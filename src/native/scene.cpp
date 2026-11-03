@@ -190,6 +190,8 @@ T source_hop_pop(std::vector<T>& heap, HigherPriority higher) {
 } // namespace
 
 BodyId Scene::add(Actor actor,std::optional<AggregateId> aggregate) {
+    if(actor.geometry==Geometry::Plane && actor.motion!=Motion::Static)
+        throw std::invalid_argument("Native plane geometry requires static motion");
     if (actors_.size() >= std::numeric_limits<BodyId>::max())
         throw std::overflow_error("Native scene body identifier exhausted");
     const auto id = static_cast<BodyId>(actors_.size());
@@ -201,7 +203,7 @@ BodyId Scene::add(Actor actor,std::optional<AggregateId> aggregate) {
             actors_.size()+1,invalid_instance);
     }
     actor.alive = true;
-    const bool dynamic_node=actor.kind==Kind::DynamicBox;
+    const bool dynamic_node=actor.motion==Motion::Dynamic;
     // Reserve the compact, live broadphase proxy list before publishing
     // the actor. Retired IDs never enlarge SAP work on future frames.
     if(live_actor_ids_.size()==live_actor_ids_.capacity()) {
@@ -220,12 +222,12 @@ BodyId Scene::add(Actor actor,std::optional<AggregateId> aggregate) {
     // Infinite planes have no finite PxgIntegerAABB. Their Sc contact
     // managers are admitted separately from GPU-owned finite BP reports.
     if(gpu_broadphase_) {
-        if(actor.kind==Kind::StaticPlane)
+        if(actor.geometry==Geometry::Plane)
             gpu_broadphase_->admit_plane(id);
         else {
-            const auto motion=actor.kind==Kind::StaticBox
+            const auto motion=actor.motion==Motion::Static
                 ? GpuBroadphaseBox::Motion::Static
-                : actor.kind==Kind::KinematicBox
+                : actor.motion==Motion::Kinematic
                     ? GpuBroadphaseBox::Motion::Kinematic
                     : GpuBroadphaseBox::Motion::Dynamic;
             if(aggregate)
@@ -236,13 +238,13 @@ BodyId Scene::add(Actor actor,std::optional<AggregateId> aggregate) {
         }
     }
     actors_.push_back(actor);
-    if(actor.kind!=Kind::StaticPlane)
+    if(actor.geometry!=Geometry::Plane)
         gpu_broadphase_snapshot_current_=false;
-    if(actor.kind==Kind::StaticPlane) {
+    if(actor.geometry==Geometry::Plane) {
         if(actor.simulation_shape_enabled)++active_plane_count_;
         if(gpu_broadphase_)plane_pair_membership_dirty_=true;
     } else if(gpu_broadphase_ && active_plane_count_ &&
-              actor.kind==Kind::DynamicBox)
+              actor.motion==Motion::Dynamic)
         plane_pair_membership_dirty_=true;
     live_actor_ids_.push_back(id);
     broadphase_endpoint_membership_dirty_=true;
@@ -257,7 +259,8 @@ BodyId Scene::add_static_box(
     Vec3 h,Vec3 p,std::optional<AggregateId> aggregate) {
     validate_box(h, p);
     Actor a;
-    a.kind = Kind::StaticBox;
+    a.motion = Motion::Static;
+    a.geometry = Geometry::Box;
     a.half_extents = h;
     a.position = p;
     return add(a,aggregate);
@@ -266,7 +269,8 @@ BodyId Scene::add_static_floor(float height) {
     if (!std::isfinite(height))
         throw std::invalid_argument("Native scene floor must be finite");
     Actor a;
-    a.kind = Kind::StaticPlane;
+    a.motion = Motion::Static;
+    a.geometry = Geometry::Plane;
     a.position = {0.0f, height, 0.0f};
     return add(a);
 }
@@ -276,7 +280,8 @@ BodyId Scene::add_dynamic_box(
     if (!std::isfinite(density) || density <= 0.0f)
         throw std::invalid_argument("Native scene density must be finite and positive");
     Actor a;
-    a.kind = Kind::DynamicBox;
+    a.motion = Motion::Dynamic;
+    a.geometry = Geometry::Box;
     a.half_extents = h;
     a.position = p;
     a.density = density;
@@ -400,7 +405,7 @@ void Scene::set_pose(BodyId id, Vec3 position, Quat orientation) {
         normalized=actor.orientation;
     // The admitted plane's world normal is fixed to +Y; rotated
     // planes require the still-unported general plane pose geometry.
-    if(actor.kind==Kind::StaticPlane) {
+    if(actor.geometry==Geometry::Plane) {
         if(normalized.x!=0.0f || normalized.y!=0.0f ||
            normalized.z!=0.0f || std::abs(normalized.w)!=1.0f)
             throw std::logic_error("Native horizontal floor cannot rotate");
@@ -423,11 +428,11 @@ void Scene::set_pose(BodyId id, Vec3 position, Quat orientation) {
         // changed bitmap BEFORE wake, Gu/PCM cache or actor mutation.
         // A failed source owner cannot leave half-authored Sc motion.
         if(gpu_broadphase_ && actor.simulation_shape_enabled &&
-           actor.kind!=Kind::StaticPlane)
+           actor.geometry!=Geometry::Plane)
             gpu_broadphase_->mark_shape_bounds_changed(id,actor.contact_offset);
     }
     // NpRigidDynamic::setGlobalPose wakes even on an idempotent edit.
-    if(actor.kind==Kind::DynamicBox) {
+    if(actor.motion==Motion::Dynamic) {
         if(actor.sleeping) {
             if(!actor.activating)queue_node_activation(id);
             actor.activating=true;
@@ -467,7 +472,7 @@ void Scene::set_pose(BodyId id, Vec3 position, Quat orientation) {
     actor.position=position;
     actor.orientation=normalized;
     actor.cached_bounds_current=false;
-    if(actor.kind!=Kind::StaticPlane)
+    if(actor.geometry!=Geometry::Plane)
         gpu_broadphase_snapshot_current_=false;
     // Preserve the established source contact-manager wake handoff:
     // relocating or rotating either endpoint wakes old touching peers
@@ -477,7 +482,7 @@ void Scene::set_pose(BodyId id, Vec3 position, Quat orientation) {
         const BodyId other=manifold.pair.a==id
             ? manifold.pair.b:manifold.pair.a;
         auto& dynamic=actors_[other];
-        if(!dynamic.alive || dynamic.kind!=Kind::DynamicBox ||
+        if(!dynamic.alive || dynamic.motion!=Motion::Dynamic ||
            (!dynamic.sleeping && !dynamic.ready_for_sleep))continue;
         if(!dynamic.activating)queue_node_activation(other);
         dynamic.activating=true;
@@ -519,7 +524,7 @@ void Scene::set_velocity(BodyId id, Vec3 velocity) {
     if (!finite(velocity))
         throw std::invalid_argument("Native scene velocity must be finite");
     auto& actor = require(id);
-    if (actor.kind != Kind::DynamicBox)
+    if (actor.motion != Motion::Dynamic)
         throw std::logic_error("Static actors have no linear velocity");
     // Publish the source wake before changing velocity; an allocator
     // failure must not commit half of an authored state change.
@@ -546,7 +551,7 @@ void Scene::set_angular_velocity(BodyId id, Vec3 velocity) {
     if (!finite(velocity))
         throw std::invalid_argument("Native angular velocity must be finite");
     auto& actor = require(id);
-    if (actor.kind != Kind::DynamicBox)
+    if (actor.motion != Motion::Dynamic)
         throw std::logic_error("Static actors have no angular velocity");
     if (!actor.angular_inertia_available &&
         (velocity.x != 0.0f || velocity.y != 0.0f || velocity.z != 0.0f))
@@ -575,7 +580,7 @@ void Scene::add_spatial_velocity_mod(BodyId id, Vec3 value,
     if(!finite(value))
         throw std::invalid_argument("Native spatial force must be finite");
     auto& actor=require(id);
-    if(actor.kind!=Kind::DynamicBox)
+    if(actor.motion!=Motion::Dynamic)
         throw std::logic_error("Static actors cannot receive spatial forces");
     if(angular && !actor.angular_inertia_available)
         throw std::logic_error(
@@ -629,7 +634,7 @@ void Scene::add_spatial_velocity_mod(BodyId id, Vec3 value,
 void Scene::clear_spatial_velocity_mod(BodyId id, ForceMode mode,
                                        bool angular) {
     auto& actor=require(id);
-    if(actor.kind!=Kind::DynamicBox)
+    if(actor.motion!=Motion::Dynamic)
         throw std::logic_error("Static actors have no spatial force state");
     if(mode!=ForceMode::Force && mode!=ForceMode::Impulse &&
        mode!=ForceMode::Acceleration && mode!=ForceMode::VelocityChange)
@@ -645,7 +650,7 @@ void Scene::clear_spatial_velocity_mod(BodyId id, ForceMode mode,
 }
 void Scene::set_kinematic_target(BodyId id, Vec3 position, Quat orientation) {
     auto& actor=require(id);
-    if(actor.kind!=Kind::KinematicBox)
+    if(actor.motion!=Motion::Kinematic)
         throw std::logic_error(
             "Source kinematic target requires eKINEMATIC rigid body");
     const float magnitude=std::sqrt(
@@ -688,7 +693,7 @@ void Scene::set_kinematic_target(BodyId id, Vec3 position, Quat orientation) {
         if(!edge.live || !edge.connected || edge.retiring)continue;
         const BodyId other=edge.pair.a==id?edge.pair.b:edge.pair.a;
         auto& partner=actors_[other];
-        if(!partner.alive || partner.kind!=Kind::DynamicBox ||
+        if(!partner.alive || partner.motion!=Motion::Dynamic ||
            (!partner.sleeping && !partner.ready_for_sleep))continue;
         if(!partner.activating)queue_node_activation(other);
         partner.activating=true;
@@ -703,9 +708,9 @@ void Scene::set_kinematic_target(BodyId id, Vec3 position, Quat orientation) {
 
 void Scene::set_kinematic(BodyId id,bool enabled) {
     auto& actor=require(id);
-    if(!rigid_node(actor.kind))
+    if(!rigid_node(actor.motion))
         throw std::logic_error("Kinematic flag requires a rigid box");
-    if((actor.kind==Kind::KinematicBox)==enabled)return;
+    if((actor.motion==Motion::Kinematic)==enabled)return;
 
     // Source ScBodySim::setKinematic removes the node from its rigid
     // island without destroying the PxRigidDynamic or its shape. Reserve
@@ -745,7 +750,7 @@ void Scene::set_kinematic(BodyId id,bool enabled) {
         const BodyId other=manifold.pair.a==id
             ? manifold.pair.b:manifold.pair.a;
         auto& partner=actors_[other];
-        if(!partner.alive || partner.kind!=Kind::DynamicBox ||
+        if(!partner.alive || partner.motion!=Motion::Dynamic ||
            (!partner.sleeping && !partner.ready_for_sleep))continue;
         if(!partner.activating)queue_node_activation(other);
         partner.activating=true;
@@ -763,7 +768,7 @@ void Scene::set_kinematic(BodyId id,bool enabled) {
         actor.kinematic_settling=false;
     }
     if(enabled) {
-        actor.kind=Kind::KinematicBox;
+        actor.motion=Motion::Kinematic;
         --live_dynamic_count_;
         actor.velocity={};
         actor.angular_velocity={};
@@ -775,7 +780,7 @@ void Scene::set_kinematic(BodyId id,bool enabled) {
         actor.sleeping=true;
         actor.ready_for_sleep=true;
     } else {
-        actor.kind=Kind::DynamicBox;
+        actor.motion=Motion::Dynamic;
         ++live_dynamic_count_;
         queue_node_activation(id);
         actor.activating=true;
@@ -803,7 +808,7 @@ void Scene::set_shape_simulation_enabled(BodyId id, bool enabled) {
     // The source AABB removal/addition can reject the Sc shape. Run
     // that source preflight before clearing any existing PCM/friction
     // working set or publishing the native shape flag.
-    if(gpu_broadphase_ && actor.kind!=Kind::StaticPlane)
+    if(gpu_broadphase_ && actor.geometry!=Geometry::Plane)
         gpu_broadphase_->set_shape_simulation_enabled(id,enabled);
     // NpShape::setFlag(eSIMULATION_SHAPE) refilters the sole shape.
     // Retire the previous contact history on this source flag change.
@@ -817,18 +822,18 @@ void Scene::set_shape_simulation_enabled(BodyId id, bool enabled) {
                 edge.pcm_cache={};
         }
     actor.simulation_shape_enabled=enabled;
-    if(actor.kind==Kind::StaticPlane) {
+    if(actor.geometry==Geometry::Plane) {
         if(enabled)++active_plane_count_;
         else --active_plane_count_;
     }
     broadphase_endpoint_membership_dirty_=true;
     if(gpu_broadphase_) {
-        if(actor.kind==Kind::StaticPlane)
+        if(actor.geometry==Geometry::Plane)
             plane_pair_membership_dirty_=true;
         else
             gpu_pair_refilter_dirty_=true;
     }
-    if(actor.kind!=Kind::StaticPlane)
+    if(actor.geometry!=Geometry::Plane)
         gpu_broadphase_snapshot_current_=false;
     dirty_=true;
 }
@@ -847,7 +852,7 @@ void Scene::set_shape_offsets(BodyId id, float contact_offset,
        actor.rest_offset==rest_offset)return;
     // AABBManagerBase::setContactDistance owns the source GPU changed bit
     // and the new distance; keep that publication ahead of scene edits.
-    if(gpu_broadphase_ && actor.kind!=Kind::StaticPlane)
+    if(gpu_broadphase_ && actor.geometry!=Geometry::Plane)
         gpu_broadphase_->mark_shape_bounds_changed(id,contact_offset);
     // An authored shape change invalidates prior friction correlation;
     // retire only this shape's anchors in the existing scene-owned cache.
@@ -867,7 +872,7 @@ void Scene::set_shape_offsets(BodyId id, float contact_offset,
     actor.contact_offset=contact_offset;
     actor.rest_offset=rest_offset;
     actor.cached_bounds_current=false;
-    if(actor.kind!=Kind::StaticPlane)
+    if(actor.geometry!=Geometry::Plane)
         gpu_broadphase_snapshot_current_=false;
     dirty_=true;
 }
@@ -891,7 +896,7 @@ void Scene::set_material(BodyId id, Material material) {
 }
 void Scene::set_dynamics(BodyId id, RigidBodyDynamics d) {
     auto& actor=require(id);
-    if(actor.kind!=Kind::DynamicBox)
+    if(actor.motion!=Motion::Dynamic)
         throw std::logic_error("Static actors have no dynamic solver state");
     // ScBodyCore::setSolverIterationCounts requires at least one
     // position iteration, but permits ZERO requested velocity iterations.
@@ -927,14 +932,14 @@ void Scene::set_contact_report_threshold(BodyId id, float force) {
         throw std::invalid_argument(
             "Native contact report threshold must be nonnegative and finite");
     auto& actor=require(id);
-    if (!rigid_node(actor.kind))
+    if (!rigid_node(actor.motion))
         throw std::logic_error(
             "Source contact report threshold requires PxRigidDynamic");
     actor.contact_report_threshold=force;
 }
 void Scene::remove(BodyId id) {
     auto& actor=require(id);
-    const bool dynamic_node=actor.kind==Kind::DynamicBox;
+    const bool dynamic_node=actor.motion==Motion::Dynamic;
     // Retirement may wake multiple sleeping Gu partners. Reserve both
     // graph-local event queues before touching partner motion flags.
     if(!manifolds_.empty()) {
@@ -962,7 +967,7 @@ void Scene::remove(BodyId id) {
         const BodyId other=manifold.pair.a==id
             ? manifold.pair.b:manifold.pair.a;
         auto& partner=actors_[other];
-        if(!partner.alive || partner.kind!=Kind::DynamicBox ||
+        if(!partner.alive || partner.motion!=Motion::Dynamic ||
            (!partner.sleeping && !partner.ready_for_sleep))continue;
         if(!partner.activating)queue_node_activation(other);
         partner.activating=true;
@@ -984,7 +989,7 @@ void Scene::remove(BodyId id) {
         else ++cursor;
     }
     actor.alive = false;
-    if(actor.kind==Kind::StaticPlane && actor.simulation_shape_enabled)
+    if(actor.geometry==Geometry::Plane && actor.simulation_shape_enabled)
         --active_plane_count_;
     std::erase(live_actor_ids_,id);
     broadphase_endpoint_membership_dirty_=true;
@@ -996,12 +1001,12 @@ void Scene::remove(BodyId id) {
         actor.kinematic_tracked=false;
     }
     if(gpu_broadphase_) {
-        if(actor.kind==Kind::StaticPlane)
+        if(actor.geometry==Geometry::Plane)
             plane_pair_membership_dirty_=true;
         else
             gpu_pair_refilter_dirty_=true;
     }
-    if(actor.kind!=Kind::StaticPlane)
+    if(actor.geometry!=Geometry::Plane)
         gpu_broadphase_snapshot_current_=false;
     dirty_ = true;
     island_topology_dirty_ |= dynamic_node;
@@ -1119,7 +1124,7 @@ void Scene::update_bounds() {
             for(BodyId id:live_actor_ids_) {
                 Actor& actor=actors_[id];
                 if(!actor.simulation_shape_enabled ||
-                   actor.kind==Kind::StaticPlane)continue;
+                   actor.geometry==Geometry::Plane)continue;
                 if(!actor.cached_bounds_current)
                     update_actor_bounds(actor);
                 const auto& bounds=actor.encoded_bounds;
@@ -1363,8 +1368,8 @@ void Scene::update_bounds() {
                     for(const std::uint32_t other_slot:active) {
                         const BodyId other_id=sap_volumes_[other_slot].id;
                         const Actor& b=actors_[other_id];
-                        if(a.kind!=Kind::DynamicBox &&
-                           b.kind!=Kind::DynamicBox)continue;
+                        if(a.motion!=Motion::Dynamic &&
+                           b.motion!=Motion::Dynamic)continue;
                         const auto& bb=b.encoded_bounds;
                         if(aa[1]>bb[4] || bb[1]>aa[4] ||
                            aa[2]>bb[5] || bb[2]>aa[5])continue;
@@ -1391,8 +1396,8 @@ void Scene::update_bounds() {
             for(const Pair pair:previous_pairs_) {
                 const Actor& a=actors_[pair.a];
                 const Actor& b=actors_[pair.b];
-                if(a.kind==Kind::StaticPlane ||
-                   b.kind==Kind::StaticPlane ||
+                if(a.geometry==Geometry::Plane ||
+                   b.geometry==Geometry::Plane ||
                    (!std::binary_search(sap_merge_updated_ids_.begin(),
                                         sap_merge_updated_ids_.end(),pair.a) &&
                     !std::binary_search(sap_merge_updated_ids_.begin(),
@@ -1506,7 +1511,7 @@ void Scene::update_bounds() {
                     const Endpoint moving=endpoints[i];
                     const Actor& moving_actor=actors_[moving.id];
                     const bool moving_dynamic=
-                        moving_actor.kind==Kind::DynamicBox;
+                        moving_actor.motion==Motion::Dynamic;
                     const auto& moving_bounds=moving_actor.encoded_bounds;
                     std::size_t previous=sap_list_prev_[i];
                     std::size_t start_index=i;
@@ -1520,7 +1525,7 @@ void Scene::update_bounds() {
                         if(moving.id!=passed.id &&
                            moving.is_max!=passed.is_max &&
                            (moving_dynamic ||
-                            actors_[passed.id].kind==Kind::DynamicBox)) {
+                            actors_[passed.id].motion==Motion::Dynamic)) {
                             const Actor& b=actors_[passed.id];
                             // A crossing on this axis changes the
                             // pair state only if its orthogonal extents
@@ -1638,8 +1643,8 @@ void Scene::update_bounds() {
                moving.is_max==neighbor.is_max)return;
             const Actor& a=actors_[moving.id];
             const Actor& other=actors_[neighbor.id];
-            if(a.kind!=Kind::DynamicBox &&
-               other.kind!=Kind::DynamicBox)return;
+            if(a.motion!=Motion::Dynamic &&
+               other.motion!=Motion::Dynamic)return;
             // Reject non-overlapping orthogonal extents before
             // spending work on the moving axis or pair lookup.
             const auto& aa=a.encoded_bounds;
@@ -1752,7 +1757,7 @@ void Scene::calculate_kinematic_velocities(float inverse_dt) {
     // target-derived velocity when solving a moving kinematic contact.
     for(BodyId id:active_kinematic_targets_) {
         Actor& body=actors_[id];
-        if(!body.alive || body.kind!=Kind::KinematicBox)continue;
+        if(!body.alive || body.motion!=Motion::Kinematic)continue;
         step_checkpoint_.save_motion(*this,id);
         if(!body.kinematic_target_pending) {
             body.velocity={};
@@ -1789,7 +1794,7 @@ void Scene::publish_kinematic_targets() {
     // publication, while this frame's Gu contacts used the old pose.
     for(BodyId id:active_kinematic_targets_) {
         Actor& body=actors_[id];
-        if(!body.alive || body.kind!=Kind::KinematicBox ||
+        if(!body.alive || body.motion!=Motion::Kinematic ||
            !body.kinematic_target_pending)continue;
         step_checkpoint_.save_motion(*this,id);
         body.position=body.kinematic_target_position;
@@ -1849,7 +1854,7 @@ void Scene::after_integration_cached_bounds() {
     // island node batches, but their source shape bounds must update.
     for(BodyId id:active_kinematic_targets_) {
         auto& actor=actors_[id];
-        if(actor.alive && actor.kind==Kind::KinematicBox &&
+        if(actor.alive && actor.motion==Motion::Kinematic &&
            !actor.cached_bounds_current) {
             publish_integrated_shape_bounds(id,actor);
         }
@@ -2043,10 +2048,10 @@ void Scene::update_gpu_pairs(bool force_update) {
             const Actor& actor=actors_[id];
             if(!actor.simulation_shape_enabled)continue;
             // Infinite planes are Sc contact managers, not finite SAP.
-            if(actor.kind==Kind::StaticPlane)continue;
-            const auto motion=actor.kind==Kind::DynamicBox
+            if(actor.geometry==Geometry::Plane)continue;
+            const auto motion=actor.motion==Motion::Dynamic
                 ? GpuBroadphaseBox::Motion::Dynamic
-                : actor.kind==Kind::KinematicBox
+                : actor.motion==Motion::Kinematic
                     ? GpuBroadphaseBox::Motion::Kinematic
                     : GpuBroadphaseBox::Motion::Static;
             gpu_broadphase_boxes_.push_back({
@@ -2073,8 +2078,8 @@ void Scene::update_gpu_pairs(bool force_update) {
         // contacts. The real source owner returns a full GPU rebuild.
         broadphase_candidate_deltas_.clear();
         for(const Pair pair:previous_pairs_)
-            if(actors_[pair.a].kind!=Kind::StaticPlane &&
-               actors_[pair.b].kind!=Kind::StaticPlane)
+            if(actors_[pair.a].geometry!=Geometry::Plane &&
+               actors_[pair.b].geometry!=Geometry::Plane)
                 broadphase_candidate_deltas_.push_back(pair);
         sap_pairs_.seed(broadphase_candidate_deltas_);
         sap_pair_registry_dirty_=false;
@@ -2091,7 +2096,7 @@ void Scene::update_gpu_pairs(bool force_update) {
             have_last=true;
             const auto& a=actors_[pair.a];
             const auto& b=actors_[pair.b];
-            if(a.kind==Kind::StaticPlane || b.kind==Kind::StaticPlane)
+            if(a.geometry==Geometry::Plane || b.geometry==Geometry::Plane)
                 throw std::invalid_argument(
                     "GPU SAP pair references a non-finite Sc plane");
             if(found && (!a.alive || !b.alive ||
@@ -2117,11 +2122,11 @@ void Scene::update_gpu_pairs(bool force_update) {
             for(const BodyId plane:live_actor_ids_) {
                 const auto& actor=actors_[plane];
                 if(!actor.alive || !actor.simulation_shape_enabled ||
-                   actor.kind!=Kind::StaticPlane)continue;
+                   actor.geometry!=Geometry::Plane)continue;
                 for(const BodyId body:live_actor_ids_) {
                     const auto& dynamic=actors_[body];
                     if(dynamic.alive && dynamic.simulation_shape_enabled &&
-                       dynamic.kind==Kind::DynamicBox)
+                       dynamic.motion==Motion::Dynamic)
                         pending_pairs_.push_back(ordered_pair(plane,body));
                 }
             }
@@ -2148,8 +2153,8 @@ void Scene::update_gpu_pairs(bool force_update) {
         pending_pairs_.clear();
         pending_pairs_.reserve(reports.found.size());
         for(const Pair pair:reports.found)
-            if(actors_[pair.a].kind==Kind::DynamicBox ||
-               actors_[pair.b].kind==Kind::DynamicBox)
+            if(actors_[pair.a].motion==Motion::Dynamic ||
+               actors_[pair.b].motion==Motion::Dynamic)
                 pending_pairs_.push_back(pair);
         append_plane_managers(false,true);
         return;
@@ -2196,8 +2201,8 @@ void Scene::update_gpu_pairs(bool force_update) {
         pending_pairs_.clear();
         pending_pairs_.reserve(sap_pairs_.active_pairs.size());
         for(const Pair pair:sap_pairs_.active_pairs)
-            if(actors_[pair.a].kind==Kind::DynamicBox ||
-               actors_[pair.b].kind==Kind::DynamicBox)
+            if(actors_[pair.a].motion==Motion::Dynamic ||
+               actors_[pair.b].motion==Motion::Dynamic)
                 pending_pairs_.push_back(pair);
         // The source BP hash has unordered storage; finite-only Sc
         // refiltering still needs sorted contact-manager identities.
@@ -2218,8 +2223,8 @@ void Scene::update_gpu_pairs(bool force_update) {
         const bool bulk=raw.size()>previous_pairs_.size()/16u;
         for(const Pair pair:raw) {
             if(new_pair &&
-               actors_[pair.a].kind!=Kind::DynamicBox &&
-               actors_[pair.b].kind!=Kind::DynamicBox)
+               actors_[pair.a].motion!=Motion::Dynamic &&
+               actors_[pair.b].motion!=Motion::Dynamic)
                 continue;
             bool existing;
             if(bulk) {
@@ -2254,8 +2259,8 @@ void Scene::update_gpu_pairs(bool force_update) {
         }
         pending_pairs_.clear();
         for(const Pair pair:previous_pairs_)
-            if(actors_[pair.a].kind!=Kind::StaticPlane &&
-               actors_[pair.b].kind!=Kind::StaticPlane)
+            if(actors_[pair.a].geometry!=Geometry::Plane &&
+               actors_[pair.b].geometry!=Geometry::Plane)
                 pending_pairs_.push_back(pair);
         append_plane_managers(false,true);
         return;
@@ -2266,8 +2271,8 @@ void Scene::update_gpu_pairs(bool force_update) {
     std::size_t new_index=0,lost_index=0;
     for(const Pair prior:previous_pairs_) {
         if(plane_pair_membership_dirty_ &&
-           (actors_[prior.a].kind==Kind::StaticPlane ||
-            actors_[prior.b].kind==Kind::StaticPlane))continue;
+           (actors_[prior.a].geometry==Geometry::Plane ||
+            actors_[prior.b].geometry==Geometry::Plane))continue;
         while(new_index<found.size() && found[new_index]<prior)
             pending_pairs_.push_back(found[new_index++]);
         if(lost_index<lost.size() && lost[lost_index]==prior)
@@ -2286,8 +2291,8 @@ void Scene::update_pairs() {
     if(sap_pair_registry_dirty_) {
         broadphase_candidate_deltas_.clear();
         for(Pair pair:previous_pairs_)
-            if(actors_[pair.a].kind!=Kind::StaticPlane &&
-               actors_[pair.b].kind!=Kind::StaticPlane)
+            if(actors_[pair.a].geometry!=Geometry::Plane &&
+               actors_[pair.b].geometry!=Geometry::Plane)
                 broadphase_candidate_deltas_.push_back(pair);
         sap_pairs_.seed(broadphase_candidate_deltas_);
         sap_pair_registry_dirty_=false;
@@ -2321,8 +2326,8 @@ void Scene::update_pairs() {
             const Actor& a=actors_[pair.a],&b=actors_[pair.b];
             const auto& aa=a.encoded_bounds;
             const auto& bb=b.encoded_bounds;
-            const bool overlap=(a.kind==Kind::DynamicBox ||
-                                b.kind==Kind::DynamicBox) &&
+            const bool overlap=(a.motion==Motion::Dynamic ||
+                                b.motion==Motion::Dynamic) &&
                 !(aa[0]>bb[3] || bb[0]>aa[3] ||
                   aa[1]>bb[4] || bb[1]>aa[4] ||
                   aa[2]>bb[5] || bb[2]>aa[5]);
@@ -2367,7 +2372,7 @@ void Scene::update_pairs() {
     // scenes never enumerate static/static candidates. Each endpoint
     // already owns a compact slot for constant-time active removal.
     for(const Endpoint ep:sap_axis_endpoints_[0]) {
-        const bool dynamic=actors_[ep.id].kind==Kind::DynamicBox;
+        const bool dynamic=actors_[ep.id].motion==Motion::Dynamic;
         auto& own=dynamic?sap_active_dynamic_slots_:
                           sap_active_static_slots_;
         if(ep.is_max) {
@@ -2400,9 +2405,9 @@ void Scene::update_pairs() {
     for(BodyId plane:live_actor_ids_) {
         const Actor& actor=actors_[plane];
         if(!actor.simulation_shape_enabled ||
-           actor.kind!=Kind::StaticPlane)continue;
+           actor.geometry!=Geometry::Plane)continue;
         for(const SapVolume& volume:sap_volumes_)
-            if(actors_[volume.id].kind==Kind::DynamicBox)
+            if(actors_[volume.id].motion==Motion::Dynamic)
                 pending_pairs_.push_back(ordered_pair(plane,volume.id));
     }
     std::sort(pending_pairs_.begin(),pending_pairs_.end());
@@ -2410,8 +2415,8 @@ void Scene::update_pairs() {
         std::unique(pending_pairs_.begin(),pending_pairs_.end()),
         pending_pairs_.end());
     for(Pair pair:pending_pairs_)
-        if(actors_[pair.a].kind!=Kind::StaticPlane &&
-           actors_[pair.b].kind!=Kind::StaticPlane)
+        if(actors_[pair.a].geometry!=Geometry::Plane &&
+           actors_[pair.b].geometry!=Geometry::Plane)
             sap_pairs_.add(pair);
     sap_pairs_.finish(sap_created_pairs_,sap_deleted_pairs_);
     broadphase_pair_membership_changed_=
@@ -2449,7 +2454,7 @@ void Scene::change_counted_interactions(Pair pair, bool attach) {
     // once, with rollback sharing the graph's sparse endpoint journal.
     for(BodyId id:{pair.a,pair.b}) {
         const Actor& actor=actors_[id];
-        if(!rigid_node(actor.kind))continue;
+        if(!rigid_node(actor.motion))continue;
         const auto count=actor.num_counted_interactions;
         if(attach && count==std::numeric_limits<std::uint32_t>::max())
             throw std::overflow_error("Source body interaction count overflow");
@@ -2458,7 +2463,7 @@ void Scene::change_counted_interactions(Pair pair, bool attach) {
     }
     for(BodyId id:{pair.a,pair.b}) {
         Actor& actor=actors_[id];
-        if(!rigid_node(actor.kind))continue;
+        if(!rigid_node(actor.motion))continue;
         step_checkpoint_.save_reference(*this,id);
         if(attach)++actor.num_counted_interactions;
         else --actor.num_counted_interactions;
@@ -2467,7 +2472,7 @@ void Scene::change_counted_interactions(Pair pair, bool attach) {
 std::uint32_t Scene::allocate_contact_edge(Pair pair) {
     // Overflow must reject before allocating a shared EdgeIndex.
     for(BodyId id:{pair.a,pair.b})
-        if(rigid_node(actors_[id].kind) &&
+        if(rigid_node(actors_[id].motion) &&
            actors_[id].num_counted_interactions==
                std::numeric_limits<std::uint32_t>::max())
             throw std::overflow_error("Source body interaction count overflow");
@@ -2546,7 +2551,7 @@ void Scene::link_contact_edge(EdgeIndex id, bool accurate) {
     for(std::size_t side=0;side<2;++side) {
         const BodyId node=side==0?edge.pair.a:edge.pair.b;
         // The PhysX static world endpoint has no dynamic island node.
-        if(!rigid_node(actors_[node].kind))continue;
+        if(!rigid_node(actors_[node].motion))continue;
         auto& link=(accurate?edge.accurate:edge.speculative)[side];
         if(link.linked)continue;
         const std::size_t index=static_cast<std::size_t>(id)*2+side;
@@ -2602,7 +2607,7 @@ void Scene::remove_accurate_island_edge(EdgeIndex id) {
     // has EdgeInstances but no island-list slot to remove.
     if(!island_edges_[id].indexed_accurate)return;
     const Pair pair=island_edges_[id].pair;
-    const BodyId node=actors_[pair.a].kind==Kind::DynamicBox
+    const BodyId node=actors_[pair.a].motion==Motion::Dynamic
         ? pair.a:pair.b;
     const auto owner=accurate_islands_.node_island[node];
     if(owner==IslandGraph::invalid) return;
@@ -2663,9 +2668,9 @@ void Scene::unlink_contact_edge(EdgeIndex id, bool accurate) {
             const BodyId other=(candidate==retiring.pair.a)
                 ? retiring.pair.b:retiring.pair.a;
             if(actors_[candidate].alive &&
-               actors_[candidate].kind==Kind::DynamicBox &&
+               actors_[candidate].motion==Motion::Dynamic &&
                actors_[candidate].sleeping &&
-               actors_[other].kind==Kind::DynamicBox &&
+               actors_[other].motion==Motion::Dynamic &&
                !actors_[other].alive)
                 speculative_split_sleep_candidates_.push_back(candidate);
         }
@@ -2702,8 +2707,8 @@ void Scene::unlink_contact_edge(EdgeIndex id, bool accurate) {
         // PhysX still tracks static touch counts for sleeping; that
         // lifecycle is outside this admitted contact-only subset.
         if(actors_[node].alive && actors_[other].alive &&
-           actors_[node].kind==Kind::DynamicBox &&
-           actors_[other].kind==Kind::DynamicBox) {
+           actors_[node].motion==Motion::Dynamic &&
+           actors_[other].motion==Motion::Dynamic) {
             auto& dirty=accurate?accurate_dirty_nodes_:speculative_dirty_nodes_;
             auto& dirty_map=accurate?accurate_dirty_map_:speculative_dirty_map_;
             // IslandSim::mDirtyMap is a set: each endpoint enters the
@@ -2763,7 +2768,7 @@ Scene::EdgeIndex Scene::add_distance_constraint(
         throw std::invalid_argument("Rigid 1D distance must be finite and nonnegative");
     const auto& left=require(a);
     const auto& right=require(b);
-    if(left.kind!=Kind::DynamicBox && right.kind!=Kind::DynamicBox)
+    if(left.motion!=Motion::Dynamic && right.motion!=Motion::Dynamic)
         throw std::logic_error("Distance constraint requires a dynamic solver node");
     if(constraint_records_.size()>=invalid_edge &&
        free_constraint_ids_.empty())
@@ -2798,8 +2803,8 @@ Scene::EdgeIndex Scene::add_distance_constraint(
 Scene::EdgeIndex Scene::add_constraint_edge(BodyId a, BodyId b) {
     require(a);
     require(b);
-    if(a==b || (!rigid_node(actors_[a].kind) &&
-                !rigid_node(actors_[b].kind)))
+    if(a==b || (!rigid_node(actors_[a].motion) &&
+                !rigid_node(actors_[b].motion)))
         throw std::invalid_argument(
             "Constraint requires two distinct actors and a rigid node");
     // EdgeIndex comes from the SAME HandleManager pool as Gu managers;
@@ -2825,9 +2830,9 @@ Scene::EdgeIndex Scene::add_constraint_edge(BodyId a, BodyId b) {
     link_contact_edge(id,false);
     link_contact_edge(id,true);
     active_constraint_handles_.push_back(id);
-    const bool awake_a=actors_[a].kind==Kind::DynamicBox &&
+    const bool awake_a=actors_[a].motion==Motion::Dynamic &&
                        !actors_[a].sleeping;
-    const bool awake_b=actors_[b].kind==Kind::DynamicBox &&
+    const bool awake_b=actors_[b].motion==Motion::Dynamic &&
                        !actors_[b].sleeping;
     if(awake_a || awake_b) {
         // Source addConnectionToGraph tests endpoint activity before
@@ -2836,7 +2841,7 @@ Scene::EdgeIndex Scene::add_constraint_edge(BodyId a, BodyId b) {
         activate_contact_edge(id,true);
         for(BodyId endpoint:{a,b}) {
             auto& body=actors_[endpoint];
-            if(body.kind==Kind::DynamicBox && body.sleeping &&
+            if(body.motion==Motion::Dynamic && body.sleeping &&
                !body.activating) {
                 queue_node_activation(endpoint);
                 body.activating=true;
@@ -2933,14 +2938,14 @@ void Scene::publish_pairs() {
             // swapped ahead of an earlier ordinary dynamic. BodyIds
             // preserve admission order for the supported rigid actors.
             // The manager retains this orientation for its lifetime.
-            const Kind a=actors_[pair.a].kind;
-            const Kind b=actors_[pair.b].kind;
+            const Motion a=actors_[pair.a].motion;
+            const Motion b=actors_[pair.b].motion;
             const bool a_static=!rigid_node(a);
             const bool both_rigid=rigid_node(a) && rigid_node(b);
             island_edges_[id].gu_order_reversed =
                 a_static ||
-                (both_rigid && (a==Kind::KinematicBox ||
-                                b==Kind::DynamicBox));
+                (both_rigid && (a==Motion::Kinematic ||
+                                b==Motion::Dynamic));
             link_contact_edge(id,false);
             next_edge_handles_.push_back(id);
             next_found_.push_back(pair);
@@ -3540,10 +3545,10 @@ void Scene::update_contacts() {
            !island_edges_[edge].pcm_cache.initialized)return false;
         const auto& a=actors_[pair.a];
         const auto& b=actors_[pair.b];
-        if(a.kind==Kind::KinematicBox || b.kind==Kind::KinematicBox)
+        if(a.motion==Motion::Kinematic || b.motion==Motion::Kinematic)
             return false;
-        const bool dynamic_a=a.kind==Kind::DynamicBox;
-        const bool dynamic_b=b.kind==Kind::DynamicBox;
+        const bool dynamic_a=a.motion==Motion::Dynamic;
+        const bool dynamic_b=b.motion==Motion::Dynamic;
         return (dynamic_a || dynamic_b) &&
             (!dynamic_a || a.sleeping) && (!dynamic_b || b.sleeping);
     };
@@ -3553,7 +3558,7 @@ void Scene::update_contacts() {
             const Pair pair=previous_pairs_[i];
             const Actor& a=actors_[pair.a];
             const Actor& b=actors_[pair.b];
-            if(a.kind==Kind::StaticPlane || b.kind==Kind::StaticPlane)
+            if(a.geometry==Geometry::Plane || b.geometry==Geometry::Plane)
                 continue;
             const EdgeIndex edge=active_edge_handles_[i];
             if(dormant_pcm(pair,edge))continue;
@@ -3575,11 +3580,11 @@ void Scene::update_contacts() {
                 const Pair pair=previous_pairs_[i];
                 const Actor& a=actors_[pair.a];
                 const Actor& b=actors_[pair.b];
-                if(a.kind!=Kind::StaticPlane &&
-                   b.kind!=Kind::StaticPlane)continue;
-                const Actor& plane=a.kind==Kind::StaticPlane?a:b;
-                const Actor& box=a.kind==Kind::StaticPlane?b:a;
-                if(box.kind!=Kind::DynamicBox)
+                if(a.geometry!=Geometry::Plane &&
+                   b.geometry!=Geometry::Plane)continue;
+                const Actor& plane=a.geometry==Geometry::Plane?a:b;
+                const Actor& box=a.geometry==Geometry::Plane?b:a;
+                if(box.motion!=Motion::Dynamic)
                     throw std::logic_error(
                         "PCM plane-box requires the admitted dynamic box");
                 const float distance=a.contact_offset+b.contact_offset;
@@ -3631,15 +3636,15 @@ void Scene::update_contacts() {
         // PxcNpBatch::discreteNarrowPhase sorts geometry types (plane
         // before box) independently of ScShapeInteraction actor order.
         // Gu box/box uses the source-oriented Sc contact manager.
-        const bool plane_pair=a.kind==Kind::StaticPlane ||
-                              b.kind==Kind::StaticPlane;
+        const bool plane_pair=a.geometry==Geometry::Plane ||
+                              b.geometry==Geometry::Plane;
         const bool reversed=!plane_pair &&
             island_edges_[edge].gu_order_reversed;
         const Actor& first=plane_pair
-            ? (a.kind==Kind::StaticPlane?a:b)
+            ? (a.geometry==Geometry::Plane?a:b)
             : (reversed?b:a);
         const Actor& second=plane_pair
-            ? (a.kind==Kind::StaticPlane?b:a)
+            ? (a.geometry==Geometry::Plane?b:a)
             : (reversed?a:b);
         const bool pcm_plane=pcm_plane_box_enabled_ && plane_pair;
         const bool pcm_box=pcm_box_box_enabled_ && !plane_pair;
@@ -3679,9 +3684,9 @@ void Scene::update_contacts() {
                 // This same EdgeIndex cache remains the authority for
                 // source Gu witnesses and rejected-frame restoration.
                 step_checkpoint_.save_edge(*this,edge);
-                const Actor& plane=a.kind==Kind::StaticPlane?a:b;
-                const Actor& box=a.kind==Kind::StaticPlane?b:a;
-                if(box.kind!=Kind::DynamicBox)
+                const Actor& plane=a.geometry==Geometry::Plane?a:b;
+                const Actor& box=a.geometry==Geometry::Plane?b:a;
+                if(box.motion!=Motion::Dynamic)
                     throw std::logic_error(
                         "PCM plane-box requires the admitted dynamic box");
                 manifold.count=generate_pcm_plane_box(
@@ -3813,7 +3818,7 @@ void Scene::update_contacts() {
                 manifold.count=old->count;
             }
         }
-        if(!pcm_plane && !pcm_box && !cache_hit && (a.kind == Kind::StaticPlane || b.kind == Kind::StaticPlane)) {
+        if(!pcm_plane && !pcm_box && !cache_hit && (a.geometry == Geometry::Plane || b.geometry == Geometry::Plane)) {
             // Direct source order/geometry from
             // GuContactPlaneBox.cpp::contactPlaneBox. The SDK plane's
             // logical normal is +Y, corresponding to PhysX plane-local
@@ -3821,9 +3826,9 @@ void Scene::update_contacts() {
             // half-extent, constructs the eight source depth tests, and
             // publishes world-space rotated vertices. Do not replace
             // this with identity-only AABB corners.
-            const Actor& plane = a.kind == Kind::StaticPlane ? a : b;
-            const Actor& box = a.kind == Kind::StaticPlane ? b : a;
-            if (box.kind != Kind::DynamicBox)
+            const Actor& plane = a.geometry == Geometry::Plane ? a : b;
+            const Actor& box = a.geometry == Geometry::Plane ? b : a;
+            if (box.motion != Motion::Dynamic)
                 continue;
             // GuContactPlaneBox always emits the plane-first normal.
             // PxcCacheLocalContacts owns that raw Gu value; the subsequent
@@ -4069,7 +4074,7 @@ bool Scene::lost_island_edges_retain_routes(bool accurate) {
     // disconnected component *inside* that iteration. Later dirty
     // nodes must observe the new island owner and the shared witnesses.
     for(BodyId node:dirty) {
-        if(!actors_[node].alive || actors_[node].kind!=Kind::DynamicBox ||
+        if(!actors_[node].alive || actors_[node].motion!=Motion::Dynamic ||
            route.confirmed[node]==confirmed_stamp)
             continue;
         ++dirty_route_checks;
@@ -4147,7 +4152,7 @@ bool Scene::lost_island_edges_retain_routes(bool accurate) {
                 const std::size_t i_edge=i/2;
                 i=link.next;
                 if(!actors_[to].alive ||
-                   actors_[to].kind!=Kind::DynamicBox ||
+                   actors_[to].motion!=Motion::Dynamic ||
                    route.seen[to]==visit_stamp)
                     continue;
                 route.seen[to]=visit_stamp;
@@ -4239,7 +4244,7 @@ void Scene::split_lost_island(bool accurate,BodyId seed) {
     const auto epoch=accurate?accurate_hint_epoch_:speculative_hint_epoch_;
     const BodyId invalid=std::numeric_limits<BodyId>::max();
     if(!actors_[seed].alive ||
-       actors_[seed].kind!=Kind::DynamicBox)
+       actors_[seed].motion!=Motion::Dynamic)
         throw std::logic_error("Source split seed is not dynamic");
     const auto owner=graph.node_island[seed];
     if(owner==IslandGraph::invalid || !graph.islands[owner].live)
@@ -4270,7 +4275,7 @@ void Scene::split_lost_island(bool accurate,BodyId seed) {
                     i=link.next;
                     if(!edge.connected ||
                        (node!=edge.pair.a &&
-                        actors_[edge.pair.a].kind==Kind::DynamicBox))
+                        actors_[edge.pair.a].motion==Motion::Dynamic))
                         continue;
                     remove_accurate_island_edge(edge_index);
                     route.split_edges.push_back(edge_index);
@@ -4372,7 +4377,7 @@ void Scene::update_island_connectivity() {
     const BodyId invalid=std::numeric_limits<BodyId>::max();
     using Graph=IslandGraph;
     const auto dynamic_node=[&](BodyId node) {
-        return actors_[node].alive && actors_[node].kind==Kind::DynamicBox;
+        return actors_[node].alive && actors_[node].motion==Motion::Dynamic;
     };
     const auto dynamic_edge=[&](Pair pair) {
         return dynamic_node(pair.a) && dynamic_node(pair.b);
@@ -4390,7 +4395,7 @@ void Scene::update_island_connectivity() {
             if(da==db)return;
             // Source PxNodeIndex::isStaticBody is an INVALID endpoint,
             // never a kinematic rigid node with its own EdgeInstance.
-            if(rigid_node(actors_[da?pair.b:pair.a].kind))return;
+            if(rigid_node(actors_[da?pair.b:pair.a].motion))return;
             const BodyId node=da?pair.a:pair.b;
             const auto id=graph.node_island[node];
             if(id==Graph::invalid || id>=graph.islands.size())
@@ -4669,7 +4674,7 @@ void Scene::update_island_connectivity() {
         // mActiveKinematicNodes order, admitting new referenced targets.
         const auto add_active_kinematic=[&](BodyId id) {
             if(id>=actors_.size() || !actors_[id].alive ||
-               actors_[id].kind!=Kind::KinematicBox ||
+               actors_[id].motion!=Motion::Kinematic ||
                next.active_kinematic_index[id]!=invalid_instance)return;
             const auto& actor=actors_[id];
             if(!next.active_reference_counts[id] &&
@@ -4741,7 +4746,7 @@ void Scene::update_island_connectivity() {
                         // In each graph a static contact manager has one
                         // intrusive instance on its dynamic endpoint.
                         if(actors_[to].alive &&
-                           !rigid_node(actors_[to].kind))
+                           !rigid_node(actors_[to].motion))
                             ++node_static_touches;
                         continue;
                     }
@@ -5199,7 +5204,7 @@ void Scene::refresh_kinematic_node(BodyId id,bool accurate) noexcept {
     auto& graph=accurate?accurate_islands_:speculative_islands_;
     if(id>=graph.active_kinematic_index.size())return;
     const auto& body=actors_[id];
-    const bool active=body.alive && body.kind==Kind::KinematicBox &&
+    const bool active=body.alive && body.motion==Motion::Kinematic &&
         ((id<graph.active_reference_counts.size() &&
           graph.active_reference_counts[id]!=0) ||
          body.kinematic_target_pending || body.kinematic_settling);
@@ -5224,8 +5229,8 @@ void Scene::activate_contact_edge(EdgeIndex id, bool accurate) noexcept {
     auto& state=accurate?edge.accurate_state:edge.speculative_state;
     if(state&1u)return; // Edge::eACTIVE
     step_checkpoint_.save_activity(*this,id);
-    if(rigid_node(actors_[edge.pair.a].kind) &&
-       rigid_node(actors_[edge.pair.b].kind)) {
+    if(rigid_node(actors_[edge.pair.a].motion) &&
+       rigid_node(actors_[edge.pair.b].motion)) {
         step_checkpoint_.save_reference(*this,edge.pair.a);
         step_checkpoint_.save_reference(*this,edge.pair.b);
     }
@@ -5233,8 +5238,8 @@ void Scene::activate_contact_edge(EdgeIndex id, bool accurate) noexcept {
     // PxsIslandSim indexes activation outputs and live counts by
     // EdgeType. Constraint edges never appear in contact-manager events.
     if(edge.type==IslandEdgeType::Constraint &&
-       actors_[edge.pair.a].kind==Kind::KinematicBox &&
-       actors_[edge.pair.b].kind==Kind::KinematicBox)return;
+       actors_[edge.pair.a].motion==Motion::Kinematic &&
+       actors_[edge.pair.b].motion==Motion::Kinematic)return;
     state|=3u; // Edge::eACTIVE | Edge::eACTIVATING
     if(edge.type==IslandEdgeType::Constraint) {
         graph.activated_constraint_edges.push_back(id);
@@ -5246,8 +5251,8 @@ void Scene::activate_contact_edge(EdgeIndex id, bool accurate) noexcept {
     // Source IslandSim::markEdgeActive counts references only for
     // edges with two valid node endpoints. Static world edges do not
     // contribute to either rigid node's active reference count.
-    if(rigid_node(actors_[edge.pair.a].kind) &&
-       rigid_node(actors_[edge.pair.b].kind)) {
+    if(rigid_node(actors_[edge.pair.a].motion) &&
+       rigid_node(actors_[edge.pair.b].motion)) {
         ++graph.active_reference_counts[edge.pair.a];
         ++graph.active_reference_counts[edge.pair.b];
         refresh_kinematic_node(edge.pair.a,accurate);
@@ -5267,8 +5272,8 @@ void Scene::deactivate_contact_edge(EdgeIndex id, bool accurate,
     auto& state=accurate?edge.accurate_state:edge.speculative_state;
     if(!(state&3u))return;
     step_checkpoint_.save_activity(*this,id);
-    if(rigid_node(actors_[edge.pair.a].kind) &&
-       rigid_node(actors_[edge.pair.b].kind)) {
+    if(rigid_node(actors_[edge.pair.a].motion) &&
+       rigid_node(actors_[edge.pair.b].motion)) {
         step_checkpoint_.save_reference(*this,edge.pair.a);
         step_checkpoint_.save_reference(*this,edge.pair.b);
     }
@@ -5292,8 +5297,8 @@ void Scene::deactivate_contact_edge(EdgeIndex id, bool accurate,
         // Source removeEdgeFromActivatingList releases both valid
         // endpoint references on every real active-to-inactive edge
         // transition, including retirement of an actor no longer alive.
-        if(rigid_node(actors_[edge.pair.a].kind) &&
-           rigid_node(actors_[edge.pair.b].kind)) {
+        if(rigid_node(actors_[edge.pair.a].motion) &&
+           rigid_node(actors_[edge.pair.b].motion)) {
             --graph.active_reference_counts[edge.pair.a];
             --graph.active_reference_counts[edge.pair.b];
             refresh_kinematic_node(edge.pair.a,accurate);
@@ -5362,7 +5367,7 @@ void Scene::activate_published_islands() noexcept {
     if(!authored_activation_pending_ && found_contacts_.empty() &&
        found_.empty())return;
     const auto dynamic_node=[&](BodyId id) {
-        return actors_[id].alive && actors_[id].kind==Kind::DynamicBox;
+        return actors_[id].alive && actors_[id].motion==Motion::Dynamic;
     };
     // A single generation per publication deduplicates each graph's
     // mActivatingNodes independently. This bounds the event list by
@@ -5455,18 +5460,18 @@ void Scene::activate_published_islands() noexcept {
     for(Pair pair:found_) {
         const EdgeIndex id=contact_edge_index(pair);
         if(id!=invalid_edge &&
-           ((actors_[pair.a].kind==Kind::DynamicBox &&
+           ((actors_[pair.a].motion==Motion::Dynamic &&
              !actors_[pair.a].sleeping) ||
-            (actors_[pair.b].kind==Kind::DynamicBox &&
+            (actors_[pair.b].motion==Motion::Dynamic &&
              !actors_[pair.b].sleeping)))
             activate_contact_edge(id,false);
     }
     for(Pair pair:found_contacts_) {
         const EdgeIndex id=contact_edge_index(pair);
         if(id!=invalid_edge &&
-           ((actors_[pair.a].kind==Kind::DynamicBox &&
+           ((actors_[pair.a].motion==Motion::Dynamic &&
              !actors_[pair.a].sleeping) ||
-            (actors_[pair.b].kind==Kind::DynamicBox &&
+            (actors_[pair.b].motion==Motion::Dynamic &&
              !actors_[pair.b].sleeping)))
             activate_contact_edge(id,true);
     }
@@ -5646,7 +5651,7 @@ std::uint32_t Scene::mark_kinematic_awake(
                                    speculative_node_first_;
         for(BodyId kinematic:graph.active_kinematic_nodes) {
             const Actor& body=actors_[kinematic];
-            if(!body.alive || body.kind!=Kind::KinematicBox ||
+            if(!body.alive || body.motion!=Motion::Kinematic ||
                body.ready_for_sleep)continue;
             for(std::size_t index=first[kinematic];
                 index!=invalid_instance;) {
@@ -5661,7 +5666,7 @@ std::uint32_t Scene::mark_kinematic_awake(
                 const BodyId other=edge.pair.a==kinematic
                     ? edge.pair.b:edge.pair.a;
                 if(other>=graph.node_island.size() ||
-                   actors_[other].kind!=Kind::DynamicBox)continue;
+                   actors_[other].motion!=Motion::Dynamic)continue;
                 const auto owner=graph.node_island[other];
                 if(owner!=IslandGraph::invalid)
                     graph.active_island_seen[owner]=stamp;
@@ -5734,7 +5739,7 @@ void Scene::deactivate_ready_accurate_islands() noexcept {
                 const EdgeIndex edge_id=static_cast<EdgeIndex>(i/2);
                 i=link.next;
                 if(edge.live && !edge.retiring && edge.connected &&
-                   (actors_[other].kind!=Kind::DynamicBox ||
+                   (actors_[other].motion!=Motion::Dynamic ||
                     actors_[other].sleeping))
                     deactivate_contact_edge(edge_id,true,true);
             }
@@ -5802,7 +5807,7 @@ void Scene::deactivate_ready_speculative_islands() noexcept {
             const BodyId other=edge.pair.a==kinematic
                 ? edge.pair.b:edge.pair.a;
             if(other<actors_.size() &&
-               actors_[other].kind==Kind::DynamicBox)
+               actors_[other].motion==Motion::Dynamic)
                 collect_candidate(other);
         }
     }
@@ -5864,7 +5869,7 @@ void Scene::deactivate_ready_speculative_islands() noexcept {
                 const EdgeIndex edge_id=static_cast<EdgeIndex>(i/2);
                 i=link.next;
                 if(edge.live && !edge.retiring &&
-                   (actors_[other].kind!=Kind::DynamicBox ||
+                   (actors_[other].motion!=Motion::Dynamic ||
                     speculative_sleep_seen_[other]==stamp))
                     deactivate_contact_edge(edge_id,false,true);
             }
@@ -6165,7 +6170,7 @@ void Scene::prepare_solver_bodies() {
     // island lists; never scan every historical actor.
     const auto prepare_kinematic=[&](BodyId id) {
         const Actor& body=actors_[id];
-        if(body.kind!=Kind::KinematicBox || !body.alive)return;
+        if(body.motion!=Motion::Kinematic || !body.alive)return;
         if(body.solver_row_generation==solver_preparation_generation_)return;
         auto& row=admit_solver_row(id);
         row.prepared_generation=solver_preparation_generation_;
@@ -6208,7 +6213,7 @@ void Scene::prepare_solver_bodies() {
                 first.dynamics.max_contact_impulse,
                 second.dynamics.max_contact_impulse)!=0.0f;
             for(BodyId id:{pair.a,pair.b})
-                if(actors_[id].kind==Kind::DynamicBox &&
+                if(actors_[id].motion==Motion::Dynamic &&
                    !actors_[id].sleeping) {
                     auto& row=admit_solver_row(id);
                     if(responds)
@@ -6231,7 +6236,7 @@ void Scene::prepare_solver_bodies() {
                 throw std::logic_error("Source 1D constraint is not admitted");
             for(BodyId id:{joint.pair.a,joint.pair.b}) {
                 prepare_kinematic(id);
-                if(actors_[id].kind==Kind::DynamicBox &&
+                if(actors_[id].motion==Motion::Dynamic &&
                    !actors_[id].sleeping)
                     admit_solver_row(id).prepared_generation=
                         solver_preparation_generation_;
@@ -6506,8 +6511,8 @@ void Scene::partition_constraints() {
         for(std::size_t i=descriptor_begin;
             i<constraint_descriptors_.size();++i) {
             const Pair pair=pair_of(i);
-            if(actors_[pair.a].kind==Kind::DynamicBox &&
-               actors_[pair.b].kind==Kind::DynamicBox &&
+            if(actors_[pair.a].motion==Motion::Dynamic &&
+               actors_[pair.b].motion==Motion::Dynamic &&
                !actors_[pair.a].sleeping && !actors_[pair.b].sleeping)
                 pending_dynamic_constraints_.push_back(i);
         }
@@ -6569,8 +6574,8 @@ void Scene::partition_constraints() {
             i<constraint_descriptors_.size();++i) {
             if(constraint_partitions_[i]!=invalid_instance)continue;
             const Pair pair=pair_of(i);
-            const bool dynamic_a=actors_[pair.a].kind==Kind::DynamicBox;
-            const bool dynamic_b=actors_[pair.b].kind==Kind::DynamicBox;
+            const bool dynamic_a=actors_[pair.a].motion==Motion::Dynamic;
+            const bool dynamic_b=actors_[pair.b].motion==Motion::Dynamic;
             if((dynamic_a && actors_[pair.a].sleeping) ||
                (dynamic_b && actors_[pair.b].sleeping))continue;
             if(!dynamic_a && !dynamic_b)continue;
@@ -6620,7 +6625,7 @@ void Scene::partition_constraints() {
     ordered_constraints_.resize(count);
     const auto dense_row=[&](BodyId id) {
         const auto& actor=actors_[id];
-        if(!rigid_node(actor.kind))return invalid_solver_row;
+        if(!rigid_node(actor.motion))return invalid_solver_row;
         if(actor.solver_row_generation!=solver_preparation_generation_ ||
            actor.solver_row_index>=solver_rows_.size() ||
            actor.solver_row_index>=invalid_solver_row)
@@ -6710,8 +6715,8 @@ void Scene::prepare_constraints(float seconds) {
         const auto& body0=actors_[edge.pair.a];
         const auto& body1=actors_[edge.pair.b];
         solver_kinematic_participant_ |=
-            body0.kind==Kind::KinematicBox ||
-            body1.kind==Kind::KinematicBox;
+            body0.motion==Motion::Kinematic ||
+            body1.motion==Motion::Kinematic;
         const Vec3 ra=rotate(body0.orientation,constraint.local_anchor_a);
         const Vec3 rb=rotate(body1.orientation,constraint.local_anchor_b);
         const Vec3 offset{
@@ -6727,9 +6732,9 @@ void Scene::prepare_constraints(float seconds) {
         const Vec3 axis=distance<1.192092896e-07f
             ? Vec3{1,0,0}
             : Vec3{offset.x/distance,offset.y/distance,offset.z/distance};
-        const float mass0=body0.kind==Kind::DynamicBox
+        const float mass0=body0.motion==Motion::Dynamic
             ? body0.inverse_mass:0.0f;
-        const float mass1=body1.kind==Kind::DynamicBox
+        const float mass1=body1.motion==Motion::Dynamic
             ? body1.inverse_mass:0.0f;
         // ExtDistanceJointSolverPrep supplies rA x axis and rB x axis.
         // DyConstraintSetup multiplies each by its body's world
@@ -6743,7 +6748,7 @@ void Scene::prepare_constraints(float seconds) {
             return a.x*b.x+a.y*b.y+a.z*b.z;
         };
         const auto jacobian=[&](BodyId id,Vec3 r) {
-            if(actors_[id].kind!=Kind::DynamicBox)return Vec3{};
+            if(actors_[id].motion!=Motion::Dynamic)return Vec3{};
             const auto& t=prepared_solver_row(id).data.sqrt_inverse_inertia;
             const Vec3 j=cross(r,axis);
             return Vec3{dot(t[0],j),dot(t[1],j),dot(t[2],j)};
@@ -6832,8 +6837,8 @@ void Scene::prepare_constraints(float seconds) {
         const Actor& actor_a=actors_[manifold.pair.a];
         const Actor& actor_b=actors_[manifold.pair.b];
         const bool active_dynamic=
-            (actor_a.kind==Kind::DynamicBox && !actor_a.sleeping) ||
-            (actor_b.kind==Kind::DynamicBox && !actor_b.sleeping);
+            (actor_a.motion==Motion::Dynamic && !actor_a.sleeping) ||
+            (actor_b.motion==Motion::Dynamic && !actor_b.sleeping);
         if(!active_dynamic) {
             manifold.solver_offset=solver_contact_points_.size();
             manifold.friction_patch_offset=next_friction_patches_.size();
@@ -6846,8 +6851,8 @@ void Scene::prepare_constraints(float seconds) {
         // solver state across otherwise independent Dy task groups.
         // Dormant Gu history must not suppress concurrent solving.
         solver_kinematic_participant_ |=
-            actor_a.kind==Kind::KinematicBox ||
-            actor_b.kind==Kind::KinematicBox;
+            actor_a.motion==Motion::Kinematic ||
+            actor_b.motion==Motion::Kinematic;
         // Preserve ScShapeInteraction's actual ordered actor pair
         // through DyContactPrep. A canonical pair key is only used
         // for Gu arena identity, and must not reorder the two
@@ -6860,9 +6865,9 @@ void Scene::prepare_constraints(float seconds) {
         const bool reversed=island_edges_[edge].gu_order_reversed;
         const BodyId id0=reversed?manifold.pair.b:manifold.pair.a;
         const BodyId id1=reversed?manifold.pair.a:manifold.pair.b;
-        const auto& a = rigid_node(actors_[id0].kind)
+        const auto& a = rigid_node(actors_[id0].motion)
             ? prepared_solver_row(id0).data : world_solver_row_.data;
-        const auto& b = rigid_node(actors_[id1].kind)
+        const auto& b = rigid_node(actors_[id1].motion)
             ? prepared_solver_row(id1).data : world_solver_row_.data;
         manifold.solver_offset = solver_contact_points_.size();
         manifold.friction_patch_offset = next_friction_patches_.size();
@@ -8160,8 +8165,8 @@ void Scene::publish_contact_events() {
         // an idle kinematic only retained by graph references cannot.
         const auto sc_actor_active=[&](BodyId id) {
             const auto& actor=actors_[id];
-            return (actor.kind==Kind::DynamicBox && !actor.sleeping) ||
-                   (actor.kind==Kind::KinematicBox &&
+            return (actor.motion==Motion::Dynamic && !actor.sleeping) ||
+                   (actor.motion==Motion::Kinematic &&
                     (actor.kinematic_target_pending ||
                      actor.kinematic_settling));
         };
@@ -8353,13 +8358,13 @@ void Scene::update_threshold_stream(float seconds) {
     for(std::size_t index:indexed_managers_) {
         const auto& manifold=manifolds_[index];
         const Pair pair=manifold.pair;
-        const bool dynamic_a=actors_[pair.a].kind==Kind::DynamicBox;
-        const bool dynamic_b=actors_[pair.b].kind==Kind::DynamicBox;
+        const bool dynamic_a=actors_[pair.a].motion==Motion::Dynamic;
+        const bool dynamic_b=actors_[pair.b].motion==Motion::Dynamic;
         if (!dynamic_a && !dynamic_b)
             continue; // no admitted response chain without a dynamic
         const bool static_world=
-            !rigid_node(actors_[pair.a].kind) ||
-            !rigid_node(actors_[pair.b].kind);
+            !rigid_node(actors_[pair.a].motion) ||
+            !rigid_node(actors_[pair.b].motion);
         const ForceThresholdKey key=static_world
             ? ForceThresholdKey{dynamic_a ? pair.a : pair.b,0,true}
             : ForceThresholdKey{pair.a,pair.b,false};
@@ -8455,7 +8460,7 @@ void Scene::publish_solver_bodies(std::size_t first,std::size_t last) {
     for(std::size_t index=first;index<last;++index) {
         const BodyId id=solver_active_ids_[index];
         auto& actor = actors_[id];
-        if (!actor.alive || actor.kind != Kind::DynamicBox) continue;
+        if (!actor.alive || actor.motion != Motion::Dynamic) continue;
         const auto& row = prepared_solver_row(id);
         const Vec3& d = row.solver.linear_velocity_delta;
         Vec3 linear{
@@ -8490,7 +8495,7 @@ void Scene::StepCheckpoint::save_motion(Scene& scene, BodyId id) noexcept {
     if(scene.motion_undo_generations_[id]==scene.motion_undo_generation_)
         return;
     const Actor& body=scene.actors_[id];
-    if(!body.alive || !rigid_node(body.kind))return;
+    if(!body.alive || !rigid_node(body.motion))return;
     scene.motion_undo_generations_[id]=scene.motion_undo_generation_;
     // capture() already reserved one record for each live dynamic body;
     // neither a speculative wake nor source deactivation can allocate.
@@ -9829,7 +9834,7 @@ void Scene::step(float seconds) {
         // which GPU-integrated poses may remain resident for the next SAP.
         for(const BodyId id:solver_active_ids_) {
             const Actor& actor=actors_[id];
-            if(!actor.alive || actor.kind!=Kind::DynamicBox ||
+            if(!actor.alive || actor.motion!=Motion::Dynamic ||
                !actor.simulation_shape_enabled ||
                actor.solver_row_generation!=solver_preparation_generation_ ||
                prepared_solver_row(id).prepared_generation!=
