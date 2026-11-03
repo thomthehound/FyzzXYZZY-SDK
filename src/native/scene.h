@@ -388,6 +388,13 @@ std::uint8_t source_pcm_sphere_box(
     Vec3 center,float radius,Vec3 box_center,Quat box_orientation,
     Vec3 box_half_extents,float contact_distance,
     std::span<ContactPoint> output);
+std::uint8_t source_gu_sphere_sphere(
+    Vec3 center0,float radius0,Vec3 center1,float radius1,
+    float contact_distance,std::span<ContactPoint> output);
+std::uint8_t source_gu_sphere_box(
+    Vec3 center,float radius,Vec3 box_center,Quat box_orientation,
+    Vec3 box_half_extents,float contact_distance,
+    std::span<ContactPoint> output);
 
 // GuPCMContactBoxBox::doBoxBoxGenerateContacts: candidates are local to
 // each participating shape, with normal stored in shape1's frame.
