@@ -849,22 +849,75 @@ void verify_mixed_gu_pcm_gpu_dy_solver(
         gpu.advance_collision();
         require(!has_pair(cpu.pairs(),plane_pair_cpu) &&
                 !has_pair(gpu.pairs(),plane_pair_gpu) &&
+                has_pair(cpu.pairs(),pcm_pair_cpu) &&
+                has_pair(gpu.pairs(),pcm_pair_gpu) &&
                 cpu.contacts().size()==gpu.contacts().size(),
-            "Disabling a Sc plane did not retire its GPU scene contact edge");
+            "Disabling a Sc plane modified finite GPU contact membership");
         cpu.set_shape_simulation_enabled(floor_cpu,true);
         gpu.set_shape_simulation_enabled(floor_gpu,true);
         cpu.advance_collision();
         gpu.advance_collision();
         require(has_pair(cpu.pairs(),plane_pair_cpu) &&
+                has_pair(gpu.pairs(),plane_pair_gpu) &&
+                has_pair(cpu.pairs(),pcm_pair_cpu) &&
+                has_pair(gpu.pairs(),pcm_pair_gpu),
+            "Reenabling a Sc plane modified finite GPU contact membership");
+        // The source rigid group transition refilters the original
+        // finite BP registry and the independent plane candidate set.
+        cpu.set_kinematic(moving_cpu[0],true);
+        gpu.set_kinematic(moving_gpu[0],true);
+        cpu.advance_collision();
+        gpu.advance_collision();
+        require(!has_pair(cpu.pairs(),plane_pair_cpu) &&
+                !has_pair(gpu.pairs(),plane_pair_gpu) &&
+                has_pair(cpu.pairs(),pcm_pair_cpu) &&
+                has_pair(gpu.pairs(),pcm_pair_gpu),
+            "Rigid-to-kinematic Sc refilter retained plane contact");
+        cpu.set_kinematic(moving_cpu[0],false);
+        gpu.set_kinematic(moving_gpu[0],false);
+        cpu.advance_collision();
+        gpu.advance_collision();
+        require(has_pair(cpu.pairs(),plane_pair_cpu) &&
                 has_pair(gpu.pairs(),plane_pair_gpu),
-            "Reenabling a Sc plane did not restore its contact manager");
+            "Kinematic-to-rigid Sc refilter lost plane admission");
+        // A plane admitted after completed GPU frames has its own Sc
+        // identity but no finite AABB. Both dynamic actors become
+        // candidates, irrespective of actual Gu touch.
+        const BodyId other_cpu=cpu.add_static_floor(-20.f);
+        const BodyId other_gpu=gpu.add_static_floor(-20.f);
+        const native::Pair other_pair_cpu{
+            std::min(other_cpu,moving_cpu[1]),
+            std::max(other_cpu,moving_cpu[1])};
+        const native::Pair other_pair_gpu{
+            std::min(other_gpu,moving_gpu[1]),
+            std::max(other_gpu,moving_gpu[1])};
+        cpu.advance_collision();
+        gpu.advance_collision();
+        require(has_pair(cpu.pairs(),other_pair_cpu) &&
+                has_pair(gpu.pairs(),other_pair_gpu) &&
+                has_pair(cpu.pairs(),plane_pair_cpu) &&
+                has_pair(gpu.pairs(),plane_pair_gpu) &&
+                has_pair(cpu.pairs(),pcm_pair_cpu) &&
+                has_pair(gpu.pairs(),pcm_pair_gpu),
+            "Second live Sc plane failed independent candidate admission");
+        cpu.remove(other_cpu);
+        gpu.remove(other_gpu);
+        cpu.advance_collision();
+        gpu.advance_collision();
+        require(!has_pair(cpu.pairs(),other_pair_cpu) &&
+                !has_pair(gpu.pairs(),other_pair_gpu) &&
+                has_pair(cpu.pairs(),plane_pair_cpu) &&
+                has_pair(gpu.pairs(),plane_pair_gpu),
+            "Retiring one Sc plane modified surviving plane membership");
         cpu.remove(floor_cpu);
         gpu.remove(floor_gpu);
         cpu.advance_collision();
         gpu.advance_collision();
         require(!has_pair(cpu.pairs(),plane_pair_cpu) &&
-                !has_pair(gpu.pairs(),plane_pair_gpu),
-            "Retiring Sc plane retained a stale GPU scene contact edge");
+                !has_pair(gpu.pairs(),plane_pair_gpu) &&
+                has_pair(cpu.pairs(),pcm_pair_cpu) &&
+                has_pair(gpu.pairs(),pcm_pair_gpu),
+            "Retiring Sc plane modified surviving finite PCM membership");
     }
 }
 
