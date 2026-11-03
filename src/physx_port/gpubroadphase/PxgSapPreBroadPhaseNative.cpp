@@ -135,10 +135,11 @@ void append_pre_broadphase_native_uploads(
         buffers.contact_distances.getSize()>=distances_bytes &&
         buffers.groups.getDevicePtr()!=0u &&
         buffers.groups.getSize()>=groups_bytes;
-    // A removed handle changes its group to eINVALID without necessarily
-    // appearing in the changed bitmap. Preserve the dense source upload
-    // on removal frames; live-only edits can reuse a contiguous delta.
+    // Retired handles and aggregate member admissions can change Bp
+    // metadata outside the top-level changed-handle bitmap. Keep their
+    // complete source transfer; standalone live edits can use a delta.
     const bool sparse_metadata=source_owned_changes && metadata_resident &&
+        !aggregate_metadata_changes &&
         update.getNumRemovedHandles()==0u;
     const bool sparse_bounds=source_owned_changes && bounds_resident &&
         !device_generated_bounds;
