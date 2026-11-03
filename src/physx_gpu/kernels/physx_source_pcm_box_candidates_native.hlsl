@@ -122,8 +122,21 @@ bool refreshEdge(uint edgeBase,float3 pa,float3 pb,float4 qa,float4 qb,
     const float3 relative=rotateSource(inverseB,pa-pb);
     const float4 rotation=quatProduct(inverseB,qa);
     const uint initialized=edgeCaches.Load(edgeBase+64u);
+    if(initialized==0u) {
+        // GuPersistentContactManifold::clear discards the old count;
+        // stale witness and pose bytes are unreachable until rebuilt.
+        // Publish the new B-local frame without reading either stale
+        // quaternion or the old contact slots.
+        edgeCaches.Store(edgeBase+12u,0u);
+        edgeCaches.Store(edgeBase+68u,0u);
+        edgeCaches.Store3(edgeBase,asuint(relative));
+        edgeCaches.Store4(edgeBase+16u,asuint(rotation));
+        edgeCaches.Store4(edgeBase+32u,asuint(qa));
+        edgeCaches.Store4(edgeBase+48u,asuint(qb));
+        edgeCaches.Store(edgeBase+64u,1u);
+        return true;
+    }
     uint count=edgeCaches.Load(edgeBase+12u);
-    if(initialized==0u)count=0u;
     const uint initial=count;
     float minA=min(ea.x,min(ea.y,ea.z));
     float minB=min(eb.x,min(eb.y,eb.z));
@@ -160,7 +173,7 @@ bool refreshEdge(uint edgeBase,float3 pa,float3 pb,float4 qa,float4 qb,
         0.9998f,0.9999f,0.9999f,0.9999f,0.9999f};
     float qaDot=dot(qa,previousA),qbDot=dot(qb,previousB);
     float limit=margin*thresholds[count];
-    bool regenerate=initialized==0u || count!=initial ||
+    bool regenerate=count!=initial ||
         translation>limit || qaDot<quaternionThresholds[count] ||
         qbDot<quaternionThresholds[count];
     if(!regenerate) {
@@ -445,12 +458,11 @@ void main(uint3 thread : SV_DispatchThreadID) {
                        asfloat(geometry.Load(gb+12u));
         uint edgeBase=p.edgeCacheBias+edge*240u;
         if((flags&0x80000000u)!=0u) {
-            // Each Sc EdgeIndex occurs once per source manager batch.
-            // Reset the original 240-byte Gu cache in its owning lane,
-            // before refreshEdge reads any of its historical witnesses.
-            [unroll]
-            for(uint word=0u;word<15u;++word)
-                edgeCaches.Store4(edgeBase+word*16u,uint4(0u,0u,0u,0u));
+            // Source PxsContactManager reset invalidates the witness
+            // count and GJK continuation, not the 240-byte storage.
+            // refreshEdge overwrites the relative pose on first use.
+            edgeCaches.Store(edgeBase+12u,0u);
+            edgeCaches.Store2(edgeBase+64u,uint2(0u,0u));
         }
         float4 qa=asfloat(transforms.Load4(ta));
         float4 qb=asfloat(transforms.Load4(tb));
