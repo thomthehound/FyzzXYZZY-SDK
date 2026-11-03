@@ -127,6 +127,47 @@ void run(Backend backend) {
                         !identity.volume_data[i].getUserData(),
                         "Recovered PhysX AABB entries retained invalid source identity");
         }
+        // Two independent ElementSim volumes bound to one rigid actor
+        // use distinct shape handles but one source actor filter identity.
+        {
+            PxgAabbSourceMembersNative owner(allocators,8u,16u,32u);
+            SourceScSceneElementsNative sc(owner);
+            using Motion=fyzz::native::GpuBroadphaseBox::Motion;
+            sc.admit_shape(0u,0u,Motion::Dynamic,0.15f);
+            sc.admit_shape(1u,0u,Motion::Dynamic,0.25f);
+            sc.admit_shape(2u,1u,Motion::Static,0.05f);
+            const auto h0=sc.handle(0u);
+            const auto h1=sc.handle(1u);
+            const auto h2=sc.handle(2u);
+            require(h0!=h1 && h0!=h2 && h1!=h2 &&
+                    owner.volume_to_actor()[h0]==0u &&
+                    owner.volume_to_actor()[h1]==1u &&
+                    owner.volume_to_actor()[h2]==2u,
+                    "Compound Sc actor collapsed independent shape elements");
+            const auto& groups=owner.scene_bounds().groups;
+            require(groups[h0]==groups[h1] &&
+                    groups[h0]!=groups[h2] &&
+                    (groups[h0]&BP_FILTERING_TYPE_MASK)==
+                        physx::Bp::FilterType::DYNAMIC,
+                    "Compound Sc shapes lost shared rigid actor BP group");
+            const std::array<fyzz::native::GpuBroadphaseBox,3> elements{{
+                box(0u,0.0f,Motion::Dynamic),
+                box(1u,0.2f,Motion::Dynamic),
+                box(2u,0.5f,Motion::Static)}};
+            const physx::Bp::BpFilter filter(false,false);
+            const auto frame=owner.prepare(elements,sc.handles(),filter);
+            require(frame.getNumCreatedHandles()==3u &&
+                    frame.getCreatedHandles()[0]==h0 &&
+                    frame.getCreatedHandles()[1]==h1 &&
+                    frame.getCreatedHandles()[2]==h2,
+                    "Compound actor failed independent source volume preparation");
+            sc.retire(1u);
+            require(sc.handle(0u)==h0 &&
+                    owner.volume_to_actor()[h0]==0u &&
+                    owner.scene_bounds().groups[h0]==groups[h0],
+                    "One retired shape released the surviving actor identity");
+            sc.post_reports_cleanup();
+        }
         {
             PxgAabbSourceMembersNative owner(allocators,8u,16u,32u);
             SourceScSceneElementsNative sc(owner);
