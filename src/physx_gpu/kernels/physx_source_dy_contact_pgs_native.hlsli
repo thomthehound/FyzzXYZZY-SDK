@@ -270,7 +270,6 @@ void prepareContactRow(uint index,uint pairIndex,uint contactBegin,
             return;
         }
         uint raw=p.prepBias+p.prepCount*72u+
-            (p.frictionCount/2u)*24u+
             (cpuOffset+index-contactBegin)*28u;
         n=asfloat(arena.Load3(raw));
         pos=asfloat(arena.Load3(raw+12u));
@@ -382,7 +381,8 @@ void prepareFrictionRow(uint index,uint pairIndex,uint errorAddress) {
     float3 tangent=asfloat(arena.Load3(fo));
     // The original Gu correlation owns two local anchors per patch
     // anchor, shared by its two tangent constraints.
-    uint anchor=p.prepBias+p.prepCount*72u+(index/2u)*24u;
+    uint anchor=p.contactBias-(p.frictionCount/2u)*24u+
+        (index/2u)*24u;
     float3 r0=prepRotate(b0,asfloat(arena.Load3(anchor)));
     float3 r1=prepRotate(b1,asfloat(arena.Load3(anchor+12u)));
     float3 p0=prepBody3(b0,0u);
@@ -450,7 +450,8 @@ void growPcmFrictionAnchors(uint patchIndex,uint pairIndex,
     }
     uint body0=arena.Load(pair);
     uint body1=arena.Load(pair+4u);
-    uint anchorBase=p.prepBias+p.prepCount*72u+(patch.x/2u)*24u;
+    uint anchorBase=p.contactBias-(p.frictionCount/2u)*24u+
+        (patch.x/2u)*24u;
     // This source-heap prefix is a physical mirror of Sc's original
     // EdgeIndex friction history. A rejected frame explicitly reloads
     // Sc's last successful anchors; ordinary frames reuse device memory.
