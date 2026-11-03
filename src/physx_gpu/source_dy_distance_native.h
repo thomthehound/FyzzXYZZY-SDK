@@ -321,7 +321,7 @@ public:
         dispatch.buffers.push_back(source_native_view(
             addresses_,pcm_pair_count?pcm_contacts:address,
             pcm_pair_count
-                ? source_allocation_bytes(pcm_pair_count,96u):total,
+                ? source_allocation_bytes(pcm_pair_count,84u):total,
             alignment_,1u,compute::BufferAccess::Read,
             params[31],max_view_));
         if(shape_capacity && (!shape_cache || !shape_bounds || !shape_geometry))
