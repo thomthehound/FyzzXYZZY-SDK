@@ -141,7 +141,6 @@ public:
         const std::size_t history_bytes=(
             next_history_capacity_*64u+127u)&~std::size_t(127u);
         history_epochs_.resize(next_history_capacity_,0u);
-        bool republish_cached_anchors=false;
         for(const auto& manager:manifolds) {
             if(!manager.patch_count)continue;
             if(manager.prep_index>=contact_prep.size() ||
@@ -158,7 +157,6 @@ public:
                    patch.anchor_count==0u)continue;
                 if(history_epochs_[pair.pcm_edge]!=history_epoch_) {
                     patch.broken|=0x40000000u;
-                    republish_cached_anchors=true;
                 }
             }
         }
@@ -247,6 +245,61 @@ public:
                 reinterpret_cast<const std::uint8_t*>(&source)+192u,
                 target.constants.size());
         }
+        // Only CPU Gu friction patches and invalidated GPU PCM history
+        // require host anchor input. Compact those source-owned anchors
+        // in patch order; each patch records its own position relative
+        // to the next contact-row arena. Ordinary PCM patches read their
+        // already-resident EdgeIndex history instead.
+        compact_anchors_.clear();
+        patch_anchor_starts_.assign(patches.size(),
+            std::numeric_limits<std::size_t>::max());
+        for(const auto& manager:manifolds) {
+            if(!manager.patch_count)continue;
+            const auto& pair=contact_prep[manager.prep_index];
+            const bool pcm=pair.pcm_pair_index!=invalid;
+            for(std::size_t j=manager.patch_offset;
+                j<manager.patch_offset+manager.patch_count;++j) {
+                auto& patch=patches[j];
+                if(patch.anchor_count>2u || patch.row_offset%2u ||
+                   patch.row_offset/2u>anchors.size() ||
+                   patch.anchor_count>anchors.size()-patch.row_offset/2u)
+                    throw std::logic_error(
+                        "Source GPU friction patch has invalid anchor rows");
+                if(pcm && (patch.broken&0x40000000u)==0u)continue;
+                if(!patch.anchor_count)continue;
+                patch_anchor_starts_[j]=compact_anchors_.size();
+                const auto begin=anchors.begin()+patch.row_offset/2u;
+                compact_anchors_.insert(compact_anchors_.end(),begin,
+                                        begin+patch.anchor_count);
+            }
+        }
+        const auto compact_anchor_bytes=compact_anchors_.size()*
+            sizeof(native::GpuDyFrictionAnchorInput);
+        if(compact_anchor_bytes>
+           std::numeric_limits<std::uint32_t>::max()-prep_bytes-
+               cpu_gu.size_bytes())
+            throw std::overflow_error(
+                "Source GPU compact friction inputs exceed address space");
+        for(const auto& manager:manifolds) {
+            if(!manager.patch_count)continue;
+            const auto& pair=contact_prep[manager.prep_index];
+            const bool pcm=pair.pcm_pair_index!=invalid;
+            for(std::size_t j=manager.patch_offset;
+                j<manager.patch_offset+manager.patch_count;++j) {
+                auto& patch=patches[j];
+                const auto start=patch_anchor_starts_[j];
+                if(start==std::numeric_limits<std::size_t>::max())continue;
+                const auto distance=narrow((compact_anchors_.size()-start)*
+                    sizeof(native::GpuDyFrictionAnchorInput));
+                if(pcm) {
+                    // The GPU source descriptor uses the CPU-Gu offset
+                    // slot for recovery anchors only when PCM is resident.
+                    auto& target=packed_[manager.prep_index];
+                    std::memcpy(target.constants.data()+56u,
+                                &distance,sizeof(distance));
+                }else patch.reserved=distance;
+            }
+        }
         // A manager excluded by the source island/partition pass has no
         // GPU reader; only scheduled descriptors require body references.
         const std::size_t inline_body_bytes=
@@ -261,12 +314,12 @@ public:
             tasks.size_bytes(),contact_bytes,friction_bytes,
             patches.size_bytes(),manifolds.size_bytes(),contact_order.size_bytes(),
             compact_prep_bytes,
-            integration.size_bytes()+16u,anchors.size_bytes()};
+            integration.size_bytes()+16u,compact_anchor_bytes};
         const std::array<std::size_t,count> elements{
             bodies.size(),rows.size(),descriptors.size(),partition_ends.size(),
             body_ordinals.size(),tasks.size(),contact_forces.size(),friction.size(),
             patches.size(),manifolds.size(),contact_order.size(),
-            contact_prep.size(),integration.size(),anchors.size()};
+            contact_prep.size(),integration.size(),compact_anchors_.size()};
         const std::array<const void*,count> sources{
             bodies.data(),rows.data(),descriptors.data(),partition_ends.data(),
             body_ordinals.data(),tasks.data(),nullptr,nullptr,
@@ -326,15 +379,12 @@ public:
                 std::memcpy(host_.data()+offsets[i],sources[i],bytes[i]);
         if(prep_bytes)
             std::memcpy(host_.data()+offsets[11],packed_.data(),prep_bytes);
-        const bool omit_anchor_upload=
-            pcm_pair_count>0u && cpu_gu.empty() &&
-            !republish_cached_anchors && !anchors.empty();
         if(!cpu_gu.empty())
             std::memcpy(host_.data()+offsets[11]+prep_bytes,
                         cpu_gu.data(),cpu_gu.size_bytes());
-        if(!anchors.empty() && !omit_anchor_upload)
+        if(!compact_anchors_.empty())
             std::memcpy(host_.data()+offsets[13],
-                        anchors.data(),anchors.size_bytes());
+                        compact_anchors_.data(),compact_anchor_bytes);
         if(!inline_bodies_.empty())
             std::memcpy(host_.data()+offsets[11]+static_begin,
                         inline_bodies_.data(),inline_bodies_.size()*
@@ -349,7 +399,7 @@ public:
         friction_history_capacity_=next_history_capacity_;
         const auto address=arena_.getDevicePtr();
         const std::size_t uploaded_bytes=
-            (omit_anchor_upload?offsets[13]:offsets[6])-upload_begin;
+            (compact_anchors_.empty()?offsets[13]:offsets[6])-upload_begin;
         std::array<std::uint32_t,32> params{};
         for(std::size_t i=0;i<11u;++i)
             params[i<6u?6u+i:17u+i-6u]=narrow(elements[i]);
@@ -530,8 +580,7 @@ public:
         last_omitted_pcm_upload_bytes_=
             reused_pcm_rows*sizeof(native::GpuDyContactPoint);
         last_cpu_gu_geometry_bytes_=cpu_gu.size_bytes();
-        last_friction_anchor_upload_bytes_=omit_anchor_upload
-            ? 0u:anchors.size_bytes();
+        last_friction_anchor_upload_bytes_=compact_anchor_bytes;
         for(const auto& manager:manifolds) {
             if(!manager.patch_count || manager.prep_index>=contact_prep.size())
                 continue;
@@ -582,6 +631,8 @@ private:
     std::vector<std::uint8_t> host_;
     std::vector<SourceDyPackedContactPrepNative> packed_;
     std::vector<native::GpuDyContactPrepBody> inline_bodies_;
+    std::vector<native::GpuDyFrictionAnchorInput> compact_anchors_;
+    std::vector<std::size_t> patch_anchor_starts_;
     std::vector<std::uint8_t> assigned_;
     // Actual packed device upload and ordered readback byte counts.
     std::pair<std::size_t,std::size_t> last_transfer_bytes_{};
