@@ -204,6 +204,12 @@ public:
     virtual BodyId add_static_box(Vec3 half_extents, Vec3 position) = 0;
     virtual BodyId add_static_floor(float height) = 0;
     virtual BodyId add_dynamic_box(Vec3 half_extents, Vec3 position, float density) = 0;
+    virtual BodyId add_static_sphere(float,Vec3) {
+        throw std::logic_error("This backend has no sphere geometry");
+    }
+    virtual BodyId add_dynamic_sphere(float,Vec3,float) {
+        throw std::logic_error("This backend has no sphere geometry");
+    }
     // A PxAggregate root has an original Sc ElementSim but is not a
     // standalone actor. Unsupported backends reject this contract.
     virtual AggregateId create_aggregate(std::uint32_t,bool) {
@@ -317,6 +323,8 @@ public:
     BodyId add_static_box(Vec3 half_extents, Vec3 position);
     BodyId add_static_floor(float height);
     BodyId add_dynamic_box(Vec3 half_extents, Vec3 position, float density);
+    BodyId add_static_sphere(float radius,Vec3 position);
+    BodyId add_dynamic_sphere(float radius,Vec3 position,float density);
     AggregateId create_aggregate(std::uint32_t max_shapes,bool self_collision);
     void destroy_aggregate(AggregateId id);
     void remove_actor_from_aggregate(AggregateId id,BodyId actor);
