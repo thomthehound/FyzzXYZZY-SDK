@@ -975,8 +975,12 @@ public:
         std::span<const physx::Bp::ShapeHandle> handles,
         const physx::Bp::BpFilter& filter,
         bool gpu_bounds = false,
-        bool republish_all_gpu_bounds = false) {
+        bool republish_all_gpu_bounds = false,
+        SourceSapDeviceCachedPoseNative* cached_poses = nullptr) {
         box_transform_records_.clear();
+        // Source allocation growth requires every Sc volume to be
+        // republished, regardless of previously authorized device poses.
+        if(republish_all_gpu_bounds)cached_poses=nullptr;
         auto* records=gpu_bounds ? &box_transform_records_ : nullptr;
         const auto republish_all=[&] {
             if(!republish_all_gpu_bounds)return;
@@ -1052,7 +1056,7 @@ public:
                 {changed_.getWords(),changed_.getWordCount()}};
             write_source_sap_scene_bounds(
                 live,handles,scene_bounds(),bounds_scratch_,
-                &geometry_changes,true,records);
+                &geometry_changes,true,records,cached_poses);
             const auto update=physx::Bp::BroadPhaseUpdateData(
                 created_.begin(),created_.size(),
                 nullptr,0u,retired_.begin(),retired_.size(),
@@ -1076,7 +1080,8 @@ public:
         }
         auto update=prepare_source_sap_single_volume_scene_native(
             single_volumes(),{created_,retired_,updated_},live,handles,
-            scene_bounds(),filter,bounds_.hasChanged(),bounds_scratch_,records);
+            scene_bounds(),filter,bounds_.hasChanged(),bounds_scratch_,
+            records,cached_poses);
         validate_source_sap_volume_actor_lifetime_native(
             actor_lifetime(),update);
         republish_all();
@@ -1086,17 +1091,6 @@ public:
     std::span<const SourceScBoxTransformInputNative> box_transform_records() const noexcept {
         return box_transform_records_;
     }
-    template<class Cached>
-    std::size_t omit_cached_box_transform_records(Cached&& cached) {
-        const auto before=box_transform_records_.size();
-        std::erase_if(box_transform_records_,[&](const auto& record) {
-            const auto handle=record.element_index;
-            return handle<volume_to_actor_.size() &&
-                cached(volume_to_actor_[handle]);
-        });
-        return before-box_transform_records_.size();
-    }
-
     SourceSapAabbManagerPreUpdateNative pre_update(
         SourceSapPreBroadPhaseBuffers sap,
         const SourceSapGpuBoxTransformsNative* gpu_boxes=nullptr) noexcept {

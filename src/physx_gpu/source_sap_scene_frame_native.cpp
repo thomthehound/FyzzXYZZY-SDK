@@ -338,16 +338,18 @@ SourceSapSceneFrameNativeResult advance_source_sap_owned_scene_frame_native(
     const auto sap_buffers=sap.pre_broadphase_buffers();
     const bool republish_all=inputs.gpu_box_owners &&
         aabb.capacity()>sap_buffers.boxes_capacity;
+    SourceSapDeviceCachedPoseNative cached_poses{
+        inputs.sc_elements,
+        [](const void* owner,BodyId actor) noexcept {
+            return static_cast<const SourceScSceneElementsNative*>(owner)->
+                has_authorized_device_cached_pose(actor);
+        }};
+    // The source AABB manager remains the only producer of transform
+    // records. Do not first pack and then compact its dirty record set.
     const auto update=aabb.prepare(
         inputs.live_boxes,inputs.live_handles,inputs.filter,
-        inputs.gpu_box_owners!=nullptr,republish_all);
-    // Original AABB changed bits still drive SAP pair classification.
-    // Only Sc-authorized resident poses avoid a redundant HtoD record.
-    const std::size_t reused_device_boxes=
-        inputs.sc_elements && !republish_all
-        ? aabb.omit_cached_box_transform_records([&](BodyId actor) {
-            return inputs.sc_elements->has_authorized_device_cached_pose(actor);
-        }):0u;
+        inputs.gpu_box_owners!=nullptr,republish_all,
+        inputs.sc_elements && !republish_all ? &cached_poses : nullptr);
     std::optional<SourceSapGpuBoxTransformsNative> gpu_boxes;
     if(inputs.gpu_box_owners) {
         const auto& owner=*inputs.gpu_box_owners;
@@ -394,7 +396,7 @@ SourceSapSceneFrameNativeResult advance_source_sap_owned_scene_frame_native(
         members,stream,sap.force_update(),stages,addresses);
     auto result=fetch_source_sap_scene_frame_native(
         members,admission,stream,addresses,context);
-    result.device_cached_box_count=reused_device_boxes;
+    result.device_cached_box_count=cached_poses.reused_records;
     return result;
 }
 } // namespace fyzz::physx_gpu

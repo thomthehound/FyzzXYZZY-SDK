@@ -376,21 +376,43 @@ void test_gpu_box_records() {
             records[0].position[0]==7.f &&
             bounds[36].isEmpty() && bounds[2].isEmpty(),
             "GPU source changed-handle bitmap staged an unchanged shape");
+
+    // Only source dirty shapes enter this selection. A resident Sc pose
+    // must not be packed or suppress a peer with a distinct source ID.
+    const BodyId resident_actor=17u;
+    SourceSapDeviceCachedPoseNative resident{
+        &resident_actor,
+        [](const void* owner,BodyId id) noexcept {
+            return id==*static_cast<const BodyId*>(owner);
+        }};
+    const std::array<physx::PxU32,2> both_dirty{1u<<2u,1u<<4u};
+    (void)prepare_source_sap_scene_update(
+        boxes,handles,arrays,{{},{},{},both_dirty},filter,true,true,
+        scratch,true,&records,&resident);
+    require(records.size()==1u &&
+            records[0].element_index==2u &&
+            records[0].position[0]==-30.f &&
+            resident.reused_records==1u &&
+            bounds[36].isEmpty() && bounds[2].isEmpty(),
+            "Sc device-resident shape was packed or dirty peer omitted");
+    resident.reused_records=0u;
     (void)prepare_source_sap_scene_update(
         boxes,handles,arrays,{{},{},{}},filter,false,false,
-        scratch,true,&records);
-    require(records.empty() && bounds[36].isEmpty(),
-            "Quiet GPU source frame published redundant box transforms");
+        scratch,true,&records,&resident);
+    require(records.empty() && resident.reused_records==0u &&
+            bounds[36].isEmpty(),
+            "Quiet GPU source frame queried or packed redundant transforms");
 
     boxes[1].half_extents.x=-1.f;
     bool rejected=false;
     try {
         (void)prepare_source_sap_scene_update(
             boxes,handles,arrays,{created,{},{}} ,filter,true,true,
-            scratch,true,&records);
+            scratch,true,&records,&resident);
     }catch(const std::invalid_argument&){rejected=true;}
-    require(rejected && records.empty() && bounds[2].isEmpty(),
-            "Invalid GPU shape input partially published box transforms");
+    require(rejected && records.empty() &&
+            resident.reused_records==0u && bounds[2].isEmpty(),
+            "Invalid GPU shape input partially published cached records");
 }
 }
 int main(){
