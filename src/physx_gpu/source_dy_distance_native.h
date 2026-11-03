@@ -67,6 +67,9 @@ public:
         if(pipeline_)context_.destroy_compute_pipeline(pipeline_);
         arena_.deallocate();
     }
+    void invalidate_after_rollback() noexcept {
+        reset_anchor_cache_=true;
+    }
 
     void solve(std::span<native::GpuDyDistanceBody> bodies,
                std::span<native::GpuDyDistanceRow> rows,
@@ -123,6 +126,20 @@ public:
                 pair.pcm_edge==0xffffffffu))
                 throw std::logic_error(
                     "Source Dy PCM contact provenance is invalid");
+        std::size_t next_history_capacity_=friction_history_capacity_;
+        for(const auto& pair:contact_prep)
+            if(pair.pcm_pair_index!=0xffffffffu)
+                next_history_capacity_=std::max(next_history_capacity_,
+                    std::size_t(pair.pcm_edge)+1u);
+        if(next_history_capacity_>
+           (std::numeric_limits<std::uint32_t>::max()-127u)/64u)
+            throw std::overflow_error(
+                "Source GPU friction history exceeds address space");
+        const std::size_t history_bytes=(
+            next_history_capacity_*64u+127u)&~std::size_t(127u);
+        for(auto& patch:patches)
+            if((patch.broken&0x80000000u) && reset_anchor_cache_)
+                patch.broken|=0x40000000u;
         for(const auto& manager:manifolds) {
             if(!manager.patch_count)continue;
             if(manager.prep_index>=contact_prep.size() ||
@@ -260,9 +277,11 @@ public:
         constexpr std::array<std::size_t,count> order{
             0u,1u,5u,8u,2u,3u,4u,9u,10u,11u,12u,6u,7u};
         std::array<std::size_t,count> offsets{};
-        // Leave the source input addresses 128-byte aligned. One packed
-        // output view precedes them, so readback needs only a single copy.
-        const std::size_t upload_begin=(output_bytes+127u)&~std::size_t(127u);
+        // The original Dy heap retains an EdgeIndex-keyed Sc anchor
+        // prefix. Solver output follows it and remains the sole readback;
+        // transient input and output locations may grow independently.
+        const std::size_t upload_begin=history_bytes+
+            ((output_bytes+127u)&~std::size_t(127u));
         std::size_t total=upload_begin;
         for(const auto i:order) {
             const auto view_bytes=std::max<std::size_t>(bytes[i],4u);
@@ -281,7 +300,10 @@ public:
                 std::memcpy(host_.data()+offsets[i],sources[i],bytes[i]);
         if(prep_bytes)
             std::memcpy(host_.data()+offsets[11],packed_.data(),prep_bytes);
-        if(!anchors.empty())
+        const bool omit_anchor_upload=
+            pcm_pair_count>0u && cpu_gu.empty() &&
+            !reset_anchor_cache_ && !anchors.empty();
+        if(!anchors.empty() && !omit_anchor_upload)
             std::memcpy(host_.data()+offsets[11]+prep_bytes,
                         anchors.data(),anchors.size_bytes());
         if(!cpu_gu.empty())
@@ -298,15 +320,17 @@ public:
         // The source GPU kernel constructs all writable Gu contact rows.
         // One ordered source upload covers every other active input and
         // stops before the contact-row arena, without scattered HtoD spans.
-        arena_.allocate(total,PX_FL);
+        arena_.allocateCopyOldDataAsync(total,stream_,PX_FL);
+        friction_history_capacity_=next_history_capacity_;
         const auto address=arena_.getDevicePtr();
-        const std::size_t uploaded_bytes=offsets[6]-upload_begin;
+        const std::size_t uploaded_bytes=offsets[6]-upload_begin-
+            (omit_anchor_upload?anchors.size_bytes():0u);
         std::array<std::uint32_t,32> params{};
         for(std::size_t i=0;i<11u;++i)
             params[i<6u?6u+i:17u+i-6u]=narrow(elements[i]);
         params[30]=narrow(elements[11]);
         for(std::size_t i=0;i<6u;++i)
-            params[22u+i]=narrow(result_offsets[i]);
+            params[22u+i]=narrow(history_bytes+result_offsets[i]);
         compute::DispatchCommand dispatch{};
         dispatch.pipeline=pipeline_;
         dispatch.groups={narrow(tasks.size()),1u,1u};
@@ -355,7 +379,15 @@ public:
         std::memcpy(host_.data()+offsets[12],
                     shape_header.data(),sizeof(shape_header));
         const auto previous_spans=stream_.submission_stats().upload_spans;
-        stream_.queue_uploads({{
+        if(omit_anchor_upload) {
+            const auto anchor_begin=offsets[11]+prep_bytes;
+            const auto anchor_end=anchor_begin+anchors.size_bytes();
+            stream_.queue_uploads({
+                {address+upload_begin,host_.data()+upload_begin,
+                 anchor_begin-upload_begin},
+                {address+anchor_end,host_.data()+anchor_end,
+                 offsets[6]-anchor_end}});
+        }else stream_.queue_uploads({{
             address+upload_begin,host_.data()+upload_begin,uploaded_bytes}});
         last_upload_spans_=stream_.submission_stats().upload_spans-
                            previous_spans;
@@ -372,7 +404,7 @@ public:
         dispatch.push_constants.resize(sizeof(params));
         std::memcpy(dispatch.push_constants.data(),params.data(),sizeof(params));
         stream_.commands().emplace_back(std::move(dispatch));
-        const auto mapped=addresses_.resolve(address,output_bytes);
+        const auto mapped=addresses_.resolve(address+history_bytes,output_bytes);
         const std::array<compute::DownloadSpan,1> downloads{
             {mapped.buffer,mapped.offset,host_.data(),output_bytes}};
         stream_.submit();
@@ -481,7 +513,9 @@ public:
         last_omitted_pcm_upload_bytes_=
             reused_pcm_rows*sizeof(native::GpuDyContactPoint);
         last_cpu_gu_geometry_bytes_=cpu_gu.size_bytes();
-        last_friction_anchor_upload_bytes_=anchors.size_bytes();
+        last_friction_anchor_upload_bytes_=omit_anchor_upload
+            ? 0u:anchors.size_bytes();
+        reset_anchor_cache_=false;
         last_friction_prepared_rows_=friction.size();
         last_contact_prep_upload_saving_=
             static_cast<std::int64_t>(contact_prep.size_bytes())-
@@ -534,6 +568,8 @@ private:
     std::size_t last_cpu_gu_geometry_bytes_=0u;
     std::size_t last_upload_spans_=0u;
     std::size_t last_friction_anchor_upload_bytes_=0u;
+    std::size_t friction_history_capacity_=0u;
+    bool reset_anchor_cache_=false;
     std::size_t last_friction_prepared_rows_=0u;
     std::int64_t last_contact_prep_upload_saving_=0;
 };
