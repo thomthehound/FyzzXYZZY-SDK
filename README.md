@@ -25,10 +25,13 @@ the optional `NativeGpuPcmShaders` bundle also runs source GPU box/box PCM,
 sparse GJK/EPA continuation and world-space Gu contact generation for live
 Sc contact managers. Without that bundle, narrowphase remains on the CPU.
 
-This is still a **hybrid** pipeline: Sc publishes GPU contacts for CPU Dy
-constraint preparation and rigid solving. Device-resident constraint
-preparation, GPU PGS and body integration, broader geometry, articulations
-and deformables are not yet production features.
+An explicit GPU Dy shader also runs contact and distance-constraint
+preparation, partitioned PGS, correlated friction and rigid body integration
+for the admitted box/plane scene. This remains a **hybrid** pipeline: Sc
+still prepares contact-manager and task metadata on the CPU, publishes
+GPU narrowphase results through host-visible contact streams, and fetches
+GPU solver results. General geometry, articulations, deformables and an
+entirely device-resident physics frame are not yet supported.
 
 Use `ExecutionMode::NativeCpu` for the independent CPU scene. The ordinary
 `World` default still uses the optional reference CPU backend, and direct
