@@ -846,9 +846,8 @@ private:
     friend struct GpuSapSceneAdmissionFixture;
     friend struct NativeSapTimingFixture;
     friend struct NativeThirdPassTimingFixture;
-    enum class Kind : std::uint8_t {
-        StaticBox, DynamicBox, StaticPlane, KinematicBox
-    };
+    enum class Motion : std::uint8_t { Static, Dynamic, Kinematic };
+    enum class Geometry : std::uint8_t { Box, Plane };
     // Node::NodeType is independent of actor kind. Kinematics retain
     // rigid node identity but no island assignment. Other node classes
     // require their own non-rigid simulation owners, not rigid Actor
@@ -861,13 +860,14 @@ private:
         static_cast<std::size_t>(IslandNodeType::Count);
     static constexpr std::size_t rigid_node_type_index=
         static_cast<std::size_t>(IslandNodeType::RigidBody);
-    // Kinematics are rigid-body nodes with valid EdgeInstances but
-    // INVALID island IDs. Only ordinary dynamic boxes enter Dy PGS.
-    static constexpr bool rigid_node(Kind kind) noexcept {
-        return kind==Kind::DynamicBox || kind==Kind::KinematicBox;
+    // Motion determines island participation independently of geometry.
+    // Kinematics have rigid graph nodes but no solver island assignment.
+    static constexpr bool rigid_node(Motion motion) noexcept {
+        return motion!=Motion::Static;
     }
     struct Actor {
-        Kind kind = Kind::StaticBox;
+        Motion motion = Motion::Static;
+        Geometry geometry = Geometry::Box;
         bool alive = false;
         Vec3 half_extents{};
         Vec3 position{};
