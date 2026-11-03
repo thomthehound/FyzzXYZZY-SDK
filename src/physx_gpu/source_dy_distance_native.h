@@ -211,10 +211,9 @@ public:
         }
         // A manager excluded by the source island/partition pass has no
         // GPU reader; only scheduled descriptors require body references.
-        const std::size_t compact_prep_bytes=static_begin+
+        const std::size_t inline_body_bytes=
             inline_bodies_.size()*sizeof(native::GpuDyContactPrepBody);
-        if(compact_prep_bytes>contact_prep.size_bytes())
-            throw std::logic_error("Source contact prep has no active rigid body");
+        const std::size_t compact_prep_bytes=static_begin+inline_body_bytes;
         constexpr std::size_t count=13u;
         // One 16-byte header describes the three original Sc/SAP GPU
         // allocations, followed by exactly one source body record per row.
@@ -474,7 +473,8 @@ public:
         last_friction_anchor_upload_bytes_=anchors.size_bytes();
         last_friction_prepared_rows_=friction.size();
         last_contact_prep_upload_saving_=
-            contact_prep.size_bytes()-compact_prep_bytes;
+            static_cast<std::int64_t>(contact_prep.size_bytes())-
+            static_cast<std::int64_t>(prep_bytes+inline_body_bytes);
     }
     std::size_t last_integrated_body_count() const noexcept {
         return last_integrated_body_count_;
@@ -500,7 +500,7 @@ public:
     std::size_t last_friction_prepared_rows() const noexcept {
         return last_friction_prepared_rows_;
     }
-    std::size_t last_contact_prep_upload_saving() const noexcept {
+    std::int64_t last_contact_prep_upload_saving() const noexcept {
         return last_contact_prep_upload_saving_;
     }
 private:
@@ -524,7 +524,7 @@ private:
     std::size_t last_upload_spans_=0u;
     std::size_t last_friction_anchor_upload_bytes_=0u;
     std::size_t last_friction_prepared_rows_=0u;
-    std::size_t last_contact_prep_upload_saving_=0u;
+    std::int64_t last_contact_prep_upload_saving_=0;
 };
 
 } // namespace fyzz::physx_gpu
