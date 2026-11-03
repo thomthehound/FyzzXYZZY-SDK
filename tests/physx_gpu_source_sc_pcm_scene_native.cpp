@@ -17,6 +17,20 @@
 
 namespace fyzz::native {
 struct GpuPcmFrictionAnchorFixture {
+    static void verify_pcm_contact_arena(const Scene& scene) {
+        const auto* base=scene.contact_points_.data();
+        for(const auto& manager:scene.manifolds_) {
+            if(manager.pcm_result_index==
+               std::numeric_limits<std::uint32_t>::max())continue;
+            if(manager.count==0u ||
+               manager.contact_offset>scene.contact_points_.size() ||
+               manager.count>scene.contact_points_.size()-manager.contact_offset ||
+               manager.points.size()!=manager.count ||
+               manager.points.data()!=base+manager.contact_offset)
+                throw std::runtime_error(
+                    "Source GPU PCM published outside its Sc Gu contact arena");
+        }
+    }
     static std::size_t cpu_gu_anchor_bytes(const Scene& scene) {
         std::size_t count=0u;
         for(const auto index:scene.indexed_managers_) {
@@ -90,6 +104,7 @@ void verify(fyzz::compute::Backend backend,const char* sap,
         require(cpu.pairs().size()==gpu.pairs().size() &&
                 cpu.contacts().size()==gpu.contacts().size(),
                 "Sc GPU PCM pair or contact manager publication differs");
+        native::GpuPcmFrictionAnchorFixture::verify_pcm_contact_arena(gpu);
         require((gpu.contacts().size()==1u)==contact,
                 "Source GPU PCM scene has unexpected contact manager count");
         if(!contact)return;
