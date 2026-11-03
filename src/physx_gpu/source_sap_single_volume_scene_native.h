@@ -21,6 +21,7 @@ prepare_source_sap_single_volume_scene_native(
     SourceSapSingleVolumeFirstPassNative handles,
     std::span<const native::GpuBroadphaseBox> live_boxes,
     std::span<const physx::Bp::ShapeHandle> live_handles,
+    std::span<const BodyId> source_volume_actors,
     SourceSapSceneBounds arrays,
     const physx::Bp::BpFilter& filter,
     bool bounds_changed,
@@ -47,6 +48,10 @@ prepare_source_sap_single_volume_scene_native(
             "Source Sc volumes and live geometry counts disagree");
     for(std::size_t i=0;i<live_handles.size();++i) {
         const auto handle=live_handles[i];
+        if(handle>=source_volume_actors.size() ||
+           source_volume_actors[handle]!=live_boxes[i].id)
+            throw std::invalid_argument(
+                "Source GPU volume handle no longer belongs to the supplied Sc actor");
         if(handle>=manager.volume_data.size() ||
            handle>=manager.groups.size() ||
            manager.groups[handle]==physx::Bp::FilterGroup::eINVALID ||
