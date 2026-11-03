@@ -12,6 +12,7 @@
 #include <array>
 #include <cmath>
 #include <cstdint>
+#include <cstring>
 #include <fstream>
 #include <iostream>
 #include <iterator>
@@ -42,6 +43,28 @@ ShaderBinary shader(const char* name) {
 void verify(Context& context,const char* transform_shader,
             const char* candidate_shader,const char* compact_shader,
             const char* epa_shader) {
+    // Exercise every contact lane with byte-exact IEEE float preservation.
+    SourcePcmGpuContactStreamNative fixture{};
+    fixture.edge_handle=197u;
+    fixture.packed_counts=4u|(4u<<6u)|(1u<<9u)|(4u<<10u);
+    fixture.normal[0]=0.25f;
+    fixture.normal[1]=-0.5f;
+    fixture.normal[2]=0.75f;
+    for(std::size_t i=0u;i<4u;++i) {
+        fixture.contacts[i].position[0]=float(i)+0.125f;
+        fixture.contacts[i].position[1]=-float(i)-0.25f;
+        fixture.contacts[i].position[2]=float(i)*0.5f;
+        fixture.contacts[i].separation=-0.375f*float(i+1u);
+    }
+    const auto unpacked=unpack_source_pcm_sc_contact_native(fixture);
+    require(unpacked.edge_handle==197u && unpacked.cached_count==4u &&
+            unpacked.status==0u && unpacked.emitted_count==4u &&
+            unpacked.selected_and_regenerated==0x80000004u &&
+            std::memcmp(unpacked.normal,fixture.normal,
+                        sizeof(unpacked.normal))==0 &&
+            std::memcmp(unpacked.contacts,fixture.contacts,
+                        sizeof(unpacked.contacts))==0,
+            "Packed GPU PCM record changed a full four-witness Gu manifold");
     constexpr float z=0.3826834323650898f;
     constexpr float w=0.9238795325112867f;
     std::array<SourceScBoxTransformInputNative,8> boxes{{
