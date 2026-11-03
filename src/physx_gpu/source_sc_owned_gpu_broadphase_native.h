@@ -272,6 +272,9 @@ public:
     void mark_shape_bounds_changed(BodyId id,float offset) override {
         producer_->mark_shape_bounds_changed(id,offset);
     }
+    void set_device_shape_pose_cache_enabled(BodyId id,bool enabled) override {
+        producer_->set_device_shape_pose_cache_enabled(id,enabled);
+    }
     void admit_shape(BodyId id,native::GpuBroadphaseBox::Motion motion,
                      float offset) override {
         producer_->admit_shape(id,motion,offset);
