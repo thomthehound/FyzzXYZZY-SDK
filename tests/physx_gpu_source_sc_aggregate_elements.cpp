@@ -296,6 +296,20 @@ void run(Backend backend) {
                     detached.getCreatedHandles()[0]==standalone0,
                     "Source aggregate actor removal did not create a standalone SAP endpoint");
             owner.complete_fetch(detached);
+            // A device solver write invalidates its prior cached pose
+            // until Sc accepts the current source solver-end result.
+            require(sc.device_shape_cache_handle(0u)==standalone0,
+                    "Source Sc cache lookup lost standalone ElementSim");
+            sc.authorize_device_integrated_pose(0u);
+            require(sc.has_authorized_device_cached_pose(0u),
+                    "Source Sc solver-end did not authorize device pose");
+            require(sc.device_shape_cache_handle(0u)==standalone0 &&
+                    !sc.has_authorized_device_cached_pose(0u),
+                    "New Dy GPU write retained stale prior-frame pose");
+            sc.authorize_device_integrated_pose(0u);
+            sc.mark_changed(0u,0.4f);
+            require(!sc.has_authorized_device_cached_pose(0u),
+                    "Source Sc shape edit retained GPU-authored pose");
             require(owner.volume_to_actor()[member0]==
                         std::numeric_limits<fyzz::BodyId>::max(),
                     "Source removed aggregate handle survived GPU report cleanup");

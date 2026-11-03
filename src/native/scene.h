@@ -131,7 +131,10 @@ struct GpuDyBodyIntegrationInput {
     float sqrt_inverse_inertia[9]{};
     std::uint32_t lock_flags=0u;
     float seconds=0.0f;
-    std::uint32_t active=0u,reserved=0u;
+    std::uint32_t active=0u;
+    // Sc actor index before source-owner lowering; ElementSim volume
+    // handle in the GPU descriptor after source admission.
+    std::uint32_t source_element=0xffffffffu;
 };
 static_assert(sizeof(GpuDyBodyIntegrationInput)==104u &&
               offsetof(GpuDyBodyIntegrationInput,lock_flags)==88u);
@@ -275,9 +278,13 @@ public:
         std::span<const GpuDyContactManifold>,
         std::span<const std::uint32_t>,
         std::span<const GpuDyContactPrepPair>,
-        std::span<const GpuDyBodyIntegrationInput>,
+        std::span<GpuDyBodyIntegrationInput>,
         std::span<GpuDyIntegratedPose>) {
         throw std::logic_error("Source GPU Dy shader is not installed");
+    }
+    // Sc's afterIntegration authorizes the source ElementSim device pose.
+    virtual void authorize_device_integrated_pose(BodyId) {
+        throw std::logic_error("Source GPU owner has no device pose cache");
     }
     virtual void mark_shape_bounds_changed(
         BodyId actor,float contact_offset)=0;

@@ -45,10 +45,9 @@ public:
         max_view_=info.max_storage_buffer_range;
         compute::ComputePipelineDesc pipeline{};
         pipeline.shader=std::move(shader);
-        pipeline.storage_buffer_binding_count=2u;
-        pipeline.storage_buffer_views={
-            compute::StorageBufferViewKind::RawReadWrite,
-            compute::StorageBufferViewKind::RawReadWrite};
+        pipeline.storage_buffer_binding_count=5u;
+        pipeline.storage_buffer_views.assign(
+            5u,compute::StorageBufferViewKind::RawReadWrite);
         pipeline.push_constant_bytes=128u;
         pipeline_=context_.create_compute_pipeline(pipeline);
     }
@@ -76,7 +75,11 @@ public:
                std::span<const native::GpuDyBodyIntegrationInput> integration,
                std::span<native::GpuDyIntegratedPose> integrated_poses,
                CudaDeviceAddressMap::Address pcm_contacts,
-               std::uint32_t pcm_pair_count) {
+               std::uint32_t pcm_pair_count,
+               CudaDeviceAddressMap::Address shape_cache,
+               CudaDeviceAddressMap::Address shape_bounds,
+               CudaDeviceAddressMap::Address shape_geometry,
+               std::uint32_t shape_capacity) {
         if(tasks.empty() || descriptors.empty())
             throw std::invalid_argument("Source Dy GPU requires active source tasks");
         if(integration.size()!=bodies.size() ||
@@ -146,13 +149,15 @@ public:
                std::numeric_limits<std::size_t>::max()-prep_bytes-
                    anchors.size_bytes())
             throw std::overflow_error("Source Gu/friction input arena exceeds address space");
+        // One 16-byte header describes the three original Sc/SAP GPU
+        // allocations, followed by exactly one source body record per row.
         const std::array<std::size_t,count> bytes{
             bodies.size_bytes(),rows.size_bytes(),descriptors.size_bytes(),
             partition_ends.size_bytes(),body_ordinals.size_bytes(),
             tasks.size_bytes(),contact_bytes,friction_bytes,
             patches.size_bytes(),manifolds.size_bytes(),contact_order.size_bytes(),
             prep_bytes+anchors.size_bytes()+cpu_gu.size_bytes(),
-            integration.size_bytes()};
+            integration.size_bytes()+16u};
         const std::array<std::size_t,count> elements{
             bodies.size(),rows.size(),descriptors.size(),partition_ends.size(),
             body_ordinals.size(),tasks.size(),contact_forces.size(),friction.size(),
@@ -206,7 +211,7 @@ public:
         // inputs. Writable GPU contact rows have no CPU mirror.
         host_.resize(offsets[6]);
         for(std::size_t i=0;i<count;++i)
-            if(i!=6u && i!=7u && i!=11u && bytes[i])
+            if(i!=6u && i!=7u && i!=11u && i!=12u && bytes[i])
                 std::memcpy(host_.data()+offsets[i],sources[i],bytes[i]);
         if(prep_bytes)
             std::memcpy(host_.data()+offsets[11],contact_prep.data(),prep_bytes);
@@ -217,17 +222,15 @@ public:
             std::memcpy(host_.data()+offsets[11]+prep_bytes+
                             anchors.size_bytes(),
                         cpu_gu.data(),cpu_gu.size_bytes());
+        if(!integration.empty())
+            std::memcpy(host_.data()+offsets[12]+16u,
+                        integration.data(),integration.size_bytes());
         // The source GPU kernel constructs all writable Gu contact rows.
         // One ordered source upload covers every other active input and
         // stops before the contact-row arena, without scattered HtoD spans.
         arena_.allocate(total,PX_FL);
         const auto address=arena_.getDevicePtr();
         const std::size_t uploaded_bytes=offsets[6]-upload_begin;
-        const auto previous_spans=stream_.submission_stats().upload_spans;
-        stream_.queue_uploads({{
-            address+upload_begin,host_.data()+upload_begin,uploaded_bytes}});
-        last_upload_spans_=stream_.submission_stats().upload_spans-
-                           previous_spans;
         std::array<std::uint32_t,32> params{};
         for(std::size_t i=0;i<11u;++i)
             params[i<6u?6u+i:17u+i-6u]=narrow(elements[i]);
@@ -251,6 +254,41 @@ public:
                 ? source_allocation_bytes(pcm_pair_count,96u):total,
             alignment_,1u,compute::BufferAccess::Read,
             params[31],max_view_));
+        if(shape_capacity && (!shape_cache || !shape_bounds || !shape_geometry))
+            throw std::logic_error("Source Sc GPU integration shape buffers are missing");
+        const auto empty_shape=std::numeric_limits<std::uint32_t>::max();
+        for(const auto& input:integration)
+            if(input.active && input.source_element!=empty_shape &&
+               input.source_element>=shape_capacity)
+                throw std::out_of_range(
+                    "Source Dy integrated ElementSim handle exceeds AABB capacity");
+        std::array<std::uint32_t,4> shape_header{0u,0u,0u,shape_capacity};
+        const auto bind_shape=[&](CudaDeviceAddressMap::Address source,
+                                  std::uint32_t stride,std::uint32_t slot,
+                                  compute::BufferAccess access,
+                                  std::uint32_t& bias) {
+            const bool empty=shape_capacity==0u;
+            return source_native_view(
+                addresses_,empty?address:source,
+                empty?total:source_allocation_bytes(shape_capacity,stride),
+                alignment_,slot,access,bias,max_view_);
+        };
+        dispatch.buffers.push_back(bind_shape(
+            shape_cache,32u,2u,compute::BufferAccess::ReadWrite,
+            shape_header[0]));
+        dispatch.buffers.push_back(bind_shape(
+            shape_bounds,24u,3u,compute::BufferAccess::ReadWrite,
+            shape_header[1]));
+        dispatch.buffers.push_back(bind_shape(
+            shape_geometry,16u,4u,compute::BufferAccess::Read,
+            shape_header[2]));
+        std::memcpy(host_.data()+offsets[12],
+                    shape_header.data(),sizeof(shape_header));
+        const auto previous_spans=stream_.submission_stats().upload_spans;
+        stream_.queue_uploads({{
+            address+upload_begin,host_.data()+upload_begin,uploaded_bytes}});
+        last_upload_spans_=stream_.submission_stats().upload_spans-
+                           previous_spans;
         for(std::size_t i=0;i<11u;++i)
             params[i<6u?i:i+6u]=narrow(
                 static_cast<std::size_t>(params[28])+offsets[i]);

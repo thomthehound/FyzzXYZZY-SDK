@@ -166,6 +166,7 @@ public:
 
     void retire(BodyId actor) {
         auto& element=live(actor);
+        element.device_cached_pose_valid=false;
         const auto handle=handles_[actor];
         if(element.in_aabb) {
             if(element.aggregate_id!=PX_INVALID_U32) {
@@ -186,6 +187,7 @@ public:
     void set_simulation_enabled(BodyId actor,bool enabled) {
         auto& element=live(actor);
         if(element.in_aabb==enabled)return;
+        element.device_cached_pose_valid=false;
         if(enabled) {
             // Sc::ElementSim's ID survives eSIMULATION_SHAPE refiltering.
             // An add before GPU fetch cancels a pending source removal;
@@ -222,6 +224,7 @@ public:
 
     void mark_changed(BodyId actor,float contact_distance) {
         auto& element=live(actor);
+        element.device_cached_pose_valid=false;
         // ScShapeCore retains contact distance across eSIMULATION_SHAPE
         // disablement. Only an admitted AABB volume can have a changed
         // bitmap bit; a disabled shape remembers the distance for re-add.
@@ -238,6 +241,7 @@ public:
     void set_motion(BodyId actor,native::GpuBroadphaseBox::Motion motion) {
         auto& element=live(actor);
         if(element.motion==motion)return;
+        element.device_cached_pose_valid=false;
         if(motion==native::GpuBroadphaseBox::Motion::Static ||
            element.motion==native::GpuBroadphaseBox::Motion::Static)
             throw std::invalid_argument(
@@ -283,6 +287,37 @@ public:
         pending_root_slots_.clear();
     }
 
+    bool device_cache_eligible(BodyId actor) const noexcept {
+        return actor<records_.size() && records_[actor].live &&
+            records_[actor].in_aabb &&
+            records_[actor].aggregate_id==PX_INVALID_U32 &&
+            records_[actor].motion==native::GpuBroadphaseBox::Motion::Dynamic;
+    }
+    physx::Bp::ShapeHandle device_shape_cache_handle(BodyId actor) {
+        if(actor>=handles_.size())
+            throw std::out_of_range("Source Sc GPU body has no ElementSim");
+        if(!device_cache_eligible(actor))
+            return std::numeric_limits<physx::Bp::ShapeHandle>::max();
+        // This solver submission will overwrite the original device
+        // shape cache. A later island deactivation can restore the Sc
+        // pose, so prior-frame authorization cannot survive the write.
+        records_[actor].device_cached_pose_valid=false;
+        return handles_[actor];
+    }
+    bool has_authorized_device_cached_pose(BodyId actor) const noexcept {
+        return device_cache_eligible(actor) &&
+            records_[actor].device_cached_pose_valid;
+    }
+    void authorize_device_integrated_pose(BodyId actor) {
+        if(!device_cache_eligible(actor))
+            throw std::logic_error(
+                "Source Sc integrated pose has no standalone dynamic ElementSim");
+        records_[actor].device_cached_pose_valid=true;
+    }
+    void invalidate_device_cached_poses() noexcept {
+        for(auto& record:records_)
+            record.device_cached_pose_valid=false;
+    }
     const std::vector<physx::Bp::ShapeHandle>& handles() const noexcept {
         return handles_;
     }
@@ -309,6 +344,7 @@ private:
         bool live,in_aabb;
         physx::Bp::AggregateHandle aggregate_id=PX_INVALID_U32;
         physx::PxU32 aggregate_attachment_index=PX_INVALID_U32;
+        bool device_cached_pose_valid=false;
     };
     struct AggregateRoot {
         physx::Bp::ShapeHandle root;
@@ -342,6 +378,7 @@ private:
     }
     void remove_actor_from_root(AggregateRoot& root,BodyId actor) {
         auto& element=live(actor);
+        element.device_cached_pose_valid=false;
         if(element.aggregate_id!=root.id)
             throw std::invalid_argument(
                 "Source Sc actor does not belong to the aggregate");

@@ -1086,6 +1086,16 @@ public:
     std::span<const SourceScBoxTransformInputNative> box_transform_records() const noexcept {
         return box_transform_records_;
     }
+    template<class Cached>
+    std::size_t omit_cached_box_transform_records(Cached&& cached) {
+        const auto before=box_transform_records_.size();
+        std::erase_if(box_transform_records_,[&](const auto& record) {
+            const auto handle=record.element_index;
+            return handle<volume_to_actor_.size() &&
+                cached(volume_to_actor_[handle]);
+        });
+        return before-box_transform_records_.size();
+    }
 
     SourceSapAabbManagerPreUpdateNative pre_update(
         SourceSapPreBroadPhaseBuffers sap,
