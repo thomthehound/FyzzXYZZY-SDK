@@ -67,6 +67,12 @@ public:
         if(pipeline_)context_.destroy_compute_pipeline(pipeline_);
         arena_.deallocate();
     }
+    void invalidate_after_rollback() noexcept {
+        if(++history_epoch_==0u) {
+            std::fill(history_epochs_.begin(),history_epochs_.end(),0u);
+            history_epoch_=1u;
+        }
+    }
 
     void solve(std::span<native::GpuDyDistanceBody> bodies,
                std::span<native::GpuDyDistanceRow> rows,
@@ -123,6 +129,39 @@ public:
                 pair.pcm_edge==0xffffffffu))
                 throw std::logic_error(
                     "Source Dy PCM contact provenance is invalid");
+        std::size_t next_history_capacity_=friction_history_capacity_;
+        for(const auto& pair:contact_prep)
+            if(pair.pcm_pair_index!=0xffffffffu)
+                next_history_capacity_=std::max(next_history_capacity_,
+                    std::size_t(pair.pcm_edge)+1u);
+        if(next_history_capacity_>
+           (std::numeric_limits<std::uint32_t>::max()-127u)/64u)
+            throw std::overflow_error(
+                "Source GPU friction history exceeds address space");
+        const std::size_t history_bytes=(
+            next_history_capacity_*64u+127u)&~std::size_t(127u);
+        history_epochs_.resize(next_history_capacity_,0u);
+        bool republish_cached_anchors=false;
+        for(const auto& manager:manifolds) {
+            if(!manager.patch_count)continue;
+            if(manager.prep_index>=contact_prep.size() ||
+               manager.patch_offset>patches.size() ||
+               manager.patch_count>patches.size()-manager.patch_offset)
+                throw std::logic_error(
+                    "Source friction history has an invalid Sc patch");
+            const auto& pair=contact_prep[manager.prep_index];
+            if(pair.pcm_pair_index==0xffffffffu)continue;
+            for(std::size_t j=manager.patch_offset;
+                j<manager.patch_offset+manager.patch_count;++j) {
+                auto& patch=patches[j];
+                if((patch.broken&0x80000000u)==0u ||
+                   patch.anchor_count==0u)continue;
+                if(history_epochs_[pair.pcm_edge]!=history_epoch_) {
+                    patch.broken|=0x40000000u;
+                    republish_cached_anchors=true;
+                }
+            }
+        }
         for(const auto& manager:manifolds) {
             if(!manager.patch_count)continue;
             if(manager.prep_index>=contact_prep.size() ||
@@ -161,12 +200,11 @@ public:
             throw std::overflow_error("Source Dy contact prep descriptor overflow");
         const std::size_t prep_bytes=contact_prep.size()*
             sizeof(SourceDyPackedContactPrepNative);
-        if(anchors.size_bytes()>std::numeric_limits<std::uint32_t>::max()-prep_bytes ||
-           cpu_gu.size_bytes()>std::numeric_limits<std::uint32_t>::max()-
-               prep_bytes-anchors.size_bytes())
-            throw std::overflow_error("Source Gu/friction input arena exceeds address space");
-        const std::size_t static_begin=prep_bytes+anchors.size_bytes()+
-            cpu_gu.size_bytes();
+        if(cpu_gu.size_bytes()>
+           std::numeric_limits<std::uint32_t>::max()-prep_bytes)
+            throw std::overflow_error(
+                "Source Gu contact-prep arena exceeds address space");
+        const std::size_t static_begin=prep_bytes+cpu_gu.size_bytes();
         packed_.resize(contact_prep.size());
         inline_bodies_.clear();
         assigned_.assign(contact_prep.size(),0u);
@@ -214,7 +252,7 @@ public:
         const std::size_t inline_body_bytes=
             inline_bodies_.size()*sizeof(native::GpuDyContactPrepBody);
         const std::size_t compact_prep_bytes=static_begin+inline_body_bytes;
-        constexpr std::size_t count=13u;
+        constexpr std::size_t count=14u;
         // One 16-byte header describes the three original Sc/SAP GPU
         // allocations, followed by exactly one source body record per row.
         const std::array<std::size_t,count> bytes{
@@ -223,17 +261,17 @@ public:
             tasks.size_bytes(),contact_bytes,friction_bytes,
             patches.size_bytes(),manifolds.size_bytes(),contact_order.size_bytes(),
             compact_prep_bytes,
-            integration.size_bytes()+16u};
+            integration.size_bytes()+16u,anchors.size_bytes()};
         const std::array<std::size_t,count> elements{
             bodies.size(),rows.size(),descriptors.size(),partition_ends.size(),
             body_ordinals.size(),tasks.size(),contact_forces.size(),friction.size(),
             patches.size(),manifolds.size(),contact_order.size(),
-            contact_prep.size(),integration.size()};
+            contact_prep.size(),integration.size(),anchors.size()};
         const std::array<const void*,count> sources{
             bodies.data(),rows.data(),descriptors.data(),partition_ends.data(),
             body_ordinals.data(),tasks.data(),nullptr,nullptr,
             patches.data(),manifolds.data(),contact_order.data(),
-            contact_prep.data(),integration.data()};
+            contact_prep.data(),integration.data(),nullptr};
         // The host retains only source normal impulses and friction
         // tangent/force writeback. Both full row ABIs live only on GPU.
         constexpr std::array<std::size_t,7> output_inputs{
@@ -258,11 +296,13 @@ public:
         // Both writable contact and friction arenas follow all source
         // inputs. The existing GPU preparation owns the complete rows.
         constexpr std::array<std::size_t,count> order{
-            0u,1u,5u,8u,2u,3u,4u,9u,10u,11u,12u,6u,7u};
+            0u,1u,5u,8u,2u,3u,4u,9u,10u,11u,12u,13u,6u,7u};
         std::array<std::size_t,count> offsets{};
-        // Leave the source input addresses 128-byte aligned. One packed
-        // output view precedes them, so readback needs only a single copy.
-        const std::size_t upload_begin=(output_bytes+127u)&~std::size_t(127u);
+        // The original Dy heap retains an EdgeIndex-keyed Sc anchor
+        // prefix. Solver output follows it and remains the sole readback;
+        // transient input and output locations may grow independently.
+        const std::size_t upload_begin=history_bytes+
+            ((output_bytes+127u)&~std::size_t(127u));
         std::size_t total=upload_begin;
         for(const auto i:order) {
             const auto view_bytes=std::max<std::size_t>(bytes[i],4u);
@@ -270,24 +310,31 @@ public:
                view_bytes>std::numeric_limits<std::uint32_t>::max()-total)
                 throw std::overflow_error("Source Dy solver arena too large");
             offsets[i]=total;
-            total=(total+view_bytes+127u)&~std::size_t(127u);
+            // Anchor input ends exactly at the writable contact arena.
+            // GPU-only PCM can omit that trailing region while retaining
+            // one contiguous source upload and the original dispatch.
+            total=i==13u?total+view_bytes:
+                (total+view_bytes+127u)&~std::size_t(127u);
         }
         narrow(total);
         // Host staging contains only compact readback and real upload
         // inputs. Writable GPU contact rows have no CPU mirror.
         host_.resize(offsets[6]);
         for(std::size_t i=0;i<count;++i)
-            if(i!=6u && i!=7u && i!=11u && i!=12u && bytes[i])
+            if(i!=6u && i!=7u && i!=11u && i!=12u &&
+               i!=13u && bytes[i])
                 std::memcpy(host_.data()+offsets[i],sources[i],bytes[i]);
         if(prep_bytes)
             std::memcpy(host_.data()+offsets[11],packed_.data(),prep_bytes);
-        if(!anchors.empty())
-            std::memcpy(host_.data()+offsets[11]+prep_bytes,
-                        anchors.data(),anchors.size_bytes());
+        const bool omit_anchor_upload=
+            pcm_pair_count>0u && cpu_gu.empty() &&
+            !republish_cached_anchors && !anchors.empty();
         if(!cpu_gu.empty())
-            std::memcpy(host_.data()+offsets[11]+prep_bytes+
-                            anchors.size_bytes(),
+            std::memcpy(host_.data()+offsets[11]+prep_bytes,
                         cpu_gu.data(),cpu_gu.size_bytes());
+        if(!anchors.empty() && !omit_anchor_upload)
+            std::memcpy(host_.data()+offsets[13],
+                        anchors.data(),anchors.size_bytes());
         if(!inline_bodies_.empty())
             std::memcpy(host_.data()+offsets[11]+static_begin,
                         inline_bodies_.data(),inline_bodies_.size()*
@@ -298,15 +345,17 @@ public:
         // The source GPU kernel constructs all writable Gu contact rows.
         // One ordered source upload covers every other active input and
         // stops before the contact-row arena, without scattered HtoD spans.
-        arena_.allocate(total,PX_FL);
+        arena_.allocateCopyOldDataAsync(total,stream_,PX_FL);
+        friction_history_capacity_=next_history_capacity_;
         const auto address=arena_.getDevicePtr();
-        const std::size_t uploaded_bytes=offsets[6]-upload_begin;
+        const std::size_t uploaded_bytes=
+            (omit_anchor_upload?offsets[13]:offsets[6])-upload_begin;
         std::array<std::uint32_t,32> params{};
         for(std::size_t i=0;i<11u;++i)
             params[i<6u?6u+i:17u+i-6u]=narrow(elements[i]);
         params[30]=narrow(elements[11]);
         for(std::size_t i=0;i<6u;++i)
-            params[22u+i]=narrow(result_offsets[i]);
+            params[22u+i]=narrow(history_bytes+result_offsets[i]);
         compute::DispatchCommand dispatch{};
         dispatch.pipeline=pipeline_;
         dispatch.groups={narrow(tasks.size()),1u,1u};
@@ -372,7 +421,7 @@ public:
         dispatch.push_constants.resize(sizeof(params));
         std::memcpy(dispatch.push_constants.data(),params.data(),sizeof(params));
         stream_.commands().emplace_back(std::move(dispatch));
-        const auto mapped=addresses_.resolve(address,output_bytes);
+        const auto mapped=addresses_.resolve(address+history_bytes,output_bytes);
         const std::array<compute::DownloadSpan,1> downloads{
             {mapped.buffer,mapped.offset,host_.data(),output_bytes}};
         stream_.submit();
@@ -481,7 +530,15 @@ public:
         last_omitted_pcm_upload_bytes_=
             reused_pcm_rows*sizeof(native::GpuDyContactPoint);
         last_cpu_gu_geometry_bytes_=cpu_gu.size_bytes();
-        last_friction_anchor_upload_bytes_=anchors.size_bytes();
+        last_friction_anchor_upload_bytes_=omit_anchor_upload
+            ? 0u:anchors.size_bytes();
+        for(const auto& manager:manifolds) {
+            if(!manager.patch_count || manager.prep_index>=contact_prep.size())
+                continue;
+            const auto& pair=contact_prep[manager.prep_index];
+            if(pair.pcm_pair_index!=0xffffffffu)
+                history_epochs_[pair.pcm_edge]=history_epoch_;
+        }
         last_friction_prepared_rows_=friction.size();
         last_contact_prep_upload_saving_=
             static_cast<std::int64_t>(contact_prep.size_bytes())-
@@ -534,6 +591,9 @@ private:
     std::size_t last_cpu_gu_geometry_bytes_=0u;
     std::size_t last_upload_spans_=0u;
     std::size_t last_friction_anchor_upload_bytes_=0u;
+    std::size_t friction_history_capacity_=0u;
+    std::vector<std::uint32_t> history_epochs_;
+    std::uint32_t history_epoch_=1u;
     std::size_t last_friction_prepared_rows_=0u;
     std::int64_t last_contact_prep_upload_saving_=0;
 };
