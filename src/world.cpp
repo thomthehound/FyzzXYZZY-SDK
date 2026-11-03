@@ -110,6 +110,20 @@ BodyId World::add_dynamic_box(Vec3 half_extents, Vec3 position, float density) {
     return impl_->add_dynamic_box(half_extents, position, density);
 }
 
+BodyId World::add_static_sphere(float radius,Vec3 position) {
+    validate_position(position);
+    if(!std::isfinite(radius) || radius<=0.0f)
+        throw std::invalid_argument("Sphere radius must be finite and positive");
+    return impl_->add_static_sphere(radius,position);
+}
+BodyId World::add_dynamic_sphere(float radius,Vec3 position,float density) {
+    validate_position(position);
+    if(!std::isfinite(radius) || radius<=0.0f ||
+       !std::isfinite(density) || density<=0.0f)
+        throw std::invalid_argument("Sphere radius and density must be finite and positive");
+    return impl_->add_dynamic_sphere(radius,position,density);
+}
+
 AggregateId World::create_aggregate(
     std::uint32_t max_shapes,bool self_collision) {
     if(!max_shapes)
