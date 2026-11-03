@@ -79,6 +79,56 @@ namespace {
 void require(bool good,const char* message) {
     if(!good)throw std::runtime_error(message);
 }
+// Independent GPU broadphase volumes share one Sc rigid actor identity.
+// Same-actor shape overlap is filtered; each cross-actor shape pair is kept.
+void verify_compound_shape_gpu_pairs(
+    fyzz::compute::Backend backend,const char* sap) {
+    using namespace fyzz;
+    using Motion=native::GpuBroadphaseBox::Motion;
+    physx_gpu::SourceScOwnedGpuBroadphaseNative gpu(
+        backend,load_native_gpu_sap_shaders(backend,sap),128u,128u);
+    gpu.admit_shape_element(0u,0u,Motion::Dynamic,0.02f);
+    gpu.admit_shape_element(1u,0u,Motion::Dynamic,0.02f);
+    gpu.admit_shape_element(2u,1u,Motion::Static,0.02f);
+    std::array<native::GpuBroadphaseBox,3> shapes{};
+    for(std::uint32_t i=0u;i<shapes.size();++i) {
+        shapes[i].id=i;
+        shapes[i].half_extents={0.5f,0.5f,0.5f};
+        shapes[i].contact_offset=0.02f;
+        shapes[i].motion=i==2u?Motion::Static:Motion::Dynamic;
+    }
+    shapes[0].position={0.f,0.f,0.f};
+    shapes[1].position={0.1f,0.f,0.f};
+    shapes[2].position={0.5f,0.f,0.f};
+    const auto contains=[](std::span<const native::Pair> pairs,
+                           native::Pair expected) {
+        return std::find(pairs.begin(),pairs.end(),expected)!=pairs.end();
+    };
+    const auto created=gpu.advance(shapes,false,true);
+    require(!created.overflow && created.found.size()==2u &&
+            contains(created.found,{0u,2u}) &&
+            contains(created.found,{1u,2u}) &&
+            !contains(created.found,{0u,1u}),
+        "Source GPU broadphase did not preserve compound shape pairs");
+    const auto quiet=gpu.advance(shapes,false,false);
+    require(quiet.found.empty() && quiet.lost.empty(),
+        "Source GPU broadphase republished unchanged compound shape pairs");
+    // Sc edits this shape, not its parent rigid actor or sibling shape.
+    shapes[0].position={4.f,0.f,0.f};
+    gpu.mark_shape_bounds_changed(0u,0.02f);
+    const auto changed=gpu.advance(shapes,false,true);
+    require(changed.found.empty() && changed.lost.size()==1u &&
+            contains(changed.lost,{0u,2u}),
+        "Edited Sc shape retired the wrong GPU contact candidate");
+    gpu.retire_shape(0u);
+    const std::array<native::GpuBroadphaseBox,2> survivors{{
+        shapes[1],shapes[2]}};
+    const auto retired=gpu.advance(survivors,false,true);
+    require(retired.found.empty() && retired.lost.empty(),
+        "Retiring one shape disturbed surviving source GPU pair history");
+    gpu.post_reports_cleanup();
+}
+
 void verify(fyzz::compute::Backend backend,const char* sap,
             const char* pcm) {
     using namespace fyzz;
@@ -1430,13 +1480,17 @@ int main(int argc,char** argv) {
         require(scenario=="all" || scenario=="scene" ||
                 scenario=="sparse_contacts" || scenario=="coupled_stack" ||
                 scenario=="coupled_solver" || scenario=="legacy_gu_solver" ||
-                scenario=="mixed_solver" || scenario=="distance_solver",
+                scenario=="mixed_solver" || scenario=="distance_solver" ||
+                scenario=="compound_shapes",
                 "Unknown GPU scene regression scenario");
 #ifdef FYZZXYZZY_TEST_D3D12
         constexpr auto backend=fyzz::compute::Backend::D3D12;
 #else
         constexpr auto backend=fyzz::compute::Backend::Vulkan;
 #endif
+        if(scenario=="all" || scenario=="compound_shapes")
+            fyzz::tests::measure_gpu_case("sc_pcm","compound_shapes",
+                [&]{verify_compound_shape_gpu_pairs(backend,argv[1]);});
         if(scenario=="all" || scenario=="scene")
             fyzz::tests::measure_gpu_case("sc_pcm","scene",
                 [&]{verify(backend,argv[1],argv[2]);});
