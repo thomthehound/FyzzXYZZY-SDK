@@ -1,260 +1,370 @@
 <!-- SPDX-FileCopyrightText: Copyright (c) 2026 thomthehound -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
-# FyzzXYZZY capability roadmap
+# FyzzXYZZY implementation program
 
-Status: November 3, 2026. This document owns the active implementation order
-and capability acceptance criteria. The objective is complete PhysX-derived
-SDK capability coverage, independently executable on native CPU, Vulkan and
-D3D12 where the original capability admits GPU execution. Completion is
-measured by real scene behavior, not kernel count, PR count or historical
-milestone labels.
+Status: November 3, 2026. This is the active capability inventory, dependency
+order and acceptance contract. The target is a complete, independent,
+modern CPU/Vulkan/D3D12 physics SDK with PhysX 5.11 capability and behavior
+coverage, followed by additional coupled physics. No full-engine, complete
+GPU-pipeline or hardware-performance acceptance has been established.
 
-## Engine contract
+## Scope and completion
 
-One scene owns actors, shapes, shape elements, interactions, island membership,
-contact managers, articulation and nonrigid state, simulation tasks and result
-publication. CPU and GPU are execution modes of those owners, never distinct
-physics engines. The algorithms, numerical contracts, data structures,
-reporting and lifetimes follow PhysX source behavior; GPU addressing,
-scheduling and storage may differ where equivalence and performance are
-demonstrated.
+The source baseline includes the public simulation, geometry, cooking,
+query, immediate-mode, extension and diagnostic facilities, not only rigid
+GPU kernels. Reference updates require an explicit inventory and conformance
+review. Record the resolved reference version and build configuration with
+comparison results; a moving reference branch is not a reproducible oracle.
+Consumers do not need a reference runtime or a particular host engine.
 
-GPU execution is the primary target. CPU is the independently built
-conformance implementation and supported-device fallback. The separate
-reference CPU backend is only a comparison oracle. Neither Godot nor an
-external PhysX runtime is required by the native SDK.
+Native CPU, Vulkan and D3D12 are execution choices within one engine. CPU
+coverage follows the source's CPU capabilities; GPU-only features need GPU
+source comparisons and independent numerical checks. A CPU fallback cannot
+claim to implement an absent deformable or particle solver. Each capability
+records its actual execution stages and supported combinations.
 
-The full target includes simulation, geometry, cooking, scene queries,
-constraints, articulations, deformables, particle systems, controller and
-vehicle extensions, serialization, callbacks and diagnostics. A supported
-feature must not silently route to the reference implementation or to an
-independently invented physics model.
+Completion has five independent conditions: a public SDK operation works;
+its source semantics are established; lifecycle and failure behavior hold;
+representative workloads meet numerical quality requirements; and physical
+hardware meets an explicit performance budget. A passing helper, translated
+kernel, copied header, populated enum or PR review form satisfies none of
+these conditions by itself.
 
-## Current production coverage
+## Audited starting point
 
-| Subsystem | Native implementation |
+This table describes merged native production code. Reference-backend
+features do not count as native coverage. The open compound-shape work adds
+sphere contacts and independent GPU volume identities; those additions are
+not yet merged compound-body or device sphere-contact acceptance.
+
+| Capability | Merged native behavior and evidence | Remaining coverage |
+| --- | --- | --- |
+| Public construction | Explicit NativeCpu and shader-bundle GPU factories; `src/world.cpp`, `native_gpu_world.h`, `native_boundary_smoke.cpp` | Ordinary World defaults to reference CPU; direct NativePortableGpu construction rejects; full scene configuration/API absent |
+| Actors, shapes, mass | Static/dynamic/kinematic motion classification; one box/plane shape stored on each Actor in `src/native/scene.h` | Independent shape attachments, shared geometry, local poses, center-of-mass frame and compound mass/inertia |
+| Broadphase/aggregates | Persistent CPU SAP and Vulkan/D3D12 AABB/SAP/aggregate report lifecycle; source owner and scene tests | General shape/node admission, other source broadphase modes and full public controls |
+| Contacts | CPU box/box and plane/box Gu/PCM; explicit device box PCM/GJK/EPA connected to Sc | General pair dispatch, mesh midphase, full cache/material/contact-modification semantics |
+| PGS/dynamics | CPU and explicit GPU contact/distance prep, friction, solve, integration, body controls and sleep for admitted rigid scenes | Full source solver forms, batching, mixed nodes and scalable GPU execution |
+| GPU frame | Shared source heap/stream, persistent SAP/PCM history and reuse of device contact/pose data | Host contact publication, CPU task/partition construction and solver fetch still constrain device progress |
+| Events/filtering | Bounded touch, threshold, material, simulation-flag and island lifecycle coverage | Shape-level callbacks, triggers, general filtering, reporting and scene publication API |
+| General rigid physics | Limited distance constraints and discrete collision | Full joint families, TGS, CCD, contact modification and remaining rigid controls |
+| Queries/cooking | No general native production API | Geometry queries, scene queries, acceleration structures and all cooked geometry |
+| Articulations | Island node categories reserved | No integrated articulation topology, dynamics, drives, tendons or inverse dynamics |
+| FEM surfaces/volumes | Island node categories reserved | No integrated deformable solver, material, attachment, self-contact or coupling |
+| Particles/fluids | Island node category reserved | No integrated PBD system, buffers, phases, neighborhood/collision or fluid behavior |
+| Extensions/tools | Independent builds, source foundation/heap, narrow Godot consumer | Controllers, vehicles, serialization, immediate mode, direct GPU access and general diagnostics |
+
+`tests/headless_smoke.cpp` contains independent PhysX CPU comparisons.
+`tests/physx_gpu_source_sc_pcm_scene_native.cpp` principally compares native
+CPU and native GPU scenes. That is valuable lowering coverage, but a defect
+shared by both implementations can pass it. Source-enabled comparisons and
+independent physical checks remain necessary.
+
+### Architectural qualification still open
+
+| Evidence in current code | Required resolution | Delivery |
+| --- | --- | --- |
+| Pair, GPU input and report identities use BodyId; Actor stores geometry/material/offsets | Shape attachment/element keys for collision; body/link keys for dynamics; correct mass frame | Scene foundation |
+| `GpuDyContactPoint`, distance/friction rows and HLSL use double; `SourceDyDistanceNativeStage` requires FP64 | Qualify source-matched FP32 production arithmetic, inventory genuinely necessary wider operations and preserve or explicitly revise the admitted extreme-input contract | Device foundation |
+| Dy shader dispatches one 128-thread workgroup per task and loops its conflict partitions | Establish scaling for one large connected island as well as many independent tasks; implement source-derived partition tiling where needed | Device foundation |
+| Scene builds host task/constraint/contact arrays; Dy solve downloads before returning | Express device dependencies and public-result visibility separately; retain intermediate device authority | Device foundation |
+| Direct buffer views/32-bit offsets cover the current bounded stage set | Qualify local offsets plus cross-allocation references before pointer-rich solver/nonrigid intake | Device foundation |
+| Existing memory timing harness compares two offset-loading forms of one SAP operation | Add actual nested/multi-allocation source accesses; current results cannot select a general ABI | Device foundation |
+| Software GPU CI and case wall-time metrics exist | Physical GPU frame/quality/scaling measurements; case wall time is not GPU kernel time | Every capability |
+
+These are open engineering decisions and qualification tasks, not measured
+hardware regressions. Fix each at its existing owner; do not introduce a
+second scene, solver state store or per-stage scheduler.
+
+## Architecture decisions
+
+| Concern | Required design |
 | --- | --- |
-| Scene, lifecycle and tasks | Source-derived Sc/island/Dy scene and PGS task chains for a one-shape-per-actor rigid subset; full public scene semantics absent |
-| Geometry and cooking | Box and infinite plane; no general shape/actor graph, mesh cooking or full geometry dispatch |
-| Broadphase | CPU SAP and persistent GPU AABB/SAP/aggregates on Vulkan and D3D12; scene admission remains bounded |
-| Narrowphase | CPU Gu PCM for box/box and plane/box; optional GPU Gu PCM box/box with GJK/EPA continuation and Sc contact publication |
-| Rigid solving | CPU PGS and explicit GPU Dy contact/distance preparation, partitions, correlated friction, solve and integration for the admitted subset; Sc still prepares and fetches host-visible streams |
-| Constraints | Limited center- and local-anchor distance constraints; general joints, TGS and CCD absent |
-| Articulations | No integrated articulation solver |
-| Nonrigid | No integrated deformable surface/volume or particle/fluid solver |
-| SDK entry | Native CPU explicit; native GPU via explicit factory/shader bundles; ordinary World default remains reference CPU where enabled |
+| Ownership | One scene owns topology and publication. Each rigid body, articulation, FEM body and particle system owns its actual state and solver data; typed interactions connect these owners. |
+| Identity | Distinguish actor, body/link, shape attachment, collision element, contact manager and constraint identities. Recycling follows outstanding GPU work, caches and observable reports. Geometry and source nonexclusive shapes may be shared; each attachment has its own collision element and derived world transform. Shared shape edits reach every attachment. |
+| Frames | Separate actor, body center-of-mass/principal-inertia, shape-local and world frames. Convert contact lever arms and attachments at the owning boundary; compound geometry cannot assume actor origin equals mass center. |
+| Geometry | Geometry is independent of motion. Shape dispatch and cooked resources serve collision, queries and CPU/GPU execution; extend pair dispatch rather than actor-kind switches. |
+| Solver composition | Keep source PGS, TGS, reduced-coordinate articulation, FEM and PBD algorithms with their numerical state. Typed coupling must return reaction to every dynamic endpoint; no generic rigid-row surrogate for a deformable body. |
+| Time and visibility | One scene clock and dependency graph; subsystem substeps and coupling iterations have explicit joins. API fetch/callback visibility does not force every internal stage onto the host. |
+| Storage | Source-owned persistent pools, local 32-bit offsets for hot known-arena accesses, 64-bit segmented logical references for cross-allocation traversal. Physical lowering may differ by backend. Resolve stable references outside iterative solve loops. |
+| Execution | CPU/compute backends implement storage, dispatch, dependencies and completion. They do not own a second physics scene or dictate contact semantics. Vulkan BDA and D3D12 descriptor views may specialize the same logical operation. |
+| Extension | New materials, fields, contacts and solvers attach to existing topology/time/lifetime contracts. Add concrete state when a working capability needs it; avoid a speculative universal framework. |
+| Fidelity | PhysX establishes initial algorithms and observable behavior. Preserve required numerical/dependency contracts; source class names, CUDA launch geometry and physical ABI are not permanent architectural constraints. Prove equivalent lowerings and measure improvements. |
 
-This is a functioning but narrow physics slice. The current hybrid readbacks,
-one-shape actor model and contact-manager admission are implementation
-boundaries, not acceptable general-engine architecture.
+## Delivery order and exit workloads
 
-## Immediate execution sequence
+Scene and device foundations are the immediate critical path. Geometry,
+rigid completion, articulations, FEM and particles then advance against those
+shared contracts. SDK operations and coupling ship with their owning
+capabilities; they are not deferred to a final integration project.
 
-These are coherent capability deliveries, not one-PR-per-kernel tasks. Closely
-related implementation changes stay together until a runnable acceptance
-workload exists. Correctness, source semantics and performance are designed
-into each capability; micro-optimizations do not substitute for expansion.
+### Scene foundation — finish actual compound simulation
 
-### 1. Actor, shape and element ownership
+Replace actor-keyed collision state throughout World, Sc, SAP, Gu and reports
+with shape attachment/element identities. Retain actor/body-keyed velocity,
+island response and Dy integration. Include shape create/attach/detach,
+local pose, geometry/material/filter edits and safe retirement. Preserve
+shared/exclusive shape semantics and simulation/query/trigger flags;
+unimplemented operations still reject explicitly. Geometry resources and
+shared shape authoring state have explicit owners.
 
-Replace the one-shape actor contract with original actor/shape/ElementSim
-identities and independent shape lifetimes. Preserve stable body identities
-through attachment/removal, distinct shape-local transforms, per-shape
-material/filter/contact offsets, trigger and simulation flags, and
-post-publication retirement. Broadphase pairs and contact managers key on
-shapes; island nodes, mass/inertia and solver velocities key on bodies.
-Do not encode extra shapes as fake rigid bodies or use aggregate grouping
-as a substitute for compound actors.
+Implement the source mass-properties operation: density-weighted shape
+contributions, rotated inertia tensors, parallel-axis shifts, aggregate
+center of mass and principal axes. Shape attachment and mass recomputation
+are distinct operations, with the source's authored update semantics.
 
-**Acceptance:** an independently constructed native actor carries multiple
-shape elements with different local transforms. Shape additions, removals,
-filter changes and ID reuse preserve source Sc/Gu history and event identities.
-A compound dynamic actor collides against multiple neighbors and solves as
-one body, with source-correct combined mass/inertia and angular response.
-The same live scene runs CPU and Vulkan/D3D12 GPU broadphase, narrowphase
-and Dy paths across several frames, including rollback and retirement.
+The migration stays in the existing production path:
 
-### 2. General geometry, cooking and collision dispatch
-
-Admit sphere and capsule, then convex geometry and cooked triangle meshes,
-heightfields and applicable signed-distance representations through the real
-geometry and collision pipeline. Use source-defined convex/support,
-GJK/EPA/SAT, PCM cache and mesh-contact algorithms, their pair dispatch,
-material assignment and contact stream rules. Geometry representation and
-cooking artifacts are shared between CPU and GPU execution without
-box-shaped stand-ins.
-
-**Acceptance:** interacting sphere, capsule, convex and cooked-mesh shapes
-produce correct contact manifolds, normals, separation, friction, restitution
-and persistent touch transitions. Mixed geometry contacts solve and report
-in compound and independent rigid scenes on both native GPU APIs; each
-supported geometry pair has an explicit backend admission contract.
-
-### 3. Complete rigid simulation and queries
-
-Complete discrete/contact-modified and continuous collision detection,
-speculative contacts, triggers and filtering, raycasts, sweeps, overlaps,
-contact reports, scene origin shifting and other public scene semantics.
-Port the full supported rigid constraint and joint families, body flags,
-locked axes, breakage, drives, PGS and TGS solver modes, partitioning and
-writeback. Retain correct source island, sleep/wake and result boundaries.
-
-**Acceptance:** broad and narrowphase, CCD, joint/contact solving and scene
-queries operate in one continuously simulated world, with correct actor and
-shape identities and frame-to-frame reports. Both native APIs pass scene-level
-parity against the independent CPU source semantics; unsupported feature
-combinations reject explicitly rather than changing simulation behavior.
-
-### 4. Fully device-resident task and data dependencies
-
-Remove mandatory host publication between device-produced bounds, contacts,
-constraint preparation, solving, integration and subsequent bounds updates.
-Keep Sc's authoritative ownership and its externally visible event/fetch
-boundary without forcing every intermediate result through the CPU. Preserve
-the original task continuation graph, GPU completion, failed-frame rollback,
-allocation and ID lifetimes. Choose physical address lowerings appropriate
-to Vulkan and D3D12; wave32 must work and wave64 is permitted where valid.
-
-**Acceptance:** an integrated heterogeneous rigid scene executes successive
-frames of shape updates, broadphase, mixed-geometry PCM, constraints, solve
-and integration on the GPU without an unconditional intermediate contact or
-body readback. Instrument the actual DMA and submission graph. CPU-visible
-results are fetched only at source-defined consumer boundaries.
-
-### 5. Articulations and coupled constraints
-
-Port articulation link topology, reduced-coordinate dynamics, joint limits,
-drives, tendons, internal and external constraints, and contact feedback.
-Preserve source solver ordering, state and wake/activation rules; articulation
-links must share broadphase, narrowphase, islands and reporting with rigid
-bodies, not run in a separate simulator.
-
-**Acceptance:** an articulated mechanism driven through contacts and joints
-interacts reciprocally with ordinary rigid bodies, with reproducible motion,
-breakage/limits where supported, correct lifecycle and end-to-end GPU task
-completion on Vulkan and D3D12.
-
-### 6. Deformables, particles and mixed physics
-
-Port deformable surfaces, deformable volumes, PBD particle/fluid systems,
-their source materials, constraints, collision detection, self-contact,
-solver scheduling and interactions. Admit the source-defined GPU data
-structures and runtime behavior rather than inserting independent cloth,
-fluid or soft-body implementations.
-
-**Acceptance:** mixed rigid/articulation/deformable/particle scenes exchange
-contacts and forces in both directions under one scene clock, with coherent
-state publication, retirement and failure handling across native backends.
-
-### 7. SDK surface, extensions and completion
-
-Fill the remaining public PhysX-derived SDK functions and extension modules:
-geometry creation/cooking, controllers, vehicles, queries, aggregates,
-serialization, scene callbacks, filtering, diagnostics and host integration.
-Build and run the independent SDK without the reference backend or an
-application-specific host. Maintain a tested capability/backend matrix for
-every advertised feature rather than using a single completion percentage.
-
-**Acceptance:** each supported feature has the source contract, standalone
-SDK behavior, device admission where applicable, failure semantics and
-consumer integration required for a complete release.
-
-## Workstream overlap and dependency rules
-
-- The shape/element model precedes broad geometry admission; adding more
-  actor kinds is not an acceptable geometry implementation strategy.
-- Mixed geometry, cooking and rigid solver dataflow advance together.
-  Articulation and nonrigid source intake can proceed in parallel once
-  their interactions have authoritative scene and island owners.
-- GPU kernels enter production only with the real source task caller,
-  buffer lifetime, result publication and a multiframe SDK witness.
-- A performance change must enable a capability, remove a demonstrated
-  architectural bottleneck, or improve a measured integrated workload.
-  Avoid additional transfer, buffer or scheduler layers without necessity.
-- Portability means actual Vulkan and D3D12 execution and tests; WARP and
-  software Vulkan are correctness infrastructure, not physical GPU speed
-  evidence. Profile integrated workloads on native AMD hardware.
-
-## Capability acceptance evidence
-
-For each delivered capability record:
-
-1. The source operation, state owner, numerical behavior, allocation
-   and lifetime contracts preserved by the native implementation.
-2. A production API and single-scene caller that executes the feature
-   through creation, motion, interaction, retirement and failed publication.
-3. A representative mixed-scene conformance workload, not just one kernel
-   or isolated arithmetic fixture. Compare CPU/native GPU behavior and
-   explain intentional numerical differences.
-4. Explicit API/backend support and failure behavior; no hidden
-   reference execution, shadow physics state or invented alternate solver.
-5. GPU submissions, bytes copied, waits, residency, allocations and
-   integrated frame timings at the capability's real performance checkpoint.
-
-The first acceptance workload for the new program is a **compound actor
-with mixed geometry**, exercising original shape identities, GPU contact
-generation, Dy body response and correct multi-frame retirement. Do not
-declare the architecture complete until that workload runs through
-the real SDK on both GPU backends.
-
-## Beyond the source capability baseline
-
-Full source capability remains the first deliverable. The following
-additional systems are future independent engineering work, not current
-PhysX parity claims or prerequisites for rigid, articulation or nonrigid
-source admission. Preserve their integration requirements in current
-architecture decisions; implement and benchmark them after the relevant
-source subsystem is functional.
-
-| Future capability | Physical scope and integration requirement |
+| Boundary | Required change |
 | --- | --- |
-| Nonlinear continuum materials | Large-strain, anisotropic, viscoelastic, hyperelastic and near-incompressible solid response; material parameters and constitutive state belong to deformable elements, not rigid shape flags |
-| Slender bodies and strands | Cosserat/elastic-rod or equivalent bending, twist, extension and contact for hair, fibers, cables and tendons, with attachment to moving deformable or articulated surfaces |
-| Thin shells and membranes | Bending, stretching, wrinkling, frictional sliding, enclosed-volume and pressure constraints, including contact with solids and liquids |
-| Wet contact and interfacial flow | Thin-film transport, wetting, adhesion, lubrication and drainage coupled to surface geometry, material state and friction rather than a visual-only wetness parameter |
-| Fluid/structure interaction | Internal and external pressure, viscous flow, surface tension, fluid containment, leakage and bidirectional force exchange with rigid, articulated, shell and volumetric bodies |
-| Thermal and surface state | Temperature, moisture and other transported surface quantities where they affect physical material behavior; renderers consume simulation state without becoming physics authorities |
+| `world.h`, `world.cpp`, reference adapter | Actor/shape attachment operations, shape-aware events and explicit mass update; reference comparisons select their backend explicitly |
+| `native::Scene::Actor`, Pair and contact/cache records | Move authored shape state out of Actor; key collision/cache records by attachment; retain body identity and mass-frame state |
+| `source_sc_scene_elements_native.h` and GPU producer | Map each attached element/volume to its rigid owner and shape pose; retire elements independently; retain sibling filtering |
+| Sc interaction/island edges and Gu managers | Keep one manager per shape pair; map responding endpoints to body/link nodes without collapsing multiple contacts between the same bodies |
+| Dy preparation/integration and reporting | Use body mass-center lever arms and one body update; publish shape identity alongside actor identity |
 
-The solver architecture must support heterogeneous objects and contacts,
-typed constraints, distinct material/field states, bidirectional force
-and momentum exchange, and appropriate substepping. A single monolithic
-numerical solver is not mandatory. Partitioned solvers are acceptable when
-their coupling, iteration, stability and convergence have been validated.
-Every interacting component must participate in the same scene clock,
-topology lifetime, completion dependencies and result visibility rules.
+Keep stable topology mappings at admission/edit boundaries; do not rebuild a
+second shape-to-body registry or all shape descriptors each frame.
 
-### Future multiphysics acceptance
+**Exit workload:** a rotating dynamic compound has unequal, offset shapes
+and a displaced mass center. Multiple shape pairs between the same two
+actors retain separate contact histories and reports while producing one
+linear/angular body response. Mutate and remove one shape, reuse its slot,
+change motion/filter state, reject a frame, and continue simulation without
+reviving contacts or losing the body. Compare the independent CPU reference
+and execute compound box contact solving on both GPU APIs. Mixed sphere
+contacts also run end to end; CPU sphere generation in a GPU scene is recorded
+as hybrid until the Geometry delivery supplies its device producer.
 
-Representative capability-level validation includes:
+The current compound work remains unfinished until this workload passes.
+Broadphase siblings and sphere primitive tests alone do not close it.
 
-- Two contacting nonlinear deformable volumes with sustained sliding,
-  self-contact and calibrated near-incompressible response.
-- A pressurized thin membrane containing fluid and compressed between
-  moving deformable surfaces, with pressure and contact forces returned to
-  every participating object.
-- Flexible strands attached to moving soft or articulated surfaces,
-  exchanging collision forces while bending, twisting and contacting
-  neighboring strands or surfaces.
-- A wet sliding interface whose fluid film and friction state evolve under
-  pressure, motion and drainage instead of using prescribed animation.
-- Mixed rigid, articulated, deformable, fluid and strand bodies running
-  over many frames with explicit energy/momentum error budgets, convergence
-  behavior and failure/retirement handling on both GPU backends.
+### Device foundation — qualify the execution model now
 
-Numerical accuracy requires constitutive laws, discretization and measured
-material parameters appropriate to each workload. Visual plausibility alone
-is not an equivalence test, and real-time performance is an independently
-measured requirement rather than a claim of universal continuum fidelity.
+Complete these decisions alongside the compound scene, before large-scale
+articulation or nonrigid kernel intake:
 
-## Technical references
+- Establish the source numerical domain and FP32 row/prep/solve contract.
+  Separate required wider reporting/intermediate operations from blanket
+  FP64 arithmetic. Validate high mass ratios, tiny/large valid inputs,
+  friction/compliance and angular response before changing admission.
+- Qualify the selected local-offset/segmented-reference model with explicit
+  null, alignment, atomics, aliasing, range, multi-segment addressing,
+  growth/relocation and completion-delayed reuse. A scene is not limited to
+  one 4 GiB arena. Benchmark actual contact/solver descriptor traversal;
+  compare a Vulkan BDA lowering and D3D12 views on supported hardware.
+- Preserve task ordering while exposing sufficient GPU work for a large
+  connected island. Partition tiling and inter-partition dependencies must
+  be source-derived; one workgroup per island/task is not accepted merely
+  because many small islands run concurrently.
+- Keep device-generated contacts, prepared rows, velocities and integrated
+  poses across dependent stages and frames. Transfer authored changes and
+  requested public results; metadata readbacks must not recreate an
+  unconditional host-controlled physics pipeline.
+- Keep the existing scene allocator, task owner and backend hazard tracking.
+  Retire transitional host mirrors as their consumers migrate. Publish
+  failures atomically; device loss may invalidate the scene and require
+  reconstruction rather than promising impossible GPU rollback.
 
-- [Architecture and fidelity contract](ARCHITECTURE_CONTRACT.md)
-- [Native scene source correspondence](NATIVE_SOURCE_INTAKE.md)
-- [GPU task/dataflow trace](PHYSX_GPU_PORT.md)
-- [GPU memory addressing](GPU_MEMORY_ADDRESSING_RFC.md)
-- [GPU performance policy](GPU_PORT_PERFORMANCE.md)
-- [SDK build and standalone integration](BUILDING.md)
+**Exit workloads:** steady and changing mixed-primitive scenes at 1K, 10K
+and 100K active bodies where resources permit, plus a single connected
+constraint/contact network and many independent islands. Record numerical
+quality, peak memory, dispatch/transfer/wait counts and critical path. GPU
+stages continue without an obligatory host contact/body readback. Host
+callbacks and requested results have named visibility boundaries. Both APIs
+must produce equivalent admitted behavior; physical GPU performance and
+addressing qualification are separate from software CI.
 
-Historical numbered plans and kernel audit records are implementation
-references, not active completion gates.
+### Geometry — primitives, convex, meshes and queries
+
+Deliver sphere/capsule device contacts, general convex/support mapping,
+convex-core/custom geometry where source-supported, triangle-mesh midphase,
+heightfields and SDF geometry. Port cooking, BVH construction/refit, mesh
+scaling, face/material identity and applicable geometry query operations
+with the collision users. Reject unsupported pairs explicitly.
+
+**Exit workloads:** mixed compound primitives and convex bodies on cooked
+terrain, moving concave/SDF geometry where supported, and authored mesh
+updates. Verify witness positions, normals, separation, feature/material IDs,
+cache retirement and dynamics. Raycast, sweep and overlap results consume
+the same authored geometry. Device-resident admission is tracked per pair;
+CPU custom callbacks are explicit host boundaries.
+
+### Rigid completion — constraints, TGS, CCD and scene semantics
+
+Complete source contact/material forms, general constraint prep and joint
+families (D6, fixed, revolute, spherical, prismatic, distance, gear and
+rack-and-pinion), limits/drives/breakage/projection, PGS/TGS, discrete and
+speculative CCD, sweep CCD, triggers, filtering/contact modification and
+reports. Include scene queries/pruning, origin shifts, split simulate/fetch,
+scene access rules, sleep/wake and capacity/failure behavior.
+
+**Exit workloads:** a jointed rigid mechanism with limits,
+drives and breakage; fast thin-feature impacts; conveyor/contact-modified
+pairs; and a sleeping mixed-geometry world under insertion/removal, queries
+and origin shift. Compare source scene behavior and validate long-running
+stability. TGS is independently admitted; PGS success cannot close it.
+
+### Articulations — start after shared topology/device contracts
+
+Port reduced-coordinate links, spatial inertia, forward/inverse dynamics,
+cache/Jacobian/mass-matrix operations, joint coordinates/limits/drives,
+tendons/mimic constraints, loop constraints and source-supported GPU access.
+Rigid and articulation contacts participate in the same interaction and
+completion graph. This work need not wait for every rigid extension.
+
+**Exit workload:** a driven multi-link mechanism manipulates and supports
+ordinary rigid objects, with reciprocal contact response, limits, sleeping,
+link/shape reports and lifecycle. Compare source articulation outputs plus
+independent momentum and joint-residual checks. Add closed-loop and tendon
+cases as those operations are admitted.
+
+### FEM — surfaces and volumes with real coupling
+
+Port simulation/collision mesh preparation, material models, FEM state and
+integration, attachments/filters, self-contact and source-supported mixed
+interactions. Volume and surface algorithms retain their own degrees of
+freedom; this is not rigid motion with a deformed render mesh.
+
+**Exit workloads:** a volumetric object deforms under gravity/contact and
+returns reaction to a moving rigid or articulated participant; a surface
+drapes and slides with thickness/self-contact. Check source stage results,
+load/displacement response, mesh/time-step convergence, conditioning and
+material limits. Attach, edit and retire objects during a multiframe scene.
+
+### Particles and fluids — source PBD systems
+
+Port particle buffers/phases/materials, neighborhood construction, collision,
+PBD iteration, density/pressure/viscosity and source-supported boundaries
+and feedback. Include particle creation/removal and applicable source
+smoothing, anisotropy, neighborhood and isosurface utilities. Rendering
+output does not replace fluid dynamics or force exchange.
+
+**Exit workload:** a fluid basin with a moving dynamic obstacle and a
+source-supported rigid/articulation coupling, showing reciprocal forces,
+density/volume error and controlled particle loss at stated resolution and
+step size. Compare source stages and hydrostatic/momentum checks. Verify
+which interactions across separate particle systems are source-defined.
+
+### SDK completion — carried with each subsystem
+
+Complete native scene/configuration APIs, immediate mode, direct GPU state
+access, standalone queries/broadphase, controllers, vehicle components,
+serialization/collections, deformable/mesh/particle extensions, statistics,
+visualization and debugging. Include independent packaging and consumer
+integration. The vehicle program includes suspension, tire, wheel,
+drivetrain, steering, braking, road-query and rigid-body/constraint coupling.
+
+**Exit workloads:** a controller and vehicle operate on the shared queried
+world; serialized scenes restore all supported topology/material/state and
+declared cache behavior; a GPU consumer reads/applies batched state without
+a CPU pose round trip. A reference-free standalone SDK and host consumer
+exercise each advertised feature and reject unsupported operations clearly.
+
+## Interaction coverage
+
+For each pairing of rigid, articulation, surface, volume and particle
+systems, record collision, attachment, filtering, self-contact, material,
+reaction, event/query availability and backend execution. Distinguish
+source-supported behavior, a source limitation and a planned extension.
+Unsupported source pairings remain explicit extension work; they do not
+quietly count as implemented multiphysics.
+
+Each admitted mixed interaction must identify its typed endpoints, geometric
+witnesses, response mapping, substep clock, coupling iteration/order,
+completion dependency and retirement owner. Test both directions of force
+exchange. Prescribed kinematic motion is identified separately from a
+participant capable of receiving reaction.
+
+Use source-supported rigid/articulation, rigid/deformable and rigid/particle
+couplings as early witnesses. Audit surface/volume, articulation/nonrigid,
+particle/deformable and cross-system particle combinations before promising
+parity. Deeper coupling beyond source capability remains a required extension
+program, with its own algorithm and validation work.
+
+## Evidence and performance gates
+
+Every delivered capability updates its inventory entry with the production
+API, state owner, source operation, supported pairs/options/backends,
+conformance workload, numerical limits, failure behavior and measurements.
+Track functional, fidelity, robustness and performance acceptance separately.
+No percentage based on files, kernels or subsystem names represents parity.
+
+Use four complementary checks: independent source comparisons; exact
+stage-level invariants where ordering permits; analytical/metamorphic
+physics checks; and multiframe stress/lifecycle workloads. Native CPU/GPU
+agreement alone is insufficient. For GPU-only features, source-stage
+comparisons and reference device captures supplement physical checks.
+CPU and GPU source algorithms may differ; compare equivalent configurations
+and document legitimate numerical differences rather than demanding false
+bitwise parity or widening tolerances after a failure.
+
+Declare quality budgets before comparisons: contact/constraint residuals,
+penetration, trajectory and angular error, density/volume error, and
+energy/momentum balance after accounting for external work and intended
+dissipation. Run time-step/iteration/mesh convergence where applicable.
+Specify units, tolerances scale and supported parameter ranges.
+
+Performance measurements cover a quiet scene, authored churn, many small
+islands, one large island, dense contacts, mixed geometry and eventually
+mixed solvers. Scale workloads by actual contacts/constraints/vertices/
+particles as well as actor count. Start with 1K/10K/100K rigid checkpoints;
+report resource-limit failures rather than silently simplifying them.
+
+Record warmed Release-build median/p95/p99 host frame time, device critical
+path/stage timestamps, host blocking, bytes transferred each direction,
+submissions, descriptor/pipeline work, allocations/growth and peak memory.
+Record adapter, driver, API, compiler, scene seed, step, solver settings,
+quality and actual CPU/GPU stage selection. Construction and warm-up are
+reported separately. Extend the existing scene harness and compute counters
+rather than creating another benchmark scheduler or simulation path.
+
+Set an absolute target frame budget and relative regression limit for each
+representative hardware workload before accepting it. Establish these from
+measured baselines; no hardware speed acceptance is currently closed. Compare
+against the same-quality native baseline and source implementation where
+hardware permits. An intentionally more expensive feature needs an explicit
+quality/cost tradeoff, not a hidden change to the benchmark workload.
+
+Vulkan 1.4 and D3D12 SM6.6 remain the baseline, with actual feature probes.
+Wave32 must work; width-independent algorithms may use wave64. AMD is the
+primary performance target, including both UMA and discrete-memory costs.
+Software Vulkan/WARP remain functional infrastructure. Optional BDA, matrix
+instructions or newer shader facilities must earn their packing, occupancy
+and synchronization costs in integrated workloads.
+
+## Beyond the source baseline
+
+The extension backlog includes nonlinear/anisotropic/viscoelastic and
+near-incompressible materials; rods/strands with bending and twist; thin
+shells/membranes and pressure; wetting, adhesion, lubrication and film
+transport; enclosed fluid/structure coupling; and material/surface fields
+such as moisture and temperature. These are additional physics to implement,
+not effects assumed to emerge from source parity.
+
+Acceptance includes sliding nonlinear volumes, a compressed fluid-filled
+membrane, strands attached to deforming surfaces, and pressure-dependent wet
+sliding, eventually combined in one scene. Validate constitutive models,
+resolution, coupling convergence and energy/momentum budgets. Partitioned
+solvers are valid when their coupling is demonstrated. Measured fidelity and
+frame cost determine supported use; visual plausibility alone does not.
+
+## Execution discipline
+
+Finish the current Scene delivery and Device decisions before another
+unrelated optimization sequence. Start articulation, FEM and particle
+production work as their shared prerequisites close; do not wait for complete
+rigid SDK parity. Each implementation slice includes public use, real solver
+execution, lifecycle and evidence. Optimize when it enables the next
+capability or addresses a measured integrated bottleneck.
+
+Keep this inventory current in the capability's own change. Historical
+source-intake documents retain technical mappings, but do not define a
+second milestone/status system. Review text and CI status cannot establish
+semantic correctness; qualification must cite executable behavior.
+
+Technical contracts: [architecture](ARCHITECTURE_CONTRACT.md),
+[source intake](NATIVE_SOURCE_INTAKE.md),
+[GPU trace](PHYSX_GPU_PORT.md),
+[address lowering](GPU_MEMORY_ADDRESSING_RFC.md),
+[performance](GPU_PORT_PERFORMANCE.md), and [build/integration](BUILDING.md).

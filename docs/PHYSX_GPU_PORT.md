@@ -8,7 +8,7 @@
 > not the required runtime owner of FyzzXYZZY. Historical sections describing
 > "PhysX scene integration" refer to source correspondence; the production
 > integration target is the SDK-owned native scene and scheduler.
-> See [native engine migration](NATIVE_ENGINE_MIGRATION.md) for current gates.
+> See the [active implementation program](ROADMAP.md) for current gates.
 
 
 See also [the multi-month GPU port program, blockers and acceptance gates](GPU_PORT_PROGRAM.md)
@@ -16,10 +16,14 @@ and the [broadphase source-to-port worksheet](GPU_BROADPHASE_TRACE.md).
 **All GPU work is also bound by the [GPU performance contract](GPU_PORT_PERFORMANCE.md)**, which requires explicit review of throughput costs and modern hardware primitives for every deviation from source PhysX.
 
 Status: source-grounded execution trace and historical port dependency map.
-The bounded native AABB/SAP and aggregate broadphase is now integrated on
-Vulkan and D3D12, publishing reports to native CPU Sc/PCM/Dy. The wider GPU
-narrowphase, rigid solver and remaining subsystems are not yet integrated;
-see the [active capability roadmap](ROADMAP.md) for their acceptance gates.
+The bounded native AABB/SAP and aggregate broadphase is integrated on
+Vulkan and D3D12. Explicit shader bundles also integrate GPU box PCM,
+contact/distance preparation, PGS/friction and rigid integration into the
+same native Sc/Dy scene. Host publication/task/fetch boundaries remain;
+general geometry, full solvers and nonrigid features are incomplete.
+The sections below retain stage-by-stage intake history, including older
+limitations subsequently superseded. Current capability status and acceptance
+are owned by the [active implementation program](ROADMAP.md).
 
 ## N2 source aggregate GPU AABB prepass
 

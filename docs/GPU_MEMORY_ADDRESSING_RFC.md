@@ -3,8 +3,10 @@
 
 # GPU memory/addressing: decision RFC and benchmark contract
 
-**Status:** scoped execution policy selected for the first coupled rigid GPU
-slice; general cross-allocation pointer ABI remains under evaluation.
+**Status:** local-offset/segmented-reference logical model selected by the
+[active implementation program](ROADMAP.md). The current rigid GPU path
+implements scoped direct views; general cross-allocation encoding, backend
+lowerings and hardware qualification remain open before pointer-rich intake.
 **Source reference:** upstream PhysX CUDA host/device addressing; no fixed source revision is a consumer requirement.
 **Goal:** preserve PhysX GPU algorithm, allocation ownership, CPU/GPU task
 dependencies and semantic data layouts while making access fast on Vulkan
@@ -102,12 +104,14 @@ physics semantics just because address lowering differs. Conversely, do
 not require Vulkan to emulate a D3D resource heap if BDA is substantially
 faster, unless we explicitly accept that cost.
 
-**Working hypothesis, not selection:** A + B can form an efficient logical
-model: local `uint32` offsets for known-arena hot paths, and a sparse
-64-bit cross-arena reference only when needed. A D3D backend can resolve
-references to `ByteAddressBuffer`/RW views; Vulkan may use BDA after
-capability checks. The model must prove support for typed and atomic
-operations before acceptance.
+**Selected logical model, qualification open:** use A + B: local `uint32`
+offsets for known-arena hot paths and 64-bit segmented references for
+cross-allocation traversal. D3D12 resolves these through buffer views;
+Vulkan may specialize through BDA after capability and equivalence checks.
+The current direct-view implementation does not establish general pointer
+support. Validate typed/atomic access, aliasing, multi-segment addressing,
+relocation and deferred reuse with actual solver/geometry traversal.
+The scene must support multiple segments rather than inherit a 4 GiB limit.
 
 Precise encoding is **not decided**. Reserve a null representation, avoid
 ambiguous arena-zero/address-zero cases, specify byte units and alignment,
