@@ -451,9 +451,29 @@ void growPcmFrictionAnchors(uint patchIndex,uint pairIndex,
     uint body0=arena.Load(pair);
     uint body1=arena.Load(pair+4u);
     uint anchorBase=p.prepBias+p.prepCount*72u+(patch.x/2u)*24u;
-    float3 local0=asfloat(arena.Load3(anchorBase));
-    float3 local1=asfloat(arena.Load3(anchorBase+24u));
+    // This source-heap prefix is a physical mirror of Sc's original
+    // EdgeIndex friction history. A rejected frame explicitly reloads
+    // Sc's last successful anchors; ordinary frames reuse device memory.
+    uint history=p.writebackBias+arena.Load(pair+52u)*64u;
     uint count=patch.z;
+    if(count>0u && (patch.w&0x40000000u)==0u) {
+        if(arena.Load(history)!=count) {
+            arena.InterlockedOr(errorAddress,262144u);
+            return;
+        }
+        [unroll]
+        for(uint k=0u;k<2u;++k) {
+            if(k>=count)break;
+            arena.Store3(anchorBase+k*24u,
+                         arena.Load3(history+8u+k*24u));
+            arena.Store3(anchorBase+k*24u+12u,
+                         arena.Load3(history+20u+k*24u));
+        }
+    }
+    float3 local0=count>0u?asfloat(arena.Load3(anchorBase)):
+                            float3(0.f,0.f,0.f);
+    float3 local1=count>1u?asfloat(arena.Load3(anchorBase+24u)):
+                            float3(0.f,0.f,0.f);
     bool keepPair=false;
     if(count==2u) {
         float3 delta=local0-local1;
@@ -525,6 +545,15 @@ void growPcmFrictionAnchors(uint patchIndex,uint pairIndex,
             arena.Store3(anchorBase+k*24u+12u,asuint(lb));
         }
     }
+    [unroll]
+    for(uint k=0u;k<2u;++k) {
+        if(k>=count)break;
+        arena.Store3(history+8u+k*24u,
+                     arena.Load3(anchorBase+k*24u));
+        arena.Store3(history+20u+k*24u,
+                     arena.Load3(anchorBase+k*24u+12u));
+    }
+    arena.Store(history,count);
     arena.Store(po+8u,count);
     uint report=(count<<1u) |
         ((changed[0]?(selected[0]+1u):0u)<<3u) |
