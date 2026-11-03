@@ -1065,7 +1065,8 @@ void execute(Context& context, ShaderBinary translateShader,
             // PhysX member types; no independent GPU pair registry.
             auto movedBoxes=liveBoxes;
             movedBoxes[1].position.x=20.0f;
-            aabb.mark_changed(1u,distances[1]);
+            movedBoxes[1].contact_offset+=0.025f;
+            aabb.mark_changed(1u,movedBoxes[1].contact_offset);
             const auto moved=aabb.prepare(movedBoxes,created,filter);
             const auto nextPre=aabb.pre_update(sap.pre_broadphase_buffers());
             validate_source_sap_owned_aabb_aliases_native(
@@ -1077,14 +1078,13 @@ void execute(Context& context, ShaderBinary translateShader,
                  nextPre.aggregated.words.size())*sizeof(physx::PxU32)+
                 nextPre.volume_data.size()*sizeof(physx::Bp::VolumeData)+
                 sizeof(physx::PxBounds3)+
-                std::size_t(moved.getCapacity())*
-                    (sizeof(physx::PxReal)+sizeof(physx::Bp::FilterGroup::Enum))+
+                sizeof(physx::PxReal)+sizeof(physx::Bp::FilterGroup::Enum)+
                 nextPre.changed.words.size()*sizeof(physx::PxU32);
             require(stream.submission_stats().upload_batches==
                         uploads_before_motion.upload_batches+1u &&
                     stream.submission_stats().upload_bytes==
                         uploads_before_motion.upload_bytes+expected_motion_bytes,
-                    "One moving Sc shape reuploaded unchanged GPU AABB bounds");
+                    "One moving Sc shape reuploaded quiet AABB or filter metadata");
             const auto nextAabbView=source_sap_aabb_descriptor_native(nextPre);
             auto nextDma=sap.dma_up_members(&nextAabbView,mappedRoots);
             const auto admitted=begin_sap_update_native(
@@ -1151,6 +1151,19 @@ void execute(Context& context, ShaderBinary translateShader,
                 sap.new_integer_bounds(),sap.old_integer_bounds());
             stream.wait_at_fetch();
 
+            const auto metadata=sap.pre_broadphase_buffers();
+            const auto source_groups=read_words(
+                metadata.groups.getDevicePtr(),moved.getCapacity());
+            const auto source_distances=read_words(
+                metadata.contact_distances.getDevicePtr(),moved.getCapacity());
+            for(std::size_t i=0;i<moved.getCapacity();++i) {
+                require(source_groups[i]==static_cast<physx::PxU32>(groups[i]),
+                    "Sparse source SAP transfer lost a resident filter group");
+                const auto expected=i==1u ? movedBoxes[1].contact_offset :
+                    distances[i];
+                require(source_distances[i]==std::bit_cast<physx::PxU32>(expected),
+                    "Sparse source SAP transfer lost a resident contact distance");
+            }
             const auto secondGpu=read_words(
                 reinterpret_cast<CUdeviceptr>(nextDesc.lostPairReport),2u);
             require(secondGpu[0]==0u&&secondGpu[1]==1u,
