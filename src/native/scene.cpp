@@ -2004,21 +2004,30 @@ void Scene::set_gpu_broadphase(
 // contact-edge publication used by the native CPU branch, but it never
 // calls BpBroadPhaseSap or reads that implementation's endpoint registry.
 void Scene::update_gpu_pairs(bool force_update) {
-    gpu_broadphase_boxes_.clear();
-    gpu_broadphase_boxes_.reserve(live_actor_ids_.size());
-    for(BodyId id:live_actor_ids_) {
-        const Actor& actor=actors_[id];
-        if(!actor.simulation_shape_enabled)continue;
-        // Source plane candidates do not enter finite GPU SAP volumes.
-        if(actor.kind==Kind::StaticPlane)continue;
-        const auto motion=actor.kind==Kind::DynamicBox
-            ? GpuBroadphaseBox::Motion::Dynamic
-            : actor.kind==Kind::KinematicBox
-                ? GpuBroadphaseBox::Motion::Kinematic
-                : GpuBroadphaseBox::Motion::Static;
-        gpu_broadphase_boxes_.push_back({
-            id,actor.position,actor.half_extents,actor.orientation,
-            actor.contact_offset,motion});
+    // Sc's geometry dirty bit is set by actor/shape admission, authored
+    // edits and afterIntegration. No authoring changed on a quiet pass:
+    // reuse the already validated input view while the source GPU AABB
+    // manager still performs its required DMA, update and fetch cycle.
+    if(dirty_ || !gpu_broadphase_snapshot_current_) {
+        gpu_broadphase_snapshot_current_=false;
+        gpu_broadphase_boxes_.clear();
+        gpu_broadphase_boxes_.reserve(live_actor_ids_.size());
+        for(BodyId id:live_actor_ids_) {
+            const Actor& actor=actors_[id];
+            if(!actor.simulation_shape_enabled)continue;
+            // Infinite planes are Sc contact managers, not finite SAP.
+            if(actor.kind==Kind::StaticPlane)continue;
+            const auto motion=actor.kind==Kind::DynamicBox
+                ? GpuBroadphaseBox::Motion::Dynamic
+                : actor.kind==Kind::KinematicBox
+                    ? GpuBroadphaseBox::Motion::Kinematic
+                    : GpuBroadphaseBox::Motion::Static;
+            gpu_broadphase_boxes_.push_back({
+                id,actor.position,actor.half_extents,actor.orientation,
+                actor.contact_offset,motion});
+        }
+        gpu_broadphase_snapshot_current_=true;
+        ++gpu_broadphase_snapshot_rebuilds_;
     }
     const auto reports=gpu_broadphase_->advance(
         gpu_broadphase_boxes_,force_update,dirty_);
@@ -9007,6 +9016,9 @@ void Scene::StepCheckpoint::rollback(Scene& scene) noexcept {
     scene.broadphase_endpoint_membership_dirty_=true;
     scene.sap_pair_registry_dirty_=true;
     scene.dirty_=dirty;
+    // Rollback restores authoritative actor motion; no scratch view
+    // from the rejected Sc/Dy frame is allowed to stand in for it.
+    scene.gpu_broadphase_snapshot_current_=false;
     scene.plane_pair_membership_dirty_=plane_pair_membership_dirty;
     scene.authored_activation_pending_=authored_activation_pending;
     // GPU source histories already rotate at successful fetch, before
