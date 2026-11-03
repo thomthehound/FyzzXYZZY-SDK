@@ -59,7 +59,10 @@ struct GpuPcmFrictionAnchorFixture {
             const auto& a=reference[i];
             const auto& b=actual[i];
             if(a.pair!=b.pair || a.contact_count!=b.contact_count ||
-               a.anchor_count!=b.anchor_count)
+               a.anchor_count!=b.anchor_count ||
+               !near(a.normal,b.normal) ||
+               !near(a.bounds_min,b.bounds_min) ||
+               !near(a.bounds_max,b.bounds_max))
                 throw std::runtime_error(
                     "GPU PCM changed source correlated friction topology");
             for(std::size_t k=0u;k<a.anchor_count;++k)
