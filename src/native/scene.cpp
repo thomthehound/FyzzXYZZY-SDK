@@ -3645,23 +3645,29 @@ void Scene::update_contacts() {
         const Actor& second=plane_pair
             ? (a.kind==Kind::StaticPlane?b:a)
             : (reversed?a:b);
-        while(old_cache_cursor<gu_cache_records_.size() &&
-              gu_cache_records_[old_cache_cursor].pair<pair)
-            ++old_cache_cursor;
-        const GuCacheRecord* old=
-            old_cache_cursor<gu_cache_records_.size() &&
-            gu_cache_records_[old_cache_cursor].pair==pair
-            ? &gu_cache_records_[old_cache_cursor] : nullptr;
-        GuCacheRecord cache{};
-        cache.pair=pair;
-        cache.offset=next_gu_cached_points_.size();
-        cache.pose0={first.position,first.orientation};
-        cache.pose1={second.position,second.orientation};
-        cache.contact_distance=contact_distance;
-        cache.collision_axis=old?old->collision_axis:manifold.collision_axis;
-        manifold.collision_axis=cache.collision_axis;
         const bool pcm_plane=pcm_plane_box_enabled_ && plane_pair;
         const bool pcm_box=pcm_box_box_enabled_ && !plane_pair;
+        // Gu's PxcCacheLocalContacts pose and collision-axis record
+        // belongs only to the non-PCM path. PCM owns persistent
+        // witnesses through the same Sc EdgeIndex; do not reconstruct
+        // an unused legacy cache for every GPU PCM manager.
+        GuCacheRecord cache{};
+        const GuCacheRecord* old=nullptr;
+        if(!pcm_plane && !pcm_box) {
+            while(old_cache_cursor<gu_cache_records_.size() &&
+                  gu_cache_records_[old_cache_cursor].pair<pair)
+                ++old_cache_cursor;
+            if(old_cache_cursor<gu_cache_records_.size() &&
+               gu_cache_records_[old_cache_cursor].pair==pair)
+                old=&gu_cache_records_[old_cache_cursor];
+            cache.pair=pair;
+            cache.offset=next_gu_cached_points_.size();
+            cache.pose0={first.position,first.orientation};
+            cache.pose1={second.position,second.orientation};
+            cache.contact_distance=contact_distance;
+            cache.collision_axis=old?old->collision_axis:manifold.collision_axis;
+            manifold.collision_axis=cache.collision_axis;
+        }
         bool cache_hit=false;
         if(pcm_plane) {
             if(overlap_plane_gu) {
