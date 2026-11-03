@@ -9,6 +9,7 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <cstring>
 #include <fstream>
 #include <iostream>
 #include <iterator>
@@ -78,6 +79,55 @@ struct GpuPcmFrictionAnchorFixture {
 namespace {
 void require(bool good,const char* message) {
     if(!good)throw std::runtime_error(message);
+}
+// Inspect compiled requirements: software adapters can execute FP64 and
+// would otherwise conceal an accidental increase of the hardware floor.
+void verify_rigid_shader_requirements(
+    fyzz::compute::Backend backend,const char* path) {
+    std::ifstream stream(path,std::ios::binary);
+    require(bool(stream),"Source Dy shader bundle missing");
+    const std::vector<char> bytes(
+        std::istreambuf_iterator<char>{stream},
+        std::istreambuf_iterator<char>{});
+    const auto word=[&](std::size_t offset) {
+        require(offset<=bytes.size() && bytes.size()-offset>=4u,
+                "Truncated rigid shader metadata");
+        std::uint32_t value;
+        std::memcpy(&value,bytes.data()+offset,sizeof(value));
+        return value;
+    };
+    if(backend==fyzz::compute::Backend::Vulkan) {
+        require(bytes.size()>=20u && bytes.size()%4u==0u &&
+                word(0u)==0x07230203u,"Invalid rigid SPIR-V module");
+        for(std::size_t offset=20u;offset<bytes.size();) {
+            const auto instruction=word(offset);
+            const auto count=instruction>>16u,opcode=instruction&0xffffu;
+            require(count>0u && count<=(bytes.size()-offset)/4u,
+                    "Invalid rigid SPIR-V instruction");
+            // OpCapability Float64 and OpTypeFloat with a 64-bit width.
+            require(!(opcode==17u && word(offset+4u)==10u) &&
+                    !(opcode==22u && word(offset+8u)==64u),
+                    "Rigid solver shader requires FP64 arithmetic");
+            offset+=std::size_t(count)*4u;
+        }
+    }else {
+        require(bytes.size()>=32u && word(0u)==0x43425844u,
+                "Invalid rigid DXIL container");
+        const auto count=word(28u);
+        require(count<=(bytes.size()-32u)/4u,
+                "Invalid rigid DXIL part table");
+        bool feature_info=false;
+        for(std::size_t i=0u;i<count;++i) {
+            const std::size_t offset=word(32u+i*4u);
+            if(word(offset)!=0x30494653u)continue; // SFI0.
+            require(word(offset+4u)>=8u,"Invalid DXIL feature metadata");
+            // D3D shader requirements: doubles and extended double ops.
+            require((word(offset+8u)&0x21u)==0u,
+                    "Rigid solver shader requires FP64 arithmetic");
+            feature_info=true;
+        }
+        require(feature_info,"Rigid DXIL shader has no feature metadata");
+    }
 }
 // Independent GPU broadphase volumes share one Sc rigid actor identity.
 // Same-actor shape overlap is filtered; each cross-actor shape pair is kept.
@@ -1578,6 +1628,7 @@ int main(int argc,char** argv) {
 #else
         constexpr auto backend=fyzz::compute::Backend::Vulkan;
 #endif
+        verify_rigid_shader_requirements(backend,argv[3]);
         if(scenario=="all" || scenario=="compound_shapes")
             fyzz::tests::measure_gpu_case("sc_pcm","compound_shapes",
                 [&]{verify_compound_shape_gpu_pairs(backend,argv[1]);});

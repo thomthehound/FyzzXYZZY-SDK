@@ -3,53 +3,35 @@
 
 // Source DySolverConstraintsShared.h contact and friction PGS, executing
 // correlated Gu contact runs in source DyConstraintPartition order.
-double contactDouble(uint addr) {
-    uint2 v=arena.Load2(addr);
-    return asdouble(v.x,v.y);
+float contactScalar(uint addr) {
+    return asfloat(arena.Load(addr));
 }
-void storeContactDouble(uint addr,double value,uint pointIndex,bool finalPass) {
-    uint lo,hi;asuint(value,lo,hi);
-    uint2 packed=uint2(lo,hi);
-    arena.Store2(addr,packed);
+void storeContactScalar(uint addr,float value,uint pointIndex,bool finalPass) {
+    arena.Store(addr,asuint(value));
     if(finalPass)
-        arena.Store2(p.writebackBias+p.resultContactOffset+
-            pointIndex*8u,packed);
+        arena.Store(p.writebackBias+p.resultContactOffset+pointIndex*4u,
+                    asuint(value));
 }
-double frictionDouble(uint addr) {
-    uint2 v=arena.Load2(addr);
-    return asdouble(v.x,v.y);
+float frictionScalar(uint addr) {
+    return asfloat(arena.Load(addr));
 }
-void storeFrictionDouble(uint addr,double value,uint rowIndex,bool finalPass) {
-    uint lo,hi;asuint(value,lo,hi);
-    uint2 packed=uint2(lo,hi);
-    arena.Store2(addr,packed);
+void storeFrictionScalar(uint addr,float value,uint rowIndex,bool finalPass) {
+    arena.Store(addr,asuint(value));
     if(finalPass) {
-        uint target=p.writebackBias+p.resultFrictionOffset+rowIndex*20u;
-        // The source Sc friction anchor writeback combines this tangent
-        // with the accumulated impulse. Both are GPU-prepared now.
-        arena.Store3(target,
-            arena.Load3(p.frictionBias+rowIndex*72u));
-        arena.Store2(target+12u,packed);
+        uint target=p.writebackBias+p.resultFrictionOffset+rowIndex*16u;
+        arena.Store3(target,arena.Load3(p.frictionBias+rowIndex*56u));
+        arena.Store(target+12u,asuint(value));
     }
 }
 bool contactImpulse(uint a,uint b,uint ao,uint bo,
                     float3 n,float3 ja,float3 jb,
                     inout float3 va,inout float3 vb,
                     inout float3 aa,inout float3 ab,
-                    double delta,float ma,float mb,uint errorAddress) {
-    double da=delta*(double)ma,db=delta*(double)mb;
-    float3 v0=float3((float)((double)va.x+da*(double)n.x),
-                     (float)((double)va.y+da*(double)n.y),
-                     (float)((double)va.z+da*(double)n.z));
-    float3 v1=float3((float)((double)vb.x-db*(double)n.x),
-                     (float)((double)vb.y-db*(double)n.y),
-                     (float)((double)vb.z-db*(double)n.z));
-    float3 w0=float3((float)((double)aa.x+delta*(double)ja.x),
-                     (float)((double)aa.y+delta*(double)ja.y),
-                     (float)((double)aa.z+delta*(double)ja.z));
-    float3 w1=float3((float)((double)ab.x-delta*(double)jb.x),
-                     (float)((double)ab.y-delta*(double)jb.y),
-                     (float)((double)ab.z-delta*(double)jb.z));
+                    float delta,float ma,float mb,uint errorAddress) {
+    float3 v0=va+(n*ma)*delta;
+    float3 v1=vb-(n*mb)*delta;
+    float3 w0=aa+ja*delta;
+    float3 w1=ab-jb*delta;
     if(!all(isfinite(v0)) || !all(isfinite(v1)) ||
        !all(isfinite(w0)) || !all(isfinite(w1))) {
         arena.InterlockedOr(errorAddress,16u);
@@ -115,7 +97,7 @@ void solveContact(uint4 descriptor,uint errorAddress,bool biased,
             arena.InterlockedOr(errorAddress,128u);
             return;
         }
-        double normalImpulse=0.0;
+        float normalImpulse=0.0;
         for(uint i=0;i<patch.y;++i) {
             uint pointIndex=arena.Load(
                 p.orderBias+(cursor++)*4u);
@@ -123,20 +105,20 @@ void solveContact(uint4 descriptor,uint errorAddress,bool biased,
                 arena.InterlockedOr(errorAddress,256u);
                 return;
             }
-            uint co=p.contactBias+pointIndex*88u;
+            uint co=p.contactBias+pointIndex*64u;
             float3 n=asfloat(arena.Load3(co));
             float3 ja=asfloat(arena.Load3(co+12u));
             float3 jb=asfloat(arena.Load3(co+24u));
             float normalVelocity=dot(n,va)-dot(n,vb)+
                 dot(aa,ja)-dot(ab,jb);
-            double oldForce=contactDouble(co+72u);
-            double error=biased?contactDouble(co+56u):
-                                contactDouble(co+64u);
-            double candidate=max(
-                -(double)normalVelocity*contactDouble(co+40u)+error,
+            float oldForce=contactScalar(co+56u);
+            float error=biased?contactScalar(co+48u):
+                                contactScalar(co+52u);
+            float candidate=max(
+                -normalVelocity*contactScalar(co+40u)+error,
                 -oldForce);
-            double nextForce=min(contactDouble(co+80u),
-                contactDouble(co+48u)*oldForce+candidate);
+            float nextForce=min(contactScalar(co+60u),
+                contactScalar(co+44u)*oldForce+candidate);
             if(!isfinite(nextForce)) {
                 arena.InterlockedOr(errorAddress,1024u);
                 return;
@@ -144,29 +126,29 @@ void solveContact(uint4 descriptor,uint errorAddress,bool biased,
             if(!contactImpulse(a,b,ao,bo,n,ja,jb,
                                va,vb,aa,ab,nextForce-oldForce,
                                ma,mb,errorAddress))return;
-            storeContactDouble(co+72u,nextForce,pointIndex,finalPass);
+            storeContactScalar(co+56u,nextForce,pointIndex,finalPass);
             normalImpulse+=nextForce;
         }
         if(!frictionEnabled || patch.z==0u)continue;
-        double coeff=patch.z==2u?0.5:1.0;
-        double maxStatic=(double)asfloat(settings.x)*coeff*normalImpulse;
-        double maxDynamic=(double)asfloat(settings.y)*coeff*normalImpulse;
+        float coeff=patch.z==2u?0.5:1.0;
+        float maxStatic=asfloat(settings.x)*coeff*normalImpulse;
+        float maxDynamic=asfloat(settings.y)*coeff*normalImpulse;
         bool broken=false;
         for(uint k=patch.x;k<patch.x+patch.z*2u;++k) {
-            uint fo=p.frictionBias+k*72u;
+            uint fo=p.frictionBias+k*56u;
             float3 n=asfloat(arena.Load3(fo));
             float3 ja=asfloat(arena.Load3(fo+12u));
             float3 jb=asfloat(arena.Load3(fo+24u));
             float tangentDelta=dot(n,va)-dot(n,vb)+
                 dot(aa,ja)-dot(ab,jb);
-            double oldForce=frictionDouble(fo+64u);
-            double bias=biased?frictionDouble(fo+48u):0.0;
-            double candidate=oldForce+
-                (frictionDouble(fo+56u)-bias-(double)tangentDelta)*
-                frictionDouble(fo+40u);
+            float oldForce=frictionScalar(fo+52u);
+            float bias=biased?frictionScalar(fo+44u):0.0;
+            float candidate=oldForce+
+                (frictionScalar(fo+48u)-bias-tangentDelta)*
+                frictionScalar(fo+40u);
             bool saturated=abs(candidate)>maxStatic;
             // Source signed FMin/FMax also handles negative compliant bounds.
-            double nextForce=saturated
+            float nextForce=saturated
                 ? min(maxDynamic,max(-maxDynamic,candidate)):candidate;
             if(!isfinite(nextForce)) {
                 arena.InterlockedOr(errorAddress,2048u);
@@ -175,7 +157,7 @@ void solveContact(uint4 descriptor,uint errorAddress,bool biased,
             if(!contactImpulse(a,b,ao,bo,n,ja,jb,
                                va,vb,aa,ab,nextForce-oldForce,
                                ma,mb,errorAddress))return;
-            storeFrictionDouble(fo+64u,nextForce,k,finalPass);
+            storeFrictionScalar(fo+52u,nextForce,k,finalPass);
             broken=broken||saturated;
         }
         if(finalPass) {
@@ -225,10 +207,8 @@ float3 prepInertia(uint source,float3 v) {
     float3 c2=prepBody3(source,60u);
     return c0*v.x+c1*v.y+c2*v.z;
 }
-void prepStoreDouble(uint address,double value) {
-    uint lo,hi;
-    asuint(value,lo,hi);
-    arena.Store2(address,uint2(lo,hi));
+void prepStoreScalar(uint address,float value) {
+    arena.Store(address,asuint(value));
 }
 void prepareContactRow(uint index,uint pairIndex,uint contactBegin,
                        uint contactCount,uint errorAddress) {
@@ -236,8 +216,8 @@ void prepareContactRow(uint index,uint pairIndex,uint contactBegin,
         arena.InterlockedOr(errorAddress,4096u);
         return;
     }
-    uint co=p.contactBias+index*88u;
-    uint pair=p.prepBias+pairIndex*72u;
+    uint co=p.contactBias+index*64u;
+    uint pair=p.prepBias+pairIndex*64u;
     uint b0=arena.Load(pair),b1=arena.Load(pair+4u);
     // The source correlation fixes patch order and body inputs. The GPU
     // reconstructs PCM normal rows without uploading a placeholder row.
@@ -263,13 +243,13 @@ void prepareContactRow(uint index,uint pairIndex,uint contactBegin,
         separation=asfloat(pcmContacts.Load(contact+12u));
         arena.Store3(co,asuint(n));
     } else {
-        uint cpuOffset=arena.Load(pair+64u);
+        uint cpuOffset=arena.Load(pair+60u);
         if(cpuOffset==0xffffffffu || index<contactBegin ||
            index-contactBegin>=contactCount) {
             arena.InterlockedOr(errorAddress,131072u);
             return;
         }
-        uint raw=p.prepBias+p.prepCount*72u+
+        uint raw=p.prepBias+p.prepCount*64u+
             (cpuOffset+index-contactBegin)*28u;
         n=asfloat(arena.Load3(raw));
         pos=asfloat(arena.Load3(raw+12u));
@@ -300,9 +280,8 @@ void prepareContactRow(uint index,uint pairIndex,uint contactBegin,
     float3 jb=prepInertia(b1,r1);
     float angularRel=dot(r0,w0)-dot(r1,w1);
     float vrel=linearRel+angularRel;
-    double response=(double)m0+(double)m1+
-        (double)dot(ja,ja)+(double)dot(jb,jb);
-    double multiplier=response>0.0?1.0/response:0.0;
+    float response=(m0+dot(ja,ja))+(m1+dot(jb,jb));
+    float multiplier=response>0.0?1.0/response:0.0;
     float restDistance=asfloat(arena.Load(pair+8u));
     float restitution=asfloat(arena.Load(pair+16u));
     float damping=asfloat(arena.Load(pair+20u));
@@ -319,17 +298,17 @@ void prepareContactRow(uint index,uint pairIndex,uint contactBegin,
     bool bouncing=restitution>0.0f &&
         bounceThreshold>vrel && closing;
     float targetVelocity=bouncing?-vrel*restitution:0.0f;
-    double target=(double)(targetVelocity-vrel);
-    double impulseMultiplier=1.0;
-    double biasedError,unbiasedError;
+    float target=(targetVelocity-vrel);
+    float impulseMultiplier=1.0;
+    float biasedError,unbiasedError;
     if(restitution<0.0f) {
         float enabledDamping=separated&&!closing?0.0f:damping;
-        double nrdt=(double)seconds*(double)restitution;
-        double aCoeff=(double)seconds*
-            ((double)enabledDamping-nrdt);
-        double massFactor=acceleration?multiplier:1.0;
-        double x=1.0/(1.0+aCoeff*(acceleration?1.0:response));
-        double bias=x*(-nrdt*(double)penetration*massFactor);
+        float nrdt=seconds*restitution;
+        float aCoeff=seconds*
+            (enabledDamping-nrdt);
+        float massFactor=acceleration?multiplier:1.0;
+        float x=1.0/(1.0+aCoeff*(acceleration?1.0:response));
+        float bias=x*(-nrdt*penetration*massFactor);
         multiplier=x*aCoeff*massFactor;
         impulseMultiplier=1.0-x;
         biasedError=target*multiplier-bias;
@@ -337,13 +316,14 @@ void prepareContactRow(uint index,uint pairIndex,uint contactBegin,
     } else {
         float penetrationScaled=separated?penetrationInvDt:
             penetration*(invDt*rigidBias);
-        double scaledBias=bouncing?0.0:
-            multiplier*(double)max(maxPenBias,penetrationScaled);
+        float scaledBias=bouncing?0.0:
+            multiplier*max(maxPenBias,penetrationScaled);
         biasedError=target*multiplier-scaledBias;
         unbiasedError=target*multiplier-
             (bouncing?0.0:max(scaledBias,0.0));
     }
-    if(!isfinite(multiplier) || !isfinite(impulseMultiplier) ||
+    if(!isfinite(response) || !isfinite(multiplier) ||
+       !isfinite(impulseMultiplier) ||
        !isfinite(biasedError) || !isfinite(unbiasedError) ||
        !all(isfinite(ja)) || !all(isfinite(jb))) {
         arena.InterlockedOr(errorAddress,8192u);
@@ -352,14 +332,14 @@ void prepareContactRow(uint index,uint pairIndex,uint contactBegin,
     // A freshly prepared source Gu normal row begins with zero impulse.
     // Its limit is common to the entire contact-manager pair.
     arena.Store(co+36u,0u);
-    arena.Store2(co+72u,uint2(0u,0u));
-    arena.Store2(co+80u,arena.Load2(pair+56u));
+    arena.Store(co+56u,0u);
+    arena.Store(co+60u,arena.Load(pair+56u));
     arena.Store3(co+12u,asuint(ja));
     arena.Store3(co+24u,asuint(jb));
-    prepStoreDouble(co+40u,multiplier);
-    prepStoreDouble(co+48u,impulseMultiplier);
-    prepStoreDouble(co+56u,biasedError);
-    prepStoreDouble(co+64u,unbiasedError);
+    prepStoreScalar(co+40u,multiplier);
+    prepStoreScalar(co+44u,impulseMultiplier);
+    prepStoreScalar(co+48u,biasedError);
+    prepStoreScalar(co+52u,unbiasedError);
 }
 
 float3 prepRotate(uint body,float3 local) {
@@ -374,8 +354,8 @@ void prepareFrictionRow(uint index,uint patchIndex,uint pairIndex,
         arena.InterlockedOr(errorAddress,16384u);
         return;
     }
-    uint fo=p.frictionBias+index*72u;
-    uint pair=p.prepBias+pairIndex*72u;
+    uint fo=p.frictionBias+index*56u;
+    uint pair=p.prepBias+pairIndex*64u;
     uint b0=arena.Load(pair),b1=arena.Load(pair+4u);
     // Source DyFrictionCorrelation selected these body-local anchors.
     // Source DyContactPrep selected the two tangents and their order.
@@ -424,15 +404,15 @@ void prepareFrictionRow(uint index,uint patchIndex,uint pairIndex,
     float3 ax1=prepSlop(cross(r1,tangent),slop);
     float3 ja=prepInertia(b0,ax0);
     float3 jb=prepInertia(b1,ax1);
-    double response=(double)m0+(double)m1+
-        (double)dot(ja,ja)+(double)dot(jb,jb);
-    double velocityMultiplier=response>0.0
-        ? (double)rigidBias/response:0.0;
-    double bias=(double)(dot(tangent,error)*invDt);
+    float response=(m0+dot(ja,ja))+(m1+dot(jb,jb));
+    float velocityMultiplier=response>0.0
+        ? rigidBias/response:0.0;
+    float bias=(dot(tangent,error)*invDt);
     float3 relative=v0-v1;
-    double targetVelocity=(double)(-(dot(tangent,relative)+
+    float targetVelocity=(-(dot(tangent,relative)+
         dot(ax0,w0)-dot(ax1,w1)));
-    if(!isfinite(velocityMultiplier) || !isfinite(bias) ||
+    if(!isfinite(response) || !isfinite(velocityMultiplier) ||
+       !isfinite(bias) ||
        !isfinite(targetVelocity) || !all(isfinite(ja)) ||
        !all(isfinite(jb))) {
         arena.InterlockedOr(errorAddress,32768u);
@@ -441,10 +421,10 @@ void prepareFrictionRow(uint index,uint patchIndex,uint pairIndex,
     arena.Store3(fo+12u,asuint(ja));
     arena.Store3(fo+24u,asuint(jb));
     arena.Store(fo+36u,0u);
-    arena.Store2(fo+64u,uint2(0u,0u));
-    prepStoreDouble(fo+40u,velocityMultiplier);
-    prepStoreDouble(fo+48u,bias);
-    prepStoreDouble(fo+56u,targetVelocity);
+    arena.Store(fo+52u,0u);
+    prepStoreScalar(fo+40u,velocityMultiplier);
+    prepStoreScalar(fo+44u,bias);
+    prepStoreScalar(fo+48u,targetVelocity);
 }
 
 // GPU PCM supplies exactly one Gu normal/contact patch for each active
@@ -457,7 +437,7 @@ void growPcmFrictionAnchors(uint patchIndex,uint pairIndex,
                             uint errorAddress) {
     uint po=p.patchBias+patchIndex*32u;
     uint4 patch=arena.Load4(po);
-    uint pair=p.prepBias+pairIndex*72u;
+    uint pair=p.prepBias+pairIndex*64u;
     uint pcmIndex=arena.Load(pair+48u);
     if(pcmIndex==0xffffffffu || patch.y>4u || patch.z>2u ||
        (patch.x&1u)!=0u || patch.x+4u>p.frictionCount) {
@@ -480,7 +460,7 @@ void growPcmFrictionAnchors(uint patchIndex,uint pairIndex,
     uint count=patch.z;
     if(count>0u) {
         if((patch.w&0x40000000u)!=0u) {
-            uint backward=arena.Load(pair+64u);
+            uint backward=arena.Load(pair+60u);
             if(backward==0xffffffffu || backward==0u ||
                backward>p.contactBias-p.writebackBias) {
                 arena.InterlockedOr(errorAddress,262144u);
@@ -610,8 +590,8 @@ void prepareFrictionPatch(uint patchIndex,uint pairIndex,uint errorAddress) {
         arena.InterlockedOr(errorAddress,16384u);
         return;
     }
-    float3 n=asfloat(arena.Load3(p.contactBias+first*88u));
-    uint pair=p.prepBias+pairIndex*72u;
+    float3 n=asfloat(arena.Load3(p.contactBias+first*64u));
+    uint pair=p.prepBias+pairIndex*64u;
     float3 a=prepBody3(arena.Load(pair),12u);
     float3 b=prepBody3(arena.Load(pair+4u),12u);
     float3 relative=a-b;
@@ -635,8 +615,8 @@ void prepareFrictionPatch(uint patchIndex,uint pairIndex,uint errorAddress) {
     }
     for(uint anchor=0u;anchor<patch.z;++anchor) {
         uint row=patch.x+anchor*2u;
-        arena.Store3(p.frictionBias+row*72u,asuint(tangent0));
-        arena.Store3(p.frictionBias+(row+1u)*72u,asuint(tangent1));
+        arena.Store3(p.frictionBias+row*56u,asuint(tangent0));
+        arena.Store3(p.frictionBias+(row+1u)*56u,asuint(tangent1));
         prepareFrictionRow(row,patchIndex,pairIndex,errorAddress);
         prepareFrictionRow(row+1u,patchIndex,pairIndex,errorAddress);
     }

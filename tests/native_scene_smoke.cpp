@@ -5787,8 +5787,8 @@ struct ContactCorrelationSourceFixture {
                 "Source pair contact slop did not mask Dy angular Jacobians");
     }
     static void verify_signed_compliant_friction_solver() {
-        // Codex's two-floor repro enters the signed normal-force path
-        // after dozens of ordinary PGS steps. The original source
+        // Nearby floor contacts enter the signed normal-force path
+        // after ordinary PGS steps. The source
         // applies FMin(maxDyn,FMax(-maxDyn,candidate)) even when
         // maxDyn is negative; std::clamp has undefined behavior there.
         Scene scene{Scene::ContactGenerator::DiagnosticLegacyGu};
@@ -5808,12 +5808,12 @@ struct ContactCorrelationSourceFixture {
         // These are numerical source invariants of the SAME inline
         // expression used in the production PGS solve.
         const auto source_limit=source_contact_friction_limit;
-        if(source_limit(0.0,-0.125,true)!=-0.125 ||
-           source_limit(0.75,-0.125,true)!=-0.125 ||
-           source_limit(-0.75,-0.125,true)!=-0.125 ||
-           source_limit(0.1,0.125,false)!=0.1 ||
-           source_limit(0.75,0.125,true)!=0.125 ||
-           source_limit(-0.75,0.125,true)!=-0.125)
+        if(source_limit(0.0f,-0.125f,true)!=-0.125f ||
+           source_limit(0.75f,-0.125f,true)!=-0.125f ||
+           source_limit(-0.75f,-0.125f,true)!=-0.125f ||
+           source_limit(0.1f,0.125f,false)!=0.1f ||
+           source_limit(0.75f,0.125f,true)!=0.125f ||
+           source_limit(-0.75f,0.125f,true)!=-0.125f)
             throw std::runtime_error(
                 "Production Dy signed friction limiter diverges from original FMin/FMax");
         bool saw_signed=false;
@@ -5889,7 +5889,7 @@ struct ContactCorrelationSourceFixture {
         // Original DySolverConstraintsShared::solveDynamicContacts can
         // produce this signed result after the compliant multiplier;
         // its original writeBackContact does not clamp the force slot.
-        constexpr double source_signed_force=-0.000160085;
+        constexpr float source_signed_force=-0.000160085f;
         scene.solver_contact_points_[manifold.solver_offset].applied_force=
             source_signed_force;
         scene.begin_contact_writeback();

@@ -185,7 +185,7 @@ public:
         std::span<const std::uint32_t> partitions,
         std::span<const std::uint32_t> ordinals,
         std::span<native::GpuDyDistanceTask> tasks,
-        std::span<double> contact_forces,
+        std::span<float> contact_forces,
         std::span<const native::GpuDyGuContactInput> cpu_gu,
         std::span<native::GpuDyFrictionWriteback> friction,
         std::span<const native::GpuDyFrictionAnchorInput> anchors,
