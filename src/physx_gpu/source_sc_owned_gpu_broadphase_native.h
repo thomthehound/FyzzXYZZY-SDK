@@ -276,6 +276,11 @@ public:
                      float offset) override {
         producer_->admit_shape(id,motion,offset);
     }
+    void admit_shape_element(
+        ShapeId shape,BodyId actor,
+        native::GpuBroadphaseBox::Motion motion,float offset) {
+        producer_->admit_shape_element(shape,actor,motion,offset);
+    }
     void admit_plane(BodyId id) override {
         producer_->admit_plane(id);
     }
