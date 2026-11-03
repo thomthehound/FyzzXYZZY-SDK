@@ -116,6 +116,39 @@ public:
         admit_actor(actor,motion,contact_distance,std::nullopt);
     }
 
+    // Source Sc records the ElementSim and rigid actor IDs even when
+    // the shape is an infinite plane with no finite broadphase volume.
+    void admit_plane(BodyId actor) {
+        if(actor!=records_.size() || actor!=handles_.size())
+            throw std::logic_error(
+                "Source Sc plane admission must follow native actor order");
+        if(handles_.size()==handles_.capacity()) {
+            const auto capacity=handles_.capacity();
+            handles_.reserve(capacity+std::max<std::size_t>(capacity,8));
+        }
+        const auto rigid_id=actor_ids_.createID();
+        try {
+            const auto handle=elements_.createID();
+            try {
+                records_.push_back({
+                    actor,rigid_id,native::GpuBroadphaseBox::Motion::Static,
+                    0.0f,true,false});
+                try {
+                    handles_.push_back(handle);
+                }catch(...) {
+                    records_.pop_back();
+                    throw;
+                }
+            }catch(...) {
+                elements_.releaseID(handle);
+                throw;
+            }
+        }catch(...) {
+            actor_ids_.releaseID(rigid_id);
+            throw;
+        }
+    }
+
     void admit_aggregate_member(
         physx::Bp::AggregateHandle aggregate,BodyId actor,
         native::GpuBroadphaseBox::Motion motion,float contact_distance) {
