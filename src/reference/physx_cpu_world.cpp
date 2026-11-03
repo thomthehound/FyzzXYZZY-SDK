@@ -327,6 +327,16 @@ struct PhysXCpuWorld final : WorldBackend, physx::PxSimulationEventCallback {
             *runtime->physics, physx::PxTransform(to_physx(position)),
             physx::PxBoxGeometry(to_physx(half_extents)), *material, density));
     }
+    BodyId add_static_sphere(float radius,Vec3 position) override {
+        return add(physx::PxCreateStatic(
+            *runtime->physics,physx::PxTransform(to_physx(position)),
+            physx::PxSphereGeometry(radius),*material));
+    }
+    BodyId add_dynamic_sphere(float radius,Vec3 position,float density) override {
+        return add(physx::PxCreateDynamic(
+            *runtime->physics,physx::PxTransform(to_physx(position)),
+            physx::PxSphereGeometry(radius),*material,density));
+    }
 
     ConstraintId add_center_distance_constraint(
         BodyId a,BodyId b,float distance) override {
