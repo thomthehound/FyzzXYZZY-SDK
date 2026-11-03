@@ -211,10 +211,15 @@ public:
         // command/upload tokens without an intervening CPU/GPU stall.
         stream_.wait_at_fetch();
         for(std::uint32_t i=0u;i<pair_count;++i) {
-            const auto decoded=unpack_source_pcm_sc_contact_native(readback_[i]);
-            std::memcpy(&output[i],&decoded,sizeof(decoded));
+            const auto& packed=readback_[i];
+            const auto header=unpack_source_pcm_gpu_header_native(packed);
+            auto& stored=output[i];
+            stored.edge=header.edge_handle;
+            stored.cached_count=header.cached_count;
+            stored.status=header.status;
+            stored.selected_and_regenerated=header.selected_and_regenerated;
+            stored.count=header.emitted_count;
             const auto& request=requests[i];
-            const auto& stored=output[i];
             const auto selected_count=
                 stored.selected_and_regenerated&0x7fffffffu;
             const bool regenerated=
@@ -228,6 +233,12 @@ public:
                stored.count>stored.cached_count)
                 throw std::logic_error(
                     "Source GPU PCM publication disagrees with original Sc manager");
+            // Only live Gu contacts cross into Sc's host manifold arena;
+            // do not copy unused lanes or materialize a second 96-byte
+            // temporary record for every pair.
+            std::memcpy(&stored.normal,packed.normal,sizeof(packed.normal));
+            std::memcpy(stored.points.data(),packed.contacts,
+                        std::size_t(stored.count)*sizeof(packed.contacts[0]));
         }
         published_pair_count_=pair_count;
         last_contact_download_bytes_=readback_bytes;
