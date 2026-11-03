@@ -6,6 +6,7 @@
 #include "physx_gpu/source_pcm_box_candidates_native.h"
 
 #include <algorithm>
+#include <cstddef>
 #include <array>
 #include <cstdint>
 #include <cstring>
