@@ -3,7 +3,7 @@
 
 # FyzzXYZZY capability roadmap
 
-Status: October 31, 2026. This is the authoritative **active** roadmap.
+Status: November 3, 2026. This is the authoritative **active** roadmap.
 Implementation and executable acceptance, not the count of kernels or commits,
 determine completion. Historical milestone names in source-intake and trace
 documents do not define additional active release gates.
@@ -32,16 +32,15 @@ independent comparison oracle, never a hidden production substitute.
 | Portable compute | Real Vulkan and D3D12 execution, compilation, resource ownership, submissions and synchronization; independent SDK tests without reference PhysX |
 | GPU broadphase | Explicit native GPU World factory, source-derived persistent AABB/SAP and aggregate ownership, multi-frame found/quiet/lost report publication into the same Sc/PCM/Dy scene |
 | GPU box/box contacts | Explicit `NativeGpuPcmShaders` selection runs GuPCM and sparse GJK/EPA on the device for live Sc managers, with source world-space contact publication; other admitted contacts use CPU narrowphase |
-| GPU rigid dynamics | No integrated GPU constraint preparation, rigid solve or body integration |
+| GPU rigid dynamics | Explicit GPU Dy execution for admitted box/plane scenes: contact and distance preparation, partitioned PGS, friction and body integration; CPU Sc preparation/publication and host readback remain |
 | Rigid feature breadth | General geometry, multishape actors, CCD, triggers, complete filtering/reporting, joints, articulations and other PhysX modes are not fully admitted |
 | Nonrigid simulation | GPU deformables, particles and their reciprocal interactions are not integrated |
 | SDK selection and consumers | `WorldOptions` defaults to the reference CPU backend when enabled; `NativeCpu` is explicit. `NativePortableGpu` through the ordinary `World` constructor rejects; `create_native_gpu_world(...)` is the explicit supported GPU-broadphase entry point. Godot acceptance uses native CPU |
 
-The GPU broadphase and optional GPU box/box PCM form a working **hybrid scene
-slice**, not a completed GPU physics pipeline or general PhysX compatibility. There is no
-meaningful single percentage for feature coverage: source breadth,
-execution-device coverage, and end-to-end scene behavior must be tracked
-separately.
+GPU broadphase, box/box PCM and the explicit GPU Dy path form a
+working **hybrid scene slice**, not a fully device-resident physics pipeline
+or general PhysX compatibility. Source breadth, execution-device coverage,
+and end-to-end scene behavior are separate acceptance dimensions.
 
 ## Active implementation priorities
 
