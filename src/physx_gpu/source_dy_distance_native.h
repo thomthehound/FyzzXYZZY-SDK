@@ -200,12 +200,11 @@ public:
             throw std::overflow_error("Source Dy contact prep descriptor overflow");
         const std::size_t prep_bytes=contact_prep.size()*
             sizeof(SourceDyPackedContactPrepNative);
-        if(anchors.size_bytes()>std::numeric_limits<std::uint32_t>::max()-prep_bytes ||
-           cpu_gu.size_bytes()>std::numeric_limits<std::uint32_t>::max()-
-               prep_bytes-anchors.size_bytes())
-            throw std::overflow_error("Source Gu/friction input arena exceeds address space");
-        const std::size_t static_begin=prep_bytes+anchors.size_bytes()+
-            cpu_gu.size_bytes();
+        if(cpu_gu.size_bytes()>
+           std::numeric_limits<std::uint32_t>::max()-prep_bytes)
+            throw std::overflow_error(
+                "Source Gu contact-prep arena exceeds address space");
+        const std::size_t static_begin=prep_bytes+cpu_gu.size_bytes();
         packed_.resize(contact_prep.size());
         inline_bodies_.clear();
         assigned_.assign(contact_prep.size(),0u);
@@ -253,7 +252,7 @@ public:
         const std::size_t inline_body_bytes=
             inline_bodies_.size()*sizeof(native::GpuDyContactPrepBody);
         const std::size_t compact_prep_bytes=static_begin+inline_body_bytes;
-        constexpr std::size_t count=13u;
+        constexpr std::size_t count=14u;
         // One 16-byte header describes the three original Sc/SAP GPU
         // allocations, followed by exactly one source body record per row.
         const std::array<std::size_t,count> bytes{
@@ -262,17 +261,17 @@ public:
             tasks.size_bytes(),contact_bytes,friction_bytes,
             patches.size_bytes(),manifolds.size_bytes(),contact_order.size_bytes(),
             compact_prep_bytes,
-            integration.size_bytes()+16u};
+            integration.size_bytes()+16u,anchors.size_bytes()};
         const std::array<std::size_t,count> elements{
             bodies.size(),rows.size(),descriptors.size(),partition_ends.size(),
             body_ordinals.size(),tasks.size(),contact_forces.size(),friction.size(),
             patches.size(),manifolds.size(),contact_order.size(),
-            contact_prep.size(),integration.size()};
+            contact_prep.size(),integration.size(),anchors.size()};
         const std::array<const void*,count> sources{
             bodies.data(),rows.data(),descriptors.data(),partition_ends.data(),
             body_ordinals.data(),tasks.data(),nullptr,nullptr,
             patches.data(),manifolds.data(),contact_order.data(),
-            contact_prep.data(),integration.data()};
+            contact_prep.data(),integration.data(),nullptr};
         // The host retains only source normal impulses and friction
         // tangent/force writeback. Both full row ABIs live only on GPU.
         constexpr std::array<std::size_t,7> output_inputs{
@@ -297,7 +296,7 @@ public:
         // Both writable contact and friction arenas follow all source
         // inputs. The existing GPU preparation owns the complete rows.
         constexpr std::array<std::size_t,count> order{
-            0u,1u,5u,8u,2u,3u,4u,9u,10u,11u,12u,6u,7u};
+            0u,1u,5u,8u,2u,3u,4u,9u,10u,11u,12u,13u,6u,7u};
         std::array<std::size_t,count> offsets{};
         // The original Dy heap retains an EdgeIndex-keyed Sc anchor
         // prefix. Solver output follows it and remains the sole readback;
@@ -311,27 +310,31 @@ public:
                view_bytes>std::numeric_limits<std::uint32_t>::max()-total)
                 throw std::overflow_error("Source Dy solver arena too large");
             offsets[i]=total;
-            total=(total+view_bytes+127u)&~std::size_t(127u);
+            // Anchor input ends exactly at the writable contact arena.
+            // GPU-only PCM can omit that trailing region while retaining
+            // one contiguous source upload and the original dispatch.
+            total=i==13u?total+view_bytes:
+                (total+view_bytes+127u)&~std::size_t(127u);
         }
         narrow(total);
         // Host staging contains only compact readback and real upload
         // inputs. Writable GPU contact rows have no CPU mirror.
         host_.resize(offsets[6]);
         for(std::size_t i=0;i<count;++i)
-            if(i!=6u && i!=7u && i!=11u && i!=12u && bytes[i])
+            if(i!=6u && i!=7u && i!=11u && i!=12u &&
+               i!=13u && bytes[i])
                 std::memcpy(host_.data()+offsets[i],sources[i],bytes[i]);
         if(prep_bytes)
             std::memcpy(host_.data()+offsets[11],packed_.data(),prep_bytes);
         const bool omit_anchor_upload=
             pcm_pair_count>0u && cpu_gu.empty() &&
             !republish_cached_anchors && !anchors.empty();
-        if(!anchors.empty() && !omit_anchor_upload)
-            std::memcpy(host_.data()+offsets[11]+prep_bytes,
-                        anchors.data(),anchors.size_bytes());
         if(!cpu_gu.empty())
-            std::memcpy(host_.data()+offsets[11]+prep_bytes+
-                            anchors.size_bytes(),
+            std::memcpy(host_.data()+offsets[11]+prep_bytes,
                         cpu_gu.data(),cpu_gu.size_bytes());
+        if(!anchors.empty() && !omit_anchor_upload)
+            std::memcpy(host_.data()+offsets[13],
+                        anchors.data(),anchors.size_bytes());
         if(!inline_bodies_.empty())
             std::memcpy(host_.data()+offsets[11]+static_begin,
                         inline_bodies_.data(),inline_bodies_.size()*
@@ -345,8 +348,8 @@ public:
         arena_.allocateCopyOldDataAsync(total,stream_,PX_FL);
         friction_history_capacity_=next_history_capacity_;
         const auto address=arena_.getDevicePtr();
-        const std::size_t uploaded_bytes=offsets[6]-upload_begin-
-            (omit_anchor_upload?anchors.size_bytes():0u);
+        const std::size_t uploaded_bytes=
+            (omit_anchor_upload?offsets[13]:offsets[6])-upload_begin;
         std::array<std::uint32_t,32> params{};
         for(std::size_t i=0;i<11u;++i)
             params[i<6u?6u+i:17u+i-6u]=narrow(elements[i]);
@@ -401,15 +404,7 @@ public:
         std::memcpy(host_.data()+offsets[12],
                     shape_header.data(),sizeof(shape_header));
         const auto previous_spans=stream_.submission_stats().upload_spans;
-        if(omit_anchor_upload) {
-            const auto anchor_begin=offsets[11]+prep_bytes;
-            const auto anchor_end=anchor_begin+anchors.size_bytes();
-            stream_.queue_uploads({
-                {address+upload_begin,host_.data()+upload_begin,
-                 anchor_begin-upload_begin},
-                {address+anchor_end,host_.data()+anchor_end,
-                 offsets[6]-anchor_end}});
-        }else stream_.queue_uploads({{
+        stream_.queue_uploads({{
             address+upload_begin,host_.data()+upload_begin,uploaded_bytes}});
         last_upload_spans_=stream_.submission_stats().upload_spans-
                            previous_spans;
