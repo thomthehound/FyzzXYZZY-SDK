@@ -368,7 +368,8 @@ float3 prepRotate(uint body,float3 local) {
     float3 t=cross(u,local)*2.0f;
     return local+q.w*t+cross(u,t);
 }
-void prepareFrictionRow(uint index,uint pairIndex,uint errorAddress) {
+void prepareFrictionRow(uint index,uint patchIndex,uint pairIndex,
+                        uint errorAddress) {
     if(index>=p.frictionCount || pairIndex>=p.prepCount) {
         arena.InterlockedOr(errorAddress,16384u);
         return;
@@ -379,10 +380,32 @@ void prepareFrictionRow(uint index,uint pairIndex,uint errorAddress) {
     // Source DyFrictionCorrelation selected these body-local anchors.
     // Source DyContactPrep selected the two tangents and their order.
     float3 tangent=asfloat(arena.Load3(fo));
-    // The original Gu correlation owns two local anchors per patch
-    // anchor, shared by its two tangent constraints.
-    uint anchor=p.contactBias-(p.frictionCount/2u)*24u+
-        (index/2u)*24u;
+    // The original Gu correlation owns one body-local anchor for both
+    // tangent rows. PCM retrieves its resident EdgeIndex history;
+    // CPU Gu reads its compact patch-local upload without PCM padding.
+    uint po=p.patchBias+patchIndex*32u;
+    uint first=arena.Load(po);
+    if(index<first || ((index-first)>>1u)>=2u) {
+        arena.InterlockedOr(errorAddress,16384u);
+        return;
+    }
+    uint slot=(index-first)>>1u;
+    uint anchor;
+    if(arena.Load(pair+48u)!=0xffffffffu) {
+        uint history=p.writebackBias+arena.Load(pair+52u)*64u;
+        if(arena.Load(history)<=slot) {
+            arena.InterlockedOr(errorAddress,262144u);
+            return;
+        }
+        anchor=history+8u+slot*24u;
+    }else {
+        uint backward=arena.Load(po+28u);
+        if(backward==0u || backward>p.contactBias-p.writebackBias) {
+            arena.InterlockedOr(errorAddress,16384u);
+            return;
+        }
+        anchor=p.contactBias-backward+slot*24u;
+    }
     float3 r0=prepRotate(b0,asfloat(arena.Load3(anchor)));
     float3 r1=prepRotate(b1,asfloat(arena.Load3(anchor+12u)));
     float3 p0=prepBody3(b0,0u);
@@ -450,30 +473,36 @@ void growPcmFrictionAnchors(uint patchIndex,uint pairIndex,
     }
     uint body0=arena.Load(pair);
     uint body1=arena.Load(pair+4u);
-    uint anchorBase=p.contactBias-(p.frictionCount/2u)*24u+
-        (patch.x/2u)*24u;
-    // This source-heap prefix is a physical mirror of Sc's original
-    // EdgeIndex friction history. A rejected frame explicitly reloads
-    // Sc's last successful anchors; ordinary frames reuse device memory.
+    // One Sc-owned EdgeIndex physical mirror feeds both patch growth
+    // and Dy tangent preparation. Only a rejected-frame recovery reads
+    // the compact host anchor input through PCM's spare Gu offset slot.
     uint history=p.writebackBias+arena.Load(pair+52u)*64u;
     uint count=patch.z;
-    if(count>0u && (patch.w&0x40000000u)==0u) {
-        if(arena.Load(history)!=count) {
+    if(count>0u) {
+        if((patch.w&0x40000000u)!=0u) {
+            uint backward=arena.Load(pair+64u);
+            if(backward==0xffffffffu || backward==0u ||
+               backward>p.contactBias-p.writebackBias) {
+                arena.InterlockedOr(errorAddress,262144u);
+                return;
+            }
+            uint source=p.contactBias-backward;
+            [unroll]
+            for(uint k=0u;k<2u;++k) {
+                if(k>=count)break;
+                arena.Store3(history+8u+k*24u,
+                             arena.Load3(source+k*24u));
+                arena.Store3(history+20u+k*24u,
+                             arena.Load3(source+k*24u+12u));
+            }
+        }else if(arena.Load(history)!=count) {
             arena.InterlockedOr(errorAddress,262144u);
             return;
         }
-        [unroll]
-        for(uint k=0u;k<2u;++k) {
-            if(k>=count)break;
-            arena.Store3(anchorBase+k*24u,
-                         arena.Load3(history+8u+k*24u));
-            arena.Store3(anchorBase+k*24u+12u,
-                         arena.Load3(history+20u+k*24u));
-        }
     }
-    float3 local0=count>0u?asfloat(arena.Load3(anchorBase)):
+    float3 local0=count>0u?asfloat(arena.Load3(history+8u)):
                             float3(0.f,0.f,0.f);
-    float3 local1=count>1u?asfloat(arena.Load3(anchorBase+24u)):
+    float3 local1=count>1u?asfloat(arena.Load3(history+32u)):
                             float3(0.f,0.f,0.f);
     bool keepPair=false;
     if(count==2u) {
@@ -542,17 +571,9 @@ void growPcmFrictionAnchors(uint patchIndex,uint pairIndex,
             float3 tb=cross(-qb.xyz,db)*2.0f;
             float3 la=da+qa.w*ta+cross(-qa.xyz,ta);
             float3 lb=db+qb.w*tb+cross(-qb.xyz,tb);
-            arena.Store3(anchorBase+k*24u,asuint(la));
-            arena.Store3(anchorBase+k*24u+12u,asuint(lb));
+            arena.Store3(history+8u+k*24u,asuint(la));
+            arena.Store3(history+20u+k*24u,asuint(lb));
         }
-    }
-    [unroll]
-    for(uint k=0u;k<2u;++k) {
-        if(k>=count)break;
-        arena.Store3(history+8u+k*24u,
-                     arena.Load3(anchorBase+k*24u));
-        arena.Store3(history+20u+k*24u,
-                     arena.Load3(anchorBase+k*24u+12u));
     }
     arena.Store(history,count);
     arena.Store(po+8u,count);
@@ -616,7 +637,7 @@ void prepareFrictionPatch(uint patchIndex,uint pairIndex,uint errorAddress) {
         uint row=patch.x+anchor*2u;
         arena.Store3(p.frictionBias+row*72u,asuint(tangent0));
         arena.Store3(p.frictionBias+(row+1u)*72u,asuint(tangent1));
-        prepareFrictionRow(row,pairIndex,errorAddress);
-        prepareFrictionRow(row+1u,pairIndex,errorAddress);
+        prepareFrictionRow(row,patchIndex,pairIndex,errorAddress);
+        prepareFrictionRow(row+1u,patchIndex,pairIndex,errorAddress);
     }
 }
