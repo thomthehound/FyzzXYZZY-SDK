@@ -168,9 +168,9 @@ public:
             throw std::overflow_error("Source Gu/friction input arena exceeds address space");
         const std::size_t static_begin=prep_bytes+anchors.size_bytes()+
             cpu_gu.size_bytes();
-        std::vector<SourceDyPackedContactPrepNative> packed(contact_prep.size());
-        std::vector<native::GpuDyContactPrepBody> inline_bodies;
-        std::vector<std::uint8_t> assigned(contact_prep.size(),0u);
+        packed_.resize(contact_prep.size());
+        inline_bodies_.clear();
+        assigned_.assign(contact_prep.size(),0u);
         const auto ref_body=[&](const native::GpuDyContactPrepBody& body,
                                 std::uint32_t ordinal) -> std::uint32_t {
             if(body.inverse_mass>0.f) {
@@ -196,13 +196,13 @@ public:
                         "Sc contact preparation disagrees with Dy body input");
                 return (ordinal<<1u)|1u;
             }
-            if(inline_bodies.size()>(
+            if(inline_bodies_.size()>=(
                 std::numeric_limits<std::uint32_t>::max()-static_begin)/
                     sizeof(native::GpuDyContactPrepBody))
                 throw std::overflow_error("Source Dy inline contact body overflow");
-            const auto offset=static_begin+inline_bodies.size()*
+            const auto offset=static_begin+inline_bodies_.size()*
                 sizeof(native::GpuDyContactPrepBody);
-            inline_bodies.push_back(body);
+            inline_bodies_.push_back(body);
             return narrow(offset); // An aligned offset; low bit clear.
         };
         for(const auto& desc:descriptors) {
@@ -212,21 +212,21 @@ public:
             const auto& manager=manifolds[desc.index];
             if(!manager.patch_count)continue;
             if(manager.prep_index>=contact_prep.size() ||
-               assigned[manager.prep_index]++)
+               assigned_[manager.prep_index]++)
                 throw std::logic_error("Source Dy contact prep is not unique");
             const auto& source=contact_prep[manager.prep_index];
-            auto& target=packed[manager.prep_index];
+            auto& target=packed_[manager.prep_index];
             target.body0_source=ref_body(source.body0,desc.row0);
             target.body1_source=ref_body(source.body1,desc.row1);
             std::memcpy(target.constants.data(),
                 reinterpret_cast<const std::uint8_t*>(&source)+192u,
                 target.constants.size());
         }
-        for(const auto a:assigned)
+        for(const auto a:assigned_)
             if(a!=1u)
                 throw std::logic_error("Source Dy contact prep lacks a descriptor");
         const std::size_t compact_prep_bytes=static_begin+
-            inline_bodies.size()*sizeof(native::GpuDyContactPrepBody);
+            inline_bodies_.size()*sizeof(native::GpuDyContactPrepBody);
         if(compact_prep_bytes>contact_prep.size_bytes())
             throw std::logic_error("Source contact prep has no active rigid body");
         constexpr std::size_t count=13u;
@@ -295,7 +295,7 @@ public:
             if(i!=6u && i!=7u && i!=11u && i!=12u && bytes[i])
                 std::memcpy(host_.data()+offsets[i],sources[i],bytes[i]);
         if(prep_bytes)
-            std::memcpy(host_.data()+offsets[11],packed.data(),prep_bytes);
+            std::memcpy(host_.data()+offsets[11],packed_.data(),prep_bytes);
         if(!anchors.empty())
             std::memcpy(host_.data()+offsets[11]+prep_bytes,
                         anchors.data(),anchors.size_bytes());
@@ -303,9 +303,9 @@ public:
             std::memcpy(host_.data()+offsets[11]+prep_bytes+
                             anchors.size_bytes(),
                         cpu_gu.data(),cpu_gu.size_bytes());
-        if(!inline_bodies.empty())
+        if(!inline_bodies_.empty())
             std::memcpy(host_.data()+offsets[11]+static_begin,
-                        inline_bodies.data(),inline_bodies.size()*
+                        inline_bodies_.data(),inline_bodies_.size()*
                             sizeof(native::GpuDyContactPrepBody));
         if(!integration.empty())
             std::memcpy(host_.data()+offsets[12]+16u,
@@ -526,6 +526,9 @@ private:
     std::size_t alignment_=0u;
     std::uint64_t max_view_=0u;
     std::vector<std::uint8_t> host_;
+    std::vector<SourceDyPackedContactPrepNative> packed_;
+    std::vector<native::GpuDyContactPrepBody> inline_bodies_;
+    std::vector<std::uint8_t> assigned_;
     // Actual packed device upload and ordered readback byte counts.
     std::pair<std::size_t,std::size_t> last_transfer_bytes_{};
     std::size_t last_integrated_body_count_=0u;
