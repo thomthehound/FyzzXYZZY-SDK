@@ -76,6 +76,15 @@ These are open engineering decisions and qualification tasks, not measured
 hardware regressions. Fix each at its existing owner; do not introduce a
 second scene, solver state store or per-stage scheduler.
 
+## Numerical quality and implementation freedom
+
+Define fidelity through contact, constraint, material and coupled-scene
+behavior, supported error, stability and runtime cost. Select precision per
+operation against those requirements. Source arithmetic provides the first
+conformance baseline; physical accuracy is assessed through scene outcomes,
+conditioning and convergence. Validated lower-cost representations remain
+available without reducing the supported physics or hiding unstable cases.
+
 ## Architecture decisions
 
 | Concern | Required design |

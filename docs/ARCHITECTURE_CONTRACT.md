@@ -97,6 +97,14 @@ capabilities with limited scope, not full GPU PhysX or residency acceptance.
 A reference scene or independent fixture scheduler cannot substitute for
 production execution.
 
+### Numerical quality
+
+Choose numerical representations per operation against physical error,
+stability and measured cost. Source arithmetic establishes the initial
+conformance baseline. Contact, constraint, material and coupled-scene
+behavior define the capability; precision choices require evidence across
+the supported parameter domain and must preserve that capability.
+
 ### Source fidelity is a release criterion, not just an intent
 
 For every physics algorithm, shader, and orchestration change:
