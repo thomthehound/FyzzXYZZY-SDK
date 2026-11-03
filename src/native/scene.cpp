@@ -3706,20 +3706,30 @@ void Scene::update_contacts() {
                        gpu_pcm_results_[gpu_pcm_index].edge!=edge)
                         throw std::logic_error(
                             "Source GPU PCM result lost Sc EdgeIndex order");
+                    const auto& result=gpu_pcm_results_[gpu_pcm_index];
+                    if(result.status!=0u || result.count>4u)
+                        throw std::logic_error(
+                            "Source GPU PCM returned an invalid Sc manifold");
+                    // The source Gu arena is the only published contact
+                    // storage. Decode device witnesses into that arena,
+                    // not into a temporary four-contact buffer first.
+                    const auto offset=next_contact_points_.size();
+                    next_contact_points_.resize(offset+result.count);
                     manifold.pcm_result_index=
-                        static_cast<std::uint32_t>(gpu_pcm_index);
+                        static_cast<std::uint32_t>(gpu_pcm_index++);
                     manifold.count=publish_gpu_pcm_box_box(
-                        gpu_pcm_results_[gpu_pcm_index++],
-                        island_edges_[edge].pcm_cache,
-                        std::span<ContactPoint>(box_contact_scratch_));
-                }else
+                        result,island_edges_[edge].pcm_cache,
+                        std::span<ContactPoint>(next_contact_points_.data()+offset,
+                                                result.count));
+                }else {
                     manifold.count=generate_pcm_box_box(
                         first,second,contact_distance,
                         island_edges_[edge].pcm_cache,
                         std::span<ContactPoint>(box_contact_scratch_));
-                next_contact_points_.insert(next_contact_points_.end(),
-                    box_contact_scratch_.begin(),
-                    box_contact_scratch_.begin()+manifold.count);
+                    next_contact_points_.insert(next_contact_points_.end(),
+                        box_contact_scratch_.begin(),
+                        box_contact_scratch_.begin()+manifold.count);
+                }
             }
         }
         if(!pcm_plane && !pcm_box && old &&
