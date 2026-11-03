@@ -295,8 +295,14 @@ public:
         pending_root_slots_.clear();
     }
 
+    void set_device_shape_pose_cache_enabled(BodyId shape,bool enabled) {
+        auto& element=live(shape);
+        element.device_pose_supported=enabled;
+        if(!enabled)element.device_cached_pose_valid=false;
+    }
     bool device_cache_eligible(BodyId actor) const noexcept {
         return actor<records_.size() && records_[actor].live &&
+            records_[actor].device_pose_supported &&
             records_[actor].in_aabb &&
             records_[actor].aggregate_id==PX_INVALID_U32 &&
             records_[actor].motion==native::GpuBroadphaseBox::Motion::Dynamic;
@@ -353,6 +359,7 @@ private:
         physx::Bp::AggregateHandle aggregate_id=PX_INVALID_U32;
         physx::PxU32 aggregate_attachment_index=PX_INVALID_U32;
         bool device_cached_pose_valid=false;
+        bool device_pose_supported=true;
     };
     struct AggregateRoot {
         physx::Bp::ShapeHandle root;
