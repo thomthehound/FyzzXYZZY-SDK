@@ -128,7 +128,11 @@ public:
         return source_sc_elements_->device_shape_cache_handle(actor);
     }
     void authorize_device_integrated_pose(BodyId actor) {
-        require_scene_elements().authorize_device_integrated_pose(actor);
+        // Aggregate members retain aggregate-owned bounds, not the
+        // standalone Sc shape cache, even when Dy solved them.
+        auto& elements=require_scene_elements();
+        if(elements.device_cache_eligible(actor))
+            elements.authorize_device_integrated_pose(actor);
     }
     void mark_shape_bounds_changed(
         BodyId actor,float contact_offset) override {

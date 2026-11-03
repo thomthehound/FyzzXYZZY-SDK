@@ -756,6 +756,9 @@ void verify_mixed_gu_pcm_gpu_dy_solver(
         for(std::uint32_t frame=0;frame<4u;++frame) {
             cpu.step(dt);
             gpu.step(dt);
+            if(frame>0u)
+                require(producer->last_frame().device_cached_box_count>0u,
+                    "Mixed Gu/PCM Dy body still uploaded its solved Sc pose");
             require(producer->dy_distance_dispatch_count()==frame+1u &&
                     producer->dy_pcm_device_contact_rows()>0u &&
                     producer->dy_cpu_gu_geometry_bytes()>=
