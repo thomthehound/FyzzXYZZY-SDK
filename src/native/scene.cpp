@@ -219,7 +219,10 @@ BodyId Scene::add(Actor actor,std::optional<AggregateId> aggregate) {
             "Original PhysX aggregate authoring requires native GPU AABB owner");
     // Infinite planes have no finite PxgIntegerAABB. Their Sc contact
     // managers are admitted separately from GPU-owned finite BP reports.
-    if(gpu_broadphase_ && actor.kind!=Kind::StaticPlane) {
+    if(gpu_broadphase_) {
+        if(actor.kind==Kind::StaticPlane)
+            gpu_broadphase_->admit_plane(id);
+        else {
         const auto motion=actor.kind==Kind::StaticBox
             ? GpuBroadphaseBox::Motion::Static
             : actor.kind==Kind::KinematicBox
@@ -230,6 +233,7 @@ BodyId Scene::add(Actor actor,std::optional<AggregateId> aggregate) {
                 *aggregate,id,motion,actor.contact_offset);
         else
             gpu_broadphase_->admit_shape(id,motion,actor.contact_offset);
+        }
     }
     actors_.push_back(actor);
     if(actor.kind==Kind::StaticPlane)has_admitted_plane_=true;
@@ -923,8 +927,7 @@ void Scene::remove(BodyId id) {
     }
     retired_edge_handles_.reserve(retired_edge_handles_.size()+incident);
     // The source AABB retains its actor identity through GPU lost fetch.
-    if(gpu_broadphase_ && actor.kind!=Kind::StaticPlane)
-        gpu_broadphase_->retire_shape(id);
+    if(gpu_broadphase_)gpu_broadphase_->retire_shape(id);
     // Sc actor retirement removes physical contact-manager edges. A
     // dormant or sleep-ready rigid body resting on the retired actor
     // cannot continue sleeping without its supporting contact: revoke
