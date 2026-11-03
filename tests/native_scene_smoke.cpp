@@ -714,7 +714,7 @@ struct SourceSapEndpointFixture {
         std::size_t admitted=0;
         for(const auto& actor:actors)
             if(actor.alive && actor.simulation_shape_enabled &&
-               actor.kind!=Scene::Kind::StaticPlane)
+               actor.geometry!=Scene::Geometry::Plane)
                 ++admitted;
         if(scene.sap_volumes_.size()!=admitted)
             throw std::runtime_error(
@@ -735,7 +735,7 @@ struct SourceSapEndpointFixture {
                 if(ep.id>=actors.size() ||
                    !actors[ep.id].alive ||
                    !actors[ep.id].simulation_shape_enabled ||
-                   actors[ep.id].kind==Scene::Kind::StaticPlane ||
+                   actors[ep.id].geometry==Scene::Geometry::Plane ||
                    ep.value!=actors[ep.id].encoded_bounds[
                        axis+(ep.is_max?3:0)])
                     throw std::runtime_error(
@@ -763,7 +763,7 @@ struct SourceSapEndpointFixture {
                 const auto& actor=actors[id];
                 const unsigned expected=
                     actor.alive && actor.simulation_shape_enabled &&
-                    actor.kind!=Scene::Kind::StaticPlane ? 1u:0u;
+                    actor.geometry!=Scene::Geometry::Plane ? 1u:0u;
                 if(counts[id][0]!=expected* (axis+1) ||
                    counts[id][1]!=expected* (axis+1))
                     throw std::runtime_error(
@@ -942,8 +942,8 @@ struct SourceSapEndpointFixture {
                 "SAP hash not synchronized with completed publication");
         std::vector<Pair> expected;
         for(const auto pair:scene.pairs())
-            if(scene.actors_[pair.a].kind!=Scene::Kind::StaticPlane &&
-               scene.actors_[pair.b].kind!=Scene::Kind::StaticPlane)
+            if(scene.actors_[pair.a].geometry!=Scene::Geometry::Plane &&
+               scene.actors_[pair.b].geometry!=Scene::Geometry::Plane)
                 expected.push_back(pair);
         auto actual=scene.sap_pairs_.active_pairs;
         std::sort(actual.begin(),actual.end());
@@ -992,10 +992,10 @@ struct SourceSapEndpointFixture {
                 for(std::size_t j=i+1;j<scene.actors_.size();++j) {
                     const auto& c=scene.actors_[j];
                     if(!c.alive || !c.simulation_shape_enabled ||
-                       (a.kind!=Scene::Kind::DynamicBox &&
-                        c.kind!=Scene::Kind::DynamicBox))continue;
-                    if(a.kind!=Scene::Kind::StaticPlane &&
-                       c.kind!=Scene::Kind::StaticPlane) {
+                       (a.motion!=Scene::Motion::Dynamic &&
+                        c.motion!=Scene::Motion::Dynamic))continue;
+                    if(a.geometry!=Scene::Geometry::Plane &&
+                       c.geometry!=Scene::Geometry::Plane) {
                         const auto& aa=a.encoded_bounds;
                         const auto& bb=c.encoded_bounds;
                         if(aa[0]>bb[3] || bb[0]>aa[3] ||
@@ -1103,8 +1103,8 @@ struct SourceSapEndpointFixture {
                 for(BodyId j=i+1;j<scene.actors_.size();++j) {
                     const auto& a=scene.actors_[i];
                     const auto& b=scene.actors_[j];
-                    if(a.kind!=Scene::Kind::DynamicBox &&
-                       b.kind!=Scene::Kind::DynamicBox)continue;
+                    if(a.motion!=Scene::Motion::Dynamic &&
+                       b.motion!=Scene::Motion::Dynamic)continue;
                     const auto& aa=a.encoded_bounds;
                     const auto& bb=b.encoded_bounds;
                     if(aa[0]>bb[3] || bb[0]>aa[3] ||
@@ -1262,8 +1262,8 @@ struct SourceSapEndpointFixture {
                 for(BodyId j=i+1;j<fixed+moving;++j) {
                     const auto& a=scene.actors_[i];
                     const auto& b=scene.actors_[j];
-                    if(a.kind!=Scene::Kind::DynamicBox &&
-                       b.kind!=Scene::Kind::DynamicBox)continue;
+                    if(a.motion!=Scene::Motion::Dynamic &&
+                       b.motion!=Scene::Motion::Dynamic)continue;
                     const auto& x=a.encoded_bounds;
                     const auto& y=b.encoded_bounds;
                     if(x[0]>y[3] || y[0]>x[3] ||
@@ -1430,8 +1430,8 @@ struct SourceSapEndpointFixture {
                 for(BodyId j=i+1;j<scene.actors_.size();++j) {
                     const auto& a=scene.actors_[i];
                     const auto& b=scene.actors_[j];
-                    if(a.kind!=Scene::Kind::DynamicBox &&
-                       b.kind!=Scene::Kind::DynamicBox)continue;
+                    if(a.motion!=Scene::Motion::Dynamic &&
+                       b.motion!=Scene::Motion::Dynamic)continue;
                     const auto& aa=a.encoded_bounds;
                     const auto& bb=b.encoded_bounds;
                     if(aa[0]>bb[3] || bb[0]>aa[3] ||
@@ -3546,7 +3546,8 @@ struct ContactCorrelationSourceFixture {
         scene.set_kinematic(b,true);
         const auto kin_pose=scene.body_state(b).position;
         scene.step(1.0f/120.0f);
-        if(scene.actors_[b].kind!=Scene::Kind::KinematicBox ||
+        if(scene.actors_[b].motion!=Scene::Motion::Kinematic ||
+           scene.actors_[b].geometry!=Scene::Geometry::Box ||
            scene.accurate_islands_.node_island[b]!=
                Scene::IslandGraph::invalid ||
            scene.accurate_island_count()!=1 ||
@@ -3564,7 +3565,8 @@ struct ContactCorrelationSourceFixture {
 
         scene.set_kinematic(b,false);
         scene.step(1.0f/120.0f);
-        if(scene.actors_[b].kind!=Scene::Kind::DynamicBox ||
+        if(scene.actors_[b].motion!=Scene::Motion::Dynamic ||
+           scene.actors_[b].geometry!=Scene::Geometry::Box ||
            scene.accurate_islands_.node_island[b]==
                Scene::IslandGraph::invalid ||
            scene.accurate_island_count()!=1)
