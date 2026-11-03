@@ -364,6 +364,113 @@ void verify_sparse_contact_stream(
     }
 }
 
+// Sc's dormant contact managers retain their own Gu publication. They
+// must not force PCM device fetches when an unrelated manager changes.
+void verify_dormant_contact_stream(
+    fyzz::compute::Backend backend,const char* sap,const char* pcm) {
+    using namespace fyzz;
+    native::Scene cpu;
+    native::Scene gpu;
+    auto owner=std::make_unique<
+        physx_gpu::SourceScOwnedGpuBroadphaseNative>(
+            backend,load_native_gpu_sap_shaders(backend,sap),
+            128u,128u,std::nullopt,
+            load_native_gpu_pcm_shaders(backend,pcm));
+    auto* producer=owner.get();
+    gpu.set_gpu_broadphase(std::move(owner));
+    std::array<BodyId,2> dormant_cpu{},dormant_gpu{};
+    for(std::uint32_t i=0;i<2u;++i) {
+        const float x=4.0f*float(i);
+        cpu.add_static_box({0.5f,0.5f,0.5f},{x,0.f,0.f});
+        gpu.add_static_box({0.5f,0.5f,0.5f},{x,0.f,0.f});
+        dormant_cpu[i]=cpu.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{x+0.997f,0.f,0.f},1.f);
+        dormant_gpu[i]=gpu.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{x+0.997f,0.f,0.f},1.f);
+        RigidBodyDynamics dynamics{};
+        dynamics.gravity_enabled=false;
+        cpu.set_dynamics(dormant_cpu[i],dynamics);
+        gpu.set_dynamics(dormant_gpu[i],dynamics);
+    }
+    // Source Dy sleepCheck publishes readiness; accurate IslandSim
+    // consumes it on the following step without retiring Sc managers.
+    for(std::uint32_t i=0;i<3u &&
+        (!gpu.body_is_sleeping(dormant_gpu[0]) ||
+         !gpu.body_is_sleeping(dormant_gpu[1]));++i) {
+        cpu.step(0.5f);
+        gpu.step(0.5f);
+    }
+    require(gpu.body_is_sleeping(dormant_gpu[0]) &&
+            gpu.body_is_sleeping(dormant_gpu[1]) &&
+            cpu.body_is_sleeping(dormant_cpu[0]) &&
+            cpu.body_is_sleeping(dormant_cpu[1]) &&
+            gpu.contacts().size()==2u,
+        "Source dormant PCM fixture did not retain two sleeping Gu managers");
+    const auto check=[&](std::size_t expected) {
+        require(cpu.contacts().size()==expected &&
+                gpu.contacts().size()==expected,
+            "Dormant Sc GPU PCM changed live manager count");
+        for(std::size_t i=0;i<expected;++i) {
+            const auto& a=cpu.contacts()[i];
+            const auto& b=gpu.contacts()[i];
+            require(a.pair==b.pair && a.count==b.count && a.count>0u,
+                "Dormant Sc GPU PCM changed Gu touch state");
+            for(std::uint8_t j=0;j<a.count;++j)
+                require(std::fabs(a.points[j].separation-
+                                  b.points[j].separation)<0.002f &&
+                        std::fabs(a.points[j].position.x-
+                                  b.points[j].position.x)<0.002f &&
+                        std::fabs(a.points[j].normal.x-
+                                  b.points[j].normal.x)<0.002f,
+                    "Dormant Sc GPU PCM lost the prior Gu witness");
+        }
+        require(cpu.found_contacts().size()==gpu.found_contacts().size() &&
+                cpu.lost_contacts().size()==gpu.lost_contacts().size(),
+            "Dormant PCM fabricated physical-touch transitions");
+    };
+    cpu.advance_collision(true);
+    gpu.advance_collision(true);
+    require(producer->pcm_contact_readback_bytes()==0u &&
+            producer->pcm_pair_upload_bytes()==0u,
+        "Sleeping Sc contact managers triggered GPU PCM transfer");
+    check(2u);
+    // An independent awake pair must not make dormant pairs pay the
+    // full Sc PCM readback. This exercises sparse original EdgeIndex
+    // order while the prior Gu manifolds are still published.
+    const BodyId fixed_cpu=cpu.add_static_box(
+        {0.5f,0.5f,0.5f},{8.f,0.f,0.f});
+    const BodyId fixed_gpu=gpu.add_static_box(
+        {0.5f,0.5f,0.5f},{8.f,0.f,0.f});
+    const auto awake_cpu=cpu.add_dynamic_box(
+        {0.5f,0.5f,0.5f},{8.997f,0.f,0.f},1.f);
+    const auto awake_gpu=gpu.add_dynamic_box(
+        {0.5f,0.5f,0.5f},{8.997f,0.f,0.f},1.f);
+    require(fixed_cpu==fixed_gpu && awake_cpu==awake_gpu,
+        "Sc sparse dormant fixture lost source actor admission order");
+    cpu.advance_collision();
+    gpu.advance_collision();
+    require(producer->pcm_contact_readback_bytes()==
+                sizeof(physx_gpu::SourcePcmGpuContactStreamNative) &&
+            gpu.contacts().size()==3u &&
+            !gpu.body_is_sleeping(awake_gpu),
+        "Awake Sc manager retransferred dormant GPU PCM manifolds");
+    check(3u);
+    // NpRigidDynamic::setGlobalPose wakes and invalidates the original
+    // Sc manager even on an idempotent pose write. It must reenter the
+    // resident GPU Gu cache and fetch exactly one additional manager.
+    const auto pose=cpu.body_state(dormant_cpu[0]);
+    cpu.set_position(dormant_cpu[0],pose.position);
+    gpu.set_position(dormant_gpu[0],pose.position);
+    cpu.advance_collision();
+    gpu.advance_collision();
+    require(!gpu.body_is_sleeping(dormant_gpu[0]) &&
+            gpu.body_is_sleeping(dormant_gpu[1]) &&
+            producer->pcm_contact_readback_bytes()==
+                2u*sizeof(physx_gpu::SourcePcmGpuContactStreamNative),
+        "Woken Sc EdgeIndex failed to reenter GPU PCM while another slept");
+    check(3u);
+}
+
 // Coupled box contacts exercise source Sc manager identity and Dy's
 // real contact partition/PGS path across multiple dependent bodies.
 void verify_coupled_rigid_stack(
@@ -1140,7 +1247,10 @@ int main(int argc,char** argv) {
                 [&]{verify(backend,argv[1],argv[2]);});
         if(scenario=="all" || scenario=="sparse_contacts")
             fyzz::tests::measure_gpu_case("sc_pcm","sparse_contacts",
-                [&]{verify_sparse_contact_stream(backend,argv[1],argv[2]);});
+                [&]{
+                    verify_sparse_contact_stream(backend,argv[1],argv[2]);
+                    verify_dormant_contact_stream(backend,argv[1],argv[2]);
+                });
         if(scenario=="all" || scenario=="coupled_stack")
             fyzz::tests::measure_gpu_case("sc_pcm","coupled_stack",
                 [&]{verify_coupled_rigid_stack(backend,argv[1],argv[2]);});
