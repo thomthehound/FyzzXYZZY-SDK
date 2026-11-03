@@ -6958,29 +6958,54 @@ void Scene::prepare_constraints(float seconds) {
         // rows; simply grouping individual normals loses linked-list
         // order and fails to prioritize valid previous-frame anchors.
         contact_patch_scratch_.clear();
-        contact_patch_scratch_.reserve(manifold.count);
-        for(std::size_t j=0;j<manifold.count;++j) {
-            const auto& point=manifold.points[j];
-            if(contact_patch_scratch_.empty() ||
-               dot(contact_patch_scratch_.back().normal,point.normal)<
-                   same_normal) {
-                ContactPatchData cp{};
-                cp.start=j;
-                cp.count=1;
-                cp.normal=point.normal;
-                cp.bounds_min=cp.bounds_max=point.position;
-                contact_patch_scratch_.push_back(cp);
-            } else {
-                auto& cp=contact_patch_scratch_.back();
-                ++cp.count;
+        // GuPCMContactBoxBox publishes one common world normal for all
+        // selected witnesses of a source box pair. Its contiguous run
+        // is already known: build the original patch bounds once without
+        // repeating general Gu normal/material compatibility checks.
+        if(manifold.pcm_result_index!=
+           std::numeric_limits<std::uint32_t>::max()) {
+            ContactPatchData cp{};
+            cp.start=0u;
+            cp.count=manifold.count;
+            cp.normal=manifold.points.front().normal;
+            cp.bounds_min=cp.bounds_max=manifold.points.front().position;
+            for(std::size_t j=1;j<manifold.count;++j) {
+                const auto& p=manifold.points[j].position;
                 cp.bounds_min={
-                    std::min(cp.bounds_min.x,point.position.x),
-                    std::min(cp.bounds_min.y,point.position.y),
-                    std::min(cp.bounds_min.z,point.position.z)};
+                    std::min(cp.bounds_min.x,p.x),
+                    std::min(cp.bounds_min.y,p.y),
+                    std::min(cp.bounds_min.z,p.z)};
                 cp.bounds_max={
-                    std::max(cp.bounds_max.x,point.position.x),
-                    std::max(cp.bounds_max.y,point.position.y),
-                    std::max(cp.bounds_max.z,point.position.z)};
+                    std::max(cp.bounds_max.x,p.x),
+                    std::max(cp.bounds_max.y,p.y),
+                    std::max(cp.bounds_max.z,p.z)};
+            }
+            contact_patch_scratch_.push_back(cp);
+        }else {
+            contact_patch_scratch_.reserve(manifold.count);
+            for(std::size_t j=0;j<manifold.count;++j) {
+                const auto& point=manifold.points[j];
+                if(contact_patch_scratch_.empty() ||
+                   dot(contact_patch_scratch_.back().normal,point.normal)<
+                       same_normal) {
+                    ContactPatchData cp{};
+                    cp.start=j;
+                    cp.count=1;
+                    cp.normal=point.normal;
+                    cp.bounds_min=cp.bounds_max=point.position;
+                    contact_patch_scratch_.push_back(cp);
+                } else {
+                    auto& cp=contact_patch_scratch_.back();
+                    ++cp.count;
+                    cp.bounds_min={
+                        std::min(cp.bounds_min.x,point.position.x),
+                        std::min(cp.bounds_min.y,point.position.y),
+                        std::min(cp.bounds_min.z,point.position.z)};
+                    cp.bounds_max={
+                        std::max(cp.bounds_max.x,point.position.x),
+                        std::max(cp.bounds_max.y,point.position.y),
+                        std::max(cp.bounds_max.z,point.position.z)};
+                }
             }
         }
         constexpr std::size_t max_source_patches=32;
