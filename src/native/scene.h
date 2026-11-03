@@ -1869,6 +1869,7 @@ private:
     // that have no current contact manager. Explicit Sc refiltering
     // consumes it only on authored actor/shape or motion-class edits.
     bool gpu_pair_refilter_dirty_=false;
+    bool has_admitted_plane_=false;
     bool broadphase_pair_membership_changed_=true;
     std::vector<Pair> sap_created_pairs_,sap_deleted_pairs_;
     std::vector<Pair> previous_pairs_;
