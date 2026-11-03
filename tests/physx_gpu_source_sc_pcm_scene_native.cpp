@@ -694,6 +694,180 @@ void verify_cpu_gu_gpu_dy_solver(
     require(saw_contact,"Source legacy Gu fixture never generated a contact");
 }
 
+// One source Dy task submission contains Sc-owned CPU plane/box Gu
+// contacts and GPU PCM box/box contacts. Both orders of Sc manager
+// admission must preserve contact ordinals, friction and force writeback.
+void verify_mixed_gu_pcm_gpu_dy_solver(
+    fyzz::compute::Backend backend,const char* sap,
+    const char* pcm,const char* dy_shader) {
+    using namespace fyzz;
+    std::ifstream input(dy_shader,std::ios::binary);
+    require(bool(input),"Compiled mixed Gu/PCM Dy shader missing");
+    std::vector<char> binary(
+        std::istreambuf_iterator<char>{input},
+        std::istreambuf_iterator<char>{});
+    for(const bool plane_first:{true,false}) {
+        compute::ShaderBinary shader{};
+        shader.format=backend==compute::Backend::Vulkan
+            ? compute::ShaderFormat::Spirv:compute::ShaderFormat::Dxil;
+        shader.bytes.assign(binary.begin(),binary.end());
+        native::Scene cpu,gpu;
+        cpu.set_enhanced_determinism(true);
+        gpu.set_enhanced_determinism(true);
+        auto owner=std::make_unique<
+            physx_gpu::SourceScOwnedGpuBroadphaseNative>(
+                backend,load_native_gpu_sap_shaders(backend,sap),
+                128u,128u,std::nullopt,
+                load_native_gpu_pcm_shaders(backend,pcm),std::move(shader));
+        auto* producer=owner.get();
+        gpu.set_gpu_broadphase(std::move(owner));
+        std::array<BodyId,2> moving_cpu{},moving_gpu{};
+        BodyId floor_cpu{},floor_gpu{},pcm_static_cpu{},pcm_static_gpu{};
+        const auto add_plane_contact=[&] {
+            floor_cpu=cpu.add_static_floor(0.f);
+            floor_gpu=gpu.add_static_floor(0.f);
+            moving_cpu[0]=cpu.add_dynamic_box(
+                {0.5f,0.5f,0.5f},{0.f,0.43f,0.f},1.f);
+            moving_gpu[0]=gpu.add_dynamic_box(
+                {0.5f,0.5f,0.5f},{0.f,0.43f,0.f},1.f);
+        };
+        const auto add_pcm_contact=[&] {
+            pcm_static_cpu=cpu.add_static_box(
+                {0.5f,0.5f,0.5f},{5.f,10.f,0.f});
+            pcm_static_gpu=gpu.add_static_box(
+                {0.5f,0.5f,0.5f},{5.f,10.f,0.f});
+            moving_cpu[1]=cpu.add_dynamic_box(
+                {0.5f,0.5f,0.5f},{5.f,10.84f,0.f},1.f);
+            moving_gpu[1]=gpu.add_dynamic_box(
+                {0.5f,0.5f,0.5f},{5.f,10.84f,0.f},1.f);
+        };
+        if(plane_first) {
+            add_plane_contact();
+            add_pcm_contact();
+        } else {
+            add_pcm_contact();
+            add_plane_contact();
+        }
+        constexpr float dt=1.f/120.f;
+        for(std::uint32_t frame=0;frame<4u;++frame) {
+            cpu.step(dt);
+            gpu.step(dt);
+            require(producer->dy_distance_dispatch_count()==frame+1u &&
+                    producer->dy_pcm_device_contact_rows()>0u &&
+                    producer->dy_cpu_gu_geometry_bytes()>=
+                        sizeof(native::GpuDyGuContactInput) &&
+                    producer->dy_upload_span_count()==1u,
+                "Mixed source Gu and PCM rows did not enter one GPU Dy task");
+            require(producer->dy_friction_anchor_upload_bytes()==
+                        producer->dy_friction_prepared_rows()*
+                            sizeof(native::GpuDyFrictionAnchorInput)/2u,
+                "Mixed source friction anchors lost their compact GPU layout");
+            require(cpu.contacts().size()==gpu.contacts().size() &&
+                    cpu.solved_normal_impulses().size()==
+                        gpu.solved_normal_impulses().size() &&
+                    cpu.solved_friction_patches().size()==
+                        gpu.solved_friction_patches().size(),
+                "Mixed source Gu/PCM managers lost Sc solver row identity");
+            bool saw_plane=false,saw_pcm=false;
+            for(const auto& m:gpu.contacts()) {
+                saw_plane |= m.pcm_result_index==
+                    std::numeric_limits<std::uint32_t>::max() && m.count>0u;
+                saw_pcm |= m.pcm_result_index!=
+                    std::numeric_limits<std::uint32_t>::max() && m.count>0u;
+            }
+            require(saw_plane && saw_pcm,
+                "Mixed Dy task did not retain both source contact producers");
+            for(std::size_t i=0;i<cpu.solved_normal_impulses().size();++i)
+                require(std::fabs(cpu.solved_normal_impulses()[i]-
+                                  gpu.solved_normal_impulses()[i])<0.08,
+                    "Mixed CPU Gu/GPU PCM normal impulse lost source ordinal");
+            for(std::size_t i=0;i<cpu.solved_friction_patches().size();++i) {
+                const auto& a=cpu.solved_friction_patches()[i];
+                const auto& b=gpu.solved_friction_patches()[i];
+                require(a.anchor_count==b.anchor_count && a.broken==b.broken,
+                    "Mixed contact friction patch lost source correlation");
+                for(std::size_t k=0;k<a.anchor_count;++k)
+                    require(std::fabs(a.anchor_impulses[k].x-
+                                      b.anchor_impulses[k].x)<0.08 &&
+                            std::fabs(a.anchor_impulses[k].y-
+                                      b.anchor_impulses[k].y)<0.08,
+                        "Mixed source GPU friction impulse diverged from CPU Dy");
+            }
+            for(std::size_t i=0;i<moving_cpu.size();++i) {
+                const auto a=cpu.body_state(moving_cpu[i]);
+                const auto b=gpu.body_state(moving_gpu[i]);
+                require(std::fabs(a.position.y-b.position.y)<0.02f &&
+                        std::fabs(a.velocity.y-b.velocity.y)<0.02f,
+                    "Mixed source Gu/PCM GPU Dy motion diverged from CPU");
+            }
+        }
+        // The plane has no finite GPU handle. Its simulation-flag and
+        // actor retirement must still retire the same Sc contact edge
+        // without changing the independent GPU PCM box manager.
+        const auto has_pair=[](auto pairs,native::Pair pair) {
+            return std::find(pairs.begin(),pairs.end(),pair)!=pairs.end();
+        };
+        const native::Pair plane_pair_cpu{
+            std::min(floor_cpu,moving_cpu[0]),
+            std::max(floor_cpu,moving_cpu[0])};
+        const native::Pair plane_pair_gpu{
+            std::min(floor_gpu,moving_gpu[0]),
+            std::max(floor_gpu,moving_gpu[0])};
+        const native::Pair pcm_pair_cpu{
+            std::min(pcm_static_cpu,moving_cpu[1]),
+            std::max(pcm_static_cpu,moving_cpu[1])};
+        const native::Pair pcm_pair_gpu{
+            std::min(pcm_static_gpu,moving_gpu[1]),
+            std::max(pcm_static_gpu,moving_gpu[1])};
+        // Finite GPU lost/found deltas must preserve the independent
+        // plane contact edge without rebuilding its candidate product.
+        const auto saved_cpu=cpu.body_state(moving_cpu[1]);
+        const auto saved_gpu=gpu.body_state(moving_gpu[1]);
+        cpu.set_position(moving_cpu[1],
+            {30.f,saved_cpu.position.y,saved_cpu.position.z});
+        gpu.set_position(moving_gpu[1],
+            {30.f,saved_gpu.position.y,saved_gpu.position.z});
+        cpu.advance_collision();
+        gpu.advance_collision();
+        require(has_pair(cpu.pairs(),plane_pair_cpu) &&
+                has_pair(gpu.pairs(),plane_pair_gpu) &&
+                !has_pair(cpu.pairs(),pcm_pair_cpu) &&
+                !has_pair(gpu.pairs(),pcm_pair_gpu),
+            "Finite lost report modified an independent Sc plane contact");
+        cpu.set_position(moving_cpu[1],saved_cpu.position);
+        gpu.set_position(moving_gpu[1],saved_gpu.position);
+        cpu.advance_collision();
+        gpu.advance_collision();
+        require(has_pair(cpu.pairs(),plane_pair_cpu) &&
+                has_pair(gpu.pairs(),plane_pair_gpu) &&
+                has_pair(cpu.pairs(),pcm_pair_cpu) &&
+                has_pair(gpu.pairs(),pcm_pair_gpu),
+            "Finite found report failed to preserve Sc plane membership");
+        cpu.set_shape_simulation_enabled(floor_cpu,false);
+        gpu.set_shape_simulation_enabled(floor_gpu,false);
+        cpu.advance_collision();
+        gpu.advance_collision();
+        require(!has_pair(cpu.pairs(),plane_pair_cpu) &&
+                !has_pair(gpu.pairs(),plane_pair_gpu) &&
+                cpu.contacts().size()==gpu.contacts().size(),
+            "Disabling a Sc plane did not retire its GPU scene contact edge");
+        cpu.set_shape_simulation_enabled(floor_cpu,true);
+        gpu.set_shape_simulation_enabled(floor_gpu,true);
+        cpu.advance_collision();
+        gpu.advance_collision();
+        require(has_pair(cpu.pairs(),plane_pair_cpu) &&
+                has_pair(gpu.pairs(),plane_pair_gpu),
+            "Reenabling a Sc plane did not restore its contact manager");
+        cpu.remove(floor_cpu);
+        gpu.remove(floor_gpu);
+        cpu.advance_collision();
+        gpu.advance_collision();
+        require(!has_pair(cpu.pairs(),plane_pair_cpu) &&
+                !has_pair(gpu.pairs(),plane_pair_gpu),
+            "Retiring Sc plane retained a stale GPU scene contact edge");
+    }
+}
+
 // The explicitly installed device Dy 1D stage must replace the
 // production PGS solve, not merely compute a disconnected fixture result.
 void verify_gpu_distance_solver(
@@ -808,7 +982,7 @@ int main(int argc,char** argv) {
         require(scenario=="all" || scenario=="scene" ||
                 scenario=="sparse_contacts" || scenario=="coupled_stack" ||
                 scenario=="coupled_solver" || scenario=="legacy_gu_solver" ||
-                scenario=="distance_solver",
+                scenario=="mixed_solver" || scenario=="distance_solver",
                 "Unknown GPU scene regression scenario");
 #ifdef FYZZXYZZY_TEST_D3D12
         constexpr auto backend=fyzz::compute::Backend::D3D12;
@@ -834,6 +1008,10 @@ int main(int argc,char** argv) {
         if(scenario=="all" || scenario=="legacy_gu_solver")
             fyzz::tests::measure_gpu_case("sc_pcm","legacy_gu_solver",
                 [&]{verify_cpu_gu_gpu_dy_solver(
+                    backend,argv[1],argv[2],argv[3]);});
+        if(scenario=="all" || scenario=="mixed_solver")
+            fyzz::tests::measure_gpu_case("sc_pcm","mixed_solver",
+                [&]{verify_mixed_gu_pcm_gpu_dy_solver(
                     backend,argv[1],argv[2],argv[3]);});
         if(scenario=="all" || scenario=="distance_solver")
             fyzz::tests::measure_gpu_case("sc_pcm","distance_solver",

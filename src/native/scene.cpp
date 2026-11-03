@@ -193,9 +193,6 @@ BodyId Scene::add(Actor actor,std::optional<AggregateId> aggregate) {
     if (actors_.size() >= std::numeric_limits<BodyId>::max())
         throw std::overflow_error("Native scene body identifier exhausted");
     const auto id = static_cast<BodyId>(actors_.size());
-    if(gpu_broadphase_ && actor.kind==Kind::StaticPlane)
-        throw std::logic_error(
-            "Native GPU SAP does not admit infinite plane shapes");
     // Edge publications are noexcept: preallocate one kinematic slot
     // for every possible actor before making this admission visible.
     for(auto* graph:{&speculative_islands_,&accurate_islands_}) {
@@ -220,19 +217,31 @@ BodyId Scene::add(Actor actor,std::optional<AggregateId> aggregate) {
     if(aggregate && !gpu_broadphase_)
         throw std::logic_error(
             "Original PhysX aggregate authoring requires native GPU AABB owner");
+    // Infinite planes have no finite PxgIntegerAABB. Their Sc contact
+    // managers are admitted separately from GPU-owned finite BP reports.
     if(gpu_broadphase_) {
-        const auto motion=actor.kind==Kind::StaticBox
-            ? GpuBroadphaseBox::Motion::Static
-            : actor.kind==Kind::KinematicBox
-                ? GpuBroadphaseBox::Motion::Kinematic
-                : GpuBroadphaseBox::Motion::Dynamic;
-        if(aggregate)
-            gpu_broadphase_->admit_aggregate_member(
-                *aggregate,id,motion,actor.contact_offset);
-        else
-            gpu_broadphase_->admit_shape(id,motion,actor.contact_offset);
+        if(actor.kind==Kind::StaticPlane)
+            gpu_broadphase_->admit_plane(id);
+        else {
+            const auto motion=actor.kind==Kind::StaticBox
+                ? GpuBroadphaseBox::Motion::Static
+                : actor.kind==Kind::KinematicBox
+                    ? GpuBroadphaseBox::Motion::Kinematic
+                    : GpuBroadphaseBox::Motion::Dynamic;
+            if(aggregate)
+                gpu_broadphase_->admit_aggregate_member(
+                    *aggregate,id,motion,actor.contact_offset);
+            else
+                gpu_broadphase_->admit_shape(id,motion,actor.contact_offset);
+        }
     }
     actors_.push_back(actor);
+    if(actor.kind==Kind::StaticPlane) {
+        has_admitted_plane_=true;
+        if(gpu_broadphase_)plane_pair_membership_dirty_=true;
+    } else if(gpu_broadphase_ && has_admitted_plane_ &&
+              actor.kind==Kind::DynamicBox)
+        plane_pair_membership_dirty_=true;
     live_actor_ids_.push_back(id);
     broadphase_endpoint_membership_dirty_=true;
     if(dynamic_node)++live_dynamic_count_;
@@ -411,7 +420,8 @@ void Scene::set_pose(BodyId id, Vec3 position, Quat orientation) {
         // Validate the source-owned volume and mark its original GPU
         // changed bitmap BEFORE wake, Gu/PCM cache or actor mutation.
         // A failed source owner cannot leave half-authored Sc motion.
-        if(gpu_broadphase_ && actor.simulation_shape_enabled)
+        if(gpu_broadphase_ && actor.simulation_shape_enabled &&
+           actor.kind!=Kind::StaticPlane)
             gpu_broadphase_->mark_shape_bounds_changed(id,actor.contact_offset);
     }
     // NpRigidDynamic::setGlobalPose wakes even on an idempotent edit.
@@ -788,7 +798,7 @@ void Scene::set_shape_simulation_enabled(BodyId id, bool enabled) {
     // The source AABB removal/addition can reject the Sc shape. Run
     // that source preflight before clearing any existing PCM/friction
     // working set or publishing the native shape flag.
-    if(gpu_broadphase_)
+    if(gpu_broadphase_ && actor.kind!=Kind::StaticPlane)
         gpu_broadphase_->set_shape_simulation_enabled(id,enabled);
     // NpShape::setFlag(eSIMULATION_SHAPE) refilters the sole shape.
     // Retire the previous contact history on this source flag change.
@@ -821,7 +831,7 @@ void Scene::set_shape_offsets(BodyId id, float contact_offset,
        actor.rest_offset==rest_offset)return;
     // AABBManagerBase::setContactDistance owns the source GPU changed bit
     // and the new distance; keep that publication ahead of scene edits.
-    if(gpu_broadphase_)
+    if(gpu_broadphase_ && actor.kind!=Kind::StaticPlane)
         gpu_broadphase_->mark_shape_bounds_changed(id,contact_offset);
     // An authored shape change invalidates prior friction correlation;
     // retire only this shape's anchors in the existing scene-owned cache.
@@ -1983,12 +1993,8 @@ void Scene::update_gpu_pairs(bool force_update) {
     for(BodyId id:live_actor_ids_) {
         const Actor& actor=actors_[id];
         if(!actor.simulation_shape_enabled)continue;
-        // Infinite planes have no finite PxgIntegerAABB in GPU SAP.
-        // A future source AABB manager must admit them explicitly; never
-        // substitute a hidden CPU broadphase for an unsupported shape.
-        if(actor.kind==Kind::StaticPlane)
-            throw std::logic_error(
-                "Native GPU SAP does not admit infinite plane shapes");
+        // Source plane candidates do not enter finite GPU SAP volumes.
+        if(actor.kind==Kind::StaticPlane)continue;
         const auto motion=actor.kind==Kind::DynamicBox
             ? GpuBroadphaseBox::Motion::Dynamic
             : actor.kind==Kind::KinematicBox
@@ -2013,7 +2019,12 @@ void Scene::update_gpu_pairs(bool force_update) {
         // Scripted GPU fixtures may resume after a rejected Sc frame.
         // Their delta-only report contract retains Sc's last published
         // contacts. The real source owner returns a full GPU rebuild.
-        sap_pairs_.seed(previous_pairs_);
+        broadphase_candidate_deltas_.clear();
+        for(const Pair pair:previous_pairs_)
+            if(actors_[pair.a].kind!=Kind::StaticPlane &&
+               actors_[pair.b].kind!=Kind::StaticPlane)
+                broadphase_candidate_deltas_.push_back(pair);
+        sap_pairs_.seed(broadphase_candidate_deltas_);
         sap_pair_registry_dirty_=false;
     }
     const auto validate=[&](std::span<const Pair> raw,bool found) {
@@ -2026,20 +2037,51 @@ void Scene::update_gpu_pairs(bool force_update) {
                     "Noncanonical or unsorted GPU SAP pair reports");
             last=pair;
             have_last=true;
-            if(found) {
-                const auto& a=actors_[pair.a];
-                const auto& b=actors_[pair.b];
-                if(!a.alive || !b.alive ||
-                   !a.simulation_shape_enabled ||
-                   !b.simulation_shape_enabled ||
-                   a.kind==Kind::StaticPlane || b.kind==Kind::StaticPlane)
-                    throw std::invalid_argument(
-                        "GPU SAP found pair references inactive Sc shapes");
-            }
+            const auto& a=actors_[pair.a];
+            const auto& b=actors_[pair.b];
+            if(a.kind==Kind::StaticPlane || b.kind==Kind::StaticPlane)
+                throw std::invalid_argument(
+                    "GPU SAP pair references a non-finite Sc plane");
+            if(found && (!a.alive || !b.alive ||
+                         !a.simulation_shape_enabled ||
+                         !b.simulation_shape_enabled))
+                throw std::invalid_argument(
+                    "GPU SAP found pair references inactive Sc shapes");
         }
     };
     validate(reports.found,true);
     validate(reports.lost,false);
+
+    // Sc's original infinite-plane interaction path has no SAP proxy.
+    // Candidate membership is the Cartesian product of admitted planes
+    // and dynamic shapes, just as in the native source Bp branch. Gu
+    // decides accurate touch; GPU SAP alone owns finite BP membership.
+    // Only Sc admission/refiltering changes infinite-plane candidate
+    // membership. Ordinary Dy motion and finite GPU crossings retain
+    // the previously published plane manager identities.
+    const auto append_plane_managers=[&](
+        bool finite_delta,bool rebuild_planes) {
+        if(has_admitted_plane_ && rebuild_planes) {
+            for(const BodyId plane:live_actor_ids_) {
+                const auto& actor=actors_[plane];
+                if(!actor.alive || !actor.simulation_shape_enabled ||
+                   actor.kind!=Kind::StaticPlane)continue;
+                for(const BodyId body:live_actor_ids_) {
+                    const auto& dynamic=actors_[body];
+                    if(dynamic.alive && dynamic.simulation_shape_enabled &&
+                       dynamic.kind==Kind::DynamicBox)
+                        pending_pairs_.push_back(ordered_pair(plane,body));
+                }
+            }
+            std::sort(pending_pairs_.begin(),pending_pairs_.end());
+            pending_pairs_.erase(
+                std::unique(pending_pairs_.begin(),pending_pairs_.end()),
+                pending_pairs_.end());
+        }
+        broadphase_pair_membership_changed_=
+            finite_delta || pending_pairs_!=previous_pairs_;
+        plane_pair_membership_dirty_=false;
+    };
 
     if(reports.full_rebuild) {
         if(!reports.lost.empty())
@@ -2057,8 +2099,7 @@ void Scene::update_gpu_pairs(bool force_update) {
             if(actors_[pair.a].kind==Kind::DynamicBox ||
                actors_[pair.b].kind==Kind::DynamicBox)
                 pending_pairs_.push_back(pair);
-        broadphase_pair_membership_changed_=
-            pending_pairs_!=previous_pairs_;
+        append_plane_managers(false,true);
         return;
     }
 
@@ -2106,9 +2147,11 @@ void Scene::update_gpu_pairs(bool force_update) {
             if(actors_[pair.a].kind==Kind::DynamicBox ||
                actors_[pair.b].kind==Kind::DynamicBox)
                 pending_pairs_.push_back(pair);
-        std::sort(pending_pairs_.begin(),pending_pairs_.end());
-        broadphase_pair_membership_changed_=
-            pending_pairs_!=previous_pairs_;
+        // The source BP hash has unordered storage; finite-only Sc
+        // refiltering still needs sorted contact-manager identities.
+        if(!has_admitted_plane_)
+            std::sort(pending_pairs_.begin(),pending_pairs_.end());
+        append_plane_managers(false,true);
         gpu_pair_refilter_dirty_=false;
         return;
     }
@@ -2152,7 +2195,17 @@ void Scene::update_gpu_pairs(bool force_update) {
     // A quiet Sc pair stream needs no merge even when the source GPU
     // reports non-dynamic overlaps or updates existing PCM contacts.
     if(found.empty() && lost.empty()) {
-        broadphase_pair_membership_changed_=false;
+        // Motion dirties Gu/PCM, not Sc plane candidate membership.
+        if(!plane_pair_membership_dirty_) {
+            broadphase_pair_membership_changed_=false;
+            return;
+        }
+        pending_pairs_.clear();
+        for(const Pair pair:previous_pairs_)
+            if(actors_[pair.a].kind!=Kind::StaticPlane &&
+               actors_[pair.b].kind!=Kind::StaticPlane)
+                pending_pairs_.push_back(pair);
+        append_plane_managers(false,true);
         return;
     }
 
@@ -2160,6 +2213,9 @@ void Scene::update_gpu_pairs(bool force_update) {
     pending_pairs_.reserve(previous_pairs_.size()+found.size());
     std::size_t new_index=0,lost_index=0;
     for(const Pair prior:previous_pairs_) {
+        if(plane_pair_membership_dirty_ &&
+           (actors_[prior.a].kind==Kind::StaticPlane ||
+            actors_[prior.b].kind==Kind::StaticPlane))continue;
         while(new_index<found.size() && found[new_index]<prior)
             pending_pairs_.push_back(found[new_index++]);
         if(lost_index<lost.size() && lost[lost_index]==prior)
@@ -2168,8 +2224,7 @@ void Scene::update_gpu_pairs(bool force_update) {
     }
     while(new_index<found.size())
         pending_pairs_.push_back(found[new_index++]);
-    broadphase_pair_membership_changed_=
-        !found.empty() || !lost.empty();
+    append_plane_managers(true,plane_pair_membership_dirty_);
 }
 
 void Scene::update_pairs() {
@@ -8479,6 +8534,7 @@ void Scene::StepCheckpoint::capture(Scene& scene, bool capture_solver_state) {
     quiet_event_epoch=scene.quiet_event_epoch_;
     topology_dirty=scene.island_topology_dirty_;
     dirty=scene.dirty_;
+    plane_pair_membership_dirty=scene.plane_pair_membership_dirty_;
     authored_activation_pending=scene.authored_activation_pending_;
     includes_solver_state=capture_solver_state;
     friction_cache_epoch=scene.friction_cache_epoch_;
@@ -8863,6 +8919,7 @@ void Scene::StepCheckpoint::rollback(Scene& scene) noexcept {
     scene.broadphase_endpoint_membership_dirty_=true;
     scene.sap_pair_registry_dirty_=true;
     scene.dirty_=dirty;
+    scene.plane_pair_membership_dirty_=plane_pair_membership_dirty;
     scene.authored_activation_pending_=authored_activation_pending;
     // GPU source histories already rotate at successful fetch, before
     // the Sc/Dy transaction has committed. Rejecting this transaction

@@ -156,6 +156,9 @@ public:
         native::GpuBroadphaseBox::Motion motion,float contact_distance) override {
         require_scene_elements().admit(actor,motion,contact_distance);
     }
+    void admit_plane(BodyId actor) override {
+        require_scene_elements().admit_plane(actor);
+    }
     AggregateId create_aggregate(
         std::uint32_t max_shapes,bool self_collision) override {
         if(!aggregate_stages_)
