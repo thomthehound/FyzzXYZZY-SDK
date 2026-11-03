@@ -143,6 +143,10 @@ public:
         if(elements.device_cache_eligible(actor))
             elements.authorize_device_integrated_pose(actor);
     }
+    void set_device_shape_pose_cache_enabled(BodyId shape,bool enabled) {
+        require_scene_elements().set_device_shape_pose_cache_enabled(
+            shape,enabled);
+    }
     void mark_shape_bounds_changed(
         BodyId actor,float contact_offset) override {
         // Authored Sc shape edits remain valid after a rejected frame.
