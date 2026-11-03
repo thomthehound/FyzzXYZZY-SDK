@@ -96,6 +96,7 @@ public:
         published_pair_count_=0u;
         last_pair_upload_bytes_=0u;
         last_contact_download_bytes_=0u;
+        last_edge_history_copy_bytes_=0u;
         if(requests.empty())return;
         if(!shape_capacity || requests.size()>
               std::numeric_limits<std::uint32_t>::max()/16u)
@@ -145,8 +146,17 @@ public:
                        pairs_.getDevicePtr()!=previous_pair_address;
         results_.allocate(source_allocation_bytes(pair_count,32u),PX_FL);
         candidates_.allocate(source_allocation_bytes(candidate_count,40u),PX_FL);
-        edges_.allocateCopyOldDataAsync(
-            source_allocation_bytes(edge_capacity,240u),stream_,PX_FL);
+        // Only previously published EdgeIndex records belong to the
+        // persistent Gu manifold. Capacity slack and the alignment pad
+        // are not historical source contacts. Preserve the high-watermark
+        // across dormant and temporarily excluded managers: their EdgeIndex
+        // slots may be needed when their rigid actors wake again.
+        const auto requested_edge_bytes=source_allocation_bytes(
+            edge_capacity,240u);
+        if(requested_edge_bytes>edges_.getSize())
+            last_edge_history_copy_bytes_=published_edge_span_bytes_;
+        edges_.allocateCopyPrefixAsync(requested_edge_bytes,
+            published_edge_span_bytes_,stream_,PX_FL);
         work_.allocate(source_allocation_bytes(pair_count,4u),PX_FL);
         dense_contacts_.allocate(source_allocation_bytes(
             pair_count,sizeof(SourcePcmGpuContactStreamNative)),PX_FL);
@@ -243,6 +253,8 @@ public:
                         std::size_t(stored.count)*sizeof(packed.contacts[0]));
         }
         published_pair_count_=pair_count;
+        published_edge_span_bytes_=std::max(
+            published_edge_span_bytes_,std::size_t(edge_capacity)*240u);
         last_contact_download_bytes_=readback_bytes;
     }
     CudaDeviceAddressMap::Address contact_stream_address() const noexcept {
@@ -256,6 +268,9 @@ public:
     }
     std::size_t last_contact_download_bytes() const noexcept {
         return last_contact_download_bytes_;
+    }
+    std::size_t last_edge_history_copy_bytes() const noexcept {
+        return last_edge_history_copy_bytes_;
     }
 private:
     compute::Context& context_;
@@ -276,5 +291,7 @@ private:
     std::uint32_t published_pair_count_=0u;
     std::size_t last_pair_upload_bytes_=0u;
     std::size_t last_contact_download_bytes_=0u;
+    std::size_t last_edge_history_copy_bytes_=0u;
+    std::size_t published_edge_span_bytes_=0u;
 };
 } // namespace fyzz::physx_gpu
