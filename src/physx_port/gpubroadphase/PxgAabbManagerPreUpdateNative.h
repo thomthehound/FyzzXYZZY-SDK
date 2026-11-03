@@ -126,6 +126,16 @@ inline void pre_update_source_sap_aabb_manager_native(
     const auto changed_bytes=validate_bitmap(manager.changed);
     const auto volume_bytes=checked_bytes(
         state_changed?capacity:0u,sizeof(physx::Bp::VolumeData));
+    // A standalone VolumeData slot encodes a stable ElementSim identity;
+    // motion and filter edits do not mutate it. The original SAP owner
+    // tracks published capacity and is reset on a rejected Sc frame.
+    const bool resident_volume_identity=state_changed &&
+        !manager.has_aggregates &&
+        !update.getNumCreatedHandles() &&
+        !update.getNumRemovedHandles() &&
+        capacity<=manager.sap.boxes_capacity &&
+        manager.volume_data_device.getDevicePtr()!=0u &&
+        manager.volume_data_device.getSize()>=volume_bytes;
     if(boxes && boxes->changed.size()>capacity)
         throw std::out_of_range("GPU box transform count exceeds source AABB capacity");
     const auto shape_bytes=boxes
@@ -161,7 +171,7 @@ inline void pre_update_source_sap_aabb_manager_native(
         manager.aggregated.device.allocate(aggregate_bytes,PX_FL);
         manager.volume_data_device.allocate(volume_bytes,PX_FL);
         append_bitmap(uploads,manager.aggregated,aggregate_bytes);
-        if(volume_bytes)
+        if(volume_bytes && !resident_volume_identity)
             uploads.push_back({manager.volume_data_device.getDevicePtr(),
                                manager.volume_data.data(),volume_bytes});
 
