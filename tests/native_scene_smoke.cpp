@@ -251,6 +251,59 @@ struct GpuSapSceneAdmissionFixture {
                 "Plane-only GPU SAP rebuilt an empty finite-box snapshot");
     }
 
+    static void verify_active_gpu_snapshot_motion() {
+        Scene scene;
+        auto producer=std::make_unique<FetchedReports>();
+        auto* gpu=producer.get();
+        scene.set_gpu_broadphase(std::move(producer));
+        for(int i=0;i<80;++i)
+            scene.add_static_box(
+                {0.2f,0.2f,0.2f},{float(i)*6.0f,0.0f,0.0f});
+        const auto dynamic=scene.add_dynamic_box(
+            {0.3f,0.4f,0.5f},{1.0f,9.0f,0.0f},1.0f);
+        const auto kinematic=scene.add_dynamic_box(
+            {0.3f,0.3f,0.3f},{3.0f,9.0f,0.0f},1.0f);
+        scene.set_kinematic(kinematic,true);
+        constexpr float dt=1.0f/60.0f;
+        for(int frame=0;frame<5;++frame) {
+            scene.step(dt);
+            const auto body=scene.body_state(dynamic);
+            const auto& input=scene.gpu_broadphase_boxes_;
+            if(scene.gpu_broadphase_snapshot_rebuilds_!=1u ||
+               input.size()!=82u || input[80].id!=dynamic ||
+               input[80].position.x!=body.position.x ||
+               input[80].position.y!=body.position.y ||
+               input[80].position.z!=body.position.z ||
+               gpu->fetches!=std::size_t(frame+1))
+                throw std::runtime_error(
+                    "Active Dy motion repacked static shapes or left stale Sc GPU pose");
+        }
+        const auto target=scene.body_state(kinematic);
+        scene.set_kinematic_target(
+            kinematic,{target.position.x+0.5f,target.position.y,0.0f},
+            target.orientation);
+        scene.step(dt);
+        const auto moved=scene.body_state(kinematic);
+        if(scene.gpu_broadphase_snapshot_rebuilds_!=1u ||
+           scene.gpu_broadphase_boxes_[81].id!=kinematic ||
+           scene.gpu_broadphase_boxes_[81].position.x!=moved.position.x ||
+           moved.position.x!=target.position.x+0.5f)
+            throw std::runtime_error(
+                "PostSolver kinematic pose failed to patch Sc GPU input");
+        const auto p=scene.body_state(dynamic);
+        scene.set_position(dynamic,{p.position.x+0.25f,p.position.y,p.position.z});
+        scene.step(dt);
+        if(scene.gpu_broadphase_snapshot_rebuilds_!=2u ||
+           scene.gpu_broadphase_boxes_[80].position.x!=
+               scene.body_state(dynamic).position.x)
+            throw std::runtime_error(
+                "Authored discontinuity did not rebuild GPU shape view");
+        scene.advance_collision();
+        if(scene.gpu_broadphase_snapshot_rebuilds_!=2u)
+            throw std::runtime_error(
+                "Post-integration quiet GPU pass repacked static shapes");
+    }
+
     static void verify_gpu_nondynamic_report_filter() {
         Scene scene;
         auto producer=std::make_unique<FetchedReports>();
@@ -14938,6 +14991,7 @@ int main() {
     try {
     fyzz::native::GpuSapSceneAdmissionFixture::verify();
     fyzz::native::GpuSapSceneAdmissionFixture::verify_quiet_gpu_snapshot_reuse();
+    fyzz::native::GpuSapSceneAdmissionFixture::verify_active_gpu_snapshot_motion();
     fyzz::native::GpuSapSceneAdmissionFixture::verify_world_installation();
     fyzz::native::GpuSapSceneAdmissionFixture::verify_gpu_nondynamic_report_filter();
     fyzz::native::GpuSapSceneAdmissionFixture::verify_gpu_removed_actor_without_lost_report();
