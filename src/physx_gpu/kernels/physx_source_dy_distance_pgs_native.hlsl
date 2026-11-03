@@ -273,10 +273,10 @@ void main(uint3 group:SV_GroupID,uint3 lane:SV_GroupThreadID) {
             dot(asfloat(arena.Load3(input+52u)),angularState),
             dot(asfloat(arena.Load3(input+64u)),angularState),
             dot(asfloat(arena.Load3(input+76u)),angularState));
+        // The axis lock was applied in solver space before the world
+        // inverse-inertia transform; the resulting motion is not masked
+        // again by DyBodyCoreIntegrator::integrateCore.
         float3 motionAngular=angular;
-        if(locks&8u)motionAngular.x=0.0f;
-        if(locks&16u)motionAngular.y=0.0f;
-        if(locks&32u)motionAngular.z=0.0f;
         const float3 nextPosition=float3(
             (float)((double)position.x+(double)motionLinear.x*(double)dt),
             (float)((double)position.y+(double)motionLinear.y*(double)dt),
