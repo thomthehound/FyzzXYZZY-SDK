@@ -520,8 +520,9 @@ void verify_gpu_coupled_solver(
         require(producer->dy_pcm_contact_upload_bytes_saved()==
                     device_rows*sizeof(native::GpuDyContactPoint),
                 "Source PCM-derived Dy contacts still upload CPU shadow rows");
-        require(producer->dy_distance_dispatch_count()==frame+1u,
-            "Source coupled Sc scene never dispatched the GPU Dy solver");
+        require(producer->dy_distance_dispatch_count()==frame+1u &&
+                producer->dy_gpu_integrated_body_count()>0u,
+            "Source coupled Sc scene never published GPU-integrated poses");
         require(cpu.contacts().size()==gpu.contacts().size() &&
                 cpu.solved_normal_impulses().size()==
                     gpu.solved_normal_impulses().size() &&
@@ -1010,8 +1011,9 @@ void verify_gpu_distance_solver(
         require(cpu.contacts().empty() && gpu.contacts().empty(),
             "Source GPU Dy 1D fixture unexpectedly generated Gu contacts");
         require(producer->dy_distance_dispatch_count()==
-                    static_cast<std::uint64_t>(frame+1),
-            "Source GPU Dy 1D task never dispatched on the device");
+                    static_cast<std::uint64_t>(frame+1) &&
+                producer->dy_gpu_integrated_body_count()>0u,
+            "Source GPU Dy 1D task never published device body motion");
         const auto [uploaded,downloaded]=
             producer->dy_distance_transfer_bytes();
         require(downloaded>0u && downloaded<uploaded/2u,

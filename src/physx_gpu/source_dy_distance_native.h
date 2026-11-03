@@ -73,10 +73,17 @@ public:
                std::span<const native::GpuDyContactManifold> manifolds,
                std::span<const std::uint32_t> contact_order,
                std::span<const native::GpuDyContactPrepPair> contact_prep,
+               std::span<const native::GpuDyBodyIntegrationInput> integration,
+               std::span<native::GpuDyIntegratedPose> integrated_poses,
                CudaDeviceAddressMap::Address pcm_contacts,
                std::uint32_t pcm_pair_count) {
         if(tasks.empty() || descriptors.empty())
             throw std::invalid_argument("Source Dy GPU requires active source tasks");
+        if(integration.size()!=bodies.size() ||
+           integrated_poses.size()!=bodies.size())
+            throw std::invalid_argument(
+                "Source Dy GPU integrateCore inputs do not match solver bodies");
+        last_integrated_body_count_=0u;
         if(tasks.size()>context_.device_info().max_workgroup_count[0])
             throw std::out_of_range("Source Dy task dispatch exceeds device limits");
         const auto narrow=[](std::size_t value) {
@@ -131,7 +138,7 @@ public:
            reused_pcm_rows+cpu_gu_rows!=contact_forces.size())
             throw std::logic_error(
                 "Source Gu contact preparation does not cover solver rows");
-        constexpr std::size_t count=12u;
+        constexpr std::size_t count=13u;
         const std::size_t prep_bytes=contact_prep.size_bytes();
         if(anchors.size_bytes()>
                std::numeric_limits<std::size_t>::max()-prep_bytes ||
@@ -144,29 +151,30 @@ public:
             partition_ends.size_bytes(),body_ordinals.size_bytes(),
             tasks.size_bytes(),contact_bytes,friction_bytes,
             patches.size_bytes(),manifolds.size_bytes(),contact_order.size_bytes(),
-            prep_bytes+anchors.size_bytes()+cpu_gu.size_bytes()};
+            prep_bytes+anchors.size_bytes()+cpu_gu.size_bytes(),
+            integration.size_bytes()};
         const std::array<std::size_t,count> elements{
             bodies.size(),rows.size(),descriptors.size(),partition_ends.size(),
             body_ordinals.size(),tasks.size(),contact_forces.size(),friction.size(),
             patches.size(),manifolds.size(),contact_order.size(),
-            contact_prep.size()};
+            contact_prep.size(),integration.size()};
         const std::array<const void*,count> sources{
             bodies.data(),rows.data(),descriptors.data(),partition_ends.data(),
             body_ordinals.data(),tasks.data(),nullptr,nullptr,
             patches.data(),manifolds.data(),contact_order.data(),
-            contact_prep.data()};
+            contact_prep.data(),integration.data()};
         // The host retains only source normal impulses and friction
         // tangent/force writeback. Both full row ABIs live only on GPU.
-        constexpr std::array<std::size_t,6> output_inputs{
-            0u,1u,5u,6u,7u,8u};
-        constexpr std::array<std::size_t,6> output_strides{
-            48u,8u,4u,8u,20u,4u};
+        constexpr std::array<std::size_t,7> output_inputs{
+            0u,1u,5u,6u,7u,8u,12u};
+        constexpr std::array<std::size_t,7> output_strides{
+            48u,8u,4u,8u,20u,4u,32u};
         static_assert(offsetof(native::GpuDyDistanceRow,applied_force)==72u &&
                       offsetof(native::GpuDyDistanceTask,error)==32u &&
                       offsetof(native::GpuDyContactPoint,applied_force)==72u &&
                       offsetof(native::GpuDyFrictionRow,applied_force)==64u &&
                       offsetof(native::GpuDyContactPatch,broken)==12u);
-        std::array<std::size_t,6> result_offsets{};
+        std::array<std::size_t,7> result_offsets{};
         std::size_t output_bytes=0u;
         for(std::size_t i=0;i<output_inputs.size();++i) {
             const auto n=elements[output_inputs[i]];
@@ -179,7 +187,7 @@ public:
         // Both writable contact and friction arenas follow all source
         // inputs. The existing GPU preparation owns the complete rows.
         constexpr std::array<std::size_t,count> order{
-            0u,1u,5u,8u,2u,3u,4u,9u,10u,11u,6u,7u};
+            0u,1u,5u,8u,2u,3u,4u,9u,10u,11u,12u,6u,7u};
         std::array<std::size_t,count> offsets{};
         // Leave the source input addresses 128-byte aligned. One packed
         // output view precedes them, so readback needs only a single copy.
@@ -224,7 +232,7 @@ public:
         for(std::size_t i=0;i<11u;++i)
             params[i<6u?6u+i:17u+i-6u]=narrow(elements[i]);
         params[30]=narrow(elements[11]);
-        for(std::size_t i=0;i<result_offsets.size();++i)
+        for(std::size_t i=0;i<6u;++i)
             params[22u+i]=narrow(result_offsets[i]);
         compute::DispatchCommand dispatch{};
         dispatch.pipeline=pipeline_;
@@ -248,6 +256,11 @@ public:
                 static_cast<std::size_t>(params[28])+offsets[i]);
         params[29]=narrow(
             static_cast<std::size_t>(params[28])+offsets[11]);
+        // The launch group count is already exactly tasks.size().
+        // Reuse the redundant taskCount root constant for integration
+        // input bias rather than exceeding Vulkan's 128-byte minimum.
+        params[11]=narrow(
+            static_cast<std::size_t>(params[28])+offsets[12]);
         dispatch.push_constants.resize(sizeof(params));
         std::memcpy(dispatch.push_constants.data(),params.data(),sizeof(params));
         stream_.commands().emplace_back(std::move(dispatch));
@@ -268,6 +281,21 @@ public:
         for(const auto& task:tasks)
             if(task.error!=0u)
                 throw std::overflow_error("Source Dy GPU solver rejected a row");
+        for(const auto& task:tasks)
+            for(std::size_t i=task.body_begin;i<task.body_end;++i) {
+                const auto index=body_ordinals[i];
+                if(index>=integration.size())
+                    throw std::logic_error(
+                        "Source Dy GPU integration body index invalid");
+                if(!integration[index].active)continue;
+                auto& pose=integrated_poses[index];
+                std::memcpy(&pose,host_.data()+result_offsets[6]+
+                    std::size_t(index)*sizeof(pose),sizeof(pose));
+                if(pose.valid!=1u)
+                    throw std::logic_error(
+                        "Source Dy GPU integrateCore pose not published");
+                ++last_integrated_body_count_;
+            }
         // The source task graph identifies every GPU-written slot. Rows
         // excluded from its descriptor/ordinal ranges retain their original
         // CPU values rather than requiring device-side output seeding.
@@ -337,6 +365,9 @@ public:
         last_friction_anchor_upload_bytes_=anchors.size_bytes();
         last_friction_prepared_rows_=friction.size();
     }
+    std::size_t last_integrated_body_count() const noexcept {
+        return last_integrated_body_count_;
+    }
     std::pair<std::size_t,std::size_t> last_transfer_bytes() const noexcept {
         return last_transfer_bytes_;
     }
@@ -369,6 +400,7 @@ private:
     std::vector<std::uint8_t> host_;
     // Actual packed device upload and ordered readback byte counts.
     std::pair<std::size_t,std::size_t> last_transfer_bytes_{};
+    std::size_t last_integrated_body_count_=0u;
     std::size_t last_reused_pcm_contact_rows_=0u;
     std::size_t last_omitted_pcm_upload_bytes_=0u;
     std::size_t last_cpu_gu_geometry_bytes_=0u;

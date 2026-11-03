@@ -17,7 +17,7 @@ struct Parameters {
     uint bodyBias, distanceBias, descriptorBias, partitionBias;
     uint ordinalBias, taskBias;
     uint bodyCount, rowCount, descriptorCount, partitionCount;
-    uint ordinalCount, taskCount;
+    uint ordinalCount, integrationBias;
     uint contactBias,frictionBias,patchBias,manifoldBias,orderBias;
     uint contactCount,frictionCount,patchCount,manifoldCount,orderCount;
     uint resultBodyOffset,resultRowOffset,resultTaskOffset;
@@ -128,7 +128,8 @@ void solveRow(uint index,uint errorAddress,bool biased,bool finalPass) {
 
 [numthreads(128,1,1)]
 void main(uint3 group:SV_GroupID,uint3 lane:SV_GroupThreadID) {
-    if(group.x>=p.taskCount)return;
+    // Dispatch groups equal the source task count; integrationBias
+    // reuses the now-redundant task-count root constant.
     uint t=p.taskBias+group.x*36u;
     uint4 ranges=arena.Load4(t);
     uint2 bodyRange=arena.Load2(t+16u);
@@ -250,6 +251,69 @@ void main(uint3 group:SV_GroupID,uint3 lane:SV_GroupThreadID) {
         arena.Store4(to,arena.Load4(from));
         arena.Store4(to+16u,arena.Load4(from+16u));
         arena.Store4(to+32u,arena.Load4(from+32u));
+        // Source DyBodyCoreIntegrator::integrateCore uses saved
+        // position-iteration deltas, not the final velocity deltas.
+        const uint input=p.integrationBias+ordinal*104u;
+        if(arena.Load(input+96u)==0u)continue;
+        const float3 position=asfloat(arena.Load3(input));
+        const float4 quaternion=asfloat(arena.Load4(input+12u));
+        const float3 baseLinear=asfloat(arena.Load3(input+28u));
+        const float3 baseAngular=asfloat(arena.Load3(input+40u));
+        const uint locks=arena.Load(input+88u);
+        const float dt=asfloat(arena.Load(input+92u));
+        float3 linear=baseLinear+asfloat(arena.Load3(from+24u));
+        float3 angularState=asfloat(arena.Load3(from+36u));
+        if(locks&1u)linear.x=0.0f;
+        if(locks&2u)linear.y=0.0f;
+        if(locks&4u)linear.z=0.0f;
+        if(locks&8u)angularState.x=0.0f;
+        if(locks&16u)angularState.y=0.0f;
+        if(locks&32u)angularState.z=0.0f;
+        const float3 angular=baseAngular+float3(
+            dot(asfloat(arena.Load3(input+52u)),angularState),
+            dot(asfloat(arena.Load3(input+64u)),angularState),
+            dot(asfloat(arena.Load3(input+76u)),angularState));
+        float3 motionAngular=angular;
+        if(locks&8u)motionAngular.x=0.0f;
+        if(locks&16u)motionAngular.y=0.0f;
+        if(locks&32u)motionAngular.z=0.0f;
+        const float3 nextPosition=float3(
+            (float)((double)position.x+(double)linear.x*(double)dt),
+            (float)((double)position.y+(double)linear.y*(double)dt),
+            (float)((double)position.z+(double)linear.z*(double)dt));
+        float4 nextQuaternion=quaternion;
+        float w=dot(motionAngular,motionAngular);
+        if(w!=0.0f) {
+            w=sqrt(w);
+            if(w>1.0e7f) {
+                motionAngular*=1.0e7f/w;
+                w=1.0e7f;
+            }
+            const float angle=dt*w*0.5f;
+            const float3 omega=motionAngular*(sin(angle)/w);
+            const float4 dq=float4(
+                quaternion.w*omega.x+omega.y*quaternion.z-omega.z*quaternion.y,
+                quaternion.w*omega.y+omega.z*quaternion.x-omega.x*quaternion.z,
+                quaternion.w*omega.z+omega.x*quaternion.y-omega.y*quaternion.x,
+                -dot(omega,quaternion.xyz));
+            nextQuaternion=dq+quaternion*cos(angle);
+            const float length=sqrt(dot(nextQuaternion,nextQuaternion));
+            if(!(length>0.0f) || !isfinite(length)) {
+                arena.InterlockedOr(endError,65536u);
+                continue;
+            }
+            nextQuaternion/=length;
+        }
+        if(!all(isfinite(nextPosition)) ||
+           !all(isfinite(nextQuaternion))) {
+            arena.InterlockedOr(endError,65536u);
+            continue;
+        }
+        const uint destination=p.writebackBias+p.resultPatchOffset+
+            p.patchCount*4u+ordinal*32u;
+        arena.Store3(destination,asuint(nextPosition));
+        arena.Store4(destination+12u,asuint(nextQuaternion));
+        arena.Store(destination+28u,1u);
     }
     AllMemoryBarrierWithGroupSync();
     if(lane.x==0u)

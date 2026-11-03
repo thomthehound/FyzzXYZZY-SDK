@@ -123,6 +123,23 @@ struct GpuDyDistanceBody {
     float inverse_mass=0.0f;
 };
 static_assert(sizeof(GpuDyDistanceBody)==52u);
+// DyBodyCoreIntegrator::integrateCore inputs for the actual source PGS
+// solver-body ordinals. The resulting poses are written by that GPU task.
+struct GpuDyBodyIntegrationInput {
+    float position[3]{},orientation[4]{};
+    float linear_velocity[3]{},angular_velocity[3]{};
+    float sqrt_inverse_inertia[9]{};
+    std::uint32_t lock_flags=0u;
+    float seconds=0.0f;
+    std::uint32_t active=0u,reserved=0u;
+};
+static_assert(sizeof(GpuDyBodyIntegrationInput)==104u &&
+              offsetof(GpuDyBodyIntegrationInput,lock_flags)==88u);
+struct GpuDyIntegratedPose {
+    float position[3]{},orientation[4]{};
+    std::uint32_t valid=0u;
+};
+static_assert(sizeof(GpuDyIntegratedPose)==32u);
 struct GpuDyDistanceRow {
     float axis[3]{},angular_a[3]{},angular_b[3]{};
     float inverse_mass_a=0.0f,inverse_mass_b=0.0f;
@@ -257,7 +274,9 @@ public:
         std::span<GpuDyContactPatch>,
         std::span<const GpuDyContactManifold>,
         std::span<const std::uint32_t>,
-        std::span<const GpuDyContactPrepPair>) {
+        std::span<const GpuDyContactPrepPair>,
+        std::span<const GpuDyBodyIntegrationInput>,
+        std::span<GpuDyIntegratedPose>) {
         throw std::logic_error("Source GPU Dy shader is not installed");
     }
     virtual void mark_shape_bounds_changed(
@@ -1104,7 +1123,7 @@ private:
     void partition_constraints();
     void prepare_constraints(float seconds);
     void erase_shape_friction_history(BodyId id);
-    void solve_gpu_distance_constraints();
+    void solve_gpu_distance_constraints(float seconds);
     void solve_constraint_task(std::size_t task_index);
     void integrate_solver_task(std::size_t task_index,float seconds,
                                std::vector<BodyId>& ready_nodes);
@@ -1759,6 +1778,9 @@ private:
     // Reused transient upload/readback spans, converted directly from
     // the original source Dy task, constraint and body row storage.
     std::vector<GpuDyDistanceBody> gpu_dy_bodies_;
+    std::vector<GpuDyBodyIntegrationInput> gpu_dy_integration_inputs_;
+    std::vector<GpuDyIntegratedPose> gpu_dy_integrated_poses_;
+    bool gpu_dy_pose_ready_=false;
     std::vector<GpuDyDistanceRow> gpu_dy_rows_;
     std::vector<GpuDyDistanceDescriptor> gpu_dy_descriptors_;
     std::vector<std::uint32_t> gpu_dy_partition_ends_;
