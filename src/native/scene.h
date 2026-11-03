@@ -282,6 +282,10 @@ public:
         std::span<GpuDyIntegratedPose>) {
         throw std::logic_error("Source GPU Dy shader is not installed");
     }
+    // Sc's afterIntegration authorizes the source ElementSim device pose.
+    virtual void authorize_device_integrated_pose(BodyId) {
+        throw std::logic_error("Source GPU owner has no device pose cache");
+    }
     virtual void mark_shape_bounds_changed(
         BodyId actor,float contact_offset)=0;
     // Sc::ActorSim/ElementSim own original actor and element IDs.

@@ -7439,6 +7439,7 @@ void Scene::solve_gpu_distance_constraints(float seconds) {
         input.lock_flags=actor.dynamics.lock_flags;
         input.seconds=seconds;
         input.active=row.prepared_generation==solver_preparation_generation_;
+        if(input.active)input.source_element=id;
     }
     gpu_dy_rows_.resize(distance_rows_.size());
     for(std::size_t i=0;i<distance_rows_.size();++i) {
@@ -9626,6 +9627,31 @@ void Scene::step(float seconds) {
     // after the original Sc afterIntegration shape-cache publication.
     // Its bounds updates participate in the same motion undo journal.
     after_integration_cached_bounds();
+    if(gpu_dy_pose_ready_) {
+        // Reconciled accurate islands and Sc afterIntegration determine
+        // which GPU-integrated poses may remain resident for the next SAP.
+        for(const BodyId id:solver_active_ids_) {
+            const Actor& actor=actors_[id];
+            if(!actor.alive || actor.kind!=Kind::DynamicBox ||
+               !actor.simulation_shape_enabled ||
+               actor.solver_row_generation!=solver_preparation_generation_ ||
+               prepared_solver_row(id).prepared_generation!=
+                   solver_preparation_generation_)
+                continue;
+            const auto index=actor.solver_row_index;
+            if(index>=gpu_dy_integrated_poses_.size())continue;
+            const auto& result=gpu_dy_integrated_poses_[index];
+            if(result.valid==1u &&
+               actor.position.x==result.position[0] &&
+               actor.position.y==result.position[1] &&
+               actor.position.z==result.position[2] &&
+               actor.orientation.x==result.orientation[0] &&
+               actor.orientation.y==result.orientation[1] &&
+               actor.orientation.z==result.orientation[2] &&
+               actor.orientation.w==result.orientation[3])
+                gpu_broadphase_->authorize_device_integrated_pose(id);
+        }
+    }
     join.finish_after_integration();
     // Threshold checks consume current Dy forces after the
     // integration/cache phase, independently from task-local solve.

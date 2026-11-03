@@ -110,7 +110,7 @@ public:
                 aabb_,sap_,
                 {live_boxes,handles_,filter_,source_frame,found_,lost_,
                  bitmap_fill_,mapped_reports_,false,aggregate_stages_,
-                 gpu_box_owners_},
+                 gpu_box_owners_,source_sc_elements_.get()},
                 stream_,stages_,addresses_,context_);
         } catch(...) {
             // The source GPU submission and fetch may already have advanced.
@@ -122,6 +122,14 @@ public:
         return {found_,lost_,false,rebuilt};
     }
 
+    std::uint32_t device_shape_cache_handle(BodyId actor) const {
+        if(!source_sc_elements_)
+            return std::numeric_limits<std::uint32_t>::max();
+        return source_sc_elements_->device_shape_cache_handle(actor);
+    }
+    void authorize_device_integrated_pose(BodyId actor) {
+        require_scene_elements().authorize_device_integrated_pose(actor);
+    }
     void mark_shape_bounds_changed(
         BodyId actor,float contact_offset) override {
         // Authored Sc shape edits remain valid after a rejected frame.
@@ -208,6 +216,8 @@ public:
 
     void invalidate_after_rollback() noexcept override {
         invalidated_=true;
+        if(source_sc_elements_)
+            source_sc_elements_->invalidate_device_cached_poses();
     }
 
     const SourceSapSceneFrameNativeResult& last_frame() const {
