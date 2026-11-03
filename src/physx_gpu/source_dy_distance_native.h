@@ -445,23 +445,34 @@ public:
                 }
                 for(std::size_t j=manager.patch_offset;
                     j<manager.patch_offset+manager.patch_count;++j) {
-                    const auto& patch=patches[j];
-                    // The final source velocity pass writes only live
-                    // friction anchors; zero-anchor patches retain history.
-                    if(!patch.anchor_count)continue;
-                    if(patch.anchor_count>2u ||
-                       patch.row_offset>friction.size() ||
-                       patch.anchor_count*2u>friction.size()-patch.row_offset)
-                        throw std::logic_error("Source Dy friction writeback range invalid");
+                    auto& patch=patches[j];
+                    const bool pcm_growth=(patch.broken&0x80000000u)!=0u;
+                    // The GPU selects new PCM anchors before source PGS.
+                    // One original four-byte patch report conveys its
+                    // resulting count and changed Gu indices, without
+                    // transferring a second device anchor array.
+                    std::uint32_t report=0u;
+                    if(pcm_growth || patch.anchor_count)
+                        std::memcpy(&report,
+                            host_.data()+result_offsets[5]+j*4u,4u);
+                    const auto count=pcm_growth?(report>>1u)&3u:
+                        patch.anchor_count;
+                    if(count>2u || patch.row_offset>friction.size() ||
+                       count*2u>friction.size()-patch.row_offset)
+                        throw std::logic_error(
+                            "Source Dy friction writeback range invalid");
                     for(std::size_t k=patch.row_offset;
-                        k<patch.row_offset+patch.anchor_count*2u;++k) {
+                        k<patch.row_offset+count*2u;++k) {
                         const auto* result=
                             host_.data()+result_offsets[4]+k*20u;
                         std::memcpy(&friction[k].tangent,result,12u);
                         std::memcpy(&friction[k].applied_force,result+12u,8u);
                     }
-                    std::memcpy(&patches[j].broken,
-                        host_.data()+result_offsets[5]+j*4u,4u);
+                    if(pcm_growth) {
+                        patch.anchor_count=count;
+                        patch.reserved=report;
+                        patch.broken=report&1u;
+                    }else if(count)patch.broken=report;
                 }
             }
         }
