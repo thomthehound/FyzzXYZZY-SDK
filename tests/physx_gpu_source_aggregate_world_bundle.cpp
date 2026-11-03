@@ -42,7 +42,8 @@ void verify_aggregate_gpu_rollback(
         return std::find(pairs.begin(),pairs.end(),expected)!=pairs.end();
     };
     scene.advance_collision();
-    require(contains(scene.pairs(),a,b) &&
+    require(producer->source_handle_projection_count()==1u &&
+            contains(scene.pairs(),a,b) &&
             contains(scene.pairs(),b,outside),
             "Aggregate GPU rollback fixture lacks real source pairs");
 
@@ -50,7 +51,8 @@ void verify_aggregate_gpu_rollback(
     // owner must rebuild its own histories, not replay CPU SAP pairs.
     producer->invalidate_after_rollback();
     scene.advance_collision();
-    require(producer->last_frame().update.counts.previous_boxes==0u &&
+    require(producer->source_handle_projection_count()==2u &&
+            producer->last_frame().update.counts.previous_boxes==0u &&
             producer->last_frame().update.counts.created==2u &&
             contains(scene.pairs(),a,b) &&
             contains(scene.pairs(),b,outside) &&
@@ -58,7 +60,8 @@ void verify_aggregate_gpu_rollback(
             "Aggregate GPU rollback did not preserve Sc pairs after source rebuild");
     scene.set_position(a,{8.0f,1.0f,0.0f});
     scene.advance_collision();
-    require(contains(scene.lost_pairs(),a,b) &&
+    require(producer->source_handle_projection_count()==2u &&
+            contains(scene.lost_pairs(),a,b) &&
             !contains(scene.pairs(),a,b) &&
             contains(scene.pairs(),b,outside),
             "Aggregate GPU rebuild did not restore native lost-pair history");
@@ -69,20 +72,31 @@ void verify_aggregate_gpu_rollback(
     // standalone GPU history, including a real later lost crossing.
     scene.remove_actor_from_aggregate(aggregate,b);
     scene.advance_collision();
-    require(contains(scene.pairs(),b,outside) &&
+    require(producer->source_handle_projection_count()==3u &&
+            contains(scene.pairs(),b,outside) &&
             std::count(scene.pairs().begin(),scene.pairs().end(),
                        fyzz::native::Pair{std::min(b,outside),
                                           std::max(b,outside)})==1,
             "Aggregate actor removal duplicated or retired a live Sc overlap");
     scene.destroy_aggregate(aggregate);
     scene.advance_collision();
-    require(contains(scene.pairs(),b,outside),
+    require(producer->source_handle_projection_count()==4u &&
+            contains(scene.pairs(),b,outside),
             "Aggregate release lost a surviving standalone GPU overlap");
     scene.set_position(b,{16.0f,1.0f,0.0f});
     scene.advance_collision();
-    require(contains(scene.lost_pairs(),b,outside) &&
+    require(producer->source_handle_projection_count()==4u &&
+            contains(scene.lost_pairs(),b,outside) &&
             !contains(scene.pairs(),b,outside),
             "Released actor failed source GPU lost-pair retirement");
+    scene.set_shape_simulation_enabled(outside,false);
+    scene.advance_collision();
+    require(producer->source_handle_projection_count()==5u,
+        "Source GPU volume withdrawal retained stale compact handles");
+    scene.set_shape_simulation_enabled(outside,true);
+    scene.advance_collision();
+    require(producer->source_handle_projection_count()==6u,
+        "Source GPU shape readmission failed to project ElementSim handle");
 }
 
 
