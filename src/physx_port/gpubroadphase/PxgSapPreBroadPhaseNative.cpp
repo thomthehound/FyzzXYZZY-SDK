@@ -128,10 +128,22 @@ void append_pre_broadphase_native_uploads(
         capacity<=previously_published &&
         buffers.bounds.getDevicePtr()!=0u &&
         buffers.bounds.getSize()>=bounds_bytes;
-    // Compute the interval before changing any source heap allocation.
-    // An uninitialized or grown buffer still needs the complete upload.
-    const auto dirty_interval=!device_generated_bounds &&
-        bounds_resident && source_owned_changes
+    const bool metadata_resident=update.getStateChanged() &&
+        capacity<=previously_published &&
+        buffers.contact_distances.getDevicePtr()!=0u &&
+        buffers.contact_distances.getSize()>=distances_bytes &&
+        buffers.groups.getDevicePtr()!=0u &&
+        buffers.groups.getSize()>=groups_bytes;
+    // A removed handle changes its group to eINVALID without necessarily
+    // appearing in the changed bitmap. Preserve the dense source upload
+    // on removal frames; live-only edits can reuse a contiguous delta.
+    const bool sparse_metadata=source_owned_changes && metadata_resident &&
+        update.getNumRemovedHandles()==0u;
+    const bool sparse_bounds=source_owned_changes && bounds_resident &&
+        !device_generated_bounds;
+    // Determine the interval before modifying any source heap allocation.
+    // The same original Sc changed handles own bounds and Bp metadata.
+    const auto dirty_interval=(sparse_bounds || sparse_metadata)
         ? contiguous_dirty_bounds(update,changed_handles)
         : std::nullopt;
 
@@ -149,7 +161,7 @@ void append_pre_broadphase_native_uploads(
     // The enclosing AABB-manager pre-update owns their submission.
     uploads.reserve(uploads.size()+4u);
     if(update.getStateChanged() && !device_generated_bounds) {
-        if(!bounds_resident || !source_owned_changes || !dirty_interval) {
+        if(!sparse_bounds || !dirty_interval) {
             uploads.push_back({buffers.bounds.getDevicePtr(),
                                update.getAABBs(),bounds_bytes});
         }else if(dirty_interval->first!=capacity) {
@@ -162,10 +174,27 @@ void append_pre_broadphase_native_uploads(
                 std::size_t(size)*sizeof(physx::PxBounds3)});
         }
     }
-    uploads.push_back({buffers.contact_distances.getDevicePtr(),
-                       update.getContactDistance(), distances_bytes});
-    uploads.push_back({buffers.groups.getDevicePtr(),
-                       update.getGroups(), groups_bytes});
+    if(sparse_metadata && dirty_interval) {
+        if(dirty_interval->first!=capacity) {
+            const auto first=dirty_interval->first;
+            const auto count=dirty_interval->second-first;
+            uploads.push_back({
+                buffers.contact_distances.getDevicePtr()+
+                    std::uint64_t(first)*sizeof(physx::PxReal),
+                update.getContactDistance()+first,
+                std::size_t(count)*sizeof(physx::PxReal)});
+            uploads.push_back({
+                buffers.groups.getDevicePtr()+
+                    std::uint64_t(first)*sizeof(physx::PxU32),
+                update.getGroups()+first,
+                std::size_t(count)*sizeof(physx::PxU32)});
+        }
+    }else {
+        uploads.push_back({buffers.contact_distances.getDevicePtr(),
+                           update.getContactDistance(),distances_bytes});
+        uploads.push_back({buffers.groups.getDevicePtr(),
+                           update.getGroups(),groups_bytes});
+    }
     if (update.getEnvIDs())
         uploads.push_back({buffers.environment_ids.getDevicePtr(),
                            update.getEnvIDs(), env_bytes});
