@@ -532,6 +532,130 @@ void verify_dormant_contact_stream(
     check(3u);
 }
 
+// Speculative SAP overlap is not a physical Gu touch. Once the dynamic
+// actor sleeps, the original zero-touch EdgeIndex can retain that result
+// without repeating GPU PCM or downloading an empty contact stream.
+void verify_dormant_empty_pcm(
+    fyzz::compute::Backend backend,const char* sap,const char* pcm) {
+    using namespace fyzz;
+    native::Scene cpu,gpu;
+    auto owner=std::make_unique<
+        physx_gpu::SourceScOwnedGpuBroadphaseNative>(
+            backend,load_native_gpu_sap_shaders(backend,sap),
+            128u,128u,std::nullopt,
+            load_native_gpu_pcm_shaders(backend,pcm));
+    auto* producer=owner.get();
+    gpu.set_gpu_broadphase(std::move(owner));
+    const Vec3 center{1.5f,0.7f,0.f};
+    const Vec3 half{1.f,0.1f,0.1f};
+    const Quat turn{0.f,0.f,-0.382683432f,0.923879533f};
+    const auto fixed_cpu=cpu.add_static_box(half,{0.f,0.f,0.f});
+    const auto fixed_gpu=gpu.add_static_box(half,{0.f,0.f,0.f});
+    const auto moving_cpu=cpu.add_dynamic_box(half,center,1.f);
+    const auto moving_gpu=gpu.add_dynamic_box(half,center,1.f);
+    cpu.set_pose(moving_cpu,center,turn);
+    gpu.set_pose(moving_gpu,center,turn);
+    RigidBodyDynamics dynamics{};
+    dynamics.gravity_enabled=false;
+    cpu.set_dynamics(moving_cpu,dynamics);
+    gpu.set_dynamics(moving_gpu,dynamics);
+    const auto check_empty=[&] {
+        require(cpu.pairs().size()==1u && gpu.pairs().size()==1u &&
+                cpu.contacts().empty() && gpu.contacts().empty() &&
+                cpu.found_contacts().empty() && gpu.found_contacts().empty() &&
+                cpu.lost_contacts().empty() && gpu.lost_contacts().empty(),
+            "Dormant zero-touch source pair lost speculative SAT separation");
+    };
+    cpu.advance_collision(true);
+    gpu.advance_collision(true);
+    check_empty();
+    const native::Pair separated_pair{fixed_gpu,moving_gpu};
+    const auto separated_edge=gpu.contact_edge_index(separated_pair);
+    require(separated_edge!=std::numeric_limits<std::uint32_t>::max() &&
+            !gpu.contact_edge_connected(separated_pair),
+        "Source speculative non-touch pair lost its original Sc EdgeIndex");
+    require(producer->pcm_contact_readback_bytes()==
+                sizeof(physx_gpu::SourcePcmGpuContactStreamNative),
+        "Uninitialized zero-touch Sc edge did not run original GPU PCM");
+    for(std::uint32_t i=0u;i<6u &&
+        (!cpu.body_is_sleeping(moving_cpu) ||
+         !gpu.body_is_sleeping(moving_gpu));++i) {
+        cpu.step(0.5f);
+        gpu.step(0.5f);
+    }
+    require(cpu.body_is_sleeping(moving_cpu) &&
+            gpu.body_is_sleeping(moving_gpu),
+        "Speculative zero-touch pair did not enter source Dy sleep");
+    check_empty();
+    cpu.advance_collision(true);
+    gpu.advance_collision(true);
+    check_empty();
+    require(producer->pcm_contact_readback_bytes()==0u &&
+            producer->pcm_pair_upload_bytes()==0u,
+        "Cached non-touching sleeping Sc pair repeated GPU PCM readback");
+    // An authored static-shape edit invalidates PCM even when the
+    // dynamic partner remains asleep. Resolve and cache the same zero
+    // result, then verify the next dormant frame needs no GPU readback.
+    cpu.set_position(fixed_cpu,{0.f,0.f,0.f});
+    gpu.set_position(fixed_gpu,{0.f,0.f,0.f});
+    cpu.advance_collision(true);
+    gpu.advance_collision(true);
+    check_empty();
+    require(gpu.body_is_sleeping(moving_gpu) &&
+            producer->pcm_contact_readback_bytes()==
+                sizeof(physx_gpu::SourcePcmGpuContactStreamNative),
+        "Static Sc cache reset did not refresh zero-touch GPU PCM");
+    cpu.advance_collision(true);
+    gpu.advance_collision(true);
+    require(producer->pcm_contact_readback_bytes()==0u,
+        "Unchanged zero-touch Sc manager did not resume dormant reuse");
+    // A separate active touching manager must not requeue the dormant
+    // negative-contact manager or shift the source Gu edge ordinal.
+    cpu.add_static_box({0.5f,0.5f,0.5f},{5.f,0.f,0.f});
+    gpu.add_static_box({0.5f,0.5f,0.5f},{5.f,0.f,0.f});
+    cpu.add_dynamic_box({0.5f,0.5f,0.5f},{5.997f,0.f,0.f},1.f);
+    gpu.add_dynamic_box({0.5f,0.5f,0.5f},{5.997f,0.f,0.f},1.f);
+    cpu.advance_collision(true);
+    gpu.advance_collision(true);
+    require(cpu.pairs().size()==2u && gpu.pairs().size()==2u &&
+            cpu.contacts().size()==1u && gpu.contacts().size()==1u &&
+            cpu.contacts()[0].pair==gpu.contacts()[0].pair &&
+            producer->pcm_contact_readback_bytes()==
+                sizeof(physx_gpu::SourcePcmGpuContactStreamNative),
+        "Awake Sc manager requeued dormant zero-touch GPU PCM");
+    // NpRigidDynamic::setGlobalPose wakes and invalidates the original
+    // zero-touch manager even on an idempotent write. Both active pairs
+    // now occupy the original ordered GPU PCM stream.
+    cpu.set_position(moving_cpu,center);
+    gpu.set_position(moving_gpu,center);
+    cpu.advance_collision(true);
+    gpu.advance_collision(true);
+    require(!gpu.body_is_sleeping(moving_gpu) &&
+            cpu.pairs().size()==gpu.pairs().size() &&
+            cpu.contacts().size()==gpu.contacts().size() &&
+            cpu.contacts().size()==1u &&
+            producer->pcm_contact_readback_bytes()==
+                2u*sizeof(physx_gpu::SourcePcmGpuContactStreamNative),
+        "Woken zero-touch Sc manager did not reenter ordered GPU PCM");
+    require(gpu.contact_edge_index(separated_pair)==separated_edge &&
+            !gpu.contact_edge_connected(separated_pair),
+        "Dormant negative-contact reuse replaced the original Sc edge");
+    // The same original manager must now publish a real Gu contact
+    // after an authored pose change. A stale negative result would hide
+    // the new physical touch despite the speculative edge surviving.
+    cpu.set_pose(moving_cpu,{0.5f,0.f,0.f},{});
+    gpu.set_pose(moving_gpu,{0.5f,0.f,0.f},{});
+    cpu.advance_collision(true);
+    gpu.advance_collision(true);
+    require(cpu.contacts().size()==2u && gpu.contacts().size()==2u &&
+            gpu.contact_edge_index(separated_pair)==separated_edge &&
+            gpu.contact_edge_connected(separated_pair) &&
+            cpu.found_contacts().size()==gpu.found_contacts().size() &&
+            producer->pcm_contact_readback_bytes()==
+                2u*sizeof(physx_gpu::SourcePcmGpuContactStreamNative),
+        "Authored Sc shape motion failed to turn cached absence into GPU touch");
+}
+
 // Coupled box contacts exercise source Sc manager identity and Dy's
 // real contact partition/PGS path across multiple dependent bodies.
 void verify_coupled_rigid_stack(
@@ -1317,6 +1441,7 @@ int main(int argc,char** argv) {
                 [&]{
                     verify_sparse_contact_stream(backend,argv[1],argv[2]);
                     verify_dormant_contact_stream(backend,argv[1],argv[2]);
+                    verify_dormant_empty_pcm(backend,argv[1],argv[2]);
                 });
         if(scenario=="all" || scenario=="coupled_stack")
             fyzz::tests::measure_gpu_case("sc_pcm","coupled_stack",

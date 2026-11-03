@@ -3529,19 +3529,15 @@ void Scene::update_contacts() {
     const bool source_gpu_pcm =
         gpu_broadphase_ && gpu_broadphase_->has_gpu_pcm_box() &&
         pcm_box_box_enabled_;
-    // Sc owns the live EdgeIndex and last published Gu manifold. An
-    // inactive rigid pair with no authored cache invalidation needs
-    // neither a PCM refresh nor a new contact readback. Dy already
-    // skips its inactive manager. Retain the source Gu record directly.
-    const auto retained_dormant_pcm=[&](Pair pair,EdgeIndex edge) noexcept {
+    // Sc's source EdgeIndex and Gu cache already distinguish an untouched
+    // speculative pair from a touching manifold. Once both rigid bodies
+    // are inactive, neither case needs another PCM refresh: retain the
+    // published points for touching pairs and the authoritative absence
+    // of points for zero-touch pairs. An authored shape edit resets the
+    // same PCM cache and a rigid wake reenters the GPU narrowphase.
+    const auto dormant_pcm=[&](Pair pair,EdgeIndex edge) noexcept {
         if(edge>=island_edges_.size() ||
-           !island_edges_[edge].pcm_cache.initialized ||
-           edge>=manifold_by_edge_.size())return false;
-        const auto& indexed=manifold_by_edge_[edge];
-        if(indexed.generation!=manifold_lookup_generation_ ||
-           indexed.index>=manifolds_.size() ||
-           !(manifolds_[indexed.index].pair==pair) ||
-           !manifolds_[indexed.index].count)return false;
+           !island_edges_[edge].pcm_cache.initialized)return false;
         const auto& a=actors_[pair.a];
         const auto& b=actors_[pair.b];
         if(a.kind==Kind::KinematicBox || b.kind==Kind::KinematicBox)
@@ -3560,7 +3556,7 @@ void Scene::update_contacts() {
             if(a.kind==Kind::StaticPlane || b.kind==Kind::StaticPlane)
                 continue;
             const EdgeIndex edge=active_edge_handles_[i];
-            if(retained_dormant_pcm(pair,edge))continue;
+            if(dormant_pcm(pair,edge))continue;
             const bool swapped=island_edges_[edge].gu_order_reversed;
             gpu_pcm_pairs_.push_back({
                 swapped?pair.b:pair.a,swapped?pair.a:pair.b,edge,
@@ -3691,14 +3687,16 @@ void Scene::update_contacts() {
             }
         }
         if(pcm_box) {
-            if(source_gpu_pcm && previously_touching &&
-               retained_dormant_pcm(pair,edge)) {
-                // The original Gu arena remains live until Sc swaps
-                // its published manifolds. No new EdgeIndex or cache.
-                const auto& prior=manifolds_[old_cursor];
-                manifold.count=prior.count;
-                next_contact_points_.insert(next_contact_points_.end(),
-                    prior.points.begin(),prior.points.end());
+            if(source_gpu_pcm && dormant_pcm(pair,edge)) {
+                // An already-touching manager retains its original Gu
+                // witnesses. A previously resolved non-touching pair
+                // remains absent, with no synthetic manifold or event.
+                if(previously_touching) {
+                    const auto& prior=manifolds_[old_cursor];
+                    manifold.count=prior.count;
+                    next_contact_points_.insert(next_contact_points_.end(),
+                        prior.points.begin(),prior.points.end());
+                }
             }else {
                 step_checkpoint_.save_edge(*this,edge);
                 if(source_gpu_pcm) {
@@ -3717,10 +3715,14 @@ void Scene::update_contacts() {
                     next_contact_points_.resize(offset+result.count);
                     manifold.pcm_result_index=
                         static_cast<std::uint32_t>(gpu_pcm_index++);
+                    // Empty Gu results have no backing point array.
+                    // Never do pointer arithmetic on a null arena data().
+                    std::span<ContactPoint> contacts{};
+                    if(result.count)
+                        contacts={next_contact_points_.data()+offset,
+                                  result.count};
                     manifold.count=publish_gpu_pcm_box_box(
-                        result,island_edges_[edge].pcm_cache,
-                        std::span<ContactPoint>(next_contact_points_.data()+offset,
-                                                result.count));
+                        result,island_edges_[edge].pcm_cache,contacts);
                 }else {
                     manifold.count=generate_pcm_box_box(
                         first,second,contact_distance,
