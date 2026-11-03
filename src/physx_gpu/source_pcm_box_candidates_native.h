@@ -145,7 +145,7 @@ public:
             view(edge_cache,source_allocation_bytes(edge_capacity,240u),
                  5u,compute::BufferAccess::ReadWrite),
             view(dispatch_args,12u,6u,compute::BufferAccess::ReadWrite),
-            view(output,source_allocation_bytes(pair_count,96u),
+            view(output,source_allocation_bytes(pair_count,84u),
                  7u,compute::BufferAccess::Write)};
         for(std::size_t i=0u;i<8u;++i)
             if(i!=6u && dispatch.buffers[i].buffer==dispatch.buffers[6].buffer)
