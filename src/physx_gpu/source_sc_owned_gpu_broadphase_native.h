@@ -304,6 +304,7 @@ public:
     void invalidate_after_rollback() noexcept override {
         producer_->invalidate_after_rollback();
         if(pcm_)pcm_->invalidate_after_rollback();
+        if(dy_distance_)dy_distance_->invalidate_after_rollback();
     }
     const SourceSapSceneFrameNativeResult& last_frame() const {
         return producer_->last_frame();
