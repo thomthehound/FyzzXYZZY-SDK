@@ -492,7 +492,7 @@ void verify_gpu_coupled_solver(
     bool saw_correlated_multi_point=false;
     bool saw_device_pcm_contact_rows=false;
     bool saw_compact_prep=false;
-    std::size_t saved_prep_bytes=0u;
+    std::int64_t saved_prep_bytes=0;
     double max_normal_error=0.0,max_friction_error=0.0;
     float max_position_error=0.f,max_velocity_error=0.f;
     std::size_t uploaded_bytes=0,downloaded_bytes=0;
@@ -515,7 +515,8 @@ void verify_gpu_coupled_solver(
         // Compare writeback with the source-sized upload baseline. The
         // GPU contact-prep payload is intentionally smaller now.
         require(downloaded>0u &&
-                downloaded<(uploaded+prep_saving)/2u,
+                static_cast<std::int64_t>(downloaded)*2<
+                    static_cast<std::int64_t>(uploaded)+prep_saving,
             "Source coupled GPU Dy writeback did not use compact output");
         uploaded_bytes+=uploaded;
         downloaded_bytes+=downloaded;
@@ -700,6 +701,8 @@ void verify_cpu_gu_gpu_dy_solver(
                     producer->dy_friction_prepared_rows()*
                         sizeof(native::GpuDyFrictionAnchorInput)/2u,
             "CPU Gu solver staged complete friction rows");
+        require(producer->dy_contact_prep_upload_saving()==88,
+            "CPU Gu contact-prep accounting includes friction anchors or geometry");
         require(producer->dy_distance_dispatch_count()==frame+1u,
             "CPU Gu contact rows did not enter source GPU Dy solver");
         const auto a=cpu.body_state(moving_cpu);
@@ -782,6 +785,8 @@ void verify_mixed_gu_pcm_gpu_dy_solver(
                         producer->dy_friction_prepared_rows()*
                             sizeof(native::GpuDyFrictionAnchorInput)/2u,
                 "Mixed source friction anchors lost their compact GPU layout");
+            require(producer->dy_contact_prep_upload_saving()==176,
+                "Mixed Gu/PCM contact-prep savings counted unrelated inputs");
             require(cpu.contacts().size()==gpu.contacts().size() &&
                     cpu.solved_normal_impulses().size()==
                         gpu.solved_normal_impulses().size() &&
