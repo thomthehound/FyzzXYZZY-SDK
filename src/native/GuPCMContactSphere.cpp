@@ -127,4 +127,75 @@ std::uint8_t source_pcm_sphere_box(
         add(box_center,rotate(box_orientation,closest)),
         normal,length-radius},output);
 }
+
+std::uint8_t source_gu_sphere_sphere(
+    Vec3 center0,float radius0,Vec3 center1,float radius1,
+    float contact_distance,std::span<ContactPoint> output) {
+    // Gu::contactSphereSphere: legacy Pxc midpoint witness differs from PCM.
+    Vec3 delta=subtract(center0,center1);
+    const float distance_squared=dot(delta,delta);
+    const float radius_sum=radius0+radius1;
+    const float inflated=radius_sum+contact_distance;
+    if(distance_squared>=inflated*inflated)return 0u;
+    const float length=std::sqrt(distance_squared);
+    delta=length<=0.00001f
+        ? Vec3{1.f,0.f,0.f}:scale(delta,1.f/length);
+    const Vec3 point=add(center0,scale(delta,
+        (radius0+length-radius1)*-0.5f));
+    return publish({point,delta,length-radius_sum},output);
+}
+
+std::uint8_t source_gu_sphere_box(
+    Vec3 center,float radius,Vec3 box_center,Quat box_orientation,
+    Vec3 box_half_extents,float contact_distance,
+    std::span<ContactPoint> output) {
+    // Gu::contactSphereBox: legacy nearest-point selection, with the
+    // embedded-center contact at the sphere center, not PCM's exit face.
+    const Vec3 delta=subtract(center,box_center);
+    Vec3 local=inverse_rotate(box_orientation,delta);
+    const Vec3 clipped{
+        std::clamp(local.x,-box_half_extents.x,box_half_extents.x),
+        std::clamp(local.y,-box_half_extents.y,box_half_extents.y),
+        std::clamp(local.z,-box_half_extents.z,box_half_extents.z)};
+    const bool outside=local.x!=clipped.x ||
+                       local.y!=clipped.y || local.z!=clipped.z;
+    if(outside) {
+        const Vec3 nearest=rotate(box_orientation,clipped);
+        const Vec3 projected=subtract(delta,nearest);
+        const float distance_squared=dot(projected,projected);
+        const float inflated=radius+contact_distance;
+        if(distance_squared>inflated*inflated)return 0u;
+        const float inverse_length=1.f/std::sqrt(distance_squared);
+        const Vec3 normal=scale(projected,inverse_length);
+        const float separation=distance_squared*inverse_length-radius;
+        return publish({
+            add(nearest,box_center),normal,separation},output);
+    }
+    const Vec3 free_depth{
+        box_half_extents.x-std::abs(local.x),
+        box_half_extents.y-std::abs(local.y),
+        box_half_extents.z-std::abs(local.z)};
+    Vec3 normal_local{};
+    float embedded;
+    if(free_depth.y<free_depth.x) {
+        if(free_depth.y<free_depth.z) {
+            normal_local={0.f,local.y>0.f?1.f:-1.f,0.f};
+            embedded=free_depth.y;
+        }else {
+            normal_local={0.f,0.f,local.z>0.f?1.f:-1.f};
+            embedded=free_depth.z;
+        }
+    }else {
+        if(free_depth.x<free_depth.z) {
+            normal_local={local.x>0.f?1.f:-1.f,0.f,0.f};
+            embedded=free_depth.x;
+        }else {
+            normal_local={0.f,0.f,local.z>0.f?1.f:-1.f};
+            embedded=free_depth.z;
+        }
+    }
+    return publish({
+        center,rotate(box_orientation,normal_local),
+        -embedded-radius},output);
+}
 } // namespace fyzz::native
