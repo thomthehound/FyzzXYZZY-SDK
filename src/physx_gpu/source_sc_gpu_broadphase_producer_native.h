@@ -175,8 +175,8 @@ public:
 
     void admit_shape(BodyId actor,
         native::GpuBroadphaseBox::Motion motion,float contact_distance) override {
-        require_scene_elements().admit(actor,motion,contact_distance);
         handles_dirty_=true;
+        require_scene_elements().admit(actor,motion,contact_distance);
     }
     void admit_plane(BodyId actor) override {
         require_scene_elements().admit_plane(actor);
@@ -191,13 +191,13 @@ public:
             self_collision?1u:0u);
     }
     void destroy_aggregate(AggregateId id) override {
-        require_scene_elements().destroy_aggregate(id);
         handles_dirty_=true;
+        require_scene_elements().destroy_aggregate(id);
     }
     void remove_actor_from_aggregate(
         AggregateId aggregate,BodyId actor) override {
-        require_scene_elements().remove_actor_from_aggregate(aggregate,actor);
         handles_dirty_=true;
+        require_scene_elements().remove_actor_from_aggregate(aggregate,actor);
     }
     void admit_aggregate_member(
         AggregateId aggregate,BodyId actor,
@@ -206,17 +206,17 @@ public:
         if(!aggregate_stages_)
             throw std::logic_error(
                 "Native Sc aggregate member requires complete source GPU kernels");
+        handles_dirty_=true;
         require_scene_elements().admit_aggregate_member(
             aggregate,actor,motion,contact_distance);
-        handles_dirty_=true;
     }
     void retire_shape(BodyId actor) override {
-        require_scene_elements().retire(actor);
         handles_dirty_=true;
+        require_scene_elements().retire(actor);
     }
     void set_shape_simulation_enabled(BodyId actor,bool enabled) override {
-        require_scene_elements().set_simulation_enabled(actor,enabled);
         handles_dirty_=true;
+        require_scene_elements().set_simulation_enabled(actor,enabled);
     }
     void post_reports_cleanup() override {
         if(source_sc_elements_)source_sc_elements_->post_reports_cleanup();
