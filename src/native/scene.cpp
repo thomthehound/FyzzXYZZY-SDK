@@ -7314,6 +7314,20 @@ void Scene::prepare_constraints(float seconds) {
                 patch.row_offset=solver_friction_rows_.size();
                 continue;
             }
+            if(gpu_normal_prep && manifold.pcm_result_index!=
+               std::numeric_limits<std::uint32_t>::max()) {
+                // A PCM box manager publishes one common Gu normal and
+                // therefore one correlated patch. Retain the source
+                // cached anchors as input; GPU Dy grows them directly
+                // from device Gu contacts before building tangent rows.
+                if(manifold.friction_patch_count!=1u ||
+                   patch.contact_count!=manifold.count)
+                    throw std::logic_error(
+                        "Source GPU PCM friction is not one correlated patch");
+                patch.row_offset=solver_friction_rows_.size();
+                solver_friction_rows_.insert(solver_friction_rows_.end(),4u,{});
+                continue;
+            }
             const Vec3 extent=sub(patch.bounds_max,patch.bounds_min);
             const float diagonal_sq=squared_length(extent);
             bool keep_pair=false;
@@ -7624,11 +7638,33 @@ void Scene::solve_gpu_distance_constraints(float seconds) {
                    solver_friction_rows_.size()-patch.row_offset ||
                patch.contact_count>m.count-(cursor-m.solver_offset))
                 throw std::logic_error("GPU Dy friction patch rows invalid");
+            const bool pcm_growth=m.pcm_result_index!=
+                std::numeric_limits<std::uint32_t>::max() &&
+                !patch.disable_friction;
+            if(pcm_growth) {
+                if(patch.row_offset%2u || patch.row_offset/2u+2u>
+                   gpu_dy_friction_anchors_.size())
+                    throw std::logic_error(
+                        "Source GPU PCM has no room for two friction anchors");
+                for(std::size_t k=0u;k<patch.anchor_count;++k) {
+                    auto& anchor=gpu_dy_friction_anchors_[patch.row_offset/2u+k];
+                    pack(anchor.local_a,patch.body0_anchors[k]);
+                    pack(anchor.local_b,patch.body1_anchors[k]);
+                }
+            }
+            const auto extent=Vec3{
+                patch.bounds_max.x-patch.bounds_min.x,
+                patch.bounds_max.y-patch.bounds_min.y,
+                patch.bounds_max.z-patch.bounds_min.z};
+            const float diagonal=extent.x*extent.x+
+                extent.y*extent.y+extent.z*extent.z;
             gpu_dy_patches_[i]={
                 narrow(patch.row_offset),patch.contact_count,
-                patch.anchor_count,patch.broken?1u:0u,
+                patch.anchor_count,(patch.broken?1u:0u)|
+                    (pcm_growth?0x80000000u:0u),
                 patch.static_friction,patch.dynamic_friction,
-                narrow(cursor),0u};
+                narrow(cursor),pcm_growth
+                    ? std::bit_cast<std::uint32_t>(diagonal):0u};
             cursor+=patch.contact_count;
         }
         if(cursor!=m.solver_offset+m.count)
@@ -7666,6 +7702,49 @@ void Scene::solve_gpu_distance_constraints(float seconds) {
             unpack(gpu_dy_friction_writeback_[i].tangent);
         solver_friction_rows_[i].applied_force=
             gpu_dy_friction_writeback_[i].applied_force;
+    }
+    // Sc retains the authoritative body-local strong-friction history.
+    // GPU PCM selected changed anchors using the same Gu point ordinals;
+    // reconstruct their local coordinates only after Dy's source task
+    // completed and its compact patch report has been fetched.
+    const auto local_point=[](const Actor& actor,Vec3 world) {
+        const auto& q=actor.orientation;
+        return rotate(Quat{-q.x,-q.y,-q.z,q.w},
+            {world.x-actor.position.x,
+             world.y-actor.position.y,world.z-actor.position.z});
+    };
+    for(const auto manager_index:indexed_managers_) {
+        const auto& m=manifolds_[manager_index];
+        if(m.pcm_result_index==std::numeric_limits<std::uint32_t>::max())
+            continue;
+        const bool reversed=island_edges_[m.edge_handle].gu_order_reversed;
+        const Actor& a=actors_[reversed?m.pair.b:m.pair.a];
+        const Actor& b=actors_[reversed?m.pair.a:m.pair.b];
+        for(std::size_t i=m.friction_patch_offset;
+            i<m.friction_patch_offset+m.friction_patch_count;++i) {
+            auto& patch=friction_patches_[i];
+            if(patch.disable_friction)continue;
+            const auto& returned=gpu_dy_patches_[i];
+            const auto count=returned.anchor_count;
+            if(count>2u)throw std::logic_error(
+                "Source GPU PCM returned more than two friction anchors");
+            const std::uint32_t report=returned.reserved;
+            for(std::uint32_t k=0u;k<count;++k) {
+                const std::uint32_t source=(report>>(3u+3u*k))&7u;
+                if(!source)continue;
+                const auto j=source-1u;
+                if(j>=m.count)throw std::logic_error(
+                    "Source GPU friction selected an invalid Gu witness");
+                patch.contact_ids[k]=static_cast<std::uint16_t>(j);
+                patch.body0_anchors[k]=local_point(a,m.points[j].position);
+                patch.body1_anchors[k]=local_point(b,m.points[j].position);
+            }
+            if(count==0u) {
+                patch.body0_anchors[0]={};
+                patch.body1_anchors[0]={};
+            }
+            patch.anchor_count=static_cast<std::uint8_t>(count);
+        }
     }
     for(std::size_t i=0;i<friction_patches_.size();++i)
         friction_patches_[i].broken=gpu_dy_patches_[i].broken!=0u;
