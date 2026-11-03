@@ -1157,12 +1157,16 @@ void execute(Context& context, ShaderBinary translateShader,
                 metadata.groups.getDevicePtr(),moved.getCapacity());
             const auto source_distances=read_words(
                 metadata.contact_distances.getDevicePtr(),moved.getCapacity());
+            const auto expected_metadata=aabb.scene_bounds();
+            require(expected_metadata.contact_distances[1]==
+                        movedBoxes[1].contact_offset,
+                "Authored Sc contact-distance edit was not published");
             for(std::size_t i=0;i<moved.getCapacity();++i) {
-                require(source_groups[i]==static_cast<physx::PxU32>(groups[i]),
+                require(source_groups[i]==static_cast<physx::PxU32>(
+                            expected_metadata.groups[i]),
                     "Sparse source SAP transfer lost a resident filter group");
-                const auto expected=i==1u ? movedBoxes[1].contact_offset :
-                    distances[i];
-                require(source_distances[i]==std::bit_cast<physx::PxU32>(expected),
+                require(source_distances[i]==std::bit_cast<physx::PxU32>(
+                            expected_metadata.contact_distances[i]),
                     "Sparse source SAP transfer lost a resident contact distance");
             }
             const auto secondGpu=read_words(
