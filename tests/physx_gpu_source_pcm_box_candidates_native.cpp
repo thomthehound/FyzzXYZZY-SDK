@@ -68,10 +68,10 @@ void verify(Context& context,const char* transform_shader,
     // An invalid source manager must remain rejectable after counter
     // saturation; never turn an out-of-range count into a valid witness.
     fixture.packed_counts=7u|(1u<<3u)|(7u<<6u)|(1u<<9u)|(7u<<10u);
-    const auto rejected=unpack_source_pcm_sc_contact_native(fixture);
-    require(rejected.edge_handle==197u && rejected.cached_count==7u &&
-            rejected.status==1u && rejected.emitted_count==7u &&
-            rejected.selected_and_regenerated==0x80000007u,
+    const auto invalid_stream=unpack_source_pcm_sc_contact_native(fixture);
+    require(invalid_stream.edge_handle==197u && invalid_stream.cached_count==7u &&
+            invalid_stream.status==1u && invalid_stream.emitted_count==7u &&
+            invalid_stream.selected_and_regenerated==0x80000007u,
             "Packed PCM counters hid an invalid Sc source manager");
     constexpr float z=0.3826834323650898f;
     constexpr float w=0.9238795325112867f;
