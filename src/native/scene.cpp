@@ -232,6 +232,7 @@ BodyId Scene::add(Actor actor,std::optional<AggregateId> aggregate) {
             gpu_broadphase_->admit_shape(id,motion,actor.contact_offset);
     }
     actors_.push_back(actor);
+    if(actor.kind==Kind::StaticPlane)has_admitted_plane_=true;
     live_actor_ids_.push_back(id);
     broadphase_endpoint_membership_dirty_=true;
     if(dynamic_node)++live_dynamic_count_;
@@ -2048,6 +2049,11 @@ void Scene::update_gpu_pairs(bool force_update) {
     // and dynamic shapes, just as in the native source Bp branch. Gu
     // decides accurate touch; GPU SAP alone owns finite BP membership.
     const auto append_plane_managers=[&] {
+        if(!has_admitted_plane_) {
+            broadphase_pair_membership_changed_=
+                pending_pairs_!=previous_pairs_;
+            return;
+        }
         for(const BodyId plane:live_actor_ids_) {
             const auto& actor=actors_[plane];
             if(!actor.alive || !actor.simulation_shape_enabled ||
@@ -2177,7 +2183,7 @@ void Scene::update_gpu_pairs(bool force_update) {
     if(found.empty() && lost.empty()) {
         // Plane/rigid admission and shape flags are authored without
         // finite SAP crossings. Recheck only when Sc has a dirty edit.
-        if(!dirty_ && !force_update) {
+        if(!has_admitted_plane_ || (!dirty_ && !force_update)) {
             broadphase_pair_membership_changed_=false;
             return;
         }
