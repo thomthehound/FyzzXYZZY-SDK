@@ -229,6 +229,9 @@ public:
     std::size_t pcm_contact_readback_bytes() const noexcept {
         return pcm_ ? pcm_->last_contact_download_bytes() : 0u;
     }
+    std::size_t pcm_edge_history_copy_bytes() const noexcept {
+        return pcm_ ? pcm_->last_edge_history_copy_bytes() : 0u;
+    }
     std::size_t dy_pcm_device_contact_rows() const noexcept {
         return dy_distance_ ? dy_distance_->last_reused_pcm_contact_rows() : 0u;
     }
