@@ -395,7 +395,10 @@ public:
         // The source GPU kernel constructs all writable Gu contact rows.
         // One ordered source upload covers every other active input and
         // stops before the contact-row arena, without scattered HtoD spans.
-        arena_.allocateCopyOldDataAsync(total,stream_,PX_FL);
+        // Only the Sc EdgeIndex friction mirror survives arena growth;
+        // every other Dy input and writeback is rebuilt for this frame.
+        arena_.allocateCopyPrefixAsync(
+            total,friction_history_capacity_*64u,stream_,PX_FL);
         friction_history_capacity_=next_history_capacity_;
         const auto address=arena_.getDevicePtr();
         const std::size_t uploaded_bytes=
