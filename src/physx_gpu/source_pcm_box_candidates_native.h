@@ -26,6 +26,9 @@ struct SourcePcmBoxPairNative {
 };
 static_assert(sizeof(SourcePcmBoxPairNative)==20u);
 constexpr std::uint32_t source_pcm_reset_cache_bit=0x80000000u;
+// Plane-box descriptors reuse the candidate offset and first-element
+// words for the height and contact distance, since they emit no candidates.
+constexpr std::uint32_t source_pcm_plane_bit=0x40000000u;
 
 // GuPCMContactBoxBox::pcmContactBoxBox requires local A/B witnesses and a
 // B-local normal before the source persistent-manifold reduction.
