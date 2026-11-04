@@ -124,30 +124,42 @@ void verify_native_rigid_contact() {
 }
 
 void verify_sphere_face_contact() {
-    World world({.execution=ExecutionMode::NativeCpu,
-                 .contact_notifications=true});
-    const auto cube=cook_convex_mesh(cube_vertices,cube_faces);
-    const auto fixed=world.create_static_body({});
-    world.attach_convex_shape(fixed,cube);
-    const auto sphere=world.add_dynamic_sphere(
-        0.2f,{0.273157f,-0.794949f,-1.0039f},1.f);
-    RigidBodyDynamics settings{};
-    settings.gravity_enabled=false;
-    settings.position_iterations=24u;
-    world.set_body_dynamics(sphere,settings);
-    world.step(1.f/120.f);
-    const auto events=world.contact_events();
-    require(events.size()==1u && events[0].kind==ContactEventKind::Found &&
-            events[0].contact_count>0u,
-            "Near-face convex/sphere penetration lost its contact manager");
-    const auto points=world.contact_event_points();
-    require(events[0].point_offset<points.size(),
-            "Near-face contact lost its published witness");
-    const auto& point=points[events[0].point_offset];
-    near(point.separation,-0.1961,0.015,
-         "Near-face sphere penetration differs from geometric depth");
-    require(std::abs(point.normal.z)>0.95f,
-            "Near-face sphere contact normal is not face-aligned");
+    // The local vertex origin may be far outside a cooked hull without
+    // changing its physical size, contact geometry, or margin thresholds.
+    for(float origin:std::array{0.f,100.f}) {
+        auto vertices=cube_vertices;
+        for(auto& vertex:vertices) {
+            vertex.x+=origin;
+            vertex.y+=origin;
+            vertex.z+=origin;
+        }
+        World world({.execution=ExecutionMode::NativeCpu,
+                     .contact_notifications=true});
+        const auto cube=cook_convex_mesh(vertices,cube_faces);
+        const auto fixed=world.create_static_body({
+            {-origin,-origin,-origin},{}});
+        world.attach_convex_shape(fixed,cube);
+        const auto sphere=world.add_dynamic_sphere(
+            0.2f,{0.273157f,-0.794949f,-1.0039f},1.f);
+        RigidBodyDynamics settings{};
+        settings.gravity_enabled=false;
+        settings.position_iterations=24u;
+        world.set_body_dynamics(sphere,settings);
+        world.step(1.f/120.f);
+        const auto events=world.contact_events();
+        require(events.size()==1u &&
+                events[0].kind==ContactEventKind::Found &&
+                events[0].contact_count>0u,
+                "Near-face convex/sphere penetration lost its contact manager");
+        const auto points=world.contact_event_points();
+        require(events[0].point_offset<points.size(),
+                "Near-face contact lost its published witness");
+        const auto& point=points[events[0].point_offset];
+        near(point.separation,-0.1961,0.015,
+             "Near-face sphere penetration differs from geometric depth");
+        require(std::abs(point.normal.z)>0.95f,
+                "Near-face sphere contact normal is not face-aligned");
+    }
 }
 
 void verify_finite_pair_matrix() {
