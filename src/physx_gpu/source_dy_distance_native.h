@@ -561,10 +561,17 @@ public:
         dispatch.buffers.push_back(bind_shape(
             shape_geometry,64u,4u,compute::BufferAccess::Read,
             integration_header[2]));
+        // Keep the optional hull view read-only and outside the writable
+        // Dy row arena whenever Sc geometry is available. Binding the
+        // same arena as both read and read-write weakens pass hazards.
+        const auto hull_source=convex_vertex_count?convex_vertices:
+            (has_shape_targets?shape_geometry:address);
+        const auto hull_bytes=convex_vertex_count
+            ? source_allocation_bytes(convex_vertex_count,12u)
+            : (has_shape_targets
+                ? source_allocation_bytes(shape_capacity,64u):total);
         dispatch.buffers.push_back(source_native_view(
-            addresses_,convex_vertex_count?convex_vertices:address,
-            convex_vertex_count
-                ? source_allocation_bytes(convex_vertex_count,12u):total,
+            addresses_,hull_source,hull_bytes,
             alignment_,5u,compute::BufferAccess::Read,
             integration_header[9],max_view_));
         std::memcpy(host_.data()+offsets[12],
