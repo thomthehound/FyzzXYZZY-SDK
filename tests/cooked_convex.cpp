@@ -3,6 +3,7 @@
 
 #include "fyzzxyzzy/convex.h"
 
+#include <algorithm>
 #include <array>
 #include <cmath>
 #include <iostream>
@@ -29,8 +30,47 @@ constexpr std::array<ConvexTriangle,12> cube_faces{{
     {0,1,5},{0,5,4},{3,7,6},{3,6,2},
     {0,4,7},{0,7,3},{1,2,6},{1,6,5}}};
 
+void verify_faces(const ConvexMesh& mesh,std::size_t expected) {
+    const auto faces=mesh.faces();
+    const auto indices=mesh.face_indices();
+    const auto vertices=mesh.vertices();
+    require(faces.size()==expected,"Cooked planar polygon count");
+    for(const auto& face:faces) {
+        require(face.index_count>=3u && face.first_index<=indices.size() &&
+                face.index_count<=indices.size()-face.first_index,
+                "Cooked polygon index window invalid");
+        const auto n=face.normal;
+        near(double(n.x)*n.x+double(n.y)*n.y+double(n.z)*n.z,
+             1.0,1.e-5,"Cooked face normal not unit length");
+        double twice_area=0.0;
+        const auto a=vertices[indices[face.first_index]];
+        for(std::uint32_t i=0u;i<face.index_count;++i) {
+            const auto index=indices[face.first_index+i];
+            require(index<vertices.size(),"Cooked face vertex outside hull");
+            for(std::uint32_t j=0u;j<i;++j)
+                require(index!=indices[face.first_index+j],
+                        "Cooked polygon repeats a boundary vertex");
+            const auto v=vertices[index];
+            near(double(n.x)*v.x+double(n.y)*v.y+
+                 double(n.z)*v.z,face.distance,1.e-4,
+                 "Cooked face vertex not in its plane");
+            if(i>=2u) {
+                const auto b=vertices[indices[face.first_index+i-1u]];
+                const auto c=v;
+                const Vec3 e{b.x-a.x,b.y-a.y,b.z-a.z};
+                const Vec3 f{c.x-a.x,c.y-a.y,c.z-a.z};
+                twice_area+=double(n.x)*(double(e.y)*f.z-double(e.z)*f.y)+
+                    double(n.y)*(double(e.z)*f.x-double(e.x)*f.z)+
+                    double(n.z)*(double(e.x)*f.y-double(e.y)*f.x);
+            }
+        }
+        require(twice_area>1.e-6,
+                "Cooked polygon lost its outward boundary winding");
+    }
+}
 void verify_tetra() {
     const auto mesh=cook_convex_mesh(tetra_vertices,tetra_faces);
+    verify_faces(*mesh,4u);
     const auto& mass=mesh->mass_properties();
     near(mass.volume,1.0/6.0,1.e-8,"Tetrahedron volume");
     near(mass.center.x,0.25,1.e-6,"Tetrahedron COM x");
@@ -62,6 +102,10 @@ void verify_tetra() {
 
 void verify_cube() {
     const auto mesh=cook_convex_mesh(cube_vertices,cube_faces);
+    verify_faces(*mesh,6u);
+    for(const auto& face:mesh->faces())
+        require(face.index_count==4u,
+                "Cube face split across triangulation diagonals");
     const auto& mass=mesh->mass_properties();
     near(mass.volume,8.,1.e-7,"Cube volume");
     near(mass.center.x,0.,1.e-7,"Cube COM");
@@ -87,6 +131,7 @@ void verify_wedge() {
         {0,3,5},{0,5,2},
         {1,2,5},{1,5,4}}};
     const auto hull=cook_convex_mesh(vertices,faces);
+    verify_faces(*hull,5u);
     const auto& mass=hull->mass_properties();
     near(mass.volume,1.0,1.e-8,"Wedge volume");
     near(mass.center.x,1.0/3.0,1.e-6,"Wedge COM x");
@@ -96,6 +141,20 @@ void verify_wedge() {
     near(mass.inertia_columns[1].y,7.0/18.0,1.e-6,"Wedge Iyy");
     near(mass.inertia_columns[2].z,1.0/9.0,1.e-6,"Wedge Izz");
     near(mass.inertia_columns[1].x,1.0/36.0,1.e-6,"Wedge Ixy");
+}
+
+void verify_pentagonal_face() {
+    constexpr std::array<Vec3,6> vertices{{
+        {-1,0,-1},{-1,0,1},{0,0,1.5f},
+        {1,0,1},{1,0,-1},{0,1,0}}};
+    constexpr std::array<ConvexTriangle,8> faces{{
+        {0,2,1},{0,3,2},{0,4,3},
+        {0,1,5},{1,2,5},{2,3,5},{3,4,5},{4,0,5}}};
+    const auto hull=cook_convex_mesh(vertices,faces);
+    verify_faces(*hull,6u);
+    require(std::any_of(hull->faces().begin(),hull->faces().end(),
+        [](const ConvexFace& face){return face.index_count==5u;}),
+        "Cooked pentagon failed to merge coplanar triangles");
 }
 
 void verify_native_rigid_contact() {
@@ -299,6 +358,7 @@ int main() {
         verify_tetra();
         verify_cube();
         verify_wedge();
+        verify_pentagonal_face();
         verify_invalid();
         verify_native_rigid_contact();
         verify_sphere_face_contact();
