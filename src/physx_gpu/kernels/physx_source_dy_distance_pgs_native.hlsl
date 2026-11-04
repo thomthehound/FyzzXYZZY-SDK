@@ -223,7 +223,8 @@ void integrateBody(uint ordinal) {
         const uint element=arena.Load(input+72u);
         if(element>=views.w)return;
         const uint geo=views.z+element*64u;
-        if(scGeometry.Load(geo+28u)!=0u)return;
+        const uint sourceKind=scGeometry.Load(geo+28u);
+        if(sourceKind!=0u && sourceKind!=2u)return;
         const float3 shapeLocal=asfloat(scGeometry.Load3(geo+16u));
         const float4 shapeLocalAxes=asfloat(scGeometry.Load4(geo+32u));
         const uint shape=views.x+element*32u;
