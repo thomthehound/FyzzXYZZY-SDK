@@ -270,11 +270,21 @@ static_assert(sizeof(GpuDyContactPrepPair)==248u &&
               offsetof(GpuDyContactPrepPair,max_contact_impulse)==240u &&
               offsetof(GpuDyContactPrepPair,cpu_gu_offset)==244u);
 
+struct GpuConvexFaceSpan {
+    std::uint32_t first_face=0;
+    std::uint32_t face_count=0;
+};
+
 class GpuBroadphaseProducer {
 public:
     virtual ~GpuBroadphaseProducer()=default;
     virtual void upload_convex_vertices(std::span<const Vec3>) {
         throw std::logic_error("GPU geometry owner cannot accept convex meshes");
+    }
+    virtual void upload_convex_geometry(
+        std::span<const Vec3>,std::span<const GpuConvexFaceSpan>,
+        std::span<const ConvexFace>,std::span<const std::uint32_t>) {
+        throw std::logic_error("GPU geometry owner cannot accept convex faces");
     }
     virtual GpuBroadphaseReports advance(
         std::span<const GpuBroadphaseBox> live_boxes,
@@ -1272,6 +1282,11 @@ private:
     std::vector<Actor> actors_;
     std::vector<Shape> shapes_;
     std::vector<Vec3> convex_vertices_;
+    // The span table is indexed by the first vertex of each cooked resource;
+    // other entries remain empty. Faces and boundary indices are immutable.
+    std::vector<GpuConvexFaceSpan> convex_face_spans_;
+    std::vector<ConvexFace> convex_faces_;
+    std::vector<std::uint32_t> convex_face_indices_;
     std::size_t uploaded_convex_vertex_count_=0;
     std::size_t rigid_shape_count_=0;
     using EdgeIndex=std::uint32_t;
