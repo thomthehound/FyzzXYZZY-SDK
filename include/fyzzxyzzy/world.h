@@ -295,6 +295,10 @@ public:
         BodyId,BodyId,Transform,Transform) {
         throw std::logic_error("This backend has no revolute rigid constraints");
     }
+    virtual ConstraintId add_prismatic_constraint(
+        BodyId,BodyId,Transform,Transform) {
+        throw std::logic_error("This backend has no prismatic rigid constraints");
+    }
     virtual void remove_constraint(ConstraintId) {
         throw std::logic_error("This backend cannot retire a constraint");
     }
@@ -419,6 +423,10 @@ public:
     // Coincident local-frame origins and aligned local X hinge axes.
     // Rotation about the shared axis is unconstrained.
     ConstraintId add_revolute_constraint(
+        BodyId a,BodyId b,Transform local_a,Transform local_b);
+    // Preserve relative orientation and transverse position while
+    // permitting translation along the authored local X axis.
+    ConstraintId add_prismatic_constraint(
         BodyId a,BodyId b,Transform local_a,Transform local_b);
     void remove_constraint(ConstraintId id);
     void step(float seconds);

@@ -426,4 +426,78 @@ inline void revolute_joint_response(World& world,World* reference) {
     retire(world,actual);
     if(reference)retire(*reference,expected);
 }
+inline void prismatic_joint_response(World& world,World* reference) {
+    constexpr Quat frame_rotation{0.0f,0.258819045f,0.0f,0.965925826f};
+    constexpr Transform local_dynamic{{0.4f,0.2f,0.0f},frame_rotation};
+    constexpr Transform local_static{{-1.6f,0.2f,0.0f},frame_rotation};
+    constexpr Vec3 pivot{0.4f,5.2f,0.0f};
+    const Vec3 axis=compound_rotate(frame_rotation,{1.0f,0.0f,0.0f});
+    struct Assembly {BodyId anchor,body;ConstraintId joint;};
+    const auto create=[&](World& w) {
+        const auto anchor=w.create_static_body({{2.0f,5.0f,0.0f},{}});
+        const auto body=w.create_dynamic_body({{0.0f,5.0f,0.0f},{}});
+        w.attach_box_shape(body,{0.36f,0.2f,0.26f},{{0.25f,0.3f,0.1f},{}});
+        w.attach_sphere_shape(body,0.2f,{{-0.3f,0.2f,-0.1f},{}});
+        w.update_mass_properties(body,3.0f);
+        const auto joint=w.add_prismatic_constraint(
+            body,anchor,local_dynamic,local_static);
+        w.set_body_velocity(body,{0.7f,0.2f,-0.3f});
+        w.set_body_angular_velocity(body,{0.3f,-0.4f,0.2f});
+        return Assembly{anchor,body,joint};
+    };
+    const auto actual=create(world),expected=reference?create(*reference):actual;
+    constexpr float dt=1.0f/120.0f;
+    float last_slide=0.0f;
+    for(unsigned frame=0;frame<24u;++frame) {
+        world.add_body_torque(actual.body,{0.1f,0.12f,-0.08f});
+        world.step(dt);
+        if(reference) {
+            reference->add_body_torque(expected.body,{0.1f,0.12f,-0.08f});
+            reference->step(dt);
+            compound_compare_state(world.body_state(actual.body),
+                reference->body_state(expected.body),0.008f,
+                "Prismatic joint response");
+        }
+        const auto state=world.body_state(actual.body);
+        const auto rotated=compound_rotate(state.orientation,local_dynamic.position);
+        const Vec3 origin{state.position.x+rotated.x,
+                          state.position.y+rotated.y,
+                          state.position.z+rotated.z};
+        const Vec3 offset{origin.x-pivot.x,origin.y-pivot.y,origin.z-pivot.z};
+        const float slide=offset.x*axis.x+offset.y*axis.y+offset.z*axis.z;
+        const Vec3 transverse{offset.x-slide*axis.x,
+                              offset.y-slide*axis.y,
+                              offset.z-slide*axis.z};
+        compound_require(compound_error(transverse,{})<0.015f,
+                         "Prismatic joint lost its transverse lock");
+        compound_require(std::abs(state.orientation.x)<0.02f &&
+                         std::abs(state.orientation.y)<0.02f &&
+                         std::abs(state.orientation.z)<0.02f,
+                         "Prismatic joint failed to lock rotation");
+        last_slide=slide;
+    }
+    compound_require(last_slide>0.05f,
+                     "Prismatic joint incorrectly locked axial translation");
+    const auto held=world.body_state(actual.body);
+    const auto retire=[&](World& w,Assembly assembly) {
+        w.remove_constraint(assembly.joint);
+        const auto replacement=w.add_prismatic_constraint(
+            assembly.body,assembly.anchor,local_dynamic,local_static);
+        bool rejected=false;
+        try {w.remove_constraint(assembly.joint);}
+        catch(const std::out_of_range&) {rejected=true;}
+        compound_require(rejected,"Retired prismatic token reached a recycled joint");
+        w.remove_constraint(replacement);
+        w.set_body_velocity(assembly.body,{0.0f,2.0f,0.0f});
+        w.step(0.12f);
+        const auto free=w.body_state(assembly.body);
+        compound_require(free.position.y>held.position.y+0.05f,
+                         "Retiring a prismatic joint did not restore transverse motion");
+        w.remove_body(assembly.body);
+        w.remove_body(assembly.anchor);
+        w.step(dt);
+    };
+    retire(world,actual);
+    if(reference)retire(*reference,expected);
+}
 } // namespace fyzz::test

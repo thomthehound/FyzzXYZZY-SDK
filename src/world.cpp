@@ -258,6 +258,13 @@ ConstraintId World::add_revolute_constraint(
         a,b,validated_transform(local_a),validated_transform(local_b));
 }
 
+ConstraintId World::add_prismatic_constraint(
+    BodyId a,BodyId b,Transform local_a,Transform local_b) {
+    if(a==b)throw std::invalid_argument("Prismatic joint requires distinct actors");
+    return impl_->add_prismatic_constraint(
+        a,b,validated_transform(local_a),validated_transform(local_b));
+}
+
 void World::remove_constraint(ConstraintId id) {
     impl_->remove_constraint(id);
 }

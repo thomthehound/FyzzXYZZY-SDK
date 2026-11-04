@@ -569,6 +569,8 @@ public:
         BodyId a,BodyId b,Transform local_a,Transform local_b);
     ConstraintId create_revolute_constraint(
         BodyId a,BodyId b,Transform local_a,Transform local_b);
+    ConstraintId create_prismatic_constraint(
+        BodyId a,BodyId b,Transform local_a,Transform local_b);
     void retire_constraint(ConstraintId id);
     // Source ScBodyCore per-rigid body unconstrained Dy inputs; no
     // separate solver owner or scene-global parameter shadow.
@@ -1320,7 +1322,7 @@ private:
     std::vector<EdgeIndex> active_constraint_handles_;
     // ScConstraintSim and Dy::Constraint::index are separate from the
     // IslandSim EdgeIndex, with recycled IDTracker indices.
-    enum class JointKind : std::uint8_t { Distance, Fixed, Spherical, Revolute };
+    enum class JointKind : std::uint8_t { Distance, Fixed, Spherical, Revolute, Prismatic };
     struct ConstraintRecord {
         EdgeIndex edge=invalid_edge;
         float distance_length=0.0f;

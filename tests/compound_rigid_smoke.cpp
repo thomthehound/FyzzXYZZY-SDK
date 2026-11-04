@@ -18,6 +18,7 @@ int main() {
         fyzz::test::fixed_joint_response(native,comparison);
         fyzz::test::spherical_joint_response(native,comparison);
         fyzz::test::revolute_joint_response(native,comparison);
+        fyzz::test::prismatic_joint_response(native,comparison);
         std::cout<<"compound rigid smoke: passed\n";
         return 0;
     }catch(const std::exception& error) {
