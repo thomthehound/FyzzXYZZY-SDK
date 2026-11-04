@@ -3,6 +3,8 @@
 #pragma once
 
 #include "fyzzxyzzy/convex.h"
+#include <fstream>
+#include <iterator>
 
 inline void verify_convex_plane_gpu_solver(
     fyzz::compute::Backend backend,const char* sap,
