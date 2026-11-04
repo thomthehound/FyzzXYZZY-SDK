@@ -51,10 +51,14 @@ public:
         SourceSapDmaNative& stream,physx::PxgHeapMemoryAllocator& allocator,
         const SourceScGpuBroadphaseProducerNative& sc,
         physx::PxgCudaBuffer& transforms,physx::PxgCudaBuffer& geometry,
+        physx::PxgCudaBuffer& convex_vertices,
+        const std::uint32_t& convex_vertex_count,
         compute::ShaderBinary candidate,compute::ShaderBinary compact,
         compute::ShaderBinary epa)
         : context_(context),addresses_(addresses),stream_(stream),sc_(sc),
           transforms_(transforms),geometry_(geometry),
+          convex_vertices_(convex_vertices),
+          convex_vertex_count_(convex_vertex_count),
           candidates_stage_(context,std::move(candidate)),
           sparse_stage_(context,std::move(compact)),
           epa_stage_(context,std::move(epa)),
@@ -215,6 +219,7 @@ public:
             pairs_.getDevicePtr(),results_.getDevicePtr(),
             candidates_.getDevicePtr(),edges_.getDevicePtr(),
             indirect_address_,dense_contacts_.getDevicePtr(),
+            convex_vertices_.getDevicePtr(),convex_vertex_count_,
             pair_count,shape_capacity,candidate_capacity,edge_capacity);
         sparse_stage_.append(stream_,addresses_,
             results_.getDevicePtr(),work_.getDevicePtr(),
@@ -306,6 +311,8 @@ private:
     const SourceScGpuBroadphaseProducerNative& sc_;
     physx::PxgCudaBuffer& transforms_;
     physx::PxgCudaBuffer& geometry_;
+    physx::PxgCudaBuffer& convex_vertices_;
+    const std::uint32_t& convex_vertex_count_;
     SourcePcmBoxCandidatesNativeStage candidates_stage_;
     SourcePcmSparseEpaNativeStage sparse_stage_;
     SourcePcmEpaNativeStage epa_stage_;
