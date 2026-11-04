@@ -207,7 +207,7 @@ void integrateBody(uint ordinal) {
     }
     // Source DyBodyCoreIntegrator::integrateCore uses saved
     // position-iteration deltas, not the final velocity deltas.
-    const uint input=p.integrationBias+44u+ordinal*112u;
+    const uint input=p.integrationBias+36u+ordinal*112u;
     if(arena.Load(input+68u)==0u)return;
     const float3 baseLinear=asfloat(arena.Load3(input));
     const float3 baseAngular=asfloat(arena.Load3(input+12u));
@@ -241,7 +241,7 @@ void integrateBody(uint ordinal) {
     } else {
         const uint count=arena.Load(p.integrationBias+32u);
         if(poseIndex>=count)return;
-        const uint pose=p.integrationBias+44u+count*112u+poseIndex*28u;
+        const uint pose=p.integrationBias+36u+count*112u+poseIndex*28u;
         position=asfloat(arena.Load3(pose));
         quaternion=asfloat(arena.Load4(pose+12u));
     }
@@ -308,12 +308,11 @@ void integrateBody(uint ordinal) {
         const float4 shapeQuaternion=kind==1u?float4(0,0,0,1):sourceRigidMultiply(nextQuaternion,localQuaternion);
         float3 lower,upper;
         if(kind==2u) {
-            const uint vertexBias=arena.Load(p.integrationBias+36u);
-            const uint capacity=arena.Load(p.integrationBias+40u);
+            const uint vertexBias=p.reservedOutput;
             const uint first=scGeometry.Load(geometryIndex+52u);
             const uint vertexCount=scGeometry.Load(geometryIndex+56u);
-            if(vertexCount<4u || first>capacity ||
-               vertexCount>capacity-first)return;
+            if(vertexCount<4u || first>0xffffffffu/12u ||
+               vertexCount>(0xffffffffu/12u)-first)return;
             lower=float3(3.402823466e38f,3.402823466e38f,3.402823466e38f);
             upper=-lower;
             for(uint j=0u;j<vertexCount;++j) {
