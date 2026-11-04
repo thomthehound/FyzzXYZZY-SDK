@@ -109,6 +109,18 @@ void main(uint3 thread : SV_DispatchThreadID) {
         boxPair.countB>p.hullCount-boxPair.firstB))return;
     if(boxPair.kindA==1u)boxPair.halfA=boxPair.radiusA;
     if(boxPair.kindB==1u)boxPair.halfB=boxPair.radiusB;
+    // Support vertices retain their original local coordinates; EPA
+    // convergence uses hull dimensions, not their origin-relative reach.
+    if(boxPair.kindA==2u) {
+        const float extent=asfloat(geometry.Load(ga+60u));
+        if(!(extent>0.f) || !isfinite(extent))return;
+        boxPair.halfA=float3(extent,extent,extent);
+    }
+    if(boxPair.kindB==2u) {
+        const float extent=asfloat(geometry.Load(gb+60u));
+        if(!(extent>0.f) || !isfinite(extent))return;
+        boxPair.halfB=float3(extent,extent,extent);
+    }
     float distance=asfloat(geometry.Load(ga+12u))+
                    asfloat(geometry.Load(gb+12u));
     GjkWitness contact;
