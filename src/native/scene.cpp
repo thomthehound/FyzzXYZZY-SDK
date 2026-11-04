@@ -4015,8 +4015,8 @@ void Scene::update_contacts() {
                 manifold.count=old->count;
             }
         }
-        if(pcm_sphere && !source_gpu_pcm && !plane_pair ||
-           (pcm_sphere && plane_pair && !gpu_pcm_plane)) {
+        if(pcm_sphere && (!source_gpu_pcm ||
+                          (plane_pair && !gpu_pcm_plane))) {
             const bool use_pcm=plane_pair
                 ? pcm_plane_box_enabled_:pcm_box_box_enabled_;
             std::array<ContactPoint,1> output{};
