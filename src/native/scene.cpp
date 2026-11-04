@@ -3786,6 +3786,10 @@ void Scene::update_contacts() {
             if(dormant_pcm(pair,edge))continue;
             if(plane) {
                 const Shape& floor=a.geometry==Geometry::Plane?a:b;
+                const Shape& box=a.geometry==Geometry::Plane?b:a;
+                if(box.motion!=Motion::Dynamic)
+                    throw std::logic_error(
+                        "PCM plane-box requires the admitted dynamic box");
                 gpu_pcm_pairs_.push_back({
                     a.geometry==Geometry::Plane?pair.a:pair.b,
                     a.geometry==Geometry::Plane?pair.b:pair.a,
@@ -4159,7 +4163,9 @@ void Scene::update_contacts() {
         // the source separation sign. ScShapeInteraction orders the
         // dynamic body before the plane regardless of creation order;
         // only its published contact stream receives the flip.
-        if(plane_pair) {
+        // The device PCM stream is already in Sc/Dy normal orientation;
+        // CPU Gu still requires its original plane-first reversal.
+        if(plane_pair && !(source_gpu_pcm && pcm_plane)) {
             for(std::size_t k=0;k<manifold.count;++k) {
                 Vec3& n=next_contact_points_[manifold.contact_offset+k].normal;
                 n={-n.x,-n.y,-n.z};
