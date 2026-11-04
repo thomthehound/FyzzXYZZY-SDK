@@ -136,8 +136,9 @@ inline void verify_convex_finite_gpu_solver(
             bool near_face=false;
             for(const auto& manager:cpu.contacts())
                 if(manager.count>0u &&
-                   manager.points[0].separation< -0.17f &&
-                   manager.points[0].separation> -0.21f)
+                   manager.points[0].position.x>23.f &&
+                   std::abs(manager.points[0].separation+0.1961f)<0.015f &&
+                   std::abs(manager.points[0].normal.z)>0.95f)
                     near_face=true;
             if(!near_face)
                 throw std::runtime_error(
