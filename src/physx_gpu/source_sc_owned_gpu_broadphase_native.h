@@ -238,7 +238,9 @@ public:
                             pcm_?pcm_->contact_stream_pair_count():0u,
                             box_cache_.getDevicePtr(),
                             sap_->pre_broadphase_buffers().bounds.getDevicePtr(),
-                            box_geometry_.getDevicePtr(),aabb_->capacity());
+                            box_geometry_.getDevicePtr(),aabb_->capacity(),
+                            convex_vertices_.getDevicePtr(),
+                            box_owners_.convex_vertex_count);
         ++dy_distance_dispatch_count_;
     }
     std::size_t dy_resident_pose_count() const noexcept {
