@@ -24,11 +24,24 @@ a new controller simply to make another increment independently testable.
   buffers, descriptors, stream/event/synchronization). Port the source scene
   dependency graph into the one FyzzXYZZY scheduler; do not let reference
   PhysX, a kernel fixture, or a second owner drive production frames.
-  Algorithm departures require source-grounded justification and tests.
-- Keep original source classes and method boundaries where they correspond
-  to actual ownership and responsibilities. Helpers are welcome for a
-  cohesive private operation; **do not accumulate a new abstraction for
-  every test, CUDA launch, buffer family, or PR**.
+  Preserve required source dependencies and numerical contracts. Physical
+  storage, task batching and hardware work decomposition may change when
+  equivalence and measured cost justify the lowering.
+- Keep cohesive ownership and responsibility boundaries. Source classes
+  and methods provide correspondence, not a permanent physical ABI or
+  CUDA-shaped scheduling requirement. Helpers serve a real production
+  operation; do not accumulate an abstraction per fixture, launch or buffer.
+- Actor motion, body/link dynamics, shape attachments, collision elements
+  and contact managers have distinct identities. Collision keys identify
+  shapes; solver endpoints identify the actual responding bodies or nodes.
+  Geometry sharing does not merge collision elements. Source nonexclusive
+  shape edits propagate to every attachment without sharing their contact
+  histories. Actor, shape and center-of-mass/principal-inertia frames remain
+  explicit.
+- Articulations, FEM bodies and particles retain their numerical state and
+  degrees of freedom under the scene lifetime. Typed interactions connect
+  them with reciprocal response and explicit substep/completion contracts.
+  A reserved node enum or rigid-body substitute does not implement a solver.
 - GPU compute is the primary full-physics implementation target. The
   selected GPU scene must retain shape/transform, broadphase, contact,
   constraint and integrated body state on the device across dependent stages.
@@ -38,9 +51,11 @@ a new controller simply to make another increment independently testable.
 - Native CPU execution is an explicit fallback for unsupported devices and
   a correctness baseline. Reference CPU execution is only an independent
   comparison mode. Production behavior must not silently switch backends
-  on failed GPU admission or for a missing GPU physics stage: fail explicitly
-  and make the execution mode observable. The N2 broadphase/CPU-solver hybrid
-  is an admitted transitional mode, not the full GPU pipeline.
+  on failed GPU admission: fail explicitly and make stage execution
+  observable. Explicit hybrid configurations identify their host-produced
+  contacts, callbacks and solver stages. CPU fallback covers only features
+  actually implemented there; source GPU-only features have separate
+  numerical/reference validation requirements.
 
 ## 2. Native runtime cost is part of correctness
 
@@ -55,8 +70,12 @@ per-frame re-creation of device-owned pipelines.
 
 **Optimize the real frame path, not isolated microtests.** CI software Vulkan
 and D3D12 WARP prove functionality, not relative native GPU throughput.
-Hardware measurements can follow coherent subsystem integration, as set out
-in [GPU_PORT_PROGRAM.md](GPU_PORT_PROGRAM.md).
+Use the [active implementation program](ROADMAP.md) for hardware workloads,
+quality budgets and delivery dependencies. Source-matched precision, large
+connected-island parallelism, cross-allocation addressing and residency must
+be qualified before pointer-rich articulation/nonrigid intake scales up.
+A blanket FP64 requirement, one-workgroup task mapping or bounded arena ABI
+is not accepted as the general engine architecture without that evidence.
 
 ## 3. Source-faithful production integration
 
@@ -68,12 +87,23 @@ PhysX CPU baseline independent; experimental `world_vulkan` and `*_arena`
 demonstrations are not substitutes for integrated production physics.
 
 Track the exact production boundary and absent connections against the
-[active capability roadmap](ROADMAP.md). The admitted native GPU broadphase publishes source-derived multi-frame
-found/lost pairs into native Sc/PCM/Dy on Vulkan and D3D12. With an explicit
-GPU PCM shader bundle, source box/box contacts also reach the native Sc
-contact managers; GPU Dy constraint preparation, solve and body integration
-are not yet integrated. A separate reference scene, test-only GPU fixture, or
-independent simulation scheduler cannot substitute for either capability.
+[active implementation program](ROADMAP.md). The native GPU broadphase
+publishes source-derived multi-frame found/lost pairs into native Sc/PCM/Dy
+on Vulkan and D3D12. Explicit GPU PCM and Dy shader bundles also execute
+box contacts, contact/distance preparation, PGS, friction and integration
+for the admitted rigid subset. Host contact publication, task construction
+and result fetch remain intermediate boundaries. These are integrated
+capabilities with limited scope, not full GPU PhysX or residency acceptance.
+A reference scene or independent fixture scheduler cannot substitute for
+production execution.
+
+### Numerical quality
+
+Choose numerical representations per operation against physical error,
+stability and measured cost. Source arithmetic establishes the initial
+conformance baseline. Contact, constraint, material and coupled-scene
+behavior define the capability; precision choices require evidence across
+the supported parameter domain and must preserve that capability.
 
 ### Source fidelity is a release criterion, not just an intent
 
@@ -99,9 +129,16 @@ For every physics algorithm, shader, and orchestration change:
   correlation, restitution, warm-start invalidation, island partitioning,
   substep clocks, task dependencies and publication. Classify N/A with a
   concrete reason rather than substituting a plausible approximation.
-- Tests must include adversarial numeric limits, many-body behavior,
-  cross-frame lifecycle and independent PhysX comparisons when relevant.
-  No test alone proves complete source parity; review the source mapping.
+- Tests include adversarial numeric limits, many-body behavior, cross-frame
+  lifecycle and independent source comparisons. Native CPU/GPU agreement
+  cannot detect shared mistakes. GPU-only source capabilities require
+  appropriate source-stage/device evidence plus independent analytical,
+  conservation and convergence checks. Numerical budgets precede results;
+  legitimate CPU/GPU algorithm differences require equivalent configurations.
+- Record capability, fidelity, robustness and performance acceptance
+  separately. Source limitations and planned extensions remain explicit.
+  Full source coverage includes public SDK operations and supported mixed
+  interactions, not only the individually named solver subsystems.
 - For an intentional departure, document why it is equivalent, how it
   reduces cost, what it changes, and which executable conformance checks
   would detect a regression. Anything unproven stays non-production.
