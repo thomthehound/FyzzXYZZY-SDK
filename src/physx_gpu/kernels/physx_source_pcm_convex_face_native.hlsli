@@ -86,20 +86,20 @@ float3 convexIncidentVertex(ConvexClip c,uint i) {
 float convexCross2(ConvexClip c,float3 a,float3 b) {
     return gjkDot(c.referenceNormal,cross(a,b));
 }
-bool convexInsideReference(ConvexClip c,float3 point) {
+bool convexInsideReference(ConvexClip c,float3 probe) {
     for(uint i=0u;i<c.nr;++i) {
         const float3 a=convexReferenceVertex(c,i);
         const float3 b=convexReferenceVertex(c,i+1u);
-        if(convexCross2(c,b-a,point-a)<-c.tolerance*c.scale)
+        if(convexCross2(c,b-a,probe-a)<-c.tolerance*c.scale)
             return false;
     }
     return true;
 }
-bool convexInsideIncident(ConvexClip c,float3 point) {
+bool convexInsideIncident(ConvexClip c,float3 probe) {
     for(uint i=0u;i<c.ni;++i) {
         const float3 a=convexIncidentVertex(c,i);
         const float3 b=convexIncidentVertex(c,i+1u);
-        if(convexCross2(c,b-a,point-a)>c.tolerance*c.scale)
+        if(convexCross2(c,b-a,probe-a)>c.tolerance*c.scale)
             return false;
     }
     return true;
