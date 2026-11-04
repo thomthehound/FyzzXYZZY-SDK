@@ -207,7 +207,7 @@ void integrateBody(uint ordinal) {
     }
     // Source DyBodyCoreIntegrator::integrateCore uses saved
     // position-iteration deltas, not the final velocity deltas.
-    const uint input=p.integrationBias+36u+ordinal*112u;
+    const uint input=p.integrationBias+44u+ordinal*112u;
     if(arena.Load(input+68u)==0u)return;
     const float3 baseLinear=asfloat(arena.Load3(input));
     const float3 baseAngular=asfloat(arena.Load3(input+12u));
@@ -240,7 +240,7 @@ void integrateBody(uint ordinal) {
     } else {
         const uint count=arena.Load(p.integrationBias+32u);
         if(poseIndex>=count)return;
-        const uint pose=p.integrationBias+36u+count*112u+poseIndex*28u;
+        const uint pose=p.integrationBias+44u+count*112u+poseIndex*28u;
         position=asfloat(arena.Load3(pose));
         quaternion=asfloat(arena.Load4(pose+12u));
     }
