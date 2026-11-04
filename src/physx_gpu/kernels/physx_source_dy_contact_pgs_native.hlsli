@@ -183,13 +183,20 @@ float3 prepSlop(float3 value,float slop) {
 // relative to the packed source contact-prep block.
 uint prepBodyOffset(uint source,uint offset) {
     if((source&1u)==0u)return p.prepBias+source+offset;
-    uint ordinal=source>>1u;
-    uint base=p.integrationBias+32u+ordinal*136u;
-    if(offset==12u)return base+28u;
-    if(offset==24u)return base+40u;
-    if(offset>=36u && offset<=60u)return base+offset+16u;
+    const uint ordinal=source>>1u;
+    const uint base=p.integrationBias+36u+ordinal*112u;
+    if(offset==12u)return base;
+    if(offset==24u)return base+12u;
+    if(offset>=36u && offset<=60u)return base+offset-12u;
     if(offset==72u)return p.bodyBias+ordinal*52u+48u;
-    if(offset==80u)return base+12u;
+    // Every device-prepared contact body retains an explicit authored
+    // mass pose. Free and joint-only bodies may use Sc's resident cache.
+    if(offset==0u || offset==80u) {
+        const uint count=arena.Load(p.integrationBias+32u);
+        const uint poseIndex=arena.Load(base+108u);
+        return p.integrationBias+36u+count*112u+
+               poseIndex*28u+(offset==80u?12u:0u);
+    }
     return base+offset;
 }
 float3 prepBody3(uint source,uint offset) {
