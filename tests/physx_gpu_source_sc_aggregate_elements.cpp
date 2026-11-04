@@ -236,7 +236,7 @@ void run(Backend backend) {
             // original aggregate member ElementSim and reinsert it with
             // its newly calculated Bp motion group.
             const auto dynamic_group=owner.scene_bounds().groups[member0];
-            sc.set_motion(0u,fyzz::native::GpuBroadphaseBox::Motion::Kinematic);
+            sc.set_actor_motion(0u,fyzz::native::GpuBroadphaseBox::Motion::Kinematic);
             require(sc.handle(0u)==member0 &&
                     owner.volume_to_actor()[member0]==0u &&
                     owner.source_aggregated().boundedTest(member0) &&
@@ -244,7 +244,7 @@ void run(Backend backend) {
                         physx::Bp::FilterType::KINEMATIC &&
                     owner.scene_bounds().groups[member0]!=dynamic_group,
                     "Kinematic aggregate member lost original ID or Bp filtering group");
-            sc.set_motion(0u,fyzz::native::GpuBroadphaseBox::Motion::Dynamic);
+            sc.set_actor_motion(0u,fyzz::native::GpuBroadphaseBox::Motion::Dynamic);
             require(owner.scene_bounds().groups[member0]==dynamic_group &&
                     owner.source_aggregated().boundedTest(member0) &&
                     sc.aggregate_root_handle(root)==root_handle,
