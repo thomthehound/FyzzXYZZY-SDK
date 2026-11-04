@@ -694,6 +694,7 @@ void verify(Context& context,const char* transform_shader,
                       static_cast<std::uint32_t>(pairs.size()));
         epa.append(stream,addresses,transforms,geometry,pair_data,result_data,
                    candidate_data,edge_data,work_data,args_data,output_data,
+                   transforms,0u,
                    static_cast<std::uint32_t>(pairs.size()),capacity,
                    static_cast<std::uint32_t>(candidates.size()),edge_capacity);
         stream.wait_at_fetch();
@@ -804,6 +805,7 @@ void verify(Context& context,const char* transform_shader,
                       static_cast<std::uint32_t>(pairs.size()));
         epa.append(stream,addresses,transforms,geometry,pair_data,result_data,
                    candidate_data,edge_data,work_data,args_data,output_data,
+                   transforms,0u,
                    static_cast<std::uint32_t>(pairs.size()),capacity,
                    static_cast<std::uint32_t>(candidates.size()),edge_capacity);
         stream.wait_at_fetch();
