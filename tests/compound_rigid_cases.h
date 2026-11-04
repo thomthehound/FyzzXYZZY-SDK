@@ -147,7 +147,46 @@ inline void compound_contact_lifetimes(World& world,World* reference) {
         ++contacts;
     }
     compound_require(contacts==2,"Compound body did not retain two independent contact managers");
-    if(reference)compound_compare_state(world.body_state(ids.body),reference->body_state(ref.body),2.0e-4f,"Compound contacts");
+    if(reference) {
+        try {
+            compound_compare_state(world.body_state(ids.body),
+                reference->body_state(ref.body),2.0e-4f,"Compound contacts");
+        }catch(const std::runtime_error& failure) {
+            // Report both contact streams when PGS diverges despite
+            // matching manager lifetimes; distinguish Gu from Dy errors.
+            std::string detail=failure.what();
+            const auto report=[&](const World& w,BodyId body,const char* tag) {
+                const auto state=w.body_state(body);
+                detail+=" "+std::string(tag)+" pos=("+
+                    std::to_string(state.position.x)+","+
+                    std::to_string(state.position.y)+","+
+                    std::to_string(state.position.z)+") vel=("+
+                    std::to_string(state.velocity.x)+","+
+                    std::to_string(state.velocity.y)+","+
+                    std::to_string(state.velocity.z)+")";
+                const auto points=w.contact_event_points();
+                for(const auto& event:w.contact_events()) {
+                    detail+=" shape="+std::to_string(event.shape1)+
+                        " count="+std::to_string(event.contact_count)+
+                        " impulse="+std::to_string(event.normal_impulse);
+                    for(std::size_t i=0;i<event.contact_count;++i) {
+                        const auto& point=points[event.point_offset+i];
+                        detail+=" [xyz="+std::to_string(point.position.x)+","+
+                            std::to_string(point.position.y)+","+
+                            std::to_string(point.position.z)+
+                            " n="+std::to_string(point.normal.x)+","+
+                            std::to_string(point.normal.y)+","+
+                            std::to_string(point.normal.z)+
+                            " sep="+std::to_string(point.separation)+
+                            " j="+std::to_string(point.normal_impulse)+"]";
+                    }
+                }
+            };
+            report(world,ids.body,"actual");
+            report(*reference,ref.body,"reference");
+            throw std::runtime_error(detail);
+        }
+    }
     world.detach_shape(ids.right);if(reference)reference->detach_shape(ref.right);
     const auto replacement=world.attach_sphere_shape(ids.body,0.1f,{{0,4,0},{}});
     if(reference)reference->attach_sphere_shape(ref.body,0.1f,{{0,4,0},{}});
