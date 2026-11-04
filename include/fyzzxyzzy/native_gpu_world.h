@@ -116,6 +116,14 @@ World create_native_gpu_world(
     NativeGpuPcmShaders pcm,compute::ShaderBinary dy_distance,
     WorldOptions options={ExecutionMode::NativePortableGpu});
 
+// Convex shapes use a dedicated GPU Dy integration kernel; primitive-only
+// scenes continue executing the original five-buffer solver.
+World create_native_gpu_world(
+    compute::Backend backend,NativeGpuSapShaders sap,
+    NativeGpuPcmShaders pcm,compute::ShaderBinary dy_distance,
+    compute::ShaderBinary convex_dy_distance,
+    WorldOptions options={ExecutionMode::NativePortableGpu});
+
 // Explicit source aggregate shader contract: all original aggregate
 // pipelines are created under the same native Context and heap owner.
 // The existing single-volume World entrypoints remain unchanged.
