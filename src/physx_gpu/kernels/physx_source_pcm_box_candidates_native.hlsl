@@ -510,23 +510,30 @@ void main(uint3 thread : SV_DispatchThreadID) {
                 edgeBase,pa,pb,qa,qb,ea,eb,marginA,marginB,distance);
             if(!regenerate) {
                 const uint cached=edgeCaches.Load(edgeBase+12u);
-                if(cached>1u) {
+                if(cached>4u) {
                     publishPair(result,0u,0u,1u,edge,first,0u,0u,0u);
                     publishScContacts(i,a,b,edge,result,p.outputBias,
                         p.transformBias,p.geometryBias,p.edgeCacheBias,
                         p.shapeCapacity,p.edgeCapacity);
                     return;
                 }
-                if(cached!=0u &&
-                   asfloat(edgeCaches.Load(edgeBase+80u+36u))<=distance) {
-                    if(limit!=0u)
-                        copyCachedContact(edgeBase,0u,
-                            p.candidateBias+first*40u);
-                    count=limit>0u?1u:0u;
-                    overlap=1u;
+                uint packed=0u;
+                for(uint j=0u;j<cached;++j) {
+                    const float depth=asfloat(
+                        edgeCaches.Load(edgeBase+80u+j*40u+36u));
+                    if(depth>distance)continue;
+                    if(count<limit) {
+                        copyCachedContact(edgeBase,j,
+                            p.candidateBias+(first+count)*40u);
+                        packed|=count<<(count*8u);
+                    }
+                    ++count;
                 }
-                publishPair(result,count,overlap,0u,edge,first,
-                    count,0u,0u);
+                overlap=count>0u?1u:0u;
+                status=count>limit?2u:0u;
+                count=min(count,limit);
+                publishPair(result,count,overlap,status,edge,first,
+                    count,packed,0u);
                 publishScContacts(i,a,b,edge,result,p.outputBias,
                     p.transformBias,p.geometryBias,p.edgeCacheBias,
                     p.shapeCapacity,p.edgeCapacity);
