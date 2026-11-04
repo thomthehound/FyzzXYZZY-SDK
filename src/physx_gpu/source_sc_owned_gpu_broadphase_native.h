@@ -280,11 +280,10 @@ public:
     }
     void generate_gpu_pcm_box_contacts(
             std::span<const native::GpuPcmBoxPair> requests,
-            std::span<native::GpuPcmBoxResult> results,
-            const std::function<void()>& on_submitted = {}) override {
+            std::span<native::GpuPcmBoxResult> results) override {
         if(!pcm_)
             throw std::logic_error("Source Sc GPU PCM shaders not installed");
-        pcm_->generate(requests,results,aabb_->capacity(),on_submitted);
+        pcm_->generate(requests,results,aabb_->capacity());
     }
     void authorize_device_integrated_pose(BodyId id) override {
         producer_->authorize_device_integrated_pose(id);

@@ -12,9 +12,10 @@
 
 #include <algorithm>
 #include <array>
+#include <bit>
+#include <cmath>
 #include <cstdint>
 #include <cstring>
-#include <functional>
 #include <limits>
 #include <span>
 #include <stdexcept>
@@ -86,8 +87,7 @@ public:
 
     void generate(std::span<const native::GpuPcmBoxPair> requests,
                   std::span<native::GpuPcmBoxResult> output,
-                  std::uint32_t shape_capacity,
-                  const std::function<void()>& on_submitted = {}) {
+                  std::uint32_t shape_capacity) {
         if(requests.size()!=output.size())
             throw std::invalid_argument("Source Sc GPU PCM result count mismatch");
         // The previous successful source stream is authoritative for
@@ -112,27 +112,44 @@ public:
             const auto& request=requests[i];
             if(request.first==request.second)
                 throw std::invalid_argument("Sc PCM pair references one actor twice");
+            if(request.plane_box &&
+               (!std::isfinite(request.plane_height) ||
+                !std::isfinite(request.contact_distance) ||
+                request.contact_distance<0.0f))
+                throw std::invalid_argument("Sc PCM plane descriptor is invalid");
             if(request.edge==std::numeric_limits<std::uint32_t>::max())
                 throw std::out_of_range("Source Sc edge watermark overflow");
             largest_edge=std::max(largest_edge,request.edge);
-            const auto first=sc_.source_element_handle(request.first);
+            // A plane ElementSim has no finite AABB storage; only its
+            // participating box needs a device geometry and transform.
+            const auto first=request.plane_box?0u:
+                sc_.source_element_handle(request.first);
             const auto second=sc_.source_element_handle(request.second);
-            if(first>=shape_capacity || second>=shape_capacity)
+            if((!request.plane_box && first>=shape_capacity) ||
+               second>=shape_capacity)
                 throw std::out_of_range("Source Sc PCM element outside original AABB capacity");
             if(request.candidate_capacity!=1u &&
                request.candidate_capacity!=16u)
                 throw std::invalid_argument(
                     "GPU PCM candidate count must match its geometry");
-            if(request.candidate_capacity>
+            const auto reservation=request.plane_box?0u:
+                request.candidate_capacity;
+            if(reservation>
                std::numeric_limits<std::uint32_t>::max()-candidate_count)
                 throw std::out_of_range(
                     "Source GPU PCM candidate capacity overflow");
-            const SourcePcmBoxPairNative next{
-                first,second,request.edge,candidate_count,
-                request.candidate_capacity |
-                    ((request.reset_cache || reset_manifolds_)
-                    ? source_pcm_reset_cache_bit : 0u)};
-            candidate_count+=request.candidate_capacity;
+            const auto reset=(request.reset_cache || reset_manifolds_)
+                ? source_pcm_reset_cache_bit : 0u;
+            const SourcePcmBoxPairNative next=request.plane_box
+                ? SourcePcmBoxPairNative{
+                    std::bit_cast<std::uint32_t>(request.plane_height),
+                    second,request.edge,
+                    std::bit_cast<std::uint32_t>(request.contact_distance),
+                    source_pcm_plane_bit | reset}
+                : SourcePcmBoxPairNative{
+                    first,second,request.edge,candidate_count,
+                    request.candidate_capacity | reset};
+            candidate_count+=reservation;
             // Sc's previous pair records are the transfer baseline.
             // Preserve a single ordered upload by widening one dirty
             // interval over changed descriptors, never creating per-pair
@@ -155,7 +172,11 @@ public:
         full_upload |= requested_pair_bytes>previous_pair_capacity ||
                        pairs_.getDevicePtr()!=previous_pair_address;
         results_.allocate(source_allocation_bytes(pair_count,32u),PX_FL);
-        candidates_.allocate(source_allocation_bytes(candidate_count,40u),PX_FL);
+        // Plane-only PCM frames need no candidate storage; retain the
+        // source stages' nonzero view contract without 16 unused slots
+        // per plane pair.
+        const auto candidate_capacity=std::max(candidate_count,1u);
+        candidates_.allocate(source_allocation_bytes(candidate_capacity,40u),PX_FL);
         // Only previously published EdgeIndex records belong to the
         // persistent Gu manifold. Capacity slack and the alignment pad
         // are not historical source contacts. Preserve the high-watermark
@@ -194,7 +215,7 @@ public:
             pairs_.getDevicePtr(),results_.getDevicePtr(),
             candidates_.getDevicePtr(),edges_.getDevicePtr(),
             indirect_address_,dense_contacts_.getDevicePtr(),
-            pair_count,shape_capacity,candidate_count,edge_capacity);
+            pair_count,shape_capacity,candidate_capacity,edge_capacity);
         sparse_stage_.append(stream_,addresses_,
             results_.getDevicePtr(),work_.getDevicePtr(),
             indirect_address_,pair_count);
@@ -204,7 +225,7 @@ public:
             candidates_.getDevicePtr(),edges_.getDevicePtr(),
             work_.getDevicePtr(),indirect_address_,
             dense_contacts_.getDevicePtr(),pair_count,shape_capacity,
-            candidate_count,edge_capacity);
+            candidate_capacity,edge_capacity);
 
 
         // Fetch the losslessly packed device stream, then reconstruct
@@ -218,14 +239,10 @@ public:
         };
         stream_.submit();
         try {
-            // Sc plane contact managers have independent PCM caches.
-            // Prepare their CPU Gu witnesses while box PCM executes on
-            // the original GPU stream, before Sc requires GPU readback.
-            if(on_submitted)on_submitted();
             context_.download_batch(downloads);
         } catch (...) {
-            // Neither CPU preparation nor readback failure may strand
-            // source GPU submission tokens or their heap allocations.
+            // Readback failure may not strand source GPU submission
+            // tokens or their heap allocations.
             stream_.wait_at_fetch();
             throw;
         }

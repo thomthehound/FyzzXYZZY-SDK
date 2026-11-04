@@ -420,6 +420,7 @@ uint4 selectBatch(uint base,uint count) {
 }
 
 #include "physx_source_pcm_sphere_native.hlsli"
+#include "physx_source_pcm_plane_native.hlsli"
 
 [numthreads(128,1,1)]
 void main(uint3 thread : SV_DispatchThreadID) {
@@ -434,6 +435,10 @@ void main(uint3 thread : SV_DispatchThreadID) {
     uint flags=pairs.Load(source+16u);
     uint limit=flags&0x7fffffffu;
     uint result=p.resultBias+i*32u;
+    if((flags&0x40000000u)!=0u) {
+        sourcePcmPlaneBox(i,b,edge,result,asfloat(a),asfloat(first),flags);
+        return;
+    }
     uint count=0u,overlap=0u,status=0u,regenerated=0u;
     if(a>=p.shapeCapacity || b>=p.shapeCapacity || a==b ||
        edge>=p.edgeCapacity ||

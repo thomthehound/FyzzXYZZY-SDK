@@ -558,4 +558,102 @@ inline void prismatic_joint_response(World& world,World* reference) {
     remove_rotating(world,rotating);
     if(reference)remove_rotating(*reference,rotating_ref);
 }
+
+inline void compound_plane_box_device_pcm(World& world,World* comparison) {
+    // Exercise both shape orders. The plane has no finite device volume,
+    // while each live Sc contact manager retains its own GPU EdgeIndex.
+    struct PairIds {BodyId plane,box;};
+    const auto create=[](World& w,bool plane_first) {
+        PairIds ids{};
+        const auto add_box=[&] {
+            ids.box=w.add_dynamic_box({0.5f,0.5f,0.35f},
+                {0.0f,0.46f,0.0f},2.0f);
+            RigidBodyDynamics d{};
+            d.gravity_enabled=false;
+            d.angular_damping=0.0f;
+            d.position_iterations=16u;
+            d.velocity_iterations=4u;
+            w.set_body_dynamics(ids.box,d);
+        };
+        if(plane_first) {ids.plane=w.add_static_floor(0.0f);add_box();}
+        else {add_box();ids.plane=w.add_static_floor(0.0f);}
+        Material m{};
+        m.static_friction=0.0f;m.dynamic_friction=0.0f;m.restitution=0.0f;
+        w.set_body_material(ids.plane,m);
+        w.set_body_material(ids.box,m);
+        return ids;
+    };
+    const auto contacts=[](const World& w,PairIds ids) {
+        std::vector<ContactEventPoint> points;
+        for(const auto& event:w.contact_events()) {
+            if(!((event.body0==ids.plane && event.body1==ids.box) ||
+                 (event.body1==ids.plane && event.body0==ids.box)))
+                continue;
+            for(std::size_t j=0;j<event.contact_count;++j)
+                points.push_back(w.contact_event_points()[event.point_offset+j]);
+        }
+        return points;
+    };
+    for(const bool plane_first:{true,false}) {
+        const auto ids=create(world,plane_first);
+        const auto ref=comparison?create(*comparison,plane_first):ids;
+        for(unsigned frame=0;frame<12u;++frame) {
+            const float height=frame>=7u?0.03f:0.0f;
+            const float x=(frame%3u==0u?0.003f:0.0f);
+            const float angle=0.09f+0.003f*static_cast<float>(frame);
+            const Quat q{0.0f,0.0f,std::sin(angle*0.5f),std::cos(angle*0.5f)};
+            const auto author=[&](World& w,PairIds actor) {
+                w.set_body_position(actor.plane,{0.0f,height,0.0f});
+                w.set_body_pose(actor.box,{x,0.46f,0.0f},q);
+                w.set_body_velocity(actor.box,{0.0f,0.0f,0.0f});
+                w.set_body_angular_velocity(actor.box,{0.0f,0.0f,0.0f});
+            };
+            author(world,ids);
+            if(comparison)author(*comparison,ref);
+            world.step(1.0f/120.0f);
+            if(comparison)comparison->step(1.0f/120.0f);
+            const auto points=contacts(world,ids);
+            compound_require(!points.empty() && points.size()<=4u,
+                "Plane-box source PCM failed to publish bounded contacts");
+            for(const auto& p:points) {
+                if(std::abs(p.position.y-height)>=0.0008f ||
+                   std::abs(std::abs(p.normal.y)-1.0f)>=0.0008f ||
+                   std::abs(p.normal.x)>=0.0008f ||
+                   std::abs(p.normal.z)>=0.0008f ||
+                   p.separation>0.0408f)
+                    throw std::runtime_error(
+                        "Plane-box PCM witness invalid: frame="+
+                        std::to_string(frame)+" plane="+std::to_string(height)+
+                        " y="+std::to_string(p.position.y)+
+                        " normal="+std::to_string(p.normal.y)+
+                        " separation="+std::to_string(p.separation));
+            }
+            if(comparison) {
+                const auto expected=contacts(*comparison,ref);
+                compound_require(points.size()==expected.size(),
+                    "GPU plane-box PCM changed persistent contact count");
+                for(const auto& actual:points) {
+                    bool matched=false;
+                    for(const auto& reference:expected)
+                        if(compound_error(actual.position,reference.position)<0.001f &&
+                           compound_error(actual.normal,reference.normal)<0.001f &&
+                           std::abs(actual.separation-reference.separation)<0.001f)
+                            matched=true;
+                    compound_require(matched,
+                        "GPU plane-box PCM changed the source witness");
+                }
+                compound_compare_state(world.body_state(ids.box),
+                    comparison->body_state(ref.box),0.004f,
+                    "Plane-box PCM dynamics");
+            }
+        }
+        world.remove_body(ids.box);
+        world.remove_body(ids.plane);
+        if(comparison) {
+            comparison->remove_body(ref.box);
+            comparison->remove_body(ref.plane);
+        }
+    }
+}
+
 } // namespace fyzz::test

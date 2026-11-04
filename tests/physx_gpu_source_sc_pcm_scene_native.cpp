@@ -1133,9 +1133,9 @@ void verify_cpu_gu_gpu_dy_solver(
     require(saw_contact,"Source legacy Gu fixture never generated a contact");
 }
 
-// One source Dy task submission contains Sc-owned CPU plane/box Gu
-// contacts and GPU PCM box/box contacts. Both orders of Sc manager
-// admission must preserve contact ordinals, friction and force writeback.
+// Explicit diagnostic plane Gu combines with device box PCM inside
+// one Dy task. Default GPU plane PCM is verified separately; the
+// diagnostic selection preserves CPU-origin Gu upload coverage.
 void verify_mixed_gu_pcm_gpu_dy_solver(
     fyzz::compute::Backend backend,const char* sap,
     const char* pcm,const char* dy_shader) {
@@ -1153,6 +1153,9 @@ void verify_mixed_gu_pcm_gpu_dy_solver(
         native::Scene cpu,gpu;
         cpu.set_enhanced_determinism(true);
         gpu.set_enhanced_determinism(true);
+        // Retain a real CPU Gu producer for the mixed-input regression.
+        cpu.set_pcm_plane_box(false);
+        gpu.set_pcm_plane_box(false);
         auto owner=std::make_unique<
             physx_gpu::SourceScOwnedGpuBroadphaseNative>(
                 backend,load_native_gpu_sap_shaders(backend,sap),
@@ -1714,6 +1717,7 @@ void verify_compound_actor_gpu_solver(
     test::spherical_joint_response(gpu,&cpu);
     test::revolute_joint_response(gpu,&cpu);
     test::prismatic_joint_response(gpu,&cpu);
+    test::compound_plane_box_device_pcm(gpu,&cpu);
 }
 
 void verify_gpu_free_integration(
