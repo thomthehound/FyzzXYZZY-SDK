@@ -66,10 +66,13 @@ public:
                 std::uint32_t convex_faces_base=0u,
                 std::uint32_t convex_indices_base=0u) const {
         if(!pair_count)return;
+        const auto group_count=face_geometry_
+            ?(std::uint64_t(pair_count)+63u)/64u
+            :std::uint64_t(pair_count);
         if(!shape_capacity || !candidate_capacity || !edge_capacity ||
-           pair_count>context_.device_info().max_workgroup_count[0])
+           group_count>context_.device_info().max_workgroup_count[0])
             throw std::out_of_range(
-                "Source GPU EPA exceeds source or native dispatch capacity");
+                "Source GPU PCM dispatch exceeds device capacity");
         std::array<std::uint32_t,18> params{
             pair_count,0u,0u,0u,0u,0u,0u,0u,
             shape_capacity,candidate_capacity,edge_capacity,0u,
@@ -120,7 +123,8 @@ public:
         if(face_geometry_) {
             // Every admitted convex contact is eligible, including GJK
             // witnesses that never enter the sparse EPA work queue.
-            dispatch.groups={(pair_count+63u)/64u,1u,1u};
+            dispatch.groups={
+                static_cast<std::uint32_t>(group_count),1u,1u};
         }else {
             const auto arguments=addresses.resolve(dispatch_args,12u);
             if(arguments.offset%4u)
