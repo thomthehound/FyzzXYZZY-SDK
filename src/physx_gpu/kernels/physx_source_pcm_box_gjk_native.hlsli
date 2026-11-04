@@ -8,6 +8,8 @@
 struct GjkBoxPair {
     float3 halfA,halfB,aInB;
     float4 relative;
+    uint kindA,kindB,firstA,countA,firstB,countB;
+    float radiusA,radiusB;
 };
 struct GjkSupportPoint {
     float3 a,b,q;
@@ -32,13 +34,45 @@ float gjkDot(float3 a,float3 b) {
 }
 float gjkLength2(float3 v) { return gjkDot(v,v); }
 
+#ifndef FYZZXYZZY_GJK_BOX_ONLY
+float3 gjkShapeSupport(uint kind,float3 half,float3 direction,
+                       uint first,uint count,out uint index) {
+    index=0u;
+    if(kind==1u)return float3(0.f,0.f,0.f);
+    if(kind==2u) {
+        float3 bestVertex=asfloat(hullVertices.Load3(
+            p.hullBias+first*12u));
+        float best=gjkDot(bestVertex,direction);
+        for(uint i=1u;i<count;++i) {
+            const float3 vertex=asfloat(hullVertices.Load3(
+                p.hullBias+(first+i)*12u));
+            const float candidate=gjkDot(vertex,direction);
+            if(candidate>best) {
+                best=candidate;
+                bestVertex=vertex;
+                index=i;
+            }
+        }
+        return bestVertex;
+    }
+    bool3 positive=direction>0.f;
+    index=(positive.x?1u:0u)|(positive.y?2u:0u)|(positive.z?4u:0u);
+    return float3(positive.x?half.x:-half.x,
+                  positive.y?half.y:-half.y,
+                  positive.z?half.z:-half.z);
+}
+#endif
+
 GjkSupportPoint gjkSupport(GjkBoxPair pair,float3 direction) {
-    float3 directionA=rotateSource(conjugate(pair.relative),direction);
-    bool3 positiveA=directionA>0.f,positiveB=-direction>0.f;
+    const float3 directionA=rotateSource(
+        conjugate(pair.relative),direction);
     GjkSupportPoint s;
+#ifdef FYZZXYZZY_GJK_BOX_ONLY
+    const bool3 positiveA=directionA>0.f;
+    const bool3 positiveB=-direction>0.f;
     s.ai=(positiveA.x?1u:0u)|(positiveA.y?2u:0u)|(positiveA.z?4u:0u);
     s.bi=(positiveB.x?1u:0u)|(positiveB.y?2u:0u)|(positiveB.z?4u:0u);
-    float3 localA=float3(
+    const float3 localA=float3(
         positiveA.x?pair.halfA.x:-pair.halfA.x,
         positiveA.y?pair.halfA.y:-pair.halfA.y,
         positiveA.z?pair.halfA.z:-pair.halfA.z);
@@ -46,6 +80,14 @@ GjkSupportPoint gjkSupport(GjkBoxPair pair,float3 direction) {
         positiveB.x?pair.halfB.x:-pair.halfB.x,
         positiveB.y?pair.halfB.y:-pair.halfB.y,
         positiveB.z?pair.halfB.z:-pair.halfB.z);
+#else
+    const float3 localA=gjkShapeSupport(
+        pair.kindA,pair.halfA,directionA,
+        pair.firstA,pair.countA,s.ai);
+    s.b=gjkShapeSupport(
+        pair.kindB,pair.halfB,-direction,
+        pair.firstB,pair.countB,s.bi);
+#endif
     s.a=pair.aInB+rotateSource(pair.relative,localA);
     s.q=s.a-s.b;
     return s;
@@ -149,9 +191,12 @@ bool gjkContact(GjkBoxPair pair,GjkClosest nearest,
     if(!(distance>0.f) || !isfinite(distance))return false;
     witness.normalB=nearest.closestPoint*(1.f/distance);
     witness.localA=rotateSource(
-        conjugate(pair.relative),nearest.a-pair.aInB);
-    witness.localB=nearest.b;
-    witness.separation=distance;
+        conjugate(pair.relative),
+        nearest.a-pair.aInB-nearest.closestPoint*
+            (pair.radiusA/distance));
+    witness.localB=nearest.b+
+        nearest.closestPoint*(pair.radiusB/distance);
+    witness.separation=distance-pair.radiusA-pair.radiusB;
     return true;
 }
 // 0: no source GJK contact; 1: source GJK contact;
@@ -175,10 +220,12 @@ uint gjkBoxContinuation(GjkBoxPair pair,float contactDistance,
         float3 normal=closest*(1.f/dist);
         GjkSupportPoint support=gjkSupport(pair,-closest);
         float projection=gjkDot(normal,support.q);
-        if(projection>contactDistance)return 0u;
+        if(projection>contactDistance+pair.radiusA+pair.radiusB)
+            return 0u;
         if(count>0u && projection>dist*progressFactor) {
             GjkClosest current=gjkClosestSimplex(simplex,count);
-            return current.mask!=0u && gjkContact(pair,current,witness)
+            return current.mask!=0u && gjkContact(pair,current,witness) &&
+                   witness.separation<=contactDistance
                 ?1u:0u;
         }
         for(uint j=0u;j<count;++j)
