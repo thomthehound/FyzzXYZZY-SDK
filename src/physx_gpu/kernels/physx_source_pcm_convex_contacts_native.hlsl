@@ -78,13 +78,15 @@ ConstantBuffer<Parameters> p : register(b0,space0);
 [numthreads(1,1,1)]
 void main(uint3 thread : SV_DispatchThreadID) {
     if(p.surfaceBytes==0u)return;
-    const uint i=work.Load(p.workBias+thread.x*4u);
+    const uint i=thread.x;
     if(i>=p.pairCount)return;
     const uint result=p.resultBias+i*32u;
-    // Only a successfully completed EPA witness is eligible for clipping.
+    // Direct GJK and sparse EPA both publish into Sc's result stream.
+    // Quiet cached managers retain their existing four-point manifold.
     if(results.Load(result+8u)!=0u ||
        results.Load(result)!=1u ||
-       results.Load(result+20u)!=1u)return;
+       results.Load(result+20u)!=1u ||
+       results.Load(result+28u)==0u)return;
     const uint source=p.pairBias+i*20u;
     const uint a=pairs.Load(source),b=pairs.Load(source+4u);
     const uint edge=pairs.Load(source+8u);
