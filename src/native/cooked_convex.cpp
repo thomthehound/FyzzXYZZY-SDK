@@ -43,7 +43,7 @@ std::shared_ptr<const ConvexMesh> cook_convex_mesh(
     if(vertices.size()<4u || triangles.size()<4u ||
        vertices.size()>std::numeric_limits<std::uint32_t>::max())
         throw std::invalid_argument("Convex hull requires a closed volume");
-    auto mesh=std::make_shared<ConvexMesh>();
+    auto mesh=std::shared_ptr<ConvexMesh>(new ConvexMesh());
     mesh->vertices_.assign(vertices.begin(),vertices.end());
     mesh->triangles_.assign(triangles.begin(),triangles.end());
 
