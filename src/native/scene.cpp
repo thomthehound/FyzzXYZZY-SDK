@@ -284,7 +284,15 @@ ShapeId Scene::attach_convex(
     BodyId body,std::shared_ptr<const ConvexMesh> mesh,Transform pose) {
     if(!mesh || mesh->vertices().empty())
         throw std::invalid_argument("Cooked convex geometry is missing");
-    if(convex_vertices_.size()>
+    // A cooked mesh is immutable. Attached instances of the same mesh
+    // share its one stable resident vertex span across their lifetimes.
+    const auto reused=std::find_if(shapes_.begin(),shapes_.end(),
+        [&](const Shape& prior) {
+            return prior.geometry==Geometry::Convex &&
+                   prior.convex.get()==mesh.get();
+        });
+    const bool existing=reused!=shapes_.end();
+    if(!existing && convex_vertices_.size()>
        std::numeric_limits<std::uint32_t>::max()-mesh->vertices().size())
         throw std::overflow_error("Convex vertex arena exceeds 32-bit device indexing");
     const auto lower=mesh->bounds_min(),upper=mesh->bounds_max();
@@ -295,13 +303,16 @@ ShapeId Scene::attach_convex(
         std::max(std::abs(lower.x),std::abs(upper.x)),
         std::max(std::abs(lower.y),std::abs(upper.y)),
         std::max(std::abs(lower.z),std::abs(upper.z))};
-    shape.convex_vertex_offset=static_cast<std::uint32_t>(convex_vertices_.size());
+    shape.convex_vertex_offset=existing
+        ?reused->convex_vertex_offset
+        :static_cast<std::uint32_t>(convex_vertices_.size());
     shape.convex_vertex_count=static_cast<std::uint32_t>(
         shape.convex->vertices().size());
     shape.local_pose=pose;
     const auto previous=convex_vertices_.size();
-    convex_vertices_.insert(convex_vertices_.end(),
-        shape.convex->vertices().begin(),shape.convex->vertices().end());
+    if(!existing)
+        convex_vertices_.insert(convex_vertices_.end(),
+            shape.convex->vertices().begin(),shape.convex->vertices().end());
     try {
         return attach(body,std::move(shape));
     }catch(...) {
