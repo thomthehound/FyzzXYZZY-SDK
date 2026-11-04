@@ -13,9 +13,9 @@
 #include <algorithm>
 #include <array>
 #include <bit>
+#include <cmath>
 #include <cstdint>
 #include <cstring>
-#include <functional>
 #include <limits>
 #include <span>
 #include <stdexcept>
@@ -87,8 +87,7 @@ public:
 
     void generate(std::span<const native::GpuPcmBoxPair> requests,
                   std::span<native::GpuPcmBoxResult> output,
-                  std::uint32_t shape_capacity,
-                  const std::function<void()>& on_submitted = {}) {
+                  std::uint32_t shape_capacity) {
         if(requests.size()!=output.size())
             throw std::invalid_argument("Source Sc GPU PCM result count mismatch");
         // The previous successful source stream is authoritative for
@@ -240,14 +239,10 @@ public:
         };
         stream_.submit();
         try {
-            // Sc plane contact managers have independent PCM caches.
-            // Prepare their CPU Gu witnesses while box PCM executes on
-            // the original GPU stream, before Sc requires GPU readback.
-            if(on_submitted)on_submitted();
             context_.download_batch(downloads);
         } catch (...) {
-            // Neither CPU preparation nor readback failure may strand
-            // source GPU submission tokens or their heap allocations.
+            // Readback failure may not strand source GPU submission
+            // tokens or their heap allocations.
             stream_.wait_at_fetch();
             throw;
         }
