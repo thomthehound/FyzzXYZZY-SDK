@@ -22,7 +22,13 @@ inline void verify_convex_finite_gpu_solver(
         {0,2,1},{0,3,2},{4,5,6},{4,6,7},
         {0,1,5},{0,5,4},{3,7,6},{3,6,2},
         {0,4,7},{0,7,3},{1,2,6},{1,6,5}}};
-    const auto cube=cook_convex_mesh(cubeVertices,cubeFaces);
+    auto translatedCube=cubeVertices;
+    for(auto& vertex:translatedCube) {
+        vertex.x+=100.f;
+        vertex.y+=100.f;
+        vertex.z+=100.f;
+    }
+    const auto cube=cook_convex_mesh(translatedCube,cubeFaces);
     const auto load=[backend](const char* path) {
         std::ifstream input(path,std::ios::binary);
         if(!input)throw std::runtime_error("Finite convex Dy shader missing");
@@ -70,7 +76,7 @@ inline void verify_convex_finite_gpu_solver(
         dynamics[4]=scene.add_dynamic_box(
             {0.4f,0.4f,0.4f},{16.35f,0.15f,0.25f},1.f);
 
-        const auto face_hull=scene.create_body({{24.f,0.f,0.f},{}},false);
+        const auto face_hull=scene.create_body({{-76.f,-100.f,-100.f},{}},false);
         scene.attach_convex(face_hull,cube,{});
         dynamics[5]=scene.add_dynamic_sphere(
             0.2f,{24.273157f,-0.794949f,-1.0039f},1.f);
