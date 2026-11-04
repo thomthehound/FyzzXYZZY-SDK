@@ -436,7 +436,7 @@ void main(uint3 thread : SV_DispatchThreadID) {
     uint limit=flags&0x7fffffffu;
     uint result=p.resultBias+i*32u;
     if((flags&0x40000000u)!=0u) {
-        sourcePcmPlaneBox(i,b,edge,result,asfloat(a),asfloat(first),flags);
+        sourcePcmPlanePair(i,b,edge,result,asfloat(a),asfloat(first),flags);
         return;
     }
     uint count=0u,overlap=0u,status=0u,regenerated=0u;
