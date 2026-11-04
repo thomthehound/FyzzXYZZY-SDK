@@ -131,6 +131,7 @@ public:
     // the shape is an infinite plane with no finite broadphase volume.
     void admit_plane(BodyId actor) {admit_plane(actor,actor);}
     void admit_plane(ShapeId shape,BodyId actor) {
+        validate_actor_motion(actor,native::GpuBroadphaseBox::Motion::Static);
         if(shape!=records_.size() || shape!=handles_.size())
             throw std::logic_error(
                 "Source Sc plane admission must follow native actor order");
@@ -159,6 +160,7 @@ public:
             release_rigid_id(actor);
             throw;
         }
+        link_actor_shape(shape);
     }
 
     void admit_aggregate_member(
@@ -195,6 +197,7 @@ public:
         if(element.aggregate_id!=PX_INVALID_U32)
             unlink_attached_actor(
                 aggregate_root(element.aggregate_id),element);
+        unlink_actor_shape(actor);
         release_rigid_id(element.actor);
         element.live=false;
         element.in_aabb=false;
@@ -254,38 +257,44 @@ public:
         element.contact_distance=contact_distance;
     }
 
-    void set_motion(BodyId actor,native::GpuBroadphaseBox::Motion motion) {
-        auto& element=live(actor);
-        if(element.motion==motion)return;
-        element.device_cached_pose_valid=false;
+    void set_actor_motion(BodyId actor,native::GpuBroadphaseBox::Motion motion) {
+        if(actor>=rigid_actor_ids_.size() || !rigid_actor_ids_[actor].live_shapes)
+            throw std::out_of_range("Unknown or retired source Sc rigid actor");
+        auto& identity=rigid_actor_ids_[actor];
+        if(identity.first_shape==PX_INVALID_U32)return;
+        if(identity.motion==motion)return;
         if(motion==native::GpuBroadphaseBox::Motion::Static ||
-           element.motion==native::GpuBroadphaseBox::Motion::Static)
+           identity.motion==native::GpuBroadphaseBox::Motion::Static)
             throw std::invalid_argument(
-                "Source Sc shape cannot switch between static and rigid");
-        if(element.in_aabb) {
-            // ScBodySim::switchTo{Kinematic,Dynamic} re-inserts the
-            // original ElementSim with its new Bp group. Aggregated
-            // shapes re-enter the same PxgAggregate member list, never
-            // the standalone SAP endpoint list. A pending GPU member
-            // retirement is canceled for this same shape identity.
-            const auto handle=handles_[actor];
-            const auto group=physx::Bp::getFilterGroup(
-                false,element.rigid_id,
-                motion==native::GpuBroadphaseBox::Motion::Kinematic);
-            if(element.aggregate_id!=PX_INVALID_U32) {
-                aabb_.remove_aggregate_member(handle);
-                aabb_.admit_aggregate_member(
-                    element.aggregate_id,handle,actor,
-                    element.contact_distance,group,&element);
-                aabb_.mark_aggregate_member_changed(
-                    handle,element.contact_distance);
-            }else {
-                aabb_.remove(handle);
-                aabb_.admit(handle,actor,element.contact_distance,group,&element);
-                aabb_.mark_changed(handle,element.contact_distance);
+                "Source Sc actor cannot switch between static and rigid");
+
+        // One ScBodySim motion change refilters every attached ElementSim.
+        // Disabled and non-AABB shapes retain the same actor motion.
+        const auto group=physx::Bp::getFilterGroup(
+            false,identity.rigid_id,
+            motion==native::GpuBroadphaseBox::Motion::Kinematic);
+        for(ShapeId shape=identity.first_shape;shape!=PX_INVALID_U32;
+            shape=records_[shape].next_actor_shape) {
+            auto& element=records_[shape];
+            element.device_cached_pose_valid=false;
+            if(element.in_aabb) {
+                const auto handle=handles_[shape];
+                if(element.aggregate_id!=PX_INVALID_U32) {
+                    aabb_.remove_aggregate_member(handle);
+                    aabb_.admit_aggregate_member(
+                        element.aggregate_id,handle,shape,
+                        element.contact_distance,group,&element);
+                    aabb_.mark_aggregate_member_changed(
+                        handle,element.contact_distance);
+                }else {
+                    aabb_.remove(handle);
+                    aabb_.admit(handle,shape,element.contact_distance,group,&element);
+                    aabb_.mark_changed(handle,element.contact_distance);
+                }
             }
+            element.motion=motion;
         }
-        element.motion=motion;
+        identity.motion=motion;
     }
 
     void post_reports_cleanup() {
@@ -368,6 +377,8 @@ private:
         physx::PxU32 aggregate_attachment_index=PX_INVALID_U32;
         bool device_cached_pose_valid=false;
         bool device_pose_supported=true;
+        ShapeId previous_actor_shape=PX_INVALID_U32;
+        ShapeId next_actor_shape=PX_INVALID_U32;
     };
     struct AggregateRoot {
         physx::Bp::ShapeHandle root;
@@ -434,11 +445,7 @@ private:
         if(shape!=records_.size() || shape!=handles_.size())
             throw std::logic_error(
                 "Source Sc shape admission must follow ElementSim order");
-        for(const auto& element:records_)
-            if(element.live && element.actor==actor &&
-               element.motion!=motion)
-                throw std::invalid_argument(
-                    "One Sc rigid actor cannot have conflicting shape motion");
+        validate_actor_motion(actor,motion);
         if(handles_.size()==handles_.capacity()) {
             const auto capacity=handles_.capacity();
             handles_.reserve(capacity+std::max<std::size_t>(capacity,8));
@@ -479,12 +486,48 @@ private:
             release_rigid_id(actor);
             throw;
         }
+        link_actor_shape(shape);
     }
 
     struct ActorIdentity {
         physx::PxU32 rigid_id=PX_INVALID_U32;
         std::uint32_t live_shapes=0u;
+        native::GpuBroadphaseBox::Motion motion=
+            native::GpuBroadphaseBox::Motion::Static;
+        ShapeId first_shape=PX_INVALID_U32;
     };
+    void validate_actor_motion(
+        BodyId actor,native::GpuBroadphaseBox::Motion motion) const {
+        if(actor<rigid_actor_ids_.size()) {
+            const auto& identity=rigid_actor_ids_[actor];
+            if(identity.first_shape!=PX_INVALID_U32 && identity.motion!=motion)
+                throw std::invalid_argument(
+                    "One Sc rigid actor cannot have conflicting shape motion");
+        }
+    }
+    void link_actor_shape(ShapeId shape) noexcept {
+        auto& element=records_[shape];
+        auto& identity=rigid_actor_ids_[element.actor];
+        element.next_actor_shape=identity.first_shape;
+        if(identity.first_shape!=PX_INVALID_U32)
+            records_[identity.first_shape].previous_actor_shape=shape;
+        identity.first_shape=shape;
+        identity.motion=element.motion;
+    }
+    void unlink_actor_shape(ShapeId shape) noexcept {
+        auto& element=records_[shape];
+        auto& identity=rigid_actor_ids_[element.actor];
+        if(element.previous_actor_shape!=PX_INVALID_U32)
+            records_[element.previous_actor_shape].next_actor_shape=
+                element.next_actor_shape;
+        else
+            identity.first_shape=element.next_actor_shape;
+        if(element.next_actor_shape!=PX_INVALID_U32)
+            records_[element.next_actor_shape].previous_actor_shape=
+                element.previous_actor_shape;
+        element.previous_actor_shape=PX_INVALID_U32;
+        element.next_actor_shape=PX_INVALID_U32;
+    }
     physx::PxU32 acquire_rigid_id(BodyId actor) {
         if(actor>=rigid_actor_ids_.size())
             rigid_actor_ids_.resize(static_cast<std::size_t>(actor)+1u);
