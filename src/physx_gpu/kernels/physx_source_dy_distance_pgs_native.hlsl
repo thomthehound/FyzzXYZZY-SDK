@@ -197,17 +197,19 @@ void saveMotion(uint index,uint endError) {
     arena.Store3(base+36u,arena.Load3(base+12u));
 }
 
-void integrateBody(uint i,uint endError) {
-    uint ordinal=arena.Load(p.ordinalBias+i*4u);
-    if(ordinal>=p.bodyCount) {
-        arena.InterlockedOr(endError,8u);
-        return;
+void integrateBody(uint ordinal) {
+    float3 linearDelta=0.0f;
+    float3 angularState=0.0f;
+    [branch]
+    if(ordinal<p.bodyCount) {
+        const uint from=p.bodyBias+ordinal*52u;
+        const uint to=p.writebackBias+p.resultBodyOffset+ordinal*48u;
+        arena.Store4(to,arena.Load4(from));
+        arena.Store4(to+16u,arena.Load4(from+16u));
+        arena.Store4(to+32u,arena.Load4(from+32u));
+        linearDelta=asfloat(arena.Load3(from+24u));
+        angularState=asfloat(arena.Load3(from+36u));
     }
-    uint from=p.bodyBias+ordinal*52u;
-    uint to=p.writebackBias+p.resultBodyOffset+ordinal*48u;
-    arena.Store4(to,arena.Load4(from));
-    arena.Store4(to+16u,arena.Load4(from+16u));
-    arena.Store4(to+32u,arena.Load4(from+32u));
     // Source DyBodyCoreIntegrator::integrateCore uses saved
     // position-iteration deltas, not the final velocity deltas.
     const uint input=p.integrationBias+32u+ordinal*136u;
@@ -218,8 +220,10 @@ void integrateBody(uint i,uint endError) {
     const float3 baseAngular=asfloat(arena.Load3(input+40u));
     const uint locks=arena.Load(input+88u);
     const float dt=asfloat(arena.Load(input+92u));
-    float3 motionLinear=baseLinear+asfloat(arena.Load3(from+24u));
-    float3 angularState=asfloat(arena.Load3(from+36u));
+    const uint destination=p.writebackBias+p.resultPatchOffset+
+        p.patchCount*4u+ordinal*32u;
+    arena.Store(destination+28u,0u);
+    float3 motionLinear=baseLinear+linearDelta;
     if(locks&1u)motionLinear.x=0.0f;
     if(locks&2u)motionLinear.y=0.0f;
     if(locks&4u)motionLinear.z=0.0f;
@@ -252,10 +256,7 @@ void integrateBody(uint i,uint endError) {
             -dot(omega,quaternion.xyz));
         nextQuaternion=dq+quaternion*cos(angle);
         const float length=sqrt(dot(nextQuaternion,nextQuaternion));
-        if(!(length>0.0f) || !isfinite(length)) {
-            arena.InterlockedOr(endError,65536u);
-            return;
-        }
+        if(!(length>0.0f) || !isfinite(length))return;
         nextQuaternion/=length;
     }
     // integrateCore advances the principal mass frame. Recover the
@@ -264,24 +265,14 @@ void integrateBody(uint i,uint endError) {
     const float4 localAxes=asfloat(arena.Load4(input+116u));
     nextQuaternion=sourceRigidMultiply(nextQuaternion,float4(-localAxes.xyz,localAxes.w));
     nextPosition-=sourceRigidRotate(nextQuaternion,localCenter);
-    if(!all(isfinite(nextPosition)) ||
-       !all(isfinite(nextQuaternion))) {
-        arena.InterlockedOr(endError,65536u);
-        return;
-    }
-    const uint destination=p.writebackBias+p.resultPatchOffset+
-        p.patchCount*4u+ordinal*32u;
+    if(!all(isfinite(nextPosition)) || !all(isfinite(nextQuaternion)))return;
     arena.Store3(destination,asuint(nextPosition));
     arena.Store4(destination+12u,asuint(nextQuaternion));
-    arena.Store(destination+28u,1u);
     uint element=arena.Load(input+100u);
     const uint shapeCount=arena.Load(input+132u);
     const uint4 views=arena.Load4(p.integrationBias);
     for(uint shape=0u;shape<shapeCount;++shape) {
-        if(element>=views.w) {
-            arena.InterlockedOr(endError,65536u);
-            break;
-        }
+        if(element>=views.w)return;
         const uint geometryIndex=views.z+element*64u;
         const float3 halfExtents=asfloat(scGeometry.Load3(geometryIndex));
         const float3 localPosition=asfloat(scGeometry.Load3(geometryIndex+16u));
@@ -292,10 +283,8 @@ void integrateBody(uint i,uint endError) {
         const float3 worldExtents=kind==1u?halfExtents:sourceBoxHalfBounds(shapeQuaternion,halfExtents);
         const float3 lower=center-worldExtents;
         const float3 upper=center+worldExtents;
-        if(kind>1u || !all(isfinite(lower)) || !all(isfinite(upper)) || !all(isfinite(shapeQuaternion))) {
-            arena.InterlockedOr(endError,65536u);
-            break;
-        }
+        if(kind>1u || !all(isfinite(lower)) || !all(isfinite(upper)) ||
+           !all(isfinite(shapeQuaternion)))return;
         const uint cache=views.x+element*32u;
         scTransforms.Store4(cache,asuint(shapeQuaternion));
         scTransforms.Store3(cache+16u,asuint(center));
@@ -305,13 +294,13 @@ void integrateBody(uint i,uint endError) {
         scBounds.Store3(bound+12u,asuint(upper));
         element=scGeometry.Load(geometryIndex+48u);
     }
-    if(shapeCount!=0u && element!=0xffffffffu)
-        arena.InterlockedOr(endError,65536u);
+    if(shapeCount==0u || element==0xffffffffu)
+        arena.Store(destination+28u,1u);
 }
 
 static const uint fusedTask=0u, normalTile=1u, frictionTile=2u;
 static const uint partitionTile=3u, motionTile=4u, integrationTile=5u;
-static const uint publishErrors=6u;
+static const uint publishErrors=6u, freeBodyTile=7u;
 
 void publishTaskError(uint task,uint error) {
     arena.Store(p.writebackBias+p.resultTaskOffset+task*4u,error);
@@ -322,81 +311,102 @@ void main(uint3 group:SV_GroupID,uint3 lane:SV_GroupThreadID) {
     const uint phase=p.launchControl&7u;
     const uint iter=p.launchControl>>3u;
     const uint index=p.launchBegin+group.x;
-    const uint4 schedule=arena.Load4(p.integrationBias+16u);
-    if(phase==publishErrors) {
-        const uint task=index*128u+lane.x;
-        if(task<schedule.z)
-            publishTaskError(task,arena.Load(p.taskBias+task*36u+32u));
-        return;
-    }
-
-    // A frame containing only compact tasks uses direct task indices.
-    uint3 tile=uint3(index,0u,0u);
-    [branch]
-    if(schedule.w!=0u)tile=arena.Load3(schedule.w+index*16u);
-    const uint t=p.taskBias+tile.x*36u;
-    const uint endError=t+32u;
-    const uint2 iters=arena.Load2(t+24u);
+    const bool freeBody=phase==freeBodyTile;
     const bool fused=phase==fusedTask;
-    uint2 descriptors=tile.yz;
-    uint2 bodies=tile.yz;
-    uint2 partitions=uint2(0u,1u);
-    if(fused) {
-        const uint4 ranges=arena.Load4(t);
-        descriptors=ranges.xy;
-        partitions=ranges.zw;
-        bodies=arena.Load2(t+16u);
-        if(descriptors.x>descriptors.y || descriptors.y>schedule.y ||
-           partitions.x>partitions.y || partitions.y>p.partitionCount ||
-           bodies.x>bodies.y || bodies.y>schedule.x) {
-            if(lane.x==0u) {
-                arena.InterlockedOr(endError,4u);
-                publishTaskError(tile.x,4u);
-            }
+    uint taskId=0u,endError=0u;
+    uint2 bodies;
+    [branch]
+    if(freeBody) {
+        const uint begin=p.bodyCount+index*128u;
+        bodies=uint2(begin,min(begin+128u,iter));
+    } else {
+        const uint4 schedule=arena.Load4(p.integrationBias+16u);
+        if(phase==publishErrors) {
+            const uint task=index*128u+lane.x;
+            if(task<schedule.z)
+                publishTaskError(task,arena.Load(p.taskBias+task*36u+32u));
             return;
         }
-    }
-    // Each phase has one shader call site. Fused groups use workgroup
-    // dependencies, while tiled launches use the command stream's
-    // device-wide dependencies between the same phases.
-    if(fused || phase==normalTile) {
-        prepareNormals(descriptors.x,descriptors.y,lane.x,endError);
-        if(!fused)return;
-        AllMemoryBarrierWithGroupSync();
-    }
-    if(fused || phase==frictionTile) {
-        prepareFriction(descriptors.x,descriptors.y,lane.x,endError);
-        if(!fused)return;
-        AllMemoryBarrierWithGroupSync();
-    }
 
-    if(fused || phase==partitionTile || phase==motionTile) {
-        const uint total=iters.x+max(iters.y,1u);
-        const uint endIteration=fused ? total : min(iter+1u,total);
-        for(uint iteration=fused?0u:iter;iteration<endIteration;++iteration) {
-            if(fused || phase==partitionTile) {
-                uint begin=descriptors.x;
-                for(uint partition=partitions.x;partition<partitions.y;++partition) {
-                    uint end=descriptors.y;
-                    if(fused)end=arena.Load(p.partitionBias+partition*4u);
-                    solvePartition(begin,end,lane.x,iters,iteration,endError);
-                    if(fused)AllMemoryBarrierWithGroupSync();
-                    begin=end;
+        // A frame containing only compact tasks uses direct task indices.
+        uint3 tile=uint3(index,0u,0u);
+        [branch]
+        if(schedule.w!=0u)tile=arena.Load3(schedule.w+index*16u);
+        const uint t=p.taskBias+tile.x*36u;
+        taskId=tile.x;
+        endError=t+32u;
+        const uint2 iters=arena.Load2(t+24u);
+        uint2 descriptors=tile.yz;
+        bodies=tile.yz;
+        uint2 partitions=uint2(0u,1u);
+        if(fused) {
+            const uint4 ranges=arena.Load4(t);
+            descriptors=ranges.xy;
+            partitions=ranges.zw;
+            bodies=arena.Load2(t+16u);
+            if(descriptors.x>descriptors.y || descriptors.y>schedule.y ||
+               partitions.x>partitions.y || partitions.y>p.partitionCount ||
+               bodies.x>bodies.y || bodies.y>schedule.x) {
+                if(lane.x==0u) {
+                    arena.InterlockedOr(endError,4u);
+                    publishTaskError(tile.x,4u);
                 }
-            }
-            if((fused || phase==motionTile) && iteration+1u==iters.x) {
-                for(uint i=bodies.x+lane.x;i<bodies.y;i+=128u)
-                    saveMotion(i,endError);
-                if(fused)AllMemoryBarrierWithGroupSync();
+                return;
             }
         }
-        if(!fused)return;
+        // Each phase has one shader call site. Fused groups use workgroup
+        // dependencies, while tiled launches use the command stream's
+        // device-wide dependencies between the same phases.
+        if(fused || phase==normalTile) {
+            prepareNormals(descriptors.x,descriptors.y,lane.x,endError);
+            if(!fused)return;
+            AllMemoryBarrierWithGroupSync();
+        }
+        if(fused || phase==frictionTile) {
+            prepareFriction(descriptors.x,descriptors.y,lane.x,endError);
+            if(!fused)return;
+            AllMemoryBarrierWithGroupSync();
+        }
+
+        if(fused || phase==partitionTile || phase==motionTile) {
+            const uint total=iters.x+max(iters.y,1u);
+            const uint endIteration=fused ? total : min(iter+1u,total);
+            for(uint iteration=fused?0u:iter;iteration<endIteration;++iteration) {
+                if(fused || phase==partitionTile) {
+                    uint begin=descriptors.x;
+                    for(uint partition=partitions.x;partition<partitions.y;++partition) {
+                        uint end=descriptors.y;
+                        if(fused)end=arena.Load(p.partitionBias+partition*4u);
+                        solvePartition(begin,end,lane.x,iters,iteration,endError);
+                        if(fused)AllMemoryBarrierWithGroupSync();
+                        begin=end;
+                    }
+                }
+                if((fused || phase==motionTile) && iteration+1u==iters.x) {
+                    for(uint i=bodies.x+lane.x;i<bodies.y;i+=128u)
+                        saveMotion(i,endError);
+                    if(fused)AllMemoryBarrierWithGroupSync();
+                }
+            }
+            if(!fused)return;
+        }
     }
-    if(fused || phase==integrationTile)
-        for(uint i=bodies.x+lane.x;i<bodies.y;i+=128u)
-            integrateBody(i,endError);
+    if(fused || phase==integrationTile || freeBody) {
+        for(uint i=bodies.x+lane.x;i<bodies.y;i+=128u) {
+            uint ordinal=i;
+            [branch]
+            if(!freeBody) {
+                ordinal=arena.Load(p.ordinalBias+i*4u);
+                if(ordinal>=p.bodyCount) {
+                    arena.InterlockedOr(endError,8u);
+                    continue;
+                }
+            }
+            integrateBody(ordinal);
+        }
+    }
     if(fused) {
         AllMemoryBarrierWithGroupSync();
-        if(lane.x==0u)publishTaskError(tile.x,arena.Load(endError));
+        if(lane.x==0u)publishTaskError(taskId,arena.Load(endError));
     }
 }

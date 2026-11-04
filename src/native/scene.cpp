@@ -6566,6 +6566,9 @@ void Scene::partition_constraints() {
     indexed_managers_.clear();
     indexed_distance_constraints_.clear();
     solver_tasks_.clear();
+    gpu_dy_free_ids_.clear();
+    const bool gpu_integration=gpu_broadphase_ &&
+        gpu_broadphase_->has_gpu_dy_distance();
     std::size_t distance_task_begin=0;
     const auto sort_constraints=[&] {
         // DyDynamicsBase::ConstraintLess compares Dy::Constraint::index
@@ -6646,6 +6649,8 @@ void Scene::partition_constraints() {
                prepared_solver_row(id).prepared_generation==
                    solver_preparation_generation_)
                 ++prepared_solver_bodies;
+            else if(gpu_integration && !actors_[id].sleeping)
+                gpu_dy_free_ids_.push_back(id);
         }
         // DyDynamicsContext::updatePostKinematic breaks after EVERY
         // accurate island with eENABLE_ENHANCED_DETERMINISM; the
@@ -6658,7 +6663,7 @@ void Scene::partition_constraints() {
             solver_tasks_.push_back({task_first_batch,batch_index+1,
                 indexed_managers_.size(),0,0,prepared_solver_bodies,
                 task_pos_iters,task_vel_iters,
-                indexed_distance_constraints_.size()});
+                indexed_distance_constraints_.size(),gpu_dy_free_ids_.size()});
             task_first_batch=batch_index+1;
             task_body_count=0;
             task_constraint_count=0;
@@ -6671,7 +6676,7 @@ void Scene::partition_constraints() {
             active_accurate_island_batches_.size(),
             indexed_managers_.size(),0,0,prepared_solver_bodies,
             task_pos_iters,task_vel_iters,
-            indexed_distance_constraints_.size()});
+            indexed_distance_constraints_.size(),gpu_dy_free_ids_.size()});
     }
     // The admitted non-compound rigid PGS descriptor path in
     // DyDynamics.cpp::setupDescTask consumes this indexed-manager
@@ -7749,7 +7754,8 @@ void Scene::prepare_constraints(float seconds) {
 void Scene::solve_gpu_distance_constraints(float seconds) {
     // Source Dy owns task, body and 1D row order; the device receives
     // transient packed views of those exact prepared source inputs.
-    if(ordered_constraints_.empty())return;
+    if(ordered_constraints_.empty() && solver_active_ids_.empty() &&
+       gpu_dy_free_ids_.empty())return;
     const auto narrow=[](std::size_t value) {
         if(value>=std::numeric_limits<std::uint32_t>::max())
             throw std::overflow_error("Native GPU Dy row index exceeds 32 bits");
@@ -7768,14 +7774,13 @@ void Scene::solve_gpu_distance_constraints(float seconds) {
         pack(body.motion_angular_state,row.motion_angular_state);
         body.inverse_mass=row.data.inverse_mass;
     }
-    gpu_dy_integration_inputs_.assign(solver_rows_.size(),{});
-    gpu_dy_integrated_poses_.resize(solver_rows_.size());
-    for(const BodyId id:solver_active_ids_) {
-        const auto& actor=actors_[id];
-        const auto& row=solver_rows_[actor.solver_row_index];
-        auto& input=gpu_dy_integration_inputs_[actor.solver_row_index];
+    const auto integration_count=solver_rows_.size()+gpu_dy_free_ids_.size();
+    gpu_dy_integration_inputs_.assign(integration_count,{});
+    gpu_dy_integrated_poses_.resize(integration_count);
+    const auto pack_integration=[&](const Actor& actor,
+                                   GpuDyBodyIntegrationInput& input) {
         pack(input.position,mass_position(actor));
-        const Quat mass_q=mass_orientation(actor);
+        const auto mass_q=mass_orientation(actor);
         input.orientation[0]=mass_q.x;input.orientation[1]=mass_q.y;
         input.orientation[2]=mass_q.z;input.orientation[3]=mass_q.w;
         pack(input.mass_local_position,actor.mass_local_pose.position);
@@ -7783,6 +7788,16 @@ void Scene::solve_gpu_distance_constraints(float seconds) {
         input.mass_local_orientation[0]=local_q.x;input.mass_local_orientation[1]=local_q.y;
         input.mass_local_orientation[2]=local_q.z;input.mass_local_orientation[3]=local_q.w;
         input.source_shape_count=actor.simulation_shape_count;
+        input.source_element=actor.first_simulation_shape;
+        input.lock_flags=actor.dynamics.lock_flags;
+        input.seconds=seconds;
+        input.active=1u;
+    };
+    for(const BodyId id:solver_active_ids_) {
+        const auto& actor=actors_[id];
+        const auto& row=solver_rows_[actor.solver_row_index];
+        auto& input=gpu_dy_integration_inputs_[actor.solver_row_index];
+        pack_integration(actor,input);
         pack(input.linear_velocity,row.data.linear_velocity);
         pack(input.angular_velocity,row.data.angular_velocity);
         for(std::size_t axis=0;axis<3u;++axis) {
@@ -7791,10 +7806,13 @@ void Scene::solve_gpu_distance_constraints(float seconds) {
             input.sqrt_inverse_inertia[axis*3u+1u]=inertia.y;
             input.sqrt_inverse_inertia[axis*3u+2u]=inertia.z;
         }
-        input.lock_flags=actor.dynamics.lock_flags;
-        input.seconds=seconds;
-        input.active=row.prepared_generation==solver_preparation_generation_;
-        if(input.active)input.source_element=actor.first_simulation_shape;
+    }
+    for(std::size_t i=0;i<gpu_dy_free_ids_.size();++i) {
+        const auto& actor=actors_[gpu_dy_free_ids_[i]];
+        auto& input=gpu_dy_integration_inputs_[solver_rows_.size()+i];
+        pack_integration(actor,input);
+        pack(input.linear_velocity,actor.velocity);
+        pack(input.angular_velocity,actor.angular_velocity);
     }
     gpu_dy_rows_.resize(distance_rows_.size());
     for(std::size_t i=0;i<distance_rows_.size();++i) {
@@ -7822,17 +7840,18 @@ void Scene::solve_gpu_distance_constraints(float seconds) {
     for(std::size_t i=0;i<solver_active_ids_.size();++i)
         gpu_dy_body_ordinals_[i]=narrow(
             actors_[solver_active_ids_[i]].solver_row_index);
-    gpu_dy_tasks_.resize(solver_tasks_.size());
-    for(std::size_t i=0;i<solver_tasks_.size();++i) {
-        const auto& task=solver_tasks_[i];
-        gpu_dy_tasks_[i]={
-            narrow(i?solver_tasks_[i-1].constraint_end:0u),
-            narrow(task.constraint_end),
-            narrow(i?solver_tasks_[i-1].partition_end:0u),
-            narrow(task.partition_end),
-            narrow(i?solver_tasks_[i-1].solver_body_end:0u),
-            narrow(task.solver_body_end),
-            task.position_iterations,task.velocity_iterations,0u};
+    gpu_dy_tasks_.clear();
+    for(const auto& task:solver_tasks_) {
+        const auto prev=gpu_dy_tasks_.empty()?GpuDyDistanceTask{}:gpu_dy_tasks_.back();
+        if(task.constraint_end==prev.descriptor_end &&
+           task.partition_end==prev.partition_end &&
+           task.solver_body_end==prev.body_end)
+            continue;
+        gpu_dy_tasks_.push_back({
+            prev.descriptor_end,narrow(task.constraint_end),
+            prev.partition_end,narrow(task.partition_end),
+            prev.body_end,narrow(task.solver_body_end),
+            task.position_iterations,task.velocity_iterations,0u});
     }
     // Sc owns Gu point identity and correlated patch normals. The GPU
     // constructs every writable Dy contact row; only CPU-origin Gu
@@ -9651,6 +9670,7 @@ void Scene::integrate_solver_task(
     // actors inside mutually exclusive task groups. The frame journal
     // has pre-recorded every active rigid actor before parallel entry.
     const auto& task=solver_tasks_[task_index];
+    auto free_index=task_index?solver_tasks_[task_index-1].gpu_free_end:0u;
         for(std::size_t batch=task.first_batch;
             batch<task.batch_end;++batch) {
         const auto island=active_accurate_island_batches_[batch];
@@ -9697,10 +9717,12 @@ void Scene::integrate_solver_task(
                 throw std::overflow_error("Native position-iteration motion overflow");
             Vec3 p{};
             Quat q{};
-            if(solved_contact && gpu_dy_pose_ready_) {
-                // Dy's source integrateCore result is produced by the
-                // same GPU task that solves this actor's PGS rows.
-                const auto index=actor.solver_row_index;
+            if(gpu_dy_pose_ready_) {
+                if(!solved_contact && (free_index>=task.gpu_free_end ||
+                   gpu_dy_free_ids_[free_index]!=id))
+                    throw std::logic_error("Source GPU free-body order mismatch");
+                const auto index=solved_contact?actor.solver_row_index:
+                    solver_rows_.size()+free_index++;
                 if(index>=gpu_dy_integrated_poses_.size() ||
                    gpu_dy_integrated_poses_[index].valid!=1u)
                     throw std::logic_error(
@@ -10051,34 +10073,28 @@ void Scene::step(float seconds) {
     // Its bounds updates participate in the same motion undo journal.
     after_integration_cached_bounds();
     if(gpu_dy_pose_ready_) {
-        // Reconciled accurate islands and Sc afterIntegration determine
-        // which GPU-integrated poses may remain resident for the next SAP.
-        for(const BodyId id:solver_active_ids_) {
-            const Actor& actor=actors_[id];
-            if(!actor.alive || actor.motion!=Motion::Dynamic ||
-               actor.solver_row_generation!=solver_preparation_generation_ ||
-               prepared_solver_row(id).prepared_generation!=
-                   solver_preparation_generation_)
-                continue;
-            const auto index=actor.solver_row_index;
-            if(index>=gpu_dy_integrated_poses_.size())continue;
+        // Only reconciled poses can authorize the next SAP to use Dy's
+        // cached device bounds. A restored pose stays dirty on the host.
+        const auto authorize=[&](BodyId id,std::size_t index) {
+            if(!gpu_dy_integration_inputs_[index].source_shape_count)return;
+            const auto& actor=actors_[id];
             const auto& result=gpu_dy_integrated_poses_[index];
-            if(result.valid!=1u)continue;
-            const bool accepted=
-                actor.position.x==result.position[0] &&
-                actor.position.y==result.position[1] &&
-                actor.position.z==result.position[2] &&
-                actor.orientation.x==result.orientation[0] &&
-                actor.orientation.y==result.orientation[1] &&
-                actor.orientation.z==result.orientation[2] &&
-                actor.orientation.w==result.orientation[3];
-            // Reconciled deactivations already mark the restored Sc
-            // shape dirty in publish_integrated_shape_bounds. Only
-            // matching Dy poses may regain device-cache authorization.
-            if(accepted)
-                for(ShapeId shape=actor.first_simulation_shape;shape!=invalid_shape;shape=shapes_[shape].next_simulation_shape)
-                    gpu_broadphase_->authorize_device_integrated_pose(shape);
-        }
+            if(actor.position.x!=result.position[0] ||
+               actor.position.y!=result.position[1] ||
+               actor.position.z!=result.position[2] ||
+               actor.orientation.x!=result.orientation[0] ||
+               actor.orientation.y!=result.orientation[1] ||
+               actor.orientation.z!=result.orientation[2] ||
+               actor.orientation.w!=result.orientation[3])
+                return;
+            for(ShapeId shape=actor.first_simulation_shape;shape!=invalid_shape;
+                shape=shapes_[shape].next_simulation_shape)
+                gpu_broadphase_->authorize_device_integrated_pose(shape);
+        };
+        for(const auto id:solver_active_ids_)
+            authorize(id,actors_[id].solver_row_index);
+        for(std::size_t i=0;i<gpu_dy_free_ids_.size();++i)
+            authorize(gpu_dy_free_ids_[i],solver_rows_.size()+i);
     }
     join.finish_after_integration();
     // Threshold checks consume current Dy forces after the

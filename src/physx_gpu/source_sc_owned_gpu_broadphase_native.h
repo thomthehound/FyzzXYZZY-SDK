@@ -197,9 +197,8 @@ public:
         std::span<native::GpuDyIntegratedPose> integrated_poses) override {
         if(!dy_distance_)
             throw std::logic_error("Source GPU Dy shader not installed");
-        // Resolve the Sc actor identity into its original ElementSim
-        // volume. Only eligible standalone dynamic boxes have a device
-        // shape-cache write target; every solver body still integrates.
+        // Resolve the first attached shape into the ElementSim cache.
+        // Body integration also covers shapes without a device target.
         for(auto& input:integration)
             if(input.active && input.source_element!=0xffffffffu) {
                 input.source_element=producer_->device_shape_cache_handle(input.source_element);
