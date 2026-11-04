@@ -445,8 +445,14 @@ struct PcmContactCandidate {
     float separation=0.0f;
 };
 struct PcmGjkWarmstart {
-    std::array<std::uint8_t,4> a{},b{};
+    std::array<std::uint32_t,4> a{},b{};
     std::uint8_t count=0;
+};
+struct PcmFiniteShape {
+    Vec3 half_extents{},position{};
+    Quat orientation{};
+    float sphere_radius=0.f;
+    std::span<const Vec3> hull_vertices{};
 };
 std::array<std::uint8_t,4> source_pcm_box_batch_selection(
     std::span<const PcmContactCandidate> contacts,float tolerance_length);
@@ -462,6 +468,14 @@ bool source_pcm_box_box_candidates(
 bool source_pcm_box_box_gjk_epa(
     Vec3 half0,Vec3 position0,Quat rotation0,
     Vec3 half1,Vec3 position1,Quat rotation1,
+    float contact_distance,PcmContactCandidate& contact,
+    PcmGjkWarmstart* warmstart=nullptr);
+
+// Finite convex contacts share Gu's simplex, EPA facets, and PCM witnesses.
+// A sphere contributes its analytical radius after the polyhedral closest
+// features are found; cooked hulls use their exact extreme vertices.
+bool source_pcm_convex_gjk_epa(
+    const PcmFiniteShape& first,const PcmFiniteShape& second,
     float contact_distance,PcmContactCandidate& contact,
     PcmGjkWarmstart* warmstart=nullptr);
 
