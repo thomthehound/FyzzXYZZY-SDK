@@ -239,9 +239,9 @@ public:
             work_.getDevicePtr(),indirect_address_,
             dense_contacts_.getDevicePtr(),
             convex_vertices_.getDevicePtr(),convex_vertex_count_,
+            pair_count,shape_capacity,candidate_capacity,edge_capacity,
             convex_surface_.getDevicePtr(),convex_surface_bytes_,
-            convex_faces_base_,convex_indices_base_,
-            pair_count,shape_capacity,candidate_capacity,edge_capacity);
+            convex_faces_base_,convex_indices_base_);
 
         // Fetch the losslessly packed device stream, then reconstruct
         // Sc's original host record. The Dy shader reads the same device
