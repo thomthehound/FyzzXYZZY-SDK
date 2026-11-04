@@ -8106,8 +8106,6 @@ void Scene::solve_gpu_distance_constraints(float seconds) {
         target.motion_linear_delta=unpack(source.motion_linear_delta);
         target.motion_angular_state=unpack(source.motion_angular_state);
     }
-    for(std::size_t i=0;i<joint_rows_.size();++i)
-        joint_rows_[i].applied_force=gpu_dy_rows_[i].applied_force;
     for(std::size_t i=0;i<solver_contact_points_.size();++i)
         solver_contact_points_[i].applied_force=gpu_dy_contact_forces_[i];
     for(std::size_t i=0;i<solver_friction_rows_.size();++i) {

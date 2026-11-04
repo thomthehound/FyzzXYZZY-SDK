@@ -34,8 +34,8 @@ struct Parameters {
     uint launchControl, integrationBias;
     uint contactBias,frictionBias,patchBias,manifoldBias,orderBias;
     uint contactCount,frictionCount,patchCount,manifoldCount,orderCount;
-    uint resultBodyOffset,resultRowOffset,resultTaskOffset;
-    uint resultContactOffset,resultFrictionOffset,resultPatchOffset;
+    uint resultBodyOffset,resultTaskOffset,resultContactOffset;
+    uint resultFrictionOffset,resultPatchOffset,reservedOutput;
     uint writebackBias;
     uint prepBias,prepCount,pcmBias;
 };
@@ -50,12 +50,7 @@ static const float maxImpulse = 3.4028234663852886e+38;
 float loadScalar(uint byteOffset) {
     return asfloat(arena.Load(byteOffset));
 }
-void storeScalar(uint byteOffset,float value,uint rowIndex,bool finalPass) {
-    arena.Store(byteOffset,asuint(value));
-    if(finalPass)
-        arena.Store(p.writebackBias+p.resultRowOffset+rowIndex*4u,asuint(value));
-}
-void solveJoint(uint4 desc,uint errorAddress,bool biased,bool finalPass) {
+void solveJoint(uint4 desc,uint errorAddress,bool biased) {
     if(desc.x>=p.rowCount || desc.w>p.rowCount-desc.x ||
        (desc.y!=invalidBody && desc.y>=p.bodyCount) ||
        (desc.z!=invalidBody && desc.z>=p.bodyCount)) {
@@ -97,7 +92,7 @@ void solveJoint(uint4 desc,uint errorAddress,bool biased,bool finalPass) {
             arena.InterlockedOr(errorAddress,2u);
             return;
         }
-        storeScalar(offset+60u,next,desc.x+row,finalPass);
+        arena.Store(offset+60u,asuint(next));
     }
     // Kinematic rows are shared read-only by disjoint solver tasks.
     if(desc.y!=invalidBody && massA>0.f) {
@@ -176,7 +171,7 @@ void solvePartition(uint begin,uint end,uint lane,uint2 iters,
     for(uint i=begin+lane;i<end;i+=128u) {
         const uint4 desc=arena.Load4(p.descriptorBias+i*16u);
         if(desc.w!=0u)
-            solveJoint(desc,endError,biased,finalPass);
+            solveJoint(desc,endError,biased);
         else
             solveContact(desc,endError,biased,friction,finalPass);
     }
