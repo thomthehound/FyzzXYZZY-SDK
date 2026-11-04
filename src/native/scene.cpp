@@ -310,13 +310,36 @@ ShapeId Scene::attach_convex(
         shape.convex->vertices().size());
     shape.local_pose=pose;
     const auto previous=convex_vertices_.size();
-    if(!existing)
-        convex_vertices_.insert(convex_vertices_.end(),
-            shape.convex->vertices().begin(),shape.convex->vertices().end());
+    const auto previous_faces=convex_faces_.size();
+    const auto previous_indices=convex_face_indices_.size();
+    if(!existing &&
+       (shape.convex->faces().size()>
+            std::numeric_limits<std::uint32_t>::max()-previous_faces ||
+        shape.convex->face_indices().size()>
+            std::numeric_limits<std::uint32_t>::max()-previous_indices))
+        throw std::overflow_error("Convex face resource exceeds device indexing");
     try {
+        if(!existing) {
+            convex_vertices_.insert(convex_vertices_.end(),
+                shape.convex->vertices().begin(),shape.convex->vertices().end());
+            convex_face_spans_.resize(convex_vertices_.size());
+            convex_face_spans_[previous]={
+                static_cast<std::uint32_t>(previous_faces),
+                static_cast<std::uint32_t>(shape.convex->faces().size())};
+            convex_face_indices_.insert(convex_face_indices_.end(),
+                shape.convex->face_indices().begin(),
+                shape.convex->face_indices().end());
+            for(auto face:shape.convex->faces()) {
+                face.first_index+=static_cast<std::uint32_t>(previous_indices);
+                convex_faces_.push_back(face);
+            }
+        }
         return attach(body,std::move(shape));
     }catch(...) {
         convex_vertices_.resize(previous);
+        convex_face_spans_.resize(previous);
+        convex_faces_.resize(previous_faces);
+        convex_face_indices_.resize(previous_indices);
         throw;
     }
 }
@@ -2310,7 +2333,9 @@ void Scene::update_gpu_pairs(bool force_update) {
         ++gpu_broadphase_snapshot_rebuilds_;
     }
     if(uploaded_convex_vertex_count_!=convex_vertices_.size()) {
-        gpu_broadphase_->upload_convex_vertices(convex_vertices_);
+        gpu_broadphase_->upload_convex_geometry(
+            convex_vertices_,convex_face_spans_,convex_faces_,
+            convex_face_indices_);
         uploaded_convex_vertex_count_=convex_vertices_.size();
     }
     const auto reports=gpu_broadphase_->advance(
