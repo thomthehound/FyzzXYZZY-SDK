@@ -864,9 +864,8 @@ void Scene::set_kinematic(BodyId id,bool enabled) {
     // Original ScBodySim switches the AABB group before refiltering its
     // interactions; do not leave the GPU volume in its previous class.
     if(gpu_broadphase_)
-        for(ShapeId shape=actor.first_shape;shape!=invalid_shape;shape=shapes_[shape].next)
-        gpu_broadphase_->set_shape_motion(
-            shape,enabled ? GpuBroadphaseBox::Motion::Kinematic
+        gpu_broadphase_->set_actor_motion(
+            id,enabled ? GpuBroadphaseBox::Motion::Kinematic
                        : GpuBroadphaseBox::Motion::Dynamic);
     // The previous source island owns the indexed contact-manager
     // entries until the rigid node's motion class changes. Detach every
