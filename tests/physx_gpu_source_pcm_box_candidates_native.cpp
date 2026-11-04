@@ -229,6 +229,7 @@ void verify(Context& context,const char* transform_shader,
     SourcePcmBoxCandidatesNativeStage pcm(context,shader(candidate_shader));
     SourcePcmSparseEpaNativeStage sparse(context,shader(compact_shader));
     SourcePcmEpaNativeStage epa(context,shader(epa_shader));
+    std::clog<<"PCM fixture: pipelines initialized\n"<<std::flush;
     {
         SourceSapDmaNative stream(context,addresses);
         producer.append(stream,addresses,inputs,bounds,transforms,geometry,
@@ -246,6 +247,7 @@ void verify(Context& context,const char* transform_shader,
         require(stream.submission_stats().command_batches==1u,
                 "Source PCM candidate and sparse EPA stages split the source stream batch");
     }
+    std::clog<<"PCM fixture: candidate stage completed\n"<<std::flush;
     context.download(root,result_offset,results.data(),sizeof(results));
     context.download(root,candidate_offset,candidates.data(),
                      candidates.size()*sizeof(candidates[0]));
@@ -646,6 +648,7 @@ void verify(Context& context,const char* transform_shader,
     context.download(root,result_offset,results.data(),sizeof(results));
     require(results[0].regenerated==1u,
             "Sc PCM GPU failed to invalidate and regenerate after large motion");
+    std::clog<<"PCM fixture: entering sparse EPA verification\n"<<std::flush;
     // Directly exercise source EPA's penetration branch on the sparse
     // device continuation. The ordinary SAT cases above remain unchanged.
     by_id[boxes[0].element_index]=boxes[0];
@@ -732,6 +735,7 @@ void verify(Context& context,const char* transform_shader,
             near(witness.normal_b[1],expected_epa.normal_b.y) &&
             near(witness.normal_b[2],expected_epa.normal_b.z),
             "GPU EPA contact differs from native source penetration witness");
+    std::clog<<"PCM fixture: sparse EPA published\n"<<std::flush;
     // A source EPA witness must survive the next quiet Sc PCM refresh
     // through the same EdgeIndex, without another GJK/EPA invocation.
     {
