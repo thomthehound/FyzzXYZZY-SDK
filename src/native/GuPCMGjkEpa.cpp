@@ -562,4 +562,231 @@ bool source_pcm_convex_gjk_epa(
     }
     return contact.separation<=contact_distance;
 }
+
+std::uint8_t source_pcm_convex_face_contacts(
+    const PcmFiniteShape& first,const PcmFiniteShape& second,
+    float contact_distance,const PcmContactCandidate& witness,
+    std::span<PcmContactCandidate> output) {
+    if(output.empty() || first.sphere_radius>0.f ||
+       second.sphere_radius>0.f ||
+       (!first.hull_vertices.empty() && first.hull_faces.empty()) ||
+       (!second.hull_vertices.empty() && second.hull_faces.empty()))
+        return 0u;
+
+    const auto axis=[](unsigned i) -> Vec3 {
+        switch(i) {
+            case 0: return {1.f,0.f,0.f};
+            case 1: return {0.f,1.f,0.f};
+            default: return {0.f,0.f,1.f};
+        }
+    };
+    const auto component=[](Vec3 v,unsigned i) {
+        return i==0u?v.x:(i==1u?v.y:v.z);
+    };
+    const auto face_count=[](const PcmFiniteShape& shape) {
+        return shape.hull_vertices.empty()?6u:
+            static_cast<unsigned>(shape.hull_faces.size());
+    };
+    const auto face_normal=[&](const PcmFiniteShape& shape,
+                               unsigned face) {
+        if(!shape.hull_vertices.empty())
+            return shape.hull_faces[face].normal;
+        return mul(axis(face/2u),(face&1u)?1.f:-1.f);
+    };
+    const auto vertex_count=[&](const PcmFiniteShape& shape,
+                                unsigned face) {
+        return shape.hull_vertices.empty()?4u:
+            shape.hull_faces[face].index_count;
+    };
+    const auto vertex_local=[&](const PcmFiniteShape& shape,
+                                unsigned face,unsigned ordinal) {
+        if(!shape.hull_vertices.empty()) {
+            const auto& f=shape.hull_faces[face];
+            return shape.hull_vertices[
+                shape.hull_face_indices[f.first_index+ordinal]];
+        }
+        const Vec3 n=face_normal(shape,face);
+        const unsigned coordinate=face/2u;
+        const Vec3 u=axis((coordinate+1u)%3u);
+        const Vec3 v=cross(n,u);
+        constexpr std::array<std::array<float,2>,4> corners{{
+            {1.f,1.f},{-1.f,1.f},{-1.f,-1.f},{1.f,-1.f}}};
+        const float hu=component(shape.half_extents,(coordinate+1u)%3u);
+        const float hv=component(shape.half_extents,(coordinate+2u)%3u);
+        return add(mul(n,component(shape.half_extents,coordinate)),
+                   add(mul(u,corners[ordinal][0]*hu),
+                       mul(v,corners[ordinal][1]*hv)));
+    };
+    const auto to_b=[&](Vec3 p) {
+        return inverse_rotate(second.orientation,
+            sub(add(first.position,rotate(first.orientation,p)),
+                second.position));
+    };
+    const auto face_vertex=[&](const PcmFiniteShape& shape,
+                               bool shape_is_a,unsigned face,
+                               unsigned ordinal) {
+        const Vec3 local=vertex_local(shape,face,ordinal);
+        return shape_is_a?to_b(local):local;
+    };
+    const auto face_normal_b=[&](const PcmFiniteShape& shape,
+                                bool shape_is_a,unsigned face) {
+        const Vec3 normal=face_normal(shape,face);
+        return shape_is_a
+            ?inverse_rotate(second.orientation,
+                rotate(first.orientation,normal))
+            :normal;
+    };
+    const Vec3 normal=witness.normal_b;
+    if(!(length2(normal)>0.f))return 0u;
+    unsigned face_a=0u,face_b=0u;
+    float alignment_a=-2.f,alignment_b=-2.f;
+    for(unsigned i=0;i<face_count(first);++i) {
+        const float d=dot(neg(normal),face_normal_b(first,true,i));
+        if(d>alignment_a){alignment_a=d;face_a=i;}
+    }
+    for(unsigned i=0;i<face_count(second);++i) {
+        const float d=dot(normal,face_normal_b(second,false,i));
+        if(d>alignment_b){alignment_b=d;face_b=i;}
+    }
+    const bool reference_b=alignment_b>=alignment_a;
+    if(std::max(alignment_a,alignment_b)<0.95f)
+        return 0u; // Edge/edge: retain the exact GJK/EPA witness.
+    const auto& reference=reference_b?second:first;
+    const auto& incident=reference_b?first:second;
+    const bool reference_is_a=!reference_b;
+    const bool incident_is_a=reference_b;
+    const unsigned reference_face=reference_b?face_b:face_a;
+    const Vec3 reference_normal=face_normal_b(
+        reference,reference_is_a,reference_face);
+    unsigned incident_face=0u;
+    float incident_alignment=-2.f;
+    for(unsigned i=0;i<face_count(incident);++i) {
+        const float d=dot(neg(reference_normal),
+            face_normal_b(incident,incident_is_a,i));
+        if(d>incident_alignment){incident_alignment=d;incident_face=i;}
+    }
+    const Vec3 incident_normal=face_normal_b(
+        incident,incident_is_a,incident_face);
+    const float denominator=dot(incident_normal,reference_normal);
+    if(!(denominator< -0.25f))return 0u;
+
+    const unsigned nr=vertex_count(reference,reference_face);
+    const unsigned ni=vertex_count(incident,incident_face);
+    if(nr<3u || ni<3u)return 0u;
+    const auto r=[&](unsigned i) {
+        return face_vertex(reference,reference_is_a,reference_face,i%nr);
+    };
+    const auto q=[&](unsigned i) {
+        return face_vertex(incident,incident_is_a,incident_face,i%ni);
+    };
+    const Vec3 anchor=r(0u);
+    const Vec3 incident_anchor=q(0u);
+    const float scale=std::max({
+        first.half_extents.x,first.half_extents.y,first.half_extents.z,
+        second.half_extents.x,second.half_extents.y,second.half_extents.z});
+    const float tolerance=std::max(scale*1.e-5f,1.e-6f);
+    const float tolerance_sq=tolerance*tolerance;
+    const auto cross2=[&](Vec3 a,Vec3 b) {
+        return dot(reference_normal,cross(a,b));
+    };
+    const auto inside_reference=[&](Vec3 point) {
+        for(unsigned i=0u;i<nr;++i)
+            if(cross2(sub(r(i+1u),r(i)),sub(point,r(i)))<
+               -tolerance*scale)
+                return false;
+        return true;
+    };
+    const auto inside_incident=[&](Vec3 point) {
+        for(unsigned i=0u;i<ni;++i)
+            if(cross2(sub(q(i+1u),q(i)),sub(point,q(i)))>
+               tolerance*scale)
+                return false;
+        return true;
+    };
+    std::uint8_t count=0u;
+    const auto emit=[&](Vec3 incident_point) {
+        const float separation=dot(reference_normal,
+            sub(incident_point,anchor));
+        if(!std::isfinite(separation) || separation>contact_distance)
+            return;
+        const Vec3 projected=sub(incident_point,
+            mul(reference_normal,separation));
+        const Vec3 a=reference_b?incident_point:projected;
+        const Vec3 b=reference_b?projected:incident_point;
+        const Vec3 a_local=inverse_rotate(first.orientation,
+            sub(add(second.position,rotate(second.orientation,a)),
+                first.position));
+        const PcmContactCandidate candidate{
+            a_local,b,reference_b?reference_normal:neg(reference_normal),
+            separation};
+        if(!std::isfinite(a_local.x) || !std::isfinite(b.x))
+            return;
+        for(unsigned i=0u;i<count;++i) {
+            if(length2(sub(output[i].local_b,candidate.local_b))<=
+               tolerance_sq) {
+                if(candidate.separation<output[i].separation)
+                    output[i]=candidate;
+                return;
+            }
+        }
+        const auto capacity=std::min<std::size_t>(output.size(),4u);
+        if(count<capacity) {
+            output[count++]=candidate;
+            return;
+        }
+        if(capacity<4u)return;
+        // Greedy five-point reduction retains the deepest contact and
+        // maximizes the projected manifold footprint. It uses the same
+        // bounded four-witness storage as the persistent Sc EdgeIndex.
+        std::array<PcmContactCandidate,5> choices{
+            output[0],output[1],output[2],output[3],candidate};
+        unsigned deepest=0u;
+        for(unsigned i=1u;i<5u;++i)
+            if(choices[i].separation<choices[deepest].separation)
+                deepest=i;
+        float best=-1.f;
+        unsigned omit=4u;
+        for(unsigned excluded=0u;excluded<5u;++excluded) {
+            if(excluded==deepest)continue;
+            float score=0.f;
+            for(unsigned i=0u;i<5u;++i) {
+                if(i==excluded)continue;
+                for(unsigned j=i+1u;j<5u;++j)
+                    if(j!=excluded)
+                        score+=length2(sub(
+                            choices[i].local_b,choices[j].local_b));
+            }
+            if(score>best) {best=score;omit=excluded;}
+        }
+        if(omit!=4u)output[omit]=candidate;
+    };
+    for(unsigned i=0u;i<ni;++i) {
+        const Vec3 v=q(i);
+        if(inside_reference(v))emit(v);
+    }
+    for(unsigned i=0u;i<nr;++i) {
+        const Vec3 v=r(i);
+        if(!inside_incident(v))continue;
+        const float height=dot(incident_normal,
+            sub(incident_anchor,v))/denominator;
+        if(std::isfinite(height))
+            emit(add(v,mul(reference_normal,height)));
+    }
+    for(unsigned i=0u;i<ni;++i) {
+        const Vec3 a=q(i),e=sub(q(i+1u),a);
+        for(unsigned j=0u;j<nr;++j) {
+            const Vec3 b=r(j),f=sub(r(j+1u),b);
+            const float determinant=cross2(e,f);
+            if(std::abs(determinant)<=tolerance_sq)continue;
+            const Vec3 d=sub(b,a);
+            const float t=cross2(d,f)/determinant;
+            const float u=cross2(d,e)/determinant;
+            if(t>=-tolerance && t<=1.f+tolerance &&
+               u>=-tolerance && u<=1.f+tolerance)
+                emit(add(a,mul(e,std::clamp(t,0.f,1.f))));
+        }
+    }
+    return count;
+}
+
 } // namespace fyzz::native
