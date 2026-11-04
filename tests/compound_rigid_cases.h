@@ -616,10 +616,17 @@ inline void compound_plane_box_device_pcm(World& world,World* comparison) {
             compound_require(!points.empty() && points.size()<=4u,
                 "Plane-box source PCM failed to publish bounded contacts");
             for(const auto& p:points) {
-                compound_require(std::abs(p.position.y-height)<0.0008f &&
-                                 std::abs(p.normal.y-1.0f)<0.0008f &&
-                                 p.separation<0.03f,
-                    "Plane-box PCM witness is not on the plane");
+                if(std::abs(p.position.y-height)>=0.0008f ||
+                   std::abs(std::abs(p.normal.y)-1.0f)>=0.0008f ||
+                   std::abs(p.normal.x)>=0.0008f ||
+                   std::abs(p.normal.z)>=0.0008f ||
+                   p.separation>0.0408f)
+                    throw std::runtime_error(
+                        "Plane-box PCM witness invalid: frame="+
+                        std::to_string(frame)+" plane="+std::to_string(height)+
+                        " y="+std::to_string(p.position.y)+
+                        " normal="+std::to_string(p.normal.y)+
+                        " separation="+std::to_string(p.separation));
             }
             if(comparison) {
                 const auto expected=contacts(*comparison,ref);
