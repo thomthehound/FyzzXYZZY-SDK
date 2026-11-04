@@ -406,7 +406,7 @@ static bool gjk_epa(
     const BoxPair& pair,float contact_distance,
     PcmContactCandidate& contact,PcmGjkWarmstart* warmstart) {
     const float epsilon=0.1f*std::min(
-        box_min_margin(half0),box_min_margin(half1));
+        box_min_margin(pair.ha),box_min_margin(pair.hb));
     constexpr float progress_factor=1.0f-0.000225f;
     std::array<Support,4> simplex{};
     int count=0;
@@ -419,7 +419,8 @@ static bool gjk_epa(
             warmstart->b[i]=simplex[i].bi;
         }
     };
-    Vec3 closest=length2(relative)>0.0f?relative:Vec3{1,0,0};
+    Vec3 closest=length2(pair.a_in_b)>0.0f
+        ?pair.a_in_b:Vec3{1,0,0};
     float previous=std::numeric_limits<float>::max();
     for(int iteration=0;iteration<32;++iteration) {
         const float dist=std::sqrt(length2(closest));
