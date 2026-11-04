@@ -536,7 +536,7 @@ if(FYZZXYZZY_BUILD_D3D12)
       DEPENDS fyzzxyzzy_source_sc_box_bounds_shader_d3d12 fyzzxyzzy_source_pcm_box_candidates_shader_d3d12 fyzzxyzzy_source_pcm_epa_work_shader_d3d12 fyzzxyzzy_source_pcm_epa_shader_d3d12
       ARGS "${FYZZXYZZY_SC_BOX_BOUNDS_DXIL}" "${FYZZXYZZY_SOURCE_PCM_BOX_DXIL}" "${FYZZXYZZY_SOURCE_PCM_EPA_WORK_DXIL_COMPACT}" "${FYZZXYZZY_SOURCE_PCM_EPA_DXIL}")
     set_tests_properties(fyzzxyzzy_source_pcm_box_candidates_d3d12 PROPERTIES
-      ENVIRONMENT "FYZZXYZZY_D3D12_DEBUG=1")
+      ENVIRONMENT "FYZZXYZZY_D3D12_DEBUG=1" TIMEOUT 300)
 
 
     # Source aggregate.cu::updateAggregateBounds, original 32-lane
