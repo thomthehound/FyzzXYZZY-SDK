@@ -91,7 +91,7 @@ public:
         desc.storage_buffer_binding_count=9u;
         desc.storage_buffer_views.assign(
             9u,compute::StorageBufferViewKind::RawReadWrite);
-        desc.push_constant_bytes=52u;
+        desc.push_constant_bytes=56u;
         pipeline_=context_.create_compute_pipeline(desc);
     }
     SourcePcmBoxCandidatesNativeStage(const SourcePcmBoxCandidatesNativeStage&)=delete;
@@ -123,9 +123,10 @@ public:
         const auto groups=(std::uint64_t(pair_count)+127u)/128u;
         if(groups>context_.device_info().max_workgroup_count[0])
             throw std::out_of_range("Source PCM GPU dispatch exceeds device limit");
-        std::array<std::uint32_t,13> params{
+        std::array<std::uint32_t,14> params{
             pair_count,0u,0u,0u,0u,0u,0u,
-            shape_capacity,candidate_capacity,edge_capacity,0u,0u,0u};
+            shape_capacity,candidate_capacity,edge_capacity,0u,0u,0u,
+            vertex_count};
         const auto view=[&](CudaDeviceAddressMap::Address address,
                             std::size_t bytes,std::uint32_t slot,
                             compute::BufferAccess access) {
