@@ -6,6 +6,7 @@
 #include "physx_gpu/source_sc_owned_gpu_broadphase_native.h"
 #include "gpu_integration_metrics.h"
 #include "compound_rigid_cases.h"
+#include "convex_gpu_case.h"
 
 #include <algorithm>
 #include <array>
@@ -1949,7 +1950,7 @@ int main(int argc,char** argv) {
                 scenario=="coupled_solver" || scenario=="legacy_gu_solver" ||
                 scenario=="mixed_solver" || scenario=="distance_solver" ||
                 scenario=="compound_shapes" || scenario=="compound_solver" ||
-                scenario=="sphere_solver" || scenario=="wide_islands" ||
+                scenario=="sphere_solver" || scenario=="convex_plane" || scenario=="wide_islands" ||
                 scenario=="wide_islands_10k" || scenario=="free_integration",
                 "Unknown GPU scene regression scenario");
 #ifdef FYZZXYZZY_TEST_D3D12
@@ -1967,6 +1968,10 @@ int main(int argc,char** argv) {
         if(scenario=="all" || scenario=="sphere_solver")
             fyzz::tests::measure_gpu_case("sc_pcm","sphere_solver",
                 [&]{verify_sphere_gpu_solver(
+                    backend,argv[1],argv[2],argv[3]);});
+        if(scenario=="all" || scenario=="convex_plane")
+            fyzz::tests::measure_gpu_case("sc_pcm","convex_plane",
+                [&]{verify_convex_plane_gpu_solver(
                     backend,argv[1],argv[2],argv[3]);});
         if(scenario=="all" || scenario=="scene")
             fyzz::tests::measure_gpu_case("sc_pcm","scene",
