@@ -405,7 +405,7 @@ jobs:
         shell: bash
         run: |
           cmake --build build-native --parallel 4
-          ctest --test-dir build-native --output-on-failure
+          ctest --test-dir build-native --output-on-failure --stop-on-failure --timeout 120
           grep -F 'FYZZXYZZY_METRIC' build-native/Testing/Temporary/LastTest.log | tee -a "$GITHUB_STEP_SUMMARY"
           test ! -d build-native/_deps/fyzzxyzzy_physx-src
           test -f build-native/libfyzzxyzzy_core.a

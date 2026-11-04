@@ -229,6 +229,13 @@ void verify(Context& context,const char* transform_shader,
     SourcePcmBoxCandidatesNativeStage pcm(context,shader(candidate_shader));
     SourcePcmSparseEpaNativeStage sparse(context,shader(compact_shader));
     SourcePcmEpaNativeStage epa(context,shader(epa_shader));
+    unsigned batch_index=0u;
+    const auto fetch_batch=[&](SourceSapDmaNative& stream) {
+        const unsigned current=++batch_index;
+        std::cerr<<"FYZZXYZZY_PCM_BATCH begin="<<current<<'\n';
+        stream.wait_at_fetch();
+        std::cerr<<"FYZZXYZZY_PCM_BATCH complete="<<current<<'\n';
+    };
     {
         SourceSapDmaNative stream(context,addresses);
         producer.append(stream,addresses,inputs,bounds,transforms,geometry,
@@ -240,7 +247,7 @@ void verify(Context& context,const char* transform_shader,
                    edge_capacity);
         sparse.append(stream,addresses,result_data,work_data,args_data,
                       static_cast<std::uint32_t>(pairs.size()));
-        stream.wait_at_fetch();
+        fetch_batch(stream);
         require(stream.submission_stats().command_batches==1u,
                 "Source PCM candidate and sparse EPA stages split the source stream batch");
     }
@@ -312,7 +319,7 @@ void verify(Context& context,const char* transform_shader,
         SourceSapDmaNative stream(context,addresses);
         sparse.append(stream,addresses,result_data,work_data,args_data,
                       static_cast<std::uint32_t>(pairs.size()));
-        stream.wait_at_fetch();
+        fetch_batch(stream);
     }
     context.download(args_buffer,0u,indirect.data(),sizeof(indirect));
     context.download(root,work_offset,work.data(),work.size()*4u);
@@ -322,7 +329,7 @@ void verify(Context& context,const char* transform_shader,
     {
         SourceSapDmaNative stream(context,addresses);
         sparse.append(stream,addresses,0u,0u,args_data,0u);
-        stream.wait_at_fetch();
+        fetch_batch(stream);
         require(stream.submission_stats().command_batches==0u,
                 "Empty Sc EPA stream submitted an unnecessary GPU dispatch");
     }
@@ -339,7 +346,7 @@ void verify(Context& context,const char* transform_shader,
         SourceSapDmaNative stream(context,addresses);
         sparse.append(stream,addresses,result_data,work_data,args_data,
                       static_cast<std::uint32_t>(pairs.size()));
-        stream.wait_at_fetch();
+        fetch_batch(stream);
     }
     context.download(args_buffer,0u,indirect.data(),sizeof(indirect));
     require(indirect==std::array<std::uint32_t,3>{0u,1u,1u},
@@ -496,7 +503,7 @@ void verify(Context& context,const char* transform_shader,
                    result_data,candidate_data,edge_data,args_data,output_data,
                    static_cast<std::uint32_t>(pairs.size()),capacity,
                    static_cast<std::uint32_t>(candidates.size()),edge_capacity);
-        stream.wait_at_fetch();
+        fetch_batch(stream);
     }
     context.download(root,result_offset,results.data(),sizeof(results));
     require(results.back().status==2u && results.back().regenerated==1u,
@@ -509,7 +516,7 @@ void verify(Context& context,const char* transform_shader,
                    result_data,candidate_data,edge_data,args_data,output_data,
                    static_cast<std::uint32_t>(pairs.size()),capacity,
                    static_cast<std::uint32_t>(candidates.size()),edge_capacity);
-        stream.wait_at_fetch();
+        fetch_batch(stream);
     }
     context.download(root,result_offset,results.data(),sizeof(results));
     context.download(root,edge_offset,edge_caches.data(),
@@ -527,7 +534,7 @@ void verify(Context& context,const char* transform_shader,
                    result_data,candidate_data,edge_data,args_data,output_data,
                    static_cast<std::uint32_t>(pairs.size()),capacity,
                    static_cast<std::uint32_t>(candidates.size()),edge_capacity);
-        stream.wait_at_fetch();
+        fetch_batch(stream);
         require(stream.submission_stats().command_batches==1u,
                 "Source PCM refresh split the native device stream");
     }
@@ -561,7 +568,7 @@ void verify(Context& context,const char* transform_shader,
                    result_data,candidate_data,edge_data,args_data,output_data,
                    static_cast<std::uint32_t>(pairs.size()),capacity,
                    static_cast<std::uint32_t>(candidates.size()),edge_capacity);
-        stream.wait_at_fetch();
+        fetch_batch(stream);
         context.download(root,result_offset,results.data(),sizeof(results));
     };
     pairs[filtered_index].candidate_capacity=3u;
@@ -602,7 +609,7 @@ void verify(Context& context,const char* transform_shader,
                    result_data,candidate_data,edge_data,args_data,output_data,
                    static_cast<std::uint32_t>(pairs.size()),capacity,
                    static_cast<std::uint32_t>(candidates.size()),edge_capacity);
-        stream.wait_at_fetch();
+        fetch_batch(stream);
         require(stream.submission_stats().command_batches==1u,
                 "Sc PCM pose refresh split the native device stream");
     }
@@ -631,7 +638,7 @@ void verify(Context& context,const char* transform_shader,
                    result_data,candidate_data,edge_data,args_data,output_data,
                    static_cast<std::uint32_t>(pairs.size()),capacity,
                    static_cast<std::uint32_t>(candidates.size()),edge_capacity);
-        stream.wait_at_fetch();
+        fetch_batch(stream);
     }
     context.download(root,result_offset,results.data(),sizeof(results));
     require(results[0].regenerated==1u,
@@ -686,7 +693,7 @@ void verify(Context& context,const char* transform_shader,
                    candidate_data,edge_data,work_data,args_data,output_data,
                    static_cast<std::uint32_t>(pairs.size()),capacity,
                    static_cast<std::uint32_t>(candidates.size()),edge_capacity);
-        stream.wait_at_fetch();
+        fetch_batch(stream);
         require(stream.submission_stats().command_batches==1u,
                 "Source EPA continuation split the native GPU command batch");
     }
@@ -729,7 +736,7 @@ void verify(Context& context,const char* transform_shader,
                    result_data,candidate_data,edge_data,args_data,output_data,
                    static_cast<std::uint32_t>(pairs.size()),capacity,
                    static_cast<std::uint32_t>(candidates.size()),edge_capacity);
-        stream.wait_at_fetch();
+        fetch_batch(stream);
     }
     context.download(root,result_offset,results.data(),sizeof(results));
     context.download(root,candidate_offset,candidates.data(),
@@ -795,7 +802,7 @@ void verify(Context& context,const char* transform_shader,
                    candidate_data,edge_data,work_data,args_data,output_data,
                    static_cast<std::uint32_t>(pairs.size()),capacity,
                    static_cast<std::uint32_t>(candidates.size()),edge_capacity);
-        stream.wait_at_fetch();
+        fetch_batch(stream);
     }
     context.download(root,result_offset,results.data(),sizeof(results));
     context.download(root,edge_offset+far_edge*sizeof(far_cache),
@@ -830,7 +837,7 @@ void verify(Context& context,const char* transform_shader,
                    result_data,candidate_data,edge_data,args_data,output_data,
                    static_cast<std::uint32_t>(pairs.size()),capacity,
                    static_cast<std::uint32_t>(candidates.size()),edge_capacity);
-        stream.wait_at_fetch();
+        fetch_batch(stream);
     }
     context.download(root,result_offset,results.data(),sizeof(results));
     context.download(root,edge_offset+far_edge*sizeof(stale),
