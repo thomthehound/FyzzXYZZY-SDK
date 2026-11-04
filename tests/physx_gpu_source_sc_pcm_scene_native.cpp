@@ -1643,8 +1643,12 @@ void verify_sphere_gpu_solver(
         for(const auto impulse:gpu.solved_normal_impulses())
             saw_device_response |= impulse>0.;
     }
-    require(touched_all && saw_device_response && saw_device_bounds,
-        "GPU sphere contacts did not produce physical PGS response");
+    require(touched_all,
+        "GPU sphere scene did not publish all source contacts");
+    require(saw_device_response,
+        "GPU sphere contacts did not produce a positive PGS normal impulse");
+    require(saw_device_bounds,
+        "GPU sphere integration did not retain a device-authored bounds cache");
 
     // The embedded-center exit-face rule selects Z before X/Y on a tie.
     // A GPU contact must retain the actual box witness, not approximate
