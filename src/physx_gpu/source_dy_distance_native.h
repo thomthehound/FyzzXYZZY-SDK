@@ -13,6 +13,7 @@
 #include <cstdint>
 #include <cstring>
 #include <limits>
+#include <optional>
 #include <span>
 #include <stdexcept>
 #include <utility>
