@@ -66,7 +66,8 @@ public:
         std::uint32_t max_aggregate_pairs=32768u,
         std::optional<NativeGpuAggregateShaders> aggregate_shaders=std::nullopt,
         std::optional<NativeGpuPcmShaders> pcm_shaders=std::nullopt,
-        std::optional<compute::ShaderBinary> dy_shader=std::nullopt)
+        std::optional<compute::ShaderBinary> dy_shader=std::nullopt,
+        std::optional<compute::ShaderBinary> convex_dy_shader=std::nullopt)
         : foundation_(physx_runtime::acquire_foundation()),
           context_(backend),
           stream_(context_,addresses_),
@@ -141,7 +142,10 @@ public:
         if(dy_shader)
             dy_distance_=std::make_unique<SourceDyDistanceNativeStage>(
                 context_,addresses_,stream_,allocators_.deviceAlloc,
-                std::move(*dy_shader));
+                std::move(*dy_shader),std::move(convex_dy_shader));
+        else if(convex_dy_shader)
+            throw std::invalid_argument(
+                "Convex Dy shader requires the primitive Dy solver");
     }
 
     SourceScOwnedGpuBroadphaseNative(const SourceScOwnedGpuBroadphaseNative&)=delete;
