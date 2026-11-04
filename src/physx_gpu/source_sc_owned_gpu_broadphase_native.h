@@ -316,8 +316,8 @@ public:
     void set_shape_simulation_enabled(BodyId id,bool enabled) override {
         producer_->set_shape_simulation_enabled(id,enabled);
     }
-    void set_shape_motion(BodyId id,native::GpuBroadphaseBox::Motion motion) override {
-        producer_->set_shape_motion(id,motion);
+    void set_actor_motion(BodyId id,native::GpuBroadphaseBox::Motion motion) override {
+        producer_->set_actor_motion(id,motion);
     }
     void post_reports_cleanup() override { producer_->post_reports_cleanup(); }
     void invalidate_after_rollback() noexcept override {
