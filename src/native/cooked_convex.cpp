@@ -152,6 +152,102 @@ std::shared_ptr<const ConvexMesh> cook_convex_mesh(
     for(std::size_t i=1u;i<triangles.size();++i)
         if(root(i)!=boundary_root)
             throw std::invalid_argument("Convex surface has disconnected shells");
+    // Preserve the actual support facets, not the input triangulation.
+    // A planar polygon supplies one stable face feature regardless of
+    // how its author chose diagonals for the mass integral.
+    struct PlanarGroup {
+        DVec normal{},point{};
+        std::vector<std::size_t> triangles;
+    };
+    std::vector<PlanarGroup> groups;
+    const double plane_tolerance=scale*1.e-6;
+    for(std::size_t i=0;i<triangles.size();++i) {
+        const auto& tri=triangles[i];
+        const DVec p0=as_double(vertices[tri[0]]);
+        const DVec p1=as_double(vertices[tri[1]]);
+        const DVec p2=as_double(vertices[tri[2]]);
+        DVec n=cross(sub(p1,p0),sub(p2,p0));
+        const double length=std::sqrt(dot(n,n));
+        for(auto& component:n)component/=length;
+        auto group=std::find_if(groups.begin(),groups.end(),
+            [&](const PlanarGroup& candidate) {
+                return dot(n,candidate.normal)>1.0-1.e-7 &&
+                    std::abs(dot(candidate.normal,
+                                 sub(p0,candidate.point)))<=plane_tolerance &&
+                    std::abs(dot(candidate.normal,
+                                 sub(p1,candidate.point)))<=plane_tolerance &&
+                    std::abs(dot(candidate.normal,
+                                 sub(p2,candidate.point)))<=plane_tolerance;
+            });
+        if(group==groups.end()) {
+            groups.push_back({n,p0,{i}});
+        }else {
+            group->triangles.push_back(i);
+        }
+    }
+    for(const auto& group:groups) {
+        struct DirectedEdge {
+            std::uint32_t from=0,to=0;
+        };
+        std::unordered_map<std::uint64_t,DirectedEdge> boundary;
+        boundary.reserve(group.triangles.size()*3u);
+        for(const auto triangle_index:group.triangles) {
+            const auto& tri=triangles[triangle_index];
+            for(unsigned k=0u;k<3u;++k) {
+                const auto from=tri[k],to=tri[(k+1u)%3u];
+                const auto low=std::min(from,to),high=std::max(from,to);
+                const auto key=(std::uint64_t(low)<<32u)|high;
+                const auto edge=boundary.find(key);
+                if(edge==boundary.end()) {
+                    boundary.emplace(key,DirectedEdge{from,to});
+                }else {
+                    if(edge->second.from!=to || edge->second.to!=from)
+                        throw std::invalid_argument(
+                            "Convex polygon has inconsistent triangulation");
+                    boundary.erase(edge);
+                }
+            }
+        }
+        if(boundary.size()<3u)
+            throw std::invalid_argument("Convex polygon has no boundary");
+        constexpr auto invalid=std::numeric_limits<std::uint32_t>::max();
+        std::vector<std::uint32_t> next(vertices.size(),invalid);
+        std::vector<std::uint32_t> previous(vertices.size(),invalid);
+        std::uint32_t first=invalid;
+        for(const auto& [key,edge]:boundary) {
+            if(next[edge.from]!=invalid || previous[edge.to]!=invalid)
+                throw std::invalid_argument(
+                    "Convex planar facet has branching boundary");
+            next[edge.from]=edge.to;
+            previous[edge.to]=edge.from;
+            first=std::min(first,edge.from);
+        }
+        if(boundary.size()>std::numeric_limits<std::uint32_t>::max() ||
+           mesh->face_indices_.size()>
+               std::numeric_limits<std::uint32_t>::max()-boundary.size())
+            throw std::overflow_error("Convex face index stream too large");
+        const auto offset=static_cast<std::uint32_t>(
+            mesh->face_indices_.size());
+        std::uint32_t current=first;
+        for(std::size_t i=0u;i<boundary.size();++i) {
+            if(current==invalid || next[current]==invalid ||
+               (i>0u && current==first))
+                throw std::invalid_argument(
+                    "Convex planar facet is not a single boundary loop");
+            mesh->face_indices_.push_back(current);
+            current=next[current];
+        }
+        if(current!=first)
+            throw std::invalid_argument(
+                "Convex planar facet has disconnected boundary loops");
+        const double distance=dot(group.normal,group.point);
+        if(!std::isfinite(distance) ||
+           std::abs(distance)>std::numeric_limits<float>::max())
+            throw std::invalid_argument("Convex facet plane outside float range");
+        mesh->faces_.push_back({
+            as_float(group.normal),static_cast<float>(distance),offset,
+            static_cast<std::uint32_t>(boundary.size())});
+    }
     if(!std::isfinite(volume) || !(volume>0.0))
         throw std::invalid_argument("Convex mesh has nonpositive volume");
     DVec center{};
