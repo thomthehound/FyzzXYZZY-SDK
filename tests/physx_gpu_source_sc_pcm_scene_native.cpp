@@ -1581,7 +1581,7 @@ void verify_sphere_gpu_solver(
     const auto gpu_ids=add_scene(gpu);
     constexpr float dt=1.f/120.f;
     bool touched_all=false,saw_device_response=false,saw_device_bounds=false;
-    float largest_cpu_impulse=0.f,largest_gpu_impulse=0.f;
+    double largest_cpu_impulse=0.0,largest_gpu_impulse=0.0;
     for(std::uint32_t frame=0u;frame<8u;++frame) {
         if(frame==3u) {
             constexpr Quat rotate{0.f,0.0998334166f,0.f,0.9950041653f};
