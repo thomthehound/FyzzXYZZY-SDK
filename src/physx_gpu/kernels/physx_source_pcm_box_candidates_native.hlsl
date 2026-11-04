@@ -419,6 +419,8 @@ uint4 selectBatch(uint base,uint count) {
     return selected;
 }
 
+#include "physx_source_pcm_sphere_native.hlsli"
+
 [numthreads(128,1,1)]
 void main(uint3 thread : SV_DispatchThreadID) {
     uint i=thread.x;
@@ -465,6 +467,9 @@ void main(uint3 thread : SV_DispatchThreadID) {
                 p.shapeCapacity,p.edgeCapacity);
             return;
         }
+        if(sourcePcmSpherePair(i,a,b,edge,first,limit,result,
+                               ga,gb,pa,pb,qa,qb,distance))
+            return;
         bool regenerate=refreshEdge(edgeBase,pa,pb,qa,qb,ea,eb,distance);
         if(!regenerate) {
             uint cached=edgeCaches.Load(edgeBase+12u);
