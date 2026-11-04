@@ -1612,12 +1612,19 @@ void verify_sphere_gpu_solver(
                     gpu.solved_normal_impulses().size(),
             "GPU sphere scene changed Sc PCM/Gu manager identity");
         if(frame==0u) {
-            require(gpu.contacts().size()==3u &&
-                    producer->dy_cpu_gu_geometry_bytes()==0u &&
-                    producer->dy_pcm_device_contact_rows()==3u &&
-                    producer->pcm_contact_readback_bytes()==
-                        3u*sizeof(physx_gpu::SourcePcmGpuContactStreamNative),
-                "Sphere/plane, sphere/sphere and sphere/box were not device PCM contacts");
+            const auto pcm_bytes=producer->pcm_contact_readback_bytes();
+            const auto pcm_rows=producer->dy_pcm_device_contact_rows();
+            const auto cpu_bytes=producer->dy_cpu_gu_geometry_bytes();
+            if(gpu.contacts().size()!=3u || cpu_bytes!=0u ||
+               pcm_rows!=3u ||
+               pcm_bytes!=3u*sizeof(physx_gpu::SourcePcmGpuContactStreamNative)) {
+                throw std::runtime_error(
+                    "Sphere GPU contact path: managers="+
+                    std::to_string(gpu.contacts().size())+
+                    " device_rows="+std::to_string(pcm_rows)+
+                    " cpu_gu_bytes="+std::to_string(cpu_bytes)+
+                    " pcm_readback_bytes="+std::to_string(pcm_bytes));
+            }
             require(cpu.contacts().size()==3u,
                 "Source sphere impact fixtures lost a contact manager");
             for(std::size_t j=0;j<cpu.contacts().size();++j) {
