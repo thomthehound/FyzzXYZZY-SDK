@@ -96,10 +96,11 @@ bool epaContact(GjkBoxPair pair,GjkSupportPoint vertices[64],
     if(!isfinite(pa.x) || !isfinite(pb.x) ||
        !isfinite(facet.distance))return false;
     float depth=abs(facet.distance);
-    witness.localA=rotateSource(conjugate(pair.relative),pa-pair.aInB);
-    witness.localB=pb;
     witness.normalB=-facet.normal;
-    witness.separation=-depth;
+    witness.localA=rotateSource(conjugate(pair.relative),
+        pa-pair.aInB-witness.normalB*pair.radiusA);
+    witness.localB=pb+witness.normalB*pair.radiusB;
+    witness.separation=-depth-pair.radiusA-pair.radiusB;
     return sqrt(gjkLength2(pa-pb))<=depth+1.e-3f;
 }
 bool epaBoxContinuation(GjkBoxPair pair,
