@@ -894,7 +894,7 @@ if(FYZZXYZZY_BUILD_D3D12)
     # Independent scene cases share one executable. Give each WARP
     # workload its own timeout and keep its timing in the CTest log.
     set(_sc_pcm_scene_tests fyzzxyzzy_source_sc_gpu_pcm_scene_d3d12)
-    foreach(_case IN ITEMS compound_shapes compound_solver sphere_solver convex_plane
+    foreach(_case IN ITEMS compound_shapes compound_solver sphere_solver convex_plane convex_finite
         sparse_contacts coupled_stack coupled_solver legacy_gu_solver
         mixed_solver distance_solver free_integration wide_islands)
       set(_test "fyzzxyzzy_source_sc_gpu_pcm_scene_${_case}_d3d12")
