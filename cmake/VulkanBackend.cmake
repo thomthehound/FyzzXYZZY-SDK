@@ -470,6 +470,14 @@ if(FYZZXYZZY_BUILD_VULKAN)
       DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_dy_contact_pgs_native.hlsli")
     add_custom_target(fyzzxyzzy_source_dy_distance_shader
       DEPENDS "${FYZZXYZZY_SOURCE_DY_DISTANCE_SPV}")
+    set(FYZZXYZZY_SOURCE_DY_CONVEX_SPV
+      "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_source_dy_convex_native.spv")
+    fyzzxyzzy_compile_hlsl("${FYZZXYZZY_SOURCE_DY_CONVEX_SPV}"
+      "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_dy_distance_pgs_native.hlsl" cs_6_6 main
+      FLAGS -DFYZZXYZZY_CONVEX=1
+      DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_dy_contact_pgs_native.hlsli")
+    add_custom_target(fyzzxyzzy_source_dy_convex_shader
+      DEPENDS "${FYZZXYZZY_SOURCE_DY_CONVEX_SPV}")
     fyzzxyzzy_add_gpu_test(fyzzxyzzy_source_pcm_box_candidates
       SOURCES tests/physx_gpu_source_pcm_box_candidates_native.cpp src/native/GuPCMContactBoxBox.cpp src/native/GuPCMGjkEpa.cpp
       INCLUDES "${CMAKE_CURRENT_SOURCE_DIR}/src"
@@ -793,8 +801,8 @@ if(FYZZXYZZY_BUILD_VULKAN)
       SOURCES tests/physx_gpu_source_sc_pcm_scene_native.cpp
       INCLUDES "${CMAKE_CURRENT_SOURCE_DIR}/src" "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_port"
       LIBRARIES FyzzXYZZY::NativeGpuWorld
-      DEPENDS fyzzxyzzy_native_gpu_sap_shaders fyzzxyzzy_native_gpu_pcm_shaders fyzzxyzzy_source_dy_distance_shader
-      ARGS "${CMAKE_CURRENT_BINARY_DIR}/kernels/fyzzxyzzy_native_sap_spirv.manifest" "${CMAKE_CURRENT_BINARY_DIR}/kernels/fyzzxyzzy_native_pcm_spv.manifest" "${FYZZXYZZY_SOURCE_DY_DISTANCE_SPV}")
+      DEPENDS fyzzxyzzy_native_gpu_sap_shaders fyzzxyzzy_native_gpu_pcm_shaders fyzzxyzzy_source_dy_distance_shader fyzzxyzzy_source_dy_convex_shader
+      ARGS "${CMAKE_CURRENT_BINARY_DIR}/kernels/fyzzxyzzy_native_sap_spirv.manifest" "${CMAKE_CURRENT_BINARY_DIR}/kernels/fyzzxyzzy_native_pcm_spv.manifest" "${FYZZXYZZY_SOURCE_DY_DISTANCE_SPV}" "${FYZZXYZZY_SOURCE_DY_CONVEX_SPV}")
     
     add_test(NAME fyzzxyzzy_owned_sap_gpu_aabb_scene_lifecycle
       COMMAND fyzzxyzzy_owned_sap_gpu_aabb_scene_lifecycle
