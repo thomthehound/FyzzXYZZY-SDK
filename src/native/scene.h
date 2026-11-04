@@ -454,6 +454,8 @@ struct PcmFiniteShape {
     Quat orientation{};
     float sphere_radius=0.f;
     std::span<const Vec3> hull_vertices{};
+    std::span<const ConvexFace> hull_faces{};
+    std::span<const std::uint32_t> hull_face_indices{};
 };
 std::array<std::uint8_t,4> source_pcm_box_batch_selection(
     std::span<const PcmContactCandidate> contacts,float tolerance_length);
@@ -479,6 +481,14 @@ bool source_pcm_convex_gjk_epa(
     const PcmFiniteShape& first,const PcmFiniteShape& second,
     float contact_distance,PcmContactCandidate& contact,
     PcmGjkWarmstart* warmstart=nullptr);
+
+// Construct clipped finite-face witnesses from cooked polygon topology.
+// Uses the GJK/EPA witness for feature selection; edges and spheres retain
+// that witness rather than fabricating a planar contact manifold.
+std::uint8_t source_pcm_convex_face_contacts(
+    const PcmFiniteShape& first,const PcmFiniteShape& second,
+    float contact_distance,const PcmContactCandidate& witness,
+    std::span<PcmContactCandidate> output);
 
 class Scene final {
 public:
