@@ -3,9 +3,9 @@
 
 #include "physx_source_box_bounds_math_native.hlsli"
 
-// DyConstraintPartition's independent rows execute concurrently within
-// a source conflict partition. Each workgroup owns one disjoint Dy task
-// and preserves the source position/conclude/velocity iteration sequence.
+// DyConstraintPartition supplies disjoint writes within each partition.
+// Wide tasks use device dispatch boundaries between partitions. Compact
+// tasks keep those dependencies inside their owning workgroup.
 #ifdef __spirv__
 [[vk::binding(0,0)]]
 #endif
@@ -30,8 +30,8 @@ RWByteAddressBuffer scGeometry : register(u4,space0);
 struct Parameters {
     uint bodyBias, distanceBias, descriptorBias, partitionBias;
     uint ordinalBias, taskBias;
-    uint bodyCount, rowCount, descriptorCount, partitionCount;
-    uint ordinalCount, integrationBias;
+    uint bodyCount, rowCount, launchBegin, partitionCount;
+    uint launchControl, integrationBias;
     uint contactBias,frictionBias,patchBias,manifoldBias,orderBias;
     uint contactCount,frictionCount,patchCount,manifoldCount,orderCount;
     uint resultBodyOffset,resultRowOffset,resultTaskOffset;
@@ -55,25 +55,16 @@ void storeScalar(uint byteOffset,float value,uint rowIndex,bool finalPass) {
     if(finalPass)
         arena.Store(p.writebackBias+p.resultRowOffset+rowIndex*4u,asuint(value));
 }
-void solveRow(uint index,uint errorAddress,bool biased,bool finalPass) {
-    uint d=p.descriptorBias+index*16u;
-    uint4 desc=arena.Load4(d);
-    if(desc.w!=1u || desc.x>=p.rowCount ||
+void solveJoint(uint4 desc,uint errorAddress,bool biased,bool finalPass) {
+    if(desc.x>=p.rowCount || desc.w>p.rowCount-desc.x ||
        (desc.y!=invalidBody && desc.y>=p.bodyCount) ||
        (desc.z!=invalidBody && desc.z>=p.bodyCount)) {
         arena.InterlockedOr(errorAddress,1u);
         return;
     }
-    uint offset=p.distanceBias+desc.x*64u;
-    float3 axis=asfloat(arena.Load3(offset));
-    float3 ja=asfloat(arena.Load3(offset+12u));
-    float3 jb=asfloat(arena.Load3(offset+24u));
-    float massA=asfloat(arena.Load(offset+36u));
-    float massB=asfloat(arena.Load(offset+40u));
-    uint ao=p.bodyBias+desc.y*52u;
-    uint bo=p.bodyBias+desc.z*52u;
-    float3 va=float3(0,0,0),vb=float3(0,0,0);
-    float3 aa=float3(0,0,0),ab=float3(0,0,0);
+    const uint ao=p.bodyBias+desc.y*52u;
+    const uint bo=p.bodyBias+desc.z*52u;
+    float3 va=0.0f,vb=0.0f,aa=0.0f,ab=0.0f;
     if(desc.y!=invalidBody) {
         va=asfloat(arena.Load3(ao));
         aa=asfloat(arena.Load3(ao+12u));
@@ -82,66 +73,49 @@ void solveRow(uint index,uint errorAddress,bool biased,bool finalPass) {
         vb=asfloat(arena.Load3(bo));
         ab=asfloat(arena.Load3(bo+12u));
     }
-
-    // DySolverConstraints::solveExt1D source row arithmetic.
-    float normalDelta=dot(axis,va-vb)+dot(ja,aa)-dot(jb,ab);
-    float previous=loadScalar(offset+60u);
-    float next=clamp(previous+
-        normalDelta*loadScalar(offset+56u)+
-        loadScalar(offset+(biased?48u:52u)),
-        -maxImpulse,maxImpulse);
-    float impulse=next-previous;
-    float3 newVa=va+axis*(impulse*massA);
-    float3 newVb=vb-axis*(impulse*massB);
-    float3 newAa=aa+ja*impulse;
-    float3 newAb=ab-jb*impulse;
-    if(!isfinite(next) || !all(isfinite(newVa)) ||
-       !all(isfinite(newVb)) || !all(isfinite(newAa)) ||
-       !all(isfinite(newAb))) {
-        arena.InterlockedOr(errorAddress,2u);
-        return;
+    const uint first=p.distanceBias+desc.x*64u;
+    const float massA=loadScalar(first+36u);
+    const float massB=loadScalar(first+40u);
+    // One lane owns both endpoints for every row of this joint.
+    for(uint row=0u;row<desc.w;++row) {
+        const uint offset=first+row*64u;
+        const float3 axis=asfloat(arena.Load3(offset));
+        const float3 ja=asfloat(arena.Load3(offset+12u));
+        const float3 jb=asfloat(arena.Load3(offset+24u));
+        const float normalDelta=dot(axis,va-vb)+dot(ja,aa)-dot(jb,ab);
+        const float previous=loadScalar(offset+60u);
+        const float next=clamp(previous+
+            normalDelta*loadScalar(offset+56u)+
+            loadScalar(offset+(biased?48u:52u)),-maxImpulse,maxImpulse);
+        const float impulse=next-previous;
+        va+=axis*(impulse*massA);
+        vb-=axis*(impulse*massB);
+        aa+=ja*impulse;
+        ab-=jb*impulse;
+        if(!isfinite(next) || !all(isfinite(va)) || !all(isfinite(vb)) ||
+           !all(isfinite(aa)) || !all(isfinite(ab))) {
+            arena.InterlockedOr(errorAddress,2u);
+            return;
+        }
+        storeScalar(offset+60u,next,desc.x+row,finalPass);
     }
-    // Only finite-mass dynamic bodies can be updated. Kinematic rows
-    // retain their original zero-response state across disjoint groups.
+    // Kinematic rows are shared read-only by disjoint solver tasks.
     if(desc.y!=invalidBody && massA>0.f) {
-        arena.Store3(ao,asuint(newVa));
-        arena.Store3(ao+12u,asuint(newAa));
+        arena.Store3(ao,asuint(va));
+        arena.Store3(ao+12u,asuint(aa));
     }
     if(desc.z!=invalidBody && massB>0.f) {
-        arena.Store3(bo,asuint(newVb));
-        arena.Store3(bo+12u,asuint(newAb));
+        arena.Store3(bo,asuint(vb));
+        arena.Store3(bo+12u,asuint(ab));
     }
-    storeScalar(offset+60u,next,desc.x,finalPass);
 }
 
 #include "physx_source_dy_contact_pgs_native.hlsli"
 
-[numthreads(128,1,1)]
-void main(uint3 group:SV_GroupID,uint3 lane:SV_GroupThreadID) {
-    // Dispatch groups equal the source task count; integrationBias
-    // reuses the now-redundant task-count root constant.
-    uint t=p.taskBias+group.x*36u;
-    uint4 ranges=arena.Load4(t);
-    uint2 bodyRange=arena.Load2(t+16u);
-    uint2 iters=arena.Load2(t+24u);
-    uint endError=t+32u;
-    if(ranges.x>ranges.y || ranges.y>p.descriptorCount ||
-       ranges.z>ranges.w || ranges.w>p.partitionCount ||
-       bodyRange.x>bodyRange.y || bodyRange.y>p.ordinalCount) {
-        if(lane.x==0u) {
-            arena.InterlockedOr(endError,4u);
-            arena.Store(p.writebackBias+p.resultTaskOffset+
-                            group.x*4u,4u);
-        }
-        return;
-    }
-    // Four lanes prepare one Sc-owned contact manager. Source Gu PCM
-    // emits up to four witnesses per box pair, and CPU Gu managers may
-    // use multiple four-contact iterations. Distribute the numerical
-    // row preparation without changing manager, Gu point or patch order.
-    for(uint i=ranges.x+(lane.x>>2u);i<ranges.y;i+=32u) {
+void prepareNormals(uint begin,uint end,uint lane,uint endError) {
+    for(uint i=begin+(lane>>2u);i<end;i+=32u) {
         uint4 desc=arena.Load4(p.descriptorBias+i*16u);
-        if(desc.w==1u)continue;
+        if(desc.w!=0u)continue;
         if(desc.x>=p.manifoldCount) {
             arena.InterlockedOr(endError,4096u);
             continue;
@@ -158,17 +132,17 @@ void main(uint3 group:SV_GroupID,uint3 lane:SV_GroupThreadID) {
             arena.InterlockedOr(endError,4096u);
             continue;
         }
-        for(uint c=lane.x&3u;c<manager.w;c+=4u) {
+        for(uint c=lane&3u;c<manager.w;c+=4u) {
             uint index=arena.Load(p.orderBias+(manager.z+c)*4u);
             prepareContactRow(index,pairIndex,manager.z,manager.w,endError);
         }
     }
-    // Friction patch preparation reads each manager's first Gu normal,
-    // so all contact-row writes must be visible before any patch reads.
-    AllMemoryBarrierWithGroupSync();
-    for(uint i=ranges.x+(lane.x>>2u);i<ranges.y;i+=32u) {
+}
+
+void prepareFriction(uint begin,uint end,uint lane,uint endError) {
+    for(uint i=begin+(lane>>2u);i<end;i+=32u) {
         uint4 desc=arena.Load4(p.descriptorBias+i*16u);
-        if(desc.w==1u)continue;
+        if(desc.w!=0u)continue;
         if(desc.x>=p.manifoldCount)continue;
         uint mo=p.manifoldBias+desc.x*20u;
         uint4 manager=arena.Load4(mo);
@@ -180,7 +154,7 @@ void main(uint3 group:SV_GroupID,uint3 lane:SV_GroupThreadID) {
            manager.z>p.orderCount ||
            manager.w>p.orderCount-manager.z)
             continue;
-        for(uint patchIndex=manager.x+(lane.x&3u);
+        for(uint patchIndex=manager.x+(lane&3u);
             patchIndex<manager.x+manager.y;patchIndex+=4u) {
             uint4 patch=arena.Load4(p.patchBias+patchIndex*32u);
             if(patch.x>p.frictionCount || patch.z>2u ||
@@ -191,159 +165,244 @@ void main(uint3 group:SV_GroupID,uint3 lane:SV_GroupThreadID) {
             prepareFrictionPatch(patchIndex,pairIndex,endError);
         }
     }
-    AllMemoryBarrierWithGroupSync();
-    uint velocityIterations=max(iters.y,1u);
-    uint firstPartition=ranges.z;
-    for(uint iter=0u;iter<iters.x+velocityIterations;++iter) {
-        for(uint partition=firstPartition;partition<ranges.w;++partition) {
-            uint begin=partition==firstPartition ? ranges.x:
-                arena.Load(p.partitionBias+(partition-1u)*4u);
-            uint end=arena.Load(p.partitionBias+partition*4u);
-            for(uint i=begin+lane.x;i<end;i+=128u) {
-                uint4 desc=arena.Load4(p.descriptorBias+i*16u);
-                bool finalPass=iter+1u==iters.x+velocityIterations;
-                if(desc.w==1u)
-                    solveRow(i,endError,iter<iters.x,finalPass);
-                else
-                    solveContact(desc,endError,iter<iters.x,
-                        iter>=iters.x || iters.x-iter<=3u,finalPass);
+}
+
+void solvePartition(uint begin,uint end,uint lane,uint2 iters,
+                    uint iter,uint endError) {
+    const uint total=iters.x+max(iters.y,1u);
+    const bool biased=iter<iters.x;
+    const bool finalPass=iter+1u==total;
+    const bool friction=!biased || iters.x-iter<=3u;
+    for(uint i=begin+lane;i<end;i+=128u) {
+        const uint4 desc=arena.Load4(p.descriptorBias+i*16u);
+        if(desc.w!=0u)
+            solveJoint(desc,endError,biased,finalPass);
+        else
+            solveContact(desc,endError,biased,friction,finalPass);
+    }
+}
+
+void saveMotion(uint index,uint endError) {
+    const uint ordinal=arena.Load(p.ordinalBias+index*4u);
+    if(ordinal>=p.bodyCount) {
+        arena.InterlockedOr(endError,8u);
+        return;
+    }
+    const uint base=p.bodyBias+ordinal*52u;
+    arena.Store3(base+24u,arena.Load3(base));
+    arena.Store3(base+36u,arena.Load3(base+12u));
+}
+
+void integrateBody(uint ordinal) {
+    float3 linearDelta=0.0f;
+    float3 angularState=0.0f;
+    [branch]
+    if(ordinal<p.bodyCount) {
+        const uint from=p.bodyBias+ordinal*52u;
+        const uint to=p.writebackBias+p.resultBodyOffset+ordinal*48u;
+        arena.Store4(to,arena.Load4(from));
+        arena.Store4(to+16u,arena.Load4(from+16u));
+        arena.Store4(to+32u,arena.Load4(from+32u));
+        linearDelta=asfloat(arena.Load3(from+24u));
+        angularState=asfloat(arena.Load3(from+36u));
+    }
+    // Source DyBodyCoreIntegrator::integrateCore uses saved
+    // position-iteration deltas, not the final velocity deltas.
+    const uint input=p.integrationBias+32u+ordinal*136u;
+    if(arena.Load(input+96u)==0u)return;
+    const float3 position=asfloat(arena.Load3(input));
+    const float4 quaternion=asfloat(arena.Load4(input+12u));
+    const float3 baseLinear=asfloat(arena.Load3(input+28u));
+    const float3 baseAngular=asfloat(arena.Load3(input+40u));
+    const uint locks=arena.Load(input+88u);
+    const float dt=asfloat(arena.Load(input+92u));
+    const uint destination=p.writebackBias+p.resultPatchOffset+
+        p.patchCount*4u+ordinal*32u;
+    arena.Store(destination+28u,0u);
+    float3 motionLinear=baseLinear+linearDelta;
+    if(locks&1u)motionLinear.x=0.0f;
+    if(locks&2u)motionLinear.y=0.0f;
+    if(locks&4u)motionLinear.z=0.0f;
+    if(locks&8u)angularState.x=0.0f;
+    if(locks&16u)angularState.y=0.0f;
+    if(locks&32u)angularState.z=0.0f;
+    const float3 angular=baseAngular+float3(
+        dot(asfloat(arena.Load3(input+52u)),angularState),
+        dot(asfloat(arena.Load3(input+64u)),angularState),
+        dot(asfloat(arena.Load3(input+76u)),angularState));
+    // The axis lock was applied in solver space before the world
+    // inverse-inertia transform; the resulting motion is not masked
+    // again by DyBodyCoreIntegrator::integrateCore.
+    float3 motionAngular=angular;
+    float3 nextPosition=position+motionLinear*dt;
+    float4 nextQuaternion=quaternion;
+    float w=dot(motionAngular,motionAngular);
+    if(w!=0.0f) {
+        w=sqrt(w);
+        if(w>1.0e7f) {
+            motionAngular*=1.0e7f/w;
+            w=1.0e7f;
+        }
+        const float angle=dt*w*0.5f;
+        const float3 omega=motionAngular*(sin(angle)/w);
+        const float4 dq=float4(
+            quaternion.w*omega.x+omega.y*quaternion.z-omega.z*quaternion.y,
+            quaternion.w*omega.y+omega.z*quaternion.x-omega.x*quaternion.z,
+            quaternion.w*omega.z+omega.x*quaternion.y-omega.y*quaternion.x,
+            -dot(omega,quaternion.xyz));
+        nextQuaternion=dq+quaternion*cos(angle);
+        const float length=sqrt(dot(nextQuaternion,nextQuaternion));
+        if(!(length>0.0f) || !isfinite(length))return;
+        nextQuaternion/=length;
+    }
+    // integrateCore advances the principal mass frame. Recover the
+    // actor frame before composing each independent local shape pose.
+    const float3 localCenter=asfloat(arena.Load3(input+104u));
+    const float4 localAxes=asfloat(arena.Load4(input+116u));
+    nextQuaternion=sourceRigidMultiply(nextQuaternion,float4(-localAxes.xyz,localAxes.w));
+    nextPosition-=sourceRigidRotate(nextQuaternion,localCenter);
+    if(!all(isfinite(nextPosition)) || !all(isfinite(nextQuaternion)))return;
+    arena.Store3(destination,asuint(nextPosition));
+    arena.Store4(destination+12u,asuint(nextQuaternion));
+    uint element=arena.Load(input+100u);
+    const uint shapeCount=arena.Load(input+132u);
+    const uint4 views=arena.Load4(p.integrationBias);
+    for(uint shape=0u;shape<shapeCount;++shape) {
+        if(element>=views.w)return;
+        const uint geometryIndex=views.z+element*64u;
+        const float3 halfExtents=asfloat(scGeometry.Load3(geometryIndex));
+        const float3 localPosition=asfloat(scGeometry.Load3(geometryIndex+16u));
+        const uint kind=scGeometry.Load(geometryIndex+28u);
+        const float4 localQuaternion=asfloat(scGeometry.Load4(geometryIndex+32u));
+        const float3 center=nextPosition+sourceRigidRotate(nextQuaternion,localPosition);
+        const float4 shapeQuaternion=kind==1u?float4(0,0,0,1):sourceRigidMultiply(nextQuaternion,localQuaternion);
+        const float3 worldExtents=kind==1u?halfExtents:sourceBoxHalfBounds(shapeQuaternion,halfExtents);
+        const float3 lower=center-worldExtents;
+        const float3 upper=center+worldExtents;
+        if(kind>1u || !all(isfinite(lower)) || !all(isfinite(upper)) ||
+           !all(isfinite(shapeQuaternion)))return;
+        const uint cache=views.x+element*32u;
+        scTransforms.Store4(cache,asuint(shapeQuaternion));
+        scTransforms.Store3(cache+16u,asuint(center));
+        scTransforms.Store(cache+28u,0u);
+        const uint bound=views.y+element*24u;
+        scBounds.Store3(bound,asuint(lower));
+        scBounds.Store3(bound+12u,asuint(upper));
+        element=scGeometry.Load(geometryIndex+48u);
+    }
+    if(shapeCount==0u || element==0xffffffffu)
+        arena.Store(destination+28u,1u);
+}
+
+static const uint fusedTask=0u, normalTile=1u, frictionTile=2u;
+static const uint partitionTile=3u, motionTile=4u, integrationTile=5u;
+static const uint publishErrors=6u, freeBodyTile=7u;
+
+void publishTaskError(uint task,uint error) {
+    arena.Store(p.writebackBias+p.resultTaskOffset+task*4u,error);
+}
+
+[numthreads(128,1,1)]
+void main(uint3 group:SV_GroupID,uint3 lane:SV_GroupThreadID) {
+    const uint phase=p.launchControl&7u;
+    const uint iter=p.launchControl>>3u;
+    const uint index=p.launchBegin+group.x;
+    const bool freeBody=phase==freeBodyTile;
+    const bool fused=phase==fusedTask;
+    uint taskId=0u,endError=0u;
+    uint2 bodies;
+    [branch]
+    if(freeBody) {
+        const uint begin=p.bodyCount+index*128u;
+        bodies=uint2(begin,min(begin+128u,iter));
+    } else {
+        const uint4 schedule=arena.Load4(p.integrationBias+16u);
+        if(phase==publishErrors) {
+            const uint task=index*128u+lane.x;
+            if(task<schedule.z)
+                publishTaskError(task,arena.Load(p.taskBias+task*36u+32u));
+            return;
+        }
+
+        // A frame containing only compact tasks uses direct task indices.
+        uint3 tile=uint3(index,0u,0u);
+        [branch]
+        if(schedule.w!=0u)tile=arena.Load3(schedule.w+index*16u);
+        const uint t=p.taskBias+tile.x*36u;
+        taskId=tile.x;
+        endError=t+32u;
+        const uint2 iters=arena.Load2(t+24u);
+        uint2 descriptors=tile.yz;
+        bodies=tile.yz;
+        uint2 partitions=uint2(0u,1u);
+        if(fused) {
+            const uint4 ranges=arena.Load4(t);
+            descriptors=ranges.xy;
+            partitions=ranges.zw;
+            bodies=arena.Load2(t+16u);
+            if(descriptors.x>descriptors.y || descriptors.y>schedule.y ||
+               partitions.x>partitions.y || partitions.y>p.partitionCount ||
+               bodies.x>bodies.y || bodies.y>schedule.x) {
+                if(lane.x==0u) {
+                    arena.InterlockedOr(endError,4u);
+                    publishTaskError(tile.x,4u);
+                }
+                return;
             }
-            // The original conflict partition guarantees no body writes
-            // overlap inside this barrier; later partitions depend on it.
+        }
+        // Each phase has one shader call site. Fused groups use workgroup
+        // dependencies, while tiled launches use the command stream's
+        // device-wide dependencies between the same phases.
+        if(fused || phase==normalTile) {
+            prepareNormals(descriptors.x,descriptors.y,lane.x,endError);
+            if(!fused)return;
             AllMemoryBarrierWithGroupSync();
         }
-        if(iter+1u==iters.x) {
-            for(uint i=bodyRange.x+lane.x;i<bodyRange.y;i+=128u) {
-                uint ordinal=arena.Load(p.ordinalBias+i*4u);
+        if(fused || phase==frictionTile) {
+            prepareFriction(descriptors.x,descriptors.y,lane.x,endError);
+            if(!fused)return;
+            AllMemoryBarrierWithGroupSync();
+        }
+
+        if(fused || phase==partitionTile || phase==motionTile) {
+            const uint total=iters.x+max(iters.y,1u);
+            const uint endIteration=fused ? total : min(iter+1u,total);
+            for(uint iteration=fused?0u:iter;iteration<endIteration;++iteration) {
+                if(fused || phase==partitionTile) {
+                    uint begin=descriptors.x;
+                    for(uint partition=partitions.x;partition<partitions.y;++partition) {
+                        uint end=descriptors.y;
+                        if(fused)end=arena.Load(p.partitionBias+partition*4u);
+                        solvePartition(begin,end,lane.x,iters,iteration,endError);
+                        if(fused)AllMemoryBarrierWithGroupSync();
+                        begin=end;
+                    }
+                }
+                if((fused || phase==motionTile) && iteration+1u==iters.x) {
+                    for(uint i=bodies.x+lane.x;i<bodies.y;i+=128u)
+                        saveMotion(i,endError);
+                    if(fused)AllMemoryBarrierWithGroupSync();
+                }
+            }
+            if(!fused)return;
+        }
+    }
+    if(fused || phase==integrationTile || freeBody) {
+        for(uint i=bodies.x+lane.x;i<bodies.y;i+=128u) {
+            uint ordinal=i;
+            [branch]
+            if(!freeBody) {
+                ordinal=arena.Load(p.ordinalBias+i*4u);
                 if(ordinal>=p.bodyCount) {
                     arena.InterlockedOr(endError,8u);
                     continue;
                 }
-                uint base=p.bodyBias+ordinal*52u;
-                arena.Store3(base+24u,arena.Load3(base));
-                arena.Store3(base+36u,arena.Load3(base+12u));
             }
-            AllMemoryBarrierWithGroupSync();
+            integrateBody(ordinal);
         }
     }
-    // A Dy task owns exclusive solver-body ordinals and descriptor ranges.
-    // Publish only the fields consumed by the source PxsSolverEndTask and
-    // Gu writeback; the original prepared inputs remain device-local.
-    AllMemoryBarrierWithGroupSync();
-    for(uint i=bodyRange.x+lane.x;i<bodyRange.y;i+=128u) {
-        uint ordinal=arena.Load(p.ordinalBias+i*4u);
-        if(ordinal>=p.bodyCount) {
-            arena.InterlockedOr(endError,8u);
-            continue;
-        }
-        uint from=p.bodyBias+ordinal*52u;
-        uint to=p.writebackBias+p.resultBodyOffset+ordinal*48u;
-        arena.Store4(to,arena.Load4(from));
-        arena.Store4(to+16u,arena.Load4(from+16u));
-        arena.Store4(to+32u,arena.Load4(from+32u));
-        // Source DyBodyCoreIntegrator::integrateCore uses saved
-        // position-iteration deltas, not the final velocity deltas.
-        const uint input=p.integrationBias+16u+ordinal*136u;
-        if(arena.Load(input+96u)==0u)continue;
-        const float3 position=asfloat(arena.Load3(input));
-        const float4 quaternion=asfloat(arena.Load4(input+12u));
-        const float3 baseLinear=asfloat(arena.Load3(input+28u));
-        const float3 baseAngular=asfloat(arena.Load3(input+40u));
-        const uint locks=arena.Load(input+88u);
-        const float dt=asfloat(arena.Load(input+92u));
-        float3 motionLinear=baseLinear+asfloat(arena.Load3(from+24u));
-        float3 angularState=asfloat(arena.Load3(from+36u));
-        if(locks&1u)motionLinear.x=0.0f;
-        if(locks&2u)motionLinear.y=0.0f;
-        if(locks&4u)motionLinear.z=0.0f;
-        if(locks&8u)angularState.x=0.0f;
-        if(locks&16u)angularState.y=0.0f;
-        if(locks&32u)angularState.z=0.0f;
-        const float3 angular=baseAngular+float3(
-            dot(asfloat(arena.Load3(input+52u)),angularState),
-            dot(asfloat(arena.Load3(input+64u)),angularState),
-            dot(asfloat(arena.Load3(input+76u)),angularState));
-        // The axis lock was applied in solver space before the world
-        // inverse-inertia transform; the resulting motion is not masked
-        // again by DyBodyCoreIntegrator::integrateCore.
-        float3 motionAngular=angular;
-        float3 nextPosition=position+motionLinear*dt;
-        float4 nextQuaternion=quaternion;
-        float w=dot(motionAngular,motionAngular);
-        if(w!=0.0f) {
-            w=sqrt(w);
-            if(w>1.0e7f) {
-                motionAngular*=1.0e7f/w;
-                w=1.0e7f;
-            }
-            const float angle=dt*w*0.5f;
-            const float3 omega=motionAngular*(sin(angle)/w);
-            const float4 dq=float4(
-                quaternion.w*omega.x+omega.y*quaternion.z-omega.z*quaternion.y,
-                quaternion.w*omega.y+omega.z*quaternion.x-omega.x*quaternion.z,
-                quaternion.w*omega.z+omega.x*quaternion.y-omega.y*quaternion.x,
-                -dot(omega,quaternion.xyz));
-            nextQuaternion=dq+quaternion*cos(angle);
-            const float length=sqrt(dot(nextQuaternion,nextQuaternion));
-            if(!(length>0.0f) || !isfinite(length)) {
-                arena.InterlockedOr(endError,65536u);
-                continue;
-            }
-            nextQuaternion/=length;
-        }
-        // integrateCore advances the principal mass frame. Recover the
-        // actor frame before composing each independent local shape pose.
-        const float3 localCenter=asfloat(arena.Load3(input+104u));
-        const float4 localAxes=asfloat(arena.Load4(input+116u));
-        nextQuaternion=sourceRigidMultiply(nextQuaternion,float4(-localAxes.xyz,localAxes.w));
-        nextPosition-=sourceRigidRotate(nextQuaternion,localCenter);
-        if(!all(isfinite(nextPosition)) ||
-           !all(isfinite(nextQuaternion))) {
-            arena.InterlockedOr(endError,65536u);
-            continue;
-        }
-        const uint destination=p.writebackBias+p.resultPatchOffset+
-            p.patchCount*4u+ordinal*32u;
-        arena.Store3(destination,asuint(nextPosition));
-        arena.Store4(destination+12u,asuint(nextQuaternion));
-        arena.Store(destination+28u,1u);
-        uint element=arena.Load(input+100u);
-        const uint shapeCount=arena.Load(input+132u);
-        const uint4 views=arena.Load4(p.integrationBias);
-        for(uint shape=0u;shape<shapeCount;++shape) {
-            if(element>=views.w) {
-                arena.InterlockedOr(endError,65536u);
-                break;
-            }
-            const uint geometryIndex=views.z+element*64u;
-            const float3 halfExtents=asfloat(scGeometry.Load3(geometryIndex));
-            const float3 localPosition=asfloat(scGeometry.Load3(geometryIndex+16u));
-            const uint kind=scGeometry.Load(geometryIndex+28u);
-            const float4 localQuaternion=asfloat(scGeometry.Load4(geometryIndex+32u));
-            const float3 center=nextPosition+sourceRigidRotate(nextQuaternion,localPosition);
-            const float4 shapeQuaternion=kind==1u?float4(0,0,0,1):sourceRigidMultiply(nextQuaternion,localQuaternion);
-            const float3 worldExtents=kind==1u?halfExtents:sourceBoxHalfBounds(shapeQuaternion,halfExtents);
-            const float3 lower=center-worldExtents;
-            const float3 upper=center+worldExtents;
-            if(kind>1u || !all(isfinite(lower)) || !all(isfinite(upper)) || !all(isfinite(shapeQuaternion))) {
-                arena.InterlockedOr(endError,65536u);
-                break;
-            }
-            const uint cache=views.x+element*32u;
-            scTransforms.Store4(cache,asuint(shapeQuaternion));
-            scTransforms.Store3(cache+16u,asuint(center));
-            scTransforms.Store(cache+28u,0u);
-            const uint bound=views.y+element*24u;
-            scBounds.Store3(bound,asuint(lower));
-            scBounds.Store3(bound+12u,asuint(upper));
-            element=scGeometry.Load(geometryIndex+48u);
-        }
-        if(shapeCount!=0u && element!=0xffffffffu)
-            arena.InterlockedOr(endError,65536u);
-
+    if(fused) {
+        AllMemoryBarrierWithGroupSync();
+        if(lane.x==0u)publishTaskError(taskId,arena.Load(endError));
     }
-    AllMemoryBarrierWithGroupSync();
-    if(lane.x==0u)
-        arena.Store(p.writebackBias+p.resultTaskOffset+
-            group.x*4u,arena.Load(endError));
 }

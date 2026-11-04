@@ -128,8 +128,8 @@ struct GpuDyDistanceBody {
     float inverse_mass=0.0f;
 };
 static_assert(sizeof(GpuDyDistanceBody)==52u);
-// DyBodyCoreIntegrator::integrateCore inputs for the actual source PGS
-// solver-body ordinals. The resulting poses are written by that GPU task.
+// DyBodyCoreIntegrator::integrateCore inputs. Free bodies follow the
+// solver-body ordinals and integrate without solver deltas.
 struct GpuDyBodyIntegrationInput {
     float position[3]{},orientation[4]{};
     float linear_velocity[3]{},angular_velocity[3]{};
@@ -154,18 +154,18 @@ struct GpuDyIntegratedPose {
     std::uint32_t valid=0u;
 };
 static_assert(sizeof(GpuDyIntegratedPose)==32u);
-struct GpuDyDistanceRow {
+struct GpuDyJointRow {
     float axis[3]{},angular_a[3]{},angular_b[3]{};
     float inverse_mass_a=0.0f,inverse_mass_b=0.0f;
     std::uint32_t reserved=0u;
     float constant=0.0f,unbiased_constant=0.0f;
     float velocity_multiplier=0.0f,applied_force=0.0f;
 };
-static_assert(sizeof(GpuDyDistanceRow)==64u &&
-              offsetof(GpuDyDistanceRow,constant)==48u &&
-              offsetof(GpuDyDistanceRow,applied_force)==60u);
+static_assert(sizeof(GpuDyJointRow)==64u &&
+              offsetof(GpuDyJointRow,constant)==48u &&
+              offsetof(GpuDyJointRow,applied_force)==60u);
 struct GpuDyDistanceDescriptor {
-    std::uint32_t index=0,row0=0,row1=0,distance=0;
+    std::uint32_t index=0,row0=0,row1=0,row_count=0;
 };
 static_assert(sizeof(GpuDyDistanceDescriptor)==16u);
 struct GpuDyDistanceTask {
@@ -282,7 +282,7 @@ public:
     virtual bool has_gpu_dy_distance() const noexcept { return false; }
     virtual void solve_gpu_dy_distance(
         std::span<GpuDyDistanceBody>,
-        std::span<GpuDyDistanceRow>,
+        std::span<GpuDyJointRow>,
         std::span<const GpuDyDistanceDescriptor>,
         std::span<const std::uint32_t>,
         std::span<const std::uint32_t>,
@@ -555,30 +555,17 @@ public:
     void set_shape_simulation_enabled(BodyId id, bool enabled);
     void set_kinematic(BodyId id, bool enabled);
     void set_kinematic_target(BodyId id, Vec3 position, Quat orientation);
-    // Both center and local-anchor 1D rows share one ScConstraintSim
-    // owner, typed island EdgeIndex and generation-stamped public ID.
+    // Joint families share the same ScConstraintSim, island edge and
+    // generation-stamped public constraint ID.
     ConstraintId create_center_distance_constraint(
-        BodyId a, BodyId b, float distance) {
+        BodyId a,BodyId b,float distance) {
         return create_anchored_distance_constraint(a,b,{},{},distance);
     }
     ConstraintId create_anchored_distance_constraint(
-        BodyId a,BodyId b,Vec3 local_a,Vec3 local_b,float distance) {
-        const EdgeIndex edge=add_distance_constraint(
-            a,b,distance,local_a,local_b);
-        const EdgeIndex index=island_edges_[edge].constraint_id;
-        const auto& record=constraint_records_[index];
-        return (static_cast<ConstraintId>(record.generation)<<32)|index;
-    }
-    void retire_center_distance_constraint(ConstraintId id) {
-        const EdgeIndex index=static_cast<EdgeIndex>(id);
-        const std::uint32_t generation=static_cast<std::uint32_t>(id>>32);
-        if(index>=constraint_records_.size() || !generation)
-            throw std::out_of_range("Unknown or expired distance constraint");
-        const auto& record=constraint_records_[index];
-        if(!record.live || record.generation!=generation)
-            throw std::out_of_range("Unknown or expired distance constraint");
-        remove_constraint_edge(record.edge);
-    }
+        BodyId a,BodyId b,Vec3 local_a,Vec3 local_b,float distance);
+    ConstraintId create_fixed_constraint(
+        BodyId a,BodyId b,Transform local_a,Transform local_b);
+    void retire_constraint(ConstraintId id);
     // Source ScBodyCore per-rigid body unconstrained Dy inputs; no
     // separate solver owner or scene-global parameter shadow.
     void set_dynamics(BodyId id, RigidBodyDynamics dynamics);
@@ -1329,14 +1316,17 @@ private:
     std::vector<EdgeIndex> active_constraint_handles_;
     // ScConstraintSim and Dy::Constraint::index are separate from the
     // IslandSim EdgeIndex, with recycled IDTracker indices.
+    enum class JointKind : std::uint8_t { Distance, Fixed };
     struct ConstraintRecord {
         EdgeIndex edge=invalid_edge;
         float distance_length=0.0f;
         bool live=false;
+        JointKind kind=JointKind::Distance;
         // Public world IDs encode this generation with the existing
         // recycled ScConstraintSim slot, not its reusable EdgeIndex.
         std::uint32_t generation=0;
-        Vec3 local_anchor_a{},local_anchor_b{};
+        Transform local_a{},local_b{};
+        bool swapped=false;
     };
     std::vector<ConstraintRecord> constraint_records_;
     std::vector<EdgeIndex> free_constraint_ids_;
@@ -1345,6 +1335,8 @@ private:
     // Px1DConstraint has one translational row and no angular Jacobian.
     EdgeIndex add_distance_constraint(BodyId a,BodyId b,float length,
                                       Vec3 local_a={},Vec3 local_b={});
+    EdgeIndex add_joint(BodyId a,BodyId b,ConstraintRecord record);
+    ConstraintId joint_token(EdgeIndex edge) const noexcept;
     void remove_constraint_edge(EdgeIndex id);
     // One aggregate count, derived only from transitions on the same
     // authoritative EdgeIndex contact-manager slots.
@@ -1756,7 +1748,7 @@ private:
     struct ConstraintDescriptor {
         std::uint32_t index=0;
         BodyId body0=0, body1=0;
-        std::uint32_t distance=0;
+        std::uint32_t row_count=0;
     };
     static_assert(sizeof(ConstraintDescriptor)==16u &&
                   alignof(ConstraintDescriptor)==4u);
@@ -1765,7 +1757,7 @@ private:
     struct SolverConstraintDescriptor {
         std::uint32_t index=0;
         std::uint32_t row0=0, row1=0;
-        std::uint32_t distance=0;
+        std::uint32_t row_count=0;
     };
     static_assert(sizeof(SolverConstraintDescriptor)==16u &&
                   alignof(SolverConstraintDescriptor)==4u);
@@ -1781,8 +1773,8 @@ private:
     std::vector<std::size_t> indexed_managers_;
     // Additional eCONSTRAINT 1D rows are indexed by their existing
     // island EdgeIndex, never stored as shape-contact managers.
-    std::vector<EdgeIndex> indexed_distance_constraints_;
-    struct DistanceRow {
+    std::vector<EdgeIndex> indexed_joints_;
+    struct JointRow {
         // The partitioned source descriptor owns this row's edge endpoints.
         Vec3 axis{};
         Vec3 angular_a{},angular_b{};
@@ -1790,7 +1782,7 @@ private:
         float constant=0.0f,unbiased_constant=0.0f;
         float velocity_multiplier=0.0f,applied_force=0.0f;
     };
-    std::vector<DistanceRow> distance_rows_;
+    std::vector<JointRow> joint_rows_;
     // DyDynamicsContext::updatePostKinematic's contiguous source task
     // groups: cumulative offsets into indexed_managers_. The admitted
     // rigid-only default batches 128 bodies or until one contact exists.
@@ -1803,7 +1795,8 @@ private:
         std::size_t manager_end=0, partition_end=0;
         std::size_t constraint_end=0, solver_body_end=0;
         std::uint8_t position_iterations=0, velocity_iterations=0;
-        std::size_t distance_end=0;
+        std::size_t joint_end=0;
+        std::size_t gpu_free_end=0;
     };
     // CPU lowering of ScPipeline's two producers of mPostSolver:
     // PxsSolverEndTask for each Dy active-island task chain and
@@ -1888,8 +1881,9 @@ private:
     std::vector<GpuDyDistanceBody> gpu_dy_bodies_;
     std::vector<GpuDyBodyIntegrationInput> gpu_dy_integration_inputs_;
     std::vector<GpuDyIntegratedPose> gpu_dy_integrated_poses_;
+    std::vector<BodyId> gpu_dy_free_ids_;
     bool gpu_dy_pose_ready_=false;
-    std::vector<GpuDyDistanceRow> gpu_dy_rows_;
+    std::vector<GpuDyJointRow> gpu_dy_rows_;
     std::vector<GpuDyDistanceDescriptor> gpu_dy_descriptors_;
     std::vector<std::uint32_t> gpu_dy_partition_ends_;
     std::vector<std::uint32_t> gpu_dy_body_ordinals_;

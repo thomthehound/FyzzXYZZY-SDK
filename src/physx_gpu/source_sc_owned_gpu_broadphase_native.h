@@ -180,7 +180,7 @@ public:
     }
     void solve_gpu_dy_distance(
         std::span<native::GpuDyDistanceBody> bodies,
-        std::span<native::GpuDyDistanceRow> rows,
+        std::span<native::GpuDyJointRow> rows,
         std::span<const native::GpuDyDistanceDescriptor> descriptors,
         std::span<const std::uint32_t> partitions,
         std::span<const std::uint32_t> ordinals,
@@ -197,9 +197,8 @@ public:
         std::span<native::GpuDyIntegratedPose> integrated_poses) override {
         if(!dy_distance_)
             throw std::logic_error("Source GPU Dy shader not installed");
-        // Resolve the Sc actor identity into its original ElementSim
-        // volume. Only eligible standalone dynamic boxes have a device
-        // shape-cache write target; every solver body still integrates.
+        // Resolve the first attached shape into the ElementSim cache.
+        // Body integration also covers shapes without a device target.
         for(auto& input:integration)
             if(input.active && input.source_element!=0xffffffffu) {
                 input.source_element=producer_->device_shape_cache_handle(input.source_element);
@@ -223,6 +222,9 @@ public:
     }
     std::size_t dy_gpu_integrated_body_count() const noexcept {
         return dy_distance_?dy_distance_->last_integrated_body_count():0u;
+    }
+    SourceDyLaunchStats dy_launch_stats() const noexcept {
+        return dy_distance_?dy_distance_->last_schedule():SourceDyLaunchStats{};
     }
     std::size_t pcm_pair_upload_bytes() const noexcept {
         return pcm_ ? pcm_->last_pair_upload_bytes() : 0u;

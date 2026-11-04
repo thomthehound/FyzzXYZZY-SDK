@@ -1792,8 +1792,8 @@ struct ConstraintIslandSourceFixture {
         const float separation=second.position.x-first.position.x;
         if(scene.island_edges_[edge].type!=Scene::IslandEdgeType::Constraint ||
            scene.accurate_island_count()!=1 ||
-           scene.indexed_distance_constraints_.size()!=1 ||
-           scene.distance_rows_.size()!=1 ||
+           scene.indexed_joints_.size()!=1 ||
+           scene.joint_rows_.size()!=1 ||
            scene.solved_result_frame()!=scene.frame_index() ||
            !std::isfinite(separation) || !(separation<2.0f) ||
            !(first.position.x>0.0f) || !(second.position.x<2.0f) ||
@@ -1807,8 +1807,8 @@ struct ConstraintIslandSourceFixture {
         // retired constraint no longer bridges two free islands.
         scene.set_position(b,{6,7,0});
         scene.step(1.0f/120.0f);
-        if(!scene.indexed_distance_constraints_.empty() ||
-           !scene.distance_rows_.empty() ||
+        if(!scene.indexed_joints_.empty() ||
+           !scene.joint_rows_.empty() ||
            scene.constraint_records_[sc_id].live ||
            scene.accurate_island_count()!=2)
             throw std::runtime_error(
@@ -1835,35 +1835,35 @@ struct ConstraintIslandSourceFixture {
             scene.add_distance_constraint(a,b,1.5f);
             scene.step(1.0f/120.0f);
             if(scene.indexed_managers_.size()!=2 ||
-               scene.indexed_distance_constraints_.size()!=1 ||
+               scene.indexed_joints_.size()!=1 ||
                scene.constraint_descriptors_.size()!=3 ||
                scene.ordered_constraints_.size()!=3 ||
                scene.solver_partition_count()!=2 ||
                scene.solver_tasks_.size()!=1 ||
                scene.solver_tasks_[0].constraint_end!=3 ||
-               !scene.ordered_constraints_[0].distance ||
-               scene.distance_rows_.size()!=1)
+               !scene.ordered_constraints_[0].row_count ||
+               scene.joint_rows_.size()!=1)
                 throw std::runtime_error(
                     "Source 1D and contact rows did not share conflict partitions");
             std::size_t joints=0,contacts=0;
             for(const auto& descriptor:scene.ordered_constraints_)
-                if(descriptor.distance)++joints;
+                if(descriptor.row_count)++joints;
                 else ++contacts;
             if(joints!=1 || contacts!=2)
                 throw std::runtime_error(
                     "Mixed source partition lost a live descriptor");
             for(std::size_t i=0;i<scene.constraint_descriptors_.size();++i) {
                 const auto& one=scene.constraint_descriptors_[i];
-                const Pair p=one.distance
-                    ? scene.island_edges_[scene.indexed_distance_constraints_[one.index]].pair
+                const Pair p=one.row_count
+                    ? scene.island_edges_[scene.indexed_joints_[one.index]].pair
                     : scene.manifolds_[one.index].pair;
                 for(std::size_t j=i+1;
                     j<scene.constraint_descriptors_.size();++j) {
                     if(scene.constraint_partitions_[i]!=
                        scene.constraint_partitions_[j])continue;
                     const auto& two=scene.constraint_descriptors_[j];
-                    const Pair q=two.distance
-                        ? scene.island_edges_[scene.indexed_distance_constraints_[two.index]].pair
+                    const Pair q=two.row_count
+                        ? scene.island_edges_[scene.indexed_joints_[two.index]].pair
                         : scene.manifolds_[two.index].pair;
                     for(BodyId id:{a,b})
                         if((p.a==id || p.b==id) &&
@@ -1902,9 +1902,9 @@ struct ConstraintIslandSourceFixture {
                 std::sqrt(x*x+dy*dy));
         }
         scene.step(1.0f/120.0f);
-        if(scene.indexed_distance_constraints_.size()!=spokes ||
+        if(scene.indexed_joints_.size()!=spokes ||
            scene.indexed_managers_.size()!=1 ||
-           scene.distance_rows_.size()!=spokes ||
+           scene.joint_rows_.size()!=spokes ||
            scene.constraint_descriptors_.size()!=spokes+1 ||
            scene.ordered_constraints_.size()!=spokes+1 ||
            scene.solver_partition_count()!=spokes+1 ||
@@ -1916,11 +1916,11 @@ struct ConstraintIslandSourceFixture {
                 "Mixed source partition failed 32-mask overflow or static reservation");
         for(std::size_t i=0;i<spokes;++i)
             if(scene.constraint_partitions_[i]!=i ||
-               !scene.ordered_constraints_[i].distance)
+               !scene.ordered_constraints_[i].row_count)
                 throw std::runtime_error(
                     "Dynamic 1D descriptor overflow lost source partition order");
         if(scene.constraint_partitions_[spokes]!=spokes ||
-           scene.ordered_constraints_[spokes].distance)
+           scene.ordered_constraints_[spokes].row_count)
             throw std::runtime_error(
                 "Floor contact was scheduled before the final 1D partition");
     }
@@ -1945,14 +1945,14 @@ struct ConstraintIslandSourceFixture {
             if(scene.solver_tasks_.size()!=2 ||
                scene.solver_tasks_[0].manager_end!=independent ||
                scene.solver_tasks_[1].manager_end!=independent+2 ||
-               scene.solver_tasks_[0].distance_end!=0 ||
-               scene.solver_tasks_[1].distance_end!=1 ||
+               scene.solver_tasks_[0].joint_end!=0 ||
+               scene.solver_tasks_[1].joint_end!=1 ||
                scene.solver_tasks_[0].solver_body_end!=independent ||
                scene.solver_tasks_[1].solver_body_end!=independent+2 ||
                scene.solver_tasks_[0].constraint_end!=independent ||
                scene.solver_tasks_[1].constraint_end!=independent+3 ||
                scene.solver_partition_count()!=3 ||
-               scene.distance_rows_.size()!=1 ||
+               scene.joint_rows_.size()!=1 ||
                scene.solved_result_frame()!=scene.frame_index())
                 throw std::runtime_error(
                     "Mixed Dy task chains lost their original ownership boundaries");
@@ -2306,14 +2306,14 @@ struct ConstraintIslandSourceFixture {
            scene.actors_[c].num_counted_interactions!=1)
             throw std::runtime_error(
                 "Gu contact manager and Sc joint counts did not coexist");
-        scene.retire_center_distance_constraint(first);
+        scene.retire_constraint(first);
         if(scene.actors_[a].num_counted_interactions!=2 ||
            scene.actors_[b].num_counted_interactions!=1)
             throw std::runtime_error(
                 "Retiring one Sc joint changed surviving interaction counts");
         scene.set_position(c,{0,9,0});
         scene.advance_collision(true);
-        scene.retire_center_distance_constraint(second);
+        scene.retire_constraint(second);
         scene.advance_collision(true);
         if(scene.actors_[a].num_counted_interactions!=0 ||
            scene.actors_[b].num_counted_interactions!=0 ||
@@ -6217,7 +6217,7 @@ struct SolverIterationSourceFixture {
             descriptor.row1==Scene::invalid_solver_row;
         const bool contact1=descriptor.row1==0u &&
             descriptor.row0==Scene::invalid_solver_row;
-        if(descriptor.distance || (!contact0 && !contact1))
+        if(descriptor.row_count || (!contact0 && !contact1))
             throw std::runtime_error(
                 "Mixed Dy partition lost its compact static/body row assignment");
     }
@@ -6272,7 +6272,7 @@ struct SolverIterationSourceFixture {
             throw std::runtime_error(
                 "Source partition stream includes dormant Gu history");
         for(const auto& descriptor:scene.constraint_descriptors_) {
-            if(descriptor.distance ||
+            if(descriptor.row_count ||
                std::find(scene.indexed_managers_.begin(),
                          scene.indexed_managers_.end(),
                          descriptor.index)==scene.indexed_managers_.end())
@@ -6561,8 +6561,8 @@ struct SolverIterationSourceFixture {
                joints_parallel.concurrent_integration_dispatches_!=frame+1 ||
                joints_parallel.concurrent_solver_worker_jobs_!=frame+1 ||
                joints_parallel.third_pass_worker_start_count_!=1 ||
-               joints_serial.indexed_distance_constraints_.size()!=pairs ||
-               joints_parallel.indexed_distance_constraints_.size()!=pairs)
+               joints_serial.indexed_joints_.size()!=pairs ||
+               joints_parallel.indexed_joints_.size()!=pairs)
                 throw std::runtime_error(
                     "Independent contact/1D Dy task chains failed concurrent admission");
             for(std::size_t i=0;i<left_ids.size();++i) {
@@ -6590,13 +6590,13 @@ struct SolverIterationSourceFixture {
             if(serial_impulses.size()!=parallel_impulses.size() ||
                !std::equal(serial_impulses.begin(),serial_impulses.end(),
                            parallel_impulses.begin()) ||
-               joints_serial.distance_rows_.size()!=
-                   joints_parallel.distance_rows_.size())
+               joints_serial.joint_rows_.size()!=
+                   joints_parallel.joint_rows_.size())
                 throw std::runtime_error(
                     "Concurrent mixed task changed source Gu/1D writeback");
-            for(std::size_t i=0;i<joints_serial.distance_rows_.size();++i)
-                if(joints_serial.distance_rows_[i].applied_force!=
-                   joints_parallel.distance_rows_[i].applied_force)
+            for(std::size_t i=0;i<joints_serial.joint_rows_.size();++i)
+                if(joints_serial.joint_rows_[i].applied_force!=
+                   joints_parallel.joint_rows_[i].applied_force)
                     throw std::runtime_error(
                         "Concurrent source 1D impulse disagreed with serial PGS");
         }
@@ -6620,7 +6620,7 @@ struct SolverIterationSourceFixture {
         mixed.step(dt);
         bool found_kinematic_constraint=false;
         for(const auto& descriptor:mixed.ordered_constraints_) {
-            if(descriptor.distance)continue;
+            if(descriptor.row_count)continue;
             const auto pair=mixed.manifolds_[descriptor.index].pair;
             found_kinematic_constraint |=
                 pair.a==kinematic || pair.b==kinematic;

@@ -1704,6 +1704,198 @@ void verify_compound_actor_gpu_solver(
     test::compound_contact_lifetimes(gpu,&cpu);
     test::compound_default_contact_response(gpu,&cpu);
     test::compound_joint_response(gpu,&cpu);
+    test::fixed_joint_response(gpu,&cpu);
+}
+
+void verify_gpu_free_integration(
+    fyzz::compute::Backend backend,const char* sap,const char* pcm,
+    const char* dy_shader) {
+    using namespace fyzz;
+    std::ifstream input(dy_shader,std::ios::binary);
+    require(bool(input),"Compiled source Dy shader unavailable");
+    const std::vector<char> binary{
+        std::istreambuf_iterator<char>{input},std::istreambuf_iterator<char>{}};
+    compute::ShaderBinary shader{};
+    shader.format=backend==compute::Backend::Vulkan
+        ? compute::ShaderFormat::Spirv : compute::ShaderFormat::Dxil;
+    shader.bytes.assign(binary.begin(),binary.end());
+
+    native::Scene cpu,gpu;
+    cpu.set_enhanced_determinism(true);
+    gpu.set_enhanced_determinism(true);
+    auto owner=std::make_unique<physx_gpu::SourceScOwnedGpuBroadphaseNative>(
+        backend,load_native_gpu_sap_shaders(backend,sap),1024u,128u,std::nullopt,
+        load_native_gpu_pcm_shaders(backend,pcm),std::move(shader));
+    auto* producer=owner.get();
+    gpu.set_gpu_broadphase(std::move(owner));
+
+    const auto assemble=[](native::Scene& scene) {
+        std::vector<BodyId> bodies;
+        scene.add_static_box({1.f,0.25f,1.f},{0.f,-0.25f,0.f});
+        bodies.push_back(scene.add_dynamic_box(
+            {0.25f,0.25f,0.25f},{0.f,0.8f,0.f},1.f));
+        scene.set_velocity(bodies.front(),{0.f,-2.5f,0.f});
+        RigidBodyDynamics free_motion{};
+        free_motion.gravity_enabled=false;
+        free_motion.lock_flags=LockLinearZ|LockAngularX;
+        for(unsigned i=1;i<=260u;++i) {
+            const float x=3.f*static_cast<float>(i);
+            const auto body=scene.add_dynamic_box(
+                {0.25f,0.4f,0.6f},{x,3.f,0.f},1.f);
+            bodies.push_back(body);
+            scene.set_dynamics(body,free_motion);
+            scene.set_velocity(body,{0.2f,0.3f,1.f});
+            scene.set_angular_velocity(body,{1.f,0.2f,-0.6f});
+        }
+        const auto compound=scene.create_body({{0.f,3.f,4.f},{}},true);
+        scene.attach_box(compound,{0.2f,0.3f,0.4f},{{-0.5f,0.f,0.f},{}});
+        scene.attach_sphere(compound,0.4f,{{0.7f,0.4f,0.f},{}});
+        scene.update_mass_properties(compound,1.f);
+        scene.set_dynamics(compound,free_motion);
+        scene.set_angular_velocity(compound,{0.f,0.5f,0.9f});
+        bodies.push_back(compound);
+        const auto shapeless=scene.create_body({{0.f,6.f,0.f},{}},true);
+        scene.set_dynamics(shapeless,free_motion);
+        scene.set_velocity(shapeless,{0.4f,-0.3f,0.f});
+        bodies.push_back(shapeless);
+        return bodies;
+    };
+    const auto expected=assemble(cpu);
+    const auto actual=assemble(gpu);
+    bool touched=false,released=false;
+    for(unsigned frame=0;frame<12u;++frame) {
+        if(touched && !released) {
+            cpu.set_position(expected.front(),{0.f,2.f,0.f});
+            gpu.set_position(actual.front(),{0.f,2.f,0.f});
+            cpu.set_velocity(expected.front(),{0.f,1.f,0.f});
+            gpu.set_velocity(actual.front(),{0.f,1.f,0.f});
+            released=true;
+        }
+        cpu.step(1.f/30.f);
+        gpu.step(1.f/30.f);
+        require(producer->dy_distance_dispatch_count()==frame+1u &&
+                producer->dy_gpu_integrated_body_count()==actual.size() &&
+                producer->dy_upload_span_count()==1u,
+                "GPU Dy did not integrate every active body in one upload");
+        require(cpu.contacts().size()==gpu.contacts().size(),
+                "Device-integrated free body changed contact admission");
+        const bool contacts=producer->dy_pcm_device_contact_rows()!=0u;
+        if(contacts) {
+            require(!released && producer->dy_launch_stats().dispatches==2u,
+                    "Mixed free and constrained bodies lost a Dy dispatch");
+            touched=true;
+        } else {
+            require(producer->dy_launch_stats().dispatches==1u &&
+                    producer->dy_distance_transfer_bytes().second==
+                        actual.size()*sizeof(native::GpuDyIntegratedPose),
+                    "Free-only Dy staged solver rows or dispatched PGS");
+        }
+        if(frame>0u)
+            require(producer->last_frame().device_cached_box_count>=262u,
+                    "Free body or compound shape lost resident bounds");
+        for(std::size_t i=0;i<actual.size();++i)
+            test::compound_compare_state(gpu.body_state(actual[i]),
+                cpu.body_state(expected[i]),0.002f,
+                "GPU Dy free or transitioning body");
+    }
+    require(touched && released,"Free body did not enter and leave GPU PCM response");
+}
+
+void verify_gpu_wide_island_solver(
+    fyzz::compute::Backend backend,const char* sap,const char* pcm,
+    const char* dy_shader,unsigned connected_bodies) {
+    using namespace fyzz;
+    std::ifstream input(dy_shader,std::ios::binary);
+    require(bool(input),"Compiled source Dy shader unavailable");
+    const std::vector<char> binary{
+        std::istreambuf_iterator<char>{input},std::istreambuf_iterator<char>{}};
+    compute::ShaderBinary shader{};
+    shader.format=backend==compute::Backend::Vulkan
+        ? compute::ShaderFormat::Spirv : compute::ShaderFormat::Dxil;
+    shader.bytes.assign(binary.begin(),binary.end());
+
+    native::Scene cpu,gpu;
+    cpu.set_enhanced_determinism(true);
+    gpu.set_enhanced_determinism(true);
+    auto owner=std::make_unique<physx_gpu::SourceScOwnedGpuBroadphaseNative>(
+        backend,load_native_gpu_sap_shaders(backend,sap),
+        connected_bodies>768u ? 32768u : 4096u,128u,std::nullopt,
+        load_native_gpu_pcm_shaders(backend,pcm),std::move(shader));
+    auto* producer=owner.get();
+    gpu.set_gpu_broadphase(std::move(owner));
+
+    struct Assembly {
+        std::vector<BodyId> bodies;
+        ConstraintId split_joint=0;
+    };
+    const auto assemble=[connected_bodies](native::Scene& scene) {
+        Assembly out;
+        const auto chain=[&](unsigned count,float z,std::uint8_t pos,std::uint8_t vel) {
+            RigidBodyDynamics dynamics;
+            dynamics.position_iterations=pos;
+            dynamics.velocity_iterations=vel;
+            BodyId previous=0;
+            for(unsigned i=0;i<count;++i) {
+                const float x=1.25f*static_cast<float>(i);
+                scene.add_static_box({0.55f,0.25f,0.55f},{x,-0.25f,z});
+                const auto body=scene.add_dynamic_box(
+                    {0.4f,0.5f,0.4f},{x,0.48f,z},1.0f);
+                out.bodies.push_back(body);
+                scene.set_dynamics(body,dynamics);
+                scene.set_velocity(body,{0.08f,0.0f,i%2u ? -0.06f : 0.06f});
+                if(i) {
+                    const auto joint=i%8u==0u
+                        ? scene.create_fixed_constraint(previous,body,
+                            {{0.625f,0.12f,0.0f},{}},{{-0.625f,0.12f,0.0f},{}})
+                        : scene.create_anchored_distance_constraint(
+                            previous,body,{0.1f,0.12f,0.0f},{-0.1f,-0.08f,0.0f},1.04f);
+                    if(count==640u && i==count/2u)out.split_joint=joint;
+                }
+                previous=body;
+            }
+        };
+        chain(connected_bodies,0.0f,5u,2u);
+        chain(640u,4.0f,3u,2u);
+        chain(2u,8.0f,4u,1u);
+        return out;
+    };
+    const auto expected=assemble(cpu);
+    const auto actual=assemble(gpu);
+    for(unsigned frame=0;frame<4u;++frame) {
+        if(frame==2u) {
+            cpu.retire_constraint(expected.split_joint);
+            gpu.retire_constraint(actual.split_joint);
+        }
+        constexpr float dt=1.0f/120.0f;
+        cpu.step(dt);
+        gpu.step(dt);
+        const auto schedule=producer->dy_launch_stats();
+        // Once the assembly moves, individual supports can lose touch.
+        // Joint connectivity must still supply a wide partition.
+        const auto width=frame==0u?connected_bodies-2u:connected_bodies/2u;
+        const auto partition_groups=(width+127u)/128u;
+        require(gpu.largest_accurate_island_size()==connected_bodies &&
+                schedule.wide_tasks==(frame<2u?2u:1u) &&
+                schedule.max_partition_groups>=partition_groups &&
+                schedule.dispatches>7u,
+                "Connected Dy islands did not execute tiled conflict partitions");
+        require(producer->dy_upload_span_count()==1u &&
+                producer->dy_gpu_integrated_body_count()==actual.bodies.size() &&
+                producer->dy_pcm_device_contact_rows()>=actual.bodies.size() &&
+                producer->dy_cpu_gu_geometry_bytes()==0u,
+                "Wide island lost GPU contact preparation or body integration");
+        for(std::size_t i=0;i<actual.bodies.size();++i)
+            test::compound_compare_state(gpu.body_state(actual.bodies[i]),
+                cpu.body_state(expected.bodies[i]),0.002f,
+                "Tiled Dy mixed contact and joint island");
+        if(frame==0u)
+            std::cout<<"FYZZXYZZY_METRIC suite=sc_pcm case=wide_islands"
+                     <<" bodies="<<actual.bodies.size()
+                     <<" wide_tasks="<<schedule.wide_tasks
+                     <<" max_partition_groups="<<schedule.max_partition_groups
+                     <<" dy_dispatches="<<schedule.dispatches
+                     <<" tile_bytes="<<schedule.tile_bytes<<'\n';
+    }
 }
 
 int main(int argc,char** argv) {
@@ -1715,7 +1907,9 @@ int main(int argc,char** argv) {
                 scenario=="sparse_contacts" || scenario=="coupled_stack" ||
                 scenario=="coupled_solver" || scenario=="legacy_gu_solver" ||
                 scenario=="mixed_solver" || scenario=="distance_solver" ||
-                scenario=="compound_shapes" || scenario=="compound_solver" || scenario=="sphere_solver",
+                scenario=="compound_shapes" || scenario=="compound_solver" ||
+                scenario=="sphere_solver" || scenario=="wide_islands" ||
+                scenario=="wide_islands_10k" || scenario=="free_integration",
                 "Unknown GPU scene regression scenario");
 #ifdef FYZZXYZZY_TEST_D3D12
         constexpr auto backend=fyzz::compute::Backend::D3D12;
@@ -1764,6 +1958,15 @@ int main(int argc,char** argv) {
         if(scenario=="all" || scenario=="distance_solver")
             fyzz::tests::measure_gpu_case("sc_pcm","distance_solver",
                 [&]{verify_gpu_distance_solver(backend,argv[1],argv[3]);});
+        if(scenario=="all" || scenario=="free_integration")
+            fyzz::tests::measure_gpu_case("sc_pcm","free_integration",
+                [&]{verify_gpu_free_integration(backend,argv[1],argv[2],argv[3]);});
+        if(scenario=="all" || scenario=="wide_islands" || scenario=="wide_islands_10k") {
+            const bool large=scenario=="wide_islands_10k";
+            fyzz::tests::measure_gpu_case("sc_pcm",large ? "wide_islands_10k" : "wide_islands",
+                [&]{verify_gpu_wide_island_solver(
+                    backend,argv[1],argv[2],argv[3],large ? 10240u : 768u);});
+        }
         std::cout<<"Native Sc GPU PCM scene "<<scenario<<" PASS\n";
         return 0;
     }catch(const std::exception& error) {

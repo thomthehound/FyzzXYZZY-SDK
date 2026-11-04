@@ -67,7 +67,7 @@ independent physical checks remain necessary.
 | --- | --- | --- |
 | Compound shape-element and body identities now separate collision history from rigid Dy response | Shared geometry ownership, per-shape filters/triggers and complete public scene semantics | Scene and geometry |
 | Native CPU/GPU rigid rows use source PxReal; compiled SPIR-V/DXIL checks reject FP64 requirements | Extend error/conditioning and cost validation with each subsystem; numerical representation follows the supported physical domain | Every capability |
-| Dy shader dispatches one 128-thread workgroup per task and loops its conflict partitions | Establish scaling for one large connected island as well as many independent tasks; implement source-derived partition tiling where needed | Device foundation |
+| Wide Dy conflict partitions run across multiple workgroups in one ordered submission. Compact tasks retain one fused workgroup. | Measure the dispatch crossover and connected-island scaling on physical GPUs | Device foundation |
 | Scene builds host task/constraint/contact arrays; Dy solve downloads before returning | Express device dependencies and public-result visibility separately; retain intermediate device authority | Device foundation |
 | Direct buffer views/32-bit offsets cover the current bounded stage set | Qualify local offsets plus cross-allocation references before pointer-rich solver/nonrigid intake | Device foundation |
 | Existing memory timing harness compares two offset-loading forms of one SAP operation | Add actual nested/multi-allocation source accesses; current results cannot select a general ABI | Device foundation |
