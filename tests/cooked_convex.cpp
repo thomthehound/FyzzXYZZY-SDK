@@ -75,6 +75,31 @@ template<class F>void rejects(F&& f,const char* message) {
     try {f();}catch(const std::invalid_argument&){return;}
     throw std::runtime_error(message);
 }
+void verify_native_rigid_contact() {
+    World world({.execution=ExecutionMode::NativeCpu,
+                 .contact_notifications=true});
+    world.add_static_floor(0.f);
+    const auto hull=cook_convex_mesh(tetra_vertices,tetra_faces);
+    const auto body=world.create_dynamic_body({{0.f,-0.025f,0.f},{}});
+    world.attach_convex_shape(body,hull);
+    world.update_mass_properties(body,6.f);
+    const auto mass=world.body_mass_properties(body);
+    near(mass.inverse_mass,1.0,1.e-5,
+         "Native convex body did not receive cooked volume mass");
+    near(mass.mass_local_pose.position.x,0.25,1.e-5,
+         "Native convex body COM differs from cooked hull");
+    near(mass.mass_local_pose.position.y,0.25,1.e-5,
+         "Native convex body COM y differs from cooked hull");
+    world.set_body_velocity(body,{0.f,-1.f,0.f});
+    for(unsigned frame=0u;frame<5u;++frame)
+        world.step(1.f/120.f);
+    const auto state=world.body_state(body);
+    require(std::isfinite(state.position.y) &&
+            std::isfinite(state.velocity.y) &&
+            state.position.y>-0.15f,
+            "Cooked convex rigid contact did not constrain body motion");
+}
+
 void verify_invalid() {
     auto open=tetra_faces;
     rejects([&]{cook_convex_mesh(tetra_vertices,
@@ -107,6 +132,7 @@ int main() {
         verify_tetra();
         verify_cube();
         verify_invalid();
+        verify_native_rigid_contact();
         std::cout<<"Cooked convex volume, inertia and topology OK\n";
         return 0;
     }catch(const std::exception& error) {
