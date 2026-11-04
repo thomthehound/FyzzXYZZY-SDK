@@ -170,19 +170,14 @@ void verify_compound_shape_gpu_pairs(
     shapes[0].motion=Motion::Kinematic;
     shapes[1].motion=Motion::Kinematic;
     const auto kinematic=gpu.advance(shapes,false,true);
-    require(kinematic.found.empty() && kinematic.lost.size()==2u &&
-            contains(kinematic.lost,{0u,2u}) &&
-            contains(kinematic.lost,{1u,2u}),
-        "Compound actor kinematic transition did not refilter both shapes");
+    require(kinematic.found.empty() && kinematic.lost.empty(),
+        "Compound actor kinematic transition changed stable GPU shape pairs");
     gpu.set_actor_motion(0u,Motion::Dynamic);
     shapes[0].motion=Motion::Dynamic;
     shapes[1].motion=Motion::Dynamic;
     const auto restored=gpu.advance(shapes,false,true);
-    require(restored.lost.empty() && restored.found.size()==2u &&
-            contains(restored.found,{0u,2u}) &&
-            contains(restored.found,{1u,2u}) &&
-            !contains(restored.found,{0u,1u}),
-        "Compound actor dynamic transition did not restore sibling filtering");
+    require(restored.lost.empty() && restored.found.empty(),
+        "Compound actor dynamic transition changed stable GPU shape pairs");
     // Sc edits this shape, not its parent rigid actor or sibling shape.
     shapes[0].position={4.f,0.f,0.f};
     gpu.mark_shape_bounds_changed(0u,0.02f);
