@@ -1548,7 +1548,7 @@ void verify_gpu_distance_solver(
 
 // Sphere/box and sphere/sphere witnesses execute in the device PCM
 // contact stream, then feed the same GPU Dy task as box PCM contacts.
-// The infinite-plane/sphere case retains its host Gu boundary.
+// Sphere/plane also uses device PCM without a finite plane volume.
 void verify_sphere_gpu_solver(
     fyzz::compute::Backend backend,const char* sap,
     const char* pcm,const char* dy_shader) {
@@ -1613,11 +1613,11 @@ void verify_sphere_gpu_solver(
             "GPU sphere scene changed Sc PCM/Gu manager identity");
         if(frame==0u) {
             require(gpu.contacts().size()==3u &&
-                    producer->dy_cpu_gu_geometry_bytes()==
-                        sizeof(native::GpuDyGuContactInput) &&
+                    producer->dy_cpu_gu_geometry_bytes()==0u &&
+                    producer->dy_pcm_device_contact_rows()==3u &&
                     producer->pcm_contact_readback_bytes()==
-                        2u*sizeof(physx_gpu::SourcePcmGpuContactStreamNative),
-                "Finite spheres were not generated on device before GPU Dy preparation");
+                        3u*sizeof(physx_gpu::SourcePcmGpuContactStreamNative),
+                "Sphere/plane, sphere/sphere and sphere/box were not device PCM contacts");
             require(cpu.contacts().size()==3u,
                 "Source sphere impact fixtures lost a contact manager");
             for(std::size_t j=0;j<cpu.contacts().size();++j) {
