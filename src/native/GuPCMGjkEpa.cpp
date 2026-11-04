@@ -434,8 +434,9 @@ static bool gjk_epa(
             return epa(pair,simplex,count,contact);
         }
         if(dist<=0.0f) {
+            if(!point_core || count==0)return false;
             store();
-            return count>0 && epa(pair,simplex,count,contact);
+            return epa(pair,simplex,count,contact);
         }
         const Vec3 normal=mul(closest,1.0f/dist);
         const Support support=pair.support(neg(closest));
