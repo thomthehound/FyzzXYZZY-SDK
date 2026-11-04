@@ -59,7 +59,7 @@ public:
         const std::uint32_t& convex_indices_base,
         compute::ShaderBinary candidate,compute::ShaderBinary compact,
         compute::ShaderBinary epa,
-        compute::ShaderBinary convex_epa)
+        compute::ShaderBinary face_contacts)
         : context_(context),addresses_(addresses),stream_(stream),sc_(sc),
           transforms_(transforms),geometry_(geometry),
           convex_vertices_(convex_vertices),
@@ -71,7 +71,7 @@ public:
           candidates_stage_(context,std::move(candidate)),
           sparse_stage_(context,std::move(compact)),
           epa_stage_(context,std::move(epa)),
-          convex_epa_stage_(context,std::move(convex_epa)),
+          face_stage_(context,std::move(face_contacts)),
           pairs_(allocator,physx::PxsHeapStats::eNARROWPHASE),
           results_(allocator,physx::PxsHeapStats::eNARROWPHASE),
           candidates_(allocator,physx::PxsHeapStats::eNARROWPHASE),
@@ -235,8 +235,7 @@ public:
         sparse_stage_.append(stream_,addresses_,
             results_.getDevicePtr(),work_.getDevicePtr(),
             indirect_address_,pair_count);
-        auto& epa=convex_vertex_count_?convex_epa_stage_:epa_stage_;
-        epa.append(stream_,addresses_,
+        epa_stage_.append(stream_,addresses_,
             transforms_.getDevicePtr(),geometry_.getDevicePtr(),
             pairs_.getDevicePtr(),results_.getDevicePtr(),
             candidates_.getDevicePtr(),edges_.getDevicePtr(),
@@ -246,6 +245,17 @@ public:
             pair_count,shape_capacity,candidate_capacity,edge_capacity,
             convex_surface_.getDevicePtr(),convex_surface_bytes_,
             convex_faces_base_,convex_indices_base_);
+        if(convex_vertex_count_)
+            face_stage_.append(stream_,addresses_,
+                transforms_.getDevicePtr(),geometry_.getDevicePtr(),
+                pairs_.getDevicePtr(),results_.getDevicePtr(),
+                candidates_.getDevicePtr(),edges_.getDevicePtr(),
+                work_.getDevicePtr(),indirect_address_,
+                dense_contacts_.getDevicePtr(),
+                convex_vertices_.getDevicePtr(),convex_vertex_count_,
+                pair_count,shape_capacity,candidate_capacity,edge_capacity,
+                convex_surface_.getDevicePtr(),convex_surface_bytes_,
+                convex_faces_base_,convex_indices_base_);
 
         // Fetch the losslessly packed device stream, then reconstruct
         // Sc's original host record. The Dy shader reads the same device
@@ -333,7 +343,7 @@ private:
     const std::uint32_t& convex_indices_base_;
     SourcePcmBoxCandidatesNativeStage candidates_stage_;
     SourcePcmSparseEpaNativeStage sparse_stage_;
-    SourcePcmEpaNativeStage epa_stage_,convex_epa_stage_;
+    SourcePcmEpaNativeStage epa_stage_,face_stage_;
     physx::PxgCudaBuffer pairs_,results_,candidates_,edges_,work_,dense_contacts_;
     compute::BufferId indirect_buffer_=0u;
     CudaDeviceAddressMap::Address indirect_address_=0u;
