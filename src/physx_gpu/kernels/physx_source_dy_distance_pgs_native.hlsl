@@ -26,6 +26,10 @@ RWByteAddressBuffer scBounds : register(u3,space0);
 [[vk::binding(4,0)]]
 #endif
 RWByteAddressBuffer scGeometry : register(u4,space0);
+#ifdef __spirv__
+[[vk::binding(5,0)]]
+#endif
+RWByteAddressBuffer scHullVertices : register(u5,space0);
 
 struct Parameters {
     uint bodyBias, distanceBias, descriptorBias, partitionBias;
@@ -301,10 +305,30 @@ void integrateBody(uint ordinal) {
         const float4 localQuaternion=asfloat(scGeometry.Load4(geometryIndex+32u));
         const float3 center=nextPosition+sourceRigidRotate(nextQuaternion,localPosition);
         const float4 shapeQuaternion=kind==1u?float4(0,0,0,1):sourceRigidMultiply(nextQuaternion,localQuaternion);
-        const float3 worldExtents=kind==1u?halfExtents:sourceBoxHalfBounds(shapeQuaternion,halfExtents);
-        const float3 lower=center-worldExtents;
-        const float3 upper=center+worldExtents;
-        if(kind>1u || !all(isfinite(lower)) || !all(isfinite(upper)) ||
+        float3 lower,upper;
+        if(kind==2u) {
+            const uint vertexBias=arena.Load(p.integrationBias+36u);
+            const uint capacity=arena.Load(p.integrationBias+40u);
+            const uint first=scGeometry.Load(geometryIndex+52u);
+            const uint vertexCount=scGeometry.Load(geometryIndex+56u);
+            if(vertexCount<4u || first>capacity ||
+               vertexCount>capacity-first)return;
+            lower=float3(3.402823466e38f,3.402823466e38f,3.402823466e38f);
+            upper=-lower;
+            for(uint j=0u;j<vertexCount;++j) {
+                const float3 vertex=asfloat(scHullVertices.Load3(
+                    vertexBias+(first+j)*12u));
+                const float3 point=center+sourceRigidRotate(shapeQuaternion,vertex);
+                lower=min(lower,point);
+                upper=max(upper,point);
+            }
+        }else {
+            const float3 worldExtents=kind==1u?halfExtents:
+                sourceBoxHalfBounds(shapeQuaternion,halfExtents);
+            lower=center-worldExtents;
+            upper=center+worldExtents;
+        }
+        if(kind>2u || !all(isfinite(lower)) || !all(isfinite(upper)) ||
            !all(isfinite(shapeQuaternion)))return;
         const uint cache=views.x+element*32u;
         scTransforms.Store4(cache,asuint(shapeQuaternion));
