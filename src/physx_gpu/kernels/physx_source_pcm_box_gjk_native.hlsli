@@ -232,10 +232,13 @@ uint gjkBoxContinuation(GjkBoxPair pair,float contactDistance,
         for(uint j=0u;j<count;++j)
             if(support.ai==simplex[j].ai &&
                support.bi==simplex[j].bi) {
-                if(pointCore && projection>0.f) {
-                    GjkClosest current=gjkClosestSimplex(simplex,count);
-                    return current.mask!=0u && gjkContact(pair,current,witness) &&
-                           witness.separation<=contactDistance?1u:0u;
+                if(pointCore) {
+                    if(projection>0.f) {
+                        GjkClosest current=gjkClosestSimplex(simplex,count);
+                        return current.mask!=0u && gjkContact(pair,current,witness) &&
+                               witness.separation<=contactDistance?1u:0u;
+                    }
+                    return 3u;
                 }
                 return 0u;
             }
@@ -247,14 +250,17 @@ uint gjkBoxContinuation(GjkBoxPair pair,float contactDistance,
         float nextDist=sqrt(next.dist2);
         gjkCompact(simplex,count,next);
         if(nextDist>=previous) {
-            if(pointCore && projection>0.f)
-                return gjkContact(pair,next,witness) &&
-                       witness.separation<=contactDistance?1u:0u;
+            if(pointCore) {
+                if(projection>0.f)
+                    return gjkContact(pair,next,witness) &&
+                           witness.separation<=contactDistance?1u:0u;
+                return 3u;
+            }
             return 0u;
         }
         previous=nextDist;
     }
-    return 0u;
+    return pointCore && count>0u?3u:0u;
 }
 
 uint gjkBoxContinuation(GjkBoxPair pair,float contactDistance,
