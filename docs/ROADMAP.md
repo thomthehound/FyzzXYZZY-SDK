@@ -35,19 +35,19 @@ independently invented physics model.
 
 | Subsystem | Native implementation |
 | --- | --- |
-| Scene, lifecycle and tasks | Source-derived Sc/island/Dy scene and PGS task chains for a one-shape-per-actor rigid subset; full public scene semantics absent |
-| Geometry and cooking | Box and infinite plane; no general shape/actor graph, mesh cooking or full geometry dispatch |
+| Scene, lifecycle and tasks | Source-derived Sc/island/Dy scene and PGS task chains for compound rigid actors with independent shape lifetimes; full public scene semantics absent |
+| Geometry and cooking | Box and sphere attachments with local transforms; horizontal plane; mesh cooking and full geometry dispatch absent |
 | Broadphase | CPU SAP and persistent GPU AABB/SAP/aggregates on Vulkan and D3D12; scene admission remains bounded |
-| Narrowphase | CPU Gu PCM for box/box and plane/box; optional GPU Gu PCM box/box with GJK/EPA continuation and Sc contact publication |
+| Narrowphase | CPU Gu PCM for box, sphere and plane combinations; optional GPU Gu PCM box/box with GJK/EPA continuation and Sc contact publication |
 | Rigid solving | CPU PGS and explicit GPU Dy contact/distance preparation, partitions, correlated friction, solve and integration for the admitted subset; Sc still prepares and fetches host-visible streams |
 | Constraints | Limited center- and local-anchor distance constraints; general joints, TGS and CCD absent |
 | Articulations | No integrated articulation solver |
 | Nonrigid | No integrated deformable surface/volume or particle/fluid solver |
 | SDK entry | Native CPU explicit; native GPU via explicit factory/shader bundles; ordinary World default remains reference CPU where enabled |
 
-This is a functioning but narrow physics slice. The current hybrid readbacks,
-one-shape actor model and contact-manager admission are implementation
-boundaries, not acceptable general-engine architecture.
+The current hybrid readbacks and geometry/contact admission remain bounded.
+Broader geometry, joints and solver families are still required for general
+engine coverage.
 
 ## Immediate execution sequence
 
@@ -67,6 +67,17 @@ shapes; island nodes, mass/inertia and solver velocities key on bodies.
 Do not encode extra shapes as fake rigid bodies or use aggregate grouping
 as a substitute for compound actors.
 
+**Implemented:** independent box/sphere attachments, local transforms,
+materials, contact/rest offsets and simulation flags; shape-keyed contact
+managers; explicit combined center of mass and principal inertia; body-keyed
+PGS response, friction, distance constraints and kinematic targets. GPU Dy
+integration traverses persistent attachment links to publish every eligible
+shape’s device pose and bounds. Retirement and failed-frame recovery retain
+separate body and shape identities.
+
+**Remaining:** per-shape filter authoring and triggers, broader geometry and
+scene semantics, and representative hardware performance acceptance.
+
 **Acceptance:** an independently constructed native actor carries multiple
 shape elements with different local transforms. Shape additions, removals,
 filter changes and ID reuse preserve source Sc/Gu history and event identities.
@@ -77,7 +88,7 @@ and Dy paths across several frames, including rollback and retirement.
 
 ### 2. General geometry, cooking and collision dispatch
 
-Admit sphere and capsule, then convex geometry and cooked triangle meshes,
+Extend the admitted sphere geometry with capsule, convex geometry and cooked triangle meshes,
 heightfields and applicable signed-distance representations through the real
 geometry and collision pipeline. Use source-defined convex/support,
 GJK/EPA/SAT, PCM cache and mesh-contact algorithms, their pair dispatch,

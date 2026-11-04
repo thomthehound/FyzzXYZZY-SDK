@@ -60,6 +60,10 @@ void verify(Context& context,const char* shader) {
          {0.09539871f,0.19079742f,0.28619614f,0.93412376f},
          {0.5f,1.2f,2.3f},1.25f}
     }};
+    shapes[0].local_position[0]=0.75f;
+    shapes[0].local_position[1]=-0.25f;
+    shapes[0].local_orientation[2]=c;shapes[0].local_orientation[3]=c;
+    shapes[0].next_element=6u;
     constexpr std::uint32_t capacity=32u;
     constexpr Bounds unchanged{{-88.f,-77.f,-66.f},{88.f,77.f,66.f}};
     std::array<Bounds,capacity> bounds;
@@ -129,6 +133,15 @@ void verify(Context& context,const char* shader) {
                 require(near(transforms[index].position[i],
                              shapes[shape].position[i]),
                         "GPU source transform cache lost Sc translation");
+            require(geometry[index].next_element==shapes[shape].next_element &&
+                    geometry[index].geometry_kind==shapes[shape].geometry_kind,
+                    "GPU shape geometry lost its attachment link or type");
+            for(unsigned axis=0;axis<3u;++axis)
+                require(near(geometry[index].local_position[axis],shapes[shape].local_position[axis]),
+                        "GPU shape geometry lost its local translation");
+            for(unsigned axis=0;axis<4u;++axis)
+                require(near(geometry[index].local_orientation[axis],shapes[shape].local_orientation[axis]),
+                        "GPU shape geometry lost its local orientation");
             require(transforms[index].flags==0u,
                     "GPU source transform cache flags not initialized");
             for(unsigned axis=0;axis<3u;++axis)

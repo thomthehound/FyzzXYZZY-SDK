@@ -13,9 +13,11 @@ Godot 4.7 is the first target consumer and acceptance harness, **not a core
 dependency**. The SDK is intended to support Linux, Windows, native C++
 applications and other host engines.
 
-The native CPU scene implements an admitted box/plane rigid-body subset
-with source-derived SAP, PCM narrowphase, island/task ownership, Dy PGS
-dynamics, materials, constraints and contact reporting. This is not complete
+The native CPU scene implements box, sphere and horizontal-plane rigid
+geometry, including compound actors with independent shape attachments,
+local transforms and materials. Combined mass properties drive one body’s
+linear/angular response through source-derived SAP, PCM narrowphase,
+island/task ownership, Dy PGS dynamics, constraints and contact reporting. This is not complete
 PhysX CPU feature coverage.
 
 The native GPU World integrates source-derived AABB/SAP and aggregate
@@ -44,6 +46,22 @@ mode. The Godot adapter currently exercises native CPU execution.
 Both native GPU backends have reference-free SDK builds and device-executed
 conformance coverage. CI software Vulkan and Windows D3D12 WARP establish
 functional/API behavior, not representative hardware performance.
+
+Compound shapes use explicit attachment and mass authoring:
+
+```cpp
+fyzz::World world({.execution=fyzz::ExecutionMode::NativeCpu});
+const auto body=world.create_dynamic_body({{0,3,0},{}});
+const auto foot=world.attach_box_shape(body,{0.6f,0.2f,0.3f},{{0,-0.4f,0},{}});
+world.attach_sphere_shape(body,0.35f,{{0.5f,0.2f,0},{}});
+world.update_mass_properties(body,10.0f);
+world.step(1.0f/120.0f);
+```
+
+Attachment edits preserve body identity and require an explicit mass update
+when mass should change. Contact events include both body IDs and shape IDs.
+The GPU Dy integration task composes each attached shape’s local transform
+and publishes its device bounds and pose cache for the next broadphase.
 
 **[Current capabilities and implementation priorities](docs/ROADMAP.md)**
 is the authoritative roadmap. Older numbered migration and GPU execution

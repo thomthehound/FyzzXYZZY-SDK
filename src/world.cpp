@@ -45,6 +45,29 @@ void validate_orientation(Quat q) {
         throw std::invalid_argument("Rigid pose orientation is not sane");
 }
 
+Transform validated_transform(Transform pose) {
+    validate_position(pose.position);
+    validate_orientation(pose.orientation);
+    auto& q=pose.orientation;
+    const float length=std::sqrt(q.x*q.x+q.y*q.y+q.z*q.z+q.w*q.w);
+    q={q.x/length,q.y/length,q.z/length,q.w/length};
+    return pose;
+}
+void validate_material(Material material) {
+    if (!std::isfinite(material.static_friction) ||
+        !std::isfinite(material.dynamic_friction) ||
+        !std::isfinite(material.restitution) ||
+        !std::isfinite(material.damping) ||
+        material.static_friction<0.0f ||
+        material.dynamic_friction<0.0f ||
+        material.restitution>1.0f || material.damping<0.0f ||
+        static_cast<unsigned>(material.friction_combine)>3 ||
+        static_cast<unsigned>(material.restitution_combine)>3 ||
+        static_cast<unsigned>(material.damping_combine)>3)
+        throw std::invalid_argument(
+            "PhysX contact material coefficients/modes invalid");
+ }
+
 std::unique_ptr<WorldBackend> create_world_backend(WorldOptions options) {
     // Native PCM selectors are deliberately irrelevant to independent
     // PhysX reference execution. ReferencePhysXCpu retains eENABLE_PCM;
@@ -87,6 +110,46 @@ World::World(std::unique_ptr<WorldBackend> backend) : impl_(std::move(backend)) 
 World::~World() = default;
 World::World(World&&) noexcept = default;
 World& World::operator=(World&&) noexcept = default;
+
+BodyId World::create_static_body(Transform pose) {
+    return impl_->create_static_body(validated_transform(pose));
+}
+BodyId World::create_dynamic_body(Transform pose) {
+    return impl_->create_dynamic_body(validated_transform(pose));
+}
+ShapeId World::attach_box_shape(BodyId body,Vec3 half,Transform local) {
+    validate_half_extents(half);
+    return impl_->attach_box_shape(body,half,validated_transform(local));
+}
+ShapeId World::attach_sphere_shape(BodyId body,float radius,Transform local) {
+    if(!std::isfinite(radius) || radius<=0.0f)
+        throw std::invalid_argument("Sphere radius must be finite and positive");
+    return impl_->attach_sphere_shape(body,radius,validated_transform(local));
+}
+void World::detach_shape(ShapeId shape) {impl_->detach_shape(shape);}
+void World::set_shape_local_pose(ShapeId shape,Transform pose) {
+    impl_->set_shape_local_pose(shape,validated_transform(pose));
+}
+void World::set_shape_material(ShapeId shape,Material material) {
+    validate_material(material);
+    impl_->set_shape_material(shape,material);
+}
+void World::set_shape_simulation_enabled(ShapeId shape,bool enabled) {
+    impl_->set_shape_simulation_enabled(shape,enabled);
+}
+void World::set_shape_offsets(ShapeId shape,float contact,float rest) {
+    if(!std::isfinite(contact) || !std::isfinite(rest) || contact<0.0f || rest>=contact)
+        throw std::invalid_argument("Invalid contact/rest offsets");
+    impl_->set_shape_offsets(shape,contact,rest);
+}
+void World::update_mass_properties(BodyId body,float density) {
+    if(!std::isfinite(density) || density<=0.0f)
+        throw std::invalid_argument("Density must be finite and positive");
+    impl_->update_mass_properties(body,density);
+}
+BodyMassProperties World::body_mass_properties(BodyId body) const {
+    return impl_->body_mass_properties(body);
+}
 
 BodyId World::add_static_box(Vec3 half_extents, Vec3 position) {
     validate_half_extents(half_extents);
@@ -244,18 +307,7 @@ void World::clear_body_torque(BodyId id, ForceMode mode) {
     impl_->clear_body_torque(id,mode);
 }
 void World::set_body_material(BodyId id, Material material) {
-    if (!std::isfinite(material.static_friction) ||
-        !std::isfinite(material.dynamic_friction) ||
-        !std::isfinite(material.restitution) ||
-        !std::isfinite(material.damping) ||
-        material.static_friction<0.0f ||
-        material.dynamic_friction<0.0f ||
-        material.restitution>1.0f || material.damping<0.0f ||
-        static_cast<unsigned>(material.friction_combine)>3 ||
-        static_cast<unsigned>(material.restitution_combine)>3 ||
-        static_cast<unsigned>(material.damping_combine)>3)
-        throw std::invalid_argument(
-            "PhysX contact material coefficients/modes invalid");
+    validate_material(material);
     impl_->set_body_material(id,material);
 }
 

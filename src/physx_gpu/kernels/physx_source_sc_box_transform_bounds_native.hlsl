@@ -41,7 +41,7 @@ ConstantBuffer<Parameters> p : register(b0,space0);
 void main(uint3 thread : SV_DispatchThreadID) {
     if(thread.x>=p.shapeCount)return;
 
-    const uint base=p.shapesBias+thread.x*48u;
+    const uint base=p.shapesBias+thread.x*96u;
     const uint index=shapes.Load(base);
     const float3 center=asfloat(shapes.Load3(base+4u));
     const float4 q=asfloat(shapes.Load4(base+16u));
@@ -63,7 +63,10 @@ void main(uint3 thread : SV_DispatchThreadID) {
     transforms.Store3(cache+16u,asuint(center));
     transforms.Store(cache+28u,0u);
 
-    const uint geometryBase=p.geometryBias+index*16u;
+    const uint geometryBase=p.geometryBias+index*64u;
     geometry.Store3(geometryBase,asuint(e));
     geometry.Store(geometryBase+12u,asuint(contactDistance));
+    geometry.Store4(geometryBase+16u,shapes.Load4(base+48u));
+    geometry.Store4(geometryBase+32u,shapes.Load4(base+64u));
+    geometry.Store4(geometryBase+48u,shapes.Load4(base+80u));
 }

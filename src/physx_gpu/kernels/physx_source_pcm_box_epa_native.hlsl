@@ -80,7 +80,7 @@ void main(uint3 thread : SV_DispatchThreadID) {
     float3 pb=asfloat(transforms.Load3(tb+16u));
     float4 qa=asfloat(transforms.Load4(ta));
     float4 qb=asfloat(transforms.Load4(tb));
-    uint ga=p.geometryBias+a*16u,gb=p.geometryBias+b*16u;
+    uint ga=p.geometryBias+a*64u,gb=p.geometryBias+b*64u;
     GjkBoxPair boxPair;
     boxPair.halfA=asfloat(geometry.Load3(ga));
     boxPair.halfB=asfloat(geometry.Load3(gb));

@@ -433,6 +433,10 @@ public:
                input.source_element>=shape_capacity)
                 throw std::out_of_range(
                     "Source Dy integrated ElementSim handle exceeds AABB capacity");
+        for(const auto& input:integration)
+            if(input.active && (input.source_shape_count>shape_capacity ||
+               (input.source_element==empty_shape && input.source_shape_count)))
+                throw std::out_of_range("Source Dy attached shape span exceeds AABB capacity");
         std::array<std::uint32_t,4> shape_header{0u,0u,0u,shape_capacity};
         const auto bind_shape=[&](CudaDeviceAddressMap::Address source,
                                   std::uint32_t stride,std::uint32_t slot,
@@ -451,7 +455,7 @@ public:
             shape_bounds,24u,3u,compute::BufferAccess::ReadWrite,
             shape_header[1]));
         dispatch.buffers.push_back(bind_shape(
-            shape_geometry,16u,4u,compute::BufferAccess::Read,
+            shape_geometry,64u,4u,compute::BufferAccess::Read,
             shape_header[2]));
         std::memcpy(host_.data()+offsets[12],
                     shape_header.data(),sizeof(shape_header));

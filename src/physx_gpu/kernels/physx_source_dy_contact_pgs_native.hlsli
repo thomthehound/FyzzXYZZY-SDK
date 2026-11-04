@@ -184,7 +184,7 @@ float3 prepSlop(float3 value,float slop) {
 uint prepBodyOffset(uint source,uint offset) {
     if((source&1u)==0u)return p.prepBias+source+offset;
     uint ordinal=source>>1u;
-    uint base=p.integrationBias+16u+ordinal*104u;
+    uint base=p.integrationBias+16u+ordinal*136u;
     if(offset==12u)return base+28u;
     if(offset==24u)return base+40u;
     if(offset>=36u && offset<=60u)return base+offset+16u;

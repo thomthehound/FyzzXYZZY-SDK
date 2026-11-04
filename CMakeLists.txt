@@ -115,6 +115,7 @@ endif()
 add_library(fyzzxyzzy_core STATIC
   src/world.cpp
   src/native/scene.cpp
+  src/native/compound.cpp
   src/native/GuContactBoxBox.cpp
   src/native/GuPCMContactBoxBox.cpp
   src/native/GuPCMContactSphere.cpp
@@ -125,7 +126,7 @@ target_link_libraries(fyzzxyzzy_core PUBLIC Threads::Threads)
 target_include_directories(fyzzxyzzy_core PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
 )
-target_include_directories(fyzzxyzzy_core PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
+target_include_directories(fyzzxyzzy_core PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src" "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_port")
 target_compile_definitions(fyzzxyzzy_core PRIVATE
   FYZZXYZZY_ENABLE_PHYSX_SOURCE=$<BOOL:${FYZZXYZZY_ENABLE_PHYSX_SOURCE}>)
 if(FYZZXYZZY_ENABLE_PHYSX_SOURCE)
@@ -161,6 +162,12 @@ if(BUILD_TESTING AND NOT FYZZXYZZY_ENABLE_PHYSX_SOURCE)
 endif()
 
 if(BUILD_TESTING)
+  add_executable(fyzzxyzzy_compound_rigid_smoke tests/compound_rigid_smoke.cpp)
+  target_link_libraries(fyzzxyzzy_compound_rigid_smoke PRIVATE FyzzXYZZY::Core)
+  target_compile_definitions(fyzzxyzzy_compound_rigid_smoke PRIVATE
+    FYZZXYZZY_ENABLE_PHYSX_SOURCE=$<BOOL:${FYZZXYZZY_ENABLE_PHYSX_SOURCE}>)
+  add_test(NAME fyzzxyzzy_compound_rigid_smoke COMMAND fyzzxyzzy_compound_rigid_smoke)
+
   add_executable(fyzzxyzzy_native_scene_smoke tests/native_scene_smoke.cpp)
   target_include_directories(fyzzxyzzy_native_scene_smoke PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}/src")
@@ -294,6 +301,9 @@ target_include_directories(fyzzxyzzy_physx_source_foundation
   PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_port"
   PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_port/foundation_source")
 target_link_libraries(fyzzxyzzy_physx_source_foundation PUBLIC Threads::Threads)
+if(NOT FYZZXYZZY_ENABLE_PHYSX_SOURCE)
+  target_link_libraries(fyzzxyzzy_core PRIVATE fyzzxyzzy_physx_source_foundation)
+endif()
 
 add_library(fyzzxyzzy_physx_original_gpu_heap STATIC
   src/physx_port/gpucommon/PxgHeapMemoryAllocator.cpp

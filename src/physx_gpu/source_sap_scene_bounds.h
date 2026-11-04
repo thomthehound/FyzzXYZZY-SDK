@@ -63,7 +63,7 @@ struct SourceSapSceneFrameChanges {
     std::span<const physx::PxU32> changed_bitmap_words{};
 };
 
-// Translates one shape per presently admitted native rigid actor into the
+// Translates independently attached native shapes into the
 // original PxBounds3/FilterGroup representation used by preBroadPhase().
 // The caller supplies the live source volume handles in the same order as
 // boxes, and retains a scratch vector across frames. All inputs and handle
@@ -200,11 +200,7 @@ inline void write_source_sap_scene_bounds(
             if(cached_poses && cached_poses->reuse(b.id))
                 ++cached_poses->reused_records;
             else
-                gpu_records->push_back({handle,
-                    {b.position.x,b.position.y,b.position.z},
-                    {b.orientation.x,b.orientation.y,b.orientation.z,b.orientation.w},
-                    {b.half_extents.x,b.half_extents.y,b.half_extents.z},
-                    b.contact_offset});
+                gpu_records->push_back(source_shape_transform_input(b,handle));
         }else {
             output.bounds[handle]=scratch.prepared_bounds[i];
         }

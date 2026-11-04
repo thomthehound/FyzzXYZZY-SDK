@@ -177,6 +177,14 @@ public:
         require_scene_elements().set_motion(actor,motion);
     }
 
+    void retain_rigid_actor(BodyId body) override {require_scene_elements().retain_actor(body);}
+    void release_rigid_actor(BodyId body) override {require_scene_elements().release_actor(body);}
+    void admit_plane_element(ShapeId shape,BodyId body) override {require_scene_elements().admit_plane(shape,body);}
+    void admit_aggregate_shape(AggregateId aggregate,ShapeId shape,BodyId body,
+                              native::GpuBroadphaseBox::Motion motion,float offset) override {
+        handles_dirty_=true;
+        require_scene_elements().admit_aggregate_shape(aggregate,shape,body,motion,offset);
+    }
     void admit_shape(BodyId actor,
         native::GpuBroadphaseBox::Motion motion,float contact_distance) override {
         handles_dirty_=true;
@@ -184,7 +192,7 @@ public:
     }
     void admit_shape_element(
         ShapeId shape,BodyId actor,
-        native::GpuBroadphaseBox::Motion motion,float contact_distance) {
+        native::GpuBroadphaseBox::Motion motion,float contact_distance) override {
         handles_dirty_=true;
         require_scene_elements().admit_shape(
             shape,actor,motion,contact_distance);

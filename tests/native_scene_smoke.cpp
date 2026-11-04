@@ -788,7 +788,7 @@ struct SourceSapEndpointFixture {
                 throw std::runtime_error(
                     "SAP activity pocket failed to restore its sentinel");
         }
-        const auto& actors=scene.actors_;
+        const auto& actors=scene.shapes_;
         std::vector<std::array<unsigned,2>> counts(actors.size());
         std::size_t admitted=0;
         for(const auto& actor:actors)
@@ -1021,8 +1021,8 @@ struct SourceSapEndpointFixture {
                 "SAP hash not synchronized with completed publication");
         std::vector<Pair> expected;
         for(const auto pair:scene.pairs())
-            if(scene.actors_[pair.a].geometry!=Scene::Geometry::Plane &&
-               scene.actors_[pair.b].geometry!=Scene::Geometry::Plane)
+            if(scene.shapes_[pair.a].geometry!=Scene::Geometry::Plane &&
+               scene.shapes_[pair.b].geometry!=Scene::Geometry::Plane)
                 expected.push_back(pair);
         auto actual=scene.sap_pairs_.active_pairs;
         std::sort(actual.begin(),actual.end());
@@ -1065,11 +1065,11 @@ struct SourceSapEndpointFixture {
         std::vector<Pair> previous;
         const auto verify_pairs=[&]() {
             std::vector<Pair> expected;
-            for(std::size_t i=0;i<scene.actors_.size();++i) {
-                const auto& a=scene.actors_[i];
+            for(std::size_t i=0;i<scene.shapes_.size();++i) {
+                const auto& a=scene.shapes_[i];
                 if(!a.alive || !a.simulation_shape_enabled)continue;
-                for(std::size_t j=i+1;j<scene.actors_.size();++j) {
-                    const auto& c=scene.actors_[j];
+                for(std::size_t j=i+1;j<scene.shapes_.size();++j) {
+                    const auto& c=scene.shapes_[j];
                     if(!c.alive || !c.simulation_shape_enabled ||
                        (a.motion!=Scene::Motion::Dynamic &&
                         c.motion!=Scene::Motion::Dynamic))continue;
@@ -1178,10 +1178,10 @@ struct SourceSapEndpointFixture {
             check(scene);
             check_pair_registry(scene);
             std::vector<Pair> expected;
-            for(BodyId i=0;i<scene.actors_.size();++i)
-                for(BodyId j=i+1;j<scene.actors_.size();++j) {
-                    const auto& a=scene.actors_[i];
-                    const auto& b=scene.actors_[j];
+            for(BodyId i=0;i<scene.shapes_.size();++i)
+                for(BodyId j=i+1;j<scene.shapes_.size();++j) {
+                    const auto& a=scene.shapes_[i];
+                    const auto& b=scene.shapes_[j];
                     if(a.motion!=Scene::Motion::Dynamic &&
                        b.motion!=Scene::Motion::Dynamic)continue;
                     const auto& aa=a.encoded_bounds;
@@ -1339,8 +1339,8 @@ struct SourceSapEndpointFixture {
             std::vector<Pair> expected;
             for(BodyId i=0;i<fixed+moving;++i)
                 for(BodyId j=i+1;j<fixed+moving;++j) {
-                    const auto& a=scene.actors_[i];
-                    const auto& b=scene.actors_[j];
+                    const auto& a=scene.shapes_[i];
+                    const auto& b=scene.shapes_[j];
                     if(a.motion!=Scene::Motion::Dynamic &&
                        b.motion!=Scene::Motion::Dynamic)continue;
                     const auto& x=a.encoded_bounds;
@@ -1505,10 +1505,10 @@ struct SourceSapEndpointFixture {
             check(scene);
             check_pair_registry(scene);
             std::vector<Pair> expected;
-            for(BodyId i=0;i<scene.actors_.size();++i)
-                for(BodyId j=i+1;j<scene.actors_.size();++j) {
-                    const auto& a=scene.actors_[i];
-                    const auto& b=scene.actors_[j];
+            for(BodyId i=0;i<scene.shapes_.size();++i)
+                for(BodyId j=i+1;j<scene.shapes_.size();++j) {
+                    const auto& a=scene.shapes_[i];
+                    const auto& b=scene.shapes_[j];
                     if(a.motion!=Scene::Motion::Dynamic &&
                        b.motion!=Scene::Motion::Dynamic)continue;
                     const auto& aa=a.encoded_bounds;
@@ -2553,7 +2553,7 @@ struct ConstraintIslandSourceFixture {
         scene.advance_collision();
         const auto original=scene.body_state(sleeper);
         const auto control=scene.body_state(awake);
-        const auto old_bounds=scene.actors_[sleeper].encoded_bounds;
+        const auto old_bounds=scene.shapes_[scene.actors_[sleeper].first_shape].encoded_bounds;
         scene.step_checkpoint_.capture(scene);
         ++scene.rigid_integration_generation_;
         scene.remember_pre_integration_pose(sleeper);
@@ -2597,8 +2597,8 @@ struct ConstraintIslandSourceFixture {
            restored.orientation.w!=original.orientation.w ||
            restored.velocity.x!=0 || restored.velocity.y!=0 ||
            restored.angular_velocity.y!=0 ||
-           !scene.actors_[sleeper].cached_bounds_current ||
-           scene.actors_[sleeper].encoded_bounds!=old_bounds ||
+           !scene.shapes_[scene.actors_[sleeper].first_shape].cached_bounds_current ||
+           scene.shapes_[scene.actors_[sleeper].first_shape].encoded_bounds!=old_bounds ||
            scene.actors_[sleeper].wake_counter!=0 ||
            !scene.actors_[sleeper].ready_for_sleep ||
            unaffected.position.x!=6.25f ||
@@ -3626,7 +3626,7 @@ struct ContactCorrelationSourceFixture {
         const auto kin_pose=scene.body_state(b).position;
         scene.step(1.0f/120.0f);
         if(scene.actors_[b].motion!=Scene::Motion::Kinematic ||
-           scene.actors_[b].geometry!=Scene::Geometry::Box ||
+           scene.shapes_[scene.actors_[b].first_shape].geometry!=Scene::Geometry::Box ||
            scene.accurate_islands_.node_island[b]!=
                Scene::IslandGraph::invalid ||
            scene.accurate_island_count()!=1 ||
@@ -3645,7 +3645,7 @@ struct ContactCorrelationSourceFixture {
         scene.set_kinematic(b,false);
         scene.step(1.0f/120.0f);
         if(scene.actors_[b].motion!=Scene::Motion::Dynamic ||
-           scene.actors_[b].geometry!=Scene::Geometry::Box ||
+           scene.shapes_[scene.actors_[b].first_shape].geometry!=Scene::Geometry::Box ||
            scene.accurate_islands_.node_island[b]==
                Scene::IslandGraph::invalid ||
            scene.accurate_island_count()!=1)
@@ -3691,7 +3691,8 @@ struct ContactCorrelationSourceFixture {
         // during authoring, obscuring this island ordering requirement.
         auto& moved=scene.actors_[upper];
         moved.position.x=4.0f;
-        moved.cached_bounds_current=false;
+        scene.refresh_shape_pose(scene.shapes_[moved.first_shape]);
+        scene.shapes_[moved.first_shape].cached_bounds_current=false;
         scene.dirty_=true;
         scene.advance_collision(true);
         if(scene.body_is_sleeping(lower) ||
@@ -3941,7 +3942,8 @@ struct ContactCorrelationSourceFixture {
             const auto frame=scene.frame_index();
             auto& body=scene.actors_[moving];
             body.position.x+=0.125f;
-            body.cached_bounds_current=false;
+            scene.refresh_shape_pose(scene.shapes_[body.first_shape]);
+            scene.shapes_[body.first_shape].cached_bounds_current=false;
             scene.dirty_=true;
             bool rejected=false;
             try {
@@ -4392,7 +4394,7 @@ struct ContactCorrelationSourceFixture {
         // does not invoke authored-pose cache invalidation.
         const auto saved=cache.relative_position;
         scene.actors_[dynamic].position.x=0.003f;
-        scene.actors_[dynamic].cached_bounds_current=false;
+        scene.shapes_[scene.actors_[dynamic].first_shape].cached_bounds_current=false;
         scene.dirty_=true;
         scene.advance_collision(true);
         if(scene.contacts().size()!=1 ||
@@ -4570,7 +4572,7 @@ struct ContactCorrelationSourceFixture {
         // in this native-source fixture; the cached B point must remain
         // anchored in plane coordinates across a small motion.
         scene.actors_[box].position.x=0.008f;
-        scene.actors_[box].cached_bounds_current=false;
+        scene.shapes_[scene.actors_[box].first_shape].cached_bounds_current=false;
         scene.dirty_=true;
         scene.advance_collision(true);
         if(scene.contacts().size()!=1 ||
@@ -4594,7 +4596,7 @@ struct ContactCorrelationSourceFixture {
         const float theta=0.14f;
         scene.actors_[box].orientation={
             0,0,std::sin(theta/2),std::cos(theta/2)};
-        scene.actors_[box].cached_bounds_current=false;
+        scene.shapes_[scene.actors_[box].first_shape].cached_bounds_current=false;
         scene.dirty_=true;
         scene.advance_collision(true);
         if(scene.contacts().empty() ||
@@ -4934,41 +4936,41 @@ struct ContactCorrelationSourceFixture {
         const auto box=scene.add_dynamic_box(
             {0.5f,0.5f,0.5f},{0,10,0},1.0f);
         scene.advance_collision(true);
-        const auto before=scene.actors_[box].encoded_bounds;
-        if(!scene.actors_[box].cached_bounds_current)
+        const auto before=scene.shapes_[scene.actors_[box].first_shape].encoded_bounds;
+        if(!scene.shapes_[scene.actors_[box].first_shape].cached_bounds_current)
             throw std::runtime_error(
                 "Sc initial Gu bounds were not cached for rigid actor");
         scene.step(1.0f/60.0f);
-        const auto integrated=scene.actors_[box].encoded_bounds;
-        if(!scene.actors_[box].cached_bounds_current ||
+        const auto integrated=scene.shapes_[scene.actors_[box].first_shape].encoded_bounds;
+        if(!scene.shapes_[scene.actors_[box].first_shape].cached_bounds_current ||
            integrated==before ||
            scene.solved_result_frame()!=scene.frame_index())
             throw std::runtime_error(
                 "Sc afterIntegration did not publish integrated shape bounds");
         scene.advance_collision(true);
-        if(scene.actors_[box].encoded_bounds!=integrated ||
-           !scene.actors_[box].cached_bounds_current)
+        if(scene.shapes_[scene.actors_[box].first_shape].encoded_bounds!=integrated ||
+           !scene.shapes_[scene.actors_[box].first_shape].cached_bounds_current)
             throw std::runtime_error(
                 "SAP recomputed or changed an already published integrated AABB");
         // Explicit shape pose and contact-offset edits invalidate the
         // cache, without requiring a separate shape/bounds owner.
         scene.set_position(box,{0,8,0});
-        if(scene.actors_[box].cached_bounds_current)
+        if(scene.shapes_[scene.actors_[box].first_shape].cached_bounds_current)
             throw std::runtime_error(
                 "Authored shape pose failed to invalidate Sc cached bounds");
         scene.advance_collision(true);
-        const auto moved=scene.actors_[box].encoded_bounds;
+        const auto moved=scene.shapes_[scene.actors_[box].first_shape].encoded_bounds;
         if(moved==integrated ||
-           !scene.actors_[box].cached_bounds_current)
+           !scene.shapes_[scene.actors_[box].first_shape].cached_bounds_current)
             throw std::runtime_error(
                 "Gu broadphase ignored an authored shape relocation");
         scene.set_shape_offsets(box,0.15f,0.0f);
-        if(scene.actors_[box].cached_bounds_current)
+        if(scene.shapes_[scene.actors_[box].first_shape].cached_bounds_current)
             throw std::runtime_error(
                 "Authored contact offset failed to invalidate Sc shape bounds");
         scene.advance_collision(true);
-        if(scene.actors_[box].encoded_bounds==moved ||
-           !scene.actors_[box].cached_bounds_current)
+        if(scene.shapes_[scene.actors_[box].first_shape].encoded_bounds==moved ||
+           !scene.shapes_[scene.actors_[box].first_shape].cached_bounds_current)
             throw std::runtime_error(
                 "Gu cached bounds omitted the new shape contact offset");
     }

@@ -189,92 +189,158 @@ T source_hop_pop(std::vector<T>& heap, HigherPriority higher) {
 }
 } // namespace
 
-BodyId Scene::add(Actor actor,std::optional<AggregateId> aggregate) {
-    if(actor.geometry==Geometry::Plane && actor.motion!=Motion::Static)
-        throw std::invalid_argument("Native plane geometry requires static motion");
-    if (actors_.size() >= std::numeric_limits<BodyId>::max())
+BodyId Scene::add(Actor actor) {
+    if(actors_.size()>=std::numeric_limits<BodyId>::max())
         throw std::overflow_error("Native scene body identifier exhausted");
-    const auto id = static_cast<BodyId>(actors_.size());
-    // Edge publications are noexcept: preallocate one kinematic slot
-    // for every possible actor before making this admission visible.
+    const BodyId id=static_cast<BodyId>(actors_.size());
     for(auto* graph:{&speculative_islands_,&accurate_islands_}) {
         graph->active_kinematic_nodes.reserve(actors_.size()+1);
-        graph->active_kinematic_index.resize(
-            actors_.size()+1,invalid_instance);
+        graph->active_kinematic_index.resize(actors_.size()+1,invalid_instance);
     }
-    actor.alive = true;
-    const bool dynamic_node=actor.motion==Motion::Dynamic;
-    // Reserve the compact, live broadphase proxy list before publishing
-    // the actor. Retired IDs never enlarge SAP work on future frames.
-    if(live_actor_ids_.size()==live_actor_ids_.capacity()) {
-        const auto capacity=live_actor_ids_.capacity();
-        live_actor_ids_.reserve(capacity+
-            std::max<std::size_t>(capacity,8));
-    }
-    // Native storage must not reallocate after original Sc ID admission.
-    if(actors_.size()==actors_.capacity()) {
-        const auto capacity=actors_.capacity();
-        actors_.reserve(capacity+std::max<std::size_t>(capacity,8));
-    }
-    if(aggregate && !gpu_broadphase_)
-        throw std::logic_error(
-            "Original PhysX aggregate authoring requires native GPU AABB owner");
-    // Infinite planes have no finite PxgIntegerAABB. Their Sc contact
-    // managers are admitted separately from GPU-owned finite BP reports.
-    if(gpu_broadphase_) {
-        if(actor.geometry==Geometry::Plane)
-            gpu_broadphase_->admit_plane(id);
-        else {
-            const auto motion=actor.motion==Motion::Static
-                ? GpuBroadphaseBox::Motion::Static
-                : actor.motion==Motion::Kinematic
-                    ? GpuBroadphaseBox::Motion::Kinematic
-                    : GpuBroadphaseBox::Motion::Dynamic;
-            if(aggregate)
-                gpu_broadphase_->admit_aggregate_member(
-                    *aggregate,id,motion,actor.contact_offset);
-            else
-                gpu_broadphase_->admit_shape(id,motion,actor.contact_offset);
-            if(actor.geometry==Geometry::Sphere)
-                gpu_broadphase_->set_device_shape_pose_cache_enabled(id,false);
-        }
-    }
+    if(actors_.size()==actors_.capacity())
+        actors_.reserve(actors_.capacity()+std::max<std::size_t>(actors_.capacity(),8));
+    if(gpu_broadphase_)gpu_broadphase_->retain_rigid_actor(id);
+    actor.alive=true;
     actors_.push_back(actor);
-    if(actor.geometry!=Geometry::Plane)
-        gpu_broadphase_snapshot_current_=false;
-    if(actor.geometry==Geometry::Plane) {
-        if(actor.simulation_shape_enabled)++active_plane_count_;
-        if(gpu_broadphase_)plane_pair_membership_dirty_=true;
-    } else if(gpu_broadphase_ && active_plane_count_ &&
-              actor.motion==Motion::Dynamic)
-        plane_pair_membership_dirty_=true;
-    live_actor_ids_.push_back(id);
-    broadphase_endpoint_membership_dirty_=true;
-    if(dynamic_node)++live_dynamic_count_;
-    dirty_ = true;
-    // Static nodes belong to the shared world endpoint, not an island.
-    // Their insertion changes SAP/Gu edges but not dynamic connectivity.
-    island_topology_dirty_ |= dynamic_node;
+    if(actor.motion==Motion::Dynamic)++live_dynamic_count_;
+    island_topology_dirty_|=actor.motion==Motion::Dynamic;
+    dirty_=true;
     return id;
+}
+ShapeId Scene::attach(BodyId body,Shape shape,std::optional<AggregateId> aggregate) {
+    auto& actor=require(body);
+    if(shapes_.size()>=invalid_shape)
+        throw std::overflow_error("Native scene shape identifier exhausted");
+    const ShapeId id=static_cast<ShapeId>(shapes_.size());
+    if(shapes_.size()==shapes_.capacity())
+        shapes_.reserve(shapes_.capacity()+std::max<std::size_t>(shapes_.capacity(),8));
+    if(live_shape_ids_.size()==live_shape_ids_.capacity())
+        live_shape_ids_.reserve(live_shape_ids_.capacity()+std::max<std::size_t>(live_shape_ids_.capacity(),8));
+    shape.local_pose=validated_pose(shape.local_pose);
+    shape.aggregate=aggregate;
+    shape.body=body;
+    shape.motion=actor.motion;
+    shape.alive=true;
+    shape.device_cache_supported=!aggregate.has_value();
+    refresh_shape_pose(shape);
+    if(aggregate && !gpu_broadphase_)
+        throw std::logic_error("Aggregate requires native GPU AABB owner");
+    if(gpu_broadphase_) {
+        const auto motion=actor.motion==Motion::Static
+            ? GpuBroadphaseBox::Motion::Static
+            : actor.motion==Motion::Kinematic ? GpuBroadphaseBox::Motion::Kinematic
+                                             : GpuBroadphaseBox::Motion::Dynamic;
+        if(shape.geometry==Geometry::Plane)
+            gpu_broadphase_->admit_plane_element(id,body);
+        else if(aggregate)
+            gpu_broadphase_->admit_aggregate_shape(*aggregate,id,body,motion,shape.contact_offset);
+        else gpu_broadphase_->admit_shape_element(id,body,motion,shape.contact_offset);
+    }
+    shape.next=actor.first_shape;
+    if(actor.first_shape!=invalid_shape)shapes_[actor.first_shape].previous=id;
+    actor.first_shape=id;
+    ++actor.shape_count;
+    if(rigid_node(actor.motion))++rigid_shape_count_;
+    shapes_.push_back(shape);
+    live_shape_ids_.push_back(id);
+    refresh_shape_links(body);
+    if(shape.geometry==Geometry::Plane)++active_plane_count_;
+    gpu_broadphase_snapshot_current_=false;
+    plane_pair_membership_dirty_=true;
+    broadphase_endpoint_membership_dirty_=true;
+    dirty_=true;
+    return id;
+}
+BodyId Scene::create_body(Transform pose,bool dynamic) {
+    pose=validated_pose(pose);
+    Actor actor;
+    actor.motion=dynamic?Motion::Dynamic:Motion::Static;
+    actor.position=pose.position;
+    actor.orientation=pose.orientation;
+    if(dynamic) {
+        actor.inverse_mass=1.0f;
+        actor.inverse_inertia_local={1.0f,1.0f,1.0f};
+        actor.angular_inertia_available=true;
+    }
+    return add(actor);
+}
+ShapeId Scene::attach_box(BodyId body,Vec3 h,Transform pose) {
+    validate_box(h,pose.position);
+    Shape shape;
+    shape.half_extents=h;
+    shape.local_pose=pose;
+    return attach(body,shape);
+}
+ShapeId Scene::attach_sphere(BodyId body,float radius,Transform pose) {
+    if(!std::isfinite(radius) || radius<=0.0f || !finite(pose.position))
+        throw std::invalid_argument("Sphere geometry invalid");
+    Shape shape;
+    shape.geometry=Geometry::Sphere;
+    shape.radius=radius;
+    shape.local_pose=pose;
+    return attach(body,shape);
+}
+Scene::Shape& Scene::require_shape(ShapeId id) {
+    if(id>=shapes_.size() || !shapes_[id].alive)
+        throw std::out_of_range("Unknown or retired native shape ID");
+    return shapes_[id];
+}
+const Scene::Shape& Scene::require_shape(ShapeId id) const {
+    if(id>=shapes_.size() || !shapes_[id].alive)
+        throw std::out_of_range("Unknown or retired native shape ID");
+    return shapes_[id];
+}
+Pair Scene::body_pair(Pair pair) const noexcept {
+    return {shapes_[pair.a].body,shapes_[pair.b].body};
+}
+Vec3 Scene::mass_position(const Actor& actor) const noexcept {
+    const Vec3 p=rotate(actor.orientation,actor.mass_local_pose.position);
+    return {actor.position.x+p.x,actor.position.y+p.y,actor.position.z+p.z};
+}
+Quat Scene::mass_orientation(const Actor& actor) const noexcept {
+    return multiply(actor.orientation,actor.mass_local_pose.orientation);
+}
+void Scene::refresh_shape_pose(Shape& shape) noexcept {
+    const auto& actor=actors_[shape.body];
+    const Vec3 p=rotate(actor.orientation,shape.local_pose.position);
+    shape.position={actor.position.x+p.x,actor.position.y+p.y,actor.position.z+p.z};
+    shape.orientation=multiply(actor.orientation,shape.local_pose.orientation);
+}
+void Scene::invalidate_body_shapes(BodyId body) {
+    for(ShapeId id=actors_[body].first_shape;id!=invalid_shape;id=shapes_[id].next) {
+        auto& shape=shapes_[id];
+        if(gpu_broadphase_ && shape.geometry!=Geometry::Plane && shape.simulation_shape_enabled)
+            gpu_broadphase_->mark_shape_bounds_changed(id,shape.contact_offset);
+        refresh_shape_pose(shape);
+        shape.cached_bounds_current=false;
+    }
+    gpu_broadphase_snapshot_current_=false;
+    dirty_=true;
 }
 BodyId Scene::add_static_box(
     Vec3 h,Vec3 p,std::optional<AggregateId> aggregate) {
     validate_box(h, p);
     Actor a;
+    Shape shape;
     a.motion = Motion::Static;
-    a.geometry = Geometry::Box;
-    a.half_extents = h;
+    shape.geometry = Geometry::Box;
+    shape.half_extents = h;
     a.position = p;
-    return add(a,aggregate);
+    const BodyId id=add(a);
+    try {attach(id,shape,aggregate);} catch(...) {remove(id); throw;}
+    return id;
 }
 BodyId Scene::add_static_floor(float height) {
     if (!std::isfinite(height))
         throw std::invalid_argument("Native scene floor must be finite");
     Actor a;
+    Shape shape;
     a.motion = Motion::Static;
-    a.geometry = Geometry::Plane;
+    shape.geometry = Geometry::Plane;
     a.position = {0.0f, height, 0.0f};
-    return add(a);
+    const BodyId id=add(a);
+    try {attach(id,shape);} catch(...) {remove(id); throw;}
+    return id;
 }
 BodyId Scene::add_dynamic_box(
     Vec3 h,Vec3 p,float density,std::optional<AggregateId> aggregate) {
@@ -282,9 +348,10 @@ BodyId Scene::add_dynamic_box(
     if (!std::isfinite(density) || density <= 0.0f)
         throw std::invalid_argument("Native scene density must be finite and positive");
     Actor a;
+    Shape shape;
     a.motion = Motion::Dynamic;
-    a.geometry = Geometry::Box;
-    a.half_extents = h;
+    shape.geometry = Geometry::Box;
+    shape.half_extents = h;
     a.position = p;
     a.density = density;
     // Cache source-derived inverse mass once, with a checked double
@@ -338,7 +405,9 @@ BodyId Scene::add_dynamic_box(
     // Keep the pre-existing tiny-mass TRANSLATION stress case admitted.
     // It is not an angular-body admission and must not silently run
     // with zero/infinite substitute inertia in the actual source solver.
-    return add(a,aggregate);
+    const BodyId id=add(a);
+    try {attach(id,shape,aggregate);} catch(...) {remove(id); throw;}
+    return id;
 }
 
 BodyId Scene::add_static_sphere(
@@ -346,11 +415,14 @@ BodyId Scene::add_static_sphere(
     if(!std::isfinite(radius) || !(radius>0.0f) || !finite(position))
         throw std::invalid_argument("Sphere radius and position must be finite and valid");
     Actor actor;
+    Shape shape;
     actor.motion=Motion::Static;
-    actor.geometry=Geometry::Sphere;
-    actor.radius=radius;
+    shape.geometry=Geometry::Sphere;
+    shape.radius=radius;
     actor.position=position;
-    return add(actor,aggregate);
+    const BodyId id=add(actor);
+    try {attach(id,shape,aggregate);} catch(...) {remove(id); throw;}
+    return id;
 }
 BodyId Scene::add_dynamic_sphere(
     float radius,Vec3 position,float density,
@@ -367,9 +439,10 @@ BodyId Scene::add_dynamic_sphere(
        static_cast<float>(inverse_mass)==0.0f)
         throw std::invalid_argument("Sphere mass outside supported range");
     Actor actor;
+    Shape shape;
     actor.motion=Motion::Dynamic;
-    actor.geometry=Geometry::Sphere;
-    actor.radius=radius;
+    shape.geometry=Geometry::Sphere;
+    shape.radius=radius;
     actor.position=position;
     actor.density=density;
     actor.inverse_mass=static_cast<float>(inverse_mass);
@@ -383,7 +456,9 @@ BodyId Scene::add_dynamic_sphere(
         actor.inverse_inertia_local={inv,inv,inv};
         actor.angular_inertia_available=true;
     }
-    return add(actor,aggregate);
+    const BodyId id=add(actor);
+    try {attach(id,shape,aggregate);} catch(...) {remove(id); throw;}
+    return id;
 }
 
 AggregateId Scene::create_aggregate(
@@ -400,6 +475,16 @@ void Scene::destroy_aggregate(AggregateId id) {
         throw std::logic_error(
             "Original PhysX aggregate requires native GPU broadphase");
     gpu_broadphase_->destroy_aggregate(id);
+    for(BodyId body=0;body<actors_.size();++body) {
+        bool changed=false;
+        for(ShapeId shape=actors_[body].first_shape;shape!=invalid_shape;shape=shapes_[shape].next)
+            if(shapes_[shape].aggregate==id) {
+                shapes_[shape].aggregate.reset();shapes_[shape].device_cache_supported=true;
+                changed=true;
+            }
+        if(changed)refresh_shape_links(body);
+    }
+    gpu_broadphase_snapshot_current_=false;
     gpu_pair_refilter_dirty_=true;
     broadphase_endpoint_membership_dirty_=true;
     dirty_=true;
@@ -409,7 +494,16 @@ void Scene::remove_actor_from_aggregate(AggregateId aggregate,BodyId id) {
     if(!gpu_broadphase_)
         throw std::logic_error(
             "Original PhysX aggregate requires native GPU broadphase");
-    gpu_broadphase_->remove_actor_from_aggregate(aggregate,id);
+    bool removed=false;
+    for(ShapeId shape=actors_[id].first_shape;shape!=invalid_shape;shape=shapes_[shape].next)
+        if(shapes_[shape].aggregate==aggregate) {
+            gpu_broadphase_->remove_actor_from_aggregate(aggregate,shape);
+            shapes_[shape].aggregate.reset();shapes_[shape].device_cache_supported=true;
+            removed=true;
+        }
+    if(!removed)throw std::invalid_argument("Body is not attached to aggregate");
+    refresh_shape_links(id);
+    gpu_broadphase_snapshot_current_=false;
     gpu_pair_refilter_dirty_=true;
     broadphase_endpoint_membership_dirty_=true;
     dirty_=true;
@@ -452,7 +546,8 @@ void Scene::set_pose(BodyId id, Vec3 position, Quat orientation) {
         normalized=actor.orientation;
     // The admitted plane's world normal is fixed to +Y; rotated
     // planes require the still-unported general plane pose geometry.
-    if(actor.geometry==Geometry::Plane) {
+    for(ShapeId shape=actor.first_shape;shape!=invalid_shape;shape=shapes_[shape].next)
+    if(shapes_[shape].geometry==Geometry::Plane) {
         if(normalized.x!=0.0f || normalized.y!=0.0f ||
            normalized.z!=0.0f || std::abs(normalized.w)!=1.0f)
             throw std::logic_error("Native horizontal floor cannot rotate");
@@ -474,9 +569,10 @@ void Scene::set_pose(BodyId id, Vec3 position, Quat orientation) {
         // Validate the source-owned volume and mark its original GPU
         // changed bitmap BEFORE wake, Gu/PCM cache or actor mutation.
         // A failed source owner cannot leave half-authored Sc motion.
-        if(gpu_broadphase_ && actor.simulation_shape_enabled &&
-           actor.geometry!=Geometry::Plane)
-            gpu_broadphase_->mark_shape_bounds_changed(id,actor.contact_offset);
+        for(ShapeId shape=actor.first_shape;shape!=invalid_shape;shape=shapes_[shape].next)
+            if(gpu_broadphase_ && shapes_[shape].simulation_shape_enabled &&
+               shapes_[shape].geometry!=Geometry::Plane)
+                gpu_broadphase_->mark_shape_bounds_changed(shape,shapes_[shape].contact_offset);
     }
     // NpRigidDynamic::setGlobalPose wakes even on an idempotent edit.
     if(actor.motion==Motion::Dynamic) {
@@ -515,19 +611,17 @@ void Scene::set_pose(BodyId id, Vec3 position, Quat orientation) {
     if(!changing_pose)return;
     // Authored transforms are discontinuities: retained strong-friction
     // anchors must not bridge either a translation or an orientation edit.
-    erase_shape_friction_history(id);
+    erase_body_friction_history(id);
     actor.position=position;
     actor.orientation=normalized;
-    actor.cached_bounds_current=false;
-    if(actor.geometry!=Geometry::Plane)
-        gpu_broadphase_snapshot_current_=false;
+    invalidate_body_shapes(id);
     // Preserve the established source contact-manager wake handoff:
     // relocating or rotating either endpoint wakes old touching peers
     // before their previous Gu managers can be retired.
     for(const auto& manifold:manifolds_) {
-        if(manifold.pair.a!=id && manifold.pair.b!=id)continue;
-        const BodyId other=manifold.pair.a==id
-            ? manifold.pair.b:manifold.pair.a;
+        const Pair bodies=body_pair(manifold.pair);
+        if(bodies.a!=id && bodies.b!=id)continue;
+        const BodyId other=bodies.a==id?bodies.b:bodies.a;
         auto& dynamic=actors_[other];
         if(!dynamic.alive || dynamic.motion!=Motion::Dynamic ||
            (!dynamic.sleeping && !dynamic.ready_for_sleep))continue;
@@ -542,12 +636,15 @@ void Scene::set_pose(BodyId id, Vec3 position, Quat orientation) {
     }
     dirty_=true;
 }
-void Scene::erase_shape_friction_history(BodyId id) {
+void Scene::erase_body_friction_history(BodyId id) {erase_friction_history(id,true);}
+void Scene::erase_shape_friction_history(ShapeId id) {erase_friction_history(id,false);}
+void Scene::erase_friction_history(std::uint32_t id,bool body_scope) {
     // Explicit authored shape discontinuities compact only affected
     // cached anchors. Reindex remaining source manager spans after
     // this explicit edit; the normal PGS path rotates its own index.
-    if(!std::erase_if(friction_patches_, [id](const FrictionPatch& patch) {
-        return patch.pair.a==id || patch.pair.b==id;
+    if(!std::erase_if(friction_patches_, [this,id,body_scope](const FrictionPatch& patch) {
+        return body_scope ? (shapes_[patch.pair.a].body==id || shapes_[patch.pair.b].body==id)
+                          : (patch.pair.a==id || patch.pair.b==id);
     }))return;
     for(auto& span:friction_by_edge_)span.epoch=0;
     for(std::size_t cursor=0;cursor<friction_patches_.size();) {
@@ -643,8 +740,8 @@ void Scene::add_spatial_velocity_mod(BodyId id, Vec3 value,
     Vec3 converted=value;
     if(mode==ForceMode::Force || mode==ForceMode::Impulse) {
         if(angular) {
-            const Vec3 local=rotate_inverse(actor.orientation,value);
-            converted=rotate(actor.orientation,{
+            const Vec3 local=rotate_inverse(mass_orientation(actor),value);
+            converted=rotate(mass_orientation(actor),{
                 local.x*actor.inverse_inertia_local.x,
                 local.y*actor.inverse_inertia_local.y,
                 local.z*actor.inverse_inertia_local.z});
@@ -767,8 +864,9 @@ void Scene::set_kinematic(BodyId id,bool enabled) {
     // Original ScBodySim switches the AABB group before refiltering its
     // interactions; do not leave the GPU volume in its previous class.
     if(gpu_broadphase_)
+        for(ShapeId shape=actor.first_shape;shape!=invalid_shape;shape=shapes_[shape].next)
         gpu_broadphase_->set_shape_motion(
-            id,enabled ? GpuBroadphaseBox::Motion::Kinematic
+            shape,enabled ? GpuBroadphaseBox::Motion::Kinematic
                        : GpuBroadphaseBox::Motion::Dynamic);
     // The previous source island owns the indexed contact-manager
     // entries until the rigid node's motion class changes. Detach every
@@ -785,7 +883,7 @@ void Scene::set_kinematic(BodyId id,bool enabled) {
         }
     // No target has been authored: the kinematic body has no external
     // motion and is not eligible for Dy solver-body integration.
-    erase_shape_friction_history(id);
+    erase_body_friction_history(id);
     for(EdgeIndex edge_id:active_edge_handles_) {
         auto& edge=island_edges_[edge_id];
         if(edge.pair.a==id || edge.pair.b==id)edge.pcm_cache={};
@@ -793,9 +891,9 @@ void Scene::set_kinematic(BodyId id,bool enabled) {
     // A mode change refilters the existing shape interactions and wakes
     // formerly touching dynamic partners as in Sc interaction dirtying.
     for(const auto& manifold:manifolds_) {
-        if(manifold.pair.a!=id && manifold.pair.b!=id)continue;
-        const BodyId other=manifold.pair.a==id
-            ? manifold.pair.b:manifold.pair.a;
+        const Pair bodies=body_pair(manifold.pair);
+        if(bodies.a!=id && bodies.b!=id)continue;
+        const BodyId other=bodies.a==id?bodies.b:bodies.a;
         auto& partner=actors_[other];
         if(!partner.alive || partner.motion!=Motion::Dynamic ||
            (!partner.sleeping && !partner.ready_for_sleep))continue;
@@ -838,6 +936,8 @@ void Scene::set_kinematic(BodyId id,bool enabled) {
         actor.sleep_angular_acc={};
         authored_activation_pending_=true;
     }
+    for(ShapeId shape=actor.first_shape;shape!=invalid_shape;shape=shapes_[shape].next)
+        shapes_[shape].motion=actor.motion;
     refresh_kinematic_node(id,false);
     refresh_kinematic_node(id,true);
     // Full node-type remapping is restricted to this explicit edit.
@@ -849,15 +949,27 @@ void Scene::set_kinematic(BodyId id,bool enabled) {
     dirty_=true;
 }
 
-void Scene::set_shape_simulation_enabled(BodyId id, bool enabled) {
-    auto& actor=require(id);
+void Scene::set_shape_simulation_enabled(BodyId body,bool enabled) {
+    for(ShapeId shape=require(body).first_shape;shape!=invalid_shape;shape=shapes_[shape].next)
+        set_attached_shape_enabled(shape,enabled);
+}
+void Scene::set_shape_offsets(BodyId body,float contact,float rest) {
+    for(ShapeId shape=require(body).first_shape;shape!=invalid_shape;shape=shapes_[shape].next)
+        set_attached_shape_offsets(shape,contact,rest);
+}
+void Scene::set_material(BodyId body,Material material) {
+    for(ShapeId shape=require(body).first_shape;shape!=invalid_shape;shape=shapes_[shape].next)
+        set_attached_shape_material(shape,material);
+}
+void Scene::set_attached_shape_enabled(ShapeId id, bool enabled) {
+    auto& actor=require_shape(id);
     if(actor.simulation_shape_enabled==enabled)return;
     // The source AABB removal/addition can reject the Sc shape. Run
     // that source preflight before clearing any existing PCM/friction
     // working set or publishing the native shape flag.
     if(gpu_broadphase_ && actor.geometry!=Geometry::Plane)
         gpu_broadphase_->set_shape_simulation_enabled(id,enabled);
-    // NpShape::setFlag(eSIMULATION_SHAPE) refilters the sole shape.
+    // NpShape::setFlag(eSIMULATION_SHAPE) refilters this shape.
     // Retire the previous contact history on this source flag change.
     // The following SAP publication is the authority for edge loss,
     // and must preserve the actor/solver body across the refilter.
@@ -865,10 +977,11 @@ void Scene::set_shape_simulation_enabled(BodyId id, bool enabled) {
     if(pcm_plane_box_enabled_ || pcm_box_box_enabled_)
         for(EdgeIndex edge_id:active_edge_handles_) {
             auto& edge=island_edges_[edge_id];
-            if(edge.pair.a==id || edge.pair.b==id)
+            if(edge.shapes.a==id || edge.shapes.b==id)
                 edge.pcm_cache={};
         }
     actor.simulation_shape_enabled=enabled;
+    refresh_shape_links(actor.body);
     if(actor.geometry==Geometry::Plane) {
         if(enabled)++active_plane_count_;
         else --active_plane_count_;
@@ -885,7 +998,7 @@ void Scene::set_shape_simulation_enabled(BodyId id, bool enabled) {
     dirty_=true;
 }
 
-void Scene::set_shape_offsets(BodyId id, float contact_offset,
+void Scene::set_attached_shape_offsets(ShapeId id, float contact_offset,
                               float rest_offset) {
     // NpShape::setContactOffset and setRestOffset require finite values,
     // contactOffset >= 0 and restOffset < contactOffset. The two fields
@@ -894,7 +1007,7 @@ void Scene::set_shape_offsets(BodyId id, float contact_offset,
     if (!std::isfinite(contact_offset) || !std::isfinite(rest_offset) ||
         contact_offset < 0.0f || rest_offset >= contact_offset)
         throw std::invalid_argument("Native PhysX shape offsets invalid");
-    auto& actor=require(id);
+    auto& actor=require_shape(id);
     if(actor.contact_offset==contact_offset &&
        actor.rest_offset==rest_offset)return;
     // AABBManagerBase::setContactDistance owns the source GPU changed bit
@@ -912,7 +1025,7 @@ void Scene::set_shape_offsets(BodyId id, float contact_offset,
     if(pcm_plane_box_enabled_ || pcm_box_box_enabled_)
         for(EdgeIndex edge_id:active_edge_handles_) {
             auto& edge=island_edges_[edge_id];
-            if(edge.pair.a==id || edge.pair.b==id) {
+            if(edge.shapes.a==id || edge.shapes.b==id) {
                 edge.pcm_cache={};
             }
         }
@@ -924,7 +1037,7 @@ void Scene::set_shape_offsets(BodyId id, float contact_offset,
     dirty_=true;
 }
 
-void Scene::set_material(BodyId id, Material material) {
+void Scene::set_attached_shape_material(ShapeId id, Material material) {
     // NpMaterial::setRestitution and PxsMaterialData accept negative
     // restitution as source compliant spring stiffness and nonnegative damping.
     if (!std::isfinite(material.static_friction) ||
@@ -939,7 +1052,7 @@ void Scene::set_material(BodyId id, Material material) {
         static_cast<unsigned>(material.damping_combine)>3)
         throw std::invalid_argument(
             "Native PhysX contact material coefficients/modes invalid");
-    require(id).material=material;
+    require_shape(id).material=material;
 }
 void Scene::set_dynamics(BodyId id, RigidBodyDynamics d) {
     auto& actor=require(id);
@@ -1002,7 +1115,7 @@ void Scene::remove(BodyId id) {
     }
     retired_edge_handles_.reserve(retired_edge_handles_.size()+incident);
     // The source AABB retains its actor identity through GPU lost fetch.
-    if(gpu_broadphase_)gpu_broadphase_->retire_shape(id);
+    while(actor.first_shape!=invalid_shape)detach_shape(actor.first_shape);
     // Sc actor retirement removes physical contact-manager edges. A
     // dormant or sleep-ready rigid body resting on the retired actor
     // cannot continue sleeping without its supporting contact: revoke
@@ -1010,9 +1123,9 @@ void Scene::remove(BodyId id) {
     // gravity/Gu contact generation on the next native step.
     // Traverse the published Gu pairs only on this explicit edit path.
     for(const auto& manifold:manifolds_) {
-        if(manifold.pair.a!=id && manifold.pair.b!=id)continue;
-        const BodyId other=manifold.pair.a==id
-            ? manifold.pair.b:manifold.pair.a;
+        const Pair bodies=body_pair(manifold.pair);
+        if(bodies.a!=id && bodies.b!=id)continue;
+        const BodyId other=bodies.a==id?bodies.b:bodies.a;
         auto& partner=actors_[other];
         if(!partner.alive || partner.motion!=Motion::Dynamic ||
            (!partner.sleeping && !partner.ready_for_sleep))continue;
@@ -1035,10 +1148,8 @@ void Scene::remove(BodyId id) {
             remove_constraint_edge(edge);
         else ++cursor;
     }
+    if(gpu_broadphase_)gpu_broadphase_->release_rigid_actor(id);
     actor.alive = false;
-    if(actor.geometry==Geometry::Plane && actor.simulation_shape_enabled)
-        --active_plane_count_;
-    std::erase(live_actor_ids_,id);
     broadphase_endpoint_membership_dirty_=true;
     refresh_kinematic_node(id,false);
     refresh_kinematic_node(id,true);
@@ -1047,14 +1158,8 @@ void Scene::remove(BodyId id) {
         std::erase(active_kinematic_targets_,id);
         actor.kinematic_tracked=false;
     }
-    if(gpu_broadphase_) {
-        if(actor.geometry==Geometry::Plane)
-            plane_pair_membership_dirty_=true;
-        else
-            gpu_pair_refilter_dirty_=true;
-    }
-    if(actor.geometry!=Geometry::Plane)
-        gpu_broadphase_snapshot_current_=false;
+    gpu_pair_refilter_dirty_=true;
+    gpu_broadphase_snapshot_current_=false;
     dirty_ = true;
     island_topology_dirty_ |= dynamic_node;
 }
@@ -1063,7 +1168,8 @@ BodyState Scene::body_state(BodyId id) const {
     return {actor.position, actor.velocity,
             actor.orientation, actor.angular_velocity, actor.sleeping};
 }
-void Scene::update_actor_bounds(Actor& actor) {
+void Scene::update_shape_bounds(Shape& actor) {
+    refresh_shape_pose(actor);
     // GuBounds::computeBounds(eBOX) followed by Sc cached-shape
     // publication. Construct every encoded endpoint before committing.
         const Vec3 p = actor.position, h = actor.half_extents;
@@ -1104,33 +1210,24 @@ void Scene::update_actor_bounds(Actor& actor) {
         actor.encoded_bounds=encoded;
         actor.cached_bounds_current=true;
 }
-void Scene::publish_integrated_shape_bounds(BodyId id,Actor& actor) {
-    if(!gpu_broadphase_) {
-        update_actor_bounds(actor);
-        return;
+void Scene::publish_integrated_shape_bounds(BodyId,Actor& actor) {
+    for(ShapeId id=actor.first_shape;id!=invalid_shape;id=shapes_[id].next) {
+        auto& shape=shapes_[id];
+        refresh_shape_pose(shape);
+        if(shape.geometry==Geometry::Plane)continue;
+        if(!gpu_broadphase_) {update_shape_bounds(shape); continue;}
+        if(shape.simulation_shape_enabled)
+            gpu_broadphase_->mark_shape_bounds_changed(id,shape.contact_offset);
+        if(shape.simulation_shape_enabled && gpu_broadphase_snapshot_current_) {
+            auto it=std::lower_bound(gpu_broadphase_boxes_.begin(),gpu_broadphase_boxes_.end(),id,
+                [](const GpuBroadphaseBox& box,ShapeId key){return box.id<key;});
+            if(it==gpu_broadphase_boxes_.end() || it->id!=id)
+                throw std::logic_error("Integrated shape missing from GPU SAP input");
+            it->position=shape.position;
+            it->orientation=shape.geometry==Geometry::Sphere?Quat{}:shape.orientation;
+        }
+        shape.cached_bounds_current=true;
     }
-    // ScPipeline::afterIntegration: the source GPU AABB manager owns
-    // the changed-volume bitmap and its float bounds. Never build the
-    // CPU SAP's unused integer endpoints for a GPU-selected scene.
-    if(actor.simulation_shape_enabled)
-        gpu_broadphase_->mark_shape_bounds_changed(id,actor.contact_offset);
-    // Sc afterIntegration visits only source active solver and kinematic
-    // body ranges. Patch that same existing BP input view in place rather
-    // than rescanning every live static and dormant shape next frame.
-    if(actor.simulation_shape_enabled && gpu_broadphase_snapshot_current_) {
-        auto it=std::lower_bound(
-            gpu_broadphase_boxes_.begin(),gpu_broadphase_boxes_.end(),id,
-            [](const GpuBroadphaseBox& box,BodyId actor) {
-                return box.id<actor;
-            });
-        if(it==gpu_broadphase_boxes_.end() || it->id!=id)
-            throw std::logic_error(
-                "Source Sc afterIntegration shape missing from GPU SAP input");
-        it->position=actor.position;
-        it->orientation=actor.geometry==Geometry::Sphere
-            ? Quat{}:actor.orientation;
-    }
-    actor.cached_bounds_current=true;
 }
 void Scene::update_bounds() {
     // BpBroadPhaseSap::batchCreate/mBoxBoundsMinMax:
@@ -1166,17 +1263,17 @@ void Scene::update_bounds() {
             sap_list_next_.clear();
             sap_list_prev_.clear();
             sap_volumes_.clear();
-            sap_volumes_.reserve(live_actor_ids_.size());
+            sap_volumes_.reserve(live_shape_ids_.size());
             for(auto& axis:sap_axis_endpoints_) {
                 axis.clear();
-                axis.reserve(live_actor_ids_.size()*2);
+                axis.reserve(live_shape_ids_.size()*2);
             }
-            for(BodyId id:live_actor_ids_) {
-                Actor& actor=actors_[id];
+            for(BodyId id:live_shape_ids_) {
+                Shape& actor=shapes_[id];
                 if(!actor.simulation_shape_enabled ||
                    actor.geometry==Geometry::Plane)continue;
                 if(!actor.cached_bounds_current)
-                    update_actor_bounds(actor);
+                    update_shape_bounds(actor);
                 const auto& bounds=actor.encoded_bounds;
                 const auto slot=static_cast<std::uint32_t>(
                     sap_volumes_.size());
@@ -1202,9 +1299,9 @@ void Scene::update_bounds() {
         // not dirty authored positions whose rounded AABB is unchanged.
         for(std::size_t slot=0;slot<sap_volumes_.size();++slot) {
             SapVolume& volume=sap_volumes_[slot];
-            Actor& actor=actors_[volume.id];
+            Shape& actor=shapes_[volume.id];
             if(!actor.cached_bounds_current)
-                update_actor_bounds(actor);
+                update_shape_bounds(actor);
             if(volume.published_bounds!=actor.encoded_bounds) {
                 std::uint8_t axes=0;
                 for(unsigned axis=0;axis<3;++axis)
@@ -1251,7 +1348,7 @@ void Scene::update_bounds() {
             bool localized=true;
             bool stable=true;
             const auto final_key=[&](Endpoint ep,unsigned axis) {
-                ep.value=actors_[ep.id].encoded_bounds[
+                ep.value=shapes_[ep.id].encoded_bounds[
                     axis+(ep.is_max?3u:0u)];
                 return ep;
             };
@@ -1299,7 +1396,7 @@ void Scene::update_bounds() {
                         for(unsigned side=0;side<2;++side) {
                             const auto i=sap_volumes_[slot].
                                 endpoint_positions[axis][side];
-                            endpoints[i].value=actors_[endpoints[i].id].
+                            endpoints[i].value=shapes_[endpoints[i].id].
                                 encoded_bounds[axis+(side?3u:0u)];
                         }
                     }
@@ -1345,7 +1442,7 @@ void Scene::update_bounds() {
                             endpoint_positions[axis][side];
                         sap_endpoint_updated_[index]=1;
                         Endpoint ep=endpoints[index];
-                        ep.value=actors_[ep.id].encoded_bounds[
+                        ep.value=shapes_[ep.id].encoded_bounds[
                             axis+(side?3u:0u)];
                         sap_merge_changed_.push_back(ep);
                     }
@@ -1375,7 +1472,7 @@ void Scene::update_bounds() {
                 endpoints.swap(sap_merge_output_);
                 reindex(axis);
             }
-            const auto overlaps=[](const Actor& a,const Actor& b) {
+            const auto overlaps=[](const Shape& a,const Shape& b) {
                 const auto& aa=a.encoded_bounds;
                 const auto& bb=b.encoded_bounds;
                 return !(aa[0]>bb[3] || bb[0]>aa[3] ||
@@ -1411,13 +1508,13 @@ void Scene::update_bounds() {
                     own.pop_back();
                     continue;
                 }
-                const Actor& a=actors_[ep.id];
+                const Shape& a=shapes_[ep.id];
                 const auto& aa=a.encoded_bounds;
                 const auto compare=[&](
                     const std::vector<std::uint32_t>& active) {
                     for(const std::uint32_t other_slot:active) {
                         const BodyId other_id=sap_volumes_[other_slot].id;
-                        const Actor& b=actors_[other_id];
+                        const Shape& b=shapes_[other_id];
                         if(a.motion!=Motion::Dynamic &&
                            b.motion!=Motion::Dynamic)continue;
                         const auto& bb=b.encoded_bounds;
@@ -1444,8 +1541,8 @@ void Scene::update_bounds() {
             // precise old membership without replaying transient
             // crossings between moving endpoint keys.
             for(const Pair pair:previous_pairs_) {
-                const Actor& a=actors_[pair.a];
-                const Actor& b=actors_[pair.b];
+                const Shape& a=shapes_[pair.a];
+                const Shape& b=shapes_[pair.b];
                 if(a.geometry==Geometry::Plane ||
                    b.geometry==Geometry::Plane ||
                    (!std::binary_search(sap_merge_updated_ids_.begin(),
@@ -1481,7 +1578,7 @@ void Scene::update_bounds() {
                         const auto index=sap_volumes_[slot].
                             endpoint_positions[axis][side];
                         Endpoint& ep=endpoints[index];
-                        const auto value=actors_[ep.id].encoded_bounds[
+                        const auto value=shapes_[ep.id].encoded_bounds[
                             axis+(side?3:0)];
                         changed|=ep.value!=value;
                         ep.value=value;
@@ -1559,7 +1656,7 @@ void Scene::update_bounds() {
                     // changed endpoint instead of comparing every key.
                     predecessor_updated=updated;
                     const Endpoint moving=endpoints[i];
-                    const Actor& moving_actor=actors_[moving.id];
+                    const Shape& moving_actor=shapes_[moving.id];
                     const bool moving_dynamic=
                         moving_actor.motion==Motion::Dynamic;
                     const auto& moving_bounds=moving_actor.encoded_bounds;
@@ -1575,8 +1672,8 @@ void Scene::update_bounds() {
                         if(moving.id!=passed.id &&
                            moving.is_max!=passed.is_max &&
                            (moving_dynamic ||
-                            actors_[passed.id].motion==Motion::Dynamic)) {
-                            const Actor& b=actors_[passed.id];
+                            shapes_[passed.id].motion==Motion::Dynamic)) {
+                            const Shape& b=shapes_[passed.id];
                             // A crossing on this axis changes the
                             // pair state only if its orthogonal extents
                             // also overlap, or it had a published pair.
@@ -1691,8 +1788,8 @@ void Scene::update_bounds() {
                                  const Endpoint& neighbor) {
             if(!sparse || moving.id==neighbor.id ||
                moving.is_max==neighbor.is_max)return;
-            const Actor& a=actors_[moving.id];
-            const Actor& other=actors_[neighbor.id];
+            const Shape& a=shapes_[moving.id];
+            const Shape& other=shapes_[neighbor.id];
             if(a.motion!=Motion::Dynamic &&
                other.motion!=Motion::Dynamic)return;
             // Reject non-overlapping orthogonal extents before
@@ -1728,7 +1825,7 @@ void Scene::update_bounds() {
                         endpoint_positions[axis][side];
                     std::size_t i=pos;
                     Endpoint moving=endpoints[i];
-                    moving.value=actors_[moving.id].encoded_bounds[
+                    moving.value=shapes_[moving.id].encoded_bounds[
                         axis+(side?3:0)];
                     if(i && less(moving,endpoints[i-1])) {
                         do {
@@ -1775,7 +1872,7 @@ void Scene::update_bounds() {
                 // source truth is the current actor AABB for every
                 // endpoint in this axis before the complete fallback.
                 for(Endpoint& ep:endpoints)
-                    ep.value=actors_[ep.id].encoded_bounds[
+                    ep.value=shapes_[ep.id].encoded_bounds[
                         axis+(ep.is_max?3:0)];
                 std::sort(endpoints.begin(),endpoints.end(),less);
                 reindex(axis);
@@ -1814,11 +1911,14 @@ void Scene::calculate_kinematic_velocities(float inverse_dt) {
             body.angular_velocity={};
             continue;
         }
-        const Vec3 target=body.kinematic_target_position;
-        body.velocity={
-            (target.x-body.position.x)*inverse_dt,
-            (target.y-body.position.y)*inverse_dt,
-            (target.z-body.position.z)*inverse_dt};
+        const Vec3 offset=rotate(body.kinematic_target_orientation,body.mass_local_pose.position);
+        const Vec3 target{body.kinematic_target_position.x+offset.x,
+                          body.kinematic_target_position.y+offset.y,
+                          body.kinematic_target_position.z+offset.z};
+        const Vec3 center=mass_position(body);
+        body.velocity={(target.x-center.x)*inverse_dt,
+                       (target.y-center.y)*inverse_dt,
+                       (target.z-center.z)*inverse_dt};
         const Quat q=body.kinematic_target_orientation;
         const Quat old=body.orientation;
         Quat relative=multiply(q,Quat{-old.x,-old.y,-old.z,old.w});
@@ -1849,7 +1949,8 @@ void Scene::publish_kinematic_targets() {
         step_checkpoint_.save_motion(*this,id);
         body.position=body.kinematic_target_position;
         body.orientation=body.kinematic_target_orientation;
-        body.cached_bounds_current=false;
+        for(ShapeId shape=body.first_shape;shape!=invalid_shape;shape=shapes_[shape].next)
+            shapes_[shape].cached_bounds_current=false;
         dirty_=true;
         body.kinematic_target_pending=false;
         body.kinematic_settling=true;
@@ -1889,7 +1990,8 @@ void Scene::reconcile_integrated_deactivations() {
         body.ready_for_sleep=true;
         body.sleep_linear_acc={};
         body.sleep_angular_acc={};
-        body.cached_bounds_current=false;
+        for(ShapeId shape=body.first_shape;shape!=invalid_shape;shape=shapes_[shape].next)
+            shapes_[shape].cached_bounds_current=false;
         publish_integrated_shape_bounds(id,body);
         dirty_=true;
     }
@@ -1904,8 +2006,7 @@ void Scene::after_integration_cached_bounds() {
     // island node batches, but their source shape bounds must update.
     for(BodyId id:active_kinematic_targets_) {
         auto& actor=actors_[id];
-        if(actor.alive && actor.motion==Motion::Kinematic &&
-           !actor.cached_bounds_current) {
+        if(actor.alive && actor.motion==Motion::Kinematic) {
             publish_integrated_shape_bounds(id,actor);
         }
     }
@@ -2093,9 +2194,9 @@ void Scene::update_gpu_pairs(bool force_update) {
     if(!gpu_broadphase_snapshot_current_) {
         gpu_broadphase_snapshot_current_=false;
         gpu_broadphase_boxes_.clear();
-        gpu_broadphase_boxes_.reserve(live_actor_ids_.size());
-        for(BodyId id:live_actor_ids_) {
-            const Actor& actor=actors_[id];
+        gpu_broadphase_boxes_.reserve(live_shape_ids_.size());
+        for(BodyId id:live_shape_ids_) {
+            const Shape& actor=shapes_[id];
             if(!actor.simulation_shape_enabled)continue;
             // Infinite planes are Sc contact managers, not finite SAP.
             if(actor.geometry==Geometry::Plane)continue;
@@ -2111,7 +2212,8 @@ void Scene::update_gpu_pairs(bool force_update) {
                 ? Quat{}:actor.orientation;
             gpu_broadphase_boxes_.push_back({
                 id,actor.position,extents,basis,
-                actor.contact_offset,motion});
+                actor.contact_offset,motion,actor.local_pose,actor.next_simulation_shape,
+                actor.geometry==Geometry::Sphere?1u:0u});
         }
         gpu_broadphase_snapshot_current_=true;
         ++gpu_broadphase_snapshot_rebuilds_;
@@ -2133,8 +2235,8 @@ void Scene::update_gpu_pairs(bool force_update) {
         // contacts. The real source owner returns a full GPU rebuild.
         broadphase_candidate_deltas_.clear();
         for(const Pair pair:previous_pairs_)
-            if(actors_[pair.a].geometry!=Geometry::Plane &&
-               actors_[pair.b].geometry!=Geometry::Plane)
+            if(shapes_[pair.a].geometry!=Geometry::Plane &&
+               shapes_[pair.b].geometry!=Geometry::Plane)
                 broadphase_candidate_deltas_.push_back(pair);
         sap_pairs_.seed(broadphase_candidate_deltas_);
         sap_pair_registry_dirty_=false;
@@ -2143,14 +2245,14 @@ void Scene::update_gpu_pairs(bool force_update) {
         Pair last{};
         bool have_last=false;
         for(const Pair pair:raw) {
-            if(pair.a>=pair.b || pair.b>=actors_.size() ||
+            if(pair.a>=pair.b || pair.b>=shapes_.size() ||
                (have_last && !(last<pair)))
                 throw std::invalid_argument(
                     "Noncanonical or unsorted GPU SAP pair reports");
             last=pair;
             have_last=true;
-            const auto& a=actors_[pair.a];
-            const auto& b=actors_[pair.b];
+            const auto& a=shapes_[pair.a];
+            const auto& b=shapes_[pair.b];
             if(a.geometry==Geometry::Plane || b.geometry==Geometry::Plane)
                 throw std::invalid_argument(
                     "GPU SAP pair references a non-finite Sc plane");
@@ -2174,12 +2276,12 @@ void Scene::update_gpu_pairs(bool force_update) {
     const auto append_plane_managers=[&](
         bool finite_delta,bool rebuild_planes) {
         if(active_plane_count_ && rebuild_planes) {
-            for(const BodyId plane:live_actor_ids_) {
-                const auto& actor=actors_[plane];
+            for(const BodyId plane:live_shape_ids_) {
+                const auto& actor=shapes_[plane];
                 if(!actor.alive || !actor.simulation_shape_enabled ||
                    actor.geometry!=Geometry::Plane)continue;
-                for(const BodyId body:live_actor_ids_) {
-                    const auto& dynamic=actors_[body];
+                for(const BodyId body:live_shape_ids_) {
+                    const auto& dynamic=shapes_[body];
                     if(dynamic.alive && dynamic.simulation_shape_enabled &&
                        dynamic.motion==Motion::Dynamic)
                         pending_pairs_.push_back(ordered_pair(plane,body));
@@ -2208,8 +2310,8 @@ void Scene::update_gpu_pairs(bool force_update) {
         pending_pairs_.clear();
         pending_pairs_.reserve(reports.found.size());
         for(const Pair pair:reports.found)
-            if(actors_[pair.a].motion==Motion::Dynamic ||
-               actors_[pair.b].motion==Motion::Dynamic)
+            if(shapes_[pair.a].motion==Motion::Dynamic ||
+               shapes_[pair.b].motion==Motion::Dynamic)
                 pending_pairs_.push_back(pair);
         append_plane_managers(false,true);
         return;
@@ -2237,8 +2339,8 @@ void Scene::update_gpu_pairs(bool force_update) {
     // before it can be carried forward as an active contact manager.
     if(gpu_pair_refilter_dirty_)
         for(const Pair pair:sap_pairs_.active_pairs) {
-            const Actor& a=actors_[pair.a];
-            const Actor& b=actors_[pair.b];
+            const Shape& a=shapes_[pair.a];
+            const Shape& b=shapes_[pair.b];
             if(!a.alive || !b.alive ||
                !a.simulation_shape_enabled || !b.simulation_shape_enabled)
                 sap_pairs_.remove(pair);
@@ -2256,8 +2358,8 @@ void Scene::update_gpu_pairs(bool force_update) {
         pending_pairs_.clear();
         pending_pairs_.reserve(sap_pairs_.active_pairs.size());
         for(const Pair pair:sap_pairs_.active_pairs)
-            if(actors_[pair.a].motion==Motion::Dynamic ||
-               actors_[pair.b].motion==Motion::Dynamic)
+            if(shapes_[pair.a].motion==Motion::Dynamic ||
+               shapes_[pair.b].motion==Motion::Dynamic)
                 pending_pairs_.push_back(pair);
         // The source BP hash has unordered storage; finite-only Sc
         // refiltering still needs sorted contact-manager identities.
@@ -2278,8 +2380,8 @@ void Scene::update_gpu_pairs(bool force_update) {
         const bool bulk=raw.size()>previous_pairs_.size()/16u;
         for(const Pair pair:raw) {
             if(new_pair &&
-               actors_[pair.a].motion!=Motion::Dynamic &&
-               actors_[pair.b].motion!=Motion::Dynamic)
+               shapes_[pair.a].motion!=Motion::Dynamic &&
+               shapes_[pair.b].motion!=Motion::Dynamic)
                 continue;
             bool existing;
             if(bulk) {
@@ -2314,8 +2416,8 @@ void Scene::update_gpu_pairs(bool force_update) {
         }
         pending_pairs_.clear();
         for(const Pair pair:previous_pairs_)
-            if(actors_[pair.a].geometry!=Geometry::Plane &&
-               actors_[pair.b].geometry!=Geometry::Plane)
+            if(shapes_[pair.a].geometry!=Geometry::Plane &&
+               shapes_[pair.b].geometry!=Geometry::Plane)
                 pending_pairs_.push_back(pair);
         append_plane_managers(false,true);
         return;
@@ -2326,8 +2428,8 @@ void Scene::update_gpu_pairs(bool force_update) {
     std::size_t new_index=0,lost_index=0;
     for(const Pair prior:previous_pairs_) {
         if(plane_pair_membership_dirty_ &&
-           (actors_[prior.a].geometry==Geometry::Plane ||
-            actors_[prior.b].geometry==Geometry::Plane))continue;
+           (shapes_[prior.a].geometry==Geometry::Plane ||
+            shapes_[prior.b].geometry==Geometry::Plane))continue;
         while(new_index<found.size() && found[new_index]<prior)
             pending_pairs_.push_back(found[new_index++]);
         if(lost_index<lost.size() && lost[lost_index]==prior)
@@ -2346,8 +2448,8 @@ void Scene::update_pairs() {
     if(sap_pair_registry_dirty_) {
         broadphase_candidate_deltas_.clear();
         for(Pair pair:previous_pairs_)
-            if(actors_[pair.a].geometry!=Geometry::Plane &&
-               actors_[pair.b].geometry!=Geometry::Plane)
+            if(shapes_[pair.a].geometry!=Geometry::Plane &&
+               shapes_[pair.b].geometry!=Geometry::Plane)
                 broadphase_candidate_deltas_.push_back(pair);
         sap_pairs_.seed(broadphase_candidate_deltas_);
         sap_pair_registry_dirty_=false;
@@ -2378,10 +2480,10 @@ void Scene::update_pairs() {
         candidates.erase(std::unique(candidates.begin(),candidates.end()),
                          candidates.end());
         for(Pair pair:candidates) {
-            const Actor& a=actors_[pair.a],&b=actors_[pair.b];
+            const Shape& a=shapes_[pair.a],&b=shapes_[pair.b];
             const auto& aa=a.encoded_bounds;
             const auto& bb=b.encoded_bounds;
-            const bool overlap=(a.motion==Motion::Dynamic ||
+            const bool overlap=a.body!=b.body && (a.motion==Motion::Dynamic ||
                                 b.motion==Motion::Dynamic) &&
                 !(aa[0]>bb[3] || bb[0]>aa[3] ||
                   aa[1]>bb[4] || bb[1]>aa[4] ||
@@ -2427,7 +2529,7 @@ void Scene::update_pairs() {
     // scenes never enumerate static/static candidates. Each endpoint
     // already owns a compact slot for constant-time active removal.
     for(const Endpoint ep:sap_axis_endpoints_[0]) {
-        const bool dynamic=actors_[ep.id].motion==Motion::Dynamic;
+        const bool dynamic=shapes_[ep.id].motion==Motion::Dynamic;
         auto& own=dynamic?sap_active_dynamic_slots_:
                           sap_active_static_slots_;
         if(ep.is_max) {
@@ -2439,11 +2541,12 @@ void Scene::update_pairs() {
             own.pop_back();
             continue;
         }
-        const auto& a=actors_[ep.id].encoded_bounds;
+        const auto& a=shapes_[ep.id].encoded_bounds;
         const auto compare=[&](const std::vector<std::uint32_t>& slots) {
             for(const std::uint32_t slot:slots) {
                 const BodyId other_id=sap_volumes_[slot].id;
-                const auto& b=actors_[other_id].encoded_bounds;
+                const auto& b=shapes_[other_id].encoded_bounds;
+                if(shapes_[ep.id].body==shapes_[other_id].body)continue;
                 if(a[1]>b[4] || b[1]>a[4] ||
                    a[2]>b[5] || b[2]>a[5])continue;
                 pending_pairs_.push_back(ordered_pair(ep.id,other_id));
@@ -2457,12 +2560,12 @@ void Scene::update_pairs() {
     }
     // Infinite source planes have no finite endpoint and therefore
     // remain separate candidate broadphase shapes, as before.
-    for(BodyId plane:live_actor_ids_) {
-        const Actor& actor=actors_[plane];
+    for(BodyId plane:live_shape_ids_) {
+        const Shape& actor=shapes_[plane];
         if(!actor.simulation_shape_enabled ||
            actor.geometry!=Geometry::Plane)continue;
         for(const SapVolume& volume:sap_volumes_)
-            if(actors_[volume.id].motion==Motion::Dynamic)
+            if(shapes_[volume.id].motion==Motion::Dynamic)
                 pending_pairs_.push_back(ordered_pair(plane,volume.id));
     }
     std::sort(pending_pairs_.begin(),pending_pairs_.end());
@@ -2470,8 +2573,8 @@ void Scene::update_pairs() {
         std::unique(pending_pairs_.begin(),pending_pairs_.end()),
         pending_pairs_.end());
     for(Pair pair:pending_pairs_)
-        if(actors_[pair.a].geometry!=Geometry::Plane &&
-           actors_[pair.b].geometry!=Geometry::Plane)
+        if(shapes_[pair.a].geometry!=Geometry::Plane &&
+           shapes_[pair.b].geometry!=Geometry::Plane)
             sap_pairs_.add(pair);
     sap_pairs_.finish(sap_created_pairs_,sap_deleted_pairs_);
     broadphase_pair_membership_changed_=
@@ -2524,7 +2627,7 @@ void Scene::change_counted_interactions(Pair pair, bool attach) {
         else --actor.num_counted_interactions;
     }
 }
-std::uint32_t Scene::allocate_contact_edge(Pair pair) {
+std::uint32_t Scene::allocate_contact_edge(Pair pair,Pair shapes) {
     // Overflow must reject before allocating a shared EdgeIndex.
     for(BodyId id:{pair.a,pair.b})
         if(rigid_node(actors_[id].motion) &&
@@ -2589,6 +2692,7 @@ std::uint32_t Scene::allocate_contact_edge(Pair pair) {
         activity_undo_generations_.resize(needed,0);
         island_edges_.push_back({IslandEdgeType::ContactManager,pair,true,false,false});
     }
+    island_edges_[id].shapes=shapes;
     change_counted_interactions(pair,true);
     return id;
 }
@@ -2986,21 +3090,21 @@ void Scene::publish_pairs() {
                   pending_pairs_[new_index]<previous_pairs_[old_index]) {
             step_checkpoint_.save_handle_lists(*this);
             const Pair pair=pending_pairs_[new_index++];
-            const EdgeIndex id=allocate_contact_edge(pair);
+            const EdgeIndex id=allocate_contact_edge(body_pair(pair),pair);
             // ScNPhaseCore::shouldSwapBodies puts static or kinematic
             // participants second. Two ordinary dynamics are ordered by
             // descending ActorID, but a later-created kinematic is not
             // swapped ahead of an earlier ordinary dynamic. BodyIds
             // preserve admission order for the supported rigid actors.
             // The manager retains this orientation for its lifetime.
-            const Motion a=actors_[pair.a].motion;
-            const Motion b=actors_[pair.b].motion;
+            const Motion a=shapes_[pair.a].motion;
+            const Motion b=shapes_[pair.b].motion;
             const bool a_static=!rigid_node(a);
             const bool both_rigid=rigid_node(a) && rigid_node(b);
             island_edges_[id].gu_order_reversed =
                 a_static ||
                 (both_rigid && (a==Motion::Kinematic ||
-                                b==Motion::Dynamic));
+                    (shapes_[pair.a].body<shapes_[pair.b].body && b==Motion::Dynamic)));
             link_contact_edge(id,false);
             next_edge_handles_.push_back(id);
             next_found_.push_back(pair);
@@ -3180,7 +3284,7 @@ void Scene::refresh_pcm_contact_points(
     }
 }
 std::uint8_t Scene::generate_pcm_box_box(
-    const Actor& first, const Actor& second, float contact_distance,
+    const Shape& first, const Shape& second, float contact_distance,
     PcmManifoldCache& cache, std::span<ContactPoint> output) {
     // GuPCMContactBoxBox.cpp::pcmContactBoxBox, operating on the same
     // Sc contact-manager edge used for islands, rollback and PGS.
@@ -3194,7 +3298,7 @@ std::uint8_t Scene::generate_pcm_box_box(
         -second.orientation.x,-second.orientation.y,
         -second.orientation.z,second.orientation.w};
     const Quat rotation=multiply(inv_b,first.orientation);
-    const auto margin=[](const Actor& a) {
+    const auto margin=[](const Shape& a) {
         return std::min(0.15f*std::min({
             a.half_extents.x,a.half_extents.y,a.half_extents.z}),0.15f);
     };
@@ -3369,7 +3473,7 @@ std::uint8_t Scene::generate_pcm_box_box(
     return emitted;
 }
 std::uint8_t Scene::generate_pcm_plane_box(
-    const Actor& plane, const Actor& box, float contact_distance,
+    const Shape& plane, const Shape& box, float contact_distance,
     PcmManifoldCache& cache, std::span<ContactPoint> output) {
     // GuPCMContactPlaneBox.cpp::pcmContactPlaneBox and
     // GuPersistentContactManifold.h::refreshContactPoints. The SDK
@@ -3598,21 +3702,21 @@ void Scene::update_contacts() {
     const auto dormant_pcm=[&](Pair pair,EdgeIndex edge) noexcept {
         if(edge>=island_edges_.size() ||
            !island_edges_[edge].pcm_cache.initialized)return false;
-        const auto& a=actors_[pair.a];
-        const auto& b=actors_[pair.b];
+        const auto& a=shapes_[pair.a];
+        const auto& b=shapes_[pair.b];
         if(a.motion==Motion::Kinematic || b.motion==Motion::Kinematic)
             return false;
         const bool dynamic_a=a.motion==Motion::Dynamic;
         const bool dynamic_b=b.motion==Motion::Dynamic;
         return (dynamic_a || dynamic_b) &&
-            (!dynamic_a || a.sleeping) && (!dynamic_b || b.sleeping);
+            (!dynamic_a || actors_[a.body].sleeping) && (!dynamic_b || actors_[b.body].sleeping);
     };
     if(source_gpu_pcm) {
         gpu_pcm_pairs_.reserve(previous_pairs_.size());
         for(std::size_t i=0;i<previous_pairs_.size();++i) {
             const Pair pair=previous_pairs_[i];
-            const Actor& a=actors_[pair.a];
-            const Actor& b=actors_[pair.b];
+            const Shape& a=shapes_[pair.a];
+            const Shape& b=shapes_[pair.b];
             if(a.geometry!=Geometry::Box || b.geometry!=Geometry::Box)
                 continue;
             const EdgeIndex edge=active_edge_handles_[i];
@@ -3633,14 +3737,14 @@ void Scene::update_contacts() {
         const auto prepare_plane_gu=[&] {
             for(std::size_t i=0;i<previous_pairs_.size();++i) {
                 const Pair pair=previous_pairs_[i];
-                const Actor& a=actors_[pair.a];
-                const Actor& b=actors_[pair.b];
+                const Shape& a=shapes_[pair.a];
+                const Shape& b=shapes_[pair.b];
                 if(a.geometry!=Geometry::Plane &&
                    b.geometry!=Geometry::Plane)continue;
                 if(a.geometry==Geometry::Sphere ||
                    b.geometry==Geometry::Sphere)continue;
-                const Actor& plane=a.geometry==Geometry::Plane?a:b;
-                const Actor& box=a.geometry==Geometry::Plane?b:a;
+                const Shape& plane=a.geometry==Geometry::Plane?a:b;
+                const Shape& box=a.geometry==Geometry::Plane?b:a;
                 if(box.motion!=Motion::Dynamic)
                     throw std::logic_error(
                         "PCM plane-box requires the admitted dynamic box");
@@ -3678,8 +3782,8 @@ void Scene::update_contacts() {
         const bool previously_touching=
             old_cursor<manifolds_.size() &&
             manifolds_[old_cursor].pair==pair;
-        const Actor& a = actors_[pair.a];
-        const Actor& b = actors_[pair.b];
+        const Shape& a = shapes_[pair.a];
+        const Shape& b = shapes_[pair.b];
         const float contact_distance=a.contact_offset+b.contact_offset;
         if(!std::isfinite(contact_distance))
             throw std::overflow_error("Native Gu contact distance overflow");
@@ -3697,10 +3801,10 @@ void Scene::update_contacts() {
                               b.geometry==Geometry::Plane;
         const bool reversed=!plane_pair &&
             island_edges_[edge].gu_order_reversed;
-        const Actor& first=plane_pair
+        const Shape& first=plane_pair
             ? (a.geometry==Geometry::Plane?a:b)
             : (reversed?b:a);
-        const Actor& second=plane_pair
+        const Shape& second=plane_pair
             ? (a.geometry==Geometry::Plane?b:a)
             : (reversed?a:b);
         const bool pcm_sphere=a.geometry==Geometry::Sphere ||
@@ -3743,8 +3847,8 @@ void Scene::update_contacts() {
                 // This same EdgeIndex cache remains the authority for
                 // source Gu witnesses and rejected-frame restoration.
                 step_checkpoint_.save_edge(*this,edge);
-                const Actor& plane=a.geometry==Geometry::Plane?a:b;
-                const Actor& box=a.geometry==Geometry::Plane?b:a;
+                const Shape& plane=a.geometry==Geometry::Plane?a:b;
+                const Shape& box=a.geometry==Geometry::Plane?b:a;
                 if(box.motion!=Motion::Dynamic)
                     throw std::logic_error(
                         "PCM plane-box requires the admitted dynamic box");
@@ -3881,9 +3985,9 @@ void Scene::update_contacts() {
             const bool use_pcm=plane_pair
                 ? pcm_plane_box_enabled_:pcm_box_box_enabled_;
             std::array<ContactPoint,1> output{};
-            const Actor& sphere=a.geometry==Geometry::Sphere?a:b;
+            const Shape& sphere=a.geometry==Geometry::Sphere?a:b;
             if(plane_pair) {
-                const Actor& plane=a.geometry==Geometry::Plane?a:b;
+                const Shape& plane=a.geometry==Geometry::Plane?a:b;
                 manifold.count=source_pcm_sphere_plane(
                     sphere.position,sphere.radius,plane.position.y,
                     contact_distance,output);
@@ -3905,7 +4009,7 @@ void Scene::update_contacts() {
                         second.position,second.radius,
                         contact_distance,output);
             }else {
-                const Actor& box=a.geometry==Geometry::Box?a:b;
+                const Shape& box=a.geometry==Geometry::Box?a:b;
                 manifold.count=use_pcm
                     ? source_pcm_sphere_box(
                         sphere.position,sphere.radius,
@@ -3932,8 +4036,8 @@ void Scene::update_contacts() {
             // half-extent, constructs the eight source depth tests, and
             // publishes world-space rotated vertices. Do not replace
             // this with identity-only AABB corners.
-            const Actor& plane = a.geometry == Geometry::Plane ? a : b;
-            const Actor& box = a.geometry == Geometry::Plane ? b : a;
+            const Shape& plane = a.geometry == Geometry::Plane ? a : b;
+            const Shape& box = a.geometry == Geometry::Plane ? b : a;
             if (box.motion != Motion::Dynamic)
                 continue;
             // GuContactPlaneBox always emits the plane-first normal.
@@ -4526,13 +4630,13 @@ void Scene::update_island_connectivity() {
             }
         };
         for(Pair pair:found_)
-            change_static(speculative_islands_,pair,true);
+            change_static(speculative_islands_,body_pair(pair),true);
         for(Pair pair:lost_)
-            change_static(speculative_islands_,pair,false);
+            change_static(speculative_islands_,body_pair(pair),false);
         for(Pair pair:found_contacts_)
-            change_static(accurate_islands_,pair,true);
+            change_static(accurate_islands_,body_pair(pair),true);
         for(Pair pair:lost_contacts_)
-            change_static(accurate_islands_,pair,false);
+            change_static(accurate_islands_,body_pair(pair),false);
     }
     if(!rebuild) {
         // No newly connected dynamic edges means no island membership,
@@ -4540,16 +4644,17 @@ void Scene::update_island_connectivity() {
         // publication contract without touching island revision/epochs.
         bool dynamic_found=false;
         for(Pair pair:found_)
-            if(dynamic_edge(pair)) {dynamic_found=true;break;}
+            if(dynamic_edge(body_pair(pair))) {dynamic_found=true;break;}
         if(!dynamic_found)
             for(Pair pair:found_contacts_)
-                if(dynamic_edge(pair)) {dynamic_found=true;break;}
+                if(dynamic_edge(body_pair(pair))) {dynamic_found=true;break;}
         if(!dynamic_found) {
             // Even a static-only touch is a source contact-manager edge
             // in its awake dynamic island; it cannot be skipped merely
             // because dynamic connectivity and handles remain unchanged.
-            for(Pair pair:found_contacts_) {
-                    const auto id=contact_edge_index(pair);
+            for(Pair shapes:found_contacts_) {
+                const Pair pair=body_pair(shapes);
+                    const auto id=contact_edge_index(shapes);
                     const BodyId node=dynamic_node(pair.a)?pair.a:pair.b;
                     if(id!=invalid_edge && dynamic_node(node))
                         append_accurate_island_edge(
@@ -5185,13 +5290,14 @@ void Scene::update_island_connectivity() {
             admit_nodes(speculative_islands_);
             admit_nodes(accurate_islands_);
             for(Pair pair:found_)
-                merge(speculative_islands_,pair,contact_edge_index(pair));
+                merge(speculative_islands_,body_pair(pair),contact_edge_index(pair));
             for(EdgeIndex id:active_constraint_handles_)
                 if(island_edges_[id].live && !island_edges_[id].retiring)
                     merge(speculative_islands_,island_edges_[id].pair,id);
-            for(Pair pair:found_contacts_) {
-                merge(accurate_islands_,pair,contact_edge_index(pair));
-                const auto id=contact_edge_index(pair);
+            for(Pair shapes:found_contacts_) {
+                const Pair pair=body_pair(shapes);
+                merge(accurate_islands_,pair,contact_edge_index(shapes));
+                const auto id=contact_edge_index(shapes);
                 const BodyId node=dynamic_node(pair.a)?pair.a:pair.b;
                 if(id!=invalid_edge && dynamic_node(node))
                     append_accurate_island_edge(
@@ -5203,8 +5309,6 @@ void Scene::update_island_connectivity() {
                     merge(accurate_islands_,pair,id);
                     const BodyId node=dynamic_node(pair.a)?pair.a:pair.b;
                     if(dynamic_node(node)) {
-                        auto& owner=accurate_islands_.islands[
-                            accurate_islands_.node_island[node]];
                         if(!island_edges_[id].indexed_accurate)
                             append_accurate_island_edge(
                                 id,accurate_islands_.node_island[node]);
@@ -5237,14 +5341,15 @@ void Scene::update_island_connectivity() {
                 accurate_island_nodes_.push_back(static_cast<BodyId>(i));
     } else {
         for(Pair pair:found_)
-            if(merge(speculative_islands_,pair,contact_edge_index(pair)))
+            if(merge(speculative_islands_,body_pair(pair),contact_edge_index(pair)))
                 --speculative_island_count_;
-        for(Pair pair:found_contacts_) {
-            if(merge(accurate_islands_,pair,contact_edge_index(pair))) {
+        for(Pair shapes:found_contacts_) {
+                const Pair pair=body_pair(shapes);
+            if(merge(accurate_islands_,pair,contact_edge_index(shapes))) {
                 --accurate_island_count_;
                 order_changed=true;
             }
-            const auto id=contact_edge_index(pair);
+            const auto id=contact_edge_index(shapes);
             const BodyId node=dynamic_node(pair.a)?pair.a:pair.b;
             if(id!=invalid_edge && dynamic_node(node))
                 append_accurate_island_edge(
@@ -5499,7 +5604,8 @@ void Scene::activate_published_islands() noexcept {
     };
     // Source first-pass SAP new-edge events precede second-pass Gu
     // touches. Each graph can receive a different subset and order.
-    for(Pair pair:found_) {
+    for(Pair shapes:found_) {
+        const Pair pair=body_pair(shapes);
         if(!dynamic_node(pair.a) || !dynamic_node(pair.b))continue;
         if(!actors_[pair.a].sleeping || !actors_[pair.b].sleeping) {
             append(speculative_islands_,pair.a);
@@ -5512,7 +5618,8 @@ void Scene::activate_published_islands() noexcept {
             actors_[pair.b].activating=true;
         }
     }
-    for(Pair pair:found_contacts_) {
+    for(Pair shapes:found_contacts_) {
+        const Pair pair=body_pair(shapes);
         for(BodyId id:{pair.a,pair.b}) {
             if(!dynamic_node(id))continue;
             append(accurate_islands_,id);
@@ -5564,8 +5671,9 @@ void Scene::activate_published_islands() noexcept {
     }
     // addConnectionToGraph activates newly linked edges whenever
     // either endpoint is active, including static-world contacts.
-    for(Pair pair:found_) {
-        const EdgeIndex id=contact_edge_index(pair);
+    for(Pair shapes:found_) {
+        const Pair pair=body_pair(shapes);
+        const EdgeIndex id=contact_edge_index(shapes);
         if(id!=invalid_edge &&
            ((actors_[pair.a].motion==Motion::Dynamic &&
              !actors_[pair.a].sleeping) ||
@@ -5573,8 +5681,9 @@ void Scene::activate_published_islands() noexcept {
              !actors_[pair.b].sleeping)))
             activate_contact_edge(id,false);
     }
-    for(Pair pair:found_contacts_) {
-        const EdgeIndex id=contact_edge_index(pair);
+    for(Pair shapes:found_contacts_) {
+        const Pair pair=body_pair(shapes);
+        const EdgeIndex id=contact_edge_index(shapes);
         if(id!=invalid_edge &&
            ((actors_[pair.a].motion==Motion::Dynamic &&
              !actors_[pair.a].sleeping) ||
@@ -6281,8 +6390,8 @@ void Scene::prepare_solver_bodies() {
         if(body.solver_row_generation==solver_preparation_generation_)return;
         auto& row=admit_solver_row(id);
         row.prepared_generation=solver_preparation_generation_;
-        row.data.position=body.position;
-        row.data.orientation=body.orientation;
+        row.data.position=mass_position(body);
+        row.data.orientation=mass_orientation(body);
         row.data.linear_velocity=body.velocity;
         row.data.angular_velocity=body.angular_velocity;
         // A kinematic participates in Jacobian velocity without any
@@ -6370,8 +6479,8 @@ void Scene::prepare_solver_bodies() {
                 continue;
             solver_active_ids_.push_back(id);
             const Actor& actor=actors_[id];
-            row.data.position=actor.position;
-            row.data.orientation=actor.orientation;
+            row.data.position=mass_position(actor);
+            row.data.orientation=mass_orientation(actor);
             row.data.linear_velocity=actor.velocity;
             row.data.angular_velocity=actor.angular_velocity;
             // DyRigidBodyToSolverBody::copyToSolverBodyData masks
@@ -6394,7 +6503,7 @@ void Scene::prepare_solver_bodies() {
                 std::sqrt(actor.inverse_inertia_local.x),
                 std::sqrt(actor.inverse_inertia_local.y),
                 std::sqrt(actor.inverse_inertia_local.z)};
-            const Quat q=actor.orientation;
+            const Quat q=mass_orientation(actor);
             if(q.x==0.0f && q.y==0.0f && q.z==0.0f && q.w==1.0f) {
                 row.data.sqrt_inverse_inertia={
                     Vec3{local.x,0.0f,0.0f},Vec3{0.0f,local.y,0.0f},
@@ -6503,7 +6612,7 @@ void Scene::partition_constraints() {
                    manifold_lookup_generation_ ||
                manifold_by_edge_[edge].index>=manifolds_.size() ||
                !(manifolds_[manifold_by_edge_[edge].index].pair==
-                 island_edges_[edge].pair))
+                 island_edges_[edge].shapes))
                 throw std::logic_error(
                     "Active PhysX island has an unindexed contact manager");
             indexed_managers_.push_back(manifold_by_edge_[edge].index);
@@ -6604,8 +6713,8 @@ void Scene::partition_constraints() {
             // position/velocity pass consumes these same resolved IDs.
             constraint_descriptors_.push_back({
                 narrow_index(index),
-                reversed?manifold.pair.b:manifold.pair.a,
-                reversed?manifold.pair.a:manifold.pair.b,
+                shapes_[reversed?manifold.pair.b:manifold.pair.a].body,
+                shapes_[reversed?manifold.pair.a:manifold.pair.b].body,
                 false});
         }
         const auto pair_of=[&](std::size_t index) {
@@ -6824,12 +6933,18 @@ void Scene::prepare_constraints(float seconds) {
         solver_kinematic_participant_ |=
             body0.motion==Motion::Kinematic ||
             body1.motion==Motion::Kinematic;
-        const Vec3 ra=rotate(body0.orientation,constraint.local_anchor_a);
-        const Vec3 rb=rotate(body1.orientation,constraint.local_anchor_b);
-        const Vec3 offset{
-            body0.position.x+ra.x-body1.position.x-rb.x,
-            body0.position.y+ra.y-body1.position.y-rb.y,
-            body0.position.z+ra.z-body1.position.z-rb.z};
+        const Vec3 anchor0=rotate(body0.orientation,constraint.local_anchor_a);
+        const Vec3 anchor1=rotate(body1.orientation,constraint.local_anchor_b);
+        const Vec3 center0=mass_position(body0),center1=mass_position(body1);
+        const Vec3 ra{body0.position.x+anchor0.x-center0.x,
+                      body0.position.y+anchor0.y-center0.y,
+                      body0.position.z+anchor0.z-center0.z};
+        const Vec3 rb{body1.position.x+anchor1.x-center1.x,
+                      body1.position.y+anchor1.y-center1.y,
+                      body1.position.z+anchor1.z-center1.z};
+        const Vec3 offset{center0.x+ra.x-center1.x-rb.x,
+                          center0.y+ra.y-center1.y-rb.y,
+                          center0.z+ra.z-center1.z-rb.z};
         const float distance=std::sqrt(
             offset.x*offset.x+offset.y*offset.y+offset.z*offset.z);
         if(!std::isfinite(distance))
@@ -6899,22 +7014,20 @@ void Scene::prepare_constraints(float seconds) {
     constexpr float same_normal = 0.999f;
     constexpr float friction_offset_threshold = 0.04f;
     constexpr float correlation_distance = 0.025f;
-    const auto local_point = [](const Actor& actor, Vec3 world) {
-        const Quat& q = actor.orientation;
+    const auto local_point = [this](const Actor& actor, Vec3 world) {
+        const Quat q = mass_orientation(actor);
+        const Vec3 p=mass_position(actor);
         return rotate(Quat{-q.x,-q.y,-q.z,q.w},
-            {world.x-actor.position.x,
-             world.y-actor.position.y,
-             world.z-actor.position.z});
+            {world.x-p.x,world.y-p.y,world.z-p.z});
     };
-    const auto local_normal = [](const Actor& actor, Vec3 world_normal) {
-        const Quat& q = actor.orientation;
+    const auto local_normal = [this](const Actor& actor, Vec3 world_normal) {
+        const Quat q = mass_orientation(actor);
         return rotate(Quat{-q.x,-q.y,-q.z,q.w}, world_normal);
     };
-    const auto world_point = [](const Actor& actor, Vec3 local) {
-        Vec3 r = rotate(actor.orientation,local);
-        return Vec3{r.x+actor.position.x,
-                    r.y+actor.position.y,
-                    r.z+actor.position.z};
+    const auto world_point = [this](const Actor& actor, Vec3 local) {
+        const Vec3 r=rotate(mass_orientation(actor),local);
+        const Vec3 p=mass_position(actor);
+        return Vec3{r.x+p.x,r.y+p.y,r.z+p.z};
     };
     const auto squared_length = [](Vec3 v) {
         return v.x*v.x + v.y*v.y + v.z*v.z;
@@ -6931,7 +7044,7 @@ void Scene::prepare_constraints(float seconds) {
         auto& manifold=manifolds_[manager_index];
         const EdgeIndex edge=manifold.edge_handle;
         if(edge>=island_edges_.size() ||
-           !(island_edges_[edge].pair==manifold.pair))
+           !(island_edges_[edge].shapes==manifold.pair))
             throw std::logic_error(
                 "Dy source manager preparation has a mismatched island edge");
         step_checkpoint_.save_manifold_solver_metadata(*this,manager_index);
@@ -6940,8 +7053,8 @@ void Scene::prepare_constraints(float seconds) {
         // but the source does not prepare or solve constraints for it.
         // Keep the Gu-indexed zero-impulse result slots without paying
         // for contact Jacobians, friction correlation or solver rows.
-        const Actor& actor_a=actors_[manifold.pair.a];
-        const Actor& actor_b=actors_[manifold.pair.b];
+        const Actor& actor_a=actors_[shapes_[manifold.pair.a].body];
+        const Actor& actor_b=actors_[shapes_[manifold.pair.b].body];
         const bool active_dynamic=
             (actor_a.motion==Motion::Dynamic && !actor_a.sleeping) ||
             (actor_b.motion==Motion::Dynamic && !actor_b.sleeping);
@@ -6969,8 +7082,9 @@ void Scene::prepare_constraints(float seconds) {
         // even when the floor was created before its dynamic partner.
         // The persistent source-order flag applies to every shape pair.
         const bool reversed=island_edges_[edge].gu_order_reversed;
-        const BodyId id0=reversed?manifold.pair.b:manifold.pair.a;
-        const BodyId id1=reversed?manifold.pair.a:manifold.pair.b;
+        const Shape& shape0=shapes_[reversed?manifold.pair.b:manifold.pair.a];
+        const Shape& shape1=shapes_[reversed?manifold.pair.a:manifold.pair.b];
+        const BodyId id0=shape0.body,id1=shape1.body;
         const auto& a = rigid_node(actors_[id0].motion)
             ? prepared_solver_row(id0).data : world_solver_row_.data;
         const auto& b = rigid_node(actors_[id1].motion)
@@ -6987,7 +7101,7 @@ void Scene::prepare_constraints(float seconds) {
             actor1.dynamics.contact_slop_coefficient);
         // DyContactPrepShared::constructContactConstraint subtracts
         // contactDesc.restDistance from each Gu surface separation.
-        const float rest_distance=actor0.rest_offset+actor1.rest_offset;
+        const float rest_distance=shape0.rest_offset+shape1.rest_offset;
         if(!std::isfinite(rest_distance) ||
            !std::isfinite(rest_distance+friction_offset_threshold))
             throw std::overflow_error("Native Dy rest distance overflow");
@@ -7012,8 +7126,8 @@ void Scene::prepare_constraints(float seconds) {
         const float max_penetration_bias=-std::min(
             actor0.dynamics.max_depenetration_velocity,
             actor1.dynamics.max_depenetration_velocity);
-        const Material& m0=actor0.material;
-        const Material& m1=actor1.material;
+        const Material& m0=shape0.material;
+        const Material& m1=shape1.material;
         const auto friction_mode=higher(m0.friction_combine,
                                         m1.friction_combine);
         // PxsMaterialCombiner::PxsCombineMaterials: a compliant material
@@ -7147,7 +7261,7 @@ void Scene::prepare_constraints(float seconds) {
                 if(old.broken || old.disable_strong_friction ||
                    old.anchor_count==0)continue;
                 const Vec3 old_normal_1_world=
-                    rotate(actor1.orientation,old.body1_normal);
+                    rotate(mass_orientation(actor1),old.body1_normal);
                 const Vec3 old_normal_1_in_0=
                     local_normal(actor0,old_normal_1_world);
                 if(dot(old.body0_normal,old_normal_1_in_0)<=same_normal)
@@ -7167,7 +7281,7 @@ void Scene::prepare_constraints(float seconds) {
                     throw std::overflow_error(
                         "Native source cached friction exceeds 32 patches");
                 FrictionPatch copied=old;
-                copied.normal=rotate(actor0.orientation,old.body0_normal);
+                copied.normal=rotate(mass_orientation(actor0),old.body0_normal);
                 copied.contact_count=0;
                 copied.contact_ids.fill(0xffff);
                 copied.bounds_min={
@@ -7304,15 +7418,13 @@ void Scene::prepare_constraints(float seconds) {
             pack_body(prep.body1,b);
             // Gu anchors are actor-local, including the immovable shape.
             // World solver-body data uses a zero-mass static sentinel.
-            const auto pack_pose=[](native::GpuDyContactPrepBody& out,
+            const auto pack_pose=[this](native::GpuDyContactPrepBody& out,
                                     const Actor& actor) {
-                out.position[0]=actor.position.x;
-                out.position[1]=actor.position.y;
-                out.position[2]=actor.position.z;
-                out.orientation[0]=actor.orientation.x;
-                out.orientation[1]=actor.orientation.y;
-                out.orientation[2]=actor.orientation.z;
-                out.orientation[3]=actor.orientation.w;
+                const Vec3 p=mass_position(actor);
+                const Quat q=mass_orientation(actor);
+                out.position[0]=p.x;out.position[1]=p.y;out.position[2]=p.z;
+                out.orientation[0]=q.x;out.orientation[1]=q.y;
+                out.orientation[2]=q.z;out.orientation[3]=q.w;
             };
             pack_pose(prep.body0,actor0);
             pack_pose(prep.body1,actor1);
@@ -7595,13 +7707,12 @@ void Scene::prepare_constraints(float seconds) {
             t0={t0.x*inv_l,t0.y*inv_l,t0.z*inv_l};
             const Vec3 t1=cross(n,t0);
             for (std::size_t k=0;k<count;++k) {
-                const Vec3 ra=rotate(actor0.orientation,patch.body0_anchors[k]);
-                const Vec3 rb=rotate(actor1.orientation,patch.body1_anchors[k]);
+                const Vec3 ra=rotate(mass_orientation(actor0),patch.body0_anchors[k]);
+                const Vec3 rb=rotate(mass_orientation(actor1),patch.body1_anchors[k]);
+                const Vec3 center0=mass_position(actor0),center1=mass_position(actor1);
                 const Vec3 error=suppress_slop(sub(
-                    {ra.x+actor0.position.x,ra.y+actor0.position.y,
-                     ra.z+actor0.position.z},
-                    {rb.x+actor1.position.x,rb.y+actor1.position.y,
-                     rb.z+actor1.position.z}),pair_slop);
+                    {ra.x+center0.x,ra.y+center0.y,ra.z+center0.z},
+                    {rb.x+center1.x,rb.y+center1.y,rb.z+center1.z}),pair_slop);
                 for (const Vec3 tangent : {t0,t1}) {
                     const Vec3 ax0=suppress_slop(cross(ra,tangent),pair_slop);
                     const Vec3 ax1=suppress_slop(cross(rb,tangent),pair_slop);
@@ -7664,11 +7775,15 @@ void Scene::solve_gpu_distance_constraints(float seconds) {
         const auto& actor=actors_[id];
         const auto& row=solver_rows_[actor.solver_row_index];
         auto& input=gpu_dy_integration_inputs_[actor.solver_row_index];
-        pack(input.position,actor.position);
-        input.orientation[0]=actor.orientation.x;
-        input.orientation[1]=actor.orientation.y;
-        input.orientation[2]=actor.orientation.z;
-        input.orientation[3]=actor.orientation.w;
+        pack(input.position,mass_position(actor));
+        const Quat mass_q=mass_orientation(actor);
+        input.orientation[0]=mass_q.x;input.orientation[1]=mass_q.y;
+        input.orientation[2]=mass_q.z;input.orientation[3]=mass_q.w;
+        pack(input.mass_local_position,actor.mass_local_pose.position);
+        const auto local_q=actor.mass_local_pose.orientation;
+        input.mass_local_orientation[0]=local_q.x;input.mass_local_orientation[1]=local_q.y;
+        input.mass_local_orientation[2]=local_q.z;input.mass_local_orientation[3]=local_q.w;
+        input.source_shape_count=actor.simulation_shape_count;
         pack(input.linear_velocity,row.data.linear_velocity);
         pack(input.angular_velocity,row.data.angular_velocity);
         for(std::size_t axis=0;axis<3u;++axis) {
@@ -7680,7 +7795,7 @@ void Scene::solve_gpu_distance_constraints(float seconds) {
         input.lock_flags=actor.dynamics.lock_flags;
         input.seconds=seconds;
         input.active=row.prepared_generation==solver_preparation_generation_;
-        if(input.active)input.source_element=id;
+        if(input.active)input.source_element=actor.first_simulation_shape;
     }
     gpu_dy_rows_.resize(distance_rows_.size());
     for(std::size_t i=0;i<distance_rows_.size();++i) {
@@ -7862,19 +7977,19 @@ void Scene::solve_gpu_distance_constraints(float seconds) {
     // GPU PCM selected changed anchors using the same Gu point ordinals;
     // reconstruct their local coordinates only after Dy's source task
     // completed and its compact patch report has been fetched.
-    const auto local_point=[](const Actor& actor,Vec3 world) {
-        const auto& q=actor.orientation;
+    const auto local_point=[this](const Actor& actor,Vec3 world) {
+        const auto q=mass_orientation(actor);
+        const auto p=mass_position(actor);
         return rotate(Quat{-q.x,-q.y,-q.z,q.w},
-            {world.x-actor.position.x,
-             world.y-actor.position.y,world.z-actor.position.z});
+            {world.x-p.x,world.y-p.y,world.z-p.z});
     };
     for(const auto manager_index:indexed_managers_) {
         const auto& m=manifolds_[manager_index];
         if(m.pcm_result_index==std::numeric_limits<std::uint32_t>::max())
             continue;
         const bool reversed=island_edges_[m.edge_handle].gu_order_reversed;
-        const Actor& a=actors_[reversed?m.pair.b:m.pair.a];
-        const Actor& b=actors_[reversed?m.pair.a:m.pair.b];
+        const Actor& a=actors_[shapes_[reversed?m.pair.b:m.pair.a].body];
+        const Actor& b=actors_[shapes_[reversed?m.pair.a:m.pair.b].body];
         for(std::size_t i=m.friction_patch_offset;
             i<m.friction_patch_offset+m.friction_patch_count;++i) {
             auto& patch=friction_patches_[i];
@@ -8239,15 +8354,20 @@ void Scene::publish_contact_events() {
     for(std::size_t index:contact_report_managers_)
         report_points+=manifolds_[index].count;
     next_contact_event_points_.reserve(report_points);
+    const auto append_event=[&](Pair pair,ContactEventKind kind,std::uint8_t count,
+                                std::size_t offset,double impulse) {
+        const Pair bodies=body_pair(pair);
+        const bool reverse=bodies.a>bodies.b;
+        next_contact_events_.push_back({reverse?bodies.b:bodies.a,reverse?bodies.a:bodies.b,
+            kind,count,offset,impulse,reverse?pair.b:pair.a,reverse?pair.a:pair.b});
+    };
     std::size_t lost=0,found=0;
     for(std::size_t index:contact_report_managers_) {
         const auto& manifold=manifolds_[index];
         while(lost<lost_contacts_.size() &&
               lost_contacts_[lost]<manifold.pair) {
             const Pair pair=lost_contacts_[lost++];
-            next_contact_events_.push_back({
-                pair.a,pair.b,ContactEventKind::Lost,0,
-                next_contact_event_points_.size(),0.0});
+            append_event(pair,ContactEventKind::Lost,0,next_contact_event_points_.size(),0.0);
         }
         while(found<found_contacts_.size() &&
               found_contacts_[found]<manifold.pair)++found;
@@ -8267,8 +8387,8 @@ void Scene::publish_contact_events() {
                      actor.kinematic_settling));
         };
         if(!is_new &&
-           !sc_actor_active(manifold.pair.a) &&
-           !sc_actor_active(manifold.pair.b))
+           !sc_actor_active(shapes_[manifold.pair.a].body) &&
+           !sc_actor_active(shapes_[manifold.pair.b].body))
             continue;
         if(manifold.contact_offset>normal_impulse_writeback_.size() ||
            manifold.count>normal_impulse_writeback_.size()-
@@ -8283,7 +8403,8 @@ void Scene::publish_contact_events() {
             const double normal_force=normal_impulse_writeback_[index];
             impulse+=normal_force;
             Vec3 outward=point.normal;
-            if(island_edges_[manifold.edge_handle].gu_order_reversed)
+            if(island_edges_[manifold.edge_handle].gu_order_reversed !=
+               (shapes_[manifold.pair.a].body>shapes_[manifold.pair.b].body))
                 outward={-outward.x,-outward.y,-outward.z};
             next_contact_event_points_.push_back({
                 point.position,outward,point.separation,normal_force});
@@ -8291,16 +8412,12 @@ void Scene::publish_contact_events() {
         if(!std::isfinite(impulse))
             throw std::overflow_error(
                 "Contact notification impulse is not finite");
-        next_contact_events_.push_back({
-            manifold.pair.a,manifold.pair.b,
-            is_new?ContactEventKind::Found:ContactEventKind::Persists,
-            manifold.count,offset,impulse});
+        append_event(manifold.pair,is_new?ContactEventKind::Found:ContactEventKind::Persists,
+                     manifold.count,offset,impulse);
     }
     for(;lost<lost_contacts_.size();++lost) {
         const Pair pair=lost_contacts_[lost];
-        next_contact_events_.push_back({
-            pair.a,pair.b,ContactEventKind::Lost,0,
-            next_contact_event_points_.size(),0.0});
+        append_event(pair,ContactEventKind::Lost,0,next_contact_event_points_.size(),0.0);
     }
     // Publish only after every Sc/Dy stage and this event preparation
     // succeeds. A rejected step leaves the previous returned span and
@@ -8398,16 +8515,14 @@ void Scene::write_back_contacts(std::size_t first,std::size_t last) {
             result.broken=source.broken;
             // DyFrictionCorrelation stores body0 anchors in Sc's
             // source-ordered frame, not the canonical Gu report pair.
-            const BodyId body0=island_edges_[manifold.edge_handle]
-                .gu_order_reversed ? source.pair.b : source.pair.a;
+            const BodyId body0=shapes_[island_edges_[manifold.edge_handle]
+                .gu_order_reversed ? source.pair.b : source.pair.a].body;
             const auto& actor=actors_[body0];
             for (std::size_t k=0;k<source.anchor_count;++k) {
                 const Vec3 local=source.body0_anchors[k];
-                const Vec3 rotated=rotate(actor.orientation,local);
-                result.anchor_positions[k]={
-                    actor.position.x+rotated.x,
-                    actor.position.y+rotated.y,
-                    actor.position.z+rotated.z};
+                const Vec3 rotated=rotate(mass_orientation(actor),local);
+                const Vec3 center=mass_position(actor);
+                result.anchor_positions[k]={center.x+rotated.x,center.y+rotated.y,center.z+rotated.z};
                 // DyContactPrep.cpp::writeBackContactFriction reconstructs
                 // world impulse by summing both tangent vectors scaled
                 // by each source SolverContactFriction::appliedForce.
@@ -8453,7 +8568,8 @@ void Scene::update_threshold_stream(float seconds) {
     // Keep each authoritative Gu contact_offset for impulse indexing.
     for(std::size_t index:indexed_managers_) {
         const auto& manifold=manifolds_[index];
-        const Pair pair=manifold.pair;
+        const Pair bodies=body_pair(manifold.pair);
+        const Pair pair=ordered_pair(bodies.a,bodies.b);
         const bool dynamic_a=actors_[pair.a].motion==Motion::Dynamic;
         const bool dynamic_b=actors_[pair.b].motion==Motion::Dynamic;
         if (!dynamic_a && !dynamic_b)
@@ -8601,8 +8717,11 @@ void Scene::StepCheckpoint::save_motion(Scene& scene, BodyId id) noexcept {
         body.pending_angular_acceleration,
         body.wake_counter,body.sleep_linear_acc,body.sleep_angular_acc,
         body.ready_for_sleep,body.sleeping,body.activating,
-        body.kinematic_target_pending,body.kinematic_settling,
-        body.encoded_bounds,body.cached_bounds_current});
+        body.kinematic_target_pending,body.kinematic_settling});
+    for(ShapeId shape=body.first_shape;shape!=invalid_shape;shape=scene.shapes_[shape].next) {
+        const auto& value=scene.shapes_[shape];
+        shape_bounds.push_back({shape,value.encoded_bounds,value.cached_bounds_current});
+    }
 }
 void Scene::StepCheckpoint::save_manifold_solver_metadata(
     Scene& scene, std::size_t index) {
@@ -8744,6 +8863,8 @@ void Scene::StepCheckpoint::capture(Scene& scene, bool capture_solver_state) {
     // that persists beyond a step or is exposed by Scene's read-only APIs.
     // It intentionally excludes rebuilt solver constraints and scratch.
     motions.clear();
+    shape_bounds.clear();
+    shape_bounds.reserve(scene.rigid_shape_count_);
     speculative_ready_before.assign(
         scene.speculative_ready_nodes_.begin(),
         scene.speculative_ready_nodes_.end());
@@ -9088,8 +9209,6 @@ void Scene::StepCheckpoint::rollback(Scene& scene) noexcept {
             a.activating=motion.activating;
             a.kinematic_target_pending=motion.kinematic_target_pending;
             a.kinematic_settling=motion.kinematic_settling;
-            a.encoded_bounds=motion.encoded_bounds;
-            a.cached_bounds_current=motion.cached_bounds_current;
         }
     }
     // Swap back the exact original arena allocations. This preserves the
@@ -9312,7 +9431,13 @@ void Scene::StepCheckpoint::rollback(Scene& scene) noexcept {
     // must force their original AABB/SAP owner to rebuild next frame.
     if(scene.gpu_broadphase_)
         scene.gpu_broadphase_->invalidate_after_rollback();
- }
+    for(const auto& undo:shape_bounds) {
+        auto& shape=scene.shapes_[undo.id];
+        scene.refresh_shape_pose(shape);
+        shape.encoded_bounds=undo.encoded_bounds;
+        shape.cached_bounds_current=undo.cached_bounds_current;
+    }
+}
 
 void Scene::RigidStepJoin::finish_accurate_third_pass() {
     // The accurate and speculative IslandSims run independent
@@ -9488,7 +9613,7 @@ void Scene::prepare_unconstrained_velocities(float seconds) {
                     "Native gyroscopic motion requires representable inertia");
             angular=gyroscopic_velocity(
                 angular,actor.inverse_inertia_local,
-                actor.orientation,seconds);
+                mass_orientation(actor),seconds);
         }
         // DyRigidBodyToSolverBody leaves the solver's pre-integration
         // linear baseline available to contact preparation. Original
@@ -9586,15 +9711,19 @@ void Scene::integrate_solver_task(
                 q={result.orientation[0],result.orientation[1],
                    result.orientation[2],result.orientation[3]};
             }else {
-                p={
-                    actor.position.x+motion_linear.x*seconds,
-                    actor.position.y+motion_linear.y*seconds,
-                    actor.position.z+motion_linear.z*seconds};
+                const Vec3 center=mass_position(actor);
+                p={center.x+motion_linear.x*seconds,
+                   center.y+motion_linear.y*seconds,
+                   center.z+motion_linear.z*seconds};
                 if(!finite(p))
                     throw std::overflow_error(
                         "Native position-iteration motion overflow");
                 q=integrate_quaternion(
-                    actor.orientation,motion_angular,seconds);
+                    mass_orientation(actor),motion_angular,seconds);
+                const auto local=actor.mass_local_pose.orientation;
+                q=multiply(q,Quat{-local.x,-local.y,-local.z,local.w});
+                const Vec3 offset=rotate(q,actor.mass_local_pose.position);
+                p={p.x-offset.x,p.y-offset.y,p.z-offset.z};
                 if(!finite(q))
                     throw std::overflow_error("Native CPU orientation overflow");
             }
@@ -9928,7 +10057,6 @@ void Scene::step(float seconds) {
         for(const BodyId id:solver_active_ids_) {
             const Actor& actor=actors_[id];
             if(!actor.alive || actor.motion!=Motion::Dynamic ||
-               !actor.simulation_shape_enabled ||
                actor.solver_row_generation!=solver_preparation_generation_ ||
                prepared_solver_row(id).prepared_generation!=
                    solver_preparation_generation_)
@@ -9949,7 +10077,8 @@ void Scene::step(float seconds) {
             // shape dirty in publish_integrated_shape_bounds. Only
             // matching Dy poses may regain device-cache authorization.
             if(accepted)
-                gpu_broadphase_->authorize_device_integrated_pose(id);
+                for(ShapeId shape=actor.first_simulation_shape;shape!=invalid_shape;shape=shapes_[shape].next_simulation_shape)
+                    gpu_broadphase_->authorize_device_integrated_pose(shape);
         }
     }
     join.finish_after_integration();
@@ -10145,6 +10274,21 @@ public:
     std::span<const ForceThresholdReport> force_threshold_changes() const override {
         return scene_.force_threshold_changes();
     }
+    BodyId create_static_body(Transform pose) override {return scene_.create_body(pose,false);}
+    BodyId create_dynamic_body(Transform pose) override {return scene_.create_body(pose,true);}
+    ShapeId attach_box_shape(BodyId body,Vec3 half,Transform pose) override {
+        return scene_.attach_box(body,half,pose);
+    }
+    ShapeId attach_sphere_shape(BodyId body,float radius,Transform pose) override {
+        return scene_.attach_sphere(body,radius,pose);
+    }
+    void detach_shape(ShapeId shape) override {scene_.detach_shape(shape);}
+    void set_shape_local_pose(ShapeId shape,Transform pose) override {scene_.set_shape_local_pose(shape,pose);}
+    void set_shape_material(ShapeId shape,Material material) override {scene_.set_attached_shape_material(shape,material);}
+    void set_shape_simulation_enabled(ShapeId shape,bool enabled) override {scene_.set_attached_shape_enabled(shape,enabled);}
+    void set_shape_offsets(ShapeId shape,float contact,float rest) override {scene_.set_attached_shape_offsets(shape,contact,rest);}
+    void update_mass_properties(BodyId body,float density) override {scene_.update_mass_properties(body,density);}
+    BodyMassProperties body_mass_properties(BodyId body) const override {return scene_.body_mass_properties(body);}
     BodyId add_static_box(Vec3 h, Vec3 p) override {
         return scene_.add_static_box(h, p);
     }

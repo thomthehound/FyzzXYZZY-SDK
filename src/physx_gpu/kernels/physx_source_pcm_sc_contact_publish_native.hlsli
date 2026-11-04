@@ -30,8 +30,8 @@ void publishScContacts(uint i,uint first,uint second,uint edge,uint result,
         float3 pb=asfloat(transforms.Load3(tb+16u));
         float distance=0.f;
         if(first<shapeCapacity) {
-            uint ga=geometryBias+first*16u;
-            uint gb=geometryBias+second*16u;
+            uint ga=geometryBias+first*64u;
+            uint gb=geometryBias+second*64u;
             distance=asfloat(geometry.Load(ga+12u))+
                      asfloat(geometry.Load(gb+12u));
         } else {

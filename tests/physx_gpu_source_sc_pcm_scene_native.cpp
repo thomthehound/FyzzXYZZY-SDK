@@ -5,6 +5,7 @@
 #include "native/scene.h"
 #include "physx_gpu/source_sc_owned_gpu_broadphase_native.h"
 #include "gpu_integration_metrics.h"
+#include "compound_rigid_cases.h"
 
 #include <algorithm>
 #include <array>
@@ -1565,7 +1566,7 @@ void verify_sphere_gpu_solver(
     const auto cpu_ids=add_scene(cpu);
     const auto gpu_ids=add_scene(gpu);
     constexpr float dt=1.f/120.f;
-    bool touched_all=false,saw_device_response=false;
+    bool touched_all=false,saw_device_response=false,saw_device_bounds=false;
     for(std::uint32_t frame=0u;frame<8u;++frame) {
         if(frame==3u) {
             constexpr Quat rotate{0.f,0.0998334166f,0.f,0.9950041653f};
@@ -1592,10 +1593,9 @@ void verify_sphere_gpu_solver(
         require(producer->dy_distance_dispatch_count()==frame+1u &&
                 producer->dy_gpu_integrated_body_count()>0u,
             "Source sphere bodies did not execute GPU Dy integration");
-        // Sphere AABBs use their exact geometric radius, never the
-        // box-oriented GPU pose cache as a substitute for that bound.
-        require(producer->last_frame().device_cached_box_count==0u,
-            "Sphere bounds incorrectly reused a box-transform device cache");
+        // Spherical geometry carries its own radius in the shared shape
+        // cache; Dy publishes exact spherical bounds after integration.
+        saw_device_bounds|=producer->last_frame().device_cached_box_count>0u;
         for(std::size_t i=0;i<cpu_ids.size();++i) {
             const auto a=cpu.body_state(cpu_ids[i]);
             const auto b=gpu.body_state(gpu_ids[i]);
@@ -1608,8 +1608,27 @@ void verify_sphere_gpu_solver(
         for(const auto impulse:gpu.solved_normal_impulses())
             saw_device_response |= impulse>0.;
     }
-    require(touched_all && saw_device_response,
+    require(touched_all && saw_device_response && saw_device_bounds,
         "GPU sphere contacts did not produce physical PGS response");
+}
+
+void verify_compound_actor_gpu_solver(
+    fyzz::compute::Backend backend,const char* sap,const char* pcm,const char* dy_shader) {
+    using namespace fyzz;
+    std::ifstream stream(dy_shader,std::ios::binary);
+    require(bool(stream),"Compound GPU Dy shader bundle missing");
+    std::vector<char> bytes(std::istreambuf_iterator<char>{stream},std::istreambuf_iterator<char>{});
+    compute::ShaderBinary shader{};
+    shader.format=backend==compute::Backend::Vulkan?compute::ShaderFormat::Spirv:compute::ShaderFormat::Dxil;
+    shader.bytes.assign(bytes.begin(),bytes.end());
+    auto gpu=create_native_gpu_world(backend,load_native_gpu_sap_shaders(backend,sap),
+        load_native_gpu_pcm_shaders(backend,pcm),std::move(shader),
+        {.execution=ExecutionMode::NativePortableGpu,.contact_notifications=true});
+    World cpu({.execution=ExecutionMode::NativeCpu,.contact_notifications=true});
+    test::compound_mass_and_motion(gpu,&cpu);
+    test::compound_contact_lifetimes(gpu,&cpu);
+    test::compound_default_contact_response(gpu,&cpu);
+    test::compound_joint_response(gpu,&cpu);
 }
 
 int main(int argc,char** argv) {
@@ -1621,7 +1640,7 @@ int main(int argc,char** argv) {
                 scenario=="sparse_contacts" || scenario=="coupled_stack" ||
                 scenario=="coupled_solver" || scenario=="legacy_gu_solver" ||
                 scenario=="mixed_solver" || scenario=="distance_solver" ||
-                scenario=="compound_shapes" || scenario=="sphere_solver",
+                scenario=="compound_shapes" || scenario=="compound_solver" || scenario=="sphere_solver",
                 "Unknown GPU scene regression scenario");
 #ifdef FYZZXYZZY_TEST_D3D12
         constexpr auto backend=fyzz::compute::Backend::D3D12;
@@ -1632,6 +1651,9 @@ int main(int argc,char** argv) {
         if(scenario=="all" || scenario=="compound_shapes")
             fyzz::tests::measure_gpu_case("sc_pcm","compound_shapes",
                 [&]{verify_compound_shape_gpu_pairs(backend,argv[1]);});
+        if(scenario=="all" || scenario=="compound_solver")
+            fyzz::tests::measure_gpu_case("sc_pcm","compound_solver",
+                [&]{verify_compound_actor_gpu_solver(backend,argv[1],argv[2],argv[3]);});
         if(scenario=="all" || scenario=="sphere_solver")
             fyzz::tests::measure_gpu_case("sc_pcm","sphere_solver",
                 [&]{verify_sphere_gpu_solver(

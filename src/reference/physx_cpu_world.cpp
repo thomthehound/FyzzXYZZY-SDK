@@ -99,6 +99,10 @@ struct PhysXCpuWorld final : WorldBackend, physx::PxSimulationEventCallback {
     physx::PxScene* scene = nullptr;
     physx::PxMaterial* material = nullptr;
     std::vector<physx::PxRigidActor*> actors;
+    struct ShapeOwner {physx::PxShape* shape; BodyId body;};
+    std::vector<ShapeOwner> shapes;
+    struct RetiredShapeToken {physx::PxShape* address; std::uintptr_t token; bool retained=false;};
+    std::vector<RetiredShapeToken> retired_shape_tokens;
     // The PxDistanceJoint remains PhysX's authoritative solver owner;
     // these tokens only retain public constraint lifetime and endpoints.
     struct DistanceJointOwner {
@@ -108,10 +112,10 @@ struct PhysXCpuWorld final : WorldBackend, physx::PxSimulationEventCallback {
     };
     std::vector<DistanceJointOwner> distance_joints;
     std::vector<std::uint32_t> free_distance_joint_ids;
-    // Deleted PhysX callback pointers are address tokens ONLY:
-    // a removed actor must never be dereferenced after PxActor::release.
+    // Retain removed objects through callback fetch so allocator address
+    // reuse cannot alias public actor or shape notification identities.
     struct RetiredActorToken {
-        const physx::PxActor* address=nullptr;
+        physx::PxRigidActor* address=nullptr;
         std::uintptr_t token=0;
     };
     std::vector<RetiredActorToken> retired_actor_tokens;
@@ -163,6 +167,16 @@ struct PhysXCpuWorld final : WorldBackend, physx::PxSimulationEventCallback {
         const float normal_sign=raw0<=raw1 ? 1.0f : -1.0f;
         for(physx::PxU32 p=0;p<count;++p) {
             const auto& pair=pairs[p];
+            const auto shape_token=[&](unsigned index) -> ShapeId {
+                const bool removed=pair.flags.isSet(index==0
+                    ? physx::PxContactPairFlag::eREMOVED_SHAPE_0:physx::PxContactPairFlag::eREMOVED_SHAPE_1);
+                if(!removed)return static_cast<ShapeId>(reinterpret_cast<std::uintptr_t>(pair.shapes[index]->userData)-1);
+                for(const auto& token:retired_shape_tokens)
+                    if(token.address==pair.shapes[index])return static_cast<ShapeId>(token.token-1);
+                throw std::logic_error("Removed reference shape has no lifetime token");
+            };
+            const ShapeId shape0=shape_token(raw0<=raw1?0:1);
+            const ShapeId shape1=shape_token(raw0<=raw1?1:0);
             const bool found=pair.events.isSet(
                 physx::PxPairFlag::eNOTIFY_TOUCH_FOUND);
             const bool lost=pair.events.isSet(
@@ -199,7 +213,7 @@ struct PhysXCpuWorld final : WorldBackend, physx::PxSimulationEventCallback {
             pending_contact_events.push_back({
                 a,b,found?ContactEventKind::Found:
                     lost?ContactEventKind::Lost:ContactEventKind::Persists,
-                n,offset,impulse});
+                n,offset,impulse,shape0,shape1});
         }
         } catch (...) {
             callback_error=std::current_exception();
@@ -273,6 +287,13 @@ struct PhysXCpuWorld final : WorldBackend, physx::PxSimulationEventCallback {
         }
     }
 
+    void release_retired_callbacks() noexcept {
+        for(auto& token:retired_shape_tokens)
+            if(token.retained)token.address->release();
+        for(auto& token:retired_actor_tokens)token.address->release();
+        retired_shape_tokens.clear();
+        retired_actor_tokens.clear();
+    }
     void cleanup() noexcept {
         for(auto& owner:distance_joints)
             if(owner.joint)owner.joint->release();
@@ -281,7 +302,8 @@ struct PhysXCpuWorld final : WorldBackend, physx::PxSimulationEventCallback {
         for (physx::PxRigidActor* actor : actors)
             if (actor) actor->release();
         actors.clear();
-        retired_actor_tokens.clear();
+        release_retired_callbacks();
+        shapes.clear();
         if (material) {
             material->release();
             material = nullptr;
@@ -310,6 +332,77 @@ struct PhysXCpuWorld final : WorldBackend, physx::PxSimulationEventCallback {
         }
     }
 
+    physx::PxRigidActor& require_actor(BodyId id) const {
+        if(id>=actors.size() || !actors[id])throw std::out_of_range("Unknown reference body ID");
+        return *actors[id];
+    }
+    physx::PxShape& require_shape(ShapeId id) const {
+        if(id>=shapes.size() || !shapes[id].shape)throw std::out_of_range("Unknown reference shape ID");
+        return *shapes[id].shape;
+    }
+    BodyId create_static_body(Transform pose) override {
+        return add(runtime->physics->createRigidStatic(physx::PxTransform(
+            to_physx(pose.position),physx::PxQuat(pose.orientation.x,pose.orientation.y,pose.orientation.z,pose.orientation.w))));
+    }
+    BodyId create_dynamic_body(Transform pose) override {
+        return add(runtime->physics->createRigidDynamic(physx::PxTransform(
+            to_physx(pose.position),physx::PxQuat(pose.orientation.x,pose.orientation.y,pose.orientation.z,pose.orientation.w))));
+    }
+    ShapeId attach(BodyId body,const physx::PxGeometry& geometry,Transform pose) {
+        auto& actor=require_actor(body);
+        if(shapes.size()>=std::numeric_limits<ShapeId>::max())throw std::overflow_error("Shape IDs exhausted");
+        shapes.reserve(shapes.size()+1);
+        auto* shape=runtime->physics->createShape(geometry,*material,true);
+        if(!shape)throw std::runtime_error("Reference shape creation failed");
+        shape->setLocalPose(physx::PxTransform(to_physx(pose.position),
+            physx::PxQuat(pose.orientation.x,pose.orientation.y,pose.orientation.z,pose.orientation.w)));
+        if(!actor.attachShape(*shape)) {shape->release();throw std::runtime_error("Reference attachment failed");}
+        const ShapeId id=static_cast<ShapeId>(shapes.size());
+        shape->userData=reinterpret_cast<void*>(static_cast<std::uintptr_t>(id)+1);
+        shapes.push_back({shape,body});
+        shape->release();
+        return id;
+    }
+    ShapeId attach_box_shape(BodyId body,Vec3 half,Transform pose) override {
+        return attach(body,physx::PxBoxGeometry(to_physx(half)),pose);
+    }
+    ShapeId attach_sphere_shape(BodyId body,float radius,Transform pose) override {
+        return attach(body,physx::PxSphereGeometry(radius),pose);
+    }
+    void detach_shape(ShapeId id) override {
+        auto& shape=require_shape(id);
+        if(contact_notifications) {
+            retired_shape_tokens.push_back({&shape,static_cast<std::uintptr_t>(id)+1,true});
+            shape.acquireReference();
+        }
+        require_actor(shapes[id].body).detachShape(shape);
+        shapes[id].shape=nullptr;
+    }
+    void set_shape_local_pose(ShapeId id,Transform pose) override {
+        require_shape(id).setLocalPose(physx::PxTransform(to_physx(pose.position),
+            physx::PxQuat(pose.orientation.x,pose.orientation.y,pose.orientation.z,pose.orientation.w)));
+    }
+    void update_mass_properties(BodyId id,float density) override {
+        auto* body=require_actor(id).is<physx::PxRigidBody>();
+        if(!body)throw std::logic_error("Static body has no mass properties");
+        const float old_mass=body->getMass();
+        const auto old_inertia=body->getMassSpaceInertiaTensor();
+        const auto old_pose=body->getCMassLocalPose();
+        const bool ok=physx::PxRigidBodyExt::updateMassAndInertia(*body,density);
+        const float mass=body->getInvMass();
+        const auto inverse=body->getMassSpaceInvInertiaTensor();
+        if(!ok || !std::isfinite(mass) || mass<=0.0f || !inverse.isFinite() || inverse.minElement()<=0.0f) {
+            body->setMass(old_mass);body->setMassSpaceInertiaTensor(old_inertia);body->setCMassLocalPose(old_pose);
+            throw std::invalid_argument("Reference compound mass/inertia outside supported range");
+        }
+    }
+    BodyMassProperties body_mass_properties(BodyId id) const override {
+        const auto* body=require_actor(id).is<physx::PxRigidBody>();
+        if(!body)throw std::logic_error("Static body has no mass properties");
+        const auto pose=body->getCMassLocalPose();
+        return {body->getInvMass(),from_physx(body->getMassSpaceInvInertiaTensor()),
+                {from_physx(pose.p),{pose.q.x,pose.q.y,pose.q.z,pose.q.w}}};
+    }
     BodyId add_static_box(Vec3 half_extents, Vec3 position) override {
         return add(physx::PxCreateStatic(
             *runtime->physics, physx::PxTransform(to_physx(position)),
@@ -317,9 +410,16 @@ struct PhysXCpuWorld final : WorldBackend, physx::PxSimulationEventCallback {
     }
 
     BodyId add_static_floor(float height) override {
-        // Plane equation y - height = 0, facing +Y.
-        return add(physx::PxCreatePlane(
-            *runtime->physics, physx::PxPlane(0.0f, 1.0f, 0.0f, -height), *material));
+        auto* actor=runtime->physics->createRigidStatic(physx::PxTransform(physx::PxVec3(0,height,0)));
+        if(!actor)throw std::runtime_error("Reference floor actor creation failed");
+        auto* shape=runtime->physics->createShape(physx::PxPlaneGeometry(),*material,true);
+        if(!shape) {actor->release();throw std::runtime_error("Reference floor shape creation failed");}
+        shape->setLocalPose(physx::PxTransformFromPlaneEquation(physx::PxPlane(0,1,0,0)));
+        if(!actor->attachShape(*shape)) {
+            shape->release();actor->release();throw std::runtime_error("Reference floor attachment failed");
+        }
+        shape->release();
+        return add(actor);
     }
 
     BodyId add_dynamic_box(Vec3 half_extents, Vec3 position, float density) override {
@@ -415,6 +515,8 @@ struct PhysXCpuWorld final : WorldBackend, physx::PxSimulationEventCallback {
                       [](const ContactEvent& a,const ContactEvent& b) {
                           if(a.body0!=b.body0)return a.body0<b.body0;
                           if(a.body1!=b.body1)return a.body1<b.body1;
+                          if(a.shape0!=b.shape0)return a.shape0<b.shape0;
+                          if(a.shape1!=b.shape1)return a.shape1<b.shape1;
                           return static_cast<unsigned>(a.kind)<
                               static_cast<unsigned>(b.kind);
                       });
@@ -425,7 +527,7 @@ struct PhysXCpuWorld final : WorldBackend, physx::PxSimulationEventCallback {
             published_contact_events.swap(pending_contact_events);
             // All callbacks referencing these retired actors were
             // consumed by this completed fetchResults boundary.
-            retired_actor_tokens.clear();
+            release_retired_callbacks();
         }
     }
 
@@ -441,28 +543,12 @@ struct PhysXCpuWorld final : WorldBackend, physx::PxSimulationEventCallback {
     void set_body_pose(BodyId id, Vec3 position, Quat orientation) override {
         if (id >= actors.size() || !actors[id])
             throw std::out_of_range("Unknown or retired FyzzXYZZY body ID");
-        physx::PxShape* shape=nullptr;
-        if(actors[id]->getShapes(&shape,1)!=1 || !shape)
-            throw std::logic_error("Reference actor lacks single shape");
-        // The SDK horizontal floor is a fixed +Y-normal primitive.
-        // Preserve its private PxCreatePlane rotation on a logical
-        // identity edit rather than rotating its physical normal.
-        if(shape->getGeometry().getType()==physx::PxGeometryType::ePLANE) {
-            // World validates PxQuat::isSane; PhysX normalizes a sane
-            // quaternion when setting the actor pose. Apply that same
-            // rule to the SDK's logical floor orientation before deciding
-            // whether the fixed horizontal plane would actually rotate.
-            const auto logical=physx::PxQuat(
-                orientation.x,orientation.y,orientation.z,orientation.w)
-                .getNormalized();
-            if(logical.x!=0.0f || logical.y!=0.0f ||
-               logical.z!=0.0f || std::abs(logical.w)!=1.0f)
-                throw std::logic_error("Native horizontal floor cannot rotate");
-            auto pose=actors[id]->getGlobalPose();
-            pose.p=to_physx(position);
-            actors[id]->setGlobalPose(pose);
-            return;
-        }
+        for(const auto& owner:shapes)
+            if(owner.shape && owner.body==id && owner.shape->getGeometry().getType()==physx::PxGeometryType::ePLANE) {
+                const auto logical=physx::PxQuat(orientation.x,orientation.y,orientation.z,orientation.w).getNormalized();
+                if(logical.x!=0.0f || logical.y!=0.0f || logical.z!=0.0f || std::abs(logical.w)!=1.0f)
+                    throw std::logic_error("Horizontal floor cannot rotate");
+            }
         actors[id]->setGlobalPose(physx::PxTransform(
             to_physx(position),physx::PxQuat(
                 orientation.x,orientation.y,orientation.z,orientation.w)));
@@ -481,12 +567,12 @@ struct PhysXCpuWorld final : WorldBackend, physx::PxSimulationEventCallback {
                 (owner.actor0==id || owner.actor1==id);
         free_distance_joint_ids.reserve(
             free_distance_joint_ids.size()+incident);
-        if(contact_notifications)
-            retired_actor_tokens.reserve(retired_actor_tokens.size()+1);
         if(contact_notifications) {
-            // Push before release: allocation failure leaves actor
-            // ownership intact. The stale pointer is compared only,
-            // NEVER dereferenced by the contact callback.
+            retired_actor_tokens.reserve(retired_actor_tokens.size()+1);
+            retired_shape_tokens.reserve(retired_shape_tokens.size()+actor->getNbShapes());
+        }
+        if(contact_notifications) {
+            // Storage is reserved before any source lifetime transition.
             retired_actor_tokens.push_back({
                 actor,static_cast<std::uintptr_t>(id)+1});
         }
@@ -498,7 +584,13 @@ struct PhysXCpuWorld final : WorldBackend, physx::PxSimulationEventCallback {
                 free_distance_joint_ids.push_back(index);
             }
         }
-        actor->release(); // PhysX removes it from the scene.
+        for(ShapeId shape=0;shape<shapes.size();++shape)
+            if(shapes[shape].shape && shapes[shape].body==id) {
+                if(contact_notifications)retired_shape_tokens.push_back({shapes[shape].shape,static_cast<std::uintptr_t>(shape)+1});
+                shapes[shape].shape=nullptr;
+            }
+        if(contact_notifications)scene->removeActor(*actor);
+        else actor->release();
         actors[id] = nullptr;
     }
 
@@ -522,22 +614,29 @@ struct PhysXCpuWorld final : WorldBackend, physx::PxSimulationEventCallback {
         body->setRigidBodyFlag(physx::PxRigidBodyFlag::eKINEMATIC,enabled);
     }
 
-    void set_body_simulation_shape_enabled(BodyId id, bool enabled) override {
-        if(id>=actors.size() || !actors[id])
-            throw std::out_of_range("Unknown or retired FyzzXYZZY body ID");
-        physx::PxShape* shape=nullptr;
-        if(actors[id]->getShapes(&shape,1)!=1 || !shape)
-            throw std::logic_error("Reference rigid actor lacks single shape");
+    void set_body_simulation_shape_enabled(BodyId body,bool enabled) override {
+        (void)require_actor(body);
+        for(ShapeId i=0;i<shapes.size();++i)
+            if(shapes[i].shape && shapes[i].body==body)set_shape_simulation_enabled(i,enabled);
+    }
+    void set_body_shape_offsets(BodyId body,float contact,float rest) override {
+        (void)require_actor(body);
+        for(ShapeId i=0;i<shapes.size();++i)
+            if(shapes[i].shape && shapes[i].body==body)set_shape_offsets(i,contact,rest);
+    }
+    void set_body_material(BodyId body,Material material) override {
+        (void)require_actor(body);
+        for(ShapeId i=0;i<shapes.size();++i)
+            if(shapes[i].shape && shapes[i].body==body)set_shape_material(i,material);
+    }
+    void set_shape_simulation_enabled(ShapeId id, bool enabled) override {
+        auto* shape=&require_shape(id);
         shape->setFlag(physx::PxShapeFlag::eSIMULATION_SHAPE,enabled);
     }
 
-    void set_body_shape_offsets(BodyId id, float contact_offset,
+    void set_shape_offsets(ShapeId id, float contact_offset,
                                 float rest_offset) override {
-        if(id>=actors.size() || !actors[id])
-            throw std::out_of_range("Unknown or retired FyzzXYZZY body ID");
-        physx::PxShape* shape=nullptr;
-        if(actors[id]->getShapes(&shape,1)!=1 || !shape)
-            throw std::logic_error("Reference actor lacks single shape");
+        auto* shape=&require_shape(id);
         // PxShape validates each setter against the current opposite
         // distance. Apply the valid final pair in an order that preserves
         // the intermediate source invariant for either edit direction.
@@ -550,12 +649,8 @@ struct PhysXCpuWorld final : WorldBackend, physx::PxSimulationEventCallback {
         }
     }
 
-    void set_body_material(BodyId id, Material source) override {
-        if (id>=actors.size() || !actors[id])
-            throw std::out_of_range("Unknown or retired FyzzXYZZY body ID");
-        physx::PxShape* shape=nullptr;
-        if (actors[id]->getShapes(&shape,1)!=1 || !shape)
-            throw std::logic_error("Reference rigid actor lacks single material shape");
+    void set_shape_material(ShapeId id, Material source) override {
+        auto* shape=&require_shape(id);
         // One source PxMaterial is authored on the EXISTING PhysX shape.
         // Shape::setMaterials retains its reference. Release the caller's
         // temporary reference after binding: no second material registry.
@@ -705,6 +800,7 @@ struct PhysXCpuWorld final : WorldBackend, physx::PxSimulationEventCallback {
         }
         const auto id = static_cast<BodyId>(actors.size());
         try {
+            shapes.reserve(shapes.size()+actor->getNbShapes());
             actors.push_back(actor);
         } catch (...) {
             actor->release();
@@ -713,6 +809,12 @@ struct PhysXCpuWorld final : WorldBackend, physx::PxSimulationEventCallback {
         if(contact_notifications)
             actor->userData=reinterpret_cast<void*>(
                 static_cast<std::uintptr_t>(id)+1);
+        for(physx::PxU32 i=0;i<actor->getNbShapes();++i) {
+            physx::PxShape* shape=nullptr;
+            actor->getShapes(&shape,1,i);
+            shape->userData=reinterpret_cast<void*>(static_cast<std::uintptr_t>(shapes.size())+1);
+            shapes.push_back({shape,id});
+        }
         scene->addActor(*actor);
         return id;
     }

@@ -201,9 +201,10 @@ public:
         // volume. Only eligible standalone dynamic boxes have a device
         // shape-cache write target; every solver body still integrates.
         for(auto& input:integration)
-            if(input.active)
-                input.source_element=producer_->device_shape_cache_handle(
-                    input.source_element);
+            if(input.active && input.source_element!=0xffffffffu) {
+                input.source_element=producer_->device_shape_cache_handle(input.source_element);
+                if(input.source_element==0xffffffffu)input.source_shape_count=0;
+            }
         dy_distance_->solve(bodies,rows,descriptors,partitions,ordinals,tasks,
                             contact_forces,cpu_gu,friction,anchors,patches,manifolds,contact_order,
                             contact_prep,integration,integrated_poses,
@@ -275,13 +276,20 @@ public:
     void set_device_shape_pose_cache_enabled(BodyId id,bool enabled) override {
         producer_->set_device_shape_pose_cache_enabled(id,enabled);
     }
+    void retain_rigid_actor(BodyId body) override {producer_->retain_rigid_actor(body);}
+    void release_rigid_actor(BodyId body) override {producer_->release_rigid_actor(body);}
+    void admit_plane_element(ShapeId shape,BodyId body) override {producer_->admit_plane_element(shape,body);}
+    void admit_aggregate_shape(AggregateId aggregate,ShapeId shape,BodyId body,
+                              native::GpuBroadphaseBox::Motion motion,float offset) override {
+        producer_->admit_aggregate_shape(aggregate,shape,body,motion,offset);
+    }
     void admit_shape(BodyId id,native::GpuBroadphaseBox::Motion motion,
                      float offset) override {
         producer_->admit_shape(id,motion,offset);
     }
     void admit_shape_element(
         ShapeId shape,BodyId actor,
-        native::GpuBroadphaseBox::Motion motion,float offset) {
+        native::GpuBroadphaseBox::Motion motion,float offset) override {
         producer_->admit_shape_element(shape,actor,motion,offset);
     }
     void admit_plane(BodyId id) override {

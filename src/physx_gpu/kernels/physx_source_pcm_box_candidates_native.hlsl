@@ -451,7 +451,7 @@ void main(uint3 thread : SV_DispatchThreadID) {
         uint ta=p.transformBias+a*32u,tb=p.transformBias+b*32u;
         float3 pa=asfloat(transforms.Load3(ta+16u));
         float3 pb=asfloat(transforms.Load3(tb+16u));
-        uint ga=p.geometryBias+a*16u,gb=p.geometryBias+b*16u;
+        uint ga=p.geometryBias+a*64u,gb=p.geometryBias+b*64u;
         float3 ea=asfloat(geometry.Load3(ga));
         float3 eb=asfloat(geometry.Load3(gb));
         float distance=asfloat(geometry.Load(ga+12u))+
@@ -595,23 +595,13 @@ void main(uint3 thread : SV_DispatchThreadID) {
                 faceX=referenceHalf.x;faceY=referenceHalf.y;
             }
             float3 search=-f.z;
-            float dx=abs(dot(search,incident[0]));
-            float dy=abs(dot(search,incident[1]));
-            float dz=abs(dot(search,incident[2]));
-#ifdef __spirv__
-            // Preserve the source rounding on near-tied faces in SPIR-V.
-            // DXIL's native dot already matches the Windows source.
-            uint bx=asuint(dx),by=asuint(dy),bz=asuint(dz);
-            uint bestScoreBits=max(bx,max(by,bz));
-            uint tied=(bestScoreBits-bx<=1u?1u:0u)+
-                      (bestScoreBits-by<=1u?1u:0u)+
-                      (bestScoreBits-bz<=1u?1u:0u);
-            if(tied>=2u) {
-                dx=abs(fusedDot(search,incident[0]));
-                dy=abs(fusedDot(search,incident[1]));
-                dz=abs(fusedDot(search,incident[2]));
-            }
-#endif
+            // Preserve source scalar evaluation order at incident-face ties.
+            precise float3 scoreX=search*incident[0];
+            precise float3 scoreY=search*incident[1];
+            precise float3 scoreZ=search*incident[2];
+            precise float dx=abs((scoreX.x+scoreX.y)+scoreX.z);
+            precise float dy=abs((scoreY.x+scoreY.y)+scoreY.z);
+            precise float dz=abs((scoreZ.x+scoreZ.y)+scoreZ.z);
             uint axis=dx>=dy&&dx>=dz?0u:(dy>=dz?1u:2u);
             float facing=dot(search,incident[axis]);
             float signedExtent=facing>0.f

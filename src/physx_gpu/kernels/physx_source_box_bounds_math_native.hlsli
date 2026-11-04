@@ -16,3 +16,11 @@ float3 sourceBoxHalfBounds(float4 q,float3 e) {
                            2.0f*(yz-wx),1.0f-2.0f*(xx+yy));
     return abs(c0)*e.x+abs(c1)*e.y+abs(c2)*e.z;
 }
+
+float4 sourceRigidMultiply(float4 a,float4 b) {
+    return float4(a.w*b.xyz+b.w*a.xyz+cross(a.xyz,b.xyz),a.w*b.w-dot(a.xyz,b.xyz));
+}
+float3 sourceRigidRotate(float4 q,float3 v) {
+    const float3 t=2.0f*cross(q.xyz,v);
+    return v+q.w*t+cross(q.xyz,t);
+}

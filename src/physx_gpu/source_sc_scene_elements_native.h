@@ -124,10 +124,14 @@ public:
         admit_actor(shape,actor,motion,contact_distance,std::nullopt);
     }
 
+    void retain_actor(BodyId body) {(void)acquire_rigid_id(body);}
+    void release_actor(BodyId body) {release_rigid_id(body);}
+
     // Source Sc records the ElementSim and rigid actor IDs even when
     // the shape is an infinite plane with no finite broadphase volume.
-    void admit_plane(BodyId actor) {
-        if(actor!=records_.size() || actor!=handles_.size())
+    void admit_plane(BodyId actor) {admit_plane(actor,actor);}
+    void admit_plane(ShapeId shape,BodyId actor) {
+        if(shape!=records_.size() || shape!=handles_.size())
             throw std::logic_error(
                 "Source Sc plane admission must follow native actor order");
         if(handles_.size()==handles_.capacity()) {
@@ -160,16 +164,20 @@ public:
     void admit_aggregate_member(
         physx::Bp::AggregateHandle aggregate,BodyId actor,
         native::GpuBroadphaseBox::Motion motion,float contact_distance) {
+        admit_aggregate_shape(aggregate,actor,actor,motion,contact_distance);
+    }
+    void admit_aggregate_shape(physx::Bp::AggregateHandle aggregate,ShapeId shape,BodyId actor,
+                              native::GpuBroadphaseBox::Motion motion,float contact_distance) {
         auto& root=aggregate_root(aggregate);
         if(root.attached_actors.size()>=root.max_shapes)
             throw std::invalid_argument(
                 "Original Sc aggregate actor capacity exceeded");
-        admit_actor(actor,actor,motion,contact_distance,aggregate);
+        admit_actor(shape,actor,motion,contact_distance,aggregate);
         // Reserved at aggregate creation; source Sc attachment is
         // distinct from the AABB manager's enabled-shape member array.
-        records_[actor].aggregate_attachment_index=
+        records_[shape].aggregate_attachment_index=
             static_cast<physx::PxU32>(root.attached_actors.size());
-        root.attached_actors.push_back(actor);
+        root.attached_actors.push_back(shape);
     }
 
     void retire(BodyId actor) {
