@@ -72,6 +72,7 @@ struct GpuBroadphaseBox {
     std::uint32_t geometry_kind=0;
     std::uint32_t convex_vertex_offset=0;
     std::uint32_t convex_vertex_count=0;
+    float convex_margin_half_extent=0.f;
 };
 
 // Source PxgCudaBroadPhaseSap::fetchBroadPhaseResults produces the two
