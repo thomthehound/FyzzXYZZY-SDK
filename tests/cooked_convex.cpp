@@ -255,6 +255,50 @@ void verify_off_origin_hull_pair() {
             "Off-origin convex pair lost physical contact geometry");
 }
 
+void verify_convex_face_manifold() {
+    const auto hull=cook_convex_mesh(cube_vertices,cube_faces);
+    World world({.execution=ExecutionMode::NativeCpu,
+                 .contact_notifications=true});
+    const auto fixed=world.create_static_body({});
+    world.attach_convex_shape(fixed,hull);
+    const auto moving=world.create_dynamic_body({{0.2f,1.85f,0.1f},{}});
+    world.attach_convex_shape(moving,hull);
+    world.update_mass_properties(moving,1.f);
+    RigidBodyDynamics dynamics{};
+    dynamics.gravity_enabled=false;
+    dynamics.position_iterations=24u;
+    world.set_body_dynamics(moving,dynamics);
+    world.step(1.f/120.f);
+    const auto events=world.contact_events();
+    require(events.size()==1u &&
+            events[0].kind==ContactEventKind::Found &&
+            events[0].contact_count==4u,
+            "Overlapping cooked cube faces did not emit four contact points");
+    const auto contacts=world.contact_event_points();
+    float min_x=std::numeric_limits<float>::max();
+    float max_x=-min_x,min_z=min_x,max_z=-min_x;
+    for(std::size_t i=0;i<events[0].contact_count;++i) {
+        const auto& point=contacts[events[0].point_offset+i];
+        require(std::abs(point.normal.y)>0.95f &&
+                point.separation<0.f,
+                "Clipped convex face generated invalid contact geometry");
+        min_x=std::min(min_x,point.position.x);
+        max_x=std::max(max_x,point.position.x);
+        min_z=std::min(min_z,point.position.z);
+        max_z=std::max(max_z,point.position.z);
+    }
+    require(max_x-min_x>1.5f && max_z-min_z>1.5f,
+            "Clipped convex face collapsed its contact footprint");
+    for(unsigned frame=0u;frame<4u;++frame) {
+        world.step(1.f/120.f);
+        const auto current=world.contact_events();
+        require(current.size()==1u &&
+                current[0].kind==ContactEventKind::Persists &&
+                current[0].contact_count>=3u,
+                "Clipped convex manifold did not persist through rigid response");
+    }
+}
+
 void verify_finite_pair_matrix() {
     World world({.execution=ExecutionMode::NativeCpu,
                  .contact_notifications=true});
@@ -363,6 +407,7 @@ int main() {
         verify_native_rigid_contact();
         verify_sphere_face_contact();
         verify_off_origin_hull_pair();
+        verify_convex_face_manifold();
         verify_finite_pair_matrix();
         std::cout<<"Cooked convex volume, inertia and topology OK\n";
         return 0;
