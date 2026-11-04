@@ -656,4 +656,99 @@ inline void compound_plane_box_device_pcm(World& world,World* comparison) {
     }
 }
 
+
+inline void compound_plane_sphere_device_pcm(World& world,World* reference) {
+    struct Bodies {BodyId plane,sphere;};
+    const auto create=[](World& w,bool plane_first) {
+        Bodies b{};
+        const auto floor=[&] {b.plane=w.add_static_floor(0.0f);};
+        const auto ball=[&] {
+            b.sphere=w.add_dynamic_sphere(0.5f,{0.0f,0.45f,0.0f},2.0f);
+            RigidBodyDynamics d{};
+            d.gravity_enabled=false;
+            d.angular_damping=0.0f;
+            w.set_body_dynamics(b.sphere,d);
+        };
+        if(plane_first) {floor();ball();}
+        else {ball();floor();}
+        Material frictionless{};
+        frictionless.static_friction=0.0f;
+        frictionless.dynamic_friction=0.0f;
+        frictionless.restitution=0.0f;
+        w.set_body_material(b.plane,frictionless);
+        w.set_body_material(b.sphere,frictionless);
+        return b;
+    };
+    const auto find_contact=[](World& w,Bodies b) {
+        std::vector<ContactEventPoint> contacts;
+        for(const auto& event:w.contact_events()) {
+            if(event.body0!=std::min(b.plane,b.sphere) ||
+               event.body1!=std::max(b.plane,b.sphere))
+                continue;
+            for(std::size_t j=0;j<event.contact_count;++j)
+                contacts.push_back(
+                    w.contact_event_points()[event.point_offset+j]);
+        }
+        return contacts;
+    };
+    for(bool plane_first:{true,false}) {
+        const auto bodies=create(world,plane_first);
+        const auto oracle=reference?create(*reference,plane_first):bodies;
+        for(unsigned frame=0;frame<9u;++frame) {
+            const float plane_height=frame>=5u?0.02f:0.0f;
+            const float sphere_height=frame==4u?0.74f:0.46f;
+            const Vec3 center{0.07f*static_cast<float>(frame),
+                              sphere_height,0.02f};
+            const auto set=[&](World& w,Bodies b) {
+                w.set_body_position(b.plane,{0.0f,plane_height,0.0f});
+                w.set_body_position(b.sphere,center);
+                w.set_body_velocity(b.sphere,{});
+                w.set_body_angular_velocity(b.sphere,{});
+            };
+            set(world,bodies);
+            if(reference)set(*reference,oracle);
+            world.step(1.0f/120.0f);
+            if(reference)reference->step(1.0f/120.0f);
+            const auto points=find_contact(world,bodies);
+            const bool touching=frame!=4u;
+            compound_require(points.size()==(touching?1u:0u),
+                "Sphere-plane PCM lost its single surface witness");
+            if(touching) {
+                const auto& point=points[0];
+                compound_require(
+                    compound_error(point.position,
+                        {center.x,center.y-0.5f,center.z})<0.0008f &&
+                    std::abs(std::abs(point.normal.y)-1.0f)<0.0008f &&
+                    std::abs(point.normal.x)<0.0008f &&
+                    std::abs(point.normal.z)<0.0008f &&
+                    std::abs(point.separation-
+                        (center.y-plane_height-0.5f))<0.0008f,
+                    "Sphere-plane PCM contact differs from sphere surface");
+            }
+            if(reference) {
+                const auto expected=find_contact(*reference,oracle);
+                compound_require(points.size()==expected.size(),
+                    "Device sphere-plane contact count diverged from native PCM");
+                for(std::size_t k=0;k<points.size();++k) {
+                    const auto& a=points[k],&b=expected[k];
+                    compound_require(
+                        compound_error(a.position,b.position)<0.0008f &&
+                        compound_error(a.normal,b.normal)<0.0008f &&
+                        std::abs(a.separation-b.separation)<0.0008f,
+                        "Device sphere-plane witness diverged from native PCM");
+                }
+                compound_compare_state(world.body_state(bodies.sphere),
+                    reference->body_state(oracle.sphere),0.002f,
+                    "Sphere-plane PCM motion");
+            }
+        }
+        world.remove_body(bodies.sphere);
+        world.remove_body(bodies.plane);
+        if(reference) {
+            reference->remove_body(oracle.sphere);
+            reference->remove_body(oracle.plane);
+        }
+    }
+}
+
 } // namespace fyzz::test
