@@ -465,9 +465,12 @@ static bool gjk_epa(
                 // status is GJK_DEGENERATE, not GJK_CONTACT; the PCM
                 // box-box caller does not publish that status.
                 store();
-                if(point_core && projection>0.f) {
-                    const Closest current=closest_simplex(simplex,count);
-                    return current.mask && contact_from_gjk(pair,current,contact);
+                if(point_core) {
+                    if(projection>0.f) {
+                        const Closest current=closest_simplex(simplex,count);
+                        return current.mask && contact_from_gjk(pair,current,contact);
+                    }
+                    return epa(pair,simplex,count,contact);
                 }
                 return false;
             }
@@ -490,11 +493,18 @@ static bool gjk_epa(
             // caller only GJK_CONTACT and EPA_CONTACT produce witnesses.
             // A positive projected gap does not override that status.
             store();
-            if(point_core && projection>0.f)
-                return contact_from_gjk(pair,next,contact);
+            if(point_core) {
+                if(projection>0.f)
+                    return contact_from_gjk(pair,next,contact);
+                return epa(pair,simplex,count,contact);
+            }
             return false;
         }
         previous=next_dist;
+    }
+    if(point_core && count>0) {
+        store();
+        return epa(pair,simplex,count,contact);
     }
     return false;
 }
