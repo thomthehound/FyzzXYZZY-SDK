@@ -7049,7 +7049,7 @@ void Scene::prepare_constraints(float seconds) {
         const auto error_p=rotate_inverse(qa,sub(world0,world1));
         const bool lock_rotation=joint.kind==JointKind::Fixed;
         Vec3 error_angle{},va{},vb{},c{};
-        float d=0.0f;
+        float d=0.0f,angular_overlap=0.0f;
         if(lock_rotation) {
             auto qb=multiply(body1.orientation,joint.local_b.orientation);
             if(qa.x*qb.x+qa.y*qb.y+qa.z*qb.z+qa.w*qb.w<0.0f)
@@ -7059,6 +7059,7 @@ void Scene::prepare_constraints(float seconds) {
             va={qa.x,qa.y,qa.z};
             vb={qb.x,qb.y,qb.z};
             d=qa.w*qb.w-dot(va,vb);
+            angular_overlap=qa.w*qb.w+dot(va,vb);
             c={qa.w*vb.x+qb.w*va.x,qa.w*vb.y+qb.w*va.y,qa.w*vb.z+qb.w*va.z};
         }
         const std::array<float,6> errors{
@@ -7095,7 +7096,7 @@ void Scene::prepare_constraints(float seconds) {
                     0.5f*(va.y*bv[k]+vb.y*av[k]+v.y),
                     0.5f*(va.z*bv[k]+vb.z*av[k]+v.z)};
                 // The relative quaternion's 180-degree Jacobian is singular.
-                if(d0+d1==0.0f)
+                if(angular_overlap==0.0f)
                     remove_projection(row.angular0,basis[k],
                                       -std::numeric_limits<float>::epsilon());
                 row.angular1=row.angular0;
