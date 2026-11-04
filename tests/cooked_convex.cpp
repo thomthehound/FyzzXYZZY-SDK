@@ -162,6 +162,40 @@ void verify_sphere_face_contact() {
     }
 }
 
+void verify_off_origin_hull_pair() {
+    auto vertices=tetra_vertices;
+    for(auto& vertex:vertices) {
+        vertex.x+=100.f;
+        vertex.y+=100.f;
+        vertex.z+=100.f;
+    }
+    World world({.execution=ExecutionMode::NativeCpu,
+                 .contact_notifications=true});
+    const auto mesh=cook_convex_mesh(vertices,tetra_faces);
+    const auto fixed=world.create_static_body({{-72.f,-100.f,-100.f},{}});
+    world.attach_convex_shape(fixed,mesh);
+    const auto moving=world.create_dynamic_body({
+        {-71.85f,-99.88f,-99.92f},{}});
+    world.attach_convex_shape(moving,mesh);
+    world.update_mass_properties(moving,1.f);
+    RigidBodyDynamics settings{};
+    settings.gravity_enabled=false;
+    settings.position_iterations=24u;
+    world.set_body_dynamics(moving,settings);
+    world.step(1.f/120.f);
+    const auto contacts=world.contact_events();
+    require(contacts.size()==1u &&
+            contacts[0].kind==ContactEventKind::Found &&
+            contacts[0].contact_count>0u,
+            "Off-origin hull pair lost finite convex contact");
+    const auto points=world.contact_event_points();
+    const auto& contact=points[contacts[0].point_offset];
+    require(contact.position.x>27.f && contact.position.x<30.f &&
+            contact.separation<0.f &&
+            std::isfinite(contact.normal.x),
+            "Off-origin convex pair lost physical contact geometry");
+}
+
 void verify_finite_pair_matrix() {
     World world({.execution=ExecutionMode::NativeCpu,
                  .contact_notifications=true});
@@ -268,6 +302,7 @@ int main() {
         verify_invalid();
         verify_native_rigid_contact();
         verify_sphere_face_contact();
+        verify_off_origin_hull_pair();
         verify_finite_pair_matrix();
         std::cout<<"Cooked convex volume, inertia and topology OK\n";
         return 0;
