@@ -17,9 +17,9 @@ void planeCacheStore(uint edgeBase,uint slot,float3 localA,
     edgeCaches.Store(dst+36u,asuint(separation));
 }
 
-// The Sc plane-box contact manager retains the same projected manifold
-// witnesses as the CPU geometry path. This is not an AABB approximation.
-void sourcePcmPlaneBox(uint index,uint boxElement,uint edge,uint result,
+// Source PCM plane/box and plane/sphere share the Sc contact manager and
+// resident Gu stream. The infinite plane has no AABB ElementSim volume.
+void sourcePcmPlanePair(uint index,uint boxElement,uint edge,uint result,
                        float planeHeight,float contactDistance,uint flags) {
     const uint dst=p.outputBias+index*84u;
     if(boxElement>=p.shapeCapacity || edge>=p.edgeCapacity ||
@@ -31,7 +31,43 @@ void sourcePcmPlaneBox(uint index,uint boxElement,uint edge,uint result,
     }
     const uint boxGeo=p.geometryBias+boxElement*64u;
     const uint boxPose=p.transformBias+boxElement*32u;
-    if(geometry.Load(boxGeo+28u)!=0u) {
+    const uint kind=geometry.Load(boxGeo+28u);
+    if(kind==1u) {
+        // Gu::pcmContactSpherePlane: inclusive contact-distance test,
+        // sphere-surface witness, and source separation. Its Sc contact
+        // normal is already in the final solver orientation.
+        const float radius=asfloat(geometry.Load(boxGeo));
+        const float3 center=asfloat(transforms.Load3(boxPose+16u));
+        if(!isfinite(radius) || radius<=0.f || !all(isfinite(center))) {
+            publishPair(result,0u,0u,1u,edge,0u,0u,0u,0u);
+            streamContacts.Store2(dst,uint2(edge,8u));
+            return;
+        }
+        const float separation=center.y-planeHeight-radius;
+        if(!isfinite(separation)) {
+            publishPair(result,0u,0u,1u,edge,0u,0u,0u,0u);
+            streamContacts.Store2(dst,uint2(edge,8u));
+            return;
+        }
+        const bool touching=contactDistance>=separation;
+        const uint cache=p.edgeCacheBias+edge*240u;
+        edgeCaches.Store(cache+12u,touching?1u:0u);
+        edgeCaches.Store(cache+64u,1u);
+        edgeCaches.Store(cache+68u,0u);
+        if(touching) {
+            const float3 witness=center-float3(0.f,radius,0.f);
+            planeCacheStore(cache,0,float3(0.f,-radius,0.f),
+                float3(witness.x,0.f,witness.z),separation);
+            streamContacts.Store4(dst+20u,asuint(float4(witness,separation)));
+        }
+        const uint count=touching?1u:0u;
+        publishPair(result,count,count,0u,edge,0u,count,0u,1u);
+        streamContacts.Store2(dst,uint2(edge,count|(count<<6u)|
+            (1u<<9u)|(count<<10u)));
+        streamContacts.Store3(dst+8u,asuint(float3(0.f,1.f,0.f)));
+        return;
+    }
+    if(kind!=0u) {
         publishPair(result,0u,0u,1u,edge,0u,0u,0u,0u);
         streamContacts.Store2(dst,uint2(edge,8u));
         return;
