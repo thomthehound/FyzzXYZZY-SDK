@@ -117,15 +117,21 @@ public:
                         ?convex_surface_bytes
                         :source_allocation_bytes(shape_capacity,32u),
                      9u,compute::BufferAccess::Read));
-        const auto arguments=addresses.resolve(dispatch_args,12u);
-        if(arguments.offset%4u)
-            throw std::invalid_argument("Source EPA indirect arguments misaligned");
-        for(const auto& binding:dispatch.buffers)
-            if(binding.buffer==arguments.buffer)
-                throw std::invalid_argument(
-                    "Source EPA indirect arguments alias Sc data");
-        dispatch.indirect=compute::DispatchIndirectArgs{
-            arguments.buffer,arguments.offset};
+        if(face_geometry_) {
+            // Every admitted convex contact is eligible, including GJK
+            // witnesses that never enter the sparse EPA work queue.
+            dispatch.groups={pair_count,1u,1u};
+        }else {
+            const auto arguments=addresses.resolve(dispatch_args,12u);
+            if(arguments.offset%4u)
+                throw std::invalid_argument("Source EPA indirect arguments misaligned");
+            for(const auto& binding:dispatch.buffers)
+                if(binding.buffer==arguments.buffer)
+                    throw std::invalid_argument(
+                        "Source EPA indirect arguments alias Sc data");
+            dispatch.indirect=compute::DispatchIndirectArgs{
+                arguments.buffer,arguments.offset};
+        }
         const auto params_bytes=face_geometry_?sizeof(params):14u*sizeof(std::uint32_t);
         dispatch.push_constants.resize(params_bytes);
         std::memcpy(dispatch.push_constants.data(),params.data(),params_bytes);
