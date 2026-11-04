@@ -224,6 +224,9 @@ public:
     std::size_t dy_gpu_integrated_body_count() const noexcept {
         return dy_distance_?dy_distance_->last_integrated_body_count():0u;
     }
+    SourceDyLaunchStats dy_launch_stats() const noexcept {
+        return dy_distance_?dy_distance_->last_schedule():SourceDyLaunchStats{};
+    }
     std::size_t pcm_pair_upload_bytes() const noexcept {
         return pcm_ ? pcm_->last_pair_upload_bytes() : 0u;
     }
