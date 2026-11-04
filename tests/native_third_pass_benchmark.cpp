@@ -218,7 +218,7 @@ struct NativeThirdPassTimingFixture {
                 const auto impulses=scene.solved_normal_impulses();
                 result.impulses.insert(result.impulses.end(),
                                        impulses.begin(),impulses.end());
-                for(const auto& row:scene.distance_rows_)
+                for(const auto& row:scene.joint_rows_)
                     result.joint_impulses.push_back(row.applied_force);
             }
         }

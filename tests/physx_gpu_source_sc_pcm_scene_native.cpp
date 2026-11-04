@@ -1643,6 +1643,7 @@ void verify_compound_actor_gpu_solver(
     test::compound_contact_lifetimes(gpu,&cpu);
     test::compound_default_contact_response(gpu,&cpu);
     test::compound_joint_response(gpu,&cpu);
+    test::fixed_joint_response(gpu,&cpu);
 }
 
 void verify_gpu_free_integration(
@@ -1782,8 +1783,11 @@ void verify_gpu_wide_island_solver(
                 scene.set_dynamics(body,dynamics);
                 scene.set_velocity(body,{0.08f,0.0f,i%2u ? -0.06f : 0.06f});
                 if(i) {
-                    const auto joint=scene.create_anchored_distance_constraint(
-                        previous,body,{0.1f,0.12f,0.0f},{-0.1f,-0.08f,0.0f},1.04f);
+                    const auto joint=i%8u==0u
+                        ? scene.create_fixed_constraint(previous,body,
+                            {{0.625f,0.12f,0.0f},{}},{{-0.625f,0.12f,0.0f},{}})
+                        : scene.create_anchored_distance_constraint(
+                            previous,body,{0.1f,0.12f,0.0f},{-0.1f,-0.08f,0.0f},1.04f);
                     if(count==640u && i==count/2u)out.split_joint=joint;
                 }
                 previous=body;
@@ -1798,14 +1802,17 @@ void verify_gpu_wide_island_solver(
     const auto actual=assemble(gpu);
     for(unsigned frame=0;frame<4u;++frame) {
         if(frame==2u) {
-            cpu.retire_center_distance_constraint(expected.split_joint);
-            gpu.retire_center_distance_constraint(actual.split_joint);
+            cpu.retire_constraint(expected.split_joint);
+            gpu.retire_constraint(actual.split_joint);
         }
         constexpr float dt=1.0f/120.0f;
         cpu.step(dt);
         gpu.step(dt);
         const auto schedule=producer->dy_launch_stats();
-        const auto partition_groups=(connected_bodies-2u+127u)/128u;
+        // Once the assembly moves, individual supports can lose touch.
+        // Joint connectivity must still supply a wide partition.
+        const auto width=frame==0u?connected_bodies-2u:connected_bodies/2u;
+        const auto partition_groups=(width+127u)/128u;
         require(gpu.largest_accurate_island_size()==connected_bodies &&
                 schedule.wide_tasks==(frame<2u?2u:1u) &&
                 schedule.max_partition_groups>=partition_groups &&

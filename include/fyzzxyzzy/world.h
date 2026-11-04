@@ -283,6 +283,10 @@ public:
         BodyId,BodyId,Vec3,Vec3,float) {
         throw std::logic_error("This backend has no anchored distance constraints");
     }
+    virtual ConstraintId add_fixed_constraint(
+        BodyId,BodyId,Transform,Transform) {
+        throw std::logic_error("This backend has no fixed rigid constraints");
+    }
     virtual void remove_constraint(ConstraintId) {
         throw std::logic_error("This backend cannot retire a constraint");
     }
@@ -397,6 +401,10 @@ public:
     // Equal-limit 1D joint with local anchors and source angular Jacobians.
     ConstraintId add_anchored_distance_constraint(
         BodyId a,BodyId b,Vec3 local_a,Vec3 local_b,float distance);
+    // Lock the relative translation and rotation of two actor-local frames.
+    // The joint does not change the actors' collision filtering.
+    ConstraintId add_fixed_constraint(
+        BodyId a,BodyId b,Transform local_a,Transform local_b);
     void remove_constraint(ConstraintId id);
     void step(float seconds);
     BodyState body_state(BodyId id) const;

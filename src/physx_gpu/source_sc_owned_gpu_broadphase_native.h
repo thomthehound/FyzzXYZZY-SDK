@@ -180,7 +180,7 @@ public:
     }
     void solve_gpu_dy_distance(
         std::span<native::GpuDyDistanceBody> bodies,
-        std::span<native::GpuDyDistanceRow> rows,
+        std::span<native::GpuDyJointRow> rows,
         std::span<const native::GpuDyDistanceDescriptor> descriptors,
         std::span<const std::uint32_t> partitions,
         std::span<const std::uint32_t> ordinals,
