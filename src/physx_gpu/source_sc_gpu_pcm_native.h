@@ -112,7 +112,7 @@ public:
             const auto& request=requests[i];
             if(request.first==request.second)
                 throw std::invalid_argument("Sc PCM pair references one actor twice");
-            if(request.plane_box &&
+            if(request.plane_pair &&
                (!std::isfinite(request.plane_height) ||
                 !std::isfinite(request.contact_distance) ||
                 request.contact_distance<0.0f))
@@ -122,17 +122,17 @@ public:
             largest_edge=std::max(largest_edge,request.edge);
             // A plane ElementSim has no finite AABB storage; only its
             // participating box needs a device geometry and transform.
-            const auto first=request.plane_box?0u:
+            const auto first=request.plane_pair?0u:
                 sc_.source_element_handle(request.first);
             const auto second=sc_.source_element_handle(request.second);
-            if((!request.plane_box && first>=shape_capacity) ||
+            if((!request.plane_pair && first>=shape_capacity) ||
                second>=shape_capacity)
                 throw std::out_of_range("Source Sc PCM element outside original AABB capacity");
             if(request.candidate_capacity!=1u &&
                request.candidate_capacity!=16u)
                 throw std::invalid_argument(
                     "GPU PCM candidate count must match its geometry");
-            const auto reservation=request.plane_box?0u:
+            const auto reservation=request.plane_pair?0u:
                 request.candidate_capacity;
             if(reservation>
                std::numeric_limits<std::uint32_t>::max()-candidate_count)
@@ -140,7 +140,7 @@ public:
                     "Source GPU PCM candidate capacity overflow");
             const auto reset=(request.reset_cache || reset_manifolds_)
                 ? source_pcm_reset_cache_bit : 0u;
-            const SourcePcmBoxPairNative next=request.plane_box
+            const SourcePcmBoxPairNative next=request.plane_pair
                 ? SourcePcmBoxPairNative{
                     std::bit_cast<std::uint32_t>(request.plane_height),
                     second,request.edge,

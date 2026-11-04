@@ -20,6 +20,7 @@ int main() {
         fyzz::test::revolute_joint_response(native,comparison);
         fyzz::test::prismatic_joint_response(native,comparison);
         fyzz::test::compound_plane_box_device_pcm(native,nullptr);
+        fyzz::test::compound_plane_sphere_device_pcm(native,nullptr);
         std::cout<<"compound rigid smoke: passed\n";
         return 0;
     }catch(const std::exception& error) {

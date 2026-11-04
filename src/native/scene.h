@@ -93,9 +93,9 @@ struct GpuPcmBoxPair {
     bool reset_cache=false;
     // One sphere witness or up to sixteen box clipping/GJK candidates.
     std::uint32_t candidate_capacity=16u;
-    // Infinite planes have no finite ElementSim geometry buffer. Their
-    // PCM descriptor carries the plane height and combined contact offset.
-    bool plane_box=false;
+    // Infinite planes have no finite ElementSim geometry buffer. The
+    // device sphere/box pair carries plane height and contact offset.
+    bool plane_pair=false;
     float plane_height=0.0f;
     float contact_distance=0.0f;
 };

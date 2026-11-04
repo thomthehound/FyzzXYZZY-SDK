@@ -1548,7 +1548,7 @@ void verify_gpu_distance_solver(
 
 // Sphere/box and sphere/sphere witnesses execute in the device PCM
 // contact stream, then feed the same GPU Dy task as box PCM contacts.
-// The infinite-plane/sphere case retains its host Gu boundary.
+// Sphere/plane also uses device PCM without a finite plane volume.
 void verify_sphere_gpu_solver(
     fyzz::compute::Backend backend,const char* sap,
     const char* pcm,const char* dy_shader) {
@@ -1612,12 +1612,24 @@ void verify_sphere_gpu_solver(
                     gpu.solved_normal_impulses().size(),
             "GPU sphere scene changed Sc PCM/Gu manager identity");
         if(frame==0u) {
-            require(gpu.contacts().size()==3u &&
-                    producer->dy_cpu_gu_geometry_bytes()==
-                        sizeof(native::GpuDyGuContactInput) &&
-                    producer->pcm_contact_readback_bytes()==
-                        2u*sizeof(physx_gpu::SourcePcmGpuContactStreamNative),
-                "Finite spheres were not generated on device before GPU Dy preparation");
+            const auto pcm_bytes=producer->pcm_contact_readback_bytes();
+            const auto pcm_rows=producer->dy_pcm_device_contact_rows();
+            const auto cpu_bytes=producer->dy_cpu_gu_geometry_bytes();
+            // Sc admits one speculative plane manager per dynamic
+            // sphere. The two elevated spheres have no physical plane
+            // touch, but their GPU PCM records still execute this frame.
+            constexpr std::size_t pcm_managers=5u;
+            if(gpu.contacts().size()!=3u || cpu_bytes!=0u ||
+               pcm_rows!=3u ||
+               pcm_bytes!=pcm_managers*sizeof(
+                   physx_gpu::SourcePcmGpuContactStreamNative)) {
+                throw std::runtime_error(
+                    "Sphere GPU contact path: managers="+
+                    std::to_string(gpu.contacts().size())+
+                    " device_rows="+std::to_string(pcm_rows)+
+                    " cpu_gu_bytes="+std::to_string(cpu_bytes)+
+                    " pcm_readback_bytes="+std::to_string(pcm_bytes));
+            }
             require(cpu.contacts().size()==3u,
                 "Source sphere impact fixtures lost a contact manager");
             for(std::size_t j=0;j<cpu.contacts().size();++j) {
@@ -1718,6 +1730,7 @@ void verify_compound_actor_gpu_solver(
     test::revolute_joint_response(gpu,&cpu);
     test::prismatic_joint_response(gpu,&cpu);
     test::compound_plane_box_device_pcm(gpu,&cpu);
+    test::compound_plane_sphere_device_pcm(gpu,&cpu);
 }
 
 void verify_gpu_free_integration(
