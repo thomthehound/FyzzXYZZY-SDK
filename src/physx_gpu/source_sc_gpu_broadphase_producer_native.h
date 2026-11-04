@@ -172,9 +172,9 @@ public:
         aabb_.mark_changed(handle,contact_offset);
     }
 
-    void set_shape_motion(BodyId actor,
+    void set_actor_motion(BodyId actor,
                           native::GpuBroadphaseBox::Motion motion) override {
-        require_scene_elements().set_motion(actor,motion);
+        require_scene_elements().set_actor_motion(actor,motion);
     }
 
     void retain_rigid_actor(BodyId body) override {require_scene_elements().retain_actor(body);}
