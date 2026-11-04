@@ -6,6 +6,126 @@
 #include <fstream>
 #include <iterator>
 
+inline void verify_convex_finite_gpu_solver(
+    fyzz::compute::Backend backend,const char* sap,
+    const char* pcm,const char* dy_shader,const char* convex_dy_shader) {
+    using namespace fyzz;
+    constexpr std::array<Vec3,4> tetra{{
+        {0.f,0.f,0.f},{1.f,0.f,0.f},{0.f,1.f,0.f},{0.f,0.f,1.f}}};
+    constexpr std::array<ConvexTriangle,4> faces{{
+        {0,2,1},{0,1,3},{0,3,2},{1,2,3}}};
+    const auto hull=cook_convex_mesh(tetra,faces);
+    const auto load=[backend](const char* path) {
+        std::ifstream input(path,std::ios::binary);
+        if(!input)throw std::runtime_error("Finite convex Dy shader missing");
+        compute::ShaderBinary shader{};
+        shader.format=backend==compute::Backend::Vulkan
+            ?compute::ShaderFormat::Spirv:compute::ShaderFormat::Dxil;
+        const std::vector<char> binary{
+            std::istreambuf_iterator<char>{input},
+            std::istreambuf_iterator<char>{}};
+        shader.bytes.assign(binary.begin(),binary.end());
+        return shader;
+    };
+    native::Scene cpu,gpu;
+    auto owner=std::make_unique<physx_gpu::SourceScOwnedGpuBroadphaseNative>(
+        backend,load_native_gpu_sap_shaders(backend,sap),128u,128u,
+        std::nullopt,load_native_gpu_pcm_shaders(backend,pcm),
+        load(dy_shader),load(convex_dy_shader));
+    auto* producer=owner.get();
+    gpu.set_gpu_broadphase(std::move(owner));
+    const auto assemble=[&](native::Scene& scene) {
+        std::array<BodyId,5> dynamics{};
+        scene.add_static_box({1.f,0.5f,1.f},{0.f,-0.5f,0.f});
+        dynamics[0]=scene.create_body({{0.f,-0.12f,0.f},{}},true);
+        scene.attach_convex(dynamics[0],hull,{});
+        scene.update_mass_properties(dynamics[0],1.f);
+
+        scene.add_static_sphere(0.38f,{4.45f,0.25f,0.25f});
+        dynamics[1]=scene.create_body({{4.f,0.f,0.f},{}},true);
+        scene.attach_convex(dynamics[1],hull,{});
+        scene.update_mass_properties(dynamics[1],1.f);
+
+        const auto fixed_hull=scene.create_body({{8.f,0.f,0.f},{}},false);
+        scene.attach_convex(fixed_hull,hull,{});
+        dynamics[2]=scene.create_body({{8.15f,0.12f,0.08f},{}},true);
+        scene.attach_convex(dynamics[2],hull,{});
+        scene.update_mass_properties(dynamics[2],1.f);
+
+        const auto fixed_sphere_hull=scene.create_body({{12.f,0.f,0.f},{}},false);
+        scene.attach_convex(fixed_sphere_hull,hull,{});
+        dynamics[3]=scene.add_dynamic_sphere(
+            0.35f,{12.35f,0.20f,0.25f},1.f);
+
+        const auto fixed_box_hull=scene.create_body({{16.f,0.f,0.f},{}},false);
+        scene.attach_convex(fixed_box_hull,hull,{});
+        dynamics[4]=scene.add_dynamic_box(
+            {0.4f,0.4f,0.4f},{16.35f,0.15f,0.25f},1.f);
+
+        RigidBodyDynamics settings{};
+        settings.gravity_enabled=false;
+        settings.position_iterations=24u;
+        for(const BodyId body:dynamics)
+            scene.set_dynamics(body,settings);
+        return dynamics;
+    };
+    const auto expected=assemble(cpu);
+    const auto actual=assemble(gpu);
+    constexpr float dt=1.f/120.f;
+    for(unsigned frame=0u;frame<3u;++frame) {
+        if(frame==1u) {
+            constexpr Quat turn{0.f,0.09983342f,0.f,0.99500417f};
+            const Vec3 p1=cpu.body_state(expected[2]).position;
+            const Vec3 p2=gpu.body_state(actual[2]).position;
+            cpu.set_pose(expected[2],p1,turn);
+            gpu.set_pose(actual[2],p2,turn);
+        }
+        cpu.step(dt);
+        gpu.step(dt);
+        if(cpu.contacts().size()!=5u ||
+           cpu.contacts().size()!=gpu.contacts().size())
+            throw std::runtime_error(
+                "Finite cooked hull PCM lost box, sphere or hull contact managers at frame "+
+                std::to_string(frame)+": cpu="+
+                std::to_string(cpu.contacts().size())+" gpu="+
+                std::to_string(gpu.contacts().size()));
+        if(producer->pcm_contact_readback_bytes()!=
+              5u*sizeof(physx_gpu::SourcePcmGpuContactStreamNative) ||
+           producer->dy_cpu_gu_geometry_bytes()!=0u ||
+           producer->dy_pcm_device_contact_rows()<5u)
+            throw std::runtime_error(
+                "Finite convex contact geometry bypassed GPU PCM/Dy");
+        for(std::size_t i=0;i<cpu.contacts().size();++i) {
+            const auto& ca=cpu.contacts()[i];
+            const auto& cb=gpu.contacts()[i];
+            if(ca.pair!=cb.pair || ca.count!=cb.count || ca.count==0u)
+                throw std::runtime_error(
+                    "Finite convex Gu/GPU contact topology diverged");
+            const auto& a=ca.points[0];
+            const auto& b=cb.points[0];
+            const auto close=[](float x,float y) {
+                return std::fabs(x-y)<0.02f;
+            };
+            if(!close(a.separation,b.separation) ||
+               !close(a.position.x,b.position.x) ||
+               !close(a.position.y,b.position.y) ||
+               !close(a.position.z,b.position.z) ||
+               !close(a.normal.x,b.normal.x) ||
+               !close(a.normal.y,b.normal.y) ||
+               !close(a.normal.z,b.normal.z))
+                throw std::runtime_error(
+                    "Finite convex CPU/GPU GJK/EPA witnesses disagree at frame "+
+                    std::to_string(frame)+" pair "+std::to_string(i)+
+                    " depth="+std::to_string(a.separation)+"/"+
+                    std::to_string(b.separation));
+        }
+        for(std::size_t i=0;i<expected.size();++i)
+            test::compound_compare_state(
+                cpu.body_state(expected[i]),gpu.body_state(actual[i]),
+                0.03f,"Finite convex GPU rigid response");
+    }
+}
+
 inline void verify_convex_plane_gpu_solver(
     fyzz::compute::Backend backend,const char* sap,
     const char* pcm,const char* dy_shader,const char* convex_dy_shader) {
