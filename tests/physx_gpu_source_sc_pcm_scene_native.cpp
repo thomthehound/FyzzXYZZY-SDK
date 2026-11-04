@@ -1645,6 +1645,28 @@ void verify_sphere_gpu_solver(
     }
     require(touched_all && saw_device_response && saw_device_bounds,
         "GPU sphere contacts did not produce physical PGS response");
+
+    // The embedded-center exit-face rule selects Z before X/Y on a tie.
+    // A GPU contact must retain the actual box witness, not approximate
+    // the sphere's surface or introduce a CPU-only special case.
+    cpu.add_static_box({0.5f,0.5f,0.5f},{20.f,10.f,0.f});
+    gpu.add_static_box({0.5f,0.5f,0.5f},{20.f,10.f,0.f});
+    cpu.add_dynamic_sphere(0.25f,{20.f,10.f,0.f},1.f);
+    gpu.add_dynamic_sphere(0.25f,{20.f,10.f,0.f},1.f);
+    cpu.advance_collision(true);
+    gpu.advance_collision(true);
+    const auto embedded=[](const native::Scene& scene) -> native::ContactPoint {
+        for(const auto& manager:scene.contacts())
+            for(const auto& point:manager.points)
+                if(std::fabs(point.separation+0.75f)<0.0004f)
+                    return point;
+        throw std::runtime_error("Embedded sphere/box PCM witness missing");
+    };
+    const auto expected=embedded(cpu),actual=embedded(gpu);
+    require(std::fabs(expected.position.z-actual.position.z)<0.0004f &&
+            std::fabs(expected.normal.z-actual.normal.z)<0.0004f &&
+            std::fabs(actual.position.z-0.5f)<0.0004f,
+        "GPU embedded sphere did not preserve source PCM exit-face witness");
 }
 
 void verify_compound_actor_gpu_solver(
