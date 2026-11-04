@@ -3748,7 +3748,6 @@ void Scene::update_contacts() {
     const auto new_lookup_generation=indexed_manifold_generation_;
     gpu_pcm_pairs_.clear();
     gpu_pcm_results_.clear();
-    plane_contact_work_.clear();
     const bool source_gpu_pcm =
         gpu_broadphase_ && gpu_broadphase_->has_gpu_pcm_box() &&
         pcm_box_box_enabled_;
@@ -3776,59 +3775,37 @@ void Scene::update_contacts() {
             const Pair pair=previous_pairs_[i];
             const Shape& a=shapes_[pair.a];
             const Shape& b=shapes_[pair.b];
-            if(a.geometry==Geometry::Plane || b.geometry==Geometry::Plane)
-                continue;
+            const bool plane=a.geometry==Geometry::Plane ||
+                b.geometry==Geometry::Plane;
+            const bool sphere=a.geometry==Geometry::Sphere ||
+                b.geometry==Geometry::Sphere;
+            // The infinite plane has no GPU broadphase volume. Its
+            // paired box already has a resident Sc ElementSim transform.
+            if(plane && (!pcm_plane_box_enabled_ || sphere))continue;
             const EdgeIndex edge=active_edge_handles_[i];
             if(dormant_pcm(pair,edge))continue;
-            const bool swapped=island_edges_[edge].gu_order_reversed;
-            gpu_pcm_pairs_.push_back({
-                swapped?pair.b:pair.a,swapped?pair.a:pair.b,edge,
-                !island_edges_[edge].pcm_cache.initialized,
-                (a.geometry==Geometry::Sphere || b.geometry==Geometry::Sphere)
-                    ? 1u:16u});
+            if(plane) {
+                const Shape& floor=a.geometry==Geometry::Plane?a:b;
+                gpu_pcm_pairs_.push_back({
+                    a.geometry==Geometry::Plane?pair.a:pair.b,
+                    a.geometry==Geometry::Plane?pair.b:pair.a,
+                    edge,!island_edges_[edge].pcm_cache.initialized,
+                    16u,true,floor.position.y,a.contact_offset+b.contact_offset});
+            }else {
+                const bool swapped=island_edges_[edge].gu_order_reversed;
+                gpu_pcm_pairs_.push_back({
+                    swapped?pair.b:pair.a,swapped?pair.a:pair.b,edge,
+                    !island_edges_[edge].pcm_cache.initialized,
+                    sphere?1u:16u});
+            }
         }
         gpu_pcm_results_.resize(gpu_pcm_pairs_.size());
     }
-    // Sc's CPU plane/box Gu caches are independent of the GPU box/box
-    // contact stream. Start GPU work first, then prepare the plane
-    // witnesses before its fetch fence, retaining original pair order.
-    const bool overlap_plane_gu=source_gpu_pcm &&
-        pcm_plane_box_enabled_ && !gpu_pcm_pairs_.empty();
-    if(source_gpu_pcm) {
-        const auto prepare_plane_gu=[&] {
-            for(std::size_t i=0;i<previous_pairs_.size();++i) {
-                const Pair pair=previous_pairs_[i];
-                const Shape& a=shapes_[pair.a];
-                const Shape& b=shapes_[pair.b];
-                if(a.geometry!=Geometry::Plane &&
-                   b.geometry!=Geometry::Plane)continue;
-                if(a.geometry==Geometry::Sphere ||
-                   b.geometry==Geometry::Sphere)continue;
-                const Shape& plane=a.geometry==Geometry::Plane?a:b;
-                const Shape& box=a.geometry==Geometry::Plane?b:a;
-                if(box.motion!=Motion::Dynamic)
-                    throw std::logic_error(
-                        "PCM plane-box requires the admitted dynamic box");
-                const float distance=a.contact_offset+b.contact_offset;
-                if(!std::isfinite(distance))
-                    throw std::overflow_error(
-                        "Native Gu contact distance overflow");
-                const EdgeIndex edge=active_edge_handles_[i];
-                step_checkpoint_.save_edge(*this,edge);
-                plane_contact_work_.emplace_back();
-                auto& work=plane_contact_work_.back();
-                work.pair=pair;
-                work.count=generate_pcm_plane_box(
-                    plane,box,distance,island_edges_[edge].pcm_cache,
-                    work.points);
-            }
-        };
+    // The GPU contact stream now includes plane-box managers in source
+    // EdgeIndex order; Sc does not generate a parallel host manifold.
+    if(source_gpu_pcm)
         gpu_broadphase_->generate_gpu_pcm_box_contacts(
-            gpu_pcm_pairs_,gpu_pcm_results_,
-            overlap_plane_gu ? std::function<void()>(prepare_plane_gu)
-                             : std::function<void()>{});
-    }
-    std::size_t plane_work_index=0u;
+            gpu_pcm_pairs_,gpu_pcm_results_);
     std::size_t gpu_pcm_index=0u;
     std::size_t old_cursor = 0;
     std::size_t old_cache_cursor=0;
@@ -3894,34 +3871,22 @@ void Scene::update_contacts() {
             manifold.collision_axis=cache.collision_axis;
         }
         bool cache_hit=false;
-        if(pcm_plane) {
-            if(overlap_plane_gu) {
-                if(plane_work_index>=plane_contact_work_.size() ||
-                   plane_contact_work_[plane_work_index].pair!=pair)
-                    throw std::logic_error(
-                        "CPU plane Gu preparation lost Sc manager order");
-                const auto& work=plane_contact_work_[plane_work_index++];
-                manifold.count=work.count;
-                next_contact_points_.insert(next_contact_points_.end(),
-                    work.points.begin(),work.points.begin()+work.count);
-            } else {
-                // This same EdgeIndex cache remains the authority for
-                // source Gu witnesses and rejected-frame restoration.
-                step_checkpoint_.save_edge(*this,edge);
-                const Shape& plane=a.geometry==Geometry::Plane?a:b;
-                const Shape& box=a.geometry==Geometry::Plane?b:a;
-                if(box.motion!=Motion::Dynamic)
-                    throw std::logic_error(
-                        "PCM plane-box requires the admitted dynamic box");
-                manifold.count=generate_pcm_plane_box(
-                    plane,box,contact_distance,island_edges_[edge].pcm_cache,
-                    std::span<ContactPoint>(box_contact_scratch_));
-                next_contact_points_.insert(next_contact_points_.end(),
-                    box_contact_scratch_.begin(),
-                    box_contact_scratch_.begin()+manifold.count);
-            }
+        if(pcm_plane && !source_gpu_pcm) {
+            step_checkpoint_.save_edge(*this,edge);
+            const Shape& plane=a.geometry==Geometry::Plane?a:b;
+            const Shape& box=a.geometry==Geometry::Plane?b:a;
+            if(box.motion!=Motion::Dynamic)
+                throw std::logic_error(
+                    "PCM plane-box requires the admitted dynamic box");
+            manifold.count=generate_pcm_plane_box(
+                plane,box,contact_distance,island_edges_[edge].pcm_cache,
+                std::span<ContactPoint>(box_contact_scratch_));
+            next_contact_points_.insert(next_contact_points_.end(),
+                box_contact_scratch_.begin(),
+                box_contact_scratch_.begin()+manifold.count);
         }
-        if(pcm_box || (pcm_sphere && !plane_pair && source_gpu_pcm)) {
+        if(pcm_box || (source_gpu_pcm &&
+                       (pcm_plane || (pcm_sphere && !plane_pair)))) {
             if(source_gpu_pcm && dormant_pcm(pair,edge)) {
                 // An already-touching manager retains its original Gu
                 // witnesses. A previously resolved non-touching pair
