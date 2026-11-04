@@ -15,6 +15,13 @@ inline void verify_convex_finite_gpu_solver(
     constexpr std::array<ConvexTriangle,4> faces{{
         {0,2,1},{0,1,3},{0,3,2},{1,2,3}}};
     const auto hull=cook_convex_mesh(tetra,faces);
+    auto offsetTetra=tetra;
+    for(auto& vertex:offsetTetra) {
+        vertex.x+=100.f;
+        vertex.y+=100.f;
+        vertex.z+=100.f;
+    }
+    const auto offsetHull=cook_convex_mesh(offsetTetra,faces);
     constexpr std::array<Vec3,8> cubeVertices{{
         {-1,-1,-1},{1,-1,-1},{1,1,-1},{-1,1,-1},
         {-1,-1,1},{1,-1,1},{1,1,1},{-1,1,1}}};
@@ -49,7 +56,7 @@ inline void verify_convex_finite_gpu_solver(
     auto* producer=owner.get();
     gpu.set_gpu_broadphase(std::move(owner));
     const auto assemble=[&](native::Scene& scene) {
-        std::array<BodyId,6> dynamics{};
+        std::array<BodyId,7> dynamics{};
         scene.add_static_box({1.f,0.5f,1.f},{0.f,-0.5f,0.f});
         dynamics[0]=scene.create_body({{0.f,-0.12f,0.f},{}},true);
         scene.attach_convex(dynamics[0],hull,{});
@@ -81,6 +88,13 @@ inline void verify_convex_finite_gpu_solver(
         dynamics[5]=scene.add_dynamic_sphere(
             0.2f,{24.273157f,-0.794949f,-1.0039f},1.f);
 
+        const auto fixed_offset=scene.create_body({{-72.f,-100.f,-100.f},{}},false);
+        scene.attach_convex(fixed_offset,offsetHull,{});
+        dynamics[6]=scene.create_body({
+            {-71.85f,-99.88f,-99.92f},{}},true);
+        scene.attach_convex(dynamics[6],offsetHull,{});
+        scene.update_mass_properties(dynamics[6],1.f);
+
         RigidBodyDynamics settings{};
         settings.gravity_enabled=false;
         settings.position_iterations=24u;
@@ -101,7 +115,7 @@ inline void verify_convex_finite_gpu_solver(
         }
         cpu.step(dt);
         gpu.step(dt);
-        if(cpu.contacts().size()!=6u ||
+        if(cpu.contacts().size()!=7u ||
            cpu.contacts().size()!=gpu.contacts().size())
             throw std::runtime_error(
                 "Finite cooked hull PCM lost box, sphere or hull contact managers at frame "+
@@ -114,9 +128,9 @@ inline void verify_convex_finite_gpu_solver(
                 " gpu_readback="+
                 std::to_string(producer->pcm_contact_readback_bytes()));
         if(producer->pcm_contact_readback_bytes()!=
-              6u*sizeof(physx_gpu::SourcePcmGpuContactStreamNative) ||
+              7u*sizeof(physx_gpu::SourcePcmGpuContactStreamNative) ||
            producer->dy_cpu_gu_geometry_bytes()!=0u ||
-           producer->dy_pcm_device_contact_rows()<6u)
+           producer->dy_pcm_device_contact_rows()<7u)
             throw std::runtime_error(
                 "Finite convex contact geometry bypassed GPU PCM/Dy");
         for(std::size_t i=0;i<cpu.contacts().size();++i) {
@@ -144,16 +158,21 @@ inline void verify_convex_finite_gpu_solver(
                     std::to_string(b.separation));
         }
         if(frame==0u) {
-            bool near_face=false;
+            bool near_face=false,off_origin_pair=false;
             for(const auto& manager:cpu.contacts())
-                if(manager.count>0u &&
-                   manager.points[0].position.x>23.f &&
-                   std::abs(manager.points[0].separation+0.1961f)<0.015f &&
-                   std::abs(manager.points[0].normal.z)>0.95f)
-                    near_face=true;
-            if(!near_face)
+                if(manager.count>0u) {
+                    const auto& point=manager.points[0];
+                    if(point.position.x>23.f && point.position.x<26.f &&
+                       std::abs(point.separation+0.1961f)<0.015f &&
+                       std::abs(point.normal.z)>0.95f)
+                        near_face=true;
+                    if(point.position.x>27.f && point.position.x<30.f &&
+                       point.separation<0.f)
+                        off_origin_pair=true;
+                }
+            if(!near_face || !off_origin_pair)
                 throw std::runtime_error(
-                    "Near-face sphere penetration missing from convex PCM");
+                    "Cooked convex PCM lost off-origin hull or sphere penetration");
         }
         for(std::size_t i=0;i<expected.size();++i)
             test::compound_compare_state(
