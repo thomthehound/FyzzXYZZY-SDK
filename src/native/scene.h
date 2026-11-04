@@ -61,11 +61,14 @@ struct Pair {
 // This is a borrowed per-update view, not an alternate simulation state.
 struct GpuBroadphaseBox {
     enum class Motion : std::uint8_t { Static, Dynamic, Kinematic };
-    BodyId id=0;
+    ShapeId id=0;
     Vec3 position{}, half_extents{};
     Quat orientation{};
     float contact_offset=0.0f;
     Motion motion=Motion::Static;
+    Transform local_pose{};
+    ShapeId next_shape=std::numeric_limits<ShapeId>::max();
+    std::uint32_t geometry_kind=0;
 };
 
 // Source PxgCudaBroadPhaseSap::fetchBroadPhaseResults produces the two
@@ -85,7 +88,7 @@ struct GpuBroadphaseReports {
 // Gu PCM contacts remain keyed by Sc's original contact-manager EdgeIndex.
 // These are borrowed per-frame views; GPU state belongs to the same Sc edge.
 struct GpuPcmBoxPair {
-    BodyId first=0,second=0;
+    ShapeId first=0,second=0;
     std::uint32_t edge=0;
     bool reset_cache=false;
 };
@@ -135,9 +138,15 @@ struct GpuDyBodyIntegrationInput {
     // Sc actor index before source-owner lowering; ElementSim volume
     // handle in the GPU descriptor after source admission.
     std::uint32_t source_element=0xffffffffu;
+    float mass_local_position[3]{};
+    float mass_local_orientation[4]{0.0f,0.0f,0.0f,1.0f};
+    std::uint32_t source_shape_count=0;
 };
-static_assert(sizeof(GpuDyBodyIntegrationInput)==104u &&
-              offsetof(GpuDyBodyIntegrationInput,lock_flags)==88u);
+static_assert(sizeof(GpuDyBodyIntegrationInput)==136u &&
+              offsetof(GpuDyBodyIntegrationInput,lock_flags)==88u &&
+              offsetof(GpuDyBodyIntegrationInput,mass_local_position)==104u &&
+              offsetof(GpuDyBodyIntegrationInput,mass_local_orientation)==116u &&
+              offsetof(GpuDyBodyIntegrationInput,source_shape_count)==132u);
 struct GpuDyIntegratedPose {
     float position[3]{},orientation[4]{};
     std::uint32_t valid=0u;
@@ -294,8 +303,27 @@ public:
     }
     virtual void mark_shape_bounds_changed(
         BodyId actor,float contact_offset)=0;
+    virtual void set_device_shape_pose_cache_enabled(BodyId,bool) {
+        throw std::logic_error("Source GPU owner cannot set shape pose cache admission");
+    }
+    virtual void retain_rigid_actor(BodyId) {}
+    virtual void release_rigid_actor(BodyId) {}
     // Sc::ActorSim/ElementSim own original actor and element IDs.
     virtual void admit_shape(BodyId,GpuBroadphaseBox::Motion,float)=0;
+    virtual void admit_shape_element(ShapeId shape,BodyId body,
+                                    GpuBroadphaseBox::Motion motion,float offset) {
+        if(shape!=body)throw std::logic_error("GPU producer lacks independent shape admission");
+        admit_shape(shape,motion,offset);
+    }
+    virtual void admit_plane_element(ShapeId shape,BodyId body) {
+        if(shape!=body)throw std::logic_error("GPU producer lacks independent plane admission");
+        admit_plane(shape);
+    }
+    virtual void admit_aggregate_shape(AggregateId aggregate,ShapeId shape,BodyId body,
+                                      GpuBroadphaseBox::Motion motion,float offset) {
+        if(shape!=body)throw std::logic_error("GPU producer lacks compound aggregate admission");
+        admit_aggregate_member(aggregate,shape,motion,offset);
+    }
     virtual void admit_plane(BodyId) {
         throw std::logic_error("Source GPU owner has no Sc plane admission");
     }
@@ -314,7 +342,7 @@ public:
     }
     virtual void retire_shape(BodyId)=0;
     virtual void set_shape_simulation_enabled(BodyId,bool)=0;
-    virtual void set_shape_motion(BodyId,GpuBroadphaseBox::Motion)=0;
+    virtual void set_actor_motion(BodyId,GpuBroadphaseBox::Motion)=0;
     // Sc::Scene::postReportsCleanup follows fetched GPU/Sc publication.
     virtual void post_reports_cleanup()=0;
     // The source GPU has already advanced its histories at fetch. A
@@ -376,6 +404,26 @@ std::uint8_t source_box_box_contacts(
     Vec3 half0, Vec3 position0, Quat rotation0,
     Vec3 half1, Vec3 position1, Quat rotation1,
     float contact_distance, std::uint8_t& previous_axis,
+    std::span<ContactPoint> output);
+
+// Source simple PCM contacts. These generators write original Gu contacts
+// without a persistent witness cache.
+std::uint8_t source_pcm_sphere_sphere(
+    Vec3 center0,float radius0,Vec3 center1,float radius1,
+    float contact_distance,std::span<ContactPoint> output);
+std::uint8_t source_pcm_sphere_plane(
+    Vec3 center,float radius,float plane_height,
+    float contact_distance,std::span<ContactPoint> output);
+std::uint8_t source_pcm_sphere_box(
+    Vec3 center,float radius,Vec3 box_center,Quat box_orientation,
+    Vec3 box_half_extents,float contact_distance,
+    std::span<ContactPoint> output);
+std::uint8_t source_gu_sphere_sphere(
+    Vec3 center0,float radius0,Vec3 center1,float radius1,
+    float contact_distance,std::span<ContactPoint> output);
+std::uint8_t source_gu_sphere_box(
+    Vec3 center,float radius,Vec3 box_center,Quat box_orientation,
+    Vec3 box_half_extents,float contact_distance,
     std::span<ContactPoint> output);
 
 // GuPCMContactBoxBox::doBoxBoxGenerateContacts: candidates are local to
@@ -467,6 +515,20 @@ public:
     BodyId add_dynamic_box(
         Vec3 half_extents,Vec3 position,float density,
         std::optional<AggregateId> aggregate=std::nullopt);
+    BodyId add_static_sphere(float radius,Vec3 position,
+        std::optional<AggregateId> aggregate=std::nullopt);
+    BodyId add_dynamic_sphere(float radius,Vec3 position,float density,
+        std::optional<AggregateId> aggregate=std::nullopt);
+    BodyId create_body(Transform pose,bool dynamic);
+    ShapeId attach_box(BodyId body,Vec3 half_extents,Transform local_pose);
+    ShapeId attach_sphere(BodyId body,float radius,Transform local_pose);
+    void detach_shape(ShapeId shape);
+    void set_shape_local_pose(ShapeId shape,Transform pose);
+    void set_attached_shape_material(ShapeId shape,Material material);
+    void set_attached_shape_enabled(ShapeId shape,bool enabled);
+    void set_attached_shape_offsets(ShapeId shape,float contact,float rest);
+    void update_mass_properties(BodyId body,float density);
+    BodyMassProperties body_mass_properties(BodyId body) const;
     AggregateId create_aggregate(std::uint32_t max_shapes,bool self_collision);
     void destroy_aggregate(AggregateId id);
     void remove_actor_from_aggregate(AggregateId id,BodyId actor);
@@ -523,8 +585,8 @@ public:
     // Live source broadphase proxy ownership, excluding retired actor IDs.
     // Simulation-disabled actors retain their proxy identity but are not
     // admitted into an active SAP endpoint until re-enabled.
-    std::size_t broadphase_registered_actor_count() const noexcept {
-        return live_actor_ids_.size();
+    std::size_t broadphase_registered_shape_count() const noexcept {
+        return live_shape_ids_.size();
     }
     // BpBroadPhaseSap endpoint-motion diagnostics, derived from the
     // authoritative scene-owned endpoint list.
@@ -851,7 +913,7 @@ private:
     friend struct NativeSapTimingFixture;
     friend struct NativeThirdPassTimingFixture;
     enum class Motion : std::uint8_t { Static, Dynamic, Kinematic };
-    enum class Geometry : std::uint8_t { Box, Plane };
+    enum class Geometry : std::uint8_t { Box, Plane, Sphere };
     // Node::NodeType is independent of actor kind. Kinematics retain
     // rigid node identity but no island assignment. Other node classes
     // require their own non-rigid simulation owners, not rigid Actor
@@ -871,21 +933,19 @@ private:
     }
     struct Actor {
         Motion motion = Motion::Static;
-        Geometry geometry = Geometry::Box;
         bool alive = false;
-        Vec3 half_extents{};
+        ShapeId first_shape=std::numeric_limits<ShapeId>::max();
+        std::uint32_t shape_count=0;
+        ShapeId first_simulation_shape=std::numeric_limits<ShapeId>::max();
+        std::uint32_t simulation_shape_count=0;
         Vec3 position{};
         Vec3 velocity{};
         Quat orientation{};
         Vec3 angular_velocity{};
         float density = 0.0f;
-        float inverse_mass = 0.0f;  // immutable cached derived body property
+        float inverse_mass = 0.0f;
         float contact_report_threshold=std::numeric_limits<float>::max();
-        Material material{};
-        // PxShapeCore owns both distances for the sole admitted shape.
-        float contact_offset=0.02f;
-        float rest_offset=0.0f;
-        bool simulation_shape_enabled=true;
+        Transform mass_local_pose{};
         // ScBodySim::BF_KINEMATIC_MOVED and its authored target pose.
         // Target velocity is computed when dt becomes known, then the
         // target pose is published in postSolver (not before Gu).
@@ -923,11 +983,6 @@ private:
         // sleep-to-wake transition; consumed by wakeIslands after Gu
         // publication. Active nodes do not reawaken peers every frame.
         bool activating=false;
-        std::array<std::uint32_t, 6> encoded_bounds{};
-        // ScPipeline::afterIntegration publishes shape changes to the
-        // selected broadphase. Native CPU caches encoded endpoints; native
-        // GPU marks the source AABB manager's changed volume instead.
-        bool cached_bounds_current=false;
         // Transient Dy row mapping; generation survives frame rollback so
         // rejected rows can never be revived by reused Sc frame indices.
         std::size_t solver_row_index=0;
@@ -938,6 +993,27 @@ private:
         Vec3 last_ccd_position{};
         Quat last_ccd_orientation{};
         std::uint64_t last_ccd_generation=0;
+    };
+    static constexpr ShapeId invalid_shape=std::numeric_limits<ShapeId>::max();
+    struct Shape {
+        BodyId body=0;
+        Geometry geometry=Geometry::Box;
+        Motion motion=Motion::Static;
+        bool alive=false;
+        bool simulation_shape_enabled=true;
+        Vec3 half_extents{};
+        float radius=0.0f;
+        Transform local_pose{};
+        Vec3 position{};
+        Quat orientation{};
+        Material material{};
+        float contact_offset=0.02f,rest_offset=0.0f;
+        ShapeId next=invalid_shape,previous=invalid_shape;
+        ShapeId next_simulation_shape=invalid_shape;
+        bool device_cache_supported=true;
+        std::optional<AggregateId> aggregate;
+        std::array<std::uint32_t,6> encoded_bounds{};
+        bool cached_bounds_current=false;
     };
     // DyRigidBodyToSolverBody.cpp::copyToSolverBodyData and
     // PxSolverDefs.h::PxSolverBody/PxSolverBodyData. These are
@@ -1051,12 +1127,23 @@ private:
         std::array<std::uint32_t,6> published_bounds{};
         std::array<std::array<std::uint32_t,2>,3> endpoint_positions{};
     };
-    BodyId add(Actor actor,std::optional<AggregateId> aggregate=std::nullopt);
+    BodyId add(Actor actor);
+    ShapeId attach(BodyId body,Shape shape,
+                   std::optional<AggregateId> aggregate=std::nullopt);
     Actor& require(BodyId id);
     const Actor& require(BodyId id) const;
+    Shape& require_shape(ShapeId id);
+    const Shape& require_shape(ShapeId id) const;
+    Pair body_pair(Pair shapes) const noexcept;
+    Vec3 mass_position(const Actor& actor) const noexcept;
+    Quat mass_orientation(const Actor& actor) const noexcept;
+    void refresh_shape_pose(Shape& shape) noexcept;
+    void invalidate_body_shapes(BodyId body);
+    void refresh_shape_links(BodyId body);
+    static Transform validated_pose(Transform pose);
     // Shared Gu collision progression, independent of Dy solver execution.
     void advance_collision_internal(bool force_update, bool checkpointed);
-    void update_actor_bounds(Actor& actor);
+    void update_shape_bounds(Shape& shape);
     void publish_integrated_shape_bounds(BodyId id,Actor& actor);
     void update_bounds();
     void after_integration_cached_bounds();
@@ -1071,7 +1158,7 @@ private:
     void update_contacts();
     // Original contact-manager addEdge/setEdgeConnected/removeConnection
     // lifecycle, within the existing single scene-owned island pipeline.
-    std::uint32_t allocate_contact_edge(Pair pair);
+    std::uint32_t allocate_contact_edge(Pair bodies,Pair shapes={});
     void change_counted_interactions(Pair pair, bool attach);
     void retire_destroyed_contact_edges();
     // IslandSim::addConnectionToGraph/removeConnectionInternal,
@@ -1131,7 +1218,10 @@ private:
     void prepare_solver_bodies();
     void partition_constraints();
     void prepare_constraints(float seconds);
-    void erase_shape_friction_history(BodyId id);
+    void erase_shape_friction_history(ShapeId id);
+    void erase_body_friction_history(BodyId id);
+    void erase_friction_history(std::uint32_t id,bool body_scope);
+    void wake_shape_partners(ShapeId id);
     void solve_gpu_distance_constraints(float seconds);
     void solve_constraint_task(std::size_t task_index);
     void integrate_solver_task(std::size_t task_index,float seconds,
@@ -1145,6 +1235,8 @@ private:
     void publish_solver_bodies(std::size_t first,std::size_t last);
 
     std::vector<Actor> actors_;
+    std::vector<Shape> shapes_;
+    std::size_t rigid_shape_count_=0;
     using EdgeIndex=std::uint32_t;
     static constexpr EdgeIndex invalid_edge=std::numeric_limits<EdgeIndex>::max();
     static constexpr std::size_t invalid_instance=
@@ -1182,10 +1274,10 @@ private:
         std::span<const PcmContactCandidate> candidates,
         float tolerance_length);
     std::uint8_t generate_pcm_plane_box(
-        const Actor& plane, const Actor& box, float contact_distance,
+        const Shape& plane, const Shape& box, float contact_distance,
         PcmManifoldCache& cache, std::span<ContactPoint> output);
     std::uint8_t generate_pcm_box_box(
-        const Actor& first, const Actor& second, float contact_distance,
+        const Shape& first, const Shape& second, float contact_distance,
         PcmManifoldCache& cache, std::span<ContactPoint> output);
     static std::uint8_t publish_gpu_pcm_box_box(
         const GpuPcmBoxResult& gpu,PcmManifoldCache& cache,
@@ -1223,6 +1315,7 @@ private:
         // Ordered accurate-island manager membership. These are links in
         // the existing source EdgeIndex slot, not another contact owner.
         EdgeIndex island_prev=invalid_edge, island_next=invalid_edge;
+        Pair shapes{};
     };
     // Source HandleManager-style reusable slots. Active handles align
     // with the one authoritative sorted SAP pair stream; the slots own
@@ -1518,9 +1611,13 @@ private:
             bool activating=false;
             bool kinematic_target_pending=false;
             bool kinematic_settling=false;
-            std::array<std::uint32_t,6> encoded_bounds{};
-            bool cached_bounds_current=false;
         };
+        struct ShapeBounds {
+            ShapeId id;
+            std::array<std::uint32_t,6> encoded_bounds;
+            bool cached_bounds_current;
+        };
+        std::vector<ShapeBounds> shape_bounds;
         // Only dynamic motion is mutated by a step. Static geometry,
         // material ownership and immutable mass properties stay in actors_.
         std::vector<Motion> motions;
@@ -1807,10 +1904,10 @@ private:
     // retired slots never participate in the SAP workload again. Keep
     // registration in insertion order; retirement erases only its live
     // proxy. This is derived from the authoritative Actor::alive state.
-    std::vector<BodyId> live_actor_ids_;
+    std::vector<BodyId> live_shape_ids_;
     // BpBroadPhaseSap's 3 axes of sorted min/max endpoint keys.
     // No second broadphase owner: volumes_ holds prior AABB witnesses,
-    // and live_actor_ids_ remains the authoritative volume membership.
+    // and live_shape_ids_ remains the authoritative volume membership.
     std::array<std::vector<Endpoint>,3> sap_axis_endpoints_;
     std::vector<SapVolume> sap_volumes_;
     bool broadphase_endpoint_membership_dirty_=true;

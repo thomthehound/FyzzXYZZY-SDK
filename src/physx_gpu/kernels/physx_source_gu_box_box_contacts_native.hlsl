@@ -332,7 +332,7 @@ void main(uint3 thread : SV_DispatchThreadID) {
         float3 pb=asfloat(transforms.Load3(tb+16u));
         float3x3 A=quaternionBasis(asfloat(transforms.Load4(ta)));
         float3x3 B=quaternionBasis(asfloat(transforms.Load4(tb)));
-        uint ga=p.geometryBias+a*16u,gb=p.geometryBias+b*16u;
+        uint ga=p.geometryBias+a*64u,gb=p.geometryBias+b*64u;
         float3 ea=asfloat(geometry.Load3(ga));
         float3 eb=asfloat(geometry.Load3(gb));
         float distance=asfloat(geometry.Load(ga+12u))+

@@ -183,7 +183,7 @@ void verify(Context& context,const char* transform_shader,
     const std::size_t bounds_offset=input_offset+sizeof(boxes)+12u;
     const std::size_t transform_offset=bounds_offset+capacity*24u+4u;
     const std::size_t geometry_offset=transform_offset+capacity*32u+4u;
-    const std::size_t pair_offset=geometry_offset+capacity*16u+4u;
+    const std::size_t pair_offset=geometry_offset+capacity*64u+4u;
     const std::size_t result_offset=pair_offset+sizeof(pairs)+4u;
     const std::size_t candidate_offset=result_offset+sizeof(results)+4u;
     const std::size_t edge_offset=
@@ -204,7 +204,7 @@ void verify(Context& context,const char* transform_shader,
     const auto inputs=addresses.register_slice(root,input_offset,sizeof(boxes));
     const auto bounds=addresses.register_slice(root,bounds_offset,capacity*24u);
     const auto transforms=addresses.register_slice(root,transform_offset,capacity*32u);
-    const auto geometry=addresses.register_slice(root,geometry_offset,capacity*16u);
+    const auto geometry=addresses.register_slice(root,geometry_offset,capacity*64u);
     const auto pair_data=addresses.register_slice(root,pair_offset,sizeof(pairs));
     const auto result_data=addresses.register_slice(root,result_offset,sizeof(results));
     const auto candidate_data=addresses.register_slice(

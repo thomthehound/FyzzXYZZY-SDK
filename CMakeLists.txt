@@ -112,11 +112,21 @@ target_link_libraries(fyzzxyzzy_reference_physx_cpu PUBLIC physx_lib)
 set_target_properties(fyzzxyzzy_reference_physx_cpu PROPERTIES POSITION_INDEPENDENT_CODE ON)
 endif()
 
+# Box PCM face selection depends on the rounding of the scalar rotation
+# and alignment scores. Match the shader's separate multiply and add.
+if(MSVC)
+  set_property(SOURCE src/native/GuPCMContactBoxBox.cpp APPEND PROPERTY COMPILE_OPTIONS /fp:precise)
+elseif(CMAKE_CXX_COMPILER_ID MATCHES "^(GNU|Clang|AppleClang)$")
+  set_property(SOURCE src/native/GuPCMContactBoxBox.cpp APPEND PROPERTY COMPILE_OPTIONS -ffp-contract=off)
+endif()
+
 add_library(fyzzxyzzy_core STATIC
   src/world.cpp
   src/native/scene.cpp
+  src/native/compound.cpp
   src/native/GuContactBoxBox.cpp
   src/native/GuPCMContactBoxBox.cpp
+  src/native/GuPCMContactSphere.cpp
   src/native/GuPCMGjkEpa.cpp)
 add_library(FyzzXYZZY::Core ALIAS fyzzxyzzy_core)
 target_compile_features(fyzzxyzzy_core PUBLIC cxx_std_23)
@@ -124,7 +134,7 @@ target_link_libraries(fyzzxyzzy_core PUBLIC Threads::Threads)
 target_include_directories(fyzzxyzzy_core PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
 )
-target_include_directories(fyzzxyzzy_core PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
+target_include_directories(fyzzxyzzy_core PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src" "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_port")
 target_compile_definitions(fyzzxyzzy_core PRIVATE
   FYZZXYZZY_ENABLE_PHYSX_SOURCE=$<BOOL:${FYZZXYZZY_ENABLE_PHYSX_SOURCE}>)
 if(FYZZXYZZY_ENABLE_PHYSX_SOURCE)
@@ -160,6 +170,12 @@ if(BUILD_TESTING AND NOT FYZZXYZZY_ENABLE_PHYSX_SOURCE)
 endif()
 
 if(BUILD_TESTING)
+  add_executable(fyzzxyzzy_compound_rigid_smoke tests/compound_rigid_smoke.cpp)
+  target_link_libraries(fyzzxyzzy_compound_rigid_smoke PRIVATE FyzzXYZZY::Core)
+  target_compile_definitions(fyzzxyzzy_compound_rigid_smoke PRIVATE
+    FYZZXYZZY_ENABLE_PHYSX_SOURCE=$<BOOL:${FYZZXYZZY_ENABLE_PHYSX_SOURCE}>)
+  add_test(NAME fyzzxyzzy_compound_rigid_smoke COMMAND fyzzxyzzy_compound_rigid_smoke)
+
   add_executable(fyzzxyzzy_native_scene_smoke tests/native_scene_smoke.cpp)
   target_include_directories(fyzzxyzzy_native_scene_smoke PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}/src")
@@ -293,6 +309,9 @@ target_include_directories(fyzzxyzzy_physx_source_foundation
   PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_port"
   PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_port/foundation_source")
 target_link_libraries(fyzzxyzzy_physx_source_foundation PUBLIC Threads::Threads)
+if(NOT FYZZXYZZY_ENABLE_PHYSX_SOURCE)
+  target_link_libraries(fyzzxyzzy_core PRIVATE fyzzxyzzy_physx_source_foundation)
+endif()
 
 add_library(fyzzxyzzy_physx_original_gpu_heap STATIC
   src/physx_port/gpucommon/PxgHeapMemoryAllocator.cpp

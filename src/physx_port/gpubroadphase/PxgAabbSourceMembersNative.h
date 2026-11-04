@@ -988,11 +988,7 @@ public:
             box_transform_records_.reserve(live.size());
             for(std::size_t i=0;i<live.size();++i) {
                 const auto& b=live[i];
-                box_transform_records_.push_back({handles[i],
-                    {b.position.x,b.position.y,b.position.z},
-                    {b.orientation.x,b.orientation.y,b.orientation.z,b.orientation.w},
-                    {b.half_extents.x,b.half_extents.y,b.half_extents.z},
-                    b.contact_offset});
+                box_transform_records_.push_back(source_shape_transform_input(b,handles[i]));
             }
         };
         if(live.size()!=handles.size())
@@ -1081,6 +1077,14 @@ public:
         return update;
     }
 
+    void lower_shape_attachment_links(std::span<const physx::Bp::ShapeHandle> handles) {
+        for(auto& shape:box_transform_records_) {
+            if(shape.next_element==0xffffffffu)continue;
+            if(shape.next_element>=handles.size())
+                throw std::out_of_range("Attached shape link has no source element");
+            shape.next_element=handles[shape.next_element];
+        }
+    }
     std::span<const SourceScBoxTransformInputNative> box_transform_records() const noexcept {
         return box_transform_records_;
     }

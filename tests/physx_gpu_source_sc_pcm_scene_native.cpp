@@ -5,6 +5,7 @@
 #include "native/scene.h"
 #include "physx_gpu/source_sc_owned_gpu_broadphase_native.h"
 #include "gpu_integration_metrics.h"
+#include "compound_rigid_cases.h"
 
 #include <algorithm>
 #include <array>
@@ -129,6 +130,70 @@ void verify_rigid_shader_requirements(
         require(feature_info,"Rigid DXIL shader has no feature metadata");
     }
 }
+// Independent GPU broadphase volumes share one Sc rigid actor identity.
+// Same-actor shape overlap is filtered; each cross-actor shape pair is kept.
+void verify_compound_shape_gpu_pairs(
+    fyzz::compute::Backend backend,const char* sap) {
+    using namespace fyzz;
+    using Motion=native::GpuBroadphaseBox::Motion;
+    physx_gpu::SourceScOwnedGpuBroadphaseNative gpu(
+        backend,load_native_gpu_sap_shaders(backend,sap),128u,128u);
+    gpu.admit_shape_element(0u,0u,Motion::Dynamic,0.02f);
+    gpu.admit_shape_element(1u,0u,Motion::Dynamic,0.02f);
+    gpu.admit_shape_element(2u,1u,Motion::Static,0.02f);
+    std::array<native::GpuBroadphaseBox,3> shapes{};
+    for(std::uint32_t i=0u;i<shapes.size();++i) {
+        shapes[i].id=i;
+        shapes[i].half_extents={0.5f,0.5f,0.5f};
+        shapes[i].contact_offset=0.02f;
+        shapes[i].motion=i==2u?Motion::Static:Motion::Dynamic;
+    }
+    shapes[0].position={0.f,0.f,0.f};
+    shapes[1].position={0.1f,0.f,0.f};
+    shapes[2].position={0.5f,0.f,0.f};
+    const auto contains=[](std::span<const native::Pair> pairs,
+                           native::Pair expected) {
+        return std::find(pairs.begin(),pairs.end(),expected)!=pairs.end();
+    };
+    const auto created=gpu.advance(shapes,false,true);
+    require(!created.overflow && created.found.size()==2u &&
+            contains(created.found,{0u,2u}) &&
+            contains(created.found,{1u,2u}) &&
+            !contains(created.found,{0u,1u}),
+        "Source GPU broadphase did not preserve compound shape pairs");
+    const auto quiet=gpu.advance(shapes,false,false);
+    require(quiet.found.empty() && quiet.lost.empty(),
+        "Source GPU broadphase republished unchanged compound shape pairs");
+    // ScBodySim changes one rigid actor's motion and refilters every attached
+    // ElementSim, even when the shapes overlap each other.
+    gpu.set_actor_motion(0u,Motion::Kinematic);
+    shapes[0].motion=Motion::Kinematic;
+    shapes[1].motion=Motion::Kinematic;
+    const auto kinematic=gpu.advance(shapes,false,true);
+    require(kinematic.found.empty() && kinematic.lost.empty(),
+        "Compound actor kinematic transition changed stable GPU shape pairs");
+    gpu.set_actor_motion(0u,Motion::Dynamic);
+    shapes[0].motion=Motion::Dynamic;
+    shapes[1].motion=Motion::Dynamic;
+    const auto restored=gpu.advance(shapes,false,true);
+    require(restored.lost.empty() && restored.found.empty(),
+        "Compound actor dynamic transition changed stable GPU shape pairs");
+    // Sc edits this shape, not its parent rigid actor or sibling shape.
+    shapes[0].position={4.f,0.f,0.f};
+    gpu.mark_shape_bounds_changed(0u,0.02f);
+    const auto changed=gpu.advance(shapes,false,true);
+    require(changed.found.empty() && changed.lost.size()==1u &&
+            contains(changed.lost,{0u,2u}),
+        "Edited Sc shape retired the wrong GPU contact candidate");
+    gpu.retire_shape(0u);
+    const std::array<native::GpuBroadphaseBox,2> survivors{{
+        shapes[1],shapes[2]}};
+    const auto retired=gpu.advance(survivors,false,true);
+    require(retired.found.empty() && retired.lost.empty(),
+        "Retiring one shape disturbed surviving source GPU pair history");
+    gpu.post_reports_cleanup();
+}
+
 void verify(fyzz::compute::Backend backend,const char* sap,
             const char* pcm) {
     using namespace fyzz;
@@ -1472,6 +1537,114 @@ void verify_gpu_distance_solver(
 }
 } // namespace
 
+// Mixed spherical geometry traverses the real GPU SAP and GPU Dy task.
+// Simple sphere PCM geometry remains CPU-produced until its device producer
+// is admitted; no box/box PCM kernel may reinterpret these shapes.
+void verify_sphere_gpu_solver(
+    fyzz::compute::Backend backend,const char* sap,
+    const char* pcm,const char* dy_shader) {
+    using namespace fyzz;
+    std::ifstream stream(dy_shader,std::ios::binary);
+    require(bool(stream),"Sphere GPU Dy shader bundle missing");
+    std::vector<char> bytes(
+        std::istreambuf_iterator<char>{stream},
+        std::istreambuf_iterator<char>{});
+    compute::ShaderBinary shader{};
+    shader.format=backend==compute::Backend::Vulkan
+        ? compute::ShaderFormat::Spirv:compute::ShaderFormat::Dxil;
+    shader.bytes.assign(bytes.begin(),bytes.end());
+    native::Scene cpu,gpu;
+    auto owner=std::make_unique<
+        physx_gpu::SourceScOwnedGpuBroadphaseNative>(
+            backend,load_native_gpu_sap_shaders(backend,sap),
+            128u,128u,std::nullopt,
+            load_native_gpu_pcm_shaders(backend,pcm),std::move(shader));
+    auto* producer=owner.get();
+    gpu.set_gpu_broadphase(std::move(owner));
+    const auto add_scene=[](native::Scene& scene) {
+        std::array<BodyId,3> moving{};
+        scene.add_static_floor(0.f);
+        moving[0]=scene.add_dynamic_sphere(
+            0.5f,{0.f,0.45f,0.f},1.f);
+        scene.add_static_sphere(0.5f,{5.f,10.f,0.f});
+        moving[1]=scene.add_dynamic_sphere(
+            0.5f,{5.92f,10.f,0.f},1.f);
+        scene.add_static_box({0.5f,0.5f,0.5f},{10.f,10.f,0.f});
+        moving[2]=scene.add_dynamic_sphere(
+            0.25f,{10.7f,10.f,0.f},1.f);
+        RigidBodyDynamics dynamic{};
+        dynamic.gravity_enabled=false;
+        for(auto id:moving)scene.set_dynamics(id,dynamic);
+        return moving;
+    };
+    const auto cpu_ids=add_scene(cpu);
+    const auto gpu_ids=add_scene(gpu);
+    constexpr float dt=1.f/120.f;
+    bool touched_all=false,saw_device_response=false,saw_device_bounds=false;
+    for(std::uint32_t frame=0u;frame<8u;++frame) {
+        if(frame==3u) {
+            constexpr Quat rotate{0.f,0.0998334166f,0.f,0.9950041653f};
+            for(std::size_t i=0;i<cpu_ids.size();++i) {
+                auto a=cpu.body_state(cpu_ids[i]);
+                auto b=gpu.body_state(gpu_ids[i]);
+                cpu.set_pose(cpu_ids[i],a.position,rotate);
+                gpu.set_pose(gpu_ids[i],b.position,rotate);
+            }
+        }
+        cpu.step(dt);
+        gpu.step(dt);
+        require(cpu.contacts().size()==gpu.contacts().size() &&
+                cpu.solved_normal_impulses().size()==
+                    gpu.solved_normal_impulses().size(),
+            "GPU sphere scene changed Sc PCM/Gu manager identity");
+        if(frame==0u) {
+            require(gpu.contacts().size()==3u &&
+                    producer->dy_cpu_gu_geometry_bytes()>=
+                        3u*sizeof(native::GpuDyGuContactInput),
+                "Mixed sphere geometry did not enter GPU Dy contact preparation");
+            touched_all=true;
+        }
+        require(producer->dy_distance_dispatch_count()==frame+1u &&
+                producer->dy_gpu_integrated_body_count()>0u,
+            "Source sphere bodies did not execute GPU Dy integration");
+        // Spherical geometry carries its own radius in the shared shape
+        // cache; Dy publishes exact spherical bounds after integration.
+        saw_device_bounds|=producer->last_frame().device_cached_box_count>0u;
+        for(std::size_t i=0;i<cpu_ids.size();++i) {
+            const auto a=cpu.body_state(cpu_ids[i]);
+            const auto b=gpu.body_state(gpu_ids[i]);
+            require(std::fabs(a.position.x-b.position.x)<0.035f &&
+                    std::fabs(a.position.y-b.position.y)<0.035f &&
+                    std::fabs(a.velocity.x-b.velocity.x)<0.04f &&
+                    std::fabs(a.velocity.y-b.velocity.y)<0.04f,
+                "Source sphere GPU Dy motion diverged from native CPU");
+        }
+        for(const auto impulse:gpu.solved_normal_impulses())
+            saw_device_response |= impulse>0.;
+    }
+    require(touched_all && saw_device_response && saw_device_bounds,
+        "GPU sphere contacts did not produce physical PGS response");
+}
+
+void verify_compound_actor_gpu_solver(
+    fyzz::compute::Backend backend,const char* sap,const char* pcm,const char* dy_shader) {
+    using namespace fyzz;
+    std::ifstream stream(dy_shader,std::ios::binary);
+    require(bool(stream),"Compound GPU Dy shader bundle missing");
+    std::vector<char> bytes(std::istreambuf_iterator<char>{stream},std::istreambuf_iterator<char>{});
+    compute::ShaderBinary shader{};
+    shader.format=backend==compute::Backend::Vulkan?compute::ShaderFormat::Spirv:compute::ShaderFormat::Dxil;
+    shader.bytes.assign(bytes.begin(),bytes.end());
+    auto gpu=create_native_gpu_world(backend,load_native_gpu_sap_shaders(backend,sap),
+        load_native_gpu_pcm_shaders(backend,pcm),std::move(shader),
+        {.execution=ExecutionMode::NativePortableGpu,.contact_notifications=true});
+    World cpu({.execution=ExecutionMode::NativeCpu,.contact_notifications=true});
+    test::compound_mass_and_motion(gpu,&cpu);
+    test::compound_contact_lifetimes(gpu,&cpu);
+    test::compound_default_contact_response(gpu,&cpu);
+    test::compound_joint_response(gpu,&cpu);
+}
+
 int main(int argc,char** argv) {
     try {
         require(argc==4 || argc==5,
@@ -1480,7 +1653,8 @@ int main(int argc,char** argv) {
         require(scenario=="all" || scenario=="scene" ||
                 scenario=="sparse_contacts" || scenario=="coupled_stack" ||
                 scenario=="coupled_solver" || scenario=="legacy_gu_solver" ||
-                scenario=="mixed_solver" || scenario=="distance_solver",
+                scenario=="mixed_solver" || scenario=="distance_solver" ||
+                scenario=="compound_shapes" || scenario=="compound_solver" || scenario=="sphere_solver",
                 "Unknown GPU scene regression scenario");
 #ifdef FYZZXYZZY_TEST_D3D12
         constexpr auto backend=fyzz::compute::Backend::D3D12;
@@ -1488,6 +1662,16 @@ int main(int argc,char** argv) {
         constexpr auto backend=fyzz::compute::Backend::Vulkan;
 #endif
         verify_rigid_shader_requirements(backend,argv[3]);
+        if(scenario=="all" || scenario=="compound_shapes")
+            fyzz::tests::measure_gpu_case("sc_pcm","compound_shapes",
+                [&]{verify_compound_shape_gpu_pairs(backend,argv[1]);});
+        if(scenario=="all" || scenario=="compound_solver")
+            fyzz::tests::measure_gpu_case("sc_pcm","compound_solver",
+                [&]{verify_compound_actor_gpu_solver(backend,argv[1],argv[2],argv[3]);});
+        if(scenario=="all" || scenario=="sphere_solver")
+            fyzz::tests::measure_gpu_case("sc_pcm","sphere_solver",
+                [&]{verify_sphere_gpu_solver(
+                    backend,argv[1],argv[2],argv[3]);});
         if(scenario=="all" || scenario=="scene")
             fyzz::tests::measure_gpu_case("sc_pcm","scene",
                 [&]{verify(backend,argv[1],argv[2]);});

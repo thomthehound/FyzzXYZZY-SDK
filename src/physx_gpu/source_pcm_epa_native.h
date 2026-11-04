@@ -77,7 +77,7 @@ public:
         dispatch.buffers={
             view(transforms,source_allocation_bytes(shape_capacity,32u),
                  0u,compute::BufferAccess::Read),
-            view(geometry,source_allocation_bytes(shape_capacity,16u),
+            view(geometry,source_allocation_bytes(shape_capacity,64u),
                  1u,compute::BufferAccess::Read),
             view(pairs,source_allocation_bytes(pair_count,20u),
                  2u,compute::BufferAccess::Read),

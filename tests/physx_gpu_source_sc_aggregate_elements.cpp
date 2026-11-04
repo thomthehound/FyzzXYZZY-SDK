@@ -127,6 +127,47 @@ void run(Backend backend) {
                         !identity.volume_data[i].getUserData(),
                         "Recovered PhysX AABB entries retained invalid source identity");
         }
+        // Two independent ElementSim volumes bound to one rigid actor
+        // use distinct shape handles but one source actor filter identity.
+        {
+            PxgAabbSourceMembersNative owner(allocators,8u,16u,32u);
+            SourceScSceneElementsNative sc(owner);
+            using Motion=fyzz::native::GpuBroadphaseBox::Motion;
+            sc.admit_shape(0u,0u,Motion::Dynamic,0.15f);
+            sc.admit_shape(1u,0u,Motion::Dynamic,0.25f);
+            sc.admit_shape(2u,1u,Motion::Static,0.05f);
+            const auto h0=sc.handle(0u);
+            const auto h1=sc.handle(1u);
+            const auto h2=sc.handle(2u);
+            require(h0!=h1 && h0!=h2 && h1!=h2 &&
+                    owner.volume_to_actor()[h0]==0u &&
+                    owner.volume_to_actor()[h1]==1u &&
+                    owner.volume_to_actor()[h2]==2u,
+                    "Compound Sc actor collapsed independent shape elements");
+            const auto& groups=owner.scene_bounds().groups;
+            require(groups[h0]==groups[h1] &&
+                    groups[h0]!=groups[h2] &&
+                    (groups[h0]&BP_FILTERING_TYPE_MASK)==
+                        physx::Bp::FilterType::DYNAMIC,
+                    "Compound Sc shapes lost shared rigid actor BP group");
+            const std::array<fyzz::native::GpuBroadphaseBox,3> elements{{
+                box(0u,0.0f,Motion::Dynamic),
+                box(1u,0.2f,Motion::Dynamic),
+                box(2u,0.5f,Motion::Static)}};
+            const physx::Bp::BpFilter filter(false,false);
+            const auto frame=owner.prepare(elements,sc.handles(),filter);
+            require(frame.getNumCreatedHandles()==3u &&
+                    frame.getCreatedHandles()[0]==h0 &&
+                    frame.getCreatedHandles()[1]==h1 &&
+                    frame.getCreatedHandles()[2]==h2,
+                    "Compound actor failed independent source volume preparation");
+            sc.retire(1u);
+            require(sc.handle(0u)==h0 &&
+                    owner.volume_to_actor()[h0]==0u &&
+                    owner.scene_bounds().groups[h0]==groups[h0],
+                    "One retired shape released the surviving actor identity");
+            sc.post_reports_cleanup();
+        }
         {
             PxgAabbSourceMembersNative owner(allocators,8u,16u,32u);
             SourceScSceneElementsNative sc(owner);
@@ -195,7 +236,7 @@ void run(Backend backend) {
             // original aggregate member ElementSim and reinsert it with
             // its newly calculated Bp motion group.
             const auto dynamic_group=owner.scene_bounds().groups[member0];
-            sc.set_motion(0u,fyzz::native::GpuBroadphaseBox::Motion::Kinematic);
+            sc.set_actor_motion(0u,fyzz::native::GpuBroadphaseBox::Motion::Kinematic);
             require(sc.handle(0u)==member0 &&
                     owner.volume_to_actor()[member0]==0u &&
                     owner.source_aggregated().boundedTest(member0) &&
@@ -203,7 +244,7 @@ void run(Backend backend) {
                         physx::Bp::FilterType::KINEMATIC &&
                     owner.scene_bounds().groups[member0]!=dynamic_group,
                     "Kinematic aggregate member lost original ID or Bp filtering group");
-            sc.set_motion(0u,fyzz::native::GpuBroadphaseBox::Motion::Dynamic);
+            sc.set_actor_motion(0u,fyzz::native::GpuBroadphaseBox::Motion::Dynamic);
             require(owner.scene_bounds().groups[member0]==dynamic_group &&
                     owner.source_aggregated().boundedTest(member0) &&
                     sc.aggregate_root_handle(root)==root_handle,
@@ -358,6 +399,36 @@ void run(Backend backend) {
                 "Disabled original Sc actor incorrectly freed aggregate capacity");
             sc.destroy_aggregate(limited);
             sc.retire(3u);
+
+            // Retiring one aggregate attachment must unlink the shape ID,
+            // not its shared rigid actor ID, while the sibling survives.
+            const auto compound=sc.create_aggregate(
+                2u,physx::Bp::getFilterGroup_Statics(),0u);
+            using Motion=fyzz::native::GpuBroadphaseBox::Motion;
+            sc.admit_aggregate_shape(compound,4u,3u,Motion::Dynamic,0.02f);
+            sc.admit_aggregate_shape(compound,5u,3u,Motion::Dynamic,0.02f);
+            const auto first=sc.handle(4u),second=sc.handle(5u);
+            const auto original_group=owner.scene_bounds().groups[first];
+            require(owner.scene_bounds().groups[second]==original_group,
+                    "Compound aggregate siblings do not share rigid filtering");
+            sc.set_actor_motion(3u,Motion::Kinematic);
+            require((owner.scene_bounds().groups[first]&BP_FILTERING_TYPE_MASK)==
+                        physx::Bp::FilterType::KINEMATIC &&
+                    (owner.scene_bounds().groups[second]&BP_FILTERING_TYPE_MASK)==
+                        physx::Bp::FilterType::KINEMATIC,
+                    "Compound aggregate motion did not update both shape groups");
+            sc.set_actor_motion(3u,Motion::Dynamic);
+            require(owner.scene_bounds().groups[first]==original_group &&
+                    owner.scene_bounds().groups[second]==original_group,
+                    "Compound aggregate actor did not restore dynamic filtering");
+            sc.retire(4u);
+            require(owner.source_aggregated().boundedTest(second)!=0u,
+                    "Retiring one compound aggregate shape detached its sibling");
+            sc.destroy_aggregate(compound);
+            require(sc.handle(5u)!=second &&
+                    owner.source_aggregated().boundedTest(second)==0u,
+                    "Compound aggregate release lost surviving shape ownership");
+            sc.retire(5u);
 
             // Detached Sc aggregate roots still carry their user-data
             // addresses until source postReportsCleanup. Reuse their

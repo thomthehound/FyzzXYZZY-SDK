@@ -144,7 +144,7 @@ inline void pre_update_source_sap_aabb_manager_native(
     const auto cache_bytes=boxes && shape_bytes
         ? checked_bytes(capacity,32u) : 0u;
     const auto geometry_bytes=boxes && shape_bytes
-        ? checked_bytes(capacity,16u) : 0u;
+        ? checked_bytes(capacity,sizeof(SourceScBoxGeometryNative)) : 0u;
 
     const auto append_bitmap=[](
         std::vector<SourceSapUpload>& uploads,

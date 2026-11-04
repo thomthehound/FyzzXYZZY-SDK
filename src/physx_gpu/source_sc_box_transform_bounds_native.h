@@ -3,6 +3,7 @@
 // SPDX-License-Identifier: Apache-2.0
 #pragma once
 
+#include "native/scene.h"
 #include "physx_gpu/source_sap_dma_native.h"
 #include "physx_gpu/source_native_view.h"
 
@@ -23,14 +24,40 @@ struct SourceScBoxTransformInputNative {
     float orientation[4];
     float half_extents[3];
     float contact_distance=0.0f;
+    float local_position[3]{};
+    std::uint32_t geometry_kind=0;
+    float local_orientation[4]{0,0,0,1};
+    std::uint32_t next_element=0xffffffffu;
+    std::uint32_t reserved[3]{};
 };
-static_assert(sizeof(SourceScBoxTransformInputNative)==48u);
+static_assert(sizeof(SourceScBoxTransformInputNative)==96u &&
+    offsetof(SourceScBoxTransformInputNative,local_position)==48u &&
+    offsetof(SourceScBoxTransformInputNative,local_orientation)==64u &&
+    offsetof(SourceScBoxTransformInputNative,next_element)==80u);
 
 struct SourceScBoxGeometryNative {
     float half_extents[3];
     float contact_distance;
+    float local_position[3]{};
+    std::uint32_t geometry_kind=0;
+    float local_orientation[4]{0,0,0,1};
+    std::uint32_t next_element=0xffffffffu;
+    std::uint32_t reserved[3]{};
 };
-static_assert(sizeof(SourceScBoxGeometryNative)==16u);
+static_assert(sizeof(SourceScBoxGeometryNative)==64u &&
+    offsetof(SourceScBoxGeometryNative,local_position)==16u &&
+    offsetof(SourceScBoxGeometryNative,local_orientation)==32u &&
+    offsetof(SourceScBoxGeometryNative,next_element)==48u);
+
+inline SourceScBoxTransformInputNative source_shape_transform_input(
+    const native::GpuBroadphaseBox& shape,std::uint32_t handle) {
+    const auto p=shape.local_pose.position;
+    const auto q=shape.local_pose.orientation;
+    return {handle,{shape.position.x,shape.position.y,shape.position.z},
+        {shape.orientation.x,shape.orientation.y,shape.orientation.z,shape.orientation.w},
+        {shape.half_extents.x,shape.half_extents.y,shape.half_extents.z},shape.contact_offset,
+        {p.x,p.y,p.z},shape.geometry_kind,{q.x,q.y,q.z,q.w},shape.next_shape,{}};
+}
 
 // GPU outputs use the original PxBounds3 (24 bytes) and PxsCachedTransform
 // (32 bytes) element strides. The cache is shared by BP and future NP.
@@ -92,13 +119,13 @@ public:
         dispatch.pipeline=pipeline_;
         dispatch.groups={static_cast<std::uint32_t>(groups),1u,1u};
         dispatch.buffers={
-            view(input,source_allocation_bytes(count,48u),
+            view(input,source_allocation_bytes(count,sizeof(SourceScBoxTransformInputNative)),
                  0u,compute::BufferAccess::Read),
             view(bounds,source_allocation_bytes(capacity,24u),
                  1u,compute::BufferAccess::Write),
             view(cache,source_allocation_bytes(capacity,32u),
                  2u,compute::BufferAccess::Write),
-            view(geometry,source_allocation_bytes(capacity,16u),
+            view(geometry,source_allocation_bytes(capacity,sizeof(SourceScBoxGeometryNative)),
                  3u,compute::BufferAccess::Write)};
         dispatch.push_constants.resize(sizeof(params));
         std::memcpy(dispatch.push_constants.data(),

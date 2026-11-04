@@ -27,6 +27,17 @@ struct Quat {
     float w = 1.0f;
 };
 
+struct Transform {
+    Vec3 position{};
+    Quat orientation{};
+};
+
+struct BodyMassProperties {
+    float inverse_mass=0.0f;
+    Vec3 inverse_inertia{};
+    Transform mass_local_pose{};
+};
+
 // Reference PhysX CPU execution is transitional and isolated from the native
 // FyzzXYZZY engine. Native execution must never silently select the reference.
 enum class ExecutionMode : std::uint8_t {
@@ -126,6 +137,7 @@ struct RigidBodyDynamics {
 };
 
 using BodyId = std::uint32_t;
+using ShapeId = std::uint32_t;
 using AggregateId = std::uint32_t;
 // World-visible identity includes a generation. Native IslandSim
 // EdgeIndex and ScConstraintSim's recycled IDTracker slot are private.
@@ -161,7 +173,7 @@ struct ForceThresholdReport {
 // simulation fetch, not Gu broadphase found/lost overlap candidates.
 enum class ContactEventKind : std::uint8_t { Found, Persists, Lost };
 struct ContactEvent {
-    BodyId body0=0, body1=0; // canonical actor IDs (one shape per actor)
+    BodyId body0=0, body1=0;
     ContactEventKind kind=ContactEventKind::Found;
     std::uint8_t contact_count=0;
     // Offset into World::contact_event_points(); each event owns a
@@ -171,6 +183,7 @@ struct ContactEvent {
     // Sum of the source per-contact normal impulse force buffer.
     // Compliant spring impulses can be signed; lost contacts report zero.
     double normal_impulse=0.0;
+    ShapeId shape0=0, shape1=0;
 };
 // Original PxContactPairPoint normal geometry + per-Gu-contact signed
 // normal force buffer. Tangential friction is reported separately at
@@ -200,9 +213,48 @@ struct BodyState {
 class WorldBackend {
 public:
     virtual ~WorldBackend() = default;
+    virtual BodyId create_static_body(Transform) {
+        throw std::logic_error("This backend cannot create a shapeless static actor");
+    }
+    virtual BodyId create_dynamic_body(Transform) {
+        throw std::logic_error("This backend cannot create a shapeless dynamic actor");
+    }
+    virtual ShapeId attach_box_shape(BodyId,Vec3,Transform) {
+        throw std::logic_error("This backend cannot attach box shapes");
+    }
+    virtual ShapeId attach_sphere_shape(BodyId,float,Transform) {
+        throw std::logic_error("This backend cannot attach sphere shapes");
+    }
+    virtual void detach_shape(ShapeId) {
+        throw std::logic_error("This backend cannot detach shapes");
+    }
+    virtual void set_shape_local_pose(ShapeId,Transform) {
+        throw std::logic_error("This backend cannot author a shape local pose");
+    }
+    virtual void set_shape_material(ShapeId,Material) {
+        throw std::logic_error("This backend cannot author shape material");
+    }
+    virtual void set_shape_simulation_enabled(ShapeId,bool) {
+        throw std::logic_error("This backend cannot author shape flags");
+    }
+    virtual void set_shape_offsets(ShapeId,float,float) {
+        throw std::logic_error("This backend cannot author shape offsets");
+    }
+    virtual void update_mass_properties(BodyId,float) {
+        throw std::logic_error("This backend cannot calculate compound mass properties");
+    }
+    virtual BodyMassProperties body_mass_properties(BodyId) const {
+        throw std::logic_error("This backend cannot expose rigid mass properties");
+    }
     virtual BodyId add_static_box(Vec3 half_extents, Vec3 position) = 0;
     virtual BodyId add_static_floor(float height) = 0;
     virtual BodyId add_dynamic_box(Vec3 half_extents, Vec3 position, float density) = 0;
+    virtual BodyId add_static_sphere(float,Vec3) {
+        throw std::logic_error("This backend has no sphere geometry");
+    }
+    virtual BodyId add_dynamic_sphere(float,Vec3,float) {
+        throw std::logic_error("This backend has no sphere geometry");
+    }
     // A PxAggregate root has an original Sc ElementSim but is not a
     // standalone actor. Unsupported backends reject this contract.
     virtual AggregateId create_aggregate(std::uint32_t,bool) {
@@ -313,9 +365,23 @@ public:
     World(World&&) noexcept;
     World& operator=(World&&) noexcept;
 
+    BodyId create_static_body(Transform pose={});
+    BodyId create_dynamic_body(Transform pose={});
+    ShapeId attach_box_shape(BodyId body,Vec3 half_extents,Transform local_pose={});
+    ShapeId attach_sphere_shape(BodyId body,float radius,Transform local_pose={});
+    void detach_shape(ShapeId shape);
+    void set_shape_local_pose(ShapeId shape,Transform local_pose);
+    void set_shape_material(ShapeId shape,Material material);
+    void set_shape_simulation_enabled(ShapeId shape,bool enabled);
+    void set_shape_offsets(ShapeId shape,float contact,float rest);
+    void update_mass_properties(BodyId body,float density);
+    BodyMassProperties body_mass_properties(BodyId body) const;
+
     BodyId add_static_box(Vec3 half_extents, Vec3 position);
     BodyId add_static_floor(float height);
     BodyId add_dynamic_box(Vec3 half_extents, Vec3 position, float density);
+    BodyId add_static_sphere(float radius,Vec3 position);
+    BodyId add_dynamic_sphere(float radius,Vec3 position,float density);
     AggregateId create_aggregate(std::uint32_t max_shapes,bool self_collision);
     void destroy_aggregate(AggregateId id);
     void remove_actor_from_aggregate(AggregateId id,BodyId actor);

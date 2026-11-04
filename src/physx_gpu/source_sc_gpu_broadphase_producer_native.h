@@ -143,6 +143,10 @@ public:
         if(elements.device_cache_eligible(actor))
             elements.authorize_device_integrated_pose(actor);
     }
+    void set_device_shape_pose_cache_enabled(BodyId shape,bool enabled) {
+        require_scene_elements().set_device_shape_pose_cache_enabled(
+            shape,enabled);
+    }
     void mark_shape_bounds_changed(
         BodyId actor,float contact_offset) override {
         // Authored Sc shape edits remain valid after a rejected frame.
@@ -168,15 +172,30 @@ public:
         aabb_.mark_changed(handle,contact_offset);
     }
 
-    void set_shape_motion(BodyId actor,
+    void set_actor_motion(BodyId actor,
                           native::GpuBroadphaseBox::Motion motion) override {
-        require_scene_elements().set_motion(actor,motion);
+        require_scene_elements().set_actor_motion(actor,motion);
     }
 
+    void retain_rigid_actor(BodyId body) override {require_scene_elements().retain_actor(body);}
+    void release_rigid_actor(BodyId body) override {require_scene_elements().release_actor(body);}
+    void admit_plane_element(ShapeId shape,BodyId body) override {require_scene_elements().admit_plane(shape,body);}
+    void admit_aggregate_shape(AggregateId aggregate,ShapeId shape,BodyId body,
+                              native::GpuBroadphaseBox::Motion motion,float offset) override {
+        handles_dirty_=true;
+        require_scene_elements().admit_aggregate_shape(aggregate,shape,body,motion,offset);
+    }
     void admit_shape(BodyId actor,
         native::GpuBroadphaseBox::Motion motion,float contact_distance) override {
         handles_dirty_=true;
         require_scene_elements().admit(actor,motion,contact_distance);
+    }
+    void admit_shape_element(
+        ShapeId shape,BodyId actor,
+        native::GpuBroadphaseBox::Motion motion,float contact_distance) override {
+        handles_dirty_=true;
+        require_scene_elements().admit_shape(
+            shape,actor,motion,contact_distance);
     }
     void admit_plane(BodyId actor) override {
         require_scene_elements().admit_plane(actor);

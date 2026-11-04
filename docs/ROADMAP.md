@@ -34,16 +34,17 @@ these conditions by itself.
 ## Audited starting point
 
 This table describes merged native production code. Reference-backend
-features do not count as native coverage. The open compound-shape work adds
-sphere contacts and independent GPU volume identities; those additions are
-not yet merged compound-body or device sphere-contact acceptance.
+features do not count as native coverage. The compound rigid scene now supports independent box/sphere attachments,
+shape-keyed contacts, mass-frame dynamics and compound GPU broadphase/Dy.
+GPU sphere contact generation, general shape authoring, and hardware
+performance acceptance remain open.
 
 | Capability | Merged native behavior and evidence | Remaining coverage |
 | --- | --- | --- |
 | Public construction | Explicit NativeCpu and shader-bundle GPU factories; `src/world.cpp`, `native_gpu_world.h`, `native_boundary_smoke.cpp` | Ordinary World defaults to reference CPU; direct NativePortableGpu construction rejects; full scene configuration/API absent |
-| Actors, shapes, mass | Static/dynamic/kinematic motion classification; one box/plane shape stored on each Actor in `src/native/scene.h` | Independent shape attachments, shared geometry, local poses, center-of-mass frame and compound mass/inertia |
-| Broadphase/aggregates | Persistent CPU SAP and Vulkan/D3D12 AABB/SAP/aggregate report lifecycle; source owner and scene tests | General shape/node admission, other source broadphase modes and full public controls |
-| Contacts | CPU box/box and plane/box Gu/PCM; explicit device box PCM/GJK/EPA connected to Sc | General pair dispatch, mesh midphase, full cache/material/contact-modification semantics |
+| Actors, shapes, mass | Independent box/sphere attachments with local poses and explicit mass-center/principal-inertia recomputation in the native CPU/GPU scene | Shared/exclusive geometry resources, full shape flags and broad geometry dispatch |
+| Broadphase/aggregates | Persistent CPU SAP and Vulkan/D3D12 AABB/SAP/aggregate reports with separate shape elements and actor-owned filtering identity | Other source broadphase modes, general shape/node categories and full public controls |
+| Contacts | CPU box/box, sphere/sphere, sphere/box and plane Gu/PCM; GPU box PCM/GJK/EPA and shape-keyed contact histories connected to Sc | Device sphere/capsule contacts, mesh midphase, general dispatch and full contact/material forms |
 | PGS/dynamics | CPU and explicit GPU contact/distance prep, friction, solve, integration, body controls and sleep for admitted rigid scenes | Full source solver forms, batching, mixed nodes and scalable GPU execution |
 | GPU frame | Shared source heap/stream, persistent SAP/PCM history and reuse of device contact/pose data | Host contact publication, CPU task/partition construction and solver fetch still constrain device progress |
 | Events/filtering | Bounded touch, threshold, material, simulation-flag and island lifecycle coverage | Shape-level callbacks, triggers, general filtering, reporting and scene publication API |
@@ -64,7 +65,7 @@ independent physical checks remain necessary.
 
 | Evidence in current code | Required resolution | Delivery |
 | --- | --- | --- |
-| Pair, GPU input and report identities use BodyId; Actor stores geometry/material/offsets | Shape attachment/element keys for collision; body/link keys for dynamics; correct mass frame | Scene foundation |
+| Compound shape-element and body identities now separate collision history from rigid Dy response | Shared geometry ownership, per-shape filters/triggers and complete public scene semantics | Scene and geometry |
 | Native CPU/GPU rigid rows use source PxReal; compiled SPIR-V/DXIL checks reject FP64 requirements | Extend error/conditioning and cost validation with each subsystem; numerical representation follows the supported physical domain | Every capability |
 | Dy shader dispatches one 128-thread workgroup per task and loops its conflict partitions | Establish scaling for one large connected island as well as many independent tasks; implement source-derived partition tiling where needed | Device foundation |
 | Scene builds host task/constraint/contact arrays; Dy solve downloads before returning | Express device dependencies and public-result visibility separately; retain intermediate device authority | Device foundation |
@@ -145,8 +146,10 @@ and execute compound box contact solving on both GPU APIs. Mixed sphere
 contacts also run end to end; CPU sphere generation in a GPU scene is recorded
 as hybrid until the Geometry delivery supplies its device producer.
 
-The current compound work remains unfinished until this workload passes.
-Broadphase siblings and sphere primitive tests alone do not close it.
+Compound rigid bodies and independent shape lifetimes are implemented in
+the native scene. The complete workload remains open for shared shape
+authoring, filter/trigger semantics, device-generated sphere contacts and
+cross-API physical hardware qualification.
 
 ### Device foundation — qualify the execution model now
 
