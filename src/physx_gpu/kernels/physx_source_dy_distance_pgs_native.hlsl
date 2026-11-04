@@ -26,10 +26,12 @@ RWByteAddressBuffer scBounds : register(u3,space0);
 [[vk::binding(4,0)]]
 #endif
 RWByteAddressBuffer scGeometry : register(u4,space0);
+#ifdef FYZZXYZZY_CONVEX
 #ifdef __spirv__
 [[vk::binding(5,0)]]
 #endif
 RWByteAddressBuffer scHullVertices : register(u5,space0);
+#endif
 
 struct Parameters {
     uint bodyBias, distanceBias, descriptorBias, partitionBias;
@@ -224,7 +226,11 @@ void integrateBody(uint ordinal) {
         if(element>=views.w)return;
         const uint geo=views.z+element*64u;
         const uint sourceKind=scGeometry.Load(geo+28u);
+#ifdef FYZZXYZZY_CONVEX
         if(sourceKind!=0u && sourceKind!=2u)return;
+#else
+        if(sourceKind!=0u)return;
+#endif
         const float3 shapeLocal=asfloat(scGeometry.Load3(geo+16u));
         const float4 shapeLocalAxes=asfloat(scGeometry.Load4(geo+32u));
         const uint shape=views.x+element*32u;
@@ -306,6 +312,7 @@ void integrateBody(uint ordinal) {
         const float4 localQuaternion=asfloat(scGeometry.Load4(geometryIndex+32u));
         const float3 center=nextPosition+sourceRigidRotate(nextQuaternion,localPosition);
         const float4 shapeQuaternion=kind==1u?float4(0,0,0,1):sourceRigidMultiply(nextQuaternion,localQuaternion);
+#ifdef FYZZXYZZY_CONVEX
         float3 lower,upper;
         if(kind==2u) {
             const uint vertexBias=p.reservedOutput;
@@ -331,6 +338,14 @@ void integrateBody(uint ordinal) {
         }
         if(kind>2u || !all(isfinite(lower)) || !all(isfinite(upper)) ||
            !all(isfinite(shapeQuaternion)))return;
+#else
+        const float3 worldExtents=kind==1u?halfExtents:
+            sourceBoxHalfBounds(shapeQuaternion,halfExtents);
+        const float3 lower=center-worldExtents;
+        const float3 upper=center+worldExtents;
+        if(kind>1u || !all(isfinite(lower)) || !all(isfinite(upper)) ||
+           !all(isfinite(shapeQuaternion)))return;
+#endif
         const uint cache=views.x+element*32u;
         scTransforms.Store4(cache,asuint(shapeQuaternion));
         scTransforms.Store3(cache+16u,asuint(center));
