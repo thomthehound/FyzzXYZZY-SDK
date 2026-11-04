@@ -16,6 +16,14 @@ inline void verify_convex_plane_gpu_solver(
     const std::array<ConvexTriangle,4> faces{{
         {0,2,1},{0,1,3},{0,3,2},{1,2,3}}};
     const auto hull=cook_convex_mesh(vertices,faces);
+    const std::array<Vec3,6> prismVertices{{
+        {0,0,0},{1,0,0},{0,1,0},
+        {0,0,2},{1,0,2},{0,1,2}}};
+    const std::array<ConvexTriangle,8> prismFaces{{
+        {0,2,1},{3,4,5},
+        {0,1,4},{0,4,3},
+        {0,3,5},{1,2,5},{1,5,4}}};
+    const auto prism=cook_convex_mesh(prismVertices,prismFaces);
     std::ifstream stream(dy_shader,std::ios::binary);
     check(bool(stream),"Convex GPU Dy shader bundle missing");
     std::vector<char> bytes(std::istreambuf_iterator<char>{stream},
@@ -32,39 +40,48 @@ inline void verify_convex_plane_gpu_solver(
     gpu.set_gpu_broadphase(std::move(owner));
     const auto assemble=[&](native::Scene& scene) {
         scene.add_static_floor(0.f);
-        const auto body=scene.create_body({{0.f,-0.025f,0.f},{}},true);
-        scene.attach_convex(body,hull,{});
-        scene.update_mass_properties(body,6.f);
+        const auto tetra=scene.create_body({{0.f,-0.025f,0.f},{}},true);
+        scene.attach_convex(tetra,hull,{});
+        scene.update_mass_properties(tetra,6.f);
+        const auto wedge=scene.create_body({{3.f,-0.025f,0.f},{}},true);
+        scene.attach_convex(wedge,prism,{});
+        scene.update_mass_properties(wedge,2.f);
         RigidBodyDynamics settings{};
         settings.gravity_enabled=false;
         settings.position_iterations=16u;
-        scene.set_dynamics(body,settings);
-        scene.set_velocity(body,{0.f,-1.f,0.f});
-        return body;
+        scene.set_dynamics(tetra,settings);
+        scene.set_dynamics(wedge,settings);
+        scene.set_velocity(tetra,{0.f,-1.f,0.f});
+        scene.set_velocity(wedge,{0.f,-1.f,0.f});
+        return std::array<BodyId,2>{tetra,wedge};
     };
     const auto a=assemble(cpu);
     const auto b=assemble(gpu);
     for(std::uint32_t frame=0u;frame<5u;++frame) {
         if(frame==2u) {
             constexpr Quat turn{0.f,0.19866933f,0.f,0.98006658f};
-            const auto pa=cpu.body_state(a).position;
-            const auto pb=gpu.body_state(b).position;
-            cpu.set_pose(a,pa,turn);
-            gpu.set_pose(b,pb,turn);
+            for(std::size_t i=0u;i<a.size();++i) {
+                const auto pa=cpu.body_state(a[i]).position;
+                const auto pb=gpu.body_state(b[i]).position;
+                cpu.set_pose(a[i],pa,turn);
+                gpu.set_pose(b[i],pb,turn);
+            }
         }
         cpu.step(1.f/120.f);
         gpu.step(1.f/120.f);
         check(cpu.contacts().size()==gpu.contacts().size(),
             "Cooked convex GPU changed plane Sc manager count");
         if(frame==0u) {
-            check(cpu.contacts().size()==1u &&
-                  cpu.contacts().front().count==3u &&
-                  gpu.contacts().front().count==3u,
-                "Convex plane must produce three actual hull-vertex witnesses");
+            check(cpu.contacts().size()==2u &&
+                  cpu.contacts()[0].count==3u &&
+                  cpu.contacts()[1].count==4u &&
+                  gpu.contacts()[0].count==3u &&
+                  gpu.contacts()[1].count==4u,
+                "Convex plane must use tetrahedron and wedge hull witnesses");
             check(producer->dy_cpu_gu_geometry_bytes()==0u &&
-                  producer->dy_pcm_device_contact_rows()==3u &&
+                  producer->dy_pcm_device_contact_rows()==7u &&
                   producer->pcm_contact_readback_bytes()==
-                      sizeof(physx_gpu::SourcePcmGpuContactStreamNative),
+                      2u*sizeof(physx_gpu::SourcePcmGpuContactStreamNative),
                 "Convex plane bypassed device PCM and Dy contact geometry");
         }
         for(std::size_t j=0u;j<cpu.contacts().size();++j) {
@@ -82,8 +99,10 @@ inline void verify_convex_plane_gpu_solver(
                     "Convex GPU contact differs from cooked CPU witness");
             }
         }
-        test::compound_compare_state(cpu.body_state(a),gpu.body_state(b),
-                                     0.008f,"Convex GPU body response");
+        for(std::size_t i=0u;i<a.size();++i)
+            test::compound_compare_state(
+                cpu.body_state(a[i]),gpu.body_state(b[i]),
+                0.008f,"Convex GPU body response");
         check(producer->dy_gpu_integrated_body_count()>0u,
             "Convex GPU body bypassed Dy integration");
     }
