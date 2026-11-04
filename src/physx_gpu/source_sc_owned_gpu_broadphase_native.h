@@ -31,6 +31,7 @@
 #include "foundation/PxPhysicsVersion.h"
 
 #include <array>
+#include <bit>
 #include <cstdint>
 #include <limits>
 #include <memory>
@@ -38,6 +39,7 @@
 #include <span>
 #include <stdexcept>
 #include <utility>
+#include <vector>
 
 namespace fyzz::physx_gpu {
 
@@ -89,6 +91,7 @@ public:
           box_cache_(allocators_.deviceAlloc,physx::PxsHeapStats::eBROADPHASE),
           box_geometry_(allocators_.deviceAlloc,physx::PxsHeapStats::eBROADPHASE),
           convex_vertices_(allocators_.deviceAlloc,physx::PxsHeapStats::eBROADPHASE),
+          convex_surface_(allocators_.deviceAlloc,physx::PxsHeapStats::eNARROWPHASE),
           box_owners_{box_transforms_,box_input_,box_cache_,box_geometry_,
                       convex_vertices_},
           lowering_(addresses_,encoding_),
@@ -136,6 +139,8 @@ public:
                 context_,addresses_,stream_,allocators_.deviceAlloc,
                 *producer_,box_cache_,box_geometry_,
                 convex_vertices_,box_owners_.convex_vertex_count,
+                convex_surface_,convex_surface_bytes_,
+                convex_surface_faces_base_,convex_surface_indices_base_,
                 take_pcm_shader(*pcm_shaders,NativeGpuPcmStage::Candidates),
                 take_pcm_shader(*pcm_shaders,NativeGpuPcmStage::EpaCompact),
                 take_pcm_shader(*pcm_shaders,NativeGpuPcmStage::EpaContact));
@@ -164,6 +169,7 @@ public:
         box_cache_.deallocate();
         box_geometry_.deallocate();
         convex_vertices_.deallocate();
+        convex_surface_.deallocate();
         aabb_.reset();
         sap_.reset();
         manager_->flushDeferredDeallocs();
@@ -186,6 +192,52 @@ public:
             convex_vertices_.getDevicePtr(),vertices.data(),bytes}});
         box_owners_.convex_vertex_count=
             static_cast<std::uint32_t>(vertices.size());
+    }
+    void upload_convex_geometry(
+        std::span<const Vec3> vertices,
+        std::span<const native::GpuConvexFaceSpan> spans,
+        std::span<const ConvexFace> faces,
+        std::span<const std::uint32_t> indices) override {
+        if(spans.size()!=vertices.size() ||
+           vertices.size()>std::numeric_limits<std::uint32_t>::max()/8u ||
+           faces.size()>std::numeric_limits<std::uint32_t>::max()/24u ||
+           indices.size()>std::numeric_limits<std::uint32_t>::max()/4u)
+            throw std::overflow_error("Convex face resource exceeds device limits");
+        const std::uint64_t bytes=spans.size()*8ull+
+            faces.size()*24ull+indices.size()*4ull;
+        if(bytes>std::numeric_limits<std::uint32_t>::max())
+            throw std::overflow_error("Convex face resource exceeds 32-bit addressing");
+        // One immutable resident byte stream: per-vertex face span,
+        // polygon plane records, then ordered local vertex indices.
+        const auto faces_base=static_cast<std::uint32_t>(spans.size()*8u);
+        const auto indices_base=static_cast<std::uint32_t>(
+            spans.size()*8u+faces.size()*24u);
+        std::vector<std::uint32_t> packed(bytes/4u);
+        for(std::size_t i=0u;i<spans.size();++i) {
+            packed[i*2u]=spans[i].first_face;
+            packed[i*2u+1u]=spans[i].face_count;
+        }
+        for(std::size_t i=0u;i<faces.size();++i) {
+            const auto& f=faces[i];
+            const auto offset=faces_base/4u+i*6u;
+            packed[offset]=std::bit_cast<std::uint32_t>(f.normal.x);
+            packed[offset+1u]=std::bit_cast<std::uint32_t>(f.normal.y);
+            packed[offset+2u]=std::bit_cast<std::uint32_t>(f.normal.z);
+            packed[offset+3u]=std::bit_cast<std::uint32_t>(f.distance);
+            packed[offset+4u]=f.first_index;
+            packed[offset+5u]=f.index_count;
+        }
+        std::copy(indices.begin(),indices.end(),
+                  packed.begin()+indices_base/4u);
+        upload_convex_vertices(vertices);
+        convex_surface_words_=std::move(packed);
+        convex_surface_.allocate(bytes,PX_FL);
+        if(bytes)stream_.queue_uploads({{
+            convex_surface_.getDevicePtr(),convex_surface_words_.data(),
+            static_cast<std::size_t>(bytes)}});
+        convex_surface_bytes_=static_cast<std::uint32_t>(bytes);
+        convex_surface_faces_base_=faces_base;
+        convex_surface_indices_base_=indices_base;
     }
     native::GpuBroadphaseReports advance(
         std::span<const native::GpuBroadphaseBox> live,
@@ -387,6 +439,11 @@ private:
     AabbEncodingStage encoding_;
     SourceScBoxTransformBoundsNativeStage box_transforms_;
     physx::PxgCudaBuffer box_input_,box_cache_,box_geometry_,convex_vertices_;
+    physx::PxgCudaBuffer convex_surface_;
+    std::vector<std::uint32_t> convex_surface_words_;
+    std::uint32_t convex_surface_bytes_=0u;
+    std::uint32_t convex_surface_faces_base_=0u;
+    std::uint32_t convex_surface_indices_base_=0u;
     SourceSapGpuBoxTransformOwnersNative box_owners_;
     CudaAabbLaunchLowering lowering_;
     SourceSapCreatedNativeStage created_;
