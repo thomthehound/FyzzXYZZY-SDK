@@ -303,4 +303,64 @@ inline void fixed_joint_response(World& world,World* reference) {
     retire(world,actual);
     if(reference)retire(*reference,expected);
 }
+inline void spherical_joint_response(World& world,World* reference) {
+    constexpr Transform local_dynamic{{0.5f,0.6f,-0.2f},{}};
+    constexpr Transform local_static{{-1.5f,0.6f,-0.2f},{}};
+    constexpr Vec3 pivot{0.5f,5.6f,-0.2f};
+    struct Assembly {BodyId anchor,body;ConstraintId joint;};
+    const auto create=[&](World& w) {
+        const auto anchor=w.create_static_body({{2.0f,5.0f,0.0f},{}});
+        const auto body=w.create_dynamic_body({{0.0f,5.0f,0.0f},{}});
+        w.attach_box_shape(body,{0.4f,0.25f,0.2f},{{0.2f,0.3f,0.1f},{}});
+        w.attach_sphere_shape(body,0.22f,{{-0.3f,0.15f,-0.2f},{}});
+        w.update_mass_properties(body,3.0f);
+        const auto joint=w.add_spherical_constraint(
+            body,anchor,local_dynamic,local_static);
+        w.set_body_angular_velocity(body,{0.4f,1.3f,0.7f});
+        return Assembly{anchor,body,joint};
+    };
+    const auto actual=create(world),expected=reference?create(*reference):actual;
+    constexpr float dt=1.0f/120.0f;
+    for(unsigned frame=0;frame<18u;++frame) {
+        world.add_body_torque(actual.body,{0.1f,0.3f,0.2f});
+        world.step(dt);
+        if(reference) {
+            reference->add_body_torque(expected.body,{0.1f,0.3f,0.2f});
+            reference->step(dt);
+            compound_compare_state(world.body_state(actual.body),
+                reference->body_state(expected.body),0.005f,
+                "Spherical joint response");
+        }
+        const auto state=world.body_state(actual.body);
+        const auto anchor=compound_rotate(state.orientation,local_dynamic.position);
+        const Vec3 position{state.position.x+anchor.x,
+                            state.position.y+anchor.y,
+                            state.position.z+anchor.z};
+        compound_require(compound_error(position,pivot)<0.01f,
+                         "Spherical joint lost its anchored pivot");
+    }
+    const auto held=world.body_state(actual.body);
+    compound_require(std::abs(held.orientation.y)>0.025f,
+                     "Spherical joint incorrectly locked free rotation");
+    const auto retire=[&](World& w,Assembly assembly) {
+        w.remove_constraint(assembly.joint);
+        const auto replacement=w.add_spherical_constraint(
+            assembly.body,assembly.anchor,local_dynamic,local_static);
+        bool rejected=false;
+        try {w.remove_constraint(assembly.joint);}
+        catch(const std::out_of_range&) {rejected=true;}
+        compound_require(rejected,"Retired spherical token reached a recycled joint");
+        w.remove_constraint(replacement);
+        w.set_body_velocity(assembly.body,{0.7f,0.0f,0.0f});
+        w.step(0.2f);
+        const auto free=w.body_state(assembly.body);
+        compound_require(free.position.x>held.position.x+0.05f,
+                         "Retiring a spherical joint did not restore free motion");
+        w.remove_body(assembly.body);
+        w.remove_body(assembly.anchor);
+        w.step(dt);
+    };
+    retire(world,actual);
+    if(reference)retire(*reference,expected);
+}
 } // namespace fyzz::test

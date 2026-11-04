@@ -2932,8 +2932,17 @@ ConstraintId Scene::create_fixed_constraint(
     record.kind=JointKind::Fixed;
     record.local_a=validated_pose(local_a);
     record.local_b=validated_pose(local_b);
-    // Fixed joint axes are defined in the authored A frame. Preserve the
-    // caller's endpoint order independently of the canonical island pair.
+    // Locked axes are defined in the authored A frame. Preserve endpoint
+    // order independently of the canonical island pair.
+    record.swapped=a>b;
+    return joint_token(add_joint(a,b,record));
+}
+ConstraintId Scene::create_spherical_constraint(
+    BodyId a,BodyId b,Transform local_a,Transform local_b) {
+    ConstraintRecord record{};
+    record.kind=JointKind::Spherical;
+    record.local_a=validated_pose(local_a);
+    record.local_b=validated_pose(local_b);
     record.swapped=a>b;
     return joint_token(add_joint(a,b,record));
 }
@@ -6740,7 +6749,8 @@ void Scene::partition_constraints() {
         for(std::size_t j=joint_begin;j<task.joint_end;++j) {
             const auto& edge=island_edges_[indexed_joints_[j]];
             const auto& joint=constraint_records_[edge.constraint_id];
-            const std::uint32_t count=joint.kind==JointKind::Fixed?6u:1u;
+            const std::uint32_t count=joint.kind==JointKind::Distance?1u:
+                (joint.kind==JointKind::Spherical?3u:6u);
             const auto a=joint.swapped?edge.pair.b:edge.pair.a;
             const auto b=joint.swapped?edge.pair.a:edge.pair.b;
             constraint_descriptors_.push_back({
@@ -7033,19 +7043,27 @@ void Scene::prepare_constraints(float seconds) {
                 mass0+mass1+dot(ja,ja)+dot(jb,jb));
             continue;
         }
-        // FixedJointSolverPrep emits the three locked translation axes,
-        // then the three derivatives of the relative quaternion vector.
+        // Spherical and fixed joints lock the three translations in the
+        // authored A frame. Only fixed joints add quaternion angular rows.
         const auto qa=multiply(body0.orientation,joint.local_a.orientation);
-        auto qb=multiply(body1.orientation,joint.local_b.orientation);
-        if(qa.x*qb.x+qa.y*qb.y+qa.z*qb.z+qa.w*qb.w<0.0f)
-            qb={-qb.x,-qb.y,-qb.z,-qb.w};
-        const auto error_q=multiply({-qa.x,-qa.y,-qa.z,qa.w},qb);
         const auto error_p=rotate_inverse(qa,sub(world0,world1));
+        const bool lock_rotation=joint.kind==JointKind::Fixed;
+        Vec3 error_angle{},va{},vb{},c{};
+        float d=0.0f;
+        if(lock_rotation) {
+            auto qb=multiply(body1.orientation,joint.local_b.orientation);
+            if(qa.x*qb.x+qa.y*qb.y+qa.z*qb.z+qa.w*qb.w<0.0f)
+                qb={-qb.x,-qb.y,-qb.z,-qb.w};
+            const auto error_q=multiply({-qa.x,-qa.y,-qa.z,qa.w},qb);
+            error_angle={error_q.x,error_q.y,error_q.z};
+            va={qa.x,qa.y,qa.z};
+            vb={qb.x,qb.y,qb.z};
+            d=qa.w*qb.w-dot(va,vb);
+            c={qa.w*vb.x+qb.w*va.x,qa.w*vb.y+qb.w*va.y,qa.w*vb.z+qb.w*va.z};
+        }
         const std::array<float,6> errors{
-            error_p.x,error_p.y,error_p.z,-error_q.x,-error_q.y,-error_q.z};
-        const Vec3 va{qa.x,qa.y,qa.z},vb{qb.x,qb.y,qb.z};
-        const float d0=qa.w*qb.w,d1=dot(va,vb),d=d0-d1;
-        const Vec3 c{qa.w*vb.x+qb.w*va.x,qa.w*vb.y+qb.w*va.y,qa.w*vb.z+qb.w*va.z};
+            error_p.x,error_p.y,error_p.z,
+            -error_angle.x,-error_angle.y,-error_angle.z};
         const std::array<Vec3,3> basis{Vec3{1,0,0},Vec3{0,1,0},Vec3{0,0,1}};
         const std::array<float,3> av{va.x,va.y,va.z},bv{vb.x,vb.y,vb.z};
         const std::array<Vec3,3> diagonal{
@@ -7061,7 +7079,8 @@ void Scene::prepare_constraints(float seconds) {
         const auto remove_projection=[](Vec3& a,Vec3 b,float t) {
             a={a.x-b.x*t,a.y-b.y*t,a.z-b.z*t};
         };
-        for(std::size_t i=0;i<rows.size();++i) {
+        const std::size_t row_count=lock_rotation?6u:3u;
+        for(std::size_t i=0;i<row_count;++i) {
             auto& row=rows[i];
             row.error=errors[i];
             if(i<3u) {
@@ -10439,6 +10458,10 @@ public:
     ConstraintId add_fixed_constraint(
         BodyId a,BodyId b,Transform local_a,Transform local_b) override {
         return scene_.create_fixed_constraint(a,b,local_a,local_b);
+    }
+    ConstraintId add_spherical_constraint(
+        BodyId a,BodyId b,Transform local_a,Transform local_b) override {
+        return scene_.create_spherical_constraint(a,b,local_a,local_b);
     }
     void remove_constraint(ConstraintId id) override {
         scene_.retire_constraint(id);
