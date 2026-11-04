@@ -2,8 +2,8 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 thomthehound
 // SPDX-License-Identifier: Apache-2.0
 
-// GuEPA box continuation. Large EPA facet/vertex storage is private to
-// sparse indirect threads; the ordinary box SAT/GJK kernel has none.
+// GuEPA box continuation. Per-pair facet and vertex storage belongs to
+// the sparse workgroup, outside the ordinary box SAT/GJK kernel.
 
 struct EpaFacet {
     uint i,j,k;
@@ -112,7 +112,7 @@ bool epaBoxContinuation(GjkBoxPair pair,
                         GjkSupportPoint simplex[4],uint simplexCount,
                         out GjkWitness witness) {
     witness=(GjkWitness)0;
-     uint vertexCount=simplexCount,facetCount=0u;
+    uint vertexCount=simplexCount,facetCount=0u;
     for(uint i=0u;i<simplexCount;++i)epa_vertices[i]=simplex[i];
     if(!epaInitialize(pair,vertexCount,facetCount))
         return false;
