@@ -74,7 +74,9 @@ ConstantBuffer<Parameters> p : register(b0,space0);
 #include "physx_source_pcm_box_math_native.hlsli"
 #include "physx_source_pcm_box_gjk_native.hlsli"
 #include "physx_source_pcm_box_epa_native.hlsli"
+#ifdef FYZZXYZZY_CONVEX_FACE
 #include "physx_source_pcm_convex_face_native.hlsli"
+#endif
 #include "physx_source_pcm_sc_contact_publish_native.hlsli"
 
 [numthreads(1,1,1)]
@@ -142,14 +144,17 @@ void main(uint3 thread : SV_DispatchThreadID) {
         admitted=epaBoxContinuation(
             boxPair,simplex,simplexCount,contact);
     GjkWitness manifold[4];
-    uint contactCount=0u;
-    if(admitted) {
+    uint contactCount=admitted?1u:0u;
+    if(admitted)manifold[0]=contact;
+#ifdef FYZZXYZZY_CONVEX_FACE
+    if(admitted && (boxPair.kindA==2u || boxPair.kindB==2u)) {
         contactCount=convexFaceContacts(boxPair,distance,contact,manifold);
         if(contactCount==0u) {
             manifold[0]=contact;
             contactCount=1u;
         }
     }
+#endif
     uint cache=p.edgeCacheBias+edge*240u;
     if(admitted && limit<contactCount) {
         // A valid contact with no destination must regenerate later.
