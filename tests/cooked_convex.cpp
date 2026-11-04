@@ -290,12 +290,17 @@ void verify_convex_face_manifold() {
     require(max_x-min_x>1.5f && max_z-min_z>1.5f,
             "Clipped convex face collapsed its contact footprint");
     for(unsigned frame=0u;frame<4u;++frame) {
+        // Hold the overlapping fixture against solver separation. This
+        // checks Sc manifold refresh, not whether a free body should
+        // remain penetrating after its contact impulses resolve it.
+        world.set_body_pose(moving,{0.2f,1.85f,0.1f},{});
+        world.set_body_velocity(moving,{0.f,0.f,0.f});
         world.step(1.f/120.f);
         const auto current=world.contact_events();
         require(current.size()==1u &&
                 current[0].kind==ContactEventKind::Persists &&
-                current[0].contact_count>=3u,
-                "Clipped convex manifold did not persist through rigid response");
+                current[0].contact_count==4u,
+                "Controlled convex face overlap lost its persistent manifold");
     }
 }
 
