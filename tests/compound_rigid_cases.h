@@ -499,5 +499,63 @@ inline void prismatic_joint_response(World& world,World* reference) {
     };
     retire(world,actual);
     if(reference)retire(*reference,expected);
+
+    // At nonzero extension, rotating the prismatic axis changes the
+    // permitted transverse velocity even if both local anchors coincide.
+    const auto create_rotating_slider=[](World& w) {
+        const auto guide=w.create_dynamic_body({{0.0f,12.0f,0.0f},{}});
+        w.attach_box_shape(guide,{0.2f,0.2f,0.2f},{});
+        w.update_mass_properties(guide,1.0f);
+        w.set_body_kinematic(guide,true);
+        const auto follower=w.create_dynamic_body({{8.0f,12.0f,0.0f},{}});
+        w.attach_box_shape(follower,{0.25f,0.2f,0.2f},{});
+        w.update_mass_properties(follower,2.0f);
+        RigidBodyDynamics dynamics{};
+        dynamics.gravity_enabled=false;
+        dynamics.linear_damping=0.0f;
+        dynamics.angular_damping=0.0f;
+        dynamics.position_iterations=8;
+        dynamics.velocity_iterations=2;
+        w.set_body_dynamics(follower,dynamics);
+        const auto joint=w.add_prismatic_constraint(guide,follower,{},{});
+        return Assembly{guide,follower,joint};
+    };
+    const auto rotating=create_rotating_slider(world);
+    const auto rotating_ref=reference?create_rotating_slider(*reference):rotating;
+    for(unsigned frame=1;frame<=12u;++frame) {
+        const float half_angle=0.005f*static_cast<float>(frame);
+        const Quat orientation{0.0f,0.0f,std::sin(half_angle),std::cos(half_angle)};
+        world.set_body_kinematic_target(
+            rotating.anchor,{0.0f,12.0f,0.0f},orientation);
+        if(reference)reference->set_body_kinematic_target(
+            rotating_ref.anchor,{0.0f,12.0f,0.0f},orientation);
+        world.step(0.01f);
+        if(reference) {
+            reference->step(0.01f);
+            compound_compare_state(world.body_state(rotating.body),
+                reference->body_state(rotating_ref.body),0.06f,
+                "Rotating extended prismatic joint");
+        }
+        const auto guide=world.body_state(rotating.anchor);
+        const auto follower=world.body_state(rotating.body);
+        const auto axis=compound_rotate(guide.orientation,{1.0f,0.0f,0.0f});
+        const Vec3 span{follower.position.x-guide.position.x,
+                        follower.position.y-guide.position.y,
+                        follower.position.z-guide.position.z};
+        const float length=span.x*axis.x+span.y*axis.y+span.z*axis.z;
+        const Vec3 transverse{span.x-length*axis.x,
+                              span.y-length*axis.y,
+                              span.z-length*axis.z};
+        compound_require(compound_error(transverse,{})<0.03f && length>7.0f,
+                         "Extended prismatic joint lost rotating slider axis");
+    }
+    const auto remove_rotating=[](World& w,Assembly a) {
+        w.remove_constraint(a.joint);
+        w.remove_body(a.body);
+        w.remove_body(a.anchor);
+        w.step(0.01f);
+    };
+    remove_rotating(world,rotating);
+    if(reference)remove_rotating(*reference,rotating_ref);
 }
 } // namespace fyzz::test
