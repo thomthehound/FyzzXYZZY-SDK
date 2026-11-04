@@ -13,6 +13,7 @@
 #include <cmath>
 #include <cstdint>
 #include <limits>
+#include <span>
 
 namespace fyzz::native {
 namespace {
@@ -40,24 +41,41 @@ Vec3 inverse_rotate(Quat q,Vec3 v) {
 }
 struct Support {
     Vec3 a{},b{},q{};
-    std::uint8_t ai=0,bi=0;
+    std::uint32_t ai=0,bi=0;
 };
 struct BoxPair {
     Vec3 ha{},hb{},a_in_b{};
     Quat qa{},qb{},relative{};
-    // Original BoxV supportLocal chooses positive only for > 0.
-    // The index encodes the support corner, not an arbitrary witness.
+    std::span<const Vec3> vertices_a{},vertices_b{};
+    float radius_a=0.f,radius_b=0.f;
+    // The cooked-hull support is a direct extreme-vertex search, not
+    // the AABB proxy. Polyhedral feature IDs remain full width.
+    static Vec3 vertex(Vec3 extent,Vec3 direction,
+                       std::span<const Vec3> hull,float radius,
+                       std::uint32_t& index) {
+        index=0u;
+        if(radius>0.f)return {};
+        if(!hull.empty()) {
+            float best=dot(hull.front(),direction);
+            for(std::uint32_t i=1u;i<hull.size();++i) {
+                const float projection=dot(hull[i],direction);
+                if(projection>best) {
+                    best=projection;
+                    index=i;
+                }
+            }
+            return hull[index];
+        }
+        const bool x=direction.x>0.f,y=direction.y>0.f,z=direction.z>0.f;
+        index=(x?1u:0u)|(y?2u:0u)|(z?4u:0u);
+        return {x?extent.x:-extent.x,
+                y?extent.y:-extent.y,z?extent.z:-extent.z};
+    }
     Support support(Vec3 direction) const {
         const Vec3 dir_a=inverse_rotate(relative,direction);
-        const auto vertex=[](Vec3 e,Vec3 d,std::uint8_t& index) {
-            const bool x=d.x>0.0f,y=d.y>0.0f,z=d.z>0.0f;
-            index=static_cast<std::uint8_t>(
-                (x?1:0)|(y?2:0)|(z?4:0));
-            return Vec3{x?e.x:-e.x,y?e.y:-e.y,z?e.z:-e.z};
-        };
         Support s;
-        const Vec3 pa=vertex(ha,dir_a,s.ai);
-        s.b=vertex(hb,neg(direction),s.bi);
+        const Vec3 pa=vertex(ha,dir_a,vertices_a,radius_a,s.ai);
+        s.b=vertex(hb,neg(direction),vertices_b,radius_b,s.bi);
         s.a=add(a_in_b,rotate(relative,pa));
         s.q=sub(s.a,s.b);
         return s;
@@ -384,27 +402,9 @@ bool epa(const BoxPair& pair,
 }
 } // namespace
 
-bool source_pcm_box_box_gjk_epa(
-    Vec3 half0,Vec3 position0,Quat rotation0,
-    Vec3 half1,Vec3 position1,Quat rotation1,
-    float contact_distance,PcmContactCandidate& contact,
-    PcmGjkWarmstart* warmstart) {
-    // The second shape is the common GJK/EPA coordinate frame.
-    const Vec3 relative=inverse_rotate(rotation1,
-                                      sub(position0,position1));
-    const Quat inverse_b{-rotation1.x,-rotation1.y,
-                         -rotation1.z,rotation1.w};
-    const Quat qa{
-        inverse_b.w*rotation0.x+rotation0.w*inverse_b.x+
-            inverse_b.y*rotation0.z-inverse_b.z*rotation0.y,
-        inverse_b.w*rotation0.y+rotation0.w*inverse_b.y+
-            inverse_b.z*rotation0.x-inverse_b.x*rotation0.z,
-        inverse_b.w*rotation0.z+rotation0.w*inverse_b.z+
-            inverse_b.x*rotation0.y-inverse_b.y*rotation0.x,
-        inverse_b.w*rotation0.w-inverse_b.x*rotation0.x-
-            inverse_b.y*rotation0.y-inverse_b.z*rotation0.z
-    };
-    const BoxPair pair{half0,half1,relative,rotation0,rotation1,qa};
+static bool gjk_epa(
+    const BoxPair& pair,float contact_distance,
+    PcmContactCandidate& contact,PcmGjkWarmstart* warmstart) {
     const float epsilon=0.1f*std::min(
         box_min_margin(half0),box_min_margin(half1));
     constexpr float progress_factor=1.0f-0.000225f;
@@ -487,5 +487,58 @@ bool source_pcm_box_box_gjk_epa(
         previous=next_dist;
     }
     return false;
+}
+bool source_pcm_box_box_gjk_epa(
+    Vec3 half0,Vec3 position0,Quat rotation0,
+    Vec3 half1,Vec3 position1,Quat rotation1,
+    float contact_distance,PcmContactCandidate& contact,
+    PcmGjkWarmstart* warmstart) {
+    const PcmFiniteShape a{half0,position0,rotation0};
+    const PcmFiniteShape b{half1,position1,rotation1};
+    return source_pcm_convex_gjk_epa(
+        a,b,contact_distance,contact,warmstart);
+}
+
+bool source_pcm_convex_gjk_epa(
+    const PcmFiniteShape& first,const PcmFiniteShape& second,
+    float contact_distance,PcmContactCandidate& contact,
+    PcmGjkWarmstart* warmstart) {
+    const Vec3 relative=inverse_rotate(second.orientation,
+        sub(first.position,second.position));
+    const Quat inverse_b{-second.orientation.x,-second.orientation.y,
+                         -second.orientation.z,second.orientation.w};
+    const Quat& rotation0=first.orientation;
+    const Quat qa{
+        inverse_b.w*rotation0.x+rotation0.w*inverse_b.x+
+            inverse_b.y*rotation0.z-inverse_b.z*rotation0.y,
+        inverse_b.w*rotation0.y+rotation0.w*inverse_b.y+
+            inverse_b.z*rotation0.x-inverse_b.x*rotation0.z,
+        inverse_b.w*rotation0.z+rotation0.w*inverse_b.z+
+            inverse_b.x*rotation0.y-inverse_b.y*rotation0.x,
+        inverse_b.w*rotation0.w-inverse_b.x*rotation0.x-
+            inverse_b.y*rotation0.y-inverse_b.z*rotation0.z};
+    const BoxPair pair{first.half_extents,second.half_extents,
+        relative,first.orientation,second.orientation,qa,
+        first.hull_vertices,second.hull_vertices,
+        first.sphere_radius,second.sphere_radius};
+    if(!gjk_epa(pair,contact_distance+
+                    first.sphere_radius+second.sphere_radius,
+                contact,warmstart))
+        return false;
+    // The simplex sees spheres as point supports. Analytical radius
+    // offsets recover the exact sphere surface along the final B-local
+    // contact normal without approximating the sphere with a polytope.
+    if(first.sphere_radius>0.f) {
+        const Vec3 offset=inverse_rotate(qa,
+            mul(contact.normal_b,-first.sphere_radius));
+        contact.local_a=add(contact.local_a,offset);
+        contact.separation-=first.sphere_radius;
+    }
+    if(second.sphere_radius>0.f) {
+        contact.local_b=add(contact.local_b,
+            mul(contact.normal_b,second.sphere_radius));
+        contact.separation-=second.sphere_radius;
+    }
+    return contact.separation<=contact_distance;
 }
 } // namespace fyzz::native
