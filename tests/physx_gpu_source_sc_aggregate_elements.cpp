@@ -400,6 +400,36 @@ void run(Backend backend) {
             sc.destroy_aggregate(limited);
             sc.retire(3u);
 
+            // Retiring one aggregate attachment must unlink the shape ID,
+            // not its shared rigid actor ID, while the sibling survives.
+            const auto compound=sc.create_aggregate(
+                2u,physx::Bp::getFilterGroup_Statics(),0u);
+            using Motion=fyzz::native::GpuBroadphaseBox::Motion;
+            sc.admit_aggregate_shape(compound,4u,3u,Motion::Dynamic,0.02f);
+            sc.admit_aggregate_shape(compound,5u,3u,Motion::Dynamic,0.02f);
+            const auto first=sc.handle(4u),second=sc.handle(5u);
+            const auto original_group=owner.scene_bounds().groups[first];
+            require(owner.scene_bounds().groups[second]==original_group,
+                    "Compound aggregate siblings do not share rigid filtering");
+            sc.set_actor_motion(3u,Motion::Kinematic);
+            require((owner.scene_bounds().groups[first]&BP_FILTERING_TYPE_MASK)==
+                        physx::Bp::FilterType::KINEMATIC &&
+                    (owner.scene_bounds().groups[second]&BP_FILTERING_TYPE_MASK)==
+                        physx::Bp::FilterType::KINEMATIC,
+                    "Compound aggregate motion did not update both shape groups");
+            sc.set_actor_motion(3u,Motion::Dynamic);
+            require(owner.scene_bounds().groups[first]==original_group &&
+                    owner.scene_bounds().groups[second]==original_group,
+                    "Compound aggregate actor did not restore dynamic filtering");
+            sc.retire(4u);
+            require(owner.source_aggregated().boundedTest(second)!=0u,
+                    "Retiring one compound aggregate shape detached its sibling");
+            sc.destroy_aggregate(compound);
+            require(sc.handle(5u)!=second &&
+                    owner.source_aggregated().boundedTest(second)==0u,
+                    "Compound aggregate release lost surviving shape ownership");
+            sc.retire(5u);
+
             // Detached Sc aggregate roots still carry their user-data
             // addresses until source postReportsCleanup. Reuse their
             // storage only afterward, even as maxShapes changes.
