@@ -164,6 +164,25 @@ void verify_compound_shape_gpu_pairs(
     const auto quiet=gpu.advance(shapes,false,false);
     require(quiet.found.empty() && quiet.lost.empty(),
         "Source GPU broadphase republished unchanged compound shape pairs");
+    // ScBodySim changes one rigid actor's motion and refilters every attached
+    // ElementSim, even when the shapes overlap each other.
+    gpu.set_actor_motion(0u,Motion::Kinematic);
+    shapes[0].motion=Motion::Kinematic;
+    shapes[1].motion=Motion::Kinematic;
+    const auto kinematic=gpu.advance(shapes,false,true);
+    require(kinematic.found.empty() && kinematic.lost.size()==2u &&
+            contains(kinematic.lost,{0u,2u}) &&
+            contains(kinematic.lost,{1u,2u}),
+        "Compound actor kinematic transition did not refilter both shapes");
+    gpu.set_actor_motion(0u,Motion::Dynamic);
+    shapes[0].motion=Motion::Dynamic;
+    shapes[1].motion=Motion::Dynamic;
+    const auto restored=gpu.advance(shapes,false,true);
+    require(restored.lost.empty() && restored.found.size()==2u &&
+            contains(restored.found,{0u,2u}) &&
+            contains(restored.found,{1u,2u}) &&
+            !contains(restored.found,{0u,1u}),
+        "Compound actor dynamic transition did not restore sibling filtering");
     // Sc edits this shape, not its parent rigid actor or sibling shape.
     shapes[0].position={4.f,0.f,0.f};
     gpu.mark_shape_bounds_changed(0u,0.02f);
