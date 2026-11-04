@@ -280,8 +280,7 @@ public:
     virtual bool has_gpu_pcm_box() const noexcept { return false; }
     virtual void generate_gpu_pcm_box_contacts(
         std::span<const GpuPcmBoxPair>,
-        std::span<GpuPcmBoxResult>,
-        const std::function<void()>& = {}) {
+        std::span<GpuPcmBoxResult>) {
         throw std::logic_error("Source GPU PCM stages are not installed");
     }
     virtual bool has_gpu_dy_distance() const noexcept { return false; }
