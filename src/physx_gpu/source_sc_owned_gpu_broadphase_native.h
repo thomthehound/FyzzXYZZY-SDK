@@ -86,7 +86,9 @@ public:
           box_input_(allocators_.deviceAlloc,physx::PxsHeapStats::eBROADPHASE),
           box_cache_(allocators_.deviceAlloc,physx::PxsHeapStats::eBROADPHASE),
           box_geometry_(allocators_.deviceAlloc,physx::PxsHeapStats::eBROADPHASE),
-          box_owners_{box_transforms_,box_input_,box_cache_,box_geometry_},
+          convex_vertices_(allocators_.deviceAlloc,physx::PxsHeapStats::eBROADPHASE),
+          box_owners_{box_transforms_,box_input_,box_cache_,box_geometry_,
+                      convex_vertices_},
           lowering_(addresses_,encoding_),
           created_(context_,take_shader(shaders,NativeGpuSapStage::CreatedPairs)),
           radix_(context_,take_shader(shaders,NativeGpuSapStage::RadixInitialize),take_shader(shaders,NativeGpuSapStage::RadixCount),
@@ -155,6 +157,7 @@ public:
         box_input_.deallocate();
         box_cache_.deallocate();
         box_geometry_.deallocate();
+        convex_vertices_.deallocate();
         aabb_.reset();
         sap_.reset();
         manager_->flushDeferredDeallocs();
@@ -167,6 +170,16 @@ public:
         }
     }
 
+    void upload_convex_vertices(std::span<const Vec3> vertices) override {
+        if(vertices.size()>std::numeric_limits<std::uint32_t>::max()/12u)
+            throw std::overflow_error("Convex GPU vertex arena exceeds 32-bit size");
+        const auto bytes=vertices.size()*12u;
+        convex_vertices_.allocate(bytes,PX_FL);
+        if(bytes)stream_.queue_uploads({{
+            convex_vertices_.getDevicePtr(),vertices.data(),bytes}});
+        box_owners_.convex_vertex_count=
+            static_cast<std::uint32_t>(vertices.size());
+    }
     native::GpuBroadphaseReports advance(
         std::span<const native::GpuBroadphaseBox> live,
         bool force_update,bool geometry_dirty) override {
@@ -364,7 +377,7 @@ private:
 
     AabbEncodingStage encoding_;
     SourceScBoxTransformBoundsNativeStage box_transforms_;
-    physx::PxgCudaBuffer box_input_,box_cache_,box_geometry_;
+    physx::PxgCudaBuffer box_input_,box_cache_,box_geometry_,convex_vertices_;
     SourceSapGpuBoxTransformOwnersNative box_owners_;
     CudaAabbLaunchLowering lowering_;
     SourceSapCreatedNativeStage created_;
