@@ -9,6 +9,7 @@
 
 #include <algorithm>
 #include <array>
+#include <bit>
 #include <cstdint>
 #include <cstring>
 #include <stdexcept>
@@ -57,7 +58,8 @@ inline SourceScBoxTransformInputNative source_shape_transform_input(
         {shape.orientation.x,shape.orientation.y,shape.orientation.z,shape.orientation.w},
         {shape.half_extents.x,shape.half_extents.y,shape.half_extents.z},shape.contact_offset,
         {p.x,p.y,p.z},shape.geometry_kind,{q.x,q.y,q.z,q.w},shape.next_shape,
-        {shape.convex_vertex_offset,shape.convex_vertex_count,0u}};
+        {shape.convex_vertex_offset,shape.convex_vertex_count,
+         std::bit_cast<std::uint32_t>(shape.convex_margin_half_extent)}};
 }
 
 // GPU outputs use the original PxBounds3 (24 bytes) and PxsCachedTransform
