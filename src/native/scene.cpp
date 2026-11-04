@@ -3716,14 +3716,16 @@ void Scene::update_contacts() {
             const Pair pair=previous_pairs_[i];
             const Shape& a=shapes_[pair.a];
             const Shape& b=shapes_[pair.b];
-            if(a.geometry!=Geometry::Box || b.geometry!=Geometry::Box)
+            if(a.geometry==Geometry::Plane || b.geometry==Geometry::Plane)
                 continue;
             const EdgeIndex edge=active_edge_handles_[i];
             if(dormant_pcm(pair,edge))continue;
             const bool swapped=island_edges_[edge].gu_order_reversed;
             gpu_pcm_pairs_.push_back({
                 swapped?pair.b:pair.a,swapped?pair.a:pair.b,edge,
-                !island_edges_[edge].pcm_cache.initialized});
+                !island_edges_[edge].pcm_cache.initialized,
+                (a.geometry==Geometry::Sphere || b.geometry==Geometry::Sphere)
+                    ? 1u:16u});
         }
         gpu_pcm_results_.resize(gpu_pcm_pairs_.size());
     }
@@ -3859,7 +3861,7 @@ void Scene::update_contacts() {
                     box_contact_scratch_.begin()+manifold.count);
             }
         }
-        if(pcm_box) {
+        if(pcm_box || (pcm_sphere && !plane_pair && source_gpu_pcm)) {
             if(source_gpu_pcm && dormant_pcm(pair,edge)) {
                 // An already-touching manager retains its original Gu
                 // witnesses. A previously resolved non-touching pair
@@ -3980,7 +3982,7 @@ void Scene::update_contacts() {
                 manifold.count=old->count;
             }
         }
-        if(pcm_sphere) {
+        if(pcm_sphere && (plane_pair || !source_gpu_pcm)) {
             const bool use_pcm=plane_pair
                 ? pcm_plane_box_enabled_:pcm_box_box_enabled_;
             std::array<ContactPoint,1> output{};
