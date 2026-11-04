@@ -75,6 +75,29 @@ template<class F>void rejects(F&& f,const char* message) {
     try {f();}catch(const std::invalid_argument&){return;}
     throw std::runtime_error(message);
 }
+void verify_wedge() {
+    // A triangular prism has an asymmetric mass frame and nonzero
+    // products of inertia; its upper and side faces are triangulated.
+    constexpr std::array<Vec3,6> vertices{{
+        {0,0,0},{1,0,0},{0,1,0},
+        {0,0,2},{1,0,2},{0,1,2}}};
+    constexpr std::array<ConvexTriangle,8> faces{{
+        {0,2,1},{3,4,5},
+        {0,1,4},{0,4,3},
+        {0,3,5},{0,5,2},
+        {1,2,5},{1,5,4}}};
+    const auto hull=cook_convex_mesh(vertices,faces);
+    const auto& mass=hull->mass_properties();
+    near(mass.volume,1.0,1.e-8,"Wedge volume");
+    near(mass.center.x,1.0/3.0,1.e-6,"Wedge COM x");
+    near(mass.center.y,1.0/3.0,1.e-6,"Wedge COM y");
+    near(mass.center.z,1.0,1.e-6,"Wedge COM z");
+    near(mass.inertia_columns[0].x,7.0/18.0,1.e-6,"Wedge Ixx");
+    near(mass.inertia_columns[1].y,7.0/18.0,1.e-6,"Wedge Iyy");
+    near(mass.inertia_columns[2].z,1.0/9.0,1.e-6,"Wedge Izz");
+    near(mass.inertia_columns[1].x,1.0/36.0,1.e-6,"Wedge Ixy");
+}
+
 void verify_native_rigid_contact() {
     World world({.execution=ExecutionMode::NativeCpu,
                  .contact_notifications=true});
@@ -131,6 +154,7 @@ int main() {
     try {
         verify_tetra();
         verify_cube();
+        verify_wedge();
         verify_invalid();
         verify_native_rigid_contact();
         std::cout<<"Cooked convex volume, inertia and topology OK\n";
