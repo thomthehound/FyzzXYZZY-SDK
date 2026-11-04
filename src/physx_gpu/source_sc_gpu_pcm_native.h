@@ -71,7 +71,7 @@ public:
           candidates_stage_(context,std::move(candidate)),
           sparse_stage_(context,std::move(compact)),
           epa_stage_(context,std::move(epa)),
-          face_stage_(context,std::move(face_contacts)),
+          face_stage_(context,std::move(face_contacts),true),
           pairs_(allocator,physx::PxsHeapStats::eNARROWPHASE),
           results_(allocator,physx::PxsHeapStats::eNARROWPHASE),
           candidates_(allocator,physx::PxsHeapStats::eNARROWPHASE),
