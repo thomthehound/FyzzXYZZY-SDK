@@ -86,15 +86,6 @@ float3 unproject(Frame f,float3 v) {
 float component(float3 v,uint i) {
     return i==0u?v.x:(i==1u?v.y:v.z);
 }
-#ifdef __spirv__
-// Preserve the source float32 incident-axis comparison on near-tied faces.
-float fusedDot(float3 a,float3 b) {
-    return fusedProductSum(a.x,b.x,
-                           fusedProductSum(a.y,b.y,a.z*b.z));
-}
-#endif
-
-
 #include "physx_source_pcm_box_gjk_native.hlsli"
 #include "physx_source_pcm_sc_contact_publish_native.hlsli"
 

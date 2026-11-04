@@ -112,6 +112,14 @@ target_link_libraries(fyzzxyzzy_reference_physx_cpu PUBLIC physx_lib)
 set_target_properties(fyzzxyzzy_reference_physx_cpu PROPERTIES POSITION_INDEPENDENT_CODE ON)
 endif()
 
+# Box PCM face selection depends on the rounding of the scalar rotation
+# and alignment scores. Match the shader's separate multiply and add.
+if(MSVC)
+  set_property(SOURCE src/native/GuPCMContactBoxBox.cpp APPEND PROPERTY COMPILE_OPTIONS /fp:precise)
+elseif(CMAKE_CXX_COMPILER_ID MATCHES "^(GNU|Clang|AppleClang)$")
+  set_property(SOURCE src/native/GuPCMContactBoxBox.cpp APPEND PROPERTY COMPILE_OPTIONS -ffp-contract=off)
+endif()
+
 add_library(fyzzxyzzy_core STATIC
   src/world.cpp
   src/native/scene.cpp
