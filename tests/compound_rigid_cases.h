@@ -363,4 +363,67 @@ inline void spherical_joint_response(World& world,World* reference) {
     retire(world,actual);
     if(reference)retire(*reference,expected);
 }
+inline void revolute_joint_response(World& world,World* reference) {
+    constexpr Transform local_dynamic{{0.5f,0.6f,-0.2f},{}};
+    constexpr Transform local_static{{-1.5f,0.6f,-0.2f},{}};
+    constexpr Vec3 pivot{0.5f,5.6f,-0.2f};
+    struct Assembly {BodyId anchor,body;ConstraintId joint;};
+    const auto create=[&](World& w) {
+        const auto anchor=w.create_static_body({{2.0f,5.0f,0.0f},{}});
+        const auto body=w.create_dynamic_body({{0.0f,5.0f,0.0f},{}});
+        w.attach_box_shape(body,{0.4f,0.25f,0.2f},{{0.2f,0.3f,0.1f},{}});
+        w.attach_sphere_shape(body,0.22f,{{-0.3f,0.15f,-0.2f},{}});
+        w.update_mass_properties(body,3.0f);
+        const auto joint=w.add_revolute_constraint(
+            body,anchor,local_dynamic,local_static);
+        w.set_body_angular_velocity(body,{2.0f,0.2f,-0.2f});
+        return Assembly{anchor,body,joint};
+    };
+    const auto actual=create(world),expected=reference?create(*reference):actual;
+    constexpr float dt=1.0f/120.0f;
+    for(unsigned frame=0;frame<24u;++frame) {
+        world.add_body_torque(actual.body,{0.45f,0.0f,0.0f});
+        world.step(dt);
+        if(reference) {
+            reference->add_body_torque(expected.body,{0.45f,0.0f,0.0f});
+            reference->step(dt);
+            compound_compare_state(world.body_state(actual.body),
+                reference->body_state(expected.body),0.008f,
+                "Revolute joint response");
+        }
+        const auto state=world.body_state(actual.body);
+        const auto offset=compound_rotate(state.orientation,local_dynamic.position);
+        const Vec3 position{state.position.x+offset.x,
+                            state.position.y+offset.y,
+                            state.position.z+offset.z};
+        compound_require(compound_error(position,pivot)<0.015f,
+                         "Revolute joint lost its anchored pivot");
+        compound_require(std::abs(state.orientation.y)<0.02f &&
+                         std::abs(state.orientation.z)<0.02f,
+                         "Revolute joint failed to lock off-axis rotation");
+    }
+    const auto held=world.body_state(actual.body);
+    compound_require(std::abs(held.orientation.x)>0.05f,
+                     "Revolute joint incorrectly locked hinge rotation");
+    const auto retire=[&](World& w,Assembly assembly) {
+        w.remove_constraint(assembly.joint);
+        const auto replacement=w.add_revolute_constraint(
+            assembly.body,assembly.anchor,local_dynamic,local_static);
+        bool rejected=false;
+        try {w.remove_constraint(assembly.joint);}
+        catch(const std::out_of_range&) {rejected=true;}
+        compound_require(rejected,"Retired revolute token reached recycled joint");
+        w.remove_constraint(replacement);
+        w.set_body_velocity(assembly.body,{0.7f,0.0f,0.0f});
+        w.step(0.2f);
+        const auto free=w.body_state(assembly.body);
+        compound_require(free.position.x>held.position.x+0.05f,
+                         "Retiring a revolute joint did not restore free motion");
+        w.remove_body(assembly.body);
+        w.remove_body(assembly.anchor);
+        w.step(dt);
+    };
+    retire(world,actual);
+    if(reference)retire(*reference,expected);
+}
 } // namespace fyzz::test

@@ -2946,6 +2946,15 @@ ConstraintId Scene::create_spherical_constraint(
     record.swapped=a>b;
     return joint_token(add_joint(a,b,record));
 }
+ConstraintId Scene::create_revolute_constraint(
+    BodyId a,BodyId b,Transform local_a,Transform local_b) {
+    ConstraintRecord record{};
+    record.kind=JointKind::Revolute;
+    record.local_a=validated_pose(local_a);
+    record.local_b=validated_pose(local_b);
+    record.swapped=a>b;
+    return joint_token(add_joint(a,b,record));
+}
 void Scene::retire_constraint(ConstraintId id) {
     const auto index=static_cast<EdgeIndex>(id);
     const auto generation=static_cast<std::uint32_t>(id>>32);
@@ -6750,7 +6759,8 @@ void Scene::partition_constraints() {
             const auto& edge=island_edges_[indexed_joints_[j]];
             const auto& joint=constraint_records_[edge.constraint_id];
             const std::uint32_t count=joint.kind==JointKind::Distance?1u:
-                (joint.kind==JointKind::Spherical?3u:6u);
+                (joint.kind==JointKind::Spherical?3u:
+                 joint.kind==JointKind::Revolute?5u:6u);
             const auto a=joint.swapped?edge.pair.b:edge.pair.a;
             const auto b=joint.swapped?edge.pair.a:edge.pair.b;
             constraint_descriptors_.push_back({
@@ -7043,11 +7053,11 @@ void Scene::prepare_constraints(float seconds) {
                 mass0+mass1+dot(ja,ja)+dot(jb,jb));
             continue;
         }
-        // Spherical and fixed joints lock the three translations in the
-        // authored A frame. Only fixed joints add quaternion angular rows.
+        // Spherical, revolute and fixed joints lock three translations in
+        // the authored A frame; revolute locks two angular axes, fixed three.
         const auto qa=multiply(body0.orientation,joint.local_a.orientation);
         const auto error_p=rotate_inverse(qa,sub(world0,world1));
-        const bool lock_rotation=joint.kind==JointKind::Fixed;
+        const bool lock_rotation=joint.kind!=JointKind::Spherical;
         Vec3 error_angle{},va{},vb{},c{};
         float d=0.0f,angular_overlap=0.0f;
         if(lock_rotation) {
@@ -7080,16 +7090,18 @@ void Scene::prepare_constraints(float seconds) {
         const auto remove_projection=[](Vec3& a,Vec3 b,float t) {
             a={a.x-b.x*t,a.y-b.y*t,a.z-b.z*t};
         };
-        const std::size_t row_count=lock_rotation?6u:3u;
+        const std::size_t row_count=joint.kind==JointKind::Spherical?3u:
+            joint.kind==JointKind::Revolute?5u:6u;
         for(std::size_t i=0;i<row_count;++i) {
             auto& row=rows[i];
-            row.error=errors[i];
+            const auto locked_axis=i-3u+(joint.kind==JointKind::Revolute?1u:0u);
+            row.error=errors[i<3u?i:locked_axis+3u];
             if(i<3u) {
                 row.linear=rotate(qa,basis[i]);
                 row.angular0=cross(ra,row.linear);
                 row.angular1=cross(rb,row.linear);
             } else {
-                const auto k=i-3u;
+                const auto k=locked_axis;
                 const auto v=diagonal[k];
                 row.angular0={
                     0.5f*(va.x*bv[k]+vb.x*av[k]+v.x),
@@ -10463,6 +10475,10 @@ public:
     ConstraintId add_spherical_constraint(
         BodyId a,BodyId b,Transform local_a,Transform local_b) override {
         return scene_.create_spherical_constraint(a,b,local_a,local_b);
+    }
+    ConstraintId add_revolute_constraint(
+        BodyId a,BodyId b,Transform local_a,Transform local_b) override {
+        return scene_.create_revolute_constraint(a,b,local_a,local_b);
     }
     void remove_constraint(ConstraintId id) override {
         scene_.retire_constraint(id);
