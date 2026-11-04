@@ -36,6 +36,10 @@ RWByteAddressBuffer work : register(u6,space0);
 [[vk::binding(7,0)]]
 #endif
 RWByteAddressBuffer streamContacts : register(u7,space0);
+#ifdef __spirv__
+[[vk::binding(8,0)]]
+#endif
+RWByteAddressBuffer hullVertices : register(u8,space0);
 
 struct Parameters {
     uint pairCount;
@@ -50,6 +54,8 @@ struct Parameters {
     uint candidateCapacity;
     uint edgeCapacity;
     uint outputBias;
+    uint hullBias;
+    uint hullCount;
 };
 #ifdef __spirv__
 [[vk::push_constant]] Parameters p;
@@ -81,11 +87,28 @@ void main(uint3 thread : SV_DispatchThreadID) {
     float4 qa=asfloat(transforms.Load4(ta));
     float4 qb=asfloat(transforms.Load4(tb));
     uint ga=p.geometryBias+a*64u,gb=p.geometryBias+b*64u;
-    GjkBoxPair boxPair;
+    GjkBoxPair boxPair=(GjkBoxPair)0;
     boxPair.halfA=asfloat(geometry.Load3(ga));
     boxPair.halfB=asfloat(geometry.Load3(gb));
     boxPair.aInB=rotateSource(conjugate(qb),pa-pb);
     boxPair.relative=quatProduct(conjugate(qb),qa);
+    boxPair.kindA=geometry.Load(ga+28u);
+    boxPair.kindB=geometry.Load(gb+28u);
+    if(boxPair.kindA>2u || boxPair.kindB>2u)return;
+    boxPair.radiusA=boxPair.kindA==1u?boxPair.halfA.x:0.f;
+    boxPair.radiusB=boxPair.kindB==1u?boxPair.halfB.x:0.f;
+    boxPair.firstA=geometry.Load(ga+52u);
+    boxPair.countA=geometry.Load(ga+56u);
+    boxPair.firstB=geometry.Load(gb+52u);
+    boxPair.countB=geometry.Load(gb+56u);
+    if(boxPair.kindA==2u &&
+       (boxPair.countA<4u || boxPair.firstA>p.hullCount ||
+        boxPair.countA>p.hullCount-boxPair.firstA))return;
+    if(boxPair.kindB==2u &&
+       (boxPair.countB<4u || boxPair.firstB>p.hullCount ||
+        boxPair.countB>p.hullCount-boxPair.firstB))return;
+    if(boxPair.kindA==1u)boxPair.halfA=boxPair.radiusA;
+    if(boxPair.kindB==1u)boxPair.halfB=boxPair.radiusB;
     float distance=asfloat(geometry.Load(ga+12u))+
                    asfloat(geometry.Load(gb+12u));
     GjkWitness contact;
