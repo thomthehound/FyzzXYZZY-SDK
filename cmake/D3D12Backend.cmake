@@ -520,6 +520,14 @@ if(FYZZXYZZY_BUILD_D3D12)
       DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_dy_contact_pgs_native.hlsli")
     add_custom_target(fyzzxyzzy_source_dy_distance_shader_d3d12
       DEPENDS "${FYZZXYZZY_SOURCE_DY_DISTANCE_DXIL}")
+    set(FYZZXYZZY_SOURCE_DY_CONVEX_DXIL
+      "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_source_dy_convex_native.dxil")
+    fyzzxyzzy_compile_hlsl("${FYZZXYZZY_SOURCE_DY_CONVEX_DXIL}"
+      "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_dy_distance_pgs_native.hlsl" cs_6_6 main
+      FLAGS -DFYZZXYZZY_CONVEX=1
+      DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_dy_contact_pgs_native.hlsli")
+    add_custom_target(fyzzxyzzy_source_dy_convex_shader_d3d12
+      DEPENDS "${FYZZXYZZY_SOURCE_DY_CONVEX_DXIL}")
     fyzzxyzzy_add_gpu_test(fyzzxyzzy_source_pcm_box_candidates_d3d12
       SOURCES tests/physx_gpu_source_pcm_box_candidates_native.cpp src/native/GuPCMContactBoxBox.cpp src/native/GuPCMGjkEpa.cpp
       DEFINITIONS FYZZXYZZY_TEST_D3D12=1
@@ -874,13 +882,14 @@ if(FYZZXYZZY_BUILD_D3D12)
     set(_sc_pcm_scene_args
       "${CMAKE_CURRENT_BINARY_DIR}/kernels/fyzzxyzzy_native_sap_dxil.manifest"
       "${CMAKE_CURRENT_BINARY_DIR}/kernels/fyzzxyzzy_native_pcm_dxil.manifest"
-      "${FYZZXYZZY_SOURCE_DY_DISTANCE_DXIL}")
+      "${FYZZXYZZY_SOURCE_DY_DISTANCE_DXIL}"
+      "${FYZZXYZZY_SOURCE_DY_CONVEX_DXIL}")
     fyzzxyzzy_add_gpu_test(fyzzxyzzy_source_sc_gpu_pcm_scene_d3d12
       SOURCES tests/physx_gpu_source_sc_pcm_scene_native.cpp
       INCLUDES "${CMAKE_CURRENT_SOURCE_DIR}/src" "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_port"
       DEFINITIONS FYZZXYZZY_TEST_D3D12=1
       LIBRARIES FyzzXYZZY::NativeGpuWorldD3D12
-      DEPENDS fyzzxyzzy_native_gpu_sap_shaders_d3d12 fyzzxyzzy_native_gpu_pcm_shaders_d3d12 fyzzxyzzy_source_dy_distance_shader_d3d12
+      DEPENDS fyzzxyzzy_native_gpu_sap_shaders_d3d12 fyzzxyzzy_native_gpu_pcm_shaders_d3d12 fyzzxyzzy_source_dy_distance_shader_d3d12 fyzzxyzzy_source_dy_convex_shader_d3d12
       ARGS ${_sc_pcm_scene_args} scene)
     # Independent scene cases share one executable. Give each WARP
     # workload its own timeout and keep its timing in the CTest log.
