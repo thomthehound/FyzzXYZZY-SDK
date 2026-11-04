@@ -3695,6 +3695,8 @@ std::uint8_t Scene::generate_pcm_convex_pair(
             }
             if(shape.geometry==Geometry::Convex) {
                 descriptor.hull_vertices=shape.convex->vertices();
+                descriptor.hull_faces=shape.convex->faces();
+                descriptor.hull_face_indices=shape.convex->face_indices();
                 const Vec3 lower=shape.convex->bounds_min();
                 const Vec3 upper=shape.convex->bounds_max();
                 descriptor.half_extents={
@@ -3704,30 +3706,45 @@ std::uint8_t Scene::generate_pcm_convex_pair(
             }
             return descriptor;
         };
+        const auto a=descriptor(first),b=descriptor(second);
         PcmContactCandidate point{};
-        if(source_pcm_convex_gjk_epa(descriptor(first),
-                                     descriptor(second),
-                                     contact_distance,point,&cache.warmstart)) {
-            cache.points[0]={point.local_a,point.local_b,
-                             point.normal_b,point.separation};
-            cache.count=1u;
-        }else cache.count=0u;
+        cache.count=0u;
+        if(source_pcm_convex_gjk_epa(a,b,contact_distance,
+                                    point,&cache.warmstart)) {
+            std::array<PcmContactCandidate,4> clipped{};
+            const auto count=source_pcm_convex_face_contacts(
+                a,b,contact_distance,point,clipped);
+            if(count) {
+                for(unsigned i=0u;i<count;++i)
+                    cache.points[i]={clipped[i].local_a,clipped[i].local_b,
+                                     clipped[i].normal_b,clipped[i].separation};
+                cache.count=count;
+            }else {
+                cache.points[0]={point.local_a,point.local_b,
+                                 point.normal_b,point.separation};
+                cache.count=1u;
+            }
+        }
     }
     if(!cache.count)return 0u;
-    const auto& point=cache.points[0];
-    if(point.separation>contact_distance)return 0u;
-    const Vec3 normal=rotate(second.orientation,point.normal_b);
-    const Vec3 local=rotate(second.orientation,point.local_b);
-    const ContactPoint contact{{
-        second.position.x+local.x,
-        second.position.y+local.y,
-        second.position.z+local.z},normal,point.separation};
-    if(!finite(contact.position) || !finite(contact.normal) ||
-       !std::isfinite(contact.separation))
-        throw std::overflow_error("Cooked convex PCM contact invalid");
-    if(output.empty())throw std::logic_error("Cooked convex Gu contact arena exhausted");
-    output[0]=contact;
-    return 1u;
+    std::uint8_t emitted=0u;
+    for(std::uint8_t i=0u;i<cache.count;++i) {
+        const auto& point=cache.points[i];
+        if(point.separation>contact_distance)continue;
+        const Vec3 normal=rotate(second.orientation,point.normal_b);
+        const Vec3 local=rotate(second.orientation,point.local_b);
+        const ContactPoint contact{{
+            second.position.x+local.x,
+            second.position.y+local.y,
+            second.position.z+local.z},normal,point.separation};
+        if(!finite(contact.position) || !finite(contact.normal) ||
+           !std::isfinite(contact.separation))
+            throw std::overflow_error("Cooked convex PCM contact invalid");
+        if(emitted>=output.size())
+            throw std::logic_error("Cooked convex Gu contact arena exhausted");
+        output[emitted++]=contact;
+    }
+    return emitted;
 }
 std::uint8_t Scene::generate_pcm_plane_box(
     const Shape& plane, const Shape& box, float contact_distance,
