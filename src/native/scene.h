@@ -1248,6 +1248,8 @@ private:
     std::vector<Shape> shapes_;
     std::vector<Vec3> convex_vertices_;
     std::size_t uploaded_convex_vertex_count_=0;
+    std::vector<PcmPersistentContact> pcm_plane_candidates_;
+    std::vector<std::uint8_t> pcm_plane_chosen_;
     std::size_t rigid_shape_count_=0;
     using EdgeIndex=std::uint32_t;
     static constexpr EdgeIndex invalid_edge=std::numeric_limits<EdgeIndex>::max();
