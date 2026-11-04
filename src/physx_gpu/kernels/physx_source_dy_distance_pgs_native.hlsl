@@ -55,25 +55,16 @@ void storeScalar(uint byteOffset,float value,uint rowIndex,bool finalPass) {
     if(finalPass)
         arena.Store(p.writebackBias+p.resultRowOffset+rowIndex*4u,asuint(value));
 }
-void solveRow(uint index,uint errorAddress,bool biased,bool finalPass) {
-    uint d=p.descriptorBias+index*16u;
-    uint4 desc=arena.Load4(d);
-    if(desc.w!=1u || desc.x>=p.rowCount ||
+void solveJoint(uint4 desc,uint errorAddress,bool biased,bool finalPass) {
+    if(desc.x>=p.rowCount || desc.w>p.rowCount-desc.x ||
        (desc.y!=invalidBody && desc.y>=p.bodyCount) ||
        (desc.z!=invalidBody && desc.z>=p.bodyCount)) {
         arena.InterlockedOr(errorAddress,1u);
         return;
     }
-    uint offset=p.distanceBias+desc.x*64u;
-    float3 axis=asfloat(arena.Load3(offset));
-    float3 ja=asfloat(arena.Load3(offset+12u));
-    float3 jb=asfloat(arena.Load3(offset+24u));
-    float massA=asfloat(arena.Load(offset+36u));
-    float massB=asfloat(arena.Load(offset+40u));
-    uint ao=p.bodyBias+desc.y*52u;
-    uint bo=p.bodyBias+desc.z*52u;
-    float3 va=float3(0,0,0),vb=float3(0,0,0);
-    float3 aa=float3(0,0,0),ab=float3(0,0,0);
+    const uint ao=p.bodyBias+desc.y*52u;
+    const uint bo=p.bodyBias+desc.z*52u;
+    float3 va=0.0f,vb=0.0f,aa=0.0f,ab=0.0f;
     if(desc.y!=invalidBody) {
         va=asfloat(arena.Load3(ao));
         aa=asfloat(arena.Load3(ao+12u));
@@ -82,36 +73,41 @@ void solveRow(uint index,uint errorAddress,bool biased,bool finalPass) {
         vb=asfloat(arena.Load3(bo));
         ab=asfloat(arena.Load3(bo+12u));
     }
-
-    // DySolverConstraints::solveExt1D source row arithmetic.
-    float normalDelta=dot(axis,va-vb)+dot(ja,aa)-dot(jb,ab);
-    float previous=loadScalar(offset+60u);
-    float next=clamp(previous+
-        normalDelta*loadScalar(offset+56u)+
-        loadScalar(offset+(biased?48u:52u)),
-        -maxImpulse,maxImpulse);
-    float impulse=next-previous;
-    float3 newVa=va+axis*(impulse*massA);
-    float3 newVb=vb-axis*(impulse*massB);
-    float3 newAa=aa+ja*impulse;
-    float3 newAb=ab-jb*impulse;
-    if(!isfinite(next) || !all(isfinite(newVa)) ||
-       !all(isfinite(newVb)) || !all(isfinite(newAa)) ||
-       !all(isfinite(newAb))) {
-        arena.InterlockedOr(errorAddress,2u);
-        return;
+    const uint first=p.distanceBias+desc.x*64u;
+    const float massA=loadScalar(first+36u);
+    const float massB=loadScalar(first+40u);
+    // One lane owns both endpoints for every row of this joint.
+    for(uint row=0u;row<desc.w;++row) {
+        const uint offset=first+row*64u;
+        const float3 axis=asfloat(arena.Load3(offset));
+        const float3 ja=asfloat(arena.Load3(offset+12u));
+        const float3 jb=asfloat(arena.Load3(offset+24u));
+        const float normalDelta=dot(axis,va-vb)+dot(ja,aa)-dot(jb,ab);
+        const float previous=loadScalar(offset+60u);
+        const float next=clamp(previous+
+            normalDelta*loadScalar(offset+56u)+
+            loadScalar(offset+(biased?48u:52u)),-maxImpulse,maxImpulse);
+        const float impulse=next-previous;
+        va+=axis*(impulse*massA);
+        vb-=axis*(impulse*massB);
+        aa+=ja*impulse;
+        ab-=jb*impulse;
+        if(!isfinite(next) || !all(isfinite(va)) || !all(isfinite(vb)) ||
+           !all(isfinite(aa)) || !all(isfinite(ab))) {
+            arena.InterlockedOr(errorAddress,2u);
+            return;
+        }
+        storeScalar(offset+60u,next,desc.x+row,finalPass);
     }
-    // Only finite-mass dynamic bodies can be updated. Kinematic rows
-    // retain their original zero-response state across disjoint groups.
+    // Kinematic rows are shared read-only by disjoint solver tasks.
     if(desc.y!=invalidBody && massA>0.f) {
-        arena.Store3(ao,asuint(newVa));
-        arena.Store3(ao+12u,asuint(newAa));
+        arena.Store3(ao,asuint(va));
+        arena.Store3(ao+12u,asuint(aa));
     }
     if(desc.z!=invalidBody && massB>0.f) {
-        arena.Store3(bo,asuint(newVb));
-        arena.Store3(bo+12u,asuint(newAb));
+        arena.Store3(bo,asuint(vb));
+        arena.Store3(bo+12u,asuint(ab));
     }
-    storeScalar(offset+60u,next,desc.x,finalPass);
 }
 
 #include "physx_source_dy_contact_pgs_native.hlsli"
@@ -119,7 +115,7 @@ void solveRow(uint index,uint errorAddress,bool biased,bool finalPass) {
 void prepareNormals(uint begin,uint end,uint lane,uint endError) {
     for(uint i=begin+(lane>>2u);i<end;i+=32u) {
         uint4 desc=arena.Load4(p.descriptorBias+i*16u);
-        if(desc.w==1u)continue;
+        if(desc.w!=0u)continue;
         if(desc.x>=p.manifoldCount) {
             arena.InterlockedOr(endError,4096u);
             continue;
@@ -146,7 +142,7 @@ void prepareNormals(uint begin,uint end,uint lane,uint endError) {
 void prepareFriction(uint begin,uint end,uint lane,uint endError) {
     for(uint i=begin+(lane>>2u);i<end;i+=32u) {
         uint4 desc=arena.Load4(p.descriptorBias+i*16u);
-        if(desc.w==1u)continue;
+        if(desc.w!=0u)continue;
         if(desc.x>=p.manifoldCount)continue;
         uint mo=p.manifoldBias+desc.x*20u;
         uint4 manager=arena.Load4(mo);
@@ -179,8 +175,8 @@ void solvePartition(uint begin,uint end,uint lane,uint2 iters,
     const bool friction=!biased || iters.x-iter<=3u;
     for(uint i=begin+lane;i<end;i+=128u) {
         const uint4 desc=arena.Load4(p.descriptorBias+i*16u);
-        if(desc.w==1u)
-            solveRow(i,endError,biased,finalPass);
+        if(desc.w!=0u)
+            solveJoint(desc,endError,biased,finalPass);
         else
             solveContact(desc,endError,biased,friction,finalPass);
     }

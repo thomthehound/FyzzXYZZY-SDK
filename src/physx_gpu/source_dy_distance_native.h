@@ -79,7 +79,7 @@ public:
     }
 
     void solve(std::span<native::GpuDyDistanceBody> bodies,
-               std::span<native::GpuDyDistanceRow> rows,
+               std::span<native::GpuDyJointRow> rows,
                std::span<const native::GpuDyDistanceDescriptor> descriptors,
                std::span<const std::uint32_t> partition_ends,
                std::span<const std::uint32_t> body_ordinals,
@@ -233,7 +233,7 @@ public:
             return narrow(offset); // An aligned offset; low bit clear.
         };
         for(const auto& desc:descriptors) {
-            if(desc.distance==1u)continue;
+            if(desc.row_count)continue;
             if(desc.index>=manifolds.size())
                 throw std::logic_error("Source contact descriptor has no manager");
             const auto& manager=manifolds[desc.index];
@@ -339,7 +339,7 @@ public:
             0u,1u,5u,6u,7u,8u,12u};
         constexpr std::array<std::size_t,7> output_strides{
             48u,4u,4u,4u,16u,4u,32u};
-        static_assert(offsetof(native::GpuDyDistanceRow,applied_force)==60u &&
+        static_assert(offsetof(native::GpuDyJointRow,applied_force)==60u &&
                       offsetof(native::GpuDyDistanceTask,error)==32u &&
                       offsetof(native::GpuDyContactPoint,applied_force)==56u &&
                       offsetof(native::GpuDyFrictionRow,applied_force)==52u &&
@@ -568,11 +568,14 @@ public:
             for(std::size_t i=task.descriptor_begin;
                 i<task.descriptor_end;++i) {
                 const auto& desc=descriptors[i];
-                if(desc.distance==1u) {
-                    if(desc.index>=rows.size())
-                        throw std::logic_error("Source Dy row writeback index invalid");
-                    std::memcpy(&rows[desc.index].applied_force,
-                        host_.data()+result_offsets[1]+desc.index*4u,4u);
+                if(desc.row_count) {
+                    if(desc.index>=rows.size() ||
+                       desc.row_count>rows.size()-desc.index)
+                        throw std::logic_error("Source Dy row writeback range invalid");
+                    const auto end=std::size_t(desc.index)+desc.row_count;
+                    for(std::size_t j=desc.index;j<end;++j)
+                        std::memcpy(&rows[j].applied_force,
+                            host_.data()+result_offsets[1]+j*4u,4u);
                     continue;
                 }
                 if(desc.index>=manifolds.size())

@@ -5,6 +5,7 @@
 #include "physx_foundation_lifetime.h"
 #include <PxPhysicsAPI.h>
 #include <extensions/PxDistanceJoint.h>
+#include <extensions/PxFixedJoint.h>
 
 #include <algorithm>
 #include <array>
@@ -23,6 +24,10 @@ physx::PxVec3 to_physx(Vec3 value) {
     return physx::PxVec3(value.x, value.y, value.z);
 }
 
+physx::PxTransform to_physx(Transform value) {
+    const auto q=value.orientation;
+    return physx::PxTransform(to_physx(value.position),physx::PxQuat(q.x,q.y,q.z,q.w));
+}
 Vec3 from_physx(const physx::PxVec3& value) {
     return {value.x, value.y, value.z};
 }
@@ -103,15 +108,14 @@ struct PhysXCpuWorld final : WorldBackend, physx::PxSimulationEventCallback {
     std::vector<ShapeOwner> shapes;
     struct RetiredShapeToken {physx::PxShape* address; std::uintptr_t token; bool retained=false;};
     std::vector<RetiredShapeToken> retired_shape_tokens;
-    // The PxDistanceJoint remains PhysX's authoritative solver owner;
-    // these tokens only retain public constraint lifetime and endpoints.
-    struct DistanceJointOwner {
-        physx::PxDistanceJoint* joint=nullptr;
+    // Public tokens retain constraint lifetime and endpoints.
+    struct JointOwner {
+        physx::PxJoint* joint=nullptr;
         BodyId actor0=0,actor1=0;
         std::uint32_t generation=0;
     };
-    std::vector<DistanceJointOwner> distance_joints;
-    std::vector<std::uint32_t> free_distance_joint_ids;
+    std::vector<JointOwner> joints;
+    std::vector<std::uint32_t> free_joint_ids;
     // Retain removed objects through callback fetch so allocator address
     // reuse cannot alias public actor or shape notification identities.
     struct RetiredActorToken {
@@ -295,10 +299,10 @@ struct PhysXCpuWorld final : WorldBackend, physx::PxSimulationEventCallback {
         retired_actor_tokens.clear();
     }
     void cleanup() noexcept {
-        for(auto& owner:distance_joints)
+        for(auto& owner:joints)
             if(owner.joint)owner.joint->release();
-        distance_joints.clear();
-        free_distance_joint_ids.clear();
+        joints.clear();
+        free_joint_ids.clear();
         for (physx::PxRigidActor* actor : actors)
             if (actor) actor->release();
         actors.clear();
@@ -445,56 +449,74 @@ struct PhysXCpuWorld final : WorldBackend, physx::PxSimulationEventCallback {
 
     ConstraintId add_anchored_distance_constraint(
         BodyId a,BodyId b,Vec3 local_a,Vec3 local_b,float distance) override {
-        if(a==b || a>=actors.size() || b>=actors.size() ||
-           !actors[a] || !actors[b])
-            throw std::out_of_range("Invalid anchored distance endpoints");
+        return add_joint(a,b,[&] {
+            auto* joint=physx::PxDistanceJointCreate(*runtime->physics,
+                actors[a],physx::PxTransform(to_physx(local_a)),
+                actors[b],physx::PxTransform(to_physx(local_b)));
+            if(joint) {
+                joint->setMinDistance(distance);
+                joint->setMaxDistance(distance);
+                joint->setTolerance(0.0f);
+                joint->setDistanceJointFlag(
+                    physx::PxDistanceJointFlag::eMIN_DISTANCE_ENABLED,true);
+                joint->setDistanceJointFlag(
+                    physx::PxDistanceJointFlag::eMAX_DISTANCE_ENABLED,true);
+            }
+            return joint;
+        });
+    }
+
+    ConstraintId add_fixed_constraint(
+        BodyId a,BodyId b,Transform local_a,Transform local_b) override {
+        return add_joint(a,b,[&] {
+            auto* joint=physx::PxFixedJointCreate(*runtime->physics,
+                actors[a],to_physx(local_a),actors[b],to_physx(local_b));
+            if(joint)joint->setConstraintFlag(
+                physx::PxConstraintFlag::eCOLLISION_ENABLED,true);
+            return joint;
+        });
+    }
+
+    template<class Create>
+    ConstraintId add_joint(BodyId a,BodyId b,Create create) {
+        if(a==b || a>=actors.size() || b>=actors.size() || !actors[a] || !actors[b])
+            throw std::out_of_range("Invalid reference joint endpoints");
         if(!actors[a]->is<physx::PxRigidDynamic>() &&
            !actors[b]->is<physx::PxRigidDynamic>())
-            throw std::logic_error("Anchored distance requires a dynamic actor");
-        const bool recycled=!free_distance_joint_ids.empty();
-        if(!recycled &&
-           distance_joints.size()>=std::numeric_limits<std::uint32_t>::max())
+            throw std::logic_error("Reference joint requires a dynamic actor");
+        const bool recycled=!free_joint_ids.empty();
+        if(!recycled && joints.size()>=std::numeric_limits<std::uint32_t>::max())
             throw std::overflow_error("Reference joint ID space exhausted");
-        if(recycled && distance_joints[free_distance_joint_ids.back()].generation==
+        if(recycled && joints[free_joint_ids.back()].generation==
                std::numeric_limits<std::uint32_t>::max())
             throw std::overflow_error("Reference joint generation exhausted");
-        if(!recycled)distance_joints.reserve(distance_joints.size()+1);
-        auto* joint=physx::PxDistanceJointCreate(*runtime->physics,
-            actors[a],physx::PxTransform(to_physx(local_a)),
-            actors[b],physx::PxTransform(to_physx(local_b)));
-        if(!joint)
-            throw std::runtime_error("Cannot create reference anchored distance joint");
-        joint->setMinDistance(distance);
-        joint->setMaxDistance(distance);
-        joint->setTolerance(0.0f);
-        joint->setDistanceJointFlag(
-            physx::PxDistanceJointFlag::eMIN_DISTANCE_ENABLED,true);
-        joint->setDistanceJointFlag(
-            physx::PxDistanceJointFlag::eMAX_DISTANCE_ENABLED,true);
+        if(!recycled)joints.reserve(joints.size()+1);
+        auto* joint=create();
+        if(!joint)throw std::runtime_error("Cannot create reference joint");
         std::uint32_t index,generation;
         if(recycled) {
-            index=free_distance_joint_ids.back();
-            free_distance_joint_ids.pop_back();
-            generation=distance_joints[index].generation+1;
-            distance_joints[index]={joint,a,b,generation};
+            index=free_joint_ids.back();
+            free_joint_ids.pop_back();
+            generation=joints[index].generation+1;
+            joints[index]={joint,a,b,generation};
         } else {
-            index=static_cast<std::uint32_t>(distance_joints.size());
+            index=static_cast<std::uint32_t>(joints.size());
             generation=1;
-            distance_joints.push_back({joint,a,b,generation});
+            joints.push_back({joint,a,b,generation});
         }
         return (static_cast<ConstraintId>(generation)<<32)|index;
     }
     void remove_constraint(ConstraintId id) override {
         const auto index=static_cast<std::uint32_t>(id);
         const auto generation=static_cast<std::uint32_t>(id>>32);
-        if(!generation || index>=distance_joints.size() ||
-           !distance_joints[index].joint ||
-           distance_joints[index].generation!=generation)
+        if(!generation || index>=joints.size() ||
+           !joints[index].joint ||
+           joints[index].generation!=generation)
             throw std::out_of_range("Unknown or retired reference constraint");
-        free_distance_joint_ids.reserve(free_distance_joint_ids.size()+1);
-        distance_joints[index].joint->release();
-        distance_joints[index].joint=nullptr;
-        free_distance_joint_ids.push_back(index);
+        free_joint_ids.reserve(free_joint_ids.size()+1);
+        joints[index].joint->release();
+        joints[index].joint=nullptr;
+        free_joint_ids.push_back(index);
     }
 
     void step(float seconds) override {
@@ -562,11 +584,11 @@ struct PhysXCpuWorld final : WorldBackend, physx::PxSimulationEventCallback {
         // any source actor/joint release. No partial retirement if an
         // allocation fails during this authored operation.
         std::size_t incident=0;
-        for(const auto& owner:distance_joints)
+        for(const auto& owner:joints)
             incident+=owner.joint &&
                 (owner.actor0==id || owner.actor1==id);
-        free_distance_joint_ids.reserve(
-            free_distance_joint_ids.size()+incident);
+        free_joint_ids.reserve(
+            free_joint_ids.size()+incident);
         if(contact_notifications) {
             retired_actor_tokens.reserve(retired_actor_tokens.size()+1);
             retired_shape_tokens.reserve(retired_shape_tokens.size()+actor->getNbShapes());
@@ -576,12 +598,12 @@ struct PhysXCpuWorld final : WorldBackend, physx::PxSimulationEventCallback {
             retired_actor_tokens.push_back({
                 actor,static_cast<std::uintptr_t>(id)+1});
         }
-        for(std::uint32_t index=0;index<distance_joints.size();++index) {
-            auto& owner=distance_joints[index];
+        for(std::uint32_t index=0;index<joints.size();++index) {
+            auto& owner=joints[index];
             if(owner.joint && (owner.actor0==id || owner.actor1==id)) {
                 owner.joint->release();
                 owner.joint=nullptr;
-                free_distance_joint_ids.push_back(index);
+                free_joint_ids.push_back(index);
             }
         }
         for(ShapeId shape=0;shape<shapes.size();++shape)

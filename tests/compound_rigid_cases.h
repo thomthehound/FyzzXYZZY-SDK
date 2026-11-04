@@ -243,4 +243,64 @@ inline void compound_joint_response(World& world,World* reference) {
     if(reference) {reference->remove_body(ref[1]);reference->remove_body(ref[0]);}
     world.step(1.0f/120.0f);if(reference)reference->step(1.0f/120.0f);
 }
+inline void fixed_joint_response(World& world,World* reference) {
+    constexpr Quat frame_rotation{0.0f,0.17364818f,0.0f,0.98480775f};
+    constexpr Transform local_dynamic{{0.85f,0.25f,-0.4f},frame_rotation};
+    constexpr Transform local_static{{-1.15f,0.25f,-0.4f},frame_rotation};
+    constexpr Vec3 target{0.0f,5.0f,0.0f};
+    struct Assembly {
+        BodyId anchor,body;
+        ConstraintId joint;
+    };
+    const auto create=[&](World& w) {
+        const auto anchor=w.create_static_body({{2.0f,5.0f,0.0f},{}});
+        const auto body=w.create_dynamic_body(
+            {{0.04f,5.06f,-0.05f},{0.04997917f,0.0f,0.0f,0.99875026f}});
+        w.attach_box_shape(body,{0.4f,0.3f,0.2f},
+            {{0.3f,0.6f,0.0f},{0.0f,0.0f,0.19866933f,0.98006658f}});
+        w.attach_sphere_shape(body,0.3f,{{-0.2f,0.8f,0.2f},{}});
+        w.update_mass_properties(body,3.0f);
+        const auto joint=w.add_fixed_constraint(body,anchor,local_dynamic,local_static);
+        w.set_body_velocity(body,{0.9f,-0.6f,0.2f});
+        w.set_body_angular_velocity(body,{0.5f,1.2f,0.7f});
+        return Assembly{anchor,body,joint};
+    };
+    const auto actual=create(world),expected=reference?create(*reference):actual;
+    constexpr float dt=1.0f/120.0f;
+    for(unsigned frame=0;frame<12u;++frame) {
+        world.add_body_torque(actual.body,{0.13f,0.39f,-0.24f});
+        world.step(dt);
+        if(reference) {
+            reference->add_body_torque(expected.body,{0.13f,0.39f,-0.24f});
+            reference->step(dt);
+            compound_compare_state(world.body_state(actual.body),
+                reference->body_state(expected.body),0.002f,"Fixed joint response");
+        }
+    }
+    const auto held=world.body_state(actual.body);
+    compound_require(compound_error(held.position,target)<0.002f &&
+                     std::abs(held.orientation.w)>0.99999f &&
+                     compound_error(held.angular_velocity,{})<0.002f,
+                     "Fixed joint failed to hold the authored frame");
+    const auto retire=[&](World& w,Assembly a) {
+        w.remove_constraint(a.joint);
+        const auto replacement=w.add_fixed_constraint(
+            a.body,a.anchor,local_dynamic,local_static);
+        bool rejected=false;
+        try {w.remove_constraint(a.joint);} catch(const std::out_of_range&) {rejected=true;}
+        compound_require(rejected,"Retired joint token reached a recycled joint");
+        w.remove_constraint(replacement);
+        w.set_body_angular_velocity(a.body,{0.0f,1.0f,0.0f});
+        w.step(4.0f*dt);
+        const auto released=w.body_state(a.body);
+        compound_require(released.position.y<held.position.y-0.002f &&
+                         std::abs(released.orientation.y)>0.01f,
+                         "Retiring a fixed joint did not restore free motion");
+        w.remove_body(a.body);
+        w.remove_body(a.anchor);
+        w.step(dt);
+    };
+    retire(world,actual);
+    if(reference)retire(*reference,expected);
+}
 } // namespace fyzz::test
