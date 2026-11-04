@@ -88,10 +88,10 @@ public:
         max_view_=device.max_storage_buffer_range;
         compute::ComputePipelineDesc desc{};
         desc.shader=std::move(shader);
-        desc.storage_buffer_binding_count=8u;
+        desc.storage_buffer_binding_count=9u;
         desc.storage_buffer_views.assign(
-            8u,compute::StorageBufferViewKind::RawReadWrite);
-        desc.push_constant_bytes=48u;
+            9u,compute::StorageBufferViewKind::RawReadWrite);
+        desc.push_constant_bytes=52u;
         pipeline_=context_.create_compute_pipeline(desc);
     }
     SourcePcmBoxCandidatesNativeStage(const SourcePcmBoxCandidatesNativeStage&)=delete;
@@ -111,6 +111,8 @@ public:
                 CudaDeviceAddressMap::Address edge_cache,
                 CudaDeviceAddressMap::Address dispatch_args,
                 CudaDeviceAddressMap::Address output,
+                CudaDeviceAddressMap::Address convex_vertices,
+                std::uint32_t vertex_count,
                 std::uint32_t pair_count,
                 std::uint32_t shape_capacity,
                 std::uint32_t candidate_capacity,
@@ -121,15 +123,17 @@ public:
         const auto groups=(std::uint64_t(pair_count)+127u)/128u;
         if(groups>context_.device_info().max_workgroup_count[0])
             throw std::out_of_range("Source PCM GPU dispatch exceeds device limit");
-        std::array<std::uint32_t,12> params{
+        std::array<std::uint32_t,13> params{
             pair_count,0u,0u,0u,0u,0u,0u,
-            shape_capacity,candidate_capacity,edge_capacity,0u,0u};
+            shape_capacity,candidate_capacity,edge_capacity,0u,0u,0u};
         const auto view=[&](CudaDeviceAddressMap::Address address,
                             std::size_t bytes,std::uint32_t slot,
                             compute::BufferAccess access) {
             return source_native_view(addresses,address,bytes,
                 alignment_,slot,access,
-                slot==6u?params[10]:(slot==7u?params[11]:params[slot+1u]),max_view_);
+                slot==6u?params[10]:(slot==7u?params[11]:
+                                      (slot==8u?params[12]:params[slot+1u])),
+                max_view_);
         };
         compute::DispatchCommand dispatch{};
         dispatch.pipeline=pipeline_;
@@ -149,8 +153,12 @@ public:
                  5u,compute::BufferAccess::ReadWrite),
             view(dispatch_args,12u,6u,compute::BufferAccess::ReadWrite),
             view(output,source_allocation_bytes(pair_count,84u),
-                 7u,compute::BufferAccess::Write)};
-        for(std::size_t i=0u;i<8u;++i)
+                 7u,compute::BufferAccess::Write),
+            view(vertex_count?convex_vertices:transforms,
+                 vertex_count?source_allocation_bytes(vertex_count,12u):
+                              source_allocation_bytes(shape_capacity,32u),
+                 8u,compute::BufferAccess::Read)};
+        for(std::size_t i=0u;i<9u;++i)
             if(i!=6u && dispatch.buffers[i].buffer==dispatch.buffers[6].buffer)
                 throw std::invalid_argument(
                     "Source PCM indirect arguments alias Sc data");
@@ -168,13 +176,16 @@ public:
                 CudaDeviceAddressMap::Address edge_cache,
                 CudaDeviceAddressMap::Address dispatch_args,
                 CudaDeviceAddressMap::Address output,
+                CudaDeviceAddressMap::Address convex_vertices,
+                std::uint32_t vertex_count,
                 std::uint32_t pair_count,
                 std::uint32_t shape_capacity,
                 std::uint32_t candidate_capacity,
                 std::uint32_t edge_capacity) const {
         append(stream.commands(),addresses,transforms,geometry,pairs,
                results,candidates,edge_cache,dispatch_args,output,
-               pair_count,shape_capacity,candidate_capacity,edge_capacity);
+               convex_vertices,vertex_count,pair_count,shape_capacity,
+               candidate_capacity,edge_capacity);
     }
 
 private:
