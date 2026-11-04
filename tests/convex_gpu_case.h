@@ -8,7 +8,7 @@
 
 inline void verify_convex_plane_gpu_solver(
     fyzz::compute::Backend backend,const char* sap,
-    const char* pcm,const char* dy_shader) {
+    const char* pcm,const char* dy_shader,const char* convex_dy_shader) {
     using namespace fyzz;
     const auto check=[](bool good,const char* message) {
         if(!good)throw std::runtime_error(message);
@@ -41,10 +41,19 @@ inline void verify_convex_plane_gpu_solver(
     shader.format=backend==compute::Backend::Vulkan
         ?compute::ShaderFormat::Spirv:compute::ShaderFormat::Dxil;
     shader.bytes.assign(bytes.begin(),bytes.end());
+    std::ifstream convex_stream(convex_dy_shader,std::ios::binary);
+    check(bool(convex_stream),"Convex-integrating GPU Dy shader bundle missing");
+    std::vector<char> convex_bytes(
+        std::istreambuf_iterator<char>{convex_stream},
+        std::istreambuf_iterator<char>{});
+    compute::ShaderBinary convex_shader{};
+    convex_shader.format=shader.format;
+    convex_shader.bytes.assign(convex_bytes.begin(),convex_bytes.end());
     native::Scene cpu,gpu;
     auto owner=std::make_unique<physx_gpu::SourceScOwnedGpuBroadphaseNative>(
         backend,load_native_gpu_sap_shaders(backend,sap),128u,128u,
-        std::nullopt,load_native_gpu_pcm_shaders(backend,pcm),std::move(shader));
+        std::nullopt,load_native_gpu_pcm_shaders(backend,pcm),
+        std::move(shader),std::move(convex_shader));
     auto* producer=owner.get();
     gpu.set_gpu_broadphase(std::move(owner));
     const auto assemble=[&](native::Scene& scene) {
