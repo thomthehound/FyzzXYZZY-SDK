@@ -92,6 +92,7 @@ float3 unproject(Frame f,float3 v) {
 float component(float3 v,uint i) {
     return i==0u?v.x:(i==1u?v.y:v.z);
 }
+#define FYZZXYZZY_GJK_BOX_ONLY 1
 #include "physx_source_pcm_box_gjk_native.hlsli"
 #include "physx_source_pcm_sc_contact_publish_native.hlsli"
 
@@ -478,6 +479,62 @@ void main(uint3 thread : SV_DispatchThreadID) {
                 p.shapeCapacity,p.edgeCapacity);
             return;
         }
+        const uint kindA=geometry.Load(ga+28u);
+        const uint kindB=geometry.Load(gb+28u);
+        if(kindA==2u || kindB==2u) {
+            // Convex finite pairs skip box SAT. Only the sparse
+            // continuation owns hull support searches and EPA facets.
+            const uint startA=geometry.Load(ga+52u);
+            const uint countA=geometry.Load(ga+56u);
+            const uint startB=geometry.Load(gb+52u);
+            const uint countB=geometry.Load(gb+56u);
+            const bool validA=kindA!=2u ||
+                (countA>=4u && startA<=p.hullCount &&
+                 countA<=p.hullCount-startA);
+            const bool validB=kindB!=2u ||
+                (countB>=4u && startB<=p.hullCount &&
+                 countB<=p.hullCount-startB);
+            if((kindA>2u || kindB>2u) || !validA || !validB) {
+                publishPair(result,0u,0u,1u,edge,first,0u,0u,0u);
+                publishScContacts(i,a,b,edge,result,p.outputBias,
+                    p.transformBias,p.geometryBias,p.edgeCacheBias,
+                    p.shapeCapacity,p.edgeCapacity);
+                return;
+            }
+            bool regenerate=refreshEdge(
+                edgeBase,pa,pb,qa,qb,ea,eb,distance);
+            if(!regenerate) {
+                const uint cached=edgeCaches.Load(edgeBase+12u);
+                if(cached>1u) {
+                    publishPair(result,0u,0u,1u,edge,first,0u,0u,0u);
+                    publishScContacts(i,a,b,edge,result,p.outputBias,
+                        p.transformBias,p.geometryBias,p.edgeCacheBias,
+                        p.shapeCapacity,p.edgeCapacity);
+                    return;
+                }
+                if(cached!=0u &&
+                   asfloat(edgeCaches.Load(edgeBase+80u+36u))<=distance) {
+                    if(limit!=0u)
+                        copyCachedContact(edgeBase,0u,
+                            p.candidateBias+first*40u);
+                    count=limit>0u?1u:0u;
+                    overlap=1u;
+                }
+                publishPair(result,count,overlap,0u,edge,first,
+                    count,0u,0u);
+                publishScContacts(i,a,b,edge,result,p.outputBias,
+                    p.transformBias,p.geometryBias,p.edgeCacheBias,
+                    p.shapeCapacity,p.edgeCapacity);
+                return;
+            }
+            edgeCaches.Store(edgeBase+12u,0u);
+            edgeCaches.Store(edgeBase+68u,1u);
+            publishPair(result,0u,1u,3u,edge,first,0u,0u,1u);
+            publishScContacts(i,a,b,edge,result,p.outputBias,
+                p.transformBias,p.geometryBias,p.edgeCacheBias,
+                p.shapeCapacity,p.edgeCapacity);
+            return;
+        }
         if(sourcePcmSpherePair(i,a,b,edge,first,limit,result,
                                ga,gb,pa,pb,qa,qb,distance))
             return;
@@ -635,7 +692,7 @@ void main(uint3 thread : SV_DispatchThreadID) {
         if(overlap!=0u && count==0u && status==0u) {
             uint cache=p.edgeCacheBias+edge*240u;
             if(edgeCaches.Load(cache+12u)==0u) {
-                GjkBoxPair boxPair;
+                GjkBoxPair boxPair=(GjkBoxPair)0;
                 boxPair.halfA=ea;
                 boxPair.halfB=eb;
                 boxPair.aInB=rotateSource(conjugate(qb),pa-pb);
