@@ -115,7 +115,8 @@ void storeSelectedContact(uint edgeBase,uint slot,uint source) {
 // invalidate_BoxConvex, operating directly on the Sc EdgeIndex record.
 // The relative transform belongs to B; no independently owned cache.
 bool refreshEdge(uint edgeBase,float3 pa,float3 pb,float4 qa,float4 qb,
-                 float3 ea,float3 eb,float contactDistance) {
+                 float3 ea,float3 eb,float minExtentA,float minExtentB,
+                 float contactDistance) {
     const float4 inverseB=conjugate(qb);
     const float3 relative=rotateSource(inverseB,pa-pb);
     const float4 rotation=quatProduct(inverseB,qa);
@@ -136,9 +137,8 @@ bool refreshEdge(uint edgeBase,float3 pa,float3 pb,float4 qa,float4 qb,
     }
     uint count=edgeCaches.Load(edgeBase+12u);
     const uint initial=count;
-    float minA=min(ea.x,min(ea.y,ea.z));
-    float minB=min(eb.x,min(eb.y,eb.z));
-    const float margin=min(min(0.15f*minA,0.15f),min(0.15f*minB,0.15f));
+    const float margin=min(min(0.15f*minExtentA,0.15f),
+                           min(0.15f*minExtentB,0.15f));
     const float breakingSq=(margin*0.8f)*(margin*0.8f);
     for(uint i=count;i>0u;--i) {
         uint offset=cachePointAddress(edgeBase,i-1u);
@@ -481,6 +481,10 @@ void main(uint3 thread : SV_DispatchThreadID) {
         }
         const uint kindA=geometry.Load(ga+28u);
         const uint kindB=geometry.Load(gb+28u);
+        const float marginA=kindA==2u?asfloat(geometry.Load(ga+60u)):
+            min(ea.x,min(ea.y,ea.z));
+        const float marginB=kindB==2u?asfloat(geometry.Load(gb+60u)):
+            min(eb.x,min(eb.y,eb.z));
         if(kindA==2u || kindB==2u) {
             // Convex finite pairs skip box SAT. Only the sparse
             // continuation owns hull support searches and EPA facets.
@@ -494,7 +498,8 @@ void main(uint3 thread : SV_DispatchThreadID) {
             const bool validB=kindB!=2u ||
                 (countB>=4u && startB<=p.hullCount &&
                  countB<=p.hullCount-startB);
-            if((kindA>2u || kindB>2u) || !validA || !validB) {
+            if((kindA>2u || kindB>2u) || !validA || !validB ||
+               !(marginA>0.f) || !(marginB>0.f)) {
                 publishPair(result,0u,0u,1u,edge,first,0u,0u,0u);
                 publishScContacts(i,a,b,edge,result,p.outputBias,
                     p.transformBias,p.geometryBias,p.edgeCacheBias,
@@ -502,7 +507,7 @@ void main(uint3 thread : SV_DispatchThreadID) {
                 return;
             }
             bool regenerate=refreshEdge(
-                edgeBase,pa,pb,qa,qb,ea,eb,distance);
+                edgeBase,pa,pb,qa,qb,ea,eb,marginA,marginB,distance);
             if(!regenerate) {
                 const uint cached=edgeCaches.Load(edgeBase+12u);
                 if(cached>1u) {
@@ -538,7 +543,8 @@ void main(uint3 thread : SV_DispatchThreadID) {
         if(sourcePcmSpherePair(i,a,b,edge,first,limit,result,
                                ga,gb,pa,pb,qa,qb,distance))
             return;
-        bool regenerate=refreshEdge(edgeBase,pa,pb,qa,qb,ea,eb,distance);
+        bool regenerate=refreshEdge(
+            edgeBase,pa,pb,qa,qb,ea,eb,marginA,marginB,distance);
         if(!regenerate) {
             uint cached=edgeCaches.Load(edgeBase+12u);
             uint eligible=0u;
