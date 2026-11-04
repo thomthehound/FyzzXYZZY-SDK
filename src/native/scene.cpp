@@ -3869,6 +3869,11 @@ void Scene::update_contacts() {
                 b.geometry==Geometry::Plane;
             const bool sphere=a.geometry==Geometry::Sphere ||
                 b.geometry==Geometry::Sphere;
+            const bool convex=a.geometry==Geometry::Convex ||
+                b.geometry==Geometry::Convex;
+            if(convex && !plane)
+                throw std::logic_error(
+                    "Convex finite-pair GJK/EPA is not implemented");
             // The infinite plane has no GPU broadphase volume. Its
             // paired box already has a resident Sc ElementSim transform.
             if(plane && !pcm_plane_box_enabled_)continue;
@@ -3944,9 +3949,11 @@ void Scene::update_contacts() {
                               b.geometry==Geometry::Sphere;
         const bool convex_pair=a.geometry==Geometry::Convex ||
                                b.geometry==Geometry::Convex;
-        if(convex_pair && !plane_pair)
+        if(convex_pair &&
+           (!plane_pair || !pcm_plane_box_enabled_ ||
+            (gpu_broadphase_ && !source_gpu_pcm)))
             throw std::logic_error(
-                "Convex finite-pair GJK/EPA has not been admitted");
+                "Cooked convex contacts require the admitted plane PCM path");
         const bool pcm_plane=pcm_plane_box_enabled_ && plane_pair && !pcm_sphere;
         const bool pcm_box=pcm_box_box_enabled_ && !plane_pair && !pcm_sphere;
         const bool gpu_pcm_plane=source_gpu_pcm && plane_pair &&
