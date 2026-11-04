@@ -1615,9 +1615,14 @@ void verify_sphere_gpu_solver(
             const auto pcm_bytes=producer->pcm_contact_readback_bytes();
             const auto pcm_rows=producer->dy_pcm_device_contact_rows();
             const auto cpu_bytes=producer->dy_cpu_gu_geometry_bytes();
+            // Sc admits one speculative plane manager per dynamic
+            // sphere. The two elevated spheres have no physical plane
+            // touch, but their GPU PCM records still execute this frame.
+            constexpr std::size_t pcm_managers=5u;
             if(gpu.contacts().size()!=3u || cpu_bytes!=0u ||
                pcm_rows!=3u ||
-               pcm_bytes!=3u*sizeof(physx_gpu::SourcePcmGpuContactStreamNative)) {
+               pcm_bytes!=pcm_managers*sizeof(
+                   physx_gpu::SourcePcmGpuContactStreamNative)) {
                 throw std::runtime_error(
                     "Sphere GPU contact path: managers="+
                     std::to_string(gpu.contacts().size())+
