@@ -1954,7 +1954,8 @@ int main(int argc,char** argv) {
                 scenario=="coupled_solver" || scenario=="legacy_gu_solver" ||
                 scenario=="mixed_solver" || scenario=="distance_solver" ||
                 scenario=="compound_shapes" || scenario=="compound_solver" ||
-                scenario=="sphere_solver" || scenario=="convex_plane" || scenario=="wide_islands" ||
+                scenario=="sphere_solver" || scenario=="convex_plane" ||
+                scenario=="convex_finite" || scenario=="wide_islands" ||
                 scenario=="wide_islands_10k" || scenario=="free_integration",
                 "Unknown GPU scene regression scenario");
 #ifdef FYZZXYZZY_TEST_D3D12
@@ -1979,6 +1980,14 @@ int main(int argc,char** argv) {
                     require(has_convex_shader,
                         "Cooked convex GPU case requires compiled hull Dy shader");
                     verify_convex_plane_gpu_solver(
+                        backend,argv[1],argv[2],argv[3],argv[4]);
+                });
+        if(scenario=="all" || scenario=="convex_finite")
+            fyzz::tests::measure_gpu_case("sc_pcm","convex_finite",
+                [&]{
+                    require(has_convex_shader,
+                        "Finite convex GPU case requires compiled hull Dy shader");
+                    verify_convex_finite_gpu_solver(
                         backend,argv[1],argv[2],argv[3],argv[4]);
                 });
         if(scenario=="all" || scenario=="scene")
