@@ -287,6 +287,10 @@ public:
         BodyId,BodyId,Transform,Transform) {
         throw std::logic_error("This backend has no fixed rigid constraints");
     }
+    virtual ConstraintId add_spherical_constraint(
+        BodyId,BodyId,Transform,Transform) {
+        throw std::logic_error("This backend has no spherical rigid constraints");
+    }
     virtual void remove_constraint(ConstraintId) {
         throw std::logic_error("This backend cannot retire a constraint");
     }
@@ -404,6 +408,9 @@ public:
     // Lock the relative translation and rotation of two actor-local frames.
     // The joint does not change the actors' collision filtering.
     ConstraintId add_fixed_constraint(
+        BodyId a,BodyId b,Transform local_a,Transform local_b);
+    // Coincident local-frame origins; relative rotation remains unconstrained.
+    ConstraintId add_spherical_constraint(
         BodyId a,BodyId b,Transform local_a,Transform local_b);
     void remove_constraint(ConstraintId id);
     void step(float seconds);
