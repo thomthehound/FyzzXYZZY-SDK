@@ -1307,6 +1307,9 @@ private:
     std::uint8_t generate_pcm_box_box(
         const Shape& first, const Shape& second, float contact_distance,
         PcmManifoldCache& cache, std::span<ContactPoint> output);
+    std::uint8_t generate_pcm_convex_pair(
+        const Shape& first,const Shape& second,float contact_distance,
+        PcmManifoldCache& cache,std::span<ContactPoint> output);
     static std::uint8_t publish_gpu_pcm_box_box(
         const GpuPcmBoxResult& gpu,PcmManifoldCache& cache,
         std::span<ContactPoint> output);
