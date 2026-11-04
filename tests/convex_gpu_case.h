@@ -22,7 +22,7 @@ inline void verify_convex_plane_gpu_solver(
     const std::array<ConvexTriangle,8> prismFaces{{
         {0,2,1},{3,4,5},
         {0,1,4},{0,4,3},
-        {0,3,5},{1,2,5},{1,5,4}}};
+        {0,3,5},{0,5,2},{1,2,5},{1,5,4}}};
     const auto prism=cook_convex_mesh(prismVertices,prismFaces);
     std::ifstream stream(dy_shader,std::ios::binary);
     check(bool(stream),"Convex GPU Dy shader bundle missing");
