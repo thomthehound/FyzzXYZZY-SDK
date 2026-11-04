@@ -3658,21 +3658,33 @@ std::uint8_t Scene::generate_pcm_plane_box(
         cache.relative_rotation=q;
         cache.initialized=true;
         cache.count=0;
-        std::array<PcmPersistentContact,8> candidates{};
-        std::size_t count=0;
-        for(unsigned corner=0;corner<8;++corner) {
-            const Vec3 local{
-                (corner&4)?-box.half_extents.x:box.half_extents.x,
-                (corner&2)?-box.half_extents.y:box.half_extents.y,
-                (corner&1)?-box.half_extents.z:box.half_extents.z};
+        // Convex plane contacts are actual cooked vertices, not corners
+        // of the shape's conservative local AABB. Reuse the scene-owned
+        // candidate arena across all Sc managers without per-pair malloc.
+        auto& candidates=pcm_plane_candidates_;
+        candidates.clear();
+        if(box.geometry==Geometry::Convex)
+            candidates.reserve(box.convex->vertices().size());
+        else candidates.reserve(8u);
+        const auto admit=[&](Vec3 local) {
             const Vec3 r=rotate(q,local);
             const Vec3 in_plane{relative.x+r.x,relative.y+r.y,
                                 relative.z+r.z};
-            if(in_plane.y>=contact_distance)continue;
-            candidates[count++]={local,
+            if(in_plane.y>=contact_distance)return;
+            candidates.push_back({local,
                 {in_plane.x,0.0f,in_plane.z}, {0.0f,1.0f,0.0f},
-                in_plane.y};
+                in_plane.y});
+        };
+        if(box.geometry==Geometry::Convex) {
+            for(const auto vertex:box.convex->vertices())admit(vertex);
+        }else {
+            for(unsigned corner=0;corner<8u;++corner)
+                admit({
+                    (corner&4u)?-box.half_extents.x:box.half_extents.x,
+                    (corner&2u)?-box.half_extents.y:box.half_extents.y,
+                    (corner&1u)?-box.half_extents.z:box.half_extents.z});
         }
+        const std::size_t count=candidates.size();
         if(count<=4) {
             for(std::size_t i=0;i<count;++i)
                 cache.points[i]=candidates[i];
@@ -3682,7 +3694,8 @@ std::uint8_t Scene::generate_pcm_plane_box(
             // reduceBatchContactsCluster (four-contact manifold). Keep
             // source deepest/farthest/segment-extrema ordering and then
             // cluster residual corners around those four witnesses.
-            std::array<bool,8> chosen{};
+            pcm_plane_chosen_.assign(count,0u);
+            auto& chosen=pcm_plane_chosen_;
             std::array<std::size_t,4> indices{};
             std::size_t first=0;
             for(std::size_t i=1;i<count;++i)
@@ -3929,6 +3942,11 @@ void Scene::update_contacts() {
             : (reversed?a:b);
         const bool pcm_sphere=a.geometry==Geometry::Sphere ||
                               b.geometry==Geometry::Sphere;
+        const bool convex_pair=a.geometry==Geometry::Convex ||
+                               b.geometry==Geometry::Convex;
+        if(convex_pair && !plane_pair)
+            throw std::logic_error(
+                "Convex finite-pair GJK/EPA has not been admitted");
         const bool pcm_plane=pcm_plane_box_enabled_ && plane_pair && !pcm_sphere;
         const bool pcm_box=pcm_box_box_enabled_ && !plane_pair && !pcm_sphere;
         const bool gpu_pcm_plane=source_gpu_pcm && plane_pair &&
