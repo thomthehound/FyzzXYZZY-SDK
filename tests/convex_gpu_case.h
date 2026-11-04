@@ -101,7 +101,12 @@ inline void verify_convex_finite_gpu_solver(
                 "Finite cooked hull PCM lost box, sphere or hull contact managers at frame "+
                 std::to_string(frame)+": cpu="+
                 std::to_string(cpu.contacts().size())+" gpu="+
-                std::to_string(gpu.contacts().size()));
+                std::to_string(gpu.contacts().size())+
+                " cpu_pairs="+std::to_string(cpu.pairs().size())+
+                " gpu_pairs="+std::to_string(gpu.pairs().size())+
+                " gpu_found="+std::to_string(gpu.found_pairs().size())+
+                " gpu_readback="+
+                std::to_string(producer->pcm_contact_readback_bytes()));
         if(producer->pcm_contact_readback_bytes()!=
               6u*sizeof(physx_gpu::SourcePcmGpuContactStreamNative) ||
            producer->dy_cpu_gu_geometry_bytes()!=0u ||
