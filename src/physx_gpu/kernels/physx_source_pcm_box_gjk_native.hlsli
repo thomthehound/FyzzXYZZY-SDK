@@ -209,14 +209,15 @@ uint gjkBoxContinuation(GjkBoxPair pair,float contactDistance,
         min(pair.halfA.x,min(pair.halfA.y,pair.halfA.z)),
         min(pair.halfB.x,min(pair.halfB.y,pair.halfB.z)));
     const float progressFactor=1.f-0.000225f;
+    const bool pointCore=pair.radiusA>0.f || pair.radiusB>0.f;
     count=0u;
     float3 closest=gjkLength2(pair.aInB)>0.f
         ?pair.aInB:float3(1.f,0.f,0.f);
     float previous=3.402823466e+38f;
     for(uint iteration=0u;iteration<32u;++iteration) {
         float dist=sqrt(gjkLength2(closest));
-        if(count>0u && dist<=epsilon)return 3u;
-        if(dist<=0.f)return 0u;
+        if(count>0u && dist<=epsilon && !pointCore)return 3u;
+        if(dist<=0.f)return count>0u?3u:0u;
         float3 normal=closest*(1.f/dist);
         GjkSupportPoint support=gjkSupport(pair,-closest);
         float projection=gjkDot(normal,support.q);
@@ -230,8 +231,14 @@ uint gjkBoxContinuation(GjkBoxPair pair,float contactDistance,
         }
         for(uint j=0u;j<count;++j)
             if(support.ai==simplex[j].ai &&
-               support.bi==simplex[j].bi)
+               support.bi==simplex[j].bi) {
+                if(pointCore && projection>0.f) {
+                    GjkClosest current=gjkClosestSimplex(simplex,count);
+                    return current.mask!=0u && gjkContact(pair,current,witness) &&
+                           witness.separation<=contactDistance?1u:0u;
+                }
                 return 0u;
+            }
         if(count==4u)return 3u;
         simplex[count++]=support;
         GjkClosest next=gjkClosestSimplex(simplex,count);
@@ -239,7 +246,12 @@ uint gjkBoxContinuation(GjkBoxPair pair,float contactDistance,
         closest=next.closestPoint;
         float nextDist=sqrt(next.dist2);
         gjkCompact(simplex,count,next);
-        if(nextDist>=previous)return 0u;
+        if(nextDist>=previous) {
+            if(pointCore && projection>0.f)
+                return gjkContact(pair,next,witness) &&
+                       witness.separation<=contactDistance?1u:0u;
+            return 0u;
+        }
         previous=nextDist;
     }
     return 0u;
