@@ -21,6 +21,13 @@ constexpr std::array<ConvexTriangle,4> tetra_faces{{
     {0,2,1},{0,1,3},{0,3,2},{1,2,3}}};
 constexpr std::array<Vec3,4> tetra_vertices{{
     {0,0,0},{1,0,0},{0,1,0},{0,0,1}}};
+constexpr std::array<Vec3,8> cube_vertices{{
+    {-1,-1,-1},{1,-1,-1},{1,1,-1},{-1,1,-1},
+    {-1,-1,1},{1,-1,1},{1,1,1},{-1,1,1}}};
+constexpr std::array<ConvexTriangle,12> cube_faces{{
+    {0,2,1},{0,3,2},{4,5,6},{4,6,7},
+    {0,1,5},{0,5,4},{3,7,6},{3,6,2},
+    {0,4,7},{0,7,3},{1,2,6},{1,6,5}}};
 
 void verify_tetra() {
     const auto mesh=cook_convex_mesh(tetra_vertices,tetra_faces);
@@ -54,14 +61,7 @@ void verify_tetra() {
 }
 
 void verify_cube() {
-    constexpr std::array<Vec3,8> vertices{{
-        {-1,-1,-1},{1,-1,-1},{1,1,-1},{-1,1,-1},
-        {-1,-1,1},{1,-1,1},{1,1,1},{-1,1,1}}};
-    constexpr std::array<ConvexTriangle,12> faces{{
-        {0,2,1},{0,3,2},{4,5,6},{4,6,7},
-        {0,1,5},{0,5,4},{3,7,6},{3,6,2},
-        {0,4,7},{0,7,3},{1,2,6},{1,6,5}}};
-    const auto mesh=cook_convex_mesh(vertices,faces);
+    const auto mesh=cook_convex_mesh(cube_vertices,cube_faces);
     const auto& mass=mesh->mass_properties();
     near(mass.volume,8.,1.e-7,"Cube volume");
     near(mass.center.x,0.,1.e-7,"Cube COM");
@@ -121,6 +121,33 @@ void verify_native_rigid_contact() {
             std::isfinite(state.velocity.y) &&
             state.position.y>-0.15f,
             "Cooked convex rigid contact did not constrain body motion");
+}
+
+void verify_sphere_face_contact() {
+    World world({.execution=ExecutionMode::NativeCpu,
+                 .contact_notifications=true});
+    const auto cube=cook_convex_mesh(cube_vertices,cube_faces);
+    const auto fixed=world.create_static_body({});
+    world.attach_convex_shape(fixed,cube);
+    const auto sphere=world.add_dynamic_sphere(
+        0.2f,{0.273157f,-0.794949f,-1.0039f},1.f);
+    RigidBodyDynamics settings{};
+    settings.gravity_enabled=false;
+    settings.position_iterations=24u;
+    world.set_body_dynamics(sphere,settings);
+    world.step(1.f/120.f);
+    const auto events=world.contact_events();
+    require(events.size()==1u && events[0].kind==ContactEventKind::Found &&
+            events[0].contact_count>0u,
+            "Near-face convex/sphere penetration lost its contact manager");
+    const auto points=world.contact_event_points();
+    require(events[0].point_offset<points.size(),
+            "Near-face contact lost its published witness");
+    const auto& point=points[events[0].point_offset];
+    near(point.separation,-0.1961,0.015,
+         "Near-face sphere penetration differs from geometric depth");
+    require(std::abs(point.normal.z)>0.95f,
+            "Near-face sphere contact normal is not face-aligned");
 }
 
 void verify_finite_pair_matrix() {
@@ -208,6 +235,17 @@ void verify_invalid() {
     pinched[4].z=-0.25f;
     rejects([&]{cook_convex_mesh(pinched,concave);},
         "Concave or inverted convex mesh admitted");
+    std::array<Vec3,8> doubled_vertices{};
+    std::array<ConvexTriangle,8> doubled_faces{};
+    for(std::size_t i=0u;i<4u;++i) {
+        doubled_vertices[i]=tetra_vertices[i];
+        doubled_vertices[i+4u]=tetra_vertices[i];
+        doubled_faces[i]=tetra_faces[i];
+        for(unsigned axis=0u;axis<3u;++axis)
+            doubled_faces[i+4u][axis]=tetra_faces[i][axis]+4u;
+    }
+    rejects([&]{cook_convex_mesh(doubled_vertices,doubled_faces);},
+        "Disconnected coincident shells doubled the cooked mass");
 }
 }
 int main() {
@@ -217,6 +255,7 @@ int main() {
         verify_wedge();
         verify_invalid();
         verify_native_rigid_contact();
+        verify_sphere_face_contact();
         verify_finite_pair_matrix();
         std::cout<<"Cooked convex volume, inertia and topology OK\n";
         return 0;
