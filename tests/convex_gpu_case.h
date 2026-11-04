@@ -148,7 +148,14 @@ inline void verify_convex_finite_gpu_solver(
             const auto& cb=gpu.contacts()[i];
             if(ca.pair!=cb.pair || ca.count!=cb.count || ca.count==0u)
                 throw std::runtime_error(
-                    "Finite convex Gu/GPU contact topology diverged");
+                    "Finite convex Gu/GPU contact topology diverged at frame "+
+                    std::to_string(frame)+" manager "+std::to_string(i)+
+                    " cpu_pair="+std::to_string(ca.pair.a)+","+
+                    std::to_string(ca.pair.b)+
+                    " gpu_pair="+std::to_string(cb.pair.a)+","+
+                    std::to_string(cb.pair.b)+
+                    " counts="+std::to_string(ca.count)+"/"+
+                    std::to_string(cb.count));
             const auto close=[](float x,float y) {
                 return std::fabs(x-y)<0.02f;
             };
