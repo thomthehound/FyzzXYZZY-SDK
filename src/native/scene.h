@@ -3,6 +3,7 @@
 #pragma once
 
 #include "fyzzxyzzy/world.h"
+#include "fyzzxyzzy/convex.h"
 
 #include <algorithm>
 #include <atomic>
@@ -69,6 +70,8 @@ struct GpuBroadphaseBox {
     Transform local_pose{};
     ShapeId next_shape=std::numeric_limits<ShapeId>::max();
     std::uint32_t geometry_kind=0;
+    std::uint32_t convex_vertex_offset=0;
+    std::uint32_t convex_vertex_count=0;
 };
 
 // Source PxgCudaBroadPhaseSap::fetchBroadPhaseResults produces the two
@@ -269,6 +272,9 @@ static_assert(sizeof(GpuDyContactPrepPair)==248u &&
 class GpuBroadphaseProducer {
 public:
     virtual ~GpuBroadphaseProducer()=default;
+    virtual void upload_convex_vertices(std::span<const Vec3>) {
+        throw std::logic_error("GPU geometry owner cannot accept convex meshes");
+    }
     virtual GpuBroadphaseReports advance(
         std::span<const GpuBroadphaseBox> live_boxes,
         bool force_update,bool geometry_dirty)=0;
@@ -528,6 +534,8 @@ public:
     BodyId create_body(Transform pose,bool dynamic);
     ShapeId attach_box(BodyId body,Vec3 half_extents,Transform local_pose);
     ShapeId attach_sphere(BodyId body,float radius,Transform local_pose);
+    ShapeId attach_convex(BodyId body,
+        std::shared_ptr<const ConvexMesh> mesh,Transform local_pose);
     void detach_shape(ShapeId shape);
     void set_shape_local_pose(ShapeId shape,Transform pose);
     void set_attached_shape_material(ShapeId shape,Material material);
@@ -912,7 +920,7 @@ private:
     friend struct NativeSapTimingFixture;
     friend struct NativeThirdPassTimingFixture;
     enum class Motion : std::uint8_t { Static, Dynamic, Kinematic };
-    enum class Geometry : std::uint8_t { Box, Plane, Sphere };
+    enum class Geometry : std::uint8_t { Box, Plane, Sphere, Convex };
     // Node::NodeType is independent of actor kind. Kinematics retain
     // rigid node identity but no island assignment. Other node classes
     // require their own non-rigid simulation owners, not rigid Actor
@@ -1002,6 +1010,9 @@ private:
         bool simulation_shape_enabled=true;
         Vec3 half_extents{};
         float radius=0.0f;
+        std::shared_ptr<const ConvexMesh> convex;
+        std::uint32_t convex_vertex_offset=0;
+        std::uint32_t convex_vertex_count=0;
         Transform local_pose{};
         Vec3 position{};
         Quat orientation{};
@@ -1235,6 +1246,8 @@ private:
 
     std::vector<Actor> actors_;
     std::vector<Shape> shapes_;
+    std::vector<Vec3> convex_vertices_;
+    std::size_t uploaded_convex_vertex_count_=0;
     std::size_t rigid_shape_count_=0;
     using EdgeIndex=std::uint32_t;
     static constexpr EdgeIndex invalid_edge=std::numeric_limits<EdgeIndex>::max();
