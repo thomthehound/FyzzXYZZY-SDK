@@ -1537,9 +1537,9 @@ void verify_gpu_distance_solver(
 }
 } // namespace
 
-// Mixed spherical geometry traverses the real GPU SAP and GPU Dy task.
-// Simple sphere PCM geometry remains CPU-produced until its device producer
-// is admitted; no box/box PCM kernel may reinterpret these shapes.
+// Sphere/box and sphere/sphere witnesses execute in the device PCM
+// contact stream, then feed the same GPU Dy task as box PCM contacts.
+// The infinite-plane/sphere case retains its host Gu boundary.
 void verify_sphere_gpu_solver(
     fyzz::compute::Backend backend,const char* sap,
     const char* pcm,const char* dy_shader) {
@@ -1599,14 +1599,35 @@ void verify_sphere_gpu_solver(
             "GPU sphere scene changed Sc PCM/Gu manager identity");
         if(frame==0u) {
             require(gpu.contacts().size()==3u &&
-                    producer->dy_cpu_gu_geometry_bytes()>=
-                        3u*sizeof(native::GpuDyGuContactInput),
-                "Mixed sphere geometry did not enter GPU Dy contact preparation");
+                    producer->dy_cpu_gu_geometry_bytes()==
+                        sizeof(native::GpuDyGuContactInput) &&
+                    producer->pcm_contact_readback_bytes()==
+                        2u*sizeof(physx_gpu::SourcePcmGpuContactStreamNative),
+                "Finite spheres were not generated on device before GPU Dy preparation");
             touched_all=true;
         }
         require(producer->dy_distance_dispatch_count()==frame+1u &&
                 producer->dy_gpu_integrated_body_count()>0u,
             "Source sphere bodies did not execute GPU Dy integration");
+        // Cross-check Gu's actual surface witnesses and orientations,
+        // not just agreement of the integrated body positions.
+        for(std::size_t j=0;j<cpu.contacts().size();++j) {
+            const auto& expected=cpu.contacts()[j];
+            const auto& actual=gpu.contacts()[j];
+            require(expected.pair==actual.pair && expected.count==actual.count,
+                "Device sphere Gu changed Sc contact-manager geometry identity");
+            for(std::uint32_t k=0;k<expected.count;++k) {
+                const auto& a=expected.points[k],&b=actual.points[k];
+                require(std::fabs(a.position.x-b.position.x)<0.0004f &&
+                        std::fabs(a.position.y-b.position.y)<0.0004f &&
+                        std::fabs(a.position.z-b.position.z)<0.0004f &&
+                        std::fabs(a.normal.x-b.normal.x)<0.0004f &&
+                        std::fabs(a.normal.y-b.normal.y)<0.0004f &&
+                        std::fabs(a.normal.z-b.normal.z)<0.0004f &&
+                        std::fabs(a.separation-b.separation)<0.0004f,
+                    "Device sphere Gu witness diverged from source PCM");
+            }
+        }
         // Spherical geometry carries its own radius in the shared shape
         // cache; Dy publishes exact spherical bounds after integration.
         saw_device_bounds|=producer->last_frame().device_cached_box_count>0u;
