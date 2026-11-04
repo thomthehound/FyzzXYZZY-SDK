@@ -714,11 +714,23 @@ void verify(Context& context,const char* transform_shader,
             "GPU EPA continuation did not consume one sparse work item");
     download_publication();
     const auto& epa_published=published[penetration_pair];
-    require(epa_published.edge_handle==edge && epa_published.status==0u &&
-            epa_published.cached_count==1u && epa_published.emitted_count==1u &&
-            epa_published.selected_and_regenerated==0x80000001u &&
-            near(epa_published.contacts[0].separation,expected_epa.separation),
-            "Sparse EPA did not publish its completed Gu world contact");
+    if(!(epa_published.edge_handle==edge && epa_published.status==0u &&
+         epa_published.cached_count==1u && epa_published.emitted_count==1u &&
+         epa_published.selected_and_regenerated==0x80000001u &&
+         near(epa_published.contacts[0].separation,expected_epa.separation)))
+        throw std::runtime_error(
+            "Sparse EPA publication mismatch pair="+
+            std::to_string(penetration_pair)+
+            " edge="+std::to_string(edge)+"/"+
+            std::to_string(epa_published.edge_handle)+
+            " status="+std::to_string(epa_published.status)+
+            " cache="+std::to_string(epa_published.cached_count)+
+            " emit="+std::to_string(epa_published.emitted_count)+
+            " selected="+std::to_string(epa_published.selected_and_regenerated)+
+            " depth="+std::to_string(epa_published.contacts[0].separation)+
+            "/"+std::to_string(expected_epa.separation)+
+            " candidate="+std::to_string(results[penetration_pair].candidate_count)+
+            " result_status="+std::to_string(results[penetration_pair].status));
     const auto& finished=results[penetration_pair];
     const auto& witness=candidates[pairs[penetration_pair].candidate_offset];
     require(finished.status==0u && finished.candidate_count==1u &&
