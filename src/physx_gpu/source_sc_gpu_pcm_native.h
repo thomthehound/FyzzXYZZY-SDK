@@ -141,6 +141,7 @@ public:
                second>=shape_capacity)
                 throw std::out_of_range("Source Sc PCM element outside original AABB capacity");
             if(request.candidate_capacity!=1u &&
+               request.candidate_capacity!=4u &&
                request.candidate_capacity!=16u)
                 throw std::invalid_argument(
                     "GPU PCM candidate count must match its geometry");
