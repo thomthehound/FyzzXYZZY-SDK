@@ -56,7 +56,7 @@ inline void verify_convex_finite_gpu_solver(
     auto* producer=owner.get();
     gpu.set_gpu_broadphase(std::move(owner));
     const auto assemble=[&](native::Scene& scene) {
-        std::array<BodyId,7> dynamics{};
+        std::array<BodyId,8> dynamics{};
         scene.add_static_box({1.f,0.5f,1.f},{0.f,-0.5f,0.f});
         dynamics[0]=scene.create_body({{0.f,-0.12f,0.f},{}},true);
         scene.attach_convex(dynamics[0],hull,{});
@@ -95,6 +95,14 @@ inline void verify_convex_finite_gpu_solver(
         scene.attach_convex(dynamics[6],offsetHull,{});
         scene.update_mass_properties(dynamics[6],1.f);
 
+        const auto face_base=scene.create_body({
+            {-40.f,-100.f,-100.f},{}},false);
+        scene.attach_convex(face_base,cube,{});
+        dynamics[7]=scene.create_body({
+            {-39.8f,-98.15f,-99.9f},{}},true);
+        scene.attach_convex(dynamics[7],cube,{});
+        scene.update_mass_properties(dynamics[7],1.f);
+
         RigidBodyDynamics settings{};
         settings.gravity_enabled=false;
         settings.position_iterations=24u;
@@ -115,7 +123,7 @@ inline void verify_convex_finite_gpu_solver(
         }
         cpu.step(dt);
         gpu.step(dt);
-        if(cpu.contacts().size()!=7u ||
+        if(cpu.contacts().size()!=8u ||
            cpu.contacts().size()!=gpu.contacts().size())
             throw std::runtime_error(
                 "Finite cooked hull PCM lost box, sphere or hull contact managers at frame "+
@@ -128,9 +136,9 @@ inline void verify_convex_finite_gpu_solver(
                 " gpu_readback="+
                 std::to_string(producer->pcm_contact_readback_bytes()));
         if(producer->pcm_contact_readback_bytes()!=
-              7u*sizeof(physx_gpu::SourcePcmGpuContactStreamNative) ||
+              8u*sizeof(physx_gpu::SourcePcmGpuContactStreamNative) ||
            producer->dy_cpu_gu_geometry_bytes()!=0u ||
-           producer->dy_pcm_device_contact_rows()<7u)
+           producer->dy_pcm_device_contact_rows()<8u)
             throw std::runtime_error(
                 "Finite convex contact geometry bypassed GPU PCM/Dy");
         for(std::size_t i=0;i<cpu.contacts().size();++i) {
@@ -139,29 +147,35 @@ inline void verify_convex_finite_gpu_solver(
             if(ca.pair!=cb.pair || ca.count!=cb.count || ca.count==0u)
                 throw std::runtime_error(
                     "Finite convex Gu/GPU contact topology diverged");
-            const auto& a=ca.points[0];
-            const auto& b=cb.points[0];
             const auto close=[](float x,float y) {
                 return std::fabs(x-y)<0.02f;
             };
-            if(!close(a.separation,b.separation) ||
-               !close(a.position.x,b.position.x) ||
-               !close(a.position.y,b.position.y) ||
-               !close(a.position.z,b.position.z) ||
-               !close(a.normal.x,b.normal.x) ||
-               !close(a.normal.y,b.normal.y) ||
-               !close(a.normal.z,b.normal.z))
-                throw std::runtime_error(
-                    "Finite convex CPU/GPU GJK/EPA witnesses disagree at frame "+
-                    std::to_string(frame)+" pair "+std::to_string(i)+
-                    " depth="+std::to_string(a.separation)+"/"+
-                    std::to_string(b.separation));
+            for(std::size_t j=0u;j<ca.count;++j) {
+                const auto& a=ca.points[j];
+                const auto& b=cb.points[j];
+                if(!close(a.separation,b.separation) ||
+                   !close(a.position.x,b.position.x) ||
+                   !close(a.position.y,b.position.y) ||
+                   !close(a.position.z,b.position.z) ||
+                   !close(a.normal.x,b.normal.x) ||
+                   !close(a.normal.y,b.normal.y) ||
+                   !close(a.normal.z,b.normal.z))
+                    throw std::runtime_error(
+                        "Finite convex CPU/GPU witnesses disagree at frame "+
+                        std::to_string(frame)+" pair "+std::to_string(i)+
+                        " point "+std::to_string(j)+
+                        " depth="+std::to_string(a.separation)+"/"+
+                        std::to_string(b.separation));
+            }
         }
         if(frame==0u) {
-            bool near_face=false,off_origin_pair=false;
+            bool near_face=false,off_origin_pair=false,clipped_face=false;
             for(const auto& manager:cpu.contacts())
                 if(manager.count>0u) {
                     const auto& point=manager.points[0];
+                    if(point.position.x>58.f && point.position.x<62.f &&
+                       manager.count==4u)
+                        clipped_face=true;
                     if(point.position.x>23.f && point.position.x<26.f &&
                        std::abs(point.separation+0.1961f)<0.015f &&
                        std::abs(point.normal.z)>0.95f)
@@ -170,9 +184,9 @@ inline void verify_convex_finite_gpu_solver(
                        point.separation<0.f)
                         off_origin_pair=true;
                 }
-            if(!near_face || !off_origin_pair)
+            if(!near_face || !off_origin_pair || !clipped_face)
                 throw std::runtime_error(
-                    "Cooked convex PCM lost off-origin hull or sphere penetration");
+                    "Cooked convex PCM lost translated hull, sphere or four-point face contacts");
         }
         for(std::size_t i=0;i<expected.size();++i)
             test::compound_compare_state(
