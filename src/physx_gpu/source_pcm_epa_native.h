@@ -20,8 +20,9 @@ namespace fyzz::physx_gpu {
 class SourcePcmEpaNativeStage final {
 public:
     SourcePcmEpaNativeStage(compute::Context& context,
-                            compute::ShaderBinary shader)
-        : context_(context) {
+                            compute::ShaderBinary shader,
+                            bool face_geometry=false)
+        : context_(context),face_geometry_(face_geometry) {
         const auto& device=context.device_info();
         if(!device.max_workgroup_count[0] ||
            !device.max_storage_buffer_range)
@@ -31,10 +32,11 @@ public:
         max_view_=device.max_storage_buffer_range;
         compute::ComputePipelineDesc desc{};
         desc.shader=std::move(shader);
-        desc.storage_buffer_binding_count=10u;
+        desc.storage_buffer_binding_count=face_geometry_?10u:9u;
         desc.storage_buffer_views.assign(
-            10u,compute::StorageBufferViewKind::RawReadWrite);
-        desc.push_constant_bytes=72u;
+            desc.storage_buffer_binding_count,
+            compute::StorageBufferViewKind::RawReadWrite);
+        desc.push_constant_bytes=face_geometry_?72u:56u;
         pipeline_=context_.create_compute_pipeline(desc);
     }
     SourcePcmEpaNativeStage(const SourcePcmEpaNativeStage&)=delete;
@@ -107,12 +109,14 @@ public:
                  convex_vertex_count
                      ?source_allocation_bytes(convex_vertex_count,12u)
                      :source_allocation_bytes(shape_capacity,32u),
-                 8u,compute::BufferAccess::Read),
-            view(convex_surface_bytes?convex_surface:transforms,
-                 convex_surface_bytes
-                    ?convex_surface_bytes
-                    :source_allocation_bytes(shape_capacity,32u),
-                 9u,compute::BufferAccess::Read)};
+                 8u,compute::BufferAccess::Read)};
+        if(face_geometry_)
+            dispatch.buffers.push_back(
+                view(convex_surface_bytes?convex_surface:transforms,
+                     convex_surface_bytes
+                        ?convex_surface_bytes
+                        :source_allocation_bytes(shape_capacity,32u),
+                     9u,compute::BufferAccess::Read));
         const auto arguments=addresses.resolve(dispatch_args,12u);
         if(arguments.offset%4u)
             throw std::invalid_argument("Source EPA indirect arguments misaligned");
@@ -122,9 +126,9 @@ public:
                     "Source EPA indirect arguments alias Sc data");
         dispatch.indirect=compute::DispatchIndirectArgs{
             arguments.buffer,arguments.offset};
-        dispatch.push_constants.resize(sizeof(params));
-        std::memcpy(dispatch.push_constants.data(),
-                    params.data(),sizeof(params));
+        const auto params_bytes=face_geometry_?sizeof(params):14u*sizeof(std::uint32_t);
+        dispatch.push_constants.resize(params_bytes);
+        std::memcpy(dispatch.push_constants.data(),params.data(),params_bytes);
         commands.emplace_back(std::move(dispatch));
     }
     void append(SourceSapDmaNative& stream,
@@ -156,6 +160,7 @@ public:
     }
 private:
     compute::Context& context_;
+    bool face_geometry_=false;
     compute::PipelineId pipeline_=0;
     std::size_t alignment_=0;
     std::uint64_t max_view_=0;
