@@ -53,12 +53,20 @@ public:
         physx::PxgCudaBuffer& transforms,physx::PxgCudaBuffer& geometry,
         physx::PxgCudaBuffer& convex_vertices,
         const std::uint32_t& convex_vertex_count,
+        physx::PxgCudaBuffer& convex_surface,
+        const std::uint32_t& convex_surface_bytes,
+        const std::uint32_t& convex_faces_base,
+        const std::uint32_t& convex_indices_base,
         compute::ShaderBinary candidate,compute::ShaderBinary compact,
         compute::ShaderBinary epa)
         : context_(context),addresses_(addresses),stream_(stream),sc_(sc),
           transforms_(transforms),geometry_(geometry),
           convex_vertices_(convex_vertices),
           convex_vertex_count_(convex_vertex_count),
+          convex_surface_(convex_surface),
+          convex_surface_bytes_(convex_surface_bytes),
+          convex_faces_base_(convex_faces_base),
+          convex_indices_base_(convex_indices_base),
           candidates_stage_(context,std::move(candidate)),
           sparse_stage_(context,std::move(compact)),
           epa_stage_(context,std::move(epa)),
@@ -231,8 +239,9 @@ public:
             work_.getDevicePtr(),indirect_address_,
             dense_contacts_.getDevicePtr(),
             convex_vertices_.getDevicePtr(),convex_vertex_count_,
+            convex_surface_.getDevicePtr(),convex_surface_bytes_,
+            convex_faces_base_,convex_indices_base_,
             pair_count,shape_capacity,candidate_capacity,edge_capacity);
-
 
         // Fetch the losslessly packed device stream, then reconstruct
         // Sc's original host record. The Dy shader reads the same device
@@ -314,6 +323,10 @@ private:
     physx::PxgCudaBuffer& geometry_;
     physx::PxgCudaBuffer& convex_vertices_;
     const std::uint32_t& convex_vertex_count_;
+    physx::PxgCudaBuffer& convex_surface_;
+    const std::uint32_t& convex_surface_bytes_;
+    const std::uint32_t& convex_faces_base_;
+    const std::uint32_t& convex_indices_base_;
     SourcePcmBoxCandidatesNativeStage candidates_stage_;
     SourcePcmSparseEpaNativeStage sparse_stage_;
     SourcePcmEpaNativeStage epa_stage_;
