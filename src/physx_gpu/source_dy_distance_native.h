@@ -421,16 +421,16 @@ public:
             contact_prep.data(),integration.data(),nullptr,tiles_.data()};
         // The host retains only source normal impulses and friction
         // tangent/force writeback. Both full row ABIs live only on GPU.
-        constexpr std::array<std::size_t,7> output_inputs{
-            0u,1u,5u,6u,7u,8u,12u};
-        constexpr std::array<std::size_t,7> output_strides{
-            48u,4u,4u,4u,16u,4u,32u};
+        constexpr std::array<std::size_t,6> output_inputs{
+            0u,5u,6u,7u,8u,12u};
+        constexpr std::array<std::size_t,6> output_strides{
+            48u,4u,4u,16u,4u,32u};
         static_assert(offsetof(native::GpuDyJointRow,applied_force)==60u &&
                       offsetof(native::GpuDyDistanceTask,error)==32u &&
                       offsetof(native::GpuDyContactPoint,applied_force)==56u &&
                       offsetof(native::GpuDyFrictionRow,applied_force)==52u &&
                       offsetof(native::GpuDyContactPatch,broken)==12u);
-        std::array<std::size_t,7> result_offsets{};
+        std::array<std::size_t,6> result_offsets{};
         std::size_t output_bytes=0u;
         for(std::size_t i=0;i<output_inputs.size();++i) {
             const auto n=elements[output_inputs[i]];
@@ -506,7 +506,7 @@ public:
         for(std::size_t i=0;i<11u;++i)
             params[i<6u?6u+i:17u+i-6u]=narrow(elements[i]);
         params[30]=narrow(elements[11]);
-        for(std::size_t i=0;i<6u;++i)
+        for(std::size_t i=0;i<5u;++i)
             params[22u+i]=narrow(history_bytes+result_offsets[i]);
         compute::DispatchCommand dispatch{};
         dispatch.pipeline=pipeline_;
@@ -627,13 +627,13 @@ public:
         stream_.wait_at_fetch();
         for(std::size_t i=0;i<tasks.size();++i)
             std::memcpy(&tasks[i].error,
-                host_.data()+result_offsets[2]+i*4u,4u);
+                host_.data()+result_offsets[1]+i*4u,4u);
         for(const auto& task:tasks)
             if(task.error!=0u)
                 throw std::overflow_error("Source Dy GPU solver rejected a row");
         const auto fetch_pose=[&](std::size_t index) {
             auto& pose=integrated_poses[index];
-            std::memcpy(&pose,host_.data()+result_offsets[6]+
+            std::memcpy(&pose,host_.data()+result_offsets[5]+
                 index*sizeof(pose),sizeof(pose));
             if(pose.valid!=1u)
                 throw std::overflow_error("Source Dy GPU integrateCore rejected a body");
@@ -660,16 +660,9 @@ public:
             for(std::size_t i=task.descriptor_begin;
                 i<task.descriptor_end;++i) {
                 const auto& desc=descriptors[i];
-                if(desc.row_count) {
-                    if(desc.index>=rows.size() ||
-                       desc.row_count>rows.size()-desc.index)
-                        throw std::logic_error("Source Dy row writeback range invalid");
-                    const auto end=std::size_t(desc.index)+desc.row_count;
-                    for(std::size_t j=desc.index;j<end;++j)
-                        std::memcpy(&rows[j].applied_force,
-                            host_.data()+result_offsets[1]+j*4u,4u);
-                    continue;
-                }
+                // Joint impulses remain local to the GPU PGS row.
+                // No Sc task consumes a host copy after solve.
+                if(desc.row_count)continue;
                 if(desc.index>=manifolds.size())
                     throw std::logic_error("Source Dy manager writeback index invalid");
                 const auto& manager=manifolds[desc.index];
@@ -686,7 +679,7 @@ public:
                     if(index>=contact_forces.size())
                         throw std::logic_error("Source Dy contact writeback index invalid");
                     std::memcpy(&contact_forces[index],
-                        host_.data()+result_offsets[3]+index*4u,4u);
+                        host_.data()+result_offsets[2]+index*4u,4u);
                 }
                 for(std::size_t j=manager.patch_offset;
                     j<manager.patch_offset+manager.patch_count;++j) {
@@ -699,7 +692,7 @@ public:
                     std::uint32_t report=0u;
                     if(pcm_growth || patch.anchor_count)
                         std::memcpy(&report,
-                            host_.data()+result_offsets[5]+j*4u,4u);
+                            host_.data()+result_offsets[4]+j*4u,4u);
                     const auto count=pcm_growth?(report>>1u)&3u:
                         patch.anchor_count;
                     if(count>2u || patch.row_offset>friction.size() ||
@@ -709,7 +702,7 @@ public:
                     for(std::size_t k=patch.row_offset;
                         k<patch.row_offset+count*2u;++k) {
                         const auto* result=
-                            host_.data()+result_offsets[4]+k*16u;
+                            host_.data()+result_offsets[3]+k*16u;
                         std::memcpy(&friction[k].tangent,result,12u);
                         std::memcpy(&friction[k].applied_force,result+12u,4u);
                     }

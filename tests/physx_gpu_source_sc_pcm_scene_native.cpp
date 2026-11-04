@@ -1510,8 +1510,14 @@ void verify_gpu_distance_solver(
             "Source GPU Dy 1D task never published device body motion");
         const auto [uploaded,downloaded]=
             producer->dy_distance_transfer_bytes();
-        require(downloaded>0u && downloaded<uploaded/2u,
-            "Source Dy GPU writeback still transfers full solver rows");
+        // Five dynamic solver bodies and three disjoint task reports.
+        // Joint impulses stay in their device PGS rows, not the
+        // completed Sc result stream.
+        constexpr std::size_t expected_output=
+            5u*(48u+sizeof(native::GpuDyIntegratedPose))+
+            3u*sizeof(std::uint32_t);
+        require(downloaded==expected_output && downloaded<uploaded/2u,
+            "Source Dy GPU fetched transient joint row impulses");
         const auto fixed_expected=cpu.body_state(anchored_cpu);
         const auto fixed_actual=gpu.body_state(anchored_gpu);
         require(std::fabs(fixed_expected.position.x-
