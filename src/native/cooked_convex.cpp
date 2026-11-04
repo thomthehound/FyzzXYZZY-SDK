@@ -7,6 +7,7 @@
 #include <array>
 #include <cmath>
 #include <limits>
+#include <numeric>
 #include <stdexcept>
 #include <unordered_map>
 
@@ -67,13 +68,30 @@ std::shared_ptr<const ConvexMesh> cook_convex_mesh(
 
     // Signed edge incidence tests both manifold closure and outward
     // orientation; an edge must appear once in each direction.
-    std::unordered_map<std::uint64_t,std::uint8_t> edges;
+    struct EdgeIncidence {
+        std::uint8_t winding=0u;
+        std::size_t face=0u;
+    };
+    std::unordered_map<std::uint64_t,EdgeIncidence> edges;
     edges.reserve(triangles.size()*3u);
+    // Two closed surfaces can each satisfy edge incidence while
+    // describing the same support hull twice. Faces must share one
+    // edge-connected boundary before their mass integrals are combined.
+    std::vector<std::size_t> component(triangles.size());
+    std::iota(component.begin(),component.end(),std::size_t{0});
+    const auto root=[&](std::size_t i) {
+        while(component[i]!=i) {
+            component[i]=component[component[i]];
+            i=component[i];
+        }
+        return i;
+    };
     std::vector<std::uint8_t> referenced(vertices.size(),0u);
     double volume=0.0;
     DVec first{};
     std::array<DVec,3> second{};
-    for(const auto& face:triangles) {
+    for(std::size_t face_index=0;face_index<triangles.size();++face_index) {
+        const auto& face=triangles[face_index];
         for(unsigned k=0;k<3u;++k)
             if(face[k]>=vertices.size() ||
                face[k]==face[(k+1u)%3u] ||
@@ -99,11 +117,16 @@ std::shared_ptr<const ConvexMesh> cook_convex_mesh(
             referenced[u]=1u;
             const auto low=std::min(u,v),high=std::max(u,v);
             const auto key=(std::uint64_t(low)<<32u)|high;
-            auto& winding=edges[key];
+            auto& incidence=edges[key];
             const auto direction=std::uint8_t(u==low?1u:2u);
-            if(winding&direction)
+            if(incidence.winding&direction)
                 throw std::invalid_argument("Convex surface has nonmanifold edges");
-            winding|=direction;
+            if(incidence.winding==0u) {
+                incidence.face=face_index;
+            }else {
+                component[root(face_index)]=root(incidence.face);
+            }
+            incidence.winding|=direction;
         }
 
         // Signed tetrahedra relative to the vertex mean avoid the large
@@ -123,8 +146,12 @@ std::shared_ptr<const ConvexMesh> cook_convex_mesh(
     if(std::any_of(referenced.begin(),referenced.end(),
                    [](std::uint8_t used){return !used;}) ||
        std::any_of(edges.begin(),edges.end(),
-                   [](const auto& e){return e.second!=3u;}))
+                   [](const auto& e){return e.second.winding!=3u;}))
         throw std::invalid_argument("Convex surface must be closed and use every vertex");
+    const std::size_t boundary_root=root(0u);
+    for(std::size_t i=1u;i<triangles.size();++i)
+        if(root(i)!=boundary_root)
+            throw std::invalid_argument("Convex surface has disconnected shells");
     if(!std::isfinite(volume) || !(volume>0.0))
         throw std::invalid_argument("Convex mesh has nonpositive volume");
     DVec center{};
