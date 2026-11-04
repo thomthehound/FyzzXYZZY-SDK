@@ -318,9 +318,10 @@ void integrateBody(uint ordinal) {
             for(uint j=0u;j<vertexCount;++j) {
                 const float3 vertex=asfloat(scHullVertices.Load3(
                     vertexBias+(first+j)*12u));
-                const float3 point=center+sourceRigidRotate(shapeQuaternion,vertex);
-                lower=min(lower,point);
-                upper=max(upper,point);
+                const float3 vertexWorld=center+
+                    sourceRigidRotate(shapeQuaternion,vertex);
+                lower=min(lower,vertexWorld);
+                upper=max(upper,vertexWorld);
             }
         }else {
             const float3 worldExtents=kind==1u?halfExtents:
