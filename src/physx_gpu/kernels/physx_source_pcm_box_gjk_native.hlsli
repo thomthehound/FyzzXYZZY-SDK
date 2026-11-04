@@ -217,7 +217,7 @@ uint gjkBoxContinuation(GjkBoxPair pair,float contactDistance,
     for(uint iteration=0u;iteration<32u;++iteration) {
         float dist=sqrt(gjkLength2(closest));
         if(count>0u && dist<=epsilon && !pointCore)return 3u;
-        if(dist<=0.f)return count>0u?3u:0u;
+        if(dist<=0.f)return pointCore && count>0u?3u:0u;
         float3 normal=closest*(1.f/dist);
         GjkSupportPoint support=gjkSupport(pair,-closest);
         float projection=gjkDot(normal,support.q);
