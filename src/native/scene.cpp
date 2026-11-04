@@ -7112,7 +7112,12 @@ void Scene::prepare_constraints(float seconds) {
             row.error=errors[component];
             if(component<3u) {
                 row.linear=rotate(qa,basis[component]);
-                row.angular0=cross(ra,row.linear);
+                // The slider's transverse axes rotate with frame A.
+                // At nonzero extension, d(axis)/dt contributes a lever
+                // arm from A's mass center to B's joint origin.
+                const Vec3 arm=joint.kind==JointKind::Prismatic
+                    ? sub(world1,center0):ra;
+                row.angular0=cross(arm,row.linear);
                 row.angular1=cross(rb,row.linear);
             } else {
                 const auto k=component-3u;
