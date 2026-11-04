@@ -78,9 +78,9 @@ public:
         max_view_=info.max_storage_buffer_range;
         compute::ComputePipelineDesc pipeline{};
         pipeline.shader=std::move(shader);
-        pipeline.storage_buffer_binding_count=5u;
+        pipeline.storage_buffer_binding_count=6u;
         pipeline.storage_buffer_views.assign(
-            5u,compute::StorageBufferViewKind::RawReadWrite);
+            6u,compute::StorageBufferViewKind::RawReadWrite);
         pipeline.push_constant_bytes=128u;
         pipeline_=context_.create_compute_pipeline(pipeline);
     }
@@ -118,7 +118,9 @@ public:
                CudaDeviceAddressMap::Address shape_cache,
                CudaDeviceAddressMap::Address shape_bounds,
                CudaDeviceAddressMap::Address shape_geometry,
-               std::uint32_t shape_capacity) {
+               std::uint32_t shape_capacity,
+               CudaDeviceAddressMap::Address convex_vertices,
+               std::uint32_t convex_vertex_count) {
         if(integration.size()<bodies.size() ||
            integrated_poses.size()!=integration.size() ||
            (tasks.empty() && integration.size()==bodies.size()))
@@ -383,7 +385,7 @@ public:
             }
             packed_integration_.push_back(record);
         }
-        constexpr std::size_t integration_header_bytes=36u;
+        constexpr std::size_t integration_header_bytes=44u;
         if(integration.size()>
            (std::numeric_limits<std::uint32_t>::max()-integration_header_bytes)/
                sizeof(SourceDyPackedIntegrationNative))
@@ -536,11 +538,11 @@ public:
         }
         if(has_shape_targets && (!shape_cache || !shape_bounds || !shape_geometry))
             throw std::logic_error("Source Sc GPU integration shape buffers are missing");
-        std::array<std::uint32_t,9> integration_header{
+        std::array<std::uint32_t,11> integration_header{
             0u,0u,0u,shape_capacity,narrow(body_ordinals.size()),
             narrow(descriptors.size()),narrow(tasks.size()),
             tiles_.empty()?0u:narrow(std::size_t(params[28])+offsets[14]),
-            narrow(integration.size())};
+            narrow(integration.size()),0u,convex_vertex_count};
         const auto bind_shape=[&](CudaDeviceAddressMap::Address source,
                                   std::uint32_t stride,std::uint32_t slot,
                                   compute::BufferAccess access,
@@ -559,6 +561,12 @@ public:
         dispatch.buffers.push_back(bind_shape(
             shape_geometry,64u,4u,compute::BufferAccess::Read,
             integration_header[2]));
+        dispatch.buffers.push_back(source_native_view(
+            addresses_,convex_vertex_count?convex_vertices:address,
+            convex_vertex_count
+                ? source_allocation_bytes(convex_vertex_count,12u):total,
+            alignment_,5u,compute::BufferAccess::Read,
+            integration_header[9],max_view_));
         std::memcpy(host_.data()+offsets[12],
                     integration_header.data(),sizeof(integration_header));
         const auto previous_spans=stream_.submission_stats().upload_spans;
