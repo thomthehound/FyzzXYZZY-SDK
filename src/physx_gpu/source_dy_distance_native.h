@@ -30,6 +30,25 @@ struct SourceDyPackedContactPrepNative {
 static_assert(sizeof(SourceDyPackedContactPrepNative)==64u &&
               offsetof(SourceDyPackedContactPrepNative,constants)==8u);
 
+// Dy integrateCore reads compact transient inputs. Box-shaped bodies with
+// authorized Sc device poses omit the host pose entirely; authored changes,
+// sphere-only bodies and unbacked bodies retain an explicit 28-byte pose.
+struct SourceDyPackedIntegrationNative {
+    float linear_velocity[3]{},angular_velocity[3]{};
+    float sqrt_inverse_inertia[9]{};
+    std::uint32_t lock_flags=0u;
+    float seconds=0.0f;
+    std::uint32_t active=0u,source_element=0xffffffffu;
+    float mass_local_position[3]{},mass_local_orientation[4]{};
+    std::uint32_t source_shape_count=0u,pose_index=0xffffffffu;
+};
+static_assert(sizeof(SourceDyPackedIntegrationNative)==112u &&
+              offsetof(SourceDyPackedIntegrationNative,pose_index)==108u);
+struct SourceDyHostPoseNative {
+    float position[3]{},orientation[4]{};
+};
+static_assert(sizeof(SourceDyHostPoseNative)==28u);
+
 struct SourceDyLaunchStats {
     std::size_t wide_tasks=0u;
     std::size_t max_partition_groups=0u;
@@ -311,6 +330,73 @@ public:
         const std::size_t inline_body_bytes=
             inline_bodies_.size()*sizeof(native::GpuDyContactPrepBody);
         const std::size_t compact_prep_bytes=static_begin+inline_body_bytes;
+        // Device contact row and friction preparation still borrow the
+        // authored mass pose. Joint-only and free bodies have no such
+        // reader, so they can consume an authorized resident box pose.
+        contact_pose_required_.assign(bodies.size(),0u);
+        for(const auto& desc:descriptors) {
+            if(desc.row_count)continue;
+            for(const auto ordinal:{desc.row0,desc.row1}) {
+                if(ordinal==invalid)continue;
+                if(ordinal>=bodies.size())
+                    throw std::logic_error("Source contact has invalid Dy body ordinal");
+                contact_pose_required_[ordinal]=1u;
+            }
+        }
+        packed_integration_.clear();
+        host_poses_.clear();
+        last_resident_pose_count_=0u;
+        packed_integration_.reserve(integration.size());
+        host_poses_.reserve(integration.size());
+        for(const auto& input:integration) {
+            const auto ordinal=packed_integration_.size();
+            const bool contact_pose=ordinal<bodies.size() &&
+                contact_pose_required_[ordinal]!=0u;
+            SourceDyPackedIntegrationNative record{};
+            std::memcpy(record.linear_velocity,input.linear_velocity,
+                        sizeof(record.linear_velocity));
+            std::memcpy(record.angular_velocity,input.angular_velocity,
+                        sizeof(record.angular_velocity));
+            std::memcpy(record.sqrt_inverse_inertia,input.sqrt_inverse_inertia,
+                        sizeof(record.sqrt_inverse_inertia));
+            record.lock_flags=input.lock_flags;
+            record.seconds=input.seconds;
+            record.active=input.active&1u;
+            record.source_element=input.source_element;
+            std::memcpy(record.mass_local_position,input.mass_local_position,
+                        sizeof(record.mass_local_position));
+            std::memcpy(record.mass_local_orientation,input.mass_local_orientation,
+                        sizeof(record.mass_local_orientation));
+            record.source_shape_count=input.source_shape_count;
+            if(record.active && (input.active&2u) && !contact_pose) {
+                if(!record.source_shape_count ||
+                   record.source_element==invalid)
+                    throw std::logic_error("Source Dy resident pose lacks Sc ElementSim");
+                record.pose_index=invalid;
+                ++last_resident_pose_count_;
+            } else if(record.active) {
+                record.pose_index=narrow(host_poses_.size());
+                SourceDyHostPoseNative pose{};
+                std::memcpy(pose.position,input.position,sizeof(pose.position));
+                std::memcpy(pose.orientation,input.orientation,sizeof(pose.orientation));
+                host_poses_.push_back(pose);
+            }
+            packed_integration_.push_back(record);
+        }
+        constexpr std::size_t integration_header_bytes=36u;
+        if(integration.size()>
+           (std::numeric_limits<std::uint32_t>::max()-integration_header_bytes)/
+               sizeof(SourceDyPackedIntegrationNative))
+            throw std::overflow_error("Source Dy packed body inputs exceed address space");
+        const std::size_t packed_input_bytes=integration_header_bytes+
+            packed_integration_.size()*sizeof(SourceDyPackedIntegrationNative);
+        if(host_poses_.size()>
+           (std::numeric_limits<std::uint32_t>::max()-packed_input_bytes)/
+               sizeof(SourceDyHostPoseNative))
+            throw std::overflow_error("Source Dy authored poses exceed address space");
+        const std::size_t integration_bytes=packed_input_bytes+
+            host_poses_.size()*sizeof(SourceDyHostPoseNative);
+        last_host_pose_upload_bytes_=host_poses_.size()*sizeof(SourceDyHostPoseNative);
         constexpr std::size_t count=15u;
         // The integration prefix describes Sc/SAP views and the launch
         // table. Solver-body ordinals precede the free-body suffix.
@@ -320,7 +406,7 @@ public:
             tasks.size_bytes(),contact_bytes,friction_bytes,
             patches.size_bytes(),manifolds.size_bytes(),contact_order.size_bytes(),
             compact_prep_bytes,
-            integration.size_bytes()+32u,compact_anchor_bytes,
+            integration_bytes,compact_anchor_bytes,
             tiles_.size()*sizeof(WorkTile)};
         const std::array<std::size_t,count> elements{
             bodies.size(),rows.size(),descriptors.size(),partition_ends.size(),
@@ -398,9 +484,13 @@ public:
             std::memcpy(host_.data()+offsets[11]+static_begin,
                         inline_bodies_.data(),inline_bodies_.size()*
                             sizeof(native::GpuDyContactPrepBody));
-        if(!integration.empty())
-            std::memcpy(host_.data()+offsets[12]+32u,
-                        integration.data(),integration.size_bytes());
+        if(!packed_integration_.empty())
+            std::memcpy(host_.data()+offsets[12]+integration_header_bytes,
+                        packed_integration_.data(),
+                        packed_integration_.size()*sizeof(SourceDyPackedIntegrationNative));
+        if(!host_poses_.empty())
+            std::memcpy(host_.data()+offsets[12]+packed_input_bytes,
+                        host_poses_.data(),last_host_pose_upload_bytes_);
         // The source GPU kernel constructs all writable Gu contact rows.
         // One ordered source upload covers every other active input and
         // stops before the contact-row arena, without scattered HtoD spans.
@@ -446,10 +536,11 @@ public:
         }
         if(has_shape_targets && (!shape_cache || !shape_bounds || !shape_geometry))
             throw std::logic_error("Source Sc GPU integration shape buffers are missing");
-        std::array<std::uint32_t,8> integration_header{
+        std::array<std::uint32_t,9> integration_header{
             0u,0u,0u,shape_capacity,narrow(body_ordinals.size()),
             narrow(descriptors.size()),narrow(tasks.size()),
-            tiles_.empty()?0u:narrow(std::size_t(params[28])+offsets[14])};
+            tiles_.empty()?0u:narrow(std::size_t(params[28])+offsets[14]),
+            narrow(integration.size())};
         const auto bind_shape=[&](CudaDeviceAddressMap::Address source,
                                   std::uint32_t stride,std::uint32_t slot,
                                   compute::BufferAccess access,
@@ -487,9 +578,10 @@ public:
         const auto launch=[&](Launch phase,TileRange range,std::uint32_t iteration=0u) {
             const bool integrates=phase==Launch::Fused || phase==Launch::Integrate ||
                                   phase==Launch::FreeBodies;
-            dispatch.buffers[2].access=integrates ? compute::BufferAccess::Write
+            dispatch.buffers[2].access=integrates ? compute::BufferAccess::ReadWrite
                                                  : compute::BufferAccess::Read;
-            dispatch.buffers[3].access=dispatch.buffers[2].access;
+            dispatch.buffers[3].access=integrates ? compute::BufferAccess::Write
+                                                 : compute::BufferAccess::Read;
             params[10]=(iteration<<3u)|static_cast<std::uint32_t>(phase);
             for(std::size_t group=0;group<range.count;) {
                 const auto count=std::min<std::size_t>(max_groups,range.count-group);
@@ -646,6 +738,12 @@ public:
         last_contact_prep_upload_saving_=
             static_cast<std::int64_t>(contact_prep.size_bytes())-
             static_cast<std::int64_t>(prep_bytes+inline_body_bytes);
+    }
+    std::size_t last_resident_pose_count() const noexcept {
+        return last_resident_pose_count_;
+    }
+    std::size_t last_host_pose_upload_bytes() const noexcept {
+        return last_host_pose_upload_bytes_;
     }
     std::size_t last_integrated_body_count() const noexcept {
         return last_integrated_body_count_;
@@ -820,6 +918,9 @@ private:
     std::uint64_t max_view_=0u;
     std::vector<std::uint8_t> host_;
     std::vector<SourceDyPackedContactPrepNative> packed_;
+    std::vector<SourceDyPackedIntegrationNative> packed_integration_;
+    std::vector<SourceDyHostPoseNative> host_poses_;
+    std::vector<std::uint8_t> contact_pose_required_;
     std::vector<native::GpuDyContactPrepBody> inline_bodies_;
     std::vector<native::GpuDyFrictionAnchorInput> compact_anchors_;
     std::vector<std::size_t> patch_anchor_starts_;
@@ -834,6 +935,8 @@ private:
     // Actual packed device upload and ordered readback byte counts.
     std::pair<std::size_t,std::size_t> last_transfer_bytes_{};
     std::size_t last_integrated_body_count_=0u;
+    std::size_t last_resident_pose_count_=0u;
+    std::size_t last_host_pose_upload_bytes_=0u;
     std::size_t last_reused_pcm_contact_rows_=0u;
     std::size_t last_omitted_pcm_upload_bytes_=0u;
     std::size_t last_cpu_gu_geometry_bytes_=0u;

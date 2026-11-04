@@ -199,11 +199,22 @@ public:
             throw std::logic_error("Source GPU Dy shader not installed");
         // Resolve the first attached shape into the ElementSim cache.
         // Body integration also covers shapes without a device target.
-        for(auto& input:integration)
-            if(input.active && input.source_element!=0xffffffffu) {
-                input.source_element=producer_->device_shape_cache_handle(input.source_element);
-                if(input.source_element==0xffffffffu)input.source_shape_count=0;
+        for(auto& input:integration) {
+            if(!input.active || input.source_element==0xffffffffu) {
+                input.active&=1u;
+                continue;
             }
+            // Authorization is consumed by this device submission. Read
+            // it before obtaining the writable ElementSim handle.
+            const bool resident=(input.active&4u)!=0u &&
+                producer_->has_authorized_device_cached_pose(input.source_element);
+            input.active=1u|(resident?2u:0u);
+            input.source_element=producer_->device_shape_cache_handle(input.source_element);
+            if(input.source_element==0xffffffffu) {
+                input.source_shape_count=0u;
+                input.active=1u;
+            }
+        }
         dy_distance_->solve(bodies,rows,descriptors,partitions,ordinals,tasks,
                             contact_forces,cpu_gu,friction,anchors,patches,manifolds,contact_order,
                             contact_prep,integration,integrated_poses,
@@ -213,6 +224,12 @@ public:
                             sap_->pre_broadphase_buffers().bounds.getDevicePtr(),
                             box_geometry_.getDevicePtr(),aabb_->capacity());
         ++dy_distance_dispatch_count_;
+    }
+    std::size_t dy_resident_pose_count() const noexcept {
+        return dy_distance_ ? dy_distance_->last_resident_pose_count() : 0u;
+    }
+    std::size_t dy_host_pose_upload_bytes() const noexcept {
+        return dy_distance_ ? dy_distance_->last_host_pose_upload_bytes() : 0u;
     }
     std::uint64_t dy_distance_dispatch_count() const noexcept {
         return dy_distance_dispatch_count_;
