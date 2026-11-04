@@ -1575,13 +1575,17 @@ void verify_sphere_gpu_solver(
         RigidBodyDynamics dynamic{};
         dynamic.gravity_enabled=false;
         for(auto id:moving)scene.set_dynamics(id,dynamic);
+        // Three closing impacts exercise contact impulses rather than
+        // merely preserving speculative overlaps at zero velocity.
+        scene.set_velocity(moving[0],{0.f,-2.f,0.f});
+        scene.set_velocity(moving[1],{-2.f,0.f,0.f});
+        scene.set_velocity(moving[2],{-2.f,0.f,0.f});
         return moving;
     };
     const auto cpu_ids=add_scene(cpu);
     const auto gpu_ids=add_scene(gpu);
     constexpr float dt=1.f/120.f;
-    bool touched_all=false,saw_device_response=false,saw_device_bounds=false;
-    double largest_cpu_impulse=0.0,largest_gpu_impulse=0.0;
+    bool touched_all=false,saw_device_bounds=false;
     for(std::uint32_t frame=0u;frame<8u;++frame) {
         if(frame==3u) {
             constexpr Quat rotate{0.f,0.0998334166f,0.f,0.9950041653f};
@@ -1605,6 +1609,19 @@ void verify_sphere_gpu_solver(
                     producer->pcm_contact_readback_bytes()==
                         2u*sizeof(physx_gpu::SourcePcmGpuContactStreamNative),
                 "Finite spheres were not generated on device before GPU Dy preparation");
+            require(cpu.contacts().size()==3u,
+                "Source sphere impact fixtures lost a contact manager");
+            for(std::size_t j=0;j<cpu.contacts().size();++j) {
+                const auto& source=cpu.contacts()[j];
+                const auto& device=gpu.contacts()[j];
+                require(source.count==1u && device.count==1u,
+                    "Sphere impact must retain one Gu contact per manager");
+                const double expected=cpu.solved_normal_impulses()[source.contact_offset];
+                const double actual=gpu.solved_normal_impulses()[device.contact_offset];
+                require(expected>0.001 && actual>0.001 &&
+                        std::fabs(expected-actual)<0.05,
+                    "GPU sphere impact did not produce source-equivalent normal impulse");
+            }
             touched_all=true;
         }
         require(producer->dy_distance_dispatch_count()==frame+1u &&
@@ -1641,20 +1658,9 @@ void verify_sphere_gpu_solver(
                     std::fabs(a.velocity.y-b.velocity.y)<0.04f,
                 "Source sphere GPU Dy motion diverged from native CPU");
         }
-        for(const auto impulse:cpu.solved_normal_impulses())
-            largest_cpu_impulse=std::max(largest_cpu_impulse,impulse);
-        for(const auto impulse:gpu.solved_normal_impulses()) {
-            largest_gpu_impulse=std::max(largest_gpu_impulse,impulse);
-            saw_device_response |= impulse>0.f;
-        }
     }
     require(touched_all,
         "GPU sphere scene did not publish all source contacts");
-    if(!saw_device_response)
-        throw std::runtime_error(
-            "GPU sphere PGS normal impulse missing: native=" +
-            std::to_string(largest_cpu_impulse) +
-            ", device=" + std::to_string(largest_gpu_impulse));
     require(saw_device_bounds,
         "GPU sphere integration did not retain a device-authored bounds cache");
 
