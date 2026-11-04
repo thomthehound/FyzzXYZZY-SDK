@@ -1581,6 +1581,7 @@ void verify_sphere_gpu_solver(
     const auto gpu_ids=add_scene(gpu);
     constexpr float dt=1.f/120.f;
     bool touched_all=false,saw_device_response=false,saw_device_bounds=false;
+    float largest_cpu_impulse=0.f,largest_gpu_impulse=0.f;
     for(std::uint32_t frame=0u;frame<8u;++frame) {
         if(frame==3u) {
             constexpr Quat rotate{0.f,0.0998334166f,0.f,0.9950041653f};
@@ -1640,13 +1641,20 @@ void verify_sphere_gpu_solver(
                     std::fabs(a.velocity.y-b.velocity.y)<0.04f,
                 "Source sphere GPU Dy motion diverged from native CPU");
         }
-        for(const auto impulse:gpu.solved_normal_impulses())
-            saw_device_response |= impulse>0.;
+        for(const auto impulse:cpu.solved_normal_impulses())
+            largest_cpu_impulse=std::max(largest_cpu_impulse,impulse);
+        for(const auto impulse:gpu.solved_normal_impulses()) {
+            largest_gpu_impulse=std::max(largest_gpu_impulse,impulse);
+            saw_device_response |= impulse>0.f;
+        }
     }
     require(touched_all,
         "GPU sphere scene did not publish all source contacts");
-    require(saw_device_response,
-        "GPU sphere contacts did not produce a positive PGS normal impulse");
+    if(!saw_device_response)
+        throw std::runtime_error(
+            "GPU sphere PGS normal impulse missing: native=" +
+            std::to_string(largest_cpu_impulse) +
+            ", device=" + std::to_string(largest_gpu_impulse));
     require(saw_device_bounds,
         "GPU sphere integration did not retain a device-authored bounds cache");
 
