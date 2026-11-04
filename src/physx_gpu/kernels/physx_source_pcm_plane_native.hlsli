@@ -211,14 +211,21 @@ void sourcePcmPlanePair(uint index,uint boxElement,uint edge,uint result,
                     if(d>high){high=d;index[2]=j;}
                     if(d<low){low=d;index[3]=j;}
                 }
-                if(index[3]==index[2]) {
+                if(low*high>0.f) {
+                    // The source batch reducer replaces the fourth
+                    // witness when both extrema lie on one side.
+                    float widest=-3.402823466e38f;
                     for(uint j=0u;j<vertexCount;++j) {
                         if(j==index[0] || j==index[1] || j==index[2])
                             continue;
                         const float3 v=asfloat(hullVertices.Load3(
                             p.hullBias+(start+j)*12u));
                         const float3 world=relative+rotateSource(rotation,v);
-                        if(world.y<contactDistance) {index[3]=j;break;}
+                        if(world.y>=contactDistance)continue;
+                        const float d=dot(float3(world.x-firstWorld.x,0.f,
+                                                 world.z-firstWorld.z),
+                                          sideways);
+                        if(d>widest){widest=d;index[3]=j;}
                     }
                 }
                 float3 centers[4];
