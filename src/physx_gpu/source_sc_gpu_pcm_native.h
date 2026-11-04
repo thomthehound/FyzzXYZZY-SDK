@@ -229,8 +229,9 @@ public:
             pairs_.getDevicePtr(),results_.getDevicePtr(),
             candidates_.getDevicePtr(),edges_.getDevicePtr(),
             work_.getDevicePtr(),indirect_address_,
-            dense_contacts_.getDevicePtr(),pair_count,shape_capacity,
-            candidate_capacity,edge_capacity);
+            dense_contacts_.getDevicePtr(),
+            convex_vertices_.getDevicePtr(),convex_vertex_count_,
+            pair_count,shape_capacity,candidate_capacity,edge_capacity);
 
 
         // Fetch the losslessly packed device stream, then reconstruct
