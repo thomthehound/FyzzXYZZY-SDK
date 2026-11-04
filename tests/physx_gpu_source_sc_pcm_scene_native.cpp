@@ -1714,6 +1714,7 @@ void verify_compound_actor_gpu_solver(
     test::spherical_joint_response(gpu,&cpu);
     test::revolute_joint_response(gpu,&cpu);
     test::prismatic_joint_response(gpu,&cpu);
+    test::compound_plane_box_device_pcm(gpu,&cpu);
 }
 
 void verify_gpu_free_integration(
