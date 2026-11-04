@@ -75,7 +75,7 @@ ConstantBuffer<Parameters> p : register(b0,space0);
 #include "physx_source_pcm_convex_face_native.hlsli"
 #include "physx_source_pcm_sc_contact_publish_native.hlsli"
 
-[numthreads(1,1,1)]
+[numthreads(64,1,1)]
 void main(uint3 thread : SV_DispatchThreadID) {
     if(p.surfaceBytes==0u)return;
     const uint i=thread.x;
