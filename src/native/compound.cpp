@@ -122,7 +122,11 @@ void Scene::update_mass_properties(BodyId id,float density) {
     const auto unit_mass=[](const Shape& shape) {
         if(shape.geometry==Geometry::Box)
             return shape.half_extents.x*shape.half_extents.y*shape.half_extents.z*8.0f;
-        return (4.0f/3.0f)*PxPi*shape.radius*shape.radius*shape.radius;
+        if(shape.geometry==Geometry::Convex)
+            return static_cast<float>(shape.convex->mass_properties().volume);
+        if(shape.geometry==Geometry::Sphere)
+            return (4.0f/3.0f)*PxPi*shape.radius*shape.radius*shape.radius;
+        throw std::logic_error("Plane geometry has no finite mass");
     };
     float mass=0.0f;
     PxVec3 center(0.0f);
@@ -131,8 +135,15 @@ void Scene::update_mass_properties(BodyId id,float density) {
         if(!shape.simulation_shape_enabled)continue;
         const float m=unit_mass(shape)*density;
         mass+=m;
-        center+=PxVec3(shape.local_pose.position.x,shape.local_pose.position.y,
-                       shape.local_pose.position.z)*m;
+        const auto q=shape.local_pose.orientation;
+        const PxQuat rotation(q.x,q.y,q.z,q.w);
+        PxVec3 local(shape.local_pose.position.x,shape.local_pose.position.y,
+                     shape.local_pose.position.z);
+        if(shape.geometry==Geometry::Convex) {
+            const auto cm=shape.convex->mass_properties().center;
+            local+=rotation.rotate(PxVec3(cm.x,cm.y,cm.z));
+        }
+        center+=local*m;
     }
     if(!PxIsFinite(mass) || mass<=0.0f || !center.isFinite())
         throw std::invalid_argument("Compound mass outside supported range");
@@ -142,16 +153,34 @@ void Scene::update_mass_properties(BodyId id,float density) {
         const auto& shape=shapes_[i];
         if(!shape.simulation_shape_enabled)continue;
         const float m=unit_mass(shape)*density;
-        PxVec3 diagonal;
-        if(shape.geometry==Geometry::Box) {
-            const auto h=shape.half_extents;
-            diagonal=PxVec3(h.y*h.y+h.z*h.z,h.x*h.x+h.z*h.z,h.x*h.x+h.y*h.y)*(m/3.0f);
-        } else diagonal=PxVec3((2.0f/5.0f)*m*shape.radius*shape.radius);
+        PxMat33 local_tensor(PxZero);
         const auto q=shape.local_pose.orientation;
-        const PxMat33 rotation(PxQuat(q.x,q.y,q.z,q.w));
-        const PxVec3 d=PxVec3(shape.local_pose.position.x,shape.local_pose.position.y,
-                               shape.local_pose.position.z)-center;
-        tensor+=rotation*PxMat33::createDiagonal(diagonal)*rotation.getTranspose();
+        const PxQuat orientation(q.x,q.y,q.z,q.w);
+        PxVec3 local_center(shape.local_pose.position.x,
+                            shape.local_pose.position.y,
+                            shape.local_pose.position.z);
+        if(shape.geometry==Geometry::Convex) {
+            const auto& properties=shape.convex->mass_properties();
+            const auto& c=properties.inertia_columns;
+            local_tensor=PxMat33(
+                PxVec3(c[0].x,c[0].y,c[0].z)*density,
+                PxVec3(c[1].x,c[1].y,c[1].z)*density,
+                PxVec3(c[2].x,c[2].y,c[2].z)*density);
+            const auto shape_center=properties.center;
+            local_center+=orientation.rotate(
+                PxVec3(shape_center.x,shape_center.y,shape_center.z));
+        } else {
+            PxVec3 diagonal;
+            if(shape.geometry==Geometry::Box) {
+                const auto h=shape.half_extents;
+                diagonal=PxVec3(h.y*h.y+h.z*h.z,h.x*h.x+h.z*h.z,
+                                h.x*h.x+h.y*h.y)*(m/3.0f);
+            } else diagonal=PxVec3((2.0f/5.0f)*m*shape.radius*shape.radius);
+            local_tensor=PxMat33::createDiagonal(diagonal);
+        }
+        const PxMat33 rotation(orientation);
+        const PxVec3 d=local_center-center;
+        tensor+=rotation*local_tensor*rotation.getTranspose();
         tensor+=(PxMat33::createDiagonal(PxVec3(d.dot(d)))-PxMat33(d*d.x,d*d.y,d*d.z))*m;
     }
     if(!tensor.column0.isFinite() || !tensor.column1.isFinite() || !tensor.column2.isFinite())
