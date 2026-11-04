@@ -97,6 +97,7 @@ void verify(Context& context,const char* shader) {
     {
         SourceScBoxTransformBoundsNativeStage stage(context,load(shader));
         stage.append(stream,addresses,input,output,cache,shape_geometry,
+                     input,0u,
                      static_cast<std::uint32_t>(shapes.size()),capacity);
         require(stream.commands().size()==1u,
                 "Sc box transform did not enter source GPU stream");
@@ -162,7 +163,7 @@ void verify(Context& context,const char* shader) {
         context.upload(root,input_offset+sizeof(shapes[0]),
                        &shapes[1],sizeof(shapes[1]));
         stage.append(stream,addresses,input+sizeof(shapes[0]),
-                     output,cache,shape_geometry,1u,capacity);
+                     output,cache,shape_geometry,input,0u,1u,capacity);
         stream.wait_at_fetch();
         context.download(root,bounds_offset,bounds.data(),sizeof(bounds));
         context.download(root,cache_offset,transforms.data(),sizeof(transforms));
@@ -176,7 +177,7 @@ void verify(Context& context,const char* shader) {
                 "Sparse device transform update corrupted quiet source shapes");
         bool rejected=false;
         try {
-            stage.append(stream,addresses,input,output,cache,shape_geometry,33u,capacity);
+            stage.append(stream,addresses,input,output,cache,shape_geometry,input,0u,33u,capacity);
         }catch(const std::invalid_argument&) {rejected=true;}
         require(rejected && stream.commands().empty(),
                 "Invalid source transform capacity partially enqueued GPU work");
