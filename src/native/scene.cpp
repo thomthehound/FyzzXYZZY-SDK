@@ -4057,7 +4057,7 @@ void Scene::update_contacts() {
                 gpu_pcm_pairs_.push_back({
                     swapped?pair.b:pair.a,swapped?pair.a:pair.b,edge,
                     !island_edges_[edge].pcm_cache.initialized,
-                    convex?1u:(sphere?1u:16u)});
+                    convex?4u:(sphere?1u:16u)});
             }
         }
         gpu_pcm_results_.resize(gpu_pcm_pairs_.size());
