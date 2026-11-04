@@ -870,15 +870,29 @@ if(FYZZXYZZY_BUILD_D3D12)
       CONTENT "${_pcm_manifest}")
     add_custom_target(fyzzxyzzy_native_gpu_pcm_shaders_d3d12
       DEPENDS ${_pcm_binaries})
+    set(_sc_pcm_scene_args
+      "${CMAKE_CURRENT_BINARY_DIR}/kernels/fyzzxyzzy_native_sap_dxil.manifest"
+      "${CMAKE_CURRENT_BINARY_DIR}/kernels/fyzzxyzzy_native_pcm_dxil.manifest"
+      "${FYZZXYZZY_SOURCE_DY_DISTANCE_DXIL}")
     fyzzxyzzy_add_gpu_test(fyzzxyzzy_source_sc_gpu_pcm_scene_d3d12
       SOURCES tests/physx_gpu_source_sc_pcm_scene_native.cpp
       INCLUDES "${CMAKE_CURRENT_SOURCE_DIR}/src" "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_port"
       DEFINITIONS FYZZXYZZY_TEST_D3D12=1
       LIBRARIES FyzzXYZZY::NativeGpuWorldD3D12
       DEPENDS fyzzxyzzy_native_gpu_sap_shaders_d3d12 fyzzxyzzy_native_gpu_pcm_shaders_d3d12 fyzzxyzzy_source_dy_distance_shader_d3d12
-      ARGS "${CMAKE_CURRENT_BINARY_DIR}/kernels/fyzzxyzzy_native_sap_dxil.manifest" "${CMAKE_CURRENT_BINARY_DIR}/kernels/fyzzxyzzy_native_pcm_dxil.manifest" "${FYZZXYZZY_SOURCE_DY_DISTANCE_DXIL}")
-    set_tests_properties(fyzzxyzzy_source_sc_gpu_pcm_scene_d3d12
-      PROPERTIES TIMEOUT 180)
+      ARGS ${_sc_pcm_scene_args} scene)
+    # Independent scene cases share one executable. Give each WARP
+    # workload its own timeout and keep its timing in the CTest log.
+    set(_sc_pcm_scene_tests fyzzxyzzy_source_sc_gpu_pcm_scene_d3d12)
+    foreach(_case IN ITEMS compound_shapes compound_solver sphere_solver
+        sparse_contacts coupled_stack coupled_solver legacy_gu_solver
+        mixed_solver distance_solver free_integration wide_islands)
+      set(_test "fyzzxyzzy_source_sc_gpu_pcm_scene_${_case}_d3d12")
+      add_test(NAME ${_test}
+        COMMAND fyzzxyzzy_source_sc_gpu_pcm_scene_d3d12 ${_sc_pcm_scene_args} ${_case})
+      list(APPEND _sc_pcm_scene_tests ${_test})
+    endforeach()
+    set_tests_properties(${_sc_pcm_scene_tests} PROPERTIES TIMEOUT 180)
     add_test(NAME fyzzxyzzy_owned_sap_gpu_aabb_scene_lifecycle_d3d12
       COMMAND fyzzxyzzy_owned_sap_gpu_aabb_scene_lifecycle_d3d12
         ${FYZZXYZZY_NATIVE_GPU_SAP_DXIL_BINARIES}

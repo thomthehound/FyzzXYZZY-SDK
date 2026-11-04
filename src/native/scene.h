@@ -126,8 +126,8 @@ struct GpuDyDistanceBody {
     float inverse_mass=0.0f;
 };
 static_assert(sizeof(GpuDyDistanceBody)==52u);
-// DyBodyCoreIntegrator::integrateCore inputs for the actual source PGS
-// solver-body ordinals. The resulting poses are written by that GPU task.
+// DyBodyCoreIntegrator::integrateCore inputs. Free bodies follow the
+// solver-body ordinals and integrate without solver deltas.
 struct GpuDyBodyIntegrationInput {
     float position[3]{},orientation[4]{};
     float linear_velocity[3]{},angular_velocity[3]{};
@@ -1802,6 +1802,7 @@ private:
         std::size_t constraint_end=0, solver_body_end=0;
         std::uint8_t position_iterations=0, velocity_iterations=0;
         std::size_t distance_end=0;
+        std::size_t gpu_free_end=0;
     };
     // CPU lowering of ScPipeline's two producers of mPostSolver:
     // PxsSolverEndTask for each Dy active-island task chain and
@@ -1886,6 +1887,7 @@ private:
     std::vector<GpuDyDistanceBody> gpu_dy_bodies_;
     std::vector<GpuDyBodyIntegrationInput> gpu_dy_integration_inputs_;
     std::vector<GpuDyIntegratedPose> gpu_dy_integrated_poses_;
+    std::vector<BodyId> gpu_dy_free_ids_;
     bool gpu_dy_pose_ready_=false;
     std::vector<GpuDyDistanceRow> gpu_dy_rows_;
     std::vector<GpuDyDistanceDescriptor> gpu_dy_descriptors_;

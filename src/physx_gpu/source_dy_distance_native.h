@@ -100,10 +100,9 @@ public:
                CudaDeviceAddressMap::Address shape_bounds,
                CudaDeviceAddressMap::Address shape_geometry,
                std::uint32_t shape_capacity) {
-        if(tasks.empty() || descriptors.empty())
-            throw std::invalid_argument("Source Dy GPU requires active source tasks");
-        if(integration.size()!=bodies.size() ||
-           integrated_poses.size()!=bodies.size())
+        if(integration.size()<bodies.size() ||
+           integrated_poses.size()!=integration.size() ||
+           (tasks.empty() && integration.size()==bodies.size()))
             throw std::invalid_argument(
                 "Source Dy GPU integrateCore inputs do not match solver bodies");
         last_integrated_body_count_=0u;
@@ -112,6 +111,7 @@ public:
                 throw std::overflow_error("Source Dy GPU exceeds 32-bit view ABI");
             return static_cast<std::uint32_t>(value);
         };
+        const auto free_bodies=integration.size()-bodies.size();
         build_launch_plan(tasks,partition_ends,narrow(descriptors.size()),
                           narrow(body_ordinals.size()));
         if(contact_forces.size()>
@@ -313,7 +313,7 @@ public:
         const std::size_t compact_prep_bytes=static_begin+inline_body_bytes;
         constexpr std::size_t count=15u;
         // The integration prefix describes Sc/SAP views and the launch
-        // table. Exactly one source body record follows per solver row.
+        // table. Solver-body ordinals precede the free-body suffix.
         const std::array<std::size_t,count> bytes{
             bodies.size_bytes(),rows.size_bytes(),descriptors.size_bytes(),
             partition_ends.size_bytes(),body_ordinals.size_bytes(),
@@ -434,18 +434,18 @@ public:
                 ? source_allocation_bytes(pcm_pair_count,84u):total,
             alignment_,1u,compute::BufferAccess::Read,
             params[31],max_view_));
-        if(shape_capacity && (!shape_cache || !shape_bounds || !shape_geometry))
-            throw std::logic_error("Source Sc GPU integration shape buffers are missing");
         const auto empty_shape=std::numeric_limits<std::uint32_t>::max();
-        for(const auto& input:integration)
-            if(input.active && input.source_element!=empty_shape &&
-               input.source_element>=shape_capacity)
-                throw std::out_of_range(
-                    "Source Dy integrated ElementSim handle exceeds AABB capacity");
-        for(const auto& input:integration)
-            if(input.active && (input.source_shape_count>shape_capacity ||
-               (input.source_element==empty_shape && input.source_shape_count)))
+        bool has_shape_targets=false;
+        for(const auto& input:integration) {
+            if(!input.active || !input.source_shape_count)continue;
+            if(input.source_element==empty_shape ||
+               input.source_element>=shape_capacity ||
+               input.source_shape_count>shape_capacity)
                 throw std::out_of_range("Source Dy attached shape span exceeds AABB capacity");
+            has_shape_targets=true;
+        }
+        if(has_shape_targets && (!shape_cache || !shape_bounds || !shape_geometry))
+            throw std::logic_error("Source Sc GPU integration shape buffers are missing");
         std::array<std::uint32_t,8> integration_header{
             0u,0u,0u,shape_capacity,narrow(body_ordinals.size()),
             narrow(descriptors.size()),narrow(tasks.size()),
@@ -454,10 +454,9 @@ public:
                                   std::uint32_t stride,std::uint32_t slot,
                                   compute::BufferAccess access,
                                   std::uint32_t& bias) {
-            const bool empty=shape_capacity==0u;
             return source_native_view(
-                addresses_,empty?address:source,
-                empty?total:source_allocation_bytes(shape_capacity,stride),
+                addresses_,has_shape_targets?source:address,
+                has_shape_targets?source_allocation_bytes(shape_capacity,stride):total,
                 alignment_,slot,access,bias,max_view_);
         };
         dispatch.buffers.push_back(bind_shape(
@@ -486,7 +485,8 @@ public:
         dispatch.push_constants.resize(sizeof(params));
         const auto max_groups=context_.device_info().max_workgroup_count[0];
         const auto launch=[&](Launch phase,TileRange range,std::uint32_t iteration=0u) {
-            const bool integrates=phase==Launch::Fused || phase==Launch::Integrate;
+            const bool integrates=phase==Launch::Fused || phase==Launch::Integrate ||
+                                  phase==Launch::FreeBodies;
             dispatch.buffers[2].access=integrates ? compute::BufferAccess::Write
                                                  : compute::BufferAccess::Read;
             dispatch.buffers[3].access=dispatch.buffers[2].access;
@@ -518,6 +518,10 @@ public:
             launch(Launch::Integrate,body_tiles_);
             launch(Launch::PublishErrors,{0u,(tasks.size()+127u)/128u});
         }
+        // The integration extent fits in launchControl's upper bits
+        // because the packed arena is limited to 32-bit byte offsets.
+        launch(Launch::FreeBodies,{0u,(free_bodies+127u)/128u},
+               narrow(integration.size()));
         const auto mapped=addresses_.resolve(address+history_bytes,output_bytes);
         const std::array<compute::DownloadSpan,1> downloads{
             {mapped.buffer,mapped.offset,host_.data(),output_bytes}};
@@ -535,21 +539,21 @@ public:
         for(const auto& task:tasks)
             if(task.error!=0u)
                 throw std::overflow_error("Source Dy GPU solver rejected a row");
-        for(const auto& task:tasks)
-            for(std::size_t i=task.body_begin;i<task.body_end;++i) {
-                const auto index=body_ordinals[i];
-                if(index>=integration.size())
-                    throw std::logic_error(
-                        "Source Dy GPU integration body index invalid");
-                if(!integration[index].active)continue;
-                auto& pose=integrated_poses[index];
-                std::memcpy(&pose,host_.data()+result_offsets[6]+
-                    std::size_t(index)*sizeof(pose),sizeof(pose));
-                if(pose.valid!=1u)
-                    throw std::logic_error(
-                        "Source Dy GPU integrateCore pose not published");
-                ++last_integrated_body_count_;
-            }
+        const auto fetch_pose=[&](std::size_t index) {
+            auto& pose=integrated_poses[index];
+            std::memcpy(&pose,host_.data()+result_offsets[6]+
+                index*sizeof(pose),sizeof(pose));
+            if(pose.valid!=1u)
+                throw std::overflow_error("Source Dy GPU integrateCore rejected a body");
+            ++last_integrated_body_count_;
+        };
+        for(const auto index:body_ordinals) {
+            if(index>=bodies.size())
+                throw std::logic_error("Source Dy GPU integration body index invalid");
+            if(integration[index].active)fetch_pose(index);
+        }
+        for(std::size_t index=bodies.size();index<integration.size();++index)
+            fetch_pose(index);
         // The source task graph identifies every GPU-written slot. Rows
         // excluded from its descriptor/ordinal ranges retain their original
         // CPU values rather than requiring device-side output seeding.
@@ -670,7 +674,7 @@ public:
     }
 private:
     enum class Launch : std::uint32_t {
-        Fused, Normals, Friction, Partition, Motion, Integrate, PublishErrors
+        Fused, Normals, Friction, Partition, Motion, Integrate, PublishErrors, FreeBodies
     };
     struct WorkTile {
         std::uint32_t task,begin,end,reserved=0u;
@@ -695,7 +699,7 @@ private:
         position_ends_.fill(false);
         wide_iterations_=0u;
         last_schedule_={};
-        last_schedule_.max_partition_groups=1u;
+        last_schedule_.max_partition_groups=tasks.empty()?0u:1u;
         fused_tiles_={0u,tasks.size()};
         prep_tiles_={};
         body_tiles_={};
