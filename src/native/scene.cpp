@@ -3781,7 +3781,7 @@ void Scene::update_contacts() {
                 b.geometry==Geometry::Sphere;
             // The infinite plane has no GPU broadphase volume. Its
             // paired box already has a resident Sc ElementSim transform.
-            if(plane && (!pcm_plane_box_enabled_ || sphere))continue;
+            if(plane && !pcm_plane_box_enabled_)continue;
             const EdgeIndex edge=active_edge_handles_[i];
             if(dormant_pcm(pair,edge))continue;
             if(plane) {
@@ -3794,7 +3794,8 @@ void Scene::update_contacts() {
                     a.geometry==Geometry::Plane?pair.a:pair.b,
                     a.geometry==Geometry::Plane?pair.b:pair.a,
                     edge,!island_edges_[edge].pcm_cache.initialized,
-                    16u,true,floor.position.y,a.contact_offset+b.contact_offset});
+                    sphere?1u:16u,true,floor.position.y,
+                    a.contact_offset+b.contact_offset});
             }else {
                 const bool swapped=island_edges_[edge].gu_order_reversed;
                 gpu_pcm_pairs_.push_back({
@@ -3853,6 +3854,8 @@ void Scene::update_contacts() {
                               b.geometry==Geometry::Sphere;
         const bool pcm_plane=pcm_plane_box_enabled_ && plane_pair && !pcm_sphere;
         const bool pcm_box=pcm_box_box_enabled_ && !plane_pair && !pcm_sphere;
+        const bool gpu_pcm_plane=source_gpu_pcm && plane_pair &&
+            pcm_plane_box_enabled_;
         // Gu's PxcCacheLocalContacts pose and collision-axis record
         // belongs only to the non-PCM path. PCM owns persistent
         // witnesses through the same Sc EdgeIndex; do not reconstruct
@@ -3890,7 +3893,8 @@ void Scene::update_contacts() {
                 box_contact_scratch_.begin()+manifold.count);
         }
         if(pcm_box || (source_gpu_pcm &&
-                       (pcm_plane || (pcm_sphere && !plane_pair)))) {
+                       (pcm_plane ||
+                        (pcm_sphere && (!plane_pair || pcm_plane_box_enabled_))))) {
             if(source_gpu_pcm && dormant_pcm(pair,edge)) {
                 // An already-touching manager retains its original Gu
                 // witnesses. A previously resolved non-touching pair
@@ -4011,7 +4015,8 @@ void Scene::update_contacts() {
                 manifold.count=old->count;
             }
         }
-        if(pcm_sphere && (plane_pair || !source_gpu_pcm)) {
+        if(pcm_sphere && !source_gpu_pcm && !plane_pair ||
+           (pcm_sphere && plane_pair && !gpu_pcm_plane)) {
             const bool use_pcm=plane_pair
                 ? pcm_plane_box_enabled_:pcm_box_box_enabled_;
             std::array<ContactPoint,1> output{};
@@ -4165,7 +4170,7 @@ void Scene::update_contacts() {
         // only its published contact stream receives the flip.
         // The device PCM stream is already in Sc/Dy normal orientation;
         // CPU Gu still requires its original plane-first reversal.
-        if(plane_pair && !(source_gpu_pcm && pcm_plane)) {
+        if(plane_pair && !gpu_pcm_plane) {
             for(std::size_t k=0;k<manifold.count;++k) {
                 Vec3& n=next_contact_points_[manifold.contact_offset+k].normal;
                 n={-n.x,-n.y,-n.z};
