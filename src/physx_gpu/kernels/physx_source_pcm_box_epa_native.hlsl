@@ -165,17 +165,17 @@ void main(uint3 thread : SV_DispatchThreadID) {
     if(admitted) {
         uint selectedIndices=0u;
         for(uint j=0u;j<contactCount;++j) {
-            const GjkWitness point=manifold[j];
+            const GjkWitness witnessPoint=manifold[j];
             uint destination=p.candidateBias+(first+j)*40u;
-            candidates.Store3(destination,asuint(point.localA));
-            candidates.Store3(destination+12u,asuint(point.localB));
-            candidates.Store3(destination+24u,asuint(point.normalB));
-            candidates.Store(destination+36u,asuint(point.separation));
+            candidates.Store3(destination,asuint(witnessPoint.localA));
+            candidates.Store3(destination+12u,asuint(witnessPoint.localB));
+            candidates.Store3(destination+24u,asuint(witnessPoint.normalB));
+            candidates.Store(destination+36u,asuint(witnessPoint.separation));
             uint persistent=cache+80u+j*40u;
-            edgeCaches.Store3(persistent,asuint(point.localA));
-            edgeCaches.Store3(persistent+12u,asuint(point.localB));
-            edgeCaches.Store3(persistent+24u,asuint(point.normalB));
-            edgeCaches.Store(persistent+36u,asuint(point.separation));
+            edgeCaches.Store3(persistent,asuint(witnessPoint.localA));
+            edgeCaches.Store3(persistent+12u,asuint(witnessPoint.localB));
+            edgeCaches.Store3(persistent+24u,asuint(witnessPoint.normalB));
+            edgeCaches.Store(persistent+36u,asuint(witnessPoint.separation));
             selectedIndices|=j<<(j*8u);
         }
         edgeCaches.Store(cache+12u,contactCount);
