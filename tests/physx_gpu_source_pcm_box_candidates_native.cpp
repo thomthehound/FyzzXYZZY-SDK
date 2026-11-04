@@ -232,9 +232,11 @@ void verify(Context& context,const char* transform_shader,
     {
         SourceSapDmaNative stream(context,addresses);
         producer.append(stream,addresses,inputs,bounds,transforms,geometry,
+                        inputs,0u,
                         static_cast<std::uint32_t>(boxes.size()),capacity);
         pcm.append(stream,addresses,transforms,geometry,pair_data,
                    result_data,candidate_data,edge_data,args_data,output_data,
+                   transforms,0u,
                    static_cast<std::uint32_t>(pairs.size()),capacity,
                    static_cast<std::uint32_t>(candidates.size()),
                    edge_capacity);
@@ -494,6 +496,7 @@ void verify(Context& context,const char* transform_shader,
         SourceSapDmaNative stream(context,addresses);
         pcm.append(stream,addresses,transforms,geometry,pair_data,
                    result_data,candidate_data,edge_data,args_data,output_data,
+                   transforms,0u,
                    static_cast<std::uint32_t>(pairs.size()),capacity,
                    static_cast<std::uint32_t>(candidates.size()),edge_capacity);
         stream.wait_at_fetch();
@@ -507,6 +510,7 @@ void verify(Context& context,const char* transform_shader,
         SourceSapDmaNative stream(context,addresses);
         pcm.append(stream,addresses,transforms,geometry,pair_data,
                    result_data,candidate_data,edge_data,args_data,output_data,
+                   transforms,0u,
                    static_cast<std::uint32_t>(pairs.size()),capacity,
                    static_cast<std::uint32_t>(candidates.size()),edge_capacity);
         stream.wait_at_fetch();
@@ -525,6 +529,7 @@ void verify(Context& context,const char* transform_shader,
         SourceSapDmaNative stream(context,addresses);
         pcm.append(stream,addresses,transforms,geometry,pair_data,
                    result_data,candidate_data,edge_data,args_data,output_data,
+                   transforms,0u,
                    static_cast<std::uint32_t>(pairs.size()),capacity,
                    static_cast<std::uint32_t>(candidates.size()),edge_capacity);
         stream.wait_at_fetch();
@@ -559,6 +564,7 @@ void verify(Context& context,const char* transform_shader,
         SourceSapDmaNative stream(context,addresses);
         pcm.append(stream,addresses,transforms,geometry,pair_data,
                    result_data,candidate_data,edge_data,args_data,output_data,
+                   transforms,0u,
                    static_cast<std::uint32_t>(pairs.size()),capacity,
                    static_cast<std::uint32_t>(candidates.size()),edge_capacity);
         stream.wait_at_fetch();
@@ -597,9 +603,11 @@ void verify(Context& context,const char* transform_shader,
     {
         SourceSapDmaNative stream(context,addresses);
         producer.append(stream,addresses,inputs,bounds,transforms,geometry,
+                        inputs,0u,
                         static_cast<std::uint32_t>(boxes.size()),capacity);
         pcm.append(stream,addresses,transforms,geometry,pair_data,
                    result_data,candidate_data,edge_data,args_data,output_data,
+                   transforms,0u,
                    static_cast<std::uint32_t>(pairs.size()),capacity,
                    static_cast<std::uint32_t>(candidates.size()),edge_capacity);
         stream.wait_at_fetch();
@@ -626,9 +634,11 @@ void verify(Context& context,const char* transform_shader,
     {
         SourceSapDmaNative stream(context,addresses);
         producer.append(stream,addresses,inputs,bounds,transforms,geometry,
+                        inputs,0u,
                         static_cast<std::uint32_t>(boxes.size()),capacity);
         pcm.append(stream,addresses,transforms,geometry,pair_data,
                    result_data,candidate_data,edge_data,args_data,output_data,
+                   transforms,0u,
                    static_cast<std::uint32_t>(pairs.size()),capacity,
                    static_cast<std::uint32_t>(candidates.size()),edge_capacity);
         stream.wait_at_fetch();
@@ -727,6 +737,7 @@ void verify(Context& context,const char* transform_shader,
         SourceSapDmaNative stream(context,addresses);
         pcm.append(stream,addresses,transforms,geometry,pair_data,
                    result_data,candidate_data,edge_data,args_data,output_data,
+                   transforms,0u,
                    static_cast<std::uint32_t>(pairs.size()),capacity,
                    static_cast<std::uint32_t>(candidates.size()),edge_capacity);
         stream.wait_at_fetch();
@@ -828,6 +839,7 @@ void verify(Context& context,const char* transform_shader,
         SourceSapDmaNative stream(context,addresses);
         pcm.append(stream,addresses,transforms,geometry,pair_data,
                    result_data,candidate_data,edge_data,args_data,output_data,
+                   transforms,0u,
                    static_cast<std::uint32_t>(pairs.size()),capacity,
                    static_cast<std::uint32_t>(candidates.size()),edge_capacity);
         stream.wait_at_fetch();
