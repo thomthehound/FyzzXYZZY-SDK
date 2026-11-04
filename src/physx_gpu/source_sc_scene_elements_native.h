@@ -196,7 +196,7 @@ public:
             elements_.releaseID(handle);
         if(element.aggregate_id!=PX_INVALID_U32)
             unlink_attached_actor(
-                aggregate_root(element.aggregate_id),element);
+                aggregate_root(element.aggregate_id),actor,element);
         unlink_actor_shape(actor);
         release_rigid_id(element.actor);
         element.live=false;
@@ -398,10 +398,10 @@ private:
     // NpAggregate/Sc actor attachments are indexed independently of
     // PxgAggregate's enabled-bounds array. Swap-last keeps actor removal
     // and aggregate release linear in the number of attached actors.
-    void unlink_attached_actor(AggregateRoot& root,Element& element) {
+    void unlink_attached_actor(AggregateRoot& root,ShapeId shape,Element& element) {
         const auto index=element.aggregate_attachment_index;
         if(index>=root.attached_actors.size() ||
-           root.attached_actors[index]!=element.actor)
+           root.attached_actors[index]!=shape)
             throw std::logic_error(
                 "Original Sc aggregate actor attachment index is invalid");
         const BodyId tail=root.attached_actors.back();
@@ -435,7 +435,7 @@ private:
             aabb_.remove_aggregate_member(old_handle);
         elements_.releaseID(old_handle);
         handles_[actor]=new_handle;
-        unlink_attached_actor(root,element);
+        unlink_attached_actor(root,actor,element);
         element.aggregate_id=PX_INVALID_U32;
     }
     void admit_actor(
