@@ -126,6 +126,12 @@ ShapeId World::attach_sphere_shape(BodyId body,float radius,Transform local) {
         throw std::invalid_argument("Sphere radius must be finite and positive");
     return impl_->attach_sphere_shape(body,radius,validated_transform(local));
 }
+ShapeId World::attach_convex_shape(
+    BodyId body,std::shared_ptr<const ConvexMesh> mesh,Transform local) {
+    if(!mesh)throw std::invalid_argument("Cooked convex mesh is null");
+    return impl_->attach_convex_shape(body,std::move(mesh),
+                                     validated_transform(local));
+}
 void World::detach_shape(ShapeId shape) {impl_->detach_shape(shape);}
 void World::set_shape_local_pose(ShapeId shape,Transform pose) {
     impl_->set_shape_local_pose(shape,validated_transform(pose));
