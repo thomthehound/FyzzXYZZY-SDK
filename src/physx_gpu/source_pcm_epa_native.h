@@ -120,7 +120,7 @@ public:
         if(face_geometry_) {
             // Every admitted convex contact is eligible, including GJK
             // witnesses that never enter the sparse EPA work queue.
-            dispatch.groups={pair_count,1u,1u};
+            dispatch.groups={(pair_count+63u)/64u,1u,1u};
         }else {
             const auto arguments=addresses.resolve(dispatch_args,12u);
             if(arguments.offset%4u)
