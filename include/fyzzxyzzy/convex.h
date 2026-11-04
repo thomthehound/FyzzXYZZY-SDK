@@ -14,6 +14,15 @@ namespace fyzz {
 
 using ConvexTriangle = std::array<std::uint32_t,3>;
 
+// Outward planar polygon, ordered around its boundary. Triangulated
+// coplanar faces share one polygon and therefore one contact feature.
+struct ConvexFace {
+    Vec3 normal{};
+    float distance=0.f;
+    std::uint32_t first_index=0;
+    std::uint32_t index_count=0;
+};
+
 // Density-one properties in the mesh's authoring frame. Inertia columns
 // are about the actual center of mass, not the authoring origin.
 struct ConvexMassProperties {
@@ -26,6 +35,10 @@ class ConvexMesh final {
 public:
     std::span<const Vec3> vertices() const noexcept { return vertices_; }
     std::span<const ConvexTriangle> triangles() const noexcept { return triangles_; }
+    std::span<const ConvexFace> faces() const noexcept { return faces_; }
+    std::span<const std::uint32_t> face_indices() const noexcept {
+        return face_indices_;
+    }
     const ConvexMassProperties& mass_properties() const noexcept { return mass_; }
     Vec3 bounds_min() const noexcept { return bounds_min_; }
     Vec3 bounds_max() const noexcept { return bounds_max_; }
@@ -34,6 +47,8 @@ private:
         std::span<const Vec3>,std::span<const ConvexTriangle>);
     std::vector<Vec3> vertices_;
     std::vector<ConvexTriangle> triangles_;
+    std::vector<ConvexFace> faces_;
+    std::vector<std::uint32_t> face_indices_;
     ConvexMassProperties mass_{};
     Vec3 bounds_min_{},bounds_max_{};
 };
