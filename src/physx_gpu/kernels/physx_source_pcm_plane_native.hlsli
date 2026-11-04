@@ -205,5 +205,8 @@ void sourcePcmPlaneBox(uint index,uint boxElement,uint edge,uint result,
     streamContacts.Store2(dst,uint2(edge,
         count | (count<<6u) | ((regenerate?1u:0u)<<9u) |
         (emitted<<10u)));
-    streamContacts.Store3(dst+8u,asuint(float3(0.f,-1.f,0.f)));
+    // Device Dy consumes the same already-oriented Sc normal as the
+    // completed host manifold. The source plane-first Gu reversal is
+    // performed here, before any GPU contact-row preparation.
+    streamContacts.Store3(dst+8u,asuint(float3(0.f,1.f,0.f)));
 }
