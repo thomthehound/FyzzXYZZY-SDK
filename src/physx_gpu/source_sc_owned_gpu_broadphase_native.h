@@ -30,6 +30,7 @@
 #include "foundation/PxFoundation.h"
 #include "foundation/PxPhysicsVersion.h"
 
+#include <algorithm>
 #include <array>
 #include <bit>
 #include <cstdint>
