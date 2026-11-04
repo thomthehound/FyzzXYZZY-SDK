@@ -4042,10 +4042,10 @@ void Scene::update_contacts() {
         const Shape& second=plane_pair
             ? (a.geometry==Geometry::Plane?b:a)
             : (reversed?a:b);
-        const bool pcm_sphere=a.geometry==Geometry::Sphere ||
-                              b.geometry==Geometry::Sphere;
         const bool convex_pair=a.geometry==Geometry::Convex ||
                                b.geometry==Geometry::Convex;
+        const bool pcm_sphere=!convex_pair &&
+            (a.geometry==Geometry::Sphere || b.geometry==Geometry::Sphere);
         if(convex_pair &&
            (plane_pair?!pcm_plane_box_enabled_:!pcm_box_box_enabled_))
             throw std::logic_error(
