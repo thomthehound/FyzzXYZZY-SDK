@@ -40,11 +40,6 @@ RWByteAddressBuffer streamContacts : register(u7,space0);
 [[vk::binding(8,0)]]
 #endif
 RWByteAddressBuffer hullVertices : register(u8,space0);
-#ifdef __spirv__
-[[vk::binding(9,0)]]
-#endif
-RWByteAddressBuffer hullSurfaces : register(u9,space0);
-
 struct Parameters {
     uint pairCount;
     uint transformBias;
@@ -60,10 +55,6 @@ struct Parameters {
     uint outputBias;
     uint hullBias;
     uint hullCount;
-    uint surfaceBias;
-    uint surfaceFacesBase;
-    uint surfaceIndicesBase;
-    uint surfaceBytes;
 };
 #ifdef __spirv__
 [[vk::push_constant]] Parameters p;
