@@ -538,15 +538,6 @@ if(FYZZXYZZY_BUILD_D3D12)
       DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_dy_contact_pgs_native.hlsli")
     add_custom_target(fyzzxyzzy_source_dy_convex_shader_d3d12
       DEPENDS "${FYZZXYZZY_SOURCE_DY_CONVEX_DXIL}")
-    # Exercise the same sparse EPA continuation without GPU-based
-    # validation to distinguish WARP execution from instrumentation cost.
-    add_test(NAME fyzzxyzzy_source_pcm_box_candidates_warp
-      COMMAND fyzzxyzzy_source_pcm_box_candidates_d3d12
-      "${FYZZXYZZY_SC_BOX_BOUNDS_DXIL}" "${FYZZXYZZY_SOURCE_PCM_BOX_DXIL}"
-      "${FYZZXYZZY_SOURCE_PCM_EPA_WORK_DXIL_COMPACT}"
-      "${FYZZXYZZY_SOURCE_PCM_EPA_DXIL}")
-    set_tests_properties(fyzzxyzzy_source_pcm_box_candidates_warp PROPERTIES
-      ENVIRONMENT "FYZZXYZZY_D3D12_DEBUG=0" TIMEOUT 120)
     fyzzxyzzy_add_gpu_test(fyzzxyzzy_source_pcm_box_candidates_d3d12
       SOURCES tests/physx_gpu_source_pcm_box_candidates_native.cpp src/native/GuPCMContactBoxBox.cpp src/native/GuPCMGjkEpa.cpp
       DEFINITIONS FYZZXYZZY_TEST_D3D12=1
