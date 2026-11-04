@@ -98,9 +98,9 @@ public:
         last_contact_download_bytes_=0u;
         last_edge_history_copy_bytes_=0u;
         if(requests.empty())return;
-        if(!shape_capacity || requests.size()>
-              std::numeric_limits<std::uint32_t>::max()/16u)
-            throw std::out_of_range("Source GPU PCM pair or candidate capacity overflow");
+        if(!shape_capacity ||
+           requests.size()>std::numeric_limits<std::uint32_t>::max())
+            throw std::out_of_range("Source GPU PCM pair capacity overflow");
         const auto pair_count=static_cast<std::uint32_t>(requests.size());
         std::uint32_t candidate_count=0u;
         std::uint32_t largest_edge=0u;
@@ -123,6 +123,10 @@ public:
                request.candidate_capacity!=16u)
                 throw std::invalid_argument(
                     "GPU PCM candidate count must match its geometry");
+            if(request.candidate_capacity>
+               std::numeric_limits<std::uint32_t>::max()-candidate_count)
+                throw std::out_of_range(
+                    "Source GPU PCM candidate capacity overflow");
             const SourcePcmBoxPairNative next{
                 first,second,request.edge,candidate_count,
                 request.candidate_capacity |
