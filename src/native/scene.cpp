@@ -2291,12 +2291,20 @@ void Scene::update_gpu_pairs(bool force_update) {
                 : actor.half_extents;
             const Quat basis=actor.geometry==Geometry::Sphere
                 ? Quat{}:actor.orientation;
+            float convex_margin_extent=0.f;
+            if(actor.geometry==Geometry::Convex) {
+                const Vec3 lower=actor.convex->bounds_min();
+                const Vec3 upper=actor.convex->bounds_max();
+                convex_margin_extent=0.5f*std::min({
+                    upper.x-lower.x,upper.y-lower.y,upper.z-lower.z});
+            }
             gpu_broadphase_boxes_.push_back({
                 id,actor.position,extents,basis,
                 actor.contact_offset,motion,actor.local_pose,actor.next_simulation_shape,
                 actor.geometry==Geometry::Sphere?1u:
                 (actor.geometry==Geometry::Convex?2u:0u),
-                actor.convex_vertex_offset,actor.convex_vertex_count});
+                actor.convex_vertex_offset,actor.convex_vertex_count,
+                convex_margin_extent});
         }
         gpu_broadphase_snapshot_current_=true;
         ++gpu_broadphase_snapshot_rebuilds_;
@@ -3634,8 +3642,15 @@ std::uint8_t Scene::generate_pcm_convex_pair(
     const auto margin=[](const Shape& shape) {
         const float extent=shape.geometry==Geometry::Sphere
             ? shape.radius
-            :std::min({shape.half_extents.x,
-                       shape.half_extents.y,shape.half_extents.z});
+            : shape.geometry==Geometry::Convex
+                ? [&] {
+                    const Vec3 lower=shape.convex->bounds_min();
+                    const Vec3 upper=shape.convex->bounds_max();
+                    return 0.5f*std::min({upper.x-lower.x,
+                                          upper.y-lower.y,upper.z-lower.z});
+                  }()
+                :std::min({shape.half_extents.x,
+                            shape.half_extents.y,shape.half_extents.z});
         return std::min(0.15f*extent,0.15f);
     };
     const float min_margin=std::min(margin(first),margin(second));
@@ -3678,8 +3693,15 @@ std::uint8_t Scene::generate_pcm_convex_pair(
                 descriptor.sphere_radius=shape.radius;
                 descriptor.half_extents={shape.radius,shape.radius,shape.radius};
             }
-            if(shape.geometry==Geometry::Convex)
+            if(shape.geometry==Geometry::Convex) {
                 descriptor.hull_vertices=shape.convex->vertices();
+                const Vec3 lower=shape.convex->bounds_min();
+                const Vec3 upper=shape.convex->bounds_max();
+                descriptor.half_extents={
+                    0.5f*(upper.x-lower.x),
+                    0.5f*(upper.y-lower.y),
+                    0.5f*(upper.z-lower.z)};
+            }
             return descriptor;
         };
         PcmContactCandidate point{};
