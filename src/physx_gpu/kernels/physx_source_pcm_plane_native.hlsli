@@ -67,7 +67,7 @@ void sourcePcmPlanePair(uint index,uint boxElement,uint edge,uint result,
         streamContacts.Store3(dst+8u,asuint(float3(0.f,1.f,0.f)));
         return;
     }
-    if(kind!=0u) {
+    if(kind!=0u && kind!=2u) {
         publishPair(result,0u,0u,1u,edge,0u,0u,0u,0u);
         streamContacts.Store2(dst,uint2(edge,8u));
         return;
@@ -131,6 +131,135 @@ void sourcePcmPlanePair(uint index,uint boxElement,uint edge,uint result,
     const bool regenerate=!initialized || count!=originalCount ||
         maxDelta>breaking || dot(rotation,oldRotation)<0.99996f;
     if(regenerate) {
+        if(kind==2u) {
+            // Cooked hull vertices stay resident in the source GPU
+            // geometry arena. Never substitute corners of its AABB.
+            const uint start=geometry.Load(boxGeo+52u);
+            const uint vertexCount=geometry.Load(boxGeo+56u);
+            if(vertexCount<4u || start>p.hullCount ||
+               vertexCount>p.hullCount-start) {
+                publishPair(result,0u,0u,1u,edge,0u,0u,0u,0u);
+                streamContacts.Store2(dst,uint2(edge,8u));
+                return;
+            }
+            float deepest=3.402823466e38f;
+            uint eligible=0u,first=0u;
+            for(uint j=0u;j<vertexCount;++j) {
+                const float3 v=asfloat(hullVertices.Load3(
+                    p.hullBias+(start+j)*12u));
+                const float3 world=relative+rotateSource(rotation,v);
+                if(world.y>=contactDistance)continue;
+                ++eligible;
+                if(world.y<deepest) {
+                    deepest=world.y;
+                    first=j;
+                }
+            }
+            count=min(eligible,4u);
+            if(eligible<=4u) {
+                uint slot=0u;
+                for(uint j=0u;j<vertexCount;++j) {
+                    const float3 v=asfloat(hullVertices.Load3(
+                        p.hullBias+(start+j)*12u));
+                    const float3 world=relative+rotateSource(rotation,v);
+                    if(world.y>=contactDistance)continue;
+                    planeCacheStore(cache,slot++,v,
+                        float3(world.x,0.f,world.z),world.y);
+                }
+            }else {
+                const float3 firstLocal=asfloat(hullVertices.Load3(
+                    p.hullBias+(start+first)*12u));
+                const float3 firstWorld=relative+
+                    rotateSource(rotation,firstLocal);
+                uint index[4]={first,first,first,first};
+                float bestDistance=-1.f;
+                for(uint j=0u;j<vertexCount;++j) {
+                    if(j==first)continue;
+                    const float3 v=asfloat(hullVertices.Load3(
+                        p.hullBias+(start+j)*12u));
+                    const float3 world=relative+rotateSource(rotation,v);
+                    if(world.y>=contactDistance)continue;
+                    const float3 d=float3(world.x-firstWorld.x,0.f,
+                                          world.z-firstWorld.z);
+                    const float distance=dot(d,d);
+                    if(distance>bestDistance) {
+                        bestDistance=distance;
+                        index[1]=j;
+                    }
+                }
+                const float3 farLocal=asfloat(hullVertices.Load3(
+                    p.hullBias+(start+index[1])*12u));
+                const float3 farWorld=relative+
+                    rotateSource(rotation,farLocal);
+                const float3 segment=float3(
+                    farWorld.x-firstWorld.x,0.f,
+                    farWorld.z-firstWorld.z);
+                const float3 tangent=float3(-segment.z,0.f,segment.x);
+                const float len2=dot(tangent,tangent);
+                const float3 sideways=len2>0.f
+                    ?tangent*rsqrt(len2):float3(0.f,1.f,0.f);
+                float high=-3.402823466e38f;
+                float low=3.402823466e38f;
+                for(uint j=0u;j<vertexCount;++j) {
+                    if(j==index[0] || j==index[1])continue;
+                    const float3 v=asfloat(hullVertices.Load3(
+                        p.hullBias+(start+j)*12u));
+                    const float3 world=relative+rotateSource(rotation,v);
+                    if(world.y>=contactDistance)continue;
+                    const float d=dot(float3(world.x-firstWorld.x,0.f,
+                                             world.z-firstWorld.z),sideways);
+                    if(d>high){high=d;index[2]=j;}
+                    if(d<low){low=d;index[3]=j;}
+                }
+                if(index[3]==index[2]) {
+                    for(uint j=0u;j<vertexCount;++j) {
+                        if(j==index[0] || j==index[1] || j==index[2])
+                            continue;
+                        const float3 v=asfloat(hullVertices.Load3(
+                            p.hullBias+(start+j)*12u));
+                        const float3 world=relative+rotateSource(rotation,v);
+                        if(world.y<contactDistance) {index[3]=j;break;}
+                    }
+                }
+                float3 centers[4];
+                for(uint k=0u;k<4u;++k) {
+                    const float3 v=asfloat(hullVertices.Load3(
+                        p.hullBias+(start+index[k])*12u));
+                    const float3 world=relative+rotateSource(rotation,v);
+                    centers[k]=float3(world.x,0.f,world.z);
+                }
+                // Cluster once around the original four witnesses:
+                // replace by the deeper member without drifting centers.
+                for(uint j=0u;j<vertexCount;++j) {
+                    if(j==index[0] || j==index[1] ||
+                       j==index[2] || j==index[3])continue;
+                    const float3 v=asfloat(hullVertices.Load3(
+                        p.hullBias+(start+j)*12u));
+                    const float3 world=relative+rotateSource(rotation,v);
+                    if(world.y>=contactDistance)continue;
+                    const float3 projection=float3(world.x,0.f,world.z);
+                    uint nearest=0u;
+                    float best=3.402823466e38f;
+                    for(uint k=0u;k<4u;++k) {
+                        const float3 d=projection-centers[k];
+                        const float sq=dot(d,d);
+                        if(sq<best){best=sq;nearest=k;}
+                    }
+                    const float3 previous=asfloat(hullVertices.Load3(
+                        p.hullBias+(start+index[nearest])*12u));
+                    const float3 oldWorld=relative+
+                        rotateSource(rotation,previous);
+                    if(world.y<oldWorld.y)index[nearest]=j;
+                }
+                for(uint k=0u;k<4u;++k) {
+                    const float3 v=asfloat(hullVertices.Load3(
+                        p.hullBias+(start+index[k])*12u));
+                    const float3 world=relative+rotateSource(rotation,v);
+                    planeCacheStore(cache,k,v,
+                        float3(world.x,0.f,world.z),world.y);
+                }
+            }
+        }else {
         float3 localPoints[8];
         float3 planePoints[8];
         float depth[8];
@@ -218,6 +347,7 @@ void sourcePcmPlanePair(uint index,uint boxElement,uint edge,uint result,
             const uint chosen=chosenIndex[j];
             planeCacheStore(cache,j,localPoints[chosen],
                             planePoints[chosen],depth[chosen]);
+        }
         }
         edgeCaches.Store3(cache,asuint(relative));
         edgeCaches.Store4(cache+16u,asuint(rotation));
