@@ -122,7 +122,9 @@ inline void verify_convex_finite_gpu_solver(
             gpu.set_pose(actual[2],p2,turn);
         }
         cpu.step(dt);
+        std::clog<<"convex_finite: gpu frame "<<frame<<" begin\n"<<std::flush;
         gpu.step(dt);
+        std::clog<<"convex_finite: gpu frame "<<frame<<" complete\n"<<std::flush;
         if(cpu.contacts().size()!=8u ||
            cpu.contacts().size()!=gpu.contacts().size())
             throw std::runtime_error(
