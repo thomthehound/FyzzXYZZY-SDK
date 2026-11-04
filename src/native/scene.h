@@ -91,6 +91,8 @@ struct GpuPcmBoxPair {
     ShapeId first=0,second=0;
     std::uint32_t edge=0;
     bool reset_cache=false;
+    // One sphere witness or up to sixteen box clipping/GJK candidates.
+    std::uint32_t candidate_capacity=16u;
 };
 struct GpuPcmBoxWorldPoint {
     Vec3 position{};

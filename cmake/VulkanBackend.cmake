@@ -444,6 +444,7 @@ if(FYZZXYZZY_BUILD_VULKAN)
     fyzzxyzzy_compile_hlsl("${FYZZXYZZY_SOURCE_PCM_BOX_SPV}" "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_pcm_box_candidates_native.hlsl" cs_6_0 main
       DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_pcm_box_gjk_native.hlsli"
         "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_pcm_box_math_native.hlsli"
+        "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_pcm_sphere_native.hlsli"
         "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_pcm_sc_contact_publish_native.hlsli")
     add_custom_target(fyzzxyzzy_source_pcm_box_candidates_shader
       DEPENDS "${FYZZXYZZY_SOURCE_PCM_BOX_SPV}")

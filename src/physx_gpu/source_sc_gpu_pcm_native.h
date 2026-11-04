@@ -98,11 +98,11 @@ public:
         last_contact_download_bytes_=0u;
         last_edge_history_copy_bytes_=0u;
         if(requests.empty())return;
-        if(!shape_capacity || requests.size()>
-              std::numeric_limits<std::uint32_t>::max()/16u)
-            throw std::out_of_range("Source GPU PCM pair or candidate capacity overflow");
+        if(!shape_capacity ||
+           requests.size()>std::numeric_limits<std::uint32_t>::max())
+            throw std::out_of_range("Source GPU PCM pair capacity overflow");
         const auto pair_count=static_cast<std::uint32_t>(requests.size());
-        const auto candidate_count=pair_count*16u; // 4 inside, 4 corners, 8 edge intersections
+        std::uint32_t candidate_count=0u;
         std::uint32_t largest_edge=0u;
         bool full_upload=reset_manifolds_ ||
             previous_count!=pair_count || pair_host_.size()!=pair_count;
@@ -119,10 +119,20 @@ public:
             const auto second=sc_.source_element_handle(request.second);
             if(first>=shape_capacity || second>=shape_capacity)
                 throw std::out_of_range("Source Sc PCM element outside original AABB capacity");
+            if(request.candidate_capacity!=1u &&
+               request.candidate_capacity!=16u)
+                throw std::invalid_argument(
+                    "GPU PCM candidate count must match its geometry");
+            if(request.candidate_capacity>
+               std::numeric_limits<std::uint32_t>::max()-candidate_count)
+                throw std::out_of_range(
+                    "Source GPU PCM candidate capacity overflow");
             const SourcePcmBoxPairNative next{
-                first,second,request.edge,i*16u,
-                16u | ((request.reset_cache || reset_manifolds_)
+                first,second,request.edge,candidate_count,
+                request.candidate_capacity |
+                    ((request.reset_cache || reset_manifolds_)
                     ? source_pcm_reset_cache_bit : 0u)};
+            candidate_count+=request.candidate_capacity;
             // Sc's previous pair records are the transfer baseline.
             // Preserve a single ordered upload by widening one dirty
             // interval over changed descriptors, never creating per-pair

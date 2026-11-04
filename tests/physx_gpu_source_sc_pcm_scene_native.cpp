@@ -1537,9 +1537,9 @@ void verify_gpu_distance_solver(
 }
 } // namespace
 
-// Mixed spherical geometry traverses the real GPU SAP and GPU Dy task.
-// Simple sphere PCM geometry remains CPU-produced until its device producer
-// is admitted; no box/box PCM kernel may reinterpret these shapes.
+// Sphere/box and sphere/sphere witnesses execute in the device PCM
+// contact stream, then feed the same GPU Dy task as box PCM contacts.
+// The infinite-plane/sphere case retains its host Gu boundary.
 void verify_sphere_gpu_solver(
     fyzz::compute::Backend backend,const char* sap,
     const char* pcm,const char* dy_shader) {
@@ -1575,12 +1575,17 @@ void verify_sphere_gpu_solver(
         RigidBodyDynamics dynamic{};
         dynamic.gravity_enabled=false;
         for(auto id:moving)scene.set_dynamics(id,dynamic);
+        // Three closing impacts exercise contact impulses rather than
+        // merely preserving speculative overlaps at zero velocity.
+        scene.set_velocity(moving[0],{0.f,-2.f,0.f});
+        scene.set_velocity(moving[1],{-2.f,0.f,0.f});
+        scene.set_velocity(moving[2],{-2.f,0.f,0.f});
         return moving;
     };
     const auto cpu_ids=add_scene(cpu);
     const auto gpu_ids=add_scene(gpu);
     constexpr float dt=1.f/120.f;
-    bool touched_all=false,saw_device_response=false,saw_device_bounds=false;
+    bool touched_all=false,saw_device_bounds=false;
     for(std::uint32_t frame=0u;frame<8u;++frame) {
         if(frame==3u) {
             constexpr Quat rotate{0.f,0.0998334166f,0.f,0.9950041653f};
@@ -1599,14 +1604,48 @@ void verify_sphere_gpu_solver(
             "GPU sphere scene changed Sc PCM/Gu manager identity");
         if(frame==0u) {
             require(gpu.contacts().size()==3u &&
-                    producer->dy_cpu_gu_geometry_bytes()>=
-                        3u*sizeof(native::GpuDyGuContactInput),
-                "Mixed sphere geometry did not enter GPU Dy contact preparation");
+                    producer->dy_cpu_gu_geometry_bytes()==
+                        sizeof(native::GpuDyGuContactInput) &&
+                    producer->pcm_contact_readback_bytes()==
+                        2u*sizeof(physx_gpu::SourcePcmGpuContactStreamNative),
+                "Finite spheres were not generated on device before GPU Dy preparation");
+            require(cpu.contacts().size()==3u,
+                "Source sphere impact fixtures lost a contact manager");
+            for(std::size_t j=0;j<cpu.contacts().size();++j) {
+                const auto& source=cpu.contacts()[j];
+                const auto& device=gpu.contacts()[j];
+                require(source.count==1u && device.count==1u,
+                    "Sphere impact must retain one Gu contact per manager");
+                const double expected=cpu.solved_normal_impulses()[source.contact_offset];
+                const double actual=gpu.solved_normal_impulses()[device.contact_offset];
+                require(expected>0.001 && actual>0.001 &&
+                        std::fabs(expected-actual)<0.05,
+                    "GPU sphere impact did not produce source-equivalent normal impulse");
+            }
             touched_all=true;
         }
         require(producer->dy_distance_dispatch_count()==frame+1u &&
                 producer->dy_gpu_integrated_body_count()>0u,
             "Source sphere bodies did not execute GPU Dy integration");
+        // Cross-check Gu's actual surface witnesses and orientations,
+        // not just agreement of the integrated body positions.
+        for(std::size_t j=0;j<cpu.contacts().size();++j) {
+            const auto& expected=cpu.contacts()[j];
+            const auto& actual=gpu.contacts()[j];
+            require(expected.pair==actual.pair && expected.count==actual.count,
+                "Device sphere Gu changed Sc contact-manager geometry identity");
+            for(std::uint32_t k=0;k<expected.count;++k) {
+                const auto& a=expected.points[k],&b=actual.points[k];
+                require(std::fabs(a.position.x-b.position.x)<0.0004f &&
+                        std::fabs(a.position.y-b.position.y)<0.0004f &&
+                        std::fabs(a.position.z-b.position.z)<0.0004f &&
+                        std::fabs(a.normal.x-b.normal.x)<0.0004f &&
+                        std::fabs(a.normal.y-b.normal.y)<0.0004f &&
+                        std::fabs(a.normal.z-b.normal.z)<0.0004f &&
+                        std::fabs(a.separation-b.separation)<0.0004f,
+                    "Device sphere Gu witness diverged from source PCM");
+            }
+        }
         // Spherical geometry carries its own radius in the shared shape
         // cache; Dy publishes exact spherical bounds after integration.
         saw_device_bounds|=producer->last_frame().device_cached_box_count>0u;
@@ -1619,11 +1658,33 @@ void verify_sphere_gpu_solver(
                     std::fabs(a.velocity.y-b.velocity.y)<0.04f,
                 "Source sphere GPU Dy motion diverged from native CPU");
         }
-        for(const auto impulse:gpu.solved_normal_impulses())
-            saw_device_response |= impulse>0.;
     }
-    require(touched_all && saw_device_response && saw_device_bounds,
-        "GPU sphere contacts did not produce physical PGS response");
+    require(touched_all,
+        "GPU sphere scene did not publish all source contacts");
+    require(saw_device_bounds,
+        "GPU sphere integration did not retain a device-authored bounds cache");
+
+    // The embedded-center exit-face rule selects Z before X/Y on a tie.
+    // A GPU contact must retain the actual box witness, not approximate
+    // the sphere's surface or introduce a CPU-only special case.
+    cpu.add_static_box({0.5f,0.5f,0.5f},{20.f,10.f,0.f});
+    gpu.add_static_box({0.5f,0.5f,0.5f},{20.f,10.f,0.f});
+    cpu.add_dynamic_sphere(0.25f,{20.f,10.f,0.f},1.f);
+    gpu.add_dynamic_sphere(0.25f,{20.f,10.f,0.f},1.f);
+    cpu.advance_collision(true);
+    gpu.advance_collision(true);
+    const auto embedded=[](const native::Scene& scene) -> native::ContactPoint {
+        for(const auto& manager:scene.contacts())
+            for(const auto& point:manager.points)
+                if(std::fabs(point.separation+0.75f)<0.0004f)
+                    return point;
+        throw std::runtime_error("Embedded sphere/box PCM witness missing");
+    };
+    const auto expected=embedded(cpu),actual=embedded(gpu);
+    require(std::fabs(expected.position.z-actual.position.z)<0.0004f &&
+            std::fabs(expected.normal.z-actual.normal.z)<0.0004f &&
+            std::fabs(actual.position.z-0.5f)<0.0004f,
+        "GPU embedded sphere did not preserve source PCM exit-face witness");
 }
 
 void verify_compound_actor_gpu_solver(
