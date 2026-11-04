@@ -24,6 +24,13 @@ inline void verify_convex_plane_gpu_solver(
         {0,1,4},{0,4,3},
         {0,3,5},{0,5,2},{1,2,5},{1,5,4}}};
     const auto prism=cook_convex_mesh(prismVertices,prismFaces);
+    const std::array<Vec3,6> pyramidVertices{{
+        {-1,0,-1},{-1,0,1},{0,0,1.5f},
+        {1,0,1},{1,0,-1},{0,1,0}}};
+    const std::array<ConvexTriangle,8> pyramidFaces{{
+        {0,2,1},{0,3,2},{0,4,3},
+        {0,1,5},{1,2,5},{2,3,5},{3,4,5},{4,0,5}}};
+    const auto pyramid=cook_convex_mesh(pyramidVertices,pyramidFaces);
     std::ifstream stream(dy_shader,std::ios::binary);
     check(bool(stream),"Convex GPU Dy shader bundle missing");
     std::vector<char> bytes(std::istreambuf_iterator<char>{stream},
@@ -46,14 +53,19 @@ inline void verify_convex_plane_gpu_solver(
         const auto wedge=scene.create_body({{3.f,-0.025f,0.f},{}},true);
         scene.attach_convex(wedge,prism,{});
         scene.update_mass_properties(wedge,2.f);
+        const auto pentagonal=scene.create_body({{8.f,-0.025f,0.f},{}},true);
+        scene.attach_convex(pentagonal,pyramid,{});
+        scene.update_mass_properties(pentagonal,1.f);
         RigidBodyDynamics settings{};
         settings.gravity_enabled=false;
         settings.position_iterations=16u;
         scene.set_dynamics(tetra,settings);
         scene.set_dynamics(wedge,settings);
+        scene.set_dynamics(pentagonal,settings);
         scene.set_velocity(tetra,{0.f,-1.f,0.f});
         scene.set_velocity(wedge,{0.f,-1.f,0.f});
-        return std::array<BodyId,2>{tetra,wedge};
+        scene.set_velocity(pentagonal,{0.f,-1.f,0.f});
+        return std::array<BodyId,3>{tetra,wedge,pentagonal};
     };
     const auto a=assemble(cpu);
     const auto b=assemble(gpu);
@@ -72,16 +84,18 @@ inline void verify_convex_plane_gpu_solver(
         check(cpu.contacts().size()==gpu.contacts().size(),
             "Cooked convex GPU changed plane Sc manager count");
         if(frame==0u) {
-            check(cpu.contacts().size()==2u &&
+            check(cpu.contacts().size()==3u &&
                   cpu.contacts()[0].count==3u &&
                   cpu.contacts()[1].count==4u &&
+                  cpu.contacts()[2].count==4u &&
                   gpu.contacts()[0].count==3u &&
-                  gpu.contacts()[1].count==4u,
-                "Convex plane must use tetrahedron and wedge hull witnesses");
+                  gpu.contacts()[1].count==4u &&
+                  gpu.contacts()[2].count==4u,
+                "Convex plane must reduce actual tetrahedron, wedge and pentagon witnesses");
             check(producer->dy_cpu_gu_geometry_bytes()==0u &&
-                  producer->dy_pcm_device_contact_rows()==7u &&
+                  producer->dy_pcm_device_contact_rows()==11u &&
                   producer->pcm_contact_readback_bytes()==
-                      2u*sizeof(physx_gpu::SourcePcmGpuContactStreamNative),
+                      3u*sizeof(physx_gpu::SourcePcmGpuContactStreamNative),
                 "Convex plane bypassed device PCM and Dy contact geometry");
         }
         for(std::size_t j=0u;j<cpu.contacts().size();++j) {
