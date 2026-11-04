@@ -74,9 +74,6 @@ ConstantBuffer<Parameters> p : register(b0,space0);
 #include "physx_source_pcm_box_math_native.hlsli"
 #include "physx_source_pcm_box_gjk_native.hlsli"
 #include "physx_source_pcm_box_epa_native.hlsli"
-#ifdef FYZZXYZZY_CONVEX_FACE
-#include "physx_source_pcm_convex_face_native.hlsli"
-#endif
 #include "physx_source_pcm_sc_contact_publish_native.hlsli"
 
 [numthreads(1,1,1)]
@@ -143,20 +140,8 @@ void main(uint3 thread : SV_DispatchThreadID) {
     if(outcome==3u)
         admitted=epaBoxContinuation(
             boxPair,simplex,simplexCount,contact);
-    GjkWitness manifold[4];
-    uint contactCount=admitted?1u:0u;
-    if(admitted)manifold[0]=contact;
-#ifdef FYZZXYZZY_CONVEX_FACE
-    if(admitted && (boxPair.kindA==2u || boxPair.kindB==2u)) {
-        contactCount=convexFaceContacts(boxPair,distance,contact,manifold);
-        if(contactCount==0u) {
-            manifold[0]=contact;
-            contactCount=1u;
-        }
-    }
-#endif
     uint cache=p.edgeCacheBias+edge*240u;
-    if(admitted && limit<contactCount) {
+    if(admitted && limit==0u) {
         // A valid contact with no destination must regenerate later.
         results.Store(result+8u,2u);
         edgeCaches.Store(cache+12u,0u);
@@ -168,25 +153,20 @@ void main(uint3 thread : SV_DispatchThreadID) {
         return;
     }
     if(admitted) {
-        uint selectedIndices=0u;
-        for(uint j=0u;j<contactCount;++j) {
-            const GjkWitness witnessPoint=manifold[j];
-            uint destination=p.candidateBias+(first+j)*40u;
-            candidates.Store3(destination,asuint(witnessPoint.localA));
-            candidates.Store3(destination+12u,asuint(witnessPoint.localB));
-            candidates.Store3(destination+24u,asuint(witnessPoint.normalB));
-            candidates.Store(destination+36u,asuint(witnessPoint.separation));
-            uint persistent=cache+80u+j*40u;
-            edgeCaches.Store3(persistent,asuint(witnessPoint.localA));
-            edgeCaches.Store3(persistent+12u,asuint(witnessPoint.localB));
-            edgeCaches.Store3(persistent+24u,asuint(witnessPoint.normalB));
-            edgeCaches.Store(persistent+36u,asuint(witnessPoint.separation));
-            selectedIndices|=j<<(j*8u);
-        }
-        edgeCaches.Store(cache+12u,contactCount);
-        results.Store(result,contactCount);
-        results.Store(result+20u,contactCount);
-        results.Store(result+24u,selectedIndices);
+        const uint destination=p.candidateBias+first*40u;
+        candidates.Store3(destination,asuint(contact.localA));
+        candidates.Store3(destination+12u,asuint(contact.localB));
+        candidates.Store3(destination+24u,asuint(contact.normalB));
+        candidates.Store(destination+36u,asuint(contact.separation));
+        const uint persistent=cache+80u;
+        edgeCaches.Store3(persistent,asuint(contact.localA));
+        edgeCaches.Store3(persistent+12u,asuint(contact.localB));
+        edgeCaches.Store3(persistent+24u,asuint(contact.normalB));
+        edgeCaches.Store(persistent+36u,asuint(contact.separation));
+        edgeCaches.Store(cache+12u,1u);
+        results.Store(result,1u);
+        results.Store(result+20u,1u);
+        results.Store(result+24u,0u);
     }else {
         edgeCaches.Store(cache+12u,0u);
         results.Store(result,0u);
