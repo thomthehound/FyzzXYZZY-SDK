@@ -58,16 +58,24 @@ inline void verify_convex_plane_gpu_solver(
         const auto pentagonal=scene.create_body({{8.f,-0.025f,0.f},{}},true);
         scene.attach_convex(pentagonal,pyramid,{});
         scene.update_mass_properties(pentagonal,1.f);
+        // Two attached hulls borrow the same cooked mesh and its one
+        // device vertex span; Sc must preserve both contact managers.
+        const auto compound=scene.create_body({{14.f,-0.025f,0.f},{}},true);
+        scene.attach_convex(compound,hull,{{-0.8f,0.f,0.f},{}});
+        scene.attach_convex(compound,hull,{{0.8f,0.f,0.f},{}});
+        scene.update_mass_properties(compound,3.f);
         RigidBodyDynamics settings{};
         settings.gravity_enabled=false;
         settings.position_iterations=16u;
         scene.set_dynamics(tetra,settings);
         scene.set_dynamics(wedge,settings);
         scene.set_dynamics(pentagonal,settings);
+        scene.set_dynamics(compound,settings);
         scene.set_velocity(tetra,{0.f,-1.f,0.f});
         scene.set_velocity(wedge,{0.f,-1.f,0.f});
         scene.set_velocity(pentagonal,{0.f,-1.f,0.f});
-        return std::array<BodyId,3>{tetra,wedge,pentagonal};
+        scene.set_velocity(compound,{0.f,-1.f,0.f});
+        return std::array<BodyId,4>{tetra,wedge,pentagonal,compound};
     };
     const auto a=assemble(cpu);
     const auto b=assemble(gpu);
@@ -86,18 +94,22 @@ inline void verify_convex_plane_gpu_solver(
         check(cpu.contacts().size()==gpu.contacts().size(),
             "Cooked convex GPU changed plane Sc manager count");
         if(frame==0u) {
-            check(cpu.contacts().size()==3u &&
+            check(cpu.contacts().size()==5u &&
                   cpu.contacts()[0].count==3u &&
                   cpu.contacts()[1].count==4u &&
                   cpu.contacts()[2].count==4u &&
+                  cpu.contacts()[3].count==3u &&
+                  cpu.contacts()[4].count==3u &&
                   gpu.contacts()[0].count==3u &&
                   gpu.contacts()[1].count==4u &&
-                  gpu.contacts()[2].count==4u,
-                "Convex plane must reduce actual tetrahedron, wedge and pentagon witnesses");
+                  gpu.contacts()[2].count==4u &&
+                  gpu.contacts()[3].count==3u &&
+                  gpu.contacts()[4].count==3u,
+                "Cooked hull contact managers lost tetrahedron, wedge, polygon or compound witnesses");
             check(producer->dy_cpu_gu_geometry_bytes()==0u &&
-                  producer->dy_pcm_device_contact_rows()==11u &&
+                  producer->dy_pcm_device_contact_rows()==17u &&
                   producer->pcm_contact_readback_bytes()==
-                      3u*sizeof(physx_gpu::SourcePcmGpuContactStreamNative),
+                      5u*sizeof(physx_gpu::SourcePcmGpuContactStreamNative),
                 "Convex plane bypassed device PCM and Dy contact geometry");
         }
         for(std::size_t j=0u;j<cpu.contacts().size();++j) {
