@@ -208,14 +208,44 @@ void integrateBody(uint ordinal) {
     }
     // Source DyBodyCoreIntegrator::integrateCore uses saved
     // position-iteration deltas, not the final velocity deltas.
-    const uint input=p.integrationBias+32u+ordinal*136u;
-    if(arena.Load(input+96u)==0u)return;
-    const float3 position=asfloat(arena.Load3(input));
-    const float4 quaternion=asfloat(arena.Load4(input+12u));
-    const float3 baseLinear=asfloat(arena.Load3(input+28u));
-    const float3 baseAngular=asfloat(arena.Load3(input+40u));
-    const uint locks=arena.Load(input+88u);
-    const float dt=asfloat(arena.Load(input+92u));
+    const uint input=p.integrationBias+36u+ordinal*112u;
+    if(arena.Load(input+68u)==0u)return;
+    const float3 baseLinear=asfloat(arena.Load3(input));
+    const float3 baseAngular=asfloat(arena.Load3(input+12u));
+    const uint locks=arena.Load(input+60u);
+    const float dt=asfloat(arena.Load(input+64u));
+    float3 position;
+    float4 quaternion;
+    const uint poseIndex=arena.Load(input+108u);
+    if(poseIndex==invalidBody) {
+        // The previous integrated box transform is still authoritative
+        // after Sc/SAP admission. Recover the rigid actor and mass frames.
+        const uint4 views=arena.Load4(p.integrationBias);
+        const uint element=arena.Load(input+72u);
+        if(element>=views.w)return;
+        const uint geo=views.z+element*64u;
+        if(scGeometry.Load(geo+28u)!=0u)return;
+        const float3 shapeLocal=asfloat(scGeometry.Load3(geo+16u));
+        const float4 shapeLocalAxes=asfloat(scGeometry.Load4(geo+32u));
+        const uint shape=views.x+element*32u;
+        const float4 shapeAxes=asfloat(scTransforms.Load4(shape));
+        const float3 shapeCenter=asfloat(scTransforms.Load3(shape+16u));
+        const float4 actorAxes=sourceRigidMultiply(
+            shapeAxes,float4(-shapeLocalAxes.xyz,shapeLocalAxes.w));
+        const float3 actorPosition=shapeCenter-
+            sourceRigidRotate(actorAxes,shapeLocal);
+        const float3 centerLocal=asfloat(arena.Load3(input+76u));
+        const float4 massLocalAxes=asfloat(arena.Load4(input+88u));
+        quaternion=sourceRigidMultiply(actorAxes,massLocalAxes);
+        position=actorPosition+sourceRigidRotate(actorAxes,centerLocal);
+    } else {
+        const uint count=arena.Load(p.integrationBias+32u);
+        if(poseIndex>=count)return;
+        const uint pose=p.integrationBias+36u+count*112u+poseIndex*28u;
+        position=asfloat(arena.Load3(pose));
+        quaternion=asfloat(arena.Load4(pose+12u));
+    }
+    if(!all(isfinite(position)) || !all(isfinite(quaternion)))return;
     const uint destination=p.writebackBias+p.resultPatchOffset+
         p.patchCount*4u+ordinal*32u;
     arena.Store(destination+28u,0u);
@@ -227,9 +257,9 @@ void integrateBody(uint ordinal) {
     if(locks&16u)angularState.y=0.0f;
     if(locks&32u)angularState.z=0.0f;
     const float3 angular=baseAngular+float3(
-        dot(asfloat(arena.Load3(input+52u)),angularState),
-        dot(asfloat(arena.Load3(input+64u)),angularState),
-        dot(asfloat(arena.Load3(input+76u)),angularState));
+        dot(asfloat(arena.Load3(input+24u)),angularState),
+        dot(asfloat(arena.Load3(input+36u)),angularState),
+        dot(asfloat(arena.Load3(input+48u)),angularState));
     // The axis lock was applied in solver space before the world
     // inverse-inertia transform; the resulting motion is not masked
     // again by DyBodyCoreIntegrator::integrateCore.
@@ -257,15 +287,15 @@ void integrateBody(uint ordinal) {
     }
     // integrateCore advances the principal mass frame. Recover the
     // actor frame before composing each independent local shape pose.
-    const float3 localCenter=asfloat(arena.Load3(input+104u));
-    const float4 localAxes=asfloat(arena.Load4(input+116u));
+    const float3 localCenter=asfloat(arena.Load3(input+76u));
+    const float4 localAxes=asfloat(arena.Load4(input+88u));
     nextQuaternion=sourceRigidMultiply(nextQuaternion,float4(-localAxes.xyz,localAxes.w));
     nextPosition-=sourceRigidRotate(nextQuaternion,localCenter);
     if(!all(isfinite(nextPosition)) || !all(isfinite(nextQuaternion)))return;
     arena.Store3(destination,asuint(nextPosition));
     arena.Store4(destination+12u,asuint(nextQuaternion));
-    uint element=arena.Load(input+100u);
-    const uint shapeCount=arena.Load(input+132u);
+    uint element=arena.Load(input+72u);
+    const uint shapeCount=arena.Load(input+104u);
     const uint4 views=arena.Load4(p.integrationBias);
     for(uint shape=0u;shape<shapeCount;++shape) {
         if(element>=views.w)return;

@@ -7912,6 +7912,11 @@ void Scene::solve_gpu_distance_constraints(float seconds) {
         input.lock_flags=actor.dynamics.lock_flags;
         input.seconds=seconds;
         input.active=1u;
+        // A box carries the full actor orientation in the existing Sc
+        // device cache; sphere orientation is deliberately not retained.
+        if(actor.first_simulation_shape!=invalid_shape &&
+           shapes_[actor.first_simulation_shape].geometry==Geometry::Box)
+            input.active|=4u;
     };
     for(const BodyId id:solver_active_ids_) {
         const auto& actor=actors_[id];

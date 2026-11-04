@@ -1779,6 +1779,12 @@ void verify_gpu_free_integration(
                 producer->dy_gpu_integrated_body_count()==actual.size() &&
                 producer->dy_upload_span_count()==1u,
                 "GPU Dy did not integrate every active body in one upload");
+        const auto resident=producer->dy_resident_pose_count();
+        require(resident<=actual.size() &&
+                producer->dy_host_pose_upload_bytes()==
+                    (actual.size()-resident)*28u &&
+                (frame==0u?resident==0u:resident>=260u),
+                "GPU Dy did not retain authorized Sc poses across frames");
         require(cpu.contacts().size()==gpu.contacts().size(),
                 "Device-integrated free body changed contact admission");
         const bool contacts=producer->dy_pcm_device_contact_rows()!=0u;

@@ -131,6 +131,10 @@ public:
         return {found_,lost_,false,rebuilt};
     }
 
+    bool has_authorized_device_cached_pose(BodyId actor) const noexcept {
+        return source_sc_elements_ &&
+            source_sc_elements_->has_authorized_device_cached_pose(actor);
+    }
     std::uint32_t device_shape_cache_handle(BodyId actor) {
         if(!source_sc_elements_)
             return std::numeric_limits<std::uint32_t>::max();
