@@ -145,7 +145,7 @@ public:
                 take_pcm_shader(*pcm_shaders,NativeGpuPcmStage::Candidates),
                 take_pcm_shader(*pcm_shaders,NativeGpuPcmStage::EpaCompact),
                 take_pcm_shader(*pcm_shaders,NativeGpuPcmStage::EpaContact),
-                take_pcm_shader(*pcm_shaders,NativeGpuPcmStage::EpaContactConvex));
+                take_pcm_shader(*pcm_shaders,NativeGpuPcmStage::FaceContacts));
         if(dy_shader)
             dy_distance_=std::make_unique<SourceDyDistanceNativeStage>(
                 context_,addresses_,stream_,allocators_.deviceAlloc,
