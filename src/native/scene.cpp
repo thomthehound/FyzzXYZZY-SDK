@@ -2955,6 +2955,15 @@ ConstraintId Scene::create_revolute_constraint(
     record.swapped=a>b;
     return joint_token(add_joint(a,b,record));
 }
+ConstraintId Scene::create_prismatic_constraint(
+    BodyId a,BodyId b,Transform local_a,Transform local_b) {
+    ConstraintRecord record{};
+    record.kind=JointKind::Prismatic;
+    record.local_a=validated_pose(local_a);
+    record.local_b=validated_pose(local_b);
+    record.swapped=a>b;
+    return joint_token(add_joint(a,b,record));
+}
 void Scene::retire_constraint(ConstraintId id) {
     const auto index=static_cast<EdgeIndex>(id);
     const auto generation=static_cast<std::uint32_t>(id>>32);
@@ -6760,7 +6769,7 @@ void Scene::partition_constraints() {
             const auto& joint=constraint_records_[edge.constraint_id];
             const std::uint32_t count=joint.kind==JointKind::Distance?1u:
                 (joint.kind==JointKind::Spherical?3u:
-                 joint.kind==JointKind::Revolute?5u:6u);
+                 joint.kind==JointKind::Fixed?6u:5u);
             const auto a=joint.swapped?edge.pair.b:edge.pair.a;
             const auto b=joint.swapped?edge.pair.a:edge.pair.b;
             constraint_descriptors_.push_back({
@@ -7053,8 +7062,9 @@ void Scene::prepare_constraints(float seconds) {
                 mass0+mass1+dot(ja,ja)+dot(jb,jb));
             continue;
         }
-        // Spherical, revolute and fixed joints lock three translations in
-        // the authored A frame; revolute locks two angular axes, fixed three.
+        // Prismatic joints lock Y/Z translation and all rotations.
+        // Revolute joints lock XYZ translation and Y/Z rotation; spherical
+        // joints lock only translation and fixed joints lock every axis.
         const auto qa=multiply(body0.orientation,joint.local_a.orientation);
         const auto error_p=rotate_inverse(qa,sub(world0,world1));
         const bool lock_rotation=joint.kind!=JointKind::Spherical;
@@ -7091,17 +7101,26 @@ void Scene::prepare_constraints(float seconds) {
             a={a.x-b.x*t,a.y-b.y*t,a.z-b.z*t};
         };
         const std::size_t row_count=joint.kind==JointKind::Spherical?3u:
-            joint.kind==JointKind::Revolute?5u:6u;
+            joint.kind==JointKind::Fixed?6u:5u;
         for(std::size_t i=0;i<row_count;++i) {
             auto& row=rows[i];
-            const auto locked_axis=i-3u+(joint.kind==JointKind::Revolute?1u:0u);
-            row.error=errors[i<3u?i:locked_axis+3u];
-            if(i<3u) {
-                row.linear=rotate(qa,basis[i]);
-                row.angular0=cross(ra,row.linear);
+            // Source locked-axis order excludes the slider's free X
+            // translation or the hinge's free X rotation.
+            const auto component=i+
+                (joint.kind==JointKind::Prismatic?1u:0u)+
+                (joint.kind==JointKind::Revolute && i>=3u?1u:0u);
+            row.error=errors[component];
+            if(component<3u) {
+                row.linear=rotate(qa,basis[component]);
+                // The slider's transverse axes rotate with frame A.
+                // At nonzero extension, d(axis)/dt contributes a lever
+                // arm from A's mass center to B's joint origin.
+                const Vec3 arm=joint.kind==JointKind::Prismatic
+                    ? sub(world1,center0):ra;
+                row.angular0=cross(arm,row.linear);
                 row.angular1=cross(rb,row.linear);
             } else {
-                const auto k=locked_axis;
+                const auto k=component-3u;
                 const auto v=diagonal[k];
                 row.angular0={
                     0.5f*(va.x*bv[k]+vb.x*av[k]+v.x),
@@ -10482,6 +10501,10 @@ public:
     ConstraintId add_revolute_constraint(
         BodyId a,BodyId b,Transform local_a,Transform local_b) override {
         return scene_.create_revolute_constraint(a,b,local_a,local_b);
+    }
+    ConstraintId add_prismatic_constraint(
+        BodyId a,BodyId b,Transform local_a,Transform local_b) override {
+        return scene_.create_prismatic_constraint(a,b,local_a,local_b);
     }
     void remove_constraint(ConstraintId id) override {
         scene_.retire_constraint(id);

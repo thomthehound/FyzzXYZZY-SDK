@@ -8,6 +8,7 @@
 #include <extensions/PxFixedJoint.h>
 #include <extensions/PxSphericalJoint.h>
 #include <extensions/PxRevoluteJoint.h>
+#include <extensions/PxPrismaticJoint.h>
 
 #include <algorithm>
 #include <array>
@@ -494,6 +495,17 @@ struct PhysXCpuWorld final : WorldBackend, physx::PxSimulationEventCallback {
         BodyId a,BodyId b,Transform local_a,Transform local_b) override {
         return add_joint(a,b,[&] {
             auto* joint=physx::PxRevoluteJointCreate(*runtime->physics,
+                actors[a],to_physx(local_a),actors[b],to_physx(local_b));
+            if(joint)joint->setConstraintFlag(
+                physx::PxConstraintFlag::eCOLLISION_ENABLED,true);
+            return joint;
+        });
+    }
+
+    ConstraintId add_prismatic_constraint(
+        BodyId a,BodyId b,Transform local_a,Transform local_b) override {
+        return add_joint(a,b,[&] {
+            auto* joint=physx::PxPrismaticJointCreate(*runtime->physics,
                 actors[a],to_physx(local_a),actors[b],to_physx(local_b));
             if(joint)joint->setConstraintFlag(
                 physx::PxConstraintFlag::eCOLLISION_ENABLED,true);

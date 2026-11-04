@@ -1713,6 +1713,7 @@ void verify_compound_actor_gpu_solver(
     test::fixed_joint_response(gpu,&cpu);
     test::spherical_joint_response(gpu,&cpu);
     test::revolute_joint_response(gpu,&cpu);
+    test::prismatic_joint_response(gpu,&cpu);
 }
 
 void verify_gpu_free_integration(
@@ -1858,7 +1859,10 @@ void verify_gpu_wide_island_solver(
                 scene.set_dynamics(body,dynamics);
                 scene.set_velocity(body,{0.08f,0.0f,i%2u ? -0.06f : 0.06f});
                 if(i) {
-                    const auto joint=i%32u==12u
+                    const auto joint=i%64u==24u
+                        ? scene.create_prismatic_constraint(previous,body,
+                            {{0.625f,0.12f,0.0f},{}},{{-0.625f,0.12f,0.0f},{}})
+                        : i%32u==12u
                         ? scene.create_revolute_constraint(previous,body,
                             {{0.625f,0.12f,0.0f},{}},{{-0.625f,0.12f,0.0f},{}})
                         : i%16u==4u
