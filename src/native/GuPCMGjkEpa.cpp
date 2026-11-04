@@ -408,6 +408,7 @@ static bool gjk_epa(
     const float epsilon=0.1f*std::min(
         box_min_margin(pair.ha),box_min_margin(pair.hb));
     constexpr float progress_factor=1.0f-0.000225f;
+    const bool point_core=pair.radius_a>0.f || pair.radius_b>0.f;
     std::array<Support,4> simplex{};
     int count=0;
     if(warmstart)*warmstart={};
@@ -424,16 +425,18 @@ static bool gjk_epa(
     float previous=std::numeric_limits<float>::max();
     for(int iteration=0;iteration<32;++iteration) {
         const float dist=std::sqrt(length2(closest));
-        // GuGJKPenetration terminates once the closest simplex lies
-        // inside the minimum-margin epsilon. The source then admits
-        // the simplex to EPA even if a small geometric gap remains.
-        // EPA's signed facet distance, not a speculative GJK witness,
-        // determines the final PCM contact normal and penetration.
-        if(count>0 && dist<=epsilon) {
+        // Polyhedral cores retain the source EPA admission margin.
+        // Sphere point cores must converge their separated distance
+        // before the analytical radius is applied; their near-face
+        // simplex is not a valid EPA penetration polytope.
+        if(count>0 && dist<=epsilon && !point_core) {
             store();
             return epa(pair,simplex,count,contact);
         }
-        if(dist<=0.0f)return false;
+        if(dist<=0.0f) {
+            store();
+            return count>0 && epa(pair,simplex,count,contact);
+        }
         const Vec3 normal=mul(closest,1.0f/dist);
         const Support support=pair.support(neg(closest));
         const float projection=dot(normal,support.q);
@@ -462,6 +465,10 @@ static bool gjk_epa(
                 // status is GJK_DEGENERATE, not GJK_CONTACT; the PCM
                 // box-box caller does not publish that status.
                 store();
+                if(point_core && projection>0.f) {
+                    const Closest current=closest_simplex(simplex,count);
+                    return current.mask && contact_from_gjk(pair,current,contact);
+                }
                 return false;
             }
         if(count==4) {
@@ -483,6 +490,8 @@ static bool gjk_epa(
             // caller only GJK_CONTACT and EPA_CONTACT produce witnesses.
             // A positive projected gap does not override that status.
             store();
+            if(point_core && projection>0.f)
+                return contact_from_gjk(pair,next,contact);
             return false;
         }
         previous=next_dist;
