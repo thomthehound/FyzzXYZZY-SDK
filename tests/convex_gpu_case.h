@@ -15,6 +15,14 @@ inline void verify_convex_finite_gpu_solver(
     constexpr std::array<ConvexTriangle,4> faces{{
         {0,2,1},{0,1,3},{0,3,2},{1,2,3}}};
     const auto hull=cook_convex_mesh(tetra,faces);
+    constexpr std::array<Vec3,8> cubeVertices{{
+        {-1,-1,-1},{1,-1,-1},{1,1,-1},{-1,1,-1},
+        {-1,-1,1},{1,-1,1},{1,1,1},{-1,1,1}}};
+    constexpr std::array<ConvexTriangle,12> cubeFaces{{
+        {0,2,1},{0,3,2},{4,5,6},{4,6,7},
+        {0,1,5},{0,5,4},{3,7,6},{3,6,2},
+        {0,4,7},{0,7,3},{1,2,6},{1,6,5}}};
+    const auto cube=cook_convex_mesh(cubeVertices,cubeFaces);
     const auto load=[backend](const char* path) {
         std::ifstream input(path,std::ios::binary);
         if(!input)throw std::runtime_error("Finite convex Dy shader missing");
@@ -35,7 +43,7 @@ inline void verify_convex_finite_gpu_solver(
     auto* producer=owner.get();
     gpu.set_gpu_broadphase(std::move(owner));
     const auto assemble=[&](native::Scene& scene) {
-        std::array<BodyId,5> dynamics{};
+        std::array<BodyId,6> dynamics{};
         scene.add_static_box({1.f,0.5f,1.f},{0.f,-0.5f,0.f});
         dynamics[0]=scene.create_body({{0.f,-0.12f,0.f},{}},true);
         scene.attach_convex(dynamics[0],hull,{});
@@ -62,6 +70,11 @@ inline void verify_convex_finite_gpu_solver(
         dynamics[4]=scene.add_dynamic_box(
             {0.4f,0.4f,0.4f},{16.35f,0.15f,0.25f},1.f);
 
+        const auto face_hull=scene.create_body({{24.f,0.f,0.f},{}},false);
+        scene.attach_convex(face_hull,cube,{});
+        dynamics[5]=scene.add_dynamic_sphere(
+            0.2f,{24.273157f,-0.794949f,-1.0039f},1.f);
+
         RigidBodyDynamics settings{};
         settings.gravity_enabled=false;
         settings.position_iterations=24u;
@@ -82,7 +95,7 @@ inline void verify_convex_finite_gpu_solver(
         }
         cpu.step(dt);
         gpu.step(dt);
-        if(cpu.contacts().size()!=5u ||
+        if(cpu.contacts().size()!=6u ||
            cpu.contacts().size()!=gpu.contacts().size())
             throw std::runtime_error(
                 "Finite cooked hull PCM lost box, sphere or hull contact managers at frame "+
@@ -90,9 +103,9 @@ inline void verify_convex_finite_gpu_solver(
                 std::to_string(cpu.contacts().size())+" gpu="+
                 std::to_string(gpu.contacts().size()));
         if(producer->pcm_contact_readback_bytes()!=
-              5u*sizeof(physx_gpu::SourcePcmGpuContactStreamNative) ||
+              6u*sizeof(physx_gpu::SourcePcmGpuContactStreamNative) ||
            producer->dy_cpu_gu_geometry_bytes()!=0u ||
-           producer->dy_pcm_device_contact_rows()<5u)
+           producer->dy_pcm_device_contact_rows()<6u)
             throw std::runtime_error(
                 "Finite convex contact geometry bypassed GPU PCM/Dy");
         for(std::size_t i=0;i<cpu.contacts().size();++i) {
@@ -118,6 +131,17 @@ inline void verify_convex_finite_gpu_solver(
                     std::to_string(frame)+" pair "+std::to_string(i)+
                     " depth="+std::to_string(a.separation)+"/"+
                     std::to_string(b.separation));
+        }
+        if(frame==0u) {
+            bool near_face=false;
+            for(const auto& manager:cpu.contacts())
+                if(manager.count>0u &&
+                   manager.points[0].separation< -0.17f &&
+                   manager.points[0].separation> -0.21f)
+                    near_face=true;
+            if(!near_face)
+                throw std::runtime_error(
+                    "Near-face sphere penetration missing from convex PCM");
         }
         for(std::size_t i=0;i<expected.size();++i)
             test::compound_compare_state(
