@@ -123,6 +123,66 @@ void verify_native_rigid_contact() {
             "Cooked convex rigid contact did not constrain body motion");
 }
 
+void verify_finite_pair_matrix() {
+    World world({.execution=ExecutionMode::NativeCpu,
+                 .contact_notifications=true});
+    const auto hull=cook_convex_mesh(tetra_vertices,tetra_faces);
+    std::array<BodyId,5> moving{};
+    world.add_static_box({1.f,0.5f,1.f},{0.f,-0.5f,0.f});
+    moving[0]=world.create_dynamic_body({{0.f,-0.12f,0.f},{}});
+    world.attach_convex_shape(moving[0],hull);
+    world.update_mass_properties(moving[0],1.f);
+
+    world.add_static_sphere(0.38f,{4.45f,0.25f,0.25f});
+    moving[1]=world.create_dynamic_body({{4.f,0.f,0.f},{}});
+    world.attach_convex_shape(moving[1],hull);
+    world.update_mass_properties(moving[1],1.f);
+
+    const auto fixed_hull=world.create_static_body({{8.f,0.f,0.f},{}});
+    world.attach_convex_shape(fixed_hull,hull);
+    moving[2]=world.create_dynamic_body({{8.15f,0.12f,0.08f},{}});
+    world.attach_convex_shape(moving[2],hull);
+    world.update_mass_properties(moving[2],1.f);
+
+    const auto fixed_sphere_hull=world.create_static_body({{12.f,0.f,0.f},{}});
+    world.attach_convex_shape(fixed_sphere_hull,hull);
+    moving[3]=world.add_dynamic_sphere(
+        0.35f,{12.35f,0.2f,0.25f},1.f);
+
+    const auto fixed_box_hull=world.create_static_body({{16.f,0.f,0.f},{}});
+    world.attach_convex_shape(fixed_box_hull,hull);
+    moving[4]=world.add_dynamic_box(
+        {0.4f,0.4f,0.4f},{16.35f,0.15f,0.25f},1.f);
+
+    RigidBodyDynamics settings{};
+    settings.gravity_enabled=false;
+    settings.position_iterations=24u;
+    for(const auto body:moving)
+        world.set_body_dynamics(body,settings);
+    world.step(1.f/120.f);
+    unsigned found=0;
+    for(const auto& event:world.contact_events()) {
+        require(event.kind==ContactEventKind::Found,
+                "Finite convex initial contact was not a found event");
+        require(event.contact_count>0u,
+                "Finite convex manifold did not publish a Gu witness");
+        ++found;
+    }
+    require(found==moving.size(),
+            "Cooked convex failed hull-box, hull-sphere or hull-hull admission");
+    // Moving a hull out of SAP must retire its independent manager
+    // without disturbing the other four live contacts.
+    world.set_body_position(moving[2],{25.f,0.f,0.f});
+    world.step(1.f/120.f);
+    unsigned lost=0,persistent=0;
+    for(const auto& event:world.contact_events()) {
+        lost+=event.kind==ContactEventKind::Lost;
+        persistent+=event.kind==ContactEventKind::Persists;
+    }
+    require(lost==1u && persistent==4u,
+            "Finite convex manager lifetime lost separation or persistence");
+}
+
 void verify_invalid() {
     auto open=tetra_faces;
     rejects([&]{cook_convex_mesh(tetra_vertices,
@@ -157,6 +217,7 @@ int main() {
         verify_wedge();
         verify_invalid();
         verify_native_rigid_contact();
+        verify_finite_pair_matrix();
         std::cout<<"Cooked convex volume, inertia and topology OK\n";
         return 0;
     }catch(const std::exception& error) {
