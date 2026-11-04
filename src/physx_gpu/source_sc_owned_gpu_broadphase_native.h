@@ -32,6 +32,7 @@
 
 #include <array>
 #include <cstdint>
+#include <limits>
 #include <memory>
 #include <optional>
 #include <span>
@@ -172,6 +173,7 @@ public:
     }
 
     void upload_convex_vertices(std::span<const Vec3> vertices) override {
+        static_assert(sizeof(Vec3)==12u);
         if(vertices.size()>std::numeric_limits<std::uint32_t>::max()/12u)
             throw std::overflow_error("Convex GPU vertex arena exceeds 32-bit size");
         const auto bytes=vertices.size()*12u;
