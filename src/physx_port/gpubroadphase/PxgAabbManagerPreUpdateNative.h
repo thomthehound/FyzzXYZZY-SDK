@@ -33,6 +33,8 @@ struct SourceSapGpuBoxTransformOwnersNative {
     physx::PxgCudaBuffer& input_device;
     physx::PxgCudaBuffer& cached_transforms;
     physx::PxgCudaBuffer& cached_geometry;
+    physx::PxgCudaBuffer& convex_vertices;
+    std::uint32_t convex_vertex_count=0u;
 };
 
 struct SourceSapGpuBoxTransformsNative {
@@ -41,6 +43,8 @@ struct SourceSapGpuBoxTransformsNative {
     physx::PxgCudaBuffer& input_device;
     physx::PxgCudaBuffer& cached_transforms;
     physx::PxgCudaBuffer& cached_geometry;
+    physx::PxgCudaBuffer& convex_vertices;
+    std::uint32_t convex_vertex_count;
     std::span<const SourceScBoxTransformInputNative> changed;
 };
 
@@ -204,6 +208,8 @@ inline void pre_update_source_sap_aabb_manager_native(
             manager.sap.bounds.getDevicePtr(),
             boxes->cached_transforms.getDevicePtr(),
             boxes->cached_geometry.getDevicePtr(),
+            boxes->convex_vertices.getDevicePtr(),
+            boxes->convex_vertex_count,
             static_cast<std::uint32_t>(boxes->changed.size()),capacity);
     }
 
