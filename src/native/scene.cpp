@@ -280,6 +280,35 @@ ShapeId Scene::attach_sphere(BodyId body,float radius,Transform pose) {
     shape.local_pose=pose;
     return attach(body,shape);
 }
+ShapeId Scene::attach_convex(
+    BodyId body,std::shared_ptr<const ConvexMesh> mesh,Transform pose) {
+    if(!mesh || mesh->vertices().empty())
+        throw std::invalid_argument("Cooked convex geometry is missing");
+    if(convex_vertices_.size()>
+       std::numeric_limits<std::uint32_t>::max()-mesh->vertices().size())
+        throw std::overflow_error("Convex vertex arena exceeds 32-bit device indexing");
+    const auto lower=mesh->bounds_min(),upper=mesh->bounds_max();
+    Shape shape;
+    shape.geometry=Geometry::Convex;
+    shape.convex=std::move(mesh);
+    shape.half_extents={
+        std::max(std::abs(lower.x),std::abs(upper.x)),
+        std::max(std::abs(lower.y),std::abs(upper.y)),
+        std::max(std::abs(lower.z),std::abs(upper.z))};
+    shape.convex_vertex_offset=static_cast<std::uint32_t>(convex_vertices_.size());
+    shape.convex_vertex_count=static_cast<std::uint32_t>(
+        shape.convex->vertices().size());
+    shape.local_pose=pose;
+    const auto previous=convex_vertices_.size();
+    convex_vertices_.insert(convex_vertices_.end(),
+        shape.convex->vertices().begin(),shape.convex->vertices().end());
+    try {
+        return attach(body,std::move(shape));
+    }catch(...) {
+        convex_vertices_.resize(previous);
+        throw;
+    }
+}
 Scene::Shape& Scene::require_shape(ShapeId id) {
     if(id>=shapes_.size() || !shapes_[id].alive)
         throw std::out_of_range("Unknown or retired native shape ID");
@@ -1169,8 +1198,8 @@ BodyState Scene::body_state(BodyId id) const {
 }
 void Scene::update_shape_bounds(Shape& actor) {
     refresh_shape_pose(actor);
-    // GuBounds::computeBounds(eBOX) followed by Sc cached-shape
-    // publication. Construct every encoded endpoint before committing.
+    // GuBounds::computeBounds followed by Sc cached-shape publication.
+    // Construct every encoded endpoint before committing.
         const Vec3 p = actor.position, h = actor.half_extents;
         // Source: GuBounds.cpp::computeBounds(eBOX), basisExtentV.
         // The world AABB of a rotated box is the sum of absolute
@@ -1191,6 +1220,48 @@ void Scene::update_shape_bounds(Shape& actor) {
                 std::abs(x.y)*h.x + std::abs(y.y)*h.y + std::abs(z.y)*h.z,
                 std::abs(x.z)*h.x + std::abs(y.z)*h.y + std::abs(z.z)*h.z
             };
+        }
+        if(actor.geometry==Geometry::Convex) {
+            Vec3 lower{
+                std::numeric_limits<float>::infinity(),
+                std::numeric_limits<float>::infinity(),
+                std::numeric_limits<float>::infinity()};
+            Vec3 upper{-lower.x,-lower.y,-lower.z};
+            for(const Vec3 v:actor.convex->vertices()) {
+                const Vec3 rotated=rotate(q,v);
+                lower.x=std::min(lower.x,rotated.x);
+                lower.y=std::min(lower.y,rotated.y);
+                lower.z=std::min(lower.z,rotated.z);
+                upper.x=std::max(upper.x,rotated.x);
+                upper.y=std::max(upper.y,rotated.y);
+                upper.z=std::max(upper.z,rotated.z);
+            }
+            const Vec3 center{
+                (upper.x+lower.x)*0.5f,
+                (upper.y+lower.y)*0.5f,
+                (upper.z+lower.z)*0.5f};
+            extent={(upper.x-lower.x)*0.5f,(upper.y-lower.y)*0.5f,
+                    (upper.z-lower.z)*0.5f};
+            // Asymmetric hull bounds are centered away from the
+            // authoring origin; adjust the six source endpoints below.
+            const Vec3 offset{center.x,center.y,center.z};
+            const Vec3 added{extent.x+actor.contact_offset,
+                             extent.y+actor.contact_offset,
+                             extent.z+actor.contact_offset};
+            const std::array<float,6> bounds{
+                p.x+offset.x-added.x,p.y+offset.y-added.y,p.z+offset.z-added.z,
+                p.x+offset.x+added.x,p.y+offset.y+added.y,p.z+offset.z+added.z};
+            std::array<std::uint32_t,6> encoded{};
+            for(const float v:bounds)
+                if(!std::isfinite(v))
+                    throw std::overflow_error("Convex scene AABB is not finite");
+            for(unsigned axis=0;axis<3u;++axis) {
+                encoded[axis]=encode_min(bounds[axis]);
+                encoded[axis+3u]=encode_max(bounds[axis+3u]);
+            }
+            actor.encoded_bounds=encoded;
+            actor.cached_bounds_current=true;
+            return;
         }
         extent.x += actor.contact_offset;
         extent.y += actor.contact_offset;
@@ -2212,10 +2283,16 @@ void Scene::update_gpu_pairs(bool force_update) {
             gpu_broadphase_boxes_.push_back({
                 id,actor.position,extents,basis,
                 actor.contact_offset,motion,actor.local_pose,actor.next_simulation_shape,
-                actor.geometry==Geometry::Sphere?1u:0u});
+                actor.geometry==Geometry::Sphere?1u:
+                (actor.geometry==Geometry::Convex?2u:0u),
+                actor.convex_vertex_offset,actor.convex_vertex_count});
         }
         gpu_broadphase_snapshot_current_=true;
         ++gpu_broadphase_snapshot_rebuilds_;
+    }
+    if(uploaded_convex_vertex_count_!=convex_vertices_.size()) {
+        gpu_broadphase_->upload_convex_vertices(convex_vertices_);
+        uploaded_convex_vertex_count_=convex_vertices_.size();
     }
     const auto reports=gpu_broadphase_->advance(
         gpu_broadphase_boxes_,force_update,dirty_);
@@ -10416,6 +10493,11 @@ public:
     }
     ShapeId attach_sphere_shape(BodyId body,float radius,Transform pose) override {
         return scene_.attach_sphere(body,radius,pose);
+    }
+    ShapeId attach_convex_shape(
+        BodyId body,std::shared_ptr<const ConvexMesh> mesh,
+        Transform pose) override {
+        return scene_.attach_convex(body,std::move(mesh),pose);
     }
     void detach_shape(ShapeId shape) override {scene_.detach_shape(shape);}
     void set_shape_local_pose(ShapeId shape,Transform pose) override {scene_.set_shape_local_pose(shape,pose);}
