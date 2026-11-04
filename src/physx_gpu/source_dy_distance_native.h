@@ -330,12 +330,28 @@ public:
         const std::size_t inline_body_bytes=
             inline_bodies_.size()*sizeof(native::GpuDyContactPrepBody);
         const std::size_t compact_prep_bytes=static_begin+inline_body_bytes;
+        // Device contact row and friction preparation still borrow the
+        // authored mass pose. Joint-only and free bodies have no such
+        // reader, so they can consume an authorized resident box pose.
+        contact_pose_required_.assign(bodies.size(),0u);
+        for(const auto& desc:descriptors) {
+            if(desc.row_count)continue;
+            for(const auto ordinal:{desc.row0,desc.row1}) {
+                if(ordinal==invalid)continue;
+                if(ordinal>=bodies.size())
+                    throw std::logic_error("Source contact has invalid Dy body ordinal");
+                contact_pose_required_[ordinal]=1u;
+            }
+        }
         packed_integration_.clear();
         host_poses_.clear();
         last_resident_pose_count_=0u;
         packed_integration_.reserve(integration.size());
         host_poses_.reserve(integration.size());
         for(const auto& input:integration) {
+            const auto ordinal=packed_integration_.size();
+            const bool contact_pose=ordinal<bodies.size() &&
+                contact_pose_required_[ordinal]!=0u;
             SourceDyPackedIntegrationNative record{};
             std::memcpy(record.linear_velocity,input.linear_velocity,
                         sizeof(record.linear_velocity));
@@ -352,7 +368,7 @@ public:
             std::memcpy(record.mass_local_orientation,input.mass_local_orientation,
                         sizeof(record.mass_local_orientation));
             record.source_shape_count=input.source_shape_count;
-            if(record.active && (input.active&2u)) {
+            if(record.active && (input.active&2u) && !contact_pose) {
                 if(!record.source_shape_count ||
                    record.source_element==invalid)
                     throw std::logic_error("Source Dy resident pose lacks Sc ElementSim");
@@ -904,6 +920,7 @@ private:
     std::vector<SourceDyPackedContactPrepNative> packed_;
     std::vector<SourceDyPackedIntegrationNative> packed_integration_;
     std::vector<SourceDyHostPoseNative> host_poses_;
+    std::vector<std::uint8_t> contact_pose_required_;
     std::vector<native::GpuDyContactPrepBody> inline_bodies_;
     std::vector<native::GpuDyFrictionAnchorInput> compact_anchors_;
     std::vector<std::size_t> patch_anchor_starts_;
