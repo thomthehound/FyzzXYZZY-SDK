@@ -514,63 +514,14 @@ if(FYZZXYZZY_BUILD_D3D12)
         "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_pcm_sc_contact_publish_native.hlsli")
     add_custom_target(fyzzxyzzy_source_pcm_gjk_shader_d3d12
       DEPENDS "${FYZZXYZZY_SOURCE_PCM_GJK_DXIL}")
-    set(FYZZXYZZY_SOURCE_PCM_GJK_BINDINGS_DXIL
-      "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_source_pcm_gjk_bindings_probe.dxil")
     set(FYZZXYZZY_SOURCE_PCM_GJK_SOLVER_DXIL
       "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_source_pcm_gjk_solver_probe.dxil")
-    set(FYZZXYZZY_SOURCE_PCM_GJK_SUPPORT_DXIL
-      "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_source_pcm_gjk_support_probe.dxil")
-    set(FYZZXYZZY_SOURCE_PCM_GJK_ITERATION_DXIL
-      "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_source_pcm_gjk_iteration_probe.dxil")
-    fyzzxyzzy_compile_hlsl("${FYZZXYZZY_SOURCE_PCM_GJK_BINDINGS_DXIL}"
-      "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_pcm_box_gjk_native.hlsl" cs_6_0 main
-      FLAGS -DFYZZXYZZY_GJK_PROBE_BINDINGS=1
-      DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_pcm_box_gjk_native.hlsli")
     fyzzxyzzy_compile_hlsl("${FYZZXYZZY_SOURCE_PCM_GJK_SOLVER_DXIL}"
       "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_pcm_box_gjk_native.hlsl" cs_6_0 main
       FLAGS -DFYZZXYZZY_GJK_PROBE_SOLVER=1
       DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_pcm_box_gjk_native.hlsli")
-    fyzzxyzzy_compile_hlsl("${FYZZXYZZY_SOURCE_PCM_GJK_SUPPORT_DXIL}"
-      "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_pcm_box_gjk_native.hlsl" cs_6_0 main
-      FLAGS -DFYZZXYZZY_GJK_PROBE_SUPPORT=1
-      DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_pcm_box_gjk_native.hlsli")
-    fyzzxyzzy_compile_hlsl("${FYZZXYZZY_SOURCE_PCM_GJK_ITERATION_DXIL}"
-      "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_pcm_box_gjk_native.hlsl" cs_6_0 main
-      FLAGS -DFYZZXYZZY_GJK_PROBE_ITERATION=1
-      DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_pcm_box_gjk_native.hlsli")
-    set(FYZZXYZZY_SOURCE_PCM_GJK_UNROLL_DXIL
-      "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_source_pcm_gjk_unroll_2_probe.dxil")
-    fyzzxyzzy_compile_hlsl("${FYZZXYZZY_SOURCE_PCM_GJK_UNROLL_DXIL}"
-      "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_pcm_box_gjk_native.hlsl" cs_6_0 main
-      FLAGS -DFYZZXYZZY_GJK_PROBE_ITERATION=2 -DFYZZXYZZY_GJK_PROBE_FORCE_UNROLL=1
-      DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_pcm_box_gjk_native.hlsli")
-    set(FYZZXYZZY_SOURCE_PCM_GJK_SECOND_PROBES)
-    foreach(stage IN ITEMS entry normal support)
-      string(TOUPPER "${stage}" stage_upper)
-      set(probe_dxil "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_source_pcm_gjk_second_${stage}_probe.dxil")
-      fyzzxyzzy_compile_hlsl("${probe_dxil}"
-        "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_pcm_box_gjk_native.hlsl" cs_6_0 main
-        FLAGS -DFYZZXYZZY_GJK_PROBE_ITERATION=2 -DFYZZXYZZY_GJK_PROBE_SECOND_${stage_upper}=1
-        DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_pcm_box_gjk_native.hlsli")
-      list(APPEND FYZZXYZZY_SOURCE_PCM_GJK_SECOND_PROBES "${probe_dxil}")
-    endforeach()
-    set(FYZZXYZZY_SOURCE_PCM_GJK_DEPTH_PROBES)
-    foreach(depth IN ITEMS 2 4 8 16)
-      set(probe_dxil "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_source_pcm_gjk_depth_${depth}_probe.dxil")
-      fyzzxyzzy_compile_hlsl("${probe_dxil}"
-        "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_pcm_box_gjk_native.hlsl" cs_6_0 main
-        FLAGS -DFYZZXYZZY_GJK_PROBE_ITERATION=${depth}
-        DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_pcm_box_gjk_native.hlsli")
-      list(APPEND FYZZXYZZY_SOURCE_PCM_GJK_DEPTH_PROBES "${probe_dxil}")
-    endforeach()
     add_custom_target(fyzzxyzzy_source_pcm_gjk_probes_shader_d3d12
-      DEPENDS "${FYZZXYZZY_SOURCE_PCM_GJK_BINDINGS_DXIL}"
-              "${FYZZXYZZY_SOURCE_PCM_GJK_SUPPORT_DXIL}"
-              "${FYZZXYZZY_SOURCE_PCM_GJK_ITERATION_DXIL}"
-              "${FYZZXYZZY_SOURCE_PCM_GJK_SOLVER_DXIL}"
-              "${FYZZXYZZY_SOURCE_PCM_GJK_UNROLL_DXIL}"
-              ${FYZZXYZZY_SOURCE_PCM_GJK_SECOND_PROBES}
-              ${FYZZXYZZY_SOURCE_PCM_GJK_DEPTH_PROBES})
+      DEPENDS "${FYZZXYZZY_SOURCE_PCM_GJK_SOLVER_DXIL}")
     set(FYZZXYZZY_SOURCE_PCM_EPA_DXIL
       "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_source_pcm_box_epa_native.dxil")
     fyzzxyzzy_compile_hlsl("${FYZZXYZZY_SOURCE_PCM_EPA_DXIL}" "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_pcm_box_epa_native.hlsl" cs_6_0 main
@@ -604,79 +555,7 @@ if(FYZZXYZZY_BUILD_D3D12)
       DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_dy_contact_pgs_native.hlsli")
     add_custom_target(fyzzxyzzy_source_dy_convex_shader_d3d12
       DEPENDS "${FYZZXYZZY_SOURCE_DY_CONVEX_DXIL}")
-    # The probe variants share the production resource layout. One
-    # exits after reading the Sc pair; the other runs GJK without
-    # contact publication.
-    foreach(probe IN ITEMS bindings support iteration)
-      if(probe STREQUAL "bindings")
-        set(probe_dxil "${FYZZXYZZY_SOURCE_PCM_GJK_BINDINGS_DXIL}")
-        set(probe_mode "b")
-      elseif(probe STREQUAL "support")
-        set(probe_dxil "${FYZZXYZZY_SOURCE_PCM_GJK_SUPPORT_DXIL}")
-        set(probe_mode "p")
-      elseif(probe STREQUAL "iteration")
-        set(probe_dxil "${FYZZXYZZY_SOURCE_PCM_GJK_ITERATION_DXIL}")
-        set(probe_mode "i")
-      else()
-        set(probe_dxil "${FYZZXYZZY_SOURCE_PCM_GJK_SOLVER_DXIL}")
-        set(probe_mode "s")
-      endif()
-      add_test(NAME fyzzxyzzy_source_pcm_gjk_${probe}_probe_d3d12
-        COMMAND $<TARGET_FILE:fyzzxyzzy_source_pcm_box_candidates_d3d12>
-          "${FYZZXYZZY_SC_BOX_BOUNDS_DXIL}"
-          "${FYZZXYZZY_SOURCE_PCM_BOX_DXIL}"
-          "${FYZZXYZZY_SOURCE_PCM_EPA_WORK_DXIL_COMPACT}"
-          "${probe_dxil}"
-          "${FYZZXYZZY_SOURCE_PCM_EPA_DXIL}")
-      set_tests_properties(fyzzxyzzy_source_pcm_gjk_${probe}_probe_d3d12
-        PROPERTIES
-        ENVIRONMENT "FYZZXYZZY_D3D12_DEBUG=1;FYZZXYZZY_D3D12_GPU_VALIDATION=0;FYZZXYZZY_PCM_GJK_PROBE=${probe_mode}"
-        TIMEOUT 45)
-    endforeach()
-    add_test(NAME fyzzxyzzy_source_pcm_gjk_unroll_2_probe_d3d12
-      COMMAND $<TARGET_FILE:fyzzxyzzy_source_pcm_box_candidates_d3d12>
-        "${FYZZXYZZY_SC_BOX_BOUNDS_DXIL}"
-        "${FYZZXYZZY_SOURCE_PCM_BOX_DXIL}"
-        "${FYZZXYZZY_SOURCE_PCM_EPA_WORK_DXIL_COMPACT}"
-        "${FYZZXYZZY_SOURCE_PCM_GJK_UNROLL_DXIL}"
-        "${FYZZXYZZY_SOURCE_PCM_EPA_DXIL}")
-    set_tests_properties(fyzzxyzzy_source_pcm_gjk_unroll_2_probe_d3d12
-      PROPERTIES
-      ENVIRONMENT "FYZZXYZZY_D3D12_DEBUG=1;FYZZXYZZY_D3D12_GPU_VALIDATION=0;FYZZXYZZY_PCM_GJK_PROBE=i"
-      TIMEOUT 45)
-    foreach(stage IN ITEMS entry normal support)
-      if(stage STREQUAL "entry")
-        set(stage_marker "e")
-      elseif(stage STREQUAL "normal")
-        set(stage_marker "n")
-      else()
-        set(stage_marker "t")
-      endif()
-      add_test(NAME fyzzxyzzy_source_pcm_gjk_second_${stage}_probe_d3d12
-        COMMAND $<TARGET_FILE:fyzzxyzzy_source_pcm_box_candidates_d3d12>
-          "${FYZZXYZZY_SC_BOX_BOUNDS_DXIL}"
-          "${FYZZXYZZY_SOURCE_PCM_BOX_DXIL}"
-          "${FYZZXYZZY_SOURCE_PCM_EPA_WORK_DXIL_COMPACT}"
-          "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_source_pcm_gjk_second_${stage}_probe.dxil"
-          "${FYZZXYZZY_SOURCE_PCM_EPA_DXIL}")
-      set_tests_properties(fyzzxyzzy_source_pcm_gjk_second_${stage}_probe_d3d12
-        PROPERTIES
-        ENVIRONMENT "FYZZXYZZY_D3D12_DEBUG=1;FYZZXYZZY_D3D12_GPU_VALIDATION=0;FYZZXYZZY_PCM_GJK_PROBE=${stage_marker}"
-        TIMEOUT 45)
-    endforeach()
-    foreach(depth IN ITEMS 2 4 8 16)
-      add_test(NAME fyzzxyzzy_source_pcm_gjk_depth_${depth}_probe_d3d12
-        COMMAND $<TARGET_FILE:fyzzxyzzy_source_pcm_box_candidates_d3d12>
-          "${FYZZXYZZY_SC_BOX_BOUNDS_DXIL}"
-          "${FYZZXYZZY_SOURCE_PCM_BOX_DXIL}"
-          "${FYZZXYZZY_SOURCE_PCM_EPA_WORK_DXIL_COMPACT}"
-          "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_source_pcm_gjk_depth_${depth}_probe.dxil"
-          "${FYZZXYZZY_SOURCE_PCM_EPA_DXIL}")
-      set_tests_properties(fyzzxyzzy_source_pcm_gjk_depth_${depth}_probe_d3d12
-        PROPERTIES
-        ENVIRONMENT "FYZZXYZZY_D3D12_DEBUG=1;FYZZXYZZY_D3D12_GPU_VALIDATION=0;FYZZXYZZY_PCM_GJK_PROBE=i"
-        TIMEOUT 45)
-    endforeach()
+    # Execute the complete GJK solver without later contact publication.
     add_test(NAME fyzzxyzzy_source_pcm_gjk_solver_probe_d3d12
       COMMAND $<TARGET_FILE:fyzzxyzzy_source_pcm_box_candidates_d3d12>
         "${FYZZXYZZY_SC_BOX_BOUNDS_DXIL}"
