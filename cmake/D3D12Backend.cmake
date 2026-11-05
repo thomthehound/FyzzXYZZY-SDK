@@ -514,6 +514,21 @@ if(FYZZXYZZY_BUILD_D3D12)
         "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_pcm_sc_contact_publish_native.hlsli")
     add_custom_target(fyzzxyzzy_source_pcm_gjk_shader_d3d12
       DEPENDS "${FYZZXYZZY_SOURCE_PCM_GJK_DXIL}")
+    set(FYZZXYZZY_SOURCE_PCM_GJK_BINDINGS_DXIL
+      "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_source_pcm_gjk_bindings_probe.dxil")
+    set(FYZZXYZZY_SOURCE_PCM_GJK_SOLVER_DXIL
+      "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_source_pcm_gjk_solver_probe.dxil")
+    fyzzxyzzy_compile_hlsl("${FYZZXYZZY_SOURCE_PCM_GJK_BINDINGS_DXIL}"
+      "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_pcm_box_gjk_native.hlsl" cs_6_0 main
+      FLAGS -DFYZZXYZZY_GJK_PROBE_BINDINGS=1
+      DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_pcm_box_gjk_native.hlsli")
+    fyzzxyzzy_compile_hlsl("${FYZZXYZZY_SOURCE_PCM_GJK_SOLVER_DXIL}"
+      "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_pcm_box_gjk_native.hlsl" cs_6_0 main
+      FLAGS -DFYZZXYZZY_GJK_PROBE_SOLVER=1
+      DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_pcm_box_gjk_native.hlsli")
+    add_custom_target(fyzzxyzzy_source_pcm_gjk_probes_shader_d3d12
+      DEPENDS "${FYZZXYZZY_SOURCE_PCM_GJK_BINDINGS_DXIL}"
+              "${FYZZXYZZY_SOURCE_PCM_GJK_SOLVER_DXIL}")
     set(FYZZXYZZY_SOURCE_PCM_EPA_DXIL
       "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_source_pcm_box_epa_native.dxil")
     fyzzxyzzy_compile_hlsl("${FYZZXYZZY_SOURCE_PCM_EPA_DXIL}" "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_pcm_box_epa_native.hlsl" cs_6_0 main
@@ -547,6 +562,39 @@ if(FYZZXYZZY_BUILD_D3D12)
       DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_dy_contact_pgs_native.hlsli")
     add_custom_target(fyzzxyzzy_source_dy_convex_shader_d3d12
       DEPENDS "${FYZZXYZZY_SOURCE_DY_CONVEX_DXIL}")
+    # The probe variants share the production resource layout. One
+    # exits after reading the Sc pair; the other runs GJK without
+    # contact publication.
+    foreach(probe IN ITEMS bindings solver)
+      if(probe STREQUAL "bindings")
+        set(probe_dxil "${FYZZXYZZY_SOURCE_PCM_GJK_BINDINGS_DXIL}")
+        set(probe_mode "b")
+      else()
+        set(probe_dxil "${FYZZXYZZY_SOURCE_PCM_GJK_SOLVER_DXIL}")
+        set(probe_mode "s")
+      endif()
+      add_test(NAME fyzzxyzzy_source_pcm_gjk_${probe}_probe_d3d12
+        COMMAND $<TARGET_FILE:fyzzxyzzy_source_pcm_box_candidates_d3d12>
+          "${FYZZXYZZY_SC_BOX_BOUNDS_DXIL}"
+          "${FYZZXYZZY_SOURCE_PCM_BOX_DXIL}"
+          "${FYZZXYZZY_SOURCE_PCM_EPA_WORK_DXIL_COMPACT}"
+          "${probe_dxil}"
+          "${FYZZXYZZY_SOURCE_PCM_EPA_DXIL}")
+      set_tests_properties(fyzzxyzzy_source_pcm_gjk_${probe}_probe_d3d12
+        PROPERTIES
+        ENVIRONMENT "FYZZXYZZY_D3D12_DEBUG=1;FYZZXYZZY_D3D12_GPU_VALIDATION=0;FYZZXYZZY_PCM_GJK_PROBE=${probe_mode}"
+        TIMEOUT 45)
+    endforeach()
+    add_test(NAME fyzzxyzzy_source_pcm_box_candidates_d3d12_release
+      COMMAND $<TARGET_FILE:fyzzxyzzy_source_pcm_box_candidates_d3d12>
+        "${FYZZXYZZY_SC_BOX_BOUNDS_DXIL}"
+        "${FYZZXYZZY_SOURCE_PCM_BOX_DXIL}"
+        "${FYZZXYZZY_SOURCE_PCM_EPA_WORK_DXIL_COMPACT}"
+        "${FYZZXYZZY_SOURCE_PCM_GJK_DXIL}"
+        "${FYZZXYZZY_SOURCE_PCM_EPA_DXIL}")
+    set_tests_properties(fyzzxyzzy_source_pcm_box_candidates_d3d12_release
+      PROPERTIES ENVIRONMENT "FYZZXYZZY_D3D12_DEBUG=0" TIMEOUT 120)
+
     # Compare the full PCM fixture with the debug layer enabled but
     # without instruction-level GPU instrumentation. The GPU-validated
     # fixture below remains unchanged.
@@ -566,7 +614,7 @@ if(FYZZXYZZY_BUILD_D3D12)
       DEFINITIONS FYZZXYZZY_TEST_D3D12=1
       INCLUDES "${CMAKE_CURRENT_SOURCE_DIR}/src"
       LIBRARIES FyzzXYZZY::ComputeD3D12 fyzzxyzzy_source_gpu_primitives_d3d12
-      DEPENDS fyzzxyzzy_source_sc_box_bounds_shader_d3d12 fyzzxyzzy_source_pcm_box_candidates_shader_d3d12 fyzzxyzzy_source_pcm_epa_work_shader_d3d12 fyzzxyzzy_source_pcm_gjk_shader_d3d12 fyzzxyzzy_source_pcm_epa_shader_d3d12
+      DEPENDS fyzzxyzzy_source_sc_box_bounds_shader_d3d12 fyzzxyzzy_source_pcm_box_candidates_shader_d3d12 fyzzxyzzy_source_pcm_epa_work_shader_d3d12 fyzzxyzzy_source_pcm_gjk_shader_d3d12 fyzzxyzzy_source_pcm_epa_shader_d3d12 fyzzxyzzy_source_pcm_gjk_probes_shader_d3d12
       ARGS "${FYZZXYZZY_SC_BOX_BOUNDS_DXIL}" "${FYZZXYZZY_SOURCE_PCM_BOX_DXIL}" "${FYZZXYZZY_SOURCE_PCM_EPA_WORK_DXIL_COMPACT}" "${FYZZXYZZY_SOURCE_PCM_GJK_DXIL}" "${FYZZXYZZY_SOURCE_PCM_EPA_DXIL}")
     set_tests_properties(fyzzxyzzy_source_pcm_box_candidates_d3d12 PROPERTIES
       ENVIRONMENT "FYZZXYZZY_D3D12_DEBUG=1" TIMEOUT 300)
