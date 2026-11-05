@@ -538,6 +538,12 @@ if(FYZZXYZZY_BUILD_D3D12)
       "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_pcm_box_gjk_native.hlsl" cs_6_0 main
       FLAGS -DFYZZXYZZY_GJK_PROBE_ITERATION=1
       DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_pcm_box_gjk_native.hlsli")
+    set(FYZZXYZZY_SOURCE_PCM_GJK_UNROLL_DXIL
+      "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_source_pcm_gjk_unroll_2_probe.dxil")
+    fyzzxyzzy_compile_hlsl("${FYZZXYZZY_SOURCE_PCM_GJK_UNROLL_DXIL}"
+      "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_pcm_box_gjk_native.hlsl" cs_6_0 main
+      FLAGS -DFYZZXYZZY_GJK_PROBE_ITERATION=2 -DFYZZXYZZY_GJK_PROBE_FORCE_UNROLL=1
+      DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_pcm_box_gjk_native.hlsli")
     set(FYZZXYZZY_SOURCE_PCM_GJK_SECOND_PROBES)
     foreach(stage IN ITEMS entry normal support)
       string(TOUPPER "${stage}" stage_upper)
@@ -562,6 +568,7 @@ if(FYZZXYZZY_BUILD_D3D12)
               "${FYZZXYZZY_SOURCE_PCM_GJK_SUPPORT_DXIL}"
               "${FYZZXYZZY_SOURCE_PCM_GJK_ITERATION_DXIL}"
               "${FYZZXYZZY_SOURCE_PCM_GJK_SOLVER_DXIL}"
+              "${FYZZXYZZY_SOURCE_PCM_GJK_UNROLL_DXIL}"
               ${FYZZXYZZY_SOURCE_PCM_GJK_SECOND_PROBES}
               ${FYZZXYZZY_SOURCE_PCM_GJK_DEPTH_PROBES})
     set(FYZZXYZZY_SOURCE_PCM_EPA_DXIL
@@ -626,6 +633,17 @@ if(FYZZXYZZY_BUILD_D3D12)
         ENVIRONMENT "FYZZXYZZY_D3D12_DEBUG=1;FYZZXYZZY_D3D12_GPU_VALIDATION=0;FYZZXYZZY_PCM_GJK_PROBE=${probe_mode}"
         TIMEOUT 45)
     endforeach()
+    add_test(NAME fyzzxyzzy_source_pcm_gjk_unroll_2_probe_d3d12
+      COMMAND $<TARGET_FILE:fyzzxyzzy_source_pcm_box_candidates_d3d12>
+        "${FYZZXYZZY_SC_BOX_BOUNDS_DXIL}"
+        "${FYZZXYZZY_SOURCE_PCM_BOX_DXIL}"
+        "${FYZZXYZZY_SOURCE_PCM_EPA_WORK_DXIL_COMPACT}"
+        "${FYZZXYZZY_SOURCE_PCM_GJK_UNROLL_DXIL}"
+        "${FYZZXYZZY_SOURCE_PCM_EPA_DXIL}")
+    set_tests_properties(fyzzxyzzy_source_pcm_gjk_unroll_2_probe_d3d12
+      PROPERTIES
+      ENVIRONMENT "FYZZXYZZY_D3D12_DEBUG=1;FYZZXYZZY_D3D12_GPU_VALIDATION=0;FYZZXYZZY_PCM_GJK_PROBE=i"
+      TIMEOUT 45)
     foreach(stage IN ITEMS entry normal support)
       if(stage STREQUAL "entry")
         set(stage_marker "e")
