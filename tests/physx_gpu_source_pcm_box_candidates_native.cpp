@@ -414,11 +414,14 @@ void verify(Context& context,const char* transform_shader,
         const auto& resolved=results[work[0]];
         const auto expected=*probe=='b'?0xB001u:
             *probe=='p'?0xB100u:
+            *probe=='e'?0xB324u:
+            *probe=='n'?0xB325u:
             *probe=='t'?0xB321u:
             *probe=='f'?0xB322u:
             *probe=='c'?0xB323u:
             *probe=='i'?0xB300u:0xB200u;
-        const bool exact=*probe=='b' || *probe=='t' ||
+        const bool exact=*probe=='b' || *probe=='e' ||
+                         *probe=='n' || *probe=='t' ||
                          *probe=='f' || *probe=='c';
         require(resolved.status==0u &&
                 (exact
