@@ -412,7 +412,9 @@ void verify(Context& context,const char* transform_shader,
         require(indirect[0]==1u,
                 "GJK dispatch probe must contain one pending pair");
         const auto& resolved=results[work[0]];
-        const auto expected=*probe=='b'?0xB001u:0xB200u;
+        const auto expected=*probe=='b'?0xB001u:
+            *probe=='p'?0xB100u:
+            *probe=='i'?0xB300u:0xB200u;
         require(resolved.status==0u &&
                 (*probe=='b'
                     ?resolved.selected_indices==expected
