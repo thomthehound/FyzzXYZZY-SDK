@@ -465,7 +465,7 @@ void verify(Context& context,const char* transform_shader,
         release_allocations();
         return;
     }
-    const auto expected_epa=std::count_if(results.begin(),results.end(),
+    const auto expected_epa_count=std::count_if(results.begin(),results.end(),
         [](const auto& entry){return entry.status==4u;});
     {
         SourceSapDmaNative stream(context,addresses);
@@ -474,7 +474,7 @@ void verify(Context& context,const char* transform_shader,
         stream.wait_at_fetch();
     }
     context.download(args_buffer,0u,indirect.data(),sizeof(indirect));
-    require(indirect[0]==expected_epa &&
+    require(indirect[0]==expected_epa_count &&
             indirect[1]==1u && indirect[2]==1u,
             "Post-GJK GPU EPA worklist retained stale admissions");
     std::clog<<"PCM fixture: post-GJK EPA worklist count="
