@@ -589,7 +589,7 @@ if(FYZZXYZZY_BUILD_D3D12)
     # The probe variants share the production resource layout. One
     # exits after reading the Sc pair; the other runs GJK without
     # contact publication.
-    foreach(probe IN ITEMS bindings support iteration solver)
+    foreach(probe IN ITEMS bindings support iteration)
       if(probe STREQUAL "bindings")
         set(probe_dxil "${FYZZXYZZY_SOURCE_PCM_GJK_BINDINGS_DXIL}")
         set(probe_mode "b")
@@ -628,6 +628,17 @@ if(FYZZXYZZY_BUILD_D3D12)
         ENVIRONMENT "FYZZXYZZY_D3D12_DEBUG=1;FYZZXYZZY_D3D12_GPU_VALIDATION=0;FYZZXYZZY_PCM_GJK_PROBE=i"
         TIMEOUT 45)
     endforeach()
+    add_test(NAME fyzzxyzzy_source_pcm_gjk_solver_probe_d3d12
+      COMMAND $<TARGET_FILE:fyzzxyzzy_source_pcm_box_candidates_d3d12>
+        "${FYZZXYZZY_SC_BOX_BOUNDS_DXIL}"
+        "${FYZZXYZZY_SOURCE_PCM_BOX_DXIL}"
+        "${FYZZXYZZY_SOURCE_PCM_EPA_WORK_DXIL_COMPACT}"
+        "${FYZZXYZZY_SOURCE_PCM_GJK_SOLVER_DXIL}"
+        "${FYZZXYZZY_SOURCE_PCM_EPA_DXIL}")
+    set_tests_properties(fyzzxyzzy_source_pcm_gjk_solver_probe_d3d12
+      PROPERTIES
+      ENVIRONMENT "FYZZXYZZY_D3D12_DEBUG=1;FYZZXYZZY_D3D12_GPU_VALIDATION=0;FYZZXYZZY_PCM_GJK_PROBE=s"
+      TIMEOUT 45)
     add_test(NAME fyzzxyzzy_source_pcm_box_candidates_d3d12_release
       COMMAND $<TARGET_FILE:fyzzxyzzy_source_pcm_box_candidates_d3d12>
         "${FYZZXYZZY_SC_BOX_BOUNDS_DXIL}"
