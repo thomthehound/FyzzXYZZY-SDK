@@ -58,7 +58,7 @@ constexpr std::array<std::string_view,
 }};
 constexpr std::array<std::string_view,
     static_cast<std::size_t>(NativeGpuPcmStage::Count)> pcm_stage_names{{
-    "Candidates","EpaCompact","EpaContact","FaceContacts"
+    "Candidates","EpaCompact","GjkContact","EpaContact","FaceContacts"
 }};
 constexpr std::array<std::string_view,
     static_cast<std::size_t>(NativeGpuAggregateStage::Count)> aggregate_stage_names{{
@@ -131,9 +131,13 @@ NativeGpuAggregateShaders load_native_gpu_aggregate_shaders(
 
 NativeGpuPcmShaders load_native_gpu_pcm_shaders(
     compute::Backend backend,const std::filesystem::path& manifest) {
-    return load_source_shader_bundle(
+    auto shaders=load_source_shader_bundle(
         backend,manifest,"PCM","FYZZXYZZY_SOURCE_PCM_1",
         pcm_stage_names);
+    if(backend==compute::Backend::Vulkan)
+        shaders[static_cast<std::size_t>(
+            NativeGpuPcmStage::GjkContact)].entry_point="gjk";
+    return shaders;
 }
 
 World create_native_gpu_world(
