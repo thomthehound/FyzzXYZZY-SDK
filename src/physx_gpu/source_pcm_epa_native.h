@@ -21,8 +21,10 @@ class SourcePcmEpaNativeStage final {
 public:
     SourcePcmEpaNativeStage(compute::Context& context,
                             compute::ShaderBinary shader,
-                            bool face_geometry=false)
-        : context_(context),face_geometry_(face_geometry) {
+                            bool face_geometry=false,
+                            bool direct_gjk=false)
+        : context_(context),face_geometry_(face_geometry),
+          direct_gjk_(direct_gjk) {
         const auto& device=context.device_info();
         if(!device.max_workgroup_count[0] ||
            !device.max_storage_buffer_range)
@@ -68,7 +70,8 @@ public:
         if(!pair_count)return;
         const auto group_count=face_geometry_
             ?(std::uint64_t(pair_count)+63u)/64u
-            :std::uint64_t(pair_count);
+            :direct_gjk_?(std::uint64_t(pair_count)+31u)/32u
+                        :std::uint64_t(pair_count);
         if(!shape_capacity || !candidate_capacity || !edge_capacity ||
            group_count>context_.device_info().max_workgroup_count[0])
             throw std::out_of_range(
@@ -120,9 +123,9 @@ public:
                         ?convex_surface_bytes
                         :source_allocation_bytes(shape_capacity,32u),
                      9u,compute::BufferAccess::Read));
-        if(face_geometry_) {
-            // Every admitted convex contact is eligible, including GJK
-            // witnesses that never enter the sparse EPA work queue.
+        if(face_geometry_ || direct_gjk_) {
+            // GJK lanes read pending Sc statuses directly; only EPA
+            // requires a compacted indirect worklist.
             dispatch.groups={
                 static_cast<std::uint32_t>(group_count),1u,1u};
         }else {
@@ -171,6 +174,7 @@ public:
 private:
     compute::Context& context_;
     bool face_geometry_=false;
+    bool direct_gjk_=false;
     compute::PipelineId pipeline_=0;
     std::size_t alignment_=0;
     std::uint64_t max_view_=0;
