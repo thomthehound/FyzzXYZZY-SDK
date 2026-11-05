@@ -15,21 +15,32 @@ struct GjkSupportPoint {
     float3 a,b,q;
     uint ai,bi;
 };
-// The simplex is carried in fixed fields rather than a dynamically
-// indexed private array across the GJK loop.
+// Only the Minkowski point and feature IDs persist between iterations.
+// Shape-space witnesses are reconstructed on convergence or EPA admission.
+struct GjkCompactPoint {
+    float3 q;
+    uint ai,bi;
+};
 struct GjkSimplex {
-    GjkSupportPoint point0,point1,point2,point3;
+    GjkCompactPoint point0,point1,point2,point3;
     uint count;
 };
-void gjkAppend(inout GjkSimplex simplex,GjkSupportPoint support) {
+void gjkAppend(inout GjkSimplex simplex,GjkCompactPoint support) {
     if(simplex.count==0u)simplex.point0=support;
     else if(simplex.count==1u)simplex.point1=support;
     else if(simplex.count==2u)simplex.point2=support;
     else simplex.point3=support;
     ++simplex.count;
 }
+void gjkAppend(inout GjkSimplex simplex,GjkSupportPoint support) {
+    GjkCompactPoint compact;
+    compact.q=support.q;
+    compact.ai=support.ai;
+    compact.bi=support.bi;
+    gjkAppend(simplex,compact);
+}
 struct GjkClosest {
-    float3 closestPoint,a,b;
+    float3 closestPoint;
     float4 weights;
     uint mask;
     float dist2;
@@ -105,6 +116,27 @@ GjkSupportPoint gjkSupport(GjkBoxPair pair,float3 direction) {
     s.q=s.a-s.b;
     return s;
 }
+float3 gjkVertex(uint kind,float3 half,uint first,uint index) {
+#ifndef FYZZXYZZY_GJK_BOX_ONLY
+    if(kind==1u)return float3(0.f,0.f,0.f);
+    if(kind==2u)
+        return asfloat(hullVertices.Load3(p.hullBias+(first+index)*12u));
+#endif
+    return float3((index&1u)!=0u?half.x:-half.x,
+                  (index&2u)!=0u?half.y:-half.y,
+                  (index&4u)!=0u?half.z:-half.z);
+}
+GjkSupportPoint gjkRestoreSupport(GjkBoxPair pair,GjkCompactPoint compact) {
+    GjkSupportPoint support;
+    const float3 localA=gjkVertex(
+        pair.kindA,pair.halfA,pair.firstA,compact.ai);
+    support.b=gjkVertex(pair.kindB,pair.halfB,pair.firstB,compact.bi);
+    support.a=pair.aInB+rotateSource(pair.relative,localA);
+    support.q=compact.q;
+    support.ai=compact.ai;
+    support.bi=compact.bi;
+    return support;
+}
 // Closest-origin Voronoi features. Each simplex dimension has a fixed
 // feature calculation; no subset masks, dynamic matrix, or variable-size
 // simplex search is needed in the GPU inner loop.
@@ -173,10 +205,10 @@ GjkClosest gjkClosestSimplex(GjkSimplex simplex) {
     result.dist2=3.402823466e+38f;
     const uint count=simplex.count;
     if(count==0u)return result;
-    const GjkSupportPoint s0=simplex.point0;
-    const GjkSupportPoint s1=simplex.point1;
-    const GjkSupportPoint s2=simplex.point2;
-    const GjkSupportPoint s3=simplex.point3;
+    const GjkCompactPoint s0=simplex.point0;
+    const GjkCompactPoint s1=simplex.point1;
+    const GjkCompactPoint s2=simplex.point2;
+    const GjkCompactPoint s3=simplex.point3;
     const float4 w0=float4(1.f,0.f,0.f,0.f);
     const float4 w1=float4(0.f,1.f,0.f,0.f);
     const float4 w2=float4(0.f,0.f,1.f,0.f);
@@ -224,22 +256,6 @@ GjkClosest gjkClosestSimplex(GjkSimplex simplex) {
     result.closestPoint=best.closest;
     result.dist2=best.dist2;
     result.weights=best.weights;
-    precise float3 pa=s0.a*best.weights.x;
-    precise float3 pb=s0.b*best.weights.x;
-    if(count>1u) {
-        pa=pa+s1.a*best.weights.y;
-        pb=pb+s1.b*best.weights.y;
-    }
-    if(count>2u) {
-        pa=pa+s2.a*best.weights.z;
-        pb=pb+s2.b*best.weights.z;
-    }
-    if(count>3u) {
-        pa=pa+s3.a*best.weights.w;
-        pb=pb+s3.b*best.weights.w;
-    }
-    result.a=pa;
-    result.b=pb;
     return result;
 }
 void gjkCompact(inout GjkSimplex simplex,GjkClosest closest) {
@@ -261,16 +277,35 @@ void gjkCompact(inout GjkSimplex simplex,GjkClosest closest) {
     simplex=packed;
 }
 bool gjkContact(GjkBoxPair pair,GjkClosest nearest,
-                out GjkWitness witness) {
+                GjkSimplex simplex,out GjkWitness witness) {
     witness=(GjkWitness)0;
     float distance=sqrt(nearest.dist2);
-    if(!(distance>0.f) || !isfinite(distance))return false;
+    if(!(distance>0.f) || !isfinite(distance) ||
+       simplex.count==0u)return false;
+    const GjkSupportPoint s0=gjkRestoreSupport(pair,simplex.point0);
+    precise float3 pa=s0.a*nearest.weights.x;
+    precise float3 pb=s0.b*nearest.weights.x;
+    if(simplex.count>1u) {
+        const GjkSupportPoint s1=gjkRestoreSupport(pair,simplex.point1);
+        pa=pa+s1.a*nearest.weights.y;
+        pb=pb+s1.b*nearest.weights.y;
+    }
+    if(simplex.count>2u) {
+        const GjkSupportPoint s2=gjkRestoreSupport(pair,simplex.point2);
+        pa=pa+s2.a*nearest.weights.z;
+        pb=pb+s2.b*nearest.weights.z;
+    }
+    if(simplex.count>3u) {
+        const GjkSupportPoint s3=gjkRestoreSupport(pair,simplex.point3);
+        pa=pa+s3.a*nearest.weights.w;
+        pb=pb+s3.b*nearest.weights.w;
+    }
     witness.normalB=nearest.closestPoint*(1.f/distance);
     witness.localA=rotateSource(
         conjugate(pair.relative),
-        nearest.a-pair.aInB-nearest.closestPoint*
+        pa-pair.aInB-nearest.closestPoint*
             (pair.radiusA/distance));
-    witness.localB=nearest.b+
+    witness.localB=pb+
         nearest.closestPoint*(pair.radiusB/distance);
     witness.separation=distance-pair.radiusA-pair.radiusB;
     return true;
@@ -330,7 +365,7 @@ uint gjkBoxContinuationState(GjkBoxPair pair,float contactDistance,
         }
         if(simplex.count>0u && projection>dist*progressFactor) {
             GjkClosest current=gjkClosestSimplex(simplex);
-            outcome=current.mask!=0u && gjkContact(pair,current,witness) &&
+            outcome=current.mask!=0u && gjkContact(pair,current,simplex,witness) &&
                     witness.separation<=contactDistance?1u:0u;
             break;
         }
@@ -347,7 +382,7 @@ uint gjkBoxContinuationState(GjkBoxPair pair,float contactDistance,
             if(projection>0.f) {
                 const GjkClosest current=gjkClosestSimplex(simplex);
                 outcome=current.mask!=0u &&
-                        gjkContact(pair,current,witness) &&
+                        gjkContact(pair,current,simplex,witness) &&
                         witness.separation<=contactDistance?1u:0u;
             } else outcome=pointCore?3u:0u;
             break;
@@ -367,17 +402,18 @@ uint gjkBoxContinuationState(GjkBoxPair pair,float contactDistance,
         }
         closest=next.closestPoint;
         float nextDist=sqrt(next.dist2);
+        bool noProgressContact=false;
+        if(nextDist>=previous && pointCore && projection>0.f)
+            noProgressContact=gjkContact(pair,next,simplex,witness) &&
+                witness.separation<=contactDistance;
         gjkCompact(simplex,next);
 #ifdef FYZZXYZZY_GJK_PROBE_SECOND_COMPACT
         if(iteration==1u)return 0x23u;
 #endif
         if(nextDist>=previous) {
-            if(pointCore) {
-                if(projection>0.f)
-                    outcome=gjkContact(pair,next,witness) &&
-                            witness.separation<=contactDistance?1u:0u;
-                else outcome=3u;
-            } else outcome=0u;
+            if(pointCore)
+                outcome=projection>0.f?(noProgressContact?1u:0u):3u;
+            else outcome=0u;
             break;
         }
         previous=nextDist;
@@ -393,10 +429,16 @@ uint gjkBoxContinuation(GjkBoxPair pair,float contactDistance,
     const uint outcome=gjkBoxContinuationState(
         pair,contactDistance,witness,state);
     count=state.count;
-    simplex[0]=state.point0;
-    simplex[1]=state.point1;
-    simplex[2]=state.point2;
-    simplex[3]=state.point3;
+    simplex[0]=(GjkSupportPoint)0;
+    simplex[1]=(GjkSupportPoint)0;
+    simplex[2]=(GjkSupportPoint)0;
+    simplex[3]=(GjkSupportPoint)0;
+    if(outcome==3u) {
+        if(count>0u)simplex[0]=gjkRestoreSupport(pair,state.point0);
+        if(count>1u)simplex[1]=gjkRestoreSupport(pair,state.point1);
+        if(count>2u)simplex[2]=gjkRestoreSupport(pair,state.point2);
+        if(count>3u)simplex[3]=gjkRestoreSupport(pair,state.point3);
+    }
     return outcome;
 }
 
