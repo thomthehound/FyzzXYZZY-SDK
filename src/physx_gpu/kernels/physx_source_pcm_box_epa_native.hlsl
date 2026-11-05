@@ -70,7 +70,6 @@ ConstantBuffer<Parameters> p : register(b0,space0);
 // One Sc pair owns one 32-thread group. Independent simplex subsets
 // retain their source evaluation order through a stable final reduction.
 groupshared GjkSupportPoint gjkGroupSimplex[4];
-groupshared GjkClosest gjkGroupChoices[15];
 groupshared GjkClosest gjkGroupBest;
 groupshared GjkWitness gjkGroupWitness;
 groupshared uint gjkGroupCount,gjkGroupState;
@@ -225,15 +224,30 @@ uint gjkGroupContinuation(GjkBoxPair pair,float contactDistance,
             }
         }
         GroupMemoryBarrierWithGroupSync();
-        if(lane<15u && gjkGroupState==0u)
-            gjkGroupChoices[lane]=gjkGroupSubset(lane+1u,gjkGroupCount);
-        GroupMemoryBarrierWithGroupSync();
+        if(WaveActiveAllTrue(gjkGroupState!=0u))break;
+        // All 32 lanes participate in one wave. Each candidate owns one
+        // simplex feature; an exact min-distance/min-lane reduction
+        // preserves the scalar subset tie order.
+        GjkClosest choice=(GjkClosest)0;
+        choice.dist2=3.402823466e+38f;
+        if(lane<15u)
+            choice=gjkGroupSubset(lane+1u,gjkGroupCount);
+        const float closestDistance=WaveActiveMin(choice.dist2);
+        const uint selectedLane=WaveActiveMin(
+            choice.mask!=0u && choice.dist2==closestDistance
+                ?lane:0xffffffffu);
+        GjkClosest best=(GjkClosest)0;
+        best.dist2=closestDistance;
+        if(selectedLane!=0xffffffffu) {
+            best.mask=WaveReadLaneAt(choice.mask,selectedLane);
+            best.closestPoint=WaveReadLaneAt(choice.closestPoint,selectedLane);
+            best.a=WaveReadLaneAt(choice.a,selectedLane);
+            best.b=WaveReadLaneAt(choice.b,selectedLane);
+            [unroll]
+            for(uint j=0u;j<4u;++j)
+                best.weights[j]=WaveReadLaneAt(choice.weights[j],selectedLane);
+        }
         if(lane==0u && gjkGroupState==0u) {
-            GjkClosest best=(GjkClosest)0;
-            best.dist2=3.402823466e+38f;
-            for(uint mask=0u;mask<15u;++mask)
-                if(gjkGroupChoices[mask].dist2<best.dist2)
-                    best=gjkGroupChoices[mask];
             if(best.mask==0u)
                 gjkGroupState=2u;
             else {
@@ -262,6 +276,7 @@ uint gjkGroupContinuation(GjkBoxPair pair,float contactDistance,
             }
         }
         GroupMemoryBarrierWithGroupSync();
+        if(WaveActiveAllTrue(gjkGroupState!=0u))break;
     }
     if(lane==0u && gjkGroupState==0u)
         gjkGroupState=pointCore && gjkGroupCount>0u?3u:2u;
