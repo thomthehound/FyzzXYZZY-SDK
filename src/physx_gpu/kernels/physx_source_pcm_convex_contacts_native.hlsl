@@ -143,7 +143,7 @@ void main(uint3 thread : SV_DispatchThreadID) {
     GjkWitness contacts[4];
     const uint count=convexFaceContacts(
         pair,contactDistance,witness,contacts);
-    if(count<=1u)return;
+    if(count==0u)return;
     if(count>limit) {
         edgeCaches.Store(cache+12u,0u);
         edgeCaches.Store(cache+68u,1u);
