@@ -295,7 +295,11 @@ uint gjkBoxContinuationState(GjkBoxPair pair,float contactDistance,
 #else
     const uint maxIterations=32u;
 #endif
+#ifdef FYZZXYZZY_GJK_PROBE_FORCE_UNROLL
+    [unroll]
+#else
     [loop]
+#endif
     for(uint iteration=0u;iteration<maxIterations;++iteration) {
 #ifdef FYZZXYZZY_GJK_PROBE_SECOND_ENTRY
         if(iteration==1u)return 0x24u;
