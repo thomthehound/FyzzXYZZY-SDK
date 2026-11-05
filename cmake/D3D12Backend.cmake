@@ -538,6 +538,16 @@ if(FYZZXYZZY_BUILD_D3D12)
       "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_pcm_box_gjk_native.hlsl" cs_6_0 main
       FLAGS -DFYZZXYZZY_GJK_PROBE_ITERATION=1
       DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_pcm_box_gjk_native.hlsli")
+    set(FYZZXYZZY_SOURCE_PCM_GJK_SECOND_PROBES)
+    foreach(stage IN ITEMS support feature compact)
+      string(TOUPPER "${stage}" stage_upper)
+      set(probe_dxil "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_source_pcm_gjk_second_${stage}_probe.dxil")
+      fyzzxyzzy_compile_hlsl("${probe_dxil}"
+        "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_pcm_box_gjk_native.hlsl" cs_6_0 main
+        FLAGS -DFYZZXYZZY_GJK_PROBE_ITERATION=2 -DFYZZXYZZY_GJK_PROBE_SECOND_${stage_upper}=1
+        DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_pcm_box_gjk_native.hlsli")
+      list(APPEND FYZZXYZZY_SOURCE_PCM_GJK_SECOND_PROBES "${probe_dxil}")
+    endforeach()
     set(FYZZXYZZY_SOURCE_PCM_GJK_DEPTH_PROBES)
     foreach(depth IN ITEMS 2 4 8 16)
       set(probe_dxil "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_source_pcm_gjk_depth_${depth}_probe.dxil")
@@ -552,6 +562,7 @@ if(FYZZXYZZY_BUILD_D3D12)
               "${FYZZXYZZY_SOURCE_PCM_GJK_SUPPORT_DXIL}"
               "${FYZZXYZZY_SOURCE_PCM_GJK_ITERATION_DXIL}"
               "${FYZZXYZZY_SOURCE_PCM_GJK_SOLVER_DXIL}"
+              ${FYZZXYZZY_SOURCE_PCM_GJK_SECOND_PROBES}
               ${FYZZXYZZY_SOURCE_PCM_GJK_DEPTH_PROBES})
     set(FYZZXYZZY_SOURCE_PCM_EPA_DXIL
       "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_source_pcm_box_epa_native.dxil")
@@ -613,6 +624,26 @@ if(FYZZXYZZY_BUILD_D3D12)
       set_tests_properties(fyzzxyzzy_source_pcm_gjk_${probe}_probe_d3d12
         PROPERTIES
         ENVIRONMENT "FYZZXYZZY_D3D12_DEBUG=1;FYZZXYZZY_D3D12_GPU_VALIDATION=0;FYZZXYZZY_PCM_GJK_PROBE=${probe_mode}"
+        TIMEOUT 45)
+    endforeach()
+    foreach(stage IN ITEMS support feature compact)
+      if(stage STREQUAL "support")
+        set(stage_marker "t")
+      elseif(stage STREQUAL "feature")
+        set(stage_marker "f")
+      else()
+        set(stage_marker "c")
+      endif()
+      add_test(NAME fyzzxyzzy_source_pcm_gjk_second_${stage}_probe_d3d12
+        COMMAND $<TARGET_FILE:fyzzxyzzy_source_pcm_box_candidates_d3d12>
+          "${FYZZXYZZY_SC_BOX_BOUNDS_DXIL}"
+          "${FYZZXYZZY_SOURCE_PCM_BOX_DXIL}"
+          "${FYZZXYZZY_SOURCE_PCM_EPA_WORK_DXIL_COMPACT}"
+          "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_source_pcm_gjk_second_${stage}_probe.dxil"
+          "${FYZZXYZZY_SOURCE_PCM_EPA_DXIL}")
+      set_tests_properties(fyzzxyzzy_source_pcm_gjk_second_${stage}_probe_d3d12
+        PROPERTIES
+        ENVIRONMENT "FYZZXYZZY_D3D12_DEBUG=1;FYZZXYZZY_D3D12_GPU_VALIDATION=0;FYZZXYZZY_PCM_GJK_PROBE=${stage_marker}"
         TIMEOUT 45)
     endforeach()
     foreach(depth IN ITEMS 2 4 8 16)
