@@ -143,8 +143,11 @@ uint gjkGroupContinuation(GjkBoxPair pair,float contactDistance,
             ?pair.aInB:float3(1.f,0.f,0.f);
     }
     GroupMemoryBarrierWithGroupSync();
+    // Every invocation traverses the same barrier sequence, including
+    // after a terminal simplex result. Early subgroup exits are invalid
+    // inside the workgroup-wide synchronization loop.
     for(uint iteration=0u;iteration<32u;++iteration) {
-        if(lane==0u) {
+        if(lane==0u && gjkGroupState==0u) {
             const float distance=sqrt(gjkLength2(gjkGroupClosest));
             if(gjkGroupCount>0u && distance<=epsilon && !pointCore)
                 gjkGroupState=3u;
@@ -191,12 +194,10 @@ uint gjkGroupContinuation(GjkBoxPair pair,float contactDistance,
             }
         }
         GroupMemoryBarrierWithGroupSync();
-        if(gjkGroupState!=0u)break;
-
-        if(lane<15u)
+        if(lane<15u && gjkGroupState==0u)
             gjkGroupChoices[lane]=gjkGroupSubset(lane+1u,gjkGroupCount);
         GroupMemoryBarrierWithGroupSync();
-        if(lane==0u) {
+        if(lane==0u && gjkGroupState==0u) {
             GjkClosest best=(GjkClosest)0;
             best.dist2=3.402823466e+38f;
             for(uint mask=0u;mask<15u;++mask)
@@ -230,7 +231,6 @@ uint gjkGroupContinuation(GjkBoxPair pair,float contactDistance,
             }
         }
         GroupMemoryBarrierWithGroupSync();
-        if(gjkGroupState!=0u)break;
     }
     if(lane==0u && gjkGroupState==0u)
         gjkGroupState=pointCore && gjkGroupCount>0u?3u:2u;
