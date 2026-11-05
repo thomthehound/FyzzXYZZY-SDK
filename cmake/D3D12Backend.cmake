@@ -518,6 +518,10 @@ if(FYZZXYZZY_BUILD_D3D12)
       "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_source_pcm_gjk_bindings_probe.dxil")
     set(FYZZXYZZY_SOURCE_PCM_GJK_SOLVER_DXIL
       "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_source_pcm_gjk_solver_probe.dxil")
+    set(FYZZXYZZY_SOURCE_PCM_GJK_SUPPORT_DXIL
+      "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_source_pcm_gjk_support_probe.dxil")
+    set(FYZZXYZZY_SOURCE_PCM_GJK_ITERATION_DXIL
+      "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_source_pcm_gjk_iteration_probe.dxil")
     fyzzxyzzy_compile_hlsl("${FYZZXYZZY_SOURCE_PCM_GJK_BINDINGS_DXIL}"
       "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_pcm_box_gjk_native.hlsl" cs_6_0 main
       FLAGS -DFYZZXYZZY_GJK_PROBE_BINDINGS=1
@@ -526,8 +530,18 @@ if(FYZZXYZZY_BUILD_D3D12)
       "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_pcm_box_gjk_native.hlsl" cs_6_0 main
       FLAGS -DFYZZXYZZY_GJK_PROBE_SOLVER=1
       DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_pcm_box_gjk_native.hlsli")
+    fyzzxyzzy_compile_hlsl("${FYZZXYZZY_SOURCE_PCM_GJK_SUPPORT_DXIL}"
+      "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_pcm_box_gjk_native.hlsl" cs_6_0 main
+      FLAGS -DFYZZXYZZY_GJK_PROBE_SUPPORT=1
+      DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_pcm_box_gjk_native.hlsli")
+    fyzzxyzzy_compile_hlsl("${FYZZXYZZY_SOURCE_PCM_GJK_ITERATION_DXIL}"
+      "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_pcm_box_gjk_native.hlsl" cs_6_0 main
+      FLAGS -DFYZZXYZZY_GJK_PROBE_ITERATION=1
+      DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_pcm_box_gjk_native.hlsli")
     add_custom_target(fyzzxyzzy_source_pcm_gjk_probes_shader_d3d12
       DEPENDS "${FYZZXYZZY_SOURCE_PCM_GJK_BINDINGS_DXIL}"
+              "${FYZZXYZZY_SOURCE_PCM_GJK_SUPPORT_DXIL}"
+              "${FYZZXYZZY_SOURCE_PCM_GJK_ITERATION_DXIL}"
               "${FYZZXYZZY_SOURCE_PCM_GJK_SOLVER_DXIL}")
     set(FYZZXYZZY_SOURCE_PCM_EPA_DXIL
       "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_source_pcm_box_epa_native.dxil")
@@ -565,10 +579,16 @@ if(FYZZXYZZY_BUILD_D3D12)
     # The probe variants share the production resource layout. One
     # exits after reading the Sc pair; the other runs GJK without
     # contact publication.
-    foreach(probe IN ITEMS bindings solver)
+    foreach(probe IN ITEMS bindings support iteration solver)
       if(probe STREQUAL "bindings")
         set(probe_dxil "${FYZZXYZZY_SOURCE_PCM_GJK_BINDINGS_DXIL}")
         set(probe_mode "b")
+      elseif(probe STREQUAL "support")
+        set(probe_dxil "${FYZZXYZZY_SOURCE_PCM_GJK_SUPPORT_DXIL}")
+        set(probe_mode "p")
+      elseif(probe STREQUAL "iteration")
+        set(probe_dxil "${FYZZXYZZY_SOURCE_PCM_GJK_ITERATION_DXIL}")
+        set(probe_mode "i")
       else()
         set(probe_dxil "${FYZZXYZZY_SOURCE_PCM_GJK_SOLVER_DXIL}")
         set(probe_mode "s")
