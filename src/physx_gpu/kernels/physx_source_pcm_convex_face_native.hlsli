@@ -206,9 +206,18 @@ uint convexFaceContacts(GjkBoxPair pair,float contactDistance,
     if(c.nr<3u || c.ni<3u)return 0u;
     c.anchor=convexReferenceVertex(c,0u);
     c.incidentAnchor=convexIncidentVertex(c,0u);
-    c.scale=max(
-        max(max(pair.halfA.x,pair.halfA.y),pair.halfA.z),
-        max(max(pair.halfB.x,pair.halfB.y),pair.halfB.z));
+    float edgeLengthSq=0.f;
+    for(uint i=0u;i<c.nr;++i) {
+        const float3 a=convexReferenceVertex(c,i);
+        const float3 b=convexReferenceVertex(c,i+1u);
+        edgeLengthSq=max(edgeLengthSq,gjkLength2(b-a));
+    }
+    for(uint i=0u;i<c.ni;++i) {
+        const float3 a=convexIncidentVertex(c,i);
+        const float3 b=convexIncidentVertex(c,i+1u);
+        edgeLengthSq=max(edgeLengthSq,gjkLength2(b-a));
+    }
+    c.scale=sqrt(edgeLengthSq);
     c.tolerance=max(c.scale*1.e-5f,1.e-6f);
     c.contactDistance=contactDistance;
     uint count=0u;
