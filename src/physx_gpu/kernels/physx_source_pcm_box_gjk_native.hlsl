@@ -62,7 +62,6 @@ ConstantBuffer<Parameters> p : register(b0,space0);
 #endif
 
 #include "physx_source_pcm_box_math_native.hlsli"
-#define FYZZXYZZY_GJK_WORKGROUP_SIMPLEX 1
 #include "physx_source_pcm_box_gjk_native.hlsli"
 #include "physx_source_pcm_sc_contact_publish_native.hlsli"
 
@@ -143,7 +142,7 @@ void main(uint3 thread : SV_DispatchThreadID) {
     GjkSupportPoint simplex[4];
     uint simplexCount;
     const uint outcome=gjkBoxContinuation(
-        boxPair,distance,i&31u,contact,simplex,simplexCount);
+        boxPair,distance,contact,simplex,simplexCount);
 #if defined(FYZZXYZZY_GJK_PROBE_ITERATION)
     results.Store(result+24u,0xB300u|outcome);
     results.Store(result+8u,0u);
