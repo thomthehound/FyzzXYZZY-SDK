@@ -76,9 +76,6 @@ float3 gjkShapeSupport(uint kind,float3 half,float3 direction,
 }
 #endif
 
-#ifndef __spirv__
-[noinline]
-#endif
 GjkSupportPoint gjkSupport(GjkBoxPair pair,float3 direction) {
     const float3 directionA=rotateSource(
         conjugate(pair.relative),direction);
@@ -171,9 +168,6 @@ GjkFeature gjkTriangleFeature(
     }
     return closest;
 }
-#ifndef __spirv__
-[noinline]
-#endif
 GjkClosest gjkClosestSimplex(GjkSimplex simplex) {
     GjkClosest result=(GjkClosest)0;
     result.dist2=3.402823466e+38f;
@@ -248,9 +242,6 @@ GjkClosest gjkClosestSimplex(GjkSimplex simplex) {
     result.b=pb;
     return result;
 }
-#ifndef __spirv__
-[noinline]
-#endif
 void gjkCompact(inout GjkSimplex simplex,GjkClosest closest) {
     GjkSimplex packed=(GjkSimplex)0;
     if(simplex.count>0u && (closest.mask&1u)!=0u &&
