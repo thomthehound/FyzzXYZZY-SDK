@@ -67,219 +67,15 @@ ConstantBuffer<Parameters> p : register(b0,space0);
 #include "physx_source_pcm_box_epa_native.hlsli"
 #include "physx_source_pcm_sc_contact_publish_native.hlsli"
 
-// One Sc pair owns one 32-thread group. Independent simplex subsets
-// retain their source evaluation order through a stable final reduction.
-groupshared GjkSupportPoint gjkGroupSimplex[4];
-groupshared GjkClosest gjkGroupChoices[15];
-groupshared GjkClosest gjkGroupBest;
-groupshared GjkWitness gjkGroupWitness;
-groupshared uint gjkGroupCount,gjkGroupState;
-groupshared float3 gjkGroupClosest;
-groupshared float gjkGroupPrevious,gjkGroupProjection;
-
-GjkClosest gjkGroupSubset(uint mask,uint count) {
-    GjkClosest candidate=(GjkClosest)0;
-    candidate.dist2=3.402823466e+38f;
-    if(mask>=(1u<<count))return candidate;
-    uint ids[4]={0u,0u,0u,0u};
-    uint n=0u;
-    for(uint i=0u;i<count;++i)
-        if((mask&(1u<<i))!=0u)ids[n++]=i;
-    float weights[4]={0.f,0.f,0.f,0.f};
-    weights[ids[0]]=1.f;
-    if(n>1u) {
-        const float3 origin=gjkGroupSimplex[ids[0]].q;
-        const float3 d1=gjkGroupSimplex[ids[1]].q-origin;
-        const float a=gjkDot(d1,d1);
-        const float x=-gjkDot(d1,origin);
-        const float epsilon=1.1920928955078125e-7f;
-        float u=0.f,v=0.f,w=0.f;
-        if(n==2u) {
-            if(!(a>0.f) || !isfinite(a))return candidate;
-            u=x/a;
-        }else {
-            const float3 d2=gjkGroupSimplex[ids[2]].q-origin;
-            const float b=gjkDot(d1,d2);
-            const float c=gjkDot(d2,d2);
-            const float y=-gjkDot(d2,origin);
-            if(n==3u) {
-                const float scale=max(a,c);
-                const float determinant=a*c-b*b;
-                if(!(scale>0.f) ||
-                   !(determinant>epsilon*scale*scale) ||
-                   !isfinite(determinant))
-                    return candidate;
-                u=(x*c-y*b)/determinant;
-                v=(y*a-x*b)/determinant;
-            }else {
-                const float3 d3=gjkGroupSimplex[ids[3]].q-origin;
-                const float third=gjkDot(d3,d3);
-                const float scale=max(a,max(c,third));
-                const float3 cross23=cross(d2,d3);
-                const float determinant=gjkDot(d1,cross23);
-                // The Gram determinant is the squared tetrahedral
-                // volume. Match the relative pivot rejection scale,
-                // avoiding dynamic Gaussian-elimination scratch.
-                if(!(scale>0.f) ||
-                   !(determinant*determinant>
-                     epsilon*scale*scale*scale) ||
-                   !isfinite(determinant))
-                    return candidate;
-                const float3 minusOrigin=-origin;
-                u=gjkDot(minusOrigin,cross23)/determinant;
-                v=gjkDot(minusOrigin,cross(d3,d1))/determinant;
-                w=gjkDot(minusOrigin,cross(d1,d2))/determinant;
-            }
-        }
-        weights[ids[0]]=1.f-u-v-w;
-        weights[ids[1]]=u;
-        if(n>=3u)weights[ids[2]]=v;
-        if(n==4u)weights[ids[3]]=w;
-    }
-    for(uint j=0u;j<n;++j)
-        if(weights[ids[j]]< -1.e-5f)return candidate;
-    precise float3 q=0.f,pa=0.f,pb=0.f;
-    for(uint j=0u;j<count;++j) {
-        precise float3 dq=gjkGroupSimplex[j].q*weights[j];
-        precise float3 da=gjkGroupSimplex[j].a*weights[j];
-        precise float3 db=gjkGroupSimplex[j].b*weights[j];
-        q=q+dq;
-        pa=pa+da;
-        pb=pb+db;
-    }
-    candidate.closestPoint=q;
-    candidate.a=pa;
-    candidate.b=pb;
-    candidate.mask=mask;
-    candidate.dist2=gjkLength2(q);
-    for(uint j=0u;j<4u;++j)candidate.weights[j]=weights[j];
-    return candidate;
-}
-
-uint gjkGroupContinuation(GjkBoxPair pair,float contactDistance,
-                          uint lane) {
-    const float epsilon=0.005f*min(
-        min(pair.halfA.x,min(pair.halfA.y,pair.halfA.z)),
-        min(pair.halfB.x,min(pair.halfB.y,pair.halfB.z)));
-    const float progressFactor=1.f-0.000225f;
-    const bool pointCore=pair.radiusA>0.f || pair.radiusB>0.f;
-    if(lane==0u) {
-        gjkGroupCount=0u;
-        gjkGroupState=0u;
-        gjkGroupWitness=(GjkWitness)0;
-        gjkGroupPrevious=3.402823466e+38f;
-        gjkGroupClosest=gjkLength2(pair.aInB)>0.f
-            ?pair.aInB:float3(1.f,0.f,0.f);
-    }
-    GroupMemoryBarrierWithGroupSync();
-    // Terminal decisions are broadcast before a uniform wave exit.
-    for(uint iteration=0u;iteration<32u;++iteration) {
-        if(lane==0u && gjkGroupState==0u) {
-            const float distance=sqrt(gjkLength2(gjkGroupClosest));
-            if(gjkGroupCount>0u && distance<=epsilon && !pointCore)
-                gjkGroupState=3u;
-            else if(distance<=0.f)
-                gjkGroupState=pointCore && gjkGroupCount>0u?3u:2u;
-            else {
-                const float3 normal=gjkGroupClosest*(1.f/distance);
-                const GjkSupportPoint support=gjkSupport(pair,-gjkGroupClosest);
-                const float projection=gjkDot(normal,support.q);
-                gjkGroupProjection=projection;
-                if(projection>contactDistance+pair.radiusA+pair.radiusB)
-                    gjkGroupState=2u;
-                else if(gjkGroupCount>0u &&
-                        projection>distance*progressFactor) {
-                    GjkWitness contact;
-                    const bool accepted=gjkGroupBest.mask!=0u &&
-                        gjkContact(pair,gjkGroupBest,contact) &&
-                        contact.separation<=contactDistance;
-                    if(accepted)gjkGroupWitness=contact;
-                    gjkGroupState=accepted?1u:2u;
-                }else {
-                    bool duplicate=false;
-                    for(uint j=0u;j<gjkGroupCount;++j)
-                        if(support.ai==gjkGroupSimplex[j].ai &&
-                           support.bi==gjkGroupSimplex[j].bi) {
-                            duplicate=true;
-                            break;
-                        }
-                    if(duplicate) {
-                        if(projection>0.f) {
-                            // Projection and simplex distance bound the
-                            // true gap when support can no longer advance.
-                            GjkWitness contact;
-                            const bool accepted=gjkGroupBest.mask!=0u &&
-                                gjkContact(pair,gjkGroupBest,contact) &&
-                                contact.separation<=contactDistance;
-                            if(accepted)gjkGroupWitness=contact;
-                            gjkGroupState=accepted?1u:2u;
-                        }else
-                            gjkGroupState=pointCore?3u:2u;
-                    }else if(gjkGroupCount==4u)
-                        gjkGroupState=3u;
-                    else
-                        gjkGroupSimplex[gjkGroupCount++]=support;
-                }
-            }
-        }
-        GroupMemoryBarrierWithGroupSync();
-        if(WaveActiveAllTrue(gjkGroupState!=0u))break;
-        // Each lane evaluates one simplex feature. Lane zero selects
-        // the strict minimum in mask order after all candidates publish.
-        if(lane<15u)
-            gjkGroupChoices[lane]=gjkGroupSubset(lane+1u,gjkGroupCount);
-        GroupMemoryBarrierWithGroupSync();
-        if(lane==0u && gjkGroupState==0u) {
-            GjkClosest best=(GjkClosest)0;
-            best.dist2=3.402823466e+38f;
-            for(uint mask=0u;mask<15u;++mask)
-                if(gjkGroupChoices[mask].dist2<best.dist2)
-                    best=gjkGroupChoices[mask];
-            if(best.mask==0u)
-                gjkGroupState=2u;
-            else {
-                gjkGroupBest=best;
-                gjkGroupClosest=best.closestPoint;
-                const float nextDistance=sqrt(best.dist2);
-                uint write=0u;
-                const uint count=gjkGroupCount;
-                for(uint read=0u;read<count;++read)
-                    if((best.mask&(1u<<read))!=0u &&
-                       best.weights[read]>1.e-6f)
-                        gjkGroupSimplex[write++]=gjkGroupSimplex[read];
-                if(write==0u && count>0u)write=1u;
-                gjkGroupCount=write;
-                if(nextDistance>=gjkGroupPrevious) {
-                    if(pointCore && gjkGroupProjection>0.f) {
-                        GjkWitness contact;
-                        const bool accepted=gjkContact(pair,best,contact) &&
-                            contact.separation<=contactDistance;
-                        if(accepted)gjkGroupWitness=contact;
-                        gjkGroupState=accepted?1u:2u;
-                    }else
-                        gjkGroupState=pointCore?3u:2u;
-                }else
-                    gjkGroupPrevious=nextDistance;
-            }
-        }
-        GroupMemoryBarrierWithGroupSync();
-        if(WaveActiveAllTrue(gjkGroupState!=0u))break;
-    }
-    if(lane==0u && gjkGroupState==0u)
-        gjkGroupState=pointCore && gjkGroupCount>0u?3u:2u;
-    GroupMemoryBarrierWithGroupSync();
-    return gjkGroupState;
-}
-
+// Sparse admission is recorded in the dense Sc pair result buffer.
+// One lane owns each pending pair. No simplex data is shared between lanes,
+// and GJK requires no workgroup barriers or private global scratch.
 [numthreads(32,1,1)]
 void gjk(uint3 thread : SV_DispatchThreadID) {
-    const uint lane=thread.x&31u;
-    const uint workIndex=thread.x>>5u;
-    uint i=work.Load(p.workBias+workIndex*4u);
+    const uint i=thread.x;
     if(i>=p.pairCount)return;
     uint result=p.resultBias+i*32u;
     if(results.Load(result+8u)!=3u)return;
-    if(lane==0u)results.Store(result+24u,0xA001u);
     uint source=p.pairBias+i*20u;
     uint a=pairs.Load(source),b=pairs.Load(source+4u);
     uint edge=pairs.Load(source+8u);
@@ -329,12 +125,11 @@ void gjk(uint3 thread : SV_DispatchThreadID) {
     }
     float distance=asfloat(geometry.Load(ga+12u))+
                    asfloat(geometry.Load(gb+12u));
-    if(lane==0u)results.Store(result+24u,0xA002u);
-    const uint outcome=gjkGroupContinuation(boxPair,distance,lane);
-    if(lane==0u)results.Store(result+24u,0xA003u);
-    if(lane!=0u)return;
-    const GjkWitness contact=gjkGroupWitness;
-    const uint simplexCount=gjkGroupCount;
+    GjkWitness contact;
+    GjkSupportPoint simplex[4];
+    uint simplexCount;
+    const uint outcome=gjkBoxContinuation(
+        boxPair,distance,contact,simplex,simplexCount);
     if(outcome==3u) {
         const uint pending=p.edgeCacheBias+edge*240u;
         if(simplexCount==0u || simplexCount>4u) {
@@ -349,10 +144,10 @@ void gjk(uint3 thread : SV_DispatchThreadID) {
         // supports, retaining both local points and exact feature IDs.
         for(uint j=0u;j<simplexCount;++j) {
             const uint slot=pending+80u+j*40u;
-            edgeCaches.Store3(slot,asuint(gjkGroupSimplex[j].a));
-            edgeCaches.Store3(slot+12u,asuint(gjkGroupSimplex[j].b));
-            edgeCaches.Store(slot+24u,gjkGroupSimplex[j].ai);
-            edgeCaches.Store(slot+28u,gjkGroupSimplex[j].bi);
+            edgeCaches.Store3(slot,asuint(simplex[j].a));
+            edgeCaches.Store3(slot+12u,asuint(simplex[j].b));
+            edgeCaches.Store(slot+24u,simplex[j].ai);
+            edgeCaches.Store(slot+28u,simplex[j].bi);
         }
         results.Store(result+24u,simplexCount);
         results.Store(result+8u,4u);
