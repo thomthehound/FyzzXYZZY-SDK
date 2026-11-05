@@ -336,10 +336,18 @@ struct Context::Impl {
             ComPtr<ID3D12Debug> debug;
             if (SUCCEEDED(D3D12GetDebugInterface(IID_PPV_ARGS(&debug)))) {
                 debug->EnableDebugLayer();
-                ComPtr<ID3D12Debug1> gpu_debug;
-                if (SUCCEEDED(debug.As(&gpu_debug)))
-                    gpu_debug->SetEnableGPUBasedValidation(TRUE);
-                std::cerr << "Enabled D3D12 GPU-based validation for native WARP test\n";
+                const char* gpu_validation =
+                    std::getenv("FYZZXYZZY_D3D12_GPU_VALIDATION");
+                const bool enable_gpu_validation =
+                    !gpu_validation || std::string(gpu_validation) != "0";
+                if (enable_gpu_validation) {
+                    ComPtr<ID3D12Debug1> gpu_debug;
+                    if (SUCCEEDED(debug.As(&gpu_debug)))
+                        gpu_debug->SetEnableGPUBasedValidation(TRUE);
+                }
+                std::cerr << "Enabled D3D12 debug layer"
+                          << (enable_gpu_validation ? " and GPU-based validation" : "")
+                          << "\n";
             } else {
                 std::cerr << "D3D12 debug layer not available on this runner\n";
             }
