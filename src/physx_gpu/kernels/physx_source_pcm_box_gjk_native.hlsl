@@ -130,12 +130,24 @@ void main(uint3 thread : SV_DispatchThreadID) {
     results.Store(result+8u,0u);
     return;
 #endif
+#ifdef FYZZXYZZY_GJK_PROBE_SUPPORT
+    const float3 direction=gjkLength2(boxPair.aInB)>0.f
+        ?-boxPair.aInB:float3(-1.f,0.f,0.f);
+    const GjkSupportPoint support=gjkSupport(boxPair,direction);
+    results.Store(result+24u,0xB100u|(support.ai&0xffu));
+    results.Store(result+8u,0u);
+    return;
+#endif
     GjkWitness contact;
     GjkSupportPoint simplex[4];
     uint simplexCount;
     const uint outcome=gjkBoxContinuation(
         boxPair,distance,contact,simplex,simplexCount);
-#ifdef FYZZXYZZY_GJK_PROBE_SOLVER
+#if defined(FYZZXYZZY_GJK_PROBE_ITERATION)
+    results.Store(result+24u,0xB300u|outcome);
+    results.Store(result+8u,0u);
+    return;
+#elif defined(FYZZXYZZY_GJK_PROBE_SOLVER)
     // Distinguish simplex execution from subsequent Sc publication.
     results.Store(result+24u,0xB200u|outcome);
     results.Store(result+8u,0u);
