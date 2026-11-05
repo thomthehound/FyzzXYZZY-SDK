@@ -665,22 +665,29 @@ if(FYZZXYZZY_BUILD_D3D12)
       PROPERTIES
       ENVIRONMENT "FYZZXYZZY_D3D12_DEBUG=1;FYZZXYZZY_D3D12_GPU_VALIDATION=0"
       TIMEOUT 120)
-    # GPU-based validation instruments the production advance and Voronoi
-    # reducer independently; full 32-step contact parity runs above.
-    add_test(NAME fyzzxyzzy_source_pcm_gjk_staged_gpu_validation_d3d12
-      COMMAND $<TARGET_FILE:fyzzxyzzy_source_pcm_box_candidates_d3d12>
-        "${FYZZXYZZY_SC_BOX_BOUNDS_DXIL}"
-        "${FYZZXYZZY_SOURCE_PCM_BOX_DXIL}"
-        "${FYZZXYZZY_SOURCE_PCM_EPA_WORK_DXIL_COMPACT}"
-        "${FYZZXYZZY_SOURCE_PCM_GJK_DXIL}"
-        "${FYZZXYZZY_SOURCE_PCM_EPA_DXIL}"
-        "${FYZZXYZZY_SOURCE_PCM_GJK_REDUCE_DXIL}"
-        "${FYZZXYZZY_SOURCE_PCM_GJK_PUBLISH_DXIL}"
-        "${FYZZXYZZY_SOURCE_PCM_EPA_ARGS_RESET_DXIL}")
-    set_tests_properties(fyzzxyzzy_source_pcm_gjk_staged_gpu_validation_d3d12
-      PROPERTIES
-      ENVIRONMENT "FYZZXYZZY_D3D12_DEBUG=1;FYZZXYZZY_D3D12_GPU_VALIDATION=1;FYZZXYZZY_PCM_GJK_STAGE_INSPECT=1"
-      TIMEOUT 180)
+    # Validate device-resident GJK advance and simplex reduction separately
+    # on a source-admitted penetrating pair.
+    foreach(_stage IN ITEMS advance reduction)
+      if(_stage STREQUAL "advance")
+        set(_inspect "a")
+      else()
+        set(_inspect "r")
+      endif()
+      add_test(NAME fyzzxyzzy_source_pcm_gjk_${_stage}_gpu_validation_d3d12
+        COMMAND $<TARGET_FILE:fyzzxyzzy_source_pcm_box_candidates_d3d12>
+          "${FYZZXYZZY_SC_BOX_BOUNDS_DXIL}"
+          "${FYZZXYZZY_SOURCE_PCM_BOX_DXIL}"
+          "${FYZZXYZZY_SOURCE_PCM_EPA_WORK_DXIL_COMPACT}"
+          "${FYZZXYZZY_SOURCE_PCM_GJK_DXIL}"
+          "${FYZZXYZZY_SOURCE_PCM_EPA_DXIL}"
+          "${FYZZXYZZY_SOURCE_PCM_GJK_REDUCE_DXIL}"
+          "${FYZZXYZZY_SOURCE_PCM_GJK_PUBLISH_DXIL}"
+          "${FYZZXYZZY_SOURCE_PCM_EPA_ARGS_RESET_DXIL}")
+      set_tests_properties(fyzzxyzzy_source_pcm_gjk_${_stage}_gpu_validation_d3d12
+        PROPERTIES
+        ENVIRONMENT "FYZZXYZZY_D3D12_DEBUG=1;FYZZXYZZY_D3D12_GPU_VALIDATION=1;FYZZXYZZY_PCM_GJK_STAGE_INSPECT=${_inspect}"
+        TIMEOUT 150)
+    endforeach()
     fyzzxyzzy_add_gpu_test(fyzzxyzzy_source_pcm_box_candidates_d3d12
       SOURCES tests/physx_gpu_source_pcm_box_candidates_native.cpp src/native/GuPCMContactBoxBox.cpp src/native/GuPCMGjkEpa.cpp
       DEFINITIONS FYZZXYZZY_TEST_D3D12=1
