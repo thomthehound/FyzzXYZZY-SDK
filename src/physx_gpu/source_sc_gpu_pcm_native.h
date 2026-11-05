@@ -70,7 +70,7 @@ public:
           convex_indices_base_(convex_indices_base),
           candidates_stage_(context,std::move(candidate)),
           sparse_stage_(context,std::move(compact)),
-          gjk_stage_(context,std::move(gjk)),
+          gjk_stage_(context,std::move(gjk),false,true),
           epa_stage_(context,std::move(epa)),
           face_stage_(context,std::move(face_contacts),true),
           pairs_(allocator,physx::PxsHeapStats::eNARROWPHASE),
