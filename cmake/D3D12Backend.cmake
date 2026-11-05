@@ -539,7 +539,7 @@ if(FYZZXYZZY_BUILD_D3D12)
       FLAGS -DFYZZXYZZY_GJK_PROBE_ITERATION=1
       DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_pcm_box_gjk_native.hlsli")
     set(FYZZXYZZY_SOURCE_PCM_GJK_SECOND_PROBES)
-    foreach(stage IN ITEMS support feature compact)
+    foreach(stage IN ITEMS entry normal support)
       string(TOUPPER "${stage}" stage_upper)
       set(probe_dxil "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_source_pcm_gjk_second_${stage}_probe.dxil")
       fyzzxyzzy_compile_hlsl("${probe_dxil}"
@@ -626,13 +626,13 @@ if(FYZZXYZZY_BUILD_D3D12)
         ENVIRONMENT "FYZZXYZZY_D3D12_DEBUG=1;FYZZXYZZY_D3D12_GPU_VALIDATION=0;FYZZXYZZY_PCM_GJK_PROBE=${probe_mode}"
         TIMEOUT 45)
     endforeach()
-    foreach(stage IN ITEMS support feature compact)
-      if(stage STREQUAL "support")
-        set(stage_marker "t")
-      elseif(stage STREQUAL "feature")
-        set(stage_marker "f")
+    foreach(stage IN ITEMS entry normal support)
+      if(stage STREQUAL "entry")
+        set(stage_marker "e")
+      elseif(stage STREQUAL "normal")
+        set(stage_marker "n")
       else()
-        set(stage_marker "c")
+        set(stage_marker "t")
       endif()
       add_test(NAME fyzzxyzzy_source_pcm_gjk_second_${stage}_probe_d3d12
         COMMAND $<TARGET_FILE:fyzzxyzzy_source_pcm_box_candidates_d3d12>
