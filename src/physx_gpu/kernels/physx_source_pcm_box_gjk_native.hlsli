@@ -284,6 +284,9 @@ uint gjkBoxContinuation(GjkBoxPair pair,float contactDistance,
         if(dist<=0.f)return pointCore && count>0u?3u:0u;
         float3 normal=closest*(1.f/dist);
         GjkSupportPoint support=gjkSupport(pair,-closest);
+#ifdef FYZZXYZZY_GJK_PROBE_SECOND_SUPPORT
+        if(iteration==1u)return 0x21u;
+#endif
         float projection=gjkDot(normal,support.q);
         if(projection>contactDistance+pair.radiusA+pair.radiusB)
             return 0u;
@@ -307,10 +310,16 @@ uint gjkBoxContinuation(GjkBoxPair pair,float contactDistance,
         if(count==4u)return 3u;
         simplex[count++]=support;
         GjkClosest next=gjkClosestSimplex(simplex,count);
+#ifdef FYZZXYZZY_GJK_PROBE_SECOND_FEATURE
+        if(iteration==1u)return 0x22u;
+#endif
         if(next.mask==0u)return 0u;
         closest=next.closestPoint;
         float nextDist=sqrt(next.dist2);
         gjkCompact(simplex,count,next);
+#ifdef FYZZXYZZY_GJK_PROBE_SECOND_COMPACT
+        if(iteration==1u)return 0x23u;
+#endif
         if(nextDist>=previous) {
             if(pointCore) {
                 if(projection>0.f)
