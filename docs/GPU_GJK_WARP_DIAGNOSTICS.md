@@ -32,6 +32,9 @@ The CI workflow runs the two-iteration probe first, then invokes the full solver
 | Two complete unrolled simplex iterations | Finish normally; stage-result check passes | 42040300349 |
 | Structured single-exit GJK loop | Two-step probe passes; full loop still stalls | 42040998184 |
 | Full solver compiled at `-O1` | Two-step probe passes; full loop still stalls | 42041626901 |
+| Two-iteration dynamic loop, compact simplex | Times out; the equivalent fully unrolled two-iteration shader passes | 42045148803 |
+| Full 32-iteration loop, box-only support mapping | Times out without hull-vertex search | 42045148803 |
+| Two-iteration dynamic loop targeting shader model 6.6 | Times out; shader model 6.0 unrolled control still passes | 42046398113 |
 
 The observed `0xC0000005` is **not** the Windows stack-overflow exception `0xC00000FD`. Stack exhaustion or corruption inside WARP is not ruled out, but there is no evidence establishing it as the cause. CTest's generic `SEGFAULT` label alone does not identify an exception code.
 
@@ -40,6 +43,8 @@ The passing two-step test demonstrates execution of two actual simplex reduction
 ## Current investigation
 
 The current GJK implementation retains only Minkowski support coordinates and feature IDs in its loop-carried simplex; full shape-space witnesses are reconstructed for contact generation and EPA admission. This reduces the persistent state and avoids recomputing witness coordinates in every iteration. **The full D3D12/WARP runtime and source contact parity must pass before this change is considered verified.**
+
+The solver now defers contact witness reconstruction until after the GJK recurrence has terminated; only simplex geometry, feature IDs and termination state remain live in the loop. The full DXIL runtime must still pass before that change is accepted.
 
 The remaining distinction to resolve is whether WARP fails because of DXIL loop-carried state, invalid compiler lowering, or the generated shader's execution/resource requirements. Preserve the source geometry, exact witness semantics, bounded iteration count, and direct GPU execution while diagnosing that distinction.
 
