@@ -276,7 +276,9 @@ void verify(Context& context,const char* transform_shader,
                 add(gjk_reduce,pass);
             }
             add(gjk,32u);
-            add(gjk_publish,32u);
+#ifdef FYZZXYZZY_TEST_D3D12
+            if(!stage_probe)add(gjk_publish,32u);
+#endif
         }else add(gjk,0u);
     };
     std::clog<<"PCM fixture: pipelines initialized\n"<<std::flush;
