@@ -22,11 +22,12 @@ public:
     SourcePcmEpaNativeStage(compute::Context& context,
                             compute::ShaderBinary shader,
                             bool face_geometry=false,
-                            bool direct_gjk=false)
+                            bool direct_gjk=false,
+                            bool staged_push_constants=false)
         : context_(context),face_geometry_(face_geometry),
           direct_gjk_(direct_gjk),
-          step_parameters_(direct_gjk &&
-              shader.format==compute::ShaderFormat::Dxil) {
+          step_parameters_(staged_push_constants || (direct_gjk &&
+              shader.format==compute::ShaderFormat::Dxil)) {
         const auto& device=context.device_info();
         if(!device.max_workgroup_count[0] ||
            !device.max_storage_buffer_range)

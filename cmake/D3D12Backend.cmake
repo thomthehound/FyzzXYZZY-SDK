@@ -521,9 +521,19 @@ if(FYZZXYZZY_BUILD_D3D12)
       DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_pcm_box_math_native.hlsli"
         "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_pcm_box_gjk_native.hlsli"
         "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_pcm_gjk_state_native.hlsli")
+    set(FYZZXYZZY_SOURCE_PCM_GJK_PUBLISH_DXIL
+      "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_source_pcm_gjk_publish_native.dxil")
+    fyzzxyzzy_compile_hlsl("${FYZZXYZZY_SOURCE_PCM_GJK_PUBLISH_DXIL}"
+      "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_pcm_box_gjk_native.hlsl" cs_6_0 main
+      FLAGS -DFYZZXYZZY_GJK_STAGED_ADVANCE=1 -DFYZZXYZZY_GJK_STAGED_PUBLISH=1
+      DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_pcm_box_math_native.hlsli"
+        "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_pcm_box_gjk_native.hlsli"
+        "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_pcm_gjk_state_native.hlsli"
+        "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_pcm_sc_contact_publish_native.hlsli")
     add_custom_target(fyzzxyzzy_source_pcm_gjk_shader_d3d12
       DEPENDS "${FYZZXYZZY_SOURCE_PCM_GJK_DXIL}"
-        "${FYZZXYZZY_SOURCE_PCM_GJK_REDUCE_DXIL}")
+        "${FYZZXYZZY_SOURCE_PCM_GJK_REDUCE_DXIL}"
+        "${FYZZXYZZY_SOURCE_PCM_GJK_PUBLISH_DXIL}")
     set(FYZZXYZZY_SOURCE_PCM_GJK_SOLVER_DXIL
       "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_source_pcm_gjk_solver_probe.dxil")
     fyzzxyzzy_compile_hlsl("${FYZZXYZZY_SOURCE_PCM_GJK_SOLVER_DXIL}"
@@ -580,7 +590,7 @@ if(FYZZXYZZY_BUILD_D3D12)
         "${FYZZXYZZY_SOURCE_PCM_EPA_WORK_DXIL_COMPACT}"
         "${FYZZXYZZY_SOURCE_PCM_GJK_TWO_STEP_DXIL}"
         "${FYZZXYZZY_SOURCE_PCM_EPA_DXIL}"
-        "${FYZZXYZZY_SOURCE_PCM_GJK_REDUCE_DXIL}")
+        "${FYZZXYZZY_SOURCE_PCM_GJK_REDUCE_DXIL}" "${FYZZXYZZY_SOURCE_PCM_GJK_PUBLISH_DXIL}")
     set_tests_properties(fyzzxyzzy_source_pcm_gjk_two_step_probe_d3d12
       PROPERTIES
       ENVIRONMENT "FYZZXYZZY_D3D12_DEBUG=1;FYZZXYZZY_D3D12_GPU_VALIDATION=0;FYZZXYZZY_PCM_GJK_PROBE=i"
@@ -593,7 +603,7 @@ if(FYZZXYZZY_BUILD_D3D12)
         "${FYZZXYZZY_SOURCE_PCM_EPA_WORK_DXIL_COMPACT}"
         "${FYZZXYZZY_SOURCE_PCM_GJK_SOLVER_DXIL}"
         "${FYZZXYZZY_SOURCE_PCM_EPA_DXIL}"
-        "${FYZZXYZZY_SOURCE_PCM_GJK_REDUCE_DXIL}")
+        "${FYZZXYZZY_SOURCE_PCM_GJK_REDUCE_DXIL}" "${FYZZXYZZY_SOURCE_PCM_GJK_PUBLISH_DXIL}")
     set_tests_properties(fyzzxyzzy_source_pcm_gjk_solver_probe_d3d12
       PROPERTIES
       ENVIRONMENT "FYZZXYZZY_D3D12_DEBUG=1;FYZZXYZZY_D3D12_GPU_VALIDATION=0;FYZZXYZZY_PCM_GJK_PROBE=s"
@@ -605,7 +615,7 @@ if(FYZZXYZZY_BUILD_D3D12)
         "${FYZZXYZZY_SOURCE_PCM_EPA_WORK_DXIL_COMPACT}"
         "${FYZZXYZZY_SOURCE_PCM_GJK_DXIL}"
         "${FYZZXYZZY_SOURCE_PCM_EPA_DXIL}"
-        "${FYZZXYZZY_SOURCE_PCM_GJK_REDUCE_DXIL}")
+        "${FYZZXYZZY_SOURCE_PCM_GJK_REDUCE_DXIL}" "${FYZZXYZZY_SOURCE_PCM_GJK_PUBLISH_DXIL}")
     set_tests_properties(fyzzxyzzy_source_pcm_box_candidates_d3d12_release
       PROPERTIES ENVIRONMENT "FYZZXYZZY_D3D12_DEBUG=0" TIMEOUT 120)
 
@@ -619,7 +629,7 @@ if(FYZZXYZZY_BUILD_D3D12)
         "${FYZZXYZZY_SOURCE_PCM_EPA_WORK_DXIL_COMPACT}"
         "${FYZZXYZZY_SOURCE_PCM_GJK_DXIL}"
         "${FYZZXYZZY_SOURCE_PCM_EPA_DXIL}"
-        "${FYZZXYZZY_SOURCE_PCM_GJK_REDUCE_DXIL}")
+        "${FYZZXYZZY_SOURCE_PCM_GJK_REDUCE_DXIL}" "${FYZZXYZZY_SOURCE_PCM_GJK_PUBLISH_DXIL}")
     set_tests_properties(fyzzxyzzy_source_pcm_box_candidates_d3d12_debug_layer
       PROPERTIES
       ENVIRONMENT "FYZZXYZZY_D3D12_DEBUG=1;FYZZXYZZY_D3D12_GPU_VALIDATION=0"
@@ -630,7 +640,7 @@ if(FYZZXYZZY_BUILD_D3D12)
       INCLUDES "${CMAKE_CURRENT_SOURCE_DIR}/src"
       LIBRARIES FyzzXYZZY::ComputeD3D12 fyzzxyzzy_source_gpu_primitives_d3d12
       DEPENDS fyzzxyzzy_source_sc_box_bounds_shader_d3d12 fyzzxyzzy_source_pcm_box_candidates_shader_d3d12 fyzzxyzzy_source_pcm_epa_work_shader_d3d12 fyzzxyzzy_source_pcm_gjk_shader_d3d12 fyzzxyzzy_source_pcm_epa_shader_d3d12 fyzzxyzzy_source_pcm_gjk_probes_shader_d3d12
-      ARGS "${FYZZXYZZY_SC_BOX_BOUNDS_DXIL}" "${FYZZXYZZY_SOURCE_PCM_BOX_DXIL}" "${FYZZXYZZY_SOURCE_PCM_EPA_WORK_DXIL_COMPACT}" "${FYZZXYZZY_SOURCE_PCM_GJK_DXIL}" "${FYZZXYZZY_SOURCE_PCM_EPA_DXIL}" "${FYZZXYZZY_SOURCE_PCM_GJK_REDUCE_DXIL}")
+      ARGS "${FYZZXYZZY_SC_BOX_BOUNDS_DXIL}" "${FYZZXYZZY_SOURCE_PCM_BOX_DXIL}" "${FYZZXYZZY_SOURCE_PCM_EPA_WORK_DXIL_COMPACT}" "${FYZZXYZZY_SOURCE_PCM_GJK_DXIL}" "${FYZZXYZZY_SOURCE_PCM_EPA_DXIL}" "${FYZZXYZZY_SOURCE_PCM_GJK_REDUCE_DXIL}" "${FYZZXYZZY_SOURCE_PCM_GJK_PUBLISH_DXIL}")
     set_tests_properties(fyzzxyzzy_source_pcm_box_candidates_d3d12 PROPERTIES
       ENVIRONMENT "FYZZXYZZY_D3D12_DEBUG=1" TIMEOUT 300)
 
@@ -964,10 +974,11 @@ if(FYZZXYZZY_BUILD_D3D12)
       "${FYZZXYZZY_SOURCE_PCM_GJK_DXIL}"
       "${FYZZXYZZY_SOURCE_PCM_EPA_DXIL}"
       "${FYZZXYZZY_SOURCE_PCM_FACE_DXIL}"
-      "${FYZZXYZZY_SOURCE_PCM_GJK_REDUCE_DXIL}")
-    set(_pcm_stages Candidates EpaCompact GjkContact EpaContact FaceContacts GjkReduce)
+      "${FYZZXYZZY_SOURCE_PCM_GJK_REDUCE_DXIL}"
+      "${FYZZXYZZY_SOURCE_PCM_GJK_PUBLISH_DXIL}")
+    set(_pcm_stages Candidates EpaCompact GjkContact EpaContact FaceContacts GjkReduce GjkPublish)
     set(_pcm_manifest "FYZZXYZZY_SOURCE_PCM_1 DXIL\n")
-    foreach(_idx RANGE 0 5)
+    foreach(_idx RANGE 0 6)
       list(GET _pcm_stages ${_idx} _stage)
       list(GET _pcm_binaries ${_idx} _binary)
       get_filename_component(_name "${_binary}" NAME)
