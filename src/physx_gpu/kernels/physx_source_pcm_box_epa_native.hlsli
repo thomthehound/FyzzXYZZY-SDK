@@ -108,90 +108,162 @@ bool epaContact(GjkBoxPair pair,EpaFacet facet,
     witness.separation=-depth-pair.radiusA-pair.radiusB;
     return sqrt(gjkLength2(pa-pb))<=depth+1.e-3f;
 }
+// One workgroup owns a penetration pair. Facet visibility and closest-facet
+// selection run across lanes; topology updates retain deterministic edge order.
+groupshared uint epa_vertex_count;
+groupshared uint epa_facet_count;
+groupshared uint epa_finished;
+groupshared uint epa_succeeded;
+groupshared uint epa_visible[64];
+groupshared float epa_distances[64];
+groupshared GjkSupportPoint epa_next_support;
+groupshared GjkWitness epa_finished_witness;
+
 bool epaBoxContinuation(GjkBoxPair pair,
                         GjkSupportPoint simplex[4],uint simplexCount,
-                        out GjkWitness witness) {
+                        uint lane,out GjkWitness witness) {
     witness=(GjkWitness)0;
-    uint vertexCount=simplexCount,facetCount=0u;
-    for(uint i=0u;i<simplexCount;++i)epa_vertices[i]=simplex[i];
-    if(!epaInitialize(pair,vertexCount,facetCount))
-        return false;
-    float epsilon=0.005f*min(
+    if(lane==0u) {
+        uint vertices=simplexCount,facets=0u;
+        for(uint i=0u;i<simplexCount;++i)epa_vertices[i]=simplex[i];
+        const bool ready=epaInitialize(pair,vertices,facets);
+        epa_vertex_count=vertices;
+        epa_facet_count=facets;
+        epa_finished=ready?0u:1u;
+        epa_succeeded=0u;
+    }
+    GroupMemoryBarrierWithGroupSync();
+    const float epsilon=0.005f*min(
         min(pair.halfA.x,min(pair.halfA.y,pair.halfA.z)),
         min(pair.halfB.x,min(pair.halfB.y,pair.halfB.z)));
     float upperBound=3.402823466e+38f;
-    for(uint iteration=0u;iteration<60u;++iteration) {
-        int closest=-1;
+    [loop]
+    for(uint iteration=0u;iteration<60u && epa_finished==0u;++iteration) {
+        const uint facetCount=epa_facet_count;
         float distance=3.402823466e+38f;
-        for(uint i=0u;i<facetCount;++i)
-            if(epa_facets[i].valid!=0u && epa_facets[i].inHeap!=0u &&
-               epa_facets[i].distance<distance) {
-                closest=int(i);
-                distance=epa_facets[i].distance;
-            }
-        if(closest<0)return false;
-        EpaFacet selected=epa_facets[closest];
-        GjkSupportPoint next=gjkSupport(pair,selected.normal);
-        float projection=gjkDot(next.q,selected.normal);
-        if(abs(projection-distance)<=epsilon)
-            return epaContact(pair,selected,witness);
-        if(vertexCount==64u)return false;
-        upperBound=min(upperBound,projection);
-        bool duplicate=false;
-        for(uint i=0u;i<vertexCount;++i)
-            if(epa_vertices[i].ai==next.ai && epa_vertices[i].bi==next.bi) {
-                duplicate=true;
-                break;
-            }
-        if(duplicate)return epaContact(pair,selected,witness);
-        uint newIndex=vertexCount++;
-        epa_vertices[newIndex]=next;
-        uint boundaryCount=0u;
-        for(uint i=0u;i<facetCount;++i) {
-            EpaFacet f=epa_facets[i];
-            if(f.valid==0u)continue;
-            if(gjkDot(f.normal,next.q-epa_vertices[f.i].q)<0.f)continue;
-            epa_facets[i].valid=0u;
-            uint2 edges[3]={
-                uint2(f.i,f.j),uint2(f.j,f.k),uint2(f.k,f.i)};
-            for(uint e=0u;e<3u;++e) {
-                int reverse=-1;
-                for(uint j=0u;j<boundaryCount;++j)
-                    if(epa_boundary[j].from==edges[e].y &&
-                       epa_boundary[j].to==edges[e].x) {
-                        reverse=int(j);
-                        break;
+        if(lane<facetCount) {
+            const EpaFacet facet=epa_facets[lane];
+            if(facet.valid!=0u && facet.inHeap!=0u)
+                distance=facet.distance;
+        }
+        epa_distances[lane]=distance;
+        GroupMemoryBarrierWithGroupSync();
+        if(lane==0u) {
+            int closest=-1;
+            float best=3.402823466e+38f;
+            for(uint i=0u;i<facetCount;++i)
+                if(epa_distances[i]<best) {
+                    closest=int(i);
+                    best=epa_distances[i];
+                }
+            if(closest<0) {
+                epa_finished=1u;
+            }else {
+                const EpaFacet selected=epa_facets[closest];
+                const GjkSupportPoint next=gjkSupport(pair,selected.normal);
+                const float projection=gjkDot(next.q,selected.normal);
+                if(abs(projection-best)<=epsilon) {
+                    epa_succeeded=epaContact(pair,selected,epa_finished_witness)?1u:0u;
+                    epa_finished=1u;
+                }else if(epa_vertex_count==64u) {
+                    epa_finished=1u;
+                }else {
+                    upperBound=min(upperBound,projection);
+                    bool duplicate=false;
+                    for(uint i=0u;i<epa_vertex_count;++i)
+                        if(epa_vertices[i].ai==next.ai &&
+                           epa_vertices[i].bi==next.bi) {
+                            duplicate=true;
+                            break;
+                        }
+                    if(duplicate) {
+                        epa_succeeded=epaContact(pair,selected,epa_finished_witness)?1u:0u;
+                        epa_finished=1u;
+                    }else {
+                        epa_next_support=next;
+                        epa_vertices[epa_vertex_count++]=next;
                     }
-                if(reverse>=0)
-                    epa_boundary[reverse]=epa_boundary[--boundaryCount];
-                else {
-                    if(boundaryCount==32u)return false;
-                    EpaEdge entry;
-                    entry.from=edges[e].x;
-                    entry.to=edges[e].y;
-                    epa_boundary[boundaryCount++]=entry;
                 }
             }
         }
-        if(boundaryCount==0u)return false;
-        uint slots=64u-facetCount;
-        for(uint i=0u;i<facetCount;++i)
-            if(epa_facets[i].valid==0u)++slots;
-        if(boundaryCount>slots)return false;
-        for(uint i=0u;i<boundaryCount;++i) {
-            EpaEdge edge=epa_boundary[i];
-            EpaFacet f=epaFacet(edge.from,edge.to,newIndex);
-            if(f.valid==0u)return false;
-            f.inHeap=f.distance<=upperBound?1u:0u;
-            int slot=-1;
-            for(uint j=0u;j<facetCount;++j)
-                if(epa_facets[j].valid==0u) {
-                    slot=int(j);
-                    break;
-                }
-            if(slot<0)slot=int(facetCount++);
-            epa_facets[slot]=f;
+        GroupMemoryBarrierWithGroupSync();
+        if(epa_finished!=0u)break;
+
+        const GjkSupportPoint next=epa_next_support;
+        uint visible=0u;
+        if(lane<facetCount) {
+            const EpaFacet facet=epa_facets[lane];
+            visible=(facet.valid!=0u &&
+                gjkDot(facet.normal,next.q-epa_vertices[facet.i].q)>=0.f)?1u:0u;
         }
+        epa_visible[lane]=visible;
+        GroupMemoryBarrierWithGroupSync();
+        if(lane==0u) {
+            uint boundaryCount=0u;
+            for(uint i=0u;i<facetCount;++i) {
+                if(epa_visible[i]==0u)continue;
+                const EpaFacet f=epa_facets[i];
+                epa_facets[i].valid=0u;
+                const uint2 edges[3]={
+                    uint2(f.i,f.j),uint2(f.j,f.k),uint2(f.k,f.i)};
+                for(uint e=0u;e<3u;++e) {
+                    int reverse=-1;
+                    for(uint j=0u;j<boundaryCount;++j)
+                        if(epa_boundary[j].from==edges[e].y &&
+                           epa_boundary[j].to==edges[e].x) {
+                            reverse=int(j);
+                            break;
+                        }
+                    if(reverse>=0)
+                        epa_boundary[reverse]=epa_boundary[--boundaryCount];
+                    else if(boundaryCount==32u) {
+                        epa_finished=1u;
+                        break;
+                    }else {
+                        EpaEdge entry;
+                        entry.from=edges[e].x;
+                        entry.to=edges[e].y;
+                        epa_boundary[boundaryCount++]=entry;
+                    }
+                }
+                if(epa_finished!=0u)break;
+            }
+            if(epa_finished==0u) {
+                if(boundaryCount==0u) {
+                    epa_finished=1u;
+                }else {
+                    uint slots=64u-facetCount;
+                    for(uint i=0u;i<facetCount;++i)
+                        if(epa_facets[i].valid==0u)++slots;
+                    if(boundaryCount>slots) {
+                        epa_finished=1u;
+                    }else {
+                        const uint newIndex=epa_vertex_count-1u;
+                        for(uint i=0u;i<boundaryCount;++i) {
+                            const EpaEdge edge=epa_boundary[i];
+                            EpaFacet f=epaFacet(edge.from,edge.to,newIndex);
+                            if(f.valid==0u) {
+                                epa_finished=1u;
+                                break;
+                            }
+                            f.inHeap=f.distance<=upperBound?1u:0u;
+                            int slot=-1;
+                            for(uint j=0u;j<epa_facet_count;++j)
+                                if(epa_facets[j].valid==0u) {
+                                    slot=int(j);
+                                    break;
+                                }
+                            if(slot<0)slot=int(epa_facet_count++);
+                            epa_facets[slot]=f;
+                        }
+                    }
+                }
+            }
+        }
+        GroupMemoryBarrierWithGroupSync();
     }
-    return false;
+    GroupMemoryBarrierWithGroupSync();
+    if(lane==0u && epa_succeeded!=0u)
+        witness=epa_finished_witness;
+    return epa_succeeded!=0u;
 }
