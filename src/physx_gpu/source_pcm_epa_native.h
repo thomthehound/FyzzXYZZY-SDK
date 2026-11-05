@@ -24,7 +24,9 @@ public:
                             bool face_geometry=false,
                             bool direct_gjk=false)
         : context_(context),face_geometry_(face_geometry),
-          direct_gjk_(direct_gjk) {
+          direct_gjk_(direct_gjk),
+          step_parameters_(direct_gjk &&
+              shader.format==compute::ShaderFormat::Dxil) {
         const auto& device=context.device_info();
         if(!device.max_workgroup_count[0] ||
            !device.max_storage_buffer_range)
@@ -38,7 +40,8 @@ public:
         desc.storage_buffer_views.assign(
             desc.storage_buffer_binding_count,
             compute::StorageBufferViewKind::RawReadWrite);
-        desc.push_constant_bytes=face_geometry_?72u:56u;
+        desc.push_constant_bytes=face_geometry_?72u:
+            (step_parameters_?60u:56u);
         pipeline_=context_.create_compute_pipeline(desc);
     }
     SourcePcmEpaNativeStage(const SourcePcmEpaNativeStage&)=delete;
@@ -66,7 +69,8 @@ public:
                 CudaDeviceAddressMap::Address convex_surface=0u,
                 std::uint32_t convex_surface_bytes=0u,
                 std::uint32_t convex_faces_base=0u,
-                std::uint32_t convex_indices_base=0u) const {
+                std::uint32_t convex_indices_base=0u,
+                std::uint32_t gjk_pass=0u) const {
         if(!pair_count)return;
         const auto group_count=face_geometry_
             ?(std::uint64_t(pair_count)+63u)/64u
@@ -81,6 +85,7 @@ public:
             shape_capacity,candidate_capacity,edge_capacity,0u,
             0u,convex_vertex_count,0u,convex_faces_base,
             convex_indices_base,convex_surface_bytes};
+        if(step_parameters_)params[14]=gjk_pass;
         const auto view=[&](CudaDeviceAddressMap::Address address,
                             std::size_t bytes,std::uint32_t slot,
                             compute::BufferAccess access) {
@@ -139,7 +144,8 @@ public:
             dispatch.indirect=compute::DispatchIndirectArgs{
                 arguments.buffer,arguments.offset};
         }
-        const auto params_bytes=face_geometry_?sizeof(params):14u*sizeof(std::uint32_t);
+        const auto params_bytes=face_geometry_?sizeof(params):
+            (step_parameters_?15u:14u)*sizeof(std::uint32_t);
         dispatch.push_constants.resize(params_bytes);
         std::memcpy(dispatch.push_constants.data(),params.data(),params_bytes);
         commands.emplace_back(std::move(dispatch));
@@ -163,18 +169,20 @@ public:
                 CudaDeviceAddressMap::Address convex_surface=0u,
                 std::uint32_t convex_surface_bytes=0u,
                 std::uint32_t convex_faces_base=0u,
-                std::uint32_t convex_indices_base=0u) const {
+                std::uint32_t convex_indices_base=0u,
+                std::uint32_t gjk_pass=0u) const {
         append(stream.commands(),addresses,transforms,geometry,pairs,
                results,candidates,edge_cache,work,dispatch_args,output,
                convex_vertices,convex_vertex_count,
                pair_count,shape_capacity,candidate_capacity,edge_capacity,
                convex_surface,convex_surface_bytes,
-               convex_faces_base,convex_indices_base);
+               convex_faces_base,convex_indices_base,gjk_pass);
     }
 private:
     compute::Context& context_;
     bool face_geometry_=false;
     bool direct_gjk_=false;
+    bool step_parameters_=false;
     compute::PipelineId pipeline_=0;
     std::size_t alignment_=0;
     std::uint64_t max_view_=0;
