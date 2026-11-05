@@ -572,7 +572,7 @@ if(FYZZXYZZY_BUILD_D3D12)
         "${FYZZXYZZY_SOURCE_PCM_EPA_DXIL}")
     set_tests_properties(fyzzxyzzy_source_pcm_gjk_two_step_probe_d3d12
       PROPERTIES
-      ENVIRONMENT "FYZZXYZZY_D3D12_DEBUG=1;FYZZXYZZY_D3D12_GPU_VALIDATION=0;FYZZXYZZY_PCM_GJK_PROBE=s"
+      ENVIRONMENT "FYZZXYZZY_D3D12_DEBUG=1;FYZZXYZZY_D3D12_GPU_VALIDATION=0;FYZZXYZZY_PCM_GJK_PROBE=i"
       TIMEOUT 45)
     # Execute the complete GJK solver without later contact publication.
     add_test(NAME fyzzxyzzy_source_pcm_gjk_solver_probe_d3d12
