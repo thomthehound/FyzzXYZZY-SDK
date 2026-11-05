@@ -171,116 +171,45 @@ GjkFeature gjkEdgeFeature(
     const uint mask=t<=0.f?ma:(t>=1.f?mb:(ma|mb));
     return gjkFeature(closest,weights,mask);
 }
-// Keep the triangle Voronoi classifier callable on DXIL. Its scalar
-// interface prevents the vector-valued intermediate instructions that
-// cannot appear in a non-inlined DXIL helper.
-#ifndef __spirv__
-[noinline]
-#endif
-uint gjkTriangleBarycentric(
-    float ax,float ay,float az,float bx,float by,float bz,
-    float cx,float cy,float cz,
-    out float baryA,out float baryB,out float baryC) {
-    baryA=1.f;
-    baryB=0.f;
-    baryC=0.f;
-    const float abx=bx-ax,aby=by-ay,abz=bz-az;
-    const float acx=cx-ax,acy=cy-ay,acz=cz-az;
-    const float aa=(abx*abx+aby*aby)+abz*abz;
-    const float bb=(abx*acx+aby*acy)+abz*acz;
-    const float cc=(acx*acx+acy*acy)+acz*acz;
+GjkFeature gjkTriangleFeature(
+    float3 a,float3 b,float3 c,
+    float4 wa,float4 wb,float4 wc,uint ma,uint mb,uint mc) {
+    const float3 ab=b-a,ac=c-a;
+    const float aa=gjkLength2(ab);
+    const float bb=gjkDot(ab,ac);
+    const float cc=gjkLength2(ac);
     const float scale=max(aa,cc);
     const float determinant=aa*cc-bb*bb;
     if(!(scale>0.f) ||
        !(determinant>1.1920928955078125e-7f*scale*scale) ||
        !isfinite(determinant)) {
-        // Degenerate triangles reduce to their closest finite edge.
-        float t=aa>0.f && isfinite(aa)
-            ?clamp(-((ax*abx+ay*aby)+az*abz)/aa,0.f,1.f):0.f;
-        float u=1.f-t;
-        float qx=ax*u+bx*t,qy=ay*u+by*t,qz=az*u+bz*t;
-        float best=(qx*qx+qy*qy)+qz*qz;
-        baryA=u;baryB=t;
-        uint mask=t<=0.f?1u:(t>=1.f?2u:3u);
-
-        t=cc>0.f && isfinite(cc)
-            ?clamp(-((ax*acx+ay*acy)+az*acz)/cc,0.f,1.f):0.f;
-        u=1.f-t;
-        qx=ax*u+cx*t;qy=ay*u+cy*t;qz=az*u+cz*t;
-        float dist=(qx*qx+qy*qy)+qz*qz;
-        if(dist<best) {
-            best=dist;
-            baryA=u;baryB=0.f;baryC=t;
-            mask=t<=0.f?1u:(t>=1.f?4u:5u);
-        }
-
-        const float bcx=cx-bx,bcy=cy-by,bcz=cz-bz;
-        const float bc=(bcx*bcx+bcy*bcy)+bcz*bcz;
-        t=bc>0.f && isfinite(bc)
-            ?clamp(-((bx*bcx+by*bcy)+bz*bcz)/bc,0.f,1.f):0.f;
-        u=1.f-t;
-        qx=bx*u+cx*t;qy=by*u+cy*t;qz=bz*u+cz*t;
-        dist=(qx*qx+qy*qy)+qz*qz;
-        if(dist<best) {
-            baryA=0.f;baryB=u;baryC=t;
-            mask=t<=0.f?2u:(t>=1.f?4u:6u);
-        }
-        return mask;
+        GjkFeature best=gjkEdgeFeature(a,b,wa,wb,ma,mb);
+        best=gjkChoose(best,gjkEdgeFeature(a,c,wa,wc,ma,mc));
+        return gjkChoose(best,gjkEdgeFeature(b,c,wb,wc,mb,mc));
     }
 
-    const float d1=-((abx*ax+aby*ay)+abz*az);
-    const float d2=-((acx*ax+acy*ay)+acz*az);
-    if(d1<=0.f && d2<=0.f)return 1u;
-    const float d3=-((abx*bx+aby*by)+abz*bz);
-    const float d4=-((acx*bx+acy*by)+acz*bz);
-    if(d3>=0.f && d4<=d3) {
-        baryA=0.f;baryB=1.f;
-        return 2u;
-    }
+    // Classify the six Voronoi regions before evaluating the face interior.
+    const float d1=-gjkDot(ab,a),d2=-gjkDot(ac,a);
+    if(d1<=0.f && d2<=0.f)return gjkFeature(a,wa,ma);
+    const float d3=-gjkDot(ab,b),d4=-gjkDot(ac,b);
+    if(d3>=0.f && d4<=d3)return gjkFeature(b,wb,mb);
     const float vc=d1*d4-d3*d2;
-    if(vc<=0.f && d1>=0.f && d3<=0.f) {
-        const float t=clamp(d1/aa,0.f,1.f);
-        baryA=1.f-t;baryB=t;
-        return t<=0.f?1u:(t>=1.f?2u:3u);
-    }
-    const float d5=-((abx*cx+aby*cy)+abz*cz);
-    const float d6=-((acx*cx+acy*cy)+acz*cz);
-    if(d6>=0.f && d5<=d6) {
-        baryA=0.f;baryC=1.f;
-        return 4u;
-    }
+    if(vc<=0.f && d1>=0.f && d3<=0.f)
+        return gjkEdgeFeature(a,b,wa,wb,ma,mb);
+    const float d5=-gjkDot(ab,c),d6=-gjkDot(ac,c);
+    if(d6>=0.f && d5<=d6)return gjkFeature(c,wc,mc);
     const float vb=d5*d2-d1*d6;
-    if(vb<=0.f && d2>=0.f && d6<=0.f) {
-        const float t=clamp(d2/cc,0.f,1.f);
-        baryA=1.f-t;baryC=t;
-        return t<=0.f?1u:(t>=1.f?4u:5u);
-    }
+    if(vb<=0.f && d2>=0.f && d6<=0.f)
+        return gjkEdgeFeature(a,c,wa,wc,ma,mc);
     const float va=d3*d6-d5*d4;
-    if(va<=0.f && d4>=d3 && d5>=d6) {
-        const float bcx=cx-bx,bcy=cy-by,bcz=cz-bz;
-        const float bc=(bcx*bcx+bcy*bcy)+bcz*bcz;
-        const float t=clamp(-((bx*bcx+by*bcy)+bz*bcz)/bc,0.f,1.f);
-        baryA=0.f;baryB=1.f-t;baryC=t;
-        return t<=0.f?2u:(t>=1.f?4u:6u);
-    }
-    baryB=(d1*cc-d2*bb)/determinant;
-    baryC=(d2*aa-d1*bb)/determinant;
-    baryA=1.f-baryB-baryC;
-    return 7u;
-}
-GjkFeature gjkTriangleFeature(
-    float3 a,float3 b,float3 c,
-    float4 wa,float4 wb,float4 wc,uint ma,uint mb,uint mc) {
-    float baryA,baryB,baryC;
-    const uint localMask=gjkTriangleBarycentric(
-        a.x,a.y,a.z,b.x,b.y,b.z,c.x,c.y,c.z,
-        baryA,baryB,baryC);
-    precise float3 closest=(a*baryA+b*baryB)+c*baryC;
-    const float4 weights=(wa*baryA+wb*baryB)+wc*baryC;
-    const uint mask=((localMask&1u)!=0u?ma:0u) |
-                    ((localMask&2u)!=0u?mb:0u) |
-                    ((localMask&4u)!=0u?mc:0u);
-    return gjkFeature(closest,weights,mask);
+    if(va<=0.f && d4>=d3 && d5>=d6)
+        return gjkEdgeFeature(b,c,wb,wc,mb,mc);
+
+    const float u=(d1*cc-d2*bb)/determinant;
+    const float v=(d2*aa-d1*bb)/determinant;
+    const float w=1.f-u-v;
+    precise float3 projected=a*w+b*u+c*v;
+    return gjkFeature(projected,wa*w+wb*u+wc*v,ma|mb|mc);
 }
 
 GjkClosest gjkClosestSimplex(GjkSimplex simplex) {
