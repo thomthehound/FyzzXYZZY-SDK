@@ -272,7 +272,12 @@ uint gjkBoxContinuation(GjkBoxPair pair,float contactDistance,
     float3 closest=gjkLength2(pair.aInB)>0.f
         ?pair.aInB:float3(1.f,0.f,0.f);
     float previous=3.402823466e+38f;
-    for(uint iteration=0u;iteration<32u;++iteration) {
+#ifdef FYZZXYZZY_GJK_PROBE_ITERATION
+    const uint maxIterations=1u;
+#else
+    const uint maxIterations=32u;
+#endif
+    for(uint iteration=0u;iteration<maxIterations;++iteration) {
         float dist=sqrt(gjkLength2(closest));
         if(count>0u && dist<=epsilon && !pointCore)return 3u;
         if(dist<=0.f)return pointCore && count>0u?3u:0u;
