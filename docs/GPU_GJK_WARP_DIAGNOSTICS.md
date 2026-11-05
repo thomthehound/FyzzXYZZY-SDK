@@ -49,15 +49,37 @@ The observed `0xC0000005` is **not** the Windows stack-overflow exception `0xC00
 
 The passing two-step test demonstrates execution of two actual simplex reductions, not merely entry into iteration two. It does not establish correct convergence over arbitrary convex pairs or justify reducing the 32-iteration limit.
 
-## Current investigation
+## Current status
 
-GJK retains its complete 32-iteration bounded recurrence and compact Minkowski simplex state. The source GPU math and full contact-witness reconstruction remain authoritative for both backends.
+The 32-step GJK recurrence runs as separate device-resident advance,
+simplex-reduction, and publication stages. Its 32-iteration bound is
+unchanged. The sparse EPA continuation now assigns one 64-lane workgroup to
+each admitted pair: lanes evaluate facet distances and visibility, while
+lane zero updates the ordered facet and boundary topology. The 60-step EPA
+bound, support mappings, and contact witness equations are unchanged.
 
-WARP completes the two-iteration compile-time-specialized shader and a first-step shader containing only point/edge simplex reduction. It fails when triangle reduction is included in the first-step shader, even with tetrahedron reduction excluded. Both a compact barycentric return path and scalar callable region classification failed to make that shader executable. Vulkan source GPU contact and scene conformance remains green.
+Independent D3D12/WARP run 42105337933 established:
 
-The attempted device-resident 32-dispatch recurrence also failed because each individual DXIL dispatch still contained the full-dimensional reducer. It was withdrawn along with the 16 MB stack-reserve experiment. A full-dimensional solver remains the merge gate; skipping triangle or tetrahedron geometry is not an acceptable substitute.
+| Fixture | Result |
+| --- | --- |
+| Full 32-step GJK preflight | Passed (13.79 s) |
+| Complete PCM Release, including nonempty EPA contact parity | Passed (112.16 s) |
+| Complete PCM with D3D12 debug layer, GPU validation disabled | Passed (113.46 s) |
+| Complete PCM with GPU-based validation enabled | Timed out (300 s), during initial staged GJK |
+| Independent Vulkan GPU suite | Passed |
 
-The implementation direction is to isolate higher-dimensional simplex reduction into independently compiled GPU stages, preserve the original support/feature/witness equations, and evaluate the additional dispatch cost. No CPU contact solver or reduced iteration limit is permitted.
+The earlier failure after an empty post-GJK EPA worklist no longer
+reproduces in ordinary Release or debug-layer execution. The remaining
+GPU-based-validation timeout occurs before EPA admission, and does not by
+itself establish a physics or memory-safety defect. GPU-based validation
+instruments shader execution and adds validation commands, making the
+66-dispatch staged GJK recurrence substantially more expensive on WARP.
+
+A separate GPU-validated advance/reduction regression now executes the
+production GJK shader stages over a genuine GPU-admitted pair and inspects
+the device-resident simplex. This probe is additional to, not a replacement
+for, full-iteration contact parity. Full GPU-based-validation acceptance
+remains outstanding.
 
 ## Acceptance gate
 
