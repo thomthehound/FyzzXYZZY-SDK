@@ -206,7 +206,9 @@ uint gjkGroupContinuation(GjkBoxPair pair,float contactDistance,
                             break;
                         }
                     if(duplicate) {
-                        if(pointCore && projection>0.f) {
+                        if(projection>0.f) {
+                            // Projection and simplex distance bound the
+                            // true gap when support can no longer advance.
                             GjkWitness contact;
                             const bool accepted=gjkGroupBest.mask!=0u &&
                                 gjkContact(pair,gjkGroupBest,contact) &&
