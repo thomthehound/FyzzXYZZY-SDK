@@ -67,9 +67,180 @@ ConstantBuffer<Parameters> p : register(b0,space0);
 #include "physx_source_pcm_box_epa_native.hlsli"
 #include "physx_source_pcm_sc_contact_publish_native.hlsli"
 
-[numthreads(1,1,1)]
-void gjk(uint3 thread : SV_DispatchThreadID) {
-    uint i=work.Load(p.workBias+thread.x*4u);
+// One Sc pair owns one 32-thread group. Independent simplex subsets
+// retain their source evaluation order through a stable final reduction.
+groupshared GjkSupportPoint gjkGroupSimplex[4];
+groupshared GjkClosest gjkGroupChoices[15];
+groupshared GjkClosest gjkGroupBest;
+groupshared GjkWitness gjkGroupWitness;
+groupshared uint gjkGroupCount,gjkGroupState;
+groupshared float3 gjkGroupClosest;
+groupshared float gjkGroupPrevious,gjkGroupProjection;
+
+GjkClosest gjkGroupSubset(uint mask,uint count) {
+    GjkClosest candidate=(GjkClosest)0;
+    candidate.dist2=3.402823466e+38f;
+    if(mask>=(1u<<count))return candidate;
+    uint ids[4]={0u,0u,0u,0u};
+    uint n=0u;
+    for(uint i=0u;i<count;++i)
+        if((mask&(1u<<i))!=0u)ids[n++]=i;
+    float weights[4]={0.f,0.f,0.f,0.f};
+    weights[ids[0]]=1.f;
+    if(n>1u) {
+        const float3 origin=gjkGroupSimplex[ids[0]].q;
+        float3 directions[3];
+        float a[3][4]={{0.f,0.f,0.f,0.f},
+                       {0.f,0.f,0.f,0.f},
+                       {0.f,0.f,0.f,0.f}};
+        for(uint j=1u;j<n;++j)
+            directions[j-1u]=gjkGroupSimplex[ids[j]].q-origin;
+        for(uint j=1u;j<n;++j) {
+            for(uint k=1u;k<n;++k)
+                a[j-1u][k-1u]=gjkDot(directions[j-1u],directions[k-1u]);
+            a[j-1u][n-1u]=-gjkDot(directions[j-1u],origin);
+        }
+        float coefficients[3]={0.f,0.f,0.f};
+        if(!gjkSolve(n-1u,a,coefficients))return candidate;
+        for(uint j=1u;j<n;++j) {
+            weights[ids[j]]=coefficients[j-1u];
+            weights[ids[0]]-=coefficients[j-1u];
+        }
+    }
+    for(uint j=0u;j<n;++j)
+        if(weights[ids[j]]< -1.e-5f)return candidate;
+    precise float3 q=0.f,pa=0.f,pb=0.f;
+    for(uint j=0u;j<count;++j) {
+        precise float3 dq=gjkGroupSimplex[j].q*weights[j];
+        precise float3 da=gjkGroupSimplex[j].a*weights[j];
+        precise float3 db=gjkGroupSimplex[j].b*weights[j];
+        q=q+dq;
+        pa=pa+da;
+        pb=pb+db;
+    }
+    candidate.closestPoint=q;
+    candidate.a=pa;
+    candidate.b=pb;
+    candidate.mask=mask;
+    candidate.dist2=gjkLength2(q);
+    for(uint j=0u;j<4u;++j)candidate.weights[j]=weights[j];
+    return candidate;
+}
+
+uint gjkGroupContinuation(GjkBoxPair pair,float contactDistance,
+                          uint lane) {
+    const float epsilon=0.005f*min(
+        min(pair.halfA.x,min(pair.halfA.y,pair.halfA.z)),
+        min(pair.halfB.x,min(pair.halfB.y,pair.halfB.z)));
+    const float progressFactor=1.f-0.000225f;
+    const bool pointCore=pair.radiusA>0.f || pair.radiusB>0.f;
+    if(lane==0u) {
+        gjkGroupCount=0u;
+        gjkGroupState=0u;
+        gjkGroupPrevious=3.402823466e+38f;
+        gjkGroupClosest=gjkLength2(pair.aInB)>0.f
+            ?pair.aInB:float3(1.f,0.f,0.f);
+    }
+    GroupMemoryBarrierWithGroupSync();
+    for(uint iteration=0u;iteration<32u;++iteration) {
+        if(lane==0u) {
+            const float distance=sqrt(gjkLength2(gjkGroupClosest));
+            if(gjkGroupCount>0u && distance<=epsilon && !pointCore)
+                gjkGroupState=3u;
+            else if(distance<=0.f)
+                gjkGroupState=pointCore && gjkGroupCount>0u?3u:2u;
+            else {
+                const float3 normal=gjkGroupClosest*(1.f/distance);
+                const GjkSupportPoint support=gjkSupport(pair,-gjkGroupClosest);
+                const float projection=gjkDot(normal,support.q);
+                gjkGroupProjection=projection;
+                if(projection>contactDistance+pair.radiusA+pair.radiusB)
+                    gjkGroupState=2u;
+                else if(gjkGroupCount>0u &&
+                        projection>distance*progressFactor) {
+                    GjkWitness contact;
+                    const bool accepted=gjkGroupBest.mask!=0u &&
+                        gjkContact(pair,gjkGroupBest,contact) &&
+                        contact.separation<=contactDistance;
+                    if(accepted)gjkGroupWitness=contact;
+                    gjkGroupState=accepted?1u:2u;
+                }else {
+                    bool duplicate=false;
+                    for(uint j=0u;j<gjkGroupCount;++j)
+                        if(support.ai==gjkGroupSimplex[j].ai &&
+                           support.bi==gjkGroupSimplex[j].bi) {
+                            duplicate=true;
+                            break;
+                        }
+                    if(duplicate) {
+                        if(pointCore && projection>0.f) {
+                            GjkWitness contact;
+                            const bool accepted=gjkGroupBest.mask!=0u &&
+                                gjkContact(pair,gjkGroupBest,contact) &&
+                                contact.separation<=contactDistance;
+                            if(accepted)gjkGroupWitness=contact;
+                            gjkGroupState=accepted?1u:2u;
+                        }else
+                            gjkGroupState=pointCore?3u:2u;
+                    }else if(gjkGroupCount==4u)
+                        gjkGroupState=3u;
+                    else
+                        gjkGroupSimplex[gjkGroupCount++]=support;
+                }
+            }
+        }
+        GroupMemoryBarrierWithGroupSync();
+        if(gjkGroupState!=0u)break;
+
+        if(lane<15u)
+            gjkGroupChoices[lane]=gjkGroupSubset(lane+1u,gjkGroupCount);
+        GroupMemoryBarrierWithGroupSync();
+        if(lane==0u) {
+            GjkClosest best=(GjkClosest)0;
+            best.dist2=3.402823466e+38f;
+            for(uint mask=0u;mask<15u;++mask)
+                if(gjkGroupChoices[mask].dist2<best.dist2)
+                    best=gjkGroupChoices[mask];
+            if(best.mask==0u)
+                gjkGroupState=2u;
+            else {
+                gjkGroupBest=best;
+                gjkGroupClosest=best.closestPoint;
+                const float nextDistance=sqrt(best.dist2);
+                uint write=0u;
+                const uint count=gjkGroupCount;
+                for(uint read=0u;read<count;++read)
+                    if((best.mask&(1u<<read))!=0u &&
+                       best.weights[read]>1.e-6f)
+                        gjkGroupSimplex[write++]=gjkGroupSimplex[read];
+                if(write==0u && count>0u)write=1u;
+                gjkGroupCount=write;
+                if(nextDistance>=gjkGroupPrevious) {
+                    if(pointCore && gjkGroupProjection>0.f) {
+                        GjkWitness contact;
+                        const bool accepted=gjkContact(pair,best,contact) &&
+                            contact.separation<=contactDistance;
+                        if(accepted)gjkGroupWitness=contact;
+                        gjkGroupState=accepted?1u:2u;
+                    }else
+                        gjkGroupState=pointCore?3u:2u;
+                }else
+                    gjkGroupPrevious=nextDistance;
+            }
+        }
+        GroupMemoryBarrierWithGroupSync();
+        if(gjkGroupState!=0u)break;
+    }
+    if(lane==0u && gjkGroupState==0u)
+        gjkGroupState=pointCore && gjkGroupCount>0u?3u:2u;
+    GroupMemoryBarrierWithGroupSync();
+    return gjkGroupState;
+}
+
+[numthreads(32,1,1)]
+void gjk(uint3 group : SV_GroupID,uint3 thread : SV_GroupThreadID) {
+    const uint lane=thread.x;
+    uint i=work.Load(p.workBias+group.x*4u);
     if(i>=p.pairCount)return;
     uint result=p.resultBias+i*32u;
     if(results.Load(result+8u)!=3u)return;
@@ -122,11 +293,10 @@ void gjk(uint3 thread : SV_DispatchThreadID) {
     }
     float distance=asfloat(geometry.Load(ga+12u))+
                    asfloat(geometry.Load(gb+12u));
-    GjkWitness contact;
-    GjkSupportPoint simplex[4];
-    uint simplexCount;
-    const uint outcome=gjkBoxContinuation(
-        boxPair,distance,contact,simplex,simplexCount);
+    const uint outcome=gjkGroupContinuation(boxPair,distance,lane);
+    if(lane!=0u)return;
+    const GjkWitness contact=gjkGroupWitness;
+    const uint simplexCount=gjkGroupCount;
     if(outcome==3u) {
         const uint pending=p.edgeCacheBias+edge*240u;
         if(simplexCount==0u || simplexCount>4u) {
@@ -141,10 +311,10 @@ void gjk(uint3 thread : SV_DispatchThreadID) {
         // supports, retaining both local points and exact feature IDs.
         for(uint j=0u;j<simplexCount;++j) {
             const uint slot=pending+80u+j*40u;
-            edgeCaches.Store3(slot,asuint(simplex[j].a));
-            edgeCaches.Store3(slot+12u,asuint(simplex[j].b));
-            edgeCaches.Store(slot+24u,simplex[j].ai);
-            edgeCaches.Store(slot+28u,simplex[j].bi);
+            edgeCaches.Store3(slot,asuint(gjkGroupSimplex[j].a));
+            edgeCaches.Store3(slot+12u,asuint(gjkGroupSimplex[j].b));
+            edgeCaches.Store(slot+24u,gjkGroupSimplex[j].ai);
+            edgeCaches.Store(slot+28u,gjkGroupSimplex[j].bi);
         }
         results.Store(result+24u,simplexCount);
         results.Store(result+8u,4u);
