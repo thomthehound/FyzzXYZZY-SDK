@@ -353,6 +353,34 @@ void verify(Context& context,const char* transform_shader,
     require(indirect==std::array<std::uint32_t,3>{0u,1u,1u},
             "Sparse EPA GPU reset retained stale pending work");
 
+    // Validate compaction against the original admission state, then
+    // resolve exactly that state through sparse GJK and EPA before
+    // comparing the final contacts with native Gu.
+    context.upload(root,result_offset,results.data(),sizeof(results));
+    {
+        seed_compaction();
+        SourceSapDmaNative stream(context,addresses);
+        sparse.append(stream,addresses,result_data,work_data,args_data,
+                      static_cast<std::uint32_t>(pairs.size()));
+        gjk.append(stream,addresses,transforms,geometry,pair_data,result_data,
+                   candidate_data,edge_data,work_data,args_data,output_data,
+                   transforms,0u,
+                   static_cast<std::uint32_t>(pairs.size()),capacity,
+                   static_cast<std::uint32_t>(candidates.size()),edge_capacity);
+        epa.append(stream,addresses,transforms,geometry,pair_data,result_data,
+                   candidate_data,edge_data,work_data,args_data,output_data,
+                   transforms,0u,
+                   static_cast<std::uint32_t>(pairs.size()),capacity,
+                   static_cast<std::uint32_t>(candidates.size()),edge_capacity);
+        stream.wait_at_fetch();
+    }
+    context.download(root,result_offset,results.data(),sizeof(results));
+    context.download(root,candidate_offset,candidates.data(),
+                     candidates.size()*sizeof(candidates[0]));
+    context.download(root,edge_offset,edge_caches.data(),
+                     edge_caches.size()*sizeof(edge_caches[0]));
+    download_publication();
+
     std::uint32_t generated=0u,reduced_batches=0u;
     for(std::size_t i=0;i<pairs.size();++i) {
         require(results[i].edge_handle==pairs[i].edge_handle &&
