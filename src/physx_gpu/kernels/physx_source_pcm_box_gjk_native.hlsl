@@ -72,16 +72,16 @@ ConstantBuffer<Parameters> p : register(b0,space0);
 // Pending Sc edges have no published contacts. Their four persistent
 // witness slots hold the continuation until contact or EPA admission.
 GjkCompactPoint gjkReadPoint(uint at) {
-    GjkCompactPoint point;
-    point.q=asfloat(edgeCaches.Load3(at));
-    point.ai=edgeCaches.Load(at+12u);
-    point.bi=edgeCaches.Load(at+16u);
-    return point;
+    GjkCompactPoint feature;
+    feature.q=asfloat(edgeCaches.Load3(at));
+    feature.ai=edgeCaches.Load(at+12u);
+    feature.bi=edgeCaches.Load(at+16u);
+    return feature;
 }
-void gjkWritePoint(uint at,GjkCompactPoint point) {
-    edgeCaches.Store3(at,asuint(point.q));
-    edgeCaches.Store(at+12u,point.ai);
-    edgeCaches.Store(at+16u,point.bi);
+void gjkWritePoint(uint at,GjkCompactPoint feature) {
+    edgeCaches.Store3(at,asuint(feature.q));
+    edgeCaches.Store(at+12u,feature.ai);
+    edgeCaches.Store(at+16u,feature.bi);
 }
 GjkContinuation gjkReadContinuation(uint base) {
     GjkContinuation state;
@@ -183,8 +183,9 @@ void main(uint3 thread : SV_DispatchThreadID) {
     uint simplexCount;
 #ifdef FYZZXYZZY_GJK_MULTI_PASS
     const uint cacheBase=p.edgeCacheBias+edge*240u;
-    GjkContinuation state=p.gjkPass==0u
-        ?gjkInitialContinuation(boxPair):gjkReadContinuation(cacheBase);
+    GjkContinuation state;
+    if(p.gjkPass==0u)state=gjkInitialContinuation(boxPair);
+    else state=gjkReadContinuation(cacheBase);
     uint outcome;
     const bool finished=gjkAdvanceOne(boxPair,distance,state,outcome,contact);
     if(!finished && p.gjkPass<31u) {
