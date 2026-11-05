@@ -144,6 +144,7 @@ public:
                 convex_surface_faces_base_,convex_surface_indices_base_,
                 take_pcm_shader(*pcm_shaders,NativeGpuPcmStage::Candidates),
                 take_pcm_shader(*pcm_shaders,NativeGpuPcmStage::EpaCompact),
+                take_pcm_shader(*pcm_shaders,NativeGpuPcmStage::GjkContact),
                 take_pcm_shader(*pcm_shaders,NativeGpuPcmStage::EpaContact),
                 take_pcm_shader(*pcm_shaders,NativeGpuPcmStage::FaceContacts));
         if(dy_shader)
