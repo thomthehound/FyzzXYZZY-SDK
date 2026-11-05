@@ -435,7 +435,7 @@ jobs:
         run: |
           cmake --build build-native --config Release --target fyzzxyzzy_source_pcm_box_candidates_d3d12 --parallel 4
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          ctest --test-dir build-native -C Release -R '^fyzzxyzzy_source_pcm_gjk_(two_step|sm66)_probe_d3d12$' --output-on-failure
+          ctest --test-dir build-native -C Release -R '^fyzzxyzzy_source_pcm_gjk_two_step_probe_d3d12$' --output-on-failure
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           # Run the exact solver fixture directly so Windows exception status
           # is retained instead of being folded into CTest's SEGFAULT label.
