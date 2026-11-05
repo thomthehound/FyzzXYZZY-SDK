@@ -518,7 +518,7 @@ if(FYZZXYZZY_BUILD_D3D12)
       "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_source_pcm_gjk_solver_probe.dxil")
     fyzzxyzzy_compile_hlsl("${FYZZXYZZY_SOURCE_PCM_GJK_SOLVER_DXIL}"
       "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_pcm_box_gjk_native.hlsl" cs_6_0 main
-      FLAGS -DFYZZXYZZY_GJK_PROBE_SOLVER=1
+      FLAGS -DFYZZXYZZY_GJK_PROBE_SOLVER=1 -O1
       DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_pcm_box_gjk_native.hlsli")
     set(FYZZXYZZY_SOURCE_PCM_GJK_TWO_STEP_DXIL
       "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_source_pcm_gjk_two_step_probe.dxil")
