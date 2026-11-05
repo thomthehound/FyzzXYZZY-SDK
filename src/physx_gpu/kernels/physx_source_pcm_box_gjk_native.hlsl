@@ -150,6 +150,11 @@ void main(uint3 thread : SV_DispatchThreadID) {
 #ifdef FYZZXYZZY_GJK_STAGED_ADVANCE
     const uint cacheBase=p.edgeCacheBias+edge*240u;
     GjkGpuState state;
+#ifdef FYZZXYZZY_GJK_STAGED_PUBLISH
+    state=gjkLoadGpuState(cacheBase);
+    if(state.phase!=2u)return;
+    uint outcome=state.outcome;
+#else
     if(p.gjkPass==0u)state=gjkInitialState(boxPair,distance);
     else state=gjkLoadGpuState(cacheBase);
     uint outcome=0u;
@@ -196,6 +201,15 @@ void main(uint3 thread : SV_DispatchThreadID) {
             }
         }
     }
+    state.phase=2u;
+    state.outcome=outcome;
+    gjkStoreGpuState(cacheBase,state);
+#ifdef FYZZXYZZY_GJK_PROBE_SOLVER
+    results.Store(result+24u,0xB200u|outcome);
+    results.Store(result+8u,0u);
+#endif
+    return;
+#endif
     if(outcome==1u) {
         const GjkClosest nearest=gjkCachedClosest(state);
         outcome=nearest.mask!=0u &&
