@@ -509,7 +509,6 @@ if(FYZZXYZZY_BUILD_D3D12)
       "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_source_pcm_box_gjk_native.dxil")
     fyzzxyzzy_compile_hlsl("${FYZZXYZZY_SOURCE_PCM_GJK_DXIL}"
       "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_pcm_box_gjk_native.hlsl" cs_6_0 main
-      FLAGS -DFYZZXYZZY_GJK_MULTI_PASS=1
       DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_pcm_box_math_native.hlsli"
         "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_pcm_box_gjk_native.hlsli"
         "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_pcm_sc_contact_publish_native.hlsli")
@@ -519,7 +518,7 @@ if(FYZZXYZZY_BUILD_D3D12)
       "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_source_pcm_gjk_solver_probe.dxil")
     fyzzxyzzy_compile_hlsl("${FYZZXYZZY_SOURCE_PCM_GJK_SOLVER_DXIL}"
       "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_pcm_box_gjk_native.hlsl" cs_6_0 main
-      FLAGS -DFYZZXYZZY_GJK_PROBE_SOLVER=1 -DFYZZXYZZY_GJK_MULTI_PASS=1
+      FLAGS -DFYZZXYZZY_GJK_PROBE_SOLVER=1
       DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_pcm_box_gjk_native.hlsli")
     set(FYZZXYZZY_SOURCE_PCM_GJK_TWO_STEP_DXIL
       "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_source_pcm_gjk_two_step_probe.dxil")
@@ -527,32 +526,9 @@ if(FYZZXYZZY_BUILD_D3D12)
       "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_pcm_box_gjk_native.hlsl" cs_6_0 main
       FLAGS -DFYZZXYZZY_GJK_PROBE_SOLVER=1 -DFYZZXYZZY_GJK_PROBE_ITERATION=2 -DFYZZXYZZY_GJK_PROBE_FORCE_UNROLL=1
       DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_pcm_box_gjk_native.hlsli")
-    set(FYZZXYZZY_SOURCE_PCM_GJK_FIRST_PASS_DXIL
-      "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_source_pcm_gjk_first_pass_probe.dxil")
-    fyzzxyzzy_compile_hlsl("${FYZZXYZZY_SOURCE_PCM_GJK_FIRST_PASS_DXIL}"
-      "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_pcm_box_gjk_native.hlsl" cs_6_0 main
-      FLAGS -DFYZZXYZZY_GJK_MULTI_PASS=1 -DFYZZXYZZY_GJK_FIRST_PASS_PROBE=1
-      DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_pcm_box_gjk_native.hlsli")
-    set(FYZZXYZZY_GJK_FIRST_NO_TETRA_DXIL
-      "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_source_pcm_gjk_first_no_tetra.dxil")
-    fyzzxyzzy_compile_hlsl("${FYZZXYZZY_GJK_FIRST_NO_TETRA_DXIL}"
-      "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_pcm_box_gjk_native.hlsl" cs_6_0 main
-      FLAGS -DFYZZXYZZY_GJK_MULTI_PASS=1 -DFYZZXYZZY_GJK_FIRST_PASS_PROBE=1
-        -DFYZZXYZZY_GJK_PROBE_SKIP_TETRAHEDRA=1
-      DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_pcm_box_gjk_native.hlsli")
-    set(FYZZXYZZY_GJK_FIRST_NO_FACES_DXIL
-      "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_source_pcm_gjk_first_no_faces.dxil")
-    fyzzxyzzy_compile_hlsl("${FYZZXYZZY_GJK_FIRST_NO_FACES_DXIL}"
-      "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_pcm_box_gjk_native.hlsl" cs_6_0 main
-      FLAGS -DFYZZXYZZY_GJK_MULTI_PASS=1 -DFYZZXYZZY_GJK_FIRST_PASS_PROBE=1
-        -DFYZZXYZZY_GJK_PROBE_SKIP_TETRAHEDRA=1 -DFYZZXYZZY_GJK_PROBE_SKIP_TRIANGLES=1
-      DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_pcm_box_gjk_native.hlsli")
     add_custom_target(fyzzxyzzy_source_pcm_gjk_probes_shader_d3d12
       DEPENDS "${FYZZXYZZY_SOURCE_PCM_GJK_SOLVER_DXIL}"
-        "${FYZZXYZZY_SOURCE_PCM_GJK_TWO_STEP_DXIL}"
-        "${FYZZXYZZY_SOURCE_PCM_GJK_FIRST_PASS_DXIL}"
-        "${FYZZXYZZY_GJK_FIRST_NO_TETRA_DXIL}"
-        "${FYZZXYZZY_GJK_FIRST_NO_FACES_DXIL}")
+        "${FYZZXYZZY_SOURCE_PCM_GJK_TWO_STEP_DXIL}")
     set(FYZZXYZZY_SOURCE_PCM_EPA_DXIL
       "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_source_pcm_box_epa_native.dxil")
     fyzzxyzzy_compile_hlsl("${FYZZXYZZY_SOURCE_PCM_EPA_DXIL}" "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_pcm_box_epa_native.hlsl" cs_6_0 main
@@ -598,36 +574,6 @@ if(FYZZXYZZY_BUILD_D3D12)
       PROPERTIES
       ENVIRONMENT "FYZZXYZZY_D3D12_DEBUG=1;FYZZXYZZY_D3D12_GPU_VALIDATION=0;FYZZXYZZY_PCM_GJK_PROBE=i"
       TIMEOUT 45)
-    add_test(NAME fyzzxyzzy_source_pcm_gjk_first_pass_probe_d3d12
-      COMMAND $<TARGET_FILE:fyzzxyzzy_source_pcm_box_candidates_d3d12>
-        "${FYZZXYZZY_SC_BOX_BOUNDS_DXIL}"
-        "${FYZZXYZZY_SOURCE_PCM_BOX_DXIL}"
-        "${FYZZXYZZY_SOURCE_PCM_EPA_WORK_DXIL_COMPACT}"
-        "${FYZZXYZZY_SOURCE_PCM_GJK_FIRST_PASS_DXIL}"
-        "${FYZZXYZZY_SOURCE_PCM_EPA_DXIL}")
-    set_tests_properties(fyzzxyzzy_source_pcm_gjk_first_pass_probe_d3d12
-      PROPERTIES
-      ENVIRONMENT "FYZZXYZZY_D3D12_DEBUG=1;FYZZXYZZY_D3D12_GPU_VALIDATION=0;FYZZXYZZY_PCM_GJK_PROBE=i"
-      TIMEOUT 45)
-    foreach(_variant IN ITEMS NO_TETRA NO_FACES)
-      if(_variant STREQUAL "NO_TETRA")
-        set(_probe_shader "${FYZZXYZZY_GJK_FIRST_NO_TETRA_DXIL}")
-        set(_probe_name "fyzzxyzzy_source_pcm_gjk_first_no_tetra_d3d12")
-      else()
-        set(_probe_shader "${FYZZXYZZY_GJK_FIRST_NO_FACES_DXIL}")
-        set(_probe_name "fyzzxyzzy_source_pcm_gjk_first_no_faces_d3d12")
-      endif()
-      add_test(NAME ${_probe_name}
-        COMMAND $<TARGET_FILE:fyzzxyzzy_source_pcm_box_candidates_d3d12>
-          "${FYZZXYZZY_SC_BOX_BOUNDS_DXIL}"
-          "${FYZZXYZZY_SOURCE_PCM_BOX_DXIL}"
-          "${FYZZXYZZY_SOURCE_PCM_EPA_WORK_DXIL_COMPACT}"
-          "${_probe_shader}"
-          "${FYZZXYZZY_SOURCE_PCM_EPA_DXIL}")
-      set_tests_properties(${_probe_name} PROPERTIES
-        ENVIRONMENT "FYZZXYZZY_D3D12_DEBUG=1;FYZZXYZZY_D3D12_GPU_VALIDATION=0;FYZZXYZZY_PCM_GJK_PROBE=i"
-        TIMEOUT 45)
-    endforeach()
     # Execute the complete GJK solver without later contact publication.
     add_test(NAME fyzzxyzzy_source_pcm_gjk_solver_probe_d3d12
       COMMAND $<TARGET_FILE:fyzzxyzzy_source_pcm_box_candidates_d3d12>

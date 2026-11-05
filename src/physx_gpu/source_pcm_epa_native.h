@@ -24,9 +24,7 @@ public:
                             bool face_geometry=false,
                             bool direct_gjk=false)
         : context_(context),face_geometry_(face_geometry),
-          direct_gjk_(direct_gjk),
-          gjk_dispatch_steps_(direct_gjk &&
-              shader.format==compute::ShaderFormat::Dxil) {
+          direct_gjk_(direct_gjk) {
         const auto& device=context.device_info();
         if(!device.max_workgroup_count[0] ||
            !device.max_storage_buffer_range)
@@ -40,8 +38,7 @@ public:
         desc.storage_buffer_views.assign(
             desc.storage_buffer_binding_count,
             compute::StorageBufferViewKind::RawReadWrite);
-        desc.push_constant_bytes=face_geometry_?72u:
-            (gjk_dispatch_steps_?60u:56u);
+        desc.push_constant_bytes=face_geometry_?72u:56u;
         pipeline_=context_.create_compute_pipeline(desc);
     }
     SourcePcmEpaNativeStage(const SourcePcmEpaNativeStage&)=delete;
@@ -142,18 +139,10 @@ public:
             dispatch.indirect=compute::DispatchIndirectArgs{
                 arguments.buffer,arguments.offset};
         }
-        const auto params_bytes=face_geometry_?sizeof(params):
-            (gjk_dispatch_steps_?15u:14u)*sizeof(std::uint32_t);
+        const auto params_bytes=face_geometry_?sizeof(params):14u*sizeof(std::uint32_t);
         dispatch.push_constants.resize(params_bytes);
         std::memcpy(dispatch.push_constants.data(),params.data(),params_bytes);
-        if(gjk_dispatch_steps_) {
-            for(std::uint32_t pass=0u;pass<32u;++pass) {
-                auto step=dispatch;
-                std::memcpy(step.push_constants.data()+14u*sizeof(std::uint32_t),
-                            &pass,sizeof(pass));
-                commands.emplace_back(std::move(step));
-            }
-        }else commands.emplace_back(std::move(dispatch));
+        commands.emplace_back(std::move(dispatch));
     }
     void append(SourceSapDmaNative& stream,
                 const CudaDeviceAddressMap& addresses,
@@ -186,7 +175,6 @@ private:
     compute::Context& context_;
     bool face_geometry_=false;
     bool direct_gjk_=false;
-    bool gjk_dispatch_steps_=false;
     compute::PipelineId pipeline_=0;
     std::size_t alignment_=0;
     std::uint64_t max_view_=0;

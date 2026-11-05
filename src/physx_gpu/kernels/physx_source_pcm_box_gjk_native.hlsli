@@ -171,49 +171,6 @@ GjkFeature gjkEdgeFeature(
     const uint mask=t<=0.f?ma:(t>=1.f?mb:(ma|mb));
     return gjkFeature(closest,weights,mask);
 }
-// DXIL keeps triangle region classification as scalar call state rather
-// than duplicating vector-valued return paths inside every simplex case.
-#ifndef __spirv__
-[noinline]
-uint gjkTriangleRegion(
-    float aa,float bb,float cc,float determinant,
-    float d1,float d2,float d3,float d4,float d5,float d6,
-    float bcProjection,
-    out float baryA,out float baryB,out float baryC) {
-    baryA=1.f;baryB=0.f;baryC=0.f;
-    if(d1<=0.f && d2<=0.f)return 1u;
-    if(d3>=0.f && d4<=d3) {
-        baryA=0.f;baryB=1.f;
-        return 2u;
-    }
-    const float vc=d1*d4-d3*d2;
-    if(vc<=0.f && d1>=0.f && d3<=0.f) {
-        const float t=clamp(d1/aa,0.f,1.f);
-        baryA=1.f-t;baryB=t;
-        return t<=0.f?1u:(t>=1.f?2u:3u);
-    }
-    if(d6>=0.f && d5<=d6) {
-        baryA=0.f;baryC=1.f;
-        return 4u;
-    }
-    const float vb=d5*d2-d1*d6;
-    if(vb<=0.f && d2>=0.f && d6<=0.f) {
-        const float t=clamp(d2/cc,0.f,1.f);
-        baryA=1.f-t;baryC=t;
-        return t<=0.f?1u:(t>=1.f?4u:5u);
-    }
-    const float va=d3*d6-d5*d4;
-    if(va<=0.f && d4>=d3 && d5>=d6) {
-        const float t=clamp(bcProjection,0.f,1.f);
-        baryA=0.f;baryB=1.f-t;baryC=t;
-        return t<=0.f?2u:(t>=1.f?4u:6u);
-    }
-    baryB=(d1*cc-d2*bb)/determinant;
-    baryC=(d2*aa-d1*bb)/determinant;
-    baryA=1.f-baryB-baryC;
-    return 7u;
-}
-#endif
 GjkFeature gjkTriangleFeature(
     float3 a,float3 b,float3 c,
     float4 wa,float4 wb,float4 wc,uint ma,uint mb,uint mc) {
@@ -231,59 +188,28 @@ GjkFeature gjkTriangleFeature(
         return gjkChoose(best,gjkEdgeFeature(b,c,wb,wc,mb,mc));
     }
 
+    // Classify the six Voronoi regions before evaluating the face interior.
     const float d1=-gjkDot(ab,a),d2=-gjkDot(ac,a);
+    if(d1<=0.f && d2<=0.f)return gjkFeature(a,wa,ma);
     const float d3=-gjkDot(ab,b),d4=-gjkDot(ac,b);
-    const float d5=-gjkDot(ab,c),d6=-gjkDot(ac,c);
-#ifndef __spirv__
-    const float3 bc=c-b;
-    const float bcProjection=-gjkDot(b,bc)/gjkLength2(bc);
-    float baryA,baryB,baryC;
-    const uint local=gjkTriangleRegion(
-        aa,bb,cc,determinant,d1,d2,d3,d4,d5,d6,bcProjection,
-        baryA,baryB,baryC);
-    const uint mask=((local&1u)!=0u?ma:0u) |
-                    ((local&2u)!=0u?mb:0u) |
-                    ((local&4u)!=0u?mc:0u);
-    precise float3 projected=(a*baryA+b*baryB)+c*baryC;
-    return gjkFeature(projected,
-        (wa*baryA+wb*baryB)+wc*baryC,mask);
-#else
-    const float va=d3*d6-d5*d4;
-    const float vb=d5*d2-d1*d6;
+    if(d3>=0.f && d4<=d3)return gjkFeature(b,wb,mb);
     const float vc=d1*d4-d3*d2;
-    float baryA=1.f,baryB=0.f,baryC=0.f;
-    uint mask=ma;
-    if(d1<=0.f && d2<=0.f) {
-        mask=ma;
-    }else if(d3>=0.f && d4<=d3) {
-        baryA=0.f;baryB=1.f;
-        mask=mb;
-    }else if(vc<=0.f && d1>=0.f && d3<=0.f) {
-        const float t=clamp(d1/aa,0.f,1.f);
-        baryA=1.f-t;baryB=t;
-        mask=t<=0.f?ma:(t>=1.f?mb:(ma|mb));
-    }else if(d6>=0.f && d5<=d6) {
-        baryA=0.f;baryC=1.f;
-        mask=mc;
-    }else if(vb<=0.f && d2>=0.f && d6<=0.f) {
-        const float t=clamp(d2/cc,0.f,1.f);
-        baryA=1.f-t;baryC=t;
-        mask=t<=0.f?ma:(t>=1.f?mc:(ma|mc));
-    }else if(va<=0.f && d4>=d3 && d5>=d6) {
-        const float3 bc=c-b;
-        const float t=clamp(-gjkDot(b,bc)/gjkLength2(bc),0.f,1.f);
-        baryA=0.f;baryB=1.f-t;baryC=t;
-        mask=t<=0.f?mb:(t>=1.f?mc:(mb|mc));
-    }else {
-        baryB=(d1*cc-d2*bb)/determinant;
-        baryC=(d2*aa-d1*bb)/determinant;
-        baryA=1.f-baryB-baryC;
-        mask=ma|mb|mc;
-    }
-    precise float3 projected=(a*baryA+b*baryB)+c*baryC;
-    return gjkFeature(projected,
-        (wa*baryA+wb*baryB)+wc*baryC,mask);
-#endif
+    if(vc<=0.f && d1>=0.f && d3<=0.f)
+        return gjkEdgeFeature(a,b,wa,wb,ma,mb);
+    const float d5=-gjkDot(ab,c),d6=-gjkDot(ac,c);
+    if(d6>=0.f && d5<=d6)return gjkFeature(c,wc,mc);
+    const float vb=d5*d2-d1*d6;
+    if(vb<=0.f && d2>=0.f && d6<=0.f)
+        return gjkEdgeFeature(a,c,wa,wc,ma,mc);
+    const float va=d3*d6-d5*d4;
+    if(va<=0.f && d4>=d3 && d5>=d6)
+        return gjkEdgeFeature(b,c,wb,wc,mb,mc);
+
+    const float u=(d1*cc-d2*bb)/determinant;
+    const float v=(d2*aa-d1*bb)/determinant;
+    const float w=1.f-u-v;
+    precise float3 projected=a*w+b*u+c*v;
+    return gjkFeature(projected,wa*w+wb*u+wc*v,ma|mb|mc);
 }
 
 GjkClosest gjkClosestSimplex(GjkSimplex simplex) {
@@ -302,12 +228,9 @@ GjkClosest gjkClosestSimplex(GjkSimplex simplex) {
     GjkFeature best=gjkFeature(s0.q,w0,1u);
     if(count==2u)
         best=gjkEdgeFeature(s0.q,s1.q,w0,w1,1u,2u);
-#ifndef FYZZXYZZY_GJK_PROBE_SKIP_TRIANGLES
     else if(count==3u)
         best=gjkTriangleFeature(
             s0.q,s1.q,s2.q,w0,w1,w2,1u,2u,4u);
-#endif
-#ifndef FYZZXYZZY_GJK_PROBE_SKIP_TETRAHEDRA
     else if(count==4u) {
         best=gjkTriangleFeature(
             s0.q,s1.q,s2.q,w0,w1,w2,1u,2u,4u);
@@ -340,7 +263,6 @@ GjkClosest gjkClosestSimplex(GjkSimplex simplex) {
             }
         }
     }
-#endif
 
     result.mask=best.mask;
     result.closestPoint=best.closest;
@@ -511,92 +433,6 @@ uint gjkBoxContinuationState(GjkBoxPair pair,float contactDistance,
     return iteration==maxIterations
         ?(pointCore && simplex.count>0u?3u:0u):outcome;
 }
-
-#ifdef FYZZXYZZY_GJK_MULTI_PASS
-struct GjkContinuation {
-    GjkSimplex simplex;
-    float3 closest;
-    float previous;
-};
-GjkContinuation gjkInitialContinuation(GjkBoxPair pair) {
-    GjkContinuation state=(GjkContinuation)0;
-    state.closest=gjkLength2(pair.aInB)>0.f
-        ?pair.aInB:float3(1.f,0.f,0.f);
-    state.previous=3.402823466e+38f;
-    return state;
-}
-// A single exact iteration; the following dispatch reloads the simplex.
-bool gjkAdvanceOne(GjkBoxPair pair,float contactDistance,
-                   inout GjkContinuation state,
-                   out uint outcome,out GjkWitness witness) {
-    outcome=0u;
-    witness=(GjkWitness)0;
-    const float epsilon=0.005f*min(
-        min(pair.halfA.x,min(pair.halfA.y,pair.halfA.z)),
-        min(pair.halfB.x,min(pair.halfB.y,pair.halfB.z)));
-    const float progressFactor=1.f-0.000225f;
-    const bool pointCore=pair.radiusA>0.f || pair.radiusB>0.f;
-    const float dist=sqrt(gjkLength2(state.closest));
-    if(state.simplex.count>0u && dist<=epsilon && !pointCore) {
-        outcome=3u;
-        return true;
-    }
-    if(dist<=0.f) {
-        outcome=pointCore && state.simplex.count>0u?3u:0u;
-        return true;
-    }
-    const float3 normal=state.closest*(1.f/dist);
-    const GjkSupportPoint support=gjkSupport(pair,-state.closest);
-    const float projection=gjkDot(normal,support.q);
-    if(projection>contactDistance+pair.radiusA+pair.radiusB)return true;
-    if(state.simplex.count>0u && projection>dist*progressFactor) {
-        const GjkClosest current=gjkClosestSimplex(state.simplex);
-        outcome=current.mask!=0u &&
-                gjkContact(pair,current,state.simplex,witness) &&
-                witness.separation<=contactDistance?1u:0u;
-        return true;
-    }
-    const bool duplicate=
-        (state.simplex.count>0u && support.ai==state.simplex.point0.ai &&
-         support.bi==state.simplex.point0.bi) ||
-        (state.simplex.count>1u && support.ai==state.simplex.point1.ai &&
-         support.bi==state.simplex.point1.bi) ||
-        (state.simplex.count>2u && support.ai==state.simplex.point2.ai &&
-         support.bi==state.simplex.point2.bi) ||
-        (state.simplex.count>3u && support.ai==state.simplex.point3.ai &&
-         support.bi==state.simplex.point3.bi);
-    if(duplicate) {
-        if(projection>0.f) {
-            const GjkClosest current=gjkClosestSimplex(state.simplex);
-            outcome=current.mask!=0u &&
-                    gjkContact(pair,current,state.simplex,witness) &&
-                    witness.separation<=contactDistance?1u:0u;
-        }else outcome=pointCore?3u:0u;
-        return true;
-    }
-    if(state.simplex.count==4u) {
-        outcome=3u;
-        return true;
-    }
-    gjkAppend(state.simplex,support);
-    const GjkClosest next=gjkClosestSimplex(state.simplex);
-    if(next.mask==0u)return true;
-    state.closest=next.closestPoint;
-    const float nextDist=sqrt(next.dist2);
-    bool noProgressContact=false;
-    if(nextDist>=state.previous && pointCore && projection>0.f)
-        noProgressContact=gjkContact(pair,next,state.simplex,witness) &&
-            witness.separation<=contactDistance;
-    gjkCompact(state.simplex,next);
-    if(nextDist>=state.previous) {
-        if(pointCore)
-            outcome=projection>0.f?(noProgressContact?1u:0u):3u;
-        return true;
-    }
-    state.previous=nextDist;
-    return false;
-}
-#endif
 
 uint gjkBoxContinuation(GjkBoxPair pair,float contactDistance,
                         out GjkWitness witness,

@@ -42,6 +42,8 @@ The CI workflow runs the two-iteration probe first, then invokes the full solver
 | One GJK iteration per dispatch with device-resident simplex | DXIL compiles, but the full 32-dispatch solver still exceeds the 45-second runtime limit | 42058026829 |
 | First step with tetrahedron reduction compiled out | Times out after 45 seconds | 42080319917 |
 | First step with triangle and tetrahedron reductions compiled out | Passes in 16.66 seconds; full-dimensional shader still times out | 42080319917 |
+| Single barycentric triangle return path | Vulkan passes; complete and triangle-only DXIL cases still time out | 42081273380 |
+| Scalar callable triangle classifier with original GPU witness arithmetic | DXIL compiles; full and triangle-only first-step cases still time out | 42082460754 |
 
 The observed `0xC0000005` is **not** the Windows stack-overflow exception `0xC00000FD`. Stack exhaustion or corruption inside WARP is not ruled out, but there is no evidence establishing it as the cause. CTest's generic `SEGFAULT` label alone does not identify an exception code.
 
@@ -49,11 +51,13 @@ The passing two-step test demonstrates execution of two actual simplex reduction
 
 ## Current investigation
 
-The GJK simplex carries Minkowski support coordinates and vertex IDs, reconstructing full witnesses when generating contacts or initializing EPA. The Vulkan implementation retains the bounded 32-iteration recurrence and passes the independent GPU conformance tests.
+GJK retains its complete 32-iteration bounded recurrence and compact Minkowski simplex state. The source GPU math and full contact-witness reconstruction remain authoritative for both backends.
 
-The DXIL implementation currently schedules 32 bounded one-iteration dispatches and persists a 104-byte continuation in the witness region of each pending Sc edge. All iterations remain on the GPU. Each pass rereads only the required support and simplex state, with resource ordering supplied by the compute backend. The full WARP solver still fails the runtime gate, so this continuation is experimental and is **not validated**.
+WARP completes the two-iteration compile-time-specialized shader and a first-step shader containing only point/edge simplex reduction. It fails when triangle reduction is included in the first-step shader, even with tetrahedron reduction excluded. Both a compact barycentric return path and scalar callable region classification failed to make that shader executable. Vulkan source GPU contact and scene conformance remains green.
 
-The primary unresolved question is whether WARP's execution failure arises from the generated full-dimension simplex reduction, rather than from the loop itself. The two-iteration shader can statically eliminate higher-dimensional Voronoi cases. Both the three-iteration unrolled shader and the fully dynamic one-step shader include those cases and fail to complete. Isolate the first failing full-dimensional kernel before making any further scheduling or control-flow changes.
+The attempted device-resident 32-dispatch recurrence also failed because each individual DXIL dispatch still contained the full-dimensional reducer. It was withdrawn along with the 16 MB stack-reserve experiment. A full-dimensional solver remains the merge gate; skipping triangle or tetrahedron geometry is not an acceptable substitute.
+
+The implementation direction is to isolate higher-dimensional simplex reduction into independently compiled GPU stages, preserve the original support/feature/witness equations, and evaluate the additional dispatch cost. No CPU contact solver or reduced iteration limit is permitted.
 
 ## Acceptance gate
 
