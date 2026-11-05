@@ -279,10 +279,16 @@ uint gjkBoxContinuation(GjkBoxPair pair,float contactDistance,
 #endif
     [loop]
     for(uint iteration=0u;iteration<maxIterations;++iteration) {
+#ifdef FYZZXYZZY_GJK_PROBE_SECOND_ENTRY
+        if(iteration==1u)return 0x24u;
+#endif
         float dist=sqrt(gjkLength2(closest));
         if(count>0u && dist<=epsilon && !pointCore)return 3u;
         if(dist<=0.f)return pointCore && count>0u?3u:0u;
         float3 normal=closest*(1.f/dist);
+#ifdef FYZZXYZZY_GJK_PROBE_SECOND_NORMAL
+        if(iteration==1u)return 0x25u;
+#endif
         GjkSupportPoint support=gjkSupport(pair,-closest);
 #ifdef FYZZXYZZY_GJK_PROBE_SECOND_SUPPORT
         if(iteration==1u)return 0x21u;
