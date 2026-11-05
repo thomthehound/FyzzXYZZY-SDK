@@ -40,6 +40,8 @@ The CI workflow runs the two-iteration probe first, then invokes the full solver
 | Scalar non-inlined triangle calculation | DXIL still stalls; GPU source contact parity regresses on Vulkan | 42051685820 |
 | Sixteen-megabyte Windows host-stack reserve | Does not resolve the three-step WARP timeout | 42052836196 |
 | One GJK iteration per dispatch with device-resident simplex | DXIL compiles, but the full 32-dispatch solver still exceeds the 45-second runtime limit | 42058026829 |
+| First step with tetrahedron reduction compiled out | Times out after 45 seconds | 42080319917 |
+| First step with triangle and tetrahedron reductions compiled out | Passes in 16.66 seconds; full-dimensional shader still times out | 42080319917 |
 
 The observed `0xC0000005` is **not** the Windows stack-overflow exception `0xC00000FD`. Stack exhaustion or corruption inside WARP is not ruled out, but there is no evidence establishing it as the cause. CTest's generic `SEGFAULT` label alone does not identify an exception code.
 
