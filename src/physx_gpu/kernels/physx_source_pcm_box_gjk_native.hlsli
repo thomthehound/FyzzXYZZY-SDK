@@ -92,39 +92,12 @@ GjkSupportPoint gjkSupport(GjkBoxPair pair,float3 direction) {
     s.q=s.a-s.b;
     return s;
 }
-bool gjkSolve(uint n,inout float a[3][4],out float result[3]) {
-    float scale=0.f;
-    for(uint i=0u;i<n;++i)scale=max(scale,abs(a[i][i]));
-    if(!(scale>0.f) || !isfinite(scale))return false;
-    float tolerance=1.1920928955078125e-7f*scale;
-    for(uint col=0u;col<n;++col) {
-        uint pivot=col;
-        for(uint row=col+1u;row<n;++row)
-            if(abs(a[row][col])>abs(a[pivot][col]))pivot=row;
-        if(!(abs(a[pivot][col])>tolerance))return false;
-        for(uint j=col;j<=n;++j) {
-            float swap=a[col][j];
-            a[col][j]=a[pivot][j];
-            a[pivot][j]=swap;
-        }
-        float divisor=a[col][col];
-        for(uint j=col;j<=n;++j)a[col][j]/=divisor;
-        for(uint row=0u;row<n;++row)if(row!=col) {
-            float factor=a[row][col];
-            for(uint j=col;j<=n;++j)
-                a[row][j]=fusedProductSum(-factor,a[col][j],a[row][j]);
-        }
-    }
-    for(uint i=0u;i<3u;++i)
-        result[i]=i<n?a[i][n]:0.f;
-    return true;
-}
+// Closest-origin features have at most three affine directions.
+// Explicit barycentric solves avoid a dynamically indexed elimination
+// matrix in the GPU continuation while preserving mask order.
 GjkClosest gjkClosestSimplex(GjkSupportPoint simplex[4],uint count) {
-    GjkClosest best;
-    best.closestPoint=0.f;best.a=0.f;best.b=0.f;
-    best.mask=0u;
+    GjkClosest best=(GjkClosest)0;
     best.dist2=3.402823466e+38f;
-    for(uint i=0u;i<4u;++i)best.weights[i]=0.f;
     for(uint mask=1u;mask<(1u<<count);++mask) {
         uint ids[4]={0u,0u,0u,0u};
         uint n=0u;
@@ -133,24 +106,47 @@ GjkClosest gjkClosestSimplex(GjkSupportPoint simplex[4],uint count) {
         float weights[4]={0.f,0.f,0.f,0.f};
         weights[ids[0]]=1.f;
         if(n>1u) {
-            float3 origin=simplex[ids[0]].q;
-            float3 directions[3];
-            float a[3][4]={{0.f,0.f,0.f,0.f},
-                           {0.f,0.f,0.f,0.f},
-                           {0.f,0.f,0.f,0.f}};
-            for(uint j=1u;j<n;++j)
-                directions[j-1u]=simplex[ids[j]].q-origin;
-            for(uint j=1u;j<n;++j) {
-                for(uint k=1u;k<n;++k)
-                    a[j-1u][k-1u]=gjkDot(directions[j-1u],directions[k-1u]);
-                a[j-1u][n-1u]=-gjkDot(directions[j-1u],origin);
+            const float3 origin=simplex[ids[0]].q;
+            const float3 d1=simplex[ids[1]].q-origin;
+            const float a=gjkDot(d1,d1);
+            const float x=-gjkDot(d1,origin);
+            const float tolerance=1.1920928955078125e-7f;
+            float u=0.f,v=0.f,w=0.f;
+            if(n==2u) {
+                if(!(a>0.f) || !isfinite(a))continue;
+                u=x/a;
+            }else {
+                const float3 d2=simplex[ids[2]].q-origin;
+                const float b=gjkDot(d1,d2);
+                const float c=gjkDot(d2,d2);
+                const float y=-gjkDot(d2,origin);
+                if(n==3u) {
+                    const float scale=max(a,c);
+                    const float determinant=a*c-b*b;
+                    if(!(scale>0.f) ||
+                       !(determinant>tolerance*scale*scale) ||
+                       !isfinite(determinant))continue;
+                    u=(x*c-y*b)/determinant;
+                    v=(y*a-x*b)/determinant;
+                }else {
+                    const float3 d3=simplex[ids[3]].q-origin;
+                    const float3 cross23=cross(d2,d3);
+                    const float determinant=gjkDot(d1,cross23);
+                    const float scale=max(a,max(c,gjkDot(d3,d3)));
+                    if(!(scale>0.f) ||
+                       !(determinant*determinant>
+                         tolerance*scale*scale*scale) ||
+                       !isfinite(determinant))continue;
+                    const float3 minusOrigin=-origin;
+                    u=gjkDot(minusOrigin,cross23)/determinant;
+                    v=gjkDot(minusOrigin,cross(d3,d1))/determinant;
+                    w=gjkDot(minusOrigin,cross(d1,d2))/determinant;
+                }
             }
-            float coeff[3]={0.f,0.f,0.f};
-            if(!gjkSolve(n-1u,a,coeff))continue;
-            for(uint j=1u;j<n;++j) {
-                weights[ids[j]]=coeff[j-1u];
-                weights[ids[0]]-=coeff[j-1u];
-            }
+            weights[ids[0]]=1.f-u-v-w;
+            weights[ids[1]]=u;
+            if(n>=3u)weights[ids[2]]=v;
+            if(n==4u)weights[ids[3]]=w;
         }
         bool feasible=true;
         for(uint j=0u;j<n;++j)
@@ -165,10 +161,13 @@ GjkClosest gjkClosestSimplex(GjkSupportPoint simplex[4],uint count) {
             pa=pa+da;
             pb=pb+db;
         }
-        float d=gjkLength2(q);
-        if(d<best.dist2) {
-            best.closestPoint=q;best.a=pa;best.b=pb;
-            best.mask=mask;best.dist2=d;
+        const float distance2=gjkLength2(q);
+        if(distance2<best.dist2) {
+            best.closestPoint=q;
+            best.a=pa;
+            best.b=pb;
+            best.mask=mask;
+            best.dist2=distance2;
             for(uint j=0u;j<4u;++j)best.weights[j]=weights[j];
         }
     }
@@ -232,15 +231,13 @@ uint gjkBoxContinuation(GjkBoxPair pair,float contactDistance,
         for(uint j=0u;j<count;++j)
             if(support.ai==simplex[j].ai &&
                support.bi==simplex[j].bi) {
-                if(pointCore) {
-                    if(projection>0.f) {
-                        GjkClosest current=gjkClosestSimplex(simplex,count);
-                        return current.mask!=0u && gjkContact(pair,current,witness) &&
-                               witness.separation<=contactDistance?1u:0u;
-                    }
-                    return 3u;
+                if(projection>0.f) {
+                    const GjkClosest current=gjkClosestSimplex(simplex,count);
+                    return current.mask!=0u &&
+                           gjkContact(pair,current,witness) &&
+                           witness.separation<=contactDistance?1u:0u;
                 }
-                return 0u;
+                return pointCore?3u:0u;
             }
         if(count==4u)return 3u;
         simplex[count++]=support;
