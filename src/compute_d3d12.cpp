@@ -508,9 +508,21 @@ struct Context::Impl {
         if (completed >= value) return;
         check(fence->SetEventOnCompletion(value, completion_event),
               "SetEventOnCompletion");
-        DWORD result = WaitForSingleObject(completion_event, INFINITE);
-        if (result != WAIT_OBJECT_0)
-            throw std::runtime_error("D3D12 fence wait failed");
+        for (;;) {
+            const DWORD result=WaitForSingleObject(completion_event,1000u);
+            if(result==WAIT_OBJECT_0)break;
+            if(result!=WAIT_TIMEOUT)
+                throw std::runtime_error("D3D12 fence wait failed");
+            // Device removal does not guarantee that an outstanding queue
+            // fence signals. Check the device while the event is pending.
+            const HRESULT reason=device->GetDeviceRemovedReason();
+            if(FAILED(reason)) {
+                print_debug_messages();
+                throw std::runtime_error(
+                    "D3D12 device removed during GPU submission (HRESULT "+
+                    std::to_string(static_cast<unsigned long>(reason))+")");
+            }
+        }
         if (fence->GetCompletedValue() == std::numeric_limits<std::uint64_t>::max()) {
             const auto reason = device->GetDeviceRemovedReason();
             print_debug_messages();
