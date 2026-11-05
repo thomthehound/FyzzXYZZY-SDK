@@ -188,6 +188,11 @@ void main(uint3 thread : SV_DispatchThreadID) {
     else state=gjkReadContinuation(cacheBase);
     uint outcome;
     const bool finished=gjkAdvanceOne(boxPair,distance,state,outcome,contact);
+#ifdef FYZZXYZZY_GJK_FIRST_PASS_PROBE
+    results.Store(result+24u,0xB300u|outcome);
+    results.Store(result+8u,0u);
+    return;
+#endif
     if(!finished && p.gjkPass<31u) {
         gjkWriteContinuation(cacheBase,state);
         return;
