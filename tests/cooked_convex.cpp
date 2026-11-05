@@ -304,6 +304,50 @@ void verify_convex_face_manifold() {
     }
 }
 
+
+void verify_translated_face_manifold() {
+    auto vertices=cube_vertices;
+    for(auto& v:vertices) {
+        v.x+=100.f;
+        v.y+=100.f;
+        v.z+=100.f;
+    }
+    const auto hull=cook_convex_mesh(vertices,cube_faces);
+    World world({.execution=ExecutionMode::NativeCpu,
+                 .contact_notifications=true});
+    const auto fixed=world.create_static_body({{-100.f,-100.f,-100.f},{}});
+    world.attach_convex_shape(fixed,hull);
+    const auto moving=world.create_dynamic_body({
+        {-99.8f,-98.15f,-99.9f},{}});
+    world.attach_convex_shape(moving,hull);
+    world.update_mass_properties(moving,1.f);
+    RigidBodyDynamics dynamics{};
+    dynamics.gravity_enabled=false;
+    dynamics.position_iterations=24u;
+    world.set_body_dynamics(moving,dynamics);
+    world.step(1.f/120.f);
+    const auto events=world.contact_events();
+    require(events.size()==1u &&
+            events[0].kind==ContactEventKind::Found &&
+            events[0].contact_count==4u,
+            "Translated cooked cube changed four-point face topology");
+    const auto points=world.contact_event_points();
+    float min_x=std::numeric_limits<float>::max();
+    float max_x=-min_x,min_z=min_x,max_z=-min_x;
+    for(std::size_t i=0u;i<events[0].contact_count;++i) {
+        const auto& point=points[events[0].point_offset+i];
+        require(std::abs(point.normal.y)>0.95f &&
+                point.separation<0.f,
+                "Translated cooked face changed its contact orientation");
+        min_x=std::min(min_x,point.position.x);
+        max_x=std::max(max_x,point.position.x);
+        min_z=std::min(min_z,point.position.z);
+        max_z=std::max(max_z,point.position.z);
+    }
+    require(max_x-min_x>1.5f && max_z-min_z>1.5f,
+            "Translated cooked face collapsed its physical footprint");
+}
+
 void verify_finite_pair_matrix() {
     World world({.execution=ExecutionMode::NativeCpu,
                  .contact_notifications=true});
@@ -413,6 +457,7 @@ int main() {
         verify_sphere_face_contact();
         verify_off_origin_hull_pair();
         verify_convex_face_manifold();
+        verify_translated_face_manifold();
         verify_finite_pair_matrix();
         std::cout<<"Cooked convex volume, inertia and topology OK\n";
         return 0;
