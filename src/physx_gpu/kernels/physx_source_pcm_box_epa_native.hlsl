@@ -89,23 +89,52 @@ GjkClosest gjkGroupSubset(uint mask,uint count) {
     weights[ids[0]]=1.f;
     if(n>1u) {
         const float3 origin=gjkGroupSimplex[ids[0]].q;
-        float3 directions[3];
-        float a[3][4]={{0.f,0.f,0.f,0.f},
-                       {0.f,0.f,0.f,0.f},
-                       {0.f,0.f,0.f,0.f}};
-        for(uint j=1u;j<n;++j)
-            directions[j-1u]=gjkGroupSimplex[ids[j]].q-origin;
-        for(uint j=1u;j<n;++j) {
-            for(uint k=1u;k<n;++k)
-                a[j-1u][k-1u]=gjkDot(directions[j-1u],directions[k-1u]);
-            a[j-1u][n-1u]=-gjkDot(directions[j-1u],origin);
+        const float3 d1=gjkGroupSimplex[ids[1]].q-origin;
+        const float a=gjkDot(d1,d1);
+        const float x=-gjkDot(d1,origin);
+        const float epsilon=1.1920928955078125e-7f;
+        float u=0.f,v=0.f,w=0.f;
+        if(n==2u) {
+            if(!(a>0.f) || !isfinite(a))return candidate;
+            u=x/a;
+        }else {
+            const float3 d2=gjkGroupSimplex[ids[2]].q-origin;
+            const float b=gjkDot(d1,d2);
+            const float c=gjkDot(d2,d2);
+            const float y=-gjkDot(d2,origin);
+            if(n==3u) {
+                const float scale=max(a,c);
+                const float determinant=a*c-b*b;
+                if(!(scale>0.f) ||
+                   !(determinant>epsilon*scale*scale) ||
+                   !isfinite(determinant))
+                    return candidate;
+                u=(x*c-y*b)/determinant;
+                v=(y*a-x*b)/determinant;
+            }else {
+                const float3 d3=gjkGroupSimplex[ids[3]].q-origin;
+                const float third=gjkDot(d3,d3);
+                const float scale=max(a,max(c,third));
+                const float3 cross23=cross(d2,d3);
+                const float determinant=gjkDot(d1,cross23);
+                // The Gram determinant is the squared tetrahedral
+                // volume. Match the relative pivot rejection scale,
+                // avoiding dynamic Gaussian-elimination scratch.
+                if(!(scale>0.f) ||
+                   !(determinant*determinant>
+                     epsilon*scale*scale*scale) ||
+                   !isfinite(determinant))
+                    return candidate;
+                const float3 minusOrigin=-origin;
+                u=gjkDot(minusOrigin,cross23)/determinant;
+                v=gjkDot(minusOrigin,cross(d3,d1))/determinant;
+                w=gjkDot(minusOrigin,cross(d1,d2))/determinant;
+            }
         }
-        float coefficients[3]={0.f,0.f,0.f};
-        if(!gjkSolve(n-1u,a,coefficients))return candidate;
-        for(uint j=1u;j<n;++j) {
-            weights[ids[j]]=coefficients[j-1u];
-            weights[ids[0]]-=coefficients[j-1u];
-        }
+        weights[ids[0]]=1.f-u-v-w;
+        weights[ids[1]]=u;
+        if(n>=3u)weights[ids[2]]=v;
+        if(n==4u)weights[ids[3]]=w;
     }
     for(uint j=0u;j<n;++j)
         if(weights[ids[j]]< -1.e-5f)return candidate;
