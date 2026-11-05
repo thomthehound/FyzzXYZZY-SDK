@@ -35,6 +35,11 @@ The CI workflow runs the two-iteration probe first, then invokes the full solver
 | Two-iteration dynamic loop, compact simplex | Times out; the equivalent fully unrolled two-iteration shader passes | 42045148803 |
 | Full 32-iteration loop, box-only support mapping | Times out without hull-vertex search | 42045148803 |
 | Two-iteration dynamic loop targeting shader model 6.6 | Times out; shader model 6.0 unrolled control still passes | 42046398113 |
+| Three, four or eight fully unrolled iterations | The two-step probe passes, but all larger variants time out | 42049155669; 42048290947 |
+| Direct triangle Voronoi-region classification | Independent Vulkan parity passes; three-step unrolled DXIL still times out | 42050719707 |
+| Scalar non-inlined triangle calculation | DXIL still stalls; GPU source contact parity regresses on Vulkan | 42051685820 |
+| Sixteen-megabyte Windows host-stack reserve | Does not resolve the three-step WARP timeout | 42052836196 |
+| One GJK iteration per dispatch with device-resident simplex | DXIL compiles, but the full 32-dispatch solver still exceeds the 45-second runtime limit | 42058026829 |
 
 The observed `0xC0000005` is **not** the Windows stack-overflow exception `0xC00000FD`. Stack exhaustion or corruption inside WARP is not ruled out, but there is no evidence establishing it as the cause. CTest's generic `SEGFAULT` label alone does not identify an exception code.
 
@@ -42,11 +47,11 @@ The passing two-step test demonstrates execution of two actual simplex reduction
 
 ## Current investigation
 
-The current GJK implementation retains only Minkowski support coordinates and feature IDs in its loop-carried simplex; full shape-space witnesses are reconstructed for contact generation and EPA admission. This reduces the persistent state and avoids recomputing witness coordinates in every iteration. **The full D3D12/WARP runtime and source contact parity must pass before this change is considered verified.**
+The GJK simplex carries Minkowski support coordinates and vertex IDs, reconstructing full witnesses when generating contacts or initializing EPA. The Vulkan implementation retains the bounded 32-iteration recurrence and passes the independent GPU conformance tests.
 
-The solver now defers contact witness reconstruction until after the GJK recurrence has terminated; only simplex geometry, feature IDs and termination state remain live in the loop. The full DXIL runtime must still pass before that change is accepted.
+The DXIL implementation currently schedules 32 bounded one-iteration dispatches and persists a 104-byte continuation in the witness region of each pending Sc edge. All iterations remain on the GPU. Each pass rereads only the required support and simplex state, with resource ordering supplied by the compute backend. The full WARP solver still fails the runtime gate, so this continuation is experimental and is **not validated**.
 
-The remaining distinction to resolve is whether WARP fails because of DXIL loop-carried state, invalid compiler lowering, or the generated shader's execution/resource requirements. Preserve the source geometry, exact witness semantics, bounded iteration count, and direct GPU execution while diagnosing that distinction.
+The primary unresolved question is whether WARP's execution failure arises from the generated full-dimension simplex reduction, rather than from the loop itself. The two-iteration shader can statically eliminate higher-dimensional Voronoi cases. Both the three-iteration unrolled shader and the fully dynamic one-step shader include those cases and fail to complete. Isolate the first failing full-dimensional kernel before making any further scheduling or control-flow changes.
 
 ## Acceptance gate
 
