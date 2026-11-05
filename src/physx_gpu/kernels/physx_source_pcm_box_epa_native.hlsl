@@ -278,7 +278,8 @@ void main(uint3 thread : SV_DispatchThreadID) {
         results.Store(result+24u,0u);
         results.Store(result+8u,5u);
         publishScContacts(i,a,b,edge,result,p.outputBias,
-            p.transformBias,p.edgeCacheBias,p.shapeCapacity,p.edgeCapacity);
+            p.transformBias,p.geometryBias,p.edgeCacheBias,
+            p.shapeCapacity,p.edgeCapacity);
         return;
     }
     uint cache=p.edgeCacheBias+edge*240u;
