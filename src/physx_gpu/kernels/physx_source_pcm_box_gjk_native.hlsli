@@ -140,6 +140,7 @@ GjkSupportPoint gjkRestoreSupport(GjkBoxPair pair,GjkCompactPoint compact) {
 // Closest-origin Voronoi features. Each simplex dimension has a fixed
 // feature calculation; no subset masks, dynamic matrix, or variable-size
 // simplex search is needed in the GPU inner loop.
+#ifndef FYZZXYZZY_GJK_STAGED_ADVANCE
 struct GjkFeature {
     float3 closest;
     float4 weights;
@@ -288,6 +289,7 @@ void gjkCompact(inout GjkSimplex simplex,GjkClosest closest) {
         gjkAppend(packed,simplex.point0);
     simplex=packed;
 }
+#endif
 bool gjkContact(GjkBoxPair pair,GjkClosest nearest,
                 GjkSimplex simplex,out GjkWitness witness) {
     witness=(GjkWitness)0;
@@ -324,6 +326,7 @@ bool gjkContact(GjkBoxPair pair,GjkClosest nearest,
 }
 // 0: no source GJK contact; 1: source GJK contact;
 // 3: simplex requires the source EPA continuation.
+#ifndef FYZZXYZZY_GJK_STAGED_ADVANCE
 uint gjkBoxContinuationState(GjkBoxPair pair,float contactDistance,
                              out GjkWitness witness,
                              out GjkSimplex simplex) {
@@ -461,3 +464,5 @@ uint gjkBoxContinuation(GjkBoxPair pair,float contactDistance,
     return gjkBoxContinuation(
         pair,contactDistance,witness,simplex,count);
 }
+
+#endif

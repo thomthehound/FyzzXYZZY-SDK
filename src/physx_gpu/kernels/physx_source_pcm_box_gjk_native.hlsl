@@ -54,6 +54,9 @@ struct Parameters {
     uint outputBias;
     uint hullBias;
     uint hullCount;
+#ifdef FYZZXYZZY_GJK_STAGED_ADVANCE
+    uint gjkPass;
+#endif
 };
 #ifdef __spirv__
 [[vk::push_constant]] Parameters p;
@@ -63,6 +66,9 @@ ConstantBuffer<Parameters> p : register(b0,space0);
 
 #include "physx_source_pcm_box_math_native.hlsli"
 #include "physx_source_pcm_box_gjk_native.hlsli"
+#ifdef FYZZXYZZY_GJK_STAGED_ADVANCE
+#include "physx_source_pcm_gjk_state_native.hlsli"
+#endif
 #include "physx_source_pcm_sc_contact_publish_native.hlsli"
 
 // Sparse admission is recorded in the dense Sc pair result buffer.
@@ -138,11 +144,77 @@ void main(uint3 thread : SV_DispatchThreadID) {
     results.Store(result+8u,0u);
     return;
 #endif
-    GjkWitness contact;
+    GjkWitness contact=(GjkWitness)0;
     GjkSupportPoint simplex[4];
-    uint simplexCount;
+    uint simplexCount=0u;
+#ifdef FYZZXYZZY_GJK_STAGED_ADVANCE
+    const uint cacheBase=p.edgeCacheBias+edge*240u;
+    GjkGpuState state;
+    if(p.gjkPass==0u)state=gjkInitialState(boxPair,distance);
+    else state=gjkLoadGpuState(cacheBase);
+    uint outcome=0u;
+    if(state.phase==2u) {
+        outcome=state.outcome;
+    }else if(p.gjkPass==32u) {
+        outcome=state.pointCore!=0u && state.simplex.count>0u?3u:0u;
+    }else {
+        const float dist=sqrt(gjkLength2(state.closest));
+        const float epsilon=0.005f*min(
+            min(boxPair.halfA.x,min(boxPair.halfA.y,boxPair.halfA.z)),
+            min(boxPair.halfB.x,min(boxPair.halfB.y,boxPair.halfB.z)));
+        if(state.simplex.count>0u && dist<=epsilon && state.pointCore==0u) {
+            outcome=3u;
+        }else if(!(dist>0.f)) {
+            outcome=state.pointCore!=0u && state.simplex.count>0u?3u:0u;
+        }else {
+            const GjkSupportPoint support=gjkSupport(boxPair,-state.closest);
+            const float projection=gjkDot(state.closest*(1.f/dist),support.q);
+            if(projection>state.contactLimit) {
+                outcome=0u;
+            }else if(state.simplex.count>0u &&
+                     projection>dist*(1.f-0.000225f)) {
+                outcome=1u;
+            }else {
+                const bool duplicate=
+                    (state.simplex.count>0u && support.ai==state.simplex.point0.ai &&
+                     support.bi==state.simplex.point0.bi) ||
+                    (state.simplex.count>1u && support.ai==state.simplex.point1.ai &&
+                     support.bi==state.simplex.point1.bi) ||
+                    (state.simplex.count>2u && support.ai==state.simplex.point2.ai &&
+                     support.bi==state.simplex.point2.bi) ||
+                    (state.simplex.count>3u && support.ai==state.simplex.point3.ai &&
+                     support.bi==state.simplex.point3.bi);
+                if(duplicate)outcome=projection>0.f?1u:(state.pointCore!=0u?3u:0u);
+                else if(state.simplex.count==4u)outcome=3u;
+                else {
+                    gjkAppend(state.simplex,support);
+                    state.projection=projection;
+                    state.phase=1u;
+                    gjkStoreGpuState(cacheBase,state);
+                    return;
+                }
+            }
+        }
+    }
+    if(outcome==1u) {
+        const GjkClosest nearest=gjkCachedClosest(state);
+        outcome=nearest.mask!=0u &&
+                gjkContact(boxPair,nearest,state.simplex,contact) &&
+                contact.separation<=distance?1u:0u;
+    }
+    simplexCount=state.simplex.count;
+    [unroll]
+    for(uint j=0u;j<4u;++j)simplex[j]=(GjkSupportPoint)0;
+    if(outcome==3u) {
+        if(simplexCount>0u)simplex[0]=gjkRestoreSupport(boxPair,state.simplex.point0);
+        if(simplexCount>1u)simplex[1]=gjkRestoreSupport(boxPair,state.simplex.point1);
+        if(simplexCount>2u)simplex[2]=gjkRestoreSupport(boxPair,state.simplex.point2);
+        if(simplexCount>3u)simplex[3]=gjkRestoreSupport(boxPair,state.simplex.point3);
+    }
+#else
     const uint outcome=gjkBoxContinuation(
         boxPair,distance,contact,simplex,simplexCount);
+#endif
 #if defined(FYZZXYZZY_GJK_PROBE_ITERATION)
     results.Store(result+24u,0xB300u|outcome);
     results.Store(result+8u,0u);
