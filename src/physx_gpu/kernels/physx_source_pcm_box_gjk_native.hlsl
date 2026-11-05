@@ -123,11 +123,24 @@ void main(uint3 thread : SV_DispatchThreadID) {
     }
     float distance=asfloat(geometry.Load(ga+12u))+
                    asfloat(geometry.Load(gb+12u));
+#ifdef FYZZXYZZY_GJK_PROBE_BINDINGS
+    // Dispatch probe: complete the same Sc pending-pair read and
+    // geometry admission path without invoking the simplex solver.
+    results.Store(result+24u,0xB001u);
+    results.Store(result+8u,0u);
+    return;
+#endif
     GjkWitness contact;
     GjkSupportPoint simplex[4];
     uint simplexCount;
     const uint outcome=gjkBoxContinuation(
         boxPair,distance,contact,simplex,simplexCount);
+#ifdef FYZZXYZZY_GJK_PROBE_SOLVER
+    // Distinguish simplex execution from subsequent Sc publication.
+    results.Store(result+24u,0xB200u|outcome);
+    results.Store(result+8u,0u);
+    return;
+#endif
     if(outcome==3u) {
         const uint pending=p.edgeCacheBias+edge*240u;
         if(simplexCount==0u || simplexCount>4u) {
