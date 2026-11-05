@@ -174,32 +174,44 @@ GjkFeature gjkEdgeFeature(
 GjkFeature gjkTriangleFeature(
     float3 a,float3 b,float3 c,
     float4 wa,float4 wb,float4 wc,uint ma,uint mb,uint mc) {
-    GjkFeature closest=gjkEdgeFeature(a,b,wa,wb,ma,mb);
-    closest=gjkChoose(closest,gjkEdgeFeature(a,c,wa,wc,ma,mc));
-    closest=gjkChoose(closest,gjkEdgeFeature(b,c,wb,wc,mb,mc));
     const float3 ab=b-a,ac=c-a;
     const float aa=gjkLength2(ab);
     const float bb=gjkDot(ab,ac);
     const float cc=gjkLength2(ac);
     const float scale=max(aa,cc);
     const float determinant=aa*cc-bb*bb;
-    if(scale>0.f &&
-       determinant>1.1920928955078125e-7f*scale*scale &&
-       isfinite(determinant)) {
-        const float x=-gjkDot(ab,a);
-        const float y=-gjkDot(ac,a);
-        const float u=(x*cc-y*bb)/determinant;
-        const float v=(y*aa-x*bb)/determinant;
-        const float w=1.f-u-v;
-        if(u>=-1.e-5f && v>=-1.e-5f && w>=-1.e-5f) {
-            precise float3 projected=a*w+b*u+c*v;
-            const float4 weights=wa*w+wb*u+wc*v;
-            closest=gjkChoose(closest,
-                gjkFeature(projected,weights,ma|mb|mc));
-        }
+    if(!(scale>0.f) ||
+       !(determinant>1.1920928955078125e-7f*scale*scale) ||
+       !isfinite(determinant)) {
+        GjkFeature best=gjkEdgeFeature(a,b,wa,wb,ma,mb);
+        best=gjkChoose(best,gjkEdgeFeature(a,c,wa,wc,ma,mc));
+        return gjkChoose(best,gjkEdgeFeature(b,c,wb,wc,mb,mc));
     }
-    return closest;
+
+    // Classify the six Voronoi regions before evaluating the face interior.
+    const float d1=-gjkDot(ab,a),d2=-gjkDot(ac,a);
+    if(d1<=0.f && d2<=0.f)return gjkFeature(a,wa,ma);
+    const float d3=-gjkDot(ab,b),d4=-gjkDot(ac,b);
+    if(d3>=0.f && d4<=d3)return gjkFeature(b,wb,mb);
+    const float vc=d1*d4-d3*d2;
+    if(vc<=0.f && d1>=0.f && d3<=0.f)
+        return gjkEdgeFeature(a,b,wa,wb,ma,mb);
+    const float d5=-gjkDot(ab,c),d6=-gjkDot(ac,c);
+    if(d6>=0.f && d5<=d6)return gjkFeature(c,wc,mc);
+    const float vb=d5*d2-d1*d6;
+    if(vb<=0.f && d2>=0.f && d6<=0.f)
+        return gjkEdgeFeature(a,c,wa,wc,ma,mc);
+    const float va=d3*d6-d5*d4;
+    if(va<=0.f && d4>=d3 && d5>=d6)
+        return gjkEdgeFeature(b,c,wb,wc,mb,mc);
+
+    const float u=(d1*cc-d2*bb)/determinant;
+    const float v=(d2*aa-d1*bb)/determinant;
+    const float w=1.f-u-v;
+    precise float3 projected=a*w+b*u+c*v;
+    return gjkFeature(projected,wa*w+wb*u+wc*v,ma|mb|mc);
 }
+
 GjkClosest gjkClosestSimplex(GjkSimplex simplex) {
     GjkClosest result=(GjkClosest)0;
     result.dist2=3.402823466e+38f;
