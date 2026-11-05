@@ -92,86 +92,143 @@ GjkSupportPoint gjkSupport(GjkBoxPair pair,float3 direction) {
     s.q=s.a-s.b;
     return s;
 }
-// Closest-origin features have at most three affine directions.
-// Explicit barycentric solves avoid a dynamically indexed elimination
-// matrix in the GPU continuation while preserving mask order.
-GjkClosest gjkClosestSimplex(GjkSupportPoint simplex[4],uint count) {
-    GjkClosest best=(GjkClosest)0;
-    best.dist2=3.402823466e+38f;
-    for(uint mask=1u;mask<(1u<<count);++mask) {
-        uint ids[4]={0u,0u,0u,0u};
-        uint n=0u;
-        for(uint i=0u;i<count;++i)
-            if((mask&(1u<<i))!=0u)ids[n++]=i;
-        float weights[4]={0.f,0.f,0.f,0.f};
-        weights[ids[0]]=1.f;
-        if(n>1u) {
-            const float3 origin=simplex[ids[0]].q;
-            const float3 d1=simplex[ids[1]].q-origin;
-            const float a=gjkDot(d1,d1);
-            const float x=-gjkDot(d1,origin);
-            const float tolerance=1.1920928955078125e-7f;
-            float u=0.f,v=0.f,w=0.f;
-            if(n==2u) {
-                if(!(a>0.f) || !isfinite(a))continue;
-                u=x/a;
-            }else {
-                const float3 d2=simplex[ids[2]].q-origin;
-                const float b=gjkDot(d1,d2);
-                const float c=gjkDot(d2,d2);
-                const float y=-gjkDot(d2,origin);
-                if(n==3u) {
-                    const float scale=max(a,c);
-                    const float determinant=a*c-b*b;
-                    if(!(scale>0.f) ||
-                       !(determinant>tolerance*scale*scale) ||
-                       !isfinite(determinant))continue;
-                    u=(x*c-y*b)/determinant;
-                    v=(y*a-x*b)/determinant;
-                }else {
-                    const float3 d3=simplex[ids[3]].q-origin;
-                    const float3 cross23=cross(d2,d3);
-                    const float determinant=gjkDot(d1,cross23);
-                    const float scale=max(a,max(c,gjkDot(d3,d3)));
-                    if(!(scale>0.f) ||
-                       !(determinant*determinant>
-                         tolerance*scale*scale*scale) ||
-                       !isfinite(determinant))continue;
-                    const float3 minusOrigin=-origin;
-                    u=gjkDot(minusOrigin,cross23)/determinant;
-                    v=gjkDot(minusOrigin,cross(d3,d1))/determinant;
-                    w=gjkDot(minusOrigin,cross(d1,d2))/determinant;
-                }
-            }
-            weights[ids[0]]=1.f-u-v-w;
-            weights[ids[1]]=u;
-            if(n>=3u)weights[ids[2]]=v;
-            if(n==4u)weights[ids[3]]=w;
-        }
-        bool feasible=true;
-        for(uint j=0u;j<n;++j)
-            if(weights[ids[j]]< -1.e-5f)feasible=false;
-        if(!feasible)continue;
-        precise float3 q=0.f,pa=0.f,pb=0.f;
-        for(uint j=0u;j<count;++j) {
-            precise float3 dq=simplex[j].q*weights[j];
-            precise float3 da=simplex[j].a*weights[j];
-            precise float3 db=simplex[j].b*weights[j];
-            q=q+dq;
-            pa=pa+da;
-            pb=pb+db;
-        }
-        const float distance2=gjkLength2(q);
-        if(distance2<best.dist2) {
-            best.closestPoint=q;
-            best.a=pa;
-            best.b=pb;
-            best.mask=mask;
-            best.dist2=distance2;
-            for(uint j=0u;j<4u;++j)best.weights[j]=weights[j];
+// Closest-origin Voronoi features. Each simplex dimension has a fixed
+// feature calculation; no subset masks, dynamic matrix, or variable-size
+// simplex search is needed in the GPU inner loop.
+struct GjkFeature {
+    float3 point;
+    float4 weights;
+    uint mask;
+    float dist2;
+};
+GjkFeature gjkFeature(float3 point,float4 weights,uint mask) {
+    GjkFeature result;
+    result.point=point;
+    result.weights=weights;
+    result.mask=mask;
+    result.dist2=gjkLength2(point);
+    return result;
+}
+GjkFeature gjkChoose(GjkFeature previous,GjkFeature candidate) {
+    return candidate.dist2<previous.dist2?candidate:previous;
+}
+GjkFeature gjkEdgeFeature(
+    float3 a,float3 b,float4 wa,float4 wb,uint ma,uint mb) {
+    const float3 ab=b-a;
+    const float denom=gjkLength2(ab);
+    if(!(denom>0.f) || !isfinite(denom))
+        return gjkChoose(gjkFeature(a,wa,ma),gjkFeature(b,wb,mb));
+    const float t=clamp(-gjkDot(a,ab)/denom,0.f,1.f);
+    const float u=1.f-t;
+    precise float3 point=a*u+b*t;
+    const float4 weights=wa*u+wb*t;
+    const uint mask=t<=0.f?ma:(t>=1.f?mb:(ma|mb));
+    return gjkFeature(point,weights,mask);
+}
+GjkFeature gjkTriangleFeature(
+    float3 a,float3 b,float3 c,
+    float4 wa,float4 wb,float4 wc,uint ma,uint mb,uint mc) {
+    GjkFeature closest=gjkEdgeFeature(a,b,wa,wb,ma,mb);
+    closest=gjkChoose(closest,gjkEdgeFeature(a,c,wa,wc,ma,mc));
+    closest=gjkChoose(closest,gjkEdgeFeature(b,c,wb,wc,mb,mc));
+    const float3 ab=b-a,ac=c-a;
+    const float aa=gjkLength2(ab);
+    const float bb=gjkDot(ab,ac);
+    const float cc=gjkLength2(ac);
+    const float scale=max(aa,cc);
+    const float determinant=aa*cc-bb*bb;
+    if(scale>0.f &&
+       determinant>1.1920928955078125e-7f*scale*scale &&
+       isfinite(determinant)) {
+        const float x=-gjkDot(ab,a);
+        const float y=-gjkDot(ac,a);
+        const float u=(x*cc-y*bb)/determinant;
+        const float v=(y*aa-x*bb)/determinant;
+        const float w=1.f-u-v;
+        if(u>=-1.e-5f && v>=-1.e-5f && w>=-1.e-5f) {
+            precise float3 point=a*w+b*u+c*v;
+            const float4 weights=wa*w+wb*u+wc*v;
+            closest=gjkChoose(closest,
+                gjkFeature(point,weights,ma|mb|mc));
         }
     }
-    return best;
+    return closest;
+}
+GjkClosest gjkClosestSimplex(GjkSupportPoint simplex[4],uint count) {
+    GjkClosest result=(GjkClosest)0;
+    result.dist2=3.402823466e+38f;
+    if(count==0u)return result;
+    const GjkSupportPoint s0=simplex[0];
+    const GjkSupportPoint s1=count>1u?simplex[1]:s0;
+    const GjkSupportPoint s2=count>2u?simplex[2]:s0;
+    const GjkSupportPoint s3=count>3u?simplex[3]:s0;
+    const float4 w0=float4(1.f,0.f,0.f,0.f);
+    const float4 w1=float4(0.f,1.f,0.f,0.f);
+    const float4 w2=float4(0.f,0.f,1.f,0.f);
+    const float4 w3=float4(0.f,0.f,0.f,1.f);
+    GjkFeature best=gjkFeature(s0.q,w0,1u);
+    if(count==2u)
+        best=gjkEdgeFeature(s0.q,s1.q,w0,w1,1u,2u);
+    else if(count==3u)
+        best=gjkTriangleFeature(
+            s0.q,s1.q,s2.q,w0,w1,w2,1u,2u,4u);
+    else if(count==4u) {
+        best=gjkTriangleFeature(
+            s0.q,s1.q,s2.q,w0,w1,w2,1u,2u,4u);
+        best=gjkChoose(best,gjkTriangleFeature(
+            s0.q,s1.q,s3.q,w0,w1,w3,1u,2u,8u));
+        best=gjkChoose(best,gjkTriangleFeature(
+            s0.q,s2.q,s3.q,w0,w2,w3,1u,4u,8u));
+        best=gjkChoose(best,gjkTriangleFeature(
+            s1.q,s2.q,s3.q,w1,w2,w3,2u,4u,8u));
+
+        const float3 d1=s1.q-s0.q,d2=s2.q-s0.q,d3=s3.q-s0.q;
+        const float3 cross23=cross(d2,d3);
+        const float determinant=gjkDot(d1,cross23);
+        const float scale=max(gjkLength2(d1),
+            max(gjkLength2(d2),gjkLength2(d3)));
+        if(scale>0.f &&
+           determinant*determinant>
+               1.1920928955078125e-7f*scale*scale*scale &&
+           isfinite(determinant)) {
+            const float3 target=-s0.q;
+            const float u=gjkDot(target,cross23)/determinant;
+            const float v=gjkDot(target,cross(d3,d1))/determinant;
+            const float w=gjkDot(target,cross(d1,d2))/determinant;
+            const float t=1.f-u-v-w;
+            if(u>=-1.e-5f && v>=-1.e-5f &&
+               w>=-1.e-5f && t>=-1.e-5f) {
+                precise float3 point=((s0.q*t+s1.q*u)+s2.q*v)+s3.q*w;
+                best=gjkChoose(best,
+                    gjkFeature(point,float4(t,u,v,w),15u));
+            }
+        }
+    }
+
+    result.mask=best.mask;
+    result.closestPoint=best.point;
+    result.dist2=best.dist2;
+    result.weights[0]=best.weights.x;
+    result.weights[1]=best.weights.y;
+    result.weights[2]=best.weights.z;
+    result.weights[3]=best.weights.w;
+    precise float3 pa=s0.a*best.weights.x;
+    precise float3 pb=s0.b*best.weights.x;
+    if(count>1u) {
+        pa=pa+s1.a*best.weights.y;
+        pb=pb+s1.b*best.weights.y;
+    }
+    if(count>2u) {
+        pa=pa+s2.a*best.weights.z;
+        pb=pb+s2.b*best.weights.z;
+    }
+    if(count>3u) {
+        pa=pa+s3.a*best.weights.w;
+        pb=pb+s3.b*best.weights.w;
+    }
+    result.a=pa;
+    result.b=pb;
+    return result;
 }
 void gjkCompact(inout GjkSupportPoint simplex[4],
                 inout uint count,GjkClosest closest) {
