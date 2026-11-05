@@ -386,6 +386,7 @@ void verify(Context& context,const char* transform_shader,
                  <<" before="<<initial_admissions[work[k]].status
                  <<" after="<<results[work[k]].status
                  <<" count="<<results[work[k]].candidate_count
+                 <<" progress="<<results[work[k]].selected_indices
                  <<"\n"<<std::flush;
     std::clog<<"PCM fixture: initial sparse GJK complete, EPA pending="
              <<std::count_if(results.begin(),results.end(),
