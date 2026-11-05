@@ -43,7 +43,8 @@ ShaderBinary shader(const char* name) {
 }
 void verify(Context& context,const char* transform_shader,
             const char* candidate_shader,const char* compact_shader,
-            const char* gjk_shader,const char* epa_shader) {
+            const char* gjk_shader,const char* epa_shader,
+            const char* gjk_reduce_shader) {
     // Exercise every contact lane with byte-exact IEEE float preservation.
     SourcePcmGpuContactStreamNative fixture{};
     fixture.edge_handle=197u;
@@ -248,7 +249,33 @@ void verify(Context& context,const char* transform_shader,
     SourcePcmSparseEpaNativeStage sparse(context,shader(compact_shader));
     SourcePcmEpaNativeStage gjk(
         context,shader(gjk_shader),false,true);
+    SourcePcmEpaNativeStage gjk_reduce(
+        context,shader(gjk_reduce_shader),false,true);
     SourcePcmEpaNativeStage epa(context,shader(epa_shader));
+#ifdef FYZZXYZZY_TEST_D3D12
+    const char* stage_probe=std::getenv("FYZZXYZZY_PCM_GJK_PROBE");
+    const bool staged_gjk=!stage_probe || *stage_probe!='i';
+#else
+    const bool staged_gjk=false;
+#endif
+    const auto append_gjk=[&](SourceSapDmaNative& stream) {
+        const auto add=[&](const SourcePcmEpaNativeStage& stage,
+                           std::uint32_t pass) {
+            stage.append(stream,addresses,transforms,geometry,pair_data,result_data,
+                candidate_data,edge_data,work_data,args_data,output_data,
+                transforms,0u,
+                static_cast<std::uint32_t>(pairs.size()),capacity,
+                static_cast<std::uint32_t>(candidates.size()),edge_capacity,
+                0u,0u,0u,0u,pass);
+        };
+        if(staged_gjk) {
+            for(std::uint32_t pass=0u;pass<32u;++pass) {
+                add(gjk,pass);
+                add(gjk_reduce,pass);
+            }
+            add(gjk,32u);
+        }else add(gjk,0u);
+    };
     std::clog<<"PCM fixture: pipelines initialized\n"<<std::flush;
     {
         SourceSapDmaNative stream(context,addresses);
@@ -389,11 +416,7 @@ void verify(Context& context,const char* transform_shader,
              <<indirect[0]<<"\n"<<std::flush;
     {
         SourceSapDmaNative stream(context,addresses);
-        gjk.append(stream,addresses,transforms,geometry,pair_data,result_data,
-                   candidate_data,edge_data,work_data,args_data,output_data,
-                   transforms,0u,
-                   static_cast<std::uint32_t>(pairs.size()),capacity,
-                   static_cast<std::uint32_t>(candidates.size()),edge_capacity);
+        append_gjk(stream);
         stream.wait_at_fetch();
     }
     context.download(root,result_offset,results.data(),sizeof(results));
@@ -805,11 +828,7 @@ void verify(Context& context,const char* transform_shader,
         SourceSapDmaNative stream(context,addresses);
         sparse.append(stream,addresses,result_data,work_data,args_data,
                       static_cast<std::uint32_t>(pairs.size()));
-        gjk.append(stream,addresses,transforms,geometry,pair_data,result_data,
-                   candidate_data,edge_data,work_data,args_data,output_data,
-                   transforms,0u,
-                   static_cast<std::uint32_t>(pairs.size()),capacity,
-                   static_cast<std::uint32_t>(candidates.size()),edge_capacity);
+        append_gjk(stream);
         epa.append(stream,addresses,transforms,geometry,pair_data,result_data,
                    candidate_data,edge_data,work_data,args_data,output_data,
                    transforms,0u,
@@ -934,11 +953,7 @@ void verify(Context& context,const char* transform_shader,
         SourceSapDmaNative stream(context,addresses);
         sparse.append(stream,addresses,result_data,work_data,args_data,
                       static_cast<std::uint32_t>(pairs.size()));
-        gjk.append(stream,addresses,transforms,geometry,pair_data,result_data,
-                   candidate_data,edge_data,work_data,args_data,output_data,
-                   transforms,0u,
-                   static_cast<std::uint32_t>(pairs.size()),capacity,
-                   static_cast<std::uint32_t>(candidates.size()),edge_capacity);
+        append_gjk(stream);
         epa.append(stream,addresses,transforms,geometry,pair_data,result_data,
                    candidate_data,edge_data,work_data,args_data,output_data,
                    transforms,0u,
@@ -1001,14 +1016,14 @@ void verify(Context& context,const char* transform_shader,
 }
 int main(int argc,char** argv) {
     try {
-        require(argc==6,
-                "Expected box transforms, PCM, EPA compact, GJK and EPA shaders");
+        require(argc==7,
+                "Expected transforms, PCM, compact, GJK, EPA and GJK reducer shaders");
 #ifdef FYZZXYZZY_TEST_D3D12
         Context context(Backend::D3D12);
 #else
         Context context(Backend::Vulkan);
 #endif
-        verify(context,argv[1],argv[2],argv[3],argv[4],argv[5]);
+        verify(context,argv[1],argv[2],argv[3],argv[4],argv[5],argv[6]);
         std::cout<<"Source PCM GPU box candidate parity PASS\n";
         return 0;
     }catch(const std::exception& error) {
