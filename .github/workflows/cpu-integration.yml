@@ -447,6 +447,8 @@ jobs:
           Write-Host ('GJK solver exit status: 0x{0:X8}' -f ($solverExit -band 0xFFFFFFFF))
           if ($solverExit -ne 0) { exit 1 }
           Remove-Item Env:FYZZXYZZY_PCM_GJK_PROBE
+          Remove-Item Env:FYZZXYZZY_D3D12_DEBUG
+          Remove-Item Env:FYZZXYZZY_D3D12_GPU_VALIDATION
           cmake --build build-native --config Release --parallel 4
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           ctest --test-dir build-native -C Release --output-on-failure --stop-on-failure
