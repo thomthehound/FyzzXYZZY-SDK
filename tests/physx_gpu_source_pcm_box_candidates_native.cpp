@@ -352,6 +352,7 @@ void verify(Context& context,const char* transform_shader,
     context.download(args_buffer,0u,indirect.data(),sizeof(indirect));
     require(indirect==std::array<std::uint32_t,3>{0u,1u,1u},
             "Sparse EPA GPU reset retained stale pending work");
+    std::clog<<"PCM fixture: sparse compaction verified\n"<<std::flush;
 
     // Validate compaction against the original admission state, then
     // resolve exactly that state through sparse GJK and EPA before
@@ -367,6 +368,15 @@ void verify(Context& context,const char* transform_shader,
                    transforms,0u,
                    static_cast<std::uint32_t>(pairs.size()),capacity,
                    static_cast<std::uint32_t>(candidates.size()),edge_capacity);
+        stream.wait_at_fetch();
+    }
+    context.download(root,result_offset,results.data(),sizeof(results));
+    std::clog<<"PCM fixture: initial sparse GJK complete, EPA pending="
+             <<std::count_if(results.begin(),results.end(),
+                 [](const auto& result){return result.status==4u;})
+             <<"\n"<<std::flush;
+    {
+        SourceSapDmaNative stream(context,addresses);
         epa.append(stream,addresses,transforms,geometry,pair_data,result_data,
                    candidate_data,edge_data,work_data,args_data,output_data,
                    transforms,0u,
@@ -374,6 +384,7 @@ void verify(Context& context,const char* transform_shader,
                    static_cast<std::uint32_t>(candidates.size()),edge_capacity);
         stream.wait_at_fetch();
     }
+    std::clog<<"PCM fixture: initial sparse EPA complete\n"<<std::flush;
     context.download(root,result_offset,results.data(),sizeof(results));
     context.download(root,candidate_offset,candidates.data(),
                      candidates.size()*sizeof(candidates[0]));
