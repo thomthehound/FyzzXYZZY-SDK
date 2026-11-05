@@ -228,9 +228,12 @@ GjkClosest gjkClosestSimplex(GjkSimplex simplex) {
     GjkFeature best=gjkFeature(s0.q,w0,1u);
     if(count==2u)
         best=gjkEdgeFeature(s0.q,s1.q,w0,w1,1u,2u);
+#ifndef FYZZXYZZY_GJK_PROBE_SKIP_TRIANGLES
     else if(count==3u)
         best=gjkTriangleFeature(
             s0.q,s1.q,s2.q,w0,w1,w2,1u,2u,4u);
+#endif
+#ifndef FYZZXYZZY_GJK_PROBE_SKIP_TETRAHEDRA
     else if(count==4u) {
         best=gjkTriangleFeature(
             s0.q,s1.q,s2.q,w0,w1,w2,1u,2u,4u);
@@ -263,6 +266,7 @@ GjkClosest gjkClosestSimplex(GjkSimplex simplex) {
             }
         }
     }
+#endif
 
     result.mask=best.mask;
     result.closestPoint=best.closest;
