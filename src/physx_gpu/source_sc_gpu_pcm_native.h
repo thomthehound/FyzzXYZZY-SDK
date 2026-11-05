@@ -59,7 +59,8 @@ public:
         const std::uint32_t& convex_indices_base,
         compute::ShaderBinary candidate,compute::ShaderBinary compact,
         compute::ShaderBinary gjk,compute::ShaderBinary gjk_reduce,
-        compute::ShaderBinary gjk_publish,compute::ShaderBinary epa,
+        compute::ShaderBinary gjk_publish,
+        compute::ShaderBinary epa_args_reset,compute::ShaderBinary epa,
         compute::ShaderBinary face_contacts)
         : context_(context),addresses_(addresses),stream_(stream),sc_(sc),
           transforms_(transforms),geometry_(geometry),
@@ -70,7 +71,9 @@ public:
           convex_faces_base_(convex_faces_base),
           convex_indices_base_(convex_indices_base),
           candidates_stage_(context,std::move(candidate)),
-          sparse_stage_(context,std::move(compact)),
+          sparse_stage_(context,compact),
+          epa_pending_stage_(context,std::move(compact),4u,
+                             std::move(epa_args_reset)),
           staged_gjk_(gjk.format==compute::ShaderFormat::Dxil),
           gjk_stage_(context,std::move(gjk),false,true),
           gjk_reduce_stage_(context,std::move(gjk_reduce),false,true),
@@ -260,6 +263,9 @@ public:
             append_gjk(gjk_stage_,32u);
             append_gjk(gjk_publish_stage_,32u);
         }else append_gjk(gjk_stage_,0u);
+        epa_pending_stage_.append(stream_,addresses_,
+            results_.getDevicePtr(),work_.getDevicePtr(),
+            indirect_address_,pair_count);
         epa_stage_.append(stream_,addresses_,
             transforms_.getDevicePtr(),geometry_.getDevicePtr(),
             pairs_.getDevicePtr(),results_.getDevicePtr(),
@@ -367,7 +373,7 @@ private:
     const std::uint32_t& convex_faces_base_;
     const std::uint32_t& convex_indices_base_;
     SourcePcmBoxCandidatesNativeStage candidates_stage_;
-    SourcePcmSparseEpaNativeStage sparse_stage_;
+    SourcePcmSparseEpaNativeStage sparse_stage_,epa_pending_stage_;
     bool staged_gjk_=false;
     SourcePcmEpaNativeStage gjk_stage_,gjk_reduce_stage_,gjk_publish_stage_,epa_stage_,face_stage_;
     physx::PxgCudaBuffer pairs_,results_,candidates_,edges_,work_,dense_contacts_;
