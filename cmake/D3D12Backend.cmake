@@ -625,6 +625,22 @@ if(FYZZXYZZY_BUILD_D3D12)
     set_tests_properties(fyzzxyzzy_source_pcm_box_candidates_d3d12_release
       PROPERTIES ENVIRONMENT "FYZZXYZZY_D3D12_DEBUG=0" TIMEOUT 120)
 
+    # Verify the second GPU worklist tracks only post-GJK EPA admissions.
+    add_test(NAME fyzzxyzzy_source_pcm_epa_worklist_d3d12
+      COMMAND $<TARGET_FILE:fyzzxyzzy_source_pcm_box_candidates_d3d12>
+        "${FYZZXYZZY_SC_BOX_BOUNDS_DXIL}"
+        "${FYZZXYZZY_SOURCE_PCM_BOX_DXIL}"
+        "${FYZZXYZZY_SOURCE_PCM_EPA_WORK_DXIL_COMPACT}"
+        "${FYZZXYZZY_SOURCE_PCM_GJK_DXIL}"
+        "${FYZZXYZZY_SOURCE_PCM_EPA_DXIL}"
+        "${FYZZXYZZY_SOURCE_PCM_GJK_REDUCE_DXIL}"
+        "${FYZZXYZZY_SOURCE_PCM_GJK_PUBLISH_DXIL}"
+        "${FYZZXYZZY_SOURCE_PCM_EPA_ARGS_RESET_DXIL}")
+    set_tests_properties(fyzzxyzzy_source_pcm_epa_worklist_d3d12
+      PROPERTIES
+      ENVIRONMENT "FYZZXYZZY_D3D12_DEBUG=1;FYZZXYZZY_D3D12_GPU_VALIDATION=0;FYZZXYZZY_PCM_EPA_WORKLIST_ONLY=1"
+      TIMEOUT 60)
+
     # Compare the full PCM fixture with the debug layer enabled but
     # without instruction-level GPU instrumentation. The GPU-validated
     # fixture below remains unchanged.
