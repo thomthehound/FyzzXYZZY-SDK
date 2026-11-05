@@ -526,6 +526,12 @@ if(FYZZXYZZY_BUILD_D3D12)
       "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_pcm_box_gjk_native.hlsl" cs_6_0 main
       FLAGS -DFYZZXYZZY_GJK_PROBE_SOLVER=1 -DFYZZXYZZY_GJK_PROBE_ITERATION=2 -DFYZZXYZZY_GJK_PROBE_FORCE_UNROLL=1
       DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_pcm_box_gjk_native.hlsli")
+    set(FYZZXYZZY_SOURCE_PCM_GJK_THREE_DXIL
+      "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_source_pcm_gjk_three_step_probe.dxil")
+    fyzzxyzzy_compile_hlsl("${FYZZXYZZY_SOURCE_PCM_GJK_THREE_DXIL}"
+      "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_pcm_box_gjk_native.hlsl" cs_6_0 main
+      FLAGS -DFYZZXYZZY_GJK_PROBE_SOLVER=1 -DFYZZXYZZY_GJK_PROBE_ITERATION=3 -DFYZZXYZZY_GJK_PROBE_FORCE_UNROLL=1
+      DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_pcm_box_gjk_native.hlsli")
     set(FYZZXYZZY_SOURCE_PCM_GJK_FOUR_DXIL
       "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_source_pcm_gjk_four_step_probe.dxil")
     fyzzxyzzy_compile_hlsl("${FYZZXYZZY_SOURCE_PCM_GJK_FOUR_DXIL}"
@@ -541,6 +547,7 @@ if(FYZZXYZZY_BUILD_D3D12)
     add_custom_target(fyzzxyzzy_source_pcm_gjk_probes_shader_d3d12
       DEPENDS "${FYZZXYZZY_SOURCE_PCM_GJK_SOLVER_DXIL}"
         "${FYZZXYZZY_SOURCE_PCM_GJK_TWO_STEP_DXIL}"
+        "${FYZZXYZZY_SOURCE_PCM_GJK_THREE_DXIL}"
         "${FYZZXYZZY_SOURCE_PCM_GJK_FOUR_DXIL}"
         "${FYZZXYZZY_SOURCE_PCM_GJK_EIGHT_DXIL}")
     set(FYZZXYZZY_SOURCE_PCM_EPA_DXIL
@@ -589,6 +596,17 @@ if(FYZZXYZZY_BUILD_D3D12)
       ENVIRONMENT "FYZZXYZZY_D3D12_DEBUG=1;FYZZXYZZY_D3D12_GPU_VALIDATION=0;FYZZXYZZY_PCM_GJK_PROBE=i"
       TIMEOUT 45)
     # Check fixed-block DXIL execution before changing GJK scheduling.
+    add_test(NAME fyzzxyzzy_source_pcm_gjk_three_step_probe_d3d12
+      COMMAND $<TARGET_FILE:fyzzxyzzy_source_pcm_box_candidates_d3d12>
+        "${FYZZXYZZY_SC_BOX_BOUNDS_DXIL}"
+        "${FYZZXYZZY_SOURCE_PCM_BOX_DXIL}"
+        "${FYZZXYZZY_SOURCE_PCM_EPA_WORK_DXIL_COMPACT}"
+        "${FYZZXYZZY_SOURCE_PCM_GJK_THREE_DXIL}"
+        "${FYZZXYZZY_SOURCE_PCM_EPA_DXIL}")
+    set_tests_properties(fyzzxyzzy_source_pcm_gjk_three_step_probe_d3d12
+      PROPERTIES
+      ENVIRONMENT "FYZZXYZZY_D3D12_DEBUG=1;FYZZXYZZY_D3D12_GPU_VALIDATION=0;FYZZXYZZY_PCM_GJK_PROBE=i"
+      TIMEOUT 45)
     add_test(NAME fyzzxyzzy_source_pcm_gjk_four_step_probe_d3d12
       COMMAND $<TARGET_FILE:fyzzxyzzy_source_pcm_box_candidates_d3d12>
         "${FYZZXYZZY_SC_BOX_BOUNDS_DXIL}"
