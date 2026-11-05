@@ -137,6 +137,7 @@ uint gjkGroupContinuation(GjkBoxPair pair,float contactDistance,
     if(lane==0u) {
         gjkGroupCount=0u;
         gjkGroupState=0u;
+        gjkGroupWitness=(GjkWitness)0;
         gjkGroupPrevious=3.402823466e+38f;
         gjkGroupClosest=gjkLength2(pair.aInB)>0.f
             ?pair.aInB:float3(1.f,0.f,0.f);
