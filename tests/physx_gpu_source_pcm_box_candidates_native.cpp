@@ -231,7 +231,7 @@ void verify(Context& context,const char* transform_shader,
     auto gjk_binary=shader(gjk_shader);
     if(gjk_binary.format==ShaderFormat::Spirv)
         gjk_binary.entry_point="gjk";
-    SourcePcmEpaNativeStage gjk(context,std::move(gjk_binary));
+    SourcePcmEpaNativeStage gjk(context,std::move(gjk_binary),false,true);
     SourcePcmEpaNativeStage epa(context,shader(epa_shader));
     std::clog<<"PCM fixture: pipelines initialized\n"<<std::flush;
     {
