@@ -277,6 +277,7 @@ uint gjkBoxContinuation(GjkBoxPair pair,float contactDistance,
 #else
     const uint maxIterations=32u;
 #endif
+    [loop]
     for(uint iteration=0u;iteration<maxIterations;++iteration) {
         float dist=sqrt(gjkLength2(closest));
         if(count>0u && dist<=epsilon && !pointCore)return 3u;
