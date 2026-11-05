@@ -92,8 +92,6 @@ float3 unproject(Frame f,float3 v) {
 float component(float3 v,uint i) {
     return i==0u?v.x:(i==1u?v.y:v.z);
 }
-#define FYZZXYZZY_GJK_BOX_ONLY 1
-#include "physx_source_pcm_box_gjk_native.hlsli"
 #include "physx_source_pcm_sc_contact_publish_native.hlsli"
 
 uint cachePointAddress(uint edgeBase,uint contactIndex) {
@@ -700,34 +698,10 @@ void main(uint3 thread : SV_DispatchThreadID) {
             clip(f,poly,incidentNormal,faceX,faceY,normal,distance,flipped,
                  A,pa,B,pb,first,limit,count,status);
         }
-        // GuPCMContactBoxBox's GJK continuation only runs when face
-        // clipping found no witness. EPA remains explicitly pending.
-        if(overlap!=0u && count==0u && status==0u) {
-            uint cache=p.edgeCacheBias+edge*240u;
-            if(edgeCaches.Load(cache+12u)==0u) {
-                GjkBoxPair boxPair=(GjkBoxPair)0;
-                boxPair.halfA=ea;
-                boxPair.halfB=eb;
-                boxPair.aInB=rotateSource(conjugate(qb),pa-pb);
-                boxPair.relative=quatProduct(conjugate(qb),qa);
-                GjkWitness witness;
-                uint outcome=gjkBoxContinuation(boxPair,distance,witness);
-                if(outcome==1u) {
-                    if(limit==0u) {
-                        status=2u;
-                    }else {
-                        uint offset=p.candidateBias+first*40u;
-                        candidates.Store3(offset,asuint(witness.localA));
-                        candidates.Store3(offset+12u,asuint(witness.localB));
-                        candidates.Store3(offset+24u,asuint(witness.normalB));
-                        candidates.Store(offset+36u,asuint(witness.separation));
-                        count=1u;
-                    }
-                }else if(outcome==0u)
-                    overlap=0u;
-                else status=3u;
-            }else status=3u;
-        }
+        // Box clipping owns SAT contacts. A clip without witnesses
+        // enters the sparse GJK continuation, not a second inline solve.
+        if(overlap!=0u && count==0u && status==0u)
+            status=3u;
     }
     uint selectedCount=status==0u?min(count,4u):0u;
     uint4 selection=uint4(0u,1u,2u,3u);
