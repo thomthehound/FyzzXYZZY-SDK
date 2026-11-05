@@ -228,10 +228,8 @@ void verify(Context& context,const char* transform_shader,
         context,shader(transform_shader));
     SourcePcmBoxCandidatesNativeStage pcm(context,shader(candidate_shader));
     SourcePcmSparseEpaNativeStage sparse(context,shader(compact_shader));
-    auto gjk_binary=shader(gjk_shader);
-    if(gjk_binary.format==ShaderFormat::Spirv)
-        gjk_binary.entry_point="gjk";
-    SourcePcmEpaNativeStage gjk(context,std::move(gjk_binary),false,true);
+    SourcePcmEpaNativeStage gjk(
+        context,shader(gjk_shader),false,true);
     SourcePcmEpaNativeStage epa(context,shader(epa_shader));
     std::clog<<"PCM fixture: pipelines initialized\n"<<std::flush;
     {
