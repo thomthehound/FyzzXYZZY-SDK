@@ -239,9 +239,10 @@ uint gjkGroupContinuation(GjkBoxPair pair,float contactDistance,
 }
 
 [numthreads(32,1,1)]
-void gjk(uint3 group : SV_GroupID,uint3 thread : SV_GroupThreadID) {
-    const uint lane=thread.x;
-    uint i=work.Load(p.workBias+group.x*4u);
+void gjk(uint3 thread : SV_DispatchThreadID) {
+    const uint lane=thread.x&31u;
+    const uint workIndex=thread.x>>5u;
+    uint i=work.Load(p.workBias+workIndex*4u);
     if(i>=p.pairCount)return;
     uint result=p.resultBias+i*32u;
     if(results.Load(result+8u)!=3u)return;
