@@ -147,10 +147,10 @@ GjkFeature gjkTriangleFeature(
         const float v=(y*aa-x*bb)/determinant;
         const float w=1.f-u-v;
         if(u>=-1.e-5f && v>=-1.e-5f && w>=-1.e-5f) {
-            precise float3 closest=a*w+b*u+c*v;
+            precise float3 point=a*w+b*u+c*v;
             const float4 weights=wa*w+wb*u+wc*v;
             closest=gjkChoose(closest,
-                gjkFeature(closest,weights,ma|mb|mc));
+                gjkFeature(point,weights,ma|mb|mc));
         }
     }
     return closest;
