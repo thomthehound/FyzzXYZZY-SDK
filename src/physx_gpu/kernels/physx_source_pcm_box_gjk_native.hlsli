@@ -295,12 +295,23 @@ uint gjkBoxContinuationState(GjkBoxPair pair,float contactDistance,
 #else
     const uint maxIterations=32u;
 #endif
-#if defined(FYZZXYZZY_GJK_PROBE_FORCE_UNROLL)
+#if defined(__spirv__) || defined(FYZZXYZZY_GJK_PROBE_FORCE_UNROLL)
+#ifdef FYZZXYZZY_GJK_PROBE_FORCE_UNROLL
     [unroll]
-#elif defined(__spirv__)
+#else
     [loop]
 #endif
     for(uint iteration=0u;iteration<maxIterations;++iteration) {
+#else
+    // Keep the bounded DXIL recurrence compact without generating thirty-two
+    // independent copies of the full Voronoi/simplex calculation.
+    [loop]
+    for(uint base=0u;base<maxIterations;base+=4u) {
+        [unroll]
+        for(uint offset=0u;offset<4u;++offset) {
+            const uint iteration=base+offset;
+            if(iteration>=maxIterations)break;
+#endif
 #ifdef FYZZXYZZY_GJK_PROBE_SECOND_ENTRY
         if(iteration==1u)return 0x24u;
 #endif
@@ -366,6 +377,9 @@ uint gjkBoxContinuationState(GjkBoxPair pair,float contactDistance,
         }
         previous=nextDist;
     }
+#if !defined(__spirv__) && !defined(FYZZXYZZY_GJK_PROBE_FORCE_UNROLL)
+    }
+#endif
     return pointCore && simplex.count>0u?3u:0u;
 }
 
