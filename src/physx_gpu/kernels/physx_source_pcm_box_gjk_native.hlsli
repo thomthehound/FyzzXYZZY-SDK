@@ -273,7 +273,7 @@ uint gjkBoxContinuation(GjkBoxPair pair,float contactDistance,
         ?pair.aInB:float3(1.f,0.f,0.f);
     float previous=3.402823466e+38f;
 #ifdef FYZZXYZZY_GJK_PROBE_ITERATION
-    const uint maxIterations=1u;
+    const uint maxIterations=FYZZXYZZY_GJK_PROBE_ITERATION;
 #else
     const uint maxIterations=32u;
 #endif
