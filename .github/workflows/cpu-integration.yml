@@ -442,8 +442,18 @@ jobs:
           $env:FYZZXYZZY_PCM_GJK_PROBE = 's'
           $kernelRoot = Join-Path (Resolve-Path 'build-native/kernels') ''
           $kernelArgs = @('physx_source_sc_box_transform_bounds_native.dxil', 'physx_source_pcm_box_candidates_native.dxil', 'physx_source_pcm_epa_compact_native.dxil', 'physx_source_pcm_gjk_solver_probe.dxil', 'physx_source_pcm_box_epa_native.dxil') | ForEach-Object { Join-Path $kernelRoot $_ }
-          & (Resolve-Path 'build-native/Release/fyzzxyzzy_source_pcm_box_candidates_d3d12.exe') @kernelArgs
-          $solverExit = $LASTEXITCODE
+          $stdoutPath = Join-Path $env:RUNNER_TEMP 'fyzzxyzzy-gjk.stdout'
+          $stderrPath = Join-Path $env:RUNNER_TEMP 'fyzzxyzzy-gjk.stderr'
+          $solver = Start-Process -FilePath (Resolve-Path 'build-native/Release/fyzzxyzzy_source_pcm_box_candidates_d3d12.exe').Path -ArgumentList $kernelArgs -PassThru -NoNewWindow -RedirectStandardOutput $stdoutPath -RedirectStandardError $stderrPath
+          $completed = $solver.WaitForExit(45000)
+          if (-not $completed) {
+            $solver.Kill($true)
+            $solver.WaitForExit()
+          }
+          Get-Content $stdoutPath
+          Get-Content $stderrPath
+          if (-not $completed) { throw 'Full GJK solver exceeded 45 seconds' }
+          $solverExit = $solver.ExitCode
           Write-Host ('GJK solver exit status: 0x{0:X8}' -f ($solverExit -band 0xFFFFFFFF))
           if ($solverExit -ne 0) { exit 1 }
           Remove-Item Env:FYZZXYZZY_PCM_GJK_PROBE
