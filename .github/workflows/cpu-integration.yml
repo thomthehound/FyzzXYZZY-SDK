@@ -435,8 +435,18 @@ jobs:
         run: |
           cmake --build build-native --config Release --target fyzzxyzzy_source_pcm_box_candidates_d3d12 --parallel 4
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          ctest --test-dir build-native -C Release -R '^fyzzxyzzy_source_pcm_gjk_solver_probe_d3d12$' --output-on-failure
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          # Run the exact solver fixture directly so Windows exception status
+          # is retained instead of being folded into CTest's SEGFAULT label.
+          $env:FYZZXYZZY_D3D12_DEBUG = '1'
+          $env:FYZZXYZZY_D3D12_GPU_VALIDATION = '0'
+          $env:FYZZXYZZY_PCM_GJK_PROBE = 's'
+          $kernelRoot = Join-Path (Resolve-Path 'build-native/kernels') ''
+          $kernelArgs = @('physx_source_sc_box_transform_bounds_native.dxil', 'physx_source_pcm_box_candidates_native.dxil', 'physx_source_pcm_epa_compact_native.dxil', 'physx_source_pcm_gjk_solver_probe.dxil', 'physx_source_pcm_box_epa_native.dxil') | ForEach-Object { Join-Path $kernelRoot $_ }
+          & (Resolve-Path 'build-native/Release/fyzzxyzzy_source_pcm_box_candidates_d3d12.exe') @kernelArgs
+          $solverExit = $LASTEXITCODE
+          Write-Host ('GJK solver exit status: 0x{0:X8}' -f ($solverExit -band 0xFFFFFFFF))
+          if ($solverExit -ne 0) { exit 1 }
+          Remove-Item Env:FYZZXYZZY_PCM_GJK_PROBE
           cmake --build build-native --config Release --parallel 4
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           ctest --test-dir build-native -C Release --output-on-failure --stop-on-failure
