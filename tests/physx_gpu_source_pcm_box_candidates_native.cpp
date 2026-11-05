@@ -358,11 +358,21 @@ void verify(Context& context,const char* transform_shader,
     // resolve exactly that state through sparse GJK and EPA before
     // comparing the final contacts with native Gu.
     context.upload(root,result_offset,results.data(),sizeof(results));
+    const auto initial_admissions=results;
     {
         seed_compaction();
         SourceSapDmaNative stream(context,addresses);
         sparse.append(stream,addresses,result_data,work_data,args_data,
                       static_cast<std::uint32_t>(pairs.size()));
+        stream.wait_at_fetch();
+    }
+    context.download(args_buffer,0u,indirect.data(),sizeof(indirect));
+    context.download(root,work_offset,work.data(),work.size()*4u);
+    verify_work(initial_admissions);
+    std::clog<<"PCM fixture: initial sparse worklist count="
+             <<indirect[0]<<"\n"<<std::flush;
+    {
+        SourceSapDmaNative stream(context,addresses);
         gjk.append(stream,addresses,transforms,geometry,pair_data,result_data,
                    candidate_data,edge_data,work_data,args_data,output_data,
                    transforms,0u,
@@ -371,6 +381,12 @@ void verify(Context& context,const char* transform_shader,
         stream.wait_at_fetch();
     }
     context.download(root,result_offset,results.data(),sizeof(results));
+    for(std::size_t k=0;k<indirect[0];++k)
+        std::clog<<"PCM fixture: sparse GJK pair="<<work[k]
+                 <<" before="<<initial_admissions[work[k]].status
+                 <<" after="<<results[work[k]].status
+                 <<" count="<<results[work[k]].candidate_count
+                 <<"\n"<<std::flush;
     std::clog<<"PCM fixture: initial sparse GJK complete, EPA pending="
              <<std::count_if(results.begin(),results.end(),
                  [](const auto& result){return result.status==4u;})
