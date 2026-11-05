@@ -71,14 +71,14 @@ ConstantBuffer<Parameters> p : register(b0,space0);
 // Sparse admission is recorded in the dense Sc pair result buffer.
 // One lane owns each pending pair. No simplex data is shared between lanes,
 // and GJK requires no workgroup barriers or private global scratch.
-[numthreads(1,1,1)]
-void main(uint3 thread : SV_DispatchThreadID) {
+[numthreads(64,1,1)]
+void main(uint3 group : SV_GroupID, uint3 lane : SV_GroupThreadID) {
 #ifdef FYZZXYZZY_EPA_EMPTY_DISPATCH_PROBE
-    const uint i=work.Load(p.workBias+thread.x*4u);
-    if(i<p.pairCount)
+    const uint i=work.Load(p.workBias+group.x*4u);
+    if(i<p.pairCount && lane.x==0u)
         results.Store(p.resultBias+i*32u+24u,0xE001u);
 #else
-    uint i=work.Load(p.workBias+thread.x*4u);
+    uint i=work.Load(p.workBias+group.x*4u);
     if(i>=p.pairCount)return;
     uint result=p.resultBias+i*32u;
     if(results.Load(result+8u)!=4u)return;
@@ -135,10 +135,12 @@ void main(uint3 thread : SV_DispatchThreadID) {
     const uint simplexCount=results.Load(result+24u);
     GjkSupportPoint simplex[4];
     if(simplexCount==0u || simplexCount>4u) {
-        results.Store(result+8u,5u);
-        publishScContacts(i,a,b,edge,result,p.outputBias,
-            p.transformBias,p.geometryBias,p.edgeCacheBias,
-            p.shapeCapacity,p.edgeCapacity);
+        if(lane.x==0u) {
+            results.Store(result+8u,5u);
+            publishScContacts(i,a,b,edge,result,p.outputBias,
+                p.transformBias,p.geometryBias,p.edgeCacheBias,
+                p.shapeCapacity,p.edgeCapacity);
+        }
         return;
     }
     for(uint j=0u;j<simplexCount;++j) {
@@ -151,7 +153,8 @@ void main(uint3 thread : SV_DispatchThreadID) {
     }
     GjkWitness contact;
     const bool admitted=epaBoxContinuation(
-        boxPair,simplex,simplexCount,contact);
+        boxPair,simplex,simplexCount,lane.x,contact);
+    if(lane.x!=0u)return;
     if(!admitted) {
         // Failure to resolve a penetrating simplex is not separation.
         // Report an unresolved manifold rather than silently removing it.
