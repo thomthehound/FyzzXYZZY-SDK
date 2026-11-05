@@ -76,6 +76,9 @@ float3 gjkShapeSupport(uint kind,float3 half,float3 direction,
 }
 #endif
 
+#ifndef __spirv__
+[noinline]
+#endif
 GjkSupportPoint gjkSupport(GjkBoxPair pair,float3 direction) {
     const float3 directionA=rotateSource(
         conjugate(pair.relative),direction);
@@ -168,6 +171,9 @@ GjkFeature gjkTriangleFeature(
     }
     return closest;
 }
+#ifndef __spirv__
+[noinline]
+#endif
 GjkClosest gjkClosestSimplex(GjkSimplex simplex) {
     GjkClosest result=(GjkClosest)0;
     result.dist2=3.402823466e+38f;
@@ -242,6 +248,9 @@ GjkClosest gjkClosestSimplex(GjkSimplex simplex) {
     result.b=pb;
     return result;
 }
+#ifndef __spirv__
+[noinline]
+#endif
 void gjkCompact(inout GjkSimplex simplex,GjkClosest closest) {
     GjkSimplex packed=(GjkSimplex)0;
     if(simplex.count>0u && (closest.mask&1u)!=0u &&
@@ -295,23 +304,12 @@ uint gjkBoxContinuationState(GjkBoxPair pair,float contactDistance,
 #else
     const uint maxIterations=32u;
 #endif
-#if defined(__spirv__) || defined(FYZZXYZZY_GJK_PROBE_FORCE_UNROLL)
 #ifdef FYZZXYZZY_GJK_PROBE_FORCE_UNROLL
     [unroll]
 #else
     [loop]
 #endif
     for(uint iteration=0u;iteration<maxIterations;++iteration) {
-#else
-    // Keep the bounded DXIL recurrence compact without generating thirty-two
-    // independent copies of the full Voronoi/simplex calculation.
-    [loop]
-    for(uint base=0u;base<maxIterations;base+=4u) {
-        [unroll]
-        for(uint offset=0u;offset<4u;++offset) {
-            const uint iteration=base+offset;
-            if(iteration>=maxIterations)break;
-#endif
 #ifdef FYZZXYZZY_GJK_PROBE_SECOND_ENTRY
         if(iteration==1u)return 0x24u;
 #endif
@@ -377,9 +375,6 @@ uint gjkBoxContinuationState(GjkBoxPair pair,float contactDistance,
         }
         previous=nextDist;
     }
-#if !defined(__spirv__) && !defined(FYZZXYZZY_GJK_PROBE_FORCE_UNROLL)
-    }
-#endif
     return pointCore && simplex.count>0u?3u:0u;
 }
 
