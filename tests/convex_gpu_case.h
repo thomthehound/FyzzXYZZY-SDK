@@ -155,7 +155,19 @@ inline void verify_convex_finite_gpu_solver(
                     " gpu_pair="+std::to_string(cb.pair.a)+","+
                     std::to_string(cb.pair.b)+
                     " counts="+std::to_string(ca.count)+"/"+
-                    std::to_string(cb.count));
+                    std::to_string(cb.count)+
+                    " cpu0_normal="+
+                    (ca.count?std::to_string(ca.points[0].normal.x)+","+
+                        std::to_string(ca.points[0].normal.y)+","+
+                        std::to_string(ca.points[0].normal.z):"empty")+
+                    " gpu0_normal="+
+                    (cb.count?std::to_string(cb.points[0].normal.x)+","+
+                        std::to_string(cb.points[0].normal.y)+","+
+                        std::to_string(cb.points[0].normal.z):"empty")+
+                    " cpu0_depth="+
+                    (ca.count?std::to_string(ca.points[0].separation):"empty")+
+                    " gpu0_depth="+
+                    (cb.count?std::to_string(cb.points[0].separation):"empty"));
             const auto close=[](float x,float y) {
                 return std::fabs(x-y)<0.02f;
             };
