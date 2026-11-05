@@ -295,7 +295,7 @@ uint gjkBoxContinuationState(GjkBoxPair pair,float contactDistance,
 #else
     const uint maxIterations=32u;
 #endif
-#ifdef FYZZXYZZY_GJK_PROBE_FORCE_UNROLL
+#if defined(FYZZXYZZY_GJK_PROBE_FORCE_UNROLL) || !defined(__spirv__)
     [unroll]
 #else
     [loop]
