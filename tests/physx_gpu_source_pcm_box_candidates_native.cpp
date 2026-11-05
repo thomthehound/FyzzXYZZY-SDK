@@ -414,9 +414,14 @@ void verify(Context& context,const char* transform_shader,
         const auto& resolved=results[work[0]];
         const auto expected=*probe=='b'?0xB001u:
             *probe=='p'?0xB100u:
+            *probe=='t'?0xB321u:
+            *probe=='f'?0xB322u:
+            *probe=='c'?0xB323u:
             *probe=='i'?0xB300u:0xB200u;
+        const bool exact=*probe=='b' || *probe=='t' ||
+                         *probe=='f' || *probe=='c';
         require(resolved.status==0u &&
-                (*probe=='b'
+                (exact
                     ?resolved.selected_indices==expected
                     :(resolved.selected_indices&0xFF00u)==expected),
                 "D3D12 GJK dispatch probe did not complete its selected stage");
