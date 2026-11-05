@@ -496,7 +496,7 @@ void verify(Context& context,const char* transform_shader,
         require(phase==1u,
                 "Penetrating GJK advance did not generate a simplex for reduction");
         std::clog<<"PCM fixture: validated GJK advance, count="
-                 <<simplex_count<<" phase="<<phase<<"\\n"<<std::flush;
+                 <<simplex_count<<" phase="<<phase<<"\n"<<std::flush;
         if(*inspect=='r') {
             {
                 SourceSapDmaNative stream(context,addresses);
@@ -507,7 +507,7 @@ void verify(Context& context,const char* transform_shader,
             require(phase==0u || phase==2u,
                     "GJK reducer did not settle its simplex recurrence");
             std::clog<<"PCM fixture: validated GJK reduction, count="
-                     <<simplex_count<<" phase="<<phase<<"\\n"<<std::flush;
+                     <<simplex_count<<" phase="<<phase<<"\n"<<std::flush;
         }
         release_allocations();
         return;
