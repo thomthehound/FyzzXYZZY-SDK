@@ -76,14 +76,17 @@ void verify(Context& context,const char* advance_dxil,
     SourcePcmScEdgeCacheNative edge{};
     edge.initialized=1u;
     edge.needs_gjk=1u;
+    constexpr auto aligned=[](std::size_t size) {
+        return (size+15u)&~std::size_t{15u};
+    };
     constexpr std::size_t transforms_offset=0u;
-    constexpr std::size_t geometry_offset=transforms_offset+sizeof(transforms);
-    constexpr std::size_t pair_offset=geometry_offset+sizeof(geometry);
-    constexpr std::size_t result_offset=pair_offset+sizeof(pair);
-    constexpr std::size_t candidate_offset=result_offset+sizeof(result);
-    constexpr std::size_t edge_offset=candidate_offset+40u;
-    constexpr std::size_t work_offset=edge_offset+sizeof(edge);
-    constexpr std::size_t output_offset=work_offset+4u;
+    constexpr std::size_t geometry_offset=aligned(transforms_offset+sizeof(transforms));
+    constexpr std::size_t pair_offset=aligned(geometry_offset+sizeof(geometry));
+    constexpr std::size_t result_offset=aligned(pair_offset+sizeof(pair));
+    constexpr std::size_t candidate_offset=aligned(result_offset+sizeof(result));
+    constexpr std::size_t edge_offset=aligned(candidate_offset+40u);
+    constexpr std::size_t work_offset=aligned(edge_offset+sizeof(edge));
+    constexpr std::size_t output_offset=aligned(work_offset+4u);
     constexpr std::size_t total_bytes=output_offset+84u;
     static_assert(total_bytes%4u==0u);
     std::array<std::uint8_t,total_bytes> data{};
@@ -109,8 +112,7 @@ void verify(Context& context,const char* advance_dxil,
     const auto output_address=addresses.register_slice(root,output_offset,84u);
     {
         SourcePcmEpaNativeStage advance(context,load_shader(advance_dxil),false,true);
-        SourcePcmEpaNativeStage reduce(context,load_shader(reduce_dxil),false,true);
-        std::clog<<"GJK stage: pipelines initialized\n"<<std::flush;
+        std::clog<<"GJK stage: advance pipeline initialized\n"<<std::flush;
         const auto execute=[&](const SourcePcmEpaNativeStage& stage,
                                const char* name) {
             SourceSapDmaNative stream(context,addresses);
@@ -139,6 +141,8 @@ void verify(Context& context,const char* advance_dxil,
                 std::abs(after_advance.closest[0]+1.5f)<1.e-5f,
                 "GJK advance did not admit the penetrating simplex");
         if(run_reduction) {
+            SourcePcmEpaNativeStage reduce(context,load_shader(reduce_dxil),false,true);
+            std::clog<<"GJK stage: reducer pipeline initialized\n"<<std::flush;
             execute(reduce,"reduction");
             const auto after_reduce=sample();
             require(after_reduce.phase==0u &&
