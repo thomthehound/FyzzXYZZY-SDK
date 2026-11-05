@@ -275,22 +275,18 @@ bool gjkContact(GjkBoxPair pair,GjkClosest nearest,
     witness.separation=distance-pair.radiusA-pair.radiusB;
     return true;
 }
-// Each GJK lane owns four simplex supports in workgroup storage. The
-// inner loop carries only scalar convergence state, not the full simplex.
-#ifdef FYZZXYZZY_GJK_WORKGROUP_SIMPLEX
-groupshared GjkSimplex gjkWorkgroupSimplex[32];
-
 // 0: no source GJK contact; 1: source GJK contact;
 // 3: simplex requires the source EPA continuation.
 uint gjkBoxContinuationState(GjkBoxPair pair,float contactDistance,
-                             uint lane,out GjkWitness witness) {
+                             out GjkWitness witness,
+                             out GjkSimplex simplex) {
     witness=(GjkWitness)0;
     const float epsilon=0.005f*min(
         min(pair.halfA.x,min(pair.halfA.y,pair.halfA.z)),
         min(pair.halfB.x,min(pair.halfB.y,pair.halfB.z)));
     const float progressFactor=1.f-0.000225f;
     const bool pointCore=pair.radiusA>0.f || pair.radiusB>0.f;
-    gjkWorkgroupSimplex[lane]=(GjkSimplex)0;
+    simplex=(GjkSimplex)0;
     float3 closest=gjkLength2(pair.aInB)>0.f
         ?pair.aInB:float3(1.f,0.f,0.f);
     float previous=3.402823466e+38f;
@@ -301,7 +297,6 @@ uint gjkBoxContinuationState(GjkBoxPair pair,float contactDistance,
 #endif
     [loop]
     for(uint iteration=0u;iteration<maxIterations;++iteration) {
-        GjkSimplex simplex=gjkWorkgroupSimplex[lane];
 #ifdef FYZZXYZZY_GJK_PROBE_SECOND_ENTRY
         if(iteration==1u)return 0x24u;
 #endif
@@ -353,7 +348,6 @@ uint gjkBoxContinuationState(GjkBoxPair pair,float contactDistance,
         closest=next.closestPoint;
         float nextDist=sqrt(next.dist2);
         gjkCompact(simplex,next);
-        gjkWorkgroupSimplex[lane]=simplex;
 #ifdef FYZZXYZZY_GJK_PROBE_SECOND_COMPACT
         if(iteration==1u)return 0x23u;
 #endif
@@ -368,15 +362,15 @@ uint gjkBoxContinuationState(GjkBoxPair pair,float contactDistance,
         }
         previous=nextDist;
     }
-    return pointCore && gjkWorkgroupSimplex[lane].count>0u?3u:0u;
+    return pointCore && simplex.count>0u?3u:0u;
 }
 
 uint gjkBoxContinuation(GjkBoxPair pair,float contactDistance,
-                        uint lane,out GjkWitness witness,
+                        out GjkWitness witness,
                         out GjkSupportPoint simplex[4],out uint count) {
+    GjkSimplex state;
     const uint outcome=gjkBoxContinuationState(
-        pair,contactDistance,lane,witness);
-    const GjkSimplex state=gjkWorkgroupSimplex[lane];
+        pair,contactDistance,witness,state);
     count=state.count;
     simplex[0]=state.point0;
     simplex[1]=state.point1;
@@ -386,10 +380,9 @@ uint gjkBoxContinuation(GjkBoxPair pair,float contactDistance,
 }
 
 uint gjkBoxContinuation(GjkBoxPair pair,float contactDistance,
-                        uint lane,out GjkWitness witness) {
+                        out GjkWitness witness) {
     GjkSupportPoint simplex[4];
     uint count;
     return gjkBoxContinuation(
-        pair,contactDistance,lane,witness,simplex,count);
+        pair,contactDistance,witness,simplex,count);
 }
-#endif
