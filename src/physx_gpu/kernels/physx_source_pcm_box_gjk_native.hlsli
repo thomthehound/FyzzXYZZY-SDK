@@ -434,6 +434,92 @@ uint gjkBoxContinuationState(GjkBoxPair pair,float contactDistance,
         ?(pointCore && simplex.count>0u?3u:0u):outcome;
 }
 
+#ifdef FYZZXYZZY_GJK_MULTI_PASS
+struct GjkContinuation {
+    GjkSimplex simplex;
+    float3 closest;
+    float previous;
+};
+GjkContinuation gjkInitialContinuation(GjkBoxPair pair) {
+    GjkContinuation state=(GjkContinuation)0;
+    state.closest=gjkLength2(pair.aInB)>0.f
+        ?pair.aInB:float3(1.f,0.f,0.f);
+    state.previous=3.402823466e+38f;
+    return state;
+}
+// A single exact iteration; the following dispatch reloads the simplex.
+bool gjkAdvanceOne(GjkBoxPair pair,float contactDistance,
+                   inout GjkContinuation state,
+                   out uint outcome,out GjkWitness witness) {
+    outcome=0u;
+    witness=(GjkWitness)0;
+    const float epsilon=0.005f*min(
+        min(pair.halfA.x,min(pair.halfA.y,pair.halfA.z)),
+        min(pair.halfB.x,min(pair.halfB.y,pair.halfB.z)));
+    const float progressFactor=1.f-0.000225f;
+    const bool pointCore=pair.radiusA>0.f || pair.radiusB>0.f;
+    const float dist=sqrt(gjkLength2(state.closest));
+    if(state.simplex.count>0u && dist<=epsilon && !pointCore) {
+        outcome=3u;
+        return true;
+    }
+    if(dist<=0.f) {
+        outcome=pointCore && state.simplex.count>0u?3u:0u;
+        return true;
+    }
+    const float3 normal=state.closest*(1.f/dist);
+    const GjkSupportPoint support=gjkSupport(pair,-state.closest);
+    const float projection=gjkDot(normal,support.q);
+    if(projection>contactDistance+pair.radiusA+pair.radiusB)return true;
+    if(state.simplex.count>0u && projection>dist*progressFactor) {
+        const GjkClosest current=gjkClosestSimplex(state.simplex);
+        outcome=current.mask!=0u &&
+                gjkContact(pair,current,state.simplex,witness) &&
+                witness.separation<=contactDistance?1u:0u;
+        return true;
+    }
+    const bool duplicate=
+        (state.simplex.count>0u && support.ai==state.simplex.point0.ai &&
+         support.bi==state.simplex.point0.bi) ||
+        (state.simplex.count>1u && support.ai==state.simplex.point1.ai &&
+         support.bi==state.simplex.point1.bi) ||
+        (state.simplex.count>2u && support.ai==state.simplex.point2.ai &&
+         support.bi==state.simplex.point2.bi) ||
+        (state.simplex.count>3u && support.ai==state.simplex.point3.ai &&
+         support.bi==state.simplex.point3.bi);
+    if(duplicate) {
+        if(projection>0.f) {
+            const GjkClosest current=gjkClosestSimplex(state.simplex);
+            outcome=current.mask!=0u &&
+                    gjkContact(pair,current,state.simplex,witness) &&
+                    witness.separation<=contactDistance?1u:0u;
+        }else outcome=pointCore?3u:0u;
+        return true;
+    }
+    if(state.simplex.count==4u) {
+        outcome=3u;
+        return true;
+    }
+    gjkAppend(state.simplex,support);
+    const GjkClosest next=gjkClosestSimplex(state.simplex);
+    if(next.mask==0u)return true;
+    state.closest=next.closestPoint;
+    const float nextDist=sqrt(next.dist2);
+    bool noProgressContact=false;
+    if(nextDist>=state.previous && pointCore && projection>0.f)
+        noProgressContact=gjkContact(pair,next,state.simplex,witness) &&
+            witness.separation<=contactDistance;
+    gjkCompact(state.simplex,next);
+    if(nextDist>=state.previous) {
+        if(pointCore)
+            outcome=projection>0.f?(noProgressContact?1u:0u):3u;
+        return true;
+    }
+    state.previous=nextDist;
+    return false;
+}
+#endif
+
 uint gjkBoxContinuation(GjkBoxPair pair,float contactDistance,
                         out GjkWitness witness,
                         out GjkSupportPoint simplex[4],out uint count) {
