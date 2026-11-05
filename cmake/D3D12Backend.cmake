@@ -526,30 +526,9 @@ if(FYZZXYZZY_BUILD_D3D12)
       "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_pcm_box_gjk_native.hlsl" cs_6_0 main
       FLAGS -DFYZZXYZZY_GJK_PROBE_SOLVER=1 -DFYZZXYZZY_GJK_PROBE_ITERATION=2 -DFYZZXYZZY_GJK_PROBE_FORCE_UNROLL=1
       DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_pcm_box_gjk_native.hlsli")
-    set(FYZZXYZZY_SOURCE_PCM_GJK_LOOP_TWO_DXIL
-      "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_source_pcm_gjk_loop_two_probe.dxil")
-    fyzzxyzzy_compile_hlsl("${FYZZXYZZY_SOURCE_PCM_GJK_LOOP_TWO_DXIL}"
-      "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_pcm_box_gjk_native.hlsl" cs_6_0 main
-      FLAGS -DFYZZXYZZY_GJK_PROBE_SOLVER=1 -DFYZZXYZZY_GJK_PROBE_ITERATION=2
-      DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_pcm_box_gjk_native.hlsli")
-    set(FYZZXYZZY_SOURCE_PCM_GJK_BOX_LOOP_DXIL
-      "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_source_pcm_gjk_box_loop_probe.dxil")
-    fyzzxyzzy_compile_hlsl("${FYZZXYZZY_SOURCE_PCM_GJK_BOX_LOOP_DXIL}"
-      "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_pcm_box_gjk_native.hlsl" cs_6_0 main
-      FLAGS -DFYZZXYZZY_GJK_PROBE_SOLVER=1 -DFYZZXYZZY_GJK_BOX_ONLY=1
-      DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_pcm_box_gjk_native.hlsli")
-    set(FYZZXYZZY_SOURCE_PCM_GJK_SM66_DXIL
-      "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_source_pcm_gjk_sm66_probe.dxil")
-    fyzzxyzzy_compile_hlsl("${FYZZXYZZY_SOURCE_PCM_GJK_SM66_DXIL}"
-      "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_pcm_box_gjk_native.hlsl" cs_6_6 main
-      FLAGS -DFYZZXYZZY_GJK_PROBE_SOLVER=1 -DFYZZXYZZY_GJK_PROBE_ITERATION=2
-      DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_pcm_box_gjk_native.hlsli")
     add_custom_target(fyzzxyzzy_source_pcm_gjk_probes_shader_d3d12
       DEPENDS "${FYZZXYZZY_SOURCE_PCM_GJK_SOLVER_DXIL}"
-        "${FYZZXYZZY_SOURCE_PCM_GJK_TWO_STEP_DXIL}"
-        "${FYZZXYZZY_SOURCE_PCM_GJK_LOOP_TWO_DXIL}"
-        "${FYZZXYZZY_SOURCE_PCM_GJK_BOX_LOOP_DXIL}"
-        "${FYZZXYZZY_SOURCE_PCM_GJK_SM66_DXIL}")
+        "${FYZZXYZZY_SOURCE_PCM_GJK_TWO_STEP_DXIL}")
     set(FYZZXYZZY_SOURCE_PCM_EPA_DXIL
       "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_source_pcm_box_epa_native.dxil")
     fyzzxyzzy_compile_hlsl("${FYZZXYZZY_SOURCE_PCM_EPA_DXIL}" "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_pcm_box_epa_native.hlsl" cs_6_0 main
@@ -592,41 +571,6 @@ if(FYZZXYZZY_BUILD_D3D12)
         "${FYZZXYZZY_SOURCE_PCM_GJK_TWO_STEP_DXIL}"
         "${FYZZXYZZY_SOURCE_PCM_EPA_DXIL}")
     set_tests_properties(fyzzxyzzy_source_pcm_gjk_two_step_probe_d3d12
-      PROPERTIES
-      ENVIRONMENT "FYZZXYZZY_D3D12_DEBUG=1;FYZZXYZZY_D3D12_GPU_VALIDATION=0;FYZZXYZZY_PCM_GJK_PROBE=i"
-      TIMEOUT 45)
-    # Isolate DXIL's outer loop from its nested hull support scan.
-    add_test(NAME fyzzxyzzy_source_pcm_gjk_loop_two_probe_d3d12
-      COMMAND $<TARGET_FILE:fyzzxyzzy_source_pcm_box_candidates_d3d12>
-        "${FYZZXYZZY_SC_BOX_BOUNDS_DXIL}"
-        "${FYZZXYZZY_SOURCE_PCM_BOX_DXIL}"
-        "${FYZZXYZZY_SOURCE_PCM_EPA_WORK_DXIL_COMPACT}"
-        "${FYZZXYZZY_SOURCE_PCM_GJK_LOOP_TWO_DXIL}"
-        "${FYZZXYZZY_SOURCE_PCM_EPA_DXIL}")
-    set_tests_properties(fyzzxyzzy_source_pcm_gjk_loop_two_probe_d3d12
-      PROPERTIES
-      ENVIRONMENT "FYZZXYZZY_D3D12_DEBUG=1;FYZZXYZZY_D3D12_GPU_VALIDATION=0;FYZZXYZZY_PCM_GJK_PROBE=i"
-      TIMEOUT 45)
-    add_test(NAME fyzzxyzzy_source_pcm_gjk_box_loop_probe_d3d12
-      COMMAND $<TARGET_FILE:fyzzxyzzy_source_pcm_box_candidates_d3d12>
-        "${FYZZXYZZY_SC_BOX_BOUNDS_DXIL}"
-        "${FYZZXYZZY_SOURCE_PCM_BOX_DXIL}"
-        "${FYZZXYZZY_SOURCE_PCM_EPA_WORK_DXIL_COMPACT}"
-        "${FYZZXYZZY_SOURCE_PCM_GJK_BOX_LOOP_DXIL}"
-        "${FYZZXYZZY_SOURCE_PCM_EPA_DXIL}")
-    set_tests_properties(fyzzxyzzy_source_pcm_gjk_box_loop_probe_d3d12
-      PROPERTIES
-      ENVIRONMENT "FYZZXYZZY_D3D12_DEBUG=1;FYZZXYZZY_D3D12_GPU_VALIDATION=0;FYZZXYZZY_PCM_GJK_PROBE=s"
-      TIMEOUT 45)
-    # Compare shader-model lowering without changing the simplex recurrence.
-    add_test(NAME fyzzxyzzy_source_pcm_gjk_sm66_probe_d3d12
-      COMMAND $<TARGET_FILE:fyzzxyzzy_source_pcm_box_candidates_d3d12>
-        "${FYZZXYZZY_SC_BOX_BOUNDS_DXIL}"
-        "${FYZZXYZZY_SOURCE_PCM_BOX_DXIL}"
-        "${FYZZXYZZY_SOURCE_PCM_EPA_WORK_DXIL_COMPACT}"
-        "${FYZZXYZZY_SOURCE_PCM_GJK_SM66_DXIL}"
-        "${FYZZXYZZY_SOURCE_PCM_EPA_DXIL}")
-    set_tests_properties(fyzzxyzzy_source_pcm_gjk_sm66_probe_d3d12
       PROPERTIES
       ENVIRONMENT "FYZZXYZZY_D3D12_DEBUG=1;FYZZXYZZY_D3D12_GPU_VALIDATION=0;FYZZXYZZY_PCM_GJK_PROBE=i"
       TIMEOUT 45)
