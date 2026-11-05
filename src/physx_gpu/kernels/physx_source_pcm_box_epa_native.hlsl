@@ -63,14 +63,21 @@ ConstantBuffer<Parameters> p : register(b0,space0);
 
 #include "physx_source_pcm_box_math_native.hlsli"
 #include "physx_source_pcm_box_gjk_native.hlsli"
+#ifndef FYZZXYZZY_EPA_EMPTY_DISPATCH_PROBE
 #include "physx_source_pcm_box_epa_native.hlsli"
 #include "physx_source_pcm_sc_contact_publish_native.hlsli"
+#endif
 
 // Sparse admission is recorded in the dense Sc pair result buffer.
 // One lane owns each pending pair. No simplex data is shared between lanes,
 // and GJK requires no workgroup barriers or private global scratch.
 [numthreads(1,1,1)]
 void main(uint3 thread : SV_DispatchThreadID) {
+#ifdef FYZZXYZZY_EPA_EMPTY_DISPATCH_PROBE
+    const uint i=work.Load(p.workBias+thread.x*4u);
+    if(i<p.pairCount)
+        results.Store(p.resultBias+i*32u+24u,0xE001u);
+#else
     uint i=work.Load(p.workBias+thread.x*4u);
     if(i>=p.pairCount)return;
     uint result=p.resultBias+i*32u;
@@ -198,4 +205,5 @@ void main(uint3 thread : SV_DispatchThreadID) {
     publishScContacts(i,a,b,edge,result,p.outputBias,
         p.transformBias,p.geometryBias,p.edgeCacheBias,
         p.shapeCapacity,p.edgeCapacity);
+#endif
 }

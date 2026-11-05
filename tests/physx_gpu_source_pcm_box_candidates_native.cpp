@@ -493,6 +493,16 @@ void verify(Context& context,const char* transform_shader,
         stream.wait_at_fetch();
     }
     std::clog<<"PCM fixture: initial sparse EPA complete\n"<<std::flush;
+    if(std::getenv("FYZZXYZZY_PCM_EPA_EMPTY_DISPATCH_PROBE")) {
+        require(indirect[0]==0u,
+                "EPA empty dispatch test requires no pending penetration pairs");
+        const auto previous=results[work[0]].selected_indices;
+        context.download(root,result_offset,results.data(),sizeof(results));
+        require(results[work[0]].selected_indices==previous,
+                "Empty EPA dispatch unexpectedly executed work");
+        release_allocations();
+        return;
+    }
     context.download(root,result_offset,results.data(),sizeof(results));
     context.download(root,candidate_offset,candidates.data(),
                      candidates.size()*sizeof(candidates[0]));

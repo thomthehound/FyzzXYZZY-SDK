@@ -564,6 +564,15 @@ if(FYZZXYZZY_BUILD_D3D12)
         "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_pcm_sc_contact_publish_native.hlsli")
     add_custom_target(fyzzxyzzy_source_pcm_epa_shader_d3d12
       DEPENDS "${FYZZXYZZY_SOURCE_PCM_EPA_DXIL}")
+    set(FYZZXYZZY_SOURCE_PCM_EPA_EMPTY_DXIL
+      "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_source_pcm_epa_empty_dispatch_probe.dxil")
+    fyzzxyzzy_compile_hlsl("${FYZZXYZZY_SOURCE_PCM_EPA_EMPTY_DXIL}"
+      "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_pcm_box_epa_native.hlsl" cs_6_0 main
+      FLAGS -DFYZZXYZZY_EPA_EMPTY_DISPATCH_PROBE=1
+      DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_pcm_box_math_native.hlsli"
+        "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_pcm_box_gjk_native.hlsli")
+    add_custom_target(fyzzxyzzy_source_pcm_epa_empty_shader_d3d12
+      DEPENDS "${FYZZXYZZY_SOURCE_PCM_EPA_EMPTY_DXIL}")
     set(FYZZXYZZY_SOURCE_PCM_FACE_DXIL
       "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_source_pcm_convex_contacts_native.dxil")
     fyzzxyzzy_compile_hlsl("${FYZZXYZZY_SOURCE_PCM_FACE_DXIL}"
@@ -665,6 +674,23 @@ if(FYZZXYZZY_BUILD_D3D12)
       ARGS "${FYZZXYZZY_SC_BOX_BOUNDS_DXIL}" "${FYZZXYZZY_SOURCE_PCM_BOX_DXIL}" "${FYZZXYZZY_SOURCE_PCM_EPA_WORK_DXIL_COMPACT}" "${FYZZXYZZY_SOURCE_PCM_GJK_DXIL}" "${FYZZXYZZY_SOURCE_PCM_EPA_DXIL}" "${FYZZXYZZY_SOURCE_PCM_GJK_REDUCE_DXIL}" "${FYZZXYZZY_SOURCE_PCM_GJK_PUBLISH_DXIL}" "${FYZZXYZZY_SOURCE_PCM_EPA_ARGS_RESET_DXIL}")
     set_tests_properties(fyzzxyzzy_source_pcm_box_candidates_d3d12 PROPERTIES
       ENVIRONMENT "FYZZXYZZY_D3D12_DEBUG=1" TIMEOUT 300)
+    add_dependencies(fyzzxyzzy_source_pcm_box_candidates_d3d12
+      fyzzxyzzy_source_pcm_epa_empty_shader_d3d12)
+    add_test(NAME fyzzxyzzy_source_pcm_epa_empty_dispatch_probe_d3d12
+      COMMAND $<TARGET_FILE:fyzzxyzzy_source_pcm_box_candidates_d3d12>
+        "${FYZZXYZZY_SC_BOX_BOUNDS_DXIL}"
+        "${FYZZXYZZY_SOURCE_PCM_BOX_DXIL}"
+        "${FYZZXYZZY_SOURCE_PCM_EPA_WORK_DXIL_COMPACT}"
+        "${FYZZXYZZY_SOURCE_PCM_GJK_DXIL}"
+        "${FYZZXYZZY_SOURCE_PCM_EPA_EMPTY_DXIL}"
+        "${FYZZXYZZY_SOURCE_PCM_GJK_REDUCE_DXIL}"
+        "${FYZZXYZZY_SOURCE_PCM_GJK_PUBLISH_DXIL}"
+        "${FYZZXYZZY_SOURCE_PCM_EPA_ARGS_RESET_DXIL}")
+    set_tests_properties(fyzzxyzzy_source_pcm_epa_empty_dispatch_probe_d3d12
+      PROPERTIES
+      ENVIRONMENT "FYZZXYZZY_D3D12_DEBUG=1;FYZZXYZZY_D3D12_GPU_VALIDATION=0;FYZZXYZZY_PCM_EPA_EMPTY_DISPATCH_PROBE=1"
+      TIMEOUT 90)
+
 
 
     # Source aggregate.cu::updateAggregateBounds, original 32-lane
