@@ -1359,12 +1359,15 @@ struct Context::Impl {
             }
             submission.commands->SetComputeRoot32BitConstants(
                 table_root, pipeline.parameters / 4u, cmd.push_constants.data(), 0);
-            if(cmd.indirect)
+            if(cmd.indirect) {
+                auto* arguments=get_buffer(cmd.indirect->buffer).resource.Get();
+                // The X group count also predicates the single indirect
+                // command, so an empty GPU worklist launches no dispatch.
                 submission.commands->ExecuteIndirect(
                     dispatch_signature.Get(),1u,
-                    get_buffer(cmd.indirect->buffer).resource.Get(),
-                    cmd.indirect->offset,nullptr,0u);
-            else
+                    arguments,cmd.indirect->offset,
+                    arguments,cmd.indirect->offset);
+            }else
                 submission.commands->Dispatch(
                     cmd.groups.x,cmd.groups.y,cmd.groups.z);
             for (std::size_t slot = 0; slot < cmd.buffers.size(); ++slot) {
