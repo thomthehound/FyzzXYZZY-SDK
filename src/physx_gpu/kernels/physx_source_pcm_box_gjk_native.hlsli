@@ -188,28 +188,44 @@ GjkFeature gjkTriangleFeature(
         return gjkChoose(best,gjkEdgeFeature(b,c,wb,wc,mb,mc));
     }
 
-    // Classify the six Voronoi regions before evaluating the face interior.
     const float d1=-gjkDot(ab,a),d2=-gjkDot(ac,a);
-    if(d1<=0.f && d2<=0.f)return gjkFeature(a,wa,ma);
     const float d3=-gjkDot(ab,b),d4=-gjkDot(ac,b);
-    if(d3>=0.f && d4<=d3)return gjkFeature(b,wb,mb);
-    const float vc=d1*d4-d3*d2;
-    if(vc<=0.f && d1>=0.f && d3<=0.f)
-        return gjkEdgeFeature(a,b,wa,wb,ma,mb);
     const float d5=-gjkDot(ab,c),d6=-gjkDot(ac,c);
-    if(d6>=0.f && d5<=d6)return gjkFeature(c,wc,mc);
-    const float vb=d5*d2-d1*d6;
-    if(vb<=0.f && d2>=0.f && d6<=0.f)
-        return gjkEdgeFeature(a,c,wa,wc,ma,mc);
     const float va=d3*d6-d5*d4;
-    if(va<=0.f && d4>=d3 && d5>=d6)
-        return gjkEdgeFeature(b,c,wb,wc,mb,mc);
-
-    const float u=(d1*cc-d2*bb)/determinant;
-    const float v=(d2*aa-d1*bb)/determinant;
-    const float w=1.f-u-v;
-    precise float3 projected=a*w+b*u+c*v;
-    return gjkFeature(projected,wa*w+wb*u+wc*v,ma|mb|mc);
+    const float vb=d5*d2-d1*d6;
+    const float vc=d1*d4-d3*d2;
+    float baryA=1.f,baryB=0.f,baryC=0.f;
+    uint mask=ma;
+    if(d1<=0.f && d2<=0.f) {
+        mask=ma;
+    }else if(d3>=0.f && d4<=d3) {
+        baryA=0.f;baryB=1.f;
+        mask=mb;
+    }else if(vc<=0.f && d1>=0.f && d3<=0.f) {
+        const float t=clamp(d1/aa,0.f,1.f);
+        baryA=1.f-t;baryB=t;
+        mask=t<=0.f?ma:(t>=1.f?mb:(ma|mb));
+    }else if(d6>=0.f && d5<=d6) {
+        baryA=0.f;baryC=1.f;
+        mask=mc;
+    }else if(vb<=0.f && d2>=0.f && d6<=0.f) {
+        const float t=clamp(d2/cc,0.f,1.f);
+        baryA=1.f-t;baryC=t;
+        mask=t<=0.f?ma:(t>=1.f?mc:(ma|mc));
+    }else if(va<=0.f && d4>=d3 && d5>=d6) {
+        const float3 bc=c-b;
+        const float t=clamp(-gjkDot(b,bc)/gjkLength2(bc),0.f,1.f);
+        baryA=0.f;baryB=1.f-t;baryC=t;
+        mask=t<=0.f?mb:(t>=1.f?mc:(mb|mc));
+    }else {
+        baryB=(d1*cc-d2*bb)/determinant;
+        baryC=(d2*aa-d1*bb)/determinant;
+        baryA=1.f-baryB-baryC;
+        mask=ma|mb|mc;
+    }
+    precise float3 projected=(a*baryA+b*baryB)+c*baryC;
+    return gjkFeature(projected,
+        (wa*baryA+wb*baryB)+wc*baryC,mask);
 }
 
 GjkClosest gjkClosestSimplex(GjkSimplex simplex) {
