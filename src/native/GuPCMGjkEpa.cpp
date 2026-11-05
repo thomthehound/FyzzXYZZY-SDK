@@ -681,9 +681,16 @@ std::uint8_t source_pcm_convex_face_contacts(
     };
     const Vec3 anchor=r(0u);
     const Vec3 incident_anchor=q(0u);
-    const float scale=std::max({
-        first.half_extents.x,first.half_extents.y,first.half_extents.z,
-        second.half_extents.x,second.half_extents.y,second.half_extents.z});
+    // Clip-plane tolerance depends on the incident polygon's physical
+    // dimensions, not on the hull's arbitrary authoring origin.
+    float edge_length_sq=0.f;
+    for(unsigned i=0u;i<nr;++i)
+        edge_length_sq=std::max(edge_length_sq,
+            length2(sub(r(i+1u),r(i))));
+    for(unsigned i=0u;i<ni;++i)
+        edge_length_sq=std::max(edge_length_sq,
+            length2(sub(q(i+1u),q(i))));
+    const float scale=std::sqrt(edge_length_sq);
     const float tolerance=std::max(scale*1.e-5f,1.e-6f);
     const float tolerance_sq=tolerance*tolerance;
     const auto cross2=[&](Vec3 a,Vec3 b) {
