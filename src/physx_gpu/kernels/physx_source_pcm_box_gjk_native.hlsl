@@ -54,6 +54,9 @@ struct Parameters {
     uint outputBias;
     uint hullBias;
     uint hullCount;
+#ifdef FYZZXYZZY_GJK_MULTI_PASS
+    uint gjkPass;
+#endif
 };
 #ifdef __spirv__
 [[vk::push_constant]] Parameters p;
@@ -64,6 +67,43 @@ ConstantBuffer<Parameters> p : register(b0,space0);
 #include "physx_source_pcm_box_math_native.hlsli"
 #include "physx_source_pcm_box_gjk_native.hlsli"
 #include "physx_source_pcm_sc_contact_publish_native.hlsli"
+
+#ifdef FYZZXYZZY_GJK_MULTI_PASS
+// Pending Sc edges have no published contacts. Their four persistent
+// witness slots hold the continuation until contact or EPA admission.
+GjkCompactPoint gjkReadPoint(uint at) {
+    GjkCompactPoint point;
+    point.q=asfloat(edgeCaches.Load3(at));
+    point.ai=edgeCaches.Load(at+12u);
+    point.bi=edgeCaches.Load(at+16u);
+    return point;
+}
+void gjkWritePoint(uint at,GjkCompactPoint point) {
+    edgeCaches.Store3(at,asuint(point.q));
+    edgeCaches.Store(at+12u,point.ai);
+    edgeCaches.Store(at+16u,point.bi);
+}
+GjkContinuation gjkReadContinuation(uint base) {
+    GjkContinuation state;
+    state.simplex.point0=gjkReadPoint(base+80u);
+    state.simplex.point1=gjkReadPoint(base+100u);
+    state.simplex.point2=gjkReadPoint(base+120u);
+    state.simplex.point3=gjkReadPoint(base+140u);
+    state.simplex.count=edgeCaches.Load(base+160u);
+    state.closest=asfloat(edgeCaches.Load3(base+164u));
+    state.previous=asfloat(edgeCaches.Load(base+176u));
+    return state;
+}
+void gjkWriteContinuation(uint base,GjkContinuation state) {
+    gjkWritePoint(base+80u,state.simplex.point0);
+    gjkWritePoint(base+100u,state.simplex.point1);
+    gjkWritePoint(base+120u,state.simplex.point2);
+    gjkWritePoint(base+140u,state.simplex.point3);
+    edgeCaches.Store(base+160u,state.simplex.count);
+    edgeCaches.Store3(base+164u,asuint(state.closest));
+    edgeCaches.Store(base+176u,asuint(state.previous));
+}
+#endif
 
 // Sparse admission is recorded in the dense Sc pair result buffer.
 // One lane owns each pending pair. No simplex data is shared between lanes,
@@ -141,8 +181,32 @@ void main(uint3 thread : SV_DispatchThreadID) {
     GjkWitness contact;
     GjkSupportPoint simplex[4];
     uint simplexCount;
+#ifdef FYZZXYZZY_GJK_MULTI_PASS
+    const uint cacheBase=p.edgeCacheBias+edge*240u;
+    GjkContinuation state=p.gjkPass==0u
+        ?gjkInitialContinuation(boxPair):gjkReadContinuation(cacheBase);
+    uint outcome;
+    const bool finished=gjkAdvanceOne(boxPair,distance,state,outcome,contact);
+    if(!finished && p.gjkPass<31u) {
+        gjkWriteContinuation(cacheBase,state);
+        return;
+    }
+    if(!finished)
+        outcome=(boxPair.radiusA>0.f || boxPair.radiusB>0.f) &&
+            state.simplex.count>0u?3u:0u;
+    simplexCount=state.simplex.count;
+    [unroll]
+    for(uint j=0u;j<4u;++j)simplex[j]=(GjkSupportPoint)0;
+    if(outcome==3u) {
+        if(simplexCount>0u)simplex[0]=gjkRestoreSupport(boxPair,state.simplex.point0);
+        if(simplexCount>1u)simplex[1]=gjkRestoreSupport(boxPair,state.simplex.point1);
+        if(simplexCount>2u)simplex[2]=gjkRestoreSupport(boxPair,state.simplex.point2);
+        if(simplexCount>3u)simplex[3]=gjkRestoreSupport(boxPair,state.simplex.point3);
+    }
+#else
     const uint outcome=gjkBoxContinuation(
         boxPair,distance,contact,simplex,simplexCount);
+#endif
 #if defined(FYZZXYZZY_GJK_PROBE_ITERATION)
     results.Store(result+24u,0xB300u|outcome);
     results.Store(result+8u,0u);
