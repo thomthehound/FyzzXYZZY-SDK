@@ -96,21 +96,22 @@ GjkSupportPoint gjkSupport(GjkBoxPair pair,float3 direction) {
 // feature calculation; no subset masks, dynamic matrix, or variable-size
 // simplex search is needed in the GPU inner loop.
 struct GjkFeature {
-    float3 point;
+    float3 closest;
     float4 weights;
     uint mask;
     float dist2;
 };
-GjkFeature gjkFeature(float3 point,float4 weights,uint mask) {
+GjkFeature gjkFeature(float3 closest,float4 weights,uint mask) {
     GjkFeature result;
-    result.point=point;
+    result.closest=closest;
     result.weights=weights;
     result.mask=mask;
-    result.dist2=gjkLength2(point);
+    result.dist2=gjkLength2(closest);
     return result;
 }
 GjkFeature gjkChoose(GjkFeature previous,GjkFeature candidate) {
-    return candidate.dist2<previous.dist2?candidate:previous;
+    if(candidate.dist2<previous.dist2)return candidate;
+    return previous;
 }
 GjkFeature gjkEdgeFeature(
     float3 a,float3 b,float4 wa,float4 wb,uint ma,uint mb) {
@@ -120,10 +121,10 @@ GjkFeature gjkEdgeFeature(
         return gjkChoose(gjkFeature(a,wa,ma),gjkFeature(b,wb,mb));
     const float t=clamp(-gjkDot(a,ab)/denom,0.f,1.f);
     const float u=1.f-t;
-    precise float3 point=a*u+b*t;
+    precise float3 closest=a*u+b*t;
     const float4 weights=wa*u+wb*t;
     const uint mask=t<=0.f?ma:(t>=1.f?mb:(ma|mb));
-    return gjkFeature(point,weights,mask);
+    return gjkFeature(closest,weights,mask);
 }
 GjkFeature gjkTriangleFeature(
     float3 a,float3 b,float3 c,
@@ -146,10 +147,10 @@ GjkFeature gjkTriangleFeature(
         const float v=(y*aa-x*bb)/determinant;
         const float w=1.f-u-v;
         if(u>=-1.e-5f && v>=-1.e-5f && w>=-1.e-5f) {
-            precise float3 point=a*w+b*u+c*v;
+            precise float3 closest=a*w+b*u+c*v;
             const float4 weights=wa*w+wb*u+wc*v;
             closest=gjkChoose(closest,
-                gjkFeature(point,weights,ma|mb|mc));
+                gjkFeature(closest,weights,ma|mb|mc));
         }
     }
     return closest;
@@ -159,9 +160,10 @@ GjkClosest gjkClosestSimplex(GjkSupportPoint simplex[4],uint count) {
     result.dist2=3.402823466e+38f;
     if(count==0u)return result;
     const GjkSupportPoint s0=simplex[0];
-    const GjkSupportPoint s1=count>1u?simplex[1]:s0;
-    const GjkSupportPoint s2=count>2u?simplex[2]:s0;
-    const GjkSupportPoint s3=count>3u?simplex[3]:s0;
+    GjkSupportPoint s1=s0,s2=s0,s3=s0;
+    if(count>1u)s1=simplex[1];
+    if(count>2u)s2=simplex[2];
+    if(count>3u)s3=simplex[3];
     const float4 w0=float4(1.f,0.f,0.f,0.f);
     const float4 w1=float4(0.f,1.f,0.f,0.f);
     const float4 w2=float4(0.f,0.f,1.f,0.f);
@@ -198,15 +200,15 @@ GjkClosest gjkClosestSimplex(GjkSupportPoint simplex[4],uint count) {
             const float t=1.f-u-v-w;
             if(u>=-1.e-5f && v>=-1.e-5f &&
                w>=-1.e-5f && t>=-1.e-5f) {
-                precise float3 point=((s0.q*t+s1.q*u)+s2.q*v)+s3.q*w;
+                precise float3 closest=((s0.q*t+s1.q*u)+s2.q*v)+s3.q*w;
                 best=gjkChoose(best,
-                    gjkFeature(point,float4(t,u,v,w),15u));
+                    gjkFeature(closest,float4(t,u,v,w),15u));
             }
         }
     }
 
     result.mask=best.mask;
-    result.closestPoint=best.point;
+    result.closestPoint=best.closest;
     result.dist2=best.dist2;
     result.weights[0]=best.weights.x;
     result.weights[1]=best.weights.y;
