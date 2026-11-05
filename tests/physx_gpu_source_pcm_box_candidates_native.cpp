@@ -263,26 +263,27 @@ void verify(Context& context,const char* transform_shader,
 #else
     const bool staged_gjk=false;
 #endif
+    const auto append_gjk_stage=[&](SourceSapDmaNative& stream,
+                                    const SourcePcmEpaNativeStage& stage,
+                                    std::uint32_t pass) {
+        stage.append(stream,addresses,transforms,geometry,pair_data,result_data,
+            candidate_data,edge_data,work_data,args_data,output_data,
+            transforms,0u,
+            static_cast<std::uint32_t>(pairs.size()),capacity,
+            static_cast<std::uint32_t>(candidates.size()),edge_capacity,
+            0u,0u,0u,0u,pass);
+    };
     const auto append_gjk=[&](SourceSapDmaNative& stream) {
-        const auto add=[&](const SourcePcmEpaNativeStage& stage,
-                           std::uint32_t pass) {
-            stage.append(stream,addresses,transforms,geometry,pair_data,result_data,
-                candidate_data,edge_data,work_data,args_data,output_data,
-                transforms,0u,
-                static_cast<std::uint32_t>(pairs.size()),capacity,
-                static_cast<std::uint32_t>(candidates.size()),edge_capacity,
-                0u,0u,0u,0u,pass);
-        };
         if(staged_gjk) {
             for(std::uint32_t pass=0u;pass<32u;++pass) {
-                add(gjk,pass);
-                add(gjk_reduce,pass);
+                append_gjk_stage(stream,gjk,pass);
+                append_gjk_stage(stream,gjk_reduce,pass);
             }
-            add(gjk,32u);
+            append_gjk_stage(stream,gjk,32u);
 #ifdef FYZZXYZZY_TEST_D3D12
-            if(!stage_probe)add(gjk_publish,32u);
+            if(!stage_probe)append_gjk_stage(stream,gjk_publish,32u);
 #endif
-        }else add(gjk,0u);
+        }else append_gjk_stage(stream,gjk,0u);
     };
     std::clog<<"PCM fixture: pipelines initialized\n"<<std::flush;
     {
@@ -422,6 +423,38 @@ void verify(Context& context,const char* transform_shader,
     verify_work(initial_admissions);
     std::clog<<"PCM fixture: initial sparse worklist count="
              <<indirect[0]<<"\n"<<std::flush;
+#ifdef FYZZXYZZY_TEST_D3D12
+    if(std::getenv("FYZZXYZZY_PCM_GJK_STAGE_INSPECT")) {
+        require(indirect[0]==1u && staged_gjk,
+                "Staged GJK inspection requires one GPU-admitted pair");
+        {
+            SourceSapDmaNative stream(context,addresses);
+            for(std::uint32_t pass=0u;pass<2u;++pass) {
+                append_gjk_stage(stream,gjk,pass);
+                append_gjk_stage(stream,gjk_reduce,pass);
+            }
+            stream.wait_at_fetch();
+        }
+        const std::size_t cache=edge_offset+
+            std::size_t(pairs[work[0]].edge_handle)*sizeof(edge_caches[0]);
+        std::uint32_t simplex_count=0u,phase=0u;
+        std::array<float,3> closest{};
+        context.download(root,cache+160u,&simplex_count,sizeof(simplex_count));
+        context.download(root,cache+164u,closest.data(),sizeof(closest));
+        context.download(root,cache+204u,&phase,sizeof(phase));
+        context.download(root,result_offset+std::size_t(work[0])*32u,
+                         &results[work[0]],sizeof(results[work[0]]));
+        require(results[work[0]].status==3u &&
+                simplex_count>0u && simplex_count<=4u &&
+                phase<=2u && std::isfinite(closest[0]) &&
+                std::isfinite(closest[1]) && std::isfinite(closest[2]),
+                "GPU-validated GJK stages corrupted the live simplex");
+        std::clog<<"PCM fixture: GJK advance/reduce state validated"
+                 <<" count="<<simplex_count<<" phase="<<phase<<"\n";
+        release_allocations();
+        return;
+    }
+#endif
     {
         SourceSapDmaNative stream(context,addresses);
         append_gjk(stream);
