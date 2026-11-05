@@ -461,19 +461,18 @@ static bool gjk_epa(
         for(int i=0;i<count;++i)
             if(support.ai==simplex[i].ai &&
                support.bi==simplex[i].bi) {
-                // Repeating an extreme support vertex cannot advance
-                // the simplex. Source GJK's non-improving-distance
-                // status is GJK_DEGENERATE, not GJK_CONTACT; the PCM
-                // box-box caller does not publish that status.
+                // A repeated support cannot improve the simplex. With a
+                // positive supporting plane, the separation lies between
+                // that projection and the simplex distance. A witness
+                // inside contact distance remains geometrically admissible.
                 store();
-                if(point_core) {
-                    if(projection>0.f) {
-                        const Closest current=closest_simplex(simplex,count);
-                        return current.mask && contact_from_gjk(pair,current,contact);
-                    }
-                    return epa(pair,simplex,count,contact);
+                if(projection>0.f) {
+                    const Closest current=closest_simplex(simplex,count);
+                    return current.mask &&
+                        contact_from_gjk(pair,current,contact) &&
+                        contact.separation<=contact_distance;
                 }
-                return false;
+                return point_core && epa(pair,simplex,count,contact);
             }
         if(count==4) {
             store();
