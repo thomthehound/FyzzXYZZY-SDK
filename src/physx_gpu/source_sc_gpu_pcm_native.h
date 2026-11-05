@@ -59,7 +59,7 @@ public:
         const std::uint32_t& convex_indices_base,
         compute::ShaderBinary candidate,compute::ShaderBinary compact,
         compute::ShaderBinary gjk,compute::ShaderBinary gjk_reduce,
-        compute::ShaderBinary epa,
+        compute::ShaderBinary gjk_publish,compute::ShaderBinary epa,
         compute::ShaderBinary face_contacts)
         : context_(context),addresses_(addresses),stream_(stream),sc_(sc),
           transforms_(transforms),geometry_(geometry),
@@ -74,6 +74,7 @@ public:
           staged_gjk_(gjk.format==compute::ShaderFormat::Dxil),
           gjk_stage_(context,std::move(gjk),false,true),
           gjk_reduce_stage_(context,std::move(gjk_reduce),false,true),
+          gjk_publish_stage_(context,std::move(gjk_publish),false,true),
           epa_stage_(context,std::move(epa)),
           face_stage_(context,std::move(face_contacts),true),
           pairs_(allocator,physx::PxsHeapStats::eNARROWPHASE),
@@ -257,6 +258,7 @@ public:
                 append_gjk(gjk_reduce_stage_,pass);
             }
             append_gjk(gjk_stage_,32u);
+            append_gjk(gjk_publish_stage_,32u);
         }else append_gjk(gjk_stage_,0u);
         epa_stage_.append(stream_,addresses_,
             transforms_.getDevicePtr(),geometry_.getDevicePtr(),
@@ -367,7 +369,7 @@ private:
     SourcePcmBoxCandidatesNativeStage candidates_stage_;
     SourcePcmSparseEpaNativeStage sparse_stage_;
     bool staged_gjk_=false;
-    SourcePcmEpaNativeStage gjk_stage_,gjk_reduce_stage_,epa_stage_,face_stage_;
+    SourcePcmEpaNativeStage gjk_stage_,gjk_reduce_stage_,gjk_publish_stage_,epa_stage_,face_stage_;
     physx::PxgCudaBuffer pairs_,results_,candidates_,edges_,work_,dense_contacts_;
     compute::BufferId indirect_buffer_=0u;
     CudaDeviceAddressMap::Address indirect_address_=0u;
