@@ -295,18 +295,26 @@ uint gjkBoxContinuationState(GjkBoxPair pair,float contactDistance,
 #else
     const uint maxIterations=32u;
 #endif
+    uint outcome=0u;
+    uint iteration=0u;
 #ifdef FYZZXYZZY_GJK_PROBE_FORCE_UNROLL
     [unroll]
 #else
     [loop]
 #endif
-    for(uint iteration=0u;iteration<maxIterations;++iteration) {
+    for(;iteration<maxIterations;++iteration) {
 #ifdef FYZZXYZZY_GJK_PROBE_SECOND_ENTRY
         if(iteration==1u)return 0x24u;
 #endif
         float dist=sqrt(gjkLength2(closest));
-        if(simplex.count>0u && dist<=epsilon && !pointCore)return 3u;
-        if(dist<=0.f)return pointCore && simplex.count>0u?3u:0u;
+        if(simplex.count>0u && dist<=epsilon && !pointCore) {
+            outcome=3u;
+            break;
+        }
+        if(dist<=0.f) {
+            outcome=pointCore && simplex.count>0u?3u:0u;
+            break;
+        }
         float3 normal=closest*(1.f/dist);
 #ifdef FYZZXYZZY_GJK_PROBE_SECOND_NORMAL
         if(iteration==1u)return 0x25u;
@@ -316,13 +324,15 @@ uint gjkBoxContinuationState(GjkBoxPair pair,float contactDistance,
         if(iteration==1u)return 0x21u;
 #endif
         float projection=gjkDot(normal,support.q);
-        if(projection>contactDistance+pair.radiusA+pair.radiusB)
-            return 0u;
+        if(projection>contactDistance+pair.radiusA+pair.radiusB) {
+            outcome=0u;
+            break;
+        }
         if(simplex.count>0u && projection>dist*progressFactor) {
             GjkClosest current=gjkClosestSimplex(simplex);
-            return current.mask!=0u && gjkContact(pair,current,witness) &&
-                   witness.separation<=contactDistance
-                ?1u:0u;
+            outcome=current.mask!=0u && gjkContact(pair,current,witness) &&
+                    witness.separation<=contactDistance?1u:0u;
+            break;
         }
         const bool duplicate=
             (simplex.count>0u && support.ai==simplex.point0.ai &&
@@ -336,19 +346,25 @@ uint gjkBoxContinuationState(GjkBoxPair pair,float contactDistance,
         if(duplicate) {
             if(projection>0.f) {
                 const GjkClosest current=gjkClosestSimplex(simplex);
-                return current.mask!=0u &&
-                       gjkContact(pair,current,witness) &&
-                       witness.separation<=contactDistance?1u:0u;
-            }
-            return pointCore?3u:0u;
+                outcome=current.mask!=0u &&
+                        gjkContact(pair,current,witness) &&
+                        witness.separation<=contactDistance?1u:0u;
+            } else outcome=pointCore?3u:0u;
+            break;
         }
-        if(simplex.count==4u)return 3u;
+        if(simplex.count==4u) {
+            outcome=3u;
+            break;
+        }
         gjkAppend(simplex,support);
         GjkClosest next=gjkClosestSimplex(simplex);
 #ifdef FYZZXYZZY_GJK_PROBE_SECOND_FEATURE
         if(iteration==1u)return 0x22u;
 #endif
-        if(next.mask==0u)return 0u;
+        if(next.mask==0u) {
+            outcome=0u;
+            break;
+        }
         closest=next.closestPoint;
         float nextDist=sqrt(next.dist2);
         gjkCompact(simplex,next);
@@ -358,15 +374,16 @@ uint gjkBoxContinuationState(GjkBoxPair pair,float contactDistance,
         if(nextDist>=previous) {
             if(pointCore) {
                 if(projection>0.f)
-                    return gjkContact(pair,next,witness) &&
-                           witness.separation<=contactDistance?1u:0u;
-                return 3u;
-            }
-            return 0u;
+                    outcome=gjkContact(pair,next,witness) &&
+                            witness.separation<=contactDistance?1u:0u;
+                else outcome=3u;
+            } else outcome=0u;
+            break;
         }
         previous=nextDist;
     }
-    return pointCore && simplex.count>0u?3u:0u;
+    return iteration==maxIterations
+        ?(pointCore && simplex.count>0u?3u:0u):outcome;
 }
 
 uint gjkBoxContinuation(GjkBoxPair pair,float contactDistance,
