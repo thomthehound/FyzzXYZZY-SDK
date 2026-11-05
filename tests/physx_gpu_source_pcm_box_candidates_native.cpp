@@ -13,6 +13,7 @@
 #include <cmath>
 #include <cstdint>
 #include <cstring>
+#include <cstdlib>
 #include <fstream>
 #include <iostream>
 #include <iterator>
@@ -216,6 +217,23 @@ void verify(Context& context,const char* transform_shader,
     const auto output_data=addresses.register_slice(
         root,output_offset,packed.size()*sizeof(packed[0]));
     const auto args_data=addresses.register_slice(args_buffer,0u,12u);
+    const auto release_allocations=[&] {
+    addresses.unregister_slice(args_data);
+    addresses.unregister_slice(output_data);
+    addresses.unregister_slice(work_data);
+    addresses.unregister_slice(edge_data);
+    addresses.unregister_slice(candidate_data);
+    addresses.unregister_slice(result_data);
+    addresses.unregister_slice(pair_data);
+    addresses.unregister_slice(geometry);
+    addresses.unregister_slice(transforms);
+    addresses.unregister_slice(bounds);
+    addresses.unregister_slice(inputs);
+    require(addresses.live_allocations()==0u,
+            "Source PCM GPU candidate fixture leaked address mappings");
+    context.destroy_buffer(args_buffer);
+    context.destroy_buffer(root);
+    };
     const auto download_publication=[&] {
         context.download(root,output_offset,packed.data(),
                          packed.size()*sizeof(packed[0]));
@@ -390,6 +408,22 @@ void verify(Context& context,const char* transform_shader,
              <<std::count_if(results.begin(),results.end(),
                  [](const auto& result){return result.status==4u;})
              <<"\n"<<std::flush;
+    if(const char* probe=std::getenv("FYZZXYZZY_PCM_GJK_PROBE")) {
+        require(indirect[0]==1u,
+                "GJK dispatch probe must contain one pending pair");
+        const auto& resolved=results[work[0]];
+        const auto expected=*probe=='b'?0xB001u:0xB200u;
+        require(resolved.status==0u &&
+                (*probe=='b'
+                    ?resolved.selected_indices==expected
+                    :(resolved.selected_indices&0xFF00u)==expected),
+                "D3D12 GJK dispatch probe did not complete its selected stage");
+        std::clog<<"PCM fixture: dispatch probe "<<probe
+                 <<" completed with result "<<resolved.selected_indices
+                 <<"\n"<<std::flush;
+        release_allocations();
+        return;
+    }
     {
         SourceSapDmaNative stream(context,addresses);
         epa.append(stream,addresses,transforms,geometry,pair_data,result_data,
@@ -951,21 +985,8 @@ void verify(Context& context,const char* transform_shader,
         "Sc GPU PCM reset reused or cleared unreachable Gu witnesses");
     pairs[separated_pair].candidate_capacity&=~source_pcm_reset_cache_bit;
 
-    addresses.unregister_slice(args_data);
-    addresses.unregister_slice(output_data);
-    addresses.unregister_slice(work_data);
-    addresses.unregister_slice(edge_data);
-    addresses.unregister_slice(candidate_data);
-    addresses.unregister_slice(result_data);
-    addresses.unregister_slice(pair_data);
-    addresses.unregister_slice(geometry);
-    addresses.unregister_slice(transforms);
-    addresses.unregister_slice(bounds);
-    addresses.unregister_slice(inputs);
-    require(addresses.live_allocations()==0u,
-            "Source PCM GPU candidate fixture leaked address mappings");
-    context.destroy_buffer(args_buffer);
-    context.destroy_buffer(root);
+
+    release_allocations();
 }
 }
 int main(int argc,char** argv) {
