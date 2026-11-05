@@ -443,7 +443,7 @@ jobs:
           $env:FYZZXYZZY_D3D12_GPU_VALIDATION = '0'
           $env:FYZZXYZZY_PCM_GJK_PROBE = 's'
           $kernelRoot = Join-Path (Resolve-Path 'build-native/kernels') ''
-          $kernelArgs = @('physx_source_sc_box_transform_bounds_native.dxil', 'physx_source_pcm_box_candidates_native.dxil', 'physx_source_pcm_epa_compact_native.dxil', 'physx_source_pcm_gjk_solver_probe.dxil', 'physx_source_pcm_box_epa_native.dxil') | ForEach-Object { Join-Path $kernelRoot $_ }
+          $kernelArgs = @('physx_source_sc_box_transform_bounds_native.dxil', 'physx_source_pcm_box_candidates_native.dxil', 'physx_source_pcm_epa_compact_native.dxil', 'physx_source_pcm_gjk_solver_probe.dxil', 'physx_source_pcm_box_epa_native.dxil', 'physx_source_pcm_gjk_reduce_native.dxil') | ForEach-Object { Join-Path $kernelRoot $_ }
           $stdoutPath = Join-Path $env:RUNNER_TEMP 'fyzzxyzzy-gjk.stdout'
           $stderrPath = Join-Path $env:RUNNER_TEMP 'fyzzxyzzy-gjk.stderr'
           $solver = Start-Process -FilePath (Resolve-Path 'build-native/Release/fyzzxyzzy_source_pcm_box_candidates_d3d12.exe').Path -ArgumentList $kernelArgs -PassThru -NoNewWindow -RedirectStandardOutput $stdoutPath -RedirectStandardError $stderrPath
