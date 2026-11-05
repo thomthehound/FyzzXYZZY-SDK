@@ -246,6 +246,7 @@ void gjk(uint3 thread : SV_DispatchThreadID) {
     if(i>=p.pairCount)return;
     uint result=p.resultBias+i*32u;
     if(results.Load(result+8u)!=3u)return;
+    if(lane==0u)results.Store(result+24u,0xA001u);
     uint source=p.pairBias+i*20u;
     uint a=pairs.Load(source),b=pairs.Load(source+4u);
     uint edge=pairs.Load(source+8u);
@@ -295,7 +296,9 @@ void gjk(uint3 thread : SV_DispatchThreadID) {
     }
     float distance=asfloat(geometry.Load(ga+12u))+
                    asfloat(geometry.Load(gb+12u));
+    if(lane==0u)results.Store(result+24u,0xA002u);
     const uint outcome=gjkGroupContinuation(boxPair,distance,lane);
+    if(lane==0u)results.Store(result+24u,0xA003u);
     if(lane!=0u)return;
     const GjkWitness contact=gjkGroupWitness;
     const uint simplexCount=gjkGroupCount;
