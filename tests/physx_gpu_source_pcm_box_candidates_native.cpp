@@ -258,10 +258,9 @@ void verify(Context& context,const char* transform_shader,
         context,shader(gjk_publish_shader),false,true,true);
     SourcePcmEpaNativeStage epa(context,shader(epa_shader));
 #ifdef FYZZXYZZY_TEST_D3D12
-    const char* stage_probe=std::getenv("FYZZXYZZY_PCM_GJK_PROBE");
-    const bool staged_gjk=!stage_probe || *stage_probe!='i';
+    constexpr bool staged_gjk=true;
 #else
-    const bool staged_gjk=false;
+    constexpr bool staged_gjk=false;
 #endif
     const auto append_gjk_stage=[&](SourceSapDmaNative& stream,
                                     const SourcePcmEpaNativeStage& stage,
@@ -280,9 +279,7 @@ void verify(Context& context,const char* transform_shader,
                 append_gjk_stage(stream,gjk_reduce,pass);
             }
             append_gjk_stage(stream,gjk,32u);
-#ifdef FYZZXYZZY_TEST_D3D12
-            if(!stage_probe)append_gjk_stage(stream,gjk_publish,32u);
-#endif
+            append_gjk_stage(stream,gjk_publish,32u);
         }else append_gjk_stage(stream,gjk,0u);
     };
     std::clog<<"PCM fixture: pipelines initialized\n"<<std::flush;
@@ -441,32 +438,6 @@ void verify(Context& context,const char* transform_shader,
              <<std::count_if(results.begin(),results.end(),
                  [](const auto& result){return result.status==4u;})
              <<"\n"<<std::flush;
-    if(const char* probe=std::getenv("FYZZXYZZY_PCM_GJK_PROBE")) {
-        require(indirect[0]==1u,
-                "GJK dispatch probe must contain one pending pair");
-        const auto& resolved=results[work[0]];
-        const auto expected=*probe=='b'?0xB001u:
-            *probe=='p'?0xB100u:
-            *probe=='e'?0xB324u:
-            *probe=='n'?0xB325u:
-            *probe=='t'?0xB321u:
-            *probe=='f'?0xB322u:
-            *probe=='c'?0xB323u:
-            *probe=='i'?0xB300u:0xB200u;
-        const bool exact=*probe=='b' || *probe=='e' ||
-                         *probe=='n' || *probe=='t' ||
-                         *probe=='f' || *probe=='c';
-        require(resolved.status==0u &&
-                (exact
-                    ?resolved.selected_indices==expected
-                    :(resolved.selected_indices&0xFF00u)==expected),
-                "D3D12 GJK dispatch probe did not complete its selected stage");
-        std::clog<<"PCM fixture: dispatch probe "<<probe
-                 <<" completed with result "<<resolved.selected_indices
-                 <<"\n"<<std::flush;
-        release_allocations();
-        return;
-    }
     const auto expected_epa_count=std::count_if(results.begin(),results.end(),
         [](const auto& entry){return entry.status==4u;});
     {

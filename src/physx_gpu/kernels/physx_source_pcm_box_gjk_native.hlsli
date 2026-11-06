@@ -344,22 +344,11 @@ uint gjkBoxContinuationState(GjkBoxPair pair,float contactDistance,
     float3 closest=gjkLength2(pair.aInB)>0.f
         ?pair.aInB:float3(1.f,0.f,0.f);
     float previous=3.402823466e+38f;
-#ifdef FYZZXYZZY_GJK_PROBE_ITERATION
-    const uint maxIterations=FYZZXYZZY_GJK_PROBE_ITERATION;
-#else
     const uint maxIterations=32u;
-#endif
     uint outcome=0u;
     uint iteration=0u;
-#ifdef FYZZXYZZY_GJK_PROBE_FORCE_UNROLL
-    [unroll]
-#else
     [loop]
-#endif
     for(;iteration<maxIterations;++iteration) {
-#ifdef FYZZXYZZY_GJK_PROBE_SECOND_ENTRY
-        if(iteration==1u)return 0x24u;
-#endif
         float dist=sqrt(gjkLength2(closest));
         if(simplex.count>0u && dist<=epsilon && !pointCore) {
             outcome=3u;
@@ -370,13 +359,7 @@ uint gjkBoxContinuationState(GjkBoxPair pair,float contactDistance,
             break;
         }
         float3 normal=closest*(1.f/dist);
-#ifdef FYZZXYZZY_GJK_PROBE_SECOND_NORMAL
-        if(iteration==1u)return 0x25u;
-#endif
         GjkSupportPoint support=gjkSupport(pair,-closest);
-#ifdef FYZZXYZZY_GJK_PROBE_SECOND_SUPPORT
-        if(iteration==1u)return 0x21u;
-#endif
         float projection=gjkDot(normal,support.q);
         if(projection>contactDistance+pair.radiusA+pair.radiusB) {
             outcome=0u;
@@ -412,9 +395,6 @@ uint gjkBoxContinuationState(GjkBoxPair pair,float contactDistance,
         }
         gjkAppend(simplex,support);
         GjkClosest next=gjkClosestSimplex(simplex);
-#ifdef FYZZXYZZY_GJK_PROBE_SECOND_FEATURE
-        if(iteration==1u)return 0x22u;
-#endif
         if(next.mask==0u) {
             outcome=0u;
             break;
@@ -426,9 +406,6 @@ uint gjkBoxContinuationState(GjkBoxPair pair,float contactDistance,
             noProgressContact=gjkContact(pair,next,simplex,witness) &&
                 witness.separation<=contactDistance;
         gjkCompact(simplex,next);
-#ifdef FYZZXYZZY_GJK_PROBE_SECOND_COMPACT
-        if(iteration==1u)return 0x23u;
-#endif
         if(nextDist>=previous) {
             if(pointCore)
                 outcome=projection>0.f?(noProgressContact?1u:0u):3u;

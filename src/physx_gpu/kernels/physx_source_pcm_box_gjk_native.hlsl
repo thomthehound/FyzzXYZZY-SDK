@@ -129,21 +129,6 @@ void main(uint3 thread : SV_DispatchThreadID) {
     }
     float distance=asfloat(geometry.Load(ga+12u))+
                    asfloat(geometry.Load(gb+12u));
-#ifdef FYZZXYZZY_GJK_PROBE_BINDINGS
-    // Dispatch probe: complete the same Sc pending-pair read and
-    // geometry admission path without invoking the simplex solver.
-    results.Store(result+24u,0xB001u);
-    results.Store(result+8u,0u);
-    return;
-#endif
-#ifdef FYZZXYZZY_GJK_PROBE_SUPPORT
-    const float3 direction=gjkLength2(boxPair.aInB)>0.f
-        ?-boxPair.aInB:float3(-1.f,0.f,0.f);
-    const GjkSupportPoint support=gjkSupport(boxPair,direction);
-    results.Store(result+24u,0xB100u|(support.ai&0xffu));
-    results.Store(result+8u,0u);
-    return;
-#endif
     GjkWitness contact=(GjkWitness)0;
     GjkSupportPoint simplex[4];
     uint simplexCount=0u;
@@ -204,10 +189,6 @@ void main(uint3 thread : SV_DispatchThreadID) {
     state.phase=2u;
     state.outcome=outcome;
     gjkStoreGpuState(cacheBase,state);
-#ifdef FYZZXYZZY_GJK_PROBE_SOLVER
-    results.Store(result+24u,0xB200u|outcome);
-    results.Store(result+8u,0u);
-#endif
     return;
 #endif
     if(outcome==1u) {
@@ -228,16 +209,6 @@ void main(uint3 thread : SV_DispatchThreadID) {
 #else
     const uint outcome=gjkBoxContinuation(
         boxPair,distance,contact,simplex,simplexCount);
-#endif
-#if defined(FYZZXYZZY_GJK_PROBE_ITERATION)
-    results.Store(result+24u,0xB300u|outcome);
-    results.Store(result+8u,0u);
-    return;
-#elif defined(FYZZXYZZY_GJK_PROBE_SOLVER)
-    // Distinguish simplex execution from subsequent Sc publication.
-    results.Store(result+24u,0xB200u|outcome);
-    results.Store(result+8u,0u);
-    return;
 #endif
     if(outcome==3u) {
         const uint pending=p.edgeCacheBias+edge*240u;
