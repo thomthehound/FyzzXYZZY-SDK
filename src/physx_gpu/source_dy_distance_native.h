@@ -979,11 +979,12 @@ private:
                parallel_width<threads || bound>std::size_t(count)/groups)
                 continue;
             wide_tasks_.push_back(static_cast<std::uint32_t>(task_id));
-            // Every color has distinct dynamic descriptor endpoints,
-            // including actors excluded from integration writeback.
+            // Each color has at most one descriptor per dynamic
+            // endpoint, including zero-response contact participants
+            // omitted from the integration writeback ordinal stream.
             last_schedule_.max_partition_groups=std::max(
                 last_schedule_.max_partition_groups,
-                (std::size_t(writable)+threads-1u)/threads);
+                (partition_endpoints+threads-1u)/threads);
             partition_levels=std::max(partition_levels,bound);
             wide_iterations_=std::max(wide_iterations_,
                 task.position_iterations+
