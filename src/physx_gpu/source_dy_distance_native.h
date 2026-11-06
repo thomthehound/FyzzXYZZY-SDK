@@ -856,6 +856,7 @@ private:
         degree_dynamic_.assign(bodies,0u);
         degree_static_.assign(bodies,0u);
         color_bounds_.assign(tasks.size(),0u);
+        partition_endpoint_counts_.assign(tasks.size(),0u);
         fused_tiles_={0u,tasks.size()};
         prep_tiles_={};
         body_tiles_={};
@@ -930,18 +931,27 @@ private:
                     bound=std::max(bound,std::size_t(degree_static_[body]));
                 }
             }
+            // The integration ordinal list can omit bodies with
+            // zero-response contact managers. Partitioning still
+            // addresses those bodies, so count distinct dynamic
+            // descriptor endpoints before retiring their degree data.
+            std::size_t partition_endpoints=0u;
+            const auto retire_endpoint=[&](std::uint32_t body) {
+                if(degree_dynamic_[body] || degree_static_[body])
+                    ++partition_endpoints;
+                degree_dynamic_[body]=0u;
+                degree_static_[body]=0u;
+            };
             for(std::uint32_t i=task.descriptor_begin;
                 i<task.descriptor_end;++i) {
                 const auto& desc=descriptors[i];
-                if(desc.row_count&0x100u) {
-                    degree_dynamic_[desc.row0]=0u;
-                    degree_static_[desc.row0]=0u;
-                }
-                if(desc.row_count&0x200u) {
-                    degree_dynamic_[desc.row1]=0u;
-                    degree_static_[desc.row1]=0u;
-                }
+                if(desc.row_count&0x100u)
+                    retire_endpoint(desc.row0);
+                if(desc.row_count&0x200u)
+                    retire_endpoint(desc.row1);
             }
+            partition_endpoint_counts_[task_id]=
+                static_cast<std::uint32_t>(partition_endpoints);
             const auto count=task.descriptor_end-task.descriptor_begin;
             bound=std::min<std::size_t>(count,bound);
             color_bounds_[task_id]=static_cast<std::uint32_t>(bound);
@@ -959,7 +969,7 @@ private:
                 ?(dynamic_edges-1u)/max_dynamic_conflicts+1u
                 :static_edges?(static_edges-1u)/max_static_degree+1u:0u;
             const auto writable=std::size_t(task.body_end-task.body_begin);
-            const auto groups=(writable+threads-1u)/threads;
+            const auto groups=(partition_endpoints+threads-1u)/threads;
             // Color count multiplied by conservative workgroups must not
             // exceed one tile per source descriptor. In particular, a
             // collection of connected high-degree hubs cannot amplify a
@@ -969,10 +979,8 @@ private:
                parallel_width<threads || bound>std::size_t(count)/groups)
                 continue;
             wide_tasks_.push_back(static_cast<std::uint32_t>(task_id));
-            // A conflict-free color may contain at most one descriptor
-            // per writable dynamic solver body. Static/kinematic contacts
-            // also consume one such body; never allocate tiles against
-            // the entire descriptor count for every color.
+            // Every color has distinct dynamic descriptor endpoints,
+            // including actors excluded from integration writeback.
             last_schedule_.max_partition_groups=std::max(
                 last_schedule_.max_partition_groups,
                 (std::size_t(writable)+threads-1u)/threads);
@@ -1024,8 +1032,8 @@ private:
         partition_tiles_.resize(partition_levels);
         for(const auto id:wide_tasks_) {
             const auto& task=tasks[id];
-            const auto writable=task.body_end-task.body_begin;
-            const auto tile_count=(std::size_t(writable)+threads-1u)/threads;
+            const auto endpoints=partition_endpoint_counts_[id];
+            const auto tile_count=(std::size_t(endpoints)+threads-1u)/threads;
             for(std::uint32_t color=0u;color<color_bounds_[id];++color) {
                 auto& range=partition_tiles_[color];
                 range.count+=tile_count;
@@ -1043,11 +1051,11 @@ private:
         tiles_.resize(end);
         for(const auto id:wide_tasks_) {
             const auto& task=tasks[id];
-            const auto writable=task.body_end-task.body_begin;
+            const auto endpoints=partition_endpoint_counts_[id];
             for(std::uint32_t color=0u;color<color_bounds_[id];++color) {
                 auto& range=partition_tiles_[color];
-                for(std::uint32_t offset=0u;offset<writable;) {
-                    const auto next=offset+std::min(threads,writable-offset);
+                for(std::uint32_t offset=0u;offset<endpoints;) {
+                    const auto next=offset+std::min(threads,endpoints-offset);
                     tiles_[range.begin+range.count++]={id,offset,next,color};
                     offset=next;
                 }
@@ -1197,6 +1205,7 @@ private:
     std::vector<std::uint8_t> assigned_;
     std::vector<std::uint32_t> wide_tasks_;
     std::vector<std::uint32_t> degree_dynamic_,degree_static_,color_bounds_;
+    std::vector<std::uint32_t> partition_endpoint_counts_;
     std::vector<WorkTile> tiles_;
     std::vector<TileRange> partition_tiles_;
     TileRange fused_tiles_,prep_tiles_,body_tiles_;
