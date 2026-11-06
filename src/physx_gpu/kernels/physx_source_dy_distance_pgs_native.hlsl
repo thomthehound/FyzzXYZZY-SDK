@@ -284,54 +284,64 @@ void sourceDyPartitionTask(uint taskId,uint scratch,uint errorAddress,
             arena.InterlockedExchange(bodyState+desc.z*12u+8u,0u,unused);
     }
     AllMemoryBarrierWithGroupSync();
-    if(lane!=0u)return;
-    uint highest=dyHighest;
-    // Static and kinematic endpoints never contribute a conflicting
-    // dynamic write. Each dynamic body reserves its static contacts
-    // after its last dynamic/dynamic color, in source encounter order.
-    for(uint i=first;i<last;++i) {
-        if(arena.Load(colors+i*4u)!=0xffffffffu)continue;
-        const uint4 desc=arena.Load4(raw+i*16u);
-        const bool dynamicA=(desc.w&0x100u)!=0u;
-        const uint ordinal=dynamicA?desc.y:desc.z;
-        const uint state=bodyState+ordinal*12u;
-        const uint value=arena.Load(state+4u)+arena.Load(state+8u);
-        if(value>=count) {
-            arena.InterlockedOr(errorAddress,1048576u);
-            return;
+    if(lane==0u) {
+        uint highest=dyHighest;
+        // Static/kinematic reservations retain source encounter order
+        // after all dynamic/dynamic partitions have been committed.
+        for(uint i=first;i<last;++i) {
+            if(arena.Load(colors+i*4u)!=0xffffffffu)continue;
+            const uint4 desc=arena.Load4(raw+i*16u);
+            const uint state=bodyState+
+                (((desc.w&0x100u)!=0u)?desc.y:desc.z)*12u;
+            const uint value=arena.Load(state+4u)+arena.Load(state+8u);
+            if(value>=count) {
+                arena.InterlockedOr(errorAddress,1048576u);
+                break;
+            }
+            arena.Store(state+8u,arena.Load(state+8u)+1u);
+            arena.Store(colors+i*4u,value);
+            highest=max(highest,value+1u);
         }
-        arena.Store(state+8u,arena.Load(state+8u)+1u);
-        arena.Store(colors+i*4u,value);
-        highest=max(highest,value+1u);
+        dyHighest=highest;
     }
-    for(uint i=partitionFirst;i<partitionCapacity;++i)
+    AllMemoryBarrierWithGroupSync();
+    if(arena.Load(errorAddress)!=0u)return;
+    for(uint i=partitionFirst+lane;i<partitionCapacity;i+=128u)
         arena.Store(cursors+i*4u,0u);
-    for(uint i=first;i<last;++i) {
+    AllMemoryBarrierWithGroupSync();
+    for(uint i=first+lane;i<last;i+=128u) {
         const uint color=arena.Load(colors+i*4u);
         const uint target=cursors+(partitionFirst+color)*4u;
-        arena.Store(target,arena.Load(target)+1u);
+        uint unused;
+        arena.InterlockedAdd(target,1u,unused);
     }
-    uint end=first;
-    for(uint i=partitionFirst;i<partitionFirst+highest;++i) {
-        const uint n=arena.Load(cursors+i*4u);
-        arena.Store(cursors+i*4u,end);
-        end+=n;
-        arena.Store(p.partitionBias+i*4u,end);
+    AllMemoryBarrierWithGroupSync();
+    if(lane==0u) {
+        uint end=first;
+        for(uint i=partitionFirst;i<partitionFirst+dyHighest;++i) {
+            const uint n=arena.Load(cursors+i*4u);
+            arena.Store(cursors+i*4u,end);
+            end+=n;
+            arena.Store(p.partitionBias+i*4u,end);
+        }
+        if(end!=last)
+            arena.InterlockedOr(errorAddress,1048576u);
+        else
+            arena.Store(task+12u,partitionFirst+dyHighest);
     }
-    if(end!=last) {
-        arena.InterlockedOr(errorAddress,1048576u);
-        return;
-    }
-    for(uint i=first;i<last;++i) {
+    AllMemoryBarrierWithGroupSync();
+    if(arena.Load(errorAddress)!=0u)return;
+    // Within a color every descriptor owns distinct writable bodies.
+    // Atomic scatter does not change solver dependencies or Gu indices.
+    for(uint i=first+lane;i<last;i+=128u) {
         uint4 desc=arena.Load4(raw+i*16u);
         const uint target=cursors+
             (partitionFirst+arena.Load(colors+i*4u))*4u;
-        const uint offset=arena.Load(target);
-        arena.Store(target,offset+1u);
+        uint offset;
+        arena.InterlockedAdd(target,1u,offset);
         desc.w&=255u;
         arena.Store4(p.descriptorBias+offset*16u,desc);
     }
-    arena.Store(task+12u,partitionFirst+highest);
 }
 
 void prepareNormals(uint begin,uint end,uint lane,uint endError) {
