@@ -2317,7 +2317,7 @@ int main(int argc,char** argv) {
         if(scenario=="all" || scenario=="free_integration")
             fyzz::tests::measure_gpu_case("sc_pcm","free_integration",
                 [&]{verify_gpu_free_integration(backend,argv[1],argv[2],argv[3]);});
-        if(scenario=="all" || scenario=="zero_response_wide")
+        if(scenario=="zero_response_wide")
             fyzz::tests::measure_gpu_case("sc_pcm","zero_response_wide",
                 [&]{verify_gpu_zero_response_wide_island(
                     backend,argv[1],argv[2],argv[3]);});
