@@ -32,8 +32,8 @@ static_assert(sizeof(SourceDyPackedContactPrepNative)==64u &&
               offsetof(SourceDyPackedContactPrepNative,constants)==8u);
 
 // Dy integrateCore reads compact transient inputs. Box-shaped bodies with
-// authorized Sc device poses omit the host pose entirely; authored changes,
-// sphere-only bodies and unbacked bodies retain an explicit 28-byte pose.
+// authorized Sc device poses omit the host pose entirely; authored edits
+// and bodies without eligible device shapes retain an explicit 28-byte pose.
 struct SourceDyPackedIntegrationNative {
     float linear_velocity[3]{},angular_velocity[3]{};
     float sqrt_inverse_inertia[9]{};
@@ -150,8 +150,44 @@ public:
             return static_cast<std::uint32_t>(value);
         };
         const auto free_bodies=integration.size()-bodies.size();
-        build_launch_plan(tasks,partition_ends,narrow(descriptors.size()),
-                          narrow(body_ordinals.size()));
+        if(device_partitions) {
+            wide_tasks_.clear();
+            tiles_.clear();
+            partition_tiles_.clear();
+            last_schedule_={};
+            fused_tiles_={0u,tasks.size()};
+            std::uint32_t desc_end=0u,partition_end=0u,body_end=0u;
+            for(const auto& task:tasks) {
+                if(task.descriptor_begin!=desc_end ||
+                   task.descriptor_end<desc_end ||
+                   task.descriptor_end>descriptors.size() ||
+                   task.partition_begin!=partition_end ||
+                   task.partition_end<partition_end ||
+                   task.partition_end>partition_ends.size() ||
+                   task.partition_end-partition_end!=
+                       task.descriptor_end-desc_end ||
+                   task.body_begin!=body_end ||
+                   task.body_end<body_end ||
+                   task.body_end>body_ordinals.size() ||
+                   !task.position_iterations ||
+                   task.position_iterations>255u ||
+                   task.velocity_iterations>255u)
+                    throw std::logic_error(
+                        "Source device partition task ranges are invalid");
+                desc_end=task.descriptor_end;
+                partition_end=task.partition_end;
+                body_end=task.body_end;
+            }
+            if(desc_end!=descriptors.size() ||
+               partition_end!=partition_ends.size() ||
+               body_end!=body_ordinals.size())
+                throw std::logic_error(
+                    "Source device partition task stream is incomplete");
+            last_schedule_.max_partition_groups=tasks.empty()?0u:1u;
+        } else {
+            build_launch_plan(tasks,partition_ends,narrow(descriptors.size()),
+                              narrow(body_ordinals.size()));
+        }
         if(contact_forces.size()>
            std::numeric_limits<std::size_t>::max()/sizeof(native::GpuDyContactPoint))
             throw std::overflow_error("Source Dy contact row byte count overflow");
@@ -271,7 +307,7 @@ public:
             return narrow(offset); // An aligned offset; low bit clear.
         };
         for(const auto& desc:descriptors) {
-            if(desc.row_count)continue;
+            if((desc.row_count&255u)!=0u)continue;
             if(desc.index>=manifolds.size())
                 throw std::logic_error("Source contact descriptor has no manager");
             const auto& manager=manifolds[desc.index];
@@ -402,7 +438,18 @@ public:
         const std::size_t integration_bytes=packed_input_bytes+
             host_poses_.size()*sizeof(SourceDyHostPoseNative);
         last_host_pose_upload_bytes_=host_poses_.size()*sizeof(SourceDyHostPoseNative);
-        constexpr std::size_t count=15u;
+        // Transient source-order descriptors and conflict-coloring state
+        // share the existing Dy arena; no separate scene state is built.
+        if(device_partitions &&
+           (descriptors.size()>
+                (std::numeric_limits<std::uint32_t>::max()-16u)/24u ||
+            bodies.size()>
+                (std::numeric_limits<std::uint32_t>::max()-16u-
+                    descriptors.size()*24u)/12u))
+            throw std::overflow_error("Device Dy partition scratch exceeds address space");
+        const std::size_t partition_scratch_bytes=device_partitions
+            ? 16u+descriptors.size()*24u+bodies.size()*12u:0u;
+        constexpr std::size_t count=16u;
         // The integration prefix describes Sc/SAP views and the launch
         // table. Solver-body ordinals precede the free-body suffix.
         const std::array<std::size_t,count> bytes{
@@ -412,18 +459,19 @@ public:
             patches.size_bytes(),manifolds.size_bytes(),contact_order.size_bytes(),
             compact_prep_bytes,
             integration_bytes,compact_anchor_bytes,
-            tiles_.size()*sizeof(WorkTile)};
+            tiles_.size()*sizeof(WorkTile),partition_scratch_bytes};
         const std::array<std::size_t,count> elements{
             bodies.size(),rows.size(),descriptors.size(),partition_ends.size(),
             body_ordinals.size(),tasks.size(),contact_forces.size(),friction.size(),
             patches.size(),manifolds.size(),contact_order.size(),
             contact_prep.size(),integration.size(),compact_anchors_.size(),
-            tiles_.size()};
+            tiles_.size(),device_partitions?1u:0u};
         const std::array<const void*,count> sources{
             bodies.data(),rows.data(),descriptors.data(),partition_ends.data(),
             body_ordinals.data(),tasks.data(),nullptr,nullptr,
             patches.data(),manifolds.data(),contact_order.data(),
-            contact_prep.data(),integration.data(),nullptr,tiles_.data()};
+            contact_prep.data(),integration.data(),nullptr,tiles_.data(),
+            nullptr};
         // The host retains only source normal impulses and friction
         // tangent/force writeback. Both full row ABIs live only on GPU.
         constexpr std::array<std::size_t,6> output_inputs{
@@ -448,7 +496,7 @@ public:
         // Both writable contact and friction arenas follow all source
         // inputs. The existing GPU preparation owns the complete rows.
         constexpr std::array<std::size_t,count> order{
-            0u,1u,5u,8u,2u,3u,4u,9u,10u,11u,12u,14u,13u,6u,7u};
+            0u,1u,5u,8u,2u,3u,4u,9u,10u,11u,12u,14u,15u,13u,6u,7u};
         std::array<std::size_t,count> offsets{};
         // The original Dy heap retains an EdgeIndex-keyed Sc anchor
         // prefix. Solver output follows it and remains the sole readback;
@@ -457,7 +505,7 @@ public:
             ((output_bytes+127u)&~std::size_t(127u));
         std::size_t total=upload_begin;
         for(const auto i:order) {
-            if(i==14u && !bytes[i])continue;
+            if((i==14u || i==15u) && !bytes[i])continue;
             const auto view_bytes=std::max<std::size_t>(bytes[i],4u);
             if(total>std::numeric_limits<std::uint32_t>::max()-128u ||
                view_bytes>std::numeric_limits<std::uint32_t>::max()-total)
@@ -475,7 +523,7 @@ public:
         host_.resize(offsets[6]);
         for(std::size_t i=0;i<count;++i)
             if(i!=6u && i!=7u && i!=11u && i!=12u &&
-               i!=13u && bytes[i])
+               i!=13u && i!=15u && bytes[i])
                 std::memcpy(host_.data()+offsets[i],sources[i],bytes[i]);
         if(prep_bytes)
             std::memcpy(host_.data()+offsets[11],packed_.data(),prep_bytes);
@@ -489,6 +537,17 @@ public:
             std::memcpy(host_.data()+offsets[11]+static_begin,
                         inline_bodies_.data(),inline_bodies_.size()*
                             sizeof(native::GpuDyContactPrepBody));
+        if(device_partitions) {
+            const auto n=descriptors.size();
+            const std::array<std::uint32_t,4> scratch_header{
+                16u,narrow(16u+n*16u),narrow(16u+n*20u),
+                narrow(16u+n*24u)};
+            std::memcpy(host_.data()+offsets[15],scratch_header.data(),
+                        sizeof(scratch_header));
+            if(n)
+                std::memcpy(host_.data()+offsets[15]+16u,
+                            descriptors.data(),descriptors.size_bytes());
+        }
         if(!packed_integration_.empty())
             std::memcpy(host_.data()+offsets[12]+integration_header_bytes,
                         packed_integration_.data(),
@@ -547,7 +606,8 @@ public:
         std::array<std::uint32_t,9> integration_header{
             0u,0u,0u,shape_capacity,narrow(body_ordinals.size()),
             narrow(descriptors.size()),narrow(tasks.size()),
-            tiles_.empty()?0u:narrow(std::size_t(params[28])+offsets[14]),
+            device_partitions?narrow(std::size_t(params[28])+offsets[15]):
+                (tiles_.empty()?0u:narrow(std::size_t(params[28])+offsets[14])),
             narrow(integration.size())};
         const auto bind_shape=[&](CudaDeviceAddressMap::Address source,
                                   std::uint32_t stride,std::uint32_t slot,
@@ -600,7 +660,8 @@ public:
                                                  : compute::BufferAccess::Read;
             dispatch.buffers[3].access=integrates ? compute::BufferAccess::Write
                                                  : compute::BufferAccess::Read;
-            params[10]=(iteration<<3u)|static_cast<std::uint32_t>(phase);
+            params[10]=(iteration<<3u)|static_cast<std::uint32_t>(phase)|
+                (device_partitions?0x80000000u:0u);
             for(std::size_t group=0;group<range.count;) {
                 const auto count=std::min<std::size_t>(max_groups,range.count-group);
                 params[8]=narrow(range.begin+group);
@@ -680,7 +741,7 @@ public:
                 const auto& desc=descriptors[i];
                 // Joint impulses remain local to the GPU PGS row.
                 // No Sc task consumes a host copy after solve.
-                if(desc.row_count)continue;
+                if((desc.row_count&255u)!=0u)continue;
                 if(desc.index>=manifolds.size())
                     throw std::logic_error("Source Dy manager writeback index invalid");
                 const auto& manager=manifolds[desc.index];
