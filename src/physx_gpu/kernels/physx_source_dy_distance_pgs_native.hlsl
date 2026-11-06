@@ -155,6 +155,7 @@ bool sourceDyMassPose(uint input,out float3 position,out float4 quaternion) {
 // dynamic edges concurrently; the original static reservation and
 // stable scatter retain source encounter order.
 groupshared uint dyNeeded,dyAssigned,dyWave,dyProgress,dyHighest;
+groupshared uint dyNextWave;
 
 void sourceDyPartitionTask(uint taskId,uint scratch,uint errorAddress,
                            uint lane) {
@@ -178,6 +179,7 @@ void sourceDyPartitionTask(uint taskId,uint scratch,uint errorAddress,
     const uint count=last-first;
     if(lane==0u) {
         dyNeeded=0u;dyAssigned=0u;dyWave=0u;dyHighest=0u;
+        dyNextWave=0u;
     }
     AllMemoryBarrierWithGroupSync();
     for(uint i=first+lane;i<last;i+=128u) {
@@ -210,6 +212,23 @@ void sourceDyPartitionTask(uint taskId,uint scratch,uint errorAddress,
     if(arena.Load(errorAddress)!=0u)return;
 
     while(dyAssigned<dyNeeded) {
+        // Masks are wave-local. A 32-color overflow retires the prior
+        // mask before new absolute partition indices are assigned.
+        if(dyNextWave!=0u) {
+            for(uint i=first+lane;i<last;i+=128u) {
+                if(arena.Load(colors+i*4u)!=0xffffffffu)continue;
+                const uint4 desc=arena.Load4(raw+i*16u);
+                if((desc.w&0x300u)!=0x300u)continue;
+                uint unused;
+                arena.InterlockedExchange(
+                    bodyState+desc.y*12u,0u,unused);
+                arena.InterlockedExchange(
+                    bodyState+desc.z*12u,0u,unused);
+            }
+            AllMemoryBarrierWithGroupSync();
+            if(lane==0u)dyNextWave=0u;
+            AllMemoryBarrierWithGroupSync();
+        }
         // A bijective index permutation prevents long chains from
         // degenerating into a single leading-edge winner per round.
         for(uint i=first+lane;i<last;i+=128u) {
@@ -267,8 +286,10 @@ void sourceDyPartitionTask(uint taskId,uint scratch,uint errorAddress,
         }
         AllMemoryBarrierWithGroupSync();
         if(lane==0u) {
-            if(dyProgress==0u)dyWave+=32u;
-            else dyAssigned+=dyProgress;
+            if(dyProgress==0u) {
+                dyWave+=32u;
+                dyNextWave=1u;
+            } else dyAssigned+=dyProgress;
             if(dyWave>=count && dyAssigned<dyNeeded)
                 arena.InterlockedOr(errorAddress,1048576u);
         }
