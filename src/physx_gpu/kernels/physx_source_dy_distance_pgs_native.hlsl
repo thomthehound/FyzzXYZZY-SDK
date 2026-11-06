@@ -151,6 +151,137 @@ bool sourceDyMassPose(uint input,out float3 position,out float4 quaternion) {
 
 #include "physx_source_dy_contact_pgs_native.hlsli"
 
+// Each original Sc solver task is isolated by accurate-island body
+// ownership. A single lane assigns source-order, conflict-free
+// dynamic partitions, followed by static-contact reservations. The
+// same group consumes the compacted partitions in Dy PGS immediately.
+// Scratch is transient to this solve; Sc remains the only graph owner.
+void sourceDyPartitionTask(uint taskId,uint scratch,uint errorAddress) {
+    const uint4 views=arena.Load4(scratch);
+    const uint raw=scratch+views.x;
+    const uint colors=scratch+views.y;
+    const uint cursors=scratch+views.z;
+    const uint bodyState=scratch+views.w;
+    const uint task=p.taskBias+taskId*36u;
+    const uint4 ranges=arena.Load4(task);
+    const uint first=ranges.x,last=ranges.y;
+    const uint partitionFirst=ranges.z,partitionCapacity=ranges.w;
+    if(last<first || last>p.orderCount+p.contactCount+p.rowCount+
+            p.prepCount+p.bodyCount+p.partitionCount ||
+       partitionCapacity<partitionFirst ||
+       partitionCapacity-partitionFirst!=last-first ||
+       partitionCapacity>p.partitionCount) {
+        arena.InterlockedOr(errorAddress,1048576u);
+        return;
+    }
+    const uint count=last-first;
+    for(uint i=first;i<last;++i) {
+        const uint4 desc=arena.Load4(raw+i*16u);
+        const bool dynamicA=(desc.w&0x100u)!=0u;
+        const bool dynamicB=(desc.w&0x200u)!=0u;
+        if((desc.w&~0x3ffu)!=0u ||
+           (!dynamicA && !dynamicB) ||
+           (dynamicA && desc.y>=p.bodyCount) ||
+           (dynamicB && desc.z>=p.bodyCount)) {
+            arena.InterlockedOr(errorAddress,1048576u);
+            return;
+        }
+        if(dynamicA)arena.Store3(bodyState+desc.y*12u,uint3(0u,0u,0u));
+        if(dynamicB)arena.Store3(bodyState+desc.z*12u,uint3(0u,0u,0u));
+        arena.Store(colors+i*4u,0xffffffffu);
+    }
+    uint assigned=0u,wave=0u,highest=0u;
+    uint needed=0u;
+    for(uint i=first;i<last;++i) {
+        const uint flags=arena.Load(raw+i*16u+12u)&0x300u;
+        if(flags==0x300u)++needed;
+    }
+    while(assigned<needed) {
+        for(uint i=first;i<last;++i) {
+            const uint4 desc=arena.Load4(raw+i*16u);
+            if((desc.w&0x300u)==0x300u) {
+                arena.Store(bodyState+desc.y*12u,0u);
+                arena.Store(bodyState+desc.z*12u,0u);
+            }
+        }
+        const uint old=assigned;
+        for(uint i=first;i<last;++i) {
+            if(arena.Load(colors+i*4u)!=0xffffffffu)continue;
+            const uint4 desc=arena.Load4(raw+i*16u);
+            if((desc.w&0x300u)!=0x300u)continue;
+            const uint a=bodyState+desc.y*12u;
+            const uint b=bodyState+desc.z*12u;
+            const uint available=~(arena.Load(a)|arena.Load(b));
+            if(available==0u)continue;
+            const uint bit=firstbitlow(available);
+            const uint value=wave+bit;
+            if(value>=count) {
+                arena.InterlockedOr(errorAddress,1048576u);
+                return;
+            }
+            const uint mask=1u<<bit;
+            arena.Store(a,arena.Load(a)|mask);
+            arena.Store(b,arena.Load(b)|mask);
+            arena.Store(a+4u,max(arena.Load(a+4u),value+1u));
+            arena.Store(b+4u,max(arena.Load(b+4u),value+1u));
+            arena.Store(colors+i*4u,value);
+            highest=max(highest,value+1u);
+            ++assigned;
+        }
+        if(assigned==old || wave>count) {
+            arena.InterlockedOr(errorAddress,1048576u);
+            return;
+        }
+        wave+=32u;
+    }
+    // Static and kinematic endpoints never contribute a conflicting
+    // dynamic write. Each dynamic body reserves its static contacts
+    // after its last dynamic/dynamic color, in source encounter order.
+    for(uint i=first;i<last;++i) {
+        if(arena.Load(colors+i*4u)!=0xffffffffu)continue;
+        const uint4 desc=arena.Load4(raw+i*16u);
+        const bool dynamicA=(desc.w&0x100u)!=0u;
+        const uint ordinal=dynamicA?desc.y:desc.z;
+        const uint state=bodyState+ordinal*12u;
+        const uint value=arena.Load(state+4u)+arena.Load(state+8u);
+        if(value>=count) {
+            arena.InterlockedOr(errorAddress,1048576u);
+            return;
+        }
+        arena.Store(state+8u,arena.Load(state+8u)+1u);
+        arena.Store(colors+i*4u,value);
+        highest=max(highest,value+1u);
+    }
+    for(uint i=partitionFirst;i<partitionCapacity;++i)
+        arena.Store(cursors+i*4u,0u);
+    for(uint i=first;i<last;++i) {
+        const uint color=arena.Load(colors+i*4u);
+        const uint target=cursors+(partitionFirst+color)*4u;
+        arena.Store(target,arena.Load(target)+1u);
+    }
+    uint end=first;
+    for(uint i=partitionFirst;i<partitionFirst+highest;++i) {
+        const uint n=arena.Load(cursors+i*4u);
+        arena.Store(cursors+i*4u,end);
+        end+=n;
+        arena.Store(p.partitionBias+i*4u,end);
+    }
+    if(end!=last) {
+        arena.InterlockedOr(errorAddress,1048576u);
+        return;
+    }
+    for(uint i=first;i<last;++i) {
+        uint4 desc=arena.Load4(raw+i*16u);
+        const uint target=cursors+
+            (partitionFirst+arena.Load(colors+i*4u))*4u;
+        const uint offset=arena.Load(target);
+        arena.Store(target,offset+1u);
+        desc.w&=255u;
+        arena.Store4(p.descriptorBias+offset*16u,desc);
+    }
+    arena.Store(task+12u,partitionFirst+highest);
+}
+
 void prepareNormals(uint begin,uint end,uint lane,uint endError) {
     for(uint i=begin+(lane>>2u);i<end;i+=32u) {
         uint4 desc=arena.Load4(p.descriptorBias+i*16u);
@@ -375,7 +506,8 @@ void publishTaskError(uint task,uint error) {
 [numthreads(128,1,1)]
 void main(uint3 group:SV_GroupID,uint3 lane:SV_GroupThreadID) {
     const uint phase=p.launchControl&7u;
-    const uint iter=p.launchControl>>3u;
+    const bool devicePartitions=(p.launchControl&0x80000000u)!=0u;
+    const uint iter=(p.launchControl&0x7fffffffu)>>3u;
     const uint index=p.launchBegin+group.x;
     const bool freeBody=phase==freeBodyTile;
     const bool fused=phase==fusedTask;
@@ -397,10 +529,21 @@ void main(uint3 group:SV_GroupID,uint3 lane:SV_GroupThreadID) {
         // A frame containing only compact tasks uses direct task indices.
         uint3 tile=uint3(index,0u,0u);
         [branch]
-        if(schedule.w!=0u)tile=arena.Load3(schedule.w+index*16u);
+        if(schedule.w!=0u && !devicePartitions)
+            tile=arena.Load3(schedule.w+index*16u);
         const uint t=p.taskBias+tile.x*36u;
         taskId=tile.x;
         endError=t+32u;
+        if(fused && devicePartitions) {
+            if(lane.x==0u)
+                sourceDyPartitionTask(taskId,schedule.w,endError);
+            AllMemoryBarrierWithGroupSync();
+            if(arena.Load(endError)!=0u) {
+                if(lane.x==0u)
+                    publishTaskError(taskId,arena.Load(endError));
+                return;
+            }
+        }
         const uint2 iters=arena.Load2(t+24u);
         uint2 descriptors=tile.yz;
         bodies=tile.yz;
