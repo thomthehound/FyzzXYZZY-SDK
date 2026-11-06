@@ -218,7 +218,7 @@ void sourceDyPartitionTask(uint taskId,uint scratch,uint errorAddress,
     // Its exact source greedy coloring is the encounter ordinal of
     // that edge: no conflict search or 32-color wave scans are needed.
     // Static reservations still use the ordinary post-dynamic phase.
-    if(lane==0u && dyNeeded>=128u) {
+    if(lane==0u && dyNeeded>=32u) {
         uint candidateA=0xffffffffu,candidateB=0xffffffffu;
         for(uint i=first;i<last;++i) {
             const uint4 desc=arena.Load4(raw+i*16u);
@@ -774,7 +774,7 @@ void main(uint3 group:SV_GroupID,uint3 lane:SV_GroupThreadID) {
         }
 
         bool serialPartitions=false;
-        if(fused && partitions.y-partitions.x>=128u) {
+        if(fused && partitions.y-partitions.x>=32u) {
             // A narrow, deeply dependent island may have thousands of
             // singleton colors. All of those writes occur in the same
             // lane, so per-color group barriers have no consumer.
