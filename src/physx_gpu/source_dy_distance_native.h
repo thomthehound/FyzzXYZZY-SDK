@@ -151,39 +151,9 @@ public:
         };
         const auto free_bodies=integration.size()-bodies.size();
         if(device_partitions) {
-            wide_tasks_.clear();
-            tiles_.clear();
-            partition_tiles_.clear();
-            last_schedule_={};
-            fused_tiles_={0u,tasks.size()};
-            std::uint32_t desc_end=0u,partition_end=0u,body_end=0u;
-            for(const auto& task:tasks) {
-                if(task.descriptor_begin!=desc_end ||
-                   task.descriptor_end<desc_end ||
-                   task.descriptor_end>descriptors.size() ||
-                   task.partition_begin!=partition_end ||
-                   task.partition_end<partition_end ||
-                   task.partition_end>partition_ends.size() ||
-                   task.partition_end-partition_end!=
-                       task.descriptor_end-desc_end ||
-                   task.body_begin!=body_end ||
-                   task.body_end<body_end ||
-                   task.body_end>body_ordinals.size() ||
-                   !task.position_iterations ||
-                   task.position_iterations>255u ||
-                   task.velocity_iterations>255u)
-                    throw std::logic_error(
-                        "Source device partition task ranges are invalid");
-                desc_end=task.descriptor_end;
-                partition_end=task.partition_end;
-                body_end=task.body_end;
-            }
-            if(desc_end!=descriptors.size() ||
-               partition_end!=partition_ends.size() ||
-               body_end!=body_ordinals.size())
-                throw std::logic_error(
-                    "Source device partition task stream is incomplete");
-            last_schedule_.max_partition_groups=tasks.empty()?0u:1u;
+            build_device_launch_plan(tasks,descriptors,partition_ends,
+                                     narrow(body_ordinals.size()),
+                                     narrow(bodies.size()));
         } else {
             build_launch_plan(tasks,partition_ends,narrow(descriptors.size()),
                               narrow(body_ordinals.size()));
@@ -442,13 +412,13 @@ public:
         // share the existing Dy arena; no separate scene state is built.
         if(device_partitions &&
            (descriptors.size()>
-                (std::numeric_limits<std::uint32_t>::max()-16u)/24u ||
+                (std::numeric_limits<std::uint32_t>::max()-20u)/24u ||
             bodies.size()>
-                (std::numeric_limits<std::uint32_t>::max()-16u-
+                (std::numeric_limits<std::uint32_t>::max()-20u-
                     descriptors.size()*24u)/12u))
             throw std::overflow_error("Device Dy partition scratch exceeds address space");
         const std::size_t partition_scratch_bytes=device_partitions
-            ? 16u+descriptors.size()*24u+bodies.size()*12u:0u;
+            ? 20u+descriptors.size()*24u+bodies.size()*12u:0u;
         constexpr std::size_t count=16u;
         // The integration prefix describes Sc/SAP views and the launch
         // table. Solver-body ordinals precede the free-body suffix.
@@ -539,13 +509,15 @@ public:
                             sizeof(native::GpuDyContactPrepBody));
         if(device_partitions) {
             const auto n=descriptors.size();
-            const std::array<std::uint32_t,4> scratch_header{
-                16u,narrow(16u+n*16u),narrow(16u+n*20u),
-                narrow(16u+n*24u)};
+            const std::array<std::uint32_t,5> scratch_header{
+                20u,narrow(20u+n*16u),narrow(20u+n*20u),
+                narrow(20u+n*24u),
+                tiles_.empty()?0u:narrow(
+                    std::size_t(params[28])+offsets[14])};
             std::memcpy(host_.data()+offsets[15],scratch_header.data(),
                         sizeof(scratch_header));
             if(n)
-                std::memcpy(host_.data()+offsets[15]+16u,
+                std::memcpy(host_.data()+offsets[15]+20u,
                             descriptors.data(),descriptors.size_bytes());
         }
         if(!packed_integration_.empty())
@@ -660,8 +632,10 @@ public:
                                                  : compute::BufferAccess::Read;
             dispatch.buffers[3].access=integrates ? compute::BufferAccess::Write
                                                  : compute::BufferAccess::Read;
-            params[10]=(iteration<<3u)|static_cast<std::uint32_t>(phase)|
-                (device_partitions?0x80000000u:0u);
+            params[10]=(iteration<<4u)|static_cast<std::uint32_t>(phase)|
+                (device_partitions?0x80000000u:0u)|
+                (device_partitions && !wide_tasks_.empty() &&
+                 phase!=Launch::Color ?0x40000000u:0u);
             for(std::size_t group=0;group<range.count;) {
                 const auto count=std::min<std::size_t>(max_groups,range.count-group);
                 params[8]=narrow(range.begin+group);
@@ -672,6 +646,8 @@ public:
                 group+=count;
             }
         };
+        if(device_partitions && !wide_tasks_.empty())
+            launch(Launch::Color,{0u,tasks.size()});
         launch(Launch::Fused,fused_tiles_);
         if(!wide_tasks_.empty()) {
             // The existing arena write dependencies order each dispatch
@@ -847,7 +823,8 @@ public:
     }
 private:
     enum class Launch : std::uint32_t {
-        Fused, Normals, Friction, Partition, Motion, Integrate, PublishErrors, FreeBodies
+        Fused, Normals, Friction, Partition, Motion, Integrate, PublishErrors,
+        FreeBodies, Color
     };
     struct WorkTile {
         std::uint32_t task,begin,end,reserved=0u;
