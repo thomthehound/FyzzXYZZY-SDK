@@ -38,7 +38,20 @@ try {
     cmake --build $BuildDir --config Release --parallel 4
     if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
-    ctest --test-dir $BuildDir -C Release -R '_d3d12' --output-on-failure --stop-on-failure
+    ctest --test-dir $BuildDir -C Release -R '_d3d12' -LE '^d3d12-extended
+}
+finally {
+    Pop-Location
+}
+ --output-on-failure --stop-on-failure --no-tests=error
+    if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+    ctest --test-dir $BuildDir -C Release -R '_d3d12' -L '^d3d12-extended
+}
+finally {
+    Pop-Location
+}
+ --output-on-failure --stop-on-failure --no-tests=error
     if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 }
 finally {
