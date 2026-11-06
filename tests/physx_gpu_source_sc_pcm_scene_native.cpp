@@ -2104,6 +2104,8 @@ void verify_gpu_zero_response_wide_island(
             schedule.wide_tasks==1u &&
             schedule.device_colored_descriptors>=
                 joint_bodies+zero_contact_bodies-2u &&
+            schedule.max_partition_groups>=
+                (joint_bodies+zero_contact_bodies+127u)/128u &&
             schedule.tile_bytes>0u &&
             schedule.tile_bytes<=schedule.device_colored_descriptors*
                 sizeof(native::GpuDyDistanceDescriptor) &&
