@@ -958,15 +958,21 @@ private:
             const std::size_t parallel_width=dynamic_edges
                 ?(dynamic_edges-1u)/max_dynamic_conflicts+1u
                 :static_edges?(static_edges-1u)/max_static_degree+1u:0u;
-            if(task.body_end-task.body_begin<wide_min ||
-               count<wide_min || parallel_width<threads)
+            const auto writable=std::size_t(task.body_end-task.body_begin);
+            const auto groups=(writable+threads-1u)/threads;
+            // Color count multiplied by conservative workgroups must not
+            // exceed one tile per source descriptor. In particular, a
+            // collection of connected high-degree hubs cannot amplify a
+            // compact source graph into a quadratic upload and dispatch
+            // schedule merely because its first matching is wide.
+            if(writable<wide_min || count<wide_min ||
+               parallel_width<threads || bound>std::size_t(count)/groups)
                 continue;
             wide_tasks_.push_back(static_cast<std::uint32_t>(task_id));
             // A conflict-free color may contain at most one descriptor
             // per writable dynamic solver body. Static/kinematic contacts
             // also consume one such body; never allocate tiles against
             // the entire descriptor count for every color.
-            const auto writable=task.body_end-task.body_begin;
             last_schedule_.max_partition_groups=std::max(
                 last_schedule_.max_partition_groups,
                 (std::size_t(writable)+threads-1u)/threads);
