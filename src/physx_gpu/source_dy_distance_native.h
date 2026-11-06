@@ -835,6 +835,175 @@ private:
         std::uint32_t iterations=0u;
     };
 
+    void build_device_launch_plan(
+        std::span<const native::GpuDyDistanceTask> tasks,
+        std::span<const native::GpuDyDistanceDescriptor> descriptors,
+        std::span<const std::uint32_t> partitions,
+        std::uint32_t ordinals,std::uint32_t bodies) {
+        constexpr std::uint32_t threads=128u;
+        constexpr std::uint32_t prep_managers=threads/4u;
+        constexpr std::uint32_t wide_min=4u*threads;
+        wide_tasks_.clear();
+        tiles_.clear();
+        partition_tiles_.clear();
+        position_ends_.fill(false);
+        wide_iterations_=0u;
+        last_schedule_={};
+        last_schedule_.max_partition_groups=tasks.empty()?0u:1u;
+        degree_dynamic_.assign(bodies,0u);
+        degree_static_.assign(bodies,0u);
+        color_bounds_.assign(tasks.size(),0u);
+        fused_tiles_={0u,tasks.size()};
+        prep_tiles_={};
+        body_tiles_={};
+        std::uint32_t descriptor_end=0u,partition_end=0u,body_end=0u;
+        std::size_t partition_levels=0u;
+        for(std::size_t task_id=0;task_id<tasks.size();++task_id) {
+            const auto& task=tasks[task_id];
+            if(task.descriptor_begin!=descriptor_end ||
+               task.descriptor_end<descriptor_end ||
+               task.descriptor_end>descriptors.size() ||
+               task.partition_begin!=partition_end ||
+               task.partition_end<partition_end ||
+               task.partition_end>partitions.size() ||
+               task.partition_end-partition_end!=
+                   task.descriptor_end-descriptor_end ||
+               task.body_begin!=body_end ||
+               task.body_end<body_end || task.body_end>ordinals ||
+               !task.position_iterations || task.position_iterations>255u ||
+               task.velocity_iterations>255u)
+                throw std::invalid_argument(
+                    "Source device Dy task ranges are inconsistent");
+            std::uint32_t max_dynamic_degree=0u,max_static_degree=0u;
+            for(std::uint32_t i=task.descriptor_begin;
+                i<task.descriptor_end;++i) {
+                const auto& desc=descriptors[i];
+                const auto flags=desc.row_count&0x300u;
+                if((desc.row_count&~0x3ffu)!=0u || !flags ||
+                   (flags&0x100u && desc.row0>=bodies) ||
+                   (flags&0x200u && desc.row1>=bodies))
+                    throw std::invalid_argument(
+                        "Sc device descriptor has invalid endpoint classification");
+                if(flags==0x300u) {
+                    max_dynamic_degree=std::max(max_dynamic_degree,
+                        ++degree_dynamic_[desc.row0]);
+                    max_dynamic_degree=std::max(max_dynamic_degree,
+                        ++degree_dynamic_[desc.row1]);
+                }else {
+                    const auto body=flags&0x100u?desc.row0:desc.row1;
+                    max_static_degree=std::max(max_static_degree,
+                        ++degree_static_[body]);
+                }
+            }
+            for(std::uint32_t i=task.descriptor_begin;
+                i<task.descriptor_end;++i) {
+                const auto& desc=descriptors[i];
+                if(desc.row_count&0x100u) {
+                    degree_dynamic_[desc.row0]=0u;
+                    degree_static_[desc.row0]=0u;
+                }
+                if(desc.row_count&0x200u) {
+                    degree_dynamic_[desc.row1]=0u;
+                    degree_static_[desc.row1]=0u;
+                }
+            }
+            const auto count=task.descriptor_end-task.descriptor_begin;
+            const std::size_t bound=std::min<std::size_t>(count,
+                (max_dynamic_degree?2u*std::size_t(max_dynamic_degree)-1u:0u)+
+                max_static_degree);
+            color_bounds_[task_id]=static_cast<std::uint32_t>(bound);
+            descriptor_end=task.descriptor_end;
+            partition_end=task.partition_end;
+            body_end=task.body_end;
+            // A 512-way disjoint partition requires at least 512
+            // independently writable dynamic solver bodies. This keeps
+            // compact connected islands inside their one-group PGS path.
+            if(task.body_end-task.body_begin<wide_min || count<wide_min)
+                continue;
+            wide_tasks_.push_back(static_cast<std::uint32_t>(task_id));
+            last_schedule_.max_partition_groups=std::max(
+                last_schedule_.max_partition_groups,
+                (std::size_t(count)+threads-1u)/threads);
+            partition_levels=std::max(partition_levels,bound);
+            wide_iterations_=std::max(wide_iterations_,
+                task.position_iterations+
+                    std::max(task.velocity_iterations,1u));
+            position_ends_[task.position_iterations-1u]=true;
+        }
+        if(descriptor_end!=descriptors.size() ||
+           partition_end!=partitions.size() || body_end!=ordinals)
+            throw std::invalid_argument(
+                "Source device Dy task input stream is incomplete");
+        if(wide_tasks_.empty())return;
+        last_schedule_.wide_tasks=wide_tasks_.size();
+        std::size_t wide_index=0u;
+        for(std::size_t task=0;task<tasks.size();++task) {
+            if(wide_index<wide_tasks_.size() &&
+               task==wide_tasks_[wide_index])++wide_index;
+            else tiles_.push_back({
+                static_cast<std::uint32_t>(task),0u,0u});
+        }
+        fused_tiles_.count=tiles_.size();
+        const auto append_tiles=[&](std::uint32_t task,
+                                    std::uint32_t begin,
+                                    std::uint32_t end,std::uint32_t step) {
+            while(begin<end) {
+                const auto next=begin+std::min(step,end-begin);
+                tiles_.push_back({task,begin,next});
+                begin=next;
+            }
+        };
+        prep_tiles_.begin=tiles_.size();
+        for(const auto id:wide_tasks_) {
+            const auto& task=tasks[id];
+            append_tiles(id,task.descriptor_begin,task.descriptor_end,
+                         prep_managers);
+        }
+        prep_tiles_.count=tiles_.size()-prep_tiles_.begin;
+        body_tiles_.begin=tiles_.size();
+        for(const auto id:wide_tasks_) {
+            const auto& task=tasks[id];
+            append_tiles(id,task.body_begin,task.body_end,threads);
+        }
+        body_tiles_.count=tiles_.size()-body_tiles_.begin;
+        // Device colors have not been computed yet. Upper bounds come
+        // from endpoint degrees, not a host conflict-colored schedule.
+        // Each tile resolves its actual color interval in the shader.
+        partition_tiles_.resize(partition_levels);
+        for(const auto id:wide_tasks_) {
+            const auto& task=tasks[id];
+            const auto count=task.descriptor_end-task.descriptor_begin;
+            const auto tile_count=(std::size_t(count)+threads-1u)/threads;
+            for(std::uint32_t color=0u;color<color_bounds_[id];++color) {
+                auto& range=partition_tiles_[color];
+                range.count+=tile_count;
+                range.iterations=std::max(range.iterations,
+                    task.position_iterations+
+                        std::max(task.velocity_iterations,1u));
+            }
+        }
+        std::size_t end=tiles_.size();
+        for(auto& range:partition_tiles_) {
+            range.begin=end;
+            end+=range.count;
+            range.count=0u;
+        }
+        tiles_.resize(end);
+        for(const auto id:wide_tasks_) {
+            const auto& task=tasks[id];
+            const auto count=task.descriptor_end-task.descriptor_begin;
+            for(std::uint32_t color=0u;color<color_bounds_[id];++color) {
+                auto& range=partition_tiles_[color];
+                for(std::uint32_t offset=0u;offset<count;) {
+                    const auto next=offset+std::min(threads,count-offset);
+                    tiles_[range.begin+range.count++]={id,offset,next,color};
+                    offset=next;
+                }
+            }
+        }
+        last_schedule_.tile_bytes=tiles_.size()*sizeof(WorkTile);
+    }
+
     void build_launch_plan(std::span<const native::GpuDyDistanceTask> tasks,
                            std::span<const std::uint32_t> partitions,
                            std::uint32_t descriptors,std::uint32_t ordinals) {
@@ -975,6 +1144,7 @@ private:
     std::vector<std::size_t> patch_anchor_starts_;
     std::vector<std::uint8_t> assigned_;
     std::vector<std::uint32_t> wide_tasks_;
+    std::vector<std::uint32_t> degree_dynamic_,degree_static_,color_bounds_;
     std::vector<WorkTile> tiles_;
     std::vector<TileRange> partition_tiles_;
     TileRange fused_tiles_,prep_tiles_,body_tiles_;
