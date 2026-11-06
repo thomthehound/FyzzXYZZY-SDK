@@ -2033,6 +2033,94 @@ void verify_gpu_wide_island_solver(
     }
 }
 
+// A chain of zero-response contacts shares an accurate island with
+// responding joint bodies, but its contact-only actors do not enter
+// the Dy integration-writeback ordinal list. Every colored descriptor
+// must still have a tile, including those actors' contact managers.
+void verify_gpu_zero_response_wide_island(
+    fyzz::compute::Backend backend,const char* sap,const char* pcm,
+    const char* dy_shader) {
+    using namespace fyzz;
+    std::ifstream input(dy_shader,std::ios::binary);
+    require(bool(input),"Compiled wide Dy shader unavailable");
+    const std::vector<char> binary{
+        std::istreambuf_iterator<char>{input},
+        std::istreambuf_iterator<char>{}};
+    compute::ShaderBinary shader{};
+    shader.format=backend==compute::Backend::Vulkan
+        ? compute::ShaderFormat::Spirv:compute::ShaderFormat::Dxil;
+    shader.bytes.assign(binary.begin(),binary.end());
+    native::Scene cpu,gpu;
+    cpu.set_enhanced_determinism(true);
+    gpu.set_enhanced_determinism(true);
+    auto owner=std::make_unique<physx_gpu::SourceScOwnedGpuBroadphaseNative>(
+        backend,load_native_gpu_sap_shaders(backend,sap),8192u,128u,
+        std::nullopt,load_native_gpu_pcm_shaders(backend,pcm),
+        std::move(shader));
+    auto* producer=owner.get();
+    gpu.set_gpu_broadphase(std::move(owner));
+
+    constexpr unsigned joint_bodies=640u,zero_contact_bodies=1024u;
+    const auto assemble=[](native::Scene& scene) {
+        std::vector<BodyId> ids;
+        ids.reserve(joint_bodies+zero_contact_bodies);
+        RigidBodyDynamics response{};
+        response.gravity_enabled=false;
+        response.position_iterations=4u;
+        response.velocity_iterations=2u;
+        BodyId previous=0u;
+        for(unsigned i=0u;i<joint_bodies;++i) {
+            const auto body=scene.add_dynamic_box(
+                {0.35f,0.35f,0.35f},
+                {1.4f*static_cast<float>(i),0.5f,0.f},1.f);
+            ids.push_back(body);
+            scene.set_dynamics(body,response);
+            scene.set_velocity(body,{0.025f,0.f,0.f});
+            if(i)scene.create_center_distance_constraint(
+                previous,body,1.4f);
+            previous=body;
+        }
+        RigidBodyDynamics zero=response;
+        zero.max_contact_impulse=0.f;
+        for(unsigned i=0u;i<zero_contact_bodies;++i) {
+            const auto body=scene.add_dynamic_box(
+                {0.41f,0.41f,0.41f},
+                {0.75f*static_cast<float>(i),0.5f,
+                 i==0u?0.7f:1.f},1.f);
+            ids.push_back(body);
+            scene.set_dynamics(body,zero);
+            scene.set_velocity(body,{0.005f,0.f,0.f});
+        }
+        return ids;
+    };
+    const auto a=assemble(cpu),b=assemble(gpu);
+    cpu.step(1.f/120.f);
+    gpu.step(1.f/120.f);
+    const auto schedule=producer->dy_launch_stats();
+    require(cpu.largest_accurate_island_size()>=
+                joint_bodies+zero_contact_bodies &&
+            gpu.largest_accurate_island_size()>=
+                joint_bodies+zero_contact_bodies &&
+            schedule.wide_tasks==1u &&
+            schedule.device_colored_descriptors>=
+                joint_bodies+zero_contact_bodies-2u &&
+            schedule.tile_bytes>0u &&
+            schedule.tile_bytes<=schedule.device_colored_descriptors*
+                sizeof(native::GpuDyDistanceDescriptor) &&
+            cpu.contacts().size()==gpu.contacts().size(),
+        "Zero-response contact endpoints lost device Dy partition coverage");
+    for(std::size_t i=0u;i<b.size();++i)
+        test::compound_compare_state(gpu.body_state(b[i]),
+            cpu.body_state(a[i]),0.003f,
+            "Wide Dy zero-response contact and joint island");
+    std::cout<<"FYZZXYZZY_METRIC suite=sc_pcm case=zero_response_wide"
+             <<" bodies="<<b.size()
+             <<" descriptors="<<schedule.device_colored_descriptors
+             <<" max_partition_groups="<<schedule.max_partition_groups
+             <<" dy_dispatches="<<schedule.dispatches
+             <<" tile_bytes="<<schedule.tile_bytes<<'\\n';
+}
+
 // One shared dynamic endpoint forces more than one 32-color wave.
 // Mixed static contact and 1D rows must reserve subsequent colors
 // without writing one dynamic body from concurrent PGS lanes.
@@ -2157,6 +2245,7 @@ int main(int argc,char** argv) {
                 scenario=="sphere_solver" || scenario=="convex_plane" ||
                 scenario=="convex_finite" || scenario=="wide_islands" ||
                 scenario=="wide_islands_10k" ||
+                scenario=="zero_response_wide" ||
                 scenario=="star_island" ||
                 scenario=="star_island_warp" ||
                 scenario=="star_island_10k" ||
@@ -2228,6 +2317,10 @@ int main(int argc,char** argv) {
         if(scenario=="all" || scenario=="free_integration")
             fyzz::tests::measure_gpu_case("sc_pcm","free_integration",
                 [&]{verify_gpu_free_integration(backend,argv[1],argv[2],argv[3]);});
+        if(scenario=="all" || scenario=="zero_response_wide")
+            fyzz::tests::measure_gpu_case("sc_pcm","zero_response_wide",
+                [&]{verify_gpu_zero_response_wide_island(
+                    backend,argv[1],argv[2],argv[3]);});
         if(scenario=="all" || scenario=="wide_islands")
             fyzz::tests::measure_gpu_case("sc_pcm","multiwave_coloring",
                 [&]{verify_gpu_high_degree_coloring(
