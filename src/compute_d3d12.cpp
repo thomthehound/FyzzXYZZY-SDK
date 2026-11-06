@@ -38,6 +38,13 @@ namespace {
 
 using Microsoft::WRL::ComPtr;
 
+// Read single-character build/test switches without CRT environment copies.
+bool environment_equals(const char* name, char expected) {
+    char value[2]{};
+    return GetEnvironmentVariableA(name,value,sizeof(value))==1u &&
+           value[0]==expected;
+}
+
 void check(HRESULT hr, const char* operation) {
     if (FAILED(hr)) {
         throw std::runtime_error(std::string(operation) + " failed (HRESULT " +
@@ -331,8 +338,7 @@ struct Context::Impl {
         if (ordinal >= adapters.size())
             throw std::out_of_range("D3D12 adapter ordinal does not exist");
         info = adapters[ordinal].info;
-        if (const char* required = std::getenv("FYZZXYZZY_D3D12_REQUIRE_HARDWARE");
-            required && std::string(required) == "1") {
+        if (environment_equals("FYZZXYZZY_D3D12_REQUIRE_HARDWARE",'1')) {
             DXGI_ADAPTER_DESC1 description{};
             check(adapters[ordinal].adapter->GetDesc1(&description),
                   "GetDesc1 for D3D12 hardware verification");
@@ -340,15 +346,12 @@ struct Context::Impl {
                 throw std::runtime_error(
                     "D3D12 hardware verification requires a physical GPU");
         }
-        const char* debug_env = std::getenv("FYZZXYZZY_D3D12_DEBUG");
-        if (debug_env && std::string(debug_env) == "1") {
+        if (environment_equals("FYZZXYZZY_D3D12_DEBUG",'1')) {
             ComPtr<ID3D12Debug> debug;
             if (SUCCEEDED(D3D12GetDebugInterface(IID_PPV_ARGS(&debug)))) {
                 debug->EnableDebugLayer();
-                const char* gpu_validation =
-                    std::getenv("FYZZXYZZY_D3D12_GPU_VALIDATION");
                 const bool enable_gpu_validation =
-                    !gpu_validation || std::string(gpu_validation) != "0";
+                    !environment_equals("FYZZXYZZY_D3D12_GPU_VALIDATION",'0');
                 if (enable_gpu_validation) {
                     ComPtr<ID3D12Debug1> gpu_debug;
                     if (SUCCEEDED(debug.As(&gpu_debug)))

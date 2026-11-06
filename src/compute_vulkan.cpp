@@ -261,7 +261,7 @@ struct Context::Impl {
         bool cacheable_batch = false;
         std::uint32_t descriptor_capacity = 0;
         std::uint32_t set_capacity = 0;
-        DescriptorReuse descriptors;
+        DescriptorReuse descriptors{};
     };
     struct CachedBatch {
         VkCommandBuffer commands = VK_NULL_HANDLE;
@@ -1727,8 +1727,8 @@ struct Context::Impl {
                     const bool reads = binding.access != BufferAccess::Write;
                     const bool writes = binding.access != BufferAccess::Read;
                     const VkAccessFlags mask =
-                        (reads ? VK_ACCESS_SHADER_READ_BIT : 0u) |
-                        (writes ? VK_ACCESS_SHADER_WRITE_BIT : 0u);
+                        (reads ? VkAccessFlags(VK_ACCESS_SHADER_READ_BIT) : 0u) |
+                        (writes ? VkAccessFlags(VK_ACCESS_SHADER_WRITE_BIT) : 0u);
                     auto found = std::find_if(operation_uses.begin(), operation_uses.end(),
                         [&](const auto& entry) { return entry.first == binding.buffer; });
                     if (found == operation_uses.end()) {

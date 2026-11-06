@@ -24,8 +24,8 @@ class SyncImpl
   public:
 	pthread_mutex_t mutex;
 	pthread_cond_t cond;
-	volatile int setCounter;
-	volatile bool is_set;
+	int setCounter;
+	bool is_set;
 };
 
 SyncImpl* getSync(PxSyncImpl* impl)
