@@ -2010,6 +2010,8 @@ void verify_gpu_wide_island_solver(
                 schedule.max_partition_groups>=partition_groups &&
                 schedule.max_partition_groups<=
                     (connected_bodies+127u)/128u &&
+                schedule.tile_bytes<=schedule.device_colored_descriptors*
+                    sizeof(native::GpuDyDistanceDescriptor) &&
                 schedule.dispatches>7u,
                 "Connected Dy islands did not execute tiled conflict partitions");
         require(producer->dy_upload_span_count()==1u &&
@@ -2155,6 +2157,7 @@ int main(int argc,char** argv) {
                 scenario=="convex_finite" || scenario=="wide_islands" ||
                 scenario=="wide_islands_10k" ||
                 scenario=="star_island" ||
+                scenario=="star_island_warp" ||
                 scenario=="star_island_10k" ||
                 scenario=="free_integration",
                 "Unknown GPU scene regression scenario");
@@ -2233,6 +2236,10 @@ int main(int argc,char** argv) {
             fyzz::tests::measure_gpu_case("sc_pcm","star_island",
                 [&]{verify_gpu_high_degree_coloring(
                     backend,argv[1],argv[2],argv[3],1024u);});
+        if(scenario=="star_island_warp")
+            fyzz::tests::measure_gpu_case("sc_pcm","star_island_warp",
+                [&]{verify_gpu_high_degree_coloring(
+                    backend,argv[1],argv[2],argv[3],512u);});
         if(scenario=="star_island_10k")
             fyzz::tests::measure_gpu_case("sc_pcm","star_island_10k",
                 [&]{verify_gpu_high_degree_coloring(
