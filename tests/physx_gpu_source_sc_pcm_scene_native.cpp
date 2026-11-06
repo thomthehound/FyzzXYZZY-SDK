@@ -2083,10 +2083,17 @@ void verify_gpu_high_degree_coloring(
         }
         return ids;
     };
-    const auto a=assemble(cpu),b=assemble(gpu);
     if(leaves>=1024u)
         std::cerr<<"FYZZXYZZY_METRIC suite=sc_pcm case=star_island"
-                 <<" spokes="<<leaves<<" phase=assembled\n";
+                 <<" spokes="<<leaves<<" phase=setup\n";
+    const auto a=assemble(cpu);
+    if(leaves>=1024u)
+        std::cerr<<"FYZZXYZZY_METRIC suite=sc_pcm case=star_island"
+                 <<" spokes="<<leaves<<" phase=cpu_assembled\n";
+    const auto b=assemble(gpu);
+    if(leaves>=1024u)
+        std::cerr<<"FYZZXYZZY_METRIC suite=sc_pcm case=star_island"
+                 <<" spokes="<<leaves<<" phase=gpu_assembled\n";
     const unsigned frames=leaves>=10000u?1u:leaves>=1024u?2u:3u;
     for(unsigned frame=0u;frame<frames;++frame) {
         const auto tick=std::chrono::steady_clock::now();
