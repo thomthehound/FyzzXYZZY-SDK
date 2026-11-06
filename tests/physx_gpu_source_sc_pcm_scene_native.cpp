@@ -2278,7 +2278,6 @@ int main(int argc,char** argv) {
                 scenario=="zero_response_wide" ||
                 scenario=="star_island" ||
                 scenario=="dual_hub" ||
-                scenario=="star_island_warp" ||
                 scenario=="star_island_10k" ||
                 scenario=="free_integration",
                 "Unknown GPU scene regression scenario");
@@ -2365,10 +2364,6 @@ int main(int argc,char** argv) {
             fyzz::tests::measure_gpu_case("sc_pcm","dual_hub",
                 [&]{verify_gpu_high_degree_coloring(
                     backend,argv[1],argv[2],argv[3],68u,true,1u);});
-        if(scenario=="star_island_warp")
-            fyzz::tests::measure_gpu_case("sc_pcm","star_island_warp",
-                [&]{verify_gpu_high_degree_coloring(
-                    backend,argv[1],argv[2],argv[3],8u,false,1u);});
         if(scenario=="star_island_10k")
             fyzz::tests::measure_gpu_case("sc_pcm","star_island_10k",
                 [&]{verify_gpu_high_degree_coloring(

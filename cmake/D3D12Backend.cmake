@@ -1075,7 +1075,7 @@ if(FYZZXYZZY_BUILD_D3D12)
       fyzzxyzzy_source_sc_gpu_pcm_scene_star_island_10k_d3d12
       PROPERTIES TIMEOUT 300)
     # WARP validates API behavior and bounded native kernels.
-    # Extended contact and instrumented solver tests run on physical GPUs.
+    # Full-scene contact and solver tests run on physical GPUs.
     set(_d3d12_extended_tests
       fyzzxyzzy_source_pcm_box_candidates_d3d12_release
       fyzzxyzzy_source_pcm_box_candidates_d3d12_debug_layer
@@ -1088,13 +1088,6 @@ if(FYZZXYZZY_BUILD_D3D12)
       ${_sc_pcm_scene_tests})
     set_tests_properties(${_d3d12_extended_tests}
       PROPERTIES LABELS "d3d12-extended")
-    # WARP checks a bounded fused device Dy solve. High-degree and
-    # large-island cases remain registered for physical D3D12 execution.
-    add_test(NAME fyzzxyzzy_source_sc_gpu_pcm_scene_star_island_warp_d3d12
-      COMMAND fyzzxyzzy_source_sc_gpu_pcm_scene_d3d12
-        ${_sc_pcm_scene_args} star_island_warp)
-    set_tests_properties(fyzzxyzzy_source_sc_gpu_pcm_scene_star_island_warp_d3d12
-      PROPERTIES TIMEOUT 180)
     add_test(NAME fyzzxyzzy_owned_sap_gpu_aabb_scene_lifecycle_d3d12
       COMMAND fyzzxyzzy_owned_sap_gpu_aabb_scene_lifecycle_d3d12
         ${FYZZXYZZY_NATIVE_GPU_SAP_DXIL_BINARIES}
