@@ -145,6 +145,7 @@ public:
                 take_pcm_shader(*pcm_shaders,NativeGpuPcmStage::Candidates),
                 take_pcm_shader(*pcm_shaders,NativeGpuPcmStage::EpaCompact),
                 take_pcm_shader(*pcm_shaders,NativeGpuPcmStage::GjkContact),
+                take_pcm_shader(*pcm_shaders,NativeGpuPcmStage::GjkPrimitive),
                 take_pcm_shader(*pcm_shaders,NativeGpuPcmStage::GjkReduce),
                 take_pcm_shader(*pcm_shaders,NativeGpuPcmStage::GjkPublish),
                 take_pcm_shader(*pcm_shaders,NativeGpuPcmStage::EpaArgsReset),

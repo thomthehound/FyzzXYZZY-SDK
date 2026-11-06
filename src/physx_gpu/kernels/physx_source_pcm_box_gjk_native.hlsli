@@ -63,6 +63,7 @@ float3 gjkShapeSupport(uint kind,float3 half,float3 direction,
                        uint first,uint count,out uint index) {
     index=0u;
     if(kind==1u)return float3(0.f,0.f,0.f);
+#ifndef FYZZXYZZY_GJK_PRIMITIVE_ONLY
     if(kind==2u) {
         float3 bestVertex=asfloat(hullVertices.Load3(
             p.hullBias+first*12u));
@@ -79,6 +80,7 @@ float3 gjkShapeSupport(uint kind,float3 half,float3 direction,
         }
         return bestVertex;
     }
+#endif
     bool3 positive=direction>0.f;
     index=(positive.x?1u:0u)|(positive.y?2u:0u)|(positive.z?4u:0u);
     return float3(positive.x?half.x:-half.x,
@@ -119,8 +121,10 @@ GjkSupportPoint gjkSupport(GjkBoxPair pair,float3 direction) {
 float3 gjkVertex(uint kind,float3 half,uint first,uint index) {
 #ifndef FYZZXYZZY_GJK_BOX_ONLY
     if(kind==1u)return float3(0.f,0.f,0.f);
+#ifndef FYZZXYZZY_GJK_PRIMITIVE_ONLY
     if(kind==2u)
         return asfloat(hullVertices.Load3(p.hullBias+(first+index)*12u));
+#endif
 #endif
     return float3((index&1u)!=0u?half.x:-half.x,
                   (index&2u)!=0u?half.y:-half.y,

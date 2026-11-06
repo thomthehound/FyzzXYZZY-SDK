@@ -17,6 +17,7 @@
 #include <cstdint>
 #include <cstring>
 #include <limits>
+#include <optional>
 #include <span>
 #include <stdexcept>
 #include <vector>
@@ -58,7 +59,8 @@ public:
         const std::uint32_t& convex_faces_base,
         const std::uint32_t& convex_indices_base,
         compute::ShaderBinary candidate,compute::ShaderBinary compact,
-        compute::ShaderBinary gjk,compute::ShaderBinary gjk_reduce,
+        compute::ShaderBinary gjk,compute::ShaderBinary gjk_primitive,
+        compute::ShaderBinary gjk_reduce,
         compute::ShaderBinary gjk_publish,
         compute::ShaderBinary epa_args_reset,compute::ShaderBinary epa,
         compute::ShaderBinary face_contacts)
@@ -88,6 +90,8 @@ public:
           dense_contacts_(allocator,physx::PxsHeapStats::eNARROWPHASE) {
         if(!stream_.bound_to(context_,addresses_))
             throw std::invalid_argument("Source Sc GPU PCM has another device stream");
+        if(staged_gjk_)
+            primitive_gjk_stage_.emplace(context_,std::move(gjk_primitive),false,true);
         // D3D12 indirect arguments require their own physical resource.
         // Separate source buddy-heap allocations can share one root UAV.
         indirect_buffer_=context_.create_buffer(
@@ -256,11 +260,13 @@ public:
                 0u,0u,0u,0u,pass);
         };
         if(staged_gjk_) {
+            const auto& advance=!convex_vertex_count_
+                ?*primitive_gjk_stage_:gjk_stage_;
             for(std::uint32_t pass=0u;pass<32u;++pass) {
-                append_gjk(gjk_stage_,pass);
+                append_gjk(advance,pass);
                 append_gjk(gjk_reduce_stage_,pass);
             }
-            append_gjk(gjk_stage_,32u);
+            append_gjk(advance,32u);
             append_gjk(gjk_publish_stage_,32u);
         }else append_gjk(gjk_stage_,0u);
         epa_pending_stage_.append(stream_,addresses_,
@@ -376,6 +382,7 @@ private:
     SourcePcmSparseEpaNativeStage sparse_stage_,epa_pending_stage_;
     bool staged_gjk_=false;
     SourcePcmEpaNativeStage gjk_stage_,gjk_reduce_stage_,gjk_publish_stage_,epa_stage_,face_stage_;
+    std::optional<SourcePcmEpaNativeStage> primitive_gjk_stage_;
     physx::PxgCudaBuffer pairs_,results_,candidates_,edges_,work_,dense_contacts_;
     compute::BufferId indirect_buffer_=0u;
     CudaDeviceAddressMap::Address indirect_address_=0u;

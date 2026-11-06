@@ -437,7 +437,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           # Validate the two production GJK shader stages before compiling
           # and running the complete PCM integration suite.
-          ctest --test-dir build-native -C Release -R '^fyzzxyzzy_source_pcm_gjk_(reduction_baseline|box_only_gpu_validation)_d3d12$' --output-on-failure --stop-on-failure
+          ctest --test-dir build-native -C Release -R '^fyzzxyzzy_source_pcm_gjk_(reduction_baseline|primitive_gpu_validation)_d3d12$' --output-on-failure --stop-on-failure
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           cmake --build build-native --config Release --target fyzzxyzzy_source_pcm_box_candidates_d3d12 --parallel 4
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

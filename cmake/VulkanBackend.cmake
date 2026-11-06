@@ -831,10 +831,11 @@ if(FYZZXYZZY_BUILD_VULKAN)
       "${FYZZXYZZY_SOURCE_PCM_FACE_SPV}"
       "${FYZZXYZZY_SOURCE_PCM_GJK_REDUCE_SPV}"
       "${FYZZXYZZY_SOURCE_PCM_GJK_PUBLISH_SPV}"
-      "${FYZZXYZZY_SOURCE_PCM_EPA_ARGS_RESET_SPV}")
-    set(_pcm_stages Candidates EpaCompact GjkContact EpaContact FaceContacts GjkReduce GjkPublish EpaArgsReset)
+      "${FYZZXYZZY_SOURCE_PCM_EPA_ARGS_RESET_SPV}"
+      "${FYZZXYZZY_SOURCE_PCM_GJK_SPV}")
+    set(_pcm_stages Candidates EpaCompact GjkContact EpaContact FaceContacts GjkReduce GjkPublish EpaArgsReset GjkPrimitive)
     set(_pcm_manifest "FYZZXYZZY_SOURCE_PCM_1 SPIRV\n")
-    foreach(_idx RANGE 0 7)
+    foreach(_idx RANGE 0 8)
       list(GET _pcm_stages ${_idx} _stage)
       list(GET _pcm_binaries ${_idx} _binary)
       get_filename_component(_name "${_binary}" NAME)
