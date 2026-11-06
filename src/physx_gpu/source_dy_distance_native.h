@@ -877,7 +877,6 @@ private:
                task.velocity_iterations>255u)
                 throw std::invalid_argument(
                     "Source device Dy task ranges are inconsistent");
-            std::uint32_t max_dynamic_degree=0u,max_static_degree=0u;
             for(std::uint32_t i=task.descriptor_begin;
                 i<task.descriptor_end;++i) {
                 const auto& desc=descriptors[i];
@@ -888,14 +887,32 @@ private:
                     throw std::invalid_argument(
                         "Sc device descriptor has invalid endpoint classification");
                 if(flags==0x300u) {
-                    max_dynamic_degree=std::max(max_dynamic_degree,
-                        ++degree_dynamic_[desc.row0]);
-                    max_dynamic_degree=std::max(max_dynamic_degree,
-                        ++degree_dynamic_[desc.row1]);
+                    ++degree_dynamic_[desc.row0];
+                    ++degree_dynamic_[desc.row1];
                 }else {
                     const auto body=flags&0x100u?desc.row0:desc.row1;
-                    max_static_degree=std::max(max_static_degree,
-                        ++degree_static_[body]);
+                    ++degree_static_[body];
+                }
+            }
+            // First-fit dynamic coloring can skip at most the colors
+            // occupied by an edge's two endpoints. After that body
+            // reserves its own static constraints in encounter order.
+            // Taking the per-edge sum avoids combining unrelated global
+            // maximum degrees, without computing any host color.
+            std::size_t bound=0u;
+            for(std::uint32_t i=task.descriptor_begin;
+                i<task.descriptor_end;++i) {
+                const auto& desc=descriptors[i];
+                const auto flags=desc.row_count&0x300u;
+                if(flags==0x300u) {
+                    const auto degree=std::size_t(degree_dynamic_[desc.row0])+
+                                      degree_dynamic_[desc.row1]-1u;
+                    const auto static_degree=std::max(
+                        degree_static_[desc.row0],degree_static_[desc.row1]);
+                    bound=std::max(bound,degree+static_degree);
+                }else {
+                    const auto body=flags&0x100u?desc.row0:desc.row1;
+                    bound=std::max(bound,std::size_t(degree_static_[body]));
                 }
             }
             for(std::uint32_t i=task.descriptor_begin;
@@ -911,9 +928,7 @@ private:
                 }
             }
             const auto count=task.descriptor_end-task.descriptor_begin;
-            const std::size_t bound=std::min<std::size_t>(count,
-                (max_dynamic_degree?2u*std::size_t(max_dynamic_degree)-1u:0u)+
-                max_static_degree);
+            bound=std::min<std::size_t>(count,bound);
             color_bounds_[task_id]=static_cast<std::uint32_t>(bound);
             descriptor_end=task.descriptor_end;
             partition_end=task.partition_end;
