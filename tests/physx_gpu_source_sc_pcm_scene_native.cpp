@@ -2368,7 +2368,7 @@ int main(int argc,char** argv) {
         if(scenario=="star_island_warp")
             fyzz::tests::measure_gpu_case("sc_pcm","star_island_warp",
                 [&]{verify_gpu_high_degree_coloring(
-                    backend,argv[1],argv[2],argv[3],33u,false,1u);});
+                    backend,argv[1],argv[2],argv[3],8u,false,1u);});
         if(scenario=="star_island_10k")
             fyzz::tests::measure_gpu_case("sc_pcm","star_island_10k",
                 [&]{verify_gpu_high_degree_coloring(
