@@ -136,7 +136,8 @@ public:
                CudaDeviceAddressMap::Address shape_geometry,
                std::uint32_t shape_capacity,
                CudaDeviceAddressMap::Address convex_vertices,
-               std::uint32_t convex_vertex_count) {
+               std::uint32_t convex_vertex_count,
+               bool device_partitions=false) {
         if(integration.size()<bodies.size() ||
            integrated_poses.size()!=integration.size() ||
            (tasks.empty() && integration.size()==bodies.size()))
