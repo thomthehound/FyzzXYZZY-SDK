@@ -189,21 +189,22 @@ uint prepBodyOffset(uint source,uint offset) {
     if(offset==24u)return base+12u;
     if(offset>=36u && offset<=60u)return base+offset-12u;
     if(offset==72u)return p.bodyBias+ordinal*52u+48u;
-    // Every device-prepared contact body retains an explicit authored
-    // mass pose. Free and joint-only bodies may use Sc's resident cache.
-    if(offset==0u || offset==80u) {
-        const uint count=arena.Load(p.integrationBias+32u);
-        const uint poseIndex=arena.Load(base+108u);
-        return p.integrationBias+36u+count*112u+
-               poseIndex*28u+(offset==80u?12u:0u);
-    }
     return base+offset;
+}
+// Resolve the identical Sc mass frame for fixed and integrated participants.
+// A tagged body with no host pose reads the authorized device transform.
+bool prepBodyPose(uint source,out float3 position,out float4 orientation) {
+    if((source&1u)==0u) {
+        const uint base=p.prepBias+source;
+        position=asfloat(arena.Load3(base));
+        orientation=asfloat(arena.Load4(base+80u));
+        return all(isfinite(position)) && all(isfinite(orientation));
+    }
+    const uint input=p.integrationBias+36u+(source>>1u)*112u;
+    return sourceDyMassPose(input,position,orientation);
 }
 float3 prepBody3(uint source,uint offset) {
     return asfloat(arena.Load3(prepBodyOffset(source,offset)));
-}
-float4 prepBody4(uint source,uint offset) {
-    return asfloat(arena.Load4(prepBodyOffset(source,offset)));
 }
 float prepBodyFloat(uint source,uint offset) {
     return asfloat(arena.Load(prepBodyOffset(source,offset)));
@@ -263,8 +264,12 @@ void prepareContactRow(uint index,uint pairIndex,uint contactBegin,
         separation=asfloat(arena.Load(raw+24u));
         arena.Store3(co,asuint(n));
     }
-    float3 p0=prepBody3(b0,0u);
-    float3 p1=prepBody3(b1,0u);
+    float3 p0,p1;
+    float4 q0,q1;
+    if(!prepBodyPose(b0,p0,q0) || !prepBodyPose(b1,p1,q1)) {
+        arena.InterlockedOr(errorAddress,524288u);
+        return;
+    }
     float3 v0=prepBody3(b0,12u);
     float3 v1=prepBody3(b1,12u);
     float3 w0=prepBody3(b0,24u);
@@ -349,12 +354,6 @@ void prepareContactRow(uint index,uint pairIndex,uint contactBegin,
     prepStoreScalar(co+52u,unbiasedError);
 }
 
-float3 prepRotate(uint body,float3 local) {
-    float4 q=prepBody4(body,80u);
-    float3 u=q.xyz;
-    float3 t=cross(u,local)*2.0f;
-    return local+q.w*t+cross(u,t);
-}
 void prepareFrictionRow(uint index,uint patchIndex,uint pairIndex,
                         uint errorAddress) {
     if(index>=p.frictionCount || pairIndex>=p.prepCount) {
@@ -393,10 +392,14 @@ void prepareFrictionRow(uint index,uint patchIndex,uint pairIndex,
         }
         anchor=p.contactBias-backward+slot*24u;
     }
-    float3 r0=prepRotate(b0,asfloat(arena.Load3(anchor)));
-    float3 r1=prepRotate(b1,asfloat(arena.Load3(anchor+12u)));
-    float3 p0=prepBody3(b0,0u);
-    float3 p1=prepBody3(b1,0u);
+    float3 p0,p1;
+    float4 q0,q1;
+    if(!prepBodyPose(b0,p0,q0) || !prepBodyPose(b1,p1,q1)) {
+        arena.InterlockedOr(errorAddress,524288u);
+        return;
+    }
+    float3 r0=sourceRigidRotate(q0,asfloat(arena.Load3(anchor)));
+    float3 r1=sourceRigidRotate(q1,asfloat(arena.Load3(anchor+12u)));
     float3 v0=prepBody3(b0,12u);
     float3 v1=prepBody3(b1,12u);
     float3 w0=prepBody3(b0,24u);
@@ -503,8 +506,15 @@ void growPcmFrictionAnchors(uint patchIndex,uint pairIndex,
     bool changed[2]={false,false};
     float pointDistance=0.0f;
     if(!keepPair) {
-        if(count==1u)anchors[0]=prepRotate(body0,local0)+
-                                 prepBody3(body0,0u);
+        float3 position0,position1;
+        float4 orientation0,orientation1;
+        if(!prepBodyPose(body0,position0,orientation0) ||
+           !prepBodyPose(body1,position1,orientation1)) {
+            arena.InterlockedOr(errorAddress,524288u);
+            return;
+        }
+        if(count==1u)
+            anchors[0]=sourceRigidRotate(orientation0,local0)+position0;
         float limit=asfloat(arena.Load(pair+8u))+0.04f;
         [loop]
         for(uint j=0u;j<patch.y;++j) {
@@ -549,10 +559,8 @@ void growPcmFrictionAnchors(uint patchIndex,uint pairIndex,
         for(uint k=0u;k<2u;++k) {
             if(k>=count || !changed[k])continue;
             float3 w=anchors[k];
-            float3 a=prepBody3(body0,0u);
-            float3 b=prepBody3(body1,0u);
-            float4 qa=prepBody4(body0,80u);
-            float4 qb=prepBody4(body1,80u);
+            float3 a=position0,b=position1;
+            float4 qa=orientation0,qb=orientation1;
             float3 da=w-a,db=w-b;
             float3 ta=cross(-qa.xyz,da)*2.0f;
             float3 tb=cross(-qb.xyz,db)*2.0f;

@@ -926,6 +926,18 @@ void verify_gpu_coupled_solver(
             cpu.set_dynamics(capped_cpu,capped_dynamics);
             gpu.set_dynamics(capped_gpu,capped_dynamics);
         }
+        if(frame==6u) {
+            // An authored edit invalidates this contact body's device
+            // pose without evicting the other active contact bodies.
+            const auto original=cpu.body_state(capped_cpu);
+            const auto current=gpu.body_state(capped_gpu);
+            cpu.set_pose(capped_cpu,
+                {original.position.x+0.12f,original.position.y,
+                 original.position.z},original.orientation);
+            gpu.set_pose(capped_gpu,
+                {current.position.x+0.12f,current.position.y,
+                 current.position.z},current.orientation);
+        }
         cpu.step(dt);
         gpu.step(dt);
         native::GpuPcmFrictionAnchorFixture::verify(cpu,gpu);
@@ -934,6 +946,24 @@ void verify_gpu_coupled_solver(
         if(frame>0u)
             require(producer->last_frame().device_cached_box_count>0u,
                 "Source Dy integrated Sc pose was reuploaded to GPU SAP");
+        const auto integrated=producer->dy_gpu_integrated_body_count();
+        const auto resident=producer->dy_resident_pose_count();
+        const auto host_pose_bytes=producer->dy_host_pose_upload_bytes();
+        require(integrated>=3u && resident<=integrated &&
+                host_pose_bytes==(integrated-resident)*
+                    sizeof(physx_gpu::SourceDyHostPoseNative),
+            "GPU Dy resident contact poses have inconsistent transfer accounting");
+        if(frame==0u)
+            require(resident==0u,
+                "First Sc contact solve reused an unauthorized device pose");
+        else if(frame==6u)
+            require(resident>=2u && resident<integrated &&
+                    host_pose_bytes>=sizeof(physx_gpu::SourceDyHostPoseNative),
+                "Authored Sc contact pose did not invalidate only its device owner");
+        else
+            require(resident>=2u && host_pose_bytes<=
+                    sizeof(physx_gpu::SourceDyHostPoseNative),
+                "Active GPU contact bodies still upload authored mass poses");
         const auto [uploaded,downloaded]=producer->dy_distance_transfer_bytes();
         const auto prep_saving=producer->dy_contact_prep_upload_saving();
         // Compare writeback with the source-sized upload baseline. The
@@ -1611,6 +1641,23 @@ void verify_sphere_gpu_solver(
         }
         cpu.step(dt);
         gpu.step(dt);
+        const auto integrated=producer->dy_gpu_integrated_body_count();
+        const auto resident=producer->dy_resident_pose_count();
+        const auto uploaded=producer->dy_host_pose_upload_bytes();
+        require(integrated==gpu_ids.size() && resident<=integrated &&
+                uploaded==(integrated-resident)*
+                    sizeof(physx_gpu::SourceDyHostPoseNative),
+            "GPU sphere mass poses have inconsistent source upload accounting");
+        if(frame==0u)
+            require(resident==0u,
+                "New sphere actors reused unauthorised device mass poses");
+        else if(frame==3u)
+            require(resident<integrated && uploaded>0u,
+                "Authored sphere quaternion did not invalidate its device pose");
+        else
+            require(resident>=2u && uploaded<=
+                    sizeof(physx_gpu::SourceDyHostPoseNative),
+                "Sphere contact preparation still uploads mass poses");
         require(cpu.contacts().size()==gpu.contacts().size() &&
                 cpu.solved_normal_impulses().size()==
                     gpu.solved_normal_impulses().size(),
