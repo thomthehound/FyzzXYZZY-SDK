@@ -33,6 +33,11 @@ function(fyzzxyzzy_add_native_gpu_libraries primitives world world_alias compute
     PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
   target_link_libraries(${primitives} PUBLIC
     ${compute} fyzzxyzzy_physx_cuda_host_address)
+  if(FYZZXYZZY_ENABLE_PHYSX_SOURCE)
+    target_link_libraries(${primitives} PUBLIC physx_lib)
+  else()
+    target_link_libraries(${primitives} PUBLIC fyzzxyzzy_physx_source_foundation)
+  endif()
   set_target_properties(${primitives} PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
   add_library(${world} STATIC src/physx_gpu/native_gpu_world.cpp)
