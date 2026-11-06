@@ -183,20 +183,6 @@ void sourceDyPartitionTask(uint taskId,uint scratch,uint errorAddress,
         dyNextWave=0u;dySerial=0u;
     }
     AllMemoryBarrierWithGroupSync();
-    // Sc task body ordinals are disjoint across islands. Initialize
-    // each writable body exactly once instead of issuing an atomic
-    // exchange for every incident contact or joint.
-    const uint2 bodyRange=arena.Load2(task+16u);
-    for(uint i=bodyRange.x+lane;i<bodyRange.y;i+=128u) {
-        const uint ordinal=arena.Load(p.ordinalBias+i*4u);
-        if(ordinal>=p.bodyCount) {
-            arena.InterlockedOr(errorAddress,1048576u);
-            continue;
-        }
-        arena.Store3(bodyState+ordinal*12u,uint3(0u,0u,0xffffffffu));
-    }
-    AllMemoryBarrierWithGroupSync();
-    if(arena.Load(errorAddress)!=0u)return;
     for(uint i=first+lane;i<last;i+=128u) {
         const uint4 desc=arena.Load4(raw+i*16u);
         const bool da=(desc.w&0x100u)!=0u;
@@ -206,6 +192,21 @@ void sourceDyPartitionTask(uint taskId,uint scratch,uint errorAddress,
            (db && desc.z>=p.bodyCount)) {
             arena.InterlockedOr(errorAddress,1048576u);
             continue;
+        }
+        // Constraint endpoints are authoritative even when a solver
+        // task omits a body from its integration writeback ordinal list.
+        uint unused;
+        if(da) {
+            const uint state=bodyState+desc.y*12u;
+            arena.InterlockedExchange(state,0u,unused);
+            arena.InterlockedExchange(state+4u,0u,unused);
+            arena.InterlockedExchange(state+8u,0xffffffffu,unused);
+        }
+        if(db) {
+            const uint state=bodyState+desc.z*12u;
+            arena.InterlockedExchange(state,0u,unused);
+            arena.InterlockedExchange(state+4u,0u,unused);
+            arena.InterlockedExchange(state+8u,0xffffffffu,unused);
         }
         arena.Store(colors+i*4u,0xffffffffu);
         if(da && db)InterlockedAdd(dyNeeded,1u);
