@@ -1592,7 +1592,7 @@ void Scene::update_bounds() {
             const std::size_t volume_count=sap_volumes_.size();
             sap_merge_updated_flags_.resize(volume_count);
             std::fill(sap_merge_updated_flags_.begin(),
-                      sap_merge_updated_flags_.end(),0);
+                      sap_merge_updated_flags_.end(),std::uint8_t{0});
             for(const std::uint32_t slot:
                 broadphase_updated_volume_slots_)
                 sap_merge_updated_flags_[slot]=1;
