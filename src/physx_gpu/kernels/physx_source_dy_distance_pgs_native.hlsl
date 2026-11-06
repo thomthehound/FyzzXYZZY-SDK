@@ -596,6 +596,7 @@ void main(uint3 group:SV_GroupID,uint3 lane:SV_GroupThreadID) {
 
         if(fused || phase==partitionTile || phase==motionTile) {
             const uint total=iters.x+max(iters.y,1u);
+            if(!fused && iter>=total)return;
             const uint endIteration=fused ? total : min(iter+1u,total);
             for(uint iteration=fused?0u:iter;iteration<endIteration;++iteration) {
                 if(fused || phase==partitionTile) {
