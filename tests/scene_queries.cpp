@@ -78,6 +78,27 @@ void verify_sphere_flags_and_lifetime() {
     require(!world.raycast({0.f,0.f,0.f},{1.f,0.f,0.f},10.f),
         "Retired shape was returned by scene query");
 }
+void verify_closest_shape() {
+    World world({.execution=ExecutionMode::NativeCpu});
+    const auto farther=world.create_static_body({});
+    const auto far_shape=world.attach_sphere_shape(
+        farther,1.f,{{5.f,0.f,0.f},{}});
+    const auto closer=world.create_static_body({});
+    const auto near_shape=world.attach_sphere_shape(
+        closer,0.5f,{{2.f,0.f,0.f},{}});
+    auto hit=world.raycast({},{1.f,0.f,0.f},10.f);
+    require(hit && hit->shape==near_shape && hit->body==closer,
+        "Raycast did not choose nearest attached geometry");
+    near(hit->distance,1.5f,1.e-5f,"Closest ray distance");
+    world.set_shape_query_enabled(near_shape,false);
+    hit=world.raycast({},{1.f,0.f,0.f},10.f);
+    require(hit && hit->shape==far_shape && hit->body==farther,
+        "Query flag did not expose next closest shape");
+    near(hit->distance,4.f,1.e-5f,"Next closest ray distance");
+    world.detach_shape(far_shape);
+    require(!world.raycast({},{1.f,0.f,0.f},10.f),
+        "Retired closest shape remained visible");
+}
 void verify_planes() {
     World world({.execution=ExecutionMode::NativeCpu});
     const auto floor=world.add_static_floor(1.f);
@@ -133,6 +154,7 @@ void verify_input_validation() {
 int main() {
     verify_boxes_and_attachment_poses();
     verify_sphere_flags_and_lifetime();
+    verify_closest_shape();
     verify_planes();
     verify_cooked_convex();
     verify_input_validation();

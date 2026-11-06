@@ -1722,6 +1722,16 @@ void verify_compound_actor_gpu_solver(
         load_native_gpu_pcm_shaders(backend,pcm),std::move(shader),
         {.execution=ExecutionMode::NativePortableGpu,.contact_notifications=true});
     World cpu({.execution=ExecutionMode::NativeCpu,.contact_notifications=true});
+    test::compound_mass_and_motion(gpu,&cpu);
+    test::compound_contact_lifetimes(gpu,&cpu);
+    test::compound_default_contact_response(gpu,&cpu);
+    test::compound_joint_response(gpu,&cpu);
+    test::fixed_joint_response(gpu,&cpu);
+    test::spherical_joint_response(gpu,&cpu);
+    test::revolute_joint_response(gpu,&cpu);
+    test::prismatic_joint_response(gpu,&cpu);
+    test::compound_plane_box_device_pcm(gpu,&cpu);
+    test::compound_plane_sphere_device_pcm(gpu,&cpu);
     // Native GPU and CPU World APIs query the same authored attachment
     // geometry, including shapes excluded from simulation collision.
     const auto gpu_body=gpu.create_static_body({{250.f,0.f,0.f},{}});
@@ -1739,16 +1749,6 @@ void verify_compound_actor_gpu_solver(
         "Native GPU World did not expose authored scene query geometry");
     gpu.remove_body(gpu_body);
     cpu.remove_body(cpu_body);
-    test::compound_mass_and_motion(gpu,&cpu);
-    test::compound_contact_lifetimes(gpu,&cpu);
-    test::compound_default_contact_response(gpu,&cpu);
-    test::compound_joint_response(gpu,&cpu);
-    test::fixed_joint_response(gpu,&cpu);
-    test::spherical_joint_response(gpu,&cpu);
-    test::revolute_joint_response(gpu,&cpu);
-    test::prismatic_joint_response(gpu,&cpu);
-    test::compound_plane_box_device_pcm(gpu,&cpu);
-    test::compound_plane_sphere_device_pcm(gpu,&cpu);
 }
 
 void verify_gpu_free_integration(
