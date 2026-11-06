@@ -926,6 +926,18 @@ void verify_gpu_coupled_solver(
             cpu.set_dynamics(capped_cpu,capped_dynamics);
             gpu.set_dynamics(capped_gpu,capped_dynamics);
         }
+        if(frame==6u) {
+            // An authored edit invalidates this contact body's device
+            // pose without evicting the other active contact bodies.
+            const auto original=cpu.body_state(capped_cpu);
+            const auto current=gpu.body_state(capped_gpu);
+            cpu.set_pose(capped_cpu,
+                {original.position.x+0.12f,original.position.y,
+                 original.position.z},original.orientation);
+            gpu.set_pose(capped_gpu,
+                {current.position.x+0.12f,current.position.y,
+                 current.position.z},current.orientation);
+        }
         cpu.step(dt);
         gpu.step(dt);
         native::GpuPcmFrictionAnchorFixture::verify(cpu,gpu);
@@ -943,7 +955,11 @@ void verify_gpu_coupled_solver(
             "GPU Dy resident contact poses have inconsistent transfer accounting");
         if(frame==0u)
             require(resident==0u,
-                "First Sc contact solve reused an unauthorised device pose");
+                "First Sc contact solve reused an unauthorized device pose");
+        else if(frame==6u)
+            require(resident>=2u && resident<integrated &&
+                    host_pose_bytes>=sizeof(physx_gpu::SourceDyHostPoseNative),
+                "Authored Sc contact pose did not invalidate only its device owner");
         else
             require(resident>=2u && host_pose_bytes<=
                     sizeof(physx_gpu::SourceDyHostPoseNative),
