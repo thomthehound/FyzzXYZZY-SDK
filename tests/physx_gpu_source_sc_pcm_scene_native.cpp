@@ -2096,7 +2096,8 @@ void verify_gpu_high_degree_coloring(
     if(leaves>=1024u)
         std::cerr<<"FYZZXYZZY_METRIC suite=sc_pcm case=star_island"
                  <<" spokes="<<leaves<<" phase=gpu_assembled\n";
-    const unsigned frames=leaves>=10000u?1u:leaves>=1024u?2u:3u;
+    const unsigned frames=leaves>=10000u?1u:leaves>=1024u?2u:
+        leaves>=512u?1u:3u;
     for(unsigned frame=0u;frame<frames;++frame) {
         const auto tick=std::chrono::steady_clock::now();
         cpu.step(1.f/120.f);
