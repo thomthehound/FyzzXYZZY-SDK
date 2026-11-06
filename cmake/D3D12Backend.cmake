@@ -680,7 +680,7 @@ if(FYZZXYZZY_BUILD_D3D12)
         "${FYZZXYZZY_SOURCE_PCM_GJK_DXIL}"
         "${FYZZXYZZY_SOURCE_PCM_GJK_REDUCE_DXIL}" reduction)
     set_tests_properties(fyzzxyzzy_source_pcm_gjk_reduction_baseline_d3d12
-      PROPERTIES ENVIRONMENT "FYZZXYZZY_D3D12_DEBUG=1;FYZZXYZZY_D3D12_GPU_VALIDATION=0"
+      PROPERTIES ENVIRONMENT "FYZZXYZZY_D3D12_FORCE_WARP=1;FYZZXYZZY_D3D12_DEBUG=1;FYZZXYZZY_D3D12_GPU_VALIDATION=0"
       TIMEOUT 45)
     foreach(_stage IN ITEMS advance reduction)
       add_test(NAME fyzzxyzzy_source_pcm_gjk_${_stage}_gpu_validation_d3d12
@@ -689,7 +689,7 @@ if(FYZZXYZZY_BUILD_D3D12)
           "${FYZZXYZZY_SOURCE_PCM_GJK_REDUCE_DXIL}" ${_stage})
       set_tests_properties(fyzzxyzzy_source_pcm_gjk_${_stage}_gpu_validation_d3d12
         PROPERTIES
-        ENVIRONMENT "FYZZXYZZY_D3D12_DEBUG=1;FYZZXYZZY_D3D12_GPU_VALIDATION=1"
+        ENVIRONMENT "FYZZXYZZY_D3D12_FORCE_WARP=1;FYZZXYZZY_D3D12_DEBUG=1;FYZZXYZZY_D3D12_GPU_VALIDATION=1;FYZZXYZZY_D3D12_TRACE_SUBMIT=1"
         TIMEOUT 150)
     endforeach()
     fyzzxyzzy_add_gpu_test(fyzzxyzzy_source_pcm_box_candidates_d3d12
