@@ -366,7 +366,7 @@ struct Context::Impl {
         }
         check(D3D12CreateDevice(adapters[ordinal].adapter.Get(), D3D_FEATURE_LEVEL_12_0,
                                 IID_PPV_ARGS(&device)), "D3D12CreateDevice");
-        if (debug_env && std::string(debug_env) == "1")
+        if (environment_equals("FYZZXYZZY_D3D12_DEBUG",'1'))
             device.As(&debug_messages);
         D3D12_COMMAND_QUEUE_DESC q{};
         q.Type = D3D12_COMMAND_LIST_TYPE_COMPUTE;
