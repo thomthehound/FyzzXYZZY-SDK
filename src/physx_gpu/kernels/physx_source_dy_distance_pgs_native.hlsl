@@ -758,21 +758,33 @@ void main(uint3 group:SV_GroupID,uint3 lane:SV_GroupThreadID) {
             const uint endIteration=fused ? total : min(iter+1u,total);
             for(uint iteration=fused?0u:iter;iteration<endIteration;++iteration) {
                 if(fused || phase==partitionTile) {
-                    uint begin=descriptors.x;
-                    for(uint partition=partitions.x;partition<partitions.y;++partition) {
-                        uint end=descriptors.y;
-                        if(fused)end=arena.Load(p.partitionBias+partition*4u);
-                        if(!serialPartitions || lane.x==0u)
-                            solvePartition(begin,end,
-                                           serialPartitions?0u:lane.x,
-                                           iters,iteration,endError);
-                        if(fused && !serialPartitions)
-                            AllMemoryBarrierWithGroupSync();
-                        begin=end;
+                    if(serialPartitions) {
+                        if(lane.x==0u) {
+                            uint begin=descriptors.x;
+                            for(uint partition=partitions.x;
+                                partition<partitions.y;++partition) {
+                                const uint end=arena.Load(
+                                    p.partitionBias+partition*4u);
+                                solvePartition(begin,end,0u,iters,
+                                               iteration,endError);
+                                begin=end;
+                            }
+                        }
+                        AllMemoryBarrierWithGroupSync();
+                    } else {
+                        uint begin=descriptors.x;
+                        for(uint partition=partitions.x;
+                            partition<partitions.y;++partition) {
+                            uint end=descriptors.y;
+                            if(fused)
+                                end=arena.Load(p.partitionBias+partition*4u);
+                            solvePartition(begin,end,lane.x,iters,
+                                           iteration,endError);
+                            if(fused)AllMemoryBarrierWithGroupSync();
+                            begin=end;
+                        }
                     }
                 }
-                if(serialPartitions)
-                    AllMemoryBarrierWithGroupSync();
                 if((fused || phase==motionTile) && iteration+1u==iters.x) {
                     for(uint i=bodies.x+lane.x;i<bodies.y;i+=128u)
                         saveMotion(i,endError);
