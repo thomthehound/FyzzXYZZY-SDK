@@ -91,7 +91,7 @@ void main(uint3 thread : SV_DispatchThreadID) {
     const uint a=pairs.Load(source),b=pairs.Load(source+4u);
     const uint edge=pairs.Load(source+8u);
     const uint first=pairs.Load(source+12u);
-    const uint limit=pairs.Load(source+16u)&0x7fffffffu;
+    const uint limit=pairs.Load(source+16u)&0x1fffffffu;
     if(a>=p.shapeCapacity || b>=p.shapeCapacity ||
        edge>=p.edgeCapacity || first>p.candidateCapacity ||
        limit>p.candidateCapacity-first)return;

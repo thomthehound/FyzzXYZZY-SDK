@@ -165,17 +165,19 @@ public:
                std::numeric_limits<std::uint32_t>::max()-candidate_count)
                 throw std::out_of_range(
                     "Source GPU PCM candidate capacity overflow");
-            const auto reset=(request.reset_cache || reset_manifolds_)
-                ? source_pcm_reset_cache_bit : 0u;
+            const auto resetting=request.reset_cache || reset_manifolds_;
+            const auto reset=resetting?source_pcm_reset_cache_bit:0u;
+            const auto prior=resetting && request.previously_touching
+                ? source_pcm_prior_touch_bit:0u;
             const SourcePcmBoxPairNative next=request.plane_pair
                 ? SourcePcmBoxPairNative{
                     std::bit_cast<std::uint32_t>(request.plane_height),
                     second,request.edge,
                     std::bit_cast<std::uint32_t>(request.contact_distance),
-                    source_pcm_plane_bit | reset}
+                    source_pcm_plane_bit | reset | prior}
                 : SourcePcmBoxPairNative{
                     first,second,request.edge,candidate_count,
-                    request.candidate_capacity | reset};
+                    request.candidate_capacity | reset | prior};
             candidate_count+=reservation;
             // Sc's previous pair records are the transfer baseline.
             // Preserve a single ordered upload by widening one dirty
@@ -324,6 +326,8 @@ public:
             stored.status=header.status;
             stored.selected_and_regenerated=header.selected_and_regenerated;
             stored.count=header.emitted_count;
+            stored.touch_transition=static_cast<native::GpuPcmTouchTransition>(
+                header.touch_transition);
             const auto& request=requests[i];
             const auto selected_count=
                 stored.selected_and_regenerated&0x7fffffffu;
@@ -335,11 +339,14 @@ public:
                selected_count>4u || stored.cached_count>4u ||
                selected_count>stored.cached_count ||
                (regenerated && selected_count!=stored.cached_count) ||
-               stored.count>stored.cached_count)
+               stored.count>stored.cached_count ||
+               ((stored.touch_transition==native::GpuPcmTouchTransition::Found ||
+                 stored.touch_transition==native::GpuPcmTouchTransition::Persists)
+                  != (stored.count>0u)))
                 throw std::logic_error(
                     "Source GPU PCM publication disagrees with original Sc manager");
             // Only live Gu contacts cross into Sc's host manifold arena;
-            // do not copy unused lanes or materialize a second 96-byte
+            // do not copy unused lanes or materialize a second 100-byte
             // temporary record for every pair.
             std::memcpy(&stored.normal,packed.normal,sizeof(packed.normal));
             std::memcpy(stored.points.data(),packed.contacts,

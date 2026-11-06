@@ -4024,8 +4024,15 @@ void Scene::update_contacts() {
     };
     if(source_gpu_pcm) {
         gpu_pcm_pairs_.reserve(previous_pairs_.size());
+        std::size_t prior_touch_cursor=0u;
         for(std::size_t i=0;i<previous_pairs_.size();++i) {
             const Pair pair=previous_pairs_[i];
+            while(prior_touch_cursor<manifolds_.size() &&
+                  manifolds_[prior_touch_cursor].pair<pair)
+                ++prior_touch_cursor;
+            const bool previously_touching=
+                prior_touch_cursor<manifolds_.size() &&
+                manifolds_[prior_touch_cursor].pair==pair;
             const Shape& a=shapes_[pair.a];
             const Shape& b=shapes_[pair.b];
             const bool plane=a.geometry==Geometry::Plane ||
@@ -4051,13 +4058,14 @@ void Scene::update_contacts() {
                     a.geometry==Geometry::Plane?pair.b:pair.a,
                     edge,!island_edges_[edge].pcm_cache.initialized,
                     sphere?1u:16u,true,floor.position.y,
-                    a.contact_offset+b.contact_offset});
+                    a.contact_offset+b.contact_offset,previously_touching});
             }else {
                 const bool swapped=island_edges_[edge].gu_order_reversed;
                 gpu_pcm_pairs_.push_back({
                     swapped?pair.b:pair.a,swapped?pair.a:pair.b,edge,
                     !island_edges_[edge].pcm_cache.initialized,
-                    convex?4u:(sphere?1u:16u)});
+                    convex?4u:(sphere?1u:16u),false,0.f,0.f,
+                    previously_touching});
             }
         }
         gpu_pcm_results_.resize(gpu_pcm_pairs_.size());
@@ -4090,6 +4098,7 @@ void Scene::update_contacts() {
         manifold.pair = pair;
         manifold.edge_handle=edge;
         manifold.contact_offset = next_contact_points_.size();
+        std::optional<GpuPcmTouchTransition> device_touch;
         if(previously_touching)
             manifold.collision_axis=manifolds_[old_cursor].collision_axis;
 
@@ -4186,6 +4195,7 @@ void Scene::update_contacts() {
                     next_contact_points_.resize(offset+result.count);
                     manifold.pcm_result_index=
                         static_cast<std::uint32_t>(gpu_pcm_index++);
+                    device_touch=result.touch_transition;
                     // Empty Gu results have no backing point array.
                     // Never do pointer arithmetic on a null arena data().
                     std::span<ContactPoint> contacts{};
@@ -4447,14 +4457,31 @@ void Scene::update_contacts() {
         // Sc's sorted Gu contact-manager traversal already compares
         // this frame against the preceding physical-touch state. Emit
         // each transition here, without a second manifold merge pass.
-        if(manifold.count>0u) {
-            if(!previously_touching)
+        if(device_touch) {
+            const auto transition=*device_touch;
+            // Source Sc's prior publication is an independent guard
+            // against a stale or recycled GPU EdgeIndex history.
+            const bool expected_found=manifold.count>0u && !previously_touching;
+            const bool expected_persists=manifold.count>0u && previously_touching;
+            const bool expected_lost=manifold.count==0u && previously_touching;
+            if((transition==GpuPcmTouchTransition::Found)!=expected_found ||
+               (transition==GpuPcmTouchTransition::Persists)!=expected_persists ||
+               (transition==GpuPcmTouchTransition::Lost)!=expected_lost)
+                throw std::logic_error(
+                    "Source GPU Sc touch transition disagrees with edge lifetime");
+            if(transition==GpuPcmTouchTransition::Found)
                 next_found_contacts_.push_back(pair);
+            else if(transition==GpuPcmTouchTransition::Lost)
+                next_lost_contacts_.push_back(pair);
+        } else if(manifold.count>0u && !previously_touching) {
+            next_found_contacts_.push_back(pair);
+        } else if(manifold.count==0u && previously_touching) {
+            next_lost_contacts_.push_back(pair);
+        }
+        if(manifold.count>0u) {
             next_manifold_by_edge_[edge]={
                 next_manifolds_.size(),new_lookup_generation};
             next_manifolds_.push_back(manifold);
-        } else if(previously_touching) {
-            next_lost_contacts_.push_back(pair);
         }
         if(previously_touching)++old_cursor;
     }

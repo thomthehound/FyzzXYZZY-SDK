@@ -49,7 +49,8 @@ void verify(Context& context,const char* transform_shader,
     // Exercise every contact lane with byte-exact IEEE float preservation.
     SourcePcmGpuContactStreamNative fixture{};
     fixture.edge_handle=197u;
-    fixture.packed_counts=4u|(4u<<6u)|(1u<<9u)|(4u<<10u);
+    fixture.packed_counts=4u|(4u<<6u)|(1u<<9u)|(4u<<10u)|
+        (1u<<13u);
     fixture.normal[0]=0.25f;
     fixture.normal[1]=-0.5f;
     fixture.normal[2]=0.75f;
@@ -63,6 +64,7 @@ void verify(Context& context,const char* transform_shader,
     require(unpacked.edge_handle==197u && unpacked.cached_count==4u &&
             unpacked.status==0u && unpacked.emitted_count==4u &&
             unpacked.selected_and_regenerated==0x80000004u &&
+            unpacked.touch_transition==fyzz::native::GpuPcmTouchTransition::Found &&
             std::memcmp(unpacked.normal,fixture.normal,
                         sizeof(unpacked.normal))==0 &&
             std::memcmp(unpacked.contacts,fixture.contacts,
@@ -70,11 +72,13 @@ void verify(Context& context,const char* transform_shader,
             "Packed GPU PCM record changed a full four-witness Gu manifold");
     // An invalid source manager must remain rejectable after counter
     // saturation; never turn an out-of-range count into a valid witness.
-    fixture.packed_counts=7u|(1u<<3u)|(7u<<6u)|(1u<<9u)|(7u<<10u);
+    fixture.packed_counts=7u|(1u<<3u)|(7u<<6u)|(1u<<9u)|(7u<<10u)|
+        (3u<<13u);
     const auto invalid_stream=unpack_source_pcm_sc_contact_native(fixture);
     require(invalid_stream.edge_handle==197u && invalid_stream.cached_count==7u &&
             invalid_stream.status==1u && invalid_stream.emitted_count==7u &&
-            invalid_stream.selected_and_regenerated==0x80000007u,
+            invalid_stream.selected_and_regenerated==0x80000007u &&
+            invalid_stream.touch_transition==fyzz::native::GpuPcmTouchTransition::Lost,
             "Packed PCM counters hid an invalid Sc source manager");
     constexpr float z=0.3826834323650898f;
     constexpr float w=0.9238795325112867f;
@@ -242,8 +246,8 @@ void verify(Context& context,const char* transform_shader,
         for(std::size_t i=0u;i<packed.size();++i)
             published[i]=unpack_source_pcm_sc_contact_native(packed[i]);
     };
-    require(sizeof(packed[0])==84u && sizeof(published[0])==96u,
-            "Source PCM packed GPU record does not save twelve bytes per pair");
+    require(sizeof(packed[0])==84u && sizeof(published[0])==100u,
+            "Source PCM packed GPU record does not preserve compact device storage");
     SourceScBoxTransformBoundsNativeStage producer(
         context,shader(transform_shader));
     SourcePcmBoxCandidatesNativeStage pcm(context,shader(candidate_shader));
@@ -1023,6 +1027,45 @@ void verify(Context& context,const char* transform_shader,
         "Sc GPU PCM reset reused or cleared unreachable Gu witnesses");
     pairs[separated_pair].candidate_capacity&=~source_pcm_reset_cache_bit;
 
+    // One persistent source edge must publish touch, separation, return,
+    // and rollback-reset continuity without a second device graph.
+    const auto original_x=boxes[0].position[0];
+    const auto advance_touch=[&] {
+        context.upload(root,input_offset,boxes.data(),sizeof(boxes));
+        context.upload(root,pair_offset,pairs.data(),sizeof(pairs));
+        SourceSapDmaNative stream(context,addresses);
+        producer.append(stream,addresses,inputs,bounds,transforms,geometry,
+                        inputs,0u,
+                        static_cast<std::uint32_t>(boxes.size()),capacity);
+        pcm.append(stream,addresses,transforms,geometry,pair_data,
+                   result_data,candidate_data,edge_data,args_data,output_data,
+                   transforms,0u,
+                   static_cast<std::uint32_t>(pairs.size()),capacity,
+                   static_cast<std::uint32_t>(candidates.size()),edge_capacity);
+        stream.wait_at_fetch();
+        download_publication();
+        require(published[0].status==0u,
+                "Source device Sc touch publication failed");
+    };
+    boxes[0].position[0]=100.f;
+    advance_touch();
+    require(published[0].emitted_count==0u &&
+            published[0].touch_transition==
+                fyzz::native::GpuPcmTouchTransition::Lost,
+            "Separating the same GPU Sc edge did not publish touch loss");
+    boxes[0].position[0]=original_x;
+    advance_touch();
+    require(published[0].emitted_count>0u &&
+            published[0].touch_transition==
+                fyzz::native::GpuPcmTouchTransition::Found,
+            "Returning GPU Sc contact did not publish a new physical touch");
+    pairs[0].candidate_capacity|=
+        source_pcm_reset_cache_bit|source_pcm_prior_touch_bit;
+    advance_touch();
+    require(published[0].emitted_count>0u &&
+            published[0].touch_transition==
+                fyzz::native::GpuPcmTouchTransition::Persists,
+            "Reset source Sc edge discarded its previously published touch");
 
     release_allocations();
 }

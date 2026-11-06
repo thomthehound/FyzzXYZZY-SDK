@@ -62,8 +62,10 @@ void sourcePcmPlanePair(uint index,uint boxElement,uint edge,uint result,
         }
         const uint count=touching?1u:0u;
         publishPair(result,count,count,0u,edge,0u,count,0u,1u);
+        const uint transition=sourceScTouchTransition(
+            edge,count,0u,p.edgeCacheBias,p.edgeCapacity);
         streamContacts.Store2(dst,uint2(edge,count|(count<<6u)|
-            (1u<<9u)|(count<<10u)));
+            (1u<<9u)|(count<<10u)|(transition<<13u)));
         streamContacts.Store3(dst+8u,asuint(float3(0.f,1.f,0.f)));
         return;
     }
@@ -375,9 +377,11 @@ void sourcePcmPlanePair(uint index,uint boxElement,uint edge,uint result,
     }
     publishPair(result,count,count!=0u?1u:0u,0u,edge,0u,
                 count,0u,regenerate?1u:0u);
+    const uint transition=sourceScTouchTransition(
+        edge,emitted,0u,p.edgeCacheBias,p.edgeCapacity);
     streamContacts.Store2(dst,uint2(edge,
         count | (count<<6u) | ((regenerate?1u:0u)<<9u) |
-        (emitted<<10u)));
+        (emitted<<10u) | (transition<<13u)));
     // Device Dy consumes the same already-oriented Sc normal as the
     // completed host manifold. The source plane-first Gu reversal is
     // performed here, before any GPU contact-row preparation.

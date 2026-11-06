@@ -2,6 +2,19 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 thomthehound
 // SPDX-License-Identifier: Apache-2.0
 
+// Physical-touch history belongs to the persistent Sc EdgeIndex record.
+// The candidate pass snapshots the prior published touch at +76, so GJK,
+// EPA and convex face continuations can publish repeatedly in one frame.
+uint sourceScTouchTransition(uint edge,uint emitted,uint status,
+                             uint edgeBias,uint edgeCapacity) {
+    if(status!=0u || edge>=edgeCapacity)return 0u;
+    uint state=edgeBias+edge*240u;
+    uint prior=edgeCaches.Load(state+76u)&1u;
+    uint current=emitted!=0u?1u:0u;
+    edgeCaches.Store(state+72u,current);
+    return current!=0u?(prior!=0u?2u:1u):(prior!=0u?3u:0u);
+}
+
 // Publish Gu world contacts from the lane that finalizes the Sc EdgeIndex.
 void publishScContacts(uint i,uint first,uint second,uint edge,uint result,
                        uint outputBias,uint transformBias,uint geometryBias,
@@ -69,8 +82,11 @@ void publishScContacts(uint i,uint first,uint second,uint edge,uint result,
             }
         }
     }
+    uint transition=sourceScTouchTransition(
+        edge,emitted,status,edgeBias,edgeCapacity);
     uint packed=min(count,7u) | (min(status,7u)<<3u) |
-        selectedBits | regenBit | (min(emitted,7u)<<10u);
+        selectedBits | regenBit | (min(emitted,7u)<<10u) |
+        (transition<<13u);
     streamContacts.Store2(dst,uint2(resultEdge,packed));
     streamContacts.Store3(dst+8u,asuint(normal));
 }
