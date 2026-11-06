@@ -156,6 +156,7 @@ bool sourceDyMassPose(uint input,out float3 position,out float4 quaternion) {
 // Static reservations follow the source descriptor encounter order.
 groupshared uint dyNeeded,dyAssigned,dyWave,dyProgress,dyHighest;
 groupshared uint dyNextWave,dySerial;
+groupshared uint dySingletonPartitions;
 
 void sourceDyPartitionTask(uint taskId,uint scratch,uint errorAddress,
                            uint lane) {
@@ -731,6 +732,26 @@ void main(uint3 group:SV_GroupID,uint3 lane:SV_GroupThreadID) {
             AllMemoryBarrierWithGroupSync();
         }
 
+        bool serialPartitions=false;
+        if(fused && partitions.y-partitions.x>=128u) {
+            // A narrow, deeply dependent island may have thousands of
+            // singleton colors. All of those writes occur in the same
+            // lane, so per-color group barriers have no consumer.
+            if(lane.x==0u) {
+                uint begin=descriptors.x;
+                dySingletonPartitions=1u;
+                for(uint color=partitions.x;color<partitions.y;++color) {
+                    const uint end=arena.Load(p.partitionBias+color*4u);
+                    if(end-begin!=1u) {
+                        dySingletonPartitions=0u;
+                        break;
+                    }
+                    begin=end;
+                }
+            }
+            AllMemoryBarrierWithGroupSync();
+            serialPartitions=dySingletonPartitions!=0u;
+        }
         if(fused || phase==partitionTile || phase==motionTile) {
             const uint total=iters.x+max(iters.y,1u);
             if(!fused && iter>=total)return;
@@ -741,11 +762,17 @@ void main(uint3 group:SV_GroupID,uint3 lane:SV_GroupThreadID) {
                     for(uint partition=partitions.x;partition<partitions.y;++partition) {
                         uint end=descriptors.y;
                         if(fused)end=arena.Load(p.partitionBias+partition*4u);
-                        solvePartition(begin,end,lane.x,iters,iteration,endError);
-                        if(fused)AllMemoryBarrierWithGroupSync();
+                        if(!serialPartitions || lane.x==0u)
+                            solvePartition(begin,end,
+                                           serialPartitions?0u:lane.x,
+                                           iters,iteration,endError);
+                        if(fused && !serialPartitions)
+                            AllMemoryBarrierWithGroupSync();
                         begin=end;
                     }
                 }
+                if(serialPartitions)
+                    AllMemoryBarrierWithGroupSync();
                 if((fused || phase==motionTile) && iteration+1u==iters.x) {
                     for(uint i=bodies.x+lane.x;i<bodies.y;i+=128u)
                         saveMotion(i,endError);
