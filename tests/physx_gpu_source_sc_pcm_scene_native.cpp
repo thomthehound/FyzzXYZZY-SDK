@@ -1722,6 +1722,23 @@ void verify_compound_actor_gpu_solver(
         load_native_gpu_pcm_shaders(backend,pcm),std::move(shader),
         {.execution=ExecutionMode::NativePortableGpu,.contact_notifications=true});
     World cpu({.execution=ExecutionMode::NativeCpu,.contact_notifications=true});
+    // Native GPU and CPU World APIs query the same authored attachment
+    // geometry, including shapes excluded from simulation collision.
+    const auto gpu_body=gpu.create_static_body({{250.f,0.f,0.f},{}});
+    const auto cpu_body=cpu.create_static_body({{250.f,0.f,0.f},{}});
+    const auto gpu_shape=gpu.attach_sphere_shape(gpu_body,0.5f);
+    const auto cpu_shape=cpu.attach_sphere_shape(cpu_body,0.5f);
+    gpu.set_shape_simulation_enabled(gpu_shape,false);
+    cpu.set_shape_simulation_enabled(cpu_shape,false);
+    const auto gpu_hit=gpu.raycast({247.f,0.f,0.f},{1.f,0.f,0.f},10.f);
+    const auto cpu_hit=cpu.raycast({247.f,0.f,0.f},{1.f,0.f,0.f},10.f);
+    require(gpu_hit && cpu_hit && gpu_hit->shape==gpu_shape &&
+            cpu_hit->shape==cpu_shape &&
+            std::abs(gpu_hit->distance-cpu_hit->distance)<1.e-5f &&
+            std::abs(gpu_hit->normal.x+1.f)<1.e-5f,
+        "Native GPU World did not expose authored scene query geometry");
+    gpu.remove_body(gpu_body);
+    cpu.remove_body(cpu_body);
     test::compound_mass_and_motion(gpu,&cpu);
     test::compound_contact_lifetimes(gpu,&cpu);
     test::compound_default_contact_response(gpu,&cpu);

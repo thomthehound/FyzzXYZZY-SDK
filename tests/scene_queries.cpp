@@ -29,7 +29,7 @@ void verify_boxes_and_attachment_poses() {
     require(!world.raycast({-3.f,0.f,0.f},{-1.f,0.f,0.f},10.f),
         "Ray pointing away from a box hit it");
     hit=world.raycast({0.f,0.f,0.f},{1.f,0.f,0.f},10.f);
-    require(hit,"Ray starting inside box missed");
+    require(hit.has_value(),"Ray starting inside box missed");
     near(hit->distance,0.f,1.e-6f,"Inside-box initial hit distance");
     near(hit->normal.x,-1.f,1.e-5f,"Inside-box initial hit normal");
 
@@ -62,13 +62,13 @@ void verify_sphere_flags_and_lifetime() {
     near(hit->normal.x,-1.f,1.e-5f,"Sphere surface normal");
 
     world.set_shape_simulation_enabled(shape,false);
-    require(world.raycast({0.f,0.f,0.f},{1.f,0.f,0.f},10.f),
+    require(world.raycast({0.f,0.f,0.f},{1.f,0.f,0.f},10.f).has_value(),
         "Simulation flag incorrectly disabled scene query");
     world.set_shape_query_enabled(shape,false);
     require(!world.raycast({0.f,0.f,0.f},{1.f,0.f,0.f},10.f),
         "Query-disabled attachment remained visible");
     world.set_shape_query_enabled(shape,true);
-    require(world.raycast({0.f,0.f,0.f},{1.f,0.f,0.f},10.f),
+    require(world.raycast({0.f,0.f,0.f},{1.f,0.f,0.f},10.f).has_value(),
         "Query-enabled attachment was not readmitted");
     world.detach_shape(shape);
     require(!world.raycast({0.f,0.f,0.f},{1.f,0.f,0.f},10.f),
@@ -82,7 +82,7 @@ void verify_planes() {
     near(hit->distance,2.f,1.e-5f,"Floor ray distance");
     near(hit->normal.y,1.f,1.e-5f,"Floor ray normal from above");
     hit=world.raycast({0.f,-1.f,0.f},{0.f,1.f,0.f},10.f);
-    require(hit,"Floor ray from below missed");
+    require(hit.has_value(),"Floor ray from below missed");
     near(hit->distance,2.f,1.e-5f,"Floor ray from below distance");
     near(hit->normal.y,-1.f,1.e-5f,"Floor ray normal from below");
     require(!world.raycast({0.f,3.f,0.f},{1.f,0.f,0.f},10.f),
@@ -110,7 +110,7 @@ void verify_cooked_convex() {
     require(!world.raycast({-3.f,3.f,0.f},{1.f,0.f,0.f},10.f),
         "Cooked convex exterior ray produced a hit");
     hit=world.raycast({0.f,0.f,0.f},{0.f,0.f,1.f},10.f);
-    require(hit,"Inside convex ray missed");
+    require(hit.has_value(),"Inside convex ray missed");
     near(hit->distance,0.f,1.e-6f,"Inside convex hit distance");
     near(hit->normal.z,-1.f,1.e-5f,"Inside convex hit normal");
 }
