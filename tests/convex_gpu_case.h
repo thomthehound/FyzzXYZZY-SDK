@@ -202,7 +202,21 @@ inline void verify_convex_finite_gpu_solver(
                         std::to_string(frame)+" pair "+std::to_string(i)+
                         " point "+std::to_string(j)+
                         " depth="+std::to_string(a.separation)+"/"+
-                        std::to_string(b.separation));
+                        std::to_string(b.separation)+
+                        " position="+
+                        std::to_string(a.position.x)+","+
+                        std::to_string(a.position.y)+","+
+                        std::to_string(a.position.z)+"/"+
+                        std::to_string(b.position.x)+","+
+                        std::to_string(b.position.y)+","+
+                        std::to_string(b.position.z)+
+                        " normal="+
+                        std::to_string(a.normal.x)+","+
+                        std::to_string(a.normal.y)+","+
+                        std::to_string(a.normal.z)+"/"+
+                        std::to_string(b.normal.x)+","+
+                        std::to_string(b.normal.y)+","+
+                        std::to_string(b.normal.z));
             }
         }
         if(frame==0u) {
