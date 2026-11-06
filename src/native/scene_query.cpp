@@ -118,7 +118,8 @@ std::optional<RaycastHit> Scene::raycast(
     const float direction_scale=std::max({
         std::abs(direction.x),std::abs(direction.y),std::abs(direction.z)});
     if(!std::isfinite(origin.x) || !std::isfinite(origin.y) ||
-       !std::isfinite(origin.z) || !std::isfinite(direction_scale) ||
+       !std::isfinite(origin.z) || !std::isfinite(direction.x) ||
+       !std::isfinite(direction.y) || !std::isfinite(direction.z) ||
        !(direction_scale>0.f) || !std::isfinite(max_distance) ||
        !(max_distance>0.f))
         throw std::invalid_argument("Raycast requires finite origin, nonzero direction and positive range");
