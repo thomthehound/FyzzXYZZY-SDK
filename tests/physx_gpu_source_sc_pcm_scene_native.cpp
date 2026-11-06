@@ -2028,6 +2028,77 @@ void verify_gpu_wide_island_solver(
     }
 }
 
+// One shared dynamic endpoint forces more than one 32-color wave.
+// Mixed static contact and 1D rows must reserve subsequent colors
+// without writing one dynamic body from concurrent PGS lanes.
+void verify_gpu_high_degree_coloring(
+    fyzz::compute::Backend backend,const char* sap,const char* pcm,
+    const char* dy_shader) {
+    using namespace fyzz;
+    std::ifstream input(dy_shader,std::ios::binary);
+    require(bool(input),"High-degree GPU Dy shader unavailable");
+    const std::vector<char> binary{
+        std::istreambuf_iterator<char>{input},
+        std::istreambuf_iterator<char>{}};
+    compute::ShaderBinary shader{};
+    shader.format=backend==compute::Backend::Vulkan
+        ? compute::ShaderFormat::Spirv:compute::ShaderFormat::Dxil;
+    shader.bytes.assign(binary.begin(),binary.end());
+    native::Scene cpu,gpu;
+    cpu.set_enhanced_determinism(true);
+    gpu.set_enhanced_determinism(true);
+    auto owner=std::make_unique<physx_gpu::SourceScOwnedGpuBroadphaseNative>(
+        backend,load_native_gpu_sap_shaders(backend,sap),512u,128u,
+        std::nullopt,load_native_gpu_pcm_shaders(backend,pcm),
+        std::move(shader));
+    auto* producer=owner.get();
+    gpu.set_gpu_broadphase(std::move(owner));
+    const auto assemble=[](native::Scene& scene) {
+        constexpr unsigned leaves=36u;
+        std::vector<BodyId> ids;
+        ids.reserve(leaves+1u);
+        const auto fixed=scene.add_static_box(
+            {0.4f,0.4f,0.4f},{-0.72f,3.f,0.f});
+        const auto center=scene.add_dynamic_box(
+            {0.4f,0.4f,0.4f},{0.f,3.f,0.f},1.f);
+        ids.push_back(center);
+        RigidBodyDynamics dynamics{};
+        dynamics.gravity_enabled=false;
+        dynamics.position_iterations=4u;
+        dynamics.velocity_iterations=1u;
+        scene.set_dynamics(center,dynamics);
+        scene.set_velocity(center,{0.05f,0.f,0.07f});
+        scene.create_center_distance_constraint(fixed,center,0.72f);
+        for(unsigned i=0u;i<leaves;++i) {
+            const float x=3.f+1.5f*static_cast<float>(i);
+            const auto body=scene.add_dynamic_box(
+                {0.3f,0.3f,0.3f},{x,3.f,0.f},1.f);
+            ids.push_back(body);
+            scene.set_dynamics(body,dynamics);
+            scene.set_velocity(body,
+                {-0.03f,0.f,i%2u ? 0.02f:-0.02f});
+            scene.create_center_distance_constraint(center,body,x);
+        }
+        return ids;
+    };
+    const auto a=assemble(cpu),b=assemble(gpu);
+    for(unsigned frame=0u;frame<3u;++frame) {
+        cpu.step(1.f/120.f);
+        gpu.step(1.f/120.f);
+        const auto schedule=producer->dy_launch_stats();
+        require(schedule.device_colored_tasks>0u &&
+                schedule.device_colored_descriptors>=37u &&
+                schedule.wide_tasks==0u &&
+                gpu.contacts().size()==cpu.contacts().size() &&
+                !gpu.contacts().empty(),
+            "High-degree Dy task did not color joint/contact rows on device");
+        for(std::size_t i=0u;i<a.size();++i)
+            test::compound_compare_state(gpu.body_state(b[i]),
+                cpu.body_state(a[i]),0.015f,
+                "GPU Dy multiwave dynamic/static constraint coloring");
+    }
+}
+
 int main(int argc,char** argv) {
     try {
         require(argc>=4 && argc<=6,
@@ -2112,6 +2183,10 @@ int main(int argc,char** argv) {
         if(scenario=="all" || scenario=="free_integration")
             fyzz::tests::measure_gpu_case("sc_pcm","free_integration",
                 [&]{verify_gpu_free_integration(backend,argv[1],argv[2],argv[3]);});
+        if(scenario=="all" || scenario=="wide_islands")
+            fyzz::tests::measure_gpu_case("sc_pcm","multiwave_coloring",
+                [&]{verify_gpu_high_degree_coloring(
+                    backend,argv[1],argv[2],argv[3]);});
         if(scenario=="all" || scenario=="wide_islands" || scenario=="wide_islands_10k") {
             const bool large=scenario=="wide_islands_10k";
             fyzz::tests::measure_gpu_case("sc_pcm",large ? "wide_islands_10k" : "wide_islands",
