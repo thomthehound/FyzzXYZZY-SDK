@@ -2,7 +2,7 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 thomthehound
 // SPDX-License-Identifier: Apache-2.0
 //
-// GuGJKPenetration box support and GJK terminal cases. EPA admission is
+// GuGJKPenetration finite-shape support and GJK terminal cases. EPA admission is
 // returned explicitly; no substitute penetration witness is fabricated.
 
 struct GjkBoxPair {
@@ -58,7 +58,6 @@ float gjkDot(float3 a,float3 b) {
 }
 float gjkLength2(float3 v) { return gjkDot(v,v); }
 
-#ifndef FYZZXYZZY_GJK_BOX_ONLY
 float3 gjkShapeSupport(uint kind,float3 half,float3 direction,
                        uint first,uint count,out uint index) {
     index=0u;
@@ -87,44 +86,26 @@ float3 gjkShapeSupport(uint kind,float3 half,float3 direction,
                   positive.y?half.y:-half.y,
                   positive.z?half.z:-half.z);
 }
-#endif
 
 GjkSupportPoint gjkSupport(GjkBoxPair pair,float3 direction) {
     const float3 directionA=rotateSource(
         conjugate(pair.relative),direction);
     GjkSupportPoint s;
-#ifdef FYZZXYZZY_GJK_BOX_ONLY
-    const bool3 positiveA=directionA>0.f;
-    const bool3 positiveB=-direction>0.f;
-    s.ai=(positiveA.x?1u:0u)|(positiveA.y?2u:0u)|(positiveA.z?4u:0u);
-    s.bi=(positiveB.x?1u:0u)|(positiveB.y?2u:0u)|(positiveB.z?4u:0u);
-    const float3 localA=float3(
-        positiveA.x?pair.halfA.x:-pair.halfA.x,
-        positiveA.y?pair.halfA.y:-pair.halfA.y,
-        positiveA.z?pair.halfA.z:-pair.halfA.z);
-    s.b=float3(
-        positiveB.x?pair.halfB.x:-pair.halfB.x,
-        positiveB.y?pair.halfB.y:-pair.halfB.y,
-        positiveB.z?pair.halfB.z:-pair.halfB.z);
-#else
     const float3 localA=gjkShapeSupport(
         pair.kindA,pair.halfA,directionA,
         pair.firstA,pair.countA,s.ai);
     s.b=gjkShapeSupport(
         pair.kindB,pair.halfB,-direction,
         pair.firstB,pair.countB,s.bi);
-#endif
     s.a=pair.aInB+rotateSource(pair.relative,localA);
     s.q=s.a-s.b;
     return s;
 }
 float3 gjkVertex(uint kind,float3 half,uint first,uint index) {
-#ifndef FYZZXYZZY_GJK_BOX_ONLY
     if(kind==1u)return float3(0.f,0.f,0.f);
 #ifndef FYZZXYZZY_GJK_PRIMITIVE_ONLY
     if(kind==2u)
         return asfloat(hullVertices.Load3(p.hullBias+(first+index)*12u));
-#endif
 #endif
     return float3((index&1u)!=0u?half.x:-half.x,
                   (index&2u)!=0u?half.y:-half.y,
