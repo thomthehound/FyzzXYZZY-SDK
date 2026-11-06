@@ -19,14 +19,16 @@ groupshared GjkSupportPoint epa_vertices[64];
 groupshared EpaFacet epa_facets[64];
 groupshared EpaEdge epa_boundary[32];
 
-EpaFacet epaFacet(uint i,uint j,uint k) {
+EpaFacet epaFacet(GjkBoxPair pair,uint i,uint j,uint k) {
     EpaFacet result=(EpaFacet)0;
     float3 a=epa_vertices[i].q;
     float3 e0=epa_vertices[j].q-a,e1=epa_vertices[k].q-a;
     float3 normal=cross(e0,e1);
     float norm2=gjkLength2(normal);
-    float edgeProduct=gjkLength2(e0)*gjkLength2(e1);
-    if(!(norm2>1.1920928955078125e-7f*edgeProduct))return result;
+    float minArea=1.1920928955078125e-7f;
+    if(pair.kindA==2u || pair.kindB==2u)
+        minArea*=gjkLength2(e0)*gjkLength2(e1);
+    if(!(norm2>minArea))return result;
     normal*=1.f/sqrt(norm2);
     result.i=i;result.j=j;result.k=k;
     result.normal=normal;
@@ -58,8 +60,8 @@ bool epaInitialize(
         epa_vertices[count++]=gjkSupport(pair,perpendicular);
     }
     if(count==3u) {
-        EpaFacet f0=epaFacet(0u,1u,2u);
-        EpaFacet f1=epaFacet(1u,0u,2u);
+        EpaFacet f0=epaFacet(pair,0u,1u,2u);
+        EpaFacet f1=epaFacet(pair,1u,0u,2u);
         if(f0.valid==0u || f1.valid==0u)return false;
         epa_facets[facetCount++]=f0;
         epa_facets[facetCount++]=f1;
@@ -76,7 +78,7 @@ bool epaInitialize(
         uint3(0u,1u,2u),uint3(0u,3u,1u),
         uint3(0u,2u,3u),uint3(1u,3u,2u)};
     for(uint i=0u;i<4u;++i) {
-        EpaFacet f=epaFacet(faces[i].x,faces[i].y,faces[i].z);
+        EpaFacet f=epaFacet(pair,faces[i].x,faces[i].y,faces[i].z);
         if(f.valid==0u)return false;
         epa_facets[facetCount++]=f;
     }
@@ -245,7 +247,7 @@ bool epaBoxContinuation(GjkBoxPair pair,
                         const uint newIndex=epa_vertex_count-1u;
                         for(uint i=0u;i<boundaryCount;++i) {
                             const EpaEdge edge=epa_boundary[i];
-                            EpaFacet f=epaFacet(edge.from,edge.to,newIndex);
+                            EpaFacet f=epaFacet(pair,edge.from,edge.to,newIndex);
                             if(f.valid==0u) {
                                 epa_finished=1u;
                                 break;

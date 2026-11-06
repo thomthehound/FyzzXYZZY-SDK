@@ -198,17 +198,19 @@ struct Facet {
 // The source EPA accepts a negative plane distance when an initial
 // point/segment/triangle has not yet enclosed the origin; flipping
 // every face to positive would erase exactly that contact branch.
-Facet make_facet(const std::array<Support,64>& vertices,
+Facet make_facet(const BoxPair& pair,
+                 const std::array<Support,64>& vertices,
                  int i,int j,int k) {
     const Vec3 a=vertices[i].q,b=vertices[j].q,c=vertices[k].q;
     const Vec3 e0=sub(b,a),e1=sub(c,a);
     Vec3 n=cross(e0,e1);
     const float norm2=length2(n);
-    // Facet area is a fourth-order length. Compare against the two
-    // edge lengths so valid small hulls do not lose EPA contacts.
-    const float edge_product=length2(e0)*length2(e1);
-    if(!(norm2>std::numeric_limits<float>::epsilon()*edge_product))
-        return {};
+    // Preserve primitive Gu facet admission. Cooked hulls require a
+    // scale-relative area threshold to retain small valid geometry.
+    float min_area=std::numeric_limits<float>::epsilon();
+    if(!pair.vertices_a.empty() || !pair.vertices_b.empty())
+        min_area*=length2(e0)*length2(e1);
+    if(!(norm2>min_area))return {};
     n=mul(n,1.0f/std::sqrt(norm2));
     return {i,j,k,n,dot(n,a),true};
 }
@@ -241,8 +243,8 @@ bool initialize_epa(const BoxPair& pair,
         vertices[count++]=pair.support(perpendicular);
     }
     if(count==3) {
-        const Facet f0=make_facet(vertices,0,1,2);
-        const Facet f1=make_facet(vertices,1,0,2);
+        const Facet f0=make_facet(pair,vertices,0,1,2);
+        const Facet f1=make_facet(pair,vertices,1,0,2);
         if(!f0.valid || !f1.valid)return false;
         facets[facet_count++]=f0;
         facets[facet_count++]=f1;
@@ -258,7 +260,7 @@ bool initialize_epa(const BoxPair& pair,
     }};
     for(const auto& face:tetra_faces) {
         const Facet facet=make_facet(
-            vertices,face[0],face[1],face[2]);
+            pair,vertices,face[0],face[1],face[2]);
         if(!facet.valid)return false;
         facets[facet_count++]=facet;
     }
@@ -385,7 +387,7 @@ bool epa(const BoxPair& pair,
             // These horizon edges come from removed (visible) facets.
             // The surviving neighbor has opposite winding, so this
             // orientation already matches source addFacet(target,source).
-            Facet f=make_facet(vertices,e.from,e.to,new_index);
+            Facet f=make_facet(pair,vertices,e.from,e.to,new_index);
             if(!f.valid)return false;
             // GuEPA.cpp::addFacet accepts triangles outside the
             // current upper bound as topology, but not heap entries.
