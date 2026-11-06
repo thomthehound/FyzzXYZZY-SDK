@@ -2118,7 +2118,7 @@ void verify_gpu_zero_response_wide_island(
              <<" descriptors="<<schedule.device_colored_descriptors
              <<" max_partition_groups="<<schedule.max_partition_groups
              <<" dy_dispatches="<<schedule.dispatches
-             <<" tile_bytes="<<schedule.tile_bytes<<'\\n';
+             <<" tile_bytes="<<schedule.tile_bytes<<'\n';
 }
 
 // One shared dynamic endpoint forces more than one 32-color wave.
