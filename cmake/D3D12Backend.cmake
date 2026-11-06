@@ -519,6 +519,16 @@ if(FYZZXYZZY_BUILD_D3D12)
       DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_pcm_box_math_native.hlsli"
         "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_pcm_box_gjk_native.hlsli"
         "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_pcm_sc_contact_publish_native.hlsli")
+    set(FYZZXYZZY_SOURCE_PCM_GJK_BOX_ONLY_DXIL
+      "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_source_pcm_box_gjk_box_only_native.dxil")
+    fyzzxyzzy_compile_hlsl("${FYZZXYZZY_SOURCE_PCM_GJK_BOX_ONLY_DXIL}"
+      "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_pcm_box_gjk_native.hlsl" cs_6_0 main
+      FLAGS -DFYZZXYZZY_GJK_STAGED_ADVANCE=1 -DFYZZXYZZY_GJK_BOX_ONLY=1
+      DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_pcm_box_math_native.hlsli"
+        "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_pcm_box_gjk_native.hlsli"
+        "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_pcm_gjk_state_native.hlsli")
+    add_custom_target(fyzzxyzzy_source_pcm_gjk_box_only_shader_d3d12
+      DEPENDS "${FYZZXYZZY_SOURCE_PCM_GJK_BOX_ONLY_DXIL}")
     set(FYZZXYZZY_SOURCE_PCM_GJK_REDUCE_DXIL
       "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_source_pcm_gjk_reduce_native.dxil")
     fyzzxyzzy_compile_hlsl("${FYZZXYZZY_SOURCE_PCM_GJK_REDUCE_DXIL}"
@@ -674,7 +684,8 @@ if(FYZZXYZZY_BUILD_D3D12)
     target_link_libraries(fyzzxyzzy_source_pcm_gjk_stage_d3d12 PRIVATE
       FyzzXYZZY::ComputeD3D12 fyzzxyzzy_source_gpu_primitives_d3d12)
     add_dependencies(fyzzxyzzy_source_pcm_gjk_stage_d3d12
-      fyzzxyzzy_source_pcm_gjk_shader_d3d12)
+      fyzzxyzzy_source_pcm_gjk_shader_d3d12
+      fyzzxyzzy_source_pcm_gjk_box_only_shader_d3d12)
     add_test(NAME fyzzxyzzy_source_pcm_gjk_reduction_baseline_d3d12
       COMMAND $<TARGET_FILE:fyzzxyzzy_source_pcm_gjk_stage_d3d12>
         "${FYZZXYZZY_SOURCE_PCM_GJK_DXIL}"
@@ -682,6 +693,14 @@ if(FYZZXYZZY_BUILD_D3D12)
     set_tests_properties(fyzzxyzzy_source_pcm_gjk_reduction_baseline_d3d12
       PROPERTIES ENVIRONMENT "FYZZXYZZY_D3D12_FORCE_WARP=1;FYZZXYZZY_D3D12_DEBUG=1;FYZZXYZZY_D3D12_GPU_VALIDATION=0"
       TIMEOUT 45)
+    add_test(NAME fyzzxyzzy_source_pcm_gjk_box_only_gpu_validation_d3d12
+      COMMAND $<TARGET_FILE:fyzzxyzzy_source_pcm_gjk_stage_d3d12>
+        "${FYZZXYZZY_SOURCE_PCM_GJK_BOX_ONLY_DXIL}"
+        "${FYZZXYZZY_SOURCE_PCM_GJK_REDUCE_DXIL}" reduction)
+    set_tests_properties(fyzzxyzzy_source_pcm_gjk_box_only_gpu_validation_d3d12
+      PROPERTIES
+      ENVIRONMENT "FYZZXYZZY_D3D12_FORCE_WARP=1;FYZZXYZZY_D3D12_DEBUG=1;FYZZXYZZY_D3D12_GPU_VALIDATION=1;FYZZXYZZY_D3D12_GBV_FRONTLOAD=1;FYZZXYZZY_D3D12_TRACE_SUBMIT=1"
+      TIMEOUT 150)
     foreach(_stage IN ITEMS advance reduction)
       add_test(NAME fyzzxyzzy_source_pcm_gjk_${_stage}_gpu_validation_d3d12
         COMMAND $<TARGET_FILE:fyzzxyzzy_source_pcm_gjk_stage_d3d12>
