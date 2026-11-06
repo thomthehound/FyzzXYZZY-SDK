@@ -151,12 +151,13 @@ bool sourceDyMassPose(uint input,out float3 position,out float4 quaternion) {
 
 #include "physx_source_dy_contact_pgs_native.hlsli"
 
-// Each original Sc solver task is isolated by accurate-island body
-// ownership. A single lane assigns source-order, conflict-free
-// dynamic partitions, followed by static-contact reservations. The
-// same group consumes the compacted partitions in Dy PGS immediately.
-// Scratch is transient to this solve; Sc remains the only graph owner.
-void sourceDyPartitionTask(uint taskId,uint scratch,uint errorAddress) {
+// Sc owns task membership. One workgroup selects nonconflicting
+// dynamic edges concurrently; the original static reservation and
+// stable scatter retain source encounter order.
+groupshared uint dyNeeded,dyAssigned,dyWave,dyProgress,dyHighest;
+
+void sourceDyPartitionTask(uint taskId,uint scratch,uint errorAddress,
+                           uint lane) {
     const uint4 views=arena.Load4(scratch);
     const uint raw=scratch+views.x;
     const uint colors=scratch+views.y;
@@ -166,73 +167,125 @@ void sourceDyPartitionTask(uint taskId,uint scratch,uint errorAddress) {
     const uint4 ranges=arena.Load4(task);
     const uint first=ranges.x,last=ranges.y;
     const uint partitionFirst=ranges.z,partitionCapacity=ranges.w;
-    if(last<first || last>arena.Load(p.integrationBias+20u) ||
-       partitionCapacity<partitionFirst ||
-       partitionCapacity-partitionFirst!=last-first ||
-       partitionCapacity>p.partitionCount) {
+    if(lane==0u &&
+       (last<first || last>arena.Load(p.integrationBias+20u) ||
+        partitionCapacity<partitionFirst ||
+        partitionCapacity-partitionFirst!=last-first ||
+        partitionCapacity>p.partitionCount))
         arena.InterlockedOr(errorAddress,1048576u);
-        return;
-    }
+    AllMemoryBarrierWithGroupSync();
+    if(arena.Load(errorAddress)!=0u)return;
     const uint count=last-first;
-    for(uint i=first;i<last;++i) {
+    if(lane==0u) {
+        dyNeeded=0u;dyAssigned=0u;dyWave=0u;dyHighest=0u;
+    }
+    AllMemoryBarrierWithGroupSync();
+    for(uint i=first+lane;i<last;i+=128u) {
         const uint4 desc=arena.Load4(raw+i*16u);
-        const bool dynamicA=(desc.w&0x100u)!=0u;
-        const bool dynamicB=(desc.w&0x200u)!=0u;
-        if((desc.w&~0x3ffu)!=0u ||
-           (!dynamicA && !dynamicB) ||
-           (dynamicA && desc.y>=p.bodyCount) ||
-           (dynamicB && desc.z>=p.bodyCount)) {
+        const bool da=(desc.w&0x100u)!=0u;
+        const bool db=(desc.w&0x200u)!=0u;
+        if((desc.w&~0x3ffu)!=0u || (!da && !db) ||
+           (da && desc.y>=p.bodyCount) ||
+           (db && desc.z>=p.bodyCount)) {
             arena.InterlockedOr(errorAddress,1048576u);
-            return;
+            continue;
         }
-        if(dynamicA)arena.Store3(bodyState+desc.y*12u,uint3(0u,0u,0u));
-        if(dynamicB)arena.Store3(bodyState+desc.z*12u,uint3(0u,0u,0u));
+        uint unused;
+        if(da) {
+            const uint state=bodyState+desc.y*12u;
+            arena.InterlockedExchange(state,0u,unused);
+            arena.InterlockedExchange(state+4u,0u,unused);
+            arena.InterlockedExchange(state+8u,0xffffffffu,unused);
+        }
+        if(db) {
+            const uint state=bodyState+desc.z*12u;
+            arena.InterlockedExchange(state,0u,unused);
+            arena.InterlockedExchange(state+4u,0u,unused);
+            arena.InterlockedExchange(state+8u,0xffffffffu,unused);
+        }
         arena.Store(colors+i*4u,0xffffffffu);
+        if(da && db)InterlockedAdd(dyNeeded,1u);
     }
-    uint assigned=0u,wave=0u,highest=0u;
-    uint needed=0u;
-    for(uint i=first;i<last;++i) {
-        const uint flags=arena.Load(raw+i*16u+12u)&0x300u;
-        if(flags==0x300u)++needed;
-    }
-    while(assigned<needed) {
-        for(uint i=first;i<last;++i) {
+    AllMemoryBarrierWithGroupSync();
+    if(arena.Load(errorAddress)!=0u)return;
+
+    while(dyAssigned<dyNeeded) {
+        // A bijective index permutation prevents long chains from
+        // degenerating into a single leading-edge winner per round.
+        for(uint i=first+lane;i<last;i+=128u) {
+            if(arena.Load(colors+i*4u)!=0xffffffffu)continue;
             const uint4 desc=arena.Load4(raw+i*16u);
-            if((desc.w&0x300u)==0x300u) {
-                arena.Store(bodyState+desc.y*12u,0u);
-                arena.Store(bodyState+desc.z*12u,0u);
-            }
+            if((desc.w&0x300u)!=0x300u)continue;
+            uint unused;
+            arena.InterlockedExchange(bodyState+desc.y*12u+8u,
+                                       0xffffffffu,unused);
+            arena.InterlockedExchange(bodyState+desc.z*12u+8u,
+                                       0xffffffffu,unused);
         }
-        const uint old=assigned;
-        for(uint i=first;i<last;++i) {
+        AllMemoryBarrierWithGroupSync();
+        for(uint i=first+lane;i<last;i+=128u) {
             if(arena.Load(colors+i*4u)!=0xffffffffu)continue;
             const uint4 desc=arena.Load4(raw+i*16u);
             if((desc.w&0x300u)!=0x300u)continue;
             const uint a=bodyState+desc.y*12u;
             const uint b=bodyState+desc.z*12u;
+            if((arena.Load(a)|arena.Load(b))==0xffffffffu)continue;
+            const uint priority=i*747796405u+2891336453u;
+            uint unused;
+            arena.InterlockedMin(a+8u,priority,unused);
+            arena.InterlockedMin(b+8u,priority,unused);
+        }
+        AllMemoryBarrierWithGroupSync();
+        if(lane==0u)dyProgress=0u;
+        AllMemoryBarrierWithGroupSync();
+        for(uint i=first+lane;i<last;i+=128u) {
+            if(arena.Load(colors+i*4u)!=0xffffffffu)continue;
+            const uint4 desc=arena.Load4(raw+i*16u);
+            if((desc.w&0x300u)!=0x300u)continue;
+            const uint a=bodyState+desc.y*12u;
+            const uint b=bodyState+desc.z*12u;
+            const uint priority=i*747796405u+2891336453u;
+            if(arena.Load(a+8u)!=priority ||
+               arena.Load(b+8u)!=priority)continue;
             const uint available=~(arena.Load(a)|arena.Load(b));
             if(available==0u)continue;
             const uint bit=firstbitlow(available);
-            const uint value=wave+bit;
+            const uint value=dyWave+bit;
             if(value>=count) {
                 arena.InterlockedOr(errorAddress,1048576u);
-                return;
+                continue;
             }
             const uint mask=1u<<bit;
-            arena.Store(a,arena.Load(a)|mask);
-            arena.Store(b,arena.Load(b)|mask);
-            arena.Store(a+4u,max(arena.Load(a+4u),value+1u));
-            arena.Store(b+4u,max(arena.Load(b+4u),value+1u));
+            uint unused;
+            arena.InterlockedOr(a,mask,unused);
+            arena.InterlockedOr(b,mask,unused);
+            arena.InterlockedMax(a+4u,value+1u,unused);
+            arena.InterlockedMax(b+4u,value+1u,unused);
             arena.Store(colors+i*4u,value);
-            highest=max(highest,value+1u);
-            ++assigned;
+            InterlockedMax(dyHighest,value+1u);
+            InterlockedAdd(dyProgress,1u);
         }
-        if(assigned==old || wave>count) {
-            arena.InterlockedOr(errorAddress,1048576u);
-            return;
+        AllMemoryBarrierWithGroupSync();
+        if(lane==0u) {
+            if(dyProgress==0u)dyWave+=32u;
+            else dyAssigned+=dyProgress;
+            if(dyWave>=count && dyAssigned<dyNeeded)
+                arena.InterlockedOr(errorAddress,1048576u);
         }
-        wave+=32u;
+        AllMemoryBarrierWithGroupSync();
+        if(arena.Load(errorAddress)!=0u)return;
     }
+    for(uint i=first+lane;i<last;i+=128u) {
+        const uint4 desc=arena.Load4(raw+i*16u);
+        uint unused;
+        if((desc.w&0x100u)!=0u)
+            arena.InterlockedExchange(bodyState+desc.y*12u+8u,0u,unused);
+        if((desc.w&0x200u)!=0u)
+            arena.InterlockedExchange(bodyState+desc.z*12u+8u,0u,unused);
+    }
+    AllMemoryBarrierWithGroupSync();
+    if(lane!=0u)return;
+    uint highest=dyHighest;
     // Static and kinematic endpoints never contribute a conflicting
     // dynamic write. Each dynamic body reserves its static contacts
     // after its last dynamic/dynamic color, in source encounter order.
@@ -540,8 +593,7 @@ void main(uint3 group:SV_GroupID,uint3 lane:SV_GroupThreadID) {
         endError=t+32u;
         if(devicePartitions && (phase==colorTile ||
                                 (fused && !precolored))) {
-            if(lane.x==0u)
-                sourceDyPartitionTask(taskId,schedule.w,endError);
+            sourceDyPartitionTask(taskId,schedule.w,endError,lane.x);
             AllMemoryBarrierWithGroupSync();
             if(arena.Load(endError)!=0u) {
                 if(lane.x==0u)
