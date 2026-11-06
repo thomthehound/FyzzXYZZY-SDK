@@ -6,6 +6,7 @@
 
 #include <array>
 #include <cmath>
+#include <limits>
 #include <stdexcept>
 
 using namespace fyzz;
@@ -156,6 +157,11 @@ void verify_input_validation() {
     try {world.raycast({},{1.f,0.f,0.f},0.f);}
     catch(const std::invalid_argument&) {rejected=true;}
     require(rejected,"Zero ray distance not rejected");
+    rejected=false;
+    try {
+        world.raycast({},{1.f,std::numeric_limits<float>::quiet_NaN(),0.f},10.f);
+    } catch(const std::invalid_argument&) {rejected=true;}
+    require(rejected,"Nonfinite ray direction not rejected");
 }
 }
 int main() {
