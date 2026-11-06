@@ -2035,7 +2035,7 @@ void verify_gpu_wide_island_solver(
 // without writing one dynamic body from concurrent PGS lanes.
 void verify_gpu_high_degree_coloring(
     fyzz::compute::Backend backend,const char* sap,const char* pcm,
-    const char* dy_shader) {
+    const char* dy_shader,unsigned leaves=36u) {
     using namespace fyzz;
     std::ifstream input(dy_shader,std::ios::binary);
     require(bool(input),"High-degree GPU Dy shader unavailable");
@@ -2055,8 +2055,7 @@ void verify_gpu_high_degree_coloring(
         std::move(shader));
     auto* producer=owner.get();
     gpu.set_gpu_broadphase(std::move(owner));
-    const auto assemble=[](native::Scene& scene) {
-        constexpr unsigned leaves=36u;
+    const auto assemble=[leaves](native::Scene& scene) {
         std::vector<BodyId> ids;
         ids.reserve(leaves+1u);
         const auto fixed=scene.add_static_box(
@@ -2084,20 +2083,31 @@ void verify_gpu_high_degree_coloring(
         return ids;
     };
     const auto a=assemble(cpu),b=assemble(gpu);
-    for(unsigned frame=0u;frame<3u;++frame) {
+    const unsigned frames=leaves>=10000u?1u:leaves>=1024u?2u:3u;
+    for(unsigned frame=0u;frame<frames;++frame) {
         cpu.step(1.f/120.f);
         gpu.step(1.f/120.f);
         const auto schedule=producer->dy_launch_stats();
         require(schedule.device_colored_tasks>0u &&
-                schedule.device_colored_descriptors>=37u &&
+                schedule.device_colored_descriptors>=leaves+1u &&
                 schedule.wide_tasks==0u &&
+                schedule.max_partition_groups==1u &&
+                schedule.tile_bytes==0u &&
+                schedule.dispatches<=2u &&
+                producer->dy_gpu_integrated_body_count()==b.size() &&
                 gpu.contacts().size()==cpu.contacts().size() &&
                 !gpu.contacts().empty(),
-            "High-degree Dy task did not color joint/contact rows on device");
+            "High-degree Dy task emitted empty tiled partitions");
         for(std::size_t i=0u;i<a.size();++i)
             test::compound_compare_state(gpu.body_state(b[i]),
                 cpu.body_state(a[i]),0.015f,
                 "GPU Dy multiwave dynamic/static constraint coloring");
+        if(frame==0u && leaves>=1024u)
+            std::cout<<"FYZZXYZZY_METRIC suite=sc_pcm case=star_island"
+                     <<" spokes="<<leaves
+                     <<" dy_dispatches="<<schedule.dispatches
+                     <<" wide_tasks="<<schedule.wide_tasks
+                     <<" tile_bytes="<<schedule.tile_bytes<<'\n';
     }
 }
 
@@ -2117,7 +2127,9 @@ int main(int argc,char** argv) {
                 scenario=="compound_shapes" || scenario=="compound_solver" ||
                 scenario=="sphere_solver" || scenario=="convex_plane" ||
                 scenario=="convex_finite" || scenario=="wide_islands" ||
-                scenario=="wide_islands_10k" || scenario=="free_integration",
+                scenario=="wide_islands_10k" ||
+                scenario=="star_island_10k" ||
+                scenario=="free_integration",
                 "Unknown GPU scene regression scenario");
 #ifdef FYZZXYZZY_TEST_D3D12
         constexpr auto backend=fyzz::compute::Backend::D3D12;
@@ -2185,10 +2197,18 @@ int main(int argc,char** argv) {
         if(scenario=="all" || scenario=="free_integration")
             fyzz::tests::measure_gpu_case("sc_pcm","free_integration",
                 [&]{verify_gpu_free_integration(backend,argv[1],argv[2],argv[3]);});
-        if(scenario=="all" || scenario=="wide_islands")
+        if(scenario=="all" || scenario=="wide_islands") {
             fyzz::tests::measure_gpu_case("sc_pcm","multiwave_coloring",
                 [&]{verify_gpu_high_degree_coloring(
                     backend,argv[1],argv[2],argv[3]);});
+            fyzz::tests::measure_gpu_case("sc_pcm","star_island",
+                [&]{verify_gpu_high_degree_coloring(
+                    backend,argv[1],argv[2],argv[3],1024u);});
+        }
+        if(scenario=="star_island_10k")
+            fyzz::tests::measure_gpu_case("sc_pcm","star_island_10k",
+                [&]{verify_gpu_high_degree_coloring(
+                    backend,argv[1],argv[2],argv[3],10000u);});
         if(scenario=="all" || scenario=="wide_islands" || scenario=="wide_islands_10k") {
             const bool large=scenario=="wide_islands_10k";
             fyzz::tests::measure_gpu_case("sc_pcm",large ? "wide_islands_10k" : "wide_islands",
