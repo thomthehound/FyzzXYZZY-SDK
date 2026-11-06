@@ -1328,7 +1328,7 @@ void Scene::publish_integrated_shape_bounds(BodyId,Actor& actor) {
             if(it==gpu_broadphase_boxes_.end() || it->id!=id)
                 throw std::logic_error("Integrated shape missing from GPU SAP input");
             it->position=shape.position;
-            it->orientation=shape.geometry==Geometry::Sphere?Quat{}:shape.orientation;
+            it->orientation=shape.orientation;
         }
         shape.cached_bounds_current=true;
     }
@@ -2312,8 +2312,7 @@ void Scene::update_gpu_pairs(bool force_update) {
             const Vec3 extents=actor.geometry==Geometry::Sphere
                 ? Vec3{actor.radius,actor.radius,actor.radius}
                 : actor.half_extents;
-            const Quat basis=actor.geometry==Geometry::Sphere
-                ? Quat{}:actor.orientation;
+            const Quat basis=actor.orientation;
             float convex_margin_extent=0.f;
             if(actor.geometry==Geometry::Convex) {
                 const Vec3 lower=actor.convex->bounds_min();
@@ -8202,13 +8201,10 @@ void Scene::solve_gpu_distance_constraints(float seconds) {
         input.lock_flags=actor.dynamics.lock_flags;
         input.seconds=seconds;
         input.active=1u;
-        // Box and convex shapes carry full authored orientations in
-        // Sc's device transform cache; spheres do not retain that pose.
-        if(actor.first_simulation_shape!=invalid_shape) {
-            const auto geometry=shapes_[actor.first_simulation_shape].geometry;
-            if(geometry==Geometry::Box || geometry==Geometry::Convex)
-                input.active|=4u;
-        }
+        // Every finite shape now retains the authored quaternion.
+        // The sphere AABB remains rotation-invariant on the device.
+        if(actor.first_simulation_shape!=invalid_shape)
+            input.active|=4u;
     };
     for(const BodyId id:solver_active_ids_) {
         const auto& actor=actors_[id];

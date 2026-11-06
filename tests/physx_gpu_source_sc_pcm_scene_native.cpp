@@ -1641,6 +1641,23 @@ void verify_sphere_gpu_solver(
         }
         cpu.step(dt);
         gpu.step(dt);
+        const auto integrated=producer->dy_gpu_integrated_body_count();
+        const auto resident=producer->dy_resident_pose_count();
+        const auto uploaded=producer->dy_host_pose_upload_bytes();
+        require(integrated==gpu_ids.size() && resident<=integrated &&
+                uploaded==(integrated-resident)*
+                    sizeof(physx_gpu::SourceDyHostPoseNative),
+            "GPU sphere mass poses have inconsistent source upload accounting");
+        if(frame==0u)
+            require(resident==0u,
+                "New sphere actors reused unauthorised device mass poses");
+        else if(frame==3u)
+            require(resident<integrated && uploaded>0u,
+                "Authored sphere quaternion did not invalidate its device pose");
+        else
+            require(resident>=2u && uploaded<=
+                    sizeof(physx_gpu::SourceDyHostPoseNative),
+                "Sphere contact preparation still uploads mass poses");
         require(cpu.contacts().size()==gpu.contacts().size() &&
                 cpu.solved_normal_impulses().size()==
                     gpu.solved_normal_impulses().size(),

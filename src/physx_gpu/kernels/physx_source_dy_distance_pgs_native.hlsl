@@ -122,9 +122,9 @@ bool sourceDyMassPose(uint input,out float3 position,out float4 quaternion) {
         const uint geo=views.z+element*64u;
         const uint kind=scGeometry.Load(geo+28u);
 #ifdef FYZZXYZZY_CONVEX
-        if(kind!=0u && kind!=2u)return false;
+        if(kind>2u)return false;
 #else
-        if(kind!=0u)return false;
+        if(kind>1u)return false;
 #endif
         const float3 shapeLocal=asfloat(scGeometry.Load3(geo+16u));
         const float4 shapeLocalAxes=asfloat(scGeometry.Load4(geo+32u));
@@ -315,7 +315,8 @@ void integrateBody(uint ordinal) {
         const uint kind=scGeometry.Load(geometryIndex+28u);
         const float4 localQuaternion=asfloat(scGeometry.Load4(geometryIndex+32u));
         const float3 center=nextPosition+sourceRigidRotate(nextQuaternion,localPosition);
-        const float4 shapeQuaternion=kind==1u?float4(0,0,0,1):sourceRigidMultiply(nextQuaternion,localQuaternion);
+        const float4 shapeQuaternion=sourceRigidMultiply(
+            nextQuaternion,localQuaternion);
 #ifdef FYZZXYZZY_CONVEX
         float3 lower,upper;
         if(kind==2u) {

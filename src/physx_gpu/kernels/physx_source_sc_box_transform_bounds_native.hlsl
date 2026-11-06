@@ -56,7 +56,8 @@ void main(uint3 thread : SV_DispatchThreadID) {
     // PxMat33(quaternion), three column vectors. updateCacheAndBound's
     // eBOX branch uses basisExtent, then center +/- world-space extents.
     float3 lower,upper;
-    if(shapes.Load(base+60u)==2u) {
+    const uint kind=shapes.Load(base+60u);
+    if(kind==2u) {
         const uint first=shapes.Load(base+84u);
         const uint count=shapes.Load(base+88u);
         lower=float3(3.402823466e38f,3.402823466e38f,3.402823466e38f);
@@ -69,7 +70,7 @@ void main(uint3 thread : SV_DispatchThreadID) {
             upper=max(upper,position);
         }
     }else {
-        const float3 extents=sourceBoxHalfBounds(q,e);
+        const float3 extents=kind==1u?e:sourceBoxHalfBounds(q,e);
         lower=center-extents;
         upper=center+extents;
     }
