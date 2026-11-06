@@ -934,6 +934,20 @@ void verify_gpu_coupled_solver(
         if(frame>0u)
             require(producer->last_frame().device_cached_box_count>0u,
                 "Source Dy integrated Sc pose was reuploaded to GPU SAP");
+        const auto integrated=producer->dy_gpu_integrated_body_count();
+        const auto resident=producer->dy_resident_pose_count();
+        const auto host_pose_bytes=producer->dy_host_pose_upload_bytes();
+        require(integrated>=3u && resident<=integrated &&
+                host_pose_bytes==(integrated-resident)*
+                    sizeof(physx_gpu::SourceDyHostPoseNative),
+            "GPU Dy resident contact poses have inconsistent transfer accounting");
+        if(frame==0u)
+            require(resident==0u,
+                "First Sc contact solve reused an unauthorised device pose");
+        else
+            require(resident>=2u && host_pose_bytes<=
+                    sizeof(physx_gpu::SourceDyHostPoseNative),
+                "Active GPU contact bodies still upload authored mass poses");
         const auto [uploaded,downloaded]=producer->dy_distance_transfer_bytes();
         const auto prep_saving=producer->dy_contact_prep_upload_saving();
         // Compare writeback with the source-sized upload baseline. The
