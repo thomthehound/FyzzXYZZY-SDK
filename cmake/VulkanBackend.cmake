@@ -891,6 +891,14 @@ if(FYZZXYZZY_BUILD_VULKAN)
         "${FYZZXYZZY_SOURCE_DY_CONVEX_SPV}" star_island_10k)
     set_tests_properties(fyzzxyzzy_source_sc_gpu_pcm_scene_star_island_10k
       PROPERTIES TIMEOUT 240)
+    add_test(NAME fyzzxyzzy_source_sc_gpu_pcm_scene_zero_response_wide
+      COMMAND fyzzxyzzy_source_sc_gpu_pcm_scene
+        "${CMAKE_CURRENT_BINARY_DIR}/kernels/fyzzxyzzy_native_sap_spirv.manifest"
+        "${CMAKE_CURRENT_BINARY_DIR}/kernels/fyzzxyzzy_native_pcm_spv.manifest"
+        "${FYZZXYZZY_SOURCE_DY_DISTANCE_SPV}"
+        "${FYZZXYZZY_SOURCE_DY_CONVEX_SPV}" zero_response_wide)
+    set_tests_properties(fyzzxyzzy_source_sc_gpu_pcm_scene_zero_response_wide
+      PROPERTIES TIMEOUT 240)
     
     add_test(NAME fyzzxyzzy_owned_sap_gpu_aabb_scene_lifecycle
       COMMAND fyzzxyzzy_owned_sap_gpu_aabb_scene_lifecycle
