@@ -924,9 +924,14 @@ private:
             if(task.body_end-task.body_begin<wide_min || count<wide_min)
                 continue;
             wide_tasks_.push_back(static_cast<std::uint32_t>(task_id));
+            // A conflict-free color may contain at most one descriptor
+            // per writable dynamic solver body. Static/kinematic contacts
+            // also consume one such body; never allocate tiles against
+            // the entire descriptor count for every color.
+            const auto writable=task.body_end-task.body_begin;
             last_schedule_.max_partition_groups=std::max(
                 last_schedule_.max_partition_groups,
-                (std::size_t(count)+threads-1u)/threads);
+                (std::size_t(writable)+threads-1u)/threads);
             partition_levels=std::max(partition_levels,bound);
             wide_iterations_=std::max(wide_iterations_,
                 task.position_iterations+
@@ -975,8 +980,8 @@ private:
         partition_tiles_.resize(partition_levels);
         for(const auto id:wide_tasks_) {
             const auto& task=tasks[id];
-            const auto count=task.descriptor_end-task.descriptor_begin;
-            const auto tile_count=(std::size_t(count)+threads-1u)/threads;
+            const auto writable=task.body_end-task.body_begin;
+            const auto tile_count=(std::size_t(writable)+threads-1u)/threads;
             for(std::uint32_t color=0u;color<color_bounds_[id];++color) {
                 auto& range=partition_tiles_[color];
                 range.count+=tile_count;
@@ -994,11 +999,11 @@ private:
         tiles_.resize(end);
         for(const auto id:wide_tasks_) {
             const auto& task=tasks[id];
-            const auto count=task.descriptor_end-task.descriptor_begin;
+            const auto writable=task.body_end-task.body_begin;
             for(std::uint32_t color=0u;color<color_bounds_[id];++color) {
                 auto& range=partition_tiles_[color];
-                for(std::uint32_t offset=0u;offset<count;) {
-                    const auto next=offset+std::min(threads,count-offset);
+                for(std::uint32_t offset=0u;offset<writable;) {
+                    const auto next=offset+std::min(threads,writable-offset);
                     tiles_[range.begin+range.count++]={id,offset,next,color};
                     offset=next;
                 }
