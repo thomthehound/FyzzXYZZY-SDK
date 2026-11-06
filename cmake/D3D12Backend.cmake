@@ -1062,14 +1062,16 @@ if(FYZZXYZZY_BUILD_D3D12)
     set(_sc_pcm_scene_tests fyzzxyzzy_source_sc_gpu_pcm_scene_d3d12)
     foreach(_case IN ITEMS compound_shapes compound_solver sphere_solver convex_plane convex_finite
         sparse_contacts coupled_stack coupled_solver legacy_gu_solver
-        mixed_solver distance_solver free_integration wide_islands star_island_10k)
+        mixed_solver distance_solver free_integration wide_islands star_island star_island_10k)
       set(_test "fyzzxyzzy_source_sc_gpu_pcm_scene_${_case}_d3d12")
       add_test(NAME ${_test}
         COMMAND fyzzxyzzy_source_sc_gpu_pcm_scene_d3d12 ${_sc_pcm_scene_args} ${_case})
       list(APPEND _sc_pcm_scene_tests ${_test})
     endforeach()
     set_tests_properties(${_sc_pcm_scene_tests} PROPERTIES TIMEOUT 180)
-    set_tests_properties(fyzzxyzzy_source_sc_gpu_pcm_scene_star_island_10k_d3d12
+    set_tests_properties(
+      fyzzxyzzy_source_sc_gpu_pcm_scene_star_island_d3d12
+      fyzzxyzzy_source_sc_gpu_pcm_scene_star_island_10k_d3d12
       PROPERTIES TIMEOUT 300)
     # WARP validates API behavior and bounded native kernels.
     # Extended contact and instrumented solver tests run on physical GPUs.
@@ -1085,12 +1087,13 @@ if(FYZZXYZZY_BUILD_D3D12)
       ${_sc_pcm_scene_tests})
     set_tests_properties(${_d3d12_extended_tests}
       PROPERTIES LABELS "d3d12-extended")
-    # Keep high-degree solver admission in the regular WARP gate. The
-    # 10000-spoke stress case retains its separate extended test.
-    add_test(NAME fyzzxyzzy_source_sc_gpu_pcm_scene_star_island_d3d12
+    # The 512-spoke case crosses the wide-admission threshold and
+    # remains bounded on WARP. Larger physical-GPU stress cases are
+    # independently registered above.
+    add_test(NAME fyzzxyzzy_source_sc_gpu_pcm_scene_star_island_warp_d3d12
       COMMAND fyzzxyzzy_source_sc_gpu_pcm_scene_d3d12
-        ${_sc_pcm_scene_args} star_island)
-    set_tests_properties(fyzzxyzzy_source_sc_gpu_pcm_scene_star_island_d3d12
+        ${_sc_pcm_scene_args} star_island_warp)
+    set_tests_properties(fyzzxyzzy_source_sc_gpu_pcm_scene_star_island_warp_d3d12
       PROPERTIES TIMEOUT 180)
     add_test(NAME fyzzxyzzy_owned_sap_gpu_aabb_scene_lifecycle_d3d12
       COMMAND fyzzxyzzy_owned_sap_gpu_aabb_scene_lifecycle_d3d12
