@@ -900,10 +900,24 @@ private:
             // Taking the per-edge sum avoids combining unrelated global
             // maximum degrees, without computing any host color.
             std::size_t bound=0u;
+            std::size_t max_conflicting_descriptors=0u;
             for(std::uint32_t i=task.descriptor_begin;
                 i<task.descriptor_end;++i) {
                 const auto& desc=descriptors[i];
                 const auto flags=desc.row_count&0x300u;
+                const auto degree_a=(flags&0x100u)
+                    ?std::size_t(degree_dynamic_[desc.row0])+
+                     degree_static_[desc.row0]:0u;
+                const auto degree_b=(flags&0x200u)
+                    ?std::size_t(degree_dynamic_[desc.row1])+
+                     degree_static_[desc.row1]:0u;
+                // The union of both dynamic endpoint adjacency sets
+                // bounds the descriptors excluded by one matching edge.
+                // One edge belongs to both sets for a dynamic pair.
+                const auto conflict=degree_a+degree_b-
+                    (flags==0x300u?1u:0u);
+                max_conflicting_descriptors=std::max(
+                    max_conflicting_descriptors,conflict);
                 if(flags==0x300u) {
                     const auto degree=std::size_t(degree_dynamic_[desc.row0])+
                                       degree_dynamic_[desc.row1]-1u;
@@ -933,10 +947,17 @@ private:
             descriptor_end=task.descriptor_end;
             partition_end=task.partition_end;
             body_end=task.body_end;
-            // A 512-way disjoint partition requires at least 512
-            // independently writable dynamic solver bodies. This keeps
-            // compact connected islands inside their one-group PGS path.
-            if(task.body_end-task.body_begin<wide_min || count<wide_min)
+            // A source-order first-fit partition is a maximal matching
+            // of writable dynamic endpoints. Its width is at least the
+            // descriptor count divided by the largest edge neighborhood.
+            // Large stars have many bodies but only one usable lane per
+            // partition: keep them on the existing fused Dy task instead
+            // of multiplying colors by almost-empty wide workgroups.
+            const std::size_t parallel_width=
+                max_conflicting_descriptors
+                    ?(std::size_t(count)-1u)/max_conflicting_descriptors+1u:0u;
+            if(task.body_end-task.body_begin<wide_min ||
+               count<wide_min || parallel_width<threads)
                 continue;
             wide_tasks_.push_back(static_cast<std::uint32_t>(task_id));
             // A conflict-free color may contain at most one descriptor
