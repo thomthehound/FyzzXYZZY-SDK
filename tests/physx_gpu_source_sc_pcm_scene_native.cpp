@@ -247,8 +247,8 @@ void verify(fyzz::compute::Backend backend,const char* sap,
     };
     check(true);
     const auto edge=gpu.contact_edge_index({gpu_a,gpu_b});
-    // The device's 84-byte stream reconstructs Sc's exact 96-byte
-    // publication record without altering its world-space Gu contacts.
+    // The device's 84-byte stream reconstructs Sc's world-space Gu
+    // contacts and the physical-touch transition on the same EdgeIndex.
     const std::array<native::GpuPcmBoxPair,1> request{{
         {gpu_a,gpu_b,edge,false}
     }};
@@ -262,6 +262,7 @@ void verify(fyzz::compute::Backend backend,const char* sap,
             direct[0].count<=direct[0].cached_count &&
             (direct[0].selected_and_regenerated&0x7fffffffu)<=4u &&
             direct[0].count>0u &&
+            direct[0].touch_transition==native::GpuPcmTouchTransition::Persists &&
             std::isfinite(direct[0].normal.x) &&
             std::isfinite(direct[0].points[0].separation),
             "Direct Sc GPU PCM readback disagrees with the shader record");
@@ -271,12 +272,13 @@ void verify(fyzz::compute::Backend backend,const char* sap,
     producer->generate_gpu_pcm_box_contacts(request,repeated);
     require(producer->pcm_pair_upload_bytes()==0u &&
             repeated[0].status==0u && repeated[0].edge==edge &&
-            repeated[0].count>0u,
+            repeated[0].count>0u &&
+            repeated[0].touch_transition==native::GpuPcmTouchTransition::Persists,
             "Stable Sc PCM manager unexpectedly re-uploaded source pair input");
     // Explicitly invalidate a live Sc EdgeIndex. A newly admitted or
     // rejected source frame uses the identical candidate-owned reset.
     const std::array<native::GpuPcmBoxPair,1> reset_request{{
-        {gpu_a,gpu_b,edge,true}
+        {gpu_a,gpu_b,edge,true,16u,false,0.f,0.f,true}
     }};
     std::array<native::GpuPcmBoxResult,1> reset{};
     producer->generate_gpu_pcm_box_contacts(reset_request,reset);
@@ -285,6 +287,7 @@ void verify(fyzz::compute::Backend backend,const char* sap,
             "Source PCM reset did not refresh its GPU pair descriptor");
     require(reset[0].edge==edge && reset[0].status==0u &&
             reset[0].count>0u &&
+            reset[0].touch_transition==native::GpuPcmTouchTransition::Persists &&
             (reset[0].selected_and_regenerated&0x80000000u)!=0u,
             "Source GPU PCM failed to regenerate a reset EdgeIndex");
     for(std::uint32_t i=0u;i<reset[0].count;++i)

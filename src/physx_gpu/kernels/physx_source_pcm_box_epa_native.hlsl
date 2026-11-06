@@ -86,7 +86,7 @@ void main(uint3 group : SV_GroupID, uint3 lane : SV_GroupThreadID) {
     uint a=pairs.Load(source),b=pairs.Load(source+4u);
     uint edge=pairs.Load(source+8u);
     uint first=pairs.Load(source+12u);
-    uint limit=pairs.Load(source+16u)&0x7fffffffu;
+    uint limit=pairs.Load(source+16u)&0x1fffffffu;
     if(a>=p.shapeCapacity || b>=p.shapeCapacity || edge>=p.edgeCapacity ||
        first>p.candidateCapacity || limit>p.candidateCapacity-first)return;
     uint ta=p.transformBias+a*32u,tb=p.transformBias+b*32u;

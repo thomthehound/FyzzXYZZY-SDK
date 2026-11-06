@@ -102,12 +102,17 @@ struct GpuPcmBoxPair {
     bool plane_pair=false;
     float plane_height=0.0f;
     float contact_distance=0.0f;
+    bool previously_touching=false;
+};
+enum class GpuPcmTouchTransition : std::uint32_t {
+    None=0,Found=1,Persists=2,Lost=3
 };
 struct GpuPcmBoxWorldPoint {
     Vec3 position{};
     float separation=0.0f;
 };
-// The GPU Sc contact-stream shader writes this exact 96-byte record.
+// The GPU Sc contact-stream shader publishes an 84-byte device record;
+// Sc's host-facing contact and transition record is 100 bytes.
 // Download directly into the scene's result array without repacking an
 // additional host-side copy of every Gu contact.
 struct GpuPcmBoxResult {
@@ -119,11 +124,12 @@ struct GpuPcmBoxResult {
     Vec3 normal{};
     std::uint32_t count=0;
     std::array<GpuPcmBoxWorldPoint,4> points{};
+    GpuPcmTouchTransition touch_transition=GpuPcmTouchTransition::None;
 };
 static_assert(sizeof(GpuPcmBoxWorldPoint)==16u);
 static_assert(std::is_trivially_copyable_v<GpuPcmBoxResult> &&
               std::is_standard_layout_v<GpuPcmBoxResult> &&
-              sizeof(GpuPcmBoxResult)==96u &&
+              sizeof(GpuPcmBoxResult)==100u &&
               offsetof(GpuPcmBoxResult,normal)==16u &&
               offsetof(GpuPcmBoxResult,count)==28u &&
               offsetof(GpuPcmBoxResult,points)==32u);

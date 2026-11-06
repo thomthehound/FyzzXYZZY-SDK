@@ -438,8 +438,15 @@ void main(uint3 thread : SV_DispatchThreadID) {
     uint edge=pairs.Load(source+8u);
     uint first=pairs.Load(source+12u);
     uint flags=pairs.Load(source+16u);
-    uint limit=flags&0x7fffffffu;
+    uint limit=flags&0x1fffffffu;
     uint result=p.resultBias+i*32u;
+    if(edge<p.edgeCapacity) {
+        uint state=p.edgeCacheBias+edge*240u;
+        uint prior=(flags&0x80000000u)!=0u
+            ? ((flags&0x20000000u)!=0u?1u:0u)
+            : (edgeCaches.Load(state+72u)&1u);
+        edgeCaches.Store(state+76u,prior);
+    }
     if((flags&0x40000000u)!=0u) {
         sourcePcmPlanePair(i,b,edge,result,asfloat(a),asfloat(first),flags);
         return;

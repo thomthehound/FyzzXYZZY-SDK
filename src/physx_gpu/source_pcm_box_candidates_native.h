@@ -29,6 +29,9 @@ constexpr std::uint32_t source_pcm_reset_cache_bit=0x80000000u;
 // Plane-box descriptors reuse the candidate offset and first-element
 // words for the height and contact distance, since they emit no candidates.
 constexpr std::uint32_t source_pcm_plane_bit=0x40000000u;
+// Seed the edge's prior physical-touch state when its Gu cache resets.
+constexpr std::uint32_t source_pcm_prior_touch_bit=0x20000000u;
+constexpr std::uint32_t source_pcm_candidate_capacity_mask=0x1fffffffu;
 
 // GuPCMContactBoxBox::pcmContactBoxBox requires local A/B witnesses and a
 // B-local normal before the source persistent-manifold reduction.
@@ -67,7 +70,9 @@ struct SourcePcmScEdgeCacheNative {
     std::uint32_t initialized;
     // Overlap without clipped witnesses requires GJK/EPA continuation.
     std::uint32_t needs_gjk;
-    std::uint32_t reserved[2];
+    // Device Sc physical-touch history, indexed by this same EdgeIndex.
+    std::uint32_t last_published_touch;
+    std::uint32_t prior_batch_touch;
     SourcePcmBoxCandidateNative contacts[4];
 };
 static_assert(sizeof(SourcePcmScEdgeCacheNative)==240u);

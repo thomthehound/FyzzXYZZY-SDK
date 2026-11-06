@@ -3,6 +3,7 @@
 // SPDX-License-Identifier: Apache-2.0
 #pragma once
 
+#include "native/scene.h"
 #include "physx_gpu/source_pcm_box_candidates_native.h"
 
 #include <algorithm>
@@ -31,14 +32,17 @@ struct SourcePcmScContactStreamNative {
     float normal[3];
     std::uint32_t emitted_count;
     SourcePcmScWorldContactNative contacts[4];
+    native::GpuPcmTouchTransition touch_transition=
+        native::GpuPcmTouchTransition::None;
 };
-static_assert(sizeof(SourcePcmScContactStreamNative)==96u);
+static_assert(sizeof(SourcePcmScContactStreamNative)==100u);
 
 // Device-side Sc PCM stream keeps all Gu contact floats, but folds the
 // bounded manager counters into one word. The host Sc record above is
 // reconstructed exactly after fetch; Dy reads this stream in place.
 // Bits: cache count [0:2], status [3:5], selected [6:8], regenerated
-// [9], emitted count [10:12]. The value 7 signals an invalid counter.
+// [9], emitted count [10:12], Sc touch transition [13:14].
+// The value 7 signals an invalid counter.
 struct SourcePcmGpuContactStreamNative {
     std::uint32_t edge_handle;
     std::uint32_t packed_counts;
@@ -54,13 +58,14 @@ struct SourcePcmGpuContactHeaderNative {
     std::uint32_t status;
     std::uint32_t selected_and_regenerated;
     std::uint32_t emitted_count;
+    std::uint32_t touch_transition;
 };
 inline SourcePcmGpuContactHeaderNative unpack_source_pcm_gpu_header_native(
     const SourcePcmGpuContactStreamNative& source) noexcept {
     const std::uint32_t packed=source.packed_counts;
     return {source.edge_handle,packed&7u,(packed>>3u)&7u,
             ((packed>>6u)&7u)|(((packed>>9u)&1u)<<31u),
-            (packed>>10u)&7u};
+            (packed>>10u)&7u,(packed>>13u)&3u};
 }
 inline SourcePcmScContactStreamNative unpack_source_pcm_sc_contact_native(
     const SourcePcmGpuContactStreamNative& source) {
@@ -71,6 +76,8 @@ inline SourcePcmScContactStreamNative unpack_source_pcm_sc_contact_native(
     record.status=header.status;
     record.selected_and_regenerated=header.selected_and_regenerated;
     record.emitted_count=header.emitted_count;
+    record.touch_transition=static_cast<native::GpuPcmTouchTransition>(
+        header.touch_transition);
     if(record.status==0u && record.emitted_count<=4u) {
         std::memcpy(record.normal,source.normal,sizeof(record.normal));
         std::memcpy(record.contacts,source.contacts,
