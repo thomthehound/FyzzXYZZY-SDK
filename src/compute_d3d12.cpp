@@ -362,6 +362,22 @@ struct Context::Impl {
                                 IID_PPV_ARGS(&device)), "D3D12CreateDevice");
         if (debug_env && std::string(debug_env) == "1")
             device.As(&debug_messages);
+        if (const char* frontload = std::getenv("FYZZXYZZY_D3D12_GBV_FRONTLOAD");
+            frontload && std::string(frontload) == "1") {
+            ComPtr<ID3D12DebugDevice1> debug_device;
+            check(device.As(&debug_device), "ID3D12DebugDevice1");
+            D3D12_DEBUG_DEVICE_GPU_BASED_VALIDATION_SETTINGS settings{};
+            check(debug_device->GetDebugParameter(
+                      D3D12_DEBUG_DEVICE_PARAMETER_GPU_BASED_VALIDATION_SETTINGS,
+                      &settings, sizeof(settings)), "Get D3D12 GBV settings");
+            settings.PipelineStateCreateFlags =
+                D3D12_GPU_BASED_VALIDATION_PIPELINE_STATE_CREATE_FLAG_FRONT_LOAD_CREATE_UNGUARDED_VALIDATION_SHADERS;
+            check(debug_device->SetDebugParameter(
+                      D3D12_DEBUG_DEVICE_PARAMETER_GPU_BASED_VALIDATION_SETTINGS,
+                      &settings, sizeof(settings)), "Set D3D12 GBV settings");
+            std::clog << "D3D12 GBV: creating instrumented pipelines at PSO creation\n"
+                      << std::flush;
+        }
         D3D12_COMMAND_QUEUE_DESC q{};
         q.Type = D3D12_COMMAND_LIST_TYPE_COMPUTE;
         check(device->CreateCommandQueue(&q, IID_PPV_ARGS(&queue)), "CreateCommandQueue");
