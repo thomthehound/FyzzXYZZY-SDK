@@ -183,6 +183,20 @@ void sourceDyPartitionTask(uint taskId,uint scratch,uint errorAddress,
         dyNextWave=0u;dySerial=0u;
     }
     AllMemoryBarrierWithGroupSync();
+    // Sc task body ordinals are disjoint across islands. Initialize
+    // each writable body exactly once instead of issuing an atomic
+    // exchange for every incident contact or joint.
+    const uint2 bodyRange=arena.Load2(task+16u);
+    for(uint i=bodyRange.x+lane;i<bodyRange.y;i+=128u) {
+        const uint ordinal=arena.Load(p.ordinalBias+i*4u);
+        if(ordinal>=p.bodyCount) {
+            arena.InterlockedOr(errorAddress,1048576u);
+            continue;
+        }
+        arena.Store3(bodyState+ordinal*12u,uint3(0u,0u,0xffffffffu));
+    }
+    AllMemoryBarrierWithGroupSync();
+    if(arena.Load(errorAddress)!=0u)return;
     for(uint i=first+lane;i<last;i+=128u) {
         const uint4 desc=arena.Load4(raw+i*16u);
         const bool da=(desc.w&0x100u)!=0u;
@@ -193,25 +207,51 @@ void sourceDyPartitionTask(uint taskId,uint scratch,uint errorAddress,
             arena.InterlockedOr(errorAddress,1048576u);
             continue;
         }
-        uint unused;
-        if(da) {
-            const uint state=bodyState+desc.y*12u;
-            arena.InterlockedExchange(state,0u,unused);
-            arena.InterlockedExchange(state+4u,0u,unused);
-            arena.InterlockedExchange(state+8u,0xffffffffu,unused);
-        }
-        if(db) {
-            const uint state=bodyState+desc.z*12u;
-            arena.InterlockedExchange(state,0u,unused);
-            arena.InterlockedExchange(state+4u,0u,unused);
-            arena.InterlockedExchange(state+8u,0xffffffffu,unused);
-        }
         arena.Store(colors+i*4u,0xffffffffu);
         if(da && db)InterlockedAdd(dyNeeded,1u);
     }
     AllMemoryBarrierWithGroupSync();
     if(arena.Load(errorAddress)!=0u)return;
 
+    // For a hub graph, every dynamic edge shares one writable body.
+    // Its exact source greedy coloring is the encounter ordinal of
+    // that edge: no conflict search or 32-color wave scans are needed.
+    // Static reservations still use the ordinary post-dynamic phase.
+    if(lane==0u && dyNeeded>=128u) {
+        uint candidateA=0xffffffffu,candidateB=0xffffffffu;
+        for(uint i=first;i<last;++i) {
+            const uint4 desc=arena.Load4(raw+i*16u);
+            if((desc.w&0x300u)==0x300u) {
+                candidateA=desc.y;
+                candidateB=desc.z;
+                break;
+            }
+        }
+        bool sharedA=candidateA!=0xffffffffu;
+        bool sharedB=sharedA;
+        for(uint i=first;i<last && (sharedA||sharedB);++i) {
+            const uint4 desc=arena.Load4(raw+i*16u);
+            if((desc.w&0x300u)!=0x300u)continue;
+            sharedA=sharedA && (desc.y==candidateA||desc.z==candidateA);
+            sharedB=sharedB && (desc.y==candidateB||desc.z==candidateB);
+        }
+        if(sharedA || sharedB) {
+            uint color=0u;
+            for(uint i=first;i<last;++i) {
+                const uint4 desc=arena.Load4(raw+i*16u);
+                if((desc.w&0x300u)!=0x300u)continue;
+                const uint a=bodyState+desc.y*12u;
+                const uint b=bodyState+desc.z*12u;
+                arena.Store(colors+i*4u,color);
+                arena.Store(a+4u,max(arena.Load(a+4u),color+1u));
+                arena.Store(b+4u,max(arena.Load(b+4u),color+1u));
+                ++color;
+            }
+            dyHighest=color;
+            dyAssigned=color;
+        }
+    }
+    AllMemoryBarrierWithGroupSync();
     while(dyAssigned<dyNeeded) {
         // Masks are wave-local. A 32-color overflow retires the prior
         // mask before new absolute partition indices are assigned.
