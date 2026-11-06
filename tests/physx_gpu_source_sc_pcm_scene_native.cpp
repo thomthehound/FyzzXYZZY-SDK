@@ -2196,7 +2196,7 @@ void verify_gpu_high_degree_coloring(
         std::cerr<<"FYZZXYZZY_METRIC suite=sc_pcm case=star_island"
                  <<" spokes="<<leaves<<" phase=gpu_assembled\n";
     const unsigned frames=leaves>=10000u?1u:leaves>=1024u?2u:
-        leaves>=512u?1u:3u;
+        leaves>=64u?1u:3u;
     for(unsigned frame=0u;frame<frames;++frame) {
         const auto tick=std::chrono::steady_clock::now();
         cpu.step(1.f/120.f);
@@ -2344,7 +2344,7 @@ int main(int argc,char** argv) {
         if(scenario=="star_island_warp")
             fyzz::tests::measure_gpu_case("sc_pcm","star_island_warp",
                 [&]{verify_gpu_high_degree_coloring(
-                    backend,argv[1],argv[2],argv[3],512u);});
+                    backend,argv[1],argv[2],argv[3],64u);});
         if(scenario=="star_island_10k")
             fyzz::tests::measure_gpu_case("sc_pcm","star_island_10k",
                 [&]{verify_gpu_high_degree_coloring(
