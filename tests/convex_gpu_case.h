@@ -3,6 +3,8 @@
 #pragma once
 
 #include "fyzzxyzzy/convex.h"
+#include <algorithm>
+#include <array>
 #include <fstream>
 #include <iterator>
 
@@ -159,7 +161,8 @@ inline void verify_convex_finite_gpu_solver(
         for(std::size_t i=0;i<cpu.contacts().size();++i) {
             const auto& ca=cpu.contacts()[i];
             const auto& cb=gpu.contacts()[i];
-            if(ca.pair!=cb.pair || ca.count!=cb.count || ca.count==0u)
+            if(ca.pair!=cb.pair || ca.count!=cb.count || ca.count==0u ||
+               ca.count>4u)
                 throw std::runtime_error(
                     "Finite convex Gu/GPU contact topology diverged at frame "+
                     std::to_string(frame)+" manager "+std::to_string(i)+
@@ -187,36 +190,54 @@ inline void verify_convex_finite_gpu_solver(
             const auto close=[tolerance](float x,float y) {
                 return std::fabs(x-y)<tolerance;
             };
-            for(std::size_t j=0u;j<ca.count;++j) {
-                const auto& a=ca.points[j];
-                const auto& b=cb.points[j];
-                if(!close(a.separation,b.separation) ||
-                   !close(a.position.x,b.position.x) ||
-                   !close(a.position.y,b.position.y) ||
-                   !close(a.position.z,b.position.z) ||
-                   !close(a.normal.x,b.normal.x) ||
-                   !close(a.normal.y,b.normal.y) ||
-                   !close(a.normal.z,b.normal.z))
-                    throw std::runtime_error(
-                        "Finite convex CPU/GPU witnesses disagree at frame "+
-                        std::to_string(frame)+" pair "+std::to_string(i)+
-                        " point "+std::to_string(j)+
-                        " depth="+std::to_string(a.separation)+"/"+
-                        std::to_string(b.separation)+
-                        " position="+
-                        std::to_string(a.position.x)+","+
-                        std::to_string(a.position.y)+","+
-                        std::to_string(a.position.z)+"/"+
-                        std::to_string(b.position.x)+","+
-                        std::to_string(b.position.y)+","+
-                        std::to_string(b.position.z)+
-                        " normal="+
-                        std::to_string(a.normal.x)+","+
-                        std::to_string(a.normal.y)+","+
-                        std::to_string(a.normal.z)+"/"+
-                        std::to_string(b.normal.x)+","+
-                        std::to_string(b.normal.y)+","+
-                        std::to_string(b.normal.z));
+            // Contact-manifold order is not a physical property. Verify
+            // a bijection of all witnesses, not corresponding array slots.
+            std::array<unsigned,4> indices{0u,1u,2u,3u};
+            bool equivalent=false;
+            do {
+                bool all_match=true;
+                for(std::size_t j=0u;j<ca.count;++j) {
+                    const auto& a=ca.points[j];
+                    const auto& b=cb.points[indices[j]];
+                    if(!close(a.separation,b.separation) ||
+                       !close(a.position.x,b.position.x) ||
+                       !close(a.position.y,b.position.y) ||
+                       !close(a.position.z,b.position.z) ||
+                       !close(a.normal.x,b.normal.x) ||
+                       !close(a.normal.y,b.normal.y) ||
+                       !close(a.normal.z,b.normal.z)) {
+                        all_match=false;
+                        break;
+                    }
+                }
+                if(all_match) {
+                    equivalent=true;
+                    break;
+                }
+            }while(std::next_permutation(indices.begin(),
+                                        indices.begin()+ca.count));
+            if(!equivalent) {
+                std::string message=
+                    "Finite convex CPU/GPU contact manifolds diverged at frame "+
+                    std::to_string(frame)+" pair "+std::to_string(i);
+                const auto append=[&](const auto& manager,const char* label) {
+                    message+=" "+std::string(label)+"=[";
+                    for(std::size_t j=0u;j<manager.count;++j) {
+                        const auto& point=manager.points[j];
+                        if(j>0u)message+=";";
+                        message+=std::to_string(point.position.x)+","+
+                            std::to_string(point.position.y)+","+
+                            std::to_string(point.position.z)+" n="+
+                            std::to_string(point.normal.x)+","+
+                            std::to_string(point.normal.y)+","+
+                            std::to_string(point.normal.z)+" d="+
+                            std::to_string(point.separation);
+                    }
+                    message+="]";
+                };
+                append(ca,"cpu");
+                append(cb,"gpu");
+                throw std::runtime_error(message);
             }
         }
         if(frame==0u) {
