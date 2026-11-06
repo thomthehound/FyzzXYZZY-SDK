@@ -323,7 +323,7 @@ public:
         std::span<const std::uint32_t>,
         std::span<const GpuDyContactPrepPair>,
         std::span<GpuDyBodyIntegrationInput>,
-        std::span<GpuDyIntegratedPose>) {
+        std::span<GpuDyIntegratedPose>,bool /*device_partitions*/=false) {
         throw std::logic_error("Source GPU Dy shader is not installed");
     }
     // Sc's afterIntegration authorizes the source ElementSim device pose.

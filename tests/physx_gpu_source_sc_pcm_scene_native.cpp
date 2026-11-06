@@ -965,6 +965,10 @@ void verify_gpu_coupled_solver(
                     sizeof(physx_gpu::SourceDyHostPoseNative),
                 "Active GPU contact bodies still upload authored mass poses");
         const auto [uploaded,downloaded]=producer->dy_distance_transfer_bytes();
+        const auto schedule=producer->dy_launch_stats();
+        require(schedule.device_colored_tasks>0u &&
+                schedule.device_colored_descriptors>0u,
+            "Coupled Dy solver skipped device-owned constraint partitioning");
         const auto prep_saving=producer->dy_contact_prep_upload_saving();
         // Compare writeback with the source-sized upload baseline. The
         // GPU contact-prep payload is intentionally smaller now.
@@ -1993,6 +1997,9 @@ void verify_gpu_wide_island_solver(
         cpu.step(dt);
         gpu.step(dt);
         const auto schedule=producer->dy_launch_stats();
+        require(schedule.device_colored_tasks>=1u &&
+                schedule.device_colored_descriptors>=connected_bodies,
+            "Wide Dy task retained CPU-generated conflict partitions");
         // Once the assembly moves, individual supports can lose touch.
         // Joint connectivity must still supply a wide partition.
         const auto width=frame==0u?connected_bodies-2u:connected_bodies/2u;

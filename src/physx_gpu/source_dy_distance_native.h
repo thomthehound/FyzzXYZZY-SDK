@@ -32,8 +32,8 @@ static_assert(sizeof(SourceDyPackedContactPrepNative)==64u &&
               offsetof(SourceDyPackedContactPrepNative,constants)==8u);
 
 // Dy integrateCore reads compact transient inputs. Box-shaped bodies with
-// authorized Sc device poses omit the host pose entirely; authored changes,
-// sphere-only bodies and unbacked bodies retain an explicit 28-byte pose.
+// authorized Sc device poses omit the host pose entirely; authored edits
+// and bodies without eligible device shapes retain an explicit 28-byte pose.
 struct SourceDyPackedIntegrationNative {
     float linear_velocity[3]{},angular_velocity[3]{};
     float sqrt_inverse_inertia[9]{};
@@ -51,6 +51,8 @@ struct SourceDyHostPoseNative {
 static_assert(sizeof(SourceDyHostPoseNative)==28u);
 
 struct SourceDyLaunchStats {
+    std::size_t device_colored_tasks=0u;
+    std::size_t device_colored_descriptors=0u;
     std::size_t wide_tasks=0u;
     std::size_t max_partition_groups=0u;
     std::size_t dispatches=0u;
@@ -136,7 +138,8 @@ public:
                CudaDeviceAddressMap::Address shape_geometry,
                std::uint32_t shape_capacity,
                CudaDeviceAddressMap::Address convex_vertices,
-               std::uint32_t convex_vertex_count) {
+               std::uint32_t convex_vertex_count,
+               bool device_partitions=false) {
         if(integration.size()<bodies.size() ||
            integrated_poses.size()!=integration.size() ||
            (tasks.empty() && integration.size()==bodies.size()))
@@ -149,8 +152,14 @@ public:
             return static_cast<std::uint32_t>(value);
         };
         const auto free_bodies=integration.size()-bodies.size();
-        build_launch_plan(tasks,partition_ends,narrow(descriptors.size()),
-                          narrow(body_ordinals.size()));
+        if(device_partitions) {
+            build_device_launch_plan(tasks,descriptors,partition_ends,
+                                     narrow(body_ordinals.size()),
+                                     narrow(bodies.size()));
+        } else {
+            build_launch_plan(tasks,partition_ends,narrow(descriptors.size()),
+                              narrow(body_ordinals.size()));
+        }
         if(contact_forces.size()>
            std::numeric_limits<std::size_t>::max()/sizeof(native::GpuDyContactPoint))
             throw std::overflow_error("Source Dy contact row byte count overflow");
@@ -270,7 +279,7 @@ public:
             return narrow(offset); // An aligned offset; low bit clear.
         };
         for(const auto& desc:descriptors) {
-            if(desc.row_count)continue;
+            if((desc.row_count&255u)!=0u)continue;
             if(desc.index>=manifolds.size())
                 throw std::logic_error("Source contact descriptor has no manager");
             const auto& manager=manifolds[desc.index];
@@ -401,7 +410,18 @@ public:
         const std::size_t integration_bytes=packed_input_bytes+
             host_poses_.size()*sizeof(SourceDyHostPoseNative);
         last_host_pose_upload_bytes_=host_poses_.size()*sizeof(SourceDyHostPoseNative);
-        constexpr std::size_t count=15u;
+        // Transient source-order descriptors and conflict-coloring state
+        // share the existing Dy arena; no separate scene state is built.
+        if(device_partitions &&
+           (descriptors.size()>
+                (std::numeric_limits<std::uint32_t>::max()-20u)/24u ||
+            bodies.size()>
+                (std::numeric_limits<std::uint32_t>::max()-20u-
+                    descriptors.size()*24u)/12u))
+            throw std::overflow_error("Device Dy partition scratch exceeds address space");
+        const std::size_t partition_scratch_bytes=device_partitions
+            ? 20u+descriptors.size()*24u+bodies.size()*12u:0u;
+        constexpr std::size_t count=16u;
         // The integration prefix describes Sc/SAP views and the launch
         // table. Solver-body ordinals precede the free-body suffix.
         const std::array<std::size_t,count> bytes{
@@ -411,18 +431,19 @@ public:
             patches.size_bytes(),manifolds.size_bytes(),contact_order.size_bytes(),
             compact_prep_bytes,
             integration_bytes,compact_anchor_bytes,
-            tiles_.size()*sizeof(WorkTile)};
+            tiles_.size()*sizeof(WorkTile),partition_scratch_bytes};
         const std::array<std::size_t,count> elements{
             bodies.size(),rows.size(),descriptors.size(),partition_ends.size(),
             body_ordinals.size(),tasks.size(),contact_forces.size(),friction.size(),
             patches.size(),manifolds.size(),contact_order.size(),
             contact_prep.size(),integration.size(),compact_anchors_.size(),
-            tiles_.size()};
+            tiles_.size(),device_partitions?1u:0u};
         const std::array<const void*,count> sources{
             bodies.data(),rows.data(),descriptors.data(),partition_ends.data(),
             body_ordinals.data(),tasks.data(),nullptr,nullptr,
             patches.data(),manifolds.data(),contact_order.data(),
-            contact_prep.data(),integration.data(),nullptr,tiles_.data()};
+            contact_prep.data(),integration.data(),nullptr,tiles_.data(),
+            nullptr};
         // The host retains only source normal impulses and friction
         // tangent/force writeback. Both full row ABIs live only on GPU.
         constexpr std::array<std::size_t,6> output_inputs{
@@ -447,7 +468,7 @@ public:
         // Both writable contact and friction arenas follow all source
         // inputs. The existing GPU preparation owns the complete rows.
         constexpr std::array<std::size_t,count> order{
-            0u,1u,5u,8u,2u,3u,4u,9u,10u,11u,12u,14u,13u,6u,7u};
+            0u,1u,5u,8u,2u,3u,4u,9u,10u,11u,12u,14u,15u,13u,6u,7u};
         std::array<std::size_t,count> offsets{};
         // The original Dy heap retains an EdgeIndex-keyed Sc anchor
         // prefix. Solver output follows it and remains the sole readback;
@@ -456,7 +477,7 @@ public:
             ((output_bytes+127u)&~std::size_t(127u));
         std::size_t total=upload_begin;
         for(const auto i:order) {
-            if(i==14u && !bytes[i])continue;
+            if((i==14u || i==15u) && !bytes[i])continue;
             const auto view_bytes=std::max<std::size_t>(bytes[i],4u);
             if(total>std::numeric_limits<std::uint32_t>::max()-128u ||
                view_bytes>std::numeric_limits<std::uint32_t>::max()-total)
@@ -474,7 +495,7 @@ public:
         host_.resize(offsets[6]);
         for(std::size_t i=0;i<count;++i)
             if(i!=6u && i!=7u && i!=11u && i!=12u &&
-               i!=13u && bytes[i])
+               i!=13u && i!=15u && bytes[i])
                 std::memcpy(host_.data()+offsets[i],sources[i],bytes[i]);
         if(prep_bytes)
             std::memcpy(host_.data()+offsets[11],packed_.data(),prep_bytes);
@@ -488,6 +509,18 @@ public:
             std::memcpy(host_.data()+offsets[11]+static_begin,
                         inline_bodies_.data(),inline_bodies_.size()*
                             sizeof(native::GpuDyContactPrepBody));
+        if(device_partitions) {
+            const auto n=descriptors.size();
+            const std::array<std::uint32_t,5> scratch_header{
+                20u,narrow(20u+n*16u),narrow(20u+n*20u),
+                narrow(20u+n*24u),
+                tiles_.empty()?0u:narrow(offsets[14])};
+            std::memcpy(host_.data()+offsets[15],scratch_header.data(),
+                        sizeof(scratch_header));
+            if(n)
+                std::memcpy(host_.data()+offsets[15]+20u,
+                            descriptors.data(),descriptors.size_bytes());
+        }
         if(!packed_integration_.empty())
             std::memcpy(host_.data()+offsets[12]+integration_header_bytes,
                         packed_integration_.data(),
@@ -546,7 +579,8 @@ public:
         std::array<std::uint32_t,9> integration_header{
             0u,0u,0u,shape_capacity,narrow(body_ordinals.size()),
             narrow(descriptors.size()),narrow(tasks.size()),
-            tiles_.empty()?0u:narrow(std::size_t(params[28])+offsets[14]),
+            device_partitions?narrow(std::size_t(params[28])+offsets[15]):
+                (tiles_.empty()?0u:narrow(std::size_t(params[28])+offsets[14])),
             narrow(integration.size())};
         const auto bind_shape=[&](CudaDeviceAddressMap::Address source,
                                   std::uint32_t stride,std::uint32_t slot,
@@ -599,7 +633,10 @@ public:
                                                  : compute::BufferAccess::Read;
             dispatch.buffers[3].access=integrates ? compute::BufferAccess::Write
                                                  : compute::BufferAccess::Read;
-            params[10]=(iteration<<3u)|static_cast<std::uint32_t>(phase);
+            params[10]=(iteration<<4u)|static_cast<std::uint32_t>(phase)|
+                (device_partitions?0x80000000u:0u)|
+                (device_partitions && !wide_tasks_.empty() &&
+                 phase!=Launch::Color ?0x40000000u:0u);
             for(std::size_t group=0;group<range.count;) {
                 const auto count=std::min<std::size_t>(max_groups,range.count-group);
                 params[8]=narrow(range.begin+group);
@@ -610,6 +647,8 @@ public:
                 group+=count;
             }
         };
+        if(device_partitions && !wide_tasks_.empty())
+            launch(Launch::Color,{0u,tasks.size()});
         launch(Launch::Fused,fused_tiles_);
         if(!wide_tasks_.empty()) {
             // The existing arena write dependencies order each dispatch
@@ -679,7 +718,7 @@ public:
                 const auto& desc=descriptors[i];
                 // Joint impulses remain local to the GPU PGS row.
                 // No Sc task consumes a host copy after solve.
-                if(desc.row_count)continue;
+                if((desc.row_count&255u)!=0u)continue;
                 if(desc.index>=manifolds.size())
                     throw std::logic_error("Source Dy manager writeback index invalid");
                 const auto& manager=manifolds[desc.index];
@@ -785,7 +824,8 @@ public:
     }
 private:
     enum class Launch : std::uint32_t {
-        Fused, Normals, Friction, Partition, Motion, Integrate, PublishErrors, FreeBodies
+        Fused, Normals, Friction, Partition, Motion, Integrate, PublishErrors,
+        FreeBodies, Color
     };
     struct WorkTile {
         std::uint32_t task,begin,end,reserved=0u;
@@ -795,6 +835,177 @@ private:
         std::size_t begin=0u,count=0u;
         std::uint32_t iterations=0u;
     };
+
+    void build_device_launch_plan(
+        std::span<const native::GpuDyDistanceTask> tasks,
+        std::span<const native::GpuDyDistanceDescriptor> descriptors,
+        std::span<const std::uint32_t> partitions,
+        std::uint32_t ordinals,std::uint32_t bodies) {
+        constexpr std::uint32_t threads=128u;
+        constexpr std::uint32_t prep_managers=threads/4u;
+        constexpr std::uint32_t wide_min=4u*threads;
+        wide_tasks_.clear();
+        tiles_.clear();
+        partition_tiles_.clear();
+        position_ends_.fill(false);
+        wide_iterations_=0u;
+        last_schedule_={};
+        last_schedule_.device_colored_tasks=tasks.size();
+        last_schedule_.device_colored_descriptors=descriptors.size();
+        last_schedule_.max_partition_groups=tasks.empty()?0u:1u;
+        degree_dynamic_.assign(bodies,0u);
+        degree_static_.assign(bodies,0u);
+        color_bounds_.assign(tasks.size(),0u);
+        fused_tiles_={0u,tasks.size()};
+        prep_tiles_={};
+        body_tiles_={};
+        std::uint32_t descriptor_end=0u,partition_end=0u,body_end=0u;
+        std::size_t partition_levels=0u;
+        for(std::size_t task_id=0;task_id<tasks.size();++task_id) {
+            const auto& task=tasks[task_id];
+            if(task.descriptor_begin!=descriptor_end ||
+               task.descriptor_end<descriptor_end ||
+               task.descriptor_end>descriptors.size() ||
+               task.partition_begin!=partition_end ||
+               task.partition_end<partition_end ||
+               task.partition_end>partitions.size() ||
+               task.partition_end-partition_end!=
+                   task.descriptor_end-descriptor_end ||
+               task.body_begin!=body_end ||
+               task.body_end<body_end || task.body_end>ordinals ||
+               !task.position_iterations || task.position_iterations>255u ||
+               task.velocity_iterations>255u)
+                throw std::invalid_argument(
+                    "Source device Dy task ranges are inconsistent");
+            std::uint32_t max_dynamic_degree=0u,max_static_degree=0u;
+            for(std::uint32_t i=task.descriptor_begin;
+                i<task.descriptor_end;++i) {
+                const auto& desc=descriptors[i];
+                const auto flags=desc.row_count&0x300u;
+                if((desc.row_count&~0x3ffu)!=0u || !flags ||
+                   (flags&0x100u && desc.row0>=bodies) ||
+                   (flags&0x200u && desc.row1>=bodies))
+                    throw std::invalid_argument(
+                        "Sc device descriptor has invalid endpoint classification");
+                if(flags==0x300u) {
+                    max_dynamic_degree=std::max(max_dynamic_degree,
+                        ++degree_dynamic_[desc.row0]);
+                    max_dynamic_degree=std::max(max_dynamic_degree,
+                        ++degree_dynamic_[desc.row1]);
+                }else {
+                    const auto body=flags&0x100u?desc.row0:desc.row1;
+                    max_static_degree=std::max(max_static_degree,
+                        ++degree_static_[body]);
+                }
+            }
+            for(std::uint32_t i=task.descriptor_begin;
+                i<task.descriptor_end;++i) {
+                const auto& desc=descriptors[i];
+                if(desc.row_count&0x100u) {
+                    degree_dynamic_[desc.row0]=0u;
+                    degree_static_[desc.row0]=0u;
+                }
+                if(desc.row_count&0x200u) {
+                    degree_dynamic_[desc.row1]=0u;
+                    degree_static_[desc.row1]=0u;
+                }
+            }
+            const auto count=task.descriptor_end-task.descriptor_begin;
+            const std::size_t bound=std::min<std::size_t>(count,
+                (max_dynamic_degree?2u*std::size_t(max_dynamic_degree)-1u:0u)+
+                max_static_degree);
+            color_bounds_[task_id]=static_cast<std::uint32_t>(bound);
+            descriptor_end=task.descriptor_end;
+            partition_end=task.partition_end;
+            body_end=task.body_end;
+            // A 512-way disjoint partition requires at least 512
+            // independently writable dynamic solver bodies. This keeps
+            // compact connected islands inside their one-group PGS path.
+            if(task.body_end-task.body_begin<wide_min || count<wide_min)
+                continue;
+            wide_tasks_.push_back(static_cast<std::uint32_t>(task_id));
+            last_schedule_.max_partition_groups=std::max(
+                last_schedule_.max_partition_groups,
+                (std::size_t(count)+threads-1u)/threads);
+            partition_levels=std::max(partition_levels,bound);
+            wide_iterations_=std::max(wide_iterations_,
+                task.position_iterations+
+                    std::max(task.velocity_iterations,1u));
+            position_ends_[task.position_iterations-1u]=true;
+        }
+        if(descriptor_end!=descriptors.size() ||
+           partition_end!=partitions.size() || body_end!=ordinals)
+            throw std::invalid_argument(
+                "Source device Dy task input stream is incomplete");
+        if(wide_tasks_.empty())return;
+        last_schedule_.wide_tasks=wide_tasks_.size();
+        std::size_t wide_index=0u;
+        for(std::size_t task=0;task<tasks.size();++task) {
+            if(wide_index<wide_tasks_.size() &&
+               task==wide_tasks_[wide_index])++wide_index;
+            else tiles_.push_back({
+                static_cast<std::uint32_t>(task),0u,0u});
+        }
+        fused_tiles_.count=tiles_.size();
+        const auto append_tiles=[&](std::uint32_t task,
+                                    std::uint32_t begin,
+                                    std::uint32_t end,std::uint32_t step) {
+            while(begin<end) {
+                const auto next=begin+std::min(step,end-begin);
+                tiles_.push_back({task,begin,next});
+                begin=next;
+            }
+        };
+        prep_tiles_.begin=tiles_.size();
+        for(const auto id:wide_tasks_) {
+            const auto& task=tasks[id];
+            append_tiles(id,task.descriptor_begin,task.descriptor_end,
+                         prep_managers);
+        }
+        prep_tiles_.count=tiles_.size()-prep_tiles_.begin;
+        body_tiles_.begin=tiles_.size();
+        for(const auto id:wide_tasks_) {
+            const auto& task=tasks[id];
+            append_tiles(id,task.body_begin,task.body_end,threads);
+        }
+        body_tiles_.count=tiles_.size()-body_tiles_.begin;
+        // Device colors have not been computed yet. Upper bounds come
+        // from endpoint degrees, not a host conflict-colored schedule.
+        // Each tile resolves its actual color interval in the shader.
+        partition_tiles_.resize(partition_levels);
+        for(const auto id:wide_tasks_) {
+            const auto& task=tasks[id];
+            const auto count=task.descriptor_end-task.descriptor_begin;
+            const auto tile_count=(std::size_t(count)+threads-1u)/threads;
+            for(std::uint32_t color=0u;color<color_bounds_[id];++color) {
+                auto& range=partition_tiles_[color];
+                range.count+=tile_count;
+                range.iterations=std::max(range.iterations,
+                    task.position_iterations+
+                        std::max(task.velocity_iterations,1u));
+            }
+        }
+        std::size_t end=tiles_.size();
+        for(auto& range:partition_tiles_) {
+            range.begin=end;
+            end+=range.count;
+            range.count=0u;
+        }
+        tiles_.resize(end);
+        for(const auto id:wide_tasks_) {
+            const auto& task=tasks[id];
+            const auto count=task.descriptor_end-task.descriptor_begin;
+            for(std::uint32_t color=0u;color<color_bounds_[id];++color) {
+                auto& range=partition_tiles_[color];
+                for(std::uint32_t offset=0u;offset<count;) {
+                    const auto next=offset+std::min(threads,count-offset);
+                    tiles_[range.begin+range.count++]={id,offset,next,color};
+                    offset=next;
+                }
+            }
+        }
+        last_schedule_.tile_bytes=tiles_.size()*sizeof(WorkTile);
+    }
 
     void build_launch_plan(std::span<const native::GpuDyDistanceTask> tasks,
                            std::span<const std::uint32_t> partitions,
@@ -936,6 +1147,7 @@ private:
     std::vector<std::size_t> patch_anchor_starts_;
     std::vector<std::uint8_t> assigned_;
     std::vector<std::uint32_t> wide_tasks_;
+    std::vector<std::uint32_t> degree_dynamic_,degree_static_,color_bounds_;
     std::vector<WorkTile> tiles_;
     std::vector<TileRange> partition_tiles_;
     TileRange fused_tiles_,prep_tiles_,body_tiles_;

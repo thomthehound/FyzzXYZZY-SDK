@@ -273,7 +273,8 @@ public:
         std::span<const std::uint32_t> contact_order,
         std::span<const native::GpuDyContactPrepPair> contact_prep,
         std::span<native::GpuDyBodyIntegrationInput> integration,
-        std::span<native::GpuDyIntegratedPose> integrated_poses) override {
+        std::span<native::GpuDyIntegratedPose> integrated_poses,
+        bool device_partitions=false) override {
         if(!dy_distance_)
             throw std::logic_error("Source GPU Dy shader not installed");
         // Resolve the first attached shape into the ElementSim cache.
@@ -303,7 +304,7 @@ public:
                             sap_->pre_broadphase_buffers().bounds.getDevicePtr(),
                             box_geometry_.getDevicePtr(),aabb_->capacity(),
                             convex_vertices_.getDevicePtr(),
-                            box_owners_.convex_vertex_count);
+                            box_owners_.convex_vertex_count,device_partitions);
         ++dy_distance_dispatch_count_;
     }
     std::size_t dy_resident_pose_count() const noexcept {
