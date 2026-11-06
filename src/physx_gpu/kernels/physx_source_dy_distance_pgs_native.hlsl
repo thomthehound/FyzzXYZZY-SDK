@@ -530,9 +530,9 @@ void main(uint3 group:SV_GroupID,uint3 lane:SV_GroupThreadID) {
         uint4 tile=uint4(index,0u,0u,0u);
         [branch]
         if(devicePartitions) {
-            const uint tileBias=arena.Load(schedule.w+16u);
-            if(phase!=colorTile && tileBias!=0u)
-                tile=arena.Load4(tileBias+index*16u);
+            const uint tileOffset=arena.Load(schedule.w+16u);
+            if(phase!=colorTile && tileOffset!=0u)
+                tile=arena.Load4(p.writebackBias+tileOffset+index*16u);
         } else if(schedule.w!=0u)
             tile=arena.Load4(schedule.w+index*16u);
         const uint t=p.taskBias+tile.x*36u;
