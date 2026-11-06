@@ -24,6 +24,13 @@ void verify_boxes_and_attachment_poses() {
     near(hit->distance,2.f,1.e-5f,"Native box ray entry distance");
     near(hit->normal.x,-1.f,1.e-5f,"Native box ray normal");
     near(hit->position.x,-1.f,1.e-5f,"Native box ray position");
+    for(const float magnitude:std::array{1.e-30f,1.e30f}) {
+        hit=world.raycast({-3.f,0.f,0.f},{magnitude,0.f,0.f},10.f);
+        require(hit && hit->body==body,
+            "Finite nonzero ray direction lost the box");
+        near(hit->distance,2.f,1.e-5f,
+             "Ray direction scaling changed physical hit distance");
+    }
     require(!world.raycast({-3.f,0.f,0.f},{1.f,0.f,0.f},1.99f),
         "Ray hit beyond its maximum distance");
     require(!world.raycast({-3.f,0.f,0.f},{-1.f,0.f,0.f},10.f),
