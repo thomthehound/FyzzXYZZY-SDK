@@ -111,6 +111,44 @@ void solveJoint(uint4 desc,uint errorAddress,bool biased) {
     }
 }
 
+// Sc's cached ElementSim pose is the common mass-frame source for
+// device contact preparation, friction correlation, and integrateCore.
+bool sourceDyMassPose(uint input,out float3 position,out float4 quaternion) {
+    const uint poseIndex=arena.Load(input+108u);
+    if(poseIndex==invalidBody) {
+        const uint4 views=arena.Load4(p.integrationBias);
+        const uint element=arena.Load(input+72u);
+        if(element>=views.w)return false;
+        const uint geo=views.z+element*64u;
+        const uint kind=scGeometry.Load(geo+28u);
+#ifdef FYZZXYZZY_CONVEX
+        if(kind!=0u && kind!=2u)return false;
+#else
+        if(kind!=0u)return false;
+#endif
+        const float3 shapeLocal=asfloat(scGeometry.Load3(geo+16u));
+        const float4 shapeLocalAxes=asfloat(scGeometry.Load4(geo+32u));
+        const uint shape=views.x+element*32u;
+        const float4 shapeAxes=asfloat(scTransforms.Load4(shape));
+        const float3 shapeCenter=asfloat(scTransforms.Load3(shape+16u));
+        const float4 actorAxes=sourceRigidMultiply(
+            shapeAxes,float4(-shapeLocalAxes.xyz,shapeLocalAxes.w));
+        const float3 actorPosition=shapeCenter-
+            sourceRigidRotate(actorAxes,shapeLocal);
+        const float3 centerLocal=asfloat(arena.Load3(input+76u));
+        const float4 massLocalAxes=asfloat(arena.Load4(input+88u));
+        quaternion=sourceRigidMultiply(actorAxes,massLocalAxes);
+        position=actorPosition+sourceRigidRotate(actorAxes,centerLocal);
+    }else {
+        const uint count=arena.Load(p.integrationBias+32u);
+        if(poseIndex>=count)return false;
+        const uint pose=p.integrationBias+36u+count*112u+poseIndex*28u;
+        position=asfloat(arena.Load3(pose));
+        quaternion=asfloat(arena.Load4(pose+12u));
+    }
+    return all(isfinite(position)) && all(isfinite(quaternion));
+}
+
 #include "physx_source_dy_contact_pgs_native.hlsli"
 
 void prepareNormals(uint begin,uint end,uint lane,uint endError) {
@@ -217,41 +255,7 @@ void integrateBody(uint ordinal) {
     const float dt=asfloat(arena.Load(input+64u));
     float3 position;
     float4 quaternion;
-    const uint poseIndex=arena.Load(input+108u);
-    if(poseIndex==invalidBody) {
-        // The previous integrated box transform is still authoritative
-        // after Sc/SAP admission. Recover the rigid actor and mass frames.
-        const uint4 views=arena.Load4(p.integrationBias);
-        const uint element=arena.Load(input+72u);
-        if(element>=views.w)return;
-        const uint geo=views.z+element*64u;
-        const uint sourceKind=scGeometry.Load(geo+28u);
-#ifdef FYZZXYZZY_CONVEX
-        if(sourceKind!=0u && sourceKind!=2u)return;
-#else
-        if(sourceKind!=0u)return;
-#endif
-        const float3 shapeLocal=asfloat(scGeometry.Load3(geo+16u));
-        const float4 shapeLocalAxes=asfloat(scGeometry.Load4(geo+32u));
-        const uint shape=views.x+element*32u;
-        const float4 shapeAxes=asfloat(scTransforms.Load4(shape));
-        const float3 shapeCenter=asfloat(scTransforms.Load3(shape+16u));
-        const float4 actorAxes=sourceRigidMultiply(
-            shapeAxes,float4(-shapeLocalAxes.xyz,shapeLocalAxes.w));
-        const float3 actorPosition=shapeCenter-
-            sourceRigidRotate(actorAxes,shapeLocal);
-        const float3 centerLocal=asfloat(arena.Load3(input+76u));
-        const float4 massLocalAxes=asfloat(arena.Load4(input+88u));
-        quaternion=sourceRigidMultiply(actorAxes,massLocalAxes);
-        position=actorPosition+sourceRigidRotate(actorAxes,centerLocal);
-    } else {
-        const uint count=arena.Load(p.integrationBias+32u);
-        if(poseIndex>=count)return;
-        const uint pose=p.integrationBias+36u+count*112u+poseIndex*28u;
-        position=asfloat(arena.Load3(pose));
-        quaternion=asfloat(arena.Load4(pose+12u));
-    }
-    if(!all(isfinite(position)) || !all(isfinite(quaternion)))return;
+    if(!sourceDyMassPose(input,position,quaternion))return;
     const uint destination=p.writebackBias+p.resultPatchOffset+
         p.patchCount*4u+ordinal*32u;
     arena.Store(destination+28u,0u);
