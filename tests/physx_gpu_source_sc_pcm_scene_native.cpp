@@ -2097,30 +2097,39 @@ void verify_gpu_zero_response_wide_island(
     cpu.step(1.f/120.f);
     gpu.step(1.f/120.f);
     const auto schedule=producer->dy_launch_stats();
-    require(cpu.largest_accurate_island_size()>=
-                joint_bodies+zero_contact_bodies &&
-            gpu.largest_accurate_island_size()>=
-                joint_bodies+zero_contact_bodies &&
-            schedule.wide_tasks==1u &&
-            schedule.device_colored_descriptors>=
-                joint_bodies+zero_contact_bodies-2u &&
-            schedule.max_partition_groups>=
-                (joint_bodies+zero_contact_bodies+127u)/128u &&
-            schedule.tile_bytes>0u &&
-            schedule.tile_bytes<=schedule.device_colored_descriptors*
-                sizeof(native::GpuDyDistanceDescriptor) &&
-            cpu.contacts().size()==gpu.contacts().size(),
-        "Zero-response contact endpoints lost device Dy partition coverage");
-    for(std::size_t i=0u;i<b.size();++i)
-        test::compound_compare_state(gpu.body_state(b[i]),
-            cpu.body_state(a[i]),0.003f,
-            "Wide Dy zero-response contact and joint island");
+    const auto cpu_island=cpu.largest_accurate_island_size();
+    const auto gpu_island=gpu.largest_accurate_island_size();
     std::cout<<"FYZZXYZZY_METRIC suite=sc_pcm case=zero_response_wide"
              <<" bodies="<<b.size()
+             <<" cpu_island="<<cpu_island
+             <<" gpu_island="<<gpu_island
+             <<" cpu_contacts="<<cpu.contacts().size()
+             <<" gpu_contacts="<<gpu.contacts().size()
+             <<" wide_tasks="<<schedule.wide_tasks
              <<" descriptors="<<schedule.device_colored_descriptors
              <<" max_partition_groups="<<schedule.max_partition_groups
              <<" dy_dispatches="<<schedule.dispatches
              <<" tile_bytes="<<schedule.tile_bytes<<'\n';
+    require(cpu_island>=joint_bodies+zero_contact_bodies &&
+            gpu_island>=joint_bodies+zero_contact_bodies,
+        "Zero-response fixture did not form the intended accurate island");
+    require(schedule.wide_tasks==1u &&
+            schedule.device_colored_descriptors>=
+                joint_bodies+zero_contact_bodies-2u,
+        "Zero-response fixture did not produce wide contact/joint descriptors");
+    require(schedule.max_partition_groups>=
+                (joint_bodies+zero_contact_bodies+127u)/128u,
+        "Device Dy partition tiles omit zero-response contact endpoints");
+    require(schedule.tile_bytes>0u &&
+            schedule.tile_bytes<=schedule.device_colored_descriptors*
+                sizeof(native::GpuDyDistanceDescriptor),
+        "Device Dy partition tile metadata exceeds its source workload");
+    require(cpu.contacts().size()==gpu.contacts().size(),
+        "Device PCM changed zero-response contact publication");
+    for(std::size_t i=0u;i<b.size();++i)
+        test::compound_compare_state(gpu.body_state(b[i]),
+            cpu.body_state(a[i]),0.003f,
+            "Wide Dy zero-response contact and joint island");
 }
 
 // One shared dynamic endpoint forces more than one 32-color wave.
