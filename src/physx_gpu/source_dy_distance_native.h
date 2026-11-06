@@ -51,6 +51,8 @@ struct SourceDyHostPoseNative {
 static_assert(sizeof(SourceDyHostPoseNative)==28u);
 
 struct SourceDyLaunchStats {
+    std::size_t device_colored_tasks=0u;
+    std::size_t device_colored_descriptors=0u;
     std::size_t wide_tasks=0u;
     std::size_t max_partition_groups=0u;
     std::size_t dispatches=0u;
@@ -848,6 +850,8 @@ private:
         position_ends_.fill(false);
         wide_iterations_=0u;
         last_schedule_={};
+        last_schedule_.device_colored_tasks=tasks.size();
+        last_schedule_.device_colored_descriptors=descriptors.size();
         last_schedule_.max_partition_groups=tasks.empty()?0u:1u;
         degree_dynamic_.assign(bodies,0u);
         degree_static_.assign(bodies,0u);
