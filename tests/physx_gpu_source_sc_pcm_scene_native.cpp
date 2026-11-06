@@ -1732,6 +1732,23 @@ void verify_compound_actor_gpu_solver(
     test::prismatic_joint_response(gpu,&cpu);
     test::compound_plane_box_device_pcm(gpu,&cpu);
     test::compound_plane_sphere_device_pcm(gpu,&cpu);
+    // Native GPU and CPU World APIs query the same authored attachment
+    // geometry, including shapes excluded from simulation collision.
+    const auto gpu_body=gpu.create_static_body({{250.f,0.f,0.f},{}});
+    const auto cpu_body=cpu.create_static_body({{250.f,0.f,0.f},{}});
+    const auto gpu_shape=gpu.attach_sphere_shape(gpu_body,0.5f);
+    const auto cpu_shape=cpu.attach_sphere_shape(cpu_body,0.5f);
+    gpu.set_shape_simulation_enabled(gpu_shape,false);
+    cpu.set_shape_simulation_enabled(cpu_shape,false);
+    const auto gpu_hit=gpu.raycast({247.f,0.f,0.f},{1.f,0.f,0.f},10.f);
+    const auto cpu_hit=cpu.raycast({247.f,0.f,0.f},{1.f,0.f,0.f},10.f);
+    require(gpu_hit && cpu_hit && gpu_hit->shape==gpu_shape &&
+            cpu_hit->shape==cpu_shape &&
+            std::abs(gpu_hit->distance-cpu_hit->distance)<1.e-5f &&
+            std::abs(gpu_hit->normal.x+1.f)<1.e-5f,
+        "Native GPU World did not expose authored scene query geometry");
+    gpu.remove_body(gpu_body);
+    cpu.remove_body(cpu_body);
 }
 
 void verify_gpu_free_integration(
@@ -1830,6 +1847,20 @@ void verify_gpu_free_integration(
             test::compound_compare_state(gpu.body_state(actual[i]),
                 cpu.body_state(expected[i]),0.002f,
                 "GPU Dy free or transitioning body");
+        // Query a moving, rotating body after Dy has published its pose.
+        // The ray crosses the body's center, independent of its rotation.
+        const auto cpu_position=cpu.body_state(expected[1]).position;
+        const auto gpu_position=gpu.body_state(actual[1]).position;
+        const auto cpu_hit=cpu.raycast(
+            {cpu_position.x,cpu_position.y+2.f,cpu_position.z},
+            {0.f,-1.f,0.f},3.f);
+        const auto gpu_hit=gpu.raycast(
+            {gpu_position.x,gpu_position.y+2.f,gpu_position.z},
+            {0.f,-1.f,0.f},3.f);
+        require(cpu_hit && gpu_hit &&
+                cpu_hit->body==expected[1] && gpu_hit->body==actual[1] &&
+                std::abs(cpu_hit->distance-gpu_hit->distance)<0.005f,
+            "Device-integrated rigid pose did not publish its scene query");
     }
     require(touched && released,"Free body did not enter and leave GPU PCM response");
 }

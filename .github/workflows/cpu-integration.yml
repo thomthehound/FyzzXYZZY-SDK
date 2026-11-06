@@ -144,7 +144,7 @@ jobs:
           test -f FyzzXYZZY-SDK/vendor/PhysX/physx/CMakeLists.txt
           cmake -S FyzzXYZZY-SDK -B offline-build -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON -DFYZZXYZZY_BUILD_GODOT=OFF -DFETCHCONTENT_FULLY_DISCONNECTED=ON
           grep -F "vendor/PhysX" offline-build/CMakeCache.txt
-          cmake --build offline-build --target fyzzxyzzy_cpp23_contract fyzzxyzzy_native_scene_smoke fyzzxyzzy_compound_rigid_smoke fyzzxyzzy_cooked_convex fyzzxyzzy_headless_smoke fyzzxyzzy_physx_foundation_shared_lifetime fyzzxyzzy_physx_cuda_address_test --parallel 4
+          cmake --build offline-build --target fyzzxyzzy_cpp23_contract fyzzxyzzy_native_scene_smoke fyzzxyzzy_compound_rigid_smoke fyzzxyzzy_cooked_convex fyzzxyzzy_scene_queries fyzzxyzzy_headless_smoke fyzzxyzzy_physx_foundation_shared_lifetime fyzzxyzzy_physx_cuda_address_test --parallel 4
           ctest --test-dir offline-build --output-on-failure
           # Production/distribution configurations must also reject toolchains
           # lacking C++23 std::expected when BUILD_TESTING=OFF.

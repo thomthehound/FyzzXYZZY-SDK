@@ -10696,6 +10696,7 @@ public:
     void set_shape_local_pose(ShapeId shape,Transform pose) override {scene_.set_shape_local_pose(shape,pose);}
     void set_shape_material(ShapeId shape,Material material) override {scene_.set_attached_shape_material(shape,material);}
     void set_shape_simulation_enabled(ShapeId shape,bool enabled) override {scene_.set_attached_shape_enabled(shape,enabled);}
+    void set_shape_query_enabled(ShapeId shape,bool enabled) override {scene_.set_attached_shape_query_enabled(shape,enabled);}
     void set_shape_offsets(ShapeId shape,float contact,float rest) override {scene_.set_attached_shape_offsets(shape,contact,rest);}
     void update_mass_properties(BodyId body,float density) override {scene_.update_mass_properties(body,density);}
     BodyMassProperties body_mass_properties(BodyId body) const override {return scene_.body_mass_properties(body);}
@@ -10762,6 +10763,9 @@ public:
     }
     void step(float seconds) override { scene_.step(seconds); }
     BodyState body_state(BodyId id) const override { return scene_.body_state(id); }
+    std::optional<RaycastHit> raycast(Vec3 origin,Vec3 direction,float max_distance) const override {
+        return scene_.raycast(origin,direction,max_distance);
+    }
     void set_body_position(BodyId id, Vec3 p) override {
         scene_.set_position(id, p);
     }

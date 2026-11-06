@@ -143,6 +143,9 @@ void World::set_shape_material(ShapeId shape,Material material) {
 void World::set_shape_simulation_enabled(ShapeId shape,bool enabled) {
     impl_->set_shape_simulation_enabled(shape,enabled);
 }
+void World::set_shape_query_enabled(ShapeId shape,bool enabled) {
+    impl_->set_shape_query_enabled(shape,enabled);
+}
 void World::set_shape_offsets(ShapeId shape,float contact,float rest) {
     if(!std::isfinite(contact) || !std::isfinite(rest) || contact<0.0f || rest>=contact)
         throw std::invalid_argument("Invalid contact/rest offsets");
@@ -284,6 +287,10 @@ void World::step(float seconds) {
 
 BodyState World::body_state(BodyId id) const {
     return impl_->body_state(id);
+}
+std::optional<RaycastHit> World::raycast(
+    Vec3 origin,Vec3 direction,float max_distance) const {
+    return impl_->raycast(origin,direction,max_distance);
 }
 std::span<const ContactEvent> World::contact_events() const {
     return impl_->contact_events();

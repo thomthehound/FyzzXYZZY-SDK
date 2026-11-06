@@ -575,6 +575,7 @@ public:
     void set_shape_local_pose(ShapeId shape,Transform pose);
     void set_attached_shape_material(ShapeId shape,Material material);
     void set_attached_shape_enabled(ShapeId shape,bool enabled);
+    void set_attached_shape_query_enabled(ShapeId shape,bool enabled);
     void set_attached_shape_offsets(ShapeId shape,float contact,float rest);
     void update_mass_properties(BodyId body,float density);
     BodyMassProperties body_mass_properties(BodyId body) const;
@@ -624,6 +625,8 @@ public:
     void set_dynamics(BodyId id, RigidBodyDynamics dynamics);
     void remove(BodyId id);
     BodyState body_state(BodyId id) const;
+    std::optional<RaycastHit> raycast(
+        Vec3 origin,Vec3 direction,float max_distance) const;
     // Live source broadphase proxy ownership, excluding retired actor IDs.
     // Simulation-disabled actors retain their proxy identity but are not
     // admitted into an active SAP endpoint until re-enabled.
@@ -1043,6 +1046,7 @@ private:
         Motion motion=Motion::Static;
         bool alive=false;
         bool simulation_shape_enabled=true;
+        bool query_shape_enabled=true;
         Vec3 half_extents{};
         float radius=0.0f;
         std::shared_ptr<const ConvexMesh> convex;

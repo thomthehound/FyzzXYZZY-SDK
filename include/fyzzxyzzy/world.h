@@ -7,6 +7,7 @@
 #include <cstdint>
 #include <memory>
 #include <limits>
+#include <optional>
 #include <span>
 #include <stdexcept>
 
@@ -210,6 +211,16 @@ struct BodyState {
     bool sleeping=false;
 };
 
+// A scene query reports the actual attachment, not only the owning actor.
+// Hits inside a solid start at distance zero with normal opposite the ray.
+struct RaycastHit {
+    BodyId body=0;
+    ShapeId shape=0;
+    Vec3 position{};
+    Vec3 normal{};
+    float distance=0.0f;
+};
+
 // SDK simulation backend. Each World owns exactly one implementation.
 // Additional backends must reject unsupported scene operations explicitly.
 class WorldBackend {
@@ -242,6 +253,9 @@ public:
     }
     virtual void set_shape_simulation_enabled(ShapeId,bool) {
         throw std::logic_error("This backend cannot author shape flags");
+    }
+    virtual void set_shape_query_enabled(ShapeId,bool) {
+        throw std::logic_error("This backend cannot author query flags");
     }
     virtual void set_shape_offsets(ShapeId,float,float) {
         throw std::logic_error("This backend cannot author shape offsets");
@@ -310,6 +324,10 @@ public:
     }
     virtual void step(float seconds) = 0;
     virtual BodyState body_state(BodyId id) const = 0;
+    virtual std::optional<RaycastHit> raycast(
+        Vec3,Vec3,float) const {
+        throw std::logic_error("This backend has no scene queries");
+    }
     virtual std::span<const ContactEvent> contact_events() const {
         return {};
     }
@@ -397,6 +415,7 @@ public:
     void set_shape_local_pose(ShapeId shape,Transform local_pose);
     void set_shape_material(ShapeId shape,Material material);
     void set_shape_simulation_enabled(ShapeId shape,bool enabled);
+    void set_shape_query_enabled(ShapeId shape,bool enabled);
     void set_shape_offsets(ShapeId shape,float contact,float rest);
     void update_mass_properties(BodyId body,float density);
     BodyMassProperties body_mass_properties(BodyId body) const;
@@ -439,6 +458,11 @@ public:
     void remove_constraint(ConstraintId id);
     void step(float seconds);
     BodyState body_state(BodyId id) const;
+    // Closest actual-geometry hit in world units, through attached query
+    // shapes including simulation-disabled ones. Direction is normalized
+    // internally. Queries use the last published scene pose.
+    std::optional<RaycastHit> raycast(
+        Vec3 origin,Vec3 direction,float max_distance) const;
     // Events are valid until the next completed World::step.
     std::span<const ContactEvent> contact_events() const;
     std::span<const ContactEventPoint> contact_event_points() const;
