@@ -107,7 +107,10 @@ bool epaContact(GjkBoxPair pair,EpaFacet facet,
         pa-pair.aInB-witness.normalB*pair.radiusA);
     witness.localB=pb+witness.normalB*pair.radiusB;
     witness.separation=-depth-pair.radiusA-pair.radiusB;
-    return sqrt(gjkLength2(pa-pb))<=depth+1.e-3f;
+    const float scale=max(
+        max(pair.halfA.x,max(pair.halfA.y,pair.halfA.z)),
+        max(pair.halfB.x,max(pair.halfB.y,pair.halfB.z)));
+    return sqrt(gjkLength2(pa-pb))<=depth+1.e-3f*scale;
 }
 // One workgroup owns a penetration pair. Facet visibility and closest-facet
 // selection run across lanes; topology updates retain deterministic edge order.

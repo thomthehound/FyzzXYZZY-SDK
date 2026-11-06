@@ -294,7 +294,9 @@ bool contact_from_facet(const BoxPair& pair,
     const float depth=std::abs(facet.distance);
     output={pair.local_a(pa),pb,normal,-depth};
     const Vec3 difference=sub(pa,pb);
-    return std::sqrt(length2(difference))<=depth+1.0e-3f;
+    const float scale=std::max({pair.ha.x,pair.ha.y,pair.ha.z,
+                                pair.hb.x,pair.hb.y,pair.hb.z});
+    return std::sqrt(length2(difference))<=depth+1.0e-3f*scale;
 }
 bool epa(const BoxPair& pair,
          const std::array<Support,4>& simplex,int simplex_count,
@@ -690,7 +692,9 @@ std::uint8_t source_pcm_convex_face_contacts(
         edge_length_sq=std::max(edge_length_sq,
             length2(sub(q(i+1u),q(i))));
     const float scale=std::sqrt(edge_length_sq);
+    if(!(scale>0.f) || !std::isfinite(scale))return 0u;
     const float tolerance=std::max(scale*1.e-5f,1.e-6f);
+    const float fractional_tolerance=tolerance/scale;
     const float tolerance_sq=tolerance*tolerance;
     const auto cross2=[&](Vec3 a,Vec3 b) {
         return dot(reference_normal,cross(a,b));
@@ -787,8 +791,8 @@ std::uint8_t source_pcm_convex_face_contacts(
             const Vec3 d=sub(b,a);
             const float t=cross2(d,f)/determinant;
             const float u=cross2(d,e)/determinant;
-            if(t>=-tolerance && t<=1.f+tolerance &&
-               u>=-tolerance && u<=1.f+tolerance)
+            if(t>=-fractional_tolerance && t<=1.f+fractional_tolerance &&
+               u>=-fractional_tolerance && u<=1.f+fractional_tolerance)
                 emit(add(a,mul(e,std::clamp(t,0.f,1.f))));
         }
     }

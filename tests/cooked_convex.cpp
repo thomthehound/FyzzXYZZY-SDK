@@ -379,6 +379,11 @@ void verify_scaled_convex_epa() {
                     std::abs(witness.normal_b.x)>0.95f,
                 "Scaled convex EPA changed its penetration or face normal");
         }
+        second.position={2.25f*half,0.01f*half,0.02f*half};
+        native::PcmContactCandidate separated{};
+        require(!native::source_pcm_convex_gjk_epa(
+            first,second,0.04f*half,separated),
+            "Separated scaled convex hulls produced a contact");
     }
 }
 

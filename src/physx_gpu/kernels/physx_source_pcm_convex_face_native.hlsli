@@ -218,7 +218,9 @@ uint convexFaceContacts(GjkBoxPair pair,float contactDistance,
         edgeLengthSq=max(edgeLengthSq,gjkLength2(b-a));
     }
     c.scale=sqrt(edgeLengthSq);
+    if(!(c.scale>0.f) || !isfinite(c.scale))return 0u;
     c.tolerance=max(c.scale*1.e-5f,1.e-6f);
+    const float fractionalTolerance=c.tolerance/c.scale;
     c.contactDistance=contactDistance;
     uint count=0u;
     for(uint i=0u;i<c.ni;++i) {
@@ -245,8 +247,8 @@ uint convexFaceContacts(GjkBoxPair pair,float contactDistance,
             const float3 d=b-a;
             const float t=convexCross2(c,d,f)/determinant;
             const float u=convexCross2(c,d,e)/determinant;
-            if(t>=-c.tolerance && t<=1.f+c.tolerance &&
-               u>=-c.tolerance && u<=1.f+c.tolerance)
+            if(t>=-fractionalTolerance && t<=1.f+fractionalTolerance &&
+               u>=-fractionalTolerance && u<=1.f+fractionalTolerance)
                 convexEmit(c,a+e*clamp(t,0.f,1.f),contacts,count);
         }
     }
