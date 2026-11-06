@@ -877,6 +877,7 @@ private:
                task.velocity_iterations>255u)
                 throw std::invalid_argument(
                     "Source device Dy task ranges are inconsistent");
+            std::size_t dynamic_edges=0u,static_edges=0u;
             for(std::uint32_t i=task.descriptor_begin;
                 i<task.descriptor_end;++i) {
                 const auto& desc=descriptors[i];
@@ -887,9 +888,11 @@ private:
                     throw std::invalid_argument(
                         "Sc device descriptor has invalid endpoint classification");
                 if(flags==0x300u) {
+                    ++dynamic_edges;
                     ++degree_dynamic_[desc.row0];
                     ++degree_dynamic_[desc.row1];
                 }else {
+                    ++static_edges;
                     const auto body=flags&0x100u?desc.row0:desc.row1;
                     ++degree_static_[body];
                 }
@@ -900,25 +903,20 @@ private:
             // Taking the per-edge sum avoids combining unrelated global
             // maximum degrees, without computing any host color.
             std::size_t bound=0u;
-            std::size_t max_conflicting_descriptors=0u;
+            std::size_t max_dynamic_conflicts=0u;
+            std::size_t max_static_degree=0u;
             for(std::uint32_t i=task.descriptor_begin;
                 i<task.descriptor_end;++i) {
                 const auto& desc=descriptors[i];
                 const auto flags=desc.row_count&0x300u;
-                const auto degree_a=(flags&0x100u)
-                    ?std::size_t(degree_dynamic_[desc.row0])+
-                     degree_static_[desc.row0]:0u;
-                const auto degree_b=(flags&0x200u)
-                    ?std::size_t(degree_dynamic_[desc.row1])+
-                     degree_static_[desc.row1]:0u;
-                // The union of both dynamic endpoint adjacency sets
-                // bounds the descriptors excluded by one matching edge.
-                // One edge belongs to both sets for a dynamic pair.
-                const auto conflict=degree_a+degree_b-
-                    (flags==0x300u?1u:0u);
-                max_conflicting_descriptors=std::max(
-                    max_conflicting_descriptors,conflict);
                 if(flags==0x300u) {
+                    // Dynamic edges color before static reservations.
+                    // Count only dynamic-edge adjacency when estimating
+                    // their guaranteed conflict-free first partition.
+                    max_dynamic_conflicts=std::max(
+                        max_dynamic_conflicts,
+                        std::size_t(degree_dynamic_[desc.row0])+
+                            degree_dynamic_[desc.row1]-1u);
                     const auto degree=std::size_t(degree_dynamic_[desc.row0])+
                                       degree_dynamic_[desc.row1]-1u;
                     const auto static_degree=std::max(
@@ -926,6 +924,9 @@ private:
                     bound=std::max(bound,degree+static_degree);
                 }else {
                     const auto body=flags&0x100u?desc.row0:desc.row1;
+                    max_static_degree=std::max(
+                        max_static_degree,
+                        std::size_t(degree_static_[body]));
                     bound=std::max(bound,std::size_t(degree_static_[body]));
                 }
             }
@@ -947,15 +948,16 @@ private:
             descriptor_end=task.descriptor_end;
             partition_end=task.partition_end;
             body_end=task.body_end;
-            // A source-order first-fit partition is a maximal matching
-            // of writable dynamic endpoints. Its width is at least the
-            // descriptor count divided by the largest edge neighborhood.
-            // Large stars have many bodies but only one usable lane per
-            // partition: keep them on the existing fused Dy task instead
-            // of multiplying colors by almost-empty wide workgroups.
-            const std::size_t parallel_width=
-                max_conflicting_descriptors
-                    ?(std::size_t(count)-1u)/max_conflicting_descriptors+1u:0u;
+            // The first dynamic partition is a maximal matching, so it
+            // contains at least dynamic_edges/max_dynamic_conflicts
+            // descriptors. Static constraints reserve colors afterward,
+            // potentially skipping otherwise free low colors; they
+            // contribute to the guarantee only for static-only tasks.
+            // High-degree stars have many bodies but one useful lane per
+            // color and must not create a quadratic tiled schedule.
+            const std::size_t parallel_width=dynamic_edges
+                ?(dynamic_edges-1u)/max_dynamic_conflicts+1u
+                :static_edges?(static_edges-1u)/max_static_degree+1u:0u;
             if(task.body_end-task.body_begin<wide_min ||
                count<wide_min || parallel_width<threads)
                 continue;
