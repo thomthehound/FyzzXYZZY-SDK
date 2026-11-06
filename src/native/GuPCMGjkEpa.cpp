@@ -298,7 +298,9 @@ bool contact_from_facet(const BoxPair& pair,
     const Vec3 difference=sub(pa,pb);
     const float scale=std::max({pair.ha.x,pair.ha.y,pair.ha.z,
                                 pair.hb.x,pair.hb.y,pair.hb.z});
-    return std::sqrt(length2(difference))<=depth+1.0e-3f*scale;
+    const float tolerance=(!pair.vertices_a.empty() ||
+                           !pair.vertices_b.empty())?1.0e-3f*scale:1.0e-3f;
+    return std::sqrt(length2(difference))<=depth+tolerance;
 }
 bool epa(const BoxPair& pair,
          const std::array<Support,4>& simplex,int simplex_count,
