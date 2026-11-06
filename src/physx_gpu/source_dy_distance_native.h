@@ -512,8 +512,7 @@ public:
             const std::array<std::uint32_t,5> scratch_header{
                 20u,narrow(20u+n*16u),narrow(20u+n*20u),
                 narrow(20u+n*24u),
-                tiles_.empty()?0u:narrow(
-                    std::size_t(params[28])+offsets[14])};
+                tiles_.empty()?0u:narrow(offsets[14])};
             std::memcpy(host_.data()+offsets[15],scratch_header.data(),
                         sizeof(scratch_header));
             if(n)
