@@ -24,7 +24,8 @@ if (-not $dxc) { throw 'A Windows x64 DXC compiler is required' }
 Push-Location (Split-Path -Parent $PSScriptRoot)
 try {
     $configure = @(
-        '-S', '.', '-B', $BuildDir, '-A', 'x64',
+        '-S', '.', '-B', $BuildDir,
+        '-G', 'Visual Studio 18 2026', '-A', 'x64',
         '-DBUILD_TESTING=ON',
         '-DFYZZXYZZY_ENABLE_PHYSX_SOURCE=OFF',
         '-DFYZZXYZZY_BUILD_D3D12=ON',
