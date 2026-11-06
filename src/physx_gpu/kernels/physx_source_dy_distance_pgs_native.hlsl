@@ -155,7 +155,7 @@ bool sourceDyMassPose(uint input,out float3 position,out float4 quaternion) {
 // constraints concurrently while preserving per-body greedy precedence.
 // Static reservations follow the source descriptor encounter order.
 groupshared uint dyNeeded,dyAssigned,dyWave,dyProgress,dyHighest;
-groupshared uint dyNextWave;
+groupshared uint dyNextWave,dySerial;
 
 void sourceDyPartitionTask(uint taskId,uint scratch,uint errorAddress,
                            uint lane) {
@@ -179,7 +179,7 @@ void sourceDyPartitionTask(uint taskId,uint scratch,uint errorAddress,
     const uint count=last-first;
     if(lane==0u) {
         dyNeeded=0u;dyAssigned=0u;dyWave=0u;dyHighest=0u;
-        dyNextWave=0u;
+        dyNextWave=0u;dySerial=0u;
     }
     AllMemoryBarrierWithGroupSync();
     for(uint i=first+lane;i<last;i+=128u) {
@@ -290,9 +290,64 @@ void sourceDyPartitionTask(uint taskId,uint scratch,uint errorAddress,
             if(dyProgress==0u) {
                 dyWave+=32u;
                 dyNextWave=1u;
-            } else dyAssigned+=dyProgress;
+            } else {
+                dyAssigned+=dyProgress;
+                // A source-ordered chain exposes little independent
+                // work. Continue its exact greedy prefix in one lane
+                // instead of imposing a barrier for every next edge.
+                if(dyNeeded>=256u && dyProgress*16u<dyNeeded)
+                    dySerial=1u;
+            }
             if(dyWave>=count && dyAssigned<dyNeeded)
                 arena.InterlockedOr(errorAddress,1048576u);
+        }
+        AllMemoryBarrierWithGroupSync();
+        if(arena.Load(errorAddress)!=0u)return;
+        if(dySerial!=0u)break;
+    }
+    if(dySerial!=0u) {
+        if(lane==0u) {
+            while(dyAssigned<dyNeeded) {
+                uint progress=0u;
+                for(uint i=first;i<last;++i) {
+                    if(arena.Load(colors+i*4u)!=0xffffffffu)continue;
+                    const uint4 desc=arena.Load4(raw+i*16u);
+                    if((desc.w&0x300u)!=0x300u)continue;
+                    const uint a=bodyState+desc.y*12u;
+                    const uint b=bodyState+desc.z*12u;
+                    const uint available=~(arena.Load(a)|arena.Load(b));
+                    if(available==0u)continue;
+                    const uint bit=firstbitlow(available);
+                    const uint value=dyWave+bit;
+                    if(value>=count) {
+                        arena.InterlockedOr(errorAddress,1048576u);
+                        break;
+                    }
+                    const uint mask=1u<<bit;
+                    arena.Store(a,arena.Load(a)|mask);
+                    arena.Store(b,arena.Load(b)|mask);
+                    arena.Store(a+4u,max(arena.Load(a+4u),value+1u));
+                    arena.Store(b+4u,max(arena.Load(b+4u),value+1u));
+                    arena.Store(colors+i*4u,value);
+                    dyHighest=max(dyHighest,value+1u);
+                    ++dyAssigned;
+                    ++progress;
+                }
+                if(arena.Load(errorAddress)!=0u)break;
+                if(dyAssigned==dyNeeded)break;
+                dyWave+=32u;
+                if(dyWave>=count) {
+                    arena.InterlockedOr(errorAddress,1048576u);
+                    break;
+                }
+                for(uint i=first;i<last;++i) {
+                    if(arena.Load(colors+i*4u)!=0xffffffffu)continue;
+                    const uint4 desc=arena.Load4(raw+i*16u);
+                    if((desc.w&0x300u)!=0x300u)continue;
+                    arena.Store(bodyState+desc.y*12u,0u);
+                    arena.Store(bodyState+desc.z*12u,0u);
+                }
+            }
         }
         AllMemoryBarrierWithGroupSync();
         if(arena.Load(errorAddress)!=0u)return;
