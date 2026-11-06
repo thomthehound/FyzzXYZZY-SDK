@@ -2007,6 +2007,8 @@ void verify_gpu_wide_island_solver(
         require(gpu.largest_accurate_island_size()==connected_bodies &&
                 schedule.wide_tasks==(frame<2u?2u:1u) &&
                 schedule.max_partition_groups>=partition_groups &&
+                schedule.max_partition_groups<=
+                    (connected_bodies+127u)/128u &&
                 schedule.dispatches>7u,
                 "Connected Dy islands did not execute tiled conflict partitions");
         require(producer->dy_upload_span_count()==1u &&
