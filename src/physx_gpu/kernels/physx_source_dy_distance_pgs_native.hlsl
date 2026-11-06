@@ -308,7 +308,6 @@ void sourceDyPartitionTask(uint taskId,uint scratch,uint errorAddress,
     if(dySerial!=0u) {
         if(lane==0u) {
             while(dyAssigned<dyNeeded) {
-                uint progress=0u;
                 for(uint i=first;i<last;++i) {
                     if(arena.Load(colors+i*4u)!=0xffffffffu)continue;
                     const uint4 desc=arena.Load4(raw+i*16u);
@@ -331,7 +330,6 @@ void sourceDyPartitionTask(uint taskId,uint scratch,uint errorAddress,
                     arena.Store(colors+i*4u,value);
                     dyHighest=max(dyHighest,value+1u);
                     ++dyAssigned;
-                    ++progress;
                 }
                 if(arena.Load(errorAddress)!=0u)break;
                 if(dyAssigned==dyNeeded)break;
