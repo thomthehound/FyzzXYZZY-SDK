@@ -68,24 +68,41 @@ Independent D3D12/WARP run 42105337933 established:
 | Complete PCM with GPU-based validation enabled | Timed out (300 s), during initial staged GJK |
 | Independent Vulkan GPU suite | Passed |
 
-The earlier failure after an empty post-GJK EPA worklist no longer
-reproduces in ordinary Release or debug-layer execution. The remaining
-GPU-based-validation timeout occurs before EPA admission, and does not by
-itself establish a physics or memory-safety defect. GPU-based validation
-instruments shader execution and adds validation commands, making the
-66-dispatch staged GJK recurrence substantially more expensive on WARP.
+The production GPU contact solver uses a primitive-specific GJK shader
+when there are no cooked hull vertices. Convex-hull scenes retain the
+general support-mapping shader.
 
-A separate GPU-validated advance/reduction regression now executes the
-production GJK shader stages over a genuine GPU-admitted pair and inspects
-the device-resident simplex. This probe is additional to, not a replacement
-for, full-iteration contact parity. Full GPU-based-validation acceptance
-remains outstanding.
+## CI and hardware verification
+
+Independent WARP run 42137708188 passed Release PCM contact parity
+(100.04 seconds), debug-layer parity (96.29 seconds), primitive GPU
+validation (81.46 seconds), general advance validation (114.94 seconds),
+and general reduction validation (121.99 seconds). The job was canceled
+at its 20-minute limit during the final complete GPU-validation fixture.
+Those passing tests remain valid; complete validation was unfinished.
+
+WARP CI retains D3D12 API checks, shader compilation, buffer operations,
+sparse GJK probes, and bounded native GPU tests. The CTest label
+`d3d12-extended` selects full contact, EPA, GPU-based-validation, and
+scene-level solver tests. These are excluded from WARP CI without
+disabling the tests or changing assertions or iteration limits.
+
+On Windows with a physical D3D12 GPU, run:
+
+```powershell
+pwsh -File scripts/verify-d3d12-gpu.ps1
+```
+
+The command builds and runs the independent D3D12 suite, including
+the extended tests. It rejects software adapters.
 
 ## Acceptance gate
 
-1. The full 32-iteration GJK solver completes within the focused WARP preflight and returns its expected result marker.
-2. The unmodified independent D3D12 release, debug-layer, GPU-validation and contact-parity tests pass.
-3. Independent Vulkan tests continue to pass; the same convex fixture must not regress in separation, overlap or EPA admission.
-4. A performance check confirms that the production shader does not require excessive register, stack, scratch or shader-code resources.
+1. Full Release, debug-layer, and GPU-based-validation contact parity
+   must pass on a physical D3D12 GPU.
+2. Primitive, cooked-convex, and coupled-solver scene tests must pass
+   without reducing GJK/EPA or solver iteration limits.
+3. Independent Vulkan and ordinary Windows/Linux suites remain green.
+4. Hardware measurements establish acceptable cost and resource use.
 
-Until these gates pass, PR #328 is **not ready to merge**.
+The hardware acceptance suite remains required before release.

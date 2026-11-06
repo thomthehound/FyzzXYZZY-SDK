@@ -691,7 +691,7 @@ if(FYZZXYZZY_BUILD_D3D12)
         "${FYZZXYZZY_SOURCE_PCM_GJK_DXIL}"
         "${FYZZXYZZY_SOURCE_PCM_GJK_REDUCE_DXIL}" reduction)
     set_tests_properties(fyzzxyzzy_source_pcm_gjk_reduction_baseline_d3d12
-      PROPERTIES ENVIRONMENT "FYZZXYZZY_D3D12_FORCE_WARP=1;FYZZXYZZY_D3D12_DEBUG=1;FYZZXYZZY_D3D12_GPU_VALIDATION=0"
+      PROPERTIES ENVIRONMENT "FYZZXYZZY_D3D12_DEBUG=1;FYZZXYZZY_D3D12_GPU_VALIDATION=0"
       TIMEOUT 45)
     add_test(NAME fyzzxyzzy_source_pcm_gjk_primitive_gpu_validation_d3d12
       COMMAND $<TARGET_FILE:fyzzxyzzy_source_pcm_gjk_stage_d3d12>
@@ -699,7 +699,7 @@ if(FYZZXYZZY_BUILD_D3D12)
         "${FYZZXYZZY_SOURCE_PCM_GJK_REDUCE_DXIL}" reduction)
     set_tests_properties(fyzzxyzzy_source_pcm_gjk_primitive_gpu_validation_d3d12
       PROPERTIES
-      ENVIRONMENT "FYZZXYZZY_D3D12_FORCE_WARP=1;FYZZXYZZY_D3D12_DEBUG=1;FYZZXYZZY_D3D12_GPU_VALIDATION=1;FYZZXYZZY_D3D12_GBV_FRONTLOAD=1;FYZZXYZZY_D3D12_TRACE_SUBMIT=1"
+      ENVIRONMENT "FYZZXYZZY_D3D12_DEBUG=1;FYZZXYZZY_D3D12_GPU_VALIDATION=1;FYZZXYZZY_D3D12_GBV_FRONTLOAD=1;FYZZXYZZY_D3D12_TRACE_SUBMIT=1"
       TIMEOUT 150)
     foreach(_stage IN ITEMS advance reduction)
       add_test(NAME fyzzxyzzy_source_pcm_gjk_${_stage}_gpu_validation_d3d12
@@ -708,7 +708,7 @@ if(FYZZXYZZY_BUILD_D3D12)
           "${FYZZXYZZY_SOURCE_PCM_GJK_REDUCE_DXIL}" ${_stage})
       set_tests_properties(fyzzxyzzy_source_pcm_gjk_${_stage}_gpu_validation_d3d12
         PROPERTIES
-        ENVIRONMENT "FYZZXYZZY_D3D12_FORCE_WARP=1;FYZZXYZZY_D3D12_DEBUG=1;FYZZXYZZY_D3D12_GPU_VALIDATION=1;FYZZXYZZY_D3D12_GBV_FRONTLOAD=1;FYZZXYZZY_D3D12_TRACE_SUBMIT=1"
+        ENVIRONMENT "FYZZXYZZY_D3D12_DEBUG=1;FYZZXYZZY_D3D12_GPU_VALIDATION=1;FYZZXYZZY_D3D12_GBV_FRONTLOAD=1;FYZZXYZZY_D3D12_TRACE_SUBMIT=1"
         TIMEOUT 150)
     endforeach()
     fyzzxyzzy_add_gpu_test(fyzzxyzzy_source_pcm_box_candidates_d3d12
@@ -1110,6 +1110,20 @@ if(FYZZXYZZY_BUILD_D3D12)
       list(APPEND _sc_pcm_scene_tests ${_test})
     endforeach()
     set_tests_properties(${_sc_pcm_scene_tests} PROPERTIES TIMEOUT 180)
+    # WARP validates API behavior and bounded native kernels.
+    # Extended contact and instrumented solver tests run on physical GPUs.
+    set(_d3d12_extended_tests
+      fyzzxyzzy_source_pcm_box_candidates_d3d12_release
+      fyzzxyzzy_source_pcm_box_candidates_d3d12_debug_layer
+      fyzzxyzzy_source_pcm_box_candidates_d3d12
+      fyzzxyzzy_source_pcm_epa_worklist_d3d12
+      fyzzxyzzy_source_pcm_epa_empty_dispatch_probe_d3d12
+      fyzzxyzzy_source_pcm_gjk_primitive_gpu_validation_d3d12
+      fyzzxyzzy_source_pcm_gjk_advance_gpu_validation_d3d12
+      fyzzxyzzy_source_pcm_gjk_reduction_gpu_validation_d3d12
+      ${_sc_pcm_scene_tests})
+    set_tests_properties(${_d3d12_extended_tests}
+      PROPERTIES LABELS "d3d12-extended")
     add_test(NAME fyzzxyzzy_owned_sap_gpu_aabb_scene_lifecycle_d3d12
       COMMAND fyzzxyzzy_owned_sap_gpu_aabb_scene_lifecycle_d3d12
         ${FYZZXYZZY_NATIVE_GPU_SAP_DXIL_BINARIES}

@@ -336,6 +336,15 @@ struct Context::Impl {
         if (ordinal >= adapters.size())
             throw std::out_of_range("D3D12 adapter ordinal does not exist");
         info = adapters[ordinal].info;
+        if (const char* required = std::getenv("FYZZXYZZY_D3D12_REQUIRE_HARDWARE");
+            required && std::string(required) == "1") {
+            DXGI_ADAPTER_DESC1 description{};
+            check(adapters[ordinal].adapter->GetDesc1(&description),
+                  "GetDesc1 for D3D12 hardware verification");
+            if (description.Flags & DXGI_ADAPTER_FLAG_SOFTWARE)
+                throw std::runtime_error(
+                    "D3D12 hardware verification requires a physical GPU");
+        }
         trace_submissions=std::getenv("FYZZXYZZY_D3D12_TRACE_SUBMIT")!=nullptr;
         const char* debug_env = std::getenv("FYZZXYZZY_D3D12_DEBUG");
         if (debug_env && std::string(debug_env) == "1") {
