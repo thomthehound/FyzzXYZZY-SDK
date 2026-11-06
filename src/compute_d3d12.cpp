@@ -291,6 +291,11 @@ struct Context::Impl {
 
     ComPtr<ID3D12Device> device;
     ComPtr<ID3D12InfoQueue> debug_messages;
+    bool trace_submissions = false;
+    void trace_submission(const char* location) const {
+        if(trace_submissions)
+            std::clog<<"D3D12 submission: "<<location<<"\n"<<std::flush;
+    }
     ComPtr<ID3D12CommandQueue> queue;
     ComPtr<ID3D12Fence> fence;
     ComPtr<ID3D12CommandSignature> dispatch_signature;
@@ -331,6 +336,7 @@ struct Context::Impl {
         if (ordinal >= adapters.size())
             throw std::out_of_range("D3D12 adapter ordinal does not exist");
         info = adapters[ordinal].info;
+        trace_submissions=std::getenv("FYZZXYZZY_D3D12_TRACE_SUBMIT")!=nullptr;
         const char* debug_env = std::getenv("FYZZXYZZY_D3D12_DEBUG");
         if (debug_env && std::string(debug_env) == "1") {
             ComPtr<ID3D12Debug> debug;
@@ -450,7 +456,9 @@ struct Context::Impl {
         if (next_submission == std::numeric_limits<SubmissionId>::max() ||
             next_fence == std::numeric_limits<std::uint64_t>::max())
             throw std::overflow_error("D3D12 submission or fence ID range exhausted");
+        trace_submission("closing command list");
         check(submission.commands->Close(), "Close command list");
+        trace_submission("command list closed");
         const SubmissionId id = next_submission;
         const std::uint64_t signal = next_fence;
         submission.fence_value = signal;
@@ -464,11 +472,15 @@ struct Context::Impl {
         ++next_submission;
         ++next_fence;
         ID3D12CommandList* lists[] = {it->second.commands.Get()};
+        trace_submission("executing command list");
         queue->ExecuteCommandLists(1, lists);
+        trace_submission("command list executed");
         // The command list has executed even if the signal fails. Keep
         // its resources owned by submissions, but never wait on this
         // unsignaled value or submit further work on the poisoned queue.
+        trace_submission("signaling fence");
         const HRESULT signal_result = queue->Signal(fence.Get(), signal);
+        trace_submission("fence signal enqueued");
         if (FAILED(signal_result)) {
             first_unsignaled_fence = signal;
             check(signal_result, "Signal D3D12 fence");
@@ -1140,7 +1152,9 @@ struct Context::Impl {
                       &signature,nullptr,IID_PPV_ARGS(&dispatch_signature)),
                   "CreateCommandSignature");
         }
+        trace_submission("validated batch");
         Submission submission = new_commands(&pipeline_sequence, descriptor_count);
+        trace_submission("command list ready");
         // Legacy D3D12 requires staging nonoverlapping copies within one
         // buffer. All such copies in this command batch can share one
         // device-local scratch allocation, with ordered state transitions
@@ -1344,6 +1358,7 @@ struct Context::Impl {
                 }
                 cached = next;
             }
+            trace_submission("binding compute pipeline");
             submission.commands->SetComputeRootSignature(pipeline.signature.Get());
             submission.commands->SetPipelineState(pipeline.state.Get());
             UINT table_root = 0u;
@@ -1359,6 +1374,7 @@ struct Context::Impl {
             }
             submission.commands->SetComputeRoot32BitConstants(
                 table_root, pipeline.parameters / 4u, cmd.push_constants.data(), 0);
+            trace_submission("recording dispatch");
             if(cmd.indirect) {
                 auto* arguments=get_buffer(cmd.indirect->buffer).resource.Get();
                 // The X group count also predicates the single indirect
@@ -1370,6 +1386,7 @@ struct Context::Impl {
             }else
                 submission.commands->Dispatch(
                     cmd.groups.x,cmd.groups.y,cmd.groups.z);
+            trace_submission("dispatch recorded");
             for (std::size_t slot = 0; slot < cmd.buffers.size(); ++slot) {
                 const auto kind = pipeline.view_kinds[slot];
                 const bool writable = kind == StorageBufferViewKind::RawReadWrite ||
@@ -1395,6 +1412,7 @@ struct Context::Impl {
                 submission.query_heap.Get(), D3D12_QUERY_TYPE_TIMESTAMP,
                 0, 2, submission.query_readback.Get(), 0);
         }
+        trace_submission("batch recorded");
         return enqueue(std::move(submission));
     }
 
