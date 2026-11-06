@@ -115,14 +115,19 @@ void Scene::set_attached_shape_query_enabled(ShapeId id,bool enabled) {
 
 std::optional<RaycastHit> Scene::raycast(
     Vec3 origin,Vec3 direction,float max_distance) const {
-    const float squared_length=dot(direction,direction);
+    const float direction_scale=std::max({
+        std::abs(direction.x),std::abs(direction.y),std::abs(direction.z)});
     if(!std::isfinite(origin.x) || !std::isfinite(origin.y) ||
-       !std::isfinite(origin.z) || !std::isfinite(squared_length) ||
-       !(squared_length>0.f) || !std::isfinite(max_distance) ||
+       !std::isfinite(origin.z) || !std::isfinite(direction_scale) ||
+       !(direction_scale>0.f) || !std::isfinite(max_distance) ||
        !(max_distance>0.f))
         throw std::invalid_argument("Raycast requires finite origin, nonzero direction and positive range");
 
-    const float length=std::sqrt(squared_length);
+    // Normalize before squaring: every finite nonzero float direction is
+    // valid, including magnitudes outside the range of a float dot product.
+    direction={direction.x/direction_scale,direction.y/direction_scale,
+               direction.z/direction_scale};
+    const float length=std::sqrt(dot(direction,direction));
     direction={direction.x/length,direction.y/length,direction.z/length};
     std::optional<RaycastHit> closest;
 
