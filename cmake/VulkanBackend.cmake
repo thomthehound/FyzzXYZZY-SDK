@@ -6,7 +6,7 @@ if(FYZZXYZZY_BUILD_VULKAN)
 
   # The Vulkan SDK DXC emits SPIR-V; another DXC in PATH may not.
   function(fyzzxyzzy_require_spirv_dxc)
-    find_program(FYZZXYZZY_DXC NAMES dxc
+    find_program(FYZZXYZZY_SPIRV_DXC NAMES dxc
       HINTS "$ENV{VULKAN_SDK}/Bin" REQUIRED)
     set(_probe_source "${CMAKE_CURRENT_BINARY_DIR}/fyzzxyzzy-spirv-compiler-check.hlsl")
     set(_probe_binary "${CMAKE_CURRENT_BINARY_DIR}/fyzzxyzzy-spirv-compiler-check.spv")
@@ -14,7 +14,7 @@ if(FYZZXYZZY_BUILD_VULKAN)
       "RWByteAddressBuffer result : register(u0);\n"
       "[numthreads(1,1,1)] void main(uint3 tid : SV_DispatchThreadID) { result.Store(0, tid.x); }\n")
     execute_process(
-      COMMAND "${FYZZXYZZY_DXC}" -spirv -fspv-target-env=vulkan1.1
+      COMMAND "${FYZZXYZZY_SPIRV_DXC}" -spirv -fspv-target-env=vulkan1.1
         -T cs_6_0 -E main -Fo "${_probe_binary}" "${_probe_source}"
       RESULT_VARIABLE _probe_result
       OUTPUT_VARIABLE _probe_stdout
@@ -22,15 +22,15 @@ if(FYZZXYZZY_BUILD_VULKAN)
     if(NOT _probe_result STREQUAL "0" OR NOT EXISTS "${_probe_binary}")
       message(FATAL_ERROR
         "Vulkan shaders require a DXC compiler with SPIR-V support. "
-        "Selected: ${FYZZXYZZY_DXC}. "
-        "Set FYZZXYZZY_DXC to the Vulkan SDK compiler "
+        "Selected: ${FYZZXYZZY_SPIRV_DXC}. "
+        "Set FYZZXYZZY_SPIRV_DXC to the Vulkan SDK compiler "
         "(typically $ENV{VULKAN_SDK}/Bin/dxc.exe).\n"
         "${_probe_stdout}\n${_probe_stderr}")
     endif()
     file(READ "${_probe_binary}" _probe_magic LIMIT 4 HEX)
     if(NOT _probe_magic STREQUAL "03022307")
       message(FATAL_ERROR
-        "The selected DXC did not emit SPIR-V: ${FYZZXYZZY_DXC}")
+        "The selected DXC did not emit SPIR-V: ${FYZZXYZZY_SPIRV_DXC}")
     endif()
   endfunction()
 
@@ -636,10 +636,10 @@ if(FYZZXYZZY_BUILD_VULKAN)
       "${FYZZXYZZY_SOURCE_AGG_PAIR_ADMIT_SPV}"
       "${FYZZXYZZY_SOURCE_AGG_PAIR_PUBLISH_SPV}"
       COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/kernels"
-      COMMAND "${FYZZXYZZY_DXC}" -spirv -fspv-target-env=vulkan1.1 -T cs_6_0 -E admit
+      COMMAND "${FYZZXYZZY_SPIRV_DXC}" -spirv -fspv-target-env=vulkan1.1 -T cs_6_0 -E admit
         -Fo "${FYZZXYZZY_SOURCE_AGG_PAIR_ADMIT_SPV}"
         "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_aggregate_pair_admission_native.hlsl"
-      COMMAND "${FYZZXYZZY_DXC}" -spirv -fspv-target-env=vulkan1.1 -T cs_6_0 -E publish
+      COMMAND "${FYZZXYZZY_SPIRV_DXC}" -spirv -fspv-target-env=vulkan1.1 -T cs_6_0 -E publish
         -Fo "${FYZZXYZZY_SOURCE_AGG_PAIR_PUBLISH_SPV}"
         "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_aggregate_pair_admission_native.hlsl"
       DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_aggregate_pair_admission_native.hlsl"
@@ -666,13 +666,13 @@ if(FYZZXYZZY_BUILD_VULKAN)
       "${FYZZXYZZY_SOURCE_AGG_PAIR_RETIRE_SPV_MARK}"
       "${FYZZXYZZY_SOURCE_AGG_PAIR_RETIRE_SPV_PUBLISH}"
       COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/kernels"
-      COMMAND "${FYZZXYZZY_DXC}" -spirv -fspv-target-env=vulkan1.1 -T cs_6_0 -E histogram
+      COMMAND "${FYZZXYZZY_SPIRV_DXC}" -spirv -fspv-target-env=vulkan1.1 -T cs_6_0 -E histogram
         -Fo "${FYZZXYZZY_SOURCE_AGG_PAIR_RETIRE_SPV_COUNT}"
         "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_aggregate_pair_retirement_native.hlsl"
-      COMMAND "${FYZZXYZZY_DXC}" -spirv -fspv-target-env=vulkan1.1 -T cs_6_0 -E mark
+      COMMAND "${FYZZXYZZY_SPIRV_DXC}" -spirv -fspv-target-env=vulkan1.1 -T cs_6_0 -E mark
         -Fo "${FYZZXYZZY_SOURCE_AGG_PAIR_RETIRE_SPV_MARK}"
         "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_aggregate_pair_retirement_native.hlsl"
-      COMMAND "${FYZZXYZZY_DXC}" -spirv -fspv-target-env=vulkan1.1 -T cs_6_0 -E publish
+      COMMAND "${FYZZXYZZY_SPIRV_DXC}" -spirv -fspv-target-env=vulkan1.1 -T cs_6_0 -E publish
         -Fo "${FYZZXYZZY_SOURCE_AGG_PAIR_RETIRE_SPV_PUBLISH}"
         "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_aggregate_pair_retirement_native.hlsl"
       DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_aggregate_pair_retirement_native.hlsl"
