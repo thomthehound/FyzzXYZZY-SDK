@@ -1062,13 +1062,15 @@ if(FYZZXYZZY_BUILD_D3D12)
     set(_sc_pcm_scene_tests fyzzxyzzy_source_sc_gpu_pcm_scene_d3d12)
     foreach(_case IN ITEMS compound_shapes compound_solver sphere_solver convex_plane convex_finite
         sparse_contacts coupled_stack coupled_solver legacy_gu_solver
-        mixed_solver distance_solver free_integration wide_islands)
+        mixed_solver distance_solver free_integration wide_islands star_island_10k)
       set(_test "fyzzxyzzy_source_sc_gpu_pcm_scene_${_case}_d3d12")
       add_test(NAME ${_test}
         COMMAND fyzzxyzzy_source_sc_gpu_pcm_scene_d3d12 ${_sc_pcm_scene_args} ${_case})
       list(APPEND _sc_pcm_scene_tests ${_test})
     endforeach()
     set_tests_properties(${_sc_pcm_scene_tests} PROPERTIES TIMEOUT 180)
+    set_tests_properties(fyzzxyzzy_source_sc_gpu_pcm_scene_star_island_10k_d3d12
+      PROPERTIES TIMEOUT 300)
     # WARP validates API behavior and bounded native kernels.
     # Extended contact and instrumented solver tests run on physical GPUs.
     set(_d3d12_extended_tests
