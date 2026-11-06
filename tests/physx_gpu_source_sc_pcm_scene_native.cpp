@@ -2132,12 +2132,13 @@ void verify_gpu_zero_response_wide_island(
             "Wide Dy zero-response contact and joint island");
 }
 
-// One shared dynamic endpoint forces more than one 32-color wave.
-// Mixed static contact and 1D rows must reserve subsequent colors
+// Hub and connected two-hub graphs exercise the source-order
+// 32-color rollover. Mixed static contact and 1D rows reserve colors
 // without writing one dynamic body from concurrent PGS lanes.
 void verify_gpu_high_degree_coloring(
     fyzz::compute::Backend backend,const char* sap,const char* pcm,
-    const char* dy_shader,unsigned leaves=36u) {
+    const char* dy_shader,unsigned leaves=36u,
+    bool dual_hub=false,unsigned frames_override=0u) {
     using namespace fyzz;
     std::ifstream input(dy_shader,std::ios::binary);
     require(bool(input),"High-degree GPU Dy shader unavailable");
@@ -2157,9 +2158,9 @@ void verify_gpu_high_degree_coloring(
         std::move(shader));
     auto* producer=owner.get();
     gpu.set_gpu_broadphase(std::move(owner));
-    const auto assemble=[leaves](native::Scene& scene) {
+    const auto assemble=[leaves,dual_hub](native::Scene& scene) {
         std::vector<BodyId> ids;
-        ids.reserve(leaves+1u);
+        ids.reserve(leaves+1u+(dual_hub?1u:0u));
         const auto fixed=scene.add_static_box(
             {0.4f,0.4f,0.4f},{-0.72f,3.f,0.f});
         const auto center=scene.add_dynamic_box(
@@ -2172,45 +2173,60 @@ void verify_gpu_high_degree_coloring(
         scene.set_dynamics(center,dynamics);
         scene.set_velocity(center,{0.05f,0.f,0.07f});
         scene.create_center_distance_constraint(fixed,center,0.72f);
+        BodyId second_center=0u;
+        if(dual_hub) {
+            second_center=scene.add_dynamic_box(
+                {0.4f,0.4f,0.4f},{-3.f,3.f,0.f},1.f);
+            ids.push_back(second_center);
+            scene.set_dynamics(second_center,dynamics);
+            scene.set_velocity(second_center,{-0.05f,0.f,0.07f});
+            scene.create_center_distance_constraint(
+                center,second_center,3.f);
+        }
         for(unsigned i=0u;i<leaves;++i) {
-            const float x=3.f+1.5f*static_cast<float>(i);
+            const bool second=dual_hub && i>=leaves/2u;
+            const float x=second
+                ?-6.f-1.5f*static_cast<float>(i-leaves/2u)
+                :3.f+1.5f*static_cast<float>(i);
+            const auto anchor=second?second_center:center;
+            const float rest=second?(-3.f-x):x;
             const auto body=scene.add_dynamic_box(
                 {0.3f,0.3f,0.3f},{x,3.f,0.f},1.f);
             ids.push_back(body);
             scene.set_dynamics(body,dynamics);
             scene.set_velocity(body,
                 {-0.03f,0.f,i%2u ? 0.02f:-0.02f});
-            scene.create_center_distance_constraint(center,body,x);
+            scene.create_center_distance_constraint(anchor,body,rest);
         }
         return ids;
     };
-    if(leaves>=1024u)
-        std::cerr<<"FYZZXYZZY_METRIC suite=sc_pcm case=star_island"
+    if(dual_hub || leaves>=1024u || frames_override!=0u)
+        std::cerr<<"FYZZXYZZY_METRIC suite=sc_pcm case="<<(dual_hub?"dual_hub":"star_island")
                  <<" spokes="<<leaves<<" phase=setup\n";
     const auto a=assemble(cpu);
-    if(leaves>=1024u)
-        std::cerr<<"FYZZXYZZY_METRIC suite=sc_pcm case=star_island"
+    if(dual_hub || leaves>=1024u || frames_override!=0u)
+        std::cerr<<"FYZZXYZZY_METRIC suite=sc_pcm case="<<(dual_hub?"dual_hub":"star_island")
                  <<" spokes="<<leaves<<" phase=cpu_assembled\n";
     const auto b=assemble(gpu);
-    if(leaves>=1024u)
-        std::cerr<<"FYZZXYZZY_METRIC suite=sc_pcm case=star_island"
+    if(dual_hub || leaves>=1024u || frames_override!=0u)
+        std::cerr<<"FYZZXYZZY_METRIC suite=sc_pcm case="<<(dual_hub?"dual_hub":"star_island")
                  <<" spokes="<<leaves<<" phase=gpu_assembled\n";
-    const unsigned frames=leaves>=10000u?1u:leaves>=1024u?2u:
-        leaves>=64u?1u:3u;
+    const unsigned frames=frames_override?frames_override:
+        leaves>=10000u?1u:leaves>=1024u?2u:leaves>=64u?1u:3u;
     for(unsigned frame=0u;frame<frames;++frame) {
         const auto tick=std::chrono::steady_clock::now();
         cpu.step(1.f/120.f);
         const auto cpu_done=std::chrono::steady_clock::now();
-        if(leaves>=1024u)
-            std::cerr<<"FYZZXYZZY_METRIC suite=sc_pcm case=star_island"
+        if(dual_hub || leaves>=1024u || frames_override!=0u)
+            std::cerr<<"FYZZXYZZY_METRIC suite=sc_pcm case="<<(dual_hub?"dual_hub":"star_island")
                      <<" spokes="<<leaves
                      <<" frame="<<frame<<" phase=cpu"
                      <<" wall_ms="<<std::chrono::duration<double,std::milli>(
                           cpu_done-tick).count()<<'\n';
         gpu.step(1.f/120.f);
         const auto gpu_done=std::chrono::steady_clock::now();
-        if(leaves>=1024u)
-            std::cerr<<"FYZZXYZZY_METRIC suite=sc_pcm case=star_island"
+        if(dual_hub || leaves>=1024u || frames_override!=0u)
+            std::cerr<<"FYZZXYZZY_METRIC suite=sc_pcm case="<<(dual_hub?"dual_hub":"star_island")
                      <<" spokes="<<leaves
                      <<" frame="<<frame<<" phase=gpu"
                      <<" wall_ms="<<std::chrono::duration<double,std::milli>(
@@ -2224,14 +2240,17 @@ void verify_gpu_high_degree_coloring(
                 schedule.dispatches<=2u &&
                 producer->dy_gpu_integrated_body_count()==b.size() &&
                 gpu.contacts().size()==cpu.contacts().size() &&
-                !gpu.contacts().empty(),
+                !gpu.contacts().empty() &&
+                (!dual_hub ||
+                 (gpu.largest_accurate_island_size()>=b.size() &&
+                  cpu.largest_accurate_island_size()>=a.size())),
             "High-degree Dy task emitted empty tiled partitions");
         for(std::size_t i=0u;i<a.size();++i)
             test::compound_compare_state(gpu.body_state(b[i]),
                 cpu.body_state(a[i]),0.015f,
                 "GPU Dy multiwave dynamic/static constraint coloring");
         if(frame==0u && leaves>=1024u)
-            std::cout<<"FYZZXYZZY_METRIC suite=sc_pcm case=star_island"
+            std::cout<<"FYZZXYZZY_METRIC suite=sc_pcm case="<<(dual_hub?"dual_hub":"star_island")
                      <<" spokes="<<leaves
                      <<" dy_dispatches="<<schedule.dispatches
                      <<" wide_tasks="<<schedule.wide_tasks
@@ -2258,6 +2277,7 @@ int main(int argc,char** argv) {
                 scenario=="wide_islands_10k" ||
                 scenario=="zero_response_wide" ||
                 scenario=="star_island" ||
+                scenario=="dual_hub" ||
                 scenario=="star_island_warp" ||
                 scenario=="star_island_10k" ||
                 scenario=="free_integration",
@@ -2341,10 +2361,14 @@ int main(int argc,char** argv) {
             fyzz::tests::measure_gpu_case("sc_pcm","star_island",
                 [&]{verify_gpu_high_degree_coloring(
                     backend,argv[1],argv[2],argv[3],1024u);});
+        if(scenario=="dual_hub")
+            fyzz::tests::measure_gpu_case("sc_pcm","dual_hub",
+                [&]{verify_gpu_high_degree_coloring(
+                    backend,argv[1],argv[2],argv[3],68u,true,1u);});
         if(scenario=="star_island_warp")
             fyzz::tests::measure_gpu_case("sc_pcm","star_island_warp",
                 [&]{verify_gpu_high_degree_coloring(
-                    backend,argv[1],argv[2],argv[3],64u);});
+                    backend,argv[1],argv[2],argv[3],33u,false,1u);});
         if(scenario=="star_island_10k")
             fyzz::tests::measure_gpu_case("sc_pcm","star_island_10k",
                 [&]{verify_gpu_high_degree_coloring(

@@ -1063,7 +1063,7 @@ if(FYZZXYZZY_BUILD_D3D12)
     foreach(_case IN ITEMS compound_shapes compound_solver sphere_solver convex_plane convex_finite
         sparse_contacts coupled_stack coupled_solver legacy_gu_solver
         mixed_solver distance_solver free_integration wide_islands zero_response_wide
-        star_island star_island_10k)
+        dual_hub star_island star_island_10k)
       set(_test "fyzzxyzzy_source_sc_gpu_pcm_scene_${_case}_d3d12")
       add_test(NAME ${_test}
         COMMAND fyzzxyzzy_source_sc_gpu_pcm_scene_d3d12 ${_sc_pcm_scene_args} ${_case})
@@ -1088,8 +1088,8 @@ if(FYZZXYZZY_BUILD_D3D12)
       ${_sc_pcm_scene_tests})
     set_tests_properties(${_d3d12_extended_tests}
       PROPERTIES LABELS "d3d12-extended")
-    # WARP checks multiwave source ordering with a bounded hub.
-    # Wide-admission and 10000-spoke stress cases remain registered
+    # WARP checks 32-color rollover with a 33-spoke hub.
+    # General multi-hub and large-island stress remain registered
     # separately for hardware D3D12 execution.
     add_test(NAME fyzzxyzzy_source_sc_gpu_pcm_scene_star_island_warp_d3d12
       COMMAND fyzzxyzzy_source_sc_gpu_pcm_scene_d3d12
