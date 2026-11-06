@@ -151,9 +151,9 @@ bool sourceDyMassPose(uint input,out float3 position,out float4 quaternion) {
 
 #include "physx_source_dy_contact_pgs_native.hlsli"
 
-// Sc owns task membership. One workgroup selects nonconflicting
-// dynamic edges concurrently; the original static reservation and
-// stable scatter retain source encounter order.
+// Sc owns task membership. One workgroup colors independent source
+// constraints concurrently while preserving per-body greedy precedence.
+// Static reservations follow the source descriptor encounter order.
 groupshared uint dyNeeded,dyAssigned,dyWave,dyProgress,dyHighest;
 groupshared uint dyNextWave;
 
@@ -229,8 +229,9 @@ void sourceDyPartitionTask(uint taskId,uint scratch,uint errorAddress,
             if(lane==0u)dyNextWave=0u;
             AllMemoryBarrierWithGroupSync();
         }
-        // A bijective index permutation prevents long chains from
-        // degenerating into a single leading-edge winner per round.
+        // A source-index priority preserves the original greedy PGS
+        // partition order wherever two edges share a dynamic body.
+        // Independent source edges can still color concurrently.
         for(uint i=first+lane;i<last;i+=128u) {
             if(arena.Load(colors+i*4u)!=0xffffffffu)continue;
             const uint4 desc=arena.Load4(raw+i*16u);
@@ -249,7 +250,7 @@ void sourceDyPartitionTask(uint taskId,uint scratch,uint errorAddress,
             const uint a=bodyState+desc.y*12u;
             const uint b=bodyState+desc.z*12u;
             if((arena.Load(a)|arena.Load(b))==0xffffffffu)continue;
-            const uint priority=i*747796405u+2891336453u;
+            const uint priority=i;
             uint unused;
             arena.InterlockedMin(a+8u,priority,unused);
             arena.InterlockedMin(b+8u,priority,unused);
@@ -263,7 +264,7 @@ void sourceDyPartitionTask(uint taskId,uint scratch,uint errorAddress,
             if((desc.w&0x300u)!=0x300u)continue;
             const uint a=bodyState+desc.y*12u;
             const uint b=bodyState+desc.z*12u;
-            const uint priority=i*747796405u+2891336453u;
+            const uint priority=i;
             if(arena.Load(a+8u)!=priority ||
                arena.Load(b+8u)!=priority)continue;
             const uint available=~(arena.Load(a)|arena.Load(b));
