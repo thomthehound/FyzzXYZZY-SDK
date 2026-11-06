@@ -168,7 +168,7 @@ std::shared_ptr<const ConvexMesh> cook_convex_mesh(
         const DVec p2=as_double(vertices[tri[2]]);
         DVec n=cross(sub(p1,p0),sub(p2,p0));
         const double length=std::sqrt(dot(n,n));
-        for(auto& component:n)component/=length;
+        for(auto& coordinate:n)coordinate/=length;
         auto group=std::find_if(groups.begin(),groups.end(),
             [&](const PlanarGroup& candidate) {
                 return dot(n,candidate.normal)>1.0-1.e-7 &&
@@ -213,14 +213,14 @@ std::shared_ptr<const ConvexMesh> cook_convex_mesh(
         constexpr auto invalid=std::numeric_limits<std::uint32_t>::max();
         std::vector<std::uint32_t> next(vertices.size(),invalid);
         std::vector<std::uint32_t> previous(vertices.size(),invalid);
-        std::uint32_t first=invalid;
+        std::uint32_t boundary_start=invalid;
         for(const auto& [key,edge]:boundary) {
             if(next[edge.from]!=invalid || previous[edge.to]!=invalid)
                 throw std::invalid_argument(
                     "Convex planar facet has branching boundary");
             next[edge.from]=edge.to;
             previous[edge.to]=edge.from;
-            first=std::min(first,edge.from);
+            boundary_start=std::min(boundary_start,edge.from);
         }
         if(boundary.size()>std::numeric_limits<std::uint32_t>::max() ||
            mesh->face_indices_.size()>
@@ -228,16 +228,16 @@ std::shared_ptr<const ConvexMesh> cook_convex_mesh(
             throw std::overflow_error("Convex face index stream too large");
         const auto offset=static_cast<std::uint32_t>(
             mesh->face_indices_.size());
-        std::uint32_t current=first;
+        std::uint32_t current=boundary_start;
         for(std::size_t i=0u;i<boundary.size();++i) {
             if(current==invalid || next[current]==invalid ||
-               (i>0u && current==first))
+               (i>0u && current==boundary_start))
                 throw std::invalid_argument(
                     "Convex planar facet is not a single boundary loop");
             mesh->face_indices_.push_back(current);
             current=next[current];
         }
-        if(current!=first)
+        if(current!=boundary_start)
             throw std::invalid_argument(
                 "Convex planar facet has disconnected boundary loops");
         const double distance=dot(group.normal,group.point);

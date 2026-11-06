@@ -3,6 +3,37 @@
 
 if(FYZZXYZZY_BUILD_VULKAN)
   find_package(Vulkan REQUIRED)
+
+  # The Vulkan SDK DXC emits SPIR-V; another DXC in PATH may not.
+  function(fyzzxyzzy_require_spirv_dxc)
+    find_program(FYZZXYZZY_DXC NAMES dxc
+      HINTS "$ENV{VULKAN_SDK}/Bin" REQUIRED)
+    set(_probe_source "${CMAKE_CURRENT_BINARY_DIR}/fyzzxyzzy-spirv-compiler-check.hlsl")
+    set(_probe_binary "${CMAKE_CURRENT_BINARY_DIR}/fyzzxyzzy-spirv-compiler-check.spv")
+    file(WRITE "${_probe_source}"
+      "RWByteAddressBuffer result : register(u0);\n"
+      "[numthreads(1,1,1)] void main(uint3 tid : SV_DispatchThreadID) { result.Store(0, tid.x); }\n")
+    execute_process(
+      COMMAND "${FYZZXYZZY_DXC}" -spirv -fspv-target-env=vulkan1.1
+        -T cs_6_0 -E main -Fo "${_probe_binary}" "${_probe_source}"
+      RESULT_VARIABLE _probe_result
+      OUTPUT_VARIABLE _probe_stdout
+      ERROR_VARIABLE _probe_stderr)
+    if(NOT _probe_result STREQUAL "0" OR NOT EXISTS "${_probe_binary}")
+      message(FATAL_ERROR
+        "Vulkan shaders require a DXC compiler with SPIR-V support. "
+        "Selected: ${FYZZXYZZY_DXC}. "
+        "Set FYZZXYZZY_DXC to the Vulkan SDK compiler "
+        "(typically $ENV{VULKAN_SDK}/Bin/dxc.exe).\n"
+        "${_probe_stdout}\n${_probe_stderr}")
+    endif()
+    file(READ "${_probe_binary}" _probe_magic LIMIT 4 HEX)
+    if(NOT _probe_magic STREQUAL "03022307")
+      message(FATAL_ERROR
+        "The selected DXC did not emit SPIR-V: ${FYZZXYZZY_DXC}")
+    endif()
+  endfunction()
+
   add_library(fyzzxyzzy_compute STATIC src/compute_vulkan.cpp)
   add_library(FyzzXYZZY::Compute ALIAS fyzzxyzzy_compute)
   target_compile_features(fyzzxyzzy_compute PUBLIC cxx_std_23)
@@ -35,7 +66,7 @@ if(FYZZXYZZY_BUILD_VULKAN)
 
   if(BUILD_TESTING AND NOT FYZZXYZZY_ENABLE_PHYSX_SOURCE
      AND FYZZXYZZY_BUILD_SOURCE_GPU_TESTS)
-    find_program(FYZZXYZZY_DXC NAMES dxc REQUIRED)
+    fyzzxyzzy_require_spirv_dxc()
       # Verify a physically fixed 32-lane subgroup through actual shader execution.
       set(FYZZXYZZY_WAVE32_SPV
         "${CMAKE_CURRENT_BINARY_DIR}/kernels/native_wave32_contract.spv")
@@ -919,7 +950,7 @@ if(FYZZXYZZY_BUILD_VULKAN)
     option(FYZZXYZZY_BUILD_PHYSX_GPU_AABB_TEST
       "Enable PhysX GPU AABB HLSL/SPIR-V acceptance test (requires DXC)" OFF)
     if(FYZZXYZZY_BUILD_PHYSX_GPU_AABB_TEST OR FYZZXYZZY_BUILD_SOURCE_GPU_TESTS)
-      find_program(FYZZXYZZY_DXC NAMES dxc REQUIRED)
+      fyzzxyzzy_require_spirv_dxc()
       # Verify a physically fixed 32-lane subgroup through actual shader execution.
       set(FYZZXYZZY_WAVE32_SPV
         "${CMAKE_CURRENT_BINARY_DIR}/kernels/native_wave32_contract.spv")
@@ -935,7 +966,7 @@ if(FYZZXYZZY_BUILD_VULKAN)
     if(FYZZXYZZY_BUILD_PHYSX_GPU_AABB_TEST)
       # PhysX broadphase.cu::translateAABBsLaunch is compiled from one HLSL
       # source for Vulkan SPIR-V and (in Windows CI) D3D12 DXIL.
-      find_program(FYZZXYZZY_DXC NAMES dxc REQUIRED)
+      fyzzxyzzy_require_spirv_dxc()
       set(FYZZXYZZY_MULTI_RESOURCE_SPV
         "${CMAKE_CURRENT_BINARY_DIR}/kernels/native_multi_resource_bindings.spv")
       fyzzxyzzy_compile_hlsl("${FYZZXYZZY_MULTI_RESOURCE_SPV}" "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/native_multi_resource_bindings.hlsl" cs_6_0 main)

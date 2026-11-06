@@ -1534,7 +1534,7 @@ void Scene::update_bounds() {
                 const std::size_t n=endpoints.size();
                 sap_endpoint_updated_.resize(n);
                 std::fill(sap_endpoint_updated_.begin(),
-                          sap_endpoint_updated_.end(),0);
+                          sap_endpoint_updated_.end(),std::uint8_t{0});
                 sap_merge_changed_.clear();
                 sap_merge_changed_.reserve(updated_count*2);
                 for(std::size_t j=0;j<updated_count;++j) {
@@ -1714,7 +1714,7 @@ void Scene::update_bounds() {
                 all_axes_stable=false;
                 sap_endpoint_updated_.resize(n);
                 std::fill(sap_endpoint_updated_.begin(),
-                          sap_endpoint_updated_.end(),0);
+                          sap_endpoint_updated_.end(),std::uint8_t{0});
                 for(std::size_t updated=0;
                     updated<broadphase_updated_volume_slots_.size();++updated) {
                     if(!(broadphase_updated_axis_masks_[updated]&axis_bit))
@@ -3976,7 +3976,7 @@ std::uint8_t Scene::publish_gpu_pcm_box_box(
             throw std::overflow_error("Source GPU PCM witness invalid");
         output[i]=contact;
     }
-    return gpu.count;
+    return static_cast<std::uint8_t>(gpu.count);
 }
 void Scene::update_contacts() {
     // Gu narrowphase consumes the sum of both PxShapeCore contact offsets.
@@ -5530,8 +5530,8 @@ void Scene::update_island_connectivity() {
                     // The first endpoint owns dynamic/dynamic entries.
                     // A world/static first endpoint cannot be visited,
                     // so admit that entry from its only dynamic endpoint.
-                    const BodyId first_node=edge.pair.a;
-                    if((node!=first_node && dynamic_node(first_node)) ||
+                    const BodyId first_endpoint=edge.pair.a;
+                    if((node!=first_endpoint && dynamic_node(first_endpoint)) ||
                        (node!=edge.pair.a && node!=edge.pair.b))
                         continue;
                     const auto target=next.node_island[node];
@@ -5550,8 +5550,8 @@ void Scene::update_island_connectivity() {
             std::vector<MigratedManager> retained;
             retained.reserve(manifolds_.size()+active_constraint_handles_.size());
             for(const auto& island:graph.islands)
-            for(EdgeIndex first:{island.first_contact,island.first_constraint})
-                for(EdgeIndex id=first;id!=invalid_edge;
+            for(EdgeIndex head:{island.first_contact,island.first_constraint})
+                for(EdgeIndex id=head;id!=invalid_edge;
                     id=island_edges_[id].island_next) {
                     const Pair pair=island_edges_[id].pair;
                     const BodyId node=dynamic_node(pair.a)?pair.a:pair.b;
@@ -8806,9 +8806,9 @@ void Scene::publish_contact_events() {
         double impulse=0.0;
         const auto offset=next_contact_event_points_.size();
         for(std::size_t i=0;i<manifold.count;++i) {
-            const std::size_t index=manifold.contact_offset+i;
-            const auto& point=contact_points_[index];
-            const double normal_force=normal_impulse_writeback_[index];
+            const std::size_t point_index=manifold.contact_offset+i;
+            const auto& point=contact_points_[point_index];
+            const double normal_force=normal_impulse_writeback_[point_index];
             impulse+=normal_force;
             Vec3 outward=point.normal;
             if(island_edges_[manifold.edge_handle].gu_order_reversed !=
@@ -10111,13 +10111,13 @@ void Scene::integrate_solver_task(
                 if(!solved_contact && (free_index>=task.gpu_free_end ||
                    gpu_dy_free_ids_[free_index]!=id))
                     throw std::logic_error("Source GPU free-body order mismatch");
-                const auto index=solved_contact?actor.solver_row_index:
+                const auto pose_index=solved_contact?actor.solver_row_index:
                     solver_rows_.size()+free_index++;
-                if(index>=gpu_dy_integrated_poses_.size() ||
-                   gpu_dy_integrated_poses_[index].valid!=1u)
+                if(pose_index>=gpu_dy_integrated_poses_.size() ||
+                   gpu_dy_integrated_poses_[pose_index].valid!=1u)
                     throw std::logic_error(
                         "Source GPU Dy integrateCore pose missing");
-                const auto& result=gpu_dy_integrated_poses_[index];
+                const auto& result=gpu_dy_integrated_poses_[pose_index];
                 p={result.position[0],result.position[1],result.position[2]};
                 q={result.orientation[0],result.orientation[1],
                    result.orientation[2],result.orientation[3]};
