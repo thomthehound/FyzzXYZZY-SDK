@@ -10,6 +10,7 @@
 
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <cmath>
 #include <cstring>
 #include <fstream>
@@ -2083,10 +2084,28 @@ void verify_gpu_high_degree_coloring(
         return ids;
     };
     const auto a=assemble(cpu),b=assemble(gpu);
+    if(leaves>=1024u)
+        std::cerr<<"FYZZXYZZY_METRIC suite=sc_pcm case=star_island"
+                 <<" spokes="<<leaves<<" phase=assembled\n";
     const unsigned frames=leaves>=10000u?1u:leaves>=1024u?2u:3u;
     for(unsigned frame=0u;frame<frames;++frame) {
+        const auto tick=std::chrono::steady_clock::now();
         cpu.step(1.f/120.f);
+        const auto cpu_done=std::chrono::steady_clock::now();
+        if(leaves>=1024u)
+            std::cerr<<"FYZZXYZZY_METRIC suite=sc_pcm case=star_island"
+                     <<" spokes="<<leaves
+                     <<" frame="<<frame<<" phase=cpu"
+                     <<" wall_ms="<<std::chrono::duration<double,std::milli>(
+                          cpu_done-tick).count()<<'\n';
         gpu.step(1.f/120.f);
+        const auto gpu_done=std::chrono::steady_clock::now();
+        if(leaves>=1024u)
+            std::cerr<<"FYZZXYZZY_METRIC suite=sc_pcm case=star_island"
+                     <<" spokes="<<leaves
+                     <<" frame="<<frame<<" phase=gpu"
+                     <<" wall_ms="<<std::chrono::duration<double,std::milli>(
+                          gpu_done-cpu_done).count()<<'\n';
         const auto schedule=producer->dy_launch_stats();
         require(schedule.device_colored_tasks>0u &&
                 schedule.device_colored_descriptors>=leaves+1u &&
