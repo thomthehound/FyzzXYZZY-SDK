@@ -41,7 +41,7 @@ apt_install() {
 cached=("$cache_dir/"*.deb)
 if (( ${#cached[@]} )); then
     # Ask APT to use its own cache, never install .deb files directly.
-    sudo cp -n -- "${cached[@]}" /var/cache/apt/archives/
+    sudo cp --update=none -- "${cached[@]}" /var/cache/apt/archives/
     if apt_install --no-download; then
         echo 'Installed Vulkan packages without network downloads'
     else

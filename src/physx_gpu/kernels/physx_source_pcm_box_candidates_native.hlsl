@@ -36,6 +36,10 @@ RWByteAddressBuffer dispatchArgs : register(u6,space0);
 [[vk::binding(7,0)]]
 #endif
 RWByteAddressBuffer streamContacts : register(u7,space0);
+#ifdef __spirv__
+[[vk::binding(8,0)]]
+#endif
+RWByteAddressBuffer hullVertices : register(u8,space0);
 
 struct Parameters {
     uint pairCount;
@@ -50,6 +54,8 @@ struct Parameters {
     uint edgeCapacity;
     uint argsBias;
     uint outputBias;
+    uint hullBias;
+    uint hullCount;
 };
 #ifdef __spirv__
 [[vk::push_constant]] Parameters p;
@@ -86,7 +92,6 @@ float3 unproject(Frame f,float3 v) {
 float component(float3 v,uint i) {
     return i==0u?v.x:(i==1u?v.y:v.z);
 }
-#include "physx_source_pcm_box_gjk_native.hlsli"
 #include "physx_source_pcm_sc_contact_publish_native.hlsli"
 
 uint cachePointAddress(uint edgeBase,uint contactIndex) {
@@ -108,7 +113,8 @@ void storeSelectedContact(uint edgeBase,uint slot,uint source) {
 // invalidate_BoxConvex, operating directly on the Sc EdgeIndex record.
 // The relative transform belongs to B; no independently owned cache.
 bool refreshEdge(uint edgeBase,float3 pa,float3 pb,float4 qa,float4 qb,
-                 float3 ea,float3 eb,float contactDistance) {
+                 float3 ea,float3 eb,float minExtentA,float minExtentB,
+                 float contactDistance) {
     const float4 inverseB=conjugate(qb);
     const float3 relative=rotateSource(inverseB,pa-pb);
     const float4 rotation=quatProduct(inverseB,qa);
@@ -129,9 +135,8 @@ bool refreshEdge(uint edgeBase,float3 pa,float3 pb,float4 qa,float4 qb,
     }
     uint count=edgeCaches.Load(edgeBase+12u);
     const uint initial=count;
-    float minA=min(ea.x,min(ea.y,ea.z));
-    float minB=min(eb.x,min(eb.y,eb.z));
-    const float margin=min(min(0.15f*minA,0.15f),min(0.15f*minB,0.15f));
+    const float margin=min(min(0.15f*minExtentA,0.15f),
+                           min(0.15f*minExtentB,0.15f));
     const float breakingSq=(margin*0.8f)*(margin*0.8f);
     for(uint i=count;i>0u;--i) {
         uint offset=cachePointAddress(edgeBase,i-1u);
@@ -472,10 +477,79 @@ void main(uint3 thread : SV_DispatchThreadID) {
                 p.shapeCapacity,p.edgeCapacity);
             return;
         }
+        const uint kindA=geometry.Load(ga+28u);
+        const uint kindB=geometry.Load(gb+28u);
+        const float marginA=kindA==2u?asfloat(geometry.Load(ga+60u)):
+            min(ea.x,min(ea.y,ea.z));
+        const float marginB=kindB==2u?asfloat(geometry.Load(gb+60u)):
+            min(eb.x,min(eb.y,eb.z));
+        if(kindA==2u || kindB==2u) {
+            // Convex finite pairs skip box SAT. Only the sparse
+            // continuation owns hull support searches and EPA facets.
+            const uint startA=geometry.Load(ga+52u);
+            const uint countA=geometry.Load(ga+56u);
+            const uint startB=geometry.Load(gb+52u);
+            const uint countB=geometry.Load(gb+56u);
+            const bool validA=kindA!=2u ||
+                (countA>=4u && startA<=p.hullCount &&
+                 countA<=p.hullCount-startA);
+            const bool validB=kindB!=2u ||
+                (countB>=4u && startB<=p.hullCount &&
+                 countB<=p.hullCount-startB);
+            if((kindA>2u || kindB>2u) || !validA || !validB ||
+               !(marginA>0.f) || !(marginB>0.f)) {
+                publishPair(result,0u,0u,1u,edge,first,0u,0u,0u);
+                publishScContacts(i,a,b,edge,result,p.outputBias,
+                    p.transformBias,p.geometryBias,p.edgeCacheBias,
+                    p.shapeCapacity,p.edgeCapacity);
+                return;
+            }
+            bool regenerate=refreshEdge(
+                edgeBase,pa,pb,qa,qb,ea,eb,marginA,marginB,distance);
+            if(!regenerate) {
+                const uint cached=edgeCaches.Load(edgeBase+12u);
+                if(cached>4u) {
+                    publishPair(result,0u,0u,1u,edge,first,0u,0u,0u);
+                    publishScContacts(i,a,b,edge,result,p.outputBias,
+                        p.transformBias,p.geometryBias,p.edgeCacheBias,
+                        p.shapeCapacity,p.edgeCapacity);
+                    return;
+                }
+                uint packed=0u;
+                for(uint j=0u;j<cached;++j) {
+                    const float depth=asfloat(
+                        edgeCaches.Load(edgeBase+80u+j*40u+36u));
+                    if(depth>distance)continue;
+                    if(count<limit) {
+                        copyCachedContact(edgeBase,j,
+                            p.candidateBias+(first+count)*40u);
+                        packed|=count<<(count*8u);
+                    }
+                    ++count;
+                }
+                overlap=count>0u?1u:0u;
+                status=count>limit?2u:0u;
+                count=min(count,limit);
+                publishPair(result,count,overlap,status,edge,first,
+                    count,packed,0u);
+                publishScContacts(i,a,b,edge,result,p.outputBias,
+                    p.transformBias,p.geometryBias,p.edgeCacheBias,
+                    p.shapeCapacity,p.edgeCapacity);
+                return;
+            }
+            edgeCaches.Store(edgeBase+12u,0u);
+            edgeCaches.Store(edgeBase+68u,1u);
+            publishPair(result,0u,1u,3u,edge,first,0u,0u,1u);
+            publishScContacts(i,a,b,edge,result,p.outputBias,
+                p.transformBias,p.geometryBias,p.edgeCacheBias,
+                p.shapeCapacity,p.edgeCapacity);
+            return;
+        }
         if(sourcePcmSpherePair(i,a,b,edge,first,limit,result,
                                ga,gb,pa,pb,qa,qb,distance))
             return;
-        bool regenerate=refreshEdge(edgeBase,pa,pb,qa,qb,ea,eb,distance);
+        bool regenerate=refreshEdge(
+            edgeBase,pa,pb,qa,qb,ea,eb,marginA,marginB,distance);
         if(!regenerate) {
             uint cached=edgeCaches.Load(edgeBase+12u);
             uint eligible=0u;
@@ -624,34 +698,10 @@ void main(uint3 thread : SV_DispatchThreadID) {
             clip(f,poly,incidentNormal,faceX,faceY,normal,distance,flipped,
                  A,pa,B,pb,first,limit,count,status);
         }
-        // GuPCMContactBoxBox's GJK continuation only runs when face
-        // clipping found no witness. EPA remains explicitly pending.
-        if(overlap!=0u && count==0u && status==0u) {
-            uint cache=p.edgeCacheBias+edge*240u;
-            if(edgeCaches.Load(cache+12u)==0u) {
-                GjkBoxPair boxPair;
-                boxPair.halfA=ea;
-                boxPair.halfB=eb;
-                boxPair.aInB=rotateSource(conjugate(qb),pa-pb);
-                boxPair.relative=quatProduct(conjugate(qb),qa);
-                GjkWitness witness;
-                uint outcome=gjkBoxContinuation(boxPair,distance,witness);
-                if(outcome==1u) {
-                    if(limit==0u) {
-                        status=2u;
-                    }else {
-                        uint offset=p.candidateBias+first*40u;
-                        candidates.Store3(offset,asuint(witness.localA));
-                        candidates.Store3(offset+12u,asuint(witness.localB));
-                        candidates.Store3(offset+24u,asuint(witness.normalB));
-                        candidates.Store(offset+36u,asuint(witness.separation));
-                        count=1u;
-                    }
-                }else if(outcome==0u)
-                    overlap=0u;
-                else status=3u;
-            }else status=3u;
-        }
+        // Box clipping owns SAT contacts. A clip without witnesses
+        // enters the sparse GJK continuation, not a second inline solve.
+        if(overlap!=0u && count==0u && status==0u)
+            status=3u;
     }
     uint selectedCount=status==0u?min(count,4u):0u;
     uint4 selection=uint4(0u,1u,2u,3u);

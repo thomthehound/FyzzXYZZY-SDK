@@ -20,8 +20,14 @@ namespace fyzz::physx_gpu {
 class SourcePcmEpaNativeStage final {
 public:
     SourcePcmEpaNativeStage(compute::Context& context,
-                            compute::ShaderBinary shader)
-        : context_(context) {
+                            compute::ShaderBinary shader,
+                            bool face_geometry=false,
+                            bool direct_gjk=false,
+                            bool staged_push_constants=false)
+        : context_(context),face_geometry_(face_geometry),
+          direct_gjk_(direct_gjk),
+          step_parameters_(staged_push_constants || (direct_gjk &&
+              shader.format==compute::ShaderFormat::Dxil)) {
         const auto& device=context.device_info();
         if(!device.max_workgroup_count[0] ||
            !device.max_storage_buffer_range)
@@ -31,10 +37,12 @@ public:
         max_view_=device.max_storage_buffer_range;
         compute::ComputePipelineDesc desc{};
         desc.shader=std::move(shader);
-        desc.storage_buffer_binding_count=8u;
+        desc.storage_buffer_binding_count=face_geometry_?10u:9u;
         desc.storage_buffer_views.assign(
-            8u,compute::StorageBufferViewKind::RawReadWrite);
-        desc.push_constant_bytes=48u;
+            desc.storage_buffer_binding_count,
+            compute::StorageBufferViewKind::RawReadWrite);
+        desc.push_constant_bytes=face_geometry_?72u:
+            (step_parameters_?60u:56u);
         pipeline_=context_.create_compute_pipeline(desc);
     }
     SourcePcmEpaNativeStage(const SourcePcmEpaNativeStage&)=delete;
@@ -54,22 +62,40 @@ public:
                 CudaDeviceAddressMap::Address work,
                 CudaDeviceAddressMap::Address dispatch_args,
                 CudaDeviceAddressMap::Address output,
+                CudaDeviceAddressMap::Address convex_vertices,
+                std::uint32_t convex_vertex_count,
                 std::uint32_t pair_count,std::uint32_t shape_capacity,
                 std::uint32_t candidate_capacity,
-                std::uint32_t edge_capacity) const {
+                std::uint32_t edge_capacity,
+                CudaDeviceAddressMap::Address convex_surface=0u,
+                std::uint32_t convex_surface_bytes=0u,
+                std::uint32_t convex_faces_base=0u,
+                std::uint32_t convex_indices_base=0u,
+                std::uint32_t gjk_pass=0u) const {
         if(!pair_count)return;
+        const auto group_count=face_geometry_
+            ?(std::uint64_t(pair_count)+63u)/64u
+            :direct_gjk_?(std::uint64_t(pair_count)+31u)/32u
+                        :std::uint64_t(pair_count);
         if(!shape_capacity || !candidate_capacity || !edge_capacity ||
-           pair_count>context_.device_info().max_workgroup_count[0])
+           group_count>context_.device_info().max_workgroup_count[0])
             throw std::out_of_range(
-                "Source GPU EPA exceeds source or native dispatch capacity");
-        std::array<std::uint32_t,12> params{
+                "Source GPU PCM dispatch exceeds device capacity");
+        std::array<std::uint32_t,18> params{
             pair_count,0u,0u,0u,0u,0u,0u,0u,
-            shape_capacity,candidate_capacity,edge_capacity,0u};
+            shape_capacity,candidate_capacity,edge_capacity,0u,
+            0u,convex_vertex_count,0u,convex_faces_base,
+            convex_indices_base,convex_surface_bytes};
+        if(step_parameters_)params[14]=gjk_pass;
         const auto view=[&](CudaDeviceAddressMap::Address address,
                             std::size_t bytes,std::uint32_t slot,
                             compute::BufferAccess access) {
             return source_native_view(addresses,address,bytes,
-                alignment_,slot,access,slot==7u?params[11]:params[slot+1u],max_view_);
+                alignment_,slot,access,
+                slot==7u?params[11]:
+                    (slot==8u?params[12]:
+                     (slot==9u?params[14]:params[slot+1u])),
+                max_view_);
         };
         compute::DispatchCommand dispatch{};
         dispatch.pipeline=pipeline_;
@@ -90,19 +116,39 @@ public:
             view(work,source_allocation_bytes(pair_count,4u),
                  6u,compute::BufferAccess::Read),
             view(output,source_allocation_bytes(pair_count,84u),
-                 7u,compute::BufferAccess::Write)};
-        const auto arguments=addresses.resolve(dispatch_args,12u);
-        if(arguments.offset%4u)
-            throw std::invalid_argument("Source EPA indirect arguments misaligned");
-        for(const auto& binding:dispatch.buffers)
-            if(binding.buffer==arguments.buffer)
-                throw std::invalid_argument(
-                    "Source EPA indirect arguments alias Sc data");
-        dispatch.indirect=compute::DispatchIndirectArgs{
-            arguments.buffer,arguments.offset};
-        dispatch.push_constants.resize(sizeof(params));
-        std::memcpy(dispatch.push_constants.data(),
-                    params.data(),sizeof(params));
+                 7u,compute::BufferAccess::Write),
+            view(convex_vertex_count?convex_vertices:transforms,
+                 convex_vertex_count
+                     ?source_allocation_bytes(convex_vertex_count,12u)
+                     :source_allocation_bytes(shape_capacity,32u),
+                 8u,compute::BufferAccess::Read)};
+        if(face_geometry_)
+            dispatch.buffers.push_back(
+                view(convex_surface_bytes?convex_surface:transforms,
+                     convex_surface_bytes
+                        ?convex_surface_bytes
+                        :source_allocation_bytes(shape_capacity,32u),
+                     9u,compute::BufferAccess::Read));
+        if(face_geometry_ || direct_gjk_) {
+            // GJK lanes read pending Sc statuses directly; only EPA
+            // requires a compacted indirect worklist.
+            dispatch.groups={
+                static_cast<std::uint32_t>(group_count),1u,1u};
+        }else {
+            const auto arguments=addresses.resolve(dispatch_args,12u);
+            if(arguments.offset%4u)
+                throw std::invalid_argument("Source EPA indirect arguments misaligned");
+            for(const auto& binding:dispatch.buffers)
+                if(binding.buffer==arguments.buffer)
+                    throw std::invalid_argument(
+                        "Source EPA indirect arguments alias Sc data");
+            dispatch.indirect=compute::DispatchIndirectArgs{
+                arguments.buffer,arguments.offset};
+        }
+        const auto params_bytes=face_geometry_?sizeof(params):
+            (step_parameters_?15u:14u)*sizeof(std::uint32_t);
+        dispatch.push_constants.resize(params_bytes);
+        std::memcpy(dispatch.push_constants.data(),params.data(),params_bytes);
         commands.emplace_back(std::move(dispatch));
     }
     void append(SourceSapDmaNative& stream,
@@ -116,15 +162,28 @@ public:
                 CudaDeviceAddressMap::Address work,
                 CudaDeviceAddressMap::Address dispatch_args,
                 CudaDeviceAddressMap::Address output,
+                CudaDeviceAddressMap::Address convex_vertices,
+                std::uint32_t convex_vertex_count,
                 std::uint32_t pair_count,std::uint32_t shape_capacity,
                 std::uint32_t candidate_capacity,
-                std::uint32_t edge_capacity) const {
+                std::uint32_t edge_capacity,
+                CudaDeviceAddressMap::Address convex_surface=0u,
+                std::uint32_t convex_surface_bytes=0u,
+                std::uint32_t convex_faces_base=0u,
+                std::uint32_t convex_indices_base=0u,
+                std::uint32_t gjk_pass=0u) const {
         append(stream.commands(),addresses,transforms,geometry,pairs,
                results,candidates,edge_cache,work,dispatch_args,output,
-               pair_count,shape_capacity,candidate_capacity,edge_capacity);
+               convex_vertices,convex_vertex_count,
+               pair_count,shape_capacity,candidate_capacity,edge_capacity,
+               convex_surface,convex_surface_bytes,
+               convex_faces_base,convex_indices_base,gjk_pass);
     }
 private:
     compute::Context& context_;
+    bool face_geometry_=false;
+    bool direct_gjk_=false;
+    bool step_parameters_=false;
     compute::PipelineId pipeline_=0;
     std::size_t alignment_=0;
     std::uint64_t max_view_=0;

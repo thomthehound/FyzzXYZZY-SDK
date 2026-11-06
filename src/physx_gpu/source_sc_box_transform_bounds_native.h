@@ -9,6 +9,7 @@
 
 #include <algorithm>
 #include <array>
+#include <bit>
 #include <cstdint>
 #include <cstring>
 #include <stdexcept>
@@ -56,7 +57,9 @@ inline SourceScBoxTransformInputNative source_shape_transform_input(
     return {handle,{shape.position.x,shape.position.y,shape.position.z},
         {shape.orientation.x,shape.orientation.y,shape.orientation.z,shape.orientation.w},
         {shape.half_extents.x,shape.half_extents.y,shape.half_extents.z},shape.contact_offset,
-        {p.x,p.y,p.z},shape.geometry_kind,{q.x,q.y,q.z,q.w},shape.next_shape,{}};
+        {p.x,p.y,p.z},shape.geometry_kind,{q.x,q.y,q.z,q.w},shape.next_shape,
+        {shape.convex_vertex_offset,shape.convex_vertex_count,
+         std::bit_cast<std::uint32_t>(shape.convex_margin_half_extent)}};
 }
 
 // GPU outputs use the original PxBounds3 (24 bytes) and PxsCachedTransform
@@ -78,10 +81,10 @@ public:
         max_view_=info.max_storage_buffer_range;
         compute::ComputePipelineDesc desc{};
         desc.shader=std::move(shader);
-        desc.storage_buffer_binding_count=4u;
+        desc.storage_buffer_binding_count=5u;
         desc.storage_buffer_views.assign(
-            4u,compute::StorageBufferViewKind::RawReadWrite);
-        desc.push_constant_bytes=20u;
+            5u,compute::StorageBufferViewKind::RawReadWrite);
+        desc.push_constant_bytes=24u;
         pipeline_=context_.create_compute_pipeline(desc);
     }
     SourceScBoxTransformBoundsNativeStage(
@@ -98,6 +101,8 @@ public:
                 CudaDeviceAddressMap::Address bounds,
                 CudaDeviceAddressMap::Address cache,
                 CudaDeviceAddressMap::Address geometry,
+                CudaDeviceAddressMap::Address convex_vertices,
+                std::uint32_t vertex_count,
                 std::uint32_t count,
                 std::uint32_t capacity) const {
         if(!count)return;
@@ -108,7 +113,7 @@ public:
         if(groups>context_.device_info().max_workgroup_count[0])
             throw std::out_of_range(
                 "Source Sc box transform GPU dispatch exceeds device limit");
-        std::array<std::uint32_t,5> params{count};
+        std::array<std::uint32_t,6> params{count};
         auto view=[&](CudaDeviceAddressMap::Address address,
                       std::size_t bytes,std::uint32_t slot,
                       compute::BufferAccess access) {
@@ -126,7 +131,11 @@ public:
             view(cache,source_allocation_bytes(capacity,32u),
                  2u,compute::BufferAccess::Write),
             view(geometry,source_allocation_bytes(capacity,sizeof(SourceScBoxGeometryNative)),
-                 3u,compute::BufferAccess::Write)};
+                 3u,compute::BufferAccess::Write),
+            view(vertex_count?convex_vertices:input,
+                 vertex_count?source_allocation_bytes(vertex_count,12u):
+                              source_allocation_bytes(count,sizeof(SourceScBoxTransformInputNative)),
+                 4u,compute::BufferAccess::Read)};
         dispatch.push_constants.resize(sizeof(params));
         std::memcpy(dispatch.push_constants.data(),
                     params.data(),sizeof(params));
@@ -138,9 +147,12 @@ public:
                 CudaDeviceAddressMap::Address bounds,
                 CudaDeviceAddressMap::Address cache,
                 CudaDeviceAddressMap::Address geometry,
+                CudaDeviceAddressMap::Address convex_vertices,
+                std::uint32_t vertex_count,
                 std::uint32_t count,
                 std::uint32_t capacity) const {
-        append(stream.commands(),addresses,input,bounds,cache,geometry,count,capacity);
+        append(stream.commands(),addresses,input,bounds,cache,geometry,
+               convex_vertices,vertex_count,count,capacity);
     }
 private:
     compute::Context& context_;

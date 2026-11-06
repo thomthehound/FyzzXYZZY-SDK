@@ -13,6 +13,7 @@
 #include <cmath>
 #include <cstdint>
 #include <cstring>
+#include <cstdlib>
 #include <fstream>
 #include <iostream>
 #include <iterator>
@@ -42,7 +43,9 @@ ShaderBinary shader(const char* name) {
 }
 void verify(Context& context,const char* transform_shader,
             const char* candidate_shader,const char* compact_shader,
-            const char* epa_shader) {
+            const char* gjk_shader,const char* epa_shader,
+            const char* gjk_reduce_shader,const char* gjk_publish_shader,
+            const char* epa_reset_shader) {
     // Exercise every contact lane with byte-exact IEEE float preservation.
     SourcePcmGpuContactStreamNative fixture{};
     fixture.edge_handle=197u;
@@ -216,6 +219,23 @@ void verify(Context& context,const char* transform_shader,
     const auto output_data=addresses.register_slice(
         root,output_offset,packed.size()*sizeof(packed[0]));
     const auto args_data=addresses.register_slice(args_buffer,0u,12u);
+    const auto release_allocations=[&] {
+    addresses.unregister_slice(args_data);
+    addresses.unregister_slice(output_data);
+    addresses.unregister_slice(work_data);
+    addresses.unregister_slice(edge_data);
+    addresses.unregister_slice(candidate_data);
+    addresses.unregister_slice(result_data);
+    addresses.unregister_slice(pair_data);
+    addresses.unregister_slice(geometry);
+    addresses.unregister_slice(transforms);
+    addresses.unregister_slice(bounds);
+    addresses.unregister_slice(inputs);
+    require(addresses.live_allocations()==0u,
+            "Source PCM GPU candidate fixture leaked address mappings");
+    context.destroy_buffer(args_buffer);
+    context.destroy_buffer(root);
+    };
     const auto download_publication=[&] {
         context.download(root,output_offset,packed.data(),
                          packed.size()*sizeof(packed[0]));
@@ -228,13 +248,49 @@ void verify(Context& context,const char* transform_shader,
         context,shader(transform_shader));
     SourcePcmBoxCandidatesNativeStage pcm(context,shader(candidate_shader));
     SourcePcmSparseEpaNativeStage sparse(context,shader(compact_shader));
+    SourcePcmSparseEpaNativeStage epa_pending(
+        context,shader(compact_shader),4u,shader(epa_reset_shader));
+    SourcePcmEpaNativeStage gjk(
+        context,shader(gjk_shader),false,true);
+    SourcePcmEpaNativeStage gjk_reduce(
+        context,shader(gjk_reduce_shader),false,true);
+    SourcePcmEpaNativeStage gjk_publish(
+        context,shader(gjk_publish_shader),false,true,true);
     SourcePcmEpaNativeStage epa(context,shader(epa_shader));
+#ifdef FYZZXYZZY_TEST_D3D12
+    constexpr bool staged_gjk=true;
+#else
+    constexpr bool staged_gjk=false;
+#endif
+    const auto append_gjk_stage=[&](SourceSapDmaNative& stream,
+                                    const SourcePcmEpaNativeStage& stage,
+                                    std::uint32_t pass) {
+        stage.append(stream,addresses,transforms,geometry,pair_data,result_data,
+            candidate_data,edge_data,work_data,args_data,output_data,
+            transforms,0u,
+            static_cast<std::uint32_t>(pairs.size()),capacity,
+            static_cast<std::uint32_t>(candidates.size()),edge_capacity,
+            0u,0u,0u,0u,pass);
+    };
+    const auto append_gjk=[&](SourceSapDmaNative& stream) {
+        if(staged_gjk) {
+            for(std::uint32_t pass=0u;pass<32u;++pass) {
+                append_gjk_stage(stream,gjk,pass);
+                append_gjk_stage(stream,gjk_reduce,pass);
+            }
+            append_gjk_stage(stream,gjk,32u);
+            append_gjk_stage(stream,gjk_publish,32u);
+        }else append_gjk_stage(stream,gjk,0u);
+    };
+    std::clog<<"PCM fixture: pipelines initialized\n"<<std::flush;
     {
         SourceSapDmaNative stream(context,addresses);
         producer.append(stream,addresses,inputs,bounds,transforms,geometry,
+                        inputs,0u,
                         static_cast<std::uint32_t>(boxes.size()),capacity);
         pcm.append(stream,addresses,transforms,geometry,pair_data,
                    result_data,candidate_data,edge_data,args_data,output_data,
+                   transforms,0u,
                    static_cast<std::uint32_t>(pairs.size()),capacity,
                    static_cast<std::uint32_t>(candidates.size()),
                    edge_capacity);
@@ -244,6 +300,7 @@ void verify(Context& context,const char* transform_shader,
         require(stream.submission_stats().command_batches==1u,
                 "Source PCM candidate and sparse EPA stages split the source stream batch");
     }
+    std::clog<<"PCM fixture: candidate stage completed\n"<<std::flush;
     context.download(root,result_offset,results.data(),sizeof(results));
     context.download(root,candidate_offset,candidates.data(),
                      candidates.size()*sizeof(candidates[0]));
@@ -344,6 +401,87 @@ void verify(Context& context,const char* transform_shader,
     context.download(args_buffer,0u,indirect.data(),sizeof(indirect));
     require(indirect==std::array<std::uint32_t,3>{0u,1u,1u},
             "Sparse EPA GPU reset retained stale pending work");
+    std::clog<<"PCM fixture: sparse compaction verified\n"<<std::flush;
+
+    // Validate compaction against the original admission state, then
+    // resolve exactly that state through sparse GJK and EPA before
+    // comparing the final contacts with native Gu.
+    context.upload(root,result_offset,results.data(),sizeof(results));
+    const auto initial_admissions=results;
+    {
+        seed_compaction();
+        SourceSapDmaNative stream(context,addresses);
+        sparse.append(stream,addresses,result_data,work_data,args_data,
+                      static_cast<std::uint32_t>(pairs.size()));
+        stream.wait_at_fetch();
+    }
+    context.download(args_buffer,0u,indirect.data(),sizeof(indirect));
+    context.download(root,work_offset,work.data(),work.size()*4u);
+    verify_work(initial_admissions);
+    std::clog<<"PCM fixture: initial sparse worklist count="
+             <<indirect[0]<<"\n"<<std::flush;
+
+    {
+        SourceSapDmaNative stream(context,addresses);
+        append_gjk(stream);
+        stream.wait_at_fetch();
+    }
+    context.download(root,result_offset,results.data(),sizeof(results));
+    for(std::size_t k=0;k<indirect[0];++k)
+        std::clog<<"PCM fixture: sparse GJK pair="<<work[k]
+                 <<" before="<<initial_admissions[work[k]].status
+                 <<" after="<<results[work[k]].status
+                 <<" count="<<results[work[k]].candidate_count
+                 <<" progress="<<results[work[k]].selected_indices
+                 <<"\n"<<std::flush;
+    std::clog<<"PCM fixture: initial sparse GJK complete, EPA pending="
+             <<std::count_if(results.begin(),results.end(),
+                 [](const auto& result){return result.status==4u;})
+             <<"\n"<<std::flush;
+    const auto expected_epa_count=std::count_if(results.begin(),results.end(),
+        [](const auto& entry){return entry.status==4u;});
+    {
+        SourceSapDmaNative stream(context,addresses);
+        epa_pending.append(stream,addresses,result_data,work_data,
+                           args_data,static_cast<std::uint32_t>(pairs.size()));
+        stream.wait_at_fetch();
+    }
+    context.download(args_buffer,0u,indirect.data(),sizeof(indirect));
+    require(indirect[0]==expected_epa_count &&
+            indirect[1]==1u && indirect[2]==1u,
+            "Post-GJK GPU EPA worklist retained stale admissions");
+    std::clog<<"PCM fixture: post-GJK EPA worklist count="
+             <<indirect[0]<<"\n"<<std::flush;
+    if(std::getenv("FYZZXYZZY_PCM_EPA_WORKLIST_ONLY")) {
+        release_allocations();
+        return;
+    }
+    {
+        SourceSapDmaNative stream(context,addresses);
+        epa.append(stream,addresses,transforms,geometry,pair_data,result_data,
+                   candidate_data,edge_data,work_data,args_data,output_data,
+                   transforms,0u,
+                   static_cast<std::uint32_t>(pairs.size()),capacity,
+                   static_cast<std::uint32_t>(candidates.size()),edge_capacity);
+        stream.wait_at_fetch();
+    }
+    std::clog<<"PCM fixture: initial sparse EPA complete\n"<<std::flush;
+    if(std::getenv("FYZZXYZZY_PCM_EPA_EMPTY_DISPATCH_PROBE")) {
+        require(indirect[0]==0u,
+                "EPA empty dispatch test requires no pending penetration pairs");
+        const auto previous=results[work[0]].selected_indices;
+        context.download(root,result_offset,results.data(),sizeof(results));
+        require(results[work[0]].selected_indices==previous,
+                "Empty EPA dispatch unexpectedly executed work");
+        release_allocations();
+        return;
+    }
+    context.download(root,result_offset,results.data(),sizeof(results));
+    context.download(root,candidate_offset,candidates.data(),
+                     candidates.size()*sizeof(candidates[0]));
+    context.download(root,edge_offset,edge_caches.data(),
+                     edge_caches.size()*sizeof(edge_caches[0]));
+    download_publication();
 
     std::uint32_t generated=0u,reduced_batches=0u;
     for(std::size_t i=0;i<pairs.size();++i) {
@@ -414,10 +552,18 @@ void verify(Context& context,const char* transform_shader,
                 a.contact_distance+b.contact_distance,gjk_reference,nullptr);
             require(results[i].status==0u || results[i].status==3u,
                     "GPU PCM returned an invalid GJK continuation status");
-            if(source_contact && gjk_reference.separation>0.0001f)
-                require(results[i].status==0u &&
-                        results[i].candidate_count==1u,
-                        "GPU GJK failed to emit source positive-gap contact");
+            if(source_contact && gjk_reference.separation>0.0001f &&
+               !(results[i].status==0u &&
+                 results[i].candidate_count==1u))
+                throw std::runtime_error(
+                    "GPU GJK positive-gap mismatch pair="+
+                    std::to_string(i)+" elements="+
+                    std::to_string(pairs[i].first_element)+","+
+                    std::to_string(pairs[i].second_element)+
+                    " cpu_gap="+std::to_string(gjk_reference.separation)+
+                    " gpu_status="+std::to_string(results[i].status)+
+                    " gpu_count="+std::to_string(results[i].candidate_count)+
+                    " gpu_overlap="+std::to_string(results[i].overlapping));
             if(results[i].status==3u) {
                 require(results[i].candidate_count==0u &&
                         results[i].overlapping==1u &&
@@ -494,6 +640,7 @@ void verify(Context& context,const char* transform_shader,
         SourceSapDmaNative stream(context,addresses);
         pcm.append(stream,addresses,transforms,geometry,pair_data,
                    result_data,candidate_data,edge_data,args_data,output_data,
+                   transforms,0u,
                    static_cast<std::uint32_t>(pairs.size()),capacity,
                    static_cast<std::uint32_t>(candidates.size()),edge_capacity);
         stream.wait_at_fetch();
@@ -507,6 +654,7 @@ void verify(Context& context,const char* transform_shader,
         SourceSapDmaNative stream(context,addresses);
         pcm.append(stream,addresses,transforms,geometry,pair_data,
                    result_data,candidate_data,edge_data,args_data,output_data,
+                   transforms,0u,
                    static_cast<std::uint32_t>(pairs.size()),capacity,
                    static_cast<std::uint32_t>(candidates.size()),edge_capacity);
         stream.wait_at_fetch();
@@ -525,6 +673,7 @@ void verify(Context& context,const char* transform_shader,
         SourceSapDmaNative stream(context,addresses);
         pcm.append(stream,addresses,transforms,geometry,pair_data,
                    result_data,candidate_data,edge_data,args_data,output_data,
+                   transforms,0u,
                    static_cast<std::uint32_t>(pairs.size()),capacity,
                    static_cast<std::uint32_t>(candidates.size()),edge_capacity);
         stream.wait_at_fetch();
@@ -559,6 +708,7 @@ void verify(Context& context,const char* transform_shader,
         SourceSapDmaNative stream(context,addresses);
         pcm.append(stream,addresses,transforms,geometry,pair_data,
                    result_data,candidate_data,edge_data,args_data,output_data,
+                   transforms,0u,
                    static_cast<std::uint32_t>(pairs.size()),capacity,
                    static_cast<std::uint32_t>(candidates.size()),edge_capacity);
         stream.wait_at_fetch();
@@ -597,9 +747,11 @@ void verify(Context& context,const char* transform_shader,
     {
         SourceSapDmaNative stream(context,addresses);
         producer.append(stream,addresses,inputs,bounds,transforms,geometry,
+                        inputs,0u,
                         static_cast<std::uint32_t>(boxes.size()),capacity);
         pcm.append(stream,addresses,transforms,geometry,pair_data,
                    result_data,candidate_data,edge_data,args_data,output_data,
+                   transforms,0u,
                    static_cast<std::uint32_t>(pairs.size()),capacity,
                    static_cast<std::uint32_t>(candidates.size()),edge_capacity);
         stream.wait_at_fetch();
@@ -626,9 +778,11 @@ void verify(Context& context,const char* transform_shader,
     {
         SourceSapDmaNative stream(context,addresses);
         producer.append(stream,addresses,inputs,bounds,transforms,geometry,
+                        inputs,0u,
                         static_cast<std::uint32_t>(boxes.size()),capacity);
         pcm.append(stream,addresses,transforms,geometry,pair_data,
                    result_data,candidate_data,edge_data,args_data,output_data,
+                   transforms,0u,
                    static_cast<std::uint32_t>(pairs.size()),capacity,
                    static_cast<std::uint32_t>(candidates.size()),edge_capacity);
         stream.wait_at_fetch();
@@ -636,6 +790,7 @@ void verify(Context& context,const char* transform_shader,
     context.download(root,result_offset,results.data(),sizeof(results));
     require(results[0].regenerated==1u,
             "Sc PCM GPU failed to invalidate and regenerate after large motion");
+    std::clog<<"PCM fixture: entering sparse EPA verification\n"<<std::flush;
     // Directly exercise source EPA's penetration branch on the sparse
     // device continuation. The ordinary SAT cases above remain unchanged.
     by_id[boxes[0].element_index]=boxes[0];
@@ -682,8 +837,12 @@ void verify(Context& context,const char* transform_shader,
         SourceSapDmaNative stream(context,addresses);
         sparse.append(stream,addresses,result_data,work_data,args_data,
                       static_cast<std::uint32_t>(pairs.size()));
+        append_gjk(stream);
+        epa_pending.append(stream,addresses,result_data,work_data,
+                           args_data,static_cast<std::uint32_t>(pairs.size()));
         epa.append(stream,addresses,transforms,geometry,pair_data,result_data,
                    candidate_data,edge_data,work_data,args_data,output_data,
+                   transforms,0u,
                    static_cast<std::uint32_t>(pairs.size()),capacity,
                    static_cast<std::uint32_t>(candidates.size()),edge_capacity);
         stream.wait_at_fetch();
@@ -700,11 +859,23 @@ void verify(Context& context,const char* transform_shader,
             "GPU EPA continuation did not consume one sparse work item");
     download_publication();
     const auto& epa_published=published[penetration_pair];
-    require(epa_published.edge_handle==edge && epa_published.status==0u &&
-            epa_published.cached_count==1u && epa_published.emitted_count==1u &&
-            epa_published.selected_and_regenerated==0x80000001u &&
-            near(epa_published.contacts[0].separation,expected_epa.separation),
-            "Sparse EPA did not publish its completed Gu world contact");
+    if(!(epa_published.edge_handle==edge && epa_published.status==0u &&
+         epa_published.cached_count==1u && epa_published.emitted_count==1u &&
+         epa_published.selected_and_regenerated==0x80000001u &&
+         near(epa_published.contacts[0].separation,expected_epa.separation)))
+        throw std::runtime_error(
+            "Sparse EPA publication mismatch pair="+
+            std::to_string(penetration_pair)+
+            " edge="+std::to_string(edge)+"/"+
+            std::to_string(epa_published.edge_handle)+
+            " status="+std::to_string(epa_published.status)+
+            " cache="+std::to_string(epa_published.cached_count)+
+            " emit="+std::to_string(epa_published.emitted_count)+
+            " selected="+std::to_string(epa_published.selected_and_regenerated)+
+            " depth="+std::to_string(epa_published.contacts[0].separation)+
+            "/"+std::to_string(expected_epa.separation)+
+            " candidate="+std::to_string(results[penetration_pair].candidate_count)+
+            " result_status="+std::to_string(results[penetration_pair].status));
     const auto& finished=results[penetration_pair];
     const auto& witness=candidates[pairs[penetration_pair].candidate_offset];
     require(finished.status==0u && finished.candidate_count==1u &&
@@ -721,12 +892,14 @@ void verify(Context& context,const char* transform_shader,
             near(witness.normal_b[1],expected_epa.normal_b.y) &&
             near(witness.normal_b[2],expected_epa.normal_b.z),
             "GPU EPA contact differs from native source penetration witness");
+    std::clog<<"PCM fixture: sparse EPA published\n"<<std::flush;
     // A source EPA witness must survive the next quiet Sc PCM refresh
     // through the same EdgeIndex, without another GJK/EPA invocation.
     {
         SourceSapDmaNative stream(context,addresses);
         pcm.append(stream,addresses,transforms,geometry,pair_data,
                    result_data,candidate_data,edge_data,args_data,output_data,
+                   transforms,0u,
                    static_cast<std::uint32_t>(pairs.size()),capacity,
                    static_cast<std::uint32_t>(candidates.size()),edge_capacity);
         stream.wait_at_fetch();
@@ -791,8 +964,12 @@ void verify(Context& context,const char* transform_shader,
         SourceSapDmaNative stream(context,addresses);
         sparse.append(stream,addresses,result_data,work_data,args_data,
                       static_cast<std::uint32_t>(pairs.size()));
+        append_gjk(stream);
+        epa_pending.append(stream,addresses,result_data,work_data,
+                           args_data,static_cast<std::uint32_t>(pairs.size()));
         epa.append(stream,addresses,transforms,geometry,pair_data,result_data,
                    candidate_data,edge_data,work_data,args_data,output_data,
+                   transforms,0u,
                    static_cast<std::uint32_t>(pairs.size()),capacity,
                    static_cast<std::uint32_t>(candidates.size()),edge_capacity);
         stream.wait_at_fetch();
@@ -828,6 +1005,7 @@ void verify(Context& context,const char* transform_shader,
         SourceSapDmaNative stream(context,addresses);
         pcm.append(stream,addresses,transforms,geometry,pair_data,
                    result_data,candidate_data,edge_data,args_data,output_data,
+                   transforms,0u,
                    static_cast<std::uint32_t>(pairs.size()),capacity,
                    static_cast<std::uint32_t>(candidates.size()),edge_capacity);
         stream.wait_at_fetch();
@@ -845,33 +1023,20 @@ void verify(Context& context,const char* transform_shader,
         "Sc GPU PCM reset reused or cleared unreachable Gu witnesses");
     pairs[separated_pair].candidate_capacity&=~source_pcm_reset_cache_bit;
 
-    addresses.unregister_slice(args_data);
-    addresses.unregister_slice(output_data);
-    addresses.unregister_slice(work_data);
-    addresses.unregister_slice(edge_data);
-    addresses.unregister_slice(candidate_data);
-    addresses.unregister_slice(result_data);
-    addresses.unregister_slice(pair_data);
-    addresses.unregister_slice(geometry);
-    addresses.unregister_slice(transforms);
-    addresses.unregister_slice(bounds);
-    addresses.unregister_slice(inputs);
-    require(addresses.live_allocations()==0u,
-            "Source PCM GPU candidate fixture leaked address mappings");
-    context.destroy_buffer(args_buffer);
-    context.destroy_buffer(root);
+
+    release_allocations();
 }
 }
 int main(int argc,char** argv) {
     try {
-        require(argc==5,
-                "Expected box transforms, PCM, EPA compact and contact shaders");
+        require(argc==9,
+                "Expected transforms, PCM, compact, GJK, EPA, reducer, publisher and reset shaders");
 #ifdef FYZZXYZZY_TEST_D3D12
         Context context(Backend::D3D12);
 #else
         Context context(Backend::Vulkan);
 #endif
-        verify(context,argv[1],argv[2],argv[3],argv[4]);
+        verify(context,argv[1],argv[2],argv[3],argv[4],argv[5],argv[6],argv[7],argv[8]);
         std::cout<<"Source PCM GPU box candidate parity PASS\n";
         return 0;
     }catch(const std::exception& error) {

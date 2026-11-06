@@ -23,6 +23,10 @@ RWByteAddressBuffer transforms : register(u2,space0);
 [[vk::binding(3,0)]]
 #endif
 RWByteAddressBuffer geometry : register(u3,space0);
+#ifdef __spirv__
+[[vk::binding(4,0)]]
+#endif
+RWByteAddressBuffer hullVertices : register(u4,space0);
 
 struct Parameters {
     uint shapeCount;
@@ -30,6 +34,7 @@ struct Parameters {
     uint boundsBias;
     uint transformsBias;
     uint geometryBias;
+    uint verticesBias;
 };
 #ifdef __spirv__
 [[vk::push_constant]] Parameters p;
@@ -50,11 +55,27 @@ void main(uint3 thread : SV_DispatchThreadID) {
 
     // PxMat33(quaternion), three column vectors. updateCacheAndBound's
     // eBOX branch uses basisExtent, then center +/- world-space extents.
-    const float3 extents=sourceBoxHalfBounds(q,e);
-
+    float3 lower,upper;
+    if(shapes.Load(base+60u)==2u) {
+        const uint first=shapes.Load(base+84u);
+        const uint count=shapes.Load(base+88u);
+        lower=float3(3.402823466e38f,3.402823466e38f,3.402823466e38f);
+        upper=-lower;
+        for(uint j=0u;j<count;++j) {
+            const float3 vertex=asfloat(hullVertices.Load3(
+                p.verticesBias+(first+j)*12u));
+            const float3 position=center+sourceRigidRotate(q,vertex);
+            lower=min(lower,position);
+            upper=max(upper,position);
+        }
+    }else {
+        const float3 extents=sourceBoxHalfBounds(q,e);
+        lower=center-extents;
+        upper=center+extents;
+    }
     const uint bound=p.boundsBias+index*24u;
-    bounds.Store3(bound,asuint(center-extents));
-    bounds.Store3(bound+12u,asuint(center+extents));
+    bounds.Store3(bound,asuint(lower));
+    bounds.Store3(bound+12u,asuint(upper));
 
     // PxsCachedTransform: PxTransform (q[4], p[3]) and flags, 32 bytes.
     // The existing source kernel initializes transform flags to zero.

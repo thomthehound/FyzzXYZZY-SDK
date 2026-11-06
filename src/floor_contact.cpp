@@ -50,7 +50,8 @@ void validate(const Context& context, BufferId positions, BufferId velocities,
 FloorContactKernel::FloorContactKernel(Context& context, ShaderBinary compiled_shader)
     : context_(context),
       pipeline_(context.create_compute_pipeline(ComputePipelineDesc{
-          std::move(compiled_shader), 2, sizeof(FloorStepParameters)})) {}
+          std::move(compiled_shader), 2, sizeof(FloorStepParameters),
+          {}, 0u})) {}
 
 FloorContactKernel::~FloorContactKernel() {
     // Context cleanup remains responsible for recovery from device loss.
@@ -73,7 +74,7 @@ void FloorContactKernel::append_step(std::vector<BatchCommand>& batch,
     batch.emplace_back(DispatchCommand{
         pipeline_, {groups, 1, 1},
         {{0, positions, 0, bytes}, {1, velocities, 0, bytes}},
-        std::move(constants)
+        std::move(constants), {}
     });
 }
 

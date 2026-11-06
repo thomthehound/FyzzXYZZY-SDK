@@ -127,7 +127,8 @@ add_library(fyzzxyzzy_core STATIC
   src/native/GuContactBoxBox.cpp
   src/native/GuPCMContactBoxBox.cpp
   src/native/GuPCMContactSphere.cpp
-  src/native/GuPCMGjkEpa.cpp)
+  src/native/GuPCMGjkEpa.cpp
+  src/native/cooked_convex.cpp)
 add_library(FyzzXYZZY::Core ALIAS fyzzxyzzy_core)
 target_compile_features(fyzzxyzzy_core PUBLIC cxx_std_23)
 target_link_libraries(fyzzxyzzy_core PUBLIC Threads::Threads)
@@ -167,6 +168,14 @@ if(BUILD_TESTING AND NOT FYZZXYZZY_ENABLE_PHYSX_SOURCE)
   target_link_libraries(fyzzxyzzy_native_boundary_smoke PRIVATE FyzzXYZZY::Core)
   add_test(NAME fyzzxyzzy_native_boundary_smoke
     COMMAND fyzzxyzzy_native_boundary_smoke)
+endif()
+
+if(BUILD_TESTING)
+  add_executable(fyzzxyzzy_cooked_convex tests/cooked_convex.cpp)
+  target_include_directories(fyzzxyzzy_cooked_convex PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/src")
+  target_link_libraries(fyzzxyzzy_cooked_convex PRIVATE FyzzXYZZY::Core)
+  add_test(NAME fyzzxyzzy_cooked_convex COMMAND fyzzxyzzy_cooked_convex)
 endif()
 
 if(BUILD_TESTING)

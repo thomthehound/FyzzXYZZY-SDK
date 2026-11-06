@@ -15,11 +15,13 @@ function(fyzzxyzzy_compile_hlsl output source profile entry)
       set(_environment "vulkan1.1")
     endif()
     set(_format_flags -spirv "-fspv-target-env=${_environment}")
+    set(_compiler "${FYZZXYZZY_SPIRV_DXC}")
   elseif(_extension STREQUAL ".dxil")
     if(HLSL_SPIRV_ENV)
       message(FATAL_ERROR "DXIL target cannot request a SPIR-V environment")
     endif()
     set(_format_flags)
+    set(_compiler "${FYZZXYZZY_DXC}")
   else()
     message(FATAL_ERROR "Unrecognized HLSL output format: ${output}")
   endif()
@@ -27,7 +29,7 @@ function(fyzzxyzzy_compile_hlsl output source profile entry)
   add_custom_command(
     OUTPUT "${output}"
     COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/kernels"
-    COMMAND "${FYZZXYZZY_DXC}" ${HLSL_FLAGS} ${_format_flags}
+    COMMAND "${_compiler}" ${HLSL_FLAGS} ${_format_flags}
       -T "${profile}" -E "${entry}" -Fo "${output}" "${source}"
     DEPENDS "${source}" ${HLSL_DEPENDS}
     VERBATIM)

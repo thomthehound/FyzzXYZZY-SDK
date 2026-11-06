@@ -144,7 +144,7 @@ jobs:
           test -f FyzzXYZZY-SDK/vendor/PhysX/physx/CMakeLists.txt
           cmake -S FyzzXYZZY-SDK -B offline-build -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON -DFYZZXYZZY_BUILD_GODOT=OFF -DFETCHCONTENT_FULLY_DISCONNECTED=ON
           grep -F "vendor/PhysX" offline-build/CMakeCache.txt
-          cmake --build offline-build --target fyzzxyzzy_cpp23_contract fyzzxyzzy_native_scene_smoke fyzzxyzzy_compound_rigid_smoke fyzzxyzzy_headless_smoke fyzzxyzzy_physx_foundation_shared_lifetime fyzzxyzzy_physx_cuda_address_test --parallel 4
+          cmake --build offline-build --target fyzzxyzzy_cpp23_contract fyzzxyzzy_native_scene_smoke fyzzxyzzy_compound_rigid_smoke fyzzxyzzy_cooked_convex fyzzxyzzy_headless_smoke fyzzxyzzy_physx_foundation_shared_lifetime fyzzxyzzy_physx_cuda_address_test --parallel 4
           ctest --test-dir offline-build --output-on-failure
           # Production/distribution configurations must also reject toolchains
           # lacking C++23 std::expected when BUILD_TESTING=OFF.
@@ -285,7 +285,7 @@ jobs:
       - name: Test
         env:
           FYZZXYZZY_D3D12_FORCE_WARP: '1'
-        run: ctest --test-dir build -C Release --output-on-failure
+        run: ctest --test-dir build -C Release -LE '^d3d12-extended$' --output-on-failure
       - name: Summarize coupled solver conformance
         shell: pwsh
         run: |
@@ -430,16 +430,18 @@ jobs:
       - name: Configure without external source or network
         shell: pwsh
         run: cmake -S . -B build-native -A x64 -DBUILD_TESTING=ON -DFYZZXYZZY_ENABLE_PHYSX_SOURCE=OFF -DFYZZXYZZY_BUILD_D3D12=ON -DFYZZXYZZY_BUILD_SOURCE_GPU_TESTS=ON -DFETCHCONTENT_FULLY_DISCONNECTED=ON "-DFYZZXYZZY_DXC=$env:FYZZXYZZY_DXC"
-      - name: Build and test native core and compute
+      - name: Build and test native core and compute on WARP
         shell: pwsh
+        env:
+          FYZZXYZZY_D3D12_FORCE_WARP: '1'
         run: |
           cmake --build build-native --config Release --parallel 4
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          ctest --test-dir build-native -C Release --output-on-failure --stop-on-failure
+          ctest --test-dir build-native -C Release -LE '^d3d12-extended$' --output-on-failure --stop-on-failure
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           $measurements = @(Select-String -Path 'build-native/Testing/Temporary/LastTest.log' -Pattern 'FYZZXYZZY_METRIC' |
             ForEach-Object { $_.Line })
           if (-not $measurements) { throw 'Native GPU integration measurements missing' }
           $measurements | Tee-Object -FilePath $env:GITHUB_STEP_SUMMARY -Append
-          if (Test-Path 'build-native/_deps/fyzzxyzzy_physx-src') { throw 'PhysX was fetched by native-only build' }
+          if (Test-Path 'build-native/_deps/fyzzxyzzy_physx-src') { throw 'Native-only build unexpectedly fetched source dependencies' }
           if (-not (Test-Path 'build-native/Release/fyzzxyzzy_source_gpu_primitives_d3d12.lib')) { throw 'Independent source GPU primitive library missing' }

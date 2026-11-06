@@ -10,6 +10,7 @@
 #include <fstream>
 #include <iostream>
 #include <iterator>
+#include <limits>
 #include <stdexcept>
 #include <string>
 #include <utility>
@@ -40,16 +41,23 @@ struct Packed {
     std::vector<std::uint32_t> keys[3];
 
     std::uint32_t reserve(std::size_t words) {
-        while (arena.size() % 32) arena.push_back(kUnused);
-        const auto at = arena.size();
-        arena.resize(at + words, kUnused);
-        return static_cast<std::uint32_t>(at * 4u);
+        const std::size_t padding=(32u-arena.size()%32u)%32u;
+        constexpr std::size_t max_words=
+            std::numeric_limits<std::uint32_t>::max()/4u;
+        if (arena.size()>max_words ||
+            padding>max_words-arena.size() ||
+            words>max_words-arena.size()-padding)
+            throw std::overflow_error("Radix test arena exceeds 32-bit offsets");
+        arena.insert(arena.end(),padding,kUnused);
+        const auto at=arena.size();
+        arena.insert(arena.end(),words,kUnused);
+        return static_cast<std::uint32_t>(at*4u);
     }
 };
 
 Packed pack(std::uint32_t num_keys, std::uint32_t descriptor_offset) {
     Packed p;
-    p.arena.resize(descriptor_offset / 4u, kUnused);
+    p.arena.assign(descriptor_offset / 4u, kUnused);
     p.descriptor_offset = p.reserve(sizeof(RadixCountArenaDesc) / 4u);
     if (p.descriptor_offset != descriptor_offset)
         throw std::runtime_error("Radix descriptor offset mismatch");

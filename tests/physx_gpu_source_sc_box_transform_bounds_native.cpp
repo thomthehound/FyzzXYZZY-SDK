@@ -97,6 +97,7 @@ void verify(Context& context,const char* shader) {
     {
         SourceScBoxTransformBoundsNativeStage stage(context,load(shader));
         stage.append(stream,addresses,input,output,cache,shape_geometry,
+                     input,0u,
                      static_cast<std::uint32_t>(shapes.size()),capacity);
         require(stream.commands().size()==1u,
                 "Sc box transform did not enter source GPU stream");
@@ -162,7 +163,7 @@ void verify(Context& context,const char* shader) {
         context.upload(root,input_offset+sizeof(shapes[0]),
                        &shapes[1],sizeof(shapes[1]));
         stage.append(stream,addresses,input+sizeof(shapes[0]),
-                     output,cache,shape_geometry,1u,capacity);
+                     output,cache,shape_geometry,input,0u,1u,capacity);
         stream.wait_at_fetch();
         context.download(root,bounds_offset,bounds.data(),sizeof(bounds));
         context.download(root,cache_offset,transforms.data(),sizeof(transforms));
@@ -176,7 +177,7 @@ void verify(Context& context,const char* shader) {
                 "Sparse device transform update corrupted quiet source shapes");
         bool rejected=false;
         try {
-            stage.append(stream,addresses,input,output,cache,shape_geometry,33u,capacity);
+            stage.append(stream,addresses,input,output,cache,shape_geometry,input,0u,33u,capacity);
         }catch(const std::invalid_argument&) {rejected=true;}
         require(rejected && stream.commands().empty(),
                 "Invalid source transform capacity partially enqueued GPU work");
@@ -189,6 +190,69 @@ void verify(Context& context,const char* shader) {
             "Source box transform test leaked GPU address mappings");
     context.destroy_buffer(root);
 }
+void verify_convex_bounds(Context& context,const char* shader) {
+    using namespace fyzz::physx_gpu;
+    constexpr float c=0.7071067811865476f;
+    SourceScBoxTransformInputNative shape{};
+    shape.element_index=0u;
+    shape.position[0]=5.f;
+    shape.position[1]=2.f;
+    shape.position[2]=-3.f;
+    shape.orientation[1]=c;
+    shape.orientation[3]=c;
+    shape.half_extents[0]=1.f;
+    shape.half_extents[1]=1.f;
+    shape.half_extents[2]=1.f;
+    shape.geometry_kind=2u;
+    shape.reserved[0]=0u;
+    shape.reserved[1]=4u;
+    constexpr std::array<fyzz::Vec3,4> vertices{{
+        {0,0,0},{1,0,0},{0,1,0},{0,0,1}}};
+    constexpr std::size_t inputOffset=4u;
+    constexpr std::size_t boundsOffset=inputOffset+sizeof(shape)+16u;
+    constexpr std::size_t cacheOffset=boundsOffset+sizeof(Bounds)+16u;
+    constexpr std::size_t geometryOffset=cacheOffset+sizeof(CachedTransform)+16u;
+    constexpr std::size_t verticesOffset=
+        geometryOffset+sizeof(SourceScBoxGeometryNative)+16u;
+    constexpr std::size_t allocation=verticesOffset+sizeof(vertices)+16u;
+    const auto buffer=context.create_buffer(allocation);
+    context.upload(buffer,inputOffset,&shape,sizeof(shape));
+    context.upload(buffer,verticesOffset,vertices.data(),sizeof(vertices));
+    CudaDeviceAddressMap addresses;
+    const auto input=addresses.register_slice(buffer,inputOffset,sizeof(shape));
+    const auto bounds=addresses.register_slice(buffer,boundsOffset,sizeof(Bounds));
+    const auto cache=addresses.register_slice(buffer,cacheOffset,sizeof(CachedTransform));
+    const auto geometry=addresses.register_slice(
+        buffer,geometryOffset,sizeof(SourceScBoxGeometryNative));
+    const auto hull=addresses.register_slice(
+        buffer,verticesOffset,sizeof(vertices));
+    SourceScBoxTransformBoundsNativeStage stage(context,load(shader));
+    SourceSapDmaNative stream(context,addresses);
+    stage.append(stream,addresses,input,bounds,cache,geometry,
+                 hull,static_cast<std::uint32_t>(vertices.size()),1u,1u);
+    stream.wait_at_fetch();
+    Bounds result{};
+    SourceScBoxGeometryNative stored{};
+    context.download(buffer,boundsOffset,&result,sizeof(result));
+    context.download(buffer,geometryOffset,&stored,sizeof(stored));
+    const auto near=[](float a,float b){return std::abs(a-b)<0.0001f;};
+    const std::array<float,3> expectedMin{5.f,2.f,-4.f};
+    const std::array<float,3> expectedMax{6.f,3.f,-3.f};
+    for(unsigned axis=0u;axis<3u;++axis)
+        require(near(result.minimum[axis],expectedMin[axis]) &&
+                near(result.maximum[axis],expectedMax[axis]),
+            "Rotated convex hull bounds differ from actual transformed vertices");
+    require(stored.geometry_kind==2u &&
+            stored.reserved[0]==0u && stored.reserved[1]==vertices.size(),
+        "Sc geometry lost convex resident vertex span");
+    addresses.unregister_slice(hull);
+    addresses.unregister_slice(geometry);
+    addresses.unregister_slice(cache);
+    addresses.unregister_slice(bounds);
+    addresses.unregister_slice(input);
+    context.destroy_buffer(buffer);
+}
+
 } // namespace
 
 int main(int argc,char** argv) {
@@ -200,7 +264,8 @@ int main(int argc,char** argv) {
         Context context(Backend::Vulkan);
 #endif
         verify(context,argv[1]);
-        std::cout<<"Source GPU box transform/cache/bounds PASS\n";
+        verify_convex_bounds(context,argv[1]);
+        std::cout<<"Source GPU box/convex transform/cache/bounds PASS\n";
         return 0;
     }catch(const std::exception& e) {
         std::cerr<<"Source GPU box transform/cache/bounds FAILED: "

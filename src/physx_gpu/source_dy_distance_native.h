@@ -13,6 +13,7 @@
 #include <cstdint>
 #include <cstring>
 #include <limits>
+#include <optional>
 #include <span>
 #include <stdexcept>
 #include <utility>
@@ -64,7 +65,8 @@ class SourceDyDistanceNativeStage final {
 public:
     SourceDyDistanceNativeStage(compute::Context& context,
         CudaDeviceAddressMap& addresses,SourceSapDmaNative& stream,
-        physx::PxgHeapMemoryAllocator& allocator,compute::ShaderBinary shader)
+        physx::PxgHeapMemoryAllocator& allocator,compute::ShaderBinary shader,
+        std::optional<compute::ShaderBinary> convex_shader=std::nullopt)
         : context_(context),addresses_(addresses),stream_(stream),
           arena_(allocator,physx::PxsHeapStats::eSOLVER) {
         const auto& info=context_.device_info();
@@ -83,10 +85,24 @@ public:
             5u,compute::StorageBufferViewKind::RawReadWrite);
         pipeline.push_constant_bytes=128u;
         pipeline_=context_.create_compute_pipeline(pipeline);
+        if(convex_shader) {
+            try {
+                pipeline.shader=std::move(*convex_shader);
+                pipeline.storage_buffer_binding_count=6u;
+                pipeline.storage_buffer_views.assign(
+                    6u,compute::StorageBufferViewKind::RawReadWrite);
+                convex_pipeline_=context_.create_compute_pipeline(pipeline);
+            }catch(...) {
+                context_.destroy_compute_pipeline(pipeline_);
+                pipeline_=0u;
+                throw;
+            }
+        }
     }
     SourceDyDistanceNativeStage(const SourceDyDistanceNativeStage&)=delete;
     SourceDyDistanceNativeStage& operator=(const SourceDyDistanceNativeStage&)=delete;
     ~SourceDyDistanceNativeStage() {
+        if(convex_pipeline_)context_.destroy_compute_pipeline(convex_pipeline_);
         if(pipeline_)context_.destroy_compute_pipeline(pipeline_);
         arena_.deallocate();
     }
@@ -118,7 +134,9 @@ public:
                CudaDeviceAddressMap::Address shape_cache,
                CudaDeviceAddressMap::Address shape_bounds,
                CudaDeviceAddressMap::Address shape_geometry,
-               std::uint32_t shape_capacity) {
+               std::uint32_t shape_capacity,
+               CudaDeviceAddressMap::Address convex_vertices,
+               std::uint32_t convex_vertex_count) {
         if(integration.size()<bodies.size() ||
            integrated_poses.size()!=integration.size() ||
            (tasks.empty() && integration.size()==bodies.size()))
@@ -508,8 +526,11 @@ public:
         params[30]=narrow(elements[11]);
         for(std::size_t i=0;i<5u;++i)
             params[22u+i]=narrow(history_bytes+result_offsets[i]);
+        if(convex_vertex_count && !convex_pipeline_)
+            throw std::logic_error(
+                "Cooked convex Dy integration requires the hull-capable solver shader");
         compute::DispatchCommand dispatch{};
-        dispatch.pipeline=pipeline_;
+        dispatch.pipeline=convex_vertex_count?convex_pipeline_:pipeline_;
         // All source spans are subranges of this one source heap block.
         // Bind its original allocation once; shader offsets are relative
         // to the native view base, including the required RAW alignment.
@@ -559,6 +580,16 @@ public:
         dispatch.buffers.push_back(bind_shape(
             shape_geometry,64u,4u,compute::BufferAccess::Read,
             integration_header[2]));
+        // Primitive-only scenes execute the original five-view Dy kernel.
+        // Hull geometry adds one read-only source view only to the convex
+        // specialization; no extra descriptors or dynamic vertex loops
+        // enter ordinary rigid constraint solves.
+        if(convex_vertex_count)
+            dispatch.buffers.push_back(source_native_view(
+                addresses_,convex_vertices,
+                source_allocation_bytes(convex_vertex_count,12u),
+                alignment_,5u,compute::BufferAccess::Read,
+                params[27],max_view_));
         std::memcpy(host_.data()+offsets[12],
                     integration_header.data(),sizeof(integration_header));
         const auto previous_spans=stream_.submission_stats().upload_spans;
@@ -907,6 +938,7 @@ private:
     SourceSapDmaNative& stream_;
     physx::PxgCudaBuffer arena_;
     compute::PipelineId pipeline_=0;
+    compute::PipelineId convex_pipeline_=0;
     std::size_t alignment_=0u;
     std::uint64_t max_view_=0u;
     std::vector<std::uint8_t> host_;

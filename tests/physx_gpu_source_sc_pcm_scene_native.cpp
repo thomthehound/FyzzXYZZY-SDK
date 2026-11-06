@@ -6,6 +6,7 @@
 #include "physx_gpu/source_sc_owned_gpu_broadphase_native.h"
 #include "gpu_integration_metrics.h"
 #include "compound_rigid_cases.h"
+#include "convex_gpu_case.h"
 
 #include <algorithm>
 #include <array>
@@ -1941,15 +1942,20 @@ void verify_gpu_wide_island_solver(
 
 int main(int argc,char** argv) {
     try {
-        require(argc==4 || argc==5,
-                "Expected SAP/PCM manifests, source Dy shader and optional scenario");
-        const std::string_view scenario=argc==5?argv[4]:"all";
+        require(argc>=4 && argc<=6,
+                "Expected SAP/PCM manifests, source Dy and convex Dy shaders, optional scenario");
+        const bool has_convex_shader=argc>=5 &&
+            (std::string_view(argv[4]).ends_with(".spv") ||
+             std::string_view(argv[4]).ends_with(".dxil"));
+        const std::string_view scenario=argc==6?argv[5]:
+            (argc==5 && !has_convex_shader?argv[4]:"all");
         require(scenario=="all" || scenario=="scene" ||
                 scenario=="sparse_contacts" || scenario=="coupled_stack" ||
                 scenario=="coupled_solver" || scenario=="legacy_gu_solver" ||
                 scenario=="mixed_solver" || scenario=="distance_solver" ||
                 scenario=="compound_shapes" || scenario=="compound_solver" ||
-                scenario=="sphere_solver" || scenario=="wide_islands" ||
+                scenario=="sphere_solver" || scenario=="convex_plane" ||
+                scenario=="convex_finite" || scenario=="wide_islands" ||
                 scenario=="wide_islands_10k" || scenario=="free_integration",
                 "Unknown GPU scene regression scenario");
 #ifdef FYZZXYZZY_TEST_D3D12
@@ -1968,6 +1974,22 @@ int main(int argc,char** argv) {
             fyzz::tests::measure_gpu_case("sc_pcm","sphere_solver",
                 [&]{verify_sphere_gpu_solver(
                     backend,argv[1],argv[2],argv[3]);});
+        if(scenario=="all" || scenario=="convex_plane")
+            fyzz::tests::measure_gpu_case("sc_pcm","convex_plane",
+                [&]{
+                    require(has_convex_shader,
+                        "Cooked convex GPU case requires compiled hull Dy shader");
+                    verify_convex_plane_gpu_solver(
+                        backend,argv[1],argv[2],argv[3],argv[4]);
+                });
+        if(scenario=="all" || scenario=="convex_finite")
+            fyzz::tests::measure_gpu_case("sc_pcm","convex_finite",
+                [&]{
+                    require(has_convex_shader,
+                        "Finite convex GPU case requires compiled hull Dy shader");
+                    verify_convex_finite_gpu_solver(
+                        backend,argv[1],argv[2],argv[3],argv[4]);
+                });
         if(scenario=="all" || scenario=="scene")
             fyzz::tests::measure_gpu_case("sc_pcm","scene",
                 [&]{verify(backend,argv[1],argv[2]);});

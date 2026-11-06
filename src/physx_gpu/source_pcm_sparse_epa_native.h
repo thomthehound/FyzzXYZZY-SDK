@@ -9,6 +9,7 @@
 #include <array>
 #include <cstdint>
 #include <cstring>
+#include <optional>
 #include <stdexcept>
 #include <utility>
 
@@ -19,8 +20,10 @@ namespace fyzz::physx_gpu {
 class SourcePcmSparseEpaNativeStage final {
 public:
     SourcePcmSparseEpaNativeStage(
-            compute::Context& context,compute::ShaderBinary compact_shader)
-        : context_(context) {
+            compute::Context& context,compute::ShaderBinary compact_shader,
+            std::uint32_t required_status=3u,
+            std::optional<compute::ShaderBinary> reset_shader=std::nullopt)
+        : context_(context),required_status_(required_status) {
         const auto& device=context.device_info();
         if(device.max_workgroup_invocations<128u ||
            device.max_workgroup_size[0]<128u ||
@@ -34,17 +37,24 @@ public:
         desc.storage_buffer_binding_count=3u;
         desc.storage_buffer_views.assign(
             3u,compute::StorageBufferViewKind::RawReadWrite);
-        desc.push_constant_bytes=16u;
+        desc.push_constant_bytes=20u;
         if(compact_shader.format==compute::ShaderFormat::Spirv)
             compact_shader.entry_point="compact";
         desc.shader=std::move(compact_shader);
         compact_=context_.create_compute_pipeline(desc);
+        if(reset_shader) {
+            if(reset_shader->format==compute::ShaderFormat::Spirv)
+                reset_shader->entry_point="reset";
+            desc.shader=std::move(*reset_shader);
+            reset_=context_.create_compute_pipeline(desc);
+        }
     }
     SourcePcmSparseEpaNativeStage(
         const SourcePcmSparseEpaNativeStage&)=delete;
     SourcePcmSparseEpaNativeStage& operator=(
         const SourcePcmSparseEpaNativeStage&)=delete;
     ~SourcePcmSparseEpaNativeStage() {
+        if(reset_)context_.destroy_compute_pipeline(reset_);
         if(compact_)context_.destroy_compute_pipeline(compact_);
     }
 
@@ -63,7 +73,7 @@ public:
         // Empty manager streams have no EPA consumer or indirect dispatch.
         if(!pair_count)return;
         const auto groups=(std::uint64_t(pair_count)+127u)/128u;
-        std::array<std::uint32_t,4> params{pair_count,0u,0u,0u};
+        std::array<std::uint32_t,5> params{pair_count,0u,0u,0u,required_status_};
         const auto view=[&](CudaDeviceAddressMap::Address addr,
                             std::size_t bytes,std::uint32_t slot,
                             compute::BufferAccess access) {
@@ -87,6 +97,12 @@ public:
         compact.push_constants.resize(sizeof(params));
         std::memcpy(compact.push_constants.data(),
                     params.data(),sizeof(params));
+        if(reset_) {
+            auto reset=compact;
+            reset.pipeline=reset_;
+            reset.groups={1u,1u,1u};
+            commands.emplace_back(std::move(reset));
+        }
         commands.emplace_back(std::move(compact));
     }
     void append(SourceSapDmaNative& stream,
@@ -100,6 +116,8 @@ public:
 private:
     compute::Context& context_;
     compute::PipelineId compact_=0;
+    compute::PipelineId reset_=0;
+    std::uint32_t required_status_=3u;
     std::size_t alignment_=0;
     std::uint64_t max_view_=0;
 };

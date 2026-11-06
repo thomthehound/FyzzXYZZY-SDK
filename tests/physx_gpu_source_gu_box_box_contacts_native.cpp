@@ -104,6 +104,7 @@ void verify(Context& context,const char* transform_shader,
             context,shader(contacts_shader));
         SourceSapDmaNative stream(context,addresses);
         producer.append(stream,addresses,input,bounds,transforms,geometry,
+                        input,0u,
                         static_cast<std::uint32_t>(boxes.size()),capacity);
         contact_stage.append(stream,addresses,transforms,geometry,pair_data,
                              result_data,contact_data,

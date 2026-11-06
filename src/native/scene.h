@@ -3,6 +3,7 @@
 #pragma once
 
 #include "fyzzxyzzy/world.h"
+#include "fyzzxyzzy/convex.h"
 
 #include <algorithm>
 #include <atomic>
@@ -69,6 +70,9 @@ struct GpuBroadphaseBox {
     Transform local_pose{};
     ShapeId next_shape=std::numeric_limits<ShapeId>::max();
     std::uint32_t geometry_kind=0;
+    std::uint32_t convex_vertex_offset=0;
+    std::uint32_t convex_vertex_count=0;
+    float convex_margin_half_extent=0.f;
 };
 
 // Source PxgCudaBroadPhaseSap::fetchBroadPhaseResults produces the two
@@ -266,9 +270,22 @@ static_assert(sizeof(GpuDyContactPrepPair)==248u &&
               offsetof(GpuDyContactPrepPair,max_contact_impulse)==240u &&
               offsetof(GpuDyContactPrepPair,cpu_gu_offset)==244u);
 
+struct GpuConvexFaceSpan {
+    std::uint32_t first_face=0;
+    std::uint32_t face_count=0;
+};
+
 class GpuBroadphaseProducer {
 public:
     virtual ~GpuBroadphaseProducer()=default;
+    virtual void upload_convex_vertices(std::span<const Vec3>) {
+        throw std::logic_error("GPU geometry owner cannot accept convex meshes");
+    }
+    virtual void upload_convex_geometry(
+        std::span<const Vec3>,std::span<const GpuConvexFaceSpan>,
+        std::span<const ConvexFace>,std::span<const std::uint32_t>) {
+        throw std::logic_error("GPU geometry owner cannot accept convex faces");
+    }
     virtual GpuBroadphaseReports advance(
         std::span<const GpuBroadphaseBox> live_boxes,
         bool force_update,bool geometry_dirty)=0;
@@ -439,8 +456,16 @@ struct PcmContactCandidate {
     float separation=0.0f;
 };
 struct PcmGjkWarmstart {
-    std::array<std::uint8_t,4> a{},b{};
+    std::array<std::uint32_t,4> a{},b{};
     std::uint8_t count=0;
+};
+struct PcmFiniteShape {
+    Vec3 half_extents{},position{};
+    Quat orientation{};
+    float sphere_radius=0.f;
+    std::span<const Vec3> hull_vertices{};
+    std::span<const ConvexFace> hull_faces{};
+    std::span<const std::uint32_t> hull_face_indices{};
 };
 std::array<std::uint8_t,4> source_pcm_box_batch_selection(
     std::span<const PcmContactCandidate> contacts,float tolerance_length);
@@ -458,6 +483,22 @@ bool source_pcm_box_box_gjk_epa(
     Vec3 half1,Vec3 position1,Quat rotation1,
     float contact_distance,PcmContactCandidate& contact,
     PcmGjkWarmstart* warmstart=nullptr);
+
+// Finite convex contacts share Gu's simplex, EPA facets, and PCM witnesses.
+// A sphere contributes its analytical radius after the polyhedral closest
+// features are found; cooked hulls use their exact extreme vertices.
+bool source_pcm_convex_gjk_epa(
+    const PcmFiniteShape& first,const PcmFiniteShape& second,
+    float contact_distance,PcmContactCandidate& contact,
+    PcmGjkWarmstart* warmstart=nullptr);
+
+// Construct clipped finite-face witnesses from cooked polygon topology.
+// Uses the GJK/EPA witness for feature selection; edges and spheres retain
+// that witness rather than fabricating a planar contact manifold.
+std::uint8_t source_pcm_convex_face_contacts(
+    const PcmFiniteShape& first,const PcmFiniteShape& second,
+    float contact_distance,const PcmContactCandidate& witness,
+    std::span<PcmContactCandidate> output);
 
 class Scene final {
 public:
@@ -528,6 +569,8 @@ public:
     BodyId create_body(Transform pose,bool dynamic);
     ShapeId attach_box(BodyId body,Vec3 half_extents,Transform local_pose);
     ShapeId attach_sphere(BodyId body,float radius,Transform local_pose);
+    ShapeId attach_convex(BodyId body,
+        std::shared_ptr<const ConvexMesh> mesh,Transform local_pose);
     void detach_shape(ShapeId shape);
     void set_shape_local_pose(ShapeId shape,Transform pose);
     void set_attached_shape_material(ShapeId shape,Material material);
@@ -912,7 +955,7 @@ private:
     friend struct NativeSapTimingFixture;
     friend struct NativeThirdPassTimingFixture;
     enum class Motion : std::uint8_t { Static, Dynamic, Kinematic };
-    enum class Geometry : std::uint8_t { Box, Plane, Sphere };
+    enum class Geometry : std::uint8_t { Box, Plane, Sphere, Convex };
     // Node::NodeType is independent of actor kind. Kinematics retain
     // rigid node identity but no island assignment. Other node classes
     // require their own non-rigid simulation owners, not rigid Actor
@@ -1002,6 +1045,9 @@ private:
         bool simulation_shape_enabled=true;
         Vec3 half_extents{};
         float radius=0.0f;
+        std::shared_ptr<const ConvexMesh> convex;
+        std::uint32_t convex_vertex_offset=0;
+        std::uint32_t convex_vertex_count=0;
         Transform local_pose{};
         Vec3 position{};
         Quat orientation{};
@@ -1235,6 +1281,13 @@ private:
 
     std::vector<Actor> actors_;
     std::vector<Shape> shapes_;
+    std::vector<Vec3> convex_vertices_;
+    // The span table is indexed by the first vertex of each cooked resource;
+    // other entries remain empty. Faces and boundary indices are immutable.
+    std::vector<GpuConvexFaceSpan> convex_face_spans_;
+    std::vector<ConvexFace> convex_faces_;
+    std::vector<std::uint32_t> convex_face_indices_;
+    std::size_t uploaded_convex_vertex_count_=0;
     std::size_t rigid_shape_count_=0;
     using EdgeIndex=std::uint32_t;
     static constexpr EdgeIndex invalid_edge=std::numeric_limits<EdgeIndex>::max();
@@ -1263,6 +1316,8 @@ private:
         std::uint8_t count=0;
         bool initialized=false;
     };
+    std::vector<PcmPersistentContact> pcm_plane_candidates_;
+    std::vector<std::uint8_t> pcm_plane_chosen_;
     static void refresh_pcm_contact_points(
         PcmManifoldCache& cache, Vec3 position_a_in_b,
         Quat rotation_a_in_b, float projection_break);
@@ -1278,6 +1333,9 @@ private:
     std::uint8_t generate_pcm_box_box(
         const Shape& first, const Shape& second, float contact_distance,
         PcmManifoldCache& cache, std::span<ContactPoint> output);
+    std::uint8_t generate_pcm_convex_pair(
+        const Shape& first,const Shape& second,float contact_distance,
+        PcmManifoldCache& cache,std::span<ContactPoint> output);
     static std::uint8_t publish_gpu_pcm_box_box(
         const GpuPcmBoxResult& gpu,PcmManifoldCache& cache,
         std::span<ContactPoint> output);

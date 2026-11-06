@@ -3,6 +3,37 @@
 
 if(FYZZXYZZY_BUILD_VULKAN)
   find_package(Vulkan REQUIRED)
+
+  # The Vulkan SDK DXC emits SPIR-V; another DXC in PATH may not.
+  function(fyzzxyzzy_require_spirv_dxc)
+    find_program(FYZZXYZZY_SPIRV_DXC NAMES dxc
+      HINTS "$ENV{VULKAN_SDK}/Bin" REQUIRED)
+    set(_probe_source "${CMAKE_CURRENT_BINARY_DIR}/fyzzxyzzy-spirv-compiler-check.hlsl")
+    set(_probe_binary "${CMAKE_CURRENT_BINARY_DIR}/fyzzxyzzy-spirv-compiler-check.spv")
+    file(WRITE "${_probe_source}"
+      "RWByteAddressBuffer result : register(u0);\n"
+      "[numthreads(1,1,1)] void main(uint3 tid : SV_DispatchThreadID) { result.Store(0, tid.x); }\n")
+    execute_process(
+      COMMAND "${FYZZXYZZY_SPIRV_DXC}" -spirv -fspv-target-env=vulkan1.1
+        -T cs_6_0 -E main -Fo "${_probe_binary}" "${_probe_source}"
+      RESULT_VARIABLE _probe_result
+      OUTPUT_VARIABLE _probe_stdout
+      ERROR_VARIABLE _probe_stderr)
+    if(NOT _probe_result STREQUAL "0" OR NOT EXISTS "${_probe_binary}")
+      message(FATAL_ERROR
+        "Vulkan shaders require a DXC compiler with SPIR-V support. "
+        "Selected: ${FYZZXYZZY_SPIRV_DXC}. "
+        "Set FYZZXYZZY_SPIRV_DXC to the Vulkan SDK compiler "
+        "(typically $ENV{VULKAN_SDK}/Bin/dxc.exe).\n"
+        "${_probe_stdout}\n${_probe_stderr}")
+    endif()
+    file(READ "${_probe_binary}" _probe_magic LIMIT 4 HEX)
+    if(NOT _probe_magic STREQUAL "03022307")
+      message(FATAL_ERROR
+        "The selected DXC did not emit SPIR-V: ${FYZZXYZZY_SPIRV_DXC}")
+    endif()
+  endfunction()
+
   add_library(fyzzxyzzy_compute STATIC src/compute_vulkan.cpp)
   add_library(FyzzXYZZY::Compute ALIAS fyzzxyzzy_compute)
   target_compile_features(fyzzxyzzy_compute PUBLIC cxx_std_23)
@@ -35,7 +66,7 @@ if(FYZZXYZZY_BUILD_VULKAN)
 
   if(BUILD_TESTING AND NOT FYZZXYZZY_ENABLE_PHYSX_SOURCE
      AND FYZZXYZZY_BUILD_SOURCE_GPU_TESTS)
-    find_program(FYZZXYZZY_DXC NAMES dxc REQUIRED)
+    fyzzxyzzy_require_spirv_dxc()
       # Verify a physically fixed 32-lane subgroup through actual shader execution.
       set(FYZZXYZZY_WAVE32_SPV
         "${CMAKE_CURRENT_BINARY_DIR}/kernels/native_wave32_contract.spv")
@@ -453,8 +484,41 @@ if(FYZZXYZZY_BUILD_VULKAN)
     fyzzxyzzy_compile_hlsl("${FYZZXYZZY_SOURCE_PCM_EPA_WORK_SPV_COMPACT}"
       "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_pcm_epa_work_native.hlsl"
       cs_6_0 compact)
+    set(FYZZXYZZY_SOURCE_PCM_EPA_ARGS_RESET_SPV
+      "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_source_pcm_epa_args_reset_native.spv")
+    fyzzxyzzy_compile_hlsl("${FYZZXYZZY_SOURCE_PCM_EPA_ARGS_RESET_SPV}"
+      "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_pcm_epa_work_native.hlsl"
+      cs_6_0 reset)
     add_custom_target(fyzzxyzzy_source_pcm_epa_work_shader
-      DEPENDS "${FYZZXYZZY_SOURCE_PCM_EPA_WORK_SPV_COMPACT}")
+      DEPENDS "${FYZZXYZZY_SOURCE_PCM_EPA_WORK_SPV_COMPACT}"
+        "${FYZZXYZZY_SOURCE_PCM_EPA_ARGS_RESET_SPV}")
+    set(FYZZXYZZY_SOURCE_PCM_GJK_SPV
+      "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_source_pcm_box_gjk_native.spv")
+    fyzzxyzzy_compile_hlsl("${FYZZXYZZY_SOURCE_PCM_GJK_SPV}"
+      "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_pcm_box_gjk_native.hlsl" cs_6_0 main
+      DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_pcm_box_math_native.hlsli"
+        "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_pcm_box_gjk_native.hlsli"
+        "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_pcm_sc_contact_publish_native.hlsli")
+    set(FYZZXYZZY_SOURCE_PCM_GJK_REDUCE_SPV
+      "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_source_pcm_gjk_reduce_native.spv")
+    fyzzxyzzy_compile_hlsl("${FYZZXYZZY_SOURCE_PCM_GJK_REDUCE_SPV}"
+      "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_pcm_gjk_reduce_native.hlsl" cs_6_0 main
+      DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_pcm_box_math_native.hlsli"
+        "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_pcm_box_gjk_native.hlsli"
+        "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_pcm_gjk_state_native.hlsli")
+    set(FYZZXYZZY_SOURCE_PCM_GJK_PUBLISH_SPV
+      "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_source_pcm_gjk_publish_native.spv")
+    fyzzxyzzy_compile_hlsl("${FYZZXYZZY_SOURCE_PCM_GJK_PUBLISH_SPV}"
+      "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_pcm_box_gjk_native.hlsl" cs_6_0 main
+      FLAGS -DFYZZXYZZY_GJK_STAGED_ADVANCE=1 -DFYZZXYZZY_GJK_STAGED_PUBLISH=1
+      DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_pcm_box_math_native.hlsli"
+        "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_pcm_box_gjk_native.hlsli"
+        "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_pcm_gjk_state_native.hlsli"
+        "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_pcm_sc_contact_publish_native.hlsli")
+    add_custom_target(fyzzxyzzy_source_pcm_gjk_shader
+      DEPENDS "${FYZZXYZZY_SOURCE_PCM_GJK_SPV}"
+        "${FYZZXYZZY_SOURCE_PCM_GJK_REDUCE_SPV}"
+        "${FYZZXYZZY_SOURCE_PCM_GJK_PUBLISH_SPV}")
     set(FYZZXYZZY_SOURCE_PCM_EPA_SPV
       "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_source_pcm_box_epa_native.spv")
     fyzzxyzzy_compile_hlsl("${FYZZXYZZY_SOURCE_PCM_EPA_SPV}" "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_pcm_box_epa_native.hlsl" cs_6_0 main
@@ -464,18 +528,36 @@ if(FYZZXYZZY_BUILD_VULKAN)
         "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_pcm_sc_contact_publish_native.hlsli")
     add_custom_target(fyzzxyzzy_source_pcm_epa_shader
       DEPENDS "${FYZZXYZZY_SOURCE_PCM_EPA_SPV}")
+    set(FYZZXYZZY_SOURCE_PCM_FACE_SPV
+      "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_source_pcm_convex_contacts_native.spv")
+    fyzzxyzzy_compile_hlsl("${FYZZXYZZY_SOURCE_PCM_FACE_SPV}"
+      "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_pcm_convex_contacts_native.hlsl" cs_6_0 main
+      DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_pcm_box_math_native.hlsli"
+        "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_pcm_box_gjk_native.hlsli"
+        "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_pcm_convex_face_native.hlsli"
+        "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_pcm_sc_contact_publish_native.hlsli")
+    add_custom_target(fyzzxyzzy_source_pcm_convex_contacts_shader
+      DEPENDS "${FYZZXYZZY_SOURCE_PCM_FACE_SPV}")
     set(FYZZXYZZY_SOURCE_DY_DISTANCE_SPV
       "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_source_dy_distance_pgs_native.spv")
     fyzzxyzzy_compile_hlsl("${FYZZXYZZY_SOURCE_DY_DISTANCE_SPV}" "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_dy_distance_pgs_native.hlsl" cs_6_6 main
       DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_dy_contact_pgs_native.hlsli")
     add_custom_target(fyzzxyzzy_source_dy_distance_shader
       DEPENDS "${FYZZXYZZY_SOURCE_DY_DISTANCE_SPV}")
+    set(FYZZXYZZY_SOURCE_DY_CONVEX_SPV
+      "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_source_dy_convex_native.spv")
+    fyzzxyzzy_compile_hlsl("${FYZZXYZZY_SOURCE_DY_CONVEX_SPV}"
+      "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_dy_distance_pgs_native.hlsl" cs_6_6 main
+      FLAGS -DFYZZXYZZY_CONVEX=1
+      DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_dy_contact_pgs_native.hlsli")
+    add_custom_target(fyzzxyzzy_source_dy_convex_shader
+      DEPENDS "${FYZZXYZZY_SOURCE_DY_CONVEX_SPV}")
     fyzzxyzzy_add_gpu_test(fyzzxyzzy_source_pcm_box_candidates
       SOURCES tests/physx_gpu_source_pcm_box_candidates_native.cpp src/native/GuPCMContactBoxBox.cpp src/native/GuPCMGjkEpa.cpp
       INCLUDES "${CMAKE_CURRENT_SOURCE_DIR}/src"
       LIBRARIES FyzzXYZZY::Compute fyzzxyzzy_source_gpu_primitives
-      DEPENDS fyzzxyzzy_source_sc_box_bounds_shader fyzzxyzzy_source_pcm_box_candidates_shader fyzzxyzzy_source_pcm_epa_work_shader fyzzxyzzy_source_pcm_epa_shader
-      ARGS "${FYZZXYZZY_SC_BOX_BOUNDS_SPV}" "${FYZZXYZZY_SOURCE_PCM_BOX_SPV}" "${FYZZXYZZY_SOURCE_PCM_EPA_WORK_SPV_COMPACT}" "${FYZZXYZZY_SOURCE_PCM_EPA_SPV}")
+      DEPENDS fyzzxyzzy_source_sc_box_bounds_shader fyzzxyzzy_source_pcm_box_candidates_shader fyzzxyzzy_source_pcm_epa_work_shader fyzzxyzzy_source_pcm_gjk_shader fyzzxyzzy_source_pcm_epa_shader
+      ARGS "${FYZZXYZZY_SC_BOX_BOUNDS_SPV}" "${FYZZXYZZY_SOURCE_PCM_BOX_SPV}" "${FYZZXYZZY_SOURCE_PCM_EPA_WORK_SPV_COMPACT}" "${FYZZXYZZY_SOURCE_PCM_GJK_SPV}" "${FYZZXYZZY_SOURCE_PCM_EPA_SPV}" "${FYZZXYZZY_SOURCE_PCM_GJK_REDUCE_SPV}" "${FYZZXYZZY_SOURCE_PCM_GJK_PUBLISH_SPV}" "${FYZZXYZZY_SOURCE_PCM_EPA_ARGS_RESET_SPV}")
 
 
     # Source aggregate.cu::updateAggregateBounds, original 32-lane
@@ -554,10 +636,10 @@ if(FYZZXYZZY_BUILD_VULKAN)
       "${FYZZXYZZY_SOURCE_AGG_PAIR_ADMIT_SPV}"
       "${FYZZXYZZY_SOURCE_AGG_PAIR_PUBLISH_SPV}"
       COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/kernels"
-      COMMAND "${FYZZXYZZY_DXC}" -spirv -fspv-target-env=vulkan1.1 -T cs_6_0 -E admit
+      COMMAND "${FYZZXYZZY_SPIRV_DXC}" -spirv -fspv-target-env=vulkan1.1 -T cs_6_0 -E admit
         -Fo "${FYZZXYZZY_SOURCE_AGG_PAIR_ADMIT_SPV}"
         "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_aggregate_pair_admission_native.hlsl"
-      COMMAND "${FYZZXYZZY_DXC}" -spirv -fspv-target-env=vulkan1.1 -T cs_6_0 -E publish
+      COMMAND "${FYZZXYZZY_SPIRV_DXC}" -spirv -fspv-target-env=vulkan1.1 -T cs_6_0 -E publish
         -Fo "${FYZZXYZZY_SOURCE_AGG_PAIR_PUBLISH_SPV}"
         "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_aggregate_pair_admission_native.hlsl"
       DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_aggregate_pair_admission_native.hlsl"
@@ -584,13 +666,13 @@ if(FYZZXYZZY_BUILD_VULKAN)
       "${FYZZXYZZY_SOURCE_AGG_PAIR_RETIRE_SPV_MARK}"
       "${FYZZXYZZY_SOURCE_AGG_PAIR_RETIRE_SPV_PUBLISH}"
       COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/kernels"
-      COMMAND "${FYZZXYZZY_DXC}" -spirv -fspv-target-env=vulkan1.1 -T cs_6_0 -E histogram
+      COMMAND "${FYZZXYZZY_SPIRV_DXC}" -spirv -fspv-target-env=vulkan1.1 -T cs_6_0 -E histogram
         -Fo "${FYZZXYZZY_SOURCE_AGG_PAIR_RETIRE_SPV_COUNT}"
         "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_aggregate_pair_retirement_native.hlsl"
-      COMMAND "${FYZZXYZZY_DXC}" -spirv -fspv-target-env=vulkan1.1 -T cs_6_0 -E mark
+      COMMAND "${FYZZXYZZY_SPIRV_DXC}" -spirv -fspv-target-env=vulkan1.1 -T cs_6_0 -E mark
         -Fo "${FYZZXYZZY_SOURCE_AGG_PAIR_RETIRE_SPV_MARK}"
         "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_aggregate_pair_retirement_native.hlsl"
-      COMMAND "${FYZZXYZZY_DXC}" -spirv -fspv-target-env=vulkan1.1 -T cs_6_0 -E publish
+      COMMAND "${FYZZXYZZY_SPIRV_DXC}" -spirv -fspv-target-env=vulkan1.1 -T cs_6_0 -E publish
         -Fo "${FYZZXYZZY_SOURCE_AGG_PAIR_RETIRE_SPV_PUBLISH}"
         "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_aggregate_pair_retirement_native.hlsl"
       DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_aggregate_pair_retirement_native.hlsl"
@@ -775,10 +857,16 @@ if(FYZZXYZZY_BUILD_VULKAN)
     set(_pcm_binaries
       "${FYZZXYZZY_SOURCE_PCM_BOX_SPV}"
       "${FYZZXYZZY_SOURCE_PCM_EPA_WORK_SPV_COMPACT}"
-      "${FYZZXYZZY_SOURCE_PCM_EPA_SPV}")
-    set(_pcm_stages Candidates EpaCompact EpaContact)
+      "${FYZZXYZZY_SOURCE_PCM_GJK_SPV}"
+      "${FYZZXYZZY_SOURCE_PCM_EPA_SPV}"
+      "${FYZZXYZZY_SOURCE_PCM_FACE_SPV}"
+      "${FYZZXYZZY_SOURCE_PCM_GJK_REDUCE_SPV}"
+      "${FYZZXYZZY_SOURCE_PCM_GJK_PUBLISH_SPV}"
+      "${FYZZXYZZY_SOURCE_PCM_EPA_ARGS_RESET_SPV}"
+      "${FYZZXYZZY_SOURCE_PCM_GJK_SPV}")
+    set(_pcm_stages Candidates EpaCompact GjkContact EpaContact FaceContacts GjkReduce GjkPublish EpaArgsReset GjkPrimitive)
     set(_pcm_manifest "FYZZXYZZY_SOURCE_PCM_1 SPIRV\n")
-    foreach(_idx RANGE 0 2)
+    foreach(_idx RANGE 0 8)
       list(GET _pcm_stages ${_idx} _stage)
       list(GET _pcm_binaries ${_idx} _binary)
       get_filename_component(_name "${_binary}" NAME)
@@ -793,8 +881,8 @@ if(FYZZXYZZY_BUILD_VULKAN)
       SOURCES tests/physx_gpu_source_sc_pcm_scene_native.cpp
       INCLUDES "${CMAKE_CURRENT_SOURCE_DIR}/src" "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_port"
       LIBRARIES FyzzXYZZY::NativeGpuWorld
-      DEPENDS fyzzxyzzy_native_gpu_sap_shaders fyzzxyzzy_native_gpu_pcm_shaders fyzzxyzzy_source_dy_distance_shader
-      ARGS "${CMAKE_CURRENT_BINARY_DIR}/kernels/fyzzxyzzy_native_sap_spirv.manifest" "${CMAKE_CURRENT_BINARY_DIR}/kernels/fyzzxyzzy_native_pcm_spv.manifest" "${FYZZXYZZY_SOURCE_DY_DISTANCE_SPV}")
+      DEPENDS fyzzxyzzy_native_gpu_sap_shaders fyzzxyzzy_native_gpu_pcm_shaders fyzzxyzzy_source_dy_distance_shader fyzzxyzzy_source_dy_convex_shader
+      ARGS "${CMAKE_CURRENT_BINARY_DIR}/kernels/fyzzxyzzy_native_sap_spirv.manifest" "${CMAKE_CURRENT_BINARY_DIR}/kernels/fyzzxyzzy_native_pcm_spv.manifest" "${FYZZXYZZY_SOURCE_DY_DISTANCE_SPV}" "${FYZZXYZZY_SOURCE_DY_CONVEX_SPV}")
     
     add_test(NAME fyzzxyzzy_owned_sap_gpu_aabb_scene_lifecycle
       COMMAND fyzzxyzzy_owned_sap_gpu_aabb_scene_lifecycle
@@ -862,7 +950,7 @@ if(FYZZXYZZY_BUILD_VULKAN)
     option(FYZZXYZZY_BUILD_PHYSX_GPU_AABB_TEST
       "Enable PhysX GPU AABB HLSL/SPIR-V acceptance test (requires DXC)" OFF)
     if(FYZZXYZZY_BUILD_PHYSX_GPU_AABB_TEST OR FYZZXYZZY_BUILD_SOURCE_GPU_TESTS)
-      find_program(FYZZXYZZY_DXC NAMES dxc REQUIRED)
+      fyzzxyzzy_require_spirv_dxc()
       # Verify a physically fixed 32-lane subgroup through actual shader execution.
       set(FYZZXYZZY_WAVE32_SPV
         "${CMAKE_CURRENT_BINARY_DIR}/kernels/native_wave32_contract.spv")
@@ -878,7 +966,7 @@ if(FYZZXYZZY_BUILD_VULKAN)
     if(FYZZXYZZY_BUILD_PHYSX_GPU_AABB_TEST)
       # PhysX broadphase.cu::translateAABBsLaunch is compiled from one HLSL
       # source for Vulkan SPIR-V and (in Windows CI) D3D12 DXIL.
-      find_program(FYZZXYZZY_DXC NAMES dxc REQUIRED)
+      fyzzxyzzy_require_spirv_dxc()
       set(FYZZXYZZY_MULTI_RESOURCE_SPV
         "${CMAKE_CURRENT_BINARY_DIR}/kernels/native_multi_resource_bindings.spv")
       fyzzxyzzy_compile_hlsl("${FYZZXYZZY_MULTI_RESOURCE_SPV}" "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/native_multi_resource_bindings.hlsl" cs_6_0 main)

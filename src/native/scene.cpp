@@ -280,6 +280,69 @@ ShapeId Scene::attach_sphere(BodyId body,float radius,Transform pose) {
     shape.local_pose=pose;
     return attach(body,shape);
 }
+ShapeId Scene::attach_convex(
+    BodyId body,std::shared_ptr<const ConvexMesh> mesh,Transform pose) {
+    if(!mesh || mesh->vertices().empty())
+        throw std::invalid_argument("Cooked convex geometry is missing");
+    // A cooked mesh is immutable. Attached instances of the same mesh
+    // share its one stable resident vertex span across their lifetimes.
+    const auto reused=std::find_if(shapes_.begin(),shapes_.end(),
+        [&](const Shape& prior) {
+            return prior.geometry==Geometry::Convex &&
+                   prior.convex.get()==mesh.get();
+        });
+    const bool existing=reused!=shapes_.end();
+    if(!existing && convex_vertices_.size()>
+       std::numeric_limits<std::uint32_t>::max()-mesh->vertices().size())
+        throw std::overflow_error("Convex vertex arena exceeds 32-bit device indexing");
+    const auto lower=mesh->bounds_min(),upper=mesh->bounds_max();
+    Shape shape;
+    shape.geometry=Geometry::Convex;
+    shape.convex=std::move(mesh);
+    shape.half_extents={
+        std::max(std::abs(lower.x),std::abs(upper.x)),
+        std::max(std::abs(lower.y),std::abs(upper.y)),
+        std::max(std::abs(lower.z),std::abs(upper.z))};
+    shape.convex_vertex_offset=existing
+        ?reused->convex_vertex_offset
+        :static_cast<std::uint32_t>(convex_vertices_.size());
+    shape.convex_vertex_count=static_cast<std::uint32_t>(
+        shape.convex->vertices().size());
+    shape.local_pose=pose;
+    const auto previous=convex_vertices_.size();
+    const auto previous_faces=convex_faces_.size();
+    const auto previous_indices=convex_face_indices_.size();
+    if(!existing &&
+       (shape.convex->faces().size()>
+            std::numeric_limits<std::uint32_t>::max()-previous_faces ||
+        shape.convex->face_indices().size()>
+            std::numeric_limits<std::uint32_t>::max()-previous_indices))
+        throw std::overflow_error("Convex face resource exceeds device indexing");
+    try {
+        if(!existing) {
+            convex_vertices_.insert(convex_vertices_.end(),
+                shape.convex->vertices().begin(),shape.convex->vertices().end());
+            convex_face_spans_.resize(convex_vertices_.size());
+            convex_face_spans_[previous]={
+                static_cast<std::uint32_t>(previous_faces),
+                static_cast<std::uint32_t>(shape.convex->faces().size())};
+            convex_face_indices_.insert(convex_face_indices_.end(),
+                shape.convex->face_indices().begin(),
+                shape.convex->face_indices().end());
+            for(auto face:shape.convex->faces()) {
+                face.first_index+=static_cast<std::uint32_t>(previous_indices);
+                convex_faces_.push_back(face);
+            }
+        }
+        return attach(body,std::move(shape));
+    }catch(...) {
+        convex_vertices_.resize(previous);
+        convex_face_spans_.resize(previous);
+        convex_faces_.resize(previous_faces);
+        convex_face_indices_.resize(previous_indices);
+        throw;
+    }
+}
 Scene::Shape& Scene::require_shape(ShapeId id) {
     if(id>=shapes_.size() || !shapes_[id].alive)
         throw std::out_of_range("Unknown or retired native shape ID");
@@ -1169,8 +1232,8 @@ BodyState Scene::body_state(BodyId id) const {
 }
 void Scene::update_shape_bounds(Shape& actor) {
     refresh_shape_pose(actor);
-    // GuBounds::computeBounds(eBOX) followed by Sc cached-shape
-    // publication. Construct every encoded endpoint before committing.
+    // GuBounds::computeBounds followed by Sc cached-shape publication.
+    // Construct every encoded endpoint before committing.
         const Vec3 p = actor.position, h = actor.half_extents;
         // Source: GuBounds.cpp::computeBounds(eBOX), basisExtentV.
         // The world AABB of a rotated box is the sum of absolute
@@ -1191,6 +1254,48 @@ void Scene::update_shape_bounds(Shape& actor) {
                 std::abs(x.y)*h.x + std::abs(y.y)*h.y + std::abs(z.y)*h.z,
                 std::abs(x.z)*h.x + std::abs(y.z)*h.y + std::abs(z.z)*h.z
             };
+        }
+        if(actor.geometry==Geometry::Convex) {
+            Vec3 lower{
+                std::numeric_limits<float>::infinity(),
+                std::numeric_limits<float>::infinity(),
+                std::numeric_limits<float>::infinity()};
+            Vec3 upper{-lower.x,-lower.y,-lower.z};
+            for(const Vec3 v:actor.convex->vertices()) {
+                const Vec3 rotated=rotate(q,v);
+                lower.x=std::min(lower.x,rotated.x);
+                lower.y=std::min(lower.y,rotated.y);
+                lower.z=std::min(lower.z,rotated.z);
+                upper.x=std::max(upper.x,rotated.x);
+                upper.y=std::max(upper.y,rotated.y);
+                upper.z=std::max(upper.z,rotated.z);
+            }
+            const Vec3 center{
+                (upper.x+lower.x)*0.5f,
+                (upper.y+lower.y)*0.5f,
+                (upper.z+lower.z)*0.5f};
+            extent={(upper.x-lower.x)*0.5f,(upper.y-lower.y)*0.5f,
+                    (upper.z-lower.z)*0.5f};
+            // Asymmetric hull bounds are centered away from the
+            // authoring origin; adjust the six source endpoints below.
+            const Vec3 offset{center.x,center.y,center.z};
+            const Vec3 added{extent.x+actor.contact_offset,
+                             extent.y+actor.contact_offset,
+                             extent.z+actor.contact_offset};
+            const std::array<float,6> bounds{
+                p.x+offset.x-added.x,p.y+offset.y-added.y,p.z+offset.z-added.z,
+                p.x+offset.x+added.x,p.y+offset.y+added.y,p.z+offset.z+added.z};
+            std::array<std::uint32_t,6> encoded{};
+            for(const float v:bounds)
+                if(!std::isfinite(v))
+                    throw std::overflow_error("Convex scene AABB is not finite");
+            for(unsigned axis=0;axis<3u;++axis) {
+                encoded[axis]=encode_min(bounds[axis]);
+                encoded[axis+3u]=encode_max(bounds[axis+3u]);
+            }
+            actor.encoded_bounds=encoded;
+            actor.cached_bounds_current=true;
+            return;
         }
         extent.x += actor.contact_offset;
         extent.y += actor.contact_offset;
@@ -1429,7 +1534,7 @@ void Scene::update_bounds() {
                 const std::size_t n=endpoints.size();
                 sap_endpoint_updated_.resize(n);
                 std::fill(sap_endpoint_updated_.begin(),
-                          sap_endpoint_updated_.end(),0);
+                          sap_endpoint_updated_.end(),std::uint8_t{0});
                 sap_merge_changed_.clear();
                 sap_merge_changed_.reserve(updated_count*2);
                 for(std::size_t j=0;j<updated_count;++j) {
@@ -1487,7 +1592,7 @@ void Scene::update_bounds() {
             const std::size_t volume_count=sap_volumes_.size();
             sap_merge_updated_flags_.resize(volume_count);
             std::fill(sap_merge_updated_flags_.begin(),
-                      sap_merge_updated_flags_.end(),0);
+                      sap_merge_updated_flags_.end(),std::uint8_t{0});
             for(const std::uint32_t slot:
                 broadphase_updated_volume_slots_)
                 sap_merge_updated_flags_[slot]=1;
@@ -1609,7 +1714,7 @@ void Scene::update_bounds() {
                 all_axes_stable=false;
                 sap_endpoint_updated_.resize(n);
                 std::fill(sap_endpoint_updated_.begin(),
-                          sap_endpoint_updated_.end(),0);
+                          sap_endpoint_updated_.end(),std::uint8_t{0});
                 for(std::size_t updated=0;
                     updated<broadphase_updated_volume_slots_.size();++updated) {
                     if(!(broadphase_updated_axis_masks_[updated]&axis_bit))
@@ -2209,13 +2314,29 @@ void Scene::update_gpu_pairs(bool force_update) {
                 : actor.half_extents;
             const Quat basis=actor.geometry==Geometry::Sphere
                 ? Quat{}:actor.orientation;
+            float convex_margin_extent=0.f;
+            if(actor.geometry==Geometry::Convex) {
+                const Vec3 lower=actor.convex->bounds_min();
+                const Vec3 upper=actor.convex->bounds_max();
+                convex_margin_extent=0.5f*std::min({
+                    upper.x-lower.x,upper.y-lower.y,upper.z-lower.z});
+            }
             gpu_broadphase_boxes_.push_back({
                 id,actor.position,extents,basis,
                 actor.contact_offset,motion,actor.local_pose,actor.next_simulation_shape,
-                actor.geometry==Geometry::Sphere?1u:0u});
+                actor.geometry==Geometry::Sphere?1u:
+                (actor.geometry==Geometry::Convex?2u:0u),
+                actor.convex_vertex_offset,actor.convex_vertex_count,
+                convex_margin_extent});
         }
         gpu_broadphase_snapshot_current_=true;
         ++gpu_broadphase_snapshot_rebuilds_;
+    }
+    if(uploaded_convex_vertex_count_!=convex_vertices_.size()) {
+        gpu_broadphase_->upload_convex_geometry(
+            convex_vertices_,convex_face_spans_,convex_faces_,
+            convex_face_indices_);
+        uploaded_convex_vertex_count_=convex_vertices_.size();
     }
     const auto reports=gpu_broadphase_->advance(
         gpu_broadphase_boxes_,force_update,dirty_);
@@ -3531,6 +3652,125 @@ std::uint8_t Scene::generate_pcm_box_box(
     }
     return emitted;
 }
+std::uint8_t Scene::generate_pcm_convex_pair(
+    const Shape& first,const Shape& second,float contact_distance,
+    PcmManifoldCache& cache,std::span<ContactPoint> output) {
+    // Cooked hulls participate in the same Sc EdgeIndex PCM lifetime,
+    // manifold refresh and Dy contact stream as other finite shapes.
+    const Vec3 delta{first.position.x-second.position.x,
+                     first.position.y-second.position.y,
+                     first.position.z-second.position.z};
+    const Vec3 relative=rotate_inverse(second.orientation,delta);
+    const Quat inverse_b{-second.orientation.x,-second.orientation.y,
+                         -second.orientation.z,second.orientation.w};
+    const Quat rotation=multiply(inverse_b,first.orientation);
+    const auto margin=[](const Shape& shape) {
+        const float extent=shape.geometry==Geometry::Sphere
+            ? shape.radius
+            : shape.geometry==Geometry::Convex
+                ? [&] {
+                    const Vec3 lower=shape.convex->bounds_min();
+                    const Vec3 upper=shape.convex->bounds_max();
+                    return 0.5f*std::min({upper.x-lower.x,
+                                          upper.y-lower.y,upper.z-lower.z});
+                  }()
+                :std::min({shape.half_extents.x,
+                            shape.half_extents.y,shape.half_extents.z});
+        return std::min(0.15f*extent,0.15f);
+    };
+    const float min_margin=std::min(margin(first),margin(second));
+    const auto previous_count=cache.count;
+    refresh_pcm_contact_points(cache,relative,rotation,min_margin*0.8f);
+    const float translation=cache.initialized
+        ?std::max({std::abs(relative.x-cache.relative_position.x),
+                   std::abs(relative.y-cache.relative_position.y),
+                   std::abs(relative.z-cache.relative_position.z)})
+        :std::numeric_limits<float>::infinity();
+    const auto quaternion_dot=[](Quat a,Quat b) {
+        return a.x*b.x+a.y*b.y+a.z*b.z+a.w*b.w;
+    };
+    const float qa=quaternion_dot(first.orientation,cache.orientation_a);
+    const float qb=quaternion_dot(second.orientation,cache.orientation_b);
+    const float threshold=min_margin*(cache.count==0u?0.5f:0.125f);
+    bool regenerate=!cache.initialized || cache.count!=previous_count ||
+        translation>threshold || qa<0.9999f || qb<0.9999f;
+    if(!regenerate) {
+        const auto angular_travel=[](float q,Vec3 extents) {
+            return (q<1.f?std::acos(std::max(-1.f,q)):0.f)*
+                std::sqrt(extents.x*extents.x+
+                          extents.y*extents.y+extents.z*extents.z);
+        };
+        regenerate=angular_travel(qa,first.half_extents)>threshold ||
+                   angular_travel(qb,second.half_extents)>threshold;
+    }
+    if(regenerate) {
+        cache.relative_position=relative;
+        cache.relative_rotation=rotation;
+        cache.orientation_a=first.orientation;
+        cache.orientation_b=second.orientation;
+        cache.initialized=true;
+        const auto descriptor=[](const Shape& shape) {
+            PcmFiniteShape descriptor{};
+            descriptor.half_extents=shape.half_extents;
+            descriptor.position=shape.position;
+            descriptor.orientation=shape.orientation;
+            if(shape.geometry==Geometry::Sphere) {
+                descriptor.sphere_radius=shape.radius;
+                descriptor.half_extents={shape.radius,shape.radius,shape.radius};
+            }
+            if(shape.geometry==Geometry::Convex) {
+                descriptor.hull_vertices=shape.convex->vertices();
+                descriptor.hull_faces=shape.convex->faces();
+                descriptor.hull_face_indices=shape.convex->face_indices();
+                const Vec3 lower=shape.convex->bounds_min();
+                const Vec3 upper=shape.convex->bounds_max();
+                descriptor.half_extents={
+                    0.5f*(upper.x-lower.x),
+                    0.5f*(upper.y-lower.y),
+                    0.5f*(upper.z-lower.z)};
+            }
+            return descriptor;
+        };
+        const auto a=descriptor(first),b=descriptor(second);
+        PcmContactCandidate point{};
+        cache.count=0u;
+        if(source_pcm_convex_gjk_epa(a,b,contact_distance,
+                                    point,&cache.warmstart)) {
+            std::array<PcmContactCandidate,4> clipped{};
+            const auto count=source_pcm_convex_face_contacts(
+                a,b,contact_distance,point,clipped);
+            if(count) {
+                for(unsigned i=0u;i<count;++i)
+                    cache.points[i]={clipped[i].local_a,clipped[i].local_b,
+                                     clipped[i].normal_b,clipped[i].separation};
+                cache.count=count;
+            }else {
+                cache.points[0]={point.local_a,point.local_b,
+                                 point.normal_b,point.separation};
+                cache.count=1u;
+            }
+        }
+    }
+    if(!cache.count)return 0u;
+    std::uint8_t emitted=0u;
+    for(std::uint8_t i=0u;i<cache.count;++i) {
+        const auto& point=cache.points[i];
+        if(point.separation>contact_distance)continue;
+        const Vec3 normal=rotate(second.orientation,point.normal_b);
+        const Vec3 local=rotate(second.orientation,point.local_b);
+        const ContactPoint contact{{
+            second.position.x+local.x,
+            second.position.y+local.y,
+            second.position.z+local.z},normal,point.separation};
+        if(!finite(contact.position) || !finite(contact.normal) ||
+           !std::isfinite(contact.separation))
+            throw std::overflow_error("Cooked convex PCM contact invalid");
+        if(emitted>=output.size())
+            throw std::logic_error("Cooked convex Gu contact arena exhausted");
+        output[emitted++]=contact;
+    }
+    return emitted;
+}
 std::uint8_t Scene::generate_pcm_plane_box(
     const Shape& plane, const Shape& box, float contact_distance,
     PcmManifoldCache& cache, std::span<ContactPoint> output) {
@@ -3581,21 +3821,33 @@ std::uint8_t Scene::generate_pcm_plane_box(
         cache.relative_rotation=q;
         cache.initialized=true;
         cache.count=0;
-        std::array<PcmPersistentContact,8> candidates{};
-        std::size_t count=0;
-        for(unsigned corner=0;corner<8;++corner) {
-            const Vec3 local{
-                (corner&4)?-box.half_extents.x:box.half_extents.x,
-                (corner&2)?-box.half_extents.y:box.half_extents.y,
-                (corner&1)?-box.half_extents.z:box.half_extents.z};
+        // Convex plane contacts are actual cooked vertices, not corners
+        // of the shape's conservative local AABB. Reuse the scene-owned
+        // candidate arena across all Sc managers without per-pair malloc.
+        auto& candidates=pcm_plane_candidates_;
+        candidates.clear();
+        if(box.geometry==Geometry::Convex)
+            candidates.reserve(box.convex->vertices().size());
+        else candidates.reserve(8u);
+        const auto admit=[&](Vec3 local) {
             const Vec3 r=rotate(q,local);
             const Vec3 in_plane{relative.x+r.x,relative.y+r.y,
                                 relative.z+r.z};
-            if(in_plane.y>=contact_distance)continue;
-            candidates[count++]={local,
+            if(in_plane.y>=contact_distance)return;
+            candidates.push_back({local,
                 {in_plane.x,0.0f,in_plane.z}, {0.0f,1.0f,0.0f},
-                in_plane.y};
+                in_plane.y});
+        };
+        if(box.geometry==Geometry::Convex) {
+            for(const auto vertex:box.convex->vertices())admit(vertex);
+        }else {
+            for(unsigned corner=0;corner<8u;++corner)
+                admit({
+                    (corner&4u)?-box.half_extents.x:box.half_extents.x,
+                    (corner&2u)?-box.half_extents.y:box.half_extents.y,
+                    (corner&1u)?-box.half_extents.z:box.half_extents.z});
         }
+        const std::size_t count=candidates.size();
         if(count<=4) {
             for(std::size_t i=0;i<count;++i)
                 cache.points[i]=candidates[i];
@@ -3605,7 +3857,8 @@ std::uint8_t Scene::generate_pcm_plane_box(
             // reduceBatchContactsCluster (four-contact manifold). Keep
             // source deepest/farthest/segment-extrema ordering and then
             // cluster residual corners around those four witnesses.
-            std::array<bool,8> chosen{};
+            pcm_plane_chosen_.assign(count,0u);
+            auto& chosen=pcm_plane_chosen_;
             std::array<std::size_t,4> indices{};
             std::size_t first=0;
             for(std::size_t i=1;i<count;++i)
@@ -3723,7 +3976,7 @@ std::uint8_t Scene::publish_gpu_pcm_box_box(
             throw std::overflow_error("Source GPU PCM witness invalid");
         output[i]=contact;
     }
-    return gpu.count;
+    return static_cast<std::uint8_t>(gpu.count);
 }
 void Scene::update_contacts() {
     // Gu narrowphase consumes the sum of both PxShapeCore contact offsets.
@@ -3779,6 +4032,9 @@ void Scene::update_contacts() {
                 b.geometry==Geometry::Plane;
             const bool sphere=a.geometry==Geometry::Sphere ||
                 b.geometry==Geometry::Sphere;
+            const bool convex=a.geometry==Geometry::Convex ||
+                b.geometry==Geometry::Convex;
+            // Finite cooked convex pairs enter Gu GJK/EPA on the GPU.
             // The infinite plane has no GPU broadphase volume. Its
             // paired box already has a resident Sc ElementSim transform.
             if(plane && !pcm_plane_box_enabled_)continue;
@@ -3801,7 +4057,7 @@ void Scene::update_contacts() {
                 gpu_pcm_pairs_.push_back({
                     swapped?pair.b:pair.a,swapped?pair.a:pair.b,edge,
                     !island_edges_[edge].pcm_cache.initialized,
-                    sphere?1u:16u});
+                    convex?4u:(sphere?1u:16u)});
             }
         }
         gpu_pcm_results_.resize(gpu_pcm_pairs_.size());
@@ -3850,10 +4106,17 @@ void Scene::update_contacts() {
         const Shape& second=plane_pair
             ? (a.geometry==Geometry::Plane?b:a)
             : (reversed?a:b);
-        const bool pcm_sphere=a.geometry==Geometry::Sphere ||
-                              b.geometry==Geometry::Sphere;
+        const bool convex_pair=a.geometry==Geometry::Convex ||
+                               b.geometry==Geometry::Convex;
+        const bool pcm_sphere=!convex_pair &&
+            (a.geometry==Geometry::Sphere || b.geometry==Geometry::Sphere);
+        if(convex_pair &&
+           (plane_pair?!pcm_plane_box_enabled_:!pcm_box_box_enabled_))
+            throw std::logic_error(
+                "Cooked convex contacts require the source PCM generator");
         const bool pcm_plane=pcm_plane_box_enabled_ && plane_pair && !pcm_sphere;
-        const bool pcm_box=pcm_box_box_enabled_ && !plane_pair && !pcm_sphere;
+        const bool pcm_box=pcm_box_box_enabled_ && !plane_pair &&
+            (!pcm_sphere || convex_pair);
         const bool gpu_pcm_plane=source_gpu_pcm && plane_pair &&
             pcm_plane_box_enabled_;
         // Gu's PxcCacheLocalContacts pose and collision-axis record
@@ -3932,10 +4195,15 @@ void Scene::update_contacts() {
                     manifold.count=publish_gpu_pcm_box_box(
                         result,island_edges_[edge].pcm_cache,contacts);
                 }else {
-                    manifold.count=generate_pcm_box_box(
-                        first,second,contact_distance,
-                        island_edges_[edge].pcm_cache,
-                        std::span<ContactPoint>(box_contact_scratch_));
+                    manifold.count=convex_pair
+                        ?generate_pcm_convex_pair(
+                            first,second,contact_distance,
+                            island_edges_[edge].pcm_cache,
+                            std::span<ContactPoint>(box_contact_scratch_))
+                        :generate_pcm_box_box(
+                            first,second,contact_distance,
+                            island_edges_[edge].pcm_cache,
+                            std::span<ContactPoint>(box_contact_scratch_));
                     next_contact_points_.insert(next_contact_points_.end(),
                         box_contact_scratch_.begin(),
                         box_contact_scratch_.begin()+manifold.count);
@@ -5262,8 +5530,8 @@ void Scene::update_island_connectivity() {
                     // The first endpoint owns dynamic/dynamic entries.
                     // A world/static first endpoint cannot be visited,
                     // so admit that entry from its only dynamic endpoint.
-                    const BodyId first_node=edge.pair.a;
-                    if((node!=first_node && dynamic_node(first_node)) ||
+                    const BodyId first_endpoint=edge.pair.a;
+                    if((node!=first_endpoint && dynamic_node(first_endpoint)) ||
                        (node!=edge.pair.a && node!=edge.pair.b))
                         continue;
                     const auto target=next.node_island[node];
@@ -5282,8 +5550,8 @@ void Scene::update_island_connectivity() {
             std::vector<MigratedManager> retained;
             retained.reserve(manifolds_.size()+active_constraint_handles_.size());
             for(const auto& island:graph.islands)
-            for(EdgeIndex first:{island.first_contact,island.first_constraint})
-                for(EdgeIndex id=first;id!=invalid_edge;
+            for(EdgeIndex head:{island.first_contact,island.first_constraint})
+                for(EdgeIndex id=head;id!=invalid_edge;
                     id=island_edges_[id].island_next) {
                     const Pair pair=island_edges_[id].pair;
                     const BodyId node=dynamic_node(pair.a)?pair.a:pair.b;
@@ -7907,11 +8175,13 @@ void Scene::solve_gpu_distance_constraints(float seconds) {
         input.lock_flags=actor.dynamics.lock_flags;
         input.seconds=seconds;
         input.active=1u;
-        // A box carries the full actor orientation in the existing Sc
-        // device cache; sphere orientation is deliberately not retained.
-        if(actor.first_simulation_shape!=invalid_shape &&
-           shapes_[actor.first_simulation_shape].geometry==Geometry::Box)
-            input.active|=4u;
+        // Box and convex shapes carry full authored orientations in
+        // Sc's device transform cache; spheres do not retain that pose.
+        if(actor.first_simulation_shape!=invalid_shape) {
+            const auto geometry=shapes_[actor.first_simulation_shape].geometry;
+            if(geometry==Geometry::Box || geometry==Geometry::Convex)
+                input.active|=4u;
+        }
     };
     for(const BodyId id:solver_active_ids_) {
         const auto& actor=actors_[id];
@@ -8536,9 +8806,9 @@ void Scene::publish_contact_events() {
         double impulse=0.0;
         const auto offset=next_contact_event_points_.size();
         for(std::size_t i=0;i<manifold.count;++i) {
-            const std::size_t index=manifold.contact_offset+i;
-            const auto& point=contact_points_[index];
-            const double normal_force=normal_impulse_writeback_[index];
+            const std::size_t point_index=manifold.contact_offset+i;
+            const auto& point=contact_points_[point_index];
+            const double normal_force=normal_impulse_writeback_[point_index];
             impulse+=normal_force;
             Vec3 outward=point.normal;
             if(island_edges_[manifold.edge_handle].gu_order_reversed !=
@@ -9841,13 +10111,13 @@ void Scene::integrate_solver_task(
                 if(!solved_contact && (free_index>=task.gpu_free_end ||
                    gpu_dy_free_ids_[free_index]!=id))
                     throw std::logic_error("Source GPU free-body order mismatch");
-                const auto index=solved_contact?actor.solver_row_index:
+                const auto pose_index=solved_contact?actor.solver_row_index:
                     solver_rows_.size()+free_index++;
-                if(index>=gpu_dy_integrated_poses_.size() ||
-                   gpu_dy_integrated_poses_[index].valid!=1u)
+                if(pose_index>=gpu_dy_integrated_poses_.size() ||
+                   gpu_dy_integrated_poses_[pose_index].valid!=1u)
                     throw std::logic_error(
                         "Source GPU Dy integrateCore pose missing");
-                const auto& result=gpu_dy_integrated_poses_[index];
+                const auto& result=gpu_dy_integrated_poses_[pose_index];
                 p={result.position[0],result.position[1],result.position[2]};
                 q={result.orientation[0],result.orientation[1],
                    result.orientation[2],result.orientation[3]};
@@ -10416,6 +10686,11 @@ public:
     }
     ShapeId attach_sphere_shape(BodyId body,float radius,Transform pose) override {
         return scene_.attach_sphere(body,radius,pose);
+    }
+    ShapeId attach_convex_shape(
+        BodyId body,std::shared_ptr<const ConvexMesh> mesh,
+        Transform pose) override {
+        return scene_.attach_convex(body,std::move(mesh),pose);
     }
     void detach_shape(ShapeId shape) override {scene_.detach_shape(shape);}
     void set_shape_local_pose(ShapeId shape,Transform pose) override {scene_.set_shape_local_pose(shape,pose);}

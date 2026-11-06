@@ -38,6 +38,13 @@ namespace {
 
 using Microsoft::WRL::ComPtr;
 
+// Read single-character build/test switches without CRT environment copies.
+bool environment_equals(const char* name, char expected) {
+    char value[2]{};
+    return GetEnvironmentVariableA(name,value,sizeof(value))==1u &&
+           value[0]==expected;
+}
+
 void check(HRESULT hr, const char* operation) {
     if (FAILED(hr)) {
         throw std::runtime_error(std::string(operation) + " failed (HRESULT " +
@@ -331,22 +338,35 @@ struct Context::Impl {
         if (ordinal >= adapters.size())
             throw std::out_of_range("D3D12 adapter ordinal does not exist");
         info = adapters[ordinal].info;
-        const char* debug_env = std::getenv("FYZZXYZZY_D3D12_DEBUG");
-        if (debug_env && std::string(debug_env) == "1") {
+        if (environment_equals("FYZZXYZZY_D3D12_REQUIRE_HARDWARE",'1')) {
+            DXGI_ADAPTER_DESC1 description{};
+            check(adapters[ordinal].adapter->GetDesc1(&description),
+                  "GetDesc1 for D3D12 hardware verification");
+            if (description.Flags & DXGI_ADAPTER_FLAG_SOFTWARE)
+                throw std::runtime_error(
+                    "D3D12 hardware verification requires a physical GPU");
+        }
+        if (environment_equals("FYZZXYZZY_D3D12_DEBUG",'1')) {
             ComPtr<ID3D12Debug> debug;
             if (SUCCEEDED(D3D12GetDebugInterface(IID_PPV_ARGS(&debug)))) {
                 debug->EnableDebugLayer();
-                ComPtr<ID3D12Debug1> gpu_debug;
-                if (SUCCEEDED(debug.As(&gpu_debug)))
-                    gpu_debug->SetEnableGPUBasedValidation(TRUE);
-                std::cerr << "Enabled D3D12 GPU-based validation for native WARP test\n";
+                const bool enable_gpu_validation =
+                    !environment_equals("FYZZXYZZY_D3D12_GPU_VALIDATION",'0');
+                if (enable_gpu_validation) {
+                    ComPtr<ID3D12Debug1> gpu_debug;
+                    if (SUCCEEDED(debug.As(&gpu_debug)))
+                        gpu_debug->SetEnableGPUBasedValidation(TRUE);
+                }
+                std::cerr << "Enabled D3D12 debug layer"
+                          << (enable_gpu_validation ? " and GPU-based validation" : "")
+                          << "\n";
             } else {
                 std::cerr << "D3D12 debug layer not available on this runner\n";
             }
         }
         check(D3D12CreateDevice(adapters[ordinal].adapter.Get(), D3D_FEATURE_LEVEL_12_0,
                                 IID_PPV_ARGS(&device)), "D3D12CreateDevice");
-        if (debug_env && std::string(debug_env) == "1")
+        if (environment_equals("FYZZXYZZY_D3D12_DEBUG",'1'))
             device.As(&debug_messages);
         D3D12_COMMAND_QUEUE_DESC q{};
         q.Type = D3D12_COMMAND_LIST_TYPE_COMPUTE;
@@ -508,9 +528,21 @@ struct Context::Impl {
         if (completed >= value) return;
         check(fence->SetEventOnCompletion(value, completion_event),
               "SetEventOnCompletion");
-        DWORD result = WaitForSingleObject(completion_event, INFINITE);
-        if (result != WAIT_OBJECT_0)
-            throw std::runtime_error("D3D12 fence wait failed");
+        for (;;) {
+            const DWORD result=WaitForSingleObject(completion_event,1000u);
+            if(result==WAIT_OBJECT_0)break;
+            if(result!=WAIT_TIMEOUT)
+                throw std::runtime_error("D3D12 fence wait failed");
+            // Device removal does not guarantee that an outstanding queue
+            // fence signals. Check the device while the event is pending.
+            const HRESULT reason=device->GetDeviceRemovedReason();
+            if(FAILED(reason)) {
+                print_debug_messages();
+                throw std::runtime_error(
+                    "D3D12 device removed during GPU submission (HRESULT "+
+                    std::to_string(static_cast<unsigned long>(reason))+")");
+            }
+        }
         if (fence->GetCompletedValue() == std::numeric_limits<std::uint64_t>::max()) {
             const auto reason = device->GetDeviceRemovedReason();
             print_debug_messages();
@@ -1339,12 +1371,15 @@ struct Context::Impl {
             }
             submission.commands->SetComputeRoot32BitConstants(
                 table_root, pipeline.parameters / 4u, cmd.push_constants.data(), 0);
-            if(cmd.indirect)
+            if(cmd.indirect) {
+                auto* arguments=get_buffer(cmd.indirect->buffer).resource.Get();
+                // The X group count also predicates the single indirect
+                // command, so an empty GPU worklist launches no dispatch.
                 submission.commands->ExecuteIndirect(
                     dispatch_signature.Get(),1u,
-                    get_buffer(cmd.indirect->buffer).resource.Get(),
-                    cmd.indirect->offset,nullptr,0u);
-            else
+                    arguments,cmd.indirect->offset,
+                    arguments,cmd.indirect->offset);
+            }else
                 submission.commands->Dispatch(
                     cmd.groups.x,cmd.groups.y,cmd.groups.z);
             for (std::size_t slot = 0; slot < cmd.buffers.size(); ++slot) {

@@ -26,6 +26,12 @@ RWByteAddressBuffer scBounds : register(u3,space0);
 [[vk::binding(4,0)]]
 #endif
 RWByteAddressBuffer scGeometry : register(u4,space0);
+#ifdef FYZZXYZZY_CONVEX
+#ifdef __spirv__
+[[vk::binding(5,0)]]
+#endif
+RWByteAddressBuffer scHullVertices : register(u5,space0);
+#endif
 
 struct Parameters {
     uint bodyBias, distanceBias, descriptorBias, partitionBias;
@@ -219,7 +225,12 @@ void integrateBody(uint ordinal) {
         const uint element=arena.Load(input+72u);
         if(element>=views.w)return;
         const uint geo=views.z+element*64u;
-        if(scGeometry.Load(geo+28u)!=0u)return;
+        const uint sourceKind=scGeometry.Load(geo+28u);
+#ifdef FYZZXYZZY_CONVEX
+        if(sourceKind!=0u && sourceKind!=2u)return;
+#else
+        if(sourceKind!=0u)return;
+#endif
         const float3 shapeLocal=asfloat(scGeometry.Load3(geo+16u));
         const float4 shapeLocalAxes=asfloat(scGeometry.Load4(geo+32u));
         const uint shape=views.x+element*32u;
@@ -301,11 +312,40 @@ void integrateBody(uint ordinal) {
         const float4 localQuaternion=asfloat(scGeometry.Load4(geometryIndex+32u));
         const float3 center=nextPosition+sourceRigidRotate(nextQuaternion,localPosition);
         const float4 shapeQuaternion=kind==1u?float4(0,0,0,1):sourceRigidMultiply(nextQuaternion,localQuaternion);
-        const float3 worldExtents=kind==1u?halfExtents:sourceBoxHalfBounds(shapeQuaternion,halfExtents);
+#ifdef FYZZXYZZY_CONVEX
+        float3 lower,upper;
+        if(kind==2u) {
+            const uint vertexBias=p.reservedOutput;
+            const uint first=scGeometry.Load(geometryIndex+52u);
+            const uint vertexCount=scGeometry.Load(geometryIndex+56u);
+            if(vertexCount<4u || first>0xffffffffu/12u ||
+               vertexCount>(0xffffffffu/12u)-first)return;
+            lower=float3(3.402823466e38f,3.402823466e38f,3.402823466e38f);
+            upper=-lower;
+            for(uint j=0u;j<vertexCount;++j) {
+                const float3 vertex=asfloat(scHullVertices.Load3(
+                    vertexBias+(first+j)*12u));
+                const float3 vertexWorld=center+
+                    sourceRigidRotate(shapeQuaternion,vertex);
+                lower=min(lower,vertexWorld);
+                upper=max(upper,vertexWorld);
+            }
+        }else {
+            const float3 worldExtents=kind==1u?halfExtents:
+                sourceBoxHalfBounds(shapeQuaternion,halfExtents);
+            lower=center-worldExtents;
+            upper=center+worldExtents;
+        }
+        if(kind>2u || !all(isfinite(lower)) || !all(isfinite(upper)) ||
+           !all(isfinite(shapeQuaternion)))return;
+#else
+        const float3 worldExtents=kind==1u?halfExtents:
+            sourceBoxHalfBounds(shapeQuaternion,halfExtents);
         const float3 lower=center-worldExtents;
         const float3 upper=center+worldExtents;
         if(kind>1u || !all(isfinite(lower)) || !all(isfinite(upper)) ||
            !all(isfinite(shapeQuaternion)))return;
+#endif
         const uint cache=views.x+element*32u;
         scTransforms.Store4(cache,asuint(shapeQuaternion));
         scTransforms.Store3(cache+16u,asuint(center));

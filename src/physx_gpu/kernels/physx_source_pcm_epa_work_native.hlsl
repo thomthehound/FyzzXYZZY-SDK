@@ -21,6 +21,7 @@ struct Parameters {
     uint resultBias;
     uint workBias;
     uint argsBias;
+    uint requiredStatus;
 };
 #ifdef __spirv__
 [[vk::push_constant]] Parameters params;
@@ -31,9 +32,14 @@ ConstantBuffer<Parameters> params : register(b0,space0);
 void compact(uint3 thread : SV_DispatchThreadID) {
     uint i=thread.x;
     if(i>=params.pairCount)return;
-    // SourcePcmBoxPairResultNative.status: 3 requires EPA continuation.
-    if(results.Load(params.resultBias+i*32u+8u)!=3u)return;
+    // Select the GPU result state required by this worklist.
+    if(results.Load(params.resultBias+i*32u+8u)!=params.requiredStatus)return;
     uint destination;
     dispatchArgs.InterlockedAdd(params.argsBias,1u,destination);
     work.Store(params.workBias+destination*4u,i);
+}
+
+[numthreads(1,1,1)]
+void reset(uint3 thread : SV_DispatchThreadID) {
+    dispatchArgs.Store3(params.argsBias,uint3(0u,1u,1u));
 }

@@ -17,6 +17,7 @@
 #include <cstdint>
 #include <cstring>
 #include <limits>
+#include <optional>
 #include <span>
 #include <stdexcept>
 #include <vector>
@@ -51,13 +52,36 @@ public:
         SourceSapDmaNative& stream,physx::PxgHeapMemoryAllocator& allocator,
         const SourceScGpuBroadphaseProducerNative& sc,
         physx::PxgCudaBuffer& transforms,physx::PxgCudaBuffer& geometry,
+        physx::PxgCudaBuffer& convex_vertices,
+        const std::uint32_t& convex_vertex_count,
+        physx::PxgCudaBuffer& convex_surface,
+        const std::uint32_t& convex_surface_bytes,
+        const std::uint32_t& convex_faces_base,
+        const std::uint32_t& convex_indices_base,
         compute::ShaderBinary candidate,compute::ShaderBinary compact,
-        compute::ShaderBinary epa)
+        compute::ShaderBinary gjk,compute::ShaderBinary gjk_primitive,
+        compute::ShaderBinary gjk_reduce,
+        compute::ShaderBinary gjk_publish,
+        compute::ShaderBinary epa_args_reset,compute::ShaderBinary epa,
+        compute::ShaderBinary face_contacts)
         : context_(context),addresses_(addresses),stream_(stream),sc_(sc),
           transforms_(transforms),geometry_(geometry),
+          convex_vertices_(convex_vertices),
+          convex_vertex_count_(convex_vertex_count),
+          convex_surface_(convex_surface),
+          convex_surface_bytes_(convex_surface_bytes),
+          convex_faces_base_(convex_faces_base),
+          convex_indices_base_(convex_indices_base),
           candidates_stage_(context,std::move(candidate)),
-          sparse_stage_(context,std::move(compact)),
+          sparse_stage_(context,compact),
+          epa_pending_stage_(context,std::move(compact),4u,
+                             std::move(epa_args_reset)),
+          staged_gjk_(gjk.format==compute::ShaderFormat::Dxil),
+          gjk_stage_(context,std::move(gjk),false,true),
+          gjk_reduce_stage_(context,std::move(gjk_reduce),false,true),
+          gjk_publish_stage_(context,std::move(gjk_publish),false,true),
           epa_stage_(context,std::move(epa)),
+          face_stage_(context,std::move(face_contacts),true),
           pairs_(allocator,physx::PxsHeapStats::eNARROWPHASE),
           results_(allocator,physx::PxsHeapStats::eNARROWPHASE),
           candidates_(allocator,physx::PxsHeapStats::eNARROWPHASE),
@@ -66,6 +90,8 @@ public:
           dense_contacts_(allocator,physx::PxsHeapStats::eNARROWPHASE) {
         if(!stream_.bound_to(context_,addresses_))
             throw std::invalid_argument("Source Sc GPU PCM has another device stream");
+        if(staged_gjk_)
+            primitive_gjk_stage_.emplace(context_,std::move(gjk_primitive),false,true);
         // D3D12 indirect arguments require their own physical resource.
         // Separate source buddy-heap allocations can share one root UAV.
         indirect_buffer_=context_.create_buffer(
@@ -129,6 +155,7 @@ public:
                second>=shape_capacity)
                 throw std::out_of_range("Source Sc PCM element outside original AABB capacity");
             if(request.candidate_capacity!=1u &&
+               request.candidate_capacity!=4u &&
                request.candidate_capacity!=16u)
                 throw std::invalid_argument(
                     "GPU PCM candidate count must match its geometry");
@@ -215,8 +242,34 @@ public:
             pairs_.getDevicePtr(),results_.getDevicePtr(),
             candidates_.getDevicePtr(),edges_.getDevicePtr(),
             indirect_address_,dense_contacts_.getDevicePtr(),
+            convex_vertices_.getDevicePtr(),convex_vertex_count_,
             pair_count,shape_capacity,candidate_capacity,edge_capacity);
         sparse_stage_.append(stream_,addresses_,
+            results_.getDevicePtr(),work_.getDevicePtr(),
+            indirect_address_,pair_count);
+        const auto append_gjk=[&](const SourcePcmEpaNativeStage& stage,
+                                   std::uint32_t pass) {
+            stage.append(stream_,addresses_,
+                transforms_.getDevicePtr(),geometry_.getDevicePtr(),
+                pairs_.getDevicePtr(),results_.getDevicePtr(),
+                candidates_.getDevicePtr(),edges_.getDevicePtr(),
+                work_.getDevicePtr(),indirect_address_,
+                dense_contacts_.getDevicePtr(),
+                convex_vertices_.getDevicePtr(),convex_vertex_count_,
+                pair_count,shape_capacity,candidate_capacity,edge_capacity,
+                0u,0u,0u,0u,pass);
+        };
+        if(staged_gjk_) {
+            const auto& advance=!convex_vertex_count_
+                ?*primitive_gjk_stage_:gjk_stage_;
+            for(std::uint32_t pass=0u;pass<32u;++pass) {
+                append_gjk(advance,pass);
+                append_gjk(gjk_reduce_stage_,pass);
+            }
+            append_gjk(advance,32u);
+            append_gjk(gjk_publish_stage_,32u);
+        }else append_gjk(gjk_stage_,0u);
+        epa_pending_stage_.append(stream_,addresses_,
             results_.getDevicePtr(),work_.getDevicePtr(),
             indirect_address_,pair_count);
         epa_stage_.append(stream_,addresses_,
@@ -224,9 +277,22 @@ public:
             pairs_.getDevicePtr(),results_.getDevicePtr(),
             candidates_.getDevicePtr(),edges_.getDevicePtr(),
             work_.getDevicePtr(),indirect_address_,
-            dense_contacts_.getDevicePtr(),pair_count,shape_capacity,
-            candidate_capacity,edge_capacity);
-
+            dense_contacts_.getDevicePtr(),
+            convex_vertices_.getDevicePtr(),convex_vertex_count_,
+            pair_count,shape_capacity,candidate_capacity,edge_capacity,
+            convex_surface_.getDevicePtr(),convex_surface_bytes_,
+            convex_faces_base_,convex_indices_base_);
+        if(convex_vertex_count_)
+            face_stage_.append(stream_,addresses_,
+                transforms_.getDevicePtr(),geometry_.getDevicePtr(),
+                pairs_.getDevicePtr(),results_.getDevicePtr(),
+                candidates_.getDevicePtr(),edges_.getDevicePtr(),
+                work_.getDevicePtr(),indirect_address_,
+                dense_contacts_.getDevicePtr(),
+                convex_vertices_.getDevicePtr(),convex_vertex_count_,
+                pair_count,shape_capacity,candidate_capacity,edge_capacity,
+                convex_surface_.getDevicePtr(),convex_surface_bytes_,
+                convex_faces_base_,convex_indices_base_);
 
         // Fetch the losslessly packed device stream, then reconstruct
         // Sc's original host record. The Dy shader reads the same device
@@ -306,9 +372,17 @@ private:
     const SourceScGpuBroadphaseProducerNative& sc_;
     physx::PxgCudaBuffer& transforms_;
     physx::PxgCudaBuffer& geometry_;
+    physx::PxgCudaBuffer& convex_vertices_;
+    const std::uint32_t& convex_vertex_count_;
+    physx::PxgCudaBuffer& convex_surface_;
+    const std::uint32_t& convex_surface_bytes_;
+    const std::uint32_t& convex_faces_base_;
+    const std::uint32_t& convex_indices_base_;
     SourcePcmBoxCandidatesNativeStage candidates_stage_;
-    SourcePcmSparseEpaNativeStage sparse_stage_;
-    SourcePcmEpaNativeStage epa_stage_;
+    SourcePcmSparseEpaNativeStage sparse_stage_,epa_pending_stage_;
+    bool staged_gjk_=false;
+    SourcePcmEpaNativeStage gjk_stage_,gjk_reduce_stage_,gjk_publish_stage_,epa_stage_,face_stage_;
+    std::optional<SourcePcmEpaNativeStage> primitive_gjk_stage_;
     physx::PxgCudaBuffer pairs_,results_,candidates_,edges_,work_,dense_contacts_;
     compute::BufferId indirect_buffer_=0u;
     CudaDeviceAddressMap::Address indirect_address_=0u;

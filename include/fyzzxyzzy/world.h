@@ -12,6 +12,8 @@
 
 namespace fyzz {
 
+class ConvexMesh;
+
 struct Vec3 {
     float x;
     float y;
@@ -225,6 +227,10 @@ public:
     virtual ShapeId attach_sphere_shape(BodyId,float,Transform) {
         throw std::logic_error("This backend cannot attach sphere shapes");
     }
+    virtual ShapeId attach_convex_shape(
+        BodyId,std::shared_ptr<const ConvexMesh>,Transform) {
+        throw std::logic_error("This backend cannot attach cooked convex shapes");
+    }
     virtual void detach_shape(ShapeId) {
         throw std::logic_error("This backend cannot detach shapes");
     }
@@ -385,6 +391,8 @@ public:
     BodyId create_dynamic_body(Transform pose={});
     ShapeId attach_box_shape(BodyId body,Vec3 half_extents,Transform local_pose={});
     ShapeId attach_sphere_shape(BodyId body,float radius,Transform local_pose={});
+    ShapeId attach_convex_shape(BodyId body,
+        std::shared_ptr<const ConvexMesh> mesh,Transform local_pose={});
     void detach_shape(ShapeId shape);
     void set_shape_local_pose(ShapeId shape,Transform local_pose);
     void set_shape_material(ShapeId shape,Material material);
