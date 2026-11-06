@@ -1088,9 +1088,9 @@ if(FYZZXYZZY_BUILD_D3D12)
       ${_sc_pcm_scene_tests})
     set_tests_properties(${_d3d12_extended_tests}
       PROPERTIES LABELS "d3d12-extended")
-    # The 512-spoke case crosses the wide-admission threshold and
-    # remains bounded on WARP. Larger physical-GPU stress cases are
-    # independently registered above.
+    # WARP checks multiwave source ordering with a bounded hub.
+    # Wide-admission and 10000-spoke stress cases remain registered
+    # separately for hardware D3D12 execution.
     add_test(NAME fyzzxyzzy_source_sc_gpu_pcm_scene_star_island_warp_d3d12
       COMMAND fyzzxyzzy_source_sc_gpu_pcm_scene_d3d12
         ${_sc_pcm_scene_args} star_island_warp)
