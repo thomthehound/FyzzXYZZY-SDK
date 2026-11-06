@@ -2128,6 +2128,7 @@ int main(int argc,char** argv) {
                 scenario=="sphere_solver" || scenario=="convex_plane" ||
                 scenario=="convex_finite" || scenario=="wide_islands" ||
                 scenario=="wide_islands_10k" ||
+                scenario=="star_island" ||
                 scenario=="star_island_10k" ||
                 scenario=="free_integration",
                 "Unknown GPU scene regression scenario");
@@ -2197,14 +2198,15 @@ int main(int argc,char** argv) {
         if(scenario=="all" || scenario=="free_integration")
             fyzz::tests::measure_gpu_case("sc_pcm","free_integration",
                 [&]{verify_gpu_free_integration(backend,argv[1],argv[2],argv[3]);});
-        if(scenario=="all" || scenario=="wide_islands") {
+        if(scenario=="all" || scenario=="wide_islands")
             fyzz::tests::measure_gpu_case("sc_pcm","multiwave_coloring",
                 [&]{verify_gpu_high_degree_coloring(
                     backend,argv[1],argv[2],argv[3]);});
+        if(scenario=="all" || scenario=="wide_islands" ||
+           scenario=="star_island")
             fyzz::tests::measure_gpu_case("sc_pcm","star_island",
                 [&]{verify_gpu_high_degree_coloring(
                     backend,argv[1],argv[2],argv[3],1024u);});
-        }
         if(scenario=="star_island_10k")
             fyzz::tests::measure_gpu_case("sc_pcm","star_island_10k",
                 [&]{verify_gpu_high_degree_coloring(
