@@ -1847,6 +1847,20 @@ void verify_gpu_free_integration(
             test::compound_compare_state(gpu.body_state(actual[i]),
                 cpu.body_state(expected[i]),0.002f,
                 "GPU Dy free or transitioning body");
+        // Query a moving, rotating body after Dy has published its pose.
+        // The ray crosses the body's center, independent of its rotation.
+        const auto cpu_position=cpu.body_state(expected[1]).position;
+        const auto gpu_position=gpu.body_state(actual[1]).position;
+        const auto cpu_hit=cpu.raycast(
+            {cpu_position.x,cpu_position.y+2.f,cpu_position.z},
+            {0.f,-1.f,0.f},3.f);
+        const auto gpu_hit=gpu.raycast(
+            {gpu_position.x,gpu_position.y+2.f,gpu_position.z},
+            {0.f,-1.f,0.f},3.f);
+        require(cpu_hit && gpu_hit &&
+                cpu_hit->body==expected[1] && gpu_hit->body==actual[1] &&
+                std::abs(cpu_hit->distance-gpu_hit->distance)<0.005f,
+            "Device-integrated rigid pose did not publish its scene query");
     }
     require(touched && released,"Free body did not enter and leave GPU PCM response");
 }

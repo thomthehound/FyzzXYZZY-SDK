@@ -95,9 +95,12 @@ std::optional<LocalHit> ray_sphere(
     if(c<=0.f)return LocalHit{0.f,negate(direction)};
     const float b=dot(origin,direction);
     if(b>=0.f)return std::nullopt;
-    const float discriminant=b*b-c;
-    if(discriminant<0.f)return std::nullopt;
-    const float distance=-b-std::sqrt(discriminant);
+    // Project first: b*b-c subtracts nearly equal large values for
+    // a distant small sphere and can erase its radius in float arithmetic.
+    const Vec3 closest=add_scaled(origin,direction,-b);
+    const float radial_square=radius*radius-dot(closest,closest);
+    if(radial_square<0.f)return std::nullopt;
+    const float distance=-b-std::sqrt(radial_square);
     if(!(distance>=0.f) || distance>limit)return std::nullopt;
     const Vec3 point=add_scaled(origin,direction,distance);
     const float length=std::sqrt(dot(point,point));

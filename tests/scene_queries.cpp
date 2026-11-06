@@ -60,6 +60,10 @@ void verify_sphere_flags_and_lifetime() {
     require(hit && hit->shape==shape,"Attached sphere did not enter scene query");
     near(hit->distance,3.f,1.e-5f,"Sphere ray distance");
     near(hit->normal.x,-1.f,1.e-5f,"Sphere surface normal");
+    const auto distant=world.raycast({-10000.f,0.f,0.f},{1.f,0.f,0.f},20000.f);
+    require(distant && distant->shape==shape,"Distant sphere ray missed");
+    near(distant->distance,10003.f,0.001f,
+         "Distant sphere ray lost its physical radius");
 
     world.set_shape_simulation_enabled(shape,false);
     require(world.raycast({0.f,0.f,0.f},{1.f,0.f,0.f},10.f).has_value(),
