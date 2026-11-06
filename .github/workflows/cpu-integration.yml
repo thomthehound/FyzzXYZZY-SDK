@@ -433,10 +433,13 @@ jobs:
       - name: Build and test native core and compute
         shell: pwsh
         run: |
-          cmake --build build-native --config Release --target fyzzxyzzy_source_pcm_gjk_stage_d3d12 fyzzxyzzy_source_pcm_box_candidates_d3d12 --parallel 4
+          cmake --build build-native --config Release --target fyzzxyzzy_source_pcm_gjk_stage_d3d12 --parallel 4
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          # Check the GPU-validated stages before the extended contact suite.
+          # Validate the two production GJK shader stages before compiling
+          # and running the complete PCM integration suite.
           ctest --test-dir build-native -C Release -R '^fyzzxyzzy_source_pcm_gjk_(reduction_baseline|advance_gpu_validation|reduction_gpu_validation)_d3d12$' --output-on-failure --stop-on-failure
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cmake --build build-native --config Release --target fyzzxyzzy_source_pcm_box_candidates_d3d12 --parallel 4
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           ctest --test-dir build-native -C Release -R '^fyzzxyzzy_source_pcm_(gjk_two_step_probe|epa_worklist|epa_empty_dispatch_probe)_d3d12$' --output-on-failure
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
