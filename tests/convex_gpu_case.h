@@ -36,6 +36,13 @@ inline void verify_convex_finite_gpu_solver(
         vertex.z+=100.f;
     }
     const auto cube=cook_convex_mesh(translatedCube,cubeFaces);
+    auto smallCubeVertices=cubeVertices;
+    for(auto& vertex:smallCubeVertices) {
+        vertex.x*=0.001f;
+        vertex.y*=0.001f;
+        vertex.z*=0.001f;
+    }
+    const auto smallCube=cook_convex_mesh(smallCubeVertices,cubeFaces);
     const auto load=[backend](const char* path) {
         std::ifstream input(path,std::ios::binary);
         if(!input)throw std::runtime_error("Finite convex Dy shader missing");
@@ -56,7 +63,7 @@ inline void verify_convex_finite_gpu_solver(
     auto* producer=owner.get();
     gpu.set_gpu_broadphase(std::move(owner));
     const auto assemble=[&](native::Scene& scene) {
-        std::array<BodyId,8> dynamics{};
+        std::array<BodyId,9> dynamics{};
         scene.add_static_box({1.f,0.5f,1.f},{0.f,-0.5f,0.f});
         dynamics[0]=scene.create_body({{0.f,-0.12f,0.f},{}},true);
         scene.attach_convex(dynamics[0],hull,{});
@@ -103,6 +110,12 @@ inline void verify_convex_finite_gpu_solver(
         scene.attach_convex(dynamics[7],cube,{});
         scene.update_mass_properties(dynamics[7],1.f);
 
+        const auto small_base=scene.create_body({{40.f,0.f,0.f},{}},false);
+        scene.attach_convex(small_base,smallCube,{});
+        dynamics[8]=scene.create_body({{40.0015f,0.00001f,0.00002f},{}},true);
+        scene.attach_convex(dynamics[8],smallCube,{});
+        scene.update_mass_properties(dynamics[8],1.e9f);
+
         RigidBodyDynamics settings{};
         settings.gravity_enabled=false;
         settings.position_iterations=24u;
@@ -125,7 +138,7 @@ inline void verify_convex_finite_gpu_solver(
         std::clog<<"convex_finite: gpu frame "<<frame<<" begin\n"<<std::flush;
         gpu.step(dt);
         std::clog<<"convex_finite: gpu frame "<<frame<<" complete\n"<<std::flush;
-        if(cpu.contacts().size()!=8u ||
+        if(cpu.contacts().size()!=9u ||
            cpu.contacts().size()!=gpu.contacts().size())
             throw std::runtime_error(
                 "Finite cooked hull PCM lost box, sphere or hull contact managers at frame "+
@@ -138,9 +151,9 @@ inline void verify_convex_finite_gpu_solver(
                 " gpu_readback="+
                 std::to_string(producer->pcm_contact_readback_bytes()));
         if(producer->pcm_contact_readback_bytes()!=
-              8u*sizeof(physx_gpu::SourcePcmGpuContactStreamNative) ||
+              9u*sizeof(physx_gpu::SourcePcmGpuContactStreamNative) ||
            producer->dy_cpu_gu_geometry_bytes()!=0u ||
-           producer->dy_pcm_device_contact_rows()<8u)
+           producer->dy_pcm_device_contact_rows()<9u)
             throw std::runtime_error(
                 "Finite convex contact geometry bypassed GPU PCM/Dy");
         for(std::size_t i=0;i<cpu.contacts().size();++i) {
@@ -191,6 +204,7 @@ inline void verify_convex_finite_gpu_solver(
         }
         if(frame==0u) {
             bool near_face=false,off_origin_pair=false,clipped_face=false;
+            bool small_hull=false;
             for(const auto& manager:cpu.contacts())
                 if(manager.count>0u) {
                     const auto& point=manager.points[0];
@@ -204,10 +218,14 @@ inline void verify_convex_finite_gpu_solver(
                     if(point.position.x>27.f && point.position.x<30.f &&
                        point.separation<0.f)
                         off_origin_pair=true;
+                    if(point.position.x>40.f && point.position.x<40.01f &&
+                       std::abs(point.separation+0.0005f)<0.0001f &&
+                       std::abs(point.normal.x)>0.95f)
+                        small_hull=true;
                 }
-            if(!near_face || !off_origin_pair || !clipped_face)
+            if(!near_face || !off_origin_pair || !clipped_face || !small_hull)
                 throw std::runtime_error(
-                    "Cooked convex PCM lost translated hull, sphere or four-point face contacts");
+                    "Cooked convex PCM lost translated, small-scale, sphere or face contacts");
         }
         for(std::size_t i=0;i<expected.size();++i)
             test::compound_compare_state(

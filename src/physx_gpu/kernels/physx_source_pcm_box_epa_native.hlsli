@@ -25,7 +25,8 @@ EpaFacet epaFacet(uint i,uint j,uint k) {
     float3 e0=epa_vertices[j].q-a,e1=epa_vertices[k].q-a;
     float3 normal=cross(e0,e1);
     float norm2=gjkLength2(normal);
-    if(!(norm2>1.1920928955078125e-7f))return result;
+    float edgeProduct=gjkLength2(e0)*gjkLength2(e1);
+    if(!(norm2>1.1920928955078125e-7f*edgeProduct))return result;
     normal*=1.f/sqrt(norm2);
     result.i=i;result.j=j;result.k=k;
     result.normal=normal;

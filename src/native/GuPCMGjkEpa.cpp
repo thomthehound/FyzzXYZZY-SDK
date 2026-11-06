@@ -204,10 +204,10 @@ Facet make_facet(const std::array<Support,64>& vertices,
     const Vec3 e0=sub(b,a),e1=sub(c,a);
     Vec3 n=cross(e0,e1);
     const float norm2=length2(n);
-    // GuEPA.cpp::Facet::isValid2 compares the squared cross product
-    // directly with FEps(), not with a scale-relative area tolerance.
-    // Tiny triangles may therefore fail source EPA facet admission.
-    if(!(norm2>std::numeric_limits<float>::epsilon()))
+    // Facet area is a fourth-order length. Compare against the two
+    // edge lengths so valid small hulls do not lose EPA contacts.
+    const float edge_product=length2(e0)*length2(e1);
+    if(!(norm2>std::numeric_limits<float>::epsilon()*edge_product))
         return {};
     n=mul(n,1.0f/std::sqrt(norm2));
     return {i,j,k,n,dot(n,a),true};

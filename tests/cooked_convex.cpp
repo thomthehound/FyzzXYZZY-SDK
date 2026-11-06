@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #include "fyzzxyzzy/convex.h"
+#include "native/scene.h"
 
 #include <algorithm>
 #include <array>
@@ -348,6 +349,39 @@ void verify_translated_face_manifold() {
             "Translated cooked face collapsed its physical footprint");
 }
 
+
+void verify_scaled_convex_epa() {
+    // EPA must admit the same penetrating hull features at any valid
+    // authoring scale, including the millimeter-sized geometry.
+    for(const float half:std::array{0.001f,0.01f,1.f}) {
+        auto vertices=cube_vertices;
+        for(auto& vertex:vertices) {
+            vertex.x*=half;vertex.y*=half;vertex.z*=half;
+        }
+        const auto hull=cook_convex_mesh(vertices,cube_faces);
+        native::PcmFiniteShape first{};
+        first.half_extents={half,half,half};
+        first.hull_vertices=hull->vertices();
+        first.hull_faces=hull->faces();
+        first.hull_face_indices=hull->face_indices();
+        auto second=first;
+        second.position={1.5f*half,0.01f*half,0.02f*half};
+        for(unsigned order=0u;order<2u;++order) {
+            native::PcmContactCandidate witness{};
+            const auto& a=order?second:first;
+            const auto& b=order?first:second;
+            require(native::source_pcm_convex_gjk_epa(
+                a,b,0.04f,witness),
+                "Valid scaled convex intersection lost its EPA witness");
+            require(witness.separation<0.f &&
+                    std::isfinite(witness.separation) &&
+                    std::abs(witness.separation+0.5f*half)<0.1f*half &&
+                    std::abs(witness.normal_b.x)>0.95f,
+                "Scaled convex EPA changed its penetration or face normal");
+        }
+    }
+}
+
 void verify_finite_pair_matrix() {
     World world({.execution=ExecutionMode::NativeCpu,
                  .contact_notifications=true});
@@ -459,6 +493,7 @@ int main() {
         verify_convex_face_manifold();
         verify_translated_face_manifold();
         verify_finite_pair_matrix();
+        verify_scaled_convex_epa();
         std::cout<<"Cooked convex volume, inertia and topology OK\n";
         return 0;
     }catch(const std::exception& error) {

@@ -172,6 +172,8 @@ endif()
 
 if(BUILD_TESTING)
   add_executable(fyzzxyzzy_cooked_convex tests/cooked_convex.cpp)
+  target_include_directories(fyzzxyzzy_cooked_convex PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/src")
   target_link_libraries(fyzzxyzzy_cooked_convex PRIVATE FyzzXYZZY::Core)
   add_test(NAME fyzzxyzzy_cooked_convex COMMAND fyzzxyzzy_cooked_convex)
 endif()
