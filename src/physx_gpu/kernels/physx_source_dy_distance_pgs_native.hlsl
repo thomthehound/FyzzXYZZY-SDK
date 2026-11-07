@@ -744,7 +744,7 @@ bool sourceDyPrepareJointGeometry(uint4 desc,uint endError) {
         return false;
     }
     const float invDt=1.0f/dt;
-    float3 linear[6],angularA[6],angularB[6],jacA[6],jacB[6];
+    float3 linearRows[6],angularA[6],angularB[6],jacA[6],jacB[6];
     float invResponse[6],projectedError[6];
     const float requiredDistance=asfloat(arena.Load(source+136u));
     for(uint i=0u;i<count;++i) {
@@ -784,10 +784,10 @@ bool sourceDyPrepareJointGeometry(uint4 desc,uint endError) {
         float3 ja=mass0>0.0f?sourceDyJointInertia(desc.y,angA):0.0f;
         float3 jb=mass1>0.0f?sourceDyJointInertia(desc.z,angB):0.0f;
         for(uint j=0u;j<i;++j) {
-            const float factor=((mass0+mass1)*sourceDyDot3(axis,linear[j])+
+            const float factor=((mass0+mass1)*sourceDyDot3(axis,linearRows[j])+
                 sourceDyDot3(ja,jacA[j])+sourceDyDot3(jb,jacB[j]))*
                 invResponse[j];
-            axis-=linear[j]*factor;
+            axis-=linearRows[j]*factor;
             angA-=angularA[j]*factor;
             angB-=angularB[j]*factor;
             ja-=jacA[j]*factor;
@@ -803,7 +803,7 @@ bool sourceDyPrepareJointGeometry(uint4 desc,uint endError) {
         }
         invResponse[i]=1.0f/response;
         projectedError[i]=error;
-        linear[i]=axis;angularA[i]=angA;angularB[i]=angB;
+        linearRows[i]=axis;angularA[i]=angA;angularB[i]=angB;
         jacA[i]=ja;jacB[i]=jb;
         const float velocity=sourceDyDot3(axis,vA-vB)+
             sourceDyDot3(angA,omegaA)-sourceDyDot3(angB,omegaB);
