@@ -2014,6 +2014,11 @@ void verify_gpu_wide_island_solver(
                     sizeof(native::GpuDyDistanceDescriptor) &&
                 schedule.dispatches>7u,
                 "Connected Dy islands did not execute tiled conflict partitions");
+        require(schedule.device_generated_bytes==
+                    schedule.device_colored_descriptors*
+                        (sizeof(native::GpuDyDistanceDescriptor)+
+                         sizeof(std::uint32_t)),
+                "Device Dy coloring still uploads its derived output arrays");
         require(producer->dy_upload_span_count()==1u &&
                 producer->dy_gpu_integrated_body_count()==actual.bodies.size() &&
                 producer->dy_pcm_device_contact_rows()>=actual.bodies.size() &&
@@ -2109,13 +2114,16 @@ void verify_gpu_zero_response_wide_island(
              <<" descriptors="<<schedule.device_colored_descriptors
              <<" max_partition_groups="<<schedule.max_partition_groups
              <<" dy_dispatches="<<schedule.dispatches
-             <<" tile_bytes="<<schedule.tile_bytes<<'\n';
+             <<" tile_bytes="<<schedule.tile_bytes
+             <<" device_generated_bytes="<<schedule.device_generated_bytes<<'\n';
     require(cpu_island>=joint_bodies+zero_contact_bodies &&
             gpu_island>=joint_bodies+zero_contact_bodies,
         "Zero-response fixture did not form the intended accurate island");
     require(schedule.wide_tasks==1u &&
             schedule.device_colored_descriptors>=
-                joint_bodies+zero_contact_bodies-2u,
+                joint_bodies+zero_contact_bodies-2u &&
+            schedule.device_generated_bytes==
+                schedule.device_colored_descriptors*20u,
         "Zero-response fixture did not produce wide contact/joint descriptors");
     require(schedule.max_partition_groups>=
                 (joint_bodies+zero_contact_bodies+127u)/128u,

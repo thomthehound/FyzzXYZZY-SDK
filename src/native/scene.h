@@ -1963,7 +1963,6 @@ private:
     bool gpu_dy_pose_ready_=false;
     std::vector<GpuDyJointRow> gpu_dy_rows_;
     std::vector<GpuDyDistanceDescriptor> gpu_dy_descriptors_;
-    std::vector<std::uint32_t> gpu_dy_partition_ends_;
     std::vector<std::uint32_t> gpu_dy_body_ordinals_;
     std::vector<GpuDyDistanceTask> gpu_dy_tasks_;
     std::vector<float> gpu_dy_contact_forces_;

@@ -7097,7 +7097,7 @@ void Scene::partition_constraints() {
             if(count>std::numeric_limits<std::size_t>::max()-partition_base)
                 throw std::overflow_error("Device Dy task partition capacity overflow");
             partition_base+=count;
-            partition_ends_.resize(partition_base,0u);
+            // Device coloring writes partition ends; Sc retains only the ranges.
             task.partition_end=partition_base;
             task.constraint_end=ordered_constraints_.size();
             manager_begin=manager_end;
@@ -8291,9 +8291,6 @@ void Scene::solve_gpu_distance_constraints(float seconds) {
         const auto& d=ordered_constraints_[i];
         gpu_dy_descriptors_[i]={d.index,d.row0,d.row1,d.row_count};
     }
-    gpu_dy_partition_ends_.resize(partition_ends_.size());
-    for(std::size_t i=0;i<partition_ends_.size();++i)
-        gpu_dy_partition_ends_[i]=narrow(partition_ends_[i]);
     gpu_dy_body_ordinals_.resize(solver_active_ids_.size());
     for(std::size_t i=0;i<solver_active_ids_.size();++i)
         gpu_dy_body_ordinals_[i]=narrow(
@@ -8421,7 +8418,7 @@ void Scene::solve_gpu_distance_constraints(float seconds) {
         gpu_dy_contact_order_[i]=narrow(solver_contact_order_[i]);
     gpu_broadphase_->solve_gpu_dy_distance(
         gpu_dy_bodies_,gpu_dy_rows_,gpu_dy_descriptors_,
-        gpu_dy_partition_ends_,gpu_dy_body_ordinals_,gpu_dy_tasks_,
+        {},gpu_dy_body_ordinals_,gpu_dy_tasks_,
         gpu_dy_contact_forces_,gpu_dy_gu_inputs_,
         gpu_dy_friction_writeback_,gpu_dy_friction_anchors_,
         gpu_dy_patches_,gpu_dy_manifolds_,gpu_dy_contact_order_,
