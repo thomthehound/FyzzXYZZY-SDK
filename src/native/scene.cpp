@@ -8336,8 +8336,8 @@ void Scene::solve_gpu_distance_constraints(float seconds) {
         }
     }
     // One source friction anchor generates the two correlated tangents.
-    // The device constructs the full 72-byte rows and returns only the
-    // solved tangent and impulse in the original Gu source order.
+    // The device constructs both 56-byte tangent rows and returns one
+    // combined world impulse per source friction anchor.
     if(solver_friction_rows_.size()%2u)
         throw std::logic_error("Source friction anchor has incomplete tangents");
     gpu_dy_friction_impulses_.resize(solver_friction_rows_.size()/2u);

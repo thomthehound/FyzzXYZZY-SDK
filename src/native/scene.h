@@ -211,8 +211,8 @@ struct GpuDyContactPoint {
 static_assert(sizeof(GpuDyContactPoint)==64u &&
               offsetof(GpuDyContactPoint,velocity_multiplier)==40u &&
               offsetof(GpuDyContactPoint,applied_force)==56u);
-// The GPU constructs both tangent rows from one pair of Sc-owned,
-// body-local friction anchors; only their solved tangent/force returns.
+// The GPU constructs two tangent rows from each Sc-owned, body-local
+// friction anchor. Standalone conformance may retrieve the solved rows.
 struct GpuDyFrictionAnchorInput {
     float local_a[3]{},local_b[3]{};
 };

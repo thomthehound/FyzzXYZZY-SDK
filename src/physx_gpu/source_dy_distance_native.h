@@ -467,8 +467,9 @@ public:
             patches.data(),manifolds.data(),contact_order.data(),
             contact_prep.data(),integration.data(),nullptr,tiles_.data(),
             nullptr};
-        // The host retains only source normal impulses and friction
-        // tangent/force writeback. Both full row ABIs live only on GPU.
+        // Both full contact and friction solver rows live on device.
+        // Sc returns normal impulses and compact per-anchor friction;
+        // standalone conformance may return complete tangent/force rows.
         constexpr std::array<std::size_t,6> output_inputs{
             0u,5u,6u,7u,8u,12u};
         const std::array<std::size_t,6> output_strides{
