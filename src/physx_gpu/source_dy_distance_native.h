@@ -141,7 +141,8 @@ public:
                std::uint32_t shape_capacity,
                CudaDeviceAddressMap::Address convex_vertices,
                std::uint32_t convex_vertex_count,
-               bool device_partitions=false) {
+               bool device_partitions=false,
+               std::span<native::GpuDyFrictionAnchorImpulse> anchor_impulses={}) {
         if(integration.size()<bodies.size() ||
            integrated_poses.size()!=integration.size() ||
            (tasks.empty() && integration.size()==bodies.size()))
@@ -172,12 +173,25 @@ public:
             throw std::overflow_error("Source Dy contact row byte count overflow");
         const auto contact_bytes=
             contact_forces.size()*sizeof(native::GpuDyContactPoint);
-        if(friction.size()>std::numeric_limits<std::size_t>::max()/
-                              sizeof(native::GpuDyFrictionRow) ||
-           friction.size()%2u || anchors.size()!=friction.size()/2u)
+        const bool compact_friction=!anchor_impulses.empty();
+        if(compact_friction && !friction.empty())
+            throw std::invalid_argument(
+                "Source Dy friction cannot return rows and anchors together");
+        if(compact_friction && anchor_impulses.size()!=anchors.size())
+            throw std::invalid_argument("Source Dy anchor report count mismatch");
+        if(anchors.size()>std::numeric_limits<std::size_t>::max()/2u)
+            throw std::overflow_error("Source Dy friction count overflow");
+        const auto friction_count=compact_friction
+            ? anchor_impulses.size()*2u:friction.size();
+        if(friction_count>std::numeric_limits<std::size_t>::max()/
+                             sizeof(native::GpuDyFrictionRow) ||
+           friction_count%2u || anchors.size()!=friction_count/2u)
             throw std::logic_error("Source friction rows lack paired anchors");
         const auto friction_bytes=
-            friction.size()*sizeof(native::GpuDyFrictionRow);
+            friction_count*sizeof(native::GpuDyFrictionRow);
+        last_friction_writeback_bytes_=compact_friction
+            ? anchor_impulses.size()*sizeof(native::GpuDyFrictionAnchorImpulse)
+            : friction.size()*sizeof(native::GpuDyFrictionWriteback);
         std::size_t reused_pcm_rows=0u;
         std::size_t cpu_gu_rows=0u;
         for(const auto& pair:contact_prep)
@@ -441,7 +455,7 @@ public:
             tiles_.size()*sizeof(WorkTile),partition_scratch_bytes};
         const std::array<std::size_t,count> elements{
             bodies.size(),rows.size(),descriptors.size(),partition_count,
-            body_ordinals.size(),tasks.size(),contact_forces.size(),friction.size(),
+            body_ordinals.size(),tasks.size(),contact_forces.size(),friction_count,
             patches.size(),manifolds.size(),contact_order.size(),
             contact_prep.size(),integration.size(),compact_anchors_.size(),
             tiles_.size(),device_partitions?1u:0u};
@@ -453,12 +467,13 @@ public:
             patches.data(),manifolds.data(),contact_order.data(),
             contact_prep.data(),integration.data(),nullptr,tiles_.data(),
             nullptr};
-        // The host retains only source normal impulses and friction
-        // tangent/force writeback. Both full row ABIs live only on GPU.
+        // Both full contact and friction solver rows live on device.
+        // Sc returns normal impulses and compact per-anchor friction;
+        // standalone conformance may return complete tangent/force rows.
         constexpr std::array<std::size_t,6> output_inputs{
             0u,5u,6u,7u,8u,12u};
-        constexpr std::array<std::size_t,6> output_strides{
-            48u,4u,4u,16u,4u,32u};
+        const std::array<std::size_t,6> output_strides{
+            48u,4u,4u,compact_friction?12u:16u,4u,32u};
         static_assert(offsetof(native::GpuDyJointRow,applied_force)==60u &&
                       offsetof(native::GpuDyDistanceTask,error)==32u &&
                       offsetof(native::GpuDyContactPoint,applied_force)==56u &&
@@ -467,7 +482,8 @@ public:
         std::array<std::size_t,6> result_offsets{};
         std::size_t output_bytes=0u;
         for(std::size_t i=0;i<output_inputs.size();++i) {
-            const auto n=elements[output_inputs[i]];
+            const auto n=i==3u && compact_friction
+                ? anchor_impulses.size():elements[output_inputs[i]];
             if(n>(std::numeric_limits<std::uint32_t>::max()-output_bytes)/
                 output_strides[i])
                 throw std::overflow_error("Source Dy writeback exceeds 32-bit view ABI");
@@ -655,6 +671,7 @@ public:
             dispatch.buffers[3].access=integrates ? compute::BufferAccess::Write
                                                  : compute::BufferAccess::Read;
             params[10]=(iteration<<4u)|static_cast<std::uint32_t>(phase)|
+                (compact_friction?0x20000000u:0u)|
                 (device_partitions?0x80000000u:0u)|
                 (device_partitions && !wide_tasks_.empty() &&
                  phase!=Launch::Color ?0x40000000u:0u);
@@ -772,16 +789,26 @@ public:
                             host_.data()+result_offsets[4]+j*4u,4u);
                     const auto count=pcm_growth?(report>>1u)&3u:
                         patch.anchor_count;
-                    if(count>2u || patch.row_offset>friction.size() ||
-                       count*2u>friction.size()-patch.row_offset)
+                    if(count>2u || patch.row_offset>friction_count ||
+                       count*2u>friction_count-patch.row_offset)
                         throw std::logic_error(
                             "Source Dy friction writeback range invalid");
-                    for(std::size_t k=patch.row_offset;
-                        k<patch.row_offset+count*2u;++k) {
-                        const auto* result=
-                            host_.data()+result_offsets[3]+k*16u;
-                        std::memcpy(&friction[k].tangent,result,12u);
-                        std::memcpy(&friction[k].applied_force,result+12u,4u);
+                    if(compact_friction) {
+                        if(patch.row_offset&1u)
+                            throw std::logic_error(
+                                "Source Dy friction anchor range is misaligned");
+                        for(std::size_t k=patch.row_offset/2u;
+                            k<patch.row_offset/2u+count;++k)
+                            std::memcpy(&anchor_impulses[k],
+                                host_.data()+result_offsets[3]+k*12u,12u);
+                    }else {
+                        for(std::size_t k=patch.row_offset;
+                            k<patch.row_offset+count*2u;++k) {
+                            const auto* result=
+                                host_.data()+result_offsets[3]+k*16u;
+                            std::memcpy(&friction[k].tangent,result,12u);
+                            std::memcpy(&friction[k].applied_force,result+12u,4u);
+                        }
                     }
                     if(pcm_growth) {
                         patch.anchor_count=count;
@@ -804,7 +831,7 @@ public:
             if(pair.pcm_pair_index!=0xffffffffu)
                 history_epochs_[pair.pcm_edge]=history_epoch_;
         }
-        last_friction_prepared_rows_=friction.size();
+        last_friction_prepared_rows_=friction_count;
         last_contact_prep_upload_saving_=
             static_cast<std::int64_t>(contact_prep.size_bytes())-
             static_cast<std::int64_t>(prep_bytes+inline_body_bytes);
@@ -836,6 +863,9 @@ public:
     }
     std::size_t last_friction_anchor_upload_bytes() const noexcept {
         return last_friction_anchor_upload_bytes_;
+    }
+    std::size_t last_friction_writeback_bytes() const noexcept {
+        return last_friction_writeback_bytes_;
     }
     std::size_t last_friction_prepared_rows() const noexcept {
         return last_friction_prepared_rows_;
@@ -1236,6 +1266,7 @@ private:
     SourceDyLaunchStats last_schedule_{};
     // Actual packed device upload and ordered readback byte counts.
     std::pair<std::size_t,std::size_t> last_transfer_bytes_{};
+    std::size_t last_friction_writeback_bytes_=0u;
     std::size_t last_integrated_body_count_=0u;
     std::size_t last_resident_pose_count_=0u;
     std::size_t last_host_pose_upload_bytes_=0u;

@@ -8336,11 +8336,11 @@ void Scene::solve_gpu_distance_constraints(float seconds) {
         }
     }
     // One source friction anchor generates the two correlated tangents.
-    // The device constructs the full 72-byte rows and returns only the
-    // solved tangent and impulse in the original Gu source order.
+    // The device constructs both 56-byte tangent rows and returns one
+    // combined world impulse per source friction anchor.
     if(solver_friction_rows_.size()%2u)
         throw std::logic_error("Source friction anchor has incomplete tangents");
-    gpu_dy_friction_writeback_.resize(solver_friction_rows_.size());
+    gpu_dy_friction_impulses_.resize(solver_friction_rows_.size()/2u);
     gpu_dy_friction_anchors_.resize(solver_friction_rows_.size()/2u);
     for(std::size_t i=0;i<gpu_dy_friction_anchors_.size();++i) {
         const auto& from=solver_friction_rows_[2u*i];
@@ -8420,10 +8420,11 @@ void Scene::solve_gpu_distance_constraints(float seconds) {
         gpu_dy_bodies_,gpu_dy_rows_,gpu_dy_descriptors_,
         {},gpu_dy_body_ordinals_,gpu_dy_tasks_,
         gpu_dy_contact_forces_,gpu_dy_gu_inputs_,
-        gpu_dy_friction_writeback_,gpu_dy_friction_anchors_,
+        {},gpu_dy_friction_anchors_,
         gpu_dy_patches_,gpu_dy_manifolds_,gpu_dy_contact_order_,
         gpu_dy_contact_prep_pairs_,
-        gpu_dy_integration_inputs_,gpu_dy_integrated_poses_,true);
+        gpu_dy_integration_inputs_,gpu_dy_integrated_poses_,true,
+        gpu_dy_friction_impulses_);
     gpu_dy_pose_ready_=true;
     const auto unpack=[](const float(&v)[3]) {
         return Vec3{v[0],v[1],v[2]};
@@ -8438,12 +8439,8 @@ void Scene::solve_gpu_distance_constraints(float seconds) {
     }
     for(std::size_t i=0;i<solver_contact_points_.size();++i)
         solver_contact_points_[i].applied_force=gpu_dy_contact_forces_[i];
-    for(std::size_t i=0;i<solver_friction_rows_.size();++i) {
-        solver_friction_rows_[i].tangent=
-            unpack(gpu_dy_friction_writeback_[i].tangent);
-        solver_friction_rows_[i].applied_force=
-            gpu_dy_friction_writeback_[i].applied_force;
-    }
+    // Solved friction rows stay on device; Sc receives only the anchor
+    // world impulses needed by its existing source patch writeback.
     // Sc retains the authoritative body-local strong-friction history.
     // GPU PCM selected changed anchors using the same Gu point ordinals;
     // reconstruct their local coordinates only after Dy's source task
@@ -8999,15 +8996,26 @@ void Scene::write_back_contacts(std::size_t first,std::size_t last) {
                 // DyContactPrep.cpp::writeBackContactFriction reconstructs
                 // world impulse by summing both tangent vectors scaled
                 // by each source SolverContactFriction::appliedForce.
-                const auto& x=solver_friction_rows_[source.row_offset+2*k];
-                const auto& y=solver_friction_rows_[source.row_offset+2*k+1];
-                result.anchor_impulses[k]={
-                    static_cast<double>(x.tangent.x)*x.applied_force+
-                        static_cast<double>(y.tangent.x)*y.applied_force,
-                    static_cast<double>(x.tangent.y)*x.applied_force+
-                        static_cast<double>(y.tangent.y)*y.applied_force,
-                    static_cast<double>(x.tangent.z)*x.applied_force+
-                        static_cast<double>(y.tangent.z)*y.applied_force};
+                if(gpu_dy_pose_ready_) {
+                    if((source.row_offset&1u)!=0u ||
+                       source.row_offset/2u+k>=gpu_dy_friction_impulses_.size())
+                        throw std::logic_error(
+                            "Source GPU friction anchor writeback range invalid");
+                    const auto& impulse=
+                        gpu_dy_friction_impulses_[source.row_offset/2u+k];
+                    result.anchor_impulses[k]={
+                        impulse.world[0],impulse.world[1],impulse.world[2]};
+                }else {
+                    const auto& x=solver_friction_rows_[source.row_offset+2*k];
+                    const auto& y=solver_friction_rows_[source.row_offset+2*k+1];
+                    result.anchor_impulses[k]={
+                        static_cast<double>(x.tangent.x)*x.applied_force+
+                            static_cast<double>(y.tangent.x)*y.applied_force,
+                        static_cast<double>(x.tangent.y)*x.applied_force+
+                            static_cast<double>(y.tangent.y)*y.applied_force,
+                        static_cast<double>(x.tangent.z)*x.applied_force+
+                            static_cast<double>(y.tangent.z)*y.applied_force};
+                }
                 const auto& v=result.anchor_impulses[k];
                 if (!finite(result.anchor_positions[k]) ||
                     !std::isfinite(v.x) || !std::isfinite(v.y) ||

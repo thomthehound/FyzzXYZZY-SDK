@@ -17,7 +17,7 @@ float frictionScalar(uint addr) {
 }
 void storeFrictionScalar(uint addr,float value,uint rowIndex,bool finalPass) {
     arena.Store(addr,asuint(value));
-    if(finalPass) {
+    if(finalPass && (p.launchControl&0x20000000u)==0u) {
         uint target=p.writebackBias+p.resultFrictionOffset+rowIndex*16u;
         arena.Store3(target,arena.Load3(p.frictionBias+rowIndex*56u));
         arena.Store(target+12u,asuint(value));
@@ -165,6 +165,26 @@ void solveContact(uint4 descriptor,uint errorAddress,bool biased,
             broken=broken||saturated;
         }
         if(finalPass) {
+            if((p.launchControl&0x20000000u)!=0u) {
+                // Report one world impulse per source friction anchor.
+                // The full solved tangent rows remain device-resident.
+                for(uint anchor=0u;anchor<patch.z;++anchor) {
+                    const uint row=patch.x+anchor*2u;
+                    const uint x=p.frictionBias+row*56u;
+                    const uint y=x+56u;
+                    precise float3 fx=asfloat(arena.Load3(x))*
+                        frictionScalar(x+52u);
+                    precise float3 fy=asfloat(arena.Load3(y))*
+                        frictionScalar(y+52u);
+                    precise float3 impulse=fx+fy;
+                    if(!all(isfinite(impulse))) {
+                        arena.InterlockedOr(errorAddress,2048u);
+                        return;
+                    }
+                    arena.Store3(p.writebackBias+p.resultFrictionOffset+
+                        (row/2u)*12u,asuint(impulse));
+                }
+            }
             bool gpuGrowth=(patch.w&0x80000000u)!=0u;
             arena.Store(po+12u,broken?1u:0u);
             uint reportAddress=p.writebackBias+p.resultPatchOffset+
