@@ -59,8 +59,7 @@ void main(uint3 dispatch:SV_DispatchThreadID) {
         const uint4 pair=graph.Load4(pairBase+i*16u);
         // The first two fields are Sc BodyIds. Bit 0/1 mark dynamic
         // rigid endpoints; every pair retains its source EdgeIndex.
-        if(pair.x>=rigidCount || pair.y>=rigidCount ||
-           pair.x==pair.y) {
+        if(pair.x>=rigidCount || pair.y>=rigidCount) {
             errorBit(1u);
             return;
         }
@@ -76,7 +75,9 @@ void main(uint3 dispatch:SV_DispatchThreadID) {
             errorBit(4u);
             return;
         }
-        if(count==0u || (pair.z&3u)!=3u)return;
+        // Distinct shapes on one rigid actor share motion but cannot
+        // connect separate dynamic island nodes.
+        if(count==0u || pair.x==pair.y || (pair.z&3u)!=3u)return;
         // Root hooking always points larger indices toward smaller roots.
         // Concurrent hooks remain acyclic and a completed successful
         // pass resolves every edge, including chains across workgroups.
