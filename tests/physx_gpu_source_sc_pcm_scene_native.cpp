@@ -10,6 +10,7 @@
 
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <cmath>
 #include <cstring>
 #include <fstream>
@@ -2007,6 +2008,10 @@ void verify_gpu_wide_island_solver(
         require(gpu.largest_accurate_island_size()==connected_bodies &&
                 schedule.wide_tasks==(frame<2u?2u:1u) &&
                 schedule.max_partition_groups>=partition_groups &&
+                schedule.max_partition_groups<=
+                    (connected_bodies+127u)/128u &&
+                schedule.tile_bytes<=schedule.device_colored_descriptors*
+                    sizeof(native::GpuDyDistanceDescriptor) &&
                 schedule.dispatches>7u,
                 "Connected Dy islands did not execute tiled conflict partitions");
         require(producer->dy_upload_span_count()==1u &&
@@ -2028,6 +2033,231 @@ void verify_gpu_wide_island_solver(
     }
 }
 
+// A chain of zero-response contacts shares an accurate island with
+// responding joint bodies, but its contact-only actors do not enter
+// the Dy integration-writeback ordinal list. Every colored descriptor
+// must still have a tile, including those actors' contact managers.
+void verify_gpu_zero_response_wide_island(
+    fyzz::compute::Backend backend,const char* sap,const char* pcm,
+    const char* dy_shader) {
+    using namespace fyzz;
+    std::ifstream input(dy_shader,std::ios::binary);
+    require(bool(input),"Compiled wide Dy shader unavailable");
+    const std::vector<char> binary{
+        std::istreambuf_iterator<char>{input},
+        std::istreambuf_iterator<char>{}};
+    compute::ShaderBinary shader{};
+    shader.format=backend==compute::Backend::Vulkan
+        ? compute::ShaderFormat::Spirv:compute::ShaderFormat::Dxil;
+    shader.bytes.assign(binary.begin(),binary.end());
+    native::Scene cpu,gpu;
+    cpu.set_enhanced_determinism(true);
+    gpu.set_enhanced_determinism(true);
+    auto owner=std::make_unique<physx_gpu::SourceScOwnedGpuBroadphaseNative>(
+        backend,load_native_gpu_sap_shaders(backend,sap),8192u,128u,
+        std::nullopt,load_native_gpu_pcm_shaders(backend,pcm),
+        std::move(shader));
+    auto* producer=owner.get();
+    gpu.set_gpu_broadphase(std::move(owner));
+
+    constexpr unsigned joint_bodies=640u,zero_contact_bodies=1024u;
+    const auto assemble=[](native::Scene& scene) {
+        std::vector<BodyId> ids;
+        ids.reserve(joint_bodies+zero_contact_bodies);
+        RigidBodyDynamics response{};
+        response.gravity_enabled=false;
+        response.position_iterations=4u;
+        response.velocity_iterations=2u;
+        BodyId previous=0u;
+        for(unsigned i=0u;i<joint_bodies;++i) {
+            const auto body=scene.add_dynamic_box(
+                {0.35f,0.35f,0.35f},
+                {1.4f*static_cast<float>(i),0.5f,0.f},1.f);
+            ids.push_back(body);
+            scene.set_dynamics(body,response);
+            scene.set_velocity(body,{0.025f,0.f,0.f});
+            if(i)scene.create_center_distance_constraint(
+                previous,body,1.4f);
+            previous=body;
+        }
+        RigidBodyDynamics zero=response;
+        zero.max_contact_impulse=0.f;
+        for(unsigned i=0u;i<zero_contact_bodies;++i) {
+            const auto body=scene.add_dynamic_box(
+                {0.41f,0.41f,0.41f},
+                {0.75f*static_cast<float>(i),0.5f,
+                 i==0u?0.7f:1.f},1.f);
+            ids.push_back(body);
+            scene.set_dynamics(body,zero);
+            scene.set_velocity(body,{0.005f,0.f,0.f});
+        }
+        return ids;
+    };
+    const auto a=assemble(cpu),b=assemble(gpu);
+    cpu.step(1.f/120.f);
+    gpu.step(1.f/120.f);
+    const auto schedule=producer->dy_launch_stats();
+    const auto cpu_island=cpu.largest_accurate_island_size();
+    const auto gpu_island=gpu.largest_accurate_island_size();
+    std::cout<<"FYZZXYZZY_METRIC suite=sc_pcm case=zero_response_wide"
+             <<" bodies="<<b.size()
+             <<" cpu_island="<<cpu_island
+             <<" gpu_island="<<gpu_island
+             <<" cpu_contacts="<<cpu.contacts().size()
+             <<" gpu_contacts="<<gpu.contacts().size()
+             <<" wide_tasks="<<schedule.wide_tasks
+             <<" descriptors="<<schedule.device_colored_descriptors
+             <<" max_partition_groups="<<schedule.max_partition_groups
+             <<" dy_dispatches="<<schedule.dispatches
+             <<" tile_bytes="<<schedule.tile_bytes<<'\n';
+    require(cpu_island>=joint_bodies+zero_contact_bodies &&
+            gpu_island>=joint_bodies+zero_contact_bodies,
+        "Zero-response fixture did not form the intended accurate island");
+    require(schedule.wide_tasks==1u &&
+            schedule.device_colored_descriptors>=
+                joint_bodies+zero_contact_bodies-2u,
+        "Zero-response fixture did not produce wide contact/joint descriptors");
+    require(schedule.max_partition_groups>=
+                (joint_bodies+zero_contact_bodies+127u)/128u,
+        "Device Dy partition tiles omit zero-response contact endpoints");
+    require(schedule.tile_bytes>0u &&
+            schedule.tile_bytes<=schedule.device_colored_descriptors*
+                sizeof(native::GpuDyDistanceDescriptor),
+        "Device Dy partition tile metadata exceeds its source workload");
+    require(cpu.contacts().size()==gpu.contacts().size(),
+        "Device PCM changed zero-response contact publication");
+    for(std::size_t i=0u;i<b.size();++i)
+        test::compound_compare_state(gpu.body_state(b[i]),
+            cpu.body_state(a[i]),0.003f,
+            "Wide Dy zero-response contact and joint island");
+}
+
+// Hub and connected two-hub graphs exercise the source-order
+// 32-color rollover. Mixed static contact and 1D rows reserve colors
+// without writing one dynamic body from concurrent PGS lanes.
+void verify_gpu_high_degree_coloring(
+    fyzz::compute::Backend backend,const char* sap,const char* pcm,
+    const char* dy_shader,unsigned leaves=36u,
+    bool dual_hub=false,unsigned frames_override=0u) {
+    using namespace fyzz;
+    std::ifstream input(dy_shader,std::ios::binary);
+    require(bool(input),"High-degree GPU Dy shader unavailable");
+    const std::vector<char> binary{
+        std::istreambuf_iterator<char>{input},
+        std::istreambuf_iterator<char>{}};
+    compute::ShaderBinary shader{};
+    shader.format=backend==compute::Backend::Vulkan
+        ? compute::ShaderFormat::Spirv:compute::ShaderFormat::Dxil;
+    shader.bytes.assign(binary.begin(),binary.end());
+    native::Scene cpu,gpu;
+    cpu.set_enhanced_determinism(true);
+    gpu.set_enhanced_determinism(true);
+    auto owner=std::make_unique<physx_gpu::SourceScOwnedGpuBroadphaseNative>(
+        backend,load_native_gpu_sap_shaders(backend,sap),512u,128u,
+        std::nullopt,load_native_gpu_pcm_shaders(backend,pcm),
+        std::move(shader));
+    auto* producer=owner.get();
+    gpu.set_gpu_broadphase(std::move(owner));
+    const auto assemble=[leaves,dual_hub](native::Scene& scene) {
+        std::vector<BodyId> ids;
+        ids.reserve(leaves+1u+(dual_hub?1u:0u));
+        const auto fixed=scene.add_static_box(
+            {0.4f,0.4f,0.4f},{-0.72f,3.f,0.f});
+        const auto center=scene.add_dynamic_box(
+            {0.4f,0.4f,0.4f},{0.f,3.f,0.f},1.f);
+        ids.push_back(center);
+        RigidBodyDynamics dynamics{};
+        dynamics.gravity_enabled=false;
+        dynamics.position_iterations=4u;
+        dynamics.velocity_iterations=1u;
+        scene.set_dynamics(center,dynamics);
+        scene.set_velocity(center,{0.05f,0.f,0.07f});
+        scene.create_center_distance_constraint(fixed,center,0.72f);
+        BodyId second_center=0u;
+        if(dual_hub) {
+            second_center=scene.add_dynamic_box(
+                {0.4f,0.4f,0.4f},{-3.f,3.f,0.f},1.f);
+            ids.push_back(second_center);
+            scene.set_dynamics(second_center,dynamics);
+            scene.set_velocity(second_center,{-0.05f,0.f,0.07f});
+            scene.create_center_distance_constraint(
+                center,second_center,3.f);
+        }
+        for(unsigned i=0u;i<leaves;++i) {
+            const bool second=dual_hub && i>=leaves/2u;
+            const float x=second
+                ?-6.f-1.5f*static_cast<float>(i-leaves/2u)
+                :3.f+1.5f*static_cast<float>(i);
+            const auto anchor=second?second_center:center;
+            const float rest=second?(-3.f-x):x;
+            const auto body=scene.add_dynamic_box(
+                {0.3f,0.3f,0.3f},{x,3.f,0.f},1.f);
+            ids.push_back(body);
+            scene.set_dynamics(body,dynamics);
+            scene.set_velocity(body,
+                {-0.03f,0.f,i%2u ? 0.02f:-0.02f});
+            scene.create_center_distance_constraint(anchor,body,rest);
+        }
+        return ids;
+    };
+    if(dual_hub || leaves>=1024u || frames_override!=0u)
+        std::cerr<<"FYZZXYZZY_METRIC suite=sc_pcm case="<<(dual_hub?"dual_hub":"star_island")
+                 <<" spokes="<<leaves<<" phase=setup\n";
+    const auto a=assemble(cpu);
+    if(dual_hub || leaves>=1024u || frames_override!=0u)
+        std::cerr<<"FYZZXYZZY_METRIC suite=sc_pcm case="<<(dual_hub?"dual_hub":"star_island")
+                 <<" spokes="<<leaves<<" phase=cpu_assembled\n";
+    const auto b=assemble(gpu);
+    if(dual_hub || leaves>=1024u || frames_override!=0u)
+        std::cerr<<"FYZZXYZZY_METRIC suite=sc_pcm case="<<(dual_hub?"dual_hub":"star_island")
+                 <<" spokes="<<leaves<<" phase=gpu_assembled\n";
+    const unsigned frames=frames_override?frames_override:
+        leaves>=10000u?1u:leaves>=1024u?2u:leaves>=64u?1u:3u;
+    for(unsigned frame=0u;frame<frames;++frame) {
+        const auto tick=std::chrono::steady_clock::now();
+        cpu.step(1.f/120.f);
+        const auto cpu_done=std::chrono::steady_clock::now();
+        if(dual_hub || leaves>=1024u || frames_override!=0u)
+            std::cerr<<"FYZZXYZZY_METRIC suite=sc_pcm case="<<(dual_hub?"dual_hub":"star_island")
+                     <<" spokes="<<leaves
+                     <<" frame="<<frame<<" phase=cpu"
+                     <<" wall_ms="<<std::chrono::duration<double,std::milli>(
+                          cpu_done-tick).count()<<'\n';
+        gpu.step(1.f/120.f);
+        const auto gpu_done=std::chrono::steady_clock::now();
+        if(dual_hub || leaves>=1024u || frames_override!=0u)
+            std::cerr<<"FYZZXYZZY_METRIC suite=sc_pcm case="<<(dual_hub?"dual_hub":"star_island")
+                     <<" spokes="<<leaves
+                     <<" frame="<<frame<<" phase=gpu"
+                     <<" wall_ms="<<std::chrono::duration<double,std::milli>(
+                          gpu_done-cpu_done).count()<<'\n';
+        const auto schedule=producer->dy_launch_stats();
+        require(schedule.device_colored_tasks>0u &&
+                schedule.device_colored_descriptors>=leaves+1u &&
+                schedule.wide_tasks==0u &&
+                schedule.max_partition_groups==1u &&
+                schedule.tile_bytes==0u &&
+                schedule.dispatches<=2u &&
+                producer->dy_gpu_integrated_body_count()==b.size() &&
+                gpu.contacts().size()==cpu.contacts().size() &&
+                !gpu.contacts().empty() &&
+                (!dual_hub ||
+                 (gpu.largest_accurate_island_size()>=b.size() &&
+                  cpu.largest_accurate_island_size()>=a.size())),
+            "High-degree Dy task emitted empty tiled partitions");
+        for(std::size_t i=0u;i<a.size();++i)
+            test::compound_compare_state(gpu.body_state(b[i]),
+                cpu.body_state(a[i]),0.015f,
+                "GPU Dy multiwave dynamic/static constraint coloring");
+        if(frame==0u && leaves>=1024u)
+            std::cout<<"FYZZXYZZY_METRIC suite=sc_pcm case="<<(dual_hub?"dual_hub":"star_island")
+                     <<" spokes="<<leaves
+                     <<" dy_dispatches="<<schedule.dispatches
+                     <<" wide_tasks="<<schedule.wide_tasks
+                     <<" tile_bytes="<<schedule.tile_bytes<<'\n';
+    }
+}
+
 int main(int argc,char** argv) {
     try {
         require(argc>=4 && argc<=6,
@@ -2044,7 +2274,12 @@ int main(int argc,char** argv) {
                 scenario=="compound_shapes" || scenario=="compound_solver" ||
                 scenario=="sphere_solver" || scenario=="convex_plane" ||
                 scenario=="convex_finite" || scenario=="wide_islands" ||
-                scenario=="wide_islands_10k" || scenario=="free_integration",
+                scenario=="wide_islands_10k" ||
+                scenario=="zero_response_wide" ||
+                scenario=="star_island" ||
+                scenario=="dual_hub" ||
+                scenario=="star_island_10k" ||
+                scenario=="free_integration",
                 "Unknown GPU scene regression scenario");
 #ifdef FYZZXYZZY_TEST_D3D12
         constexpr auto backend=fyzz::compute::Backend::D3D12;
@@ -2112,6 +2347,27 @@ int main(int argc,char** argv) {
         if(scenario=="all" || scenario=="free_integration")
             fyzz::tests::measure_gpu_case("sc_pcm","free_integration",
                 [&]{verify_gpu_free_integration(backend,argv[1],argv[2],argv[3]);});
+        if(scenario=="zero_response_wide")
+            fyzz::tests::measure_gpu_case("sc_pcm","zero_response_wide",
+                [&]{verify_gpu_zero_response_wide_island(
+                    backend,argv[1],argv[2],argv[3]);});
+        if(scenario=="all" || scenario=="wide_islands")
+            fyzz::tests::measure_gpu_case("sc_pcm","multiwave_coloring",
+                [&]{verify_gpu_high_degree_coloring(
+                    backend,argv[1],argv[2],argv[3]);});
+        if(scenario=="all" || scenario=="wide_islands" ||
+           scenario=="star_island")
+            fyzz::tests::measure_gpu_case("sc_pcm","star_island",
+                [&]{verify_gpu_high_degree_coloring(
+                    backend,argv[1],argv[2],argv[3],1024u);});
+        if(scenario=="dual_hub")
+            fyzz::tests::measure_gpu_case("sc_pcm","dual_hub",
+                [&]{verify_gpu_high_degree_coloring(
+                    backend,argv[1],argv[2],argv[3],68u,true,1u);});
+        if(scenario=="star_island_10k")
+            fyzz::tests::measure_gpu_case("sc_pcm","star_island_10k",
+                [&]{verify_gpu_high_degree_coloring(
+                    backend,argv[1],argv[2],argv[3],10000u);});
         if(scenario=="all" || scenario=="wide_islands" || scenario=="wide_islands_10k") {
             const bool large=scenario=="wide_islands_10k";
             fyzz::tests::measure_gpu_case("sc_pcm",large ? "wide_islands_10k" : "wide_islands",

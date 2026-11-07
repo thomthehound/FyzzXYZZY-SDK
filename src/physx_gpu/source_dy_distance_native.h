@@ -856,6 +856,7 @@ private:
         degree_dynamic_.assign(bodies,0u);
         degree_static_.assign(bodies,0u);
         color_bounds_.assign(tasks.size(),0u);
+        partition_endpoint_counts_.assign(tasks.size(),0u);
         fused_tiles_={0u,tasks.size()};
         prep_tiles_={};
         body_tiles_={};
@@ -877,7 +878,7 @@ private:
                task.velocity_iterations>255u)
                 throw std::invalid_argument(
                     "Source device Dy task ranges are inconsistent");
-            std::uint32_t max_dynamic_degree=0u,max_static_degree=0u;
+            std::size_t dynamic_edges=0u,static_edges=0u;
             for(std::uint32_t i=task.descriptor_begin;
                 i<task.descriptor_end;++i) {
                 const auto& desc=descriptors[i];
@@ -888,45 +889,102 @@ private:
                     throw std::invalid_argument(
                         "Sc device descriptor has invalid endpoint classification");
                 if(flags==0x300u) {
-                    max_dynamic_degree=std::max(max_dynamic_degree,
-                        ++degree_dynamic_[desc.row0]);
-                    max_dynamic_degree=std::max(max_dynamic_degree,
-                        ++degree_dynamic_[desc.row1]);
+                    ++dynamic_edges;
+                    ++degree_dynamic_[desc.row0];
+                    ++degree_dynamic_[desc.row1];
                 }else {
+                    ++static_edges;
                     const auto body=flags&0x100u?desc.row0:desc.row1;
-                    max_static_degree=std::max(max_static_degree,
-                        ++degree_static_[body]);
+                    ++degree_static_[body];
                 }
             }
+            // First-fit dynamic coloring can skip at most the colors
+            // occupied by an edge's two endpoints. After that body
+            // reserves its own static constraints in encounter order.
+            // Taking the per-edge sum avoids combining unrelated global
+            // maximum degrees, without computing any host color.
+            std::size_t bound=0u;
+            std::size_t max_dynamic_conflicts=0u;
+            std::size_t max_static_degree=0u;
             for(std::uint32_t i=task.descriptor_begin;
                 i<task.descriptor_end;++i) {
                 const auto& desc=descriptors[i];
-                if(desc.row_count&0x100u) {
-                    degree_dynamic_[desc.row0]=0u;
-                    degree_static_[desc.row0]=0u;
-                }
-                if(desc.row_count&0x200u) {
-                    degree_dynamic_[desc.row1]=0u;
-                    degree_static_[desc.row1]=0u;
+                const auto flags=desc.row_count&0x300u;
+                if(flags==0x300u) {
+                    // Dynamic edges color before static reservations.
+                    // Count only dynamic-edge adjacency when estimating
+                    // their guaranteed conflict-free first partition.
+                    max_dynamic_conflicts=std::max(
+                        max_dynamic_conflicts,
+                        std::size_t(degree_dynamic_[desc.row0])+
+                            degree_dynamic_[desc.row1]-1u);
+                    const auto degree=std::size_t(degree_dynamic_[desc.row0])+
+                                      degree_dynamic_[desc.row1]-1u;
+                    const auto static_degree=std::max(
+                        degree_static_[desc.row0],degree_static_[desc.row1]);
+                    bound=std::max(bound,degree+static_degree);
+                }else {
+                    const auto body=flags&0x100u?desc.row0:desc.row1;
+                    max_static_degree=std::max(
+                        max_static_degree,
+                        std::size_t(degree_static_[body]));
+                    bound=std::max(bound,std::size_t(degree_static_[body]));
                 }
             }
+            // The integration ordinal list can omit bodies with
+            // zero-response contact managers. Partitioning still
+            // addresses those bodies, so count distinct dynamic
+            // descriptor endpoints before retiring their degree data.
+            std::size_t partition_endpoints=0u;
+            const auto retire_endpoint=[&](std::uint32_t body) {
+                if(degree_dynamic_[body] || degree_static_[body])
+                    ++partition_endpoints;
+                degree_dynamic_[body]=0u;
+                degree_static_[body]=0u;
+            };
+            for(std::uint32_t i=task.descriptor_begin;
+                i<task.descriptor_end;++i) {
+                const auto& desc=descriptors[i];
+                if(desc.row_count&0x100u)
+                    retire_endpoint(desc.row0);
+                if(desc.row_count&0x200u)
+                    retire_endpoint(desc.row1);
+            }
+            partition_endpoint_counts_[task_id]=
+                static_cast<std::uint32_t>(partition_endpoints);
             const auto count=task.descriptor_end-task.descriptor_begin;
-            const std::size_t bound=std::min<std::size_t>(count,
-                (max_dynamic_degree?2u*std::size_t(max_dynamic_degree)-1u:0u)+
-                max_static_degree);
+            bound=std::min<std::size_t>(count,bound);
             color_bounds_[task_id]=static_cast<std::uint32_t>(bound);
             descriptor_end=task.descriptor_end;
             partition_end=task.partition_end;
             body_end=task.body_end;
-            // A 512-way disjoint partition requires at least 512
-            // independently writable dynamic solver bodies. This keeps
-            // compact connected islands inside their one-group PGS path.
-            if(task.body_end-task.body_begin<wide_min || count<wide_min)
+            // The first dynamic partition is a maximal matching, so it
+            // contains at least dynamic_edges/max_dynamic_conflicts
+            // descriptors. Static constraints reserve colors afterward,
+            // potentially skipping otherwise free low colors; they
+            // contribute to the guarantee only for static-only tasks.
+            // High-degree stars have many bodies but one useful lane per
+            // color and must not create a quadratic tiled schedule.
+            const std::size_t parallel_width=dynamic_edges
+                ?(dynamic_edges-1u)/max_dynamic_conflicts+1u
+                :static_edges?(static_edges-1u)/max_static_degree+1u:0u;
+            const auto writable=std::size_t(task.body_end-task.body_begin);
+            const auto groups=(partition_endpoints+threads-1u)/threads;
+            // Color count multiplied by conservative workgroups must not
+            // exceed one tile per source descriptor. In particular, a
+            // collection of connected high-degree hubs cannot amplify a
+            // compact source graph into a quadratic upload and dispatch
+            // schedule merely because its first matching is wide.
+            if(writable<wide_min || count<wide_min ||
+               parallel_width<threads || bound>std::size_t(count)/groups)
                 continue;
             wide_tasks_.push_back(static_cast<std::uint32_t>(task_id));
+            // Each color has at most one descriptor per dynamic
+            // endpoint, including zero-response contact participants
+            // omitted from the integration writeback ordinal stream.
             last_schedule_.max_partition_groups=std::max(
                 last_schedule_.max_partition_groups,
-                (std::size_t(count)+threads-1u)/threads);
+                (partition_endpoints+threads-1u)/threads);
             partition_levels=std::max(partition_levels,bound);
             wide_iterations_=std::max(wide_iterations_,
                 task.position_iterations+
@@ -975,8 +1033,8 @@ private:
         partition_tiles_.resize(partition_levels);
         for(const auto id:wide_tasks_) {
             const auto& task=tasks[id];
-            const auto count=task.descriptor_end-task.descriptor_begin;
-            const auto tile_count=(std::size_t(count)+threads-1u)/threads;
+            const auto endpoints=partition_endpoint_counts_[id];
+            const auto tile_count=(std::size_t(endpoints)+threads-1u)/threads;
             for(std::uint32_t color=0u;color<color_bounds_[id];++color) {
                 auto& range=partition_tiles_[color];
                 range.count+=tile_count;
@@ -994,11 +1052,11 @@ private:
         tiles_.resize(end);
         for(const auto id:wide_tasks_) {
             const auto& task=tasks[id];
-            const auto count=task.descriptor_end-task.descriptor_begin;
+            const auto endpoints=partition_endpoint_counts_[id];
             for(std::uint32_t color=0u;color<color_bounds_[id];++color) {
                 auto& range=partition_tiles_[color];
-                for(std::uint32_t offset=0u;offset<count;) {
-                    const auto next=offset+std::min(threads,count-offset);
+                for(std::uint32_t offset=0u;offset<endpoints;) {
+                    const auto next=offset+std::min(threads,endpoints-offset);
                     tiles_[range.begin+range.count++]={id,offset,next,color};
                     offset=next;
                 }
@@ -1148,6 +1206,7 @@ private:
     std::vector<std::uint8_t> assigned_;
     std::vector<std::uint32_t> wide_tasks_;
     std::vector<std::uint32_t> degree_dynamic_,degree_static_,color_bounds_;
+    std::vector<std::uint32_t> partition_endpoint_counts_;
     std::vector<WorkTile> tiles_;
     std::vector<TileRange> partition_tiles_;
     TileRange fused_tiles_,prep_tiles_,body_tiles_;
