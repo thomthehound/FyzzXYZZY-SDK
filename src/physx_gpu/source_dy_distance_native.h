@@ -35,18 +35,24 @@ static_assert(sizeof(SourceDyPackedContactPrepNative)==64u &&
 // authorized Sc device poses omit the host pose entirely; authored edits
 // and bodies without eligible device shapes retain an explicit 28-byte pose.
 struct SourceDyPackedIntegrationNative {
-    float linear_velocity[3]{},angular_velocity[3]{};
     float sqrt_inverse_inertia[9]{};
     std::uint32_t lock_flags=0u;
     float seconds=0.0f;
     std::uint32_t active=0u,source_element=0xffffffffu;
     std::uint32_t source_shape_count=0u,pose_index=0xffffffffu;
-    // Byte offset into the stable actor-local device pool.
     std::uint32_t actor_local_offset=0xffffffffu;
+    // Prepared velocities either reuse the actor's GPU state or refer
+    // to a compact frame-local update in the single Dy source upload.
+    std::uint32_t velocity_offset=0xffffffffu;
 };
-static_assert(sizeof(SourceDyPackedIntegrationNative)==88u &&
-              offsetof(SourceDyPackedIntegrationNative,pose_index)==80u &&
-              offsetof(SourceDyPackedIntegrationNative,actor_local_offset)==84u);
+static_assert(sizeof(SourceDyPackedIntegrationNative)==68u &&
+              offsetof(SourceDyPackedIntegrationNative,pose_index)==56u &&
+              offsetof(SourceDyPackedIntegrationNative,actor_local_offset)==60u &&
+              offsetof(SourceDyPackedIntegrationNative,velocity_offset)==64u);
+struct SourceDyPreparedVelocityNative {
+    float linear[3]{},angular[3]{};
+};
+static_assert(sizeof(SourceDyPreparedVelocityNative)==24u);
 struct SourceDyHostPoseNative {
     float position[3]{},orientation[4]{};
 };
@@ -54,9 +60,13 @@ static_assert(sizeof(SourceDyHostPoseNative)==28u);
 struct SourceDyActorLocalNative {
     float position[3]{},orientation[4]{};
     float inverse_mass=0.0f;
+    // Updated by Dy integration and retained for the next frame.
+    float linear_velocity[3]{},angular_velocity[3]{};
 };
-static_assert(sizeof(SourceDyActorLocalNative)==32u &&
-              offsetof(SourceDyActorLocalNative,inverse_mass)==28u);
+static_assert(sizeof(SourceDyActorLocalNative)==56u &&
+              offsetof(SourceDyActorLocalNative,inverse_mass)==28u &&
+              offsetof(SourceDyActorLocalNative,linear_velocity)==32u &&
+              offsetof(SourceDyActorLocalNative,angular_velocity)==44u);
 
 struct SourceDyLaunchStats {
     std::size_t device_colored_tasks=0u;
@@ -76,6 +86,8 @@ struct SourceDyLaunchStats {
     std::size_t actor_local_upload_bytes=0u;
     std::size_t actor_local_upload_spans=0u;
     std::size_t reused_actor_local_poses=0u;
+    std::size_t resident_velocity_reuses=0u;
+    std::size_t prepared_velocity_upload_bytes=0u;
 };
 
 // Dy's original per-task conflict partitions and prepared 1D rows are
@@ -130,10 +142,14 @@ public:
         actor_locals_.deallocate();
     }
     void retire_rigid_actor(BodyId id) noexcept {
-        if(id<actor_local_valid_.size())actor_local_valid_[id]=0u;
+        if(id<actor_local_valid_.size()) {
+            actor_local_valid_[id]=0u;
+            actor_velocity_valid_[id]=0u;
+        }
     }
     void invalidate_after_rollback() noexcept {
         std::fill(actor_local_valid_.begin(),actor_local_valid_.end(),0u);
+        std::fill(actor_velocity_valid_.begin(),actor_velocity_valid_.end(),0u);
         if(++history_epoch_==0u) {
             std::fill(history_epochs_.begin(),history_epochs_.end(),0u);
             history_epoch_=1u;
@@ -426,8 +442,12 @@ public:
         last_schedule_.actor_local_upload_bytes=0u;
         last_schedule_.actor_local_upload_spans=0u;
         last_schedule_.reused_actor_local_poses=0u;
+        last_schedule_.resident_velocity_reuses=0u;
+        last_schedule_.prepared_velocity_upload_bytes=0u;
         pending_actor_locals_.clear();
+        prepared_velocity_updates_.clear();
         packed_integration_.reserve(integration.size());
+        prepared_velocity_updates_.reserve(integration.size());
         host_poses_.reserve(integration.size());
         std::size_t needed_actor_slots=0u;
         for(std::size_t ordinal=0u;ordinal<integration.size();++ordinal) {
@@ -453,6 +473,7 @@ public:
                     "Source Dy rigid actor local-pose pool exceeds GPU view");
             actor_local_host_.resize(capacity);
             actor_local_valid_.resize(capacity,0u);
+            actor_velocity_valid_.resize(capacity,0u);
             actor_locals_.allocateCopyPrefixAsync(
                 capacity*sizeof(SourceDyActorLocalNative)+127u,
                 actor_local_capacity_*sizeof(SourceDyActorLocalNative),
@@ -462,10 +483,6 @@ public:
         for(std::size_t ordinal=0u;ordinal<integration.size();++ordinal) {
             const auto& input=integration[ordinal];
             SourceDyPackedIntegrationNative record{};
-            std::memcpy(record.linear_velocity,input.linear_velocity,
-                        sizeof(record.linear_velocity));
-            std::memcpy(record.angular_velocity,input.angular_velocity,
-                        sizeof(record.angular_velocity));
             std::memcpy(record.sqrt_inverse_inertia,input.sqrt_inverse_inertia,
                         sizeof(record.sqrt_inverse_inertia));
             record.lock_flags=input.lock_flags;
@@ -488,13 +505,38 @@ public:
                    local.inverse_mass!=bodies[ordinal].inverse_mass)
                     throw std::logic_error(
                         "Sc actor-local inverse mass differs from Dy admission");
+                // Only the immutable mass-frame prefix participates in
+                // metadata invalidation; Dy owns the trailing velocities.
+                constexpr auto metadata_bytes=
+                    offsetof(SourceDyActorLocalNative,linear_velocity);
                 if(!actor_local_valid_[id] ||
-                   std::memcmp(&actor_local_host_[id],&local,sizeof(local))!=0) {
-                    actor_local_host_[id]=local;
+                   std::memcmp(&actor_local_host_[id],&local,metadata_bytes)!=0) {
+                    std::memcpy(&actor_local_host_[id],&local,metadata_bytes);
                     actor_local_valid_[id]=0u;
                     pending_actor_locals_.push_back(id);
                 }else
                     ++last_schedule_.reused_actor_local_poses;
+                const bool reuse_velocity=device_world_motion &&
+                    actor_velocity_valid_[id] &&
+                    std::memcmp(actor_local_host_[id].linear_velocity,
+                                input.linear_velocity,3u*sizeof(float))==0 &&
+                    std::memcmp(actor_local_host_[id].angular_velocity,
+                                input.angular_velocity,3u*sizeof(float))==0;
+                if(reuse_velocity) {
+                    ++last_schedule_.resident_velocity_reuses;
+                }else {
+                    record.velocity_offset=narrow(
+                        prepared_velocity_updates_.size());
+                    SourceDyPreparedVelocityNative prepared{};
+                    std::memcpy(prepared.linear,input.linear_velocity,
+                                sizeof(prepared.linear));
+                    std::memcpy(prepared.angular,input.angular_velocity,
+                                sizeof(prepared.angular));
+                    prepared_velocity_updates_.push_back(prepared);
+                }
+                // Every published body must explicitly reestablish its
+                // committed velocity after a successful device solve.
+                actor_velocity_valid_[id]=0u;
             }
             if(record.active && (input.active&2u)) {
                 if(!record.source_shape_count ||
@@ -518,12 +560,21 @@ public:
             throw std::overflow_error("Source Dy packed body inputs exceed address space");
         const std::size_t packed_input_bytes=integration_header_bytes+
             packed_integration_.size()*sizeof(SourceDyPackedIntegrationNative);
-        if(host_poses_.size()>
+        if(prepared_velocity_updates_.size()>
            (std::numeric_limits<std::uint32_t>::max()-packed_input_bytes)/
+               sizeof(SourceDyPreparedVelocityNative))
+            throw std::overflow_error(
+                "Source Dy prepared velocity updates exceed address space");
+        const std::size_t velocity_bytes=prepared_velocity_updates_.size()*
+            sizeof(SourceDyPreparedVelocityNative);
+        const std::size_t host_pose_begin=packed_input_bytes+velocity_bytes;
+        if(host_poses_.size()>
+           (std::numeric_limits<std::uint32_t>::max()-host_pose_begin)/
                sizeof(SourceDyHostPoseNative))
             throw std::overflow_error("Source Dy authored poses exceed address space");
-        const std::size_t mass_offset=packed_input_bytes+
+        const std::size_t mass_offset=host_pose_begin+
             host_poses_.size()*sizeof(SourceDyHostPoseNative);
+        last_schedule_.prepared_velocity_upload_bytes=velocity_bytes;
         const bool upload_body_masses=device_initial_bodies &&
             !device_world_motion;
         if(upload_body_masses &&
@@ -667,8 +718,11 @@ public:
                 std::memcpy(host_.data()+offsets[15]+20u,
                             descriptors.data(),descriptors.size_bytes());
         }
-        if(!host_poses_.empty())
+        if(!prepared_velocity_updates_.empty())
             std::memcpy(host_.data()+offsets[12]+packed_input_bytes,
+                        prepared_velocity_updates_.data(),velocity_bytes);
+        if(!host_poses_.empty())
+            std::memcpy(host_.data()+offsets[12]+host_pose_begin,
                         host_poses_.data(),last_host_pose_upload_bytes_);
         if(upload_body_masses)
             for(std::size_t i=0;i<bodies.size();++i)
@@ -767,13 +821,24 @@ public:
                 source_allocation_bytes(convex_vertex_count,12u),
                 alignment_,6u,compute::BufferAccess::Read,
                 params[27],max_view_));
-        for(auto& record:packed_integration_)
+        for(auto& record:packed_integration_) {
             if(record.actor_local_offset!=invalid) {
                 const auto offset=std::size_t(actor_local_bias)+
                     std::size_t(record.actor_local_offset)*
                         sizeof(SourceDyActorLocalNative);
                 record.actor_local_offset=narrow(offset);
             }
+            if(record.velocity_offset!=invalid)
+                record.velocity_offset=narrow(
+                    std::size_t(params[28])+offsets[12]+packed_input_bytes+
+                    std::size_t(record.velocity_offset)*
+                        sizeof(SourceDyPreparedVelocityNative));
+            if(record.pose_index!=invalid)
+                record.pose_index=narrow(
+                    std::size_t(params[28])+offsets[12]+host_pose_begin+
+                    std::size_t(record.pose_index)*
+                        sizeof(SourceDyHostPoseNative));
+        }
         if(!packed_integration_.empty())
             std::memcpy(host_.data()+offsets[12]+integration_header_bytes,
                         packed_integration_.data(),
@@ -828,6 +893,8 @@ public:
             dispatch.buffers[2].access=integrates ? compute::BufferAccess::ReadWrite
                                                  : compute::BufferAccess::Read;
             dispatch.buffers[3].access=integrates ? compute::BufferAccess::Write
+                                                 : compute::BufferAccess::Read;
+            dispatch.buffers[5].access=integrates ? compute::BufferAccess::ReadWrite
                                                  : compute::BufferAccess::Read;
             params[10]=(iteration<<4u)|static_cast<std::uint32_t>(phase)|
                 (compact_friction?0x20000000u:0u)|
@@ -1429,7 +1496,8 @@ private:
     std::vector<SourceDyPackedIntegrationNative> packed_integration_;
     std::vector<SourceDyHostPoseNative> host_poses_;
     std::vector<SourceDyActorLocalNative> actor_local_host_;
-    std::vector<std::uint8_t> actor_local_valid_;
+    std::vector<std::uint8_t> actor_local_valid_,actor_velocity_valid_;
+    std::vector<SourceDyPreparedVelocityNative> prepared_velocity_updates_;
     std::vector<std::uint32_t> pending_actor_locals_;
     std::vector<SourceSapUpload> actor_local_uploads_;
     std::size_t actor_local_capacity_=0u;
