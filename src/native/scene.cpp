@@ -8296,7 +8296,9 @@ void Scene::solve_gpu_distance_constraints(float seconds) {
         auto& input=gpu_dy_integration_inputs_[actor.solver_row_index];
         pack_integration(id,actor,input);
         pack(input.linear_velocity,row.data.linear_velocity);
-        pack(input.angular_velocity,row.data.angular_velocity);
+        // GPU preintegration clamps and applies gyroscopic correction
+        // before masking angular axes, just like CPU source preintegration.
+        pack(input.angular_velocity,actor.angular_velocity);
         for(std::size_t axis=0;axis<3u;++axis) {
             const auto& inertia=row.data.sqrt_inverse_inertia[axis];
             input.sqrt_inverse_inertia[axis*3u]=inertia.x;

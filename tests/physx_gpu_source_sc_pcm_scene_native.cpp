@@ -1483,7 +1483,11 @@ void verify_gpu_distance_solver(
         d.velocity_iterations=2;
         d.linear_damping=0.0f;
         d.angular_damping=0.0f;
-        if(i==0u)d.lock_flags=LockAngularX;
+        if(i==0u) {
+            d.lock_flags=LockAngularX;
+            d.max_angular_velocity=1.0f;
+            d.gyroscopic_forces_enabled=true;
+        }
         cpu.set_dynamics(ids_cpu[i],d);
         gpu.set_dynamics(ids_gpu[i],d);
     }
@@ -1517,6 +1521,10 @@ void verify_gpu_distance_solver(
         fixed_gpu,anchored_gpu,3.8f);
     cpu.set_velocity(ids_cpu[0],{0.4f,0.2f,0.0f});
     gpu.set_velocity(ids_gpu[0],{0.4f,0.2f,0.0f});
+    // The original X angular component affects speed clamping and
+    // gyroscopic torque before the final LockAngularX projection.
+    cpu.set_angular_velocity(ids_cpu[0],{10.0f,1.0f,0.0f});
+    gpu.set_angular_velocity(ids_gpu[0],{10.0f,1.0f,0.0f});
     cpu.set_velocity(ids_cpu[2],{-0.6f,0.0f,0.0f});
     gpu.set_velocity(ids_gpu[2],{-0.6f,0.0f,0.0f});
     std::size_t previous_cached=0u;
@@ -1589,6 +1597,8 @@ void verify_gpu_distance_solver(
             require(std::fabs(expected.position.x-actual.position.x)<0.001f &&
                     std::fabs(expected.position.y-actual.position.y)<0.001f &&
                     std::fabs(expected.velocity.x-actual.velocity.x)<0.001f &&
+                    std::fabs(expected.angular_velocity.y-
+                              actual.angular_velocity.y)<0.001f &&
                     std::fabs(expected.angular_velocity.z-
                               actual.angular_velocity.z)<0.001f &&
                     std::fabs(expected.orientation.x-actual.orientation.x)<0.001f &&
