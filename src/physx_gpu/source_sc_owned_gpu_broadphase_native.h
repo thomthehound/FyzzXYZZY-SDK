@@ -286,15 +286,16 @@ public:
         // Body integration also covers shapes without a device target.
         for(auto& input:integration) {
             if(input.active&16u)continue;
+            const auto dy_flags=input.active&32u;
             if(!input.active || input.source_element==0xffffffffu) {
-                input.active&=1u;
+                input.active=(input.active&1u)|dy_flags;
                 continue;
             }
             // Authorization is consumed by this device submission. Read
             // it before obtaining the writable ElementSim handle.
             const bool resident=(input.active&4u)!=0u &&
                 producer_->has_authorized_device_cached_pose(input.source_element);
-            input.active=1u|(resident?2u:0u);
+            input.active=1u|(resident?2u:0u)|dy_flags;
             input.source_element=producer_->device_shape_cache_handle(input.source_element);
             if(input.source_element==0xffffffffu) {
                 input.source_shape_count=0u;
