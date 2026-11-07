@@ -8256,6 +8256,22 @@ void Scene::solve_gpu_distance_constraints(float seconds) {
                                    GpuDyBodyIntegrationInput& input) {
         input.source_actor=id;
         input.source_inverse_mass=actor.inverse_mass;
+        const auto& d=actor.dynamics;
+        input.linear_damping=d.linear_damping;
+        input.angular_damping=d.angular_damping;
+        input.max_linear_speed_squared=d.max_linear_velocity*d.max_linear_velocity;
+        input.max_angular_speed_squared=d.max_angular_velocity*d.max_angular_velocity;
+        pack(input.inverse_inertia_local,actor.inverse_inertia_local);
+        input.dynamics_flags=(d.gravity_enabled?1u:0u)|
+            (d.gyroscopic_forces_enabled?2u:0u);
+        pack(input.pending_linear_velocity_delta,
+             actor.pending_linear_velocity_delta);
+        pack(input.pending_linear_acceleration,
+             actor.pending_linear_acceleration);
+        pack(input.pending_angular_velocity_delta,
+             actor.pending_angular_velocity_delta);
+        pack(input.pending_angular_acceleration,
+             actor.pending_angular_acceleration);
         pack(input.position,mass_position(actor));
         const auto mass_q=mass_orientation(actor);
         input.orientation[0]=mass_q.x;input.orientation[1]=mass_q.y;
@@ -8453,8 +8469,19 @@ void Scene::solve_gpu_distance_constraints(float seconds) {
         gpu_dy_patches_,gpu_dy_manifolds_,gpu_dy_contact_order_,
         gpu_dy_contact_prep_pairs_,
         gpu_dy_integration_inputs_,gpu_dy_integrated_poses_,true,
-        gpu_dy_friction_impulses_,true,true);
+        gpu_dy_friction_impulses_,true,true,true);
     gpu_dy_pose_ready_=true;
+    const auto consume_preintegration=[this](BodyId id) {
+        auto& actor=actors_[id];
+        actor.pending_angular_velocity_delta={};
+        actor.pending_linear_velocity_delta={};
+        if(!actor.dynamics.retain_accelerations) {
+            actor.pending_linear_acceleration={};
+            actor.pending_angular_acceleration={};
+        }
+    };
+    for(const BodyId id:solver_active_ids_)consume_preintegration(id);
+    for(const BodyId id:gpu_dy_free_ids_)consume_preintegration(id);
     // Dy keeps transient PGS deltas on device. Sc receives world-space
     // final and position-phase velocities needed by its task continuations.
     for(std::size_t i=0;i<solver_contact_points_.size();++i)
@@ -10053,6 +10080,16 @@ void Scene::prepare_unconstrained_velocities(float seconds) {
         auto& actor=actors_[accurate_island_nodes_[index]];
         if(actor.sleeping)continue;
         const auto& d=actor.dynamics;
+        if(gpu_broadphase_ && gpu_broadphase_->has_gpu_dy_distance()) {
+            if(d.gyroscopic_forces_enabled && !actor.angular_inertia_available)
+                throw std::logic_error(
+                    "Native gyroscopic motion requires representable inertia");
+            // Velocity mods remain authoritative until the device solve
+            // succeeds. The frame journal restores them on rejection.
+            step_checkpoint_.save_motion(*this,accurate_island_nodes_[index]);
+            dirty_=true;
+            continue;
+        }
         // ScBodySim::updateForces runs at ScPipeline::beforeSolver:
         // per-step velocity + per-second acceleration*dt are applied
         // before Dy::bodyCoreComputeUnconstrainedVelocity damping.
@@ -10168,15 +10205,27 @@ void Scene::integrate_solver_task(
             // solve. For no-contact bodies this is also their final
             // velocity publication; active solver bodies were already
             // masked by publish_solver_bodies().
-            lock_linear_axes(actor.velocity,actor.dynamics.lock_flags);
-            Vec3 motion_linear = actor.velocity;
-            Vec3 motion_angular = actor.angular_velocity;
             // Scene clock increments in advance_collision_internal; only
             // this frame's actual contact participants own motion snapshots.
             const bool solved_contact =
                 actor.solver_row_generation==solver_preparation_generation_ &&
                 prepared_solver_row(id).prepared_generation==
                     solver_preparation_generation_;
+            if(gpu_dy_pose_ready_ && !solved_contact) {
+                if(free_index>=task.gpu_free_end ||
+                   gpu_dy_free_ids_[free_index]!=id)
+                    throw std::logic_error(
+                        "Source GPU free-body velocity publication order invalid");
+                const auto& result=gpu_dy_integration_inputs_[
+                    solver_rows_.size()+free_index];
+                actor.velocity={result.linear_velocity[0],
+                    result.linear_velocity[1],result.linear_velocity[2]};
+                actor.angular_velocity={result.angular_velocity[0],
+                    result.angular_velocity[1],result.angular_velocity[2]};
+            }
+            lock_linear_axes(actor.velocity,actor.dynamics.lock_flags);
+            Vec3 motion_linear = actor.velocity;
+            Vec3 motion_angular = actor.angular_velocity;
             if(solved_contact && gpu_dy_pose_ready_) {
                 const auto& result=gpu_dy_bodies_[actor.solver_row_index];
                 motion_linear=result.position_linear_velocity();

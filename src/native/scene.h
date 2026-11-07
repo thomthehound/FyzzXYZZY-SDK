@@ -175,14 +175,23 @@ struct GpuDyBodyIntegrationInput {
     // Stable Sc actor identity, independent of transient Dy row indices.
     std::uint32_t source_actor=0xffffffffu;
     float source_inverse_mass=0.0f;
+    float linear_damping=0.0f,angular_damping=0.0f;
+    float max_linear_speed_squared=0.0f,max_angular_speed_squared=0.0f;
+    float inverse_inertia_local[3]{};
+    std::uint32_t dynamics_flags=0u;
+    float pending_linear_velocity_delta[3]{},pending_linear_acceleration[3]{};
+    float pending_angular_velocity_delta[3]{},pending_angular_acceleration[3]{};
 };
-static_assert(sizeof(GpuDyBodyIntegrationInput)==144u &&
+static_assert(sizeof(GpuDyBodyIntegrationInput)==224u &&
               offsetof(GpuDyBodyIntegrationInput,lock_flags)==88u &&
               offsetof(GpuDyBodyIntegrationInput,mass_local_position)==104u &&
               offsetof(GpuDyBodyIntegrationInput,mass_local_orientation)==116u &&
               offsetof(GpuDyBodyIntegrationInput,source_shape_count)==132u &&
               offsetof(GpuDyBodyIntegrationInput,source_actor)==136u &&
-              offsetof(GpuDyBodyIntegrationInput,source_inverse_mass)==140u);
+              offsetof(GpuDyBodyIntegrationInput,source_inverse_mass)==140u &&
+              offsetof(GpuDyBodyIntegrationInput,linear_damping)==144u &&
+              offsetof(GpuDyBodyIntegrationInput,dynamics_flags)==172u &&
+              offsetof(GpuDyBodyIntegrationInput,pending_linear_velocity_delta)==176u);
 struct GpuDyIntegratedPose {
     float position[3]{},orientation[4]{};
     std::uint32_t valid=0u;
