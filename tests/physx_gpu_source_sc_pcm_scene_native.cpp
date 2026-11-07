@@ -2297,8 +2297,9 @@ void verify_gpu_high_degree_coloring(
                 schedule.wide_tasks==0u &&
                 schedule.max_partition_groups==1u &&
                 schedule.tile_bytes==0u &&
-                schedule.dispatches==1u &&
-                schedule.device_initialization_dispatches==0u &&
+                schedule.dispatches==(b.size()<=128u?1u:2u) &&
+                schedule.device_initialization_dispatches==
+                    (b.size()<=128u?0u:1u) &&
                 producer->dy_gpu_integrated_body_count()==b.size() &&
                 gpu.contacts().size()==cpu.contacts().size() &&
                 !gpu.contacts().empty() &&

@@ -715,11 +715,14 @@ public:
                 group+=count;
             }
         };
-        // Color consumes its own task dispatch before any PGS work;
-        // a single compact task has a workgroup barrier before its solve.
-        // Multiple compact task groups have no device-wide barrier.
+        // The coloring dispatch reserves additional workgroups for
+        // parallel body initialization, without another submission.
+        // Small single-task scenes initialize within their fused group.
+        // Large compact tasks and independent compact islands use a
+        // separate ordered dispatch rather than serializing body writes.
         if(device_initial_bodies && !bodies.empty() &&
-           wide_tasks_.empty() && tasks.size()!=1u) {
+           wide_tasks_.empty() &&
+           (tasks.size()!=1u || bodies.size()>128u)) {
             const auto before=last_schedule_.dispatches;
             launch(Launch::InitializeBodies,
                 {0u,(bodies.size()+127u)/128u});
@@ -727,7 +730,8 @@ public:
                 last_schedule_.dispatches-before;
         }
         if(device_partitions && !wide_tasks_.empty())
-            launch(Launch::Color,{0u,tasks.size()});
+            launch(Launch::Color,{0u,tasks.size()+
+                (device_initial_bodies ? (bodies.size()+127u)/128u : 0u)});
         launch(Launch::Fused,fused_tiles_);
         if(!wide_tasks_.empty()) {
             // The existing arena write dependencies order each dispatch

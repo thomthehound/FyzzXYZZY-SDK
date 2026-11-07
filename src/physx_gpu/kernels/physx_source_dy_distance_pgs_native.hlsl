@@ -738,23 +738,26 @@ void main(uint3 group:SV_GroupID,uint3 lane:SV_GroupThreadID) {
         bodies=uint2(begin,min(begin+128u,iter));
     } else {
         const uint4 schedule=arena.Load4(p.integrationBias+16u);
-        // A wide schedule already dispatches one color group per task.
-        // Compact single-task scenes initialize inside their fused group.
-        // The remaining compact multi-task case retains the ordered
-        // initialization dispatch: independent groups cannot synchronize
-        // before another group's solver reads its body state.
-        if(schedule.z!=0u &&
-           (phase==colorTile ||
-            (fused && !precolored && schedule.z==1u))) {
+        // Color groups consume [0, taskCount). Additional groups in that
+        // SAME dispatch initialize distinct body blocks in parallel.
+        // No solver reads body state until the next ordered dispatch.
+        if(phase==colorTile && index>=schedule.z) {
+            const uint ordinal=(index-schedule.z)*128u+lane.x;
+            const uint source=arena.Load(p.integrationBias+36u);
+            if(source!=0u && ordinal<p.bodyCount)
+                initializeSolverBody(ordinal,source);
+            return;
+        }
+        // Compact single-task scenes can initialize up to one workgroup
+        // of bodies before their fused PGS. Larger or independent tasks
+        // use a separate initialization dispatch for global ordering.
+        if(fused && !precolored && schedule.z==1u &&
+           p.bodyCount<=128u) {
             const uint source=arena.Load(p.integrationBias+36u);
             if(source!=0u) {
-                const uint batches=(p.bodyCount+127u)/128u;
-                for(uint batch=index;batch<batches;batch+=schedule.z) {
-                    const uint ordinal=batch*128u+lane.x;
-                    if(ordinal<p.bodyCount)
-                        initializeSolverBody(ordinal,source);
-                }
-                if(fused)AllMemoryBarrierWithGroupSync();
+                if(lane.x<p.bodyCount)
+                    initializeSolverBody(lane.x,source);
+                AllMemoryBarrierWithGroupSync();
             }
         }
         if(phase==publishErrors) {
