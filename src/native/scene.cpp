@@ -7375,7 +7375,13 @@ void Scene::prepare_constraints(float seconds) {
                 gpu.inverse_mass_a=mass0;
                 gpu.inverse_mass_b=mass1;
                 gpu.reserved=2u;
-                if(i==0u)gpu.applied_force=std::bit_cast<float>(source_index);
+                if(i==0u) {
+                    gpu.applied_force=std::bit_cast<float>(source_index);
+                    // The device verifies both source slot and generation
+                    // before replacing these transient admission words.
+                    gpu.constant=std::bit_cast<float>(input.source_slot);
+                    gpu.unbiased_constant=std::bit_cast<float>(input.source_generation);
+                }
             }
             continue;
         }
