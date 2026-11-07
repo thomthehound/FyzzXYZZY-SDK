@@ -15,7 +15,7 @@
 namespace fyzz::physx_gpu {
 
 struct SourceScContactGraphPairNative {
-    native::BodyId body_a,body_b;
+    BodyId body_a,body_b;
     std::uint32_t dynamic_mask,edge;
 };
 static_assert(sizeof(SourceScContactGraphPairNative)==16u);
