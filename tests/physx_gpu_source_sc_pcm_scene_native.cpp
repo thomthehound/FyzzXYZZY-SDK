@@ -1634,10 +1634,10 @@ void verify_gpu_distance_solver(
     follower_dynamics.angular_damping=0.0f;
     cpu.set_dynamics(follower_cpu,follower_dynamics);
     gpu.set_dynamics(follower_gpu,follower_dynamics);
-    cpu.create_anchored_distance_constraint(
+    const auto moving_cpu=cpu.create_anchored_distance_constraint(
         kinematic_cpu,follower_cpu,
         {0.f,0.2f,0.f},{0.f,-0.2f,0.f},3.f);
-    gpu.create_anchored_distance_constraint(
+    const auto moving_gpu=gpu.create_anchored_distance_constraint(
         kinematic_gpu,follower_gpu,
         {0.f,0.2f,0.f},{0.f,-0.2f,0.f},3.f);
     for(unsigned frame=0u;frame<4u;++frame) {
@@ -1663,6 +1663,10 @@ void verify_gpu_distance_solver(
             "GPU 1D joint ignored kinematic target linear/angular velocity");
     }
 
+    // End the moving-kinematic fixture before inspecting exact sparse
+    // upload counts for an unrelated dynamic joint's source slot.
+    cpu.retire_constraint(moving_cpu);
+    gpu.retire_constraint(moving_gpu);
     // Sc IDTracker recycles the same constraint slot with a new generation.
     // The already-resident old definition must not alias a different
     // authored frame or distance, even when the bodies remain unchanged.
@@ -1676,10 +1680,10 @@ void verify_gpu_distance_solver(
         cpu.step(dt);
         gpu.step(dt);
         const auto stats=producer->dy_launch_stats();
-        if(!(stats.device_joint_geometry_count==4u &&
+        if(!(stats.device_joint_geometry_count==3u &&
              stats.device_joint_metadata_upload_bytes==
                  (frame==0u?sizeof(native::GpuDyJointInput):0u) &&
-             stats.device_joint_metadata_reuses==(frame==0u?3u:4u)))
+             stats.device_joint_metadata_reuses==(frame==0u?2u:3u)))
             throw std::runtime_error(
                 "Recycled native joint slot residency mismatch: frame="+
                 std::to_string(frame)+
