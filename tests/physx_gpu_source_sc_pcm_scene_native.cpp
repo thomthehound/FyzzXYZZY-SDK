@@ -1851,6 +1851,7 @@ void verify_gpu_free_integration(
         scene.set_velocity(bodies.front(),{0.f,-2.5f,0.f});
         RigidBodyDynamics free_motion{};
         free_motion.gravity_enabled=false;
+        free_motion.angular_damping=0.0f;
         free_motion.lock_flags=LockLinearZ|LockAngularX;
         for(unsigned i=1;i<=260u;++i) {
             const float x=3.f*static_cast<float>(i);
@@ -1866,11 +1867,13 @@ void verify_gpu_free_integration(
             compound,{0.2f,0.3f,0.4f},{{-0.5f,0.f,0.f},{}});
         scene.attach_sphere(compound,0.4f,{{0.7f,0.4f,0.f},{}});
         scene.update_mass_properties(compound,1.f);
-        scene.set_dynamics(compound,free_motion);
+        RigidBodyDynamics damped_motion=free_motion;
+        damped_motion.angular_damping=0.05f;
+        scene.set_dynamics(compound,damped_motion);
         scene.set_angular_velocity(compound,{0.f,0.5f,0.9f});
         bodies.push_back(compound);
         const auto shapeless=scene.create_body({{0.f,6.f,0.f},{}},true);
-        scene.set_dynamics(shapeless,free_motion);
+        scene.set_dynamics(shapeless,damped_motion);
         scene.set_velocity(shapeless,{0.4f,-0.3f,0.f});
         bodies.push_back(shapeless);
         return bodies;
@@ -1880,6 +1883,12 @@ void verify_gpu_free_integration(
     const auto actual=assemble(gpu,actual_shape);
     bool touched=false,released=false;
     for(unsigned frame=0;frame<12u;++frame) {
+        if(frame==7u) {
+            // An authored change to a steady free body must overwrite the
+            // previous GPU velocity without changing its stable actor ID.
+            cpu.set_velocity(expected[2],{1.f,0.7f,1.f});
+            gpu.set_velocity(actual[2],{1.f,0.7f,1.f});
+        }
         if(frame==4u) {
             // Recenter the compound and change its principal mass frame.
             // Sc's authored edit must replace exactly this GPU actor's
@@ -1905,6 +1914,26 @@ void verify_gpu_free_integration(
                 "GPU Dy did not integrate every active body in one upload");
         const auto resident=producer->dy_resident_pose_count();
         const auto metadata=producer->dy_launch_stats();
+        constexpr auto velocity_bytes=
+            sizeof(physx_gpu::SourceDyPreparedVelocityNative);
+        require(metadata.prepared_velocity_updated_bodies+
+                    metadata.resident_velocity_reuses==actual.size() &&
+                metadata.prepared_velocity_upload_bytes>=
+                    metadata.prepared_velocity_updated_bodies*sizeof(float) &&
+                metadata.prepared_velocity_upload_bytes<=
+                    metadata.prepared_velocity_updated_bodies*velocity_bytes &&
+                (frame==0u
+                    ? metadata.prepared_velocity_upload_bytes==
+                          actual.size()*velocity_bytes &&
+                      metadata.resident_velocity_reuses==0u
+                    : metadata.resident_velocity_reuses>=
+                          (frame==7u?259u:260u)) &&
+                (frame==0u || metadata.prepared_velocity_updated_bodies==0u ||
+                 metadata.prepared_velocity_upload_bytes<
+                     metadata.prepared_velocity_updated_bodies*velocity_bytes) &&
+                (frame!=7u ||
+                 metadata.prepared_velocity_updated_bodies>=2u),
+            "Native Dy did not retain and compact exact GPU velocities");
         require((frame==0u
                     ? metadata.actor_local_upload_bytes==
                           actual.size()*sizeof(physx_gpu::SourceDyActorLocalNative) &&
@@ -1983,6 +2012,12 @@ void verify_gpu_free_integration(
     cpu.step(1.f/30.f);
     gpu.step(1.f/30.f);
     const auto after_replacement=producer->dy_launch_stats();
+    require(after_replacement.prepared_velocity_updated_bodies+
+                after_replacement.resident_velocity_reuses==actual.size() &&
+            after_replacement.prepared_velocity_upload_bytes<=
+                after_replacement.prepared_velocity_updated_bodies*
+                    sizeof(physx_gpu::SourceDyPreparedVelocityNative),
+        "Retired native body contaminated resident velocity publication");
     require(after_replacement.actor_local_upload_bytes==
                 sizeof(physx_gpu::SourceDyActorLocalNative) &&
             after_replacement.actor_local_upload_spans==1u &&

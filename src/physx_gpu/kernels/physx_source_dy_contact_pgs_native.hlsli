@@ -208,10 +208,8 @@ float3 prepSlop(float3 value,float slop) {
 uint prepBodyOffset(uint source,uint offset) {
     if((source&1u)==0u)return p.prepBias+source+offset;
     const uint ordinal=source>>1u;
-    const uint base=p.integrationBias+40u+ordinal*88u;
-    if(offset==12u)return base;
-    if(offset==24u)return base+12u;
-    if(offset>=36u && offset<=60u)return base+offset-12u;
+    const uint base=p.integrationBias+40u+ordinal*68u;
+    if(offset>=36u && offset<=60u)return base+offset-36u;
     if(offset==72u)return p.bodyBias+ordinal*52u+48u;
     return base+offset;
 }
@@ -224,10 +222,14 @@ bool prepBodyPose(uint source,out float3 position,out float4 orientation) {
         orientation=asfloat(arena.Load4(base+80u));
         return all(isfinite(position)) && all(isfinite(orientation));
     }
-    const uint input=p.integrationBias+40u+(source>>1u)*88u;
+    const uint input=p.integrationBias+40u+(source>>1u)*68u;
     return sourceDyMassPose(input,position,orientation);
 }
 float3 prepBody3(uint source,uint offset) {
+    if((source&1u)!=0u && (offset==12u || offset==24u)) {
+        const uint input=p.integrationBias+40u+(source>>1u)*68u;
+        return sourceDyPreparedVelocity(input,offset==24u);
+    }
     return asfloat(arena.Load3(prepBodyOffset(source,offset)));
 }
 float prepBodyFloat(uint source,uint offset) {
