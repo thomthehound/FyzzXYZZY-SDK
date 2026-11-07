@@ -951,19 +951,18 @@ void verify_gpu_coupled_solver(
         const auto resident=producer->dy_resident_pose_count();
         const auto host_pose_bytes=producer->dy_host_pose_upload_bytes();
         require(integrated>=3u && resident<=integrated &&
-                host_pose_bytes==(integrated-resident)*
-                    sizeof(physx_gpu::SourceDyHostPoseNative),
+                host_pose_bytes==0u,
             "GPU Dy resident contact poses have inconsistent transfer accounting");
         if(frame==0u)
             require(resident==0u,
                 "First Sc contact solve reused an unauthorized device pose");
         else if(frame==6u)
             require(resident>=2u && resident<integrated &&
-                    host_pose_bytes>=sizeof(physx_gpu::SourceDyHostPoseNative),
+                    producer->dy_launch_stats().actor_local_upload_bytes>=
+                        sizeof(physx_gpu::SourceDyActorLocalNative),
                 "Authored Sc contact pose did not invalidate only its device owner");
         else
-            require(resident>=2u && host_pose_bytes<=
-                    sizeof(physx_gpu::SourceDyHostPoseNative),
+            require(resident>=2u && host_pose_bytes==0u,
                 "Active GPU contact bodies still upload authored mass poses");
         const auto [uploaded,downloaded]=producer->dy_distance_transfer_bytes();
         const auto schedule=producer->dy_launch_stats();
@@ -1720,18 +1719,18 @@ void verify_sphere_gpu_solver(
         const auto resident=producer->dy_resident_pose_count();
         const auto uploaded=producer->dy_host_pose_upload_bytes();
         require(integrated==gpu_ids.size() && resident<=integrated &&
-                uploaded==(integrated-resident)*
-                    sizeof(physx_gpu::SourceDyHostPoseNative),
+                uploaded==0u,
             "GPU sphere mass poses have inconsistent source upload accounting");
         if(frame==0u)
             require(resident==0u,
                 "New sphere actors reused unauthorised device mass poses");
         else if(frame==3u)
-            require(resident<integrated && uploaded>0u,
+            require(resident<integrated &&
+                    producer->dy_launch_stats().actor_local_upload_bytes>=
+                        sizeof(physx_gpu::SourceDyActorLocalNative),
                 "Authored sphere quaternion did not invalidate its device pose");
         else
-            require(resident>=2u && uploaded<=
-                    sizeof(physx_gpu::SourceDyHostPoseNative),
+            require(resident>=2u && uploaded==0u,
                 "Sphere contact preparation still uploads mass poses");
         require(cpu.contacts().size()==gpu.contacts().size() &&
                 cpu.solved_normal_impulses().size()==
@@ -2048,10 +2047,12 @@ void verify_gpu_free_integration(
                        metadata.actor_local_upload_bytes>=resident_record_bytes)),
             transfer_error.c_str());
         require(resident<=actual.size() &&
-                producer->dy_host_pose_upload_bytes()==
-                    (actual.size()-resident)*28u &&
+                producer->dy_host_pose_upload_bytes()==0u &&
                 (frame==0u?resident==0u:resident>=260u),
                 "GPU Dy did not retain authorized Sc poses across frames");
+        if(frame==1u)
+            require(resident==actual.size(),
+                "Shape-less native rigid actor did not reuse its GPU world pose");
         require(cpu.contacts().size()==gpu.contacts().size(),
                 "Device-integrated free body changed contact admission");
         const bool contacts=producer->dy_pcm_device_contact_rows()!=0u;

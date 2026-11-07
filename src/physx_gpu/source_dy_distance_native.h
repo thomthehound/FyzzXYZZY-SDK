@@ -66,7 +66,7 @@ static_assert(sizeof(SourceDyHostPoseNative)==28u);
 struct SourceDyActorLocalNative {
     float position[3]{},orientation[4]{};
     float inverse_mass=0.0f;
-    // Stable authored dynamics precede the GPU-owned velocity tail.
+    // Stable authored dynamics precede GPU-owned motion and sleep state.
     float linear_damping=0.0f,angular_damping=0.0f;
     float max_linear_speed_squared=0.0f,max_angular_speed_squared=0.0f;
     float inverse_inertia_local[3]{};
@@ -76,8 +76,10 @@ struct SourceDyActorLocalNative {
     // after a validated device solve for rollback and public queries.
     float wake_counter=0.4f;
     float sleep_linear_acc[3]{},sleep_angular_acc[3]{};
+    // Dy integrates the actor frame independently of attached shape storage.
+    float world_position[3]{},world_orientation[4]{};
 };
-static_assert(sizeof(SourceDyActorLocalNative)==116u &&
+static_assert(sizeof(SourceDyActorLocalNative)==144u &&
               offsetof(SourceDyActorLocalNative,inverse_mass)==28u &&
               offsetof(SourceDyActorLocalNative,linear_damping)==32u &&
               offsetof(SourceDyActorLocalNative,dynamics_flags)==60u &&
@@ -85,7 +87,9 @@ static_assert(sizeof(SourceDyActorLocalNative)==116u &&
               offsetof(SourceDyActorLocalNative,angular_velocity)==76u &&
               offsetof(SourceDyActorLocalNative,wake_counter)==88u &&
               offsetof(SourceDyActorLocalNative,sleep_linear_acc)==92u &&
-              offsetof(SourceDyActorLocalNative,sleep_angular_acc)==104u);
+              offsetof(SourceDyActorLocalNative,sleep_angular_acc)==104u &&
+              offsetof(SourceDyActorLocalNative,world_position)==116u &&
+              offsetof(SourceDyActorLocalNative,world_orientation)==128u);
 
 struct SourceDyLaunchStats {
     std::size_t device_colored_tasks=0u;
@@ -171,11 +175,13 @@ public:
         if(id<actor_local_valid_.size()) {
             actor_local_valid_[id]=0u;
             actor_velocity_valid_[id]=0u;
+            actor_pose_valid_[id]=0u;
         }
     }
     void invalidate_after_rollback() noexcept {
         std::fill(actor_local_valid_.begin(),actor_local_valid_.end(),0u);
         std::fill(actor_velocity_valid_.begin(),actor_velocity_valid_.end(),0u);
+        std::fill(actor_pose_valid_.begin(),actor_pose_valid_.end(),0u);
         if(++history_epoch_==0u) {
             std::fill(history_epochs_.begin(),history_epochs_.end(),0u);
             history_epoch_=1u;
@@ -483,8 +489,8 @@ public:
         const std::size_t inline_body_bytes=
             inline_bodies_.size()*sizeof(native::GpuDyContactPrepBody);
         const std::size_t compact_prep_bytes=static_begin+inline_body_bytes;
-        // Contact/friction prep and integrateCore consume the same
-        // authorized Sc mass pose. No CPU pose mirror for contact bodies.
+        // Contact/friction prep and integrateCore share one actor world pose.
+        // Sc retains the completed-frame mirror for publication and rollback.
         packed_integration_.clear();
         host_poses_.clear();
         last_resident_pose_count_=0u;
@@ -528,6 +534,7 @@ public:
             actor_local_host_.resize(capacity);
             actor_local_valid_.resize(capacity,0u);
             actor_velocity_valid_.resize(capacity,0u);
+            actor_pose_valid_.resize(capacity,0u);
             actor_locals_.allocateCopyPrefixAsync(
                 capacity*sizeof(SourceDyActorLocalNative)+127u,
                 actor_local_capacity_*sizeof(SourceDyActorLocalNative),
@@ -542,7 +549,7 @@ public:
             record.lock_flags=input.lock_flags;
             record.seconds=input.seconds;
             record.active=(input.active&1u)|
-                (device_world_motion && (input.active&1u) ?8u:0u);
+                (device_world_motion && (input.active&1u) ?(8u|128u):0u);
             record.source_element=input.source_element;
             record.source_shape_count=input.source_shape_count;
             record.counted_interactions=input.counted_interactions;
@@ -580,6 +587,28 @@ public:
                     pending_actor_locals_.push_back(id);
                 }else
                     ++last_schedule_.reused_actor_local_poses;
+                // Authored and restored poses re-seed only their actor slot.
+                // Unchanged integrated poses remain the next device input.
+                if(device_world_motion) {
+                    const bool reused=actor_pose_valid_[id] &&
+                        std::memcmp(actor_local_host_[id].world_position,
+                            input.actor_position,
+                            sizeof(local.world_position))==0 &&
+                        std::memcmp(actor_local_host_[id].world_orientation,
+                            input.actor_orientation,
+                            sizeof(local.world_orientation))==0;
+                    if(reused)++last_resident_pose_count_;
+                    else {
+                        std::memcpy(actor_local_host_[id].world_position,
+                                    input.actor_position,
+                                    sizeof(local.world_position));
+                        std::memcpy(actor_local_host_[id].world_orientation,
+                                    input.actor_orientation,
+                                    sizeof(local.world_orientation));
+                        actor_local_valid_[id]=0u;
+                        pending_actor_locals_.push_back(id);
+                    }
+                }
                 std::uint32_t changed=0u;
                 const bool prior=device_world_motion &&
                     actor_velocity_valid_[id];
@@ -656,7 +685,10 @@ public:
                     input.angular_velocity,input.angular_velocity+3u);
                 ++last_schedule_.prepared_velocity_updated_bodies;
             }
-            if((input.active&1u) && (input.active&2u)) {
+            if((input.active&1u) && device_world_motion) {
+                // The BodyId pool is the pose source for every native rigid body.
+                record.pose_index=invalid;
+            }else if((input.active&1u) && (input.active&2u)) {
                 if(!record.source_shape_count ||
                    record.source_element==invalid)
                     throw std::logic_error("Source Dy resident pose lacks Sc ElementSim");
@@ -948,7 +980,7 @@ public:
         dispatch.buffers.push_back(bind_shape(
             shape_geometry,64u,4u,compute::BufferAccess::Read,
             integration_header[2]));
-        // Stable BodyIds index the device-owned mass-local transform pool.
+        // Stable BodyIds index one actor-local and world-motion state pool.
         // The transient body stream carries only the per-actor byte offset.
         std::uint32_t actor_local_bias=0u;
         dispatch.buffers.push_back(source_native_view(
@@ -1289,6 +1321,22 @@ public:
             for(std::size_t index=bodies.size();
                 index<integration.size();++index)
                 if(integration[index].active&1u)mirror_sleep(index);
+        }
+        if(device_world_motion) {
+            const auto mirror_pose=[&](std::size_t index) {
+                const auto id=integration[index].source_actor;
+                auto& mirror=actor_local_host_[id];
+                const auto& result=integrated_poses[index];
+                std::memcpy(mirror.world_position,result.position,
+                            sizeof(mirror.world_position));
+                std::memcpy(mirror.world_orientation,result.orientation,
+                            sizeof(mirror.world_orientation));
+                actor_pose_valid_[id]=1u;
+            };
+            for(const auto ordinal:body_ordinals)
+                if(integration[ordinal].active&1u)mirror_pose(ordinal);
+            for(std::size_t index=bodies.size();index<integration.size();++index)
+                if(integration[index].active&1u)mirror_pose(index);
         }
         last_transfer_bytes_={uploaded_bytes,output_bytes};
         last_reused_pcm_contact_rows_=reused_pcm_rows;
@@ -1725,7 +1773,7 @@ private:
     std::vector<SourceDyPackedIntegrationNative> packed_integration_;
     std::vector<SourceDyHostPoseNative> host_poses_;
     std::vector<SourceDyActorLocalNative> actor_local_host_;
-    std::vector<std::uint8_t> actor_local_valid_,actor_velocity_valid_;
+    std::vector<std::uint8_t> actor_local_valid_,actor_velocity_valid_,actor_pose_valid_;
     std::vector<float> prepared_velocity_components_,force_mod_components_;
     std::vector<std::uint32_t> pending_actor_locals_;
     std::vector<SourceSapUpload> actor_local_uploads_;

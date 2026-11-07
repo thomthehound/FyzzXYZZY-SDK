@@ -184,8 +184,10 @@ struct GpuDyBodyIntegrationInput {
     float wake_counter=0.0f;
     float sleep_linear_acc[3]{},sleep_angular_acc[3]{};
     std::uint32_t counted_interactions=0u;
+    // Sc actor frame for device-resident Dy motion admission.
+    float actor_position[3]{},actor_orientation[4]{0.0f,0.0f,0.0f,1.0f};
 };
-static_assert(sizeof(GpuDyBodyIntegrationInput)==256u &&
+static_assert(sizeof(GpuDyBodyIntegrationInput)==284u &&
               offsetof(GpuDyBodyIntegrationInput,lock_flags)==88u &&
               offsetof(GpuDyBodyIntegrationInput,mass_local_position)==104u &&
               offsetof(GpuDyBodyIntegrationInput,mass_local_orientation)==116u &&
@@ -196,7 +198,9 @@ static_assert(sizeof(GpuDyBodyIntegrationInput)==256u &&
               offsetof(GpuDyBodyIntegrationInput,dynamics_flags)==172u &&
               offsetof(GpuDyBodyIntegrationInput,pending_linear_velocity_delta)==176u &&
               offsetof(GpuDyBodyIntegrationInput,wake_counter)==224u &&
-              offsetof(GpuDyBodyIntegrationInput,counted_interactions)==252u);
+              offsetof(GpuDyBodyIntegrationInput,counted_interactions)==252u &&
+              offsetof(GpuDyBodyIntegrationInput,actor_position)==256u &&
+              offsetof(GpuDyBodyIntegrationInput,actor_orientation)==268u);
 struct GpuDyIntegratedPose {
     float position[3]{},orientation[4]{};
     std::uint32_t valid=0u;

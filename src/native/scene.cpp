@@ -8277,10 +8277,13 @@ void Scene::solve_gpu_distance_constraints(float seconds) {
              actor.pending_angular_velocity_delta);
         pack(input.pending_angular_acceleration,
              actor.pending_angular_acceleration);
-        pack(input.position,mass_position(actor));
-        const auto mass_q=mass_orientation(actor);
-        input.orientation[0]=mass_q.x;input.orientation[1]=mass_q.y;
-        input.orientation[2]=mass_q.z;input.orientation[3]=mass_q.w;
+        // Native Dy reconstructs its mass frame from the resident actor
+        // pose and mass-local transform; Sc supplies only actor edits.
+        pack(input.actor_position,actor.position);
+        input.actor_orientation[0]=actor.orientation.x;
+        input.actor_orientation[1]=actor.orientation.y;
+        input.actor_orientation[2]=actor.orientation.z;
+        input.actor_orientation[3]=actor.orientation.w;
         pack(input.mass_local_position,actor.mass_local_pose.position);
         const auto local_q=actor.mass_local_pose.orientation;
         input.mass_local_orientation[0]=local_q.x;input.mass_local_orientation[1]=local_q.y;
