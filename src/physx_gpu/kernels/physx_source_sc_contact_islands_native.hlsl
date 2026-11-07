@@ -65,8 +65,14 @@ void main(uint3 dispatch:SV_DispatchThreadID) {
         }
         // Authored joints remain connected until their Sc edge retires.
         // Dormant Gu managers retain the device's last physical touch.
-        const bool touching=(pair.z&4u)!=0u ||
-            (edgeCaches.Load(p.contactBias+pair.w*240u+72u)&1u)!=0u;
+        bool touching=(pair.z&4u)!=0u;
+        [branch] if(!touching) {
+            if(pair.w>=header(5u)) {
+                errorBit(2u);
+                return;
+            }
+            touching=(edgeCaches.Load(p.contactBias+pair.w*240u+72u)&1u)!=0u;
+        }
         if(!touching || pair.x==pair.y || (pair.z&3u)!=3u)return;
         // Root hooking always points larger indices toward smaller roots.
         // Concurrent hooks remain acyclic and a completed successful
