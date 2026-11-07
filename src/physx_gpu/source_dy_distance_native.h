@@ -379,6 +379,9 @@ public:
             const auto slot=joint.source_slot;
             if(!joint_source_valid_[slot] ||
                std::memcmp(&joint_source_host_[slot],&joint,sizeof(joint))!=0) {
+                // An attempted edit is not resident until the full frame
+                // completes. A failed submission must reupload on retry.
+                joint_source_valid_[slot]=0u;
                 joint_source_host_[slot]=joint;
                 joint_source_dirty_.push_back(slot);
             }else
