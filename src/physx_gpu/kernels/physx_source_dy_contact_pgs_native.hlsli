@@ -28,8 +28,10 @@ bool contactImpulse(uint a,uint b,uint ao,uint bo,
                     inout float3 va,inout float3 vb,
                     inout float3 aa,inout float3 ab,
                     float delta,float ma,float mb,uint errorAddress) {
-    float3 v0=va+(n*ma)*delta;
-    float3 v1=vb-(n*mb)*delta;
+    // Source contact PGS multiplies impulse by inverse mass first.
+    const float da=delta*ma,db=delta*mb;
+    float3 v0=va+n*da;
+    float3 v1=vb-n*db;
     float3 w0=aa+ja*delta;
     float3 w1=ab-jb*delta;
     if(!all(isfinite(v0)) || !all(isfinite(v1)) ||
@@ -109,8 +111,9 @@ void solveContact(uint4 descriptor,uint errorAddress,bool biased,
             float3 n=asfloat(arena.Load3(co));
             float3 ja=asfloat(arena.Load3(co+12u));
             float3 jb=asfloat(arena.Load3(co+24u));
-            float normalVelocity=dot(n,va)-dot(n,vb)+
-                dot(aa,ja)-dot(ab,jb);
+            precise float normalVelocity=
+                sourceDyDot3(n,va)-sourceDyDot3(n,vb)+
+                sourceDyDot3(aa,ja)-sourceDyDot3(ab,jb);
             float oldForce=contactScalar(co+56u);
             float error=biased?contactScalar(co+48u):
                                 contactScalar(co+52u);
@@ -139,8 +142,9 @@ void solveContact(uint4 descriptor,uint errorAddress,bool biased,
             float3 n=asfloat(arena.Load3(fo));
             float3 ja=asfloat(arena.Load3(fo+12u));
             float3 jb=asfloat(arena.Load3(fo+24u));
-            float tangentDelta=dot(n,va)-dot(n,vb)+
-                dot(aa,ja)-dot(ab,jb);
+            precise float tangentDelta=
+                sourceDyDot3(n,va)-sourceDyDot3(n,vb)+
+                sourceDyDot3(aa,ja)-sourceDyDot3(ab,jb);
             float oldForce=frictionScalar(fo+52u);
             float bias=biased?frictionScalar(fo+44u):0.0;
             float candidate=oldForce+
@@ -278,10 +282,10 @@ void prepareContactRow(uint index,uint pairIndex,uint contactBegin,
     float m1=prepBodyFloat(b1,72u);
     float3 r0=cross(pos-p0,n);
     float3 r1=cross(pos-p1,n);
-    float linearRel=dot(n,v0-v1);
+    float linearRel=sourceDyDot3(n,v0-v1);
     float pairSlop=asfloat(arena.Load(pair+12u));
     if(pairSlop>0.0f) {
-        float angularRel=dot(r0,w0)-dot(r1,w1);
+        float angularRel=sourceDyDot3(r0,w0)-sourceDyDot3(r1,w1);
         float ratio=linearRel==0.0f
             ? 3.402823466e+38f : angularRel/linearRel;
         float slop=pairSlop*max(ratio,1.0f);
@@ -290,9 +294,9 @@ void prepareContactRow(uint index,uint pairIndex,uint contactBegin,
     }
     float3 ja=prepInertia(b0,r0);
     float3 jb=prepInertia(b1,r1);
-    float angularRel=dot(r0,w0)-dot(r1,w1);
+    float angularRel=sourceDyDot3(r0,w0)-sourceDyDot3(r1,w1);
     float vrel=linearRel+angularRel;
-    float response=(m0+dot(ja,ja))+(m1+dot(jb,jb));
+    float response=(m0+sourceDyDot3(ja,ja))+(m1+sourceDyDot3(jb,jb));
     float multiplier=response>0.0?1.0/response:0.0;
     float restDistance=asfloat(arena.Load(pair+8u));
     float restitution=asfloat(arena.Load(pair+16u));
@@ -414,13 +418,13 @@ void prepareFrictionRow(uint index,uint patchIndex,uint pairIndex,
     float3 ax1=prepSlop(cross(r1,tangent),slop);
     float3 ja=prepInertia(b0,ax0);
     float3 jb=prepInertia(b1,ax1);
-    float response=(m0+dot(ja,ja))+(m1+dot(jb,jb));
+    float response=(m0+sourceDyDot3(ja,ja))+(m1+sourceDyDot3(jb,jb));
     float velocityMultiplier=response>0.0
         ? rigidBias/response:0.0;
-    float bias=(dot(tangent,error)*invDt);
+    float bias=(sourceDyDot3(tangent,error)*invDt);
     float3 relative=v0-v1;
-    float targetVelocity=(-(dot(tangent,relative)+
-        dot(ax0,w0)-dot(ax1,w1)));
+    float targetVelocity=(-(sourceDyDot3(tangent,relative)+
+        sourceDyDot3(ax0,w0)-sourceDyDot3(ax1,w1)));
     if(!isfinite(response) || !isfinite(velocityMultiplier) ||
        !isfinite(bias) ||
        !isfinite(targetVelocity) || !all(isfinite(ja)) ||
@@ -610,7 +614,7 @@ void prepareFrictionPatch(uint patchIndex,uint pairIndex,uint errorAddress) {
     float3 a=prepBody3(arena.Load(pair),12u);
     float3 b=prepBody3(arena.Load(pair+4u),12u);
     float3 relative=a-b;
-    float projection=dot(relative,n);
+    float projection=sourceDyDot3(relative,n);
     float3 tangent0=relative-float3(
         n.x*projection,n.y*projection,n.z*projection);
     float squared=tangent0.x*tangent0.x+
