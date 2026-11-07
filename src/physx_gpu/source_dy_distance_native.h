@@ -1294,9 +1294,11 @@ public:
         for(std::size_t i=0;i<tasks.size();++i)
             std::memcpy(&tasks[i].error,
                 host_.data()+result_offsets[1]+i*4u,4u);
-        for(const auto& task:tasks)
-            if(task.error!=0u)
-                throw std::overflow_error("Source Dy GPU solver rejected a row");
+        for(std::size_t i=0u;i<tasks.size();++i)
+            if(tasks[i].error!=0u)
+                throw std::overflow_error(
+                    "Source Dy GPU solver task "+std::to_string(i)+
+                    " rejected flags "+std::to_string(tasks[i].error));
         const auto fetch_pose=[&](std::size_t index) {
             auto& pose=integrated_poses[index];
             std::memcpy(&pose,host_.data()+result_offsets[5]+
