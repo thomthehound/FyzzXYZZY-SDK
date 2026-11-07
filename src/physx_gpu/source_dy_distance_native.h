@@ -552,8 +552,10 @@ public:
             record.seconds=input.seconds;
             record.active=(input.active&1u)|
                 (device_world_motion && (input.active&1u) ?(8u|128u):0u)|
-                (device_world_motion && (input.active&32u) ?256u:0u);
-            if((record.active&256u)!=0u)
+                (device_world_motion && (input.active&32u) ?0x4000u:0u);
+            // Bits [8:13] are exact authored velocity-change components;
+            // bit 14 is reserved for device inertia preparation.
+            if((record.active&0x4000u)!=0u)
                 ++last_schedule_.device_world_inertia_bodies;
             record.source_element=input.source_element;
             record.source_shape_count=input.source_shape_count;
