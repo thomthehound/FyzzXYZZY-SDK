@@ -40,15 +40,23 @@ struct SourceDyPackedIntegrationNative {
     std::uint32_t lock_flags=0u;
     float seconds=0.0f;
     std::uint32_t active=0u,source_element=0xffffffffu;
-    float mass_local_position[3]{},mass_local_orientation[4]{};
     std::uint32_t source_shape_count=0u,pose_index=0xffffffffu;
+    // Byte offset into the stable actor-local device pool.
+    std::uint32_t actor_local_offset=0xffffffffu;
 };
-static_assert(sizeof(SourceDyPackedIntegrationNative)==112u &&
-              offsetof(SourceDyPackedIntegrationNative,pose_index)==108u);
+static_assert(sizeof(SourceDyPackedIntegrationNative)==88u &&
+              offsetof(SourceDyPackedIntegrationNative,pose_index)==80u &&
+              offsetof(SourceDyPackedIntegrationNative,actor_local_offset)==84u);
 struct SourceDyHostPoseNative {
     float position[3]{},orientation[4]{};
 };
 static_assert(sizeof(SourceDyHostPoseNative)==28u);
+struct SourceDyActorLocalNative {
+    float position[3]{},orientation[4]{};
+    float inverse_mass=0.0f;
+};
+static_assert(sizeof(SourceDyActorLocalNative)==32u &&
+              offsetof(SourceDyActorLocalNative,inverse_mass)==28u);
 
 struct SourceDyLaunchStats {
     std::size_t device_colored_tasks=0u;
@@ -59,12 +67,15 @@ struct SourceDyLaunchStats {
     std::size_t tile_bytes=0u;
     // Shader-written descriptor and partition bytes omitted from HtoD.
     std::size_t device_generated_bytes=0u;
-    // Inverse masses are uploaded; transient 52-byte solver bodies
-    // are initialized by Dy before conflict coloring or PGS.
+    // Native Sc initializes transient solver bodies from the resident
+    // actor inverse masses; standalone Dy retains explicit input support.
     std::size_t device_initialized_bodies=0u;
     std::size_t device_body_upload_bytes=0u;
     std::size_t device_initialization_dispatches=0u;
     std::size_t device_world_motion_bodies=0u;
+    std::size_t actor_local_upload_bytes=0u;
+    std::size_t actor_local_upload_spans=0u;
+    std::size_t reused_actor_local_poses=0u;
 };
 
 // Dy's original per-task conflict partitions and prepared 1D rows are
@@ -78,7 +89,8 @@ public:
         physx::PxgHeapMemoryAllocator& allocator,compute::ShaderBinary shader,
         std::optional<compute::ShaderBinary> convex_shader=std::nullopt)
         : context_(context),addresses_(addresses),stream_(stream),
-          arena_(allocator,physx::PxsHeapStats::eSOLVER) {
+          arena_(allocator,physx::PxsHeapStats::eSOLVER),
+          actor_locals_(allocator,physx::PxsHeapStats::eSOLVER) {
         const auto& info=context_.device_info();
         if(info.max_workgroup_invocations<128u ||
            info.max_workgroup_size[0]<128u ||
@@ -90,17 +102,17 @@ public:
         max_view_=info.max_storage_buffer_range;
         compute::ComputePipelineDesc pipeline{};
         pipeline.shader=std::move(shader);
-        pipeline.storage_buffer_binding_count=5u;
+        pipeline.storage_buffer_binding_count=6u;
         pipeline.storage_buffer_views.assign(
-            5u,compute::StorageBufferViewKind::RawReadWrite);
+            6u,compute::StorageBufferViewKind::RawReadWrite);
         pipeline.push_constant_bytes=128u;
         pipeline_=context_.create_compute_pipeline(pipeline);
         if(convex_shader) {
             try {
                 pipeline.shader=std::move(*convex_shader);
-                pipeline.storage_buffer_binding_count=6u;
+                pipeline.storage_buffer_binding_count=7u;
                 pipeline.storage_buffer_views.assign(
-                    6u,compute::StorageBufferViewKind::RawReadWrite);
+                    7u,compute::StorageBufferViewKind::RawReadWrite);
                 convex_pipeline_=context_.create_compute_pipeline(pipeline);
             }catch(...) {
                 context_.destroy_compute_pipeline(pipeline_);
@@ -115,8 +127,13 @@ public:
         if(convex_pipeline_)context_.destroy_compute_pipeline(convex_pipeline_);
         if(pipeline_)context_.destroy_compute_pipeline(pipeline_);
         arena_.deallocate();
+        actor_locals_.deallocate();
+    }
+    void retire_rigid_actor(BodyId id) noexcept {
+        if(id<actor_local_valid_.size())actor_local_valid_[id]=0u;
     }
     void invalidate_after_rollback() noexcept {
+        std::fill(actor_local_valid_.begin(),actor_local_valid_.end(),0u);
         if(++history_epoch_==0u) {
             std::fill(history_epochs_.begin(),history_epochs_.end(),0u);
             history_epoch_=1u;
@@ -166,6 +183,12 @@ public:
             return static_cast<std::uint32_t>(value);
         };
         const auto free_bodies=integration.size()-bodies.size();
+        if(device_initial_bodies && device_world_motion)
+            for(std::size_t i=0u;i<bodies.size();++i)
+                if(!(integration[i].active&1u) &&
+                   bodies[i].inverse_mass!=0.0f)
+                    throw std::logic_error(
+                        "Native Dy inactive solver row has nonzero inverse mass");
         const auto partition_count=device_partitions
             ? (tasks.empty()?0u:tasks.back().partition_end)
             : partition_ends.size();
@@ -181,7 +204,8 @@ public:
         }
         last_schedule_.device_initialized_bodies=device_initial_bodies?bodies.size():0u;
         last_schedule_.device_body_upload_bytes=device_initial_bodies
-            ? bodies.size()*sizeof(float):bodies.size_bytes();
+            ? (device_world_motion?0u:bodies.size()*sizeof(float))
+            : bodies.size_bytes();
         last_schedule_.device_world_motion_bodies=
             device_world_motion?body_ordinals.size():0u;
         if(contact_forces.size()>
@@ -399,9 +423,44 @@ public:
         packed_integration_.clear();
         host_poses_.clear();
         last_resident_pose_count_=0u;
+        last_schedule_.actor_local_upload_bytes=0u;
+        last_schedule_.actor_local_upload_spans=0u;
+        last_schedule_.reused_actor_local_poses=0u;
+        pending_actor_locals_.clear();
         packed_integration_.reserve(integration.size());
         host_poses_.reserve(integration.size());
-        for(const auto& input:integration) {
+        std::size_t needed_actor_slots=0u;
+        for(std::size_t ordinal=0u;ordinal<integration.size();++ordinal) {
+            const auto& input=integration[ordinal];
+            if(!(input.active&1u))continue;
+            const auto id=device_world_motion
+                ?input.source_actor:narrow(ordinal);
+            if(id==invalid ||
+               id>(std::numeric_limits<std::uint32_t>::max()-128u)/
+                      sizeof(SourceDyActorLocalNative))
+                throw std::overflow_error(
+                    "Source Dy rigid actor local-pose index exceeds GPU address space");
+            needed_actor_slots=std::max(needed_actor_slots,std::size_t(id)+1u);
+        }
+        if(needed_actor_slots>actor_local_capacity_) {
+            const auto capacity=std::max(needed_actor_slots,
+                actor_local_capacity_+
+                    std::max(actor_local_capacity_,std::size_t(8u)));
+            if(capacity>(std::numeric_limits<std::uint32_t>::max()-128u)/
+                            sizeof(SourceDyActorLocalNative) ||
+               capacity>max_view_/sizeof(SourceDyActorLocalNative))
+                throw std::overflow_error(
+                    "Source Dy rigid actor local-pose pool exceeds GPU view");
+            actor_local_host_.resize(capacity);
+            actor_local_valid_.resize(capacity,0u);
+            actor_locals_.allocateCopyPrefixAsync(
+                capacity*sizeof(SourceDyActorLocalNative)+127u,
+                actor_local_capacity_*sizeof(SourceDyActorLocalNative),
+                stream_,PX_FL);
+            actor_local_capacity_=capacity;
+        }
+        for(std::size_t ordinal=0u;ordinal<integration.size();++ordinal) {
+            const auto& input=integration[ordinal];
             SourceDyPackedIntegrationNative record{};
             std::memcpy(record.linear_velocity,input.linear_velocity,
                         sizeof(record.linear_velocity));
@@ -414,11 +473,29 @@ public:
             record.active=(input.active&1u)|
                 (device_world_motion && (input.active&1u) ?8u:0u);
             record.source_element=input.source_element;
-            std::memcpy(record.mass_local_position,input.mass_local_position,
-                        sizeof(record.mass_local_position));
-            std::memcpy(record.mass_local_orientation,input.mass_local_orientation,
-                        sizeof(record.mass_local_orientation));
             record.source_shape_count=input.source_shape_count;
+            if(input.active&1u) {
+                const auto id=device_world_motion
+                    ?input.source_actor:narrow(ordinal);
+                record.actor_local_offset=id;
+                SourceDyActorLocalNative local{};
+                std::memcpy(local.position,input.mass_local_position,
+                            sizeof(local.position));
+                std::memcpy(local.orientation,input.mass_local_orientation,
+                            sizeof(local.orientation));
+                local.inverse_mass=input.source_inverse_mass;
+                if(device_world_motion && ordinal<bodies.size() &&
+                   local.inverse_mass!=bodies[ordinal].inverse_mass)
+                    throw std::logic_error(
+                        "Sc actor-local inverse mass differs from Dy admission");
+                if(!actor_local_valid_[id] ||
+                   std::memcmp(&actor_local_host_[id],&local,sizeof(local))!=0) {
+                    actor_local_host_[id]=local;
+                    actor_local_valid_[id]=0u;
+                    pending_actor_locals_.push_back(id);
+                }else
+                    ++last_schedule_.reused_actor_local_poses;
+            }
             if(record.active && (input.active&2u)) {
                 if(!record.source_shape_count ||
                    record.source_element==invalid)
@@ -447,12 +524,14 @@ public:
             throw std::overflow_error("Source Dy authored poses exceed address space");
         const std::size_t mass_offset=packed_input_bytes+
             host_poses_.size()*sizeof(SourceDyHostPoseNative);
-        if(device_initial_bodies &&
+        const bool upload_body_masses=device_initial_bodies &&
+            !device_world_motion;
+        if(upload_body_masses &&
            bodies.size()>(std::numeric_limits<std::uint32_t>::max()-
                           mass_offset)/sizeof(float))
             throw std::overflow_error(
                 "Source Dy device solver-body masses exceed address space");
-        const std::size_t mass_bytes=device_initial_bodies
+        const std::size_t mass_bytes=upload_body_masses
             ? bodies.size()*sizeof(float):0u;
         const std::size_t integration_bytes=mass_offset+mass_bytes;
         last_host_pose_upload_bytes_=host_poses_.size()*sizeof(SourceDyHostPoseNative);
@@ -588,14 +667,10 @@ public:
                 std::memcpy(host_.data()+offsets[15]+20u,
                             descriptors.data(),descriptors.size_bytes());
         }
-        if(!packed_integration_.empty())
-            std::memcpy(host_.data()+offsets[12]+integration_header_bytes,
-                        packed_integration_.data(),
-                        packed_integration_.size()*sizeof(SourceDyPackedIntegrationNative));
         if(!host_poses_.empty())
             std::memcpy(host_.data()+offsets[12]+packed_input_bytes,
                         host_poses_.data(),last_host_pose_upload_bytes_);
-        if(device_initial_bodies)
+        if(upload_body_masses)
             for(std::size_t i=0;i<bodies.size();++i)
                 std::memcpy(host_.data()+offsets[12]+mass_offset+i*4u,
                             &bodies[i].inverse_mass,sizeof(float));
@@ -653,7 +728,9 @@ public:
                 (tiles_.empty()?0u:narrow(std::size_t(params[28])+offsets[14])),
             narrow(integration.size()),
             device_initial_bodies
-                ? narrow(std::size_t(params[28])+offsets[12]+mass_offset):0u};
+                ? (device_world_motion?invalid
+                    :narrow(std::size_t(params[28])+offsets[12]+mass_offset))
+                :0u};
         const auto bind_shape=[&](CudaDeviceAddressMap::Address source,
                                   std::uint32_t stride,std::uint32_t slot,
                                   compute::BufferAccess access,
@@ -672,16 +749,63 @@ public:
         dispatch.buffers.push_back(bind_shape(
             shape_geometry,64u,4u,compute::BufferAccess::Read,
             integration_header[2]));
-        // Primitive-only scenes execute the original five-view Dy kernel.
-        // Hull geometry adds one read-only source view only to the convex
-        // specialization; no extra descriptors or dynamic vertex loops
-        // enter ordinary rigid constraint solves.
+        // Stable BodyIds index the device-owned mass-local transform pool.
+        // The transient body stream carries only the per-actor byte offset.
+        std::uint32_t actor_local_bias=0u;
+        dispatch.buffers.push_back(source_native_view(
+            addresses_,actor_local_capacity_
+                ?actor_locals_.getDevicePtr():address,
+            actor_local_capacity_
+                ?actor_local_capacity_*sizeof(SourceDyActorLocalNative):total,
+            alignment_,5u,compute::BufferAccess::Read,
+            actor_local_bias,max_view_));
+        // Convex geometry shares the original Dy pipeline but follows
+        // the actor-local pool in the same source descriptor set.
         if(convex_vertex_count)
             dispatch.buffers.push_back(source_native_view(
                 addresses_,convex_vertices,
                 source_allocation_bytes(convex_vertex_count,12u),
-                alignment_,5u,compute::BufferAccess::Read,
+                alignment_,6u,compute::BufferAccess::Read,
                 params[27],max_view_));
+        for(auto& record:packed_integration_)
+            if(record.actor_local_offset!=invalid) {
+                const auto offset=std::size_t(actor_local_bias)+
+                    std::size_t(record.actor_local_offset)*
+                        sizeof(SourceDyActorLocalNative);
+                record.actor_local_offset=narrow(offset);
+            }
+        if(!packed_integration_.empty())
+            std::memcpy(host_.data()+offsets[12]+integration_header_bytes,
+                        packed_integration_.data(),
+                        packed_integration_.size()*sizeof(SourceDyPackedIntegrationNative));
+        // Only newly admitted or edited actor-local transforms are
+        // uploaded. Neighboring BodyIds share one source DMA span.
+        std::sort(pending_actor_locals_.begin(),pending_actor_locals_.end());
+        pending_actor_locals_.erase(std::unique(
+            pending_actor_locals_.begin(),pending_actor_locals_.end()),
+            pending_actor_locals_.end());
+        actor_local_uploads_.clear();
+        for(std::size_t i=0u;i<pending_actor_locals_.size();) {
+            const auto first=pending_actor_locals_[i];
+            auto last=first+1u;
+            ++i;
+            while(i<pending_actor_locals_.size() &&
+                  pending_actor_locals_[i]==last) {
+                ++last;
+                ++i;
+            }
+            const auto count=last-first;
+            actor_local_uploads_.push_back({
+                actor_locals_.getDevicePtr()+
+                    first*sizeof(SourceDyActorLocalNative),
+                actor_local_host_.data()+first,
+                count*sizeof(SourceDyActorLocalNative)});
+            last_schedule_.actor_local_upload_bytes+=
+                count*sizeof(SourceDyActorLocalNative);
+        }
+        last_schedule_.actor_local_upload_spans=actor_local_uploads_.size();
+        if(!actor_local_uploads_.empty())
+            stream_.queue_uploads(actor_local_uploads_);
         std::memcpy(host_.data()+offsets[12],
                     integration_header.data(),sizeof(integration_header));
         const auto previous_spans=stream_.submission_stats().upload_spans;
@@ -769,6 +893,8 @@ public:
             throw;
         }
         stream_.wait_at_fetch();
+        for(const auto id:pending_actor_locals_)
+            actor_local_valid_[id]=1u;
         for(std::size_t i=0;i<tasks.size();++i)
             std::memcpy(&tasks[i].error,
                 host_.data()+result_offsets[1]+i*4u,4u);
@@ -1293,6 +1419,7 @@ private:
     CudaDeviceAddressMap& addresses_;
     SourceSapDmaNative& stream_;
     physx::PxgCudaBuffer arena_;
+    physx::PxgCudaBuffer actor_locals_;
     compute::PipelineId pipeline_=0;
     compute::PipelineId convex_pipeline_=0;
     std::size_t alignment_=0u;
@@ -1301,6 +1428,11 @@ private:
     std::vector<SourceDyPackedContactPrepNative> packed_;
     std::vector<SourceDyPackedIntegrationNative> packed_integration_;
     std::vector<SourceDyHostPoseNative> host_poses_;
+    std::vector<SourceDyActorLocalNative> actor_local_host_;
+    std::vector<std::uint8_t> actor_local_valid_;
+    std::vector<std::uint32_t> pending_actor_locals_;
+    std::vector<SourceSapUpload> actor_local_uploads_;
+    std::size_t actor_local_capacity_=0u;
     std::vector<native::GpuDyContactPrepBody> inline_bodies_;
     std::vector<native::GpuDyFrictionAnchorInput> compact_anchors_;
     std::vector<std::size_t> patch_anchor_starts_;

@@ -8222,15 +8222,17 @@ void Scene::solve_gpu_distance_constraints(float seconds) {
     for(std::size_t i=0;i<solver_rows_.size();++i) {
         const auto& row=solver_rows_[i];
         auto& body=gpu_dy_bodies_[i];
-        // Fresh solver rows have zero deltas. Dy constructs that state
-        // on device and only consumes Sc's inverse mass at admission.
+        // Dy initializes fresh transient deltas from the stable per-actor
+        // inverse masses retained on the device.
         body.inverse_mass=row.data.inverse_mass;
     }
     const auto integration_count=solver_rows_.size()+gpu_dy_free_ids_.size();
     gpu_dy_integration_inputs_.assign(integration_count,{});
     gpu_dy_integrated_poses_.resize(integration_count);
-    const auto pack_integration=[&](const Actor& actor,
+    const auto pack_integration=[&](BodyId id,const Actor& actor,
                                    GpuDyBodyIntegrationInput& input) {
+        input.source_actor=id;
+        input.source_inverse_mass=actor.inverse_mass;
         pack(input.position,mass_position(actor));
         const auto mass_q=mass_orientation(actor);
         input.orientation[0]=mass_q.x;input.orientation[1]=mass_q.y;
@@ -8253,7 +8255,7 @@ void Scene::solve_gpu_distance_constraints(float seconds) {
         const auto& actor=actors_[id];
         const auto& row=solver_rows_[actor.solver_row_index];
         auto& input=gpu_dy_integration_inputs_[actor.solver_row_index];
-        pack_integration(actor,input);
+        pack_integration(id,actor,input);
         pack(input.linear_velocity,row.data.linear_velocity);
         pack(input.angular_velocity,row.data.angular_velocity);
         for(std::size_t axis=0;axis<3u;++axis) {
@@ -8266,7 +8268,7 @@ void Scene::solve_gpu_distance_constraints(float seconds) {
     for(std::size_t i=0;i<gpu_dy_free_ids_.size();++i) {
         const auto& actor=actors_[gpu_dy_free_ids_[i]];
         auto& input=gpu_dy_integration_inputs_[solver_rows_.size()+i];
-        pack_integration(actor,input);
+        pack_integration(gpu_dy_free_ids_[i],actor,input);
         pack(input.linear_velocity,actor.velocity);
         pack(input.angular_velocity,actor.angular_velocity);
     }

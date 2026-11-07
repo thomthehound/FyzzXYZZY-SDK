@@ -385,7 +385,10 @@ public:
         producer_->set_device_shape_pose_cache_enabled(id,enabled);
     }
     void retain_rigid_actor(BodyId body) override {producer_->retain_rigid_actor(body);}
-    void release_rigid_actor(BodyId body) override {producer_->release_rigid_actor(body);}
+    void release_rigid_actor(BodyId body) override {
+        producer_->release_rigid_actor(body);
+        if(dy_distance_)dy_distance_->retire_rigid_actor(body);
+    }
     void admit_plane_element(ShapeId shape,BodyId body) override {producer_->admit_plane_element(shape,body);}
     void admit_aggregate_shape(AggregateId aggregate,ShapeId shape,BodyId body,
                               native::GpuBroadphaseBox::Motion motion,float offset) override {

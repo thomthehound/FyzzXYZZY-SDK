@@ -974,8 +974,7 @@ void verify_gpu_coupled_solver(
                 schedule.device_world_motion_bodies>0u &&
                 schedule.device_world_motion_bodies<=
                     schedule.device_initialized_bodies &&
-                schedule.device_body_upload_bytes==
-                    schedule.device_initialized_bodies*sizeof(float),
+                schedule.device_body_upload_bytes==0u,
             "Coupled Dy failed device world-motion publication");
         const auto prep_saving=producer->dy_contact_prep_upload_saving();
         // Compare writeback with the source-sized upload baseline. The
@@ -1844,7 +1843,7 @@ void verify_gpu_free_integration(
     auto* producer=owner.get();
     gpu.set_gpu_broadphase(std::move(owner));
 
-    const auto assemble=[](native::Scene& scene) {
+    const auto assemble=[](native::Scene& scene,ShapeId& compound_shape) {
         std::vector<BodyId> bodies;
         scene.add_static_box({1.f,0.25f,1.f},{0.f,-0.25f,0.f});
         bodies.push_back(scene.add_dynamic_box(
@@ -1863,7 +1862,8 @@ void verify_gpu_free_integration(
             scene.set_angular_velocity(body,{1.f,0.2f,-0.6f});
         }
         const auto compound=scene.create_body({{0.f,3.f,4.f},{}},true);
-        scene.attach_box(compound,{0.2f,0.3f,0.4f},{{-0.5f,0.f,0.f},{}});
+        compound_shape=scene.attach_box(
+            compound,{0.2f,0.3f,0.4f},{{-0.5f,0.f,0.f},{}});
         scene.attach_sphere(compound,0.4f,{{0.7f,0.4f,0.f},{}});
         scene.update_mass_properties(compound,1.f);
         scene.set_dynamics(compound,free_motion);
@@ -1875,10 +1875,21 @@ void verify_gpu_free_integration(
         bodies.push_back(shapeless);
         return bodies;
     };
-    const auto expected=assemble(cpu);
-    const auto actual=assemble(gpu);
+    ShapeId expected_shape{},actual_shape{};
+    const auto expected=assemble(cpu,expected_shape);
+    const auto actual=assemble(gpu,actual_shape);
     bool touched=false,released=false;
     for(unsigned frame=0;frame<12u;++frame) {
+        if(frame==4u) {
+            // Recenter the compound and change its principal mass frame.
+            // Sc's authored edit must replace exactly this GPU actor's
+            // resident local transform before contact preparation.
+            const Transform edited{{-0.35f,0.1f,0.05f},{}};
+            cpu.set_shape_local_pose(expected_shape,edited);
+            gpu.set_shape_local_pose(actual_shape,edited);
+            cpu.update_mass_properties(expected[expected.size()-2u],1.f);
+            gpu.update_mass_properties(actual[actual.size()-2u],1.f);
+        }
         if(touched && !released) {
             cpu.set_position(expected.front(),{0.f,2.f,0.f});
             gpu.set_position(actual.front(),{0.f,2.f,0.f});
@@ -1893,6 +1904,20 @@ void verify_gpu_free_integration(
                 producer->dy_upload_span_count()==1u,
                 "GPU Dy did not integrate every active body in one upload");
         const auto resident=producer->dy_resident_pose_count();
+        const auto metadata=producer->dy_launch_stats();
+        require((frame==0u
+                    ? metadata.actor_local_upload_bytes==
+                          actual.size()*sizeof(physx_gpu::SourceDyActorLocalNative) &&
+                      metadata.actor_local_upload_spans==1u
+                    : frame==4u
+                        ? metadata.actor_local_upload_bytes==
+                              sizeof(physx_gpu::SourceDyActorLocalNative) &&
+                          metadata.actor_local_upload_spans==1u &&
+                          metadata.reused_actor_local_poses==actual.size()-1u
+                        : metadata.actor_local_upload_bytes==0u &&
+                          metadata.actor_local_upload_spans==0u &&
+                          metadata.reused_actor_local_poses==actual.size()),
+            "Source Dy reuploaded unchanged actor-local mass frames");
         require(resident<=actual.size() &&
                 producer->dy_host_pose_upload_bytes()==
                     (actual.size()-resident)*28u &&
@@ -1909,8 +1934,7 @@ void verify_gpu_free_integration(
                     schedule.device_world_motion_bodies>0u &&
                     schedule.device_world_motion_bodies<=
                         schedule.device_initialized_bodies &&
-                    schedule.device_body_upload_bytes==
-                        schedule.device_initialized_bodies*sizeof(float),
+                    schedule.device_body_upload_bytes==0u,
                     "Mixed Dy skipped device initialization, PGS or free-body integration");
             touched=true;
         } else {
@@ -1944,6 +1968,29 @@ void verify_gpu_free_integration(
             "Device-integrated rigid pose did not publish its scene query");
     }
     require(touched && released,"Free body did not enter and leave GPU PCM response");
+    // A retired Sc BodyId must never supply the metadata for a newly
+    // admitted actor, even when the source device pool grows this frame.
+    cpu.remove(expected.back());
+    gpu.remove(actual.back());
+    const auto replacement_cpu=cpu.add_dynamic_box(
+        {0.2f,0.3f,0.4f},{1250.f,5.f,0.f},1.f);
+    const auto replacement_gpu=gpu.add_dynamic_box(
+        {0.2f,0.3f,0.4f},{1250.f,5.f,0.f},1.f);
+    RigidBodyDynamics replacement_dynamics{};
+    replacement_dynamics.gravity_enabled=false;
+    cpu.set_dynamics(replacement_cpu,replacement_dynamics);
+    gpu.set_dynamics(replacement_gpu,replacement_dynamics);
+    cpu.step(1.f/30.f);
+    gpu.step(1.f/30.f);
+    const auto after_replacement=producer->dy_launch_stats();
+    require(after_replacement.actor_local_upload_bytes==
+                sizeof(physx_gpu::SourceDyActorLocalNative) &&
+            after_replacement.actor_local_upload_spans==1u &&
+            after_replacement.reused_actor_local_poses==actual.size()-1u,
+        "GPU Dy retired actor metadata leaked into newly admitted rigid");
+    test::compound_compare_state(
+        gpu.body_state(replacement_gpu),cpu.body_state(replacement_cpu),
+        0.002f,"Resident GPU Dy actor replacement");
 }
 
 void verify_gpu_wide_island_solver(
