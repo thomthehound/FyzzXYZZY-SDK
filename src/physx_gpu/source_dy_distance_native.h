@@ -57,6 +57,8 @@ struct SourceDyLaunchStats {
     std::size_t max_partition_groups=0u;
     std::size_t dispatches=0u;
     std::size_t tile_bytes=0u;
+    // Shader-written descriptor and partition bytes omitted from HtoD.
+    std::size_t device_generated_bytes=0u;
 };
 
 // Dy's original per-task conflict partitions and prepared 1D rows are
@@ -152,8 +154,13 @@ public:
             return static_cast<std::uint32_t>(value);
         };
         const auto free_bodies=integration.size()-bodies.size();
+        const auto partition_count=device_partitions
+            ? (tasks.empty()?0u:tasks.back().partition_end)
+            : partition_ends.size();
+        if(partition_count>std::numeric_limits<std::uint32_t>::max()/4u)
+            throw std::overflow_error("Source Dy partition arena exceeds 32-bit offsets");
         if(device_partitions) {
-            build_device_launch_plan(tasks,descriptors,partition_ends,
+            build_device_launch_plan(tasks,descriptors,narrow(partition_count),
                                      narrow(body_ordinals.size()),
                                      narrow(bodies.size()));
         } else {
@@ -426,20 +433,22 @@ public:
         // table. Solver-body ordinals precede the free-body suffix.
         const std::array<std::size_t,count> bytes{
             bodies.size_bytes(),rows.size_bytes(),descriptors.size_bytes(),
-            partition_ends.size_bytes(),body_ordinals.size_bytes(),
+            partition_count*sizeof(std::uint32_t),body_ordinals.size_bytes(),
             tasks.size_bytes(),contact_bytes,friction_bytes,
             patches.size_bytes(),manifolds.size_bytes(),contact_order.size_bytes(),
             compact_prep_bytes,
             integration_bytes,compact_anchor_bytes,
             tiles_.size()*sizeof(WorkTile),partition_scratch_bytes};
         const std::array<std::size_t,count> elements{
-            bodies.size(),rows.size(),descriptors.size(),partition_ends.size(),
+            bodies.size(),rows.size(),descriptors.size(),partition_count,
             body_ordinals.size(),tasks.size(),contact_forces.size(),friction.size(),
             patches.size(),manifolds.size(),contact_order.size(),
             contact_prep.size(),integration.size(),compact_anchors_.size(),
             tiles_.size(),device_partitions?1u:0u};
         const std::array<const void*,count> sources{
-            bodies.data(),rows.data(),descriptors.data(),partition_ends.data(),
+            bodies.data(),rows.data(),
+            device_partitions?nullptr:descriptors.data(),
+            device_partitions?nullptr:partition_ends.data(),
             body_ordinals.data(),tasks.data(),nullptr,nullptr,
             patches.data(),manifolds.data(),contact_order.data(),
             contact_prep.data(),integration.data(),nullptr,tiles_.data(),
@@ -467,8 +476,17 @@ public:
         }
         // Both writable contact and friction arenas follow all source
         // inputs. The existing GPU preparation owns the complete rows.
-        constexpr std::array<std::size_t,count> order{
-            0u,1u,5u,8u,2u,3u,4u,9u,10u,11u,12u,14u,15u,13u,6u,7u};
+        // Device coloring consumes raw descriptors in the scratch input
+        // and writes both sorted descriptors and partition ends itself.
+        // Place those output-only ranges after the contact/friction rows;
+        // compact anchors must remain adjacent to contact rows.
+        const std::array<std::size_t,count> order=device_partitions
+            ? std::array<std::size_t,count>{
+                0u,1u,5u,8u,4u,9u,10u,11u,12u,14u,15u,13u,6u,7u,2u,3u}
+            : std::array<std::size_t,count>{
+                0u,1u,5u,8u,2u,3u,4u,9u,10u,11u,12u,14u,15u,13u,6u,7u};
+        last_schedule_.device_generated_bytes=device_partitions
+            ? bytes[2]+bytes[3]:0u;
         std::array<std::size_t,count> offsets{};
         // The original Dy heap retains an EdgeIndex-keyed Sc anchor
         // prefix. Solver output follows it and remains the sole readback;
@@ -492,10 +510,14 @@ public:
         narrow(total);
         // Host staging contains only compact readback and real upload
         // inputs. Writable GPU contact rows have no CPU mirror.
-        host_.resize(offsets[6]);
+        // The contact shader addresses anchors backward from contactBias.
+        // Keep the compact anchor region immediately before contact rows.
+        const auto input_end=offsets[6];
+        host_.resize(input_end);
         for(std::size_t i=0;i<count;++i)
             if(i!=6u && i!=7u && i!=11u && i!=12u &&
-               i!=13u && i!=15u && bytes[i])
+               i!=13u && i!=15u && bytes[i] &&
+               (!device_partitions || (i!=2u && i!=3u)))
                 std::memcpy(host_.data()+offsets[i],sources[i],bytes[i]);
         if(prep_bytes)
             std::memcpy(host_.data()+offsets[11],packed_.data(),prep_bytes);
@@ -537,8 +559,7 @@ public:
             total,friction_history_capacity_*64u,stream_,PX_FL);
         friction_history_capacity_=next_history_capacity_;
         const auto address=arena_.getDevicePtr();
-        const std::size_t uploaded_bytes=
-            (compact_anchors_.empty()?offsets[13]:offsets[6])-upload_begin;
+        const std::size_t uploaded_bytes=input_end-upload_begin;
         std::array<std::uint32_t,32> params{};
         for(std::size_t i=0;i<11u;++i)
             params[i<6u?6u+i:17u+i-6u]=narrow(elements[i]);
@@ -839,7 +860,7 @@ private:
     void build_device_launch_plan(
         std::span<const native::GpuDyDistanceTask> tasks,
         std::span<const native::GpuDyDistanceDescriptor> descriptors,
-        std::span<const std::uint32_t> partitions,
+        std::uint32_t partition_count,
         std::uint32_t ordinals,std::uint32_t bodies) {
         constexpr std::uint32_t threads=128u;
         constexpr std::uint32_t prep_managers=threads/4u;
@@ -869,7 +890,7 @@ private:
                task.descriptor_end>descriptors.size() ||
                task.partition_begin!=partition_end ||
                task.partition_end<partition_end ||
-               task.partition_end>partitions.size() ||
+               task.partition_end>partition_count ||
                task.partition_end-partition_end!=
                    task.descriptor_end-descriptor_end ||
                task.body_begin!=body_end ||
@@ -992,7 +1013,7 @@ private:
             position_ends_[task.position_iterations-1u]=true;
         }
         if(descriptor_end!=descriptors.size() ||
-           partition_end!=partitions.size() || body_end!=ordinals)
+           partition_end!=partition_count || body_end!=ordinals)
             throw std::invalid_argument(
                 "Source device Dy task input stream is incomplete");
         if(wide_tasks_.empty())return;

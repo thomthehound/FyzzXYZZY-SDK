@@ -2014,15 +2014,52 @@ void verify_gpu_wide_island_solver(
                     sizeof(native::GpuDyDistanceDescriptor) &&
                 schedule.dispatches>7u,
                 "Connected Dy islands did not execute tiled conflict partitions");
+        require(schedule.device_generated_bytes==
+                    schedule.device_colored_descriptors*
+                        (sizeof(native::GpuDyDistanceDescriptor)+
+                         sizeof(std::uint32_t)),
+                "Device Dy coloring still uploads its derived output arrays");
         require(producer->dy_upload_span_count()==1u &&
                 producer->dy_gpu_integrated_body_count()==actual.bodies.size() &&
                 producer->dy_pcm_device_contact_rows()>=actual.bodies.size() &&
                 producer->dy_cpu_gu_geometry_bytes()==0u,
                 "Wide island lost GPU contact preparation or body integration");
-        for(std::size_t i=0;i<actual.bodies.size();++i)
-            test::compound_compare_state(gpu.body_state(actual.bodies[i]),
-                cpu.body_state(expected.bodies[i]),0.002f,
-                "Tiled Dy mixed contact and joint island");
+        for(std::size_t i=0;i<actual.bodies.size();++i) {
+            const auto actual_state=gpu.body_state(actual.bodies[i]);
+            const auto expected_state=cpu.body_state(expected.bodies[i]);
+            try {
+                test::compound_compare_state(
+                    actual_state,expected_state,0.002f,
+                    "Tiled Dy mixed contact and joint island");
+            } catch(const std::runtime_error&) {
+                const auto actual_forces=gpu.solved_normal_impulses();
+                const auto expected_forces=cpu.solved_normal_impulses();
+                double max_force_difference=0.0;
+                if(actual_forces.size()==expected_forces.size())
+                    for(std::size_t k=0;k<actual_forces.size();++k)
+                        max_force_difference=std::max(
+                            max_force_difference,
+                            std::abs(actual_forces[k]-expected_forces[k]));
+                std::cout<<"FYZZXYZZY_METRIC suite=sc_pcm case=wide_islands"
+                         <<" phase=state_mismatch"
+                         <<" frame="<<frame<<" body_index="<<i
+                         <<" gpu_angular=("
+                         <<actual_state.angular_velocity.x<<","
+                         <<actual_state.angular_velocity.y<<","
+                         <<actual_state.angular_velocity.z<<")"
+                         <<" cpu_angular=("
+                         <<expected_state.angular_velocity.x<<","
+                         <<expected_state.angular_velocity.y<<","
+                         <<expected_state.angular_velocity.z<<")"
+                         <<" gpu_contacts="<<gpu.contacts().size()
+                         <<" cpu_contacts="<<cpu.contacts().size()
+                         <<" gpu_normal_rows="<<actual_forces.size()
+                         <<" cpu_normal_rows="<<expected_forces.size()
+                         <<" max_normal_force_error="
+                         <<max_force_difference<<'\n';
+                throw;
+            }
+        }
         if(frame==0u)
             std::cout<<"FYZZXYZZY_METRIC suite=sc_pcm case=wide_islands"
                      <<" bodies="<<actual.bodies.size()
@@ -2109,13 +2146,16 @@ void verify_gpu_zero_response_wide_island(
              <<" descriptors="<<schedule.device_colored_descriptors
              <<" max_partition_groups="<<schedule.max_partition_groups
              <<" dy_dispatches="<<schedule.dispatches
-             <<" tile_bytes="<<schedule.tile_bytes<<'\n';
+             <<" tile_bytes="<<schedule.tile_bytes
+             <<" device_generated_bytes="<<schedule.device_generated_bytes<<'\n';
     require(cpu_island>=joint_bodies+zero_contact_bodies &&
             gpu_island>=joint_bodies+zero_contact_bodies,
         "Zero-response fixture did not form the intended accurate island");
     require(schedule.wide_tasks==1u &&
             schedule.device_colored_descriptors>=
-                joint_bodies+zero_contact_bodies-2u,
+                joint_bodies+zero_contact_bodies-2u &&
+            schedule.device_generated_bytes==
+                schedule.device_colored_descriptors*20u,
         "Zero-response fixture did not produce wide contact/joint descriptors");
     require(schedule.max_partition_groups>=
                 (joint_bodies+zero_contact_bodies+127u)/128u,
