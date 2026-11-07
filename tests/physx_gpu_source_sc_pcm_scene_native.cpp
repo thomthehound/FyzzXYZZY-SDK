@@ -1598,6 +1598,43 @@ void verify_gpu_distance_solver(
                 "Source GPU Dy locked-axis integration diverged from CPU PGS");
         }
     }
+
+    // A moving kinematic joint endpoint contributes target velocity
+    // without entering the dynamic integration or mass-response pool.
+    const auto kinematic_cpu=cpu.add_dynamic_box(
+        {0.25f,0.25f,0.25f},{80.f,3.f,0.f},1.f);
+    const auto kinematic_gpu=gpu.add_dynamic_box(
+        {0.25f,0.25f,0.25f},{80.f,3.f,0.f},1.f);
+    const auto follower_cpu=cpu.add_dynamic_box(
+        {0.25f,0.25f,0.25f},{83.f,3.f,0.f},1.f);
+    const auto follower_gpu=gpu.add_dynamic_box(
+        {0.25f,0.25f,0.25f},{83.f,3.f,0.f},1.f);
+    cpu.set_kinematic(kinematic_cpu,true);
+    gpu.set_kinematic(kinematic_gpu,true);
+    RigidBodyDynamics follower_dynamics{};
+    follower_dynamics.gravity_enabled=false;
+    follower_dynamics.linear_damping=0.0f;
+    follower_dynamics.angular_damping=0.0f;
+    cpu.set_dynamics(follower_cpu,follower_dynamics);
+    gpu.set_dynamics(follower_gpu,follower_dynamics);
+    cpu.create_center_distance_constraint(
+        kinematic_cpu,follower_cpu,3.f);
+    gpu.create_center_distance_constraint(
+        kinematic_gpu,follower_gpu,3.f);
+    for(unsigned frame=0u;frame<4u;++frame) {
+        const Vec3 target{80.1f+0.1f*float(frame),3.f,0.f};
+        cpu.set_kinematic_target(kinematic_cpu,target,{});
+        gpu.set_kinematic_target(kinematic_gpu,target,{});
+        cpu.step(dt);
+        gpu.step(dt);
+        require(producer->dy_launch_stats().device_joint_prepared_rows>=4u,
+            "Native GPU Dy skipped moving kinematic 1D joint preparation");
+        const auto expected=cpu.body_state(follower_cpu);
+        const auto actual=gpu.body_state(follower_gpu);
+        require(std::abs(expected.position.x-actual.position.x)<0.002f &&
+                std::abs(expected.velocity.x-actual.velocity.x)<0.002f,
+            "GPU 1D joint ignored kinematic target velocity");
+    }
 }
 } // namespace
 
