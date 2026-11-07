@@ -803,7 +803,8 @@ void integrateBody(uint ordinal) {
     [branch]
     if(ordinal<p.bodyCount) {
         const uint from=p.bodyBias+ordinal*52u;
-        const uint to=p.writebackBias+p.resultBodyOffset+ordinal*48u;
+        const uint to=p.writebackBias+p.resultBodyOffset+
+            ordinal*((inputFlags&64u)!=0u?52u:48u);
         linearDelta=asfloat(arena.Load3(from+24u));
         angularState=asfloat(arena.Load3(from+36u));
         if((inputFlags&8u)==0u) {
@@ -849,7 +850,8 @@ void integrateBody(uint ordinal) {
     float3 finalAngular=baseAngular;
     if(ordinal<p.bodyCount && (inputFlags&8u)!=0u) {
         const uint from=p.bodyBias+ordinal*52u;
-        const uint to=p.writebackBias+p.resultBodyOffset+ordinal*48u;
+        const uint to=p.writebackBias+p.resultBodyOffset+
+            ordinal*((inputFlags&64u)!=0u?52u:48u);
         finalLinear=baseLinear+asfloat(arena.Load3(from));
         if(locks&1u)finalLinear.x=0.0f;
         if(locks&2u)finalLinear.y=0.0f;
@@ -864,8 +866,10 @@ void integrateBody(uint ordinal) {
             sourceDyDot3(inertiaZ,finalState));
         arena.Store3(to,asuint(finalLinear));
         arena.Store3(to+12u,asuint(finalAngular));
-        arena.Store3(to+24u,asuint(motionLinear));
-        arena.Store3(to+36u,asuint(angular));
+        if((inputFlags&64u)==0u) {
+            arena.Store3(to+24u,asuint(motionLinear));
+            arena.Store3(to+36u,asuint(angular));
+        }
     }
     // The axis lock was applied in solver space before the world
     // inverse-inertia transform; the resulting motion is not masked
@@ -906,16 +910,39 @@ void integrateBody(uint ordinal) {
     nextQuaternion=sourceRigidMultiply(nextQuaternion,float4(-localAxes.xyz,localAxes.w));
     nextPosition-=sourceRigidRotate(nextQuaternion,localCenter);
     if(!all(isfinite(nextPosition)) || !all(isfinite(nextQuaternion)))return;
+    float3 sleepLinear=0.0f,sleepAngular=0.0f;
+    float wakeCounter=0.0f;
+    if((inputFlags&64u)!=0u &&
+       !sourceDyPrepareSleep(input,local,motionLinear,angular,
+                             nextQuaternion,sleepLinear,sleepAngular,
+                             wakeCounter))return;
+    if(ordinal<p.bodyCount && (inputFlags&64u)!=0u) {
+        const uint result=p.writebackBias+p.resultBodyOffset+ordinal*52u;
+        arena.Store3(result+24u,asuint(sleepLinear));
+        arena.Store3(result+36u,asuint(sleepAngular));
+        arena.Store(result+48u,asuint(wakeCounter));
+    }
     if(ordinal>=p.bodyCount && (inputFlags&32u)!=0u) {
         const uint count=arena.Load(p.integrationBias+32u);
         const uint output=p.writebackBias+p.resultPatchOffset+
-            p.patchCount*4u+count*32u+(ordinal-p.bodyCount)*24u;
+            p.patchCount*4u+count*32u+
+            (ordinal-p.bodyCount)*((inputFlags&64u)!=0u?52u:24u);
         arena.Store3(output,asuint(finalLinear));
         arena.Store3(output+12u,asuint(finalAngular));
+        if((inputFlags&64u)!=0u) {
+            arena.Store3(output+24u,asuint(sleepLinear));
+            arena.Store3(output+36u,asuint(sleepAngular));
+            arena.Store(output+48u,asuint(wakeCounter));
+        }
     }
     if((inputFlags&8u)!=0u) {
         scActorLocals.Store3(local+64u,asuint(finalLinear));
         scActorLocals.Store3(local+76u,asuint(finalAngular));
+        if((inputFlags&64u)!=0u) {
+            scActorLocals.Store(local+88u,asuint(wakeCounter));
+            scActorLocals.Store3(local+92u,asuint(sleepLinear));
+            scActorLocals.Store3(local+104u,asuint(sleepAngular));
+        }
     }
     arena.Store3(destination,asuint(nextPosition));
     arena.Store4(destination+12u,asuint(nextQuaternion));
