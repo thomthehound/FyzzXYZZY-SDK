@@ -118,6 +118,9 @@ struct SourceDyLaunchStats {
     std::size_t prepared_velocity_upload_bytes=0u;
     std::size_t device_joint_input_rows=0u;
     std::size_t device_joint_geometry_count=0u;
+    std::size_t device_joint_metadata_upload_bytes=0u;
+    std::size_t device_joint_metadata_upload_spans=0u;
+    std::size_t device_joint_metadata_reuses=0u;
     std::size_t device_preintegrated_bodies=0u;
     std::size_t force_mod_upload_bytes=0u;
     std::size_t free_velocity_readback_bytes=0u;
@@ -187,6 +190,7 @@ public:
         std::fill(actor_local_valid_.begin(),actor_local_valid_.end(),0u);
         std::fill(actor_velocity_valid_.begin(),actor_velocity_valid_.end(),0u);
         std::fill(actor_pose_valid_.begin(),actor_pose_valid_.end(),0u);
+        std::fill(joint_source_valid_.begin(),joint_source_valid_.end(),0u);
         if(++history_epoch_==0u) {
             std::fill(history_epochs_.begin(),history_epochs_.end(),0u);
             history_epoch_=1u;
@@ -281,6 +285,9 @@ public:
             std::count_if(rows.begin(),rows.end(),
                 [](const auto& row){return row.reserved==1u || row.reserved==2u;});
         last_schedule_.device_joint_geometry_count=joint_inputs.size();
+        last_schedule_.device_joint_metadata_upload_bytes=0u;
+        last_schedule_.device_joint_metadata_upload_spans=0u;
+        last_schedule_.device_joint_metadata_reuses=0u;
         if(!joint_inputs.empty() && !device_world_motion)
             throw std::invalid_argument(
                 "Source device joint geometry requires native resident actor motion");
@@ -1821,6 +1828,11 @@ private:
     std::vector<std::uint32_t> pending_actor_locals_;
     std::vector<SourceSapUpload> actor_local_uploads_;
     std::size_t actor_local_capacity_=0u;
+    std::vector<native::GpuDyJointInput> joint_source_host_;
+    std::vector<std::uint8_t> joint_source_valid_;
+    std::vector<std::uint32_t> joint_source_dirty_;
+    std::vector<SourceSapUpload> joint_source_uploads_;
+    std::size_t joint_source_capacity_=0u;
     std::vector<native::GpuDyContactPrepBody> inline_bodies_;
     std::vector<native::GpuDyFrictionAnchorInput> compact_anchors_;
     std::vector<std::size_t> patch_anchor_starts_;
