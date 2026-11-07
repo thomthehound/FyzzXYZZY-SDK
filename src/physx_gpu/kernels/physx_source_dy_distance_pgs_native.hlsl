@@ -692,8 +692,7 @@ float3 sourceDyJointInertia(uint ordinal,float3 angular) {
 }
 bool sourceDyPrepareJointGeometry(uint4 desc,uint endError) {
     const uint first=p.distanceBias+desc.x*64u;
-    const uint sourceIndex=arena.Load(first+60u);
-    const uint source=p.distanceBias+p.rowCount*64u+sourceIndex*144u;
+    const uint source=arena.Load(first+60u);
     const uint kind=arena.Load(source+140u);
     const uint count=kind==0u?1u:kind==2u?3u:kind==1u?6u:5u;
     if(kind>4u || desc.w!=count) {
