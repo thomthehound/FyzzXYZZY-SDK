@@ -1061,6 +1061,38 @@ public:
                 }
             }
         }
+        // Sc's final world velocities are the device pool's next-frame
+        // baseline. Update the host comparison mirror from the same
+        // fetched result, never by replaying PGS on the CPU.
+        if(device_world_motion) {
+            for(const auto index:body_ordinals) {
+                if(!integration[index].active)continue;
+                const auto id=integration[index].source_actor;
+                std::memcpy(actor_local_host_[id].linear_velocity,
+                            bodies[index].linear_delta,
+                            sizeof(actor_local_host_[id].linear_velocity));
+                std::memcpy(actor_local_host_[id].angular_velocity,
+                            bodies[index].angular_state,
+                            sizeof(actor_local_host_[id].angular_velocity));
+                actor_velocity_valid_[id]=1u;
+            }
+            for(std::size_t index=bodies.size();index<integration.size();++index) {
+                const auto& input=integration[index];
+                if(!(input.active&1u))continue;
+                const auto id=input.source_actor;
+                float linear[3]{
+                    input.linear_velocity[0],input.linear_velocity[1],
+                    input.linear_velocity[2]};
+                for(unsigned axis=0u;axis<3u;++axis)
+                    if(input.lock_flags&(1u<<axis))linear[axis]=0.0f;
+                std::memcpy(actor_local_host_[id].linear_velocity,linear,
+                            sizeof(linear));
+                std::memcpy(actor_local_host_[id].angular_velocity,
+                            input.angular_velocity,
+                            sizeof(actor_local_host_[id].angular_velocity));
+                actor_velocity_valid_[id]=1u;
+            }
+        }
         last_transfer_bytes_={uploaded_bytes,output_bytes};
         last_reused_pcm_contact_rows_=reused_pcm_rows;
         last_omitted_pcm_upload_bytes_=
