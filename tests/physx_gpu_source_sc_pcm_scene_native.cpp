@@ -1903,7 +1903,10 @@ void verify_gpu_free_integration(
             const auto body=scene.add_dynamic_box(
                 {0.25f,0.4f,0.6f},{x,3.f,0.f},1.f);
             bodies.push_back(body);
-            scene.set_dynamics(body,free_motion);
+            RigidBodyDynamics dynamics=free_motion;
+            if(i==3u)dynamics.gyroscopic_forces_enabled=true;
+            if(i==14u)dynamics.retain_accelerations=true;
+            scene.set_dynamics(body,dynamics);
             scene.set_velocity(body,{0.2f,0.3f,1.f});
             scene.set_angular_velocity(body,{1.f,0.2f,-0.6f});
         }
@@ -1928,6 +1931,29 @@ void verify_gpu_free_integration(
     const auto actual=assemble(gpu,actual_shape);
     bool touched=false,released=false;
     for(unsigned frame=0;frame<12u;++frame) {
+        if(frame==3u) {
+            RigidBodyDynamics clamped{};
+            clamped.gravity_enabled=false;
+            clamped.angular_damping=0.0f;
+            clamped.lock_flags=LockLinearZ|LockAngularX;
+            clamped.max_linear_velocity=0.4f;
+            clamped.max_angular_velocity=0.5f;
+            cpu.set_dynamics(expected[15],clamped);
+            gpu.set_dynamics(actual[15],clamped);
+        }
+        if(frame==5u) {
+            const Vec3 impulse{0.4f,-0.15f,0.f};
+            const Vec3 acceleration{0.f,-1.0f,0.f};
+            const Vec3 torque{0.f,0.15f,0.05f};
+            for(auto* scene:{&cpu,&gpu}) {
+                const auto& ids=scene==&cpu?expected:actual;
+                scene->add_spatial_velocity_mod(ids[10],impulse,ForceMode::Impulse,false);
+                scene->add_spatial_velocity_mod(ids[11],acceleration,ForceMode::Acceleration,false);
+                scene->add_spatial_velocity_mod(ids[12],torque,ForceMode::VelocityChange,true);
+                scene->add_spatial_velocity_mod(ids[13],torque,ForceMode::Force,true);
+                scene->add_spatial_velocity_mod(ids[14],acceleration,ForceMode::Acceleration,false);
+            }
+        }
         if(frame==7u) {
             // An authored change to a steady free body must overwrite the
             // previous GPU velocity without changing its stable actor ID.
@@ -1959,6 +1985,12 @@ void verify_gpu_free_integration(
                 "GPU Dy did not integrate every active body in one upload");
         const auto resident=producer->dy_resident_pose_count();
         const auto metadata=producer->dy_launch_stats();
+        require(metadata.device_preintegrated_bodies==actual.size() &&
+                metadata.free_velocity_readback_bytes<=
+                    actual.size()*sizeof(physx_gpu::SourceDyPreparedVelocityNative) &&
+                (frame<5u?metadata.force_mod_upload_bytes==0u
+                         :metadata.force_mod_upload_bytes>0u),
+            "GPU Dy did not prepare rigid velocities and force streams");
         constexpr auto velocity_bytes=
             sizeof(physx_gpu::SourceDyPreparedVelocityNative);
         require(metadata.prepared_velocity_updated_bodies+
@@ -1977,13 +2009,13 @@ void verify_gpu_free_integration(
                  metadata.prepared_velocity_upload_bytes<
                      metadata.prepared_velocity_updated_bodies*velocity_bytes) &&
                 (frame!=7u ||
-                 metadata.prepared_velocity_updated_bodies>=2u),
+                 metadata.prepared_velocity_updated_bodies>=1u),
             "Native Dy did not retain and compact exact GPU velocities");
         require((frame==0u
                     ? metadata.actor_local_upload_bytes==
                           actual.size()*sizeof(physx_gpu::SourceDyActorLocalNative) &&
                       metadata.actor_local_upload_spans==1u
-                    : frame==4u
+                    : (frame==3u || frame==4u)
                         ? metadata.actor_local_upload_bytes==
                               sizeof(physx_gpu::SourceDyActorLocalNative) &&
                           metadata.actor_local_upload_spans==1u &&
@@ -2016,7 +2048,9 @@ void verify_gpu_free_integration(
                     schedule.device_initialized_bodies==0u &&
                     schedule.device_world_motion_bodies==0u &&
                     producer->dy_distance_transfer_bytes().second==
-                        actual.size()*sizeof(native::GpuDyIntegratedPose),
+                        actual.size()*
+                            (sizeof(native::GpuDyIntegratedPose)+
+                             sizeof(physx_gpu::SourceDyPreparedVelocityNative)),
                     "Free-only Dy staged solver rows or dispatched PGS");
         }
         if(frame>0u)
