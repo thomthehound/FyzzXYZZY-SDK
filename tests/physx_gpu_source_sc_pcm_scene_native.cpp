@@ -1893,6 +1893,15 @@ void verify_gpu_free_integration(
                 producer->dy_upload_span_count()==1u,
                 "GPU Dy did not integrate every active body in one upload");
         const auto resident=producer->dy_resident_pose_count();
+        const auto metadata=producer->dy_launch_stats();
+        require((frame==0u
+                    ? metadata.actor_local_upload_bytes==
+                          actual.size()*sizeof(physx_gpu::SourceDyHostPoseNative) &&
+                      metadata.actor_local_upload_spans==1u
+                    : metadata.actor_local_upload_bytes==0u &&
+                      metadata.actor_local_upload_spans==0u &&
+                      metadata.reused_actor_local_poses==actual.size()),
+            "Source Dy reuploaded unchanged actor-local mass frames");
         require(resident<=actual.size() &&
                 producer->dy_host_pose_upload_bytes()==
                     (actual.size()-resident)*28u &&
