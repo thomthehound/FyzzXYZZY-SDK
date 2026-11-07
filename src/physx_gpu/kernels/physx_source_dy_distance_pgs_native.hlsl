@@ -284,6 +284,61 @@ void sourceDyInvalidatePreparedVelocity(uint ordinal) {
     scActorLocals.Store3(local+76u,invalid);
 }
 
+// DySleep::updateWakeCounter consumes position-phase motion after
+// integrateCore has produced the actor quaternion. IslandSim remains
+// the owner of actual deactivation and reactivation.
+bool sourceDyPrepareSleep(uint input,uint local,
+                          float3 motionLinear,float3 motionAngular,
+                          float4 actorOrientation,
+                          out float3 linearAcc,out float3 angularAcc,
+                          out float wakeCounter) {
+    wakeCounter=asfloat(scActorLocals.Load(local+88u));
+    linearAcc=asfloat(scActorLocals.Load3(local+92u));
+    angularAcc=asfloat(scActorLocals.Load3(local+104u));
+    const float dt=asfloat(arena.Load(input+40u));
+    if(wakeCounter<0.2f || wakeCounter<dt) {
+        const float4 inverseOrientation=
+            float4(-actorOrientation.xyz,actorOrientation.w);
+        const float3 localAngular=
+            sourceRigidRotate(inverseOrientation,motionAngular);
+        linearAcc+=motionLinear;
+        angularAcc+=localAngular;
+        if(!all(isfinite(linearAcc)) || !all(isfinite(angularAcc)))
+            return false;
+        const float3 inverseInertia=asfloat(scActorLocals.Load3(local+48u));
+        const float3 inertia=float3(
+            inverseInertia.x>0.0f?1.0f/inverseInertia.x:1.0f,
+            inverseInertia.y>0.0f?1.0f/inverseInertia.y:1.0f,
+            inverseInertia.z>0.0f?1.0f/inverseInertia.z:1.0f);
+        const float inverseMass=asfloat(scActorLocals.Load(local+28u));
+        precise float angularEnergy=(
+            angularAcc.x*angularAcc.x*inertia.x+
+            angularAcc.y*angularAcc.y*inertia.y+
+            angularAcc.z*angularAcc.z*inertia.z)*inverseMass;
+        precise float accumulatedLinear=
+            linearAcc.x*linearAcc.x+
+            linearAcc.y*linearAcc.y+
+            linearAcc.z*linearAcc.z;
+        const float normalizedEnergy=0.5f*(angularEnergy+accumulatedLinear);
+        const float cluster=1.0f+float(arena.Load(input+72u));
+        const float threshold=cluster*0.005f;
+        if(normalizedEnergy>=threshold) {
+            linearAcc=0.0f;
+            angularAcc=0.0f;
+            const float factor=threshold==0.0f
+                ?2.0f:min(normalizedEnergy/threshold,2.0f);
+            wakeCounter=factor*0.5f*0.4f+dt*(cluster-1.0f);
+        }else
+            wakeCounter=max(wakeCounter-dt,0.0f);
+    }else wakeCounter=max(wakeCounter-dt,0.0f);
+    if(wakeCounter==0.0f) {
+        linearAcc=0.0f;
+        angularAcc=0.0f;
+    }
+    return all(isfinite(linearAcc)) && all(isfinite(angularAcc)) &&
+           isfinite(wakeCounter) && wakeCounter>=0.0f;
+}
+
 #include "physx_source_dy_contact_pgs_native.hlsli"
 
 // Sc owns task membership. One workgroup colors independent source
