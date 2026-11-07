@@ -1572,7 +1572,12 @@ void verify_gpu_distance_solver(
                     static_cast<std::uint64_t>(frame+1) &&
                 producer->dy_gpu_integrated_body_count()>0u &&
                 producer->dy_launch_stats().device_joint_input_rows==3u &&
-                producer->dy_launch_stats().device_joint_geometry_count==3u,
+                producer->dy_launch_stats().device_joint_geometry_count==3u &&
+                (frame==0?producer->dy_launch_stats().device_joint_metadata_upload_bytes==
+                    3u*sizeof(native::GpuDyJointInput)
+                    :producer->dy_launch_stats().device_joint_metadata_upload_bytes==0u) &&
+                producer->dy_launch_stats().device_joint_metadata_reuses==
+                    (frame==0?0u:3u),
             "Source GPU 1D joint rows did not reach device preparation");
         const auto [uploaded,downloaded]=
             producer->dy_distance_transfer_bytes();
@@ -1643,7 +1648,9 @@ void verify_gpu_distance_solver(
         cpu.step(dt);
         gpu.step(dt);
         require(producer->dy_launch_stats().device_joint_input_rows>=4u &&
-                producer->dy_launch_stats().device_joint_geometry_count>=4u,
+                producer->dy_launch_stats().device_joint_geometry_count>=4u &&
+                producer->dy_launch_stats().device_joint_metadata_upload_bytes<=
+                    4u*sizeof(native::GpuDyJointInput),
             "Native GPU Dy skipped moving kinematic 1D joint preparation");
         const auto expected=cpu.body_state(follower_cpu);
         const auto actual=gpu.body_state(follower_gpu);
