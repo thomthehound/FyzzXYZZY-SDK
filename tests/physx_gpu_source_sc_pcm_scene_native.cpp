@@ -1898,12 +1898,17 @@ void verify_gpu_free_integration(
         require(cpu.contacts().size()==gpu.contacts().size(),
                 "Device-integrated free body changed contact admission");
         const bool contacts=producer->dy_pcm_device_contact_rows()!=0u;
+        const auto schedule=producer->dy_launch_stats();
         if(contacts) {
-            require(!released && producer->dy_launch_stats().dispatches==2u,
-                    "Mixed free and constrained bodies lost a Dy dispatch");
+            require(!released && schedule.dispatches==3u &&
+                    schedule.device_initialized_bodies>0u &&
+                    schedule.device_body_upload_bytes==
+                        schedule.device_initialized_bodies*sizeof(float),
+                    "Mixed Dy skipped device initialization, PGS or free-body integration");
             touched=true;
         } else {
-            require(producer->dy_launch_stats().dispatches==1u &&
+            require(schedule.dispatches==1u &&
+                    schedule.device_initialized_bodies==0u &&
                     producer->dy_distance_transfer_bytes().second==
                         actual.size()*sizeof(native::GpuDyIntegratedPose),
                     "Free-only Dy staged solver rows or dispatched PGS");
