@@ -1888,12 +1888,6 @@ private:
         float velocity_multiplier=0.0f,applied_force=0.0f;
     };
     std::vector<JointRow> joint_rows_;
-    struct JointWorldAngular {
-        Vec3 body0{},body1{};
-    };
-    // GPU 1D preparation consumes the original world-space Jacobians;
-    // source CPU rows retain their sqrt-inertia transformed values.
-    std::vector<JointWorldAngular> gpu_dy_joint_world_;
     // DyDynamicsContext::updatePostKinematic's contiguous source task
     // groups: cumulative offsets into indexed_managers_. The admitted
     // rigid-only default batches 128 bodies or until one contact exists.

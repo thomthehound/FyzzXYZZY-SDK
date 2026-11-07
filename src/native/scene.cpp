@@ -7306,7 +7306,7 @@ void Scene::prepare_constraints(float seconds) {
     solver_contact_points_.clear();
     solver_contact_order_.clear();
     joint_rows_.clear();
-    gpu_dy_joint_world_.clear();
+    gpu_dy_rows_.clear();
     const bool gpu_normal_prep=
         gpu_broadphase_ && gpu_broadphase_->has_gpu_dy_distance();
     gpu_dy_contact_prep_pairs_.clear();
@@ -7358,7 +7358,21 @@ void Scene::prepare_constraints(float seconds) {
                 // Dy computes the source's velocity-dependent constants
                 // after GPU-prepared actor velocities are available.
                 row.constant=error*inv_dt;
-                gpu_dy_joint_world_.push_back({angular0,angular1});
+                // Materialize the final 64-byte source GPU row here.
+                // Its angular terms remain in world coordinates until
+                // Dy normal preparation applies sqrt-inverse-inertia.
+                auto& gpu=gpu_dy_rows_.emplace_back();
+                const auto pack=[](float(&out)[3],Vec3 v) {
+                    out[0]=v.x;out[1]=v.y;out[2]=v.z;
+                };
+                pack(gpu.axis,axis);
+                pack(gpu.angular_a,angular0);
+                pack(gpu.angular_b,angular1);
+                gpu.inverse_mass_a=mass0;
+                gpu.inverse_mass_b=mass1;
+                gpu.reserved=1u;
+                gpu.constant=row.constant;
+                gpu.velocity_multiplier=row.velocity_multiplier;
             }else {
                 const float speed=
                     dot(axis,relative)+dot(angular0,body0.angular_velocity)-
@@ -8298,23 +8312,9 @@ void Scene::solve_gpu_distance_constraints(float seconds) {
         pack(input.linear_velocity,actor.velocity);
         pack(input.angular_velocity,actor.angular_velocity);
     }
-    gpu_dy_rows_.resize(joint_rows_.size());
-    if(gpu_dy_joint_world_.size()!=joint_rows_.size())
-        throw std::logic_error("Source GPU 1D world Jacobian stream incomplete");
-    for(std::size_t i=0;i<joint_rows_.size();++i) {
-        const auto& row=joint_rows_[i];
-        auto& out=gpu_dy_rows_[i];
-        pack(out.axis,row.axis);
-        pack(out.angular_a,gpu_dy_joint_world_[i].body0);
-        pack(out.angular_b,gpu_dy_joint_world_[i].body1);
-        out.reserved=1u;
-        out.inverse_mass_a=row.inverse_mass_a;
-        out.inverse_mass_b=row.inverse_mass_b;
-        out.constant=row.constant;
-        out.unbiased_constant=row.unbiased_constant;
-        out.velocity_multiplier=row.velocity_multiplier;
-        out.applied_force=row.applied_force;
-    }
+    if(gpu_dy_rows_.size()!=joint_rows_.size())
+        throw std::logic_error(
+            "Source GPU 1D row preparation did not cover source rows");
     gpu_dy_descriptors_.resize(ordered_constraints_.size());
     for(std::size_t i=0;i<ordered_constraints_.size();++i) {
         const auto& d=ordered_constraints_[i];
