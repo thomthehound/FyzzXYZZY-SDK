@@ -26,11 +26,15 @@ RWByteAddressBuffer scBounds : register(u3,space0);
 [[vk::binding(4,0)]]
 #endif
 RWByteAddressBuffer scGeometry : register(u4,space0);
-#ifdef FYZZXYZZY_CONVEX
 #ifdef __spirv__
 [[vk::binding(5,0)]]
 #endif
-RWByteAddressBuffer scHullVertices : register(u5,space0);
+RWByteAddressBuffer scActorLocals : register(u5,space0);
+#ifdef FYZZXYZZY_CONVEX
+#ifdef __spirv__
+[[vk::binding(6,0)]]
+#endif
+RWByteAddressBuffer scHullVertices : register(u6,space0);
 #endif
 
 struct Parameters {
@@ -129,7 +133,7 @@ void solveJoint(uint4 desc,uint errorAddress,bool biased) {
 // Sc's cached ElementSim pose is the common mass-frame source for
 // device contact preparation, friction correlation, and integrateCore.
 bool sourceDyMassPose(uint input,out float3 position,out float4 quaternion) {
-    const uint poseIndex=arena.Load(input+108u);
+    const uint poseIndex=arena.Load(input+80u);
     if(poseIndex==invalidBody) {
         const uint4 views=arena.Load4(p.integrationBias);
         const uint element=arena.Load(input+72u);
@@ -150,14 +154,15 @@ bool sourceDyMassPose(uint input,out float3 position,out float4 quaternion) {
             shapeAxes,float4(-shapeLocalAxes.xyz,shapeLocalAxes.w));
         const float3 actorPosition=shapeCenter-
             sourceRigidRotate(actorAxes,shapeLocal);
-        const float3 centerLocal=asfloat(arena.Load3(input+76u));
-        const float4 massLocalAxes=asfloat(arena.Load4(input+88u));
+        const uint local=arena.Load(input+84u);
+        const float3 centerLocal=asfloat(scActorLocals.Load3(local));
+        const float4 massLocalAxes=asfloat(scActorLocals.Load4(local+12u));
         quaternion=sourceRigidMultiply(actorAxes,massLocalAxes);
         position=actorPosition+sourceRigidRotate(actorAxes,centerLocal);
     }else {
         const uint count=arena.Load(p.integrationBias+32u);
         if(poseIndex>=count)return false;
-        const uint pose=p.integrationBias+40u+count*112u+poseIndex*28u;
+        const uint pose=p.integrationBias+40u+count*88u+poseIndex*28u;
         position=asfloat(arena.Load3(pose));
         quaternion=asfloat(arena.Load4(pose+12u));
     }
@@ -560,7 +565,7 @@ void saveMotion(uint index,uint endError) {
 void integrateBody(uint ordinal) {
     float3 linearDelta=0.0f;
     float3 angularState=0.0f;
-    const uint input=p.integrationBias+40u+ordinal*112u;
+    const uint input=p.integrationBias+40u+ordinal*88u;
     const uint inputFlags=arena.Load(input+68u);
     [branch]
     if(ordinal<p.bodyCount) {
@@ -654,15 +659,16 @@ void integrateBody(uint ordinal) {
     }
     // integrateCore advances the principal mass frame. Recover the
     // actor frame before composing each independent local shape pose.
-    const float3 localCenter=asfloat(arena.Load3(input+76u));
-    const float4 localAxes=asfloat(arena.Load4(input+88u));
+    const uint local=arena.Load(input+84u);
+    const float3 localCenter=asfloat(scActorLocals.Load3(local));
+    const float4 localAxes=asfloat(scActorLocals.Load4(local+12u));
     nextQuaternion=sourceRigidMultiply(nextQuaternion,float4(-localAxes.xyz,localAxes.w));
     nextPosition-=sourceRigidRotate(nextQuaternion,localCenter);
     if(!all(isfinite(nextPosition)) || !all(isfinite(nextQuaternion)))return;
     arena.Store3(destination,asuint(nextPosition));
     arena.Store4(destination+12u,asuint(nextQuaternion));
     uint element=arena.Load(input+72u);
-    const uint shapeCount=arena.Load(input+104u);
+    const uint shapeCount=arena.Load(input+76u);
     const uint4 views=arena.Load4(p.integrationBias);
     for(uint shape=0u;shape<shapeCount;++shape) {
         if(element>=views.w)return;
