@@ -115,6 +115,20 @@ public:
 
     void invalidate_after_rollback() noexcept { reset_manifolds_=true; }
 
+    void set_contact_graph(
+        std::span<const native::GpuScContactGraphEdge> edges,
+        std::uint32_t rigid_count) {
+        if(edges.size()>std::numeric_limits<std::uint32_t>::max() ||
+           (!rigid_count && !edges.empty()))
+            throw std::out_of_range("Sc contact graph exceeds source rigid address range");
+        for(const auto& edge:edges)
+            if(edge.body_a>=rigid_count || edge.body_b>=rigid_count ||
+               edge.edge==0xffffffffu || (edge.flags&~7u)!=0u)
+                throw std::invalid_argument("Source Sc graph references invalid EdgeIndex or rigid actor");
+        graph_sources_.assign(edges.begin(),edges.end());
+        graph_rigid_watermark_=rigid_count;
+    }
+
     void generate(std::span<const native::GpuPcmBoxPair> requests,
                   std::span<native::GpuPcmBoxResult> output,
                   std::uint32_t shape_capacity) {
@@ -128,18 +142,30 @@ public:
         last_contact_download_bytes_=0u;
         last_edge_history_copy_bytes_=0u;
         last_graph_upload_bytes_=0u;
-        if(requests.empty())return;
-        if(!shape_capacity ||
+        if(requests.empty() && graph_sources_.empty())return;
+        if((!shape_capacity && !requests.empty()) ||
            requests.size()>std::numeric_limits<std::uint32_t>::max())
             throw std::out_of_range("Source GPU PCM pair capacity overflow");
         const auto pair_count=static_cast<std::uint32_t>(requests.size());
         std::uint32_t candidate_count=0u;
         std::uint32_t largest_edge=0u;
-        std::uint32_t rigid_count=0u;
+        const auto graph_count=static_cast<std::uint32_t>(graph_sources_.size());
+        const auto rigid_count=graph_rigid_watermark_;
         const auto old_graph_count=graph_pair_host_.size();
         const auto old_graph_rigid_count=graph_rigid_count_;
-        graph_pair_host_.resize(pair_count);
-        std::uint32_t first_graph_dirty=pair_count,last_graph_dirty=0u;
+        graph_pair_host_.resize(graph_count);
+        std::uint32_t first_graph_dirty=graph_count,last_graph_dirty=0u;
+        for(std::uint32_t i=0u;i<graph_count;++i) {
+            const auto& link=graph_sources_[i];
+            if((link.flags&4u)==0u)
+                largest_edge=std::max(largest_edge,link.edge);
+            if(i>=old_graph_count ||
+               std::memcmp(&graph_pair_host_[i],&link,sizeof(link))!=0) {
+                first_graph_dirty=std::min(first_graph_dirty,i);
+                last_graph_dirty=i+1u;
+            }
+            graph_pair_host_[i]=link;
+        }
         bool full_upload=reset_manifolds_ ||
             previous_count!=pair_count || pair_host_.size()!=pair_count;
         std::uint32_t first_dirty=pair_count,last_dirty=0u;
@@ -156,24 +182,6 @@ public:
             if(request.edge==std::numeric_limits<std::uint32_t>::max())
                 throw std::out_of_range("Source Sc edge watermark overflow");
             largest_edge=std::max(largest_edge,request.edge);
-            if(request.rigid_a==0xffffffffu ||
-               request.rigid_b==0xffffffffu ||
-               request.rigid_a==0xfffffffeu ||
-               request.rigid_b==0xfffffffeu)
-                throw std::invalid_argument("Sc PCM graph needs two live rigid endpoints");
-            rigid_count=std::max(rigid_count,
-                std::max(request.rigid_a,request.rigid_b)+1u);
-            const SourceScContactGraphPairNative graph_pair{
-                request.rigid_a,request.rigid_b,
-                (request.dynamic_a?1u:0u)|(request.dynamic_b?2u:0u),
-                request.edge};
-            if(i>=old_graph_count ||
-               std::memcmp(&graph_pair_host_[i],&graph_pair,
-                           sizeof(graph_pair))!=0) {
-                first_graph_dirty=std::min(first_graph_dirty,i);
-                last_graph_dirty=i+1u;
-            }
-            graph_pair_host_[i]=graph_pair;
             // A plane ElementSim has no finite AABB storage; only its
             // participating box needs a device geometry and transform.
             const auto first=request.plane_pair?0u:
@@ -222,18 +230,21 @@ public:
         // Reserve the download destination before queueing any source
         // allocation or GPU work. Its address remains fixed through fetch.
         readback_.resize(pair_count);
-        const auto requested_pair_bytes=source_allocation_bytes(pair_count,20u);
-        const auto previous_pair_capacity=pairs_.getSize();
-        const auto previous_pair_address=pairs_.getDevicePtr();
-        pairs_.allocate(requested_pair_bytes,PX_FL);
-        full_upload |= requested_pair_bytes>previous_pair_capacity ||
-                       pairs_.getDevicePtr()!=previous_pair_address;
-        results_.allocate(source_allocation_bytes(pair_count,32u),PX_FL);
+        if(pair_count) {
+            const auto requested_pair_bytes=source_allocation_bytes(pair_count,20u);
+            const auto previous_pair_capacity=pairs_.getSize();
+            const auto previous_pair_address=pairs_.getDevicePtr();
+            pairs_.allocate(requested_pair_bytes,PX_FL);
+            full_upload |= requested_pair_bytes>previous_pair_capacity ||
+                           pairs_.getDevicePtr()!=previous_pair_address;
+            results_.allocate(source_allocation_bytes(pair_count,32u),PX_FL);
+        }
         // Plane-only PCM frames need no candidate storage; retain the
         // source stages' nonzero view contract without 16 unused slots
         // per plane pair.
         const auto candidate_capacity=std::max(candidate_count,1u);
-        candidates_.allocate(source_allocation_bytes(candidate_capacity,40u),PX_FL);
+        if(pair_count)
+            candidates_.allocate(source_allocation_bytes(candidate_capacity,40u),PX_FL);
         // Only previously published EdgeIndex records belong to the
         // persistent Gu manifold. Capacity slack and the alignment pad
         // are not historical source contacts. Preserve the high-watermark
@@ -245,15 +256,17 @@ public:
             last_edge_history_copy_bytes_=published_edge_span_bytes_;
         edges_.allocateCopyPrefixAsync(requested_edge_bytes,
             published_edge_span_bytes_,stream_,PX_FL);
-        work_.allocate(source_allocation_bytes(pair_count,4u),PX_FL);
-        dense_contacts_.allocate(source_allocation_bytes(
-            pair_count,sizeof(SourcePcmGpuContactStreamNative)),PX_FL);
+        if(pair_count) {
+            work_.allocate(source_allocation_bytes(pair_count,4u),PX_FL);
+            dense_contacts_.allocate(source_allocation_bytes(
+                pair_count,sizeof(SourcePcmGpuContactStreamNative)),PX_FL);
+        }
         // The accurate graph shares this Sc PCM source manager stream.
         // Physical touch determines connectivity; static endpoints
         // remain graph terminals rather than merging dynamic islands.
         const auto graph_pair_offset=std::size_t(32u);
         const auto graph_root_offset=graph_pair_offset+
-            std::size_t(pair_count)*sizeof(SourceScContactGraphPairNative);
+            std::size_t(graph_count)*sizeof(SourceScContactGraphPairNative);
         const auto graph_error_offset=graph_root_offset+
             std::size_t(rigid_count)*sizeof(std::uint32_t);
         if(graph_error_offset>std::numeric_limits<std::uint32_t>::max()-127u)
@@ -262,18 +275,18 @@ public:
         const auto old_graph_capacity=graph_.getSize();
         const auto old_graph_address=graph_.getDevicePtr();
         graph_.allocate(graph_bytes,PX_FL);
-        const bool full_graph=old_graph_count!=pair_count ||
+        const bool full_graph=old_graph_count!=graph_count ||
             old_graph_rigid_count!=rigid_count ||
             graph_bytes>old_graph_capacity ||
             graph_.getDevicePtr()!=old_graph_address;
         graph_rigid_count_=rigid_count;
-        graph_header_={pair_count,rigid_count,
+        graph_header_={graph_count,rigid_count,
             static_cast<std::uint32_t>(graph_pair_offset),
             static_cast<std::uint32_t>(graph_root_offset),
             static_cast<std::uint32_t>(graph_error_offset),0u,0u,0u};
         if(full_graph) {
             first_graph_dirty=0u;
-            last_graph_dirty=pair_count;
+            last_graph_dirty=graph_count;
         }
         // Sc's reset intent travels with the source pair. The GPU
         // candidate owner initializes its own EdgeIndex record before
@@ -454,13 +467,13 @@ public:
         return last_edge_history_copy_bytes_;
     }
     CudaDeviceAddressMap::Address graph_address() const noexcept {
-        return published_pair_count_?graph_.getDevicePtr():0u;
+        return graph_pair_host_.empty()?0u:graph_.getDevicePtr();
     }
     std::size_t last_graph_upload_bytes() const noexcept {
         return last_graph_upload_bytes_;
     }
     std::uint32_t graph_rigid_count() const noexcept {
-        return published_pair_count_?graph_rigid_count_:0u;
+        return graph_pair_host_.empty()?0u:graph_rigid_count_;
     }
 private:
     compute::Context& context_;
@@ -486,6 +499,8 @@ private:
     CudaDeviceAddressMap::Address indirect_address_=0u;
     std::vector<SourcePcmBoxPairNative> pair_host_;
     std::vector<SourcePcmGpuContactStreamNative> readback_;
+    std::vector<SourceScContactGraphPairNative> graph_sources_;
+    std::uint32_t graph_rigid_watermark_=0u;
     std::vector<SourceScContactGraphPairNative> graph_pair_host_;
     std::vector<SourceSapUpload> graph_uploads_;
     std::array<std::uint32_t,8> graph_header_{};
