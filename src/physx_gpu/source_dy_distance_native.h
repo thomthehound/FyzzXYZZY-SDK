@@ -1132,6 +1132,23 @@ public:
             std::memcpy(host_.data()+offsets[12]+integration_header_bytes,
                         packed_integration_.data(),
                         packed_integration_.size()*sizeof(SourceDyPackedIntegrationNative));
+        // First-row metadata references the retained Sc constraint slot
+        // rather than a per-frame array ordinal. Row order is unchanged.
+        for(const auto& descriptor:descriptors) {
+            if((descriptor.row_count&255u)==0u)continue;
+            const auto& first=rows[descriptor.index];
+            if(first.reserved!=2u)continue;
+            const auto index=std::bit_cast<std::uint32_t>(first.applied_force);
+            const auto slot=joint_inputs[index].source_slot;
+            const auto address=narrow(std::size_t(params[28])+joint_base+
+                std::size_t(slot)*sizeof(native::GpuDyJointInput));
+            std::memcpy(host_.data()+offsets[1]+
+                            std::size_t(descriptor.index)*sizeof(native::GpuDyJointRow)+
+                            offsetof(native::GpuDyJointRow,applied_force),
+                        &address,sizeof(address));
+        }
+        if(!joint_source_uploads_.empty())
+            stream_.queue_uploads(joint_source_uploads_);
         // Only newly admitted or edited actor-local transforms are
         // uploaded. Neighboring BodyIds share one source DMA span.
         std::sort(pending_actor_locals_.begin(),pending_actor_locals_.end());
@@ -1461,6 +1478,10 @@ public:
                 history_epochs_[pair.pcm_edge]=history_epoch_;
         }
         last_friction_prepared_rows_=friction_count;
+        // The device accepted each changed joint only after all source
+        // task results and their lifetime checks were published.
+        for(const auto slot:joint_source_dirty_)
+            joint_source_valid_[slot]=1u;
         last_contact_prep_upload_saving_=
             static_cast<std::int64_t>(contact_prep.size_bytes())-
             static_cast<std::int64_t>(prep_bytes+inline_body_bytes);
