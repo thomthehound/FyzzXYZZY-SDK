@@ -199,8 +199,8 @@ static_assert(sizeof(GpuDyBodyIntegrationInput)==284u &&
               offsetof(GpuDyBodyIntegrationInput,pending_linear_velocity_delta)==176u &&
               offsetof(GpuDyBodyIntegrationInput,wake_counter)==224u &&
               offsetof(GpuDyBodyIntegrationInput,counted_interactions)==252u &&
-               offsetof(GpuDyBodyIntegrationInput,actor_position)==256u &&
-               offsetof(GpuDyBodyIntegrationInput,actor_orientation)==268u);
+              offsetof(GpuDyBodyIntegrationInput,actor_position)==256u &&
+              offsetof(GpuDyBodyIntegrationInput,actor_orientation)==268u);
 struct GpuDyIntegratedPose {
     float position[3]{},orientation[4]{};
     std::uint32_t valid=0u;

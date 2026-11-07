@@ -66,7 +66,7 @@ static_assert(sizeof(SourceDyHostPoseNative)==28u);
 struct SourceDyActorLocalNative {
     float position[3]{},orientation[4]{};
     float inverse_mass=0.0f;
-    // Stable authored dynamics precede the GPU-owned velocity tail.
+    // Stable authored dynamics precede GPU-owned motion and sleep state.
     float linear_damping=0.0f,angular_damping=0.0f;
     float max_linear_speed_squared=0.0f,max_angular_speed_squared=0.0f;
     float inverse_inertia_local[3]{};
@@ -88,8 +88,8 @@ static_assert(sizeof(SourceDyActorLocalNative)==144u &&
               offsetof(SourceDyActorLocalNative,wake_counter)==88u &&
               offsetof(SourceDyActorLocalNative,sleep_linear_acc)==92u &&
               offsetof(SourceDyActorLocalNative,sleep_angular_acc)==104u &&
-               offsetof(SourceDyActorLocalNative,world_position)==116u &&
-               offsetof(SourceDyActorLocalNative,world_orientation)==128u);
+              offsetof(SourceDyActorLocalNative,world_position)==116u &&
+              offsetof(SourceDyActorLocalNative,world_orientation)==128u);
 
 struct SourceDyLaunchStats {
     std::size_t device_colored_tasks=0u;
@@ -489,8 +489,8 @@ public:
         const std::size_t inline_body_bytes=
             inline_bodies_.size()*sizeof(native::GpuDyContactPrepBody);
         const std::size_t compact_prep_bytes=static_begin+inline_body_bytes;
-        // Contact/friction prep and integrateCore consume the same
-        // authorized Sc mass pose. No CPU pose mirror for contact bodies.
+        // Contact/friction prep and integrateCore share one actor world pose.
+        // Sc retains the completed-frame mirror for publication and rollback.
         packed_integration_.clear();
         host_poses_.clear();
         last_resident_pose_count_=0u;
@@ -980,7 +980,7 @@ public:
         dispatch.buffers.push_back(bind_shape(
             shape_geometry,64u,4u,compute::BufferAccess::Read,
             integration_header[2]));
-        // Stable BodyIds index the device-owned mass-local transform pool.
+        // Stable BodyIds index one actor-local and world-motion state pool.
         // The transient body stream carries only the per-actor byte offset.
         std::uint32_t actor_local_bias=0u;
         dispatch.buffers.push_back(source_native_view(

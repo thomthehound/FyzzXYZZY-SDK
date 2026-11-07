@@ -130,8 +130,8 @@ void solveJoint(uint4 desc,uint errorAddress,bool biased) {
     }
 }
 
-// Sc's cached ElementSim pose is the common mass-frame source for
-// device contact preparation, friction correlation, and integrateCore.
+// Native Dy reconstructs the mass frame from resident actor motion.
+// Standalone inputs retain their cached-shape or explicit pose source.
 bool sourceDyMassPose(uint input,out float3 position,out float4 quaternion) {
     const uint pose=arena.Load(input+56u);
     if((arena.Load(input+44u)&128u)!=0u) {

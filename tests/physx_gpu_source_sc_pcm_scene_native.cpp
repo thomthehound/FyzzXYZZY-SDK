@@ -2050,6 +2050,9 @@ void verify_gpu_free_integration(
                 producer->dy_host_pose_upload_bytes()==0u &&
                 (frame==0u?resident==0u:resident>=260u),
                 "GPU Dy did not retain authorized Sc poses across frames");
+        if(frame==1u)
+            require(resident==actual.size(),
+                "Shape-less native rigid actor did not reuse its GPU world pose");
         require(cpu.contacts().size()==gpu.contacts().size(),
                 "Device-integrated free body changed contact admission");
         const bool contacts=producer->dy_pcm_device_contact_rows()!=0u;
