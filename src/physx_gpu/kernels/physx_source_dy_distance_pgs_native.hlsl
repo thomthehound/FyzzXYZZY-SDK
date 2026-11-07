@@ -166,15 +166,26 @@ bool sourceDyMassPose(uint input,out float3 position,out float4 quaternion) {
     return all(isfinite(position)) && all(isfinite(quaternion));
 }
 
-// Prepared velocities are either source-authored frame updates or the
-// previous solve's device-resident final world velocities.
+// Preserve each Sc-prepared FP32 component exactly. Reuse unchanged
+// components from committed Dy motion and overlay only authored deltas.
 float3 sourceDyPreparedVelocity(uint input,bool angular) {
-    const uint source=arena.Load(input+64u);
+    const uint flags=arena.Load(input+44u);
+    const uint changed=(flags>>8u)&63u;
     const uint component=angular?12u:0u;
-    if(source!=invalidBody)
-        return asfloat(arena.Load3(source+component));
+    if(changed==63u)
+        return asfloat(arena.Load3(arena.Load(input+64u)+component));
     const uint local=arena.Load(input+60u);
-    return asfloat(scActorLocals.Load3(local+32u+component));
+    float3 velocity=asfloat(scActorLocals.Load3(local+32u+component));
+    if(changed==0u)return velocity;
+    const uint source=arena.Load(input+64u);
+    [unroll]
+    for(uint axis=0u;axis<3u;++axis) {
+        const uint bit=1u<<((angular?3u:0u)+axis);
+        if((changed&bit)!=0u)
+            velocity[axis]=asfloat(arena.Load(
+                source+countbits(changed&(bit-1u))*4u));
+    }
+    return velocity;
 }
 
 #include "physx_source_dy_contact_pgs_native.hlsli"
