@@ -89,7 +89,7 @@ struct SourceDyLaunchStats {
     std::size_t resident_velocity_reuses=0u;
     std::size_t prepared_velocity_updated_bodies=0u;
     std::size_t prepared_velocity_upload_bytes=0u;
-    std::size_t device_joint_prepared_rows=0u;
+    std::size_t device_joint_input_rows=0u;
 };
 
 // Dy's original per-task conflict partitions and prepared 1D rows are
@@ -226,7 +226,7 @@ public:
             : bodies.size_bytes();
         last_schedule_.device_world_motion_bodies=
             device_world_motion?body_ordinals.size():0u;
-        last_schedule_.device_joint_prepared_rows=
+        last_schedule_.device_joint_input_rows=
             std::count_if(rows.begin(),rows.end(),
                 [](const auto& row){return row.reserved==1u;});
         if(contact_forces.size()>

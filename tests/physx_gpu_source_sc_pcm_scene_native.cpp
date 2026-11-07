@@ -1564,7 +1564,7 @@ void verify_gpu_distance_solver(
         require(producer->dy_distance_dispatch_count()==
                     static_cast<std::uint64_t>(frame+1) &&
                 producer->dy_gpu_integrated_body_count()>0u &&
-                producer->dy_launch_stats().device_joint_prepared_rows==3u,
+                producer->dy_launch_stats().device_joint_input_rows==3u,
             "Source GPU 1D joint rows did not reach device preparation");
         const auto [uploaded,downloaded]=
             producer->dy_distance_transfer_bytes();
@@ -1627,7 +1627,7 @@ void verify_gpu_distance_solver(
         gpu.set_kinematic_target(kinematic_gpu,target,{});
         cpu.step(dt);
         gpu.step(dt);
-        require(producer->dy_launch_stats().device_joint_prepared_rows>=4u,
+        require(producer->dy_launch_stats().device_joint_input_rows>=4u,
             "Native GPU Dy skipped moving kinematic 1D joint preparation");
         const auto expected=cpu.body_state(follower_cpu);
         const auto actual=gpu.body_state(follower_gpu);
@@ -2146,7 +2146,7 @@ void verify_gpu_wide_island_solver(
         const auto schedule=producer->dy_launch_stats();
         require(schedule.device_colored_tasks>=1u &&
                 schedule.device_colored_descriptors>=connected_bodies &&
-                schedule.device_joint_prepared_rows>=connected_bodies/2u,
+                schedule.device_joint_input_rows>=connected_bodies/2u,
             "Wide Dy task lost device joint preparation or coloring");
         // Once the assembly moves, individual supports can lose touch.
         // Joint connectivity must still supply a wide partition.
