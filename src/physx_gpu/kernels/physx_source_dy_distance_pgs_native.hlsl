@@ -157,7 +157,7 @@ bool sourceDyMassPose(uint input,out float3 position,out float4 quaternion) {
     }else {
         const uint count=arena.Load(p.integrationBias+32u);
         if(poseIndex>=count)return false;
-        const uint pose=p.integrationBias+36u+count*112u+poseIndex*28u;
+        const uint pose=p.integrationBias+40u+count*112u+poseIndex*28u;
         position=asfloat(arena.Load3(pose));
         quaternion=asfloat(arena.Load4(pose+12u));
     }
@@ -572,7 +572,7 @@ void integrateBody(uint ordinal) {
     }
     // Source DyBodyCoreIntegrator::integrateCore uses saved
     // position-iteration deltas, not the final velocity deltas.
-    const uint input=p.integrationBias+36u+ordinal*112u;
+    const uint input=p.integrationBias+40u+ordinal*112u;
     if(arena.Load(input+68u)==0u)return;
     const float3 baseLinear=asfloat(arena.Load3(input));
     const float3 baseAngular=asfloat(arena.Load3(input+12u));
@@ -698,6 +698,7 @@ void integrateBody(uint ordinal) {
 static const uint fusedTask=0u, normalTile=1u, frictionTile=2u;
 static const uint partitionTile=3u, motionTile=4u, integrationTile=5u;
 static const uint publishErrors=6u, freeBodyTile=7u, colorTile=8u;
+static const uint initializeBodiesTile=9u;
 
 void publishTaskError(uint task,uint error) {
     arena.Store(p.writebackBias+p.resultTaskOffset+task*4u,error);
@@ -710,6 +711,19 @@ void main(uint3 group:SV_GroupID,uint3 lane:SV_GroupThreadID) {
     const bool precolored=(p.launchControl&0x40000000u)!=0u;
     const uint iter=(p.launchControl&0x1fffffffu)>>4u;
     const uint index=p.launchBegin+group.x;
+    if(phase==initializeBodiesTile) {
+        const uint ordinal=index*128u+lane.x;
+        if(ordinal<p.bodyCount) {
+            const uint source=arena.Load(p.integrationBias+36u);
+            const uint target=p.bodyBias+ordinal*52u;
+            const uint4 zero=uint4(0u,0u,0u,0u);
+            arena.Store4(target,zero);
+            arena.Store4(target+16u,zero);
+            arena.Store4(target+32u,zero);
+            arena.Store(target+48u,arena.Load(source+ordinal*4u));
+        }
+        return;
+    }
     const bool freeBody=phase==freeBodyTile;
     const bool fused=phase==fusedTask;
     uint taskId=0u,endError=0u;

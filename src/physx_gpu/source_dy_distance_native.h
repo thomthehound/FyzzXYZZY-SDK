@@ -59,6 +59,10 @@ struct SourceDyLaunchStats {
     std::size_t tile_bytes=0u;
     // Shader-written descriptor and partition bytes omitted from HtoD.
     std::size_t device_generated_bytes=0u;
+    // Inverse masses are uploaded; transient 52-byte solver bodies
+    // are initialized by Dy before conflict coloring or PGS.
+    std::size_t device_initialized_bodies=0u;
+    std::size_t device_body_upload_bytes=0u;
 };
 
 // Dy's original per-task conflict partitions and prepared 1D rows are
@@ -142,13 +146,17 @@ public:
                CudaDeviceAddressMap::Address convex_vertices,
                std::uint32_t convex_vertex_count,
                bool device_partitions=false,
-               std::span<native::GpuDyFrictionAnchorImpulse> anchor_impulses={}) {
+               std::span<native::GpuDyFrictionAnchorImpulse> anchor_impulses={},
+               bool device_initial_bodies=false) {
         if(integration.size()<bodies.size() ||
            integrated_poses.size()!=integration.size() ||
            (tasks.empty() && integration.size()==bodies.size()))
             throw std::invalid_argument(
                 "Source Dy GPU integrateCore inputs do not match solver bodies");
         last_integrated_body_count_=0u;
+        if(device_initial_bodies && !device_partitions)
+            throw std::invalid_argument(
+                "Source Dy device body initialization requires device partitions");
         const auto narrow=[](std::size_t value) {
             if(value>=std::numeric_limits<std::uint32_t>::max())
                 throw std::overflow_error("Source Dy GPU exceeds 32-bit view ABI");
@@ -168,6 +176,9 @@ public:
             build_launch_plan(tasks,partition_ends,narrow(descriptors.size()),
                               narrow(body_ordinals.size()));
         }
+        last_schedule_.device_initialized_bodies=device_initial_bodies?bodies.size():0u;
+        last_schedule_.device_body_upload_bytes=device_initial_bodies
+            ? bodies.size()*sizeof(float):bodies.size_bytes();
         if(contact_forces.size()>
            std::numeric_limits<std::size_t>::max()/sizeof(native::GpuDyContactPoint))
             throw std::overflow_error("Source Dy contact row byte count overflow");
@@ -417,7 +428,7 @@ public:
             }
             packed_integration_.push_back(record);
         }
-        constexpr std::size_t integration_header_bytes=36u;
+        constexpr std::size_t integration_header_bytes=40u;
         if(integration.size()>
            (std::numeric_limits<std::uint32_t>::max()-integration_header_bytes)/
                sizeof(SourceDyPackedIntegrationNative))
@@ -428,8 +439,16 @@ public:
            (std::numeric_limits<std::uint32_t>::max()-packed_input_bytes)/
                sizeof(SourceDyHostPoseNative))
             throw std::overflow_error("Source Dy authored poses exceed address space");
-        const std::size_t integration_bytes=packed_input_bytes+
+        const std::size_t mass_offset=packed_input_bytes+
             host_poses_.size()*sizeof(SourceDyHostPoseNative);
+        if(device_initial_bodies &&
+           bodies.size()>(std::numeric_limits<std::uint32_t>::max()-
+                          mass_offset)/sizeof(float))
+            throw std::overflow_error(
+                "Source Dy device solver-body masses exceed address space");
+        const std::size_t mass_bytes=device_initial_bodies
+            ? bodies.size()*sizeof(float):0u;
+        const std::size_t integration_bytes=mass_offset+mass_bytes;
         last_host_pose_upload_bytes_=host_poses_.size()*sizeof(SourceDyHostPoseNative);
         // Transient source-order descriptors and conflict-coloring state
         // share the existing Dy arena; no separate scene state is built.
@@ -496,11 +515,14 @@ public:
         // and writes both sorted descriptors and partition ends itself.
         // Place those output-only ranges after the contact/friction rows;
         // compact anchors must remain adjacent to contact rows.
-        const std::array<std::size_t,count> order=device_partitions
+        const std::array<std::size_t,count> order=device_initial_bodies
             ? std::array<std::size_t,count>{
-                0u,1u,5u,8u,4u,9u,10u,11u,12u,14u,15u,13u,6u,7u,2u,3u}
-            : std::array<std::size_t,count>{
-                0u,1u,5u,8u,2u,3u,4u,9u,10u,11u,12u,14u,15u,13u,6u,7u};
+                1u,5u,8u,4u,9u,10u,11u,12u,14u,15u,13u,6u,7u,0u,2u,3u}
+            : device_partitions
+                ? std::array<std::size_t,count>{
+                    0u,1u,5u,8u,4u,9u,10u,11u,12u,14u,15u,13u,6u,7u,2u,3u}
+                : std::array<std::size_t,count>{
+                    0u,1u,5u,8u,2u,3u,4u,9u,10u,11u,12u,14u,15u,13u,6u,7u};
         last_schedule_.device_generated_bytes=device_partitions
             ? bytes[2]+bytes[3]:0u;
         std::array<std::size_t,count> offsets{};
@@ -533,6 +555,7 @@ public:
         for(std::size_t i=0;i<count;++i)
             if(i!=6u && i!=7u && i!=11u && i!=12u &&
                i!=13u && i!=15u && bytes[i] &&
+               (!device_initial_bodies || i!=0u) &&
                (!device_partitions || (i!=2u && i!=3u)))
                 std::memcpy(host_.data()+offsets[i],sources[i],bytes[i]);
         if(prep_bytes)
@@ -566,6 +589,10 @@ public:
         if(!host_poses_.empty())
             std::memcpy(host_.data()+offsets[12]+packed_input_bytes,
                         host_poses_.data(),last_host_pose_upload_bytes_);
+        if(device_initial_bodies)
+            for(std::size_t i=0;i<bodies.size();++i)
+                std::memcpy(host_.data()+offsets[12]+mass_offset+i*4u,
+                            &bodies[i].inverse_mass,sizeof(float));
         // The source GPU kernel constructs all writable Gu contact rows.
         // One ordered source upload covers every other active input and
         // stops before the contact-row arena, without scattered HtoD spans.
@@ -613,12 +640,14 @@ public:
         }
         if(has_shape_targets && (!shape_cache || !shape_bounds || !shape_geometry))
             throw std::logic_error("Source Sc GPU integration shape buffers are missing");
-        std::array<std::uint32_t,9> integration_header{
+        std::array<std::uint32_t,10> integration_header{
             0u,0u,0u,shape_capacity,narrow(body_ordinals.size()),
             narrow(descriptors.size()),narrow(tasks.size()),
             device_partitions?narrow(std::size_t(params[28])+offsets[15]):
                 (tiles_.empty()?0u:narrow(std::size_t(params[28])+offsets[14])),
-            narrow(integration.size())};
+            narrow(integration.size()),
+            device_initial_bodies
+                ? narrow(std::size_t(params[28])+offsets[12]+mass_offset):0u};
         const auto bind_shape=[&](CudaDeviceAddressMap::Address source,
                                   std::uint32_t stride,std::uint32_t slot,
                                   compute::BufferAccess access,
@@ -685,6 +714,9 @@ public:
                 group+=count;
             }
         };
+        if(device_initial_bodies && !bodies.empty())
+            launch(Launch::InitializeBodies,
+                {0u,(bodies.size()+127u)/128u});
         if(device_partitions && !wide_tasks_.empty())
             launch(Launch::Color,{0u,tasks.size()});
         launch(Launch::Fused,fused_tiles_);
@@ -876,7 +908,7 @@ public:
 private:
     enum class Launch : std::uint32_t {
         Fused, Normals, Friction, Partition, Motion, Integrate, PublishErrors,
-        FreeBodies, Color
+        FreeBodies, Color, InitializeBodies
     };
     struct WorkTile {
         std::uint32_t task,begin,end,reserved=0u;

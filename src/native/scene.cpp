@@ -8222,10 +8222,8 @@ void Scene::solve_gpu_distance_constraints(float seconds) {
     for(std::size_t i=0;i<solver_rows_.size();++i) {
         const auto& row=solver_rows_[i];
         auto& body=gpu_dy_bodies_[i];
-        pack(body.linear_delta,row.solver.linear_velocity_delta);
-        pack(body.angular_state,row.solver.angular_state);
-        pack(body.motion_linear_delta,row.motion_linear_delta);
-        pack(body.motion_angular_state,row.motion_angular_state);
+        // Fresh solver rows have zero deltas. Dy constructs that state
+        // on device and only consumes Sc's inverse mass at admission.
         body.inverse_mass=row.data.inverse_mass;
     }
     const auto integration_count=solver_rows_.size()+gpu_dy_free_ids_.size();
@@ -8424,7 +8422,7 @@ void Scene::solve_gpu_distance_constraints(float seconds) {
         gpu_dy_patches_,gpu_dy_manifolds_,gpu_dy_contact_order_,
         gpu_dy_contact_prep_pairs_,
         gpu_dy_integration_inputs_,gpu_dy_integrated_poses_,true,
-        gpu_dy_friction_impulses_);
+        gpu_dy_friction_impulses_,true);
     gpu_dy_pose_ready_=true;
     const auto unpack=[](const float(&v)[3]) {
         return Vec3{v[0],v[1],v[2]};
