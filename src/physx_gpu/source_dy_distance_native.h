@@ -46,12 +46,14 @@ struct SourceDyPackedIntegrationNative {
     // scalar streams; exact component masks live in active flags.
     std::uint32_t velocity_offset=0xffffffffu;
     std::uint32_t force_offset=0xffffffffu;
+    std::uint32_t counted_interactions=0u;
 };
-static_assert(sizeof(SourceDyPackedIntegrationNative)==72u &&
+static_assert(sizeof(SourceDyPackedIntegrationNative)==76u &&
               offsetof(SourceDyPackedIntegrationNative,pose_index)==56u &&
               offsetof(SourceDyPackedIntegrationNative,actor_local_offset)==60u &&
               offsetof(SourceDyPackedIntegrationNative,velocity_offset)==64u &&
-              offsetof(SourceDyPackedIntegrationNative,force_offset)==68u);
+              offsetof(SourceDyPackedIntegrationNative,force_offset)==68u &&
+              offsetof(SourceDyPackedIntegrationNative,counted_interactions)==72u);
 struct SourceDyPreparedVelocityNative {
     float linear[3]{},angular[3]{};
 };
@@ -69,13 +71,20 @@ struct SourceDyActorLocalNative {
     float inverse_inertia_local[3]{};
     std::uint32_t dynamics_flags=0u;
     float linear_velocity[3]{},angular_velocity[3]{};
+    // Dy owns wake arbitration across frames. Sc mirrors this state
+    // after a validated device solve for rollback and public queries.
+    float wake_counter=0.4f;
+    float sleep_linear_acc[3]{},sleep_angular_acc[3]{};
 };
-static_assert(sizeof(SourceDyActorLocalNative)==88u &&
+static_assert(sizeof(SourceDyActorLocalNative)==116u &&
               offsetof(SourceDyActorLocalNative,inverse_mass)==28u &&
               offsetof(SourceDyActorLocalNative,linear_damping)==32u &&
               offsetof(SourceDyActorLocalNative,dynamics_flags)==60u &&
               offsetof(SourceDyActorLocalNative,linear_velocity)==64u &&
-              offsetof(SourceDyActorLocalNative,angular_velocity)==76u);
+              offsetof(SourceDyActorLocalNative,angular_velocity)==76u &&
+              offsetof(SourceDyActorLocalNative,wake_counter)==88u &&
+              offsetof(SourceDyActorLocalNative,sleep_linear_acc)==92u &&
+              offsetof(SourceDyActorLocalNative,sleep_angular_acc)==104u);
 
 struct SourceDyLaunchStats {
     std::size_t device_colored_tasks=0u;
@@ -102,6 +111,8 @@ struct SourceDyLaunchStats {
     std::size_t device_preintegrated_bodies=0u;
     std::size_t force_mod_upload_bytes=0u;
     std::size_t free_velocity_readback_bytes=0u;
+    std::size_t device_sleep_bodies=0u;
+    std::size_t sleep_readback_bytes=0u;
 };
 
 // Dy's original per-task conflict partitions and prepared 1D rows are
@@ -198,7 +209,8 @@ public:
                std::span<native::GpuDyFrictionAnchorImpulse> anchor_impulses={},
                bool device_initial_bodies=false,
                bool device_world_motion=false,
-               bool device_unconstrained_preparation=false) {
+               bool device_unconstrained_preparation=false,
+               std::span<native::GpuDySleepState> sleep_states={}) {
         if(integration.size()<bodies.size() ||
            integrated_poses.size()!=integration.size() ||
            (tasks.empty() && integration.size()==bodies.size()))
@@ -214,6 +226,10 @@ public:
             return static_cast<std::uint32_t>(value);
         };
         const auto free_bodies=integration.size()-bodies.size();
+        if(device_unconstrained_preparation &&
+           sleep_states.size()!=integration.size())
+            throw std::invalid_argument(
+                "Source GPU Dy sleep-state outputs do not match body ordinals");
         if(device_initial_bodies && device_world_motion)
             for(std::size_t i=0u;i<bodies.size();++i)
                 if(!(integration[i].active&1u) &&
@@ -246,6 +262,8 @@ public:
         last_schedule_.device_preintegrated_bodies=
             device_unconstrained_preparation
                 ?body_ordinals.size()+free_bodies:0u;
+        last_schedule_.device_sleep_bodies=
+            last_schedule_.device_preintegrated_bodies;
         last_schedule_.device_joint_input_rows=
             std::count_if(rows.begin(),rows.end(),
                 [](const auto& row){return row.reserved==1u;});
@@ -526,6 +544,9 @@ public:
                 (device_world_motion && (input.active&1u) ?8u:0u);
             record.source_element=input.source_element;
             record.source_shape_count=input.source_shape_count;
+            record.counted_interactions=input.counted_interactions;
+            if(device_unconstrained_preparation && (input.active&1u))
+                record.active|=64u;
             if(input.active&1u) {
                 const auto id=device_world_motion
                     ?input.source_actor:narrow(ordinal);
@@ -584,6 +605,18 @@ public:
                                 axis<3u?input.linear_velocity[axis]:
                                          input.angular_velocity[axis-3u]);
                     ++last_schedule_.prepared_velocity_updated_bodies;
+                }
+                // Dy retains sleep accumulators; Sc may also edit wake
+                // state between device frames and must re-authorize it.
+                auto& cached=actor_local_host_[id];
+                constexpr auto sleep_bytes=28u;
+                if(!actor_local_valid_[id] ||
+                   std::memcmp(&cached.wake_counter,
+                               &input.wake_counter,sleep_bytes)!=0) {
+                    std::memcpy(&cached.wake_counter,
+                                &input.wake_counter,sleep_bytes);
+                    actor_local_valid_[id]=0u;
+                    pending_actor_locals_.push_back(id);
                 }
                 // Every published body must explicitly reestablish its
                 // committed velocity after a successful device solve.
