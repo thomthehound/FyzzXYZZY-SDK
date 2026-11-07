@@ -277,7 +277,8 @@ public:
         bool device_partitions=false,
         std::span<native::GpuDyFrictionAnchorImpulse> anchor_impulses={},
         bool device_initial_bodies=false,
-        bool device_world_motion=false) override {
+        bool device_world_motion=false,
+        bool device_unconstrained_preparation=false) override {
         if(!dy_distance_)
             throw std::logic_error("Source GPU Dy shader not installed");
         // Resolve the first attached shape into the ElementSim cache.
@@ -310,7 +311,8 @@ public:
                             convex_vertices_.getDevicePtr(),
                             box_owners_.convex_vertex_count,device_partitions,
                             anchor_impulses,device_initial_bodies,
-                            device_world_motion);
+                            device_world_motion,
+                            device_unconstrained_preparation);
         ++dy_distance_dispatch_count_;
     }
     std::size_t dy_resident_pose_count() const noexcept {
