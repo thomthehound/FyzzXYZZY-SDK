@@ -51,6 +51,12 @@ struct SourceDyHostPoseNative {
     float position[3]{},orientation[4]{};
 };
 static_assert(sizeof(SourceDyHostPoseNative)==28u);
+struct SourceDyActorLocalNative {
+    float position[3]{},orientation[4]{};
+    float inverse_mass=0.0f;
+};
+static_assert(sizeof(SourceDyActorLocalNative)==32u &&
+              offsetof(SourceDyActorLocalNative,inverse_mass)==28u);
 
 struct SourceDyLaunchStats {
     std::size_t device_colored_tasks=0u;
@@ -192,7 +198,8 @@ public:
         }
         last_schedule_.device_initialized_bodies=device_initial_bodies?bodies.size():0u;
         last_schedule_.device_body_upload_bytes=device_initial_bodies
-            ? bodies.size()*sizeof(float):bodies.size_bytes();
+            ? (device_world_motion?0u:bodies.size()*sizeof(float))
+            : bodies.size_bytes();
         last_schedule_.device_world_motion_bodies=
             device_world_motion?body_ordinals.size():0u;
         if(contact_forces.size()>
@@ -424,7 +431,7 @@ public:
                 ?input.source_actor:narrow(ordinal);
             if(id==invalid ||
                id>(std::numeric_limits<std::uint32_t>::max()-128u)/
-                      sizeof(SourceDyHostPoseNative))
+                      sizeof(SourceDyActorLocalNative))
                 throw std::overflow_error(
                     "Source Dy rigid actor local-pose index exceeds GPU address space");
             needed_actor_slots=std::max(needed_actor_slots,std::size_t(id)+1u);
@@ -434,14 +441,14 @@ public:
                 actor_local_capacity_+
                     std::max(actor_local_capacity_,std::size_t(8u)));
             if(capacity>(std::numeric_limits<std::uint32_t>::max()-128u)/
-                            sizeof(SourceDyHostPoseNative) ||
-               capacity>max_view_/sizeof(SourceDyHostPoseNative))
+                            sizeof(SourceDyActorLocalNative) ||
+               capacity>max_view_/sizeof(SourceDyActorLocalNative))
                 throw std::overflow_error(
                     "Source Dy rigid actor local-pose pool exceeds GPU view");
             actor_local_host_.resize(capacity);
             actor_local_valid_.resize(capacity,0u);
             actor_locals_.allocateCopyOldDataAsync(
-                capacity*sizeof(SourceDyHostPoseNative),stream_,PX_FL);
+                capacity*sizeof(SourceDyActorLocalNative),stream_,PX_FL);
             actor_local_capacity_=capacity;
         }
         for(std::size_t ordinal=0u;ordinal<integration.size();++ordinal) {
@@ -463,11 +470,16 @@ public:
                 const auto id=device_world_motion
                     ?input.source_actor:narrow(ordinal);
                 record.actor_local_offset=id;
-                SourceDyHostPoseNative local{};
+                SourceDyActorLocalNative local{};
                 std::memcpy(local.position,input.mass_local_position,
                             sizeof(local.position));
                 std::memcpy(local.orientation,input.mass_local_orientation,
                             sizeof(local.orientation));
+                local.inverse_mass=input.source_inverse_mass;
+                if(device_world_motion && ordinal<bodies.size() &&
+                   local.inverse_mass!=bodies[ordinal].inverse_mass)
+                    throw std::logic_error(
+                        "Sc actor-local inverse mass differs from Dy admission");
                 if(!actor_local_valid_[id] ||
                    std::memcmp(&actor_local_host_[id],&local,sizeof(local))!=0) {
                     actor_local_host_[id]=local;
@@ -504,12 +516,14 @@ public:
             throw std::overflow_error("Source Dy authored poses exceed address space");
         const std::size_t mass_offset=packed_input_bytes+
             host_poses_.size()*sizeof(SourceDyHostPoseNative);
-        if(device_initial_bodies &&
+        const bool upload_body_masses=device_initial_bodies &&
+            !device_world_motion;
+        if(upload_body_masses &&
            bodies.size()>(std::numeric_limits<std::uint32_t>::max()-
                           mass_offset)/sizeof(float))
             throw std::overflow_error(
                 "Source Dy device solver-body masses exceed address space");
-        const std::size_t mass_bytes=device_initial_bodies
+        const std::size_t mass_bytes=upload_body_masses
             ? bodies.size()*sizeof(float):0u;
         const std::size_t integration_bytes=mass_offset+mass_bytes;
         last_host_pose_upload_bytes_=host_poses_.size()*sizeof(SourceDyHostPoseNative);
@@ -648,7 +662,7 @@ public:
         if(!host_poses_.empty())
             std::memcpy(host_.data()+offsets[12]+packed_input_bytes,
                         host_poses_.data(),last_host_pose_upload_bytes_);
-        if(device_initial_bodies)
+        if(upload_body_masses)
             for(std::size_t i=0;i<bodies.size();++i)
                 std::memcpy(host_.data()+offsets[12]+mass_offset+i*4u,
                             &bodies[i].inverse_mass,sizeof(float));
@@ -706,7 +720,9 @@ public:
                 (tiles_.empty()?0u:narrow(std::size_t(params[28])+offsets[14])),
             narrow(integration.size()),
             device_initial_bodies
-                ? narrow(std::size_t(params[28])+offsets[12]+mass_offset):0u};
+                ? (device_world_motion?invalid
+                    :narrow(std::size_t(params[28])+offsets[12]+mass_offset))
+                :0u};
         const auto bind_shape=[&](CudaDeviceAddressMap::Address source,
                                   std::uint32_t stride,std::uint32_t slot,
                                   compute::BufferAccess access,
@@ -732,7 +748,7 @@ public:
             addresses_,actor_local_capacity_
                 ?actor_locals_.getDevicePtr():address,
             actor_local_capacity_
-                ?actor_local_capacity_*sizeof(SourceDyHostPoseNative):total,
+                ?actor_local_capacity_*sizeof(SourceDyActorLocalNative):total,
             alignment_,5u,compute::BufferAccess::Read,
             actor_local_bias,max_view_));
         // Convex geometry shares the original Dy pipeline but follows
@@ -747,7 +763,7 @@ public:
             if(record.actor_local_offset!=invalid) {
                 const auto offset=std::size_t(actor_local_bias)+
                     std::size_t(record.actor_local_offset)*
-                        sizeof(SourceDyHostPoseNative);
+                        sizeof(SourceDyActorLocalNative);
                 record.actor_local_offset=narrow(offset);
             }
         if(!packed_integration_.empty())
@@ -773,11 +789,11 @@ public:
             const auto count=last-first;
             actor_local_uploads_.push_back({
                 actor_locals_.getDevicePtr()+
-                    first*sizeof(SourceDyHostPoseNative),
+                    first*sizeof(SourceDyActorLocalNative),
                 actor_local_host_.data()+first,
-                count*sizeof(SourceDyHostPoseNative)});
+                count*sizeof(SourceDyActorLocalNative)});
             last_schedule_.actor_local_upload_bytes+=
-                count*sizeof(SourceDyHostPoseNative);
+                count*sizeof(SourceDyActorLocalNative);
         }
         last_schedule_.actor_local_upload_spans=actor_local_uploads_.size();
         if(!actor_local_uploads_.empty())
@@ -1404,7 +1420,7 @@ private:
     std::vector<SourceDyPackedContactPrepNative> packed_;
     std::vector<SourceDyPackedIntegrationNative> packed_integration_;
     std::vector<SourceDyHostPoseNative> host_poses_;
-    std::vector<SourceDyHostPoseNative> actor_local_host_;
+    std::vector<SourceDyActorLocalNative> actor_local_host_;
     std::vector<std::uint8_t> actor_local_valid_;
     std::vector<std::uint32_t> pending_actor_locals_;
     std::vector<SourceSapUpload> actor_local_uploads_;
