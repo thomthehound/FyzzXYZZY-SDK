@@ -8222,8 +8222,8 @@ void Scene::solve_gpu_distance_constraints(float seconds) {
     for(std::size_t i=0;i<solver_rows_.size();++i) {
         const auto& row=solver_rows_[i];
         auto& body=gpu_dy_bodies_[i];
-        // Fresh solver rows have zero deltas. Dy constructs that state
-        // on device and only consumes Sc's inverse mass at admission.
+        // Dy initializes fresh transient deltas from the stable per-actor
+        // inverse masses retained on the device.
         body.inverse_mass=row.data.inverse_mass;
     }
     const auto integration_count=solver_rows_.size()+gpu_dy_free_ids_.size();

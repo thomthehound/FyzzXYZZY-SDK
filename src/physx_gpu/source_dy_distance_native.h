@@ -67,8 +67,8 @@ struct SourceDyLaunchStats {
     std::size_t tile_bytes=0u;
     // Shader-written descriptor and partition bytes omitted from HtoD.
     std::size_t device_generated_bytes=0u;
-    // Inverse masses are uploaded; transient 52-byte solver bodies
-    // are initialized by Dy before conflict coloring or PGS.
+    // Native Sc initializes transient solver bodies from the resident
+    // actor inverse masses; standalone Dy retains explicit input support.
     std::size_t device_initialized_bodies=0u;
     std::size_t device_body_upload_bytes=0u;
     std::size_t device_initialization_dispatches=0u;
