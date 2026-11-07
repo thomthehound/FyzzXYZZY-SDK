@@ -294,22 +294,20 @@ public:
             last_pair_upload_bytes_=bytes;
         }
         reset_manifolds_=false;
-        std::array<SourceSapUpload,2> graph_uploads{};
-        std::size_t graph_upload_count=0u;
-        graph_uploads[graph_upload_count++]={
-            graph_.getDevicePtr(),graph_header_.data(),sizeof(graph_header_)};
+        graph_uploads_.clear();
+        graph_uploads_.push_back({
+            graph_.getDevicePtr(),graph_header_.data(),sizeof(graph_header_)});
         last_graph_upload_bytes_=sizeof(graph_header_);
         if(first_graph_dirty<last_graph_dirty) {
             const auto stride=sizeof(SourceScContactGraphPairNative);
             const auto bytes=std::size_t(last_graph_dirty-first_graph_dirty)*stride;
-            graph_uploads[graph_upload_count++]={
+            graph_uploads_.push_back({
                 graph_.getDevicePtr()+graph_pair_offset+
                     std::size_t(first_graph_dirty)*stride,
-                graph_pair_host_.data()+first_graph_dirty,bytes};
+                graph_pair_host_.data()+first_graph_dirty,bytes});
             last_graph_upload_bytes_+=bytes;
         }
-        stream_.queue_uploads(std::span<const SourceSapUpload>(
-            graph_uploads.data(),graph_upload_count));
+        stream_.queue_uploads(graph_uploads_);
 
         candidates_stage_.append(stream_,addresses_,
             transforms_.getDevicePtr(),geometry_.getDevicePtr(),
@@ -490,6 +488,7 @@ private:
     std::vector<SourcePcmBoxPairNative> pair_host_;
     std::vector<SourcePcmGpuContactStreamNative> readback_;
     std::vector<SourceScContactGraphPairNative> graph_pair_host_;
+    std::vector<SourceSapUpload> graph_uploads_;
     std::array<std::uint32_t,8> graph_header_{};
     std::array<std::uint32_t,1> graph_error_host_{};
     std::uint32_t graph_rigid_count_=0u;
