@@ -708,7 +708,7 @@ void main(uint3 group:SV_GroupID,uint3 lane:SV_GroupThreadID) {
     const uint phase=p.launchControl&15u;
     const bool devicePartitions=(p.launchControl&0x80000000u)!=0u;
     const bool precolored=(p.launchControl&0x40000000u)!=0u;
-    const uint iter=(p.launchControl&0x3fffffffu)>>4u;
+    const uint iter=(p.launchControl&0x1fffffffu)>>4u;
     const uint index=p.launchBegin+group.x;
     const bool freeBody=phase==freeBodyTile;
     const bool fused=phase==fusedTask;
