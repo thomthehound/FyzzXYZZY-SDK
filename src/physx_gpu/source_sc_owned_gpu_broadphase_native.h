@@ -299,7 +299,7 @@ public:
             input.source_element=producer_->device_shape_cache_handle(input.source_element);
             if(input.source_element==0xffffffffu) {
                 input.source_shape_count=0u;
-                input.active=1u;
+                input.active=1u|dy_flags;
             }
         }
         dy_distance_->solve(bodies,rows,descriptors,partitions,ordinals,tasks,
