@@ -1851,6 +1851,7 @@ void verify_gpu_free_integration(
         scene.set_velocity(bodies.front(),{0.f,-2.5f,0.f});
         RigidBodyDynamics free_motion{};
         free_motion.gravity_enabled=false;
+        free_motion.angular_damping=0.0f;
         free_motion.lock_flags=LockLinearZ|LockAngularX;
         for(unsigned i=1;i<=260u;++i) {
             const float x=3.f*static_cast<float>(i);
@@ -1866,11 +1867,13 @@ void verify_gpu_free_integration(
             compound,{0.2f,0.3f,0.4f},{{-0.5f,0.f,0.f},{}});
         scene.attach_sphere(compound,0.4f,{{0.7f,0.4f,0.f},{}});
         scene.update_mass_properties(compound,1.f);
-        scene.set_dynamics(compound,free_motion);
+        RigidBodyDynamics damped_motion=free_motion;
+        damped_motion.angular_damping=0.05f;
+        scene.set_dynamics(compound,damped_motion);
         scene.set_angular_velocity(compound,{0.f,0.5f,0.9f});
         bodies.push_back(compound);
         const auto shapeless=scene.create_body({{0.f,6.f,0.f},{}},true);
-        scene.set_dynamics(shapeless,free_motion);
+        scene.set_dynamics(shapeless,damped_motion);
         scene.set_velocity(shapeless,{0.4f,-0.3f,0.f});
         bodies.push_back(shapeless);
         return bodies;
