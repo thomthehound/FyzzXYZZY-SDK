@@ -1261,6 +1261,35 @@ public:
                 actor_velocity_valid_[id]=1u;
             }
         }
+        if(device_unconstrained_preparation) {
+            const auto mirror_sleep=[&](std::size_t index) {
+                const auto& state=sleep_states[index];
+                for(const auto component:state.linear_acc)
+                    if(!std::isfinite(component))
+                        throw std::overflow_error(
+                            "Source GPU sleep linear accumulator is not finite");
+                for(const auto component:state.angular_acc)
+                    if(!std::isfinite(component))
+                        throw std::overflow_error(
+                            "Source GPU sleep angular accumulator is not finite");
+                if(!std::isfinite(state.wake_counter) ||
+                   state.wake_counter<0.0f)
+                    throw std::overflow_error(
+                        "Source GPU wake counter is not finite");
+                const auto id=integration[index].source_actor;
+                auto& resident=actor_local_host_[id];
+                resident.wake_counter=state.wake_counter;
+                std::memcpy(resident.sleep_linear_acc,state.linear_acc,
+                            sizeof(state.linear_acc));
+                std::memcpy(resident.sleep_angular_acc,state.angular_acc,
+                            sizeof(state.angular_acc));
+            };
+            for(const auto ordinal:body_ordinals)
+                if(integration[ordinal].active&1u)mirror_sleep(ordinal);
+            for(std::size_t index=bodies.size();
+                index<integration.size();++index)
+                if(integration[index].active&1u)mirror_sleep(index);
+        }
         last_transfer_bytes_={uploaded_bytes,output_bytes};
         last_reused_pcm_contact_rows_=reused_pcm_rows;
         last_omitted_pcm_upload_bytes_=
