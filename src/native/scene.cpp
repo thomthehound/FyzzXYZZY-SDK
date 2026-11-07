@@ -7346,12 +7346,16 @@ void Scene::prepare_constraints(float seconds) {
             pack4(input.local_a_orientation,joint.local_a.orientation);
             pack3(input.local_b_position,joint.local_b.position);
             pack4(input.local_b_orientation,joint.local_b.orientation);
-            pack3(input.actor_a_position,body0.position);
-            pack4(input.actor_a_orientation,body0.orientation);
-            pack3(input.actor_b_position,body1.position);
-            pack4(input.actor_b_orientation,body1.orientation);
-            pack3(input.center_a,mass_position(body0));
-            pack3(input.center_b,mass_position(body1));
+            if(body0.motion!=Motion::Dynamic) {
+                pack3(input.actor_a_position,body0.position);
+                pack4(input.actor_a_orientation,body0.orientation);
+                pack3(input.center_a,mass_position(body0));
+            }
+            if(body1.motion!=Motion::Dynamic) {
+                pack3(input.actor_b_position,body1.position);
+                pack4(input.actor_b_orientation,body1.orientation);
+                pack3(input.center_b,mass_position(body1));
+            }
             input.distance_length=joint.distance_length;
             input.kind=static_cast<std::uint32_t>(joint.kind);
             if(gpu_dy_joint_inputs_.size()>=std::numeric_limits<std::uint32_t>::max())
@@ -7403,32 +7407,11 @@ void Scene::prepare_constraints(float seconds) {
             row.inverse_mass_a=mass0;
             row.inverse_mass_b=mass1;
             row.velocity_multiplier=-reciprocal;
-            if(gpu_normal_prep) {
-                // Dy computes the source's velocity-dependent constants
-                // after GPU-prepared actor velocities are available.
-                row.constant=error*inv_dt;
-                // Materialize the final 64-byte source GPU row here.
-                // Its angular terms remain in world coordinates until
-                // Dy normal preparation applies sqrt-inverse-inertia.
-                auto& gpu=gpu_dy_rows_.emplace_back();
-                const auto pack=[](float(&out)[3],Vec3 v) {
-                    out[0]=v.x;out[1]=v.y;out[2]=v.z;
-                };
-                pack(gpu.axis,axis);
-                pack(gpu.angular_a,angular0);
-                pack(gpu.angular_b,angular1);
-                gpu.inverse_mass_a=mass0;
-                gpu.inverse_mass_b=mass1;
-                gpu.reserved=1u;
-                gpu.constant=row.constant;
-                gpu.velocity_multiplier=row.velocity_multiplier;
-            }else {
-                const float speed=
-                    dot(axis,relative)+dot(angular0,body0.angular_velocity)-
-                    dot(angular1,body1.angular_velocity);
-                row.constant=-reciprocal*(error*inv_dt+speed);
-                row.unbiased_constant=-reciprocal*speed;
-            }
+            const float speed=
+                dot(axis,relative)+dot(angular0,body0.angular_velocity)-
+                dot(angular1,body1.angular_velocity);
+            row.constant=-reciprocal*(error*inv_dt+speed);
+            row.unbiased_constant=-reciprocal*speed;
             if(!std::isfinite(row.constant) || !std::isfinite(row.unbiased_constant))
                 throw std::overflow_error("Source 1D solver constants overflow");
             joint_rows_.push_back(row);
