@@ -732,15 +732,23 @@ static const uint partitionTile=3u, motionTile=4u, integrationTile=5u;
 static const uint publishErrors=6u, freeBodyTile=7u, colorTile=8u;
 static const uint initializeBodiesTile=9u;
 
-// Only the initial inverse mass enters from Sc. Each workgroup owns
-// disjoint body ordinals before any solver consumer reads the records.
+// Native Sc resolves inverse mass through the persistent actor-local
+// pool. Standalone Dy callers retain their explicit inverse-mass stream.
 void initializeSolverBody(uint ordinal,uint source) {
     const uint target=p.bodyBias+ordinal*52u;
     const uint4 zero=uint4(0u,0u,0u,0u);
     arena.Store4(target,zero);
     arena.Store4(target+16u,zero);
     arena.Store4(target+32u,zero);
-    arena.Store(target+48u,arena.Load(source+ordinal*4u));
+    uint massBits=0u;
+    if(source==invalidBody) {
+        const uint input=p.integrationBias+40u+ordinal*88u;
+        const uint local=arena.Load(input+84u);
+        if(local!=invalidBody)
+            massBits=scActorLocals.Load(local+28u);
+    }else
+        massBits=arena.Load(source+ordinal*4u);
+    arena.Store(target+48u,massBits);
 }
 
 void publishTaskError(uint task,uint error) {
