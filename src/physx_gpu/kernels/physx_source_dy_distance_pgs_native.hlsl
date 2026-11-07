@@ -229,18 +229,18 @@ bool sourceDyPreIntegrateBody(uint ordinal) {
     const float3 linearAcceleration=sourceDyMotionMod(input,1u);
     const float3 angularDelta=sourceDyMotionMod(input,2u);
     const float3 angularAcceleration=sourceDyMotionMod(input,3u);
-    precise float3 linear=rawLinear+linearDelta+linearAcceleration*dt;
-    linear.y+=(flags&1u)!=0u?-9.81f*dt:0.0f;
+    precise float3 velocityLinear=rawLinear+linearDelta+linearAcceleration*dt;
+    velocityLinear.y+=(flags&1u)!=0u?-9.81f*dt:0.0f;
     const float linearDamping=asfloat(scActorLocals.Load(local+32u));
-    linear*=max(1.0f-linearDamping*dt,0.0f);
+    velocityLinear*=max(1.0f-linearDamping*dt,0.0f);
     precise float3 angular=rawAngular+angularDelta+angularAcceleration*dt;
     if(!all(isfinite(angular)))return false;
     const float angularDamping=asfloat(scActorLocals.Load(local+36u));
     angular*=max(1.0f-angularDamping*dt,0.0f);
-    precise float linearSpeed=linear.x*linear.x+linear.y*linear.y+linear.z*linear.z;
+    precise float linearSpeed=velocityLinear.x*velocityLinear.x+velocityLinear.y*velocityLinear.y+velocityLinear.z*velocityLinear.z;
     const float maxLinearSq=asfloat(scActorLocals.Load(local+40u));
     if(linearSpeed>maxLinearSq)
-        linear*=sqrt(maxLinearSq/linearSpeed);
+        velocityLinear*=sqrt(maxLinearSq/linearSpeed);
     precise float angularSpeed=
         angular.x*angular.x+angular.y*angular.y+angular.z*angular.z;
     const float maxAngularSq=asfloat(scActorLocals.Load(local+44u));
@@ -270,8 +270,8 @@ bool sourceDyPreIntegrateBody(uint ordinal) {
     if(locks&8u)angular.x=0.0f;
     if(locks&16u)angular.y=0.0f;
     if(locks&32u)angular.z=0.0f;
-    if(!all(isfinite(linear)) || !all(isfinite(angular)))return false;
-    scActorLocals.Store3(local+64u,asuint(linear));
+    if(!all(isfinite(velocityLinear)) || !all(isfinite(angular)))return false;
+    scActorLocals.Store3(local+64u,asuint(velocityLinear));
     scActorLocals.Store3(local+76u,asuint(angular));
     return true;
 }
