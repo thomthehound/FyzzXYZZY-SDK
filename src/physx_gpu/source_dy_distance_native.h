@@ -184,7 +184,7 @@ public:
                std::span<const native::GpuDyContactManifold> manifolds,
                std::span<const std::uint32_t> contact_order,
                std::span<const native::GpuDyContactPrepPair> contact_prep,
-               std::span<const native::GpuDyBodyIntegrationInput> integration,
+               std::span<native::GpuDyBodyIntegrationInput> integration,
                std::span<native::GpuDyIntegratedPose> integrated_poses,
                CudaDeviceAddressMap::Address pcm_contacts,
                std::uint32_t pcm_pair_count,
