@@ -360,17 +360,22 @@ public:
         assigned_.assign(contact_prep.size(),0u);
         const auto ref_body=[&](const native::GpuDyContactPrepBody& body,
                                 std::uint32_t ordinal) -> std::uint32_t {
-            if(body.inverse_mass>0.f) {
-                if(ordinal==invalid || ordinal>=integration.size() ||
-                   ordinal>=bodies.size() || ordinal>=invalid/2u)
-                    throw std::logic_error(
-                        "Active source Dy contact body has no solver ordinal");
-                if(!integration[ordinal].active ||
+            // An awake zero-inverse-mass dynamic still has source motion.
+            // GPU preintegration owns it, unlike static/kinematic inline
+            // participants whose velocities Sc prepares independently.
+            const bool active_dynamic=ordinal!=invalid &&
+                ordinal<integration.size() &&
+                (integration[ordinal].active&1u)!=0u;
+            if(active_dynamic) {
+                if(ordinal>=bodies.size() || ordinal>=invalid/2u ||
                    body.inverse_mass!=bodies[ordinal].inverse_mass)
                     throw std::logic_error(
-                        "Sc contact preparation has no matching active Dy body");
+                        "Active source Dy contact body has no matching solver row");
                 return (ordinal<<1u)|1u;
             }
+            if(body.inverse_mass>0.f)
+                throw std::logic_error(
+                    "Responding source Dy contact body has no solver ordinal");
             if(inline_bodies_.size()>=(
                 std::numeric_limits<std::uint32_t>::max()-static_begin)/
                     sizeof(native::GpuDyContactPrepBody))
