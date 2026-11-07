@@ -1676,12 +1676,12 @@ void verify_gpu_distance_solver(
         cpu.step(dt);
         gpu.step(dt);
         const auto stats=producer->dy_launch_stats();
-        require(stats.device_joint_geometry_count==4u &&
-                stats.device_joint_metadata_upload_bytes==
-                    (frame==0u?sizeof(native::GpuDyJointInput):0u) &&
-                stats.device_joint_metadata_reuses==
-                    (frame==0u?3u:4u),
-            "Recycled native joint slot residency mismatch: frame="+
+        if(!(stats.device_joint_geometry_count==4u &&
+             stats.device_joint_metadata_upload_bytes==
+                 (frame==0u?sizeof(native::GpuDyJointInput):0u) &&
+             stats.device_joint_metadata_reuses==(frame==0u?3u:4u)))
+            throw std::runtime_error(
+                "Recycled native joint slot residency mismatch: frame="+
                 std::to_string(frame)+
                 " joints="+std::to_string(stats.device_joint_geometry_count)+
                 " upload="+std::to_string(stats.device_joint_metadata_upload_bytes)+
