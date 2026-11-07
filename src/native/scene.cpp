@@ -10304,6 +10304,32 @@ void Scene::integrate_solver_task(
             remember_pre_integration_pose(id);
             actor.position = p;
             actor.orientation = q;
+            if(gpu_dy_pose_ready_) {
+                const auto result_index=solved_contact
+                    ? actor.solver_row_index
+                    : solver_rows_.size()+free_index-1u;
+                if(result_index>=gpu_dy_sleep_states_.size())
+                    throw std::logic_error(
+                        "Native GPU sleep state ordinal is invalid");
+                const auto& result=gpu_dy_sleep_states_[result_index];
+                const Vec3 linear{result.linear_acc[0],
+                    result.linear_acc[1],result.linear_acc[2]};
+                const Vec3 angular{result.angular_acc[0],
+                    result.angular_acc[1],result.angular_acc[2]};
+                if(!finite(linear) || !finite(angular) ||
+                   !std::isfinite(result.wake_counter) ||
+                   result.wake_counter<0.0f)
+                    throw std::overflow_error(
+                        "Native GPU Dy sleep state is not finite");
+                const bool was_ready=actor.ready_for_sleep;
+                actor.sleep_linear_acc=linear;
+                actor.sleep_angular_acc=angular;
+                actor.wake_counter=result.wake_counter;
+                actor.ready_for_sleep=result.wake_counter==0.0f;
+                if(actor.ready_for_sleep && !was_ready)
+                    ready_nodes.push_back(id);
+                continue;
+            }
             // DySleep.cpp::updateWakeCounter (default scene, without
             // stabilization). ScBodyCore::BodyCore and PxsBodyCore::init
             // initialize sleepThreshold to 5e-5 * scale.speed^2.
