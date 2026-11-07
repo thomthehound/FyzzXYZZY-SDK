@@ -53,6 +53,17 @@ ConstantBuffer<Parameters> p : register(b0,space0);
 static const uint invalidBody = 0xffffffffu;
 static const float maxImpulse = 3.4028234663852886e+38;
 
+// Source PxReal dot3 evaluates three rounded products followed by two
+// ordered sums. Preserve that arithmetic at the iterative PGS boundary.
+float sourceDyDot3(float3 a,float3 b) {
+    precise float x=a.x*b.x;
+    precise float y=a.y*b.y;
+    precise float z=a.z*b.z;
+    precise float xy=x+y;
+    precise float result=xy+z;
+    return result;
+}
+
 float loadScalar(uint byteOffset) {
     return asfloat(arena.Load(byteOffset));
 }
@@ -65,7 +76,7 @@ void solveJoint(uint4 desc,uint errorAddress,bool biased) {
     }
     const uint ao=p.bodyBias+desc.y*52u;
     const uint bo=p.bodyBias+desc.z*52u;
-    float3 va=0.0f,vb=0.0f,aa=0.0f,ab=0.0f;
+    precise float3 va=0.0f,vb=0.0f,aa=0.0f,ab=0.0f;
     if(desc.y!=invalidBody) {
         va=asfloat(arena.Load3(ao));
         aa=asfloat(arena.Load3(ao+12u));
@@ -83,12 +94,16 @@ void solveJoint(uint4 desc,uint errorAddress,bool biased) {
         const float3 axis=asfloat(arena.Load3(offset));
         const float3 ja=asfloat(arena.Load3(offset+12u));
         const float3 jb=asfloat(arena.Load3(offset+24u));
-        const float normalDelta=dot(axis,va-vb)+dot(ja,aa)-dot(jb,ab);
+        precise float normalDelta=
+            sourceDyDot3(axis,va-vb)+sourceDyDot3(ja,aa)-
+            sourceDyDot3(jb,ab);
         const float previous=loadScalar(offset+60u);
-        const float next=clamp(previous+
-            normalDelta*loadScalar(offset+56u)+
-            loadScalar(offset+(biased?48u:52u)),-maxImpulse,maxImpulse);
-        const float impulse=next-previous;
+        precise float velocityTerm=normalDelta*loadScalar(offset+56u);
+        precise float force=previous+velocityTerm;
+        precise float candidate=force+
+            loadScalar(offset+(biased?48u:52u));
+        precise float next=clamp(candidate,-maxImpulse,maxImpulse);
+        precise float impulse=next-previous;
         va+=axis*(impulse*massA);
         vb-=axis*(impulse*massB);
         aa+=ja*impulse;
@@ -577,16 +592,16 @@ void integrateBody(uint ordinal) {
     if(locks&16u)angularState.y=0.0f;
     if(locks&32u)angularState.z=0.0f;
     const float3 angular=baseAngular+float3(
-        dot(asfloat(arena.Load3(input+24u)),angularState),
-        dot(asfloat(arena.Load3(input+36u)),angularState),
-        dot(asfloat(arena.Load3(input+48u)),angularState));
+        sourceDyDot3(asfloat(arena.Load3(input+24u)),angularState),
+        sourceDyDot3(asfloat(arena.Load3(input+36u)),angularState),
+        sourceDyDot3(asfloat(arena.Load3(input+48u)),angularState));
     // The axis lock was applied in solver space before the world
     // inverse-inertia transform; the resulting motion is not masked
     // again by DyBodyCoreIntegrator::integrateCore.
-    float3 motionAngular=angular;
-    float3 nextPosition=position+motionLinear*dt;
-    float4 nextQuaternion=quaternion;
-    float w=dot(motionAngular,motionAngular);
+    precise float3 motionAngular=angular;
+    precise float3 nextPosition=position+motionLinear*dt;
+    precise float4 nextQuaternion=quaternion;
+    precise float w=sourceDyDot3(motionAngular,motionAngular);
     if(w!=0.0f) {
         w=sqrt(w);
         if(w>1.0e7f) {
@@ -594,14 +609,20 @@ void integrateBody(uint ordinal) {
             w=1.0e7f;
         }
         const float angle=dt*w*0.5f;
-        const float3 omega=motionAngular*(sin(angle)/w);
+        precise float3 omega=motionAngular*(sin(angle)/w);
         const float4 dq=float4(
             quaternion.w*omega.x+omega.y*quaternion.z-omega.z*quaternion.y,
             quaternion.w*omega.y+omega.z*quaternion.x-omega.x*quaternion.z,
             quaternion.w*omega.z+omega.x*quaternion.y-omega.y*quaternion.x,
-            -dot(omega,quaternion.xyz));
+            -(omega.x*quaternion.x)-omega.y*quaternion.y-
+                omega.z*quaternion.z);
         nextQuaternion=dq+quaternion*cos(angle);
-        const float length=sqrt(dot(nextQuaternion,nextQuaternion));
+        // Source integrate_quaternion rounds each square and sum in order.
+        precise float qx=nextQuaternion.x*nextQuaternion.x;
+        precise float qy=nextQuaternion.y*nextQuaternion.y;
+        precise float qz=nextQuaternion.z*nextQuaternion.z;
+        precise float qw=nextQuaternion.w*nextQuaternion.w;
+        precise float length=sqrt(((qx+qy)+qz)+qw);
         if(!(length>0.0f) || !isfinite(length))return;
         nextQuaternion/=length;
     }
