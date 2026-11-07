@@ -478,10 +478,11 @@ public:
         // inputs. The existing GPU preparation owns the complete rows.
         // Device coloring consumes raw descriptors in the scratch input
         // and writes both sorted descriptors and partition ends itself.
-        // Place those output-only ranges after the final uploaded input.
+        // Place those output-only ranges after the contact/friction rows;
+        // compact anchors must remain adjacent to contact rows.
         const std::array<std::size_t,count> order=device_partitions
             ? std::array<std::size_t,count>{
-                0u,1u,5u,8u,4u,9u,10u,11u,12u,14u,15u,13u,2u,3u,6u,7u}
+                0u,1u,5u,8u,4u,9u,10u,11u,12u,14u,15u,13u,6u,7u,2u,3u}
             : std::array<std::size_t,count>{
                 0u,1u,5u,8u,2u,3u,4u,9u,10u,11u,12u,14u,15u,13u,6u,7u};
         last_schedule_.device_generated_bytes=device_partitions
@@ -509,9 +510,9 @@ public:
         narrow(total);
         // Host staging contains only compact readback and real upload
         // inputs. Writable GPU contact rows have no CPU mirror.
-        const auto input_end=device_partitions
-            ? (compact_anchors_.empty()?offsets[13]:offsets[2])
-            : (compact_anchors_.empty()?offsets[13]:offsets[6]);
+        // The contact shader addresses anchors backward from contactBias.
+        // Keep the compact anchor region immediately before contact rows.
+        const auto input_end=offsets[6];
         host_.resize(input_end);
         for(std::size_t i=0;i<count;++i)
             if(i!=6u && i!=7u && i!=11u && i!=12u &&
