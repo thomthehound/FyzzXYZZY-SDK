@@ -158,7 +158,6 @@ public:
             largest_edge=std::max(largest_edge,request.edge);
             if(request.rigid_a==0xffffffffu ||
                request.rigid_b==0xffffffffu ||
-               request.rigid_a==request.rigid_b ||
                request.rigid_a==0xfffffffeu ||
                request.rigid_b==0xfffffffeu)
                 throw std::invalid_argument("Sc PCM graph needs two live rigid endpoints");
