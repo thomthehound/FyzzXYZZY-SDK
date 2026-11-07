@@ -117,6 +117,7 @@ struct SourceDyLaunchStats {
     std::size_t prepared_velocity_updated_bodies=0u;
     std::size_t prepared_velocity_upload_bytes=0u;
     std::size_t device_joint_input_rows=0u;
+    std::size_t device_joint_geometry_count=0u;
     std::size_t device_preintegrated_bodies=0u;
     std::size_t force_mod_upload_bytes=0u;
     std::size_t free_velocity_readback_bytes=0u;
@@ -221,7 +222,8 @@ public:
                bool device_initial_bodies=false,
                bool device_world_motion=false,
                bool device_unconstrained_preparation=false,
-               std::span<native::GpuDySleepState> sleep_states={}) {
+               std::span<native::GpuDySleepState> sleep_states={},
+               std::span<const native::GpuDyJointInput> joint_inputs={}) {
         if(integration.size()<bodies.size() ||
            integrated_poses.size()!=integration.size() ||
            (tasks.empty() && integration.size()==bodies.size()))
@@ -277,7 +279,11 @@ public:
             last_schedule_.device_preintegrated_bodies;
         last_schedule_.device_joint_input_rows=
             std::count_if(rows.begin(),rows.end(),
-                [](const auto& row){return row.reserved==1u;});
+                [](const auto& row){return row.reserved==1u || row.reserved==2u;});
+        last_schedule_.device_joint_geometry_count=joint_inputs.size();
+        if(!joint_inputs.empty() && !device_world_motion)
+            throw std::invalid_argument(
+                "Source device joint geometry requires native resident actor motion");
         if(contact_forces.size()>
            std::numeric_limits<std::size_t>::max()/sizeof(native::GpuDyContactPoint))
             throw std::overflow_error("Source Dy contact row byte count overflow");
@@ -766,11 +772,16 @@ public:
             throw std::overflow_error("Device Dy partition scratch exceeds address space");
         const std::size_t partition_scratch_bytes=device_partitions
             ? 20u+descriptors.size()*24u+bodies.size()*12u:0u;
+        if(joint_inputs.size()>(std::numeric_limits<std::uint32_t>::max()-
+                                 rows.size_bytes())/sizeof(native::GpuDyJointInput))
+            throw std::overflow_error("Device Dy joint metadata exceeds 32-bit row view");
+        const std::size_t joint_row_bytes=rows.size_bytes()+
+            joint_inputs.size_bytes();
         constexpr std::size_t count=16u;
         // The integration prefix describes Sc/SAP views and the launch
         // table. Solver-body ordinals precede the free-body suffix.
         const std::array<std::size_t,count> bytes{
-            bodies.size_bytes(),rows.size_bytes(),descriptors.size_bytes(),
+            bodies.size_bytes(),joint_row_bytes,descriptors.size_bytes(),
             partition_count*sizeof(std::uint32_t),body_ordinals.size_bytes(),
             tasks.size_bytes(),contact_bytes,friction_bytes,
             patches.size_bytes(),manifolds.size_bytes(),contact_order.size_bytes(),
@@ -877,7 +888,11 @@ public:
                i!=13u && i!=15u && bytes[i] &&
                (!device_initial_bodies || i!=0u) &&
                (!device_partitions || (i!=2u && i!=3u)))
-                std::memcpy(host_.data()+offsets[i],sources[i],bytes[i]);
+                std::memcpy(host_.data()+offsets[i],sources[i],
+                            i==1u?rows.size_bytes():bytes[i]);
+        if(!joint_inputs.empty())
+            std::memcpy(host_.data()+offsets[1]+rows.size_bytes(),
+                        joint_inputs.data(),joint_inputs.size_bytes());
         if(prep_bytes)
             std::memcpy(host_.data()+offsets[11],packed_.data(),prep_bytes);
         if(!cpu_gu.empty())

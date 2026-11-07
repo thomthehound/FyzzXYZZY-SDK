@@ -221,6 +221,23 @@ struct GpuDyJointRow {
 static_assert(sizeof(GpuDyJointRow)==64u &&
               offsetof(GpuDyJointRow,constant)==48u &&
               offsetof(GpuDyJointRow,applied_force)==60u);
+// Source-ordered Sc joint admission. Dynamic actor frames come from the
+// resident Dy BodyId pool; non-dynamic endpoint frames are authored inputs.
+struct GpuDyJointInput {
+    float local_a_position[3]{},local_a_orientation[4]{};
+    float local_b_position[3]{},local_b_orientation[4]{};
+    float actor_a_position[3]{},actor_a_orientation[4]{};
+    float actor_b_position[3]{},actor_b_orientation[4]{};
+    float center_a[3]{},center_b[3]{};
+    float distance_length=0.0f;
+    std::uint32_t kind=0u;
+};
+static_assert(sizeof(GpuDyJointInput)==144u &&
+              offsetof(GpuDyJointInput,actor_a_position)==56u &&
+              offsetof(GpuDyJointInput,actor_b_position)==84u &&
+              offsetof(GpuDyJointInput,center_a)==112u &&
+              offsetof(GpuDyJointInput,center_b)==124u &&
+              offsetof(GpuDyJointInput,kind)==140u);
 struct GpuDyDistanceDescriptor {
     std::uint32_t index=0,row0=0,row1=0,row_count=0;
 };
@@ -375,7 +392,8 @@ public:
         bool /*device_initial_bodies*/=false,
         bool /*device_world_motion*/=false,
         bool /*device_unconstrained_preparation*/=false,
-        std::span<GpuDySleepState> /*sleep_states*/={}) {
+        std::span<GpuDySleepState> /*sleep_states*/={},
+        std::span<const GpuDyJointInput> /*joint_inputs*/={}) {
         throw std::logic_error("Source GPU Dy shader is not installed");
     }
     // Sc's afterIntegration authorizes the source ElementSim device pose.
@@ -2016,6 +2034,7 @@ private:
     std::vector<BodyId> gpu_dy_free_ids_;
     bool gpu_dy_pose_ready_=false;
     std::vector<GpuDyJointRow> gpu_dy_rows_;
+    std::vector<GpuDyJointInput> gpu_dy_joint_inputs_;
     std::vector<GpuDyDistanceDescriptor> gpu_dy_descriptors_;
     std::vector<std::uint32_t> gpu_dy_body_ordinals_;
     std::vector<GpuDyDistanceTask> gpu_dy_tasks_;
