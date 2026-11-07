@@ -1681,7 +1681,11 @@ void verify_gpu_distance_solver(
                     (frame==0u?sizeof(native::GpuDyJointInput):0u) &&
                 stats.device_joint_metadata_reuses==
                     (frame==0u?3u:4u),
-            "Recycled native joint slot retained stale device authoring");
+            "Recycled native joint slot residency mismatch: frame="+
+                std::to_string(frame)+
+                " joints="+std::to_string(stats.device_joint_geometry_count)+
+                " upload="+std::to_string(stats.device_joint_metadata_upload_bytes)+
+                " reuse="+std::to_string(stats.device_joint_metadata_reuses));
         for(const auto i:{2u,3u}) {
             const auto expected=cpu.body_state(ids_cpu[i]);
             const auto actual=gpu.body_state(ids_gpu[i]);
