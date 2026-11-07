@@ -787,11 +787,12 @@ void verify_coupled_rigid_stack(
     using namespace fyzz;
     native::Scene cpu;
     native::Scene gpu;
-    gpu.set_gpu_broadphase(
-        std::make_unique<physx_gpu::SourceScOwnedGpuBroadphaseNative>(
-            backend,load_native_gpu_sap_shaders(backend,sap),
-            128u,128u,std::nullopt,
-            load_native_gpu_pcm_shaders(backend,pcm)));
+    auto owner=std::make_unique<physx_gpu::SourceScOwnedGpuBroadphaseNative>(
+        backend,load_native_gpu_sap_shaders(backend,sap),
+        128u,128u,std::nullopt,
+        load_native_gpu_pcm_shaders(backend,pcm));
+    auto* producer=owner.get();
+    gpu.set_gpu_broadphase(std::move(owner));
     cpu.add_static_box({0.5f,0.5f,0.5f},{0.f,-0.5f,0.f});
     const BodyId fixed_gpu=gpu.add_static_box(
         {0.5f,0.5f,0.5f},{0.f,-0.5f,0.f});
@@ -826,6 +827,15 @@ void verify_coupled_rigid_stack(
                     std::fabs(a.velocity.z-b.velocity.z)<0.025f,
                     "GPU coupled rigid stack diverged from source Sc/Dy motion");
         }
+        const auto roots=producer->contact_island_roots();
+        for(std::size_t i=0;i<dynamic_gpu.size();++i)
+            for(std::size_t j=i+1u;j<dynamic_gpu.size();++j) {
+                const auto a=dynamic_gpu[i],b=dynamic_gpu[j];
+                require(a<roots.size() && b<roots.size() &&
+                    ((gpu.accurate_island_id(a)==gpu.accurate_island_id(b))==
+                     (roots[a]==roots[b])),
+                    "Device PCM island connectivity diverged from Sc accurate graph");
+            }
         require(gpu.solved_result_frame()==gpu.frame_index(),
                 "GPU coupled rigid stack did not complete Dy solve");
     }
@@ -1557,6 +1567,14 @@ void verify_gpu_distance_solver(
         }
         cpu.step(dt);
         gpu.step(dt);
+        const auto roots=producer->contact_island_roots();
+        require(anchored_gpu<roots.size() &&
+                roots[ids_gpu[0]]==roots[ids_gpu[1]] &&
+                roots[ids_gpu[2]]==roots[ids_gpu[3]] &&
+                roots[ids_gpu[0]]!=roots[ids_gpu[2]] &&
+                roots[anchored_gpu]!=roots[ids_gpu[0]] &&
+                roots[anchored_gpu]!=roots[ids_gpu[2]],
+            "GPU Sc joint-only island roots differ from authored connections");
         const auto cached=producer->last_frame().device_cached_box_count;
         if(frame==0 || frame==8)
             require(cached==0u,
@@ -1672,6 +1690,12 @@ void verify_gpu_distance_solver(
     // authored frame or distance, even when the bodies remain unchanged.
     cpu.retire_constraint(recycled_cpu);
     gpu.retire_constraint(recycled_gpu);
+    cpu.step(dt);
+    gpu.step(dt);
+    const auto split_roots=producer->contact_island_roots();
+    require(ids_gpu[3]<split_roots.size() &&
+            split_roots[ids_gpu[2]]!=split_roots[ids_gpu[3]],
+        "Retired Sc joint retained a stale GPU dynamic island link");
     cpu.create_anchored_distance_constraint(ids_cpu[2],ids_cpu[3],
         {0.0f,0.15f,0.0f},{0.0f,-0.15f,0.0f},3.2f);
     gpu.create_anchored_distance_constraint(ids_gpu[2],ids_gpu[3],
@@ -1679,6 +1703,10 @@ void verify_gpu_distance_solver(
     for(unsigned frame=0u;frame<3u;++frame) {
         cpu.step(dt);
         gpu.step(dt);
+        const auto restored_roots=producer->contact_island_roots();
+        require(ids_gpu[3]<restored_roots.size() &&
+                restored_roots[ids_gpu[2]]==restored_roots[ids_gpu[3]],
+            "Recycled joint did not reconnect its GPU accurate island");
         const auto stats=producer->dy_launch_stats();
         if(!(stats.device_joint_geometry_count==3u &&
              stats.device_joint_metadata_upload_bytes==
