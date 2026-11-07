@@ -2027,6 +2027,12 @@ void verify_gpu_free_integration(
         const auto resident_record_bytes=
             sizeof(physx_gpu::SourceDyActorLocalNative);
         const auto mass_frame_edits=(frame==3u || frame==4u)?1u:0u;
+        const auto transfer_error=
+            std::string{"Source Dy actor-state refresh exceeded authored changes: frame="}+
+            std::to_string(frame)+
+            " bytes="+std::to_string(metadata.actor_local_upload_bytes)+
+            " reuses="+std::to_string(metadata.reused_actor_local_poses)+
+            " spans="+std::to_string(metadata.actor_local_upload_spans);
         require((frame==0u
                     ? metadata.actor_local_upload_bytes==
                           actual.size()*resident_record_bytes &&
@@ -2040,11 +2046,7 @@ void verify_gpu_free_integration(
                       metadata.actor_local_upload_spans<=3u &&
                       (mass_frame_edits==0u ||
                        metadata.actor_local_upload_bytes>=resident_record_bytes)),
-            "Source Dy actor-state refresh exceeded authored changes: frame="+
-                std::to_string(frame)+
-                " bytes="+std::to_string(metadata.actor_local_upload_bytes)+
-                " reuses="+std::to_string(metadata.reused_actor_local_poses)+
-                " spans="+std::to_string(metadata.actor_local_upload_spans));
+            transfer_error.c_str());
         require(resident<=actual.size() &&
                 producer->dy_host_pose_upload_bytes()==
                     (actual.size()-resident)*28u &&
