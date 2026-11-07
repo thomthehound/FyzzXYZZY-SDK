@@ -378,6 +378,11 @@ public:
         return dy_distance_ ? dy_distance_->last_transfer_bytes()
                             : std::pair<std::size_t,std::size_t>{};
     }
+    std::vector<std::uint32_t> contact_island_roots() const {
+        if(!pcm_)
+            throw std::logic_error("GPU Sc contact graph is not installed");
+        return pcm_->contact_island_roots();
+    }
     void set_gpu_sc_contact_graph(
         std::span<const native::GpuScContactGraphEdge> edges,
         std::uint32_t rigid_count) override {
