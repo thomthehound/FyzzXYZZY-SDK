@@ -349,8 +349,45 @@ public:
            (std::numeric_limits<std::uint32_t>::max()-127u)/64u)
             throw std::overflow_error(
                 "Source GPU friction history exceeds address space");
-        const std::size_t history_bytes=(
+        const std::size_t joint_base=(
             next_history_capacity_*64u+127u)&~std::size_t(127u);
+        // EdgeIndex friction history occupies the first part of Dy's
+        // allocation; stable Sc constraint records follow that prefix.
+        std::size_t next_joint_capacity=joint_source_capacity_;
+        for(const auto& joint:joint_inputs) {
+            if(joint.source_slot==0xffffffffu)
+                throw std::logic_error("Native Dy joint has no live Sc constraint slot");
+            next_joint_capacity=std::max(next_joint_capacity,
+                                         std::size_t(joint.source_slot)+1u);
+        }
+        if(joint_base>std::numeric_limits<std::uint32_t>::max()-127u ||
+           next_joint_capacity>
+               (std::numeric_limits<std::uint32_t>::max()-joint_base-127u)/
+               sizeof(native::GpuDyJointInput))
+            throw std::overflow_error("Native Dy resident joints exceed 32-bit view");
+        const std::size_t history_bytes=(joint_base+
+            next_joint_capacity*sizeof(native::GpuDyJointInput)+127u)&
+            ~std::size_t(127u);
+        // Friction growth moves the joint base. Re-admit the source
+        // record spans instead of preserving bytes at obsolete offsets.
+        if(next_history_capacity_!=friction_history_capacity_)
+            std::fill(joint_source_valid_.begin(),joint_source_valid_.end(),0u);
+        joint_source_host_.resize(next_joint_capacity);
+        joint_source_valid_.resize(next_joint_capacity,0u);
+        joint_source_dirty_.clear();
+        for(const auto& joint:joint_inputs) {
+            const auto slot=joint.source_slot;
+            if(!joint_source_valid_[slot] ||
+               std::memcmp(&joint_source_host_[slot],&joint,sizeof(joint))!=0) {
+                joint_source_host_[slot]=joint;
+                joint_source_dirty_.push_back(slot);
+            }else
+                ++last_schedule_.device_joint_metadata_reuses;
+        }
+        std::sort(joint_source_dirty_.begin(),joint_source_dirty_.end());
+        if(std::adjacent_find(joint_source_dirty_.begin(),
+                              joint_source_dirty_.end())!=joint_source_dirty_.end())
+            throw std::logic_error("Native Dy joint slot admitted more than once");
         history_epochs_.resize(next_history_capacity_,0u);
         for(const auto& manager:manifolds) {
             if(!manager.patch_count)continue;
