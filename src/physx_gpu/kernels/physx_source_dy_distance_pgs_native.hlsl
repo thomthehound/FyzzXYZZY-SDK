@@ -275,6 +275,14 @@ bool sourceDyPreIntegrateBody(uint ordinal) {
     scActorLocals.Store3(local+76u,asuint(angular));
     return true;
 }
+void sourceDyInvalidatePreparedVelocity(uint ordinal) {
+    const uint input=p.integrationBias+40u+ordinal*72u;
+    const uint local=arena.Load(input+60u);
+    if(local==invalidBody)return;
+    const uint3 invalid=uint3(0x7fc00000u,0x7fc00000u,0x7fc00000u);
+    scActorLocals.Store3(local+64u,invalid);
+    scActorLocals.Store3(local+76u,invalid);
+}
 
 #include "physx_source_dy_contact_pgs_native.hlsli"
 
@@ -752,16 +760,22 @@ void integrateBody(uint ordinal) {
     }
     // Position integration consumes the saved position-iteration state.
     if((inputFlags&1u)==0u)return;
+    const uint destination=p.writebackBias+p.resultPatchOffset+
+        p.patchCount*4u+ordinal*32u;
+    arena.Store(destination+28u,0u);
+    if(ordinal>=p.bodyCount && (inputFlags&32u)!=0u &&
+       !sourceDyPreIntegrateBody(ordinal)) {
+        sourceDyInvalidatePreparedVelocity(ordinal);
+        return;
+    }
     const float3 baseLinear=sourceDyPreparedVelocity(input,false);
     const float3 baseAngular=sourceDyPreparedVelocity(input,true);
+    if(!all(isfinite(baseLinear)) || !all(isfinite(baseAngular)))return;
     const uint locks=arena.Load(input+36u);
     const float dt=asfloat(arena.Load(input+40u));
     float3 position;
     float4 quaternion;
     if(!sourceDyMassPose(input,position,quaternion))return;
-    const uint destination=p.writebackBias+p.resultPatchOffset+
-        p.patchCount*4u+ordinal*32u;
-    arena.Store(destination+28u,0u);
     float3 motionLinear=baseLinear+linearDelta;
     if(locks&1u)motionLinear.x=0.0f;
     if(locks&2u)motionLinear.y=0.0f;
@@ -837,6 +851,13 @@ void integrateBody(uint ordinal) {
     nextQuaternion=sourceRigidMultiply(nextQuaternion,float4(-localAxes.xyz,localAxes.w));
     nextPosition-=sourceRigidRotate(nextQuaternion,localCenter);
     if(!all(isfinite(nextPosition)) || !all(isfinite(nextQuaternion)))return;
+    if(ordinal>=p.bodyCount && (inputFlags&32u)!=0u) {
+        const uint count=arena.Load(p.integrationBias+32u);
+        const uint output=p.writebackBias+p.resultPatchOffset+
+            p.patchCount*4u+count*32u+(ordinal-p.bodyCount)*24u;
+        arena.Store3(output,asuint(finalLinear));
+        arena.Store3(output+12u,asuint(finalAngular));
+    }
     if((inputFlags&8u)!=0u) {
         scActorLocals.Store3(local+64u,asuint(finalLinear));
         scActorLocals.Store3(local+76u,asuint(finalAngular));
@@ -940,8 +961,11 @@ void main(uint3 group:SV_GroupID,uint3 lane:SV_GroupThreadID) {
     const uint index=p.launchBegin+group.x;
     if(phase==initializeBodiesTile) {
         const uint ordinal=index*128u+lane.x;
-        if(ordinal<p.bodyCount)
+        if(ordinal<p.bodyCount) {
             initializeSolverBody(ordinal,arena.Load(p.integrationBias+36u));
+            if(!sourceDyPreIntegrateBody(ordinal))
+                sourceDyInvalidatePreparedVelocity(ordinal);
+        }
         return;
     }
     const bool freeBody=phase==freeBodyTile;
@@ -960,8 +984,11 @@ void main(uint3 group:SV_GroupID,uint3 lane:SV_GroupThreadID) {
         if(phase==colorTile && index>=schedule.z) {
             const uint ordinal=(index-schedule.z)*128u+lane.x;
             const uint source=arena.Load(p.integrationBias+36u);
-            if(source!=0u && ordinal<p.bodyCount)
+            if(source!=0u && ordinal<p.bodyCount) {
                 initializeSolverBody(ordinal,source);
+                if(!sourceDyPreIntegrateBody(ordinal))
+                    sourceDyInvalidatePreparedVelocity(ordinal);
+            }
             return;
         }
         // Compact single-task scenes can initialize up to one workgroup
@@ -971,8 +998,11 @@ void main(uint3 group:SV_GroupID,uint3 lane:SV_GroupThreadID) {
            p.bodyCount<=128u) {
             const uint source=arena.Load(p.integrationBias+36u);
             if(source!=0u) {
-                if(lane.x<p.bodyCount)
+                if(lane.x<p.bodyCount) {
                     initializeSolverBody(lane.x,source);
+                    if(!sourceDyPreIntegrateBody(lane.x))
+                        sourceDyInvalidatePreparedVelocity(lane.x);
+                }
                 AllMemoryBarrierWithGroupSync();
             }
         }
