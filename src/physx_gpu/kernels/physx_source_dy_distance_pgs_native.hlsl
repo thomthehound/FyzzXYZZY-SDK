@@ -500,10 +500,73 @@ void sourceDyPartitionTask(uint taskId,uint scratch,uint errorAddress,
     }
 }
 
+// The native 1D upload carries world-space angular Jacobians and
+// geometric error. Build the velocity-dependent constants only after
+// Sc-prepared actor velocities are present in the GPU source stream.
+void prepareJointRows(uint4 desc,uint lane,uint endError) {
+    if(desc.x>=p.rowCount || desc.w>p.rowCount-desc.x ||
+       (desc.y!=invalidBody && desc.y>=p.bodyCount) ||
+       (desc.z!=invalidBody && desc.z>=p.bodyCount)) {
+        arena.InterlockedOr(endError,4096u);
+        return;
+    }
+    const uint massRow=p.distanceBias+desc.x*64u;
+    const float inverseMassA=asfloat(arena.Load(massRow+36u));
+    const float inverseMassB=asfloat(arena.Load(massRow+40u));
+    const uint inputA=p.integrationBias+40u+desc.y*68u;
+    const uint inputB=p.integrationBias+40u+desc.z*68u;
+    float3 va=0.0f,vb=0.0f,wa=0.0f,wb=0.0f;
+    if(desc.y!=invalidBody) {
+        va=sourceDyPreparedVelocity(inputA,false);
+        wa=sourceDyPreparedVelocity(inputA,true);
+    }
+    if(desc.z!=invalidBody) {
+        vb=sourceDyPreparedVelocity(inputB,false);
+        wb=sourceDyPreparedVelocity(inputB,true);
+    }
+    for(uint i=lane;i<desc.w;i+=4u) {
+        const uint row=p.distanceBias+(desc.x+i)*64u;
+        if(arena.Load(row+44u)!=1u)continue;
+        const float3 axis=asfloat(arena.Load3(row));
+        const float3 angularA=asfloat(arena.Load3(row+12u));
+        const float3 angularB=asfloat(arena.Load3(row+24u));
+        float3 ja=0.0f,jb=0.0f;
+        if(inverseMassA>0.0f) {
+            ja=asfloat(arena.Load3(inputA))*angularA.x+
+               asfloat(arena.Load3(inputA+12u))*angularA.y+
+               asfloat(arena.Load3(inputA+24u))*angularA.z;
+        }
+        if(inverseMassB>0.0f) {
+            jb=asfloat(arena.Load3(inputB))*angularB.x+
+               asfloat(arena.Load3(inputB+12u))*angularB.y+
+               asfloat(arena.Load3(inputB+24u))*angularB.z;
+        }
+        precise float speed=sourceDyDot3(axis,va-vb)+
+            sourceDyDot3(angularA,wa)-sourceDyDot3(angularB,wb);
+        const float multiplier=asfloat(arena.Load(row+56u));
+        const float errorRate=asfloat(arena.Load(row+48u));
+        const float constant=multiplier*(errorRate+speed);
+        const float unbiased=multiplier*speed;
+        if(!isfinite(constant) || !isfinite(unbiased) ||
+           !all(isfinite(ja)) || !all(isfinite(jb))) {
+            arena.InterlockedOr(endError,8192u);
+            continue;
+        }
+        arena.Store3(row+12u,asuint(ja));
+        arena.Store3(row+24u,asuint(jb));
+        arena.Store(row+48u,asuint(constant));
+        arena.Store(row+52u,asuint(unbiased));
+        arena.Store(row+44u,0u);
+    }
+}
+
 void prepareNormals(uint begin,uint end,uint lane,uint endError) {
     for(uint i=begin+(lane>>2u);i<end;i+=32u) {
         uint4 desc=arena.Load4(p.descriptorBias+i*16u);
-        if(desc.w!=0u)continue;
+        if(desc.w!=0u) {
+            prepareJointRows(desc,lane&3u,endError);
+            continue;
+        }
         if(desc.x>=p.manifoldCount) {
             arena.InterlockedOr(endError,4096u);
             continue;

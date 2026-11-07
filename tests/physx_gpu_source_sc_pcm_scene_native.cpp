@@ -1563,8 +1563,9 @@ void verify_gpu_distance_solver(
             "Source GPU Dy 1D fixture unexpectedly generated Gu contacts");
         require(producer->dy_distance_dispatch_count()==
                     static_cast<std::uint64_t>(frame+1) &&
-                producer->dy_gpu_integrated_body_count()>0u,
-            "Source GPU Dy 1D task never published device body motion");
+                producer->dy_gpu_integrated_body_count()>0u &&
+                producer->dy_launch_stats().device_joint_input_rows==3u,
+            "Source GPU 1D joint rows did not reach device preparation");
         const auto [uploaded,downloaded]=
             producer->dy_distance_transfer_bytes();
         // Five dynamic solver bodies and three disjoint task reports.
@@ -1596,6 +1597,50 @@ void verify_gpu_distance_solver(
                     std::fabs(expected.orientation.w-actual.orientation.w)<0.001f,
                 "Source GPU Dy locked-axis integration diverged from CPU PGS");
         }
+    }
+
+    // A moving kinematic joint endpoint contributes target velocity
+    // without entering the dynamic integration or mass-response pool.
+    const auto kinematic_cpu=cpu.add_dynamic_box(
+        {0.25f,0.25f,0.25f},{80.f,3.f,0.f},1.f);
+    const auto kinematic_gpu=gpu.add_dynamic_box(
+        {0.25f,0.25f,0.25f},{80.f,3.f,0.f},1.f);
+    const auto follower_cpu=cpu.add_dynamic_box(
+        {0.25f,0.25f,0.25f},{83.f,3.f,0.f},1.f);
+    const auto follower_gpu=gpu.add_dynamic_box(
+        {0.25f,0.25f,0.25f},{83.f,3.f,0.f},1.f);
+    cpu.set_kinematic(kinematic_cpu,true);
+    gpu.set_kinematic(kinematic_gpu,true);
+    RigidBodyDynamics follower_dynamics{};
+    follower_dynamics.gravity_enabled=false;
+    follower_dynamics.linear_damping=0.0f;
+    follower_dynamics.angular_damping=0.0f;
+    cpu.set_dynamics(follower_cpu,follower_dynamics);
+    gpu.set_dynamics(follower_gpu,follower_dynamics);
+    cpu.create_anchored_distance_constraint(
+        kinematic_cpu,follower_cpu,
+        {0.f,0.2f,0.f},{0.f,-0.2f,0.f},3.f);
+    gpu.create_anchored_distance_constraint(
+        kinematic_gpu,follower_gpu,
+        {0.f,0.2f,0.f},{0.f,-0.2f,0.f},3.f);
+    for(unsigned frame=0u;frame<4u;++frame) {
+        const Vec3 target{80.1f+0.1f*float(frame),3.f,0.f};
+        const float half_angle=0.005f*float(frame+1u);
+        const Quat orientation{
+            0.f,0.f,std::sin(half_angle),std::cos(half_angle)};
+        cpu.set_kinematic_target(kinematic_cpu,target,orientation);
+        gpu.set_kinematic_target(kinematic_gpu,target,orientation);
+        cpu.step(dt);
+        gpu.step(dt);
+        require(producer->dy_launch_stats().device_joint_input_rows>=4u,
+            "Native GPU Dy skipped moving kinematic 1D joint preparation");
+        const auto expected=cpu.body_state(follower_cpu);
+        const auto actual=gpu.body_state(follower_gpu);
+        require(std::abs(expected.position.x-actual.position.x)<0.003f &&
+                std::abs(expected.velocity.x-actual.velocity.x)<0.003f &&
+                std::abs(expected.angular_velocity.z-
+                         actual.angular_velocity.z)<0.003f,
+            "GPU 1D joint ignored kinematic target linear/angular velocity");
     }
 }
 } // namespace
@@ -2107,8 +2152,9 @@ void verify_gpu_wide_island_solver(
         gpu.step(dt);
         const auto schedule=producer->dy_launch_stats();
         require(schedule.device_colored_tasks>=1u &&
-                schedule.device_colored_descriptors>=connected_bodies,
-            "Wide Dy task retained CPU-generated conflict partitions");
+                schedule.device_colored_descriptors>=connected_bodies &&
+                schedule.device_joint_input_rows>=connected_bodies/2u,
+            "Wide Dy task lost device joint preparation or coloring");
         // Once the assembly moves, individual supports can lose touch.
         // Joint connectivity must still supply a wide partition.
         const auto width=frame==0u?connected_bodies-2u:connected_bodies/2u;

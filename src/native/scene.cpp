@@ -7306,6 +7306,7 @@ void Scene::prepare_constraints(float seconds) {
     solver_contact_points_.clear();
     solver_contact_order_.clear();
     joint_rows_.clear();
+    gpu_dy_rows_.clear();
     const bool gpu_normal_prep=
         gpu_broadphase_ && gpu_broadphase_->has_gpu_dy_distance();
     gpu_dy_contact_prep_pairs_.clear();
@@ -7344,8 +7345,6 @@ void Scene::prepare_constraints(float seconds) {
                             Vec3 ja,Vec3 jb,float error,float response) {
             if(!(response>0.0f) || !std::isfinite(response))
                 throw std::logic_error("Source 1D joint requires finite response");
-            const float speed=dot(axis,relative)+dot(angular0,body0.angular_velocity)-
-                dot(angular1,body1.angular_velocity);
             const float reciprocal=1.0f/response;
             // Hard PGS rows use unit ERP, then remove bias for velocity passes.
             JointRow row{};
@@ -7355,8 +7354,32 @@ void Scene::prepare_constraints(float seconds) {
             row.inverse_mass_a=mass0;
             row.inverse_mass_b=mass1;
             row.velocity_multiplier=-reciprocal;
-            row.constant=-reciprocal*(error*inv_dt+speed);
-            row.unbiased_constant=-reciprocal*speed;
+            if(gpu_normal_prep) {
+                // Dy computes the source's velocity-dependent constants
+                // after GPU-prepared actor velocities are available.
+                row.constant=error*inv_dt;
+                // Materialize the final 64-byte source GPU row here.
+                // Its angular terms remain in world coordinates until
+                // Dy normal preparation applies sqrt-inverse-inertia.
+                auto& gpu=gpu_dy_rows_.emplace_back();
+                const auto pack=[](float(&out)[3],Vec3 v) {
+                    out[0]=v.x;out[1]=v.y;out[2]=v.z;
+                };
+                pack(gpu.axis,axis);
+                pack(gpu.angular_a,angular0);
+                pack(gpu.angular_b,angular1);
+                gpu.inverse_mass_a=mass0;
+                gpu.inverse_mass_b=mass1;
+                gpu.reserved=1u;
+                gpu.constant=row.constant;
+                gpu.velocity_multiplier=row.velocity_multiplier;
+            }else {
+                const float speed=
+                    dot(axis,relative)+dot(angular0,body0.angular_velocity)-
+                    dot(angular1,body1.angular_velocity);
+                row.constant=-reciprocal*(error*inv_dt+speed);
+                row.unbiased_constant=-reciprocal*speed;
+            }
             if(!std::isfinite(row.constant) || !std::isfinite(row.unbiased_constant))
                 throw std::overflow_error("Source 1D solver constants overflow");
             joint_rows_.push_back(row);
@@ -8265,6 +8288,23 @@ void Scene::solve_gpu_distance_constraints(float seconds) {
             input.sqrt_inverse_inertia[axis*3u+2u]=inertia.z;
         }
     }
+    // Kinematic 1D endpoints contribute authored velocities but are
+    // not integrated or treated as dynamic solver-body owners.
+    for(const EdgeIndex edge:indexed_joints_) {
+        const auto pair=island_edges_[edge].pair;
+        for(const BodyId id:{pair.a,pair.b}) {
+            const auto& actor=actors_[id];
+            if(actor.motion!=Motion::Kinematic)continue;
+            if(actor.solver_row_generation!=solver_preparation_generation_ ||
+               actor.solver_row_index>=solver_rows_.size())
+                throw std::logic_error(
+                    "Source GPU 1D kinematic lacks its prepared row");
+            auto& input=gpu_dy_integration_inputs_[actor.solver_row_index];
+            input.active=16u;
+            pack(input.linear_velocity,actor.velocity);
+            pack(input.angular_velocity,actor.angular_velocity);
+        }
+    }
     for(std::size_t i=0;i<gpu_dy_free_ids_.size();++i) {
         const auto& actor=actors_[gpu_dy_free_ids_[i]];
         auto& input=gpu_dy_integration_inputs_[solver_rows_.size()+i];
@@ -8272,20 +8312,9 @@ void Scene::solve_gpu_distance_constraints(float seconds) {
         pack(input.linear_velocity,actor.velocity);
         pack(input.angular_velocity,actor.angular_velocity);
     }
-    gpu_dy_rows_.resize(joint_rows_.size());
-    for(std::size_t i=0;i<joint_rows_.size();++i) {
-        const auto& row=joint_rows_[i];
-        auto& out=gpu_dy_rows_[i];
-        pack(out.axis,row.axis);
-        pack(out.angular_a,row.angular_a);
-        pack(out.angular_b,row.angular_b);
-        out.inverse_mass_a=row.inverse_mass_a;
-        out.inverse_mass_b=row.inverse_mass_b;
-        out.constant=row.constant;
-        out.unbiased_constant=row.unbiased_constant;
-        out.velocity_multiplier=row.velocity_multiplier;
-        out.applied_force=row.applied_force;
-    }
+    if(gpu_dy_rows_.size()!=joint_rows_.size())
+        throw std::logic_error(
+            "Source GPU 1D row preparation did not cover source rows");
     gpu_dy_descriptors_.resize(ordered_constraints_.size());
     for(std::size_t i=0;i<ordered_constraints_.size();++i) {
         const auto& d=ordered_constraints_[i];
