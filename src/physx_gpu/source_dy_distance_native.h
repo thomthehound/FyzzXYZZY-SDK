@@ -87,6 +87,7 @@ struct SourceDyLaunchStats {
     std::size_t actor_local_upload_spans=0u;
     std::size_t reused_actor_local_poses=0u;
     std::size_t resident_velocity_reuses=0u;
+    std::size_t prepared_velocity_updated_bodies=0u;
     std::size_t prepared_velocity_upload_bytes=0u;
 };
 
@@ -443,11 +444,12 @@ public:
         last_schedule_.actor_local_upload_spans=0u;
         last_schedule_.reused_actor_local_poses=0u;
         last_schedule_.resident_velocity_reuses=0u;
+        last_schedule_.prepared_velocity_updated_bodies=0u;
         last_schedule_.prepared_velocity_upload_bytes=0u;
         pending_actor_locals_.clear();
-        prepared_velocity_updates_.clear();
+        prepared_velocity_components_.clear();
         packed_integration_.reserve(integration.size());
-        prepared_velocity_updates_.reserve(integration.size());
+        prepared_velocity_components_.reserve(integration.size()*6u);
         host_poses_.reserve(integration.size());
         std::size_t needed_actor_slots=0u;
         for(std::size_t ordinal=0u;ordinal<integration.size();++ordinal) {
@@ -516,23 +518,32 @@ public:
                     pending_actor_locals_.push_back(id);
                 }else
                     ++last_schedule_.reused_actor_local_poses;
-                const bool reuse_velocity=device_world_motion &&
-                    actor_velocity_valid_[id] &&
-                    std::memcmp(actor_local_host_[id].linear_velocity,
-                                input.linear_velocity,3u*sizeof(float))==0 &&
-                    std::memcmp(actor_local_host_[id].angular_velocity,
-                                input.angular_velocity,3u*sizeof(float))==0;
-                if(reuse_velocity) {
+                std::uint32_t changed=0u;
+                const bool prior=device_world_motion &&
+                    actor_velocity_valid_[id];
+                const auto& resident=actor_local_host_[id];
+                for(unsigned axis=0u;axis<6u;++axis) {
+                    const float* prepared=axis<3u
+                        ?input.linear_velocity+axis
+                        :input.angular_velocity+(axis-3u);
+                    const float* previous=axis<3u
+                        ?resident.linear_velocity+axis
+                        :resident.angular_velocity+(axis-3u);
+                    if(!prior || std::memcmp(prepared,previous,sizeof(float))!=0)
+                        changed|=1u<<axis;
+                }
+                if(changed==0u) {
                     ++last_schedule_.resident_velocity_reuses;
                 }else {
+                    record.active|=changed<<8u;
                     record.velocity_offset=narrow(
-                        prepared_velocity_updates_.size());
-                    SourceDyPreparedVelocityNative prepared{};
-                    std::memcpy(prepared.linear,input.linear_velocity,
-                                sizeof(prepared.linear));
-                    std::memcpy(prepared.angular,input.angular_velocity,
-                                sizeof(prepared.angular));
-                    prepared_velocity_updates_.push_back(prepared);
+                        prepared_velocity_components_.size());
+                    for(unsigned axis=0u;axis<6u;++axis)
+                        if(changed&(1u<<axis))
+                            prepared_velocity_components_.push_back(
+                                axis<3u?input.linear_velocity[axis]:
+                                         input.angular_velocity[axis-3u]);
+                    ++last_schedule_.prepared_velocity_updated_bodies;
                 }
                 // Every published body must explicitly reestablish its
                 // committed velocity after a successful device solve.
@@ -560,13 +571,13 @@ public:
             throw std::overflow_error("Source Dy packed body inputs exceed address space");
         const std::size_t packed_input_bytes=integration_header_bytes+
             packed_integration_.size()*sizeof(SourceDyPackedIntegrationNative);
-        if(prepared_velocity_updates_.size()>
+        if(prepared_velocity_components_.size()>
            (std::numeric_limits<std::uint32_t>::max()-packed_input_bytes)/
-               sizeof(SourceDyPreparedVelocityNative))
+               sizeof(float))
             throw std::overflow_error(
                 "Source Dy prepared velocity updates exceed address space");
-        const std::size_t velocity_bytes=prepared_velocity_updates_.size()*
-            sizeof(SourceDyPreparedVelocityNative);
+        const std::size_t velocity_bytes=prepared_velocity_components_.size()*
+            sizeof(float);
         const std::size_t host_pose_begin=packed_input_bytes+velocity_bytes;
         if(host_poses_.size()>
            (std::numeric_limits<std::uint32_t>::max()-host_pose_begin)/
@@ -718,9 +729,9 @@ public:
                 std::memcpy(host_.data()+offsets[15]+20u,
                             descriptors.data(),descriptors.size_bytes());
         }
-        if(!prepared_velocity_updates_.empty())
+        if(!prepared_velocity_components_.empty())
             std::memcpy(host_.data()+offsets[12]+packed_input_bytes,
-                        prepared_velocity_updates_.data(),velocity_bytes);
+                        prepared_velocity_components_.data(),velocity_bytes);
         if(!host_poses_.empty())
             std::memcpy(host_.data()+offsets[12]+host_pose_begin,
                         host_poses_.data(),last_host_pose_upload_bytes_);
@@ -831,8 +842,7 @@ public:
             if(record.velocity_offset!=invalid)
                 record.velocity_offset=narrow(
                     std::size_t(params[28])+offsets[12]+packed_input_bytes+
-                    std::size_t(record.velocity_offset)*
-                        sizeof(SourceDyPreparedVelocityNative));
+                    std::size_t(record.velocity_offset)*sizeof(float));
             if(record.pose_index!=invalid)
                 record.pose_index=narrow(
                     std::size_t(params[28])+offsets[12]+host_pose_begin+
@@ -1529,7 +1539,7 @@ private:
     std::vector<SourceDyHostPoseNative> host_poses_;
     std::vector<SourceDyActorLocalNative> actor_local_host_;
     std::vector<std::uint8_t> actor_local_valid_,actor_velocity_valid_;
-    std::vector<SourceDyPreparedVelocityNative> prepared_velocity_updates_;
+    std::vector<float> prepared_velocity_components_;
     std::vector<std::uint32_t> pending_actor_locals_;
     std::vector<SourceSapUpload> actor_local_uploads_;
     std::size_t actor_local_capacity_=0u;
