@@ -997,8 +997,12 @@ public:
                                                  : compute::BufferAccess::Read;
             dispatch.buffers[3].access=integrates ? compute::BufferAccess::Write
                                                  : compute::BufferAccess::Read;
-            dispatch.buffers[5].access=integrates ? compute::BufferAccess::ReadWrite
-                                                 : compute::BufferAccess::Read;
+            const bool writes_actor_velocities=integrates ||
+                (device_unconstrained_preparation &&
+                 (phase==Launch::Color || phase==Launch::InitializeBodies));
+            dispatch.buffers[5].access=writes_actor_velocities
+                ?compute::BufferAccess::ReadWrite
+                :compute::BufferAccess::Read;
             params[10]=(iteration<<4u)|static_cast<std::uint32_t>(phase)|
                 (compact_friction?0x20000000u:0u)|
                 (device_partitions?0x80000000u:0u)|
