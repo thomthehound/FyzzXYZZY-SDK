@@ -1617,23 +1617,30 @@ void verify_gpu_distance_solver(
     follower_dynamics.angular_damping=0.0f;
     cpu.set_dynamics(follower_cpu,follower_dynamics);
     gpu.set_dynamics(follower_gpu,follower_dynamics);
-    cpu.create_center_distance_constraint(
-        kinematic_cpu,follower_cpu,3.f);
-    gpu.create_center_distance_constraint(
-        kinematic_gpu,follower_gpu,3.f);
+    cpu.create_anchored_distance_constraint(
+        kinematic_cpu,follower_cpu,
+        {0.f,0.2f,0.f},{0.f,-0.2f,0.f},3.f);
+    gpu.create_anchored_distance_constraint(
+        kinematic_gpu,follower_gpu,
+        {0.f,0.2f,0.f},{0.f,-0.2f,0.f},3.f);
     for(unsigned frame=0u;frame<4u;++frame) {
         const Vec3 target{80.1f+0.1f*float(frame),3.f,0.f};
-        cpu.set_kinematic_target(kinematic_cpu,target,{});
-        gpu.set_kinematic_target(kinematic_gpu,target,{});
+        const float half_angle=0.005f*float(frame+1u);
+        const Quat orientation{
+            0.f,0.f,std::sin(half_angle),std::cos(half_angle)};
+        cpu.set_kinematic_target(kinematic_cpu,target,orientation);
+        gpu.set_kinematic_target(kinematic_gpu,target,orientation);
         cpu.step(dt);
         gpu.step(dt);
         require(producer->dy_launch_stats().device_joint_input_rows>=4u,
             "Native GPU Dy skipped moving kinematic 1D joint preparation");
         const auto expected=cpu.body_state(follower_cpu);
         const auto actual=gpu.body_state(follower_gpu);
-        require(std::abs(expected.position.x-actual.position.x)<0.002f &&
-                std::abs(expected.velocity.x-actual.velocity.x)<0.002f,
-            "GPU 1D joint ignored kinematic target velocity");
+        require(std::abs(expected.position.x-actual.position.x)<0.003f &&
+                std::abs(expected.velocity.x-actual.velocity.x)<0.003f &&
+                std::abs(expected.angular_velocity.z-
+                         actual.angular_velocity.z)<0.003f,
+            "GPU 1D joint ignored kinematic target linear/angular velocity");
     }
 }
 } // namespace
