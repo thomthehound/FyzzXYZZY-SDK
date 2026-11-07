@@ -1844,7 +1844,7 @@ void verify_gpu_free_integration(
     auto* producer=owner.get();
     gpu.set_gpu_broadphase(std::move(owner));
 
-    const auto assemble=[](native::Scene& scene) {
+    const auto assemble=[](native::Scene& scene,ShapeId& compound_shape) {
         std::vector<BodyId> bodies;
         scene.add_static_box({1.f,0.25f,1.f},{0.f,-0.25f,0.f});
         bodies.push_back(scene.add_dynamic_box(
@@ -1863,7 +1863,8 @@ void verify_gpu_free_integration(
             scene.set_angular_velocity(body,{1.f,0.2f,-0.6f});
         }
         const auto compound=scene.create_body({{0.f,3.f,4.f},{}},true);
-        scene.attach_box(compound,{0.2f,0.3f,0.4f},{{-0.5f,0.f,0.f},{}});
+        compound_shape=scene.attach_box(
+            compound,{0.2f,0.3f,0.4f},{{-0.5f,0.f,0.f},{}});
         scene.attach_sphere(compound,0.4f,{{0.7f,0.4f,0.f},{}});
         scene.update_mass_properties(compound,1.f);
         scene.set_dynamics(compound,free_motion);
@@ -1875,10 +1876,21 @@ void verify_gpu_free_integration(
         bodies.push_back(shapeless);
         return bodies;
     };
-    const auto expected=assemble(cpu);
-    const auto actual=assemble(gpu);
+    ShapeId expected_shape{},actual_shape{};
+    const auto expected=assemble(cpu,expected_shape);
+    const auto actual=assemble(gpu,actual_shape);
     bool touched=false,released=false;
     for(unsigned frame=0;frame<12u;++frame) {
+        if(frame==4u) {
+            // Recenter the compound and change its principal mass frame.
+            // Sc's authored edit must replace exactly this GPU actor's
+            // resident local transform before contact preparation.
+            const Transform edited{{-0.35f,0.1f,0.05f},{}};
+            cpu.set_shape_local_pose(expected_shape,edited);
+            gpu.set_shape_local_pose(actual_shape,edited);
+            cpu.update_mass_properties(expected[expected.size()-2u],1.f);
+            gpu.update_mass_properties(actual[actual.size()-2u],1.f);
+        }
         if(touched && !released) {
             cpu.set_position(expected.front(),{0.f,2.f,0.f});
             gpu.set_position(actual.front(),{0.f,2.f,0.f});
@@ -1898,9 +1910,14 @@ void verify_gpu_free_integration(
                     ? metadata.actor_local_upload_bytes==
                           actual.size()*sizeof(physx_gpu::SourceDyHostPoseNative) &&
                       metadata.actor_local_upload_spans==1u
-                    : metadata.actor_local_upload_bytes==0u &&
-                      metadata.actor_local_upload_spans==0u &&
-                      metadata.reused_actor_local_poses==actual.size()),
+                    : frame==4u
+                        ? metadata.actor_local_upload_bytes==
+                              sizeof(physx_gpu::SourceDyHostPoseNative) &&
+                          metadata.actor_local_upload_spans==1u &&
+                          metadata.reused_actor_local_poses==actual.size()-1u
+                        : metadata.actor_local_upload_bytes==0u &&
+                          metadata.actor_local_upload_spans==0u &&
+                          metadata.reused_actor_local_poses==actual.size()),
             "Source Dy reuploaded unchanged actor-local mass frames");
         require(resident<=actual.size() &&
                 producer->dy_host_pose_upload_bytes()==
