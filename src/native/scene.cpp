@@ -8252,6 +8252,7 @@ void Scene::solve_gpu_distance_constraints(float seconds) {
     const auto integration_count=solver_rows_.size()+gpu_dy_free_ids_.size();
     gpu_dy_integration_inputs_.assign(integration_count,{});
     gpu_dy_integrated_poses_.resize(integration_count);
+    gpu_dy_sleep_states_.resize(integration_count);
     const auto pack_integration=[&](BodyId id,const Actor& actor,
                                    GpuDyBodyIntegrationInput& input) {
         input.source_actor=id;
@@ -8264,6 +8265,10 @@ void Scene::solve_gpu_distance_constraints(float seconds) {
         pack(input.inverse_inertia_local,actor.inverse_inertia_local);
         input.dynamics_flags=(d.gravity_enabled?1u:0u)|
             (d.gyroscopic_forces_enabled?2u:0u);
+        input.wake_counter=actor.wake_counter;
+        pack(input.sleep_linear_acc,actor.sleep_linear_acc);
+        pack(input.sleep_angular_acc,actor.sleep_angular_acc);
+        input.counted_interactions=actor.num_counted_interactions;
         pack(input.pending_linear_velocity_delta,
              actor.pending_linear_velocity_delta);
         pack(input.pending_linear_acceleration,
@@ -8471,7 +8476,7 @@ void Scene::solve_gpu_distance_constraints(float seconds) {
         gpu_dy_patches_,gpu_dy_manifolds_,gpu_dy_contact_order_,
         gpu_dy_contact_prep_pairs_,
         gpu_dy_integration_inputs_,gpu_dy_integrated_poses_,true,
-        gpu_dy_friction_impulses_,true,true,true);
+        gpu_dy_friction_impulses_,true,true,true,gpu_dy_sleep_states_);
     gpu_dy_pose_ready_=true;
     const auto consume_preintegration=[this](BodyId id) {
         auto& actor=actors_[id];
