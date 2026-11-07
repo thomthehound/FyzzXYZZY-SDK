@@ -2024,10 +2024,42 @@ void verify_gpu_wide_island_solver(
                 producer->dy_pcm_device_contact_rows()>=actual.bodies.size() &&
                 producer->dy_cpu_gu_geometry_bytes()==0u,
                 "Wide island lost GPU contact preparation or body integration");
-        for(std::size_t i=0;i<actual.bodies.size();++i)
-            test::compound_compare_state(gpu.body_state(actual.bodies[i]),
-                cpu.body_state(expected.bodies[i]),0.002f,
-                "Tiled Dy mixed contact and joint island");
+        for(std::size_t i=0;i<actual.bodies.size();++i) {
+            const auto actual_state=gpu.body_state(actual.bodies[i]);
+            const auto expected_state=cpu.body_state(expected.bodies[i]);
+            try {
+                test::compound_compare_state(
+                    actual_state,expected_state,0.002f,
+                    "Tiled Dy mixed contact and joint island");
+            } catch(const std::runtime_error&) {
+                const auto actual_forces=gpu.solved_normal_impulses();
+                const auto expected_forces=cpu.solved_normal_impulses();
+                float max_force_difference=0.f;
+                if(actual_forces.size()==expected_forces.size())
+                    for(std::size_t k=0;k<actual_forces.size();++k)
+                        max_force_difference=std::max(
+                            max_force_difference,
+                            std::abs(actual_forces[k]-expected_forces[k]));
+                std::cout<<"FYZZXYZZY_METRIC suite=sc_pcm case=wide_islands"
+                         <<" phase=state_mismatch"
+                         <<" frame="<<frame<<" body_index="<<i
+                         <<" gpu_angular=("
+                         <<actual_state.angular_velocity.x<<","
+                         <<actual_state.angular_velocity.y<<","
+                         <<actual_state.angular_velocity.z<<")"
+                         <<" cpu_angular=("
+                         <<expected_state.angular_velocity.x<<","
+                         <<expected_state.angular_velocity.y<<","
+                         <<expected_state.angular_velocity.z<<")"
+                         <<" gpu_contacts="<<gpu.contacts().size()
+                         <<" cpu_contacts="<<cpu.contacts().size()
+                         <<" gpu_normal_rows="<<actual_forces.size()
+                         <<" cpu_normal_rows="<<expected_forces.size()
+                         <<" max_normal_force_error="
+                         <<max_force_difference<<'\\n';
+                throw;
+            }
+        }
         if(frame==0u)
             std::cout<<"FYZZXYZZY_METRIC suite=sc_pcm case=wide_islands"
                      <<" bodies="<<actual.bodies.size()
