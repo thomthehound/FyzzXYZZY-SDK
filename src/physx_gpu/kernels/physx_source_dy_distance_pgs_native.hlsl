@@ -704,11 +704,8 @@ bool sourceDyPrepareJointGeometry(uint4 desc,uint endError) {
     const float4 localQA=asfloat(arena.Load4(source+12u));
     const float3 localB=asfloat(arena.Load3(source+28u));
     const float4 localQB=asfloat(arena.Load4(source+40u));
-    const float3 massAInput=asfloat(arena.Load3(source+112u));
-    const float3 massBInput=asfloat(arena.Load3(source+124u));
-    // Two fallback records are contiguous 28-byte authored actor frames,
-    // followed by their source mass centers. A dynamic endpoint instead
-    // consumes its integrated actor frame and mass-local transform.
+    // Fallback actor frames and mass centers are borrowed authored state.
+    // Dynamic endpoints consume the resident actor frame instead.
     float3 pA,pB,cA,cB;
     float4 qA,qB;
     if(!sourceDyJointActorFrame(desc.y,source+56u,source+112u,pA,qA,cA) ||
