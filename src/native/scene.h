@@ -181,8 +181,11 @@ struct GpuDyBodyIntegrationInput {
     std::uint32_t dynamics_flags=0u;
     float pending_linear_velocity_delta[3]{},pending_linear_acceleration[3]{};
     float pending_angular_velocity_delta[3]{},pending_angular_acceleration[3]{};
+    float wake_counter=0.0f;
+    float sleep_linear_acc[3]{},sleep_angular_acc[3]{};
+    std::uint32_t counted_interactions=0u;
 };
-static_assert(sizeof(GpuDyBodyIntegrationInput)==224u &&
+static_assert(sizeof(GpuDyBodyIntegrationInput)==256u &&
               offsetof(GpuDyBodyIntegrationInput,lock_flags)==88u &&
               offsetof(GpuDyBodyIntegrationInput,mass_local_position)==104u &&
               offsetof(GpuDyBodyIntegrationInput,mass_local_orientation)==116u &&
@@ -191,12 +194,19 @@ static_assert(sizeof(GpuDyBodyIntegrationInput)==224u &&
               offsetof(GpuDyBodyIntegrationInput,source_inverse_mass)==140u &&
               offsetof(GpuDyBodyIntegrationInput,linear_damping)==144u &&
               offsetof(GpuDyBodyIntegrationInput,dynamics_flags)==172u &&
-              offsetof(GpuDyBodyIntegrationInput,pending_linear_velocity_delta)==176u);
+              offsetof(GpuDyBodyIntegrationInput,pending_linear_velocity_delta)==176u &&
+              offsetof(GpuDyBodyIntegrationInput,wake_counter)==224u &&
+              offsetof(GpuDyBodyIntegrationInput,counted_interactions)==252u);
 struct GpuDyIntegratedPose {
     float position[3]{},orientation[4]{};
     std::uint32_t valid=0u;
 };
 static_assert(sizeof(GpuDyIntegratedPose)==32u);
+struct GpuDySleepState {
+    float linear_acc[3]{},angular_acc[3]{},wake_counter=0.0f;
+};
+static_assert(sizeof(GpuDySleepState)==28u &&
+              offsetof(GpuDySleepState,wake_counter)==24u);
 struct GpuDyJointRow {
     float axis[3]{},angular_a[3]{},angular_b[3]{};
     float inverse_mass_a=0.0f,inverse_mass_b=0.0f;
@@ -360,7 +370,8 @@ public:
         std::span<GpuDyFrictionAnchorImpulse> /*anchor_impulses*/={},
         bool /*device_initial_bodies*/=false,
         bool /*device_world_motion*/=false,
-        bool /*device_unconstrained_preparation*/=false) {
+        bool /*device_unconstrained_preparation*/=false,
+        std::span<GpuDySleepState> /*sleep_states*/={}) {
         throw std::logic_error("Source GPU Dy shader is not installed");
     }
     // Sc's afterIntegration authorizes the source ElementSim device pose.
@@ -1996,6 +2007,7 @@ private:
     std::vector<GpuDyDistanceBody> gpu_dy_bodies_;
     std::vector<GpuDyBodyIntegrationInput> gpu_dy_integration_inputs_;
     std::vector<GpuDyIntegratedPose> gpu_dy_integrated_poses_;
+    std::vector<GpuDySleepState> gpu_dy_sleep_states_;
     std::vector<BodyId> gpu_dy_free_ids_;
     bool gpu_dy_pose_ready_=false;
     std::vector<GpuDyJointRow> gpu_dy_rows_;

@@ -1483,7 +1483,11 @@ void verify_gpu_distance_solver(
         d.velocity_iterations=2;
         d.linear_damping=0.0f;
         d.angular_damping=0.0f;
-        if(i==0u)d.lock_flags=LockAngularX;
+        if(i==0u) {
+            d.lock_flags=LockAngularX;
+            d.max_angular_velocity=1.0f;
+            d.gyroscopic_forces_enabled=true;
+        }
         cpu.set_dynamics(ids_cpu[i],d);
         gpu.set_dynamics(ids_gpu[i],d);
     }
@@ -1517,6 +1521,10 @@ void verify_gpu_distance_solver(
         fixed_gpu,anchored_gpu,3.8f);
     cpu.set_velocity(ids_cpu[0],{0.4f,0.2f,0.0f});
     gpu.set_velocity(ids_gpu[0],{0.4f,0.2f,0.0f});
+    // The original X angular component affects speed clamping and
+    // gyroscopic torque before the final LockAngularX projection.
+    cpu.set_angular_velocity(ids_cpu[0],{10.0f,1.0f,0.0f});
+    gpu.set_angular_velocity(ids_gpu[0],{10.0f,1.0f,0.0f});
     cpu.set_velocity(ids_cpu[2],{-0.6f,0.0f,0.0f});
     gpu.set_velocity(ids_gpu[2],{-0.6f,0.0f,0.0f});
     std::size_t previous_cached=0u;
@@ -1572,7 +1580,7 @@ void verify_gpu_distance_solver(
         // Joint impulses stay in their device PGS rows, not the
         // completed Sc result stream.
         constexpr std::size_t expected_output=
-            5u*(48u+sizeof(native::GpuDyIntegratedPose))+
+            5u*(52u+sizeof(native::GpuDyIntegratedPose))+
             3u*sizeof(std::uint32_t);
         require(downloaded==expected_output && downloaded<uploaded/2u,
             "Source Dy GPU fetched transient joint row impulses");
@@ -1589,6 +1597,8 @@ void verify_gpu_distance_solver(
             require(std::fabs(expected.position.x-actual.position.x)<0.001f &&
                     std::fabs(expected.position.y-actual.position.y)<0.001f &&
                     std::fabs(expected.velocity.x-actual.velocity.x)<0.001f &&
+                    std::fabs(expected.angular_velocity.y-
+                              actual.angular_velocity.y)<0.001f &&
                     std::fabs(expected.angular_velocity.z-
                               actual.angular_velocity.z)<0.001f &&
                     std::fabs(expected.orientation.x-actual.orientation.x)<0.001f &&
@@ -1986,6 +1996,9 @@ void verify_gpu_free_integration(
         const auto resident=producer->dy_resident_pose_count();
         const auto metadata=producer->dy_launch_stats();
         require(metadata.device_preintegrated_bodies==actual.size() &&
+                metadata.device_sleep_bodies==actual.size() &&
+                metadata.sleep_readback_bytes==
+                    actual.size()*sizeof(native::GpuDySleepState) &&
                 metadata.free_velocity_readback_bytes<=
                     actual.size()*sizeof(physx_gpu::SourceDyPreparedVelocityNative) &&
                 (frame<5u?metadata.force_mod_upload_bytes==0u
@@ -2011,19 +2024,29 @@ void verify_gpu_free_integration(
                 (frame!=7u ||
                  metadata.prepared_velocity_updated_bodies>=1u),
             "Native Dy did not retain and compact exact GPU velocities");
+        const auto resident_record_bytes=
+            sizeof(physx_gpu::SourceDyActorLocalNative);
+        const auto mass_frame_edits=(frame==3u || frame==4u)?1u:0u;
+        const auto transfer_error=
+            std::string{"Source Dy actor-state refresh exceeded authored changes: frame="}+
+            std::to_string(frame)+
+            " bytes="+std::to_string(metadata.actor_local_upload_bytes)+
+            " reuses="+std::to_string(metadata.reused_actor_local_poses)+
+            " spans="+std::to_string(metadata.actor_local_upload_spans);
         require((frame==0u
                     ? metadata.actor_local_upload_bytes==
-                          actual.size()*sizeof(physx_gpu::SourceDyActorLocalNative) &&
-                      metadata.actor_local_upload_spans==1u
-                    : (frame==3u || frame==4u)
-                        ? metadata.actor_local_upload_bytes==
-                              sizeof(physx_gpu::SourceDyActorLocalNative) &&
-                          metadata.actor_local_upload_spans==1u &&
-                          metadata.reused_actor_local_poses==actual.size()-1u
-                        : metadata.actor_local_upload_bytes==0u &&
-                          metadata.actor_local_upload_spans==0u &&
-                          metadata.reused_actor_local_poses==actual.size()),
-            "Source Dy reuploaded unchanged actor-local mass frames");
+                          actual.size()*resident_record_bytes &&
+                      metadata.actor_local_upload_spans==1u &&
+                      metadata.reused_actor_local_poses==0u
+                    : metadata.reused_actor_local_poses==
+                          actual.size()-mass_frame_edits &&
+                      metadata.actor_local_upload_bytes%resident_record_bytes==0u &&
+                      metadata.actor_local_upload_bytes<=
+                          6u*resident_record_bytes &&
+                      metadata.actor_local_upload_spans<=3u &&
+                      (mass_frame_edits==0u ||
+                       metadata.actor_local_upload_bytes>=resident_record_bytes)),
+            transfer_error.c_str());
         require(resident<=actual.size() &&
                 producer->dy_host_pose_upload_bytes()==
                     (actual.size()-resident)*28u &&
@@ -2050,16 +2073,23 @@ void verify_gpu_free_integration(
                     producer->dy_distance_transfer_bytes().second==
                         actual.size()*
                             (sizeof(native::GpuDyIntegratedPose)+
-                             sizeof(physx_gpu::SourceDyPreparedVelocityNative)),
+                             sizeof(physx_gpu::SourceDyPreparedVelocityNative)+
+                             sizeof(native::GpuDySleepState)),
                     "Free-only Dy staged solver rows or dispatched PGS");
         }
         if(frame>0u)
             require(producer->last_frame().device_cached_box_count>=262u,
                     "Free body or compound shape lost resident bounds");
-        for(std::size_t i=0;i<actual.size();++i)
+        for(std::size_t i=0;i<actual.size();++i) {
             test::compound_compare_state(gpu.body_state(actual[i]),
                 cpu.body_state(expected[i]),0.002f,
                 "GPU Dy free or transitioning body");
+            require(std::fabs(cpu.body_wake_counter(expected[i])-
+                              gpu.body_wake_counter(actual[i]))<0.0005f &&
+                    cpu.body_ready_for_sleep(expected[i])==
+                        gpu.body_ready_for_sleep(actual[i]),
+                "GPU Dy sleep energy or wake-counter arbitration diverged");
+        }
         // Query a moving, rotating body after Dy has published its pose.
         // The ray crosses the body's center, independent of its rotation.
         const auto cpu_position=cpu.body_state(expected[1]).position;
@@ -2105,6 +2135,45 @@ void verify_gpu_free_integration(
     test::compound_compare_state(
         gpu.body_state(replacement_gpu),cpu.body_state(replacement_cpu),
         0.002f,"Resident GPU Dy actor replacement");
+
+    // The source wake counter must reach IslandSim readiness on device,
+    // then accept an authored wake without replaying old accumulators.
+    const auto idle_cpu=cpu.add_dynamic_box(
+        {0.2f,0.2f,0.2f},{2200.f,5.f,0.f},1.f);
+    const auto idle_gpu=gpu.add_dynamic_box(
+        {0.2f,0.2f,0.2f},{2200.f,5.f,0.f},1.f);
+    RigidBodyDynamics idle_dynamics{};
+    idle_dynamics.gravity_enabled=false;
+    idle_dynamics.linear_damping=0.0f;
+    idle_dynamics.angular_damping=0.0f;
+    cpu.set_dynamics(idle_cpu,idle_dynamics);
+    gpu.set_dynamics(idle_gpu,idle_dynamics);
+    bool reached_sleep=false;
+    for(unsigned frame=0u;frame<16u;++frame) {
+        cpu.step(1.f/30.f);
+        gpu.step(1.f/30.f);
+        require(std::fabs(cpu.body_wake_counter(idle_cpu)-
+                          gpu.body_wake_counter(idle_gpu))<0.0005f &&
+                cpu.body_ready_for_sleep(idle_cpu)==
+                    gpu.body_ready_for_sleep(idle_gpu) &&
+                cpu.body_is_sleeping(idle_cpu)==
+                    gpu.body_is_sleeping(idle_gpu),
+            "GPU Dy idle wake-counter or island sleep transition diverged");
+        reached_sleep|=cpu.body_is_sleeping(idle_cpu);
+    }
+    require(reached_sleep,
+        "Source idle rigid did not reach IslandSim deactivation");
+    cpu.set_velocity(idle_cpu,{0.1f,0.f,0.f});
+    gpu.set_velocity(idle_gpu,{0.1f,0.f,0.f});
+    cpu.step(1.f/30.f);
+    gpu.step(1.f/30.f);
+    require(!gpu.body_is_sleeping(idle_gpu) &&
+            std::fabs(cpu.body_wake_counter(idle_cpu)-
+                      gpu.body_wake_counter(idle_gpu))<0.0005f,
+        "GPU Dy did not restore resident sleep state on authored wake");
+    test::compound_compare_state(
+        gpu.body_state(idle_gpu),cpu.body_state(idle_cpu),0.002f,
+        "Resident GPU Dy sleep-to-wake response");
 }
 
 void verify_gpu_wide_island_solver(

@@ -10,6 +10,7 @@
 #include <algorithm>
 #include <array>
 #include <bit>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -46,12 +47,14 @@ struct SourceDyPackedIntegrationNative {
     // scalar streams; exact component masks live in active flags.
     std::uint32_t velocity_offset=0xffffffffu;
     std::uint32_t force_offset=0xffffffffu;
+    std::uint32_t counted_interactions=0u;
 };
-static_assert(sizeof(SourceDyPackedIntegrationNative)==72u &&
+static_assert(sizeof(SourceDyPackedIntegrationNative)==76u &&
               offsetof(SourceDyPackedIntegrationNative,pose_index)==56u &&
               offsetof(SourceDyPackedIntegrationNative,actor_local_offset)==60u &&
               offsetof(SourceDyPackedIntegrationNative,velocity_offset)==64u &&
-              offsetof(SourceDyPackedIntegrationNative,force_offset)==68u);
+              offsetof(SourceDyPackedIntegrationNative,force_offset)==68u &&
+              offsetof(SourceDyPackedIntegrationNative,counted_interactions)==72u);
 struct SourceDyPreparedVelocityNative {
     float linear[3]{},angular[3]{};
 };
@@ -69,13 +72,20 @@ struct SourceDyActorLocalNative {
     float inverse_inertia_local[3]{};
     std::uint32_t dynamics_flags=0u;
     float linear_velocity[3]{},angular_velocity[3]{};
+    // Dy owns wake arbitration across frames. Sc mirrors this state
+    // after a validated device solve for rollback and public queries.
+    float wake_counter=0.4f;
+    float sleep_linear_acc[3]{},sleep_angular_acc[3]{};
 };
-static_assert(sizeof(SourceDyActorLocalNative)==88u &&
+static_assert(sizeof(SourceDyActorLocalNative)==116u &&
               offsetof(SourceDyActorLocalNative,inverse_mass)==28u &&
               offsetof(SourceDyActorLocalNative,linear_damping)==32u &&
               offsetof(SourceDyActorLocalNative,dynamics_flags)==60u &&
               offsetof(SourceDyActorLocalNative,linear_velocity)==64u &&
-              offsetof(SourceDyActorLocalNative,angular_velocity)==76u);
+              offsetof(SourceDyActorLocalNative,angular_velocity)==76u &&
+              offsetof(SourceDyActorLocalNative,wake_counter)==88u &&
+              offsetof(SourceDyActorLocalNative,sleep_linear_acc)==92u &&
+              offsetof(SourceDyActorLocalNative,sleep_angular_acc)==104u);
 
 struct SourceDyLaunchStats {
     std::size_t device_colored_tasks=0u;
@@ -102,6 +112,8 @@ struct SourceDyLaunchStats {
     std::size_t device_preintegrated_bodies=0u;
     std::size_t force_mod_upload_bytes=0u;
     std::size_t free_velocity_readback_bytes=0u;
+    std::size_t device_sleep_bodies=0u;
+    std::size_t sleep_readback_bytes=0u;
 };
 
 // Dy's original per-task conflict partitions and prepared 1D rows are
@@ -198,7 +210,8 @@ public:
                std::span<native::GpuDyFrictionAnchorImpulse> anchor_impulses={},
                bool device_initial_bodies=false,
                bool device_world_motion=false,
-               bool device_unconstrained_preparation=false) {
+               bool device_unconstrained_preparation=false,
+               std::span<native::GpuDySleepState> sleep_states={}) {
         if(integration.size()<bodies.size() ||
            integrated_poses.size()!=integration.size() ||
            (tasks.empty() && integration.size()==bodies.size()))
@@ -214,6 +227,10 @@ public:
             return static_cast<std::uint32_t>(value);
         };
         const auto free_bodies=integration.size()-bodies.size();
+        if(device_unconstrained_preparation &&
+           sleep_states.size()!=integration.size())
+            throw std::invalid_argument(
+                "Source GPU Dy sleep-state outputs do not match body ordinals");
         if(device_initial_bodies && device_world_motion)
             for(std::size_t i=0u;i<bodies.size();++i)
                 if(!(integration[i].active&1u) &&
@@ -246,6 +263,8 @@ public:
         last_schedule_.device_preintegrated_bodies=
             device_unconstrained_preparation
                 ?body_ordinals.size()+free_bodies:0u;
+        last_schedule_.device_sleep_bodies=
+            last_schedule_.device_preintegrated_bodies;
         last_schedule_.device_joint_input_rows=
             std::count_if(rows.begin(),rows.end(),
                 [](const auto& row){return row.reserved==1u;});
@@ -526,6 +545,9 @@ public:
                 (device_world_motion && (input.active&1u) ?8u:0u);
             record.source_element=input.source_element;
             record.source_shape_count=input.source_shape_count;
+            record.counted_interactions=input.counted_interactions;
+            if(device_unconstrained_preparation && (input.active&1u))
+                record.active|=64u;
             if(input.active&1u) {
                 const auto id=device_world_motion
                     ?input.source_actor:narrow(ordinal);
@@ -584,6 +606,18 @@ public:
                                 axis<3u?input.linear_velocity[axis]:
                                          input.angular_velocity[axis-3u]);
                     ++last_schedule_.prepared_velocity_updated_bodies;
+                }
+                // Dy retains sleep accumulators; Sc may also edit wake
+                // state between device frames and must re-authorize it.
+                auto& cached=actor_local_host_[id];
+                constexpr auto sleep_bytes=28u;
+                if(!actor_local_valid_[id] ||
+                   std::memcmp(&cached.wake_counter,
+                               &input.wake_counter,sleep_bytes)!=0) {
+                    std::memcpy(&cached.wake_counter,
+                                &input.wake_counter,sleep_bytes);
+                    actor_local_valid_[id]=0u;
+                    pending_actor_locals_.push_back(id);
                 }
                 // Every published body must explicitly reestablish its
                 // committed velocity after a successful device solve.
@@ -721,7 +755,8 @@ public:
         constexpr std::array<std::size_t,6> output_inputs{
             0u,5u,6u,7u,8u,12u};
         const std::array<std::size_t,6> output_strides{
-            48u,4u,4u,compact_friction?12u:16u,4u,32u};
+            device_unconstrained_preparation?52u:48u,
+            4u,4u,compact_friction?12u:16u,4u,32u};
         static_assert(offsetof(native::GpuDyJointRow,applied_force)==60u &&
                       offsetof(native::GpuDyDistanceTask,error)==32u &&
                       offsetof(native::GpuDyContactPoint,applied_force)==56u &&
@@ -741,12 +776,17 @@ public:
         const std::size_t free_velocity_offset=output_bytes;
         const std::size_t free_velocity_bytes=
             device_unconstrained_preparation?free_bodies*24u:0u;
+        const std::size_t free_sleep_bytes=
+            device_unconstrained_preparation?free_bodies*28u:0u;
         if(free_bodies>(std::numeric_limits<std::uint32_t>::max()-
-                       output_bytes)/24u)
+                       output_bytes)/52u)
             throw std::overflow_error(
                 "Source GPU free-body velocity writeback exceeds 32-bit view");
-        output_bytes+=free_velocity_bytes;
+        output_bytes+=free_velocity_bytes+free_sleep_bytes;
         last_schedule_.free_velocity_readback_bytes=free_velocity_bytes;
+        last_schedule_.sleep_readback_bytes=
+            device_unconstrained_preparation
+                ?(body_ordinals.size()+free_bodies)*28u:0u;
         // Both writable contact and friction arenas follow all source
         // inputs. The existing GPU preparation owns the complete rows.
         // Device coloring consumes raw descriptors in the scratch input
@@ -1099,9 +1139,11 @@ public:
             for(std::size_t index=bodies.size();index<integration.size();++index) {
                 auto& input=integration[index];
                 const auto* output=host_.data()+free_velocity_offset+
-                    (index-bodies.size())*24u;
+                    (index-bodies.size())*52u;
                 std::memcpy(input.linear_velocity,output,12u);
                 std::memcpy(input.angular_velocity,output+12u,12u);
+                std::memcpy(&sleep_states[index],output+24u,
+                            sizeof(native::GpuDySleepState));
             }
         // The source task graph identifies every GPU-written slot. Rows
         // excluded from its descriptor/ordinal ranges retain their original
@@ -1111,8 +1153,14 @@ public:
                 const auto index=body_ordinals[i];
                 if(index>=bodies.size())
                     throw std::logic_error("Source Dy body writeback index invalid");
-                std::memcpy(&bodies[index],
-                    host_.data()+result_offsets[0]+index*48u,48u);
+                if(device_unconstrained_preparation) {
+                    const auto* output=host_.data()+result_offsets[0]+index*52u;
+                    std::memcpy(&bodies[index],output,24u);
+                    std::memcpy(&sleep_states[index],output+24u,
+                                sizeof(native::GpuDySleepState));
+                }else
+                    std::memcpy(&bodies[index],
+                        host_.data()+result_offsets[0]+index*48u,48u);
             }
             for(std::size_t i=task.descriptor_begin;
                 i<task.descriptor_end;++i) {
@@ -1212,6 +1260,35 @@ public:
                             sizeof(actor_local_host_[id].angular_velocity));
                 actor_velocity_valid_[id]=1u;
             }
+        }
+        if(device_unconstrained_preparation) {
+            const auto mirror_sleep=[&](std::size_t index) {
+                const auto& state=sleep_states[index];
+                for(const auto component:state.linear_acc)
+                    if(!std::isfinite(component))
+                        throw std::overflow_error(
+                            "Source GPU sleep linear accumulator is not finite");
+                for(const auto component:state.angular_acc)
+                    if(!std::isfinite(component))
+                        throw std::overflow_error(
+                            "Source GPU sleep angular accumulator is not finite");
+                if(!std::isfinite(state.wake_counter) ||
+                   state.wake_counter<0.0f)
+                    throw std::overflow_error(
+                        "Source GPU wake counter is not finite");
+                const auto id=integration[index].source_actor;
+                auto& resident=actor_local_host_[id];
+                resident.wake_counter=state.wake_counter;
+                std::memcpy(resident.sleep_linear_acc,state.linear_acc,
+                            sizeof(state.linear_acc));
+                std::memcpy(resident.sleep_angular_acc,state.angular_acc,
+                            sizeof(state.angular_acc));
+            };
+            for(const auto ordinal:body_ordinals)
+                if(integration[ordinal].active&1u)mirror_sleep(ordinal);
+            for(std::size_t index=bodies.size();
+                index<integration.size();++index)
+                if(integration[index].active&1u)mirror_sleep(index);
         }
         last_transfer_bytes_={uploaded_bytes,output_bytes};
         last_reused_pcm_contact_rows_=reused_pcm_rows;

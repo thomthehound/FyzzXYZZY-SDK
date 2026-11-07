@@ -8252,6 +8252,7 @@ void Scene::solve_gpu_distance_constraints(float seconds) {
     const auto integration_count=solver_rows_.size()+gpu_dy_free_ids_.size();
     gpu_dy_integration_inputs_.assign(integration_count,{});
     gpu_dy_integrated_poses_.resize(integration_count);
+    gpu_dy_sleep_states_.resize(integration_count);
     const auto pack_integration=[&](BodyId id,const Actor& actor,
                                    GpuDyBodyIntegrationInput& input) {
         input.source_actor=id;
@@ -8264,6 +8265,10 @@ void Scene::solve_gpu_distance_constraints(float seconds) {
         pack(input.inverse_inertia_local,actor.inverse_inertia_local);
         input.dynamics_flags=(d.gravity_enabled?1u:0u)|
             (d.gyroscopic_forces_enabled?2u:0u);
+        input.wake_counter=actor.wake_counter;
+        pack(input.sleep_linear_acc,actor.sleep_linear_acc);
+        pack(input.sleep_angular_acc,actor.sleep_angular_acc);
+        input.counted_interactions=actor.num_counted_interactions;
         pack(input.pending_linear_velocity_delta,
              actor.pending_linear_velocity_delta);
         pack(input.pending_linear_acceleration,
@@ -8296,7 +8301,9 @@ void Scene::solve_gpu_distance_constraints(float seconds) {
         auto& input=gpu_dy_integration_inputs_[actor.solver_row_index];
         pack_integration(id,actor,input);
         pack(input.linear_velocity,row.data.linear_velocity);
-        pack(input.angular_velocity,row.data.angular_velocity);
+        // GPU preintegration clamps and applies gyroscopic correction
+        // before masking angular axes, just like CPU source preintegration.
+        pack(input.angular_velocity,actor.angular_velocity);
         for(std::size_t axis=0;axis<3u;++axis) {
             const auto& inertia=row.data.sqrt_inverse_inertia[axis];
             input.sqrt_inverse_inertia[axis*3u]=inertia.x;
@@ -8469,7 +8476,7 @@ void Scene::solve_gpu_distance_constraints(float seconds) {
         gpu_dy_patches_,gpu_dy_manifolds_,gpu_dy_contact_order_,
         gpu_dy_contact_prep_pairs_,
         gpu_dy_integration_inputs_,gpu_dy_integrated_poses_,true,
-        gpu_dy_friction_impulses_,true,true,true);
+        gpu_dy_friction_impulses_,true,true,true,gpu_dy_sleep_states_);
     gpu_dy_pose_ready_=true;
     const auto consume_preintegration=[this](BodyId id) {
         auto& actor=actors_[id];
@@ -10231,11 +10238,7 @@ void Scene::integrate_solver_task(
             lock_linear_axes(actor.velocity,actor.dynamics.lock_flags);
             Vec3 motion_linear = actor.velocity;
             Vec3 motion_angular = actor.angular_velocity;
-            if(solved_contact && gpu_dy_pose_ready_) {
-                const auto& result=gpu_dy_bodies_[actor.solver_row_index];
-                motion_linear=result.position_linear_velocity();
-                motion_angular=result.position_angular_velocity();
-            }else if(solved_contact) {
+            if(solved_contact && !gpu_dy_pose_ready_) {
                 const auto& row = prepared_solver_row(id);
                 const Vec3& delta = row.motion_linear_delta;
                 motion_linear = {
@@ -10255,9 +10258,12 @@ void Scene::integrate_solver_task(
             }
             // integrateCore also locks position-phase motion separately
             // from the final unbiased velocity publication.
-            lock_linear_axes(motion_linear,actor.dynamics.lock_flags);
-            if (!finite(motion_linear) || !finite(motion_angular))
-                throw std::overflow_error("Native position-iteration motion overflow");
+            if(!gpu_dy_pose_ready_) {
+                lock_linear_axes(motion_linear,actor.dynamics.lock_flags);
+                if(!finite(motion_linear) || !finite(motion_angular))
+                    throw std::overflow_error(
+                        "Native position-iteration motion overflow");
+            }
             Vec3 p{};
             Quat q{};
             if(gpu_dy_pose_ready_) {
@@ -10297,6 +10303,32 @@ void Scene::integrate_solver_task(
             remember_pre_integration_pose(id);
             actor.position = p;
             actor.orientation = q;
+            if(gpu_dy_pose_ready_) {
+                const auto result_index=solved_contact
+                    ? actor.solver_row_index
+                    : solver_rows_.size()+free_index-1u;
+                if(result_index>=gpu_dy_sleep_states_.size())
+                    throw std::logic_error(
+                        "Native GPU sleep state ordinal is invalid");
+                const auto& result=gpu_dy_sleep_states_[result_index];
+                const Vec3 linear{result.linear_acc[0],
+                    result.linear_acc[1],result.linear_acc[2]};
+                const Vec3 angular{result.angular_acc[0],
+                    result.angular_acc[1],result.angular_acc[2]};
+                if(!finite(linear) || !finite(angular) ||
+                   !std::isfinite(result.wake_counter) ||
+                   result.wake_counter<0.0f)
+                    throw std::overflow_error(
+                        "Native GPU Dy sleep state is not finite");
+                const bool was_ready=actor.ready_for_sleep;
+                actor.sleep_linear_acc=linear;
+                actor.sleep_angular_acc=angular;
+                actor.wake_counter=result.wake_counter;
+                actor.ready_for_sleep=result.wake_counter==0.0f;
+                if(actor.ready_for_sleep && !was_ready)
+                    ready_nodes.push_back(id);
+                continue;
+            }
             // DySleep.cpp::updateWakeCounter (default scene, without
             // stabilization). ScBodyCore::BodyCore and PxsBodyCore::init
             // initialize sleepThreshold to 5e-5 * scale.speed^2.
