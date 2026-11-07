@@ -41,14 +41,16 @@ struct SourceDyPackedIntegrationNative {
     std::uint32_t active=0u,source_element=0xffffffffu;
     std::uint32_t source_shape_count=0u,pose_index=0xffffffffu;
     std::uint32_t actor_local_offset=0xffffffffu;
-    // Prepared velocities either reuse the actor's GPU state or refer
-    // to a compact frame-local update in the single Dy source upload.
+    // Prepared velocities and active force modifications are compact
+    // scalar streams; exact component masks live in active flags.
     std::uint32_t velocity_offset=0xffffffffu;
+    std::uint32_t force_offset=0xffffffffu;
 };
-static_assert(sizeof(SourceDyPackedIntegrationNative)==68u &&
+static_assert(sizeof(SourceDyPackedIntegrationNative)==72u &&
               offsetof(SourceDyPackedIntegrationNative,pose_index)==56u &&
               offsetof(SourceDyPackedIntegrationNative,actor_local_offset)==60u &&
-              offsetof(SourceDyPackedIntegrationNative,velocity_offset)==64u);
+              offsetof(SourceDyPackedIntegrationNative,velocity_offset)==64u &&
+              offsetof(SourceDyPackedIntegrationNative,force_offset)==68u);
 struct SourceDyPreparedVelocityNative {
     float linear[3]{},angular[3]{};
 };
@@ -60,13 +62,19 @@ static_assert(sizeof(SourceDyHostPoseNative)==28u);
 struct SourceDyActorLocalNative {
     float position[3]{},orientation[4]{};
     float inverse_mass=0.0f;
-    // Updated by Dy integration and retained for the next frame.
+    // Stable authored dynamics precede the GPU-owned velocity tail.
+    float linear_damping=0.0f,angular_damping=0.0f;
+    float max_linear_speed_squared=0.0f,max_angular_speed_squared=0.0f;
+    float inverse_inertia_local[3]{};
+    std::uint32_t dynamics_flags=0u;
     float linear_velocity[3]{},angular_velocity[3]{};
 };
-static_assert(sizeof(SourceDyActorLocalNative)==56u &&
+static_assert(sizeof(SourceDyActorLocalNative)==88u &&
               offsetof(SourceDyActorLocalNative,inverse_mass)==28u &&
-              offsetof(SourceDyActorLocalNative,linear_velocity)==32u &&
-              offsetof(SourceDyActorLocalNative,angular_velocity)==44u);
+              offsetof(SourceDyActorLocalNative,linear_damping)==32u &&
+              offsetof(SourceDyActorLocalNative,dynamics_flags)==60u &&
+              offsetof(SourceDyActorLocalNative,linear_velocity)==64u &&
+              offsetof(SourceDyActorLocalNative,angular_velocity)==76u);
 
 struct SourceDyLaunchStats {
     std::size_t device_colored_tasks=0u;
@@ -90,6 +98,9 @@ struct SourceDyLaunchStats {
     std::size_t prepared_velocity_updated_bodies=0u;
     std::size_t prepared_velocity_upload_bytes=0u;
     std::size_t device_joint_input_rows=0u;
+    std::size_t device_preintegrated_bodies=0u;
+    std::size_t force_mod_upload_bytes=0u;
+    std::size_t free_velocity_readback_bytes=0u;
 };
 
 // Dy's original per-task conflict partitions and prepared 1D rows are
@@ -185,7 +196,8 @@ public:
                bool device_partitions=false,
                std::span<native::GpuDyFrictionAnchorImpulse> anchor_impulses={},
                bool device_initial_bodies=false,
-               bool device_world_motion=false) {
+               bool device_world_motion=false,
+               bool device_unconstrained_preparation=false) {
         if(integration.size()<bodies.size() ||
            integrated_poses.size()!=integration.size() ||
            (tasks.empty() && integration.size()==bodies.size()))
@@ -226,6 +238,13 @@ public:
             : bodies.size_bytes();
         last_schedule_.device_world_motion_bodies=
             device_world_motion?body_ordinals.size():0u;
+        if(device_unconstrained_preparation &&
+           (!device_world_motion || !device_initial_bodies))
+            throw std::invalid_argument(
+                "GPU preintegration requires native device body ownership");
+        last_schedule_.device_preintegrated_bodies=
+            device_unconstrained_preparation
+                ?body_ordinals.size()+free_bodies:0u;
         last_schedule_.device_joint_input_rows=
             std::count_if(rows.begin(),rows.end(),
                 [](const auto& row){return row.reserved==1u;});
@@ -450,10 +469,14 @@ public:
         last_schedule_.resident_velocity_reuses=0u;
         last_schedule_.prepared_velocity_updated_bodies=0u;
         last_schedule_.prepared_velocity_upload_bytes=0u;
+        last_schedule_.force_mod_upload_bytes=0u;
+        last_schedule_.free_velocity_readback_bytes=0u;
         pending_actor_locals_.clear();
         prepared_velocity_components_.clear();
+        force_mod_components_.clear();
         packed_integration_.reserve(integration.size());
         prepared_velocity_components_.reserve(integration.size()*6u);
+        force_mod_components_.reserve(integration.size()*12u);
         host_poses_.reserve(integration.size());
         std::size_t needed_actor_slots=0u;
         for(std::size_t ordinal=0u;ordinal<integration.size();++ordinal) {
@@ -507,6 +530,13 @@ public:
                 std::memcpy(local.orientation,input.mass_local_orientation,
                             sizeof(local.orientation));
                 local.inverse_mass=input.source_inverse_mass;
+                local.linear_damping=input.linear_damping;
+                local.angular_damping=input.angular_damping;
+                local.max_linear_speed_squared=input.max_linear_speed_squared;
+                local.max_angular_speed_squared=input.max_angular_speed_squared;
+                std::memcpy(local.inverse_inertia_local,input.inverse_inertia_local,
+                            sizeof(local.inverse_inertia_local));
+                local.dynamics_flags=input.dynamics_flags;
                 if(device_world_motion && ordinal<bodies.size() &&
                    local.inverse_mass!=bodies[ordinal].inverse_mass)
                     throw std::logic_error(
@@ -552,6 +582,26 @@ public:
                 // Every published body must explicitly reestablish its
                 // committed velocity after a successful device solve.
                 actor_velocity_valid_[id]=0u;
+                if(device_unconstrained_preparation) {
+                    record.active|=32u;
+                    const float* streams[4]{
+                        input.pending_linear_velocity_delta,
+                        input.pending_linear_acceleration,
+                        input.pending_angular_velocity_delta,
+                        input.pending_angular_acceleration};
+                    std::uint32_t mask=0u;
+                    for(unsigned j=0u;j<12u;++j)
+                        if(std::bit_cast<std::uint32_t>(streams[j/3u][j%3u])!=0u)
+                            mask|=1u<<j;
+                    record.active|=mask<<16u;
+                    if(mask) {
+                        record.force_offset=narrow(force_mod_components_.size());
+                        for(unsigned j=0u;j<12u;++j)
+                            if(mask&(1u<<j))
+                                force_mod_components_.push_back(
+                                    streams[j/3u][j%3u]);
+                    }
+                }
             }else if(input.active&16u) {
                 // Infinite-mass kinematic joints contribute current
                 // velocity without creating a GPU-integrated actor.
@@ -595,7 +645,16 @@ public:
                 "Source Dy prepared velocity updates exceed address space");
         const std::size_t velocity_bytes=prepared_velocity_components_.size()*
             sizeof(float);
-        const std::size_t host_pose_begin=packed_input_bytes+velocity_bytes;
+        const std::size_t force_begin=packed_input_bytes+velocity_bytes;
+        if(force_mod_components_.size()>
+           (std::numeric_limits<std::uint32_t>::max()-force_begin)/
+               sizeof(float))
+            throw std::overflow_error(
+                "Source Dy velocity modification stream exceeds address space");
+        const std::size_t force_bytes=force_mod_components_.size()*
+            sizeof(float);
+        last_schedule_.force_mod_upload_bytes=force_bytes;
+        const std::size_t host_pose_begin=force_begin+force_bytes;
         if(host_poses_.size()>
            (std::numeric_limits<std::uint32_t>::max()-host_pose_begin)/
                sizeof(SourceDyHostPoseNative))
@@ -749,6 +808,9 @@ public:
         if(!prepared_velocity_components_.empty())
             std::memcpy(host_.data()+offsets[12]+packed_input_bytes,
                         prepared_velocity_components_.data(),velocity_bytes);
+        if(!force_mod_components_.empty())
+            std::memcpy(host_.data()+offsets[12]+force_begin,
+                        force_mod_components_.data(),force_bytes);
         if(!host_poses_.empty())
             std::memcpy(host_.data()+offsets[12]+host_pose_begin,
                         host_poses_.data(),last_host_pose_upload_bytes_);
@@ -860,6 +922,10 @@ public:
                 record.velocity_offset=narrow(
                     std::size_t(params[28])+offsets[12]+packed_input_bytes+
                     std::size_t(record.velocity_offset)*sizeof(float));
+            if(record.force_offset!=invalid)
+                record.force_offset=narrow(
+                    std::size_t(params[28])+offsets[12]+force_begin+
+                    std::size_t(record.force_offset)*sizeof(float));
             if(record.pose_index!=invalid)
                 record.pose_index=narrow(
                     std::size_t(params[28])+offsets[12]+host_pose_begin+
@@ -1556,7 +1622,7 @@ private:
     std::vector<SourceDyHostPoseNative> host_poses_;
     std::vector<SourceDyActorLocalNative> actor_local_host_;
     std::vector<std::uint8_t> actor_local_valid_,actor_velocity_valid_;
-    std::vector<float> prepared_velocity_components_;
+    std::vector<float> prepared_velocity_components_,force_mod_components_;
     std::vector<std::uint32_t> pending_actor_locals_;
     std::vector<SourceSapUpload> actor_local_uploads_;
     std::size_t actor_local_capacity_=0u;
