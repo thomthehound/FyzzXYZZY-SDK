@@ -166,9 +166,10 @@ bool sourceDyMassPose(uint input,out float3 position,out float4 quaternion) {
     return all(isfinite(position)) && all(isfinite(quaternion));
 }
 
-// Preserve each Sc-prepared FP32 component exactly. Reuse unchanged
-// components from committed Dy motion and overlay only authored deltas.
-float3 sourceDyPreparedVelocity(uint input,bool angular) {
+// Source-authored velocities update the previous GPU result only when
+// an FP32 component has actually changed. Dy preintegration consumes
+// this exact input and commits its prepared velocities in the actor pool.
+float3 sourceDyAuthoredVelocity(uint input,bool angular) {
     const uint flags=arena.Load(input+44u);
     const uint changed=(flags>>8u)&63u;
     const uint component=angular?12u:0u;
@@ -186,6 +187,93 @@ float3 sourceDyPreparedVelocity(uint input,bool angular) {
                 source+countbits(changed&(bit-1u))*4u));
     }
     return velocity;
+}
+float3 sourceDyPreparedVelocity(uint input,bool angular) {
+    if((arena.Load(input+44u)&32u)!=0u) {
+        const uint local=arena.Load(input+60u);
+        return asfloat(scActorLocals.Load3(local+64u+(angular?12u:0u)));
+    }
+    return sourceDyAuthoredVelocity(input,angular);
+}
+// Sparse per-step velocity and acceleration modifiers retain their
+// original Sc ordering: velocity delta, then acceleration * dt.
+float3 sourceDyMotionMod(uint input,uint stream) {
+    const uint flags=arena.Load(input+44u);
+    const uint mask=(flags>>16u)&4095u;
+    float3 result=0.0f;
+    if(mask==0u)return result;
+    const uint source=arena.Load(input+68u);
+    [unroll]
+    for(uint axis=0u;axis<3u;++axis) {
+        const uint bit=1u<<(stream*3u+axis);
+        if((mask&bit)!=0u)
+            result[axis]=asfloat(arena.Load(
+                source+countbits(mask&(bit-1u))*4u));
+    }
+    return result;
+}
+// DyRigidBodyToSolverBody::copyToSolverBodyData /
+// bodyCoreComputeUnconstrainedVelocity. Every awake rigid is prepared once
+// before contact/joint PGS; free flight performs it immediately before
+// integrateCore. No host solver-state shadow participates.
+bool sourceDyPreIntegrateBody(uint ordinal) {
+    const uint input=p.integrationBias+40u+ordinal*72u;
+    if((arena.Load(input+44u)&32u)==0u)return true;
+    const uint local=arena.Load(input+60u);
+    if(local==invalidBody)return false;
+    const float dt=asfloat(arena.Load(input+40u));
+    const uint flags=scActorLocals.Load(local+60u);
+    const float3 rawLinear=sourceDyAuthoredVelocity(input,false);
+    const float3 rawAngular=sourceDyAuthoredVelocity(input,true);
+    const float3 linearDelta=sourceDyMotionMod(input,0u);
+    const float3 linearAcceleration=sourceDyMotionMod(input,1u);
+    const float3 angularDelta=sourceDyMotionMod(input,2u);
+    const float3 angularAcceleration=sourceDyMotionMod(input,3u);
+    precise float3 linear=rawLinear+linearDelta+linearAcceleration*dt;
+    linear.y+=(flags&1u)!=0u?-9.81f*dt:0.0f;
+    const float linearDamping=asfloat(scActorLocals.Load(local+32u));
+    linear*=max(1.0f-linearDamping*dt,0.0f);
+    precise float3 angular=rawAngular+angularDelta+angularAcceleration*dt;
+    if(!all(isfinite(angular)))return false;
+    const float angularDamping=asfloat(scActorLocals.Load(local+36u));
+    angular*=max(1.0f-angularDamping*dt,0.0f);
+    precise float linearSpeed=linear.x*linear.x+linear.y*linear.y+linear.z*linear.z;
+    const float maxLinearSq=asfloat(scActorLocals.Load(local+40u));
+    if(linearSpeed>maxLinearSq)
+        linear*=sqrt(maxLinearSq/linearSpeed);
+    precise float angularSpeed=
+        angular.x*angular.x+angular.y*angular.y+angular.z*angular.z;
+    const float maxAngularSq=asfloat(scActorLocals.Load(local+44u));
+    if(angularSpeed>maxAngularSq)
+        angular*=sqrt(maxAngularSq/angularSpeed);
+    if((flags&2u)!=0u) {
+        float3 pose;
+        float4 q;
+        if(!sourceDyMassPose(input,pose,q))return false;
+        const float3 inverseInertia=asfloat(scActorLocals.Load3(local+48u));
+        const float3 inertia=float3(
+            inverseInertia.x>0.0f?1.0f/inverseInertia.x:0.0f,
+            inverseInertia.y>0.0f?1.0f/inverseInertia.y:0.0f,
+            inverseInertia.z>0.0f?1.0f/inverseInertia.z:0.0f);
+        const float3 localAngular=sourceRigidRotate(float4(-q.xyz,q.w),angular);
+        const float3 original=inertia*localAngular;
+        const float3 torque=cross(localAngular,original);
+        float3 next=original-torque*dt;
+        const float oldMagnitude=sqrt(sourceDyDot3(original,original));
+        const float newMagnitude=sqrt(sourceDyDot3(next,next));
+        next*=newMagnitude>0.0f?oldMagnitude/newMagnitude:0.0f;
+        const float3 delta=sourceRigidRotate(
+            q,inverseInertia*next-localAngular);
+        angular+=delta;
+    }
+    const uint locks=arena.Load(input+36u);
+    if(locks&8u)angular.x=0.0f;
+    if(locks&16u)angular.y=0.0f;
+    if(locks&32u)angular.z=0.0f;
+    if(!all(isfinite(linear)) || !all(isfinite(angular)))return false;
+    scActorLocals.Store3(local+64u,asuint(linear));
+    scActorLocals.Store3(local+76u,asuint(angular));
+    return true;
 }
 
 #include "physx_source_dy_contact_pgs_native.hlsli"
