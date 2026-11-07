@@ -4022,6 +4022,40 @@ void Scene::update_contacts() {
             (!dynamic_a || actors_[a.body].sleeping) && (!dynamic_b || actors_[b.body].sleeping);
     };
     if(source_gpu_pcm) {
+        // All live manager EdgeIndices belong to this graph, including
+        // dormant PCM contacts and authored joints that did not change.
+        gpu_sc_graph_edges_.clear();
+        gpu_sc_graph_edges_.reserve(previous_pairs_.size()+
+                                    active_constraint_handles_.size());
+        for(std::size_t i=0;i<previous_pairs_.size();++i) {
+            const auto pair=previous_pairs_[i];
+            const auto edge=active_edge_handles_[i];
+            const auto& first=shapes_[pair.a];
+            const auto& second=shapes_[pair.b];
+            const bool plane=first.geometry==Geometry::Plane ||
+                second.geometry==Geometry::Plane;
+            if(plane && !pcm_plane_box_enabled_)continue;
+            gpu_sc_graph_edges_.push_back({
+                first.body,second.body,
+                (actors_[first.body].motion==Motion::Dynamic?1u:0u)|
+                (actors_[second.body].motion==Motion::Dynamic?2u:0u),
+                edge});
+        }
+        for(const EdgeIndex edge:active_constraint_handles_) {
+            const auto& joint=island_edges_[edge];
+            if(!joint.live || joint.retiring ||
+               joint.type!=IslandEdgeType::Constraint)
+                continue;
+            gpu_sc_graph_edges_.push_back({
+                joint.pair.a,joint.pair.b,
+                4u|(actors_[joint.pair.a].motion==Motion::Dynamic?1u:0u)|
+                (actors_[joint.pair.b].motion==Motion::Dynamic?2u:0u),
+                edge});
+        }
+        if(actors_.size()>=std::numeric_limits<std::uint32_t>::max())
+            throw std::overflow_error("Sc GPU rigid graph exceeds BodyId address space");
+        gpu_broadphase_->set_gpu_sc_contact_graph(
+            gpu_sc_graph_edges_,static_cast<std::uint32_t>(actors_.size()));
         gpu_pcm_pairs_.reserve(previous_pairs_.size());
         std::size_t prior_touch_cursor=0u;
         for(std::size_t i=0;i<previous_pairs_.size();++i) {

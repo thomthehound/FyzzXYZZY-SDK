@@ -376,6 +376,13 @@ public:
         return dy_distance_ ? dy_distance_->last_transfer_bytes()
                             : std::pair<std::size_t,std::size_t>{};
     }
+    void set_gpu_sc_contact_graph(
+        std::span<const native::GpuScContactGraphEdge> edges,
+        std::uint32_t rigid_count) override {
+        if(!pcm_)
+            throw std::logic_error("Source GPU PCM contact graph not installed");
+        pcm_->set_contact_graph(edges,rigid_count);
+    }
     void generate_gpu_pcm_box_contacts(
             std::span<const native::GpuPcmBoxPair> requests,
             std::span<native::GpuPcmBoxResult> results) override {

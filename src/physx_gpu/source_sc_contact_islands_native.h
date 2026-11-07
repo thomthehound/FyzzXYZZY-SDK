@@ -14,10 +14,7 @@
 
 namespace fyzz::physx_gpu {
 
-struct SourceScContactGraphPairNative {
-    BodyId body_a,body_b;
-    std::uint32_t dynamic_mask,edge;
-};
+using SourceScContactGraphPairNative=native::GpuScContactGraphEdge;
 static_assert(sizeof(SourceScContactGraphPairNative)==16u);
 
 // The Sc PCM EdgeIndex is the source identity. The topology buffer
