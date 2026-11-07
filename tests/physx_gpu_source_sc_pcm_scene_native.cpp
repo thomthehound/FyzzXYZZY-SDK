@@ -971,9 +971,12 @@ void verify_gpu_coupled_solver(
                 schedule.device_colored_descriptors>0u,
             "Coupled Dy solver skipped device-owned constraint partitioning");
         require(schedule.device_initialized_bodies>0u &&
+                schedule.device_world_motion_bodies>0u &&
+                schedule.device_world_motion_bodies<=
+                    schedule.device_initialized_bodies &&
                 schedule.device_body_upload_bytes==
                     schedule.device_initialized_bodies*sizeof(float),
-            "Coupled Dy solver still uploads host-seeded body deltas");
+            "Coupled Dy failed device world-motion publication");
         const auto prep_saving=producer->dy_contact_prep_upload_saving();
         // Compare writeback with the source-sized upload baseline. The
         // GPU contact-prep payload is intentionally smaller now.
@@ -1903,6 +1906,9 @@ void verify_gpu_free_integration(
             require(!released && schedule.dispatches==2u &&
                     schedule.device_initialization_dispatches==0u &&
                     schedule.device_initialized_bodies>0u &&
+                    schedule.device_world_motion_bodies>0u &&
+                    schedule.device_world_motion_bodies<=
+                        schedule.device_initialized_bodies &&
                     schedule.device_body_upload_bytes==
                         schedule.device_initialized_bodies*sizeof(float),
                     "Mixed Dy skipped device initialization, PGS or free-body integration");
@@ -1910,6 +1916,7 @@ void verify_gpu_free_integration(
         } else {
             require(schedule.dispatches==1u &&
                     schedule.device_initialized_bodies==0u &&
+                    schedule.device_world_motion_bodies==0u &&
                     producer->dy_distance_transfer_bytes().second==
                         actual.size()*sizeof(native::GpuDyIntegratedPose),
                     "Free-only Dy staged solver rows or dispatched PGS");

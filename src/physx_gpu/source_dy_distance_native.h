@@ -64,6 +64,7 @@ struct SourceDyLaunchStats {
     std::size_t device_initialized_bodies=0u;
     std::size_t device_body_upload_bytes=0u;
     std::size_t device_initialization_dispatches=0u;
+    std::size_t device_world_motion_bodies=0u;
 };
 
 // Dy's original per-task conflict partitions and prepared 1D rows are
@@ -148,7 +149,8 @@ public:
                std::uint32_t convex_vertex_count,
                bool device_partitions=false,
                std::span<native::GpuDyFrictionAnchorImpulse> anchor_impulses={},
-               bool device_initial_bodies=false) {
+               bool device_initial_bodies=false,
+               bool device_world_motion=false) {
         if(integration.size()<bodies.size() ||
            integrated_poses.size()!=integration.size() ||
            (tasks.empty() && integration.size()==bodies.size()))
@@ -180,6 +182,8 @@ public:
         last_schedule_.device_initialized_bodies=device_initial_bodies?bodies.size():0u;
         last_schedule_.device_body_upload_bytes=device_initial_bodies
             ? bodies.size()*sizeof(float):bodies.size_bytes();
+        last_schedule_.device_world_motion_bodies=
+            device_world_motion?body_ordinals.size():0u;
         if(contact_forces.size()>
            std::numeric_limits<std::size_t>::max()/sizeof(native::GpuDyContactPoint))
             throw std::overflow_error("Source Dy contact row byte count overflow");
@@ -407,7 +411,8 @@ public:
                         sizeof(record.sqrt_inverse_inertia));
             record.lock_flags=input.lock_flags;
             record.seconds=input.seconds;
-            record.active=input.active&1u;
+            record.active=(input.active&1u)|
+                (device_world_motion && (input.active&1u) ?8u:0u);
             record.source_element=input.source_element;
             std::memcpy(record.mass_local_position,input.mass_local_position,
                         sizeof(record.mass_local_position));

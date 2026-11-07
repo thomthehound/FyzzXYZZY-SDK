@@ -141,6 +141,20 @@ struct GpuDyDistanceBody {
     float motion_linear_delta[3]{};
     float motion_angular_state[3]{};
     float inverse_mass=0.0f;
+    // Sc's world-motion result occupies the same first 48 bytes as the
+    // standalone Dy delta return. Inverse mass remains the input tail.
+    Vec3 final_linear_velocity() const noexcept {
+        return {linear_delta[0],linear_delta[1],linear_delta[2]};
+    }
+    Vec3 final_angular_velocity() const noexcept {
+        return {angular_state[0],angular_state[1],angular_state[2]};
+    }
+    Vec3 position_linear_velocity() const noexcept {
+        return {motion_linear_delta[0],motion_linear_delta[1],motion_linear_delta[2]};
+    }
+    Vec3 position_angular_velocity() const noexcept {
+        return {motion_angular_state[0],motion_angular_state[1],motion_angular_state[2]};
+    }
 };
 static_assert(sizeof(GpuDyDistanceBody)==52u);
 // DyBodyCoreIntegrator::integrateCore inputs. Free bodies follow the
@@ -330,7 +344,8 @@ public:
         std::span<GpuDyBodyIntegrationInput>,
         std::span<GpuDyIntegratedPose>,bool /*device_partitions*/=false,
         std::span<GpuDyFrictionAnchorImpulse> /*anchor_impulses*/={},
-        bool /*device_initial_bodies*/=false) {
+        bool /*device_initial_bodies*/=false,
+        bool /*device_world_motion*/=false) {
         throw std::logic_error("Source GPU Dy shader is not installed");
     }
     // Sc's afterIntegration authorizes the source ElementSim device pose.
