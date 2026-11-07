@@ -6798,13 +6798,9 @@ void Scene::prepare_solver_bodies() {
     const bool gpu_world_inertia=gpu_broadphase_ &&
         gpu_broadphase_->has_gpu_dy_distance();
     for(std::size_t island:active_accurate_island_batches_) {
-        const BodyId root=accurate_island_nodes_[accurate_island_offsets_[island]];
-        const auto& graph_island=accurate_islands_.islands[
-            accurate_islands_.node_island[root]];
-        // Contact-only Dy islands need no host angular response matrix.
-        // Joint row orthogonalization still consumes the source CPU tensor.
-        const bool device_inertia=gpu_world_inertia &&
-            graph_island.constraint_count==0u;
+        // Contact and joint geometry consume the same resident Dy inertia.
+        // CPU execution alone requires a host world-response matrix.
+        const bool device_inertia=gpu_world_inertia;
         for(std::size_t index=accurate_island_offsets_[island];
             index<accurate_island_offsets_[island+1];++index) {
             const BodyId id=accurate_island_nodes_[index];
@@ -7318,6 +7314,7 @@ void Scene::prepare_constraints(float seconds) {
     solver_contact_order_.clear();
     joint_rows_.clear();
     gpu_dy_rows_.clear();
+    gpu_dy_joint_inputs_.clear();
     const bool gpu_normal_prep=
         gpu_broadphase_ && gpu_broadphase_->has_gpu_dy_distance();
     gpu_dy_contact_prep_pairs_.clear();
@@ -7335,6 +7332,51 @@ void Scene::prepare_constraints(float seconds) {
         const auto& body1=actors_[id1];
         solver_kinematic_participant_ |=
             body0.motion==Motion::Kinematic || body1.motion==Motion::Kinematic;
+        if(gpu_normal_prep) {
+            // Only authored local frames and non-dynamic endpoint poses
+            // cross into Dy. World Jacobians use resident actor motion.
+            GpuDyJointInput input{};
+            const auto pack3=[](float(&out)[3],Vec3 v) {
+                out[0]=v.x;out[1]=v.y;out[2]=v.z;
+            };
+            const auto pack4=[](float(&out)[4],Quat q) {
+                out[0]=q.x;out[1]=q.y;out[2]=q.z;out[3]=q.w;
+            };
+            pack3(input.local_a_position,joint.local_a.position);
+            pack4(input.local_a_orientation,joint.local_a.orientation);
+            pack3(input.local_b_position,joint.local_b.position);
+            pack4(input.local_b_orientation,joint.local_b.orientation);
+            if(body0.motion!=Motion::Dynamic) {
+                pack3(input.actor_a_position,body0.position);
+                pack4(input.actor_a_orientation,body0.orientation);
+                pack3(input.center_a,mass_position(body0));
+            }
+            if(body1.motion!=Motion::Dynamic) {
+                pack3(input.actor_b_position,body1.position);
+                pack4(input.actor_b_orientation,body1.orientation);
+                pack3(input.center_b,mass_position(body1));
+            }
+            input.distance_length=joint.distance_length;
+            input.kind=static_cast<std::uint32_t>(joint.kind);
+            if(gpu_dy_joint_inputs_.size()>=std::numeric_limits<std::uint32_t>::max())
+                throw std::overflow_error("Native GPU joint admission count overflow");
+            const auto source_index=static_cast<std::uint32_t>(gpu_dy_joint_inputs_.size());
+            gpu_dy_joint_inputs_.push_back(input);
+            const auto count=joint.kind==JointKind::Distance?1u:
+                joint.kind==JointKind::Spherical?3u:
+                joint.kind==JointKind::Fixed?6u:5u;
+            const float mass0=body0.motion==Motion::Dynamic?body0.inverse_mass:0.0f;
+            const float mass1=body1.motion==Motion::Dynamic?body1.inverse_mass:0.0f;
+            for(std::uint32_t i=0u;i<count;++i) {
+                joint_rows_.emplace_back();
+                auto& gpu=gpu_dy_rows_.emplace_back();
+                gpu.inverse_mass_a=mass0;
+                gpu.inverse_mass_b=mass1;
+                gpu.reserved=2u;
+                if(i==0u)gpu.applied_force=std::bit_cast<float>(source_index);
+            }
+            continue;
+        }
         const auto anchor0=rotate(body0.orientation,joint.local_a.position);
         const auto anchor1=rotate(body1.orientation,joint.local_b.position);
         const Vec3 world0{body0.position.x+anchor0.x,
@@ -7365,32 +7407,11 @@ void Scene::prepare_constraints(float seconds) {
             row.inverse_mass_a=mass0;
             row.inverse_mass_b=mass1;
             row.velocity_multiplier=-reciprocal;
-            if(gpu_normal_prep) {
-                // Dy computes the source's velocity-dependent constants
-                // after GPU-prepared actor velocities are available.
-                row.constant=error*inv_dt;
-                // Materialize the final 64-byte source GPU row here.
-                // Its angular terms remain in world coordinates until
-                // Dy normal preparation applies sqrt-inverse-inertia.
-                auto& gpu=gpu_dy_rows_.emplace_back();
-                const auto pack=[](float(&out)[3],Vec3 v) {
-                    out[0]=v.x;out[1]=v.y;out[2]=v.z;
-                };
-                pack(gpu.axis,axis);
-                pack(gpu.angular_a,angular0);
-                pack(gpu.angular_b,angular1);
-                gpu.inverse_mass_a=mass0;
-                gpu.inverse_mass_b=mass1;
-                gpu.reserved=1u;
-                gpu.constant=row.constant;
-                gpu.velocity_multiplier=row.velocity_multiplier;
-            }else {
-                const float speed=
-                    dot(axis,relative)+dot(angular0,body0.angular_velocity)-
-                    dot(angular1,body1.angular_velocity);
-                row.constant=-reciprocal*(error*inv_dt+speed);
-                row.unbiased_constant=-reciprocal*speed;
-            }
+            const float speed=
+                dot(axis,relative)+dot(angular0,body0.angular_velocity)-
+                dot(angular1,body1.angular_velocity);
+            row.constant=-reciprocal*(error*inv_dt+speed);
+            row.unbiased_constant=-reciprocal*speed;
             if(!std::isfinite(row.constant) || !std::isfinite(row.unbiased_constant))
                 throw std::overflow_error("Source 1D solver constants overflow");
             joint_rows_.push_back(row);
@@ -8491,7 +8512,8 @@ void Scene::solve_gpu_distance_constraints(float seconds) {
         gpu_dy_patches_,gpu_dy_manifolds_,gpu_dy_contact_order_,
         gpu_dy_contact_prep_pairs_,
         gpu_dy_integration_inputs_,gpu_dy_integrated_poses_,true,
-        gpu_dy_friction_impulses_,true,true,true,gpu_dy_sleep_states_);
+        gpu_dy_friction_impulses_,true,true,true,gpu_dy_sleep_states_,
+        gpu_dy_joint_inputs_);
     gpu_dy_pose_ready_=true;
     const auto consume_preintegration=[this](BodyId id) {
         auto& actor=actors_[id];
