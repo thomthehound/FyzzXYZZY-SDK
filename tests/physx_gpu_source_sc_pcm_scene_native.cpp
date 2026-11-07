@@ -1450,7 +1450,8 @@ void verify_mixed_gu_pcm_gpu_dy_solver(
 // The explicitly installed device Dy 1D stage must replace the
 // production PGS solve, not merely compute a disconnected fixture result.
 void verify_gpu_distance_solver(
-    fyzz::compute::Backend backend,const char* sap,const char* dy_shader) {
+    fyzz::compute::Backend backend,const char* sap,
+    const char* pcm,const char* dy_shader) {
     using namespace fyzz;
     std::ifstream input(dy_shader,std::ios::binary);
     require(bool(input),"Compiled source Dy shader unavailable");
@@ -1468,7 +1469,8 @@ void verify_gpu_distance_solver(
     auto owner=std::make_unique<
         physx_gpu::SourceScOwnedGpuBroadphaseNative>(
             backend,load_native_gpu_sap_shaders(backend,sap),
-            128u,128u,std::nullopt,std::nullopt,std::move(shader));
+            128u,128u,std::nullopt,
+            load_native_gpu_pcm_shaders(backend,pcm),std::move(shader));
     auto* producer=owner.get();
     require(producer->has_gpu_dy_distance(),
             "Explicit source Dy distance stage was not installed");
@@ -2725,7 +2727,8 @@ int main(int argc,char** argv) {
                     backend,argv[1],argv[2],argv[3]);});
         if(scenario=="all" || scenario=="distance_solver")
             fyzz::tests::measure_gpu_case("sc_pcm","distance_solver",
-                [&]{verify_gpu_distance_solver(backend,argv[1],argv[3]);});
+                [&]{verify_gpu_distance_solver(
+                    backend,argv[1],argv[2],argv[3]);});
         if(scenario=="all" || scenario=="free_integration")
             fyzz::tests::measure_gpu_case("sc_pcm","free_integration",
                 [&]{verify_gpu_free_integration(backend,argv[1],argv[2],argv[3]);});
