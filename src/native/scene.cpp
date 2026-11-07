@@ -10081,6 +10081,11 @@ void Scene::prepare_unconstrained_velocities(float seconds) {
         if(actor.sleeping)continue;
         const auto& d=actor.dynamics;
         if(gpu_broadphase_ && gpu_broadphase_->has_gpu_dy_distance()) {
+            // Dy's float gravity term cannot be admitted if its
+            // timestep product already overflows the source arithmetic.
+            if(d.gravity_enabled && !std::isfinite(gravity*seconds))
+                throw std::overflow_error(
+                    "Native GPU unconstrained gravity timestep overflow");
             if(d.gyroscopic_forces_enabled && !actor.angular_inertia_available)
                 throw std::logic_error(
                     "Native gyroscopic motion requires representable inertia");
