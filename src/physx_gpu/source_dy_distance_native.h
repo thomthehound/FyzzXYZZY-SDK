@@ -9,6 +9,7 @@
 
 #include <algorithm>
 #include <array>
+#include <bit>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -732,6 +733,15 @@ public:
             result_offsets[i]=output_bytes;
             output_bytes+=n*output_strides[i];
         }
+        const std::size_t free_velocity_offset=output_bytes;
+        const std::size_t free_velocity_bytes=
+            device_unconstrained_preparation?free_bodies*24u:0u;
+        if(free_bodies>(std::numeric_limits<std::uint32_t>::max()-
+                       output_bytes)/24u)
+            throw std::overflow_error(
+                "Source GPU free-body velocity writeback exceeds 32-bit view");
+        output_bytes+=free_velocity_bytes;
+        last_schedule_.free_velocity_readback_bytes=free_velocity_bytes;
         // Both writable contact and friction arenas follow all source
         // inputs. The existing GPU preparation owns the complete rows.
         // Device coloring consumes raw descriptors in the scratch input
@@ -1076,6 +1086,14 @@ public:
         }
         for(std::size_t index=bodies.size();index<integration.size();++index)
             fetch_pose(index);
+        if(device_unconstrained_preparation)
+            for(std::size_t index=bodies.size();index<integration.size();++index) {
+                auto& input=integration[index];
+                const auto* output=host_.data()+free_velocity_offset+
+                    (index-bodies.size())*24u;
+                std::memcpy(input.linear_velocity,output,12u);
+                std::memcpy(input.angular_velocity,output+12u,12u);
+            }
         // The source task graph identifies every GPU-written slot. Rows
         // excluded from its descriptor/ordinal ranges retain their original
         // CPU values rather than requiring device-side output seeding.
