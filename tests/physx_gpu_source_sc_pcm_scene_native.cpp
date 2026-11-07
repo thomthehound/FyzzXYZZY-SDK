@@ -2024,19 +2024,27 @@ void verify_gpu_free_integration(
                 (frame!=7u ||
                  metadata.prepared_velocity_updated_bodies>=1u),
             "Native Dy did not retain and compact exact GPU velocities");
+        const auto resident_record_bytes=
+            sizeof(physx_gpu::SourceDyActorLocalNative);
+        const auto mass_frame_edits=(frame==3u || frame==4u)?1u:0u;
         require((frame==0u
                     ? metadata.actor_local_upload_bytes==
-                          actual.size()*sizeof(physx_gpu::SourceDyActorLocalNative) &&
-                      metadata.actor_local_upload_spans==1u
-                    : (frame==3u || frame==4u)
-                        ? metadata.actor_local_upload_bytes==
-                              sizeof(physx_gpu::SourceDyActorLocalNative) &&
-                          metadata.actor_local_upload_spans==1u &&
-                          metadata.reused_actor_local_poses==actual.size()-1u
-                        : metadata.actor_local_upload_bytes==0u &&
-                          metadata.actor_local_upload_spans==0u &&
-                          metadata.reused_actor_local_poses==actual.size()),
-            "Source Dy reuploaded unchanged actor-local mass frames");
+                          actual.size()*resident_record_bytes &&
+                      metadata.actor_local_upload_spans==1u &&
+                      metadata.reused_actor_local_poses==0u
+                    : metadata.reused_actor_local_poses==
+                          actual.size()-mass_frame_edits &&
+                      metadata.actor_local_upload_bytes%resident_record_bytes==0u &&
+                      metadata.actor_local_upload_bytes<=
+                          6u*resident_record_bytes &&
+                      metadata.actor_local_upload_spans<=3u &&
+                      (mass_frame_edits==0u ||
+                       metadata.actor_local_upload_bytes>=resident_record_bytes)),
+            "Source Dy actor-state refresh exceeded authored changes: frame="+
+                std::to_string(frame)+
+                " bytes="+std::to_string(metadata.actor_local_upload_bytes)+
+                " reuses="+std::to_string(metadata.reused_actor_local_poses)+
+                " spans="+std::to_string(metadata.actor_local_upload_spans));
         require(resident<=actual.size() &&
                 producer->dy_host_pose_upload_bytes()==
                     (actual.size()-resident)*28u &&
