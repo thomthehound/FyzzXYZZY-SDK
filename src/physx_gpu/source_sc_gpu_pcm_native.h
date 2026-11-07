@@ -283,7 +283,8 @@ public:
         graph_header_={graph_count,rigid_count,
             static_cast<std::uint32_t>(graph_pair_offset),
             static_cast<std::uint32_t>(graph_root_offset),
-            static_cast<std::uint32_t>(graph_error_offset),0u,0u,0u};
+            static_cast<std::uint32_t>(graph_error_offset),
+            edge_capacity,0u,0u};
         if(full_graph) {
             first_graph_dirty=0u;
             last_graph_dirty=graph_count;
