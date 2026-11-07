@@ -659,9 +659,186 @@ void sourceDyPartitionTask(uint taskId,uint scratch,uint errorAddress,
     }
 }
 
-// The native 1D upload carries world-space angular Jacobians and
-// geometric error. Build the velocity-dependent constants only after
-// Sc-prepared actor velocities are present in the GPU source stream.
+// Sc admits immutable joint local frames and non-dynamic authored poses.
+// Active rigid endpoints read the same BodyId-resident actor state as PCM
+// contact preparation and integrateCore. Dy constructs every 1D Jacobian
+// before source-order PGS, with no host world-frame joint row dependency.
+bool sourceDyJointActorFrame(uint ordinal,uint fallback,
+                             out float3 actorPosition,out float4 actorAxes,
+                             out float3 massCenter) {
+    actorPosition=asfloat(arena.Load3(fallback));
+    actorAxes=asfloat(arena.Load4(fallback+12u));
+    massCenter=asfloat(arena.Load3(fallback+56u));
+    if(ordinal!=invalidBody) {
+        const uint input=p.integrationBias+40u+ordinal*76u;
+        if((arena.Load(input+44u)&128u)!=0u) {
+            const uint local=arena.Load(input+60u);
+            if(local==invalidBody)return false;
+            actorPosition=asfloat(scActorLocals.Load3(local+116u));
+            actorAxes=asfloat(scActorLocals.Load4(local+128u));
+            const float3 localCenter=asfloat(scActorLocals.Load3(local));
+            massCenter=actorPosition+sourceRigidRotate(actorAxes,localCenter);
+        }
+    }
+    return all(isfinite(actorPosition)) && all(isfinite(actorAxes)) &&
+           all(isfinite(massCenter));
+}
+float3 sourceDyJointInertia(uint ordinal,float3 angular) {
+    if(ordinal==invalidBody)return 0.0f;
+    const uint input=p.integrationBias+40u+ordinal*76u;
+    return asfloat(arena.Load3(input))*angular.x+
+           asfloat(arena.Load3(input+12u))*angular.y+
+           asfloat(arena.Load3(input+24u))*angular.z;
+}
+bool sourceDyPrepareJointGeometry(uint4 desc,uint endError) {
+    const uint first=p.distanceBias+desc.x*64u;
+    const uint sourceIndex=arena.Load(first+60u);
+    const uint source=p.distanceBias+p.rowCount*64u+sourceIndex*144u;
+    const uint kind=arena.Load(source+140u);
+    const uint count=kind==0u?1u:kind==2u?3u:kind==1u?6u:5u;
+    if(kind>4u || desc.w!=count) {
+        arena.InterlockedOr(endError,8192u);
+        return false;
+    }
+    const float3 localA=asfloat(arena.Load3(source));
+    const float4 localQA=asfloat(arena.Load4(source+12u));
+    const float3 localB=asfloat(arena.Load3(source+28u));
+    const float4 localQB=asfloat(arena.Load4(source+40u));
+    const float3 massAInput=asfloat(arena.Load3(source+112u));
+    const float3 massBInput=asfloat(arena.Load3(source+124u));
+    // Two fallback records are contiguous 28-byte authored actor frames,
+    // followed by their source mass centers. A dynamic endpoint instead
+    // consumes its integrated actor frame and mass-local transform.
+    float3 pA,pB,cA,cB;
+    float4 qA,qB;
+    if(!sourceDyJointActorFrame(desc.y,source+56u,pA,qA,cA) ||
+       !sourceDyJointActorFrame(desc.z,source+84u,pB,qB,cB)) {
+        arena.InterlockedOr(endError,8192u);
+        return false;
+    }
+    if(desc.y==invalidBody || (arena.Load(p.integrationBias+40u+desc.y*76u+44u)&128u)==0u)
+        cA=massAInput;
+    if(desc.z==invalidBody || (arena.Load(p.integrationBias+40u+desc.z*76u+44u)&128u)==0u)
+        cB=massBInput;
+    const float3 wA=pA+sourceRigidRotate(qA,localA);
+    const float3 wB=pB+sourceRigidRotate(qB,localB);
+    const float3 rA=wA-cA,rB=wB-cB;
+    const float4 qa=sourceRigidMultiply(qA,localQA);
+    const float4 qbRaw=sourceRigidMultiply(qB,localQB);
+    const float4 qb=dot(qa,qbRaw)<0.0f?-qbRaw:qbRaw;
+    const float3 localError=sourceRigidRotate(float4(-qa.xyz,qa.w),wA-wB);
+    const float4 errorQ=sourceRigidMultiply(float4(-qa.xyz,qa.w),qb);
+    const float3 va=qa.xyz,vb=qb.xyz;
+    const float d=qa.w*qb.w-sourceDyDot3(va,vb);
+    const float overlap=qa.w*qb.w+sourceDyDot3(va,vb);
+    const float3 c=qa.w*vb+qb.w*va;
+    const float3 diagonal[3]={
+        float3(d,c.z,-c.y),float3(-c.z,d,c.x),float3(c.y,-c.x,d)};
+    const float3 basis[3]={
+        float3(1.0f,0.0f,0.0f),float3(0.0f,1.0f,0.0f),float3(0.0f,0.0f,1.0f)};
+    const float mass0=asfloat(arena.Load(first+36u));
+    const float mass1=asfloat(arena.Load(first+40u));
+    const uint inputA=p.integrationBias+40u+desc.y*76u;
+    const uint inputB=p.integrationBias+40u+desc.z*76u;
+    const float3 vA=desc.y==invalidBody?0.0f:sourceDyPreparedVelocity(inputA,false);
+    const float3 vB=desc.z==invalidBody?0.0f:sourceDyPreparedVelocity(inputB,false);
+    const float3 omegaA=desc.y==invalidBody?0.0f:sourceDyPreparedVelocity(inputA,true);
+    const float3 omegaB=desc.z==invalidBody?0.0f:sourceDyPreparedVelocity(inputB,true);
+    const uint dtInput=mass0>0.0f?inputA:inputB;
+    const float dt=asfloat(arena.Load(dtInput+40u));
+    if(!(dt>0.0f) || !isfinite(dt)) {
+        arena.InterlockedOr(endError,8192u);
+        return false;
+    }
+    const float invDt=1.0f/dt;
+    float3 linear[6],angularA[6],angularB[6],jacA[6],jacB[6];
+    float invResponse[6];
+    const float requiredDistance=asfloat(arena.Load(source+136u));
+    for(uint i=0u;i<count;++i) {
+        float3 axis=0.0f,angA=0.0f,angB=0.0f;
+        float error=0.0f;
+        if(kind==0u) {
+            const float3 offset=(cA+rA)-(cB+rB);
+            const float distance=sqrt(sourceDyDot3(offset,offset));
+            if(!isfinite(distance)) {
+                arena.InterlockedOr(endError,8192u);
+                return false;
+            }
+            axis=distance<1.192092896e-07f
+                ?float3(1.0f,0.0f,0.0f):offset/distance;
+            angA=cross(rA,axis);
+            angB=cross(rB,axis);
+            error=distance-requiredDistance;
+        }else {
+            const uint component=i+(kind==4u?1u:0u)+
+                (kind==3u && i>=3u?1u:0u);
+            error=component<3u?localError[component]:
+                -errorQ[component-3u];
+            if(component<3u) {
+                axis=sourceRigidRotate(qa,basis[component]);
+                const float3 arm=kind==4u?wB-cA:rA;
+                angA=cross(arm,axis);
+                angB=cross(rB,axis);
+            }else {
+                const uint k=component-3u;
+                const float3 v=diagonal[k];
+                angA=0.5f*(va*vb[k]+vb*va[k]+v);
+                if(overlap==0.0f)
+                    angA+=basis[k]*1.1920928955078125e-7f;
+                angB=angA;
+            }
+        }
+        float3 ja=mass0>0.0f?sourceDyJointInertia(desc.y,angA):0.0f;
+        float3 jb=mass1>0.0f?sourceDyJointInertia(desc.z,angB):0.0f;
+        for(uint j=0u;j<i;++j) {
+            const float factor=((mass0+mass1)*sourceDyDot3(axis,linear[j])+
+                sourceDyDot3(ja,jacA[j])+sourceDyDot3(jb,jacB[j]))*
+                invResponse[j];
+            axis-=linear[j]*factor;
+            angA-=angularA[j]*factor;
+            angB-=angularB[j]*factor;
+            ja-=jacA[j]*factor;
+            jb-=jacB[j]*factor;
+            // Geometry and its error must share the same source projection.
+            error-=asfloat(arena.Load(first+j*64u+48u))*factor;
+        }
+        const float response=(mass0+mass1)*sourceDyDot3(axis,axis)+
+            sourceDyDot3(ja,ja)+sourceDyDot3(jb,jb);
+        if(!(response>0.0f) || !isfinite(response)) {
+            arena.InterlockedOr(endError,8192u);
+            return false;
+        }
+        invResponse[i]=1.0f/response;
+        linear[i]=axis;angularA[i]=angA;angularB[i]=angB;
+        jacA[i]=ja;jacB[i]=jb;
+        const float velocity=sourceDyDot3(axis,vA-vB)+
+            sourceDyDot3(angA,omegaA)-sourceDyDot3(angB,omegaB);
+        const float multiplier=-invResponse[i];
+        const float constant=multiplier*(error*invDt+velocity);
+        const float unbiased=multiplier*velocity;
+        if(!all(isfinite(axis)) || !all(isfinite(ja)) ||
+           !all(isfinite(jb)) || !isfinite(constant) ||
+           !isfinite(unbiased)) {
+            arena.InterlockedOr(endError,8192u);
+            return false;
+        }
+        const uint row=first+i*64u;
+        arena.Store3(row,asuint(axis));
+        arena.Store3(row+12u,asuint(ja));
+        arena.Store3(row+24u,asuint(jb));
+        arena.Store(row+48u,asuint(constant));
+        arena.Store(row+52u,asuint(unbiased));
+        arena.Store(row+56u,asuint(multiplier));
+        arena.Store(row+60u,asuint(0.0f));
+        // Reserved 2 distinguishes device geometry admission. All rows
+        // remain unavailable to the ordinary host-geometry branch.
+        arena.Store(row+44u,0u);
+    }
+    return true;
+}
+
+// Host-geometry rows are retained for standalone conformance. Native Sc
+// joint rows instead use the source-authored frame payload above.
 void prepareJointRows(uint4 desc,uint lane,uint endError) {
     if(desc.x>=p.rowCount || desc.w>p.rowCount-desc.x ||
        (desc.y!=invalidBody && desc.y>=p.bodyCount) ||
@@ -670,6 +847,10 @@ void prepareJointRows(uint4 desc,uint lane,uint endError) {
         return;
     }
     const uint massRow=p.distanceBias+desc.x*64u;
+    if(arena.Load(massRow+44u)==2u) {
+        if(lane==0u)sourceDyPrepareJointGeometry(desc,endError);
+        return;
+    }
     const float inverseMassA=asfloat(arena.Load(massRow+36u));
     const float inverseMassB=asfloat(arena.Load(massRow+40u));
     const uint inputA=p.integrationBias+40u+desc.y*76u;
