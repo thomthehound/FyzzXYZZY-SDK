@@ -10,6 +10,7 @@
 #include <algorithm>
 #include <array>
 #include <bit>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -754,7 +755,8 @@ public:
         constexpr std::array<std::size_t,6> output_inputs{
             0u,5u,6u,7u,8u,12u};
         const std::array<std::size_t,6> output_strides{
-            48u,4u,4u,compact_friction?12u:16u,4u,32u};
+            device_unconstrained_preparation?52u:48u,
+            4u,4u,compact_friction?12u:16u,4u,32u};
         static_assert(offsetof(native::GpuDyJointRow,applied_force)==60u &&
                       offsetof(native::GpuDyDistanceTask,error)==32u &&
                       offsetof(native::GpuDyContactPoint,applied_force)==56u &&
@@ -774,12 +776,17 @@ public:
         const std::size_t free_velocity_offset=output_bytes;
         const std::size_t free_velocity_bytes=
             device_unconstrained_preparation?free_bodies*24u:0u;
+        const std::size_t free_sleep_bytes=
+            device_unconstrained_preparation?free_bodies*28u:0u;
         if(free_bodies>(std::numeric_limits<std::uint32_t>::max()-
-                       output_bytes)/24u)
+                       output_bytes)/52u)
             throw std::overflow_error(
                 "Source GPU free-body velocity writeback exceeds 32-bit view");
-        output_bytes+=free_velocity_bytes;
+        output_bytes+=free_velocity_bytes+free_sleep_bytes;
         last_schedule_.free_velocity_readback_bytes=free_velocity_bytes;
+        last_schedule_.sleep_readback_bytes=
+            device_unconstrained_preparation
+                ?(body_ordinals.size()+free_bodies)*28u:0u;
         // Both writable contact and friction arenas follow all source
         // inputs. The existing GPU preparation owns the complete rows.
         // Device coloring consumes raw descriptors in the scratch input
@@ -1135,6 +1142,8 @@ public:
                     (index-bodies.size())*24u;
                 std::memcpy(input.linear_velocity,output,12u);
                 std::memcpy(input.angular_velocity,output+12u,12u);
+                std::memcpy(&sleep_states[index],output+24u,
+                            sizeof(native::GpuDySleepState));
             }
         // The source task graph identifies every GPU-written slot. Rows
         // excluded from its descriptor/ordinal ranges retain their original
@@ -1144,8 +1153,14 @@ public:
                 const auto index=body_ordinals[i];
                 if(index>=bodies.size())
                     throw std::logic_error("Source Dy body writeback index invalid");
-                std::memcpy(&bodies[index],
-                    host_.data()+result_offsets[0]+index*48u,48u);
+                if(device_unconstrained_preparation) {
+                    const auto* output=host_.data()+result_offsets[0]+index*52u;
+                    std::memcpy(&bodies[index],output,24u);
+                    std::memcpy(&sleep_states[index],output+24u,
+                                sizeof(native::GpuDySleepState));
+                }else
+                    std::memcpy(&bodies[index],
+                        host_.data()+result_offsets[0]+index*48u,48u);
             }
             for(std::size_t i=task.descriptor_begin;
                 i<task.descriptor_end;++i) {
