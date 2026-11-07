@@ -217,7 +217,7 @@ float3 sourceDyMotionMod(uint input,uint stream) {
 // before contact/joint PGS; free flight performs it immediately before
 // integrateCore. No host solver-state shadow participates.
 bool sourceDyPreIntegrateBody(uint ordinal) {
-    const uint input=p.integrationBias+40u+ordinal*72u;
+    const uint input=p.integrationBias+40u+ordinal*76u;
     if((arena.Load(input+44u)&32u)==0u)return true;
     const uint local=arena.Load(input+60u);
     if(local==invalidBody)return false;
@@ -276,7 +276,7 @@ bool sourceDyPreIntegrateBody(uint ordinal) {
     return true;
 }
 void sourceDyInvalidatePreparedVelocity(uint ordinal) {
-    const uint input=p.integrationBias+40u+ordinal*72u;
+    const uint input=p.integrationBias+40u+ordinal*76u;
     const uint local=arena.Load(input+60u);
     if(local==invalidBody)return;
     const uint3 invalid=uint3(0x7fc00000u,0x7fc00000u,0x7fc00000u);
@@ -609,8 +609,8 @@ void prepareJointRows(uint4 desc,uint lane,uint endError) {
     const uint massRow=p.distanceBias+desc.x*64u;
     const float inverseMassA=asfloat(arena.Load(massRow+36u));
     const float inverseMassB=asfloat(arena.Load(massRow+40u));
-    const uint inputA=p.integrationBias+40u+desc.y*72u;
-    const uint inputB=p.integrationBias+40u+desc.z*72u;
+    const uint inputA=p.integrationBias+40u+desc.y*76u;
+    const uint inputB=p.integrationBias+40u+desc.z*76u;
     float3 va=0.0f,vb=0.0f,wa=0.0f,wb=0.0f;
     if(desc.y!=invalidBody) {
         va=sourceDyPreparedVelocity(inputA,false);
@@ -743,7 +743,7 @@ void saveMotion(uint index,uint endError) {
 void integrateBody(uint ordinal) {
     float3 linearDelta=0.0f;
     float3 angularState=0.0f;
-    const uint input=p.integrationBias+40u+ordinal*72u;
+    const uint input=p.integrationBias+40u+ordinal*76u;
     const uint inputFlags=arena.Load(input+44u);
     [branch]
     if(ordinal<p.bodyCount) {
@@ -939,7 +939,7 @@ void initializeSolverBody(uint ordinal,uint source) {
     arena.Store4(target+32u,zero);
     uint massBits=0u;
     if(source==invalidBody) {
-        const uint input=p.integrationBias+40u+ordinal*72u;
+        const uint input=p.integrationBias+40u+ordinal*76u;
         const uint local=arena.Load(input+60u);
         if(local!=invalidBody)
             massBits=scActorLocals.Load(local+28u);
