@@ -2057,6 +2057,9 @@ void verify_gpu_free_integration(
                 "Device-integrated free body changed contact admission");
         const bool contacts=producer->dy_pcm_device_contact_rows()!=0u;
         const auto schedule=producer->dy_launch_stats();
+        require(schedule.device_world_inertia_bodies<=actual.size() &&
+                (!contacts || schedule.device_world_inertia_bodies>0u),
+            "Contact-only native Dy skipped resident world-inertia preparation");
         if(contacts) {
             require(!released && schedule.dispatches==2u &&
                     schedule.device_initialization_dispatches==0u &&

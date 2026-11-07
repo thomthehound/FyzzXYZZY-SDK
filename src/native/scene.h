@@ -1155,6 +1155,7 @@ private:
         Vec3 motion_linear_delta{};
         Vec3 motion_angular_state{};
         std::uint64_t prepared_generation = 0;
+        bool device_world_inertia = false;
     };
     SolverBodyRow& admit_solver_row(BodyId id);
     SolverBodyRow& prepared_solver_row(BodyId id);

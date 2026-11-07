@@ -6795,7 +6795,16 @@ void Scene::prepare_solver_bodies() {
     // Dy::DynamicsContext::iterateIslandsNodes hands contiguous accurate
     // island nodes to preIntegrationParallel. Free-flight bodies retain the
     // source no-constraint integration path without preparing unused rows.
+    const bool gpu_world_inertia=gpu_broadphase_ &&
+        gpu_broadphase_->has_gpu_dy_distance();
     for(std::size_t island:active_accurate_island_batches_) {
+        const BodyId root=accurate_island_nodes_[accurate_island_offsets_[island]];
+        const auto& graph_island=accurate_islands_.islands[
+            accurate_islands_.node_island[root]];
+        // Contact-only Dy islands need no host angular response matrix.
+        // Joint row orthogonalization still consumes the source CPU tensor.
+        const bool device_inertia=gpu_world_inertia &&
+            graph_island.constraint_count==0u;
         for(std::size_t index=accurate_island_offsets_[island];
             index<accurate_island_offsets_[island+1];++index) {
             const BodyId id=accurate_island_nodes_[index];
@@ -6827,6 +6836,8 @@ void Scene::prepare_solver_bodies() {
             if(!actor.angular_inertia_available)
                 throw std::logic_error(
                     "Native rigid contact requires representable angular inertia");
+            row.device_world_inertia=device_inertia;
+            if(device_inertia)continue;
 
             // CmUtils.h::transformInertiaTensor(sqrt(invInertia), pose.q).
             // Reuse the six unique terms of the symmetric world tensor.
@@ -8304,6 +8315,7 @@ void Scene::solve_gpu_distance_constraints(float seconds) {
         auto& input=gpu_dy_integration_inputs_[actor.solver_row_index];
         pack_integration(id,actor,input);
         pack(input.linear_velocity,row.data.linear_velocity);
+        if(row.device_world_inertia)input.active|=32u;
         // GPU preintegration clamps and applies gyroscopic correction
         // before masking angular axes, just like CPU source preintegration.
         pack(input.angular_velocity,actor.angular_velocity);

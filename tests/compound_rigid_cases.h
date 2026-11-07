@@ -226,7 +226,25 @@ inline void compound_contact_lifetimes(World& world,World* reference) {
         world.step(1.0f/240.0f);
         if(reference) {
             reference->step(1.0f/240.0f);
-            compound_compare_state(world.body_state(ids.body),reference->body_state(ref.body),4.0e-4f,"Compound retained response");
+            try {
+                compound_compare_state(world.body_state(ids.body),
+                    reference->body_state(ref.body),4.0e-4f,"Compound retained response");
+            }catch(const std::runtime_error& error) {
+                const auto gpu=world.body_state(ids.body);
+                const auto cpu=reference->body_state(ref.body);
+                const auto velocity=[](Vec3 v) {
+                    return "("+std::to_string(v.x)+","+
+                        std::to_string(v.y)+","+std::to_string(v.z)+")";
+                };
+                throw std::runtime_error(std::string(error.what())+
+                    " frame="+std::to_string(i)+
+                    " gpu_pos="+velocity(gpu.position)+
+                    " cpu_pos="+velocity(cpu.position)+
+                    " gpu_vel="+velocity(gpu.velocity)+
+                    " cpu_vel="+velocity(cpu.velocity)+
+                    " gpu_events="+std::to_string(world.contact_events().size())+
+                    " cpu_events="+std::to_string(reference->contact_events().size()));
+            }
         }
     }
     world.remove_body(ids.body);world.remove_body(ids.ground);
