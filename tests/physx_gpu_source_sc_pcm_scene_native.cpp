@@ -2034,7 +2034,7 @@ void verify_gpu_wide_island_solver(
             } catch(const std::runtime_error&) {
                 const auto actual_forces=gpu.solved_normal_impulses();
                 const auto expected_forces=cpu.solved_normal_impulses();
-                float max_force_difference=0.f;
+                double max_force_difference=0.0;
                 if(actual_forces.size()==expected_forces.size())
                     for(std::size_t k=0;k<actual_forces.size();++k)
                         max_force_difference=std::max(
