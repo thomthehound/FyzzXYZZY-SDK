@@ -453,8 +453,10 @@ public:
                     "Source Dy rigid actor local-pose pool exceeds GPU view");
             actor_local_host_.resize(capacity);
             actor_local_valid_.resize(capacity,0u);
-            actor_locals_.allocateCopyOldDataAsync(
-                capacity*sizeof(SourceDyActorLocalNative),stream_,PX_FL);
+            actor_locals_.allocateCopyPrefixAsync(
+                capacity*sizeof(SourceDyActorLocalNative)+127u,
+                actor_local_capacity_*sizeof(SourceDyActorLocalNative),
+                stream_,PX_FL);
             actor_local_capacity_=capacity;
         }
         for(std::size_t ordinal=0u;ordinal<integration.size();++ordinal) {
