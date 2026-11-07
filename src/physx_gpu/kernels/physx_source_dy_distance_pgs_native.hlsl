@@ -1026,6 +1026,71 @@ static const uint initializeBodiesTile=9u;
 
 // Native Sc resolves inverse mass through the persistent actor-local
 // pool. Standalone Dy callers retain their explicit inverse-mass stream.
+// CmUtils::transformInertiaTensor(sqrt(invI), massPose.q) is prepared
+// directly from native Dy's resident actor mass frame for contact-only islands.
+// Source joint-island rows continue consuming their CPU-prepared tensor.
+// Preserve the ordered PxQuat and PxQuat::rotate products used by
+// CmUtils::transformInertiaTensor at the iterative contact boundary.
+float4 sourceDyMassOrientationOrdered(float4 a,float4 b) {
+    precise float x=((a.w*b.x+b.w*a.x)+a.y*b.z)-a.z*b.y;
+    precise float y=((a.w*b.y+b.w*a.y)+a.z*b.x)-a.x*b.z;
+    precise float z=((a.w*b.z+b.w*a.z)+a.x*b.y)-a.y*b.x;
+    precise float w=((a.w*b.w-a.x*b.x)-a.y*b.y)-a.z*b.z;
+    return float4(x,y,z,w);
+}
+float3 sourceDyRotateOrdered(float4 q,float3 v) {
+    precise float cx=q.y*v.z-q.z*v.y;
+    precise float cy=q.z*v.x-q.x*v.z;
+    precise float cz=q.x*v.y-q.y*v.x;
+    precise float tx=cx*2.0f,ty=cy*2.0f,tz=cz*2.0f;
+    precise float dx=q.y*tz-q.z*ty;
+    precise float dy=q.z*tx-q.x*tz;
+    precise float dz=q.x*ty-q.y*tx;
+    precise float x=(v.x+q.w*tx)+dx;
+    precise float y=(v.y+q.w*ty)+dy;
+    precise float z=(v.z+q.w*tz)+dz;
+    return float3(x,y,z);
+}
+bool sourceDyPrepareWorldInertia(uint ordinal) {
+    const uint input=p.integrationBias+40u+ordinal*76u;
+    // Bit 14 does not overlap velocity changes [8:13] or force mods [16:27].
+    if((arena.Load(input+44u)&0x4000u)==0u)return true;
+    const uint local=arena.Load(input+60u);
+    if(local==invalidBody)return false;
+    const float3 inverseI=asfloat(scActorLocals.Load3(local+48u));
+    if(!all(isfinite(inverseI)) || any(inverseI<0.0f))return false;
+    const float3 lengths=sqrt(inverseI);
+    const float4 actorAxes=asfloat(scActorLocals.Load4(local+128u));
+    const float4 massAxes=asfloat(scActorLocals.Load4(local+12u));
+    const float4 q=sourceDyMassOrientationOrdered(actorAxes,massAxes);
+    if(!all(isfinite(q)))return false;
+    float3 c0,c1,c2;
+    if(q.x==0.0f && q.y==0.0f && q.z==0.0f && q.w==1.0f) {
+        c0=float3(lengths.x,0.0f,0.0f);
+        c1=float3(0.0f,lengths.y,0.0f);
+        c2=float3(0.0f,0.0f,lengths.z);
+    }else {
+        const float3 rx=sourceDyRotateOrdered(q,float3(1.0f,0.0f,0.0f));
+        const float3 ry=sourceDyRotateOrdered(q,float3(0.0f,1.0f,0.0f));
+        const float3 rz=sourceDyRotateOrdered(q,float3(0.0f,0.0f,1.0f));
+        precise float xx=(lengths.x*rx.x*rx.x+lengths.y*ry.x*ry.x)+lengths.z*rz.x*rz.x;
+        precise float yy=(lengths.x*rx.y*rx.y+lengths.y*ry.y*ry.y)+lengths.z*rz.y*rz.y;
+        precise float zz=(lengths.x*rx.z*rx.z+lengths.y*ry.z*ry.z)+lengths.z*rz.z*rz.z;
+        precise float xy=(lengths.x*rx.x*rx.y+lengths.y*ry.x*ry.y)+lengths.z*rz.x*rz.y;
+        precise float xz=(lengths.x*rx.x*rx.z+lengths.y*ry.x*ry.z)+lengths.z*rz.x*rz.z;
+        precise float yz=(lengths.x*rx.y*rx.z+lengths.y*ry.y*ry.z)+lengths.z*rz.y*rz.z;
+        c0=float3(xx,xy,xz);
+        c1=float3(xy,yy,yz);
+        c2=float3(xz,yz,zz);
+    }
+    if(!all(isfinite(c0)) || !all(isfinite(c1)) ||
+       !all(isfinite(c2)))return false;
+    arena.Store3(input,asuint(c0));
+    arena.Store3(input+12u,asuint(c1));
+    arena.Store3(input+24u,asuint(c2));
+    return true;
+}
+
 void initializeSolverBody(uint ordinal,uint source) {
     const uint target=p.bodyBias+ordinal*52u;
     const uint4 zero=uint4(0u,0u,0u,0u);
@@ -1058,7 +1123,8 @@ void main(uint3 group:SV_GroupID,uint3 lane:SV_GroupThreadID) {
         const uint ordinal=index*128u+lane.x;
         if(ordinal<p.bodyCount) {
             initializeSolverBody(ordinal,arena.Load(p.integrationBias+36u));
-            if(!sourceDyPreIntegrateBody(ordinal))
+            if(!sourceDyPreIntegrateBody(ordinal) ||
+               !sourceDyPrepareWorldInertia(ordinal))
                 sourceDyInvalidatePreparedVelocity(ordinal);
         }
         return;
@@ -1081,7 +1147,8 @@ void main(uint3 group:SV_GroupID,uint3 lane:SV_GroupThreadID) {
             const uint source=arena.Load(p.integrationBias+36u);
             if(source!=0u && ordinal<p.bodyCount) {
                 initializeSolverBody(ordinal,source);
-                if(!sourceDyPreIntegrateBody(ordinal))
+                if(!sourceDyPreIntegrateBody(ordinal) ||
+                   !sourceDyPrepareWorldInertia(ordinal))
                     sourceDyInvalidatePreparedVelocity(ordinal);
             }
             return;
@@ -1095,7 +1162,8 @@ void main(uint3 group:SV_GroupID,uint3 lane:SV_GroupThreadID) {
             if(source!=0u) {
                 if(lane.x<p.bodyCount) {
                     initializeSolverBody(lane.x,source);
-                    if(!sourceDyPreIntegrateBody(lane.x))
+                    if(!sourceDyPreIntegrateBody(lane.x) ||
+                       !sourceDyPrepareWorldInertia(lane.x))
                         sourceDyInvalidatePreparedVelocity(lane.x);
                 }
                 AllMemoryBarrierWithGroupSync();

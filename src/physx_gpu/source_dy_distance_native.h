@@ -55,6 +55,9 @@ static_assert(sizeof(SourceDyPackedIntegrationNative)==76u &&
               offsetof(SourceDyPackedIntegrationNative,velocity_offset)==64u &&
               offsetof(SourceDyPackedIntegrationNative,force_offset)==68u &&
               offsetof(SourceDyPackedIntegrationNative,counted_interactions)==72u);
+inline constexpr std::uint32_t source_dy_device_inertia_flag=0x4000u;
+static_assert((source_dy_device_inertia_flag&
+    ((63u<<8u)|(4095u<<16u)|1u|8u|16u|32u|64u|128u))==0u);
 struct SourceDyPreparedVelocityNative {
     float linear[3]{},angular[3]{};
 };
@@ -105,6 +108,7 @@ struct SourceDyLaunchStats {
     std::size_t device_initialized_bodies=0u;
     std::size_t device_body_upload_bytes=0u;
     std::size_t device_initialization_dispatches=0u;
+    std::size_t device_world_inertia_bodies=0u;
     std::size_t device_world_motion_bodies=0u;
     std::size_t actor_local_upload_bytes=0u;
     std::size_t actor_local_upload_spans=0u;
@@ -494,6 +498,7 @@ public:
         packed_integration_.clear();
         host_poses_.clear();
         last_resident_pose_count_=0u;
+        last_schedule_.device_world_inertia_bodies=0u;
         last_schedule_.actor_local_upload_bytes=0u;
         last_schedule_.actor_local_upload_spans=0u;
         last_schedule_.reused_actor_local_poses=0u;
@@ -549,7 +554,12 @@ public:
             record.lock_flags=input.lock_flags;
             record.seconds=input.seconds;
             record.active=(input.active&1u)|
-                (device_world_motion && (input.active&1u) ?(8u|128u):0u);
+                (device_world_motion && (input.active&1u) ?(8u|128u):0u)|
+                (device_world_motion && (input.active&32u) ?source_dy_device_inertia_flag:0u);
+            // Bits [8:13] are exact authored velocity-change components;
+            // bit 14 is reserved for device inertia preparation.
+            if((record.active&source_dy_device_inertia_flag)!=0u)
+                ++last_schedule_.device_world_inertia_bodies;
             record.source_element=input.source_element;
             record.source_shape_count=input.source_shape_count;
             record.counted_interactions=input.counted_interactions;
