@@ -59,7 +59,7 @@ constexpr std::array<std::string_view,
 constexpr std::array<std::string_view,
     static_cast<std::size_t>(NativeGpuPcmStage::Count)> pcm_stage_names{{
     "Candidates","EpaCompact","GjkContact","EpaContact","FaceContacts",
-    "GjkReduce","GjkPublish","EpaArgsReset","GjkPrimitive","ContactIslands"
+    "GjkReduce","GjkPublish","EpaArgsReset","GjkPrimitive","ContactIslands","ContactJournal"
 }};
 constexpr std::array<std::string_view,
     static_cast<std::size_t>(NativeGpuAggregateStage::Count)> aggregate_stage_names{{
