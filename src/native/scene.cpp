@@ -7358,6 +7358,8 @@ void Scene::prepare_constraints(float seconds) {
             }
             input.distance_length=joint.distance_length;
             input.kind=static_cast<std::uint32_t>(joint.kind);
+            input.source_slot=edge.constraint_id;
+            input.source_generation=joint.generation;
             if(gpu_dy_joint_inputs_.size()>=std::numeric_limits<std::uint32_t>::max())
                 throw std::overflow_error("Native GPU joint admission count overflow");
             const auto source_index=static_cast<std::uint32_t>(gpu_dy_joint_inputs_.size());
