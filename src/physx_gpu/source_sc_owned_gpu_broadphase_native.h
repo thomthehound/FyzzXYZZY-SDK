@@ -317,7 +317,9 @@ public:
                             anchor_impulses,device_initial_bodies,
                             device_world_motion,
                             device_unconstrained_preparation,sleep_states,
-                            joint_inputs);
+                            joint_inputs,
+                            pcm_?pcm_->graph_address():0u,
+                            pcm_?pcm_->graph_storage_bytes():0u);
         ++dy_distance_dispatch_count_;
     }
     std::size_t dy_resident_pose_count() const noexcept {
