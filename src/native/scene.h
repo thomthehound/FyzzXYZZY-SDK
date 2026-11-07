@@ -329,7 +329,8 @@ public:
         std::span<const GpuDyContactPrepPair>,
         std::span<GpuDyBodyIntegrationInput>,
         std::span<GpuDyIntegratedPose>,bool /*device_partitions*/=false,
-        std::span<GpuDyFrictionAnchorImpulse> /*anchor_impulses*/={}) {
+        std::span<GpuDyFrictionAnchorImpulse> /*anchor_impulses*/={},
+        bool /*device_initial_bodies*/=false) {
         throw std::logic_error("Source GPU Dy shader is not installed");
     }
     // Sc's afterIntegration authorizes the source ElementSim device pose.

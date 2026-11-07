@@ -970,6 +970,10 @@ void verify_gpu_coupled_solver(
         require(schedule.device_colored_tasks>0u &&
                 schedule.device_colored_descriptors>0u,
             "Coupled Dy solver skipped device-owned constraint partitioning");
+        require(schedule.device_initialized_bodies>0u &&
+                schedule.device_body_upload_bytes==
+                    schedule.device_initialized_bodies*sizeof(float),
+            "Coupled Dy solver still uploads host-seeded body deltas");
         const auto prep_saving=producer->dy_contact_prep_upload_saving();
         // Compare writeback with the source-sized upload baseline. The
         // GPU contact-prep payload is intentionally smaller now.
@@ -1894,12 +1898,18 @@ void verify_gpu_free_integration(
         require(cpu.contacts().size()==gpu.contacts().size(),
                 "Device-integrated free body changed contact admission");
         const bool contacts=producer->dy_pcm_device_contact_rows()!=0u;
+        const auto schedule=producer->dy_launch_stats();
         if(contacts) {
-            require(!released && producer->dy_launch_stats().dispatches==2u,
-                    "Mixed free and constrained bodies lost a Dy dispatch");
+            require(!released && schedule.dispatches==2u &&
+                    schedule.device_initialization_dispatches==0u &&
+                    schedule.device_initialized_bodies>0u &&
+                    schedule.device_body_upload_bytes==
+                        schedule.device_initialized_bodies*sizeof(float),
+                    "Mixed Dy skipped device initialization, PGS or free-body integration");
             touched=true;
         } else {
-            require(producer->dy_launch_stats().dispatches==1u &&
+            require(schedule.dispatches==1u &&
+                    schedule.device_initialized_bodies==0u &&
                     producer->dy_distance_transfer_bytes().second==
                         actual.size()*sizeof(native::GpuDyIntegratedPose),
                     "Free-only Dy staged solver rows or dispatched PGS");
@@ -2021,7 +2031,8 @@ void verify_gpu_wide_island_solver(
                     (connected_bodies+127u)/128u &&
                 schedule.tile_bytes<=schedule.device_colored_descriptors*
                     sizeof(native::GpuDyDistanceDescriptor) &&
-                schedule.dispatches>7u,
+                schedule.dispatches>7u &&
+                schedule.device_initialization_dispatches==0u,
                 "Connected Dy islands did not execute tiled conflict partitions");
         require(schedule.device_generated_bytes==
                     schedule.device_colored_descriptors*
@@ -2286,7 +2297,9 @@ void verify_gpu_high_degree_coloring(
                 schedule.wide_tasks==0u &&
                 schedule.max_partition_groups==1u &&
                 schedule.tile_bytes==0u &&
-                schedule.dispatches<=2u &&
+                schedule.dispatches==(b.size()<=128u?1u:2u) &&
+                schedule.device_initialization_dispatches==
+                    (b.size()<=128u?0u:1u) &&
                 producer->dy_gpu_integrated_body_count()==b.size() &&
                 gpu.contacts().size()==cpu.contacts().size() &&
                 !gpu.contacts().empty() &&
