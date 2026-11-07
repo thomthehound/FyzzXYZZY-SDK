@@ -134,7 +134,15 @@ void solveJoint(uint4 desc,uint errorAddress,bool biased) {
 // device contact preparation, friction correlation, and integrateCore.
 bool sourceDyMassPose(uint input,out float3 position,out float4 quaternion) {
     const uint pose=arena.Load(input+56u);
-    if(pose==invalidBody) {
+    if((arena.Load(input+44u)&128u)!=0u) {
+        const uint local=arena.Load(input+60u);
+        const float3 actorPosition=asfloat(scActorLocals.Load3(local+116u));
+        const float4 actorAxes=asfloat(scActorLocals.Load4(local+128u));
+        const float3 massLocal=asfloat(scActorLocals.Load3(local));
+        const float4 massAxes=asfloat(scActorLocals.Load4(local+12u));
+        position=actorPosition+sourceRigidRotate(actorAxes,massLocal);
+        quaternion=sourceRigidMultiply(actorAxes,massAxes);
+    }else if(pose==invalidBody) {
         const uint4 views=arena.Load4(p.integrationBias);
         const uint element=arena.Load(input+48u);
         if(element>=views.w)return false;
@@ -1002,8 +1010,13 @@ void integrateBody(uint ordinal) {
         scBounds.Store3(bound+12u,asuint(upper));
         element=scGeometry.Load(geometryIndex+48u);
     }
-    if(shapeCount==0u || element==0xffffffffu)
+    if(shapeCount==0u || element==0xffffffffu) {
+        if((inputFlags&128u)!=0u) {
+            scActorLocals.Store3(local+116u,asuint(nextPosition));
+            scActorLocals.Store4(local+128u,asuint(nextQuaternion));
+        }
         arena.Store(destination+28u,1u);
+    }
 }
 
 static const uint fusedTask=0u, normalTile=1u, frictionTile=2u;

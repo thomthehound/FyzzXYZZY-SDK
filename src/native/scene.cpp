@@ -8278,6 +8278,11 @@ void Scene::solve_gpu_distance_constraints(float seconds) {
         pack(input.pending_angular_acceleration,
              actor.pending_angular_acceleration);
         pack(input.position,mass_position(actor));
+        pack(input.actor_position,actor.position);
+        input.actor_orientation[0]=actor.orientation.x;
+        input.actor_orientation[1]=actor.orientation.y;
+        input.actor_orientation[2]=actor.orientation.z;
+        input.actor_orientation[3]=actor.orientation.w;
         const auto mass_q=mass_orientation(actor);
         input.orientation[0]=mass_q.x;input.orientation[1]=mass_q.y;
         input.orientation[2]=mass_q.z;input.orientation[3]=mass_q.w;
