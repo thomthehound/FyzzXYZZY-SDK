@@ -63,6 +63,7 @@ struct SourceDyLaunchStats {
     // are initialized by Dy before conflict coloring or PGS.
     std::size_t device_initialized_bodies=0u;
     std::size_t device_body_upload_bytes=0u;
+    std::size_t device_initialization_dispatches=0u;
 };
 
 // Dy's original per-task conflict partitions and prepared 1D rows are
@@ -714,9 +715,17 @@ public:
                 group+=count;
             }
         };
-        if(device_initial_bodies && !bodies.empty())
+        // Color consumes its own task dispatch before any PGS work;
+        // a single compact task has a workgroup barrier before its solve.
+        // Multiple compact task groups have no device-wide barrier.
+        if(device_initial_bodies && !bodies.empty() &&
+           wide_tasks_.empty() && tasks.size()!=1u) {
+            const auto before=last_schedule_.dispatches;
             launch(Launch::InitializeBodies,
                 {0u,(bodies.size()+127u)/128u});
+            last_schedule_.device_initialization_dispatches=
+                last_schedule_.dispatches-before;
+        }
         if(device_partitions && !wide_tasks_.empty())
             launch(Launch::Color,{0u,tasks.size()});
         launch(Launch::Fused,fused_tiles_);

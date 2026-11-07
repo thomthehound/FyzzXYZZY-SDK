@@ -700,6 +700,17 @@ static const uint partitionTile=3u, motionTile=4u, integrationTile=5u;
 static const uint publishErrors=6u, freeBodyTile=7u, colorTile=8u;
 static const uint initializeBodiesTile=9u;
 
+// Only the initial inverse mass enters from Sc. Each workgroup owns
+// disjoint body ordinals before any solver consumer reads the records.
+void initializeSolverBody(uint ordinal,uint source) {
+    const uint target=p.bodyBias+ordinal*52u;
+    const uint4 zero=uint4(0u,0u,0u,0u);
+    arena.Store4(target,zero);
+    arena.Store4(target+16u,zero);
+    arena.Store4(target+32u,zero);
+    arena.Store(target+48u,arena.Load(source+ordinal*4u));
+}
+
 void publishTaskError(uint task,uint error) {
     arena.Store(p.writebackBias+p.resultTaskOffset+task*4u,error);
 }
@@ -713,15 +724,8 @@ void main(uint3 group:SV_GroupID,uint3 lane:SV_GroupThreadID) {
     const uint index=p.launchBegin+group.x;
     if(phase==initializeBodiesTile) {
         const uint ordinal=index*128u+lane.x;
-        if(ordinal<p.bodyCount) {
-            const uint source=arena.Load(p.integrationBias+36u);
-            const uint target=p.bodyBias+ordinal*52u;
-            const uint4 zero=uint4(0u,0u,0u,0u);
-            arena.Store4(target,zero);
-            arena.Store4(target+16u,zero);
-            arena.Store4(target+32u,zero);
-            arena.Store(target+48u,arena.Load(source+ordinal*4u));
-        }
+        if(ordinal<p.bodyCount)
+            initializeSolverBody(ordinal,arena.Load(p.integrationBias+36u));
         return;
     }
     const bool freeBody=phase==freeBodyTile;
@@ -734,6 +738,25 @@ void main(uint3 group:SV_GroupID,uint3 lane:SV_GroupThreadID) {
         bodies=uint2(begin,min(begin+128u,iter));
     } else {
         const uint4 schedule=arena.Load4(p.integrationBias+16u);
+        // A wide schedule already dispatches one color group per task.
+        // Compact single-task scenes initialize inside their fused group.
+        // The remaining compact multi-task case retains the ordered
+        // initialization dispatch: independent groups cannot synchronize
+        // before another group's solver reads its body state.
+        if(schedule.z!=0u &&
+           (phase==colorTile ||
+            (fused && !precolored && schedule.z==1u))) {
+            const uint source=arena.Load(p.integrationBias+36u);
+            if(source!=0u) {
+                const uint batches=(p.bodyCount+127u)/128u;
+                for(uint batch=index;batch<batches;batch+=schedule.z) {
+                    const uint ordinal=batch*128u+lane.x;
+                    if(ordinal<p.bodyCount)
+                        initializeSolverBody(ordinal,source);
+                }
+                if(fused)AllMemoryBarrierWithGroupSync();
+            }
+        }
         if(phase==publishErrors) {
             const uint task=index*128u+lane.x;
             if(task<schedule.z)
