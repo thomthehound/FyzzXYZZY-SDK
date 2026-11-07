@@ -475,6 +475,9 @@ public:
     std::size_t last_graph_upload_bytes() const noexcept {
         return last_graph_upload_bytes_;
     }
+    std::size_t graph_storage_bytes() const noexcept {
+        return graph_pair_host_.empty()?0u:graph_.getSize();
+    }
     std::uint32_t graph_rigid_count() const noexcept {
         return graph_pair_host_.empty()?0u:graph_rigid_count_;
     }
