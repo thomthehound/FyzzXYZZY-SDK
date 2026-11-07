@@ -1563,8 +1563,9 @@ void verify_gpu_distance_solver(
             "Source GPU Dy 1D fixture unexpectedly generated Gu contacts");
         require(producer->dy_distance_dispatch_count()==
                     static_cast<std::uint64_t>(frame+1) &&
-                producer->dy_gpu_integrated_body_count()>0u,
-            "Source GPU Dy 1D task never published device body motion");
+                producer->dy_gpu_integrated_body_count()>0u &&
+                producer->dy_launch_stats().device_joint_prepared_rows==3u,
+            "Source GPU 1D joint rows did not reach device preparation");
         const auto [uploaded,downloaded]=
             producer->dy_distance_transfer_bytes();
         // Five dynamic solver bodies and three disjoint task reports.
@@ -2107,8 +2108,9 @@ void verify_gpu_wide_island_solver(
         gpu.step(dt);
         const auto schedule=producer->dy_launch_stats();
         require(schedule.device_colored_tasks>=1u &&
-                schedule.device_colored_descriptors>=connected_bodies,
-            "Wide Dy task retained CPU-generated conflict partitions");
+                schedule.device_colored_descriptors>=connected_bodies &&
+                schedule.device_joint_prepared_rows>=connected_bodies/2u,
+            "Wide Dy task lost device joint preparation or coloring");
         // Once the assembly moves, individual supports can lose touch.
         // Joint connectivity must still supply a wide partition.
         const auto width=frame==0u?connected_bodies-2u:connected_bodies/2u;
