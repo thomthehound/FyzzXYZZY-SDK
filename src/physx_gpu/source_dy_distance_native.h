@@ -55,6 +55,9 @@ static_assert(sizeof(SourceDyPackedIntegrationNative)==76u &&
               offsetof(SourceDyPackedIntegrationNative,velocity_offset)==64u &&
               offsetof(SourceDyPackedIntegrationNative,force_offset)==68u &&
               offsetof(SourceDyPackedIntegrationNative,counted_interactions)==72u);
+inline constexpr std::uint32_t source_dy_device_inertia_flag=0x4000u;
+static_assert((source_dy_device_inertia_flag&
+    ((63u<<8u)|(4095u<<16u)|1u|8u|16u|32u|64u|128u))==0u);
 struct SourceDyPreparedVelocityNative {
     float linear[3]{},angular[3]{};
 };
@@ -552,10 +555,10 @@ public:
             record.seconds=input.seconds;
             record.active=(input.active&1u)|
                 (device_world_motion && (input.active&1u) ?(8u|128u):0u)|
-                (device_world_motion && (input.active&32u) ?0x4000u:0u);
+                (device_world_motion && (input.active&32u) ?source_dy_device_inertia_flag:0u);
             // Bits [8:13] are exact authored velocity-change components;
             // bit 14 is reserved for device inertia preparation.
-            if((record.active&0x4000u)!=0u)
+            if((record.active&source_dy_device_inertia_flag)!=0u)
                 ++last_schedule_.device_world_inertia_bodies;
             record.source_element=input.source_element;
             record.source_shape_count=input.source_shape_count;
