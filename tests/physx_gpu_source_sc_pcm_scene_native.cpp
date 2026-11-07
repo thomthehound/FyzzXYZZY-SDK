@@ -2056,7 +2056,7 @@ void verify_gpu_wide_island_solver(
                          <<" gpu_normal_rows="<<actual_forces.size()
                          <<" cpu_normal_rows="<<expected_forces.size()
                          <<" max_normal_force_error="
-                         <<max_force_difference<<'\\n';
+                         <<max_force_difference<<'\n';
                 throw;
             }
         }
