@@ -8232,6 +8232,7 @@ void Scene::solve_gpu_distance_constraints(float seconds) {
     const auto pack_integration=[&](BodyId id,const Actor& actor,
                                    GpuDyBodyIntegrationInput& input) {
         input.source_actor=id;
+        input.source_inverse_mass=actor.inverse_mass;
         pack(input.position,mass_position(actor));
         const auto mass_q=mass_orientation(actor);
         input.orientation[0]=mass_q.x;input.orientation[1]=mass_q.y;

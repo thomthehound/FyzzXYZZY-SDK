@@ -174,13 +174,15 @@ struct GpuDyBodyIntegrationInput {
     std::uint32_t source_shape_count=0;
     // Stable Sc actor identity, independent of transient Dy row indices.
     std::uint32_t source_actor=0xffffffffu;
+    float source_inverse_mass=0.0f;
 };
-static_assert(sizeof(GpuDyBodyIntegrationInput)==140u &&
+static_assert(sizeof(GpuDyBodyIntegrationInput)==144u &&
               offsetof(GpuDyBodyIntegrationInput,lock_flags)==88u &&
               offsetof(GpuDyBodyIntegrationInput,mass_local_position)==104u &&
               offsetof(GpuDyBodyIntegrationInput,mass_local_orientation)==116u &&
               offsetof(GpuDyBodyIntegrationInput,source_shape_count)==132u &&
-              offsetof(GpuDyBodyIntegrationInput,source_actor)==136u);
+              offsetof(GpuDyBodyIntegrationInput,source_actor)==136u &&
+              offsetof(GpuDyBodyIntegrationInput,source_inverse_mass)==140u);
 struct GpuDyIntegratedPose {
     float position[3]{},orientation[4]{};
     std::uint32_t valid=0u;
