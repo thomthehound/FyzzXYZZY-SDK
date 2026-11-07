@@ -6798,7 +6798,6 @@ void Scene::prepare_solver_bodies() {
     const bool gpu_world_inertia=gpu_broadphase_ &&
         gpu_broadphase_->has_gpu_dy_distance();
     for(std::size_t island:active_accurate_island_batches_) {
-        const BodyId root=accurate_island_nodes_[accurate_island_offsets_[island]];
         // Contact and joint geometry consume the same resident Dy inertia.
         // CPU execution alone requires a host world-response matrix.
         const bool device_inertia=gpu_world_inertia;
