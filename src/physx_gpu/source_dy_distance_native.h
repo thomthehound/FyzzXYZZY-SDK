@@ -48,13 +48,16 @@ struct SourceDyPackedIntegrationNative {
     std::uint32_t velocity_offset=0xffffffffu;
     std::uint32_t force_offset=0xffffffffu;
     std::uint32_t counted_interactions=0u;
+    // Stable actor ID needed by GPU Sc island task admission.
+    std::uint32_t source_actor=0xffffffffu;
 };
-static_assert(sizeof(SourceDyPackedIntegrationNative)==76u &&
+static_assert(sizeof(SourceDyPackedIntegrationNative)==80u &&
               offsetof(SourceDyPackedIntegrationNative,pose_index)==56u &&
               offsetof(SourceDyPackedIntegrationNative,actor_local_offset)==60u &&
               offsetof(SourceDyPackedIntegrationNative,velocity_offset)==64u &&
               offsetof(SourceDyPackedIntegrationNative,force_offset)==68u &&
-              offsetof(SourceDyPackedIntegrationNative,counted_interactions)==72u);
+              offsetof(SourceDyPackedIntegrationNative,counted_interactions)==72u &&
+              offsetof(SourceDyPackedIntegrationNative,source_actor)==76u);
 inline constexpr std::uint32_t source_dy_device_inertia_flag=0x4000u;
 static_assert((source_dy_device_inertia_flag&
     ((63u<<8u)|(4095u<<16u)|1u|8u|16u|32u|64u|128u))==0u);
@@ -152,17 +155,17 @@ public:
         max_view_=info.max_storage_buffer_range;
         compute::ComputePipelineDesc pipeline{};
         pipeline.shader=std::move(shader);
-        pipeline.storage_buffer_binding_count=6u;
+        pipeline.storage_buffer_binding_count=7u;
         pipeline.storage_buffer_views.assign(
-            6u,compute::StorageBufferViewKind::RawReadWrite);
+            7u,compute::StorageBufferViewKind::RawReadWrite);
         pipeline.push_constant_bytes=128u;
         pipeline_=context_.create_compute_pipeline(pipeline);
         if(convex_shader) {
             try {
                 pipeline.shader=std::move(*convex_shader);
-                pipeline.storage_buffer_binding_count=7u;
+                pipeline.storage_buffer_binding_count=8u;
                 pipeline.storage_buffer_views.assign(
-                    7u,compute::StorageBufferViewKind::RawReadWrite);
+                    8u,compute::StorageBufferViewKind::RawReadWrite);
                 convex_pipeline_=context_.create_compute_pipeline(pipeline);
             }catch(...) {
                 context_.destroy_compute_pipeline(pipeline_);
@@ -227,7 +230,9 @@ public:
                bool device_world_motion=false,
                bool device_unconstrained_preparation=false,
                std::span<native::GpuDySleepState> sleep_states={},
-               std::span<const native::GpuDyJointInput> joint_inputs={}) {
+               std::span<const native::GpuDyJointInput> joint_inputs={},
+               CudaDeviceAddressMap::Address sc_graph=0u,
+               std::size_t sc_graph_bytes=0u) {
         if(integration.size()<bodies.size() ||
            integrated_poses.size()!=integration.size() ||
            (tasks.empty() && integration.size()==bodies.size()))
@@ -633,6 +638,7 @@ public:
             record.source_element=input.source_element;
             record.source_shape_count=input.source_shape_count;
             record.counted_interactions=input.counted_interactions;
+            record.source_actor=input.source_actor;
             if(device_unconstrained_preparation && (input.active&1u))
                 record.active|=64u;
             if(input.active&1u) {
@@ -783,7 +789,7 @@ public:
             }
             packed_integration_.push_back(record);
         }
-        constexpr std::size_t integration_header_bytes=40u;
+        constexpr std::size_t integration_header_bytes=48u;
         if(integration.size()>
            (std::numeric_limits<std::uint32_t>::max()-integration_header_bytes)/
                sizeof(SourceDyPackedIntegrationNative))
@@ -1064,7 +1070,7 @@ public:
         }
         if(has_shape_targets && (!shape_cache || !shape_bounds || !shape_geometry))
             throw std::logic_error("Source Sc GPU integration shape buffers are missing");
-        std::array<std::uint32_t,10> integration_header{
+        std::array<std::uint32_t,12> integration_header{
             0u,0u,0u,shape_capacity,narrow(body_ordinals.size()),
             narrow(descriptors.size()),narrow(tasks.size()),
             device_partitions?narrow(std::size_t(params[28])+offsets[15]):
@@ -1073,7 +1079,7 @@ public:
             device_initial_bodies
                 ? (device_world_motion?invalid
                     :narrow(std::size_t(params[28])+offsets[12]+mass_offset))
-                :0u};
+                :0u,0u,0u};
         const auto bind_shape=[&](CudaDeviceAddressMap::Address source,
                                   std::uint32_t stride,std::uint32_t slot,
                                   compute::BufferAccess access,
@@ -1102,13 +1108,23 @@ public:
                 ?actor_local_capacity_*sizeof(SourceDyActorLocalNative):total,
             alignment_,5u,compute::BufferAccess::Read,
             actor_local_bias,max_view_));
-        // Convex geometry shares the original Dy pipeline but follows
-        // the actor-local pool in the same source descriptor set.
+        // The graph is produced by the PCM contact/constraint EdgeIndex
+        // pass and consumed before any source task is colored or solved.
+        // Dy-only fixtures without PCM never consult the borrowed root map.
+        if(sc_graph && !sc_graph_bytes)
+            throw std::invalid_argument("Sc island graph has no device range");
+        dispatch.buffers.push_back(source_native_view(
+            addresses_,sc_graph?sc_graph:address,
+            sc_graph?sc_graph_bytes:total,
+            alignment_,6u,compute::BufferAccess::Read,
+            integration_header[10],max_view_));
+        integration_header[11]=sc_graph?1u:0u;
+        // Convex geometry shares this source descriptor set after graph.
         if(convex_vertex_count)
             dispatch.buffers.push_back(source_native_view(
                 addresses_,convex_vertices,
                 source_allocation_bytes(convex_vertex_count,12u),
-                alignment_,6u,compute::BufferAccess::Read,
+                alignment_,7u,compute::BufferAccess::Read,
                 params[27],max_view_));
         for(auto& record:packed_integration_) {
             if(record.actor_local_offset!=invalid) {
