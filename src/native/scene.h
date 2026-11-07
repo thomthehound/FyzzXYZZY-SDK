@@ -223,6 +223,11 @@ struct GpuDyFrictionWriteback {
 };
 static_assert(sizeof(GpuDyFrictionWriteback)==16u &&
               offsetof(GpuDyFrictionWriteback,applied_force)==12u);
+// The GPU combines the two solved tangent rows at each source anchor.
+struct GpuDyFrictionAnchorImpulse {
+    float world[3]{};
+};
+static_assert(sizeof(GpuDyFrictionAnchorImpulse)==12u);
 // The GPU friction row retains source PxReal coefficients and impulses.
 struct GpuDyFrictionRow {
     float tangent[3]{},angular_a[3]{},angular_b[3]{};
@@ -323,7 +328,8 @@ public:
         std::span<const std::uint32_t>,
         std::span<const GpuDyContactPrepPair>,
         std::span<GpuDyBodyIntegrationInput>,
-        std::span<GpuDyIntegratedPose>,bool /*device_partitions*/=false) {
+        std::span<GpuDyIntegratedPose>,bool /*device_partitions*/=false,
+        std::span<GpuDyFrictionAnchorImpulse> /*anchor_impulses*/={}) {
         throw std::logic_error("Source GPU Dy shader is not installed");
     }
     // Sc's afterIntegration authorizes the source ElementSim device pose.
@@ -1967,7 +1973,7 @@ private:
     std::vector<GpuDyDistanceTask> gpu_dy_tasks_;
     std::vector<float> gpu_dy_contact_forces_;
     std::vector<GpuDyGuContactInput> gpu_dy_gu_inputs_;
-    std::vector<GpuDyFrictionWriteback> gpu_dy_friction_writeback_;
+    std::vector<GpuDyFrictionAnchorImpulse> gpu_dy_friction_impulses_;
     std::vector<GpuDyFrictionAnchorInput> gpu_dy_friction_anchors_;
     std::vector<GpuDyContactPatch> gpu_dy_patches_;
     std::vector<GpuDyContactManifold> gpu_dy_manifolds_;

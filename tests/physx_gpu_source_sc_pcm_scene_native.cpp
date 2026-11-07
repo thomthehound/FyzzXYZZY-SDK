@@ -989,6 +989,9 @@ void verify_gpu_coupled_solver(
         require(producer->dy_friction_prepared_rows()>0u &&
                 producer->dy_friction_anchor_upload_bytes()==0u,
             "Resident PCM friction anchors were retransferred to GPU Dy");
+        require(producer->dy_friction_writeback_bytes()*2u==
+                    producer->dy_friction_prepared_rows()*12u,
+            "Source GPU Dy downloaded tangent rows instead of anchor impulses");
         require(producer->dy_pcm_contact_upload_bytes_saved()==
                     device_rows*sizeof(native::GpuDyContactPoint),
                 "Source PCM-derived Dy contacts still upload CPU shadow rows");
