@@ -10238,11 +10238,7 @@ void Scene::integrate_solver_task(
             lock_linear_axes(actor.velocity,actor.dynamics.lock_flags);
             Vec3 motion_linear = actor.velocity;
             Vec3 motion_angular = actor.angular_velocity;
-            if(solved_contact && gpu_dy_pose_ready_) {
-                const auto& result=gpu_dy_bodies_[actor.solver_row_index];
-                motion_linear=result.position_linear_velocity();
-                motion_angular=result.position_angular_velocity();
-            }else if(solved_contact) {
+            if(solved_contact && !gpu_dy_pose_ready_) {
                 const auto& row = prepared_solver_row(id);
                 const Vec3& delta = row.motion_linear_delta;
                 motion_linear = {
@@ -10262,9 +10258,12 @@ void Scene::integrate_solver_task(
             }
             // integrateCore also locks position-phase motion separately
             // from the final unbiased velocity publication.
-            lock_linear_axes(motion_linear,actor.dynamics.lock_flags);
-            if (!finite(motion_linear) || !finite(motion_angular))
-                throw std::overflow_error("Native position-iteration motion overflow");
+            if(!gpu_dy_pose_ready_) {
+                lock_linear_axes(motion_linear,actor.dynamics.lock_flags);
+                if(!finite(motion_linear) || !finite(motion_angular))
+                    throw std::overflow_error(
+                        "Native position-iteration motion overflow");
+            }
             Vec3 p{};
             Quat q{};
             if(gpu_dy_pose_ready_) {
