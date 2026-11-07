@@ -1970,6 +1970,29 @@ void verify_gpu_free_integration(
             "Device-integrated rigid pose did not publish its scene query");
     }
     require(touched && released,"Free body did not enter and leave GPU PCM response");
+    // A retired Sc BodyId must never supply the metadata for a newly
+    // admitted actor, even when the source device pool grows this frame.
+    cpu.remove(expected.back());
+    gpu.remove(actual.back());
+    const auto replacement_cpu=cpu.add_dynamic_box(
+        {0.2f,0.3f,0.4f},{1250.f,5.f,0.f},1.f);
+    const auto replacement_gpu=gpu.add_dynamic_box(
+        {0.2f,0.3f,0.4f},{1250.f,5.f,0.f},1.f);
+    RigidBodyDynamics replacement_dynamics{};
+    replacement_dynamics.gravity_enabled=false;
+    cpu.set_dynamics(replacement_cpu,replacement_dynamics);
+    gpu.set_dynamics(replacement_gpu,replacement_dynamics);
+    cpu.step(1.f/30.f);
+    gpu.step(1.f/30.f);
+    const auto after_replacement=producer->dy_launch_stats();
+    require(after_replacement.actor_local_upload_bytes==
+                sizeof(physx_gpu::SourceDyHostPoseNative) &&
+            after_replacement.actor_local_upload_spans==1u &&
+            after_replacement.reused_actor_local_poses==actual.size()-1u,
+        "GPU Dy retired actor metadata leaked into newly admitted rigid");
+    test::compound_compare_state(
+        gpu.body_state(replacement_gpu),cpu.body_state(replacement_cpu),
+        0.002f,"Resident GPU Dy actor replacement");
 }
 
 void verify_gpu_wide_island_solver(
