@@ -175,7 +175,7 @@ float3 sourceDyPreparedVelocity(uint input,bool angular) {
     if(changed==63u)
         return asfloat(arena.Load3(arena.Load(input+64u)+component));
     const uint local=arena.Load(input+60u);
-    float3 velocity=asfloat(scActorLocals.Load3(local+32u+component));
+    float3 velocity=asfloat(scActorLocals.Load3(local+64u+component));
     if(changed==0u)return velocity;
     const uint source=arena.Load(input+64u);
     [unroll]
@@ -513,8 +513,8 @@ void prepareJointRows(uint4 desc,uint lane,uint endError) {
     const uint massRow=p.distanceBias+desc.x*64u;
     const float inverseMassA=asfloat(arena.Load(massRow+36u));
     const float inverseMassB=asfloat(arena.Load(massRow+40u));
-    const uint inputA=p.integrationBias+40u+desc.y*68u;
-    const uint inputB=p.integrationBias+40u+desc.z*68u;
+    const uint inputA=p.integrationBias+40u+desc.y*72u;
+    const uint inputB=p.integrationBias+40u+desc.z*72u;
     float3 va=0.0f,vb=0.0f,wa=0.0f,wb=0.0f;
     if(desc.y!=invalidBody) {
         va=sourceDyPreparedVelocity(inputA,false);
@@ -647,7 +647,7 @@ void saveMotion(uint index,uint endError) {
 void integrateBody(uint ordinal) {
     float3 linearDelta=0.0f;
     float3 angularState=0.0f;
-    const uint input=p.integrationBias+40u+ordinal*68u;
+    const uint input=p.integrationBias+40u+ordinal*72u;
     const uint inputFlags=arena.Load(input+44u);
     [branch]
     if(ordinal<p.bodyCount) {
@@ -750,8 +750,8 @@ void integrateBody(uint ordinal) {
     nextPosition-=sourceRigidRotate(nextQuaternion,localCenter);
     if(!all(isfinite(nextPosition)) || !all(isfinite(nextQuaternion)))return;
     if((inputFlags&8u)!=0u) {
-        scActorLocals.Store3(local+32u,asuint(finalLinear));
-        scActorLocals.Store3(local+44u,asuint(finalAngular));
+        scActorLocals.Store3(local+64u,asuint(finalLinear));
+        scActorLocals.Store3(local+76u,asuint(finalAngular));
     }
     arena.Store3(destination,asuint(nextPosition));
     arena.Store4(destination+12u,asuint(nextQuaternion));
@@ -830,7 +830,7 @@ void initializeSolverBody(uint ordinal,uint source) {
     arena.Store4(target+32u,zero);
     uint massBits=0u;
     if(source==invalidBody) {
-        const uint input=p.integrationBias+40u+ordinal*68u;
+        const uint input=p.integrationBias+40u+ordinal*72u;
         const uint local=arena.Load(input+60u);
         if(local!=invalidBody)
             massBits=scActorLocals.Load(local+28u);
