@@ -1496,8 +1496,10 @@ void verify_gpu_distance_solver(
         {0.0f,0.2f,0.0f},{0.0f,-0.2f,0.0f},3.7f);
     gpu.create_anchored_distance_constraint(ids_gpu[0],ids_gpu[1],
         {0.0f,0.2f,0.0f},{0.0f,-0.2f,0.0f},3.7f);
-    cpu.create_center_distance_constraint(ids_cpu[2],ids_cpu[3],3.5f);
-    gpu.create_center_distance_constraint(ids_gpu[2],ids_gpu[3],3.5f);
+    const auto recycled_cpu=
+        cpu.create_center_distance_constraint(ids_cpu[2],ids_cpu[3],3.5f);
+    const auto recycled_gpu=
+        gpu.create_center_distance_constraint(ids_gpu[2],ids_gpu[3],3.5f);
     // A source 1D joint against an immovable body must use the
     // original static-world sentinel, never a fabricated solver body.
     const auto fixed_cpu=cpu.add_static_box(
@@ -1572,7 +1574,12 @@ void verify_gpu_distance_solver(
                     static_cast<std::uint64_t>(frame+1) &&
                 producer->dy_gpu_integrated_body_count()>0u &&
                 producer->dy_launch_stats().device_joint_input_rows==3u &&
-                producer->dy_launch_stats().device_joint_geometry_count==3u,
+                producer->dy_launch_stats().device_joint_geometry_count==3u &&
+                (frame==0?producer->dy_launch_stats().device_joint_metadata_upload_bytes==
+                    3u*sizeof(native::GpuDyJointInput)
+                    :producer->dy_launch_stats().device_joint_metadata_upload_bytes==0u) &&
+                producer->dy_launch_stats().device_joint_metadata_reuses==
+                    (frame==0?0u:3u),
             "Source GPU 1D joint rows did not reach device preparation");
         const auto [uploaded,downloaded]=
             producer->dy_distance_transfer_bytes();
@@ -1627,10 +1634,10 @@ void verify_gpu_distance_solver(
     follower_dynamics.angular_damping=0.0f;
     cpu.set_dynamics(follower_cpu,follower_dynamics);
     gpu.set_dynamics(follower_gpu,follower_dynamics);
-    cpu.create_anchored_distance_constraint(
+    const auto moving_cpu=cpu.create_anchored_distance_constraint(
         kinematic_cpu,follower_cpu,
         {0.f,0.2f,0.f},{0.f,-0.2f,0.f},3.f);
-    gpu.create_anchored_distance_constraint(
+    const auto moving_gpu=gpu.create_anchored_distance_constraint(
         kinematic_gpu,follower_gpu,
         {0.f,0.2f,0.f},{0.f,-0.2f,0.f},3.f);
     for(unsigned frame=0u;frame<4u;++frame) {
@@ -1643,7 +1650,9 @@ void verify_gpu_distance_solver(
         cpu.step(dt);
         gpu.step(dt);
         require(producer->dy_launch_stats().device_joint_input_rows>=4u &&
-                producer->dy_launch_stats().device_joint_geometry_count>=4u,
+                producer->dy_launch_stats().device_joint_geometry_count>=4u &&
+                producer->dy_launch_stats().device_joint_metadata_upload_bytes<=
+                    4u*sizeof(native::GpuDyJointInput),
             "Native GPU Dy skipped moving kinematic 1D joint preparation");
         const auto expected=cpu.body_state(follower_cpu);
         const auto actual=gpu.body_state(follower_gpu);
@@ -1652,6 +1661,44 @@ void verify_gpu_distance_solver(
                 std::abs(expected.angular_velocity.z-
                          actual.angular_velocity.z)<0.003f,
             "GPU 1D joint ignored kinematic target linear/angular velocity");
+    }
+
+    // End the moving-kinematic fixture before inspecting exact sparse
+    // upload counts for an unrelated dynamic joint's source slot.
+    cpu.retire_constraint(moving_cpu);
+    gpu.retire_constraint(moving_gpu);
+    // Sc IDTracker recycles the same constraint slot with a new generation.
+    // The already-resident old definition must not alias a different
+    // authored frame or distance, even when the bodies remain unchanged.
+    cpu.retire_constraint(recycled_cpu);
+    gpu.retire_constraint(recycled_gpu);
+    cpu.create_anchored_distance_constraint(ids_cpu[2],ids_cpu[3],
+        {0.0f,0.15f,0.0f},{0.0f,-0.15f,0.0f},3.2f);
+    gpu.create_anchored_distance_constraint(ids_gpu[2],ids_gpu[3],
+        {0.0f,0.15f,0.0f},{0.0f,-0.15f,0.0f},3.2f);
+    for(unsigned frame=0u;frame<3u;++frame) {
+        cpu.step(dt);
+        gpu.step(dt);
+        const auto stats=producer->dy_launch_stats();
+        if(!(stats.device_joint_geometry_count==3u &&
+             stats.device_joint_metadata_upload_bytes==
+                 (frame==0u?sizeof(native::GpuDyJointInput):0u) &&
+             stats.device_joint_metadata_reuses==(frame==0u?2u:3u)))
+            throw std::runtime_error(
+                "Recycled native joint slot residency mismatch: frame="+
+                std::to_string(frame)+
+                " joints="+std::to_string(stats.device_joint_geometry_count)+
+                " upload="+std::to_string(stats.device_joint_metadata_upload_bytes)+
+                " reuse="+std::to_string(stats.device_joint_metadata_reuses));
+        for(const auto i:{2u,3u}) {
+            const auto expected=cpu.body_state(ids_cpu[i]);
+            const auto actual=gpu.body_state(ids_gpu[i]);
+            require(std::abs(expected.position.x-actual.position.x)<0.002f &&
+                    std::abs(expected.position.y-actual.position.y)<0.002f &&
+                    std::abs(expected.velocity.x-actual.velocity.x)<0.002f &&
+                    std::abs(expected.velocity.y-actual.velocity.y)<0.002f,
+                "Recycled GPU joint diverged from source constraint response");
+        }
     }
 }
 } // namespace

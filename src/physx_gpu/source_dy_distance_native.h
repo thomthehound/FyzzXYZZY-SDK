@@ -118,6 +118,9 @@ struct SourceDyLaunchStats {
     std::size_t prepared_velocity_upload_bytes=0u;
     std::size_t device_joint_input_rows=0u;
     std::size_t device_joint_geometry_count=0u;
+    std::size_t device_joint_metadata_upload_bytes=0u;
+    std::size_t device_joint_metadata_upload_spans=0u;
+    std::size_t device_joint_metadata_reuses=0u;
     std::size_t device_preintegrated_bodies=0u;
     std::size_t force_mod_upload_bytes=0u;
     std::size_t free_velocity_readback_bytes=0u;
@@ -187,6 +190,7 @@ public:
         std::fill(actor_local_valid_.begin(),actor_local_valid_.end(),0u);
         std::fill(actor_velocity_valid_.begin(),actor_velocity_valid_.end(),0u);
         std::fill(actor_pose_valid_.begin(),actor_pose_valid_.end(),0u);
+        std::fill(joint_source_valid_.begin(),joint_source_valid_.end(),0u);
         if(++history_epoch_==0u) {
             std::fill(history_epochs_.begin(),history_epochs_.end(),0u);
             history_epoch_=1u;
@@ -281,6 +285,9 @@ public:
             std::count_if(rows.begin(),rows.end(),
                 [](const auto& row){return row.reserved==1u || row.reserved==2u;});
         last_schedule_.device_joint_geometry_count=joint_inputs.size();
+        last_schedule_.device_joint_metadata_upload_bytes=0u;
+        last_schedule_.device_joint_metadata_upload_spans=0u;
+        last_schedule_.device_joint_metadata_reuses=0u;
         if(!joint_inputs.empty() && !device_world_motion)
             throw std::invalid_argument(
                 "Source device joint geometry requires native resident actor motion");
@@ -342,8 +349,48 @@ public:
            (std::numeric_limits<std::uint32_t>::max()-127u)/64u)
             throw std::overflow_error(
                 "Source GPU friction history exceeds address space");
-        const std::size_t history_bytes=(
+        const std::size_t joint_base=(
             next_history_capacity_*64u+127u)&~std::size_t(127u);
+        // EdgeIndex friction history occupies the first part of Dy's
+        // allocation; stable Sc constraint records follow that prefix.
+        std::size_t next_joint_capacity=joint_source_capacity_;
+        for(const auto& joint:joint_inputs) {
+            if(joint.source_slot==0xffffffffu)
+                throw std::logic_error("Native Dy joint has no live Sc constraint slot");
+            next_joint_capacity=std::max(next_joint_capacity,
+                                         std::size_t(joint.source_slot)+1u);
+        }
+        if(joint_base>std::numeric_limits<std::uint32_t>::max()-127u ||
+           next_joint_capacity>
+               (std::numeric_limits<std::uint32_t>::max()-joint_base-127u)/
+               sizeof(native::GpuDyJointInput))
+            throw std::overflow_error("Native Dy resident joints exceed 32-bit view");
+        const std::size_t history_bytes=(joint_base+
+            next_joint_capacity*sizeof(native::GpuDyJointInput)+127u)&
+            ~std::size_t(127u);
+        // Friction growth moves the joint base. Re-admit the source
+        // record spans instead of preserving bytes at obsolete offsets.
+        if(next_history_capacity_!=friction_history_capacity_)
+            std::fill(joint_source_valid_.begin(),joint_source_valid_.end(),0u);
+        joint_source_host_.resize(next_joint_capacity);
+        joint_source_valid_.resize(next_joint_capacity,0u);
+        joint_source_dirty_.clear();
+        for(const auto& joint:joint_inputs) {
+            const auto slot=joint.source_slot;
+            if(!joint_source_valid_[slot] ||
+               std::memcmp(&joint_source_host_[slot],&joint,sizeof(joint))!=0) {
+                // An attempted edit is not resident until the full frame
+                // completes. A failed submission must reupload on retry.
+                joint_source_valid_[slot]=0u;
+                joint_source_host_[slot]=joint;
+                joint_source_dirty_.push_back(slot);
+            }else
+                ++last_schedule_.device_joint_metadata_reuses;
+        }
+        std::sort(joint_source_dirty_.begin(),joint_source_dirty_.end());
+        if(std::adjacent_find(joint_source_dirty_.begin(),
+                              joint_source_dirty_.end())!=joint_source_dirty_.end())
+            throw std::logic_error("Native Dy joint slot admitted more than once");
         history_epochs_.resize(next_history_capacity_,0u);
         for(const auto& manager:manifolds) {
             if(!manager.patch_count)continue;
@@ -789,17 +836,13 @@ public:
             throw std::overflow_error("Device Dy partition scratch exceeds address space");
         const std::size_t partition_scratch_bytes=device_partitions
             ? 20u+descriptors.size()*24u+bodies.size()*12u:0u;
-        if(rows.size_bytes()>std::numeric_limits<std::uint32_t>::max() ||
-           joint_inputs.size()>(std::numeric_limits<std::uint32_t>::max()-
-                                 rows.size_bytes())/sizeof(native::GpuDyJointInput))
-            throw std::overflow_error("Device Dy joint metadata exceeds 32-bit row view");
-        const std::size_t joint_row_bytes=rows.size_bytes()+
-            joint_inputs.size_bytes();
+        if(rows.size_bytes()>std::numeric_limits<std::uint32_t>::max())
+            throw std::overflow_error("Device Dy joint rows exceed 32-bit view");
         constexpr std::size_t count=16u;
         // The integration prefix describes Sc/SAP views and the launch
         // table. Solver-body ordinals precede the free-body suffix.
         const std::array<std::size_t,count> bytes{
-            bodies.size_bytes(),joint_row_bytes,descriptors.size_bytes(),
+            bodies.size_bytes(),rows.size_bytes(),descriptors.size_bytes(),
             partition_count*sizeof(std::uint32_t),body_ordinals.size_bytes(),
             tasks.size_bytes(),contact_bytes,friction_bytes,
             patches.size_bytes(),manifolds.size_bytes(),contact_order.size_bytes(),
@@ -906,11 +949,7 @@ public:
                i!=13u && i!=15u && bytes[i] &&
                (!device_initial_bodies || i!=0u) &&
                (!device_partitions || (i!=2u && i!=3u)))
-                std::memcpy(host_.data()+offsets[i],sources[i],
-                            i==1u?rows.size_bytes():bytes[i]);
-        if(!joint_inputs.empty())
-            std::memcpy(host_.data()+offsets[1]+rows.size_bytes(),
-                        joint_inputs.data(),joint_inputs.size_bytes());
+                std::memcpy(host_.data()+offsets[i],sources[i],bytes[i]);
         if(prep_bytes)
             std::memcpy(host_.data()+offsets[11],packed_.data(),prep_bytes);
         if(!cpu_gu.empty())
@@ -951,13 +990,43 @@ public:
         // The source GPU kernel constructs all writable Gu contact rows.
         // One ordered source upload covers every other active input and
         // stops before the contact-row arena, without scattered HtoD spans.
-        // Only the Sc EdgeIndex friction mirror survives arena growth;
-        // every other Dy input and writeback is rebuilt for this frame.
+        // Retain both the source friction prefix and stable joint slots.
+        // A friction growth moves the joint base and reuploads its records.
+        const auto old_joint_base=(
+            friction_history_capacity_*64u+127u)&~std::size_t(127u);
+        const auto preserved_bytes=friction_history_capacity_==
+                next_history_capacity_
+            ?old_joint_base+joint_source_capacity_*
+                sizeof(native::GpuDyJointInput)
+            :friction_history_capacity_*64u;
         arena_.allocateCopyPrefixAsync(
-            total,friction_history_capacity_*64u,stream_,PX_FL);
+            total,preserved_bytes,stream_,PX_FL);
         friction_history_capacity_=next_history_capacity_;
+        joint_source_capacity_=next_joint_capacity;
         const auto address=arena_.getDevicePtr();
         const std::size_t uploaded_bytes=input_end-upload_begin;
+        // Adjacent Sc constraint slot edits share one DMA into the
+        // resident Dy allocation, not the transient solver-row upload.
+        joint_source_uploads_.clear();
+        for(std::size_t i=0u;i<joint_source_dirty_.size();) {
+            const auto first=joint_source_dirty_[i];
+            auto last=first+1u;
+            ++i;
+            while(i<joint_source_dirty_.size() &&
+                  joint_source_dirty_[i]==last) {
+                ++last;
+                ++i;
+            }
+            joint_source_uploads_.push_back({
+                address+joint_base+std::size_t(first)*
+                    sizeof(native::GpuDyJointInput),
+                joint_source_host_.data()+first,
+                std::size_t(last-first)*sizeof(native::GpuDyJointInput)});
+            last_schedule_.device_joint_metadata_upload_bytes+=
+                std::size_t(last-first)*sizeof(native::GpuDyJointInput);
+        }
+        last_schedule_.device_joint_metadata_upload_spans=
+            joint_source_uploads_.size();
         std::array<std::uint32_t,32> params{};
         for(std::size_t i=0;i<11u;++i)
             params[i<6u?6u+i:17u+i-6u]=narrow(elements[i]);
@@ -1066,6 +1135,23 @@ public:
             std::memcpy(host_.data()+offsets[12]+integration_header_bytes,
                         packed_integration_.data(),
                         packed_integration_.size()*sizeof(SourceDyPackedIntegrationNative));
+        // First-row metadata references the retained Sc constraint slot
+        // rather than a per-frame array ordinal. Row order is unchanged.
+        for(const auto& descriptor:descriptors) {
+            if((descriptor.row_count&255u)==0u)continue;
+            const auto& first=rows[descriptor.index];
+            if(first.reserved!=2u)continue;
+            const auto index=std::bit_cast<std::uint32_t>(first.applied_force);
+            const auto slot=joint_inputs[index].source_slot;
+            const auto address=narrow(std::size_t(params[28])+joint_base+
+                std::size_t(slot)*sizeof(native::GpuDyJointInput));
+            std::memcpy(host_.data()+offsets[1]+
+                            std::size_t(descriptor.index)*sizeof(native::GpuDyJointRow)+
+                            offsetof(native::GpuDyJointRow,applied_force),
+                        &address,sizeof(address));
+        }
+        if(!joint_source_uploads_.empty())
+            stream_.queue_uploads(joint_source_uploads_);
         // Only newly admitted or edited actor-local transforms are
         // uploaded. Neighboring BodyIds share one source DMA span.
         std::sort(pending_actor_locals_.begin(),pending_actor_locals_.end());
@@ -1395,6 +1481,10 @@ public:
                 history_epochs_[pair.pcm_edge]=history_epoch_;
         }
         last_friction_prepared_rows_=friction_count;
+        // The device accepted each changed joint only after all source
+        // task results and their lifetime checks were published.
+        for(const auto slot:joint_source_dirty_)
+            joint_source_valid_[slot]=1u;
         last_contact_prep_upload_saving_=
             static_cast<std::int64_t>(contact_prep.size_bytes())-
             static_cast<std::int64_t>(prep_bytes+inline_body_bytes);
@@ -1821,6 +1911,11 @@ private:
     std::vector<std::uint32_t> pending_actor_locals_;
     std::vector<SourceSapUpload> actor_local_uploads_;
     std::size_t actor_local_capacity_=0u;
+    std::vector<native::GpuDyJointInput> joint_source_host_;
+    std::vector<std::uint8_t> joint_source_valid_;
+    std::vector<std::uint32_t> joint_source_dirty_;
+    std::vector<SourceSapUpload> joint_source_uploads_;
+    std::size_t joint_source_capacity_=0u;
     std::vector<native::GpuDyContactPrepBody> inline_bodies_;
     std::vector<native::GpuDyFrictionAnchorInput> compact_anchors_;
     std::vector<std::size_t> patch_anchor_starts_;

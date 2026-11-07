@@ -231,13 +231,17 @@ struct GpuDyJointInput {
     float center_a[3]{},center_b[3]{};
     float distance_length=0.0f;
     std::uint32_t kind=0u;
+    // Stable ScConstraintSim identity, independent of solver row order.
+    std::uint32_t source_slot=0xffffffffu,source_generation=0u;
 };
-static_assert(sizeof(GpuDyJointInput)==144u &&
+static_assert(sizeof(GpuDyJointInput)==152u &&
               offsetof(GpuDyJointInput,actor_a_position)==56u &&
               offsetof(GpuDyJointInput,actor_b_position)==84u &&
               offsetof(GpuDyJointInput,center_a)==112u &&
               offsetof(GpuDyJointInput,center_b)==124u &&
-              offsetof(GpuDyJointInput,kind)==140u);
+              offsetof(GpuDyJointInput,kind)==140u &&
+              offsetof(GpuDyJointInput,source_slot)==144u &&
+              offsetof(GpuDyJointInput,source_generation)==148u);
 struct GpuDyDistanceDescriptor {
     std::uint32_t index=0,row0=0,row1=0,row_count=0;
 };
