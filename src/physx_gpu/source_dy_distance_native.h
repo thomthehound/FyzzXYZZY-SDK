@@ -284,6 +284,23 @@ public:
         if(!joint_inputs.empty() && !device_world_motion)
             throw std::invalid_argument(
                 "Source device joint geometry requires native resident actor motion");
+        for(const auto& descriptor:descriptors) {
+            const auto row_count=descriptor.row_count&255u;
+            if(!row_count)continue;
+            if(descriptor.index>=rows.size() ||
+               row_count>rows.size()-descriptor.index)
+                throw std::logic_error("Source Dy joint descriptor exceeds row storage");
+            const auto& first=rows[descriptor.index];
+            if(first.reserved!=2u)continue;
+            const auto index=std::bit_cast<std::uint32_t>(first.applied_force);
+            if(index>=joint_inputs.size())
+                throw std::logic_error("Source Dy joint metadata index is invalid");
+            const auto kind=joint_inputs[index].kind;
+            const auto expected=kind==0u?1u:kind==2u?3u:
+                kind==1u?6u:5u;
+            if(kind>4u || row_count!=expected)
+                throw std::logic_error("Source Dy joint kind and row count disagree");
+        }
         if(contact_forces.size()>
            std::numeric_limits<std::size_t>::max()/sizeof(native::GpuDyContactPoint))
             throw std::overflow_error("Source Dy contact row byte count overflow");
@@ -772,7 +789,8 @@ public:
             throw std::overflow_error("Device Dy partition scratch exceeds address space");
         const std::size_t partition_scratch_bytes=device_partitions
             ? 20u+descriptors.size()*24u+bodies.size()*12u:0u;
-        if(joint_inputs.size()>(std::numeric_limits<std::uint32_t>::max()-
+        if(rows.size_bytes()>std::numeric_limits<std::uint32_t>::max() ||
+           joint_inputs.size()>(std::numeric_limits<std::uint32_t>::max()-
                                  rows.size_bytes())/sizeof(native::GpuDyJointInput))
             throw std::overflow_error("Device Dy joint metadata exceeds 32-bit row view");
         const std::size_t joint_row_bytes=rows.size_bytes()+
