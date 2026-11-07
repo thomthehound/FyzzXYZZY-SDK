@@ -183,6 +183,12 @@ public:
             return static_cast<std::uint32_t>(value);
         };
         const auto free_bodies=integration.size()-bodies.size();
+        if(device_initial_bodies && device_world_motion)
+            for(std::size_t i=0u;i<bodies.size();++i)
+                if(!(integration[i].active&1u) &&
+                   bodies[i].inverse_mass!=0.0f)
+                    throw std::logic_error(
+                        "Native Dy inactive solver row has nonzero inverse mass");
         const auto partition_count=device_partitions
             ? (tasks.empty()?0u:tasks.back().partition_end)
             : partition_ends.size();

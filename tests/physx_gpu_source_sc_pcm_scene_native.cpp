@@ -974,8 +974,7 @@ void verify_gpu_coupled_solver(
                 schedule.device_world_motion_bodies>0u &&
                 schedule.device_world_motion_bodies<=
                     schedule.device_initialized_bodies &&
-                schedule.device_body_upload_bytes==
-                    schedule.device_initialized_bodies*sizeof(float),
+                schedule.device_body_upload_bytes==0u,
             "Coupled Dy failed device world-motion publication");
         const auto prep_saving=producer->dy_contact_prep_upload_saving();
         // Compare writeback with the source-sized upload baseline. The
@@ -1908,11 +1907,11 @@ void verify_gpu_free_integration(
         const auto metadata=producer->dy_launch_stats();
         require((frame==0u
                     ? metadata.actor_local_upload_bytes==
-                          actual.size()*sizeof(physx_gpu::SourceDyHostPoseNative) &&
+                          actual.size()*sizeof(physx_gpu::SourceDyActorLocalNative) &&
                       metadata.actor_local_upload_spans==1u
                     : frame==4u
                         ? metadata.actor_local_upload_bytes==
-                              sizeof(physx_gpu::SourceDyHostPoseNative) &&
+                              sizeof(physx_gpu::SourceDyActorLocalNative) &&
                           metadata.actor_local_upload_spans==1u &&
                           metadata.reused_actor_local_poses==actual.size()-1u
                         : metadata.actor_local_upload_bytes==0u &&
@@ -1935,8 +1934,7 @@ void verify_gpu_free_integration(
                     schedule.device_world_motion_bodies>0u &&
                     schedule.device_world_motion_bodies<=
                         schedule.device_initialized_bodies &&
-                    schedule.device_body_upload_bytes==
-                        schedule.device_initialized_bodies*sizeof(float),
+                    schedule.device_body_upload_bytes==0u,
                     "Mixed Dy skipped device initialization, PGS or free-body integration");
             touched=true;
         } else {
@@ -1986,7 +1984,7 @@ void verify_gpu_free_integration(
     gpu.step(1.f/30.f);
     const auto after_replacement=producer->dy_launch_stats();
     require(after_replacement.actor_local_upload_bytes==
-                sizeof(physx_gpu::SourceDyHostPoseNative) &&
+                sizeof(physx_gpu::SourceDyActorLocalNative) &&
             after_replacement.actor_local_upload_spans==1u &&
             after_replacement.reused_actor_local_poses==actual.size()-1u,
         "GPU Dy retired actor metadata leaked into newly admitted rigid");
