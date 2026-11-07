@@ -177,6 +177,10 @@ void solveContact(uint4 descriptor,uint errorAddress,bool biased,
                     precise float3 fy=asfloat(arena.Load3(y))*
                         frictionScalar(y+52u);
                     precise float3 impulse=fx+fy;
+                    if(!all(isfinite(impulse))) {
+                        arena.InterlockedOr(errorAddress,2048u);
+                        return;
+                    }
                     arena.Store3(p.writebackBias+p.resultFrictionOffset+
                         (row/2u)*12u,asuint(impulse));
                 }
