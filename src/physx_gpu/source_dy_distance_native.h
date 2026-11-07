@@ -496,7 +496,8 @@ public:
         host_poses_.clear();
         last_resident_pose_count_=0u;
         last_schedule_.device_world_inertia_bodies=0u;
-        last_schedule_.actor_local_upload_bytes=0u;        last_schedule_.actor_local_upload_spans=0u;
+        last_schedule_.actor_local_upload_bytes=0u;
+        last_schedule_.actor_local_upload_spans=0u;
         last_schedule_.reused_actor_local_poses=0u;
         last_schedule_.resident_velocity_reuses=0u;
         last_schedule_.prepared_velocity_updated_bodies=0u;
