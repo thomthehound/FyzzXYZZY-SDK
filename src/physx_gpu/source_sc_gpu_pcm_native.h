@@ -481,6 +481,17 @@ public:
     std::uint32_t graph_rigid_count() const noexcept {
         return graph_pair_host_.empty()?0u:graph_rigid_count_;
     }
+    // Explicit diagnostic snapshot. No production frame downloads roots.
+    std::vector<std::uint32_t> contact_island_roots() const {
+        if(graph_pair_host_.empty())return {};
+        std::vector<std::uint32_t> roots(graph_rigid_count_);
+        const auto bytes=roots.size()*sizeof(roots[0]);
+        const auto physical=addresses_.resolve(
+            graph_.getDevicePtr()+graph_header_[3],bytes);
+        context_.download(physical.buffer,physical.offset,
+                          roots.data(),bytes);
+        return roots;
+    }
 private:
     compute::Context& context_;
     CudaDeviceAddressMap& addresses_;
