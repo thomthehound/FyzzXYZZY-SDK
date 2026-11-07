@@ -208,7 +208,7 @@ float3 prepSlop(float3 value,float slop) {
 uint prepBodyOffset(uint source,uint offset) {
     if((source&1u)==0u)return p.prepBias+source+offset;
     const uint ordinal=source>>1u;
-    const uint base=p.integrationBias+40u+ordinal*112u;
+    const uint base=p.integrationBias+40u+ordinal*88u;
     if(offset==12u)return base;
     if(offset==24u)return base+12u;
     if(offset>=36u && offset<=60u)return base+offset-12u;
@@ -224,7 +224,7 @@ bool prepBodyPose(uint source,out float3 position,out float4 orientation) {
         orientation=asfloat(arena.Load4(base+80u));
         return all(isfinite(position)) && all(isfinite(orientation));
     }
-    const uint input=p.integrationBias+40u+(source>>1u)*112u;
+    const uint input=p.integrationBias+40u+(source>>1u)*88u;
     return sourceDyMassPose(input,position,orientation);
 }
 float3 prepBody3(uint source,uint offset) {
