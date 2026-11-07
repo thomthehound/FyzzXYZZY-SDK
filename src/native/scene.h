@@ -1182,6 +1182,9 @@ private:
     struct SolverBodyRow {
         SolverBody solver{};
         SolverBodyData data{};
+        // Every admitted solver row, including zero-response contact
+        // endpoints, retains its original Sc actor identity.
+        BodyId actor_id=std::numeric_limits<BodyId>::max();
         // DySolverControl::saveMotionVelocities saves the solver deltas
         // after position iterations, before conclude/velocity iterations.
         // DyBodyCoreIntegrator uses this snapshot to advance the pose,

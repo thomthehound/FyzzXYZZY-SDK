@@ -6714,6 +6714,7 @@ Scene::SolverBodyRow& Scene::admit_solver_row(BodyId id) {
     if(actor.solver_row_generation!=solver_preparation_generation_) {
         const auto index=solver_rows_.size();
         solver_rows_.emplace_back();
+        solver_rows_.back().actor_id=id;
         actor.solver_row_index=index;
         actor.solver_row_generation=solver_preparation_generation_;
     }
@@ -8325,6 +8326,12 @@ void Scene::solve_gpu_distance_constraints(float seconds) {
     }
     const auto integration_count=solver_rows_.size()+gpu_dy_free_ids_.size();
     gpu_dy_integration_inputs_.assign(integration_count,{});
+    for(std::size_t i=0;i<solver_rows_.size();++i) {
+        const auto id=solver_rows_[i].actor_id;
+        if(id>=actors_.size() || !actors_[id].alive)
+            throw std::logic_error("Dy source solver row lost its rigid actor");
+        gpu_dy_integration_inputs_[i].source_actor=id;
+    }
     gpu_dy_integrated_poses_.resize(integration_count);
     gpu_dy_sleep_states_.resize(integration_count);
     const auto pack_integration=[&](BodyId id,const Actor& actor,
