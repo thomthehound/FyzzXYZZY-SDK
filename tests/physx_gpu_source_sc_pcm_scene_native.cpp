@@ -1916,18 +1916,24 @@ void verify_gpu_free_integration(
         const auto metadata=producer->dy_launch_stats();
         constexpr auto velocity_bytes=
             sizeof(physx_gpu::SourceDyPreparedVelocityNative);
-        require(metadata.prepared_velocity_upload_bytes%velocity_bytes==0u &&
-                metadata.prepared_velocity_upload_bytes/velocity_bytes+
+        require(metadata.prepared_velocity_updated_bodies+
                     metadata.resident_velocity_reuses==actual.size() &&
+                metadata.prepared_velocity_upload_bytes>=
+                    metadata.prepared_velocity_updated_bodies*sizeof(float) &&
+                metadata.prepared_velocity_upload_bytes<=
+                    metadata.prepared_velocity_updated_bodies*velocity_bytes &&
                 (frame==0u
                     ? metadata.prepared_velocity_upload_bytes==
                           actual.size()*velocity_bytes &&
                       metadata.resident_velocity_reuses==0u
                     : metadata.resident_velocity_reuses>=
                           (frame==7u?259u:260u)) &&
+                (frame==0u || metadata.prepared_velocity_updated_bodies==0u ||
+                 metadata.prepared_velocity_upload_bytes<
+                     metadata.prepared_velocity_updated_bodies*velocity_bytes) &&
                 (frame!=7u ||
-                 metadata.prepared_velocity_upload_bytes>=velocity_bytes),
-            "Native Dy did not retain final GPU velocities across frames");
+                 metadata.prepared_velocity_updated_bodies>=2u),
+            "Native Dy did not retain and compact exact GPU velocities");
         require((frame==0u
                     ? metadata.actor_local_upload_bytes==
                           actual.size()*sizeof(physx_gpu::SourceDyActorLocalNative) &&
@@ -2006,11 +2012,11 @@ void verify_gpu_free_integration(
     cpu.step(1.f/30.f);
     gpu.step(1.f/30.f);
     const auto after_replacement=producer->dy_launch_stats();
-    require(after_replacement.prepared_velocity_upload_bytes%
-                sizeof(physx_gpu::SourceDyPreparedVelocityNative)==0u &&
-            after_replacement.prepared_velocity_upload_bytes/
-                    sizeof(physx_gpu::SourceDyPreparedVelocityNative)+
-                after_replacement.resident_velocity_reuses==actual.size(),
+    require(after_replacement.prepared_velocity_updated_bodies+
+                after_replacement.resident_velocity_reuses==actual.size() &&
+            after_replacement.prepared_velocity_upload_bytes<=
+                after_replacement.prepared_velocity_updated_bodies*
+                    sizeof(physx_gpu::SourceDyPreparedVelocityNative),
         "Retired native body contaminated resident velocity publication");
     require(after_replacement.actor_local_upload_bytes==
                 sizeof(physx_gpu::SourceDyActorLocalNative) &&
