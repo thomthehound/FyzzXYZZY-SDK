@@ -2125,6 +2125,45 @@ void verify_gpu_free_integration(
     test::compound_compare_state(
         gpu.body_state(replacement_gpu),cpu.body_state(replacement_cpu),
         0.002f,"Resident GPU Dy actor replacement");
+
+    // The source wake counter must reach IslandSim readiness on device,
+    // then accept an authored wake without replaying old accumulators.
+    const auto idle_cpu=cpu.add_dynamic_box(
+        {0.2f,0.2f,0.2f},{2200.f,5.f,0.f},1.f);
+    const auto idle_gpu=gpu.add_dynamic_box(
+        {0.2f,0.2f,0.2f},{2200.f,5.f,0.f},1.f);
+    RigidBodyDynamics idle_dynamics{};
+    idle_dynamics.gravity_enabled=false;
+    idle_dynamics.linear_damping=0.0f;
+    idle_dynamics.angular_damping=0.0f;
+    cpu.set_dynamics(idle_cpu,idle_dynamics);
+    gpu.set_dynamics(idle_gpu,idle_dynamics);
+    bool reached_sleep=false;
+    for(unsigned frame=0u;frame<16u;++frame) {
+        cpu.step(1.f/30.f);
+        gpu.step(1.f/30.f);
+        require(std::fabs(cpu.body_wake_counter(idle_cpu)-
+                          gpu.body_wake_counter(idle_gpu))<0.0005f &&
+                cpu.body_ready_for_sleep(idle_cpu)==
+                    gpu.body_ready_for_sleep(idle_gpu) &&
+                cpu.body_is_sleeping(idle_cpu)==
+                    gpu.body_is_sleeping(idle_gpu),
+            "GPU Dy idle wake-counter or island sleep transition diverged");
+        reached_sleep|=cpu.body_is_sleeping(idle_cpu);
+    }
+    require(reached_sleep,
+        "Source idle rigid did not reach IslandSim deactivation");
+    cpu.set_velocity(idle_cpu,{0.1f,0.f,0.f});
+    gpu.set_velocity(idle_gpu,{0.1f,0.f,0.f});
+    cpu.step(1.f/30.f);
+    gpu.step(1.f/30.f);
+    require(!gpu.body_is_sleeping(idle_gpu) &&
+            std::fabs(cpu.body_wake_counter(idle_cpu)-
+                      gpu.body_wake_counter(idle_gpu))<0.0005f,
+        "GPU Dy did not restore resident sleep state on authored wake");
+    test::compound_compare_state(
+        gpu.body_state(idle_gpu),cpu.body_state(idle_cpu),0.002f,
+        "Resident GPU Dy sleep-to-wake response");
 }
 
 void verify_gpu_wide_island_solver(
