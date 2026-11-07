@@ -1053,7 +1053,8 @@ float3 sourceDyRotateOrdered(float4 q,float3 v) {
 }
 bool sourceDyPrepareWorldInertia(uint ordinal) {
     const uint input=p.integrationBias+40u+ordinal*76u;
-    if((arena.Load(input+44u)&256u)==0u)return true;
+    // Bit 14 does not overlap velocity changes [8:13] or force mods [16:27].
+    if((arena.Load(input+44u)&0x4000u)==0u)return true;
     const uint local=arena.Load(input+60u);
     if(local==invalidBody)return false;
     const float3 inverseI=asfloat(scActorLocals.Load3(local+48u));
