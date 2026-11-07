@@ -12,7 +12,7 @@ RWByteAddressBuffer graph : register(u0,space0);
 #ifdef __spirv__
 [[vk::binding(1,0)]]
 #endif
-RWByteAddressBuffer contacts : register(u1,space0);
+RWByteAddressBuffer edgeCaches : register(u1,space0);
 
 struct Parameters {
     uint graphBias,contactBias,phase,unused;
@@ -46,7 +46,7 @@ void errorBit(uint bit) {
 [numthreads(128,1,1)]
 void main(uint3 dispatch:SV_DispatchThreadID) {
     const uint i=dispatch.x;
-    const uint pairCount=header(0u);
+    const uint edgeCount=header(0u);
     const uint rigidCount=header(1u);
     const uint pairBase=p.graphBias+header(2u);
     if(p.phase==0u) {
@@ -55,7 +55,7 @@ void main(uint3 dispatch:SV_DispatchThreadID) {
         return;
     }
     if(p.phase==1u) {
-        if(i>=pairCount)return;
+        if(i>=edgeCount)return;
         const uint4 pair=graph.Load4(pairBase+i*16u);
         // The first two fields are Sc BodyIds. Bit 0/1 mark dynamic
         // rigid endpoints; every pair retains its source EdgeIndex.
@@ -63,21 +63,11 @@ void main(uint3 dispatch:SV_DispatchThreadID) {
             errorBit(1u);
             return;
         }
-        const uint stream=p.contactBias+i*84u;
-        if(contacts.Load(stream)!=pair.w) {
-            errorBit(2u);
-            return;
-        }
-        const uint packed=contacts.Load(stream+4u);
-        const uint status=(packed>>3u)&7u;
-        const uint count=(packed>>10u)&7u;
-        if(status!=0u || count>4u) {
-            errorBit(4u);
-            return;
-        }
-        // Distinct shapes on one rigid actor share motion but cannot
-        // connect separate dynamic island nodes.
-        if(count==0u || pair.x==pair.y || (pair.z&3u)!=3u)return;
+        // Authored joints remain connected until their Sc edge retires.
+        // Dormant Gu managers retain the device's last physical touch.
+        const bool touching=(pair.z&4u)!=0u ||
+            (edgeCaches.Load(p.contactBias+pair.w*240u+72u)&1u)!=0u;
+        if(!touching || pair.x==pair.y || (pair.z&3u)!=3u)return;
         // Root hooking always points larger indices toward smaller roots.
         // Concurrent hooks remain acyclic and a completed successful
         // pass resolves every edge, including chains across workgroups.

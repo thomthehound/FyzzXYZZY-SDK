@@ -380,23 +380,26 @@ public:
 
         islands_stage_.append(stream_,addresses_,
             graph_.getDevicePtr(),graph_bytes,
-            dense_contacts_.getDevicePtr(),
-            source_allocation_bytes(pair_count,sizeof(SourcePcmGpuContactStreamNative)),
-            pair_count,rigid_count);
+            edges_.getDevicePtr(),source_allocation_bytes(edge_capacity,240u),
+            graph_count,rigid_count);
 
         // Fetch the losslessly packed device stream, then reconstruct
         // Sc's original host record. The Dy shader reads the same device
         // allocation; no GPU repacking command or second fence is needed.
         const auto readback_bytes=readback_.size()*sizeof(readback_[0]);
-        const auto mapped=addresses_.resolve(
-            dense_contacts_.getDevicePtr(),readback_bytes);
         const auto graph_error=addresses_.resolve(
             graph_.getDevicePtr()+graph_error_offset,sizeof(graph_error_host_));
-        const std::array<compute::DownloadSpan,2> downloads{{
-            {mapped.buffer,mapped.offset,readback_.data(),readback_bytes},
-            {graph_error.buffer,graph_error.offset,
-                graph_error_host_.data(),sizeof(graph_error_host_)}
-        }};
+        std::vector<compute::DownloadSpan> downloads;
+        downloads.reserve(2u);
+        if(readback_bytes) {
+            const auto mapped=addresses_.resolve(
+                dense_contacts_.getDevicePtr(),readback_bytes);
+            downloads.push_back({
+                mapped.buffer,mapped.offset,readback_.data(),readback_bytes});
+        }
+        downloads.push_back({
+            graph_error.buffer,graph_error.offset,
+            graph_error_host_.data(),sizeof(graph_error_host_)});
         stream_.submit();
         try {
             context_.download_batch(downloads);
