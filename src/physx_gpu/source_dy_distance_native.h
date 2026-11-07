@@ -40,11 +40,13 @@ struct SourceDyPackedIntegrationNative {
     std::uint32_t lock_flags=0u;
     float seconds=0.0f;
     std::uint32_t active=0u,source_element=0xffffffffu;
-    float mass_local_position[3]{},mass_local_orientation[4]{};
     std::uint32_t source_shape_count=0u,pose_index=0xffffffffu;
+    // Byte offset into the stable actor-local device pool.
+    std::uint32_t actor_local_offset=0xffffffffu;
 };
-static_assert(sizeof(SourceDyPackedIntegrationNative)==112u &&
-              offsetof(SourceDyPackedIntegrationNative,pose_index)==108u);
+static_assert(sizeof(SourceDyPackedIntegrationNative)==88u &&
+              offsetof(SourceDyPackedIntegrationNative,pose_index)==80u &&
+              offsetof(SourceDyPackedIntegrationNative,actor_local_offset)==84u);
 struct SourceDyHostPoseNative {
     float position[3]{},orientation[4]{};
 };
@@ -65,6 +67,9 @@ struct SourceDyLaunchStats {
     std::size_t device_body_upload_bytes=0u;
     std::size_t device_initialization_dispatches=0u;
     std::size_t device_world_motion_bodies=0u;
+    std::size_t actor_local_upload_bytes=0u;
+    std::size_t actor_local_upload_spans=0u;
+    std::size_t reused_actor_local_poses=0u;
 };
 
 // Dy's original per-task conflict partitions and prepared 1D rows are
@@ -78,7 +83,8 @@ public:
         physx::PxgHeapMemoryAllocator& allocator,compute::ShaderBinary shader,
         std::optional<compute::ShaderBinary> convex_shader=std::nullopt)
         : context_(context),addresses_(addresses),stream_(stream),
-          arena_(allocator,physx::PxsHeapStats::eSOLVER) {
+          arena_(allocator,physx::PxsHeapStats::eSOLVER),
+          actor_locals_(allocator,physx::PxsHeapStats::eSOLVER) {
         const auto& info=context_.device_info();
         if(info.max_workgroup_invocations<128u ||
            info.max_workgroup_size[0]<128u ||
@@ -90,17 +96,17 @@ public:
         max_view_=info.max_storage_buffer_range;
         compute::ComputePipelineDesc pipeline{};
         pipeline.shader=std::move(shader);
-        pipeline.storage_buffer_binding_count=5u;
+        pipeline.storage_buffer_binding_count=6u;
         pipeline.storage_buffer_views.assign(
-            5u,compute::StorageBufferViewKind::RawReadWrite);
+            6u,compute::StorageBufferViewKind::RawReadWrite);
         pipeline.push_constant_bytes=128u;
         pipeline_=context_.create_compute_pipeline(pipeline);
         if(convex_shader) {
             try {
                 pipeline.shader=std::move(*convex_shader);
-                pipeline.storage_buffer_binding_count=6u;
+                pipeline.storage_buffer_binding_count=7u;
                 pipeline.storage_buffer_views.assign(
-                    6u,compute::StorageBufferViewKind::RawReadWrite);
+                    7u,compute::StorageBufferViewKind::RawReadWrite);
                 convex_pipeline_=context_.create_compute_pipeline(pipeline);
             }catch(...) {
                 context_.destroy_compute_pipeline(pipeline_);
@@ -115,8 +121,13 @@ public:
         if(convex_pipeline_)context_.destroy_compute_pipeline(convex_pipeline_);
         if(pipeline_)context_.destroy_compute_pipeline(pipeline_);
         arena_.deallocate();
+        actor_locals_.deallocate();
+    }
+    void retire_rigid_actor(BodyId id) noexcept {
+        if(id<actor_local_valid_.size())actor_local_valid_[id]=0u;
     }
     void invalidate_after_rollback() noexcept {
+        std::fill(actor_local_valid_.begin(),actor_local_valid_.end(),0u);
         if(++history_epoch_==0u) {
             std::fill(history_epochs_.begin(),history_epochs_.end(),0u);
             history_epoch_=1u;
@@ -1293,6 +1304,7 @@ private:
     CudaDeviceAddressMap& addresses_;
     SourceSapDmaNative& stream_;
     physx::PxgCudaBuffer arena_;
+    physx::PxgCudaBuffer actor_locals_;
     compute::PipelineId pipeline_=0;
     compute::PipelineId convex_pipeline_=0;
     std::size_t alignment_=0u;
@@ -1301,6 +1313,10 @@ private:
     std::vector<SourceDyPackedContactPrepNative> packed_;
     std::vector<SourceDyPackedIntegrationNative> packed_integration_;
     std::vector<SourceDyHostPoseNative> host_poses_;
+    std::vector<SourceDyHostPoseNative> actor_local_host_;
+    std::vector<std::uint8_t> actor_local_valid_;
+    std::vector<std::uint32_t> pending_actor_locals_;
+    std::size_t actor_local_capacity_=0u;
     std::vector<native::GpuDyContactPrepBody> inline_bodies_;
     std::vector<native::GpuDyFrictionAnchorInput> compact_anchors_;
     std::vector<std::size_t> patch_anchor_starts_;
