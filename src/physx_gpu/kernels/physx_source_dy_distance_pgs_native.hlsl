@@ -561,19 +561,51 @@ void integrateBody(uint ordinal) {
     float3 linearDelta=0.0f;
     float3 angularState=0.0f;
     [branch]
+    const uint input=p.integrationBias+40u+ordinal*112u;
+    const uint inputFlags=arena.Load(input+68u);
     if(ordinal<p.bodyCount) {
         const uint from=p.bodyBias+ordinal*52u;
         const uint to=p.writebackBias+p.resultBodyOffset+ordinal*48u;
-        arena.Store4(to,arena.Load4(from));
-        arena.Store4(to+16u,arena.Load4(from+16u));
-        arena.Store4(to+32u,arena.Load4(from+32u));
         linearDelta=asfloat(arena.Load3(from+24u));
         angularState=asfloat(arena.Load3(from+36u));
+        if((inputFlags&8u)!=0u) {
+            const float3 baseLinear=asfloat(arena.Load3(input));
+            const float3 baseAngular=asfloat(arena.Load3(input+12u));
+            const uint locks=arena.Load(input+60u);
+            float3 finalLinear=baseLinear+asfloat(arena.Load3(from));
+            float3 positionLinear=baseLinear+linearDelta;
+            if(locks&1u) {finalLinear.x=0.0f;positionLinear.x=0.0f;}
+            if(locks&2u) {finalLinear.y=0.0f;positionLinear.y=0.0f;}
+            if(locks&4u) {finalLinear.z=0.0f;positionLinear.z=0.0f;}
+            float3 finalState=asfloat(arena.Load3(from+12u));
+            float3 positionState=angularState;
+            if(locks&8u) {finalState.x=0.0f;positionState.x=0.0f;}
+            if(locks&16u) {finalState.y=0.0f;positionState.y=0.0f;}
+            if(locks&32u) {finalState.z=0.0f;positionState.z=0.0f;}
+            const float3 inertiaX=asfloat(arena.Load3(input+24u));
+            const float3 inertiaY=asfloat(arena.Load3(input+36u));
+            const float3 inertiaZ=asfloat(arena.Load3(input+48u));
+            const float3 finalAngular=baseAngular+float3(
+                sourceDyDot3(inertiaX,finalState),
+                sourceDyDot3(inertiaY,finalState),
+                sourceDyDot3(inertiaZ,finalState));
+            const float3 positionAngular=baseAngular+float3(
+                sourceDyDot3(inertiaX,positionState),
+                sourceDyDot3(inertiaY,positionState),
+                sourceDyDot3(inertiaZ,positionState));
+            arena.Store3(to,asuint(finalLinear));
+            arena.Store3(to+12u,asuint(finalAngular));
+            arena.Store3(to+24u,asuint(positionLinear));
+            arena.Store3(to+36u,asuint(positionAngular));
+        }else {
+            // Standalone Dy returns the caller's original four deltas.
+            arena.Store4(to,arena.Load4(from));
+            arena.Store4(to+16u,arena.Load4(from+16u));
+            arena.Store4(to+32u,arena.Load4(from+32u));
+        }
     }
-    // Source DyBodyCoreIntegrator::integrateCore uses saved
-    // position-iteration deltas, not the final velocity deltas.
-    const uint input=p.integrationBias+40u+ordinal*112u;
-    if(arena.Load(input+68u)==0u)return;
+    // Position integration consumes the saved position-iteration state.
+    if((inputFlags&1u)==0u)return;
     const float3 baseLinear=asfloat(arena.Load3(input));
     const float3 baseAngular=asfloat(arena.Load3(input+12u));
     const uint locks=arena.Load(input+60u);

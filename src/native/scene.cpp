@@ -8422,19 +8422,10 @@ void Scene::solve_gpu_distance_constraints(float seconds) {
         gpu_dy_patches_,gpu_dy_manifolds_,gpu_dy_contact_order_,
         gpu_dy_contact_prep_pairs_,
         gpu_dy_integration_inputs_,gpu_dy_integrated_poses_,true,
-        gpu_dy_friction_impulses_,true);
+        gpu_dy_friction_impulses_,true,true);
     gpu_dy_pose_ready_=true;
-    const auto unpack=[](const float(&v)[3]) {
-        return Vec3{v[0],v[1],v[2]};
-    };
-    for(std::size_t i=0;i<solver_rows_.size();++i) {
-        const auto& source=gpu_dy_bodies_[i];
-        auto& target=solver_rows_[i];
-        target.solver.linear_velocity_delta=unpack(source.linear_delta);
-        target.solver.angular_state=unpack(source.angular_state);
-        target.motion_linear_delta=unpack(source.motion_linear_delta);
-        target.motion_angular_state=unpack(source.motion_angular_state);
-    }
+    // Dy keeps transient PGS deltas on device. Sc receives world-space
+    // final and position-phase velocities needed by its task continuations.
     for(std::size_t i=0;i<solver_contact_points_.size();++i)
         solver_contact_points_[i].applied_force=gpu_dy_contact_forces_[i];
     // Solved friction rows stay on device; Sc receives only the anchor
@@ -9152,28 +9143,30 @@ void Scene::publish_solver_bodies(std::size_t first,std::size_t last) {
         const BodyId id=solver_active_ids_[index];
         auto& actor = actors_[id];
         if (!actor.alive || actor.motion != Motion::Dynamic) continue;
-        const auto& row = prepared_solver_row(id);
-        const Vec3& d = row.solver.linear_velocity_delta;
-        Vec3 linear{
-            row.data.linear_velocity.x+d.x,
-            row.data.linear_velocity.y+d.y,
-            row.data.linear_velocity.z+d.z};
-        lock_linear_axes(linear,actor.dynamics.lock_flags);
-        // DyBodyCoreIntegrator::integrateCore publishes angular solver
-        // state through the *world* square-root inverse inertia tensor,
-        // rather than treating PxSolverBody::angularState as angular velocity.
-        Vec3 angular_state=row.solver.angular_state;
-        // integrateCore masks solver-space angular components before
-        // multiplication by the world sqrt-inverse-inertia tensor.
-        lock_angular_axes(angular_state,actor.dynamics.lock_flags);
-        const auto& i = row.data.sqrt_inverse_inertia;
-        const Vec3 angular{
-            row.data.angular_velocity.x + i[0].x*angular_state.x +
-                i[1].x*angular_state.y + i[2].x*angular_state.z,
-            row.data.angular_velocity.y + i[0].y*angular_state.x +
-                i[1].y*angular_state.y + i[2].y*angular_state.z,
-            row.data.angular_velocity.z + i[0].z*angular_state.x +
-                i[1].z*angular_state.y + i[2].z*angular_state.z};
+        Vec3 linear{},angular{};
+        if(gpu_dy_pose_ready_) {
+            const auto& result=gpu_dy_bodies_[actor.solver_row_index];
+            linear=result.final_linear_velocity();
+            angular=result.final_angular_velocity();
+        }else {
+            const auto& row = prepared_solver_row(id);
+            const Vec3& d = row.solver.linear_velocity_delta;
+            linear={row.data.linear_velocity.x+d.x,
+                    row.data.linear_velocity.y+d.y,
+                    row.data.linear_velocity.z+d.z};
+            lock_linear_axes(linear,actor.dynamics.lock_flags);
+            // Solver angular state is expressed in sqrt-inertia space.
+            Vec3 angular_state=row.solver.angular_state;
+            lock_angular_axes(angular_state,actor.dynamics.lock_flags);
+            const auto& i = row.data.sqrt_inverse_inertia;
+            angular={
+                row.data.angular_velocity.x + i[0].x*angular_state.x +
+                    i[1].x*angular_state.y + i[2].x*angular_state.z,
+                row.data.angular_velocity.y + i[0].y*angular_state.x +
+                    i[1].y*angular_state.y + i[2].y*angular_state.z,
+                row.data.angular_velocity.z + i[0].z*angular_state.x +
+                    i[1].z*angular_state.y + i[2].z*angular_state.z};
+        }
         if (!finite(linear) || !finite(angular))
             throw std::overflow_error("Native solver publication is not finite");
         step_checkpoint_.save_motion(*this,id);
@@ -10153,7 +10146,11 @@ void Scene::integrate_solver_task(
                 actor.solver_row_generation==solver_preparation_generation_ &&
                 prepared_solver_row(id).prepared_generation==
                     solver_preparation_generation_;
-            if (solved_contact) {
+            if(solved_contact && gpu_dy_pose_ready_) {
+                const auto& result=gpu_dy_bodies_[actor.solver_row_index];
+                motion_linear=result.position_linear_velocity();
+                motion_angular=result.position_angular_velocity();
+            }else if(solved_contact) {
                 const auto& row = prepared_solver_row(id);
                 const Vec3& delta = row.motion_linear_delta;
                 motion_linear = {
