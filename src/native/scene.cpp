@@ -7306,6 +7306,7 @@ void Scene::prepare_constraints(float seconds) {
     solver_contact_points_.clear();
     solver_contact_order_.clear();
     joint_rows_.clear();
+    gpu_dy_joint_world_.clear();
     const bool gpu_normal_prep=
         gpu_broadphase_ && gpu_broadphase_->has_gpu_dy_distance();
     gpu_dy_contact_prep_pairs_.clear();
@@ -7344,8 +7345,6 @@ void Scene::prepare_constraints(float seconds) {
                             Vec3 ja,Vec3 jb,float error,float response) {
             if(!(response>0.0f) || !std::isfinite(response))
                 throw std::logic_error("Source 1D joint requires finite response");
-            const float speed=dot(axis,relative)+dot(angular0,body0.angular_velocity)-
-                dot(angular1,body1.angular_velocity);
             const float reciprocal=1.0f/response;
             // Hard PGS rows use unit ERP, then remove bias for velocity passes.
             JointRow row{};
@@ -7355,8 +7354,18 @@ void Scene::prepare_constraints(float seconds) {
             row.inverse_mass_a=mass0;
             row.inverse_mass_b=mass1;
             row.velocity_multiplier=-reciprocal;
-            row.constant=-reciprocal*(error*inv_dt+speed);
-            row.unbiased_constant=-reciprocal*speed;
+            if(gpu_normal_prep) {
+                // Dy computes the source's velocity-dependent constants
+                // after GPU-prepared actor velocities are available.
+                row.constant=error*inv_dt;
+                gpu_dy_joint_world_.push_back({angular0,angular1});
+            }else {
+                const float speed=
+                    dot(axis,relative)+dot(angular0,body0.angular_velocity)-
+                    dot(angular1,body1.angular_velocity);
+                row.constant=-reciprocal*(error*inv_dt+speed);
+                row.unbiased_constant=-reciprocal*speed;
+            }
             if(!std::isfinite(row.constant) || !std::isfinite(row.unbiased_constant))
                 throw std::overflow_error("Source 1D solver constants overflow");
             joint_rows_.push_back(row);
@@ -8273,12 +8282,15 @@ void Scene::solve_gpu_distance_constraints(float seconds) {
         pack(input.angular_velocity,actor.angular_velocity);
     }
     gpu_dy_rows_.resize(joint_rows_.size());
+    if(gpu_dy_joint_world_.size()!=joint_rows_.size())
+        throw std::logic_error("Source GPU 1D world Jacobian stream incomplete");
     for(std::size_t i=0;i<joint_rows_.size();++i) {
         const auto& row=joint_rows_[i];
         auto& out=gpu_dy_rows_[i];
         pack(out.axis,row.axis);
-        pack(out.angular_a,row.angular_a);
-        pack(out.angular_b,row.angular_b);
+        pack(out.angular_a,gpu_dy_joint_world_[i].body0);
+        pack(out.angular_b,gpu_dy_joint_world_[i].body1);
+        out.reserved=1u;
         out.inverse_mass_a=row.inverse_mass_a;
         out.inverse_mass_b=row.inverse_mass_b;
         out.constant=row.constant;
