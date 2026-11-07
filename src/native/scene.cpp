@@ -8274,6 +8274,23 @@ void Scene::solve_gpu_distance_constraints(float seconds) {
             input.sqrt_inverse_inertia[axis*3u+2u]=inertia.z;
         }
     }
+    // Kinematic 1D endpoints contribute authored velocities but are
+    // not integrated or treated as dynamic solver-body owners.
+    for(const EdgeIndex edge:indexed_joints_) {
+        const auto pair=island_edges_[edge].pair;
+        for(const BodyId id:{pair.a,pair.b}) {
+            const auto& actor=actors_[id];
+            if(actor.motion!=Motion::Kinematic)continue;
+            if(actor.solver_row_generation!=solver_preparation_generation_ ||
+               actor.solver_row_index>=solver_rows_.size())
+                throw std::logic_error(
+                    "Source GPU 1D kinematic lacks its prepared row");
+            auto& input=gpu_dy_integration_inputs_[actor.solver_row_index];
+            input.active=16u;
+            pack(input.linear_velocity,actor.velocity);
+            pack(input.angular_velocity,actor.angular_velocity);
+        }
+    }
     for(std::size_t i=0;i<gpu_dy_free_ids_.size();++i) {
         const auto& actor=actors_[gpu_dy_free_ids_[i]];
         auto& input=gpu_dy_integration_inputs_[solver_rows_.size()+i];

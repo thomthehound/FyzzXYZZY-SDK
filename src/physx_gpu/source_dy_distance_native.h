@@ -89,6 +89,7 @@ struct SourceDyLaunchStats {
     std::size_t resident_velocity_reuses=0u;
     std::size_t prepared_velocity_updated_bodies=0u;
     std::size_t prepared_velocity_upload_bytes=0u;
+    std::size_t device_joint_prepared_rows=0u;
 };
 
 // Dy's original per-task conflict partitions and prepared 1D rows are
@@ -225,6 +226,9 @@ public:
             : bodies.size_bytes();
         last_schedule_.device_world_motion_bodies=
             device_world_motion?body_ordinals.size():0u;
+        last_schedule_.device_joint_prepared_rows=
+            std::count_if(rows.begin(),rows.end(),
+                [](const auto& row){return row.reserved==1u;});
         if(contact_forces.size()>
            std::numeric_limits<std::size_t>::max()/sizeof(native::GpuDyContactPoint))
             throw std::overflow_error("Source Dy contact row byte count overflow");
@@ -548,14 +552,27 @@ public:
                 // Every published body must explicitly reestablish its
                 // committed velocity after a successful device solve.
                 actor_velocity_valid_[id]=0u;
+            }else if(input.active&16u) {
+                // Infinite-mass kinematic joints contribute current
+                // velocity without creating a GPU-integrated actor.
+                record.active=16u|(63u<<8u);
+                record.velocity_offset=narrow(
+                    prepared_velocity_components_.size());
+                prepared_velocity_components_.insert(
+                    prepared_velocity_components_.end(),
+                    input.linear_velocity,input.linear_velocity+3u);
+                prepared_velocity_components_.insert(
+                    prepared_velocity_components_.end(),
+                    input.angular_velocity,input.angular_velocity+3u);
+                ++last_schedule_.prepared_velocity_updated_bodies;
             }
-            if(record.active && (input.active&2u)) {
+            if((input.active&1u) && (input.active&2u)) {
                 if(!record.source_shape_count ||
                    record.source_element==invalid)
                     throw std::logic_error("Source Dy resident pose lacks Sc ElementSim");
                 record.pose_index=invalid;
                 ++last_resident_pose_count_;
-            } else if(record.active) {
+            } else if(input.active&1u) {
                 record.pose_index=narrow(host_poses_.size());
                 SourceDyHostPoseNative pose{};
                 std::memcpy(pose.position,input.position,sizeof(pose.position));
@@ -989,7 +1006,7 @@ public:
         for(const auto index:body_ordinals) {
             if(index>=bodies.size())
                 throw std::logic_error("Source Dy GPU integration body index invalid");
-            if(integration[index].active)fetch_pose(index);
+            if(integration[index].active&1u)fetch_pose(index);
         }
         for(std::size_t index=bodies.size();index<integration.size();++index)
             fetch_pose(index);

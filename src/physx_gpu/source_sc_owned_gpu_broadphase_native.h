@@ -283,6 +283,7 @@ public:
         // Resolve the first attached shape into the ElementSim cache.
         // Body integration also covers shapes without a device target.
         for(auto& input:integration) {
+            if(input.active&16u)continue;
             if(!input.active || input.source_element==0xffffffffu) {
                 input.active&=1u;
                 continue;
