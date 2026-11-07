@@ -1162,6 +1162,9 @@ void verify_cpu_gu_gpu_dy_solver(
                     producer->dy_friction_prepared_rows()*
                         sizeof(native::GpuDyFrictionAnchorInput)/2u,
             "CPU Gu solver staged complete friction rows");
+        require(producer->dy_friction_writeback_bytes()*2u==
+                    producer->dy_friction_prepared_rows()*12u,
+            "CPU Gu GPU Dy returned tangent rows instead of anchor impulses");
         require(producer->dy_contact_prep_upload_saving()==88,
             "CPU Gu contact-prep accounting includes friction anchors or geometry");
         require(producer->dy_distance_dispatch_count()==frame+1u,
@@ -1254,6 +1257,9 @@ void verify_mixed_gu_pcm_gpu_dy_solver(
                         producer->dy_friction_prepared_rows()*
                             sizeof(native::GpuDyFrictionAnchorInput)/2u,
                 "Mixed Dy source upload still includes resident PCM anchors");
+            require(producer->dy_friction_writeback_bytes()*2u==
+                        producer->dy_friction_prepared_rows()*12u,
+                "Mixed source Gu/PCM Dy returned tangent rows instead of anchors");
             native::GpuPcmFrictionAnchorFixture::verify(cpu,gpu);
             require(producer->dy_contact_prep_upload_saving()==176,
                 "Mixed Gu/PCM contact-prep savings counted unrelated inputs");
