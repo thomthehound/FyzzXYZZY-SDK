@@ -76,7 +76,7 @@ void solveJoint(uint4 desc,uint errorAddress,bool biased) {
     }
     const uint ao=p.bodyBias+desc.y*52u;
     const uint bo=p.bodyBias+desc.z*52u;
-    float3 va=0.0f,vb=0.0f,aa=0.0f,ab=0.0f;
+    precise float3 va=0.0f,vb=0.0f,aa=0.0f,ab=0.0f;
     if(desc.y!=invalidBody) {
         va=asfloat(arena.Load3(ao));
         aa=asfloat(arena.Load3(ao+12u));
@@ -102,8 +102,8 @@ void solveJoint(uint4 desc,uint errorAddress,bool biased) {
         precise float force=previous+velocityTerm;
         precise float candidate=force+
             loadScalar(offset+(biased?48u:52u));
-        const float next=clamp(candidate,-maxImpulse,maxImpulse);
-        const float impulse=next-previous;
+        precise float next=clamp(candidate,-maxImpulse,maxImpulse);
+        precise float impulse=next-previous;
         va+=axis*(impulse*massA);
         vb-=axis*(impulse*massB);
         aa+=ja*impulse;
@@ -598,10 +598,10 @@ void integrateBody(uint ordinal) {
     // The axis lock was applied in solver space before the world
     // inverse-inertia transform; the resulting motion is not masked
     // again by DyBodyCoreIntegrator::integrateCore.
-    float3 motionAngular=angular;
-    float3 nextPosition=position+motionLinear*dt;
-    float4 nextQuaternion=quaternion;
-    float w=sourceDyDot3(motionAngular,motionAngular);
+    precise float3 motionAngular=angular;
+    precise float3 nextPosition=position+motionLinear*dt;
+    precise float4 nextQuaternion=quaternion;
+    precise float w=sourceDyDot3(motionAngular,motionAngular);
     if(w!=0.0f) {
         w=sqrt(w);
         if(w>1.0e7f) {
@@ -609,14 +609,20 @@ void integrateBody(uint ordinal) {
             w=1.0e7f;
         }
         const float angle=dt*w*0.5f;
-        const float3 omega=motionAngular*(sin(angle)/w);
+        precise float3 omega=motionAngular*(sin(angle)/w);
         const float4 dq=float4(
             quaternion.w*omega.x+omega.y*quaternion.z-omega.z*quaternion.y,
             quaternion.w*omega.y+omega.z*quaternion.x-omega.x*quaternion.z,
             quaternion.w*omega.z+omega.x*quaternion.y-omega.y*quaternion.x,
-            -sourceDyDot3(omega,quaternion.xyz));
+            -(omega.x*quaternion.x)-omega.y*quaternion.y-
+                omega.z*quaternion.z);
         nextQuaternion=dq+quaternion*cos(angle);
-        const float length=sqrt(dot(nextQuaternion,nextQuaternion));
+        // Source integrate_quaternion rounds each square and sum in order.
+        precise float qx=nextQuaternion.x*nextQuaternion.x;
+        precise float qy=nextQuaternion.y*nextQuaternion.y;
+        precise float qz=nextQuaternion.z*nextQuaternion.z;
+        precise float qw=nextQuaternion.w*nextQuaternion.w;
+        precise float length=sqrt(((qx+qy)+qz)+qw);
         if(!(length>0.0f) || !isfinite(length))return;
         nextQuaternion/=length;
     }

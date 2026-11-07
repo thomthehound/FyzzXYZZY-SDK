@@ -29,11 +29,11 @@ bool contactImpulse(uint a,uint b,uint ao,uint bo,
                     inout float3 aa,inout float3 ab,
                     float delta,float ma,float mb,uint errorAddress) {
     // Source contact PGS multiplies impulse by inverse mass first.
-    const float da=delta*ma,db=delta*mb;
-    float3 v0=va+n*da;
-    float3 v1=vb-n*db;
-    float3 w0=aa+ja*delta;
-    float3 w1=ab-jb*delta;
+    precise float da=delta*ma,db=delta*mb;
+    precise float3 v0=va+n*da;
+    precise float3 v1=vb-n*db;
+    precise float3 w0=aa+ja*delta;
+    precise float3 w1=ab-jb*delta;
     if(!all(isfinite(v0)) || !all(isfinite(v1)) ||
        !all(isfinite(w0)) || !all(isfinite(w1))) {
         arena.InterlockedOr(errorAddress,16u);
@@ -99,7 +99,7 @@ void solveContact(uint4 descriptor,uint errorAddress,bool biased,
             arena.InterlockedOr(errorAddress,128u);
             return;
         }
-        float normalImpulse=0.0;
+        precise float normalImpulse=0.0;
         for(uint i=0;i<patch.y;++i) {
             uint pointIndex=arena.Load(
                 p.orderBias+(cursor++)*4u);
@@ -117,10 +117,10 @@ void solveContact(uint4 descriptor,uint errorAddress,bool biased,
             float oldForce=contactScalar(co+56u);
             float error=biased?contactScalar(co+48u):
                                 contactScalar(co+52u);
-            float candidate=max(
+            precise float candidate=max(
                 -normalVelocity*contactScalar(co+40u)+error,
                 -oldForce);
-            float nextForce=min(contactScalar(co+60u),
+            precise float nextForce=min(contactScalar(co+60u),
                 contactScalar(co+44u)*oldForce+candidate);
             if(!isfinite(nextForce)) {
                 arena.InterlockedOr(errorAddress,1024u);
@@ -134,8 +134,8 @@ void solveContact(uint4 descriptor,uint errorAddress,bool biased,
         }
         if(!frictionEnabled || patch.z==0u)continue;
         float coeff=patch.z==2u?0.5:1.0;
-        float maxStatic=asfloat(settings.x)*coeff*normalImpulse;
-        float maxDynamic=asfloat(settings.y)*coeff*normalImpulse;
+        precise float maxStatic=asfloat(settings.x)*coeff*normalImpulse;
+        precise float maxDynamic=asfloat(settings.y)*coeff*normalImpulse;
         bool broken=false;
         for(uint k=patch.x;k<patch.x+patch.z*2u;++k) {
             uint fo=p.frictionBias+k*56u;
@@ -147,12 +147,12 @@ void solveContact(uint4 descriptor,uint errorAddress,bool biased,
                 sourceDyDot3(aa,ja)-sourceDyDot3(ab,jb);
             float oldForce=frictionScalar(fo+52u);
             float bias=biased?frictionScalar(fo+44u):0.0;
-            float candidate=oldForce+
+            precise float candidate=oldForce+
                 (frictionScalar(fo+48u)-bias-tangentDelta)*
                 frictionScalar(fo+40u);
             bool saturated=abs(candidate)>maxStatic;
             // Source signed FMin/FMax also handles negative compliant bounds.
-            float nextForce=saturated
+            precise float nextForce=saturated
                 ? min(maxDynamic,max(-maxDynamic,candidate)):candidate;
             if(!isfinite(nextForce)) {
                 arena.InterlockedOr(errorAddress,2048u);
@@ -296,8 +296,8 @@ void prepareContactRow(uint index,uint pairIndex,uint contactBegin,
     float3 jb=prepInertia(b1,r1);
     float angularRel=sourceDyDot3(r0,w0)-sourceDyDot3(r1,w1);
     float vrel=linearRel+angularRel;
-    float response=(m0+sourceDyDot3(ja,ja))+(m1+sourceDyDot3(jb,jb));
-    float multiplier=response>0.0?1.0/response:0.0;
+    precise float response=(m0+sourceDyDot3(ja,ja))+(m1+sourceDyDot3(jb,jb));
+    precise float multiplier=response>0.0?1.0/response:0.0;
     float restDistance=asfloat(arena.Load(pair+8u));
     float restitution=asfloat(arena.Load(pair+16u));
     float damping=asfloat(arena.Load(pair+20u));
@@ -316,7 +316,7 @@ void prepareContactRow(uint index,uint pairIndex,uint contactBegin,
     float targetVelocity=bouncing?-vrel*restitution:0.0f;
     float target=(targetVelocity-vrel);
     float impulseMultiplier=1.0;
-    float biasedError,unbiasedError;
+    precise float biasedError,unbiasedError;
     if(restitution<0.0f) {
         float enabledDamping=separated&&!closing?0.0f:damping;
         float nrdt=seconds*restitution;
@@ -418,12 +418,12 @@ void prepareFrictionRow(uint index,uint patchIndex,uint pairIndex,
     float3 ax1=prepSlop(cross(r1,tangent),slop);
     float3 ja=prepInertia(b0,ax0);
     float3 jb=prepInertia(b1,ax1);
-    float response=(m0+sourceDyDot3(ja,ja))+(m1+sourceDyDot3(jb,jb));
-    float velocityMultiplier=response>0.0
+    precise float response=(m0+sourceDyDot3(ja,ja))+(m1+sourceDyDot3(jb,jb));
+    precise float velocityMultiplier=response>0.0
         ? rigidBias/response:0.0;
-    float bias=(sourceDyDot3(tangent,error)*invDt);
+    precise float bias=(sourceDyDot3(tangent,error)*invDt);
     float3 relative=v0-v1;
-    float targetVelocity=(-(sourceDyDot3(tangent,relative)+
+    precise float targetVelocity=(-(sourceDyDot3(tangent,relative)+
         sourceDyDot3(ax0,w0)-sourceDyDot3(ax1,w1)));
     if(!isfinite(response) || !isfinite(velocityMultiplier) ||
        !isfinite(bias) ||
