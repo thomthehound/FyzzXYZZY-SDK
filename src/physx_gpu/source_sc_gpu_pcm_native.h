@@ -125,7 +125,7 @@ public:
             if(edge.body_a>=rigid_count || edge.body_b>=rigid_count ||
                edge.edge==0xffffffffu || (edge.flags&~7u)!=0u)
                 throw std::invalid_argument("Source Sc graph references invalid EdgeIndex or rigid actor");
-        graph_sources_.assign(edges.begin(),edges.end());
+        graph_sources_=edges;
         graph_rigid_watermark_=rigid_count;
     }
 
@@ -502,7 +502,7 @@ private:
     CudaDeviceAddressMap::Address indirect_address_=0u;
     std::vector<SourcePcmBoxPairNative> pair_host_;
     std::vector<SourcePcmGpuContactStreamNative> readback_;
-    std::vector<SourceScContactGraphPairNative> graph_sources_;
+    std::span<const SourceScContactGraphPairNative> graph_sources_;
     std::uint32_t graph_rigid_watermark_=0u;
     std::vector<SourceScContactGraphPairNative> graph_pair_host_;
     std::vector<SourceSapUpload> graph_uploads_;

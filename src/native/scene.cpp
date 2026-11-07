@@ -4091,19 +4091,14 @@ void Scene::update_contacts() {
                     a.geometry==Geometry::Plane?pair.b:pair.a,
                     edge,!island_edges_[edge].pcm_cache.initialized,
                     sphere?1u:16u,true,floor.position.y,
-                    a.contact_offset+b.contact_offset,previously_touching,
-                    a.body,b.body,
-                    actors_[a.body].motion==Motion::Dynamic,
-                    actors_[b.body].motion==Motion::Dynamic});
+                    a.contact_offset+b.contact_offset,previously_touching});
             }else {
                 const bool swapped=island_edges_[edge].gu_order_reversed;
                 gpu_pcm_pairs_.push_back({
                     swapped?pair.b:pair.a,swapped?pair.a:pair.b,edge,
                     !island_edges_[edge].pcm_cache.initialized,
                     convex?4u:(sphere?1u:16u),false,0.f,0.f,
-                    previously_touching,a.body,b.body,
-                    actors_[a.body].motion==Motion::Dynamic,
-                    actors_[b.body].motion==Motion::Dynamic});
+                    previously_touching});
             }
         }
         gpu_pcm_results_.resize(gpu_pcm_pairs_.size());

@@ -103,10 +103,6 @@ struct GpuPcmBoxPair {
     float plane_height=0.0f;
     float contact_distance=0.0f;
     bool previously_touching=false;
-    // Rigid endpoints of this Sc EdgeIndex. Shape handles and rigid
-    // actor IDs occupy different lifetime domains.
-    BodyId rigid_a=0xffffffffu,rigid_b=0xffffffffu;
-    bool dynamic_a=false,dynamic_b=false;
 };
 // The current Sc contact-manager and constraint EdgeIndex view.
 // Bit 2 marks an authored joint; physical touch for contacts is read
