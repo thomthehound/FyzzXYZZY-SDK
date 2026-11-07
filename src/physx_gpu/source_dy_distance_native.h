@@ -1139,7 +1139,7 @@ public:
             for(std::size_t index=bodies.size();index<integration.size();++index) {
                 auto& input=integration[index];
                 const auto* output=host_.data()+free_velocity_offset+
-                    (index-bodies.size())*24u;
+                    (index-bodies.size())*52u;
                 std::memcpy(input.linear_velocity,output,12u);
                 std::memcpy(input.angular_velocity,output+12u,12u);
                 std::memcpy(&sleep_states[index],output+24u,
