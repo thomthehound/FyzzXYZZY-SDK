@@ -183,7 +183,7 @@ public:
         last_schedule_.device_body_upload_bytes=device_initial_bodies
             ? bodies.size()*sizeof(float):bodies.size_bytes();
         last_schedule_.device_world_motion_bodies=
-            device_world_motion?bodies.size():0u;
+            device_world_motion?body_ordinals.size():0u;
         if(contact_forces.size()>
            std::numeric_limits<std::size_t>::max()/sizeof(native::GpuDyContactPoint))
             throw std::overflow_error("Source Dy contact row byte count overflow");
