@@ -1580,7 +1580,7 @@ void verify_gpu_distance_solver(
         // Joint impulses stay in their device PGS rows, not the
         // completed Sc result stream.
         constexpr std::size_t expected_output=
-            5u*(48u+sizeof(native::GpuDyIntegratedPose))+
+            5u*(52u+sizeof(native::GpuDyIntegratedPose))+
             3u*sizeof(std::uint32_t);
         require(downloaded==expected_output && downloaded<uploaded/2u,
             "Source Dy GPU fetched transient joint row impulses");
@@ -1996,6 +1996,9 @@ void verify_gpu_free_integration(
         const auto resident=producer->dy_resident_pose_count();
         const auto metadata=producer->dy_launch_stats();
         require(metadata.device_preintegrated_bodies==actual.size() &&
+                metadata.device_sleep_bodies==actual.size() &&
+                metadata.sleep_readback_bytes==
+                    actual.size()*sizeof(native::GpuDySleepState) &&
                 metadata.free_velocity_readback_bytes<=
                     actual.size()*sizeof(physx_gpu::SourceDyPreparedVelocityNative) &&
                 (frame<5u?metadata.force_mod_upload_bytes==0u
@@ -2060,16 +2063,23 @@ void verify_gpu_free_integration(
                     producer->dy_distance_transfer_bytes().second==
                         actual.size()*
                             (sizeof(native::GpuDyIntegratedPose)+
-                             sizeof(physx_gpu::SourceDyPreparedVelocityNative)),
+                             sizeof(physx_gpu::SourceDyPreparedVelocityNative)+
+                             sizeof(native::GpuDySleepState)),
                     "Free-only Dy staged solver rows or dispatched PGS");
         }
         if(frame>0u)
             require(producer->last_frame().device_cached_box_count>=262u,
                     "Free body or compound shape lost resident bounds");
-        for(std::size_t i=0;i<actual.size();++i)
+        for(std::size_t i=0;i<actual.size();++i) {
             test::compound_compare_state(gpu.body_state(actual[i]),
                 cpu.body_state(expected[i]),0.002f,
                 "GPU Dy free or transitioning body");
+            require(std::fabs(cpu.body_wake_counter(expected[i])-
+                              gpu.body_wake_counter(actual[i]))<0.0005f &&
+                    cpu.body_ready_for_sleep(expected[i])==
+                        gpu.body_ready_for_sleep(actual[i]),
+                "GPU Dy sleep energy or wake-counter arbitration diverged");
+        }
         // Query a moving, rotating body after Dy has published its pose.
         // The ray crosses the body's center, independent of its rotation.
         const auto cpu_position=cpu.body_state(expected[1]).position;
