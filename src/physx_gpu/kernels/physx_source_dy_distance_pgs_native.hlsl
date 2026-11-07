@@ -663,12 +663,12 @@ void sourceDyPartitionTask(uint taskId,uint scratch,uint errorAddress,
 // Active rigid endpoints read the same BodyId-resident actor state as PCM
 // contact preparation and integrateCore. Dy constructs every 1D Jacobian
 // before source-order PGS, with no host world-frame joint row dependency.
-bool sourceDyJointActorFrame(uint ordinal,uint fallback,
+bool sourceDyJointActorFrame(uint ordinal,uint fallback,uint centerFallback,
                              out float3 actorPosition,out float4 actorAxes,
                              out float3 massCenter) {
     actorPosition=asfloat(arena.Load3(fallback));
     actorAxes=asfloat(arena.Load4(fallback+12u));
-    massCenter=asfloat(arena.Load3(fallback+56u));
+    massCenter=asfloat(arena.Load3(centerFallback));
     if(ordinal!=invalidBody) {
         const uint input=p.integrationBias+40u+ordinal*76u;
         if((arena.Load(input+44u)&128u)!=0u) {
@@ -711,16 +711,12 @@ bool sourceDyPrepareJointGeometry(uint4 desc,uint endError) {
     // consumes its integrated actor frame and mass-local transform.
     float3 pA,pB,cA,cB;
     float4 qA,qB;
-    if(!sourceDyJointActorFrame(desc.y,source+56u,pA,qA,cA) ||
-       !sourceDyJointActorFrame(desc.z,source+84u,pB,qB,cB)) {
+    if(!sourceDyJointActorFrame(desc.y,source+56u,source+112u,pA,qA,cA) ||
+       !sourceDyJointActorFrame(desc.z,source+84u,source+124u,pB,qB,cB)) {
         arena.InterlockedOr(endError,8192u);
         return false;
     }
-    if(desc.y==invalidBody || (arena.Load(p.integrationBias+40u+desc.y*76u+44u)&128u)==0u)
-        cA=massAInput;
-    if(desc.z==invalidBody || (arena.Load(p.integrationBias+40u+desc.z*76u+44u)&128u)==0u)
-        cB=massBInput;
-    const float3 wA=pA+sourceRigidRotate(qA,localA);
+     const float3 wA=pA+sourceRigidRotate(qA,localA);
     const float3 wB=pB+sourceRigidRotate(qB,localB);
     const float3 rA=wA-cA,rB=wB-cB;
     const float4 qa=sourceRigidMultiply(qA,localQA);
@@ -752,7 +748,7 @@ bool sourceDyPrepareJointGeometry(uint4 desc,uint endError) {
     }
     const float invDt=1.0f/dt;
     float3 linear[6],angularA[6],angularB[6],jacA[6],jacB[6];
-    float invResponse[6];
+    float invResponse[6],projectedError[6];
     const float requiredDistance=asfloat(arena.Load(source+136u));
     for(uint i=0u;i<count;++i) {
         float3 axis=0.0f,angA=0.0f,angB=0.0f;
@@ -800,7 +796,7 @@ bool sourceDyPrepareJointGeometry(uint4 desc,uint endError) {
             ja-=jacA[j]*factor;
             jb-=jacB[j]*factor;
             // Geometry and its error must share the same source projection.
-            error-=asfloat(arena.Load(first+j*64u+48u))*factor;
+            error-=projectedError[j]*factor;
         }
         const float response=(mass0+mass1)*sourceDyDot3(axis,axis)+
             sourceDyDot3(ja,ja)+sourceDyDot3(jb,jb);
@@ -809,6 +805,7 @@ bool sourceDyPrepareJointGeometry(uint4 desc,uint endError) {
             return false;
         }
         invResponse[i]=1.0f/response;
+        projectedError[i]=error;
         linear[i]=axis;angularA[i]=angA;angularB[i]=angB;
         jacA[i]=ja;jacB[i]=jb;
         const float velocity=sourceDyDot3(axis,vA-vB)+
