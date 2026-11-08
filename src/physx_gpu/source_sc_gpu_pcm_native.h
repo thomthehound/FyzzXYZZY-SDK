@@ -501,6 +501,54 @@ public:
         if(gpu_downloads_.empty())stream_.submit();
         else stream_.begin_fetch(gpu_downloads_);
     }
+    // Source Sc produces bounded primitive witnesses independently of
+    // general GPU PCM. Snapshot their uploads before the Sc witness join;
+    // the Context owns both staging and the borrowed result buffers.
+    // GPU Gu ordinals are not inspected until their readback completes.
+    void enqueue_host_contacts(
+            std::span<const native::GpuPcmBoxPair> requests,
+            std::span<const native::GpuPcmBoxResult> output) {
+        if(!result_pending_ || !pcm_transaction_pending_ ||
+           host_upload_pending_ ||
+           requests.data()!=pending_requests_.data() ||
+           requests.size()!=pending_requests_.size() ||
+           output.data()!=pending_output_.data() ||
+           output.size()!=pending_output_.size())
+            throw std::logic_error("Mixed source Gu admission is not the pending PCM epoch");
+        auto& uploads=stream_.upload_scratch();
+        std::size_t bytes=0u;
+        for(std::size_t i=0u;i<requests.size();) {
+            if(!requests[i].host_generated) {
+                ++i;
+                continue;
+            }
+            const auto first=i;
+            while(i<requests.size() && requests[i].host_generated) {
+                validate_host_contact(requests[i],output[i]);
+                ++i;
+            }
+            const auto stride=sizeof(native::GpuPcmBoxResult);
+            const auto size=(i-first)*stride;
+            uploads.push_back({
+                dense_contacts_.getDevicePtr()+first*stride,
+                output.data()+first,size});
+            bytes+=size;
+        }
+        if(uploads.empty())
+            throw std::logic_error("Mixed PCM epoch has no bounded CPU Gu records");
+        stream_.queue_uploads(uploads);
+        // This updates both GPU PCM and CPU Gu physical-touch words in
+        // source order. It executes after the independent GPU contact
+        // producer and the CPU Gu upload, without blocking Sc's readback.
+        journal_stage_.append(stream_,addresses_,
+            SourceScContactHistoryNativeStage::Phase::PublishHostTouch,
+            dense_contacts_.getDevicePtr(),edges_.getDevicePtr(),
+            journal_.getDevicePtr(),journal_pair_count_,
+            journal_edge_capacity_);
+        last_host_contact_upload_bytes_=bytes;
+        host_upload_pending_=true;
+    }
+
     void finish() {
         if(!result_pending_)
             throw std::logic_error("Source PCM join has no queued epoch");
@@ -532,39 +580,12 @@ public:
                 throw std::logic_error(
                     "Source GPU PCM publication disagrees with original Sc manager");
         }
-        // CPU Gu is already published to Sc's host result arena.
-        // Snapshot its device upload on this same ordered queue while
-        // Sc begins accurate-island and friction preparation.
-        auto& uploads=stream_.upload_scratch();
-        for(std::size_t i=0u;i<requests.size();) {
-            if(!requests[i].host_generated) {
-                ++i;
-                continue;
-            }
-            const auto first=i;
-            while(i<requests.size() && requests[i].host_generated) {
-                validate_host_contact(requests[i],output[i]);
-                ++i;
-            }
-            const auto stride=sizeof(native::GpuPcmBoxResult);
-            const auto bytes=(i-first)*stride;
-            uploads.push_back({
-                dense_contacts_.getDevicePtr()+first*stride,
-                output.data()+first,bytes});
-            last_host_contact_upload_bytes_+=bytes;
-        }
-        if(!uploads.empty()) {
-            stream_.queue_uploads(uploads);
-            // The final source contact stream carries both CPU Gu and
-            // GPU PCM touch transitions. The same device EdgeIndex is
-            // visible to downstream accurate-connectivity consumers.
-            journal_stage_.append(stream_,addresses_,
-                SourceScContactHistoryNativeStage::Phase::PublishHostTouch,
-                dense_contacts_.getDevicePtr(),edges_.getDevicePtr(),
-                journal_.getDevicePtr(),journal_pair_count_,
-                journal_edge_capacity_);
-            host_upload_pending_=true;
-        }
+        // CPU Gu was submitted before this host witness join. No later
+        // device continuation can extend the readback dependency.
+        if(std::any_of(requests.begin(),requests.end(),
+                       [](const auto& request){return request.host_generated;}) &&
+           !host_upload_pending_)
+            throw std::logic_error("Mixed PCM host Gu was not admitted before fetch");
         published_pair_count_=journal_pair_count_;
         result_pending_=false;
         pending_requests_={};
