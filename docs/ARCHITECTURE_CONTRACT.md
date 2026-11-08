@@ -153,6 +153,14 @@ nodes, ordered constraints and explicit cross-system dependencies within
 this same graph. A new feature must not require a second independent frame
 loop, contact registry, island manager or solver-state truth.
 
+CPU Gu and GPU PCM publish physical-touch transitions into the same device
+EdgeIndex history. Host-only Gu epochs journal only the prior/current touch
+words from the existing resident 84-byte contact records; mixed epochs retain
+the full GPU manifold journal but snapshot only touch words for CPU-owned
+managers. A rejected transaction restores the original device touch epoch
+before another producer can update that EdgeIndex. This does not move public
+Sc graph reconciliation or current Dy task construction to the device.
+
 **Current migration boundary:** general GPU PCM still downloads its 84-byte
 contact records before CPU Sc friction correlation and accurate-island
 scheduling. The ordered PCM enqueue/join starts general GPU PCM before
