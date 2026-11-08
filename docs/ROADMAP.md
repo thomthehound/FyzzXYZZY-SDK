@@ -170,11 +170,24 @@ articulation or nonrigid kernel intake:
   be source-derived; one workgroup per island/task is not accepted merely
   because many small islands run concurrently.
 - Keep device-generated contacts, prepared rows, velocities and integrated
-  poses across dependent stages and frames. CPU-owned sparse Sc contact
-  manager and island metadata may remain when cheaper, but it must consume
-  compact changes rather than force a complete GPU result fetch. Transfer
-  authored changes and requested public results; metadata readbacks must
-  not create an unconditional GPU → CPU → GPU dependency.
+  poses across dependent stages and frames. The scene execution graph in
+  [ARCHITECTURE_CONTRACT.md](ARCHITECTURE_CONTRACT.md) is binding. The remaining
+  general PCM-to-Sc host witness fetch is a blocking migration dependency,
+  not the long-term solver scheduling model.
+- Complete the device-side accurate touch/connectivity admission first:
+  source EdgeIndex identity stays stable, while current-frame GPU touch
+  and constraint edges determine actual islands without CPU witness
+  reconstruction. Broadphase overlap alone cannot admit a physical touch.
+- Move GPU-owned contact/friction correlation and active task/row admission
+  onto the dependent device graph, reusing the existing PCM contact stream,
+  persistent anchor history and Dy partition/solve pipeline. Preserve
+  source Gu ordinals, mixed CPU-authored contact slots, exact island
+  ordering and generation-safe retirement; do not duplicate numerical Gu.
+- Reconcile compact topology, contact events and requested host-visible
+  results at scene publication. An early host join must correspond to a
+  real CPU consumer such as an authored callback. Validate rejection
+  between enqueue, numerical execution and final commit before removing
+  the current intermediate fetch.
 - Measure refiltering and topology churn separately from quiet frames.
   Do not rebuild full device broadphase history to avoid a cheap host
   overlap lookup unless measured critical-path cost establishes a win.
