@@ -79,6 +79,9 @@ public:
         queue(0u,rigidCount);
         queue(1u,pairCount);
         queue(2u,rigidCount);
+        // The compressed roots are now globally visible. Materialize
+        // manager membership for Dy task admission on this same stream.
+        queue(3u,pairCount);
     }
 private:
     compute::Context& context_;
