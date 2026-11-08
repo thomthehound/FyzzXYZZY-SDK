@@ -352,6 +352,7 @@ void verify(fyzz::compute::Backend backend,const char* sap,
     producer->enqueue_gpu_pcm_box_contacts(request,direct);
     const auto queued=producer->stream_submission_stats();
     require(queued.command_batches>before_enqueue.command_batches &&
+            queued.readback_submissions==before_enqueue.readback_submissions+1u &&
             queued.fetch_batches==before_enqueue.fetch_batches &&
             queued.fetch_bytes==before_enqueue.fetch_bytes &&
             direct[0].packed_counts==0u,
@@ -462,6 +463,9 @@ void verify(fyzz::compute::Backend backend,const char* sap,
     std::array<native::GpuPcmBoxResult,1> abandoned{};
     producer->enqueue_gpu_pcm_box_contacts(failed_request,abandoned);
     producer->invalidate_after_rollback();
+    require(abandoned[0].packed_counts==0u &&
+            abandoned[0].edge==0u,
+        "Abandoned GPU readback published rejected contact witnesses");
     std::array<native::GpuPcmBoxResult,1> retried{};
     producer->enqueue_gpu_pcm_box_contacts(request,retried);
     producer->finish_gpu_pcm_box_contacts();
