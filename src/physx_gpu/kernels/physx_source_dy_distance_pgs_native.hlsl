@@ -385,6 +385,7 @@ uint sourceDyGraphManagerCount(uint root) {
 groupshared uint dyNeeded,dyAssigned,dyWave,dyProgress,dyHighest;
 groupshared uint dyNextWave,dySerial;
 groupshared uint dySingletonPartitions;
+groupshared uint dyHubA,dyHubB,dyHubMask;
 
 void sourceDyPartitionTask(uint taskId,uint scratch,uint errorAddress,
                            uint lane) {
@@ -486,42 +487,69 @@ void sourceDyPartitionTask(uint taskId,uint scratch,uint errorAddress,
     AllMemoryBarrierWithGroupSync();
     if(arena.Load(errorAddress)!=0u)return;
 
-    // For a hub graph, every dynamic edge shares one writable body.
-    // Its exact source greedy coloring is the encounter ordinal of
-    // that edge: no conflict search or 32-color wave scans are needed.
-    // Static reservations still use the ordinary post-dynamic phase.
-    if(lane==0u && dyNeeded>=32u) {
-        uint candidateA=0xffffffffu,candidateB=0xffffffffu;
-        for(uint i=first;i<last;++i) {
-            const uint4 desc=arena.Load4(raw+i*16u);
-            if((desc.w&0x300u)==0x300u) {
-                candidateA=desc.y;
-                candidateB=desc.z;
-                break;
-            }
-        }
-        bool sharedA=candidateA!=0xffffffffu;
-        bool sharedB=sharedA;
-        for(uint i=first;i<last && (sharedA||sharedB);++i) {
-            const uint4 desc=arena.Load4(raw+i*16u);
-            if((desc.w&0x300u)!=0x300u)continue;
-            sharedA=sharedA && (desc.y==candidateA||desc.z==candidateA);
-            sharedB=sharedB && (desc.y==candidateB||desc.z==candidateB);
-        }
-        if(sharedA || sharedB) {
-            uint color=0u;
+    // A hub's dynamic/dynamic color is its encounter rank. Recognize
+    // the common endpoint in parallel; when every descriptor is dynamic,
+    // the rank is simply its source ordinal and needs no serial scan.
+    if(dyNeeded>=32u) {
+        if(lane==0u) {
+            dyHubA=0xffffffffu;
+            dyHubB=0xffffffffu;
+            dyHubMask=3u;
             for(uint i=first;i<last;++i) {
                 const uint4 desc=arena.Load4(raw+i*16u);
-                if((desc.w&0x300u)!=0x300u)continue;
-                const uint a=bodyState+desc.y*12u;
-                const uint b=bodyState+desc.z*12u;
-                arena.Store(colors+i*4u,color);
-                arena.Store(a+4u,max(arena.Load(a+4u),color+1u));
-                arena.Store(b+4u,max(arena.Load(b+4u),color+1u));
-                ++color;
+                if((desc.w&0x300u)==0x300u) {
+                    dyHubA=desc.y;
+                    dyHubB=desc.z;
+                    break;
+                }
             }
-            dyHighest=color;
-            dyAssigned=color;
+        }
+        AllMemoryBarrierWithGroupSync();
+        uint common=3u;
+        for(uint i=first+lane;i<last && common!=0u;i+=128u) {
+            const uint4 desc=arena.Load4(raw+i*16u);
+            if((desc.w&0x300u)!=0x300u)continue;
+            if(desc.y!=dyHubA && desc.z!=dyHubA)common&=~1u;
+            if(desc.y!=dyHubB && desc.z!=dyHubB)common&=~2u;
+        }
+        InterlockedAnd(dyHubMask,common);
+        AllMemoryBarrierWithGroupSync();
+        if(dyHubMask!=0u) {
+            if(dyNeeded==count) {
+                // Every source ordinal is one conflicting dynamic edge.
+                // Each writes a unique color; body maxima are atomic
+                // because the hub and spokes can be shared across lanes.
+                for(uint i=first+lane;i<last;i+=128u) {
+                    const uint4 desc=arena.Load4(raw+i*16u);
+                    const uint color=i-first;
+                    arena.Store(colors+i*4u,color);
+                    uint unused;
+                    arena.InterlockedMax(bodyState+desc.y*12u+4u,
+                                         color+1u,unused);
+                    arena.InterlockedMax(bodyState+desc.z*12u+4u,
+                                         color+1u,unused);
+                }
+                if(lane==0u) {
+                    dyHighest=count;
+                    dyAssigned=count;
+                }
+            } else if(lane==0u) {
+                // Static reservations follow the dynamic colors. Mixed
+                // hubs retain their exact dynamic encounter ranks.
+                uint color=0u;
+                for(uint i=first;i<last;++i) {
+                    const uint4 desc=arena.Load4(raw+i*16u);
+                    if((desc.w&0x300u)!=0x300u)continue;
+                    const uint a=bodyState+desc.y*12u;
+                    const uint b=bodyState+desc.z*12u;
+                    arena.Store(colors+i*4u,color);
+                    arena.Store(a+4u,max(arena.Load(a+4u),color+1u));
+                    arena.Store(b+4u,max(arena.Load(b+4u),color+1u));
+                    ++color;
+                }
+                dyHighest=color;
+                dyAssigned=color;
+            }
         }
     }
     AllMemoryBarrierWithGroupSync();
