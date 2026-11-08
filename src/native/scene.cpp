@@ -4122,6 +4122,13 @@ void Scene::update_contacts() {
     if(gpu_results_pending || (source_gpu_pcm && gpu_pcm_pairs_.empty()))
         gpu_broadphase_->enqueue_gpu_pcm_box_contacts(
             gpu_pcm_pairs_,gpu_pcm_results_);
+    // The speculative IslandSim consumes SAP membership, never Gu
+    // witness geometry. Admit its first/second-pass topology on the CPU
+    // while the same scene stream executes general GPU PCM. Accurate
+    // IslandSim admission remains dependent on the real Gu touch result.
+    if(gpu_results_pending &&
+       (island_topology_dirty_ || !found_.empty() || !lost_.empty()))
+        update_island_connectivity(true);
     if(host_pair_count) {
         // The same Sc cache owns primitive witnesses even when this
         // frame also schedules general device PCM contacts.
@@ -11028,6 +11035,7 @@ void Scene::advance_collision(bool force_update) {
 }
 void Scene::advance_collision_internal(
     bool force_update,bool checkpointed) {
+    speculative_connectivity_prepared_=false;
     // Begin one complete source publication. The first pass can rebuild
     // island membership before third-pass lost-edge repair, so preserve
     // any resulting sleep candidates across both passes of this frame.
