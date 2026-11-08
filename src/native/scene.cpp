@@ -3978,7 +3978,7 @@ std::uint8_t Scene::publish_gpu_pcm_box_box(
     }
     return static_cast<std::uint8_t>(gpu.count);
 }
-void Scene::update_contacts() {
+void Scene::update_contacts(bool gpu_dy_follows) {
     // Gu narrowphase consumes the sum of both PxShapeCore contact offsets.
     next_manifolds_.clear();
     next_contact_points_.clear();
@@ -4070,11 +4070,79 @@ void Scene::update_contacts() {
         }
         gpu_pcm_results_.resize(gpu_pcm_pairs_.size());
     }
-    // The GPU contact stream now includes plane-box managers in source
-    // EdgeIndex order; Sc does not generate a parallel host manifold.
-    if(source_gpu_pcm)
-        gpu_broadphase_->generate_gpu_pcm_box_contacts(
-            gpu_pcm_pairs_,gpu_pcm_results_);
+    // Only analytic, single-witness Sc managers can produce the exact
+    // source Gu classification independently of the device stream. CPU
+    // Sc publishes topology while GPU PCM prepares numerical Dy inputs.
+    // The GPU outcome is checked at the existing Dy fetch boundary.
+    bool deferred_pcm=false;
+    if(source_gpu_pcm) {
+        const bool analytic=gpu_dy_follows &&
+            gpu_broadphase_->has_gpu_dy_distance() &&
+            !gpu_pcm_pairs_.empty() &&
+            std::all_of(gpu_pcm_pairs_.begin(),gpu_pcm_pairs_.end(),
+                [](const GpuPcmBoxPair& request) {
+                    return request.candidate_capacity==1u;
+                });
+        if(analytic)
+            deferred_pcm=gpu_broadphase_->begin_gpu_pcm_contacts_deferred(
+                gpu_pcm_pairs_,gpu_pcm_results_);
+        if(!deferred_pcm)
+            gpu_broadphase_->generate_gpu_pcm_box_contacts(
+                gpu_pcm_pairs_,gpu_pcm_results_);
+    }
+    if(deferred_pcm) {
+        // A sphere's one-contact Gu source is bounded O(1) CPU work.
+        // No GPU contact record crosses to Sc before Dy execution.
+        for(std::size_t i=0u;i<gpu_pcm_pairs_.size();++i) {
+            const auto& request=gpu_pcm_pairs_[i];
+            const Shape& first=shapes_[request.first];
+            const Shape& second=shapes_[request.second];
+            const Shape& sphere=first.geometry==Geometry::Sphere
+                ?first:second;
+            std::array<ContactPoint,1> points{};
+            std::uint8_t count=0u;
+            const float distance=first.contact_offset+second.contact_offset;
+            if(request.plane_pair) {
+                count=source_pcm_sphere_plane(
+                    sphere.position,sphere.radius,first.position.y,
+                    distance,points);
+                if(count)points[0].normal={
+                    -points[0].normal.x,-points[0].normal.y,
+                    -points[0].normal.z};
+            }else if(first.geometry==Geometry::Sphere &&
+                     second.geometry==Geometry::Sphere) {
+                count=source_pcm_sphere_sphere(
+                    first.position,first.radius,second.position,second.radius,
+                    distance,points);
+            }else {
+                const Shape& box=first.geometry==Geometry::Box?first:second;
+                count=source_pcm_sphere_box(
+                    sphere.position,sphere.radius,box.position,
+                    box.orientation,box.half_extents,distance,points);
+                if(count && first.geometry==Geometry::Box)
+                    points[0].normal={
+                        -points[0].normal.x,-points[0].normal.y,
+                        -points[0].normal.z};
+            }
+            auto& result=gpu_pcm_results_[i];
+            result.edge=request.edge;
+            result.status=0u;
+            result.count=count;
+            result.cached_count=count;
+            result.selected_and_regenerated=count;
+            result.touch_transition=count
+                ?(request.previously_touching
+                    ?GpuPcmTouchTransition::Persists
+                    :GpuPcmTouchTransition::Found)
+                :(request.previously_touching
+                    ?GpuPcmTouchTransition::Lost
+                    :GpuPcmTouchTransition::None);
+            if(count) {
+                result.normal=points[0].normal;
+                result.points[0]={points[0].position,points[0].separation};
+            }
+        }
+    }
     std::size_t gpu_pcm_index=0u;
     std::size_t old_cursor = 0;
     std::size_t old_cache_cursor=0;
@@ -10488,7 +10556,7 @@ void Scene::step(float seconds) {
         accurate_islands_.active_nodes.size();
     speculative_islands_.initial_active_node_count=
         speculative_islands_.active_nodes.size();
-    advance_collision_internal(false,true);
+    advance_collision_internal(false,true,true);
     // The source first/second-pass wakeIslands handoffs precede
     // third-pass processLostEdges, preserving old-island wake reach.
     activate_published_islands();
@@ -10825,7 +10893,7 @@ void Scene::advance_collision(bool force_update) {
         synchronize_active_island_nodes();
 }
 void Scene::advance_collision_internal(
-    bool force_update, bool checkpointed) {
+    bool force_update,bool checkpointed,bool gpu_dy_follows) {
     // Begin one complete source publication. The first pass can rebuild
     // island membership before third-pass lost-edge repair, so preserve
     // any resulting sleep candidates across both passes of this frame.
@@ -10861,7 +10929,7 @@ void Scene::advance_collision_internal(
             update_pairs();
         }
         publish_pairs();
-        update_contacts();
+        update_contacts(gpu_dy_follows);
     } else {
         // A quiet query/step still publishes empty per-frame event
         // streams. Rotate only their reusable buffers so a later

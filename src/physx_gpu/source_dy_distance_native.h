@@ -229,7 +229,8 @@ public:
                bool device_world_motion=false,
                bool device_unconstrained_preparation=false,
                std::span<native::GpuDySleepState> sleep_states={},
-               std::span<const native::GpuDyJointInput> joint_inputs={}) {
+               std::span<const native::GpuDyJointInput> joint_inputs={},
+               std::optional<compute::DownloadSpan> pcm_completion={}) {
         if(integration.size()<bodies.size() ||
            integrated_poses.size()!=integration.size() ||
            (tasks.empty() && integration.size()==bodies.size()))
@@ -1329,12 +1330,14 @@ public:
         launch(Launch::FreeBodies,{0u,(free_bodies+127u)/128u},
                narrow(integration.size()));
         const auto mapped=addresses_.resolve(address+history_bytes,output_bytes);
-        const std::array<compute::DownloadSpan,1> downloads{{
-            {mapped.buffer,mapped.offset,host_.data(),output_bytes}
+        std::array<compute::DownloadSpan,2> downloads{{
+            {mapped.buffer,mapped.offset,host_.data(),output_bytes},{}
         }};
+        if(pcm_completion)downloads[1]=*pcm_completion;
         stream_.submit();
         try {
-            context_.download_batch(downloads);
+            context_.download_batch(std::span<const compute::DownloadSpan>(
+                downloads.data(),pcm_completion?2u:1u));
         } catch(...) {
             stream_.wait_at_fetch();
             throw;

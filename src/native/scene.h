@@ -382,6 +382,12 @@ public:
         std::span<GpuPcmBoxResult>) {
         throw std::logic_error("Source GPU PCM stages are not installed");
     }
+    // Analytic Sc contacts can be classified on the host while the
+    // source GPU builds their numerical Dy stream. A producer that
+    // cannot join deferred verification to Dy declines the request.
+    virtual bool begin_gpu_pcm_contacts_deferred(
+        std::span<const GpuPcmBoxPair>,
+        std::span<GpuPcmBoxResult>) { return false; }
     virtual bool has_gpu_dy_distance() const noexcept { return false; }
     virtual void solve_gpu_dy_distance(
         std::span<GpuDyDistanceBody>,
@@ -1284,7 +1290,8 @@ private:
     void refresh_shape_links(BodyId body);
     static Transform validated_pose(Transform pose);
     // Shared Gu collision progression, independent of Dy solver execution.
-    void advance_collision_internal(bool force_update, bool checkpointed);
+    void advance_collision_internal(
+        bool force_update,bool checkpointed,bool gpu_dy_follows=false);
     void update_shape_bounds(Shape& shape);
     void publish_integrated_shape_bounds(BodyId id,Actor& actor);
     void update_bounds();
@@ -1297,7 +1304,7 @@ private:
     void update_pairs();
     void update_gpu_pairs(bool force_update);
     void publish_pairs();
-    void update_contacts();
+    void update_contacts(bool gpu_dy_follows);
     // Original contact-manager addEdge/setEdgeConnected/removeConnection
     // lifecycle, within the existing single scene-owned island pipeline.
     std::uint32_t allocate_contact_edge(Pair bodies,Pair shapes={});

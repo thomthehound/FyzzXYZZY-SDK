@@ -1989,6 +1989,8 @@ void verify_sphere_gpu_solver(
             "GPU sphere scene changed Sc PCM/Gu manager identity");
         if(frame==0u) {
             const auto pcm_bytes=producer->pcm_contact_readback_bytes();
+            const auto deferred_bytes=
+                producer->pcm_deferred_contact_readback_bytes();
             const auto pcm_rows=producer->dy_pcm_device_contact_rows();
             const auto cpu_bytes=producer->dy_cpu_gu_geometry_bytes();
             // Sc admits one speculative plane manager per dynamic
@@ -1996,15 +1998,16 @@ void verify_sphere_gpu_solver(
             // touch, but their GPU PCM records still execute this frame.
             constexpr std::size_t pcm_managers=5u;
             if(gpu.contacts().size()!=3u || cpu_bytes!=0u ||
-               pcm_rows!=3u ||
-               pcm_bytes!=pcm_managers*sizeof(
+               pcm_rows!=3u || pcm_bytes!=0u ||
+               deferred_bytes!=pcm_managers*sizeof(
                    physx_gpu::SourcePcmGpuContactStreamNative)) {
                 throw std::runtime_error(
                     "Sphere GPU contact path: managers="+
                     std::to_string(gpu.contacts().size())+
                     " device_rows="+std::to_string(pcm_rows)+
                     " cpu_gu_bytes="+std::to_string(cpu_bytes)+
-                    " pcm_readback_bytes="+std::to_string(pcm_bytes));
+                    " pcm_readback_bytes="+std::to_string(pcm_bytes)+
+                    " deferred_bytes="+std::to_string(deferred_bytes));
             }
             require(cpu.contacts().size()==3u,
                 "Source sphere impact fixtures lost a contact manager");
@@ -2070,6 +2073,9 @@ void verify_sphere_gpu_solver(
     gpu.add_dynamic_sphere(0.25f,{20.f,10.f,0.f},1.f);
     cpu.advance_collision(true);
     gpu.advance_collision(true);
+    require(producer->pcm_deferred_contact_readback_bytes()==0u &&
+            producer->pcm_contact_readback_bytes()>0u,
+        "Collision-only source PCM incorrectly deferred its GPU fetch");
     const auto embedded=[](const native::Scene& scene) -> native::ContactPoint {
         for(const auto& manager:scene.contacts())
             for(const auto& point:manager.points)
