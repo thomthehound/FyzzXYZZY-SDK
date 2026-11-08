@@ -7766,7 +7766,6 @@ void Scene::prepare_constraints(float seconds) {
     // PXC_SAME_NORMAL and DyCorrelationBuffer::MAX_FRICTION_PATCHES.
     constexpr float same_normal = 0.999f;
     constexpr float friction_offset_threshold = 0.04f;
-    constexpr float correlation_distance = 0.025f;
     const auto local_point = [this](const Actor& actor, Vec3 world) {
         const Quat q = mass_orientation(actor);
         const Vec3 p=mass_position(actor);
@@ -8016,25 +8015,14 @@ void Scene::prepare_constraints(float seconds) {
             for(std::size_t previous=history.offset;
                 previous<history.offset+history.count;++previous) {
                 const auto& old=friction_patches_[previous];
-                if(old.broken || old.disable_strong_friction ||
-                   old.anchor_count==0)continue;
-                const Vec3 old_normal_1_world=
-                    rotate(mass_orientation(actor1),old.body1_normal);
-                const Vec3 old_normal_1_in_0=
-                    local_normal(actor0,old_normal_1_world);
-                if(dot(old.body0_normal,old_normal_1_in_0)<=same_normal)
-                    continue;
-                bool separated=false;
-                for(std::size_t k=0;k<old.anchor_count;++k) {
-                    const Vec3 p1_in0=local_point(actor0,
-                        world_point(actor1,old.body1_anchors[k]));
-                    if(std::abs(dot(sub(old.body0_anchors[k],p1_in0),
-                                    old.body0_normal))>=correlation_distance) {
-                        separated=true;
-                        break;
-                    }
-                }
-                if(separated)continue;
+                const bool checked_before_gu=
+                    manifold.pcm_result_index<
+                        gpu_pcm_friction_history_masks_.size();
+                const bool valid=checked_before_gu
+                    ?(gpu_pcm_friction_history_masks_[manifold.pcm_result_index] &
+                       (1u<<(previous-history.offset)))!=0u
+                    :cached_friction_patch_valid(old,actor0,actor1);
+                if(!valid)continue;
                 if(manifold.friction_patch_count==max_source_patches)
                     throw std::overflow_error(
                         "Native source cached friction exceeds 32 patches");
