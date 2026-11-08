@@ -255,6 +255,7 @@ void verify(fyzz::compute::Backend backend,const char* sap,
     }};
     std::array<native::GpuPcmBoxResult,1> direct{};
     producer->generate_gpu_pcm_box_contacts(request,direct);
+    producer->commit_gpu_step();
     require(producer->pcm_contact_readback_bytes()==
                 sizeof(physx_gpu::SourcePcmGpuContactStreamNative),
             "Direct GPU PCM readback did not use the compact device stream");
@@ -271,6 +272,7 @@ void verify(fyzz::compute::Backend backend,const char* sap,
     // the GPU still runs PCM, but no pair-list HtoD submission is needed.
     std::array<native::GpuPcmBoxResult,1> repeated{};
     producer->generate_gpu_pcm_box_contacts(request,repeated);
+    producer->commit_gpu_step();
     require(producer->pcm_pair_upload_bytes()==0u &&
             repeated[0].status==0u && repeated[0].edge==edge &&
             repeated[0].count>0u &&
@@ -283,6 +285,7 @@ void verify(fyzz::compute::Backend backend,const char* sap,
     }};
     std::array<native::GpuPcmBoxResult,1> reset{};
     producer->generate_gpu_pcm_box_contacts(reset_request,reset);
+    producer->commit_gpu_step();
     require(producer->pcm_pair_upload_bytes()==
                 sizeof(physx_gpu::SourcePcmBoxPairNative),
             "Source PCM reset did not refresh its GPU pair descriptor");
@@ -298,12 +301,37 @@ void verify(fyzz::compute::Backend backend,const char* sap,
                 "Source GPU PCM reset altered the Gu witness");
     // Force the original AABB volume domain to grow while the first
     // contact manager retains GPU-local cached shape geometry.
+    BodyId distant_gpu=std::numeric_limits<BodyId>::max();
     for(std::uint32_t i=0u;i<36u;++i) {
         const Vec3 position{20.f+3.f*float(i),1.f,0.f};
         cpu.add_static_box({0.5f,0.5f,0.5f},position);
-        gpu.add_static_box({0.5f,0.5f,0.5f},position);
+        const auto id=gpu.add_static_box({0.5f,0.5f,0.5f},position);
+        if(i==0u)distant_gpu=id;
     }
     check(true);
+    // Deliberately reject a speculative Gu manager refresh: it writes
+    // an empty witness and a physical-touch loss into an existing
+    // EdgeIndex. The device must restore the accepted full witness
+    // before another source publication or island calculation.
+    const std::array<native::GpuPcmBoxPair,1> failed_request{{
+        {gpu_a,distant_gpu,edge,true,16u,false,0.f,0.f,true}
+    }};
+    std::array<native::GpuPcmBoxResult,1> rejected{};
+    producer->generate_gpu_pcm_box_contacts(failed_request,rejected);
+    require(rejected[0].count==0u &&
+            rejected[0].touch_transition==native::GpuPcmTouchTransition::Lost,
+        "Rejected Sc PCM refresh did not mutate speculative touch history");
+    producer->invalidate_after_rollback();
+    std::array<native::GpuPcmBoxResult,1> recovered{};
+    producer->generate_gpu_pcm_box_contacts(request,recovered);
+    require(recovered[0].status==0u &&
+            recovered[0].count>0u &&
+            recovered[0].touch_transition==
+                native::GpuPcmTouchTransition::Persists &&
+            recovered[0].cached_count<=4u,
+        "Sc device contact journal failed to restore committed PCM history");
+    producer->commit_gpu_step();
+    check(true,true);
     require(gpu.contact_edge_index({gpu_a,gpu_b})==edge,
             "AABB capacity growth discarded an unchanged GPU PCM manifold");
     cpu.set_position(cpu_a,{0.02f,1.0f,0.0f});
