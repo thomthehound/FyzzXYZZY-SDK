@@ -97,6 +97,10 @@ void verify(Context& context,const char* advance_dxil,
     std::memcpy(data.data()+edge_offset,&edge,sizeof(edge));
 
     const auto root=context.create_buffer(data.size(),MemoryPlacement::DeviceLocal);
+    const auto indirect=context.create_buffer(16u,MemoryPlacement::DeviceLocal);
+    const std::array<std::uint32_t,3> inactive{0u,1u,1u};
+    const std::array<std::uint32_t,3> active{1u,1u,1u};
+    context.upload(indirect,0u,inactive.data(),sizeof(inactive));
     context.upload(root,0u,data.data(),data.size());
     std::clog<<"GJK stage: source state uploaded\n"<<std::flush;
     CudaDeviceAddressMap addresses;
@@ -110,15 +114,17 @@ void verify(Context& context,const char* advance_dxil,
     const auto edge_address=addresses.register_slice(root,edge_offset,sizeof(edge));
     const auto work_address=addresses.register_slice(root,work_offset,4u);
     const auto output_address=addresses.register_slice(root,output_offset,84u);
+    const auto indirect_address=addresses.register_slice(indirect,0u,12u);
     {
-        SourcePcmEpaNativeStage advance(context,load_shader(advance_dxil),false,true);
+        SourcePcmEpaNativeStage advance(
+            context,load_shader(advance_dxil),false,true,false,true);
         std::clog<<"GJK stage: advance pipeline initialized\n"<<std::flush;
         const auto execute=[&](const SourcePcmEpaNativeStage& stage,
                                const char* name) {
             SourceSapDmaNative stream(context,addresses);
             stage.append(stream,addresses,transforms_address,geometry_address,
                          pair_address,result_address,candidate_address,
-                         edge_address,work_address,0u,output_address,
+                         edge_address,work_address,indirect_address,output_address,
                          transforms_address,0u,1u,2u,1u,1u);
             std::clog<<"GJK stage: submitting "<<name<<"\n"<<std::flush;
             stream.submit();
@@ -135,13 +141,20 @@ void verify(Context& context,const char* advance_dxil,
                     "GJK stage wrote an invalid simplex");
             return state;
         };
+        execute(advance,"empty worklist");
+        GjkStateSample idle{};
+        context.download(root,edge_offset+160u,&idle,sizeof(idle));
+        require(idle.count==0u && idle.phase==0u,
+                "Empty indirect GJK worklist still executed a pair");
+        context.upload(indirect,0u,active.data(),sizeof(active));
         execute(advance,"advance");
         const auto after_advance=sample();
         require(after_advance.phase==1u &&
                 std::abs(after_advance.closest[0]+1.5f)<1.e-5f,
                 "GJK advance did not admit the penetrating simplex");
         if(run_reduction) {
-            SourcePcmEpaNativeStage reduce(context,load_shader(reduce_dxil),false,true);
+            SourcePcmEpaNativeStage reduce(
+                context,load_shader(reduce_dxil),false,true,false,true);
             std::clog<<"GJK stage: reducer pipeline initialized\n"<<std::flush;
             execute(reduce,"reduction");
             const auto after_reduce=sample();
@@ -153,6 +166,7 @@ void verify(Context& context,const char* advance_dxil,
                     "GJK reduction differs from the analytic support witness");
         }
     }
+    addresses.unregister_slice(indirect_address);
     addresses.unregister_slice(output_address);
     addresses.unregister_slice(work_address);
     addresses.unregister_slice(edge_address);
@@ -162,6 +176,7 @@ void verify(Context& context,const char* advance_dxil,
     addresses.unregister_slice(geometry_address);
     addresses.unregister_slice(transforms_address);
     require(addresses.live_allocations()==0u,"GJK fixture leaked device mappings");
+    context.destroy_buffer(indirect);
     context.destroy_buffer(root);
 }
 } // namespace
