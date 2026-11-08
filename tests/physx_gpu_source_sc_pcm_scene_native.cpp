@@ -169,15 +169,19 @@ void verify_compound_shape_gpu_pairs(
             contains(created.found,{1u,2u}) &&
             !contains(created.found,{0u,1u}),
         "Source GPU broadphase did not preserve compound shape pairs");
+    const auto initial_fetches=gpu.source_sap_fetch_count();
     const auto quiet=gpu.advance(shapes,false,false);
-    require(quiet.found.empty() && quiet.lost.empty(),
-        "Source GPU broadphase republished unchanged compound shape pairs");
+    require(quiet.found.empty() && quiet.lost.empty() &&
+            gpu.source_sap_fetch_count()==initial_fetches,
+        "Unchanged source AABB submitted or fetched another SAP frame");
     // ScBodySim changes one rigid actor's motion and refilters every attached
     // ElementSim, even when the shapes overlap each other.
     gpu.set_actor_motion(0u,Motion::Kinematic);
     shapes[0].motion=Motion::Kinematic;
     shapes[1].motion=Motion::Kinematic;
     const auto kinematic=gpu.advance(shapes,false,true);
+    require(gpu.source_sap_fetch_count()==initial_fetches+1u,
+        "Motion-class refilter did not advance source GPU SAP");
     require(kinematic.found.empty() && kinematic.lost.empty(),
         "Compound actor kinematic transition changed stable GPU shape pairs");
     gpu.set_actor_motion(0u,Motion::Dynamic);
@@ -190,6 +194,8 @@ void verify_compound_shape_gpu_pairs(
     shapes[0].position={4.f,0.f,0.f};
     gpu.mark_shape_bounds_changed(0u,0.02f);
     const auto changed=gpu.advance(shapes,false,true);
+    require(gpu.source_sap_fetch_count()==initial_fetches+3u,
+        "Shape-bound update failed to resume source GPU SAP");
     require(changed.found.empty() && changed.lost.size()==1u &&
             contains(changed.lost,{0u,2u}),
         "Edited Sc shape retired the wrong GPU contact candidate");

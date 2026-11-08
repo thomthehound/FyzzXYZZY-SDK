@@ -71,7 +71,17 @@ public:
 
     native::GpuBroadphaseReports advance(
         std::span<const native::GpuBroadphaseBox> live_boxes,
-        bool force_update, bool /* geometry_dirty */) override {
+        bool force_update, bool geometry_dirty) override {
+        // Only the owned Sc ElementSim can prove that no source AABB
+        // change has been authored since the last completed fetch.
+        if(source_sc_elements_ && last_frame_ && !invalidated_ &&
+           !handles_dirty_ && !pending_bounds_ && !geometry_dirty &&
+           !force_update && !sap_.force_update() &&
+           !aabb_.aggregate_gpu_work_pending()) {
+            found_.clear();
+            lost_.clear();
+            return {found_,lost_,false,false};
+        }
         // A rejected Sc/Dy frame may have advanced the source GPU
         // endpoint histories before Sc's transaction was rolled back.
         // Drain that same original stream, discard only source SAP
@@ -128,6 +138,8 @@ public:
             throw;
         }
         invalidated_=false;
+        pending_bounds_=false;
+        ++source_sap_fetch_count_;
         return {found_,lost_,false,rebuilt};
     }
 
@@ -144,12 +156,15 @@ public:
         // Aggregate members retain aggregate-owned bounds, not the
         // standalone Sc shape cache, even when Dy solved them.
         auto& elements=require_scene_elements();
-        if(elements.device_cache_eligible(actor))
+        if(elements.device_cache_eligible(actor)) {
             elements.authorize_device_integrated_pose(actor);
+            pending_bounds_=true;
+        }
     }
     void set_device_shape_pose_cache_enabled(BodyId shape,bool enabled) {
         require_scene_elements().set_device_shape_pose_cache_enabled(
             shape,enabled);
+        pending_bounds_=true;
     }
     void mark_shape_bounds_changed(
         BodyId actor,float contact_offset) override {
@@ -166,6 +181,7 @@ public:
         // retired by a previous completed fetch.
         if(source_sc_elements_) {
             source_sc_elements_->mark_changed(actor,contact_offset);
+            pending_bounds_=true;
             return;
         }
         const auto handle=(*sc_actor_element_ids_)[actor];
@@ -174,11 +190,13 @@ public:
             throw std::invalid_argument(
                 "Source Sc edited shape has no matching AABB volume");
         aabb_.mark_changed(handle,contact_offset);
+        pending_bounds_=true;
     }
 
     void set_actor_motion(BodyId actor,
                           native::GpuBroadphaseBox::Motion motion) override {
         require_scene_elements().set_actor_motion(actor,motion);
+        pending_bounds_=true;
     }
 
     void retain_rigid_actor(BodyId body) override {require_scene_elements().retain_actor(body);}
@@ -265,6 +283,9 @@ public:
     std::uint64_t source_handle_projection_count() const noexcept {
         return source_handle_projection_count_;
     }
+    std::uint64_t source_sap_fetch_count() const noexcept {
+        return source_sap_fetch_count_;
+    }
 
     const SourceSapSceneFrameNativeResult& last_frame() const {
         if(!last_frame_)
@@ -298,6 +319,8 @@ private:
     std::vector<native::Pair> found_,lost_;
     std::optional<SourceSapSceneFrameNativeResult> last_frame_;
     std::uint64_t source_handle_projection_count_=0u;
+    std::uint64_t source_sap_fetch_count_=0u;
+    bool pending_bounds_=true;
     bool handles_dirty_=true;
     bool invalidated_=false;
 };
