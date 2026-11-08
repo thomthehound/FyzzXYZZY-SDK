@@ -23,10 +23,20 @@ struct Parameters {
 ConstantBuffer<Parameters> p:register(b0,space0);
 #endif
 
-// Header: pairCount, rigidWatermark, pairOffset, rootOffset, errorOffset.
+// Header: edgeCount, rigidWatermark, pairOffset, rootOffset, errorOffset,
+ // edgeCapacity, componentCountsOffset, componentHeadsOffset, linksOffset.
 uint header(uint word) {return graph.Load(p.graphBias+word*4u);}
 uint parentAddress(uint node) {
     return p.graphBias+header(3u)+node*4u;
+}
+uint componentCountAddress(uint root) {
+    return p.graphBias+header(6u)+root*4u;
+}
+uint componentHeadAddress(uint root) {
+    return p.graphBias+header(7u)+root*4u;
+}
+uint componentNextAddress(uint edgeOrdinal) {
+    return p.graphBias+header(8u)+edgeOrdinal*4u;
 }
 uint rootOf(uint node,uint size) {
     uint cursor=node;
@@ -42,6 +52,16 @@ void errorBit(uint bit) {
     uint ignored;
     graph.InterlockedOr(p.graphBias+header(4u),bit,ignored);
 }
+// Contact and constraint EdgeIndices share one Sc graph, but only
+// contacts read physical-touch state from the GuPCM edge cache.
+bool connected(uint4 edge) {
+    if((edge.z&4u)!=0u)return true;
+    if(edge.w>=header(5u)) {
+        errorBit(2u);
+        return false;
+    }
+    return (edgeCaches.Load(p.contactBias+edge.w*240u+72u)&1u)!=0u;
+}
 
 [numthreads(128,1,1)]
 void main(uint3 dispatch:SV_DispatchThreadID) {
@@ -51,7 +71,11 @@ void main(uint3 dispatch:SV_DispatchThreadID) {
     const uint pairBase=p.graphBias+header(2u);
     if(p.phase==0u) {
         if(i==0u)graph.Store(p.graphBias+header(4u),0u);
-        if(i<rigidCount)graph.Store(parentAddress(i),i);
+        if(i<rigidCount) {
+            graph.Store(parentAddress(i),i);
+            graph.Store(componentCountAddress(i),0u);
+            graph.Store(componentHeadAddress(i),0xffffffffu);
+        }
         return;
     }
     if(p.phase==1u) {
@@ -63,17 +87,8 @@ void main(uint3 dispatch:SV_DispatchThreadID) {
             errorBit(1u);
             return;
         }
-        // Authored joints remain connected until their Sc edge retires.
-        // Dormant Gu managers retain the device's last physical touch.
-        bool touching=(pair.z&4u)!=0u;
-        [branch] if(!touching) {
-            if(pair.w>=header(5u)) {
-                errorBit(2u);
-                return;
-            }
-            touching=(edgeCaches.Load(p.contactBias+pair.w*240u+72u)&1u)!=0u;
-        }
-        if(!touching || pair.x==pair.y || (pair.z&3u)!=3u)return;
+        if(!connected(pair) || pair.x==pair.y ||
+           (pair.z&3u)!=3u)return;
         // Root hooking always points larger indices toward smaller roots.
         // Concurrent hooks remain acyclic and a completed successful
         // pass resolves every edge, including chains across workgroups.
@@ -101,5 +116,27 @@ void main(uint3 dispatch:SV_DispatchThreadID) {
             return;
         }
         graph.Store(parentAddress(i),root);
+        return;
+    }
+    if(p.phase==3u && i<edgeCount) {
+        const uint4 edge=graph.Load4(pairBase+i*16u);
+        if(edge.x>=rigidCount || edge.y>=rigidCount ||
+           (edge.z&3u)==0u || !connected(edge))
+            return;
+        // The same source contact or joint EdgeIndex contributes to
+        // exactly one accurate dynamic island. Static and kinematic
+        // endpoints are terminals, not members of another island.
+        const uint node=(edge.z&1u)!=0u?edge.x:edge.y;
+        const uint root=graph.Load(parentAddress(node));
+        if(root>=rigidCount ||
+           ((edge.z&3u)==3u &&
+            root!=graph.Load(parentAddress(edge.y)))) {
+            errorBit(64u);
+            return;
+        }
+        uint previous;
+        graph.InterlockedExchange(componentHeadAddress(root),i,previous);
+        graph.Store(componentNextAddress(i),previous);
+        graph.InterlockedAdd(componentCountAddress(root),1u,previous);
     }
 }
