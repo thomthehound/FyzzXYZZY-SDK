@@ -10784,6 +10784,7 @@ void Scene::step(float seconds) {
     // A failed stage above leaves it unpublished; rollback restores the
     // previously completed result generation and all its buffers.
     solved_result_frame_=frame_index_;
+    if(gpu_broadphase_)gpu_broadphase_->commit_gpu_step();
     // Solver and lost-edge producers have both completed before this
     // successful step returns its published body and contact results.
     activity_checkpoint_active_=false;
@@ -10862,6 +10863,7 @@ void Scene::advance_collision(bool force_update) {
     consume_deactivated_contact_interactions();
     if(!accurate_islands_.nodes_to_deactivate.empty())
         synchronize_active_island_nodes();
+    if(gpu_broadphase_)gpu_broadphase_->commit_gpu_step();
 }
 void Scene::advance_collision_internal(
     bool force_update, bool checkpointed) {

@@ -460,6 +460,9 @@ public:
     virtual void set_actor_motion(BodyId,GpuBroadphaseBox::Motion)=0;
     // Sc::Scene::postReportsCleanup follows fetched GPU/Sc publication.
     virtual void post_reports_cleanup()=0;
+    // The successful Sc publication accepts the same device contact
+    // epoch. Before this call, GPU PCM history remains speculative.
+    virtual void commit_gpu_step() noexcept {}
     // The source GPU has already advanced its histories at fetch. A
     // rejected Sc/Dy transaction invalidates that frame; the owner must
     // reconstruct its GPU histories from the next authoritative scene.

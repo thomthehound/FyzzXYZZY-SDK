@@ -454,6 +454,9 @@ public:
         producer_->set_actor_motion(id,motion);
     }
     void post_reports_cleanup() override { producer_->post_reports_cleanup(); }
+    void commit_gpu_step() noexcept override {
+        if(pcm_)pcm_->commit_step();
+    }
     void invalidate_after_rollback() noexcept override {
         producer_->invalidate_after_rollback();
         if(pcm_)pcm_->invalidate_after_rollback();
