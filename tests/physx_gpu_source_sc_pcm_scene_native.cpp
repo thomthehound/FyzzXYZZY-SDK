@@ -32,10 +32,10 @@ struct GpuPcmFrictionAnchorFixture {
                 "Early speculative Sc admission changed source island counts");
         for(std::size_t a=0u;a<reference.actors_.size();++a) {
             if(!reference.actors_[a].alive ||
-               reference.actors_[a].motion!=Motion::Dynamic)continue;
+               reference.actors_[a].motion!=Scene::Motion::Dynamic)continue;
             for(std::size_t b=a+1u;b<reference.actors_.size();++b) {
                 if(!reference.actors_[b].alive ||
-                   reference.actors_[b].motion!=Motion::Dynamic)continue;
+                   reference.actors_[b].motion!=Scene::Motion::Dynamic)continue;
                 const auto eq=[a,b](const auto& graph) {
                     return graph.node_island[a]==graph.node_island[b];
                 };
