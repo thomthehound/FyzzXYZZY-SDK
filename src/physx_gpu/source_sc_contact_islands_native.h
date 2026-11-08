@@ -48,7 +48,8 @@ public:
     void append(SourceSapDmaNative& stream,const CudaDeviceAddressMap& addresses,
                 CudaDeviceAddressMap::Address graph,std::size_t graphBytes,
                 CudaDeviceAddressMap::Address contacts,std::size_t contactsBytes,
-                std::uint32_t pairCount,std::uint32_t rigidCount) const {
+                std::uint32_t pairCount,std::uint32_t rigidCount,
+                std::uint32_t graphEdgeCount) const {
         if(!pairCount || !rigidCount)return;
         const auto maxGroups=context_.device_info().max_workgroup_count[0];
         std::array<std::uint32_t,4> args{};
@@ -76,7 +77,9 @@ public:
                 first+=static_cast<std::uint32_t>(groups*128u);
             }
         };
-        queue(0u,rigidCount);
+        // Initialize the original EdgeIndex lookup even for worlds whose
+        // contact/constraint watermark exceeds their rigid actor count.
+        queue(0u,std::max(rigidCount,graphEdgeCount));
         queue(1u,pairCount);
         queue(2u,rigidCount);
         // The compressed roots are now globally visible. Materialize

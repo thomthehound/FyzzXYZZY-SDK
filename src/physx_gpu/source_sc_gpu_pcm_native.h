@@ -195,6 +195,7 @@ public:
         const auto pair_count=static_cast<std::uint32_t>(requests.size());
         std::uint32_t candidate_count=0u;
         std::uint32_t largest_edge=0u;
+        std::uint32_t largest_graph_edge=0u;
         const auto graph_count=static_cast<std::uint32_t>(graph_sources_.size());
         const auto rigid_count=graph_rigid_watermark_;
         const auto old_graph_count=graph_pair_host_.size();
@@ -203,6 +204,7 @@ public:
         std::uint32_t first_graph_dirty=graph_count,last_graph_dirty=0u;
         for(std::uint32_t i=0u;i<graph_count;++i) {
             const auto& link=graph_sources_[i];
+            largest_graph_edge=std::max(largest_graph_edge,link.edge);
             if((link.flags&4u)==0u)
                 largest_edge=std::max(largest_edge,link.edge);
             if(i>=old_graph_count ||
@@ -328,8 +330,11 @@ public:
             std::size_t(rigid_count)*sizeof(std::uint32_t);
         const auto graph_link_offset=graph_head_offset+
             std::size_t(rigid_count)*sizeof(std::uint32_t);
-        const auto graph_error_offset=graph_link_offset+
+        const auto graph_edge_root_offset=graph_link_offset+
             std::size_t(graph_count)*sizeof(std::uint32_t);
+        const auto graph_edge_count=largest_graph_edge+1u;
+        const auto graph_error_offset=graph_edge_root_offset+
+            std::size_t(graph_edge_count)*sizeof(std::uint32_t);
         if(graph_error_offset>std::numeric_limits<std::uint32_t>::max()-127u)
             throw std::overflow_error("Sc device contact graph exceeds source address range");
         const auto graph_bytes=(graph_error_offset+4u+127u)&~std::size_t(127u);
@@ -349,7 +354,8 @@ public:
             static_cast<std::uint32_t>(graph_count_offset),
             static_cast<std::uint32_t>(graph_head_offset),
             static_cast<std::uint32_t>(graph_link_offset),
-            0u,0u,0u};
+            static_cast<std::uint32_t>(graph_edge_root_offset),
+            graph_edge_count,0u};
         if(full_graph) {
             first_graph_dirty=0u;
             last_graph_dirty=graph_count;
@@ -464,7 +470,7 @@ public:
         islands_stage_.append(stream_,addresses_,
             graph_.getDevicePtr(),graph_bytes,
             edges_.getDevicePtr(),source_allocation_bytes(edge_capacity,240u),
-            graph_count,rigid_count);
+            graph_count,rigid_count,graph_edge_count);
 
         // Fetch the losslessly packed device stream, then reconstruct
         // Sc's original host record. The Dy shader reads the same device

@@ -24,7 +24,8 @@ ConstantBuffer<Parameters> p:register(b0,space0);
 #endif
 
 // Header: edgeCount, rigidWatermark, pairOffset, rootOffset, errorOffset,
- // edgeCapacity, componentCountsOffset, componentHeadsOffset, linksOffset.
+ // contactEdgeCapacity, componentCountsOffset, componentHeadsOffset,
+ // linksOffset, edgeRootOffset, graphEdgeCapacity.
 uint header(uint word) {return graph.Load(p.graphBias+word*4u);}
 uint parentAddress(uint node) {
     return p.graphBias+header(3u)+node*4u;
@@ -37,6 +38,9 @@ uint componentHeadAddress(uint root) {
 }
 uint componentNextAddress(uint edgeOrdinal) {
     return p.graphBias+header(8u)+edgeOrdinal*4u;
+}
+uint edgeRootAddress(uint edge) {
+    return p.graphBias+header(9u)+edge*4u;
 }
 uint rootOf(uint node,uint size) {
     uint cursor=node;
@@ -76,6 +80,8 @@ void main(uint3 dispatch:SV_DispatchThreadID) {
             graph.Store(componentCountAddress(i),0u);
             graph.Store(componentHeadAddress(i),0xffffffffu);
         }
+        if(i<header(10u))
+            graph.Store(edgeRootAddress(i),0xffffffffu);
         return;
     }
     if(p.phase==1u) {
@@ -134,6 +140,11 @@ void main(uint3 dispatch:SV_DispatchThreadID) {
             errorBit(64u);
             return;
         }
+        if(edge.w>=header(10u)) {
+            errorBit(128u);
+            return;
+        }
+        graph.Store(edgeRootAddress(edge.w),root);
         uint previous;
         graph.InterlockedExchange(componentHeadAddress(root),i,previous);
         graph.Store(componentNextAddress(i),previous);
