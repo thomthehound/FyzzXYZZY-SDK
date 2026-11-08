@@ -4103,12 +4103,11 @@ void Scene::update_contacts(bool gpu_dy_follows) {
             std::uint8_t count=0u;
             const float distance=first.contact_offset+second.contact_offset;
             if(request.plane_pair) {
+                // GPU plane contacts are already in Sc's final +Y
+                // orientation. The CPU-only Gu path reverses twice.
                 count=source_pcm_sphere_plane(
                     sphere.position,sphere.radius,first.position.y,
                     distance,points);
-                if(count)points[0].normal={
-                    -points[0].normal.x,-points[0].normal.y,
-                    -points[0].normal.z};
             }else if(first.geometry==Geometry::Sphere &&
                      second.geometry==Geometry::Sphere) {
                 count=source_pcm_sphere_sphere(
