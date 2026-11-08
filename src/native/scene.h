@@ -1349,7 +1349,7 @@ private:
     // append, concatenate on merge, and swap-last on retirement.
     void append_accurate_island_edge(std::uint32_t id, std::uint32_t island);
     void remove_accurate_island_edge(std::uint32_t id);
-    void update_island_connectivity();
+    void update_island_connectivity(bool speculative_only=false);
     bool repair_lost_island_graph(bool accurate);
     bool repair_lost_island_graphs_concurrently();
     bool worthwhile_parallel_route_work() const noexcept;
@@ -1752,6 +1752,7 @@ private:
     std::uint64_t island_full_rebuild_count_ = 0;
     std::uint64_t island_local_split_count_ = 0;
     std::uint64_t island_graph_checkpoint_count_ = 0;
+    bool speculative_connectivity_prepared_=false;
     bool island_topology_dirty_ = true;
     // Source Dy rows are dense among current contact/1D participants.
     // Actor generation-stamped indices resolve their owning rows without

@@ -4122,6 +4122,13 @@ void Scene::update_contacts() {
     if(gpu_results_pending || (source_gpu_pcm && gpu_pcm_pairs_.empty()))
         gpu_broadphase_->enqueue_gpu_pcm_box_contacts(
             gpu_pcm_pairs_,gpu_pcm_results_);
+    // The speculative IslandSim consumes SAP membership, never Gu
+    // witness geometry. Admit its first/second-pass topology on the CPU
+    // while the same scene stream executes general GPU PCM. Accurate
+    // IslandSim admission remains dependent on the real Gu touch result.
+    if(gpu_results_pending &&
+       (island_topology_dirty_ || !found_.empty() || !lost_.empty()))
+        update_island_connectivity(true);
     if(host_pair_count) {
         // The same Sc cache owns primitive witnesses even when this
         // frame also schedules general device PCM contacts.
@@ -5040,7 +5047,11 @@ void Scene::split_lost_island(bool accurate,BodyId seed) {
             .fetch_add(1,std::memory_order_relaxed);
 }
 
-void Scene::update_island_connectivity() {
+void Scene::update_island_connectivity(bool speculative_only) {
+    const bool speculative_pass=
+        speculative_only || !speculative_connectivity_prepared_;
+    const bool accurate_pass=!speculative_only;
+    if(speculative_only)speculative_connectivity_prepared_=true;
     // PxsIslandSim::IslandSim's node-to-island IDs and persistent island
     // handle slots are now the authoritative connectivity owner. The
     // speculative and accurate graphs share source contact-manager edge
@@ -5089,31 +5100,51 @@ void Scene::update_island_connectivity() {
                 --total;
             }
         };
-        for(Pair pair:found_)
-            change_static(speculative_islands_,body_pair(pair),true);
-        for(Pair pair:lost_)
-            change_static(speculative_islands_,body_pair(pair),false);
-        for(Pair pair:found_contacts_)
-            change_static(accurate_islands_,body_pair(pair),true);
-        for(Pair pair:lost_contacts_)
-            change_static(accurate_islands_,body_pair(pair),false);
+        if(speculative_pass) {
+            for(Pair pair:found_)
+                change_static(speculative_islands_,body_pair(pair),true);
+            for(Pair pair:lost_)
+                change_static(speculative_islands_,body_pair(pair),false);
+        }
+        if(accurate_pass) {
+            for(Pair pair:found_contacts_)
+                change_static(accurate_islands_,body_pair(pair),true);
+            for(Pair pair:lost_contacts_)
+                change_static(accurate_islands_,body_pair(pair),false);
+        }
     }
     if(!rebuild) {
         // No newly connected dynamic edges means no island membership,
         // handle or solver batch change. Preserve the source's quiet
         // publication contract without touching island revision/epochs.
         bool dynamic_found=false;
-        for(Pair pair:found_)
-            if(dynamic_edge(body_pair(pair))) {dynamic_found=true;break;}
-        if(!dynamic_found)
+        if(speculative_pass)
+            for(Pair pair:found_)
+                if(dynamic_edge(body_pair(pair))) {
+                    dynamic_found=true;
+                    break;
+                }
+        if(accurate_pass && !dynamic_found)
             for(Pair pair:found_contacts_)
-                if(dynamic_edge(body_pair(pair))) {dynamic_found=true;break;}
+                if(dynamic_edge(body_pair(pair))) {
+                    dynamic_found=true;
+                    break;
+                }
+        // The accurate completion also publishes the earlier speculative
+        // merge's single topology revision even if Gu touches are quiet.
+        if(accurate_pass && speculative_connectivity_prepared_ &&
+           !dynamic_found)
+            for(Pair pair:found_)
+                if(dynamic_edge(body_pair(pair))) {
+                    dynamic_found=true;
+                    break;
+                }
         if(!dynamic_found) {
-            // Even a static-only touch is a source contact-manager edge
-            // in its awake dynamic island; it cannot be skipped merely
-            // because dynamic connectivity and handles remain unchanged.
-            for(Pair shapes:found_contacts_) {
-                const Pair pair=body_pair(shapes);
+            // A static-only Gu touch still joins its existing accurate
+            // island's contact list, but not the speculative graph.
+            if(accurate_pass)
+                for(Pair shapes:found_contacts_) {
+                    const Pair pair=body_pair(shapes);
                     const auto id=contact_edge_index(shapes);
                     const BodyId node=dynamic_node(pair.a)?pair.a:pair.b;
                     if(id!=invalid_edge && dynamic_node(node))
@@ -5739,52 +5770,58 @@ void Scene::update_island_connectivity() {
     };
 
 
-    bool order_changed=rebuild;
+    bool order_changed=rebuild && accurate_pass;
     if(rebuild) {
         step_checkpoint_.save_graph_ownership(*this);
-        ++island_full_rebuild_count_;
+        if(speculative_pass)++island_full_rebuild_count_;
         if(island_topology_dirty_) {
             // Existing source islands still own pre-loss membership.
             // Admit newly added nodes, then merge *all* found edges
             // against accumulated island sizes, prior to any split.
-            admit_nodes(speculative_islands_);
-            admit_nodes(accurate_islands_);
-            for(Pair pair:found_)
-                merge(speculative_islands_,body_pair(pair),contact_edge_index(pair));
-            for(EdgeIndex id:active_constraint_handles_)
-                if(island_edges_[id].live && !island_edges_[id].retiring)
-                    merge(speculative_islands_,island_edges_[id].pair,id);
-            for(Pair shapes:found_contacts_) {
-                const Pair pair=body_pair(shapes);
-                merge(accurate_islands_,pair,contact_edge_index(shapes));
-                const auto id=contact_edge_index(shapes);
-                const BodyId node=dynamic_node(pair.a)?pair.a:pair.b;
-                if(id!=invalid_edge && dynamic_node(node))
-                    append_accurate_island_edge(
-                        id,accurate_islands_.node_island[node]);
+            if(speculative_pass) {
+                admit_nodes(speculative_islands_);
+                for(Pair pair:found_)
+                    merge(speculative_islands_,body_pair(pair),contact_edge_index(pair));
+                for(EdgeIndex id:active_constraint_handles_)
+                    if(island_edges_[id].live && !island_edges_[id].retiring)
+                        merge(speculative_islands_,island_edges_[id].pair,id);
             }
-            for(EdgeIndex id:active_constraint_handles_)
-                if(island_edges_[id].live && !island_edges_[id].retiring) {
-                    const Pair pair=island_edges_[id].pair;
-                    merge(accurate_islands_,pair,id);
+            if(accurate_pass) {
+                admit_nodes(accurate_islands_);
+                for(Pair shapes:found_contacts_) {
+                    const Pair pair=body_pair(shapes);
+                    merge(accurate_islands_,pair,contact_edge_index(shapes));
+                    const auto id=contact_edge_index(shapes);
                     const BodyId node=dynamic_node(pair.a)?pair.a:pair.b;
-                    if(dynamic_node(node)) {
-                        if(!island_edges_[id].indexed_accurate)
-                            append_accurate_island_edge(
-                                id,accurate_islands_.node_island[node]);
-                    }
+                    if(id!=invalid_edge && dynamic_node(node))
+                        append_accurate_island_edge(
+                            id,accurate_islands_.node_island[node]);
                 }
+                for(EdgeIndex id:active_constraint_handles_)
+                    if(island_edges_[id].live && !island_edges_[id].retiring) {
+                        const Pair pair=island_edges_[id].pair;
+                        merge(accurate_islands_,pair,id);
+                        const BodyId node=dynamic_node(pair.a)?pair.a:pair.b;
+                        if(dynamic_node(node)) {
+                            if(!island_edges_[id].indexed_accurate)
+                                append_accurate_island_edge(
+                                    id,accurate_islands_.node_island[node]);
+                        }
+                    }
+            }
         }
         // Reconcile lost edges and actor retirement with the authoritative
         // intrusive graph. Already-selected source handles survive on the
         // connected component that retains their original root.
-        speculative_island_count_=rebuild_graph(speculative_islands_,false);
-        accurate_island_count_=rebuild_graph(accurate_islands_,true);
+        if(speculative_pass)
+            speculative_island_count_=rebuild_graph(speculative_islands_,false);
+        if(accurate_pass)
+            accurate_island_count_=rebuild_graph(accurate_islands_,true);
         // Reclassified rigid bodies may reconnect an existing Gu manager
         // without emitting a new touch-found report. Index those live
         // managers in their newly admitted dynamic island after the
         // original full node/edge reconciliation.
-        if(gpu_broadphase_)
+        if(accurate_pass && gpu_broadphase_)
             for(EdgeIndex edge_id:active_edge_handles_) {
                 const auto& edge=island_edges_[edge_id];
                 if(!edge.live || !edge.connected || edge.indexed_accurate)continue;
@@ -5795,48 +5832,54 @@ void Scene::update_island_connectivity() {
                 if(owner!=IslandGraph::invalid)
                     append_accurate_island_edge(edge_id,owner);
             }
-        accurate_island_nodes_.clear();
-        for(std::size_t i=0;i<actors_.size();++i)
-            if(dynamic_node(static_cast<BodyId>(i)))
-                accurate_island_nodes_.push_back(static_cast<BodyId>(i));
-    } else {
-        for(Pair pair:found_)
-            if(merge(speculative_islands_,body_pair(pair),contact_edge_index(pair)))
-                --speculative_island_count_;
-        for(Pair shapes:found_contacts_) {
-                const Pair pair=body_pair(shapes);
-            if(merge(accurate_islands_,pair,contact_edge_index(shapes))) {
-                --accurate_island_count_;
-                order_changed=true;
-            }
-            const auto id=contact_edge_index(shapes);
-            const BodyId node=dynamic_node(pair.a)?pair.a:pair.b;
-            if(id!=invalid_edge && dynamic_node(node))
-                append_accurate_island_edge(
-                    id,accurate_islands_.node_island[node]);
+        if(accurate_pass) {
+            accurate_island_nodes_.clear();
+            for(std::size_t i=0;i<actors_.size();++i)
+                if(dynamic_node(static_cast<BodyId>(i)))
+                    accurate_island_nodes_.push_back(static_cast<BodyId>(i));
         }
+    } else {
+        if(speculative_pass)
+            for(Pair pair:found_)
+                if(merge(speculative_islands_,body_pair(pair),contact_edge_index(pair)))
+                    --speculative_island_count_;
+        if(accurate_pass)
+            for(Pair shapes:found_contacts_) {
+                const Pair pair=body_pair(shapes);
+                if(merge(accurate_islands_,pair,contact_edge_index(shapes))) {
+                    --accurate_island_count_;
+                    order_changed=true;
+                }
+                const auto id=contact_edge_index(shapes);
+                const BodyId node=dynamic_node(pair.a)?pair.a:pair.b;
+                if(id!=invalid_edge && dynamic_node(node))
+                    append_accurate_island_edge(
+                        id,accurate_islands_.node_island[node]);
+            }
     }
     if(order_changed)rebuild_accurate_island_offsets();
-    // New source split handles may extend the visited-stamp arrays.
-    // Allocate here, inside the failure-atomic topology transaction,
-    // before no-throw wake/sleep publication updates mActiveIslands.
-    speculative_islands_.active_island_seen.resize(
-        speculative_islands_.islands.size(),0);
-    speculative_pre_retirement_index_.resize(
-        speculative_islands_.islands.size());
-    accurate_islands_.active_island_seen.resize(
-        accurate_islands_.islands.size(),0);
-    speculative_islands_.active_islands.reserve(actors_.size());
-    accurate_islands_.active_islands.reserve(actors_.size());
-    speculative_islands_.activating_nodes.reserve(actors_.size());
-    accurate_islands_.activating_nodes.reserve(actors_.size());
-    speculative_islands_.activating_seen.resize(actors_.size(),0);
-    accurate_islands_.activating_seen.resize(actors_.size(),0);
-    // Root changes in rebuild_graph invalidate only affected node hints.
-    // Ordinary merges and independent actor admissions retain live routes
-    // in both graphs; each attempted route validates its full edge chain.
-    island_topology_dirty_=false;
-    ++island_topology_revision_;
+    // Reserve each graph's wake/deactivation storage when its own
+    // first/second-pass source admission finishes.
+    if(speculative_pass) {
+        speculative_islands_.active_island_seen.resize(
+            speculative_islands_.islands.size(),0);
+        speculative_pre_retirement_index_.resize(
+            speculative_islands_.islands.size());
+        speculative_islands_.active_islands.reserve(actors_.size());
+        speculative_islands_.activating_nodes.reserve(actors_.size());
+        speculative_islands_.activating_seen.resize(actors_.size(),0);
+    }
+    if(accurate_pass) {
+        accurate_islands_.active_island_seen.resize(
+            accurate_islands_.islands.size(),0);
+        accurate_islands_.active_islands.reserve(actors_.size());
+        accurate_islands_.activating_nodes.reserve(actors_.size());
+        accurate_islands_.activating_seen.resize(actors_.size(),0);
+        // Actor/topology journal flags stay open until both IslandSim
+        // producers have finished admitting this scene transaction.
+        island_topology_dirty_=false;
+        ++island_topology_revision_;
+    }
 }
 void Scene::rebuild_accurate_island_offsets() {
     // Only accurate islands own Dy's indexed solver-body batches.
@@ -10992,6 +11035,7 @@ void Scene::advance_collision(bool force_update) {
 }
 void Scene::advance_collision_internal(
     bool force_update,bool checkpointed) {
+    speculative_connectivity_prepared_=false;
     // Begin one complete source publication. The first pass can rebuild
     // island membership before third-pass lost-edge repair, so preserve
     // any resulting sleep candidates across both passes of this frame.

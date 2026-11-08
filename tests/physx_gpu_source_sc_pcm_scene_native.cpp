@@ -21,6 +21,39 @@
 
 namespace fyzz::native {
 struct GpuPcmFrictionAnchorFixture {
+    static void verify_early_speculative_admission(
+        const Scene& reference,const Scene& gpu) {
+        if(!gpu.speculative_connectivity_prepared_)
+            throw std::runtime_error(
+                "GPU PCM scene did not overlap speculative IslandSim admission");
+        if(reference.speculative_island_count_!=
+               gpu.speculative_island_count_ ||
+           reference.accurate_island_count_!=
+               gpu.accurate_island_count_)
+            throw std::runtime_error(
+                "Early speculative Sc admission changed source island counts: " +
+                std::to_string(reference.speculative_island_count_) + "/" +
+                std::to_string(gpu.speculative_island_count_) + " speculative, " +
+                std::to_string(reference.accurate_island_count_) + "/" +
+                std::to_string(gpu.accurate_island_count_) + " accurate");
+        for(std::size_t a=0u;a<reference.actors_.size();++a) {
+            if(!reference.actors_[a].alive ||
+               reference.actors_[a].motion!=Scene::Motion::Dynamic)continue;
+            for(std::size_t b=a+1u;b<reference.actors_.size();++b) {
+                if(!reference.actors_[b].alive ||
+                   reference.actors_[b].motion!=Scene::Motion::Dynamic)continue;
+                const auto eq=[a,b](const auto& graph) {
+                    return graph.node_island[a]==graph.node_island[b];
+                };
+                if(eq(reference.speculative_islands_)!=
+                       eq(gpu.speculative_islands_) ||
+                   eq(reference.accurate_islands_)!=
+                       eq(gpu.accurate_islands_))
+                    throw std::runtime_error(
+                        "Early speculative Sc admission changed source island connectivity");
+            }
+        }
+    }
     static std::uint32_t contact_manager_edge(const Scene& scene,Pair shapes) {
         return scene.contact_edge_index(shapes);
     }
@@ -282,6 +315,8 @@ void verify(fyzz::compute::Backend backend,const char* sap,
         }
     };
     check(true);
+    native::GpuPcmFrictionAnchorFixture::verify_early_speculative_admission(
+        cpu,gpu);
     const auto edge=gpu.contact_edge_index({gpu_a,gpu_b});
     // CPU Sc and GPU Dy consume the same 84-byte source record.
     // No expanded per-manager host staging record is needed.
@@ -371,6 +406,8 @@ void verify(fyzz::compute::Backend backend,const char* sap,
         if(i==0u)distant_gpu=id;
     }
     check(true);
+    // Static shape growth changes the GPU broadphase allocation, but
+    // creates no dynamic IslandSim topology work to overlap.
     // Deliberately reject a speculative Gu manager refresh: it writes
     // an empty witness and a physical-touch loss into an existing
     // EdgeIndex. The device must restore the accepted full witness
@@ -964,6 +1001,9 @@ void verify_coupled_rigid_stack(
     for(std::uint32_t frame=0u;frame<12u;++frame) {
         cpu.step(dt);
         gpu.step(dt);
+        if(frame==0u)
+            native::GpuPcmFrictionAnchorFixture::verify_early_speculative_admission(
+                cpu,gpu);
         require(cpu.pairs().size()==gpu.pairs().size() &&
                 cpu.contacts().size()==gpu.contacts().size(),
                 "GPU coupled rigid stack lost Sc contact-manager parity");
