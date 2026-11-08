@@ -3978,6 +3978,37 @@ std::uint8_t Scene::publish_gpu_pcm_box_box(
     }
     return static_cast<std::uint8_t>(gpu.count());
 }
+bool Scene::cached_friction_patch_valid(
+    const FrictionPatch& old,const Actor& actor0,
+    const Actor& actor1) const {
+    if(old.broken || old.disable_strong_friction || old.anchor_count==0u)
+        return false;
+    constexpr float same_normal=0.999f;
+    constexpr float correlation_distance=0.025f;
+    const Quat q0=mass_orientation(actor0),q1=mass_orientation(actor1);
+    const Vec3 old_normal_1_in_0=
+        rotate_inverse(q0,rotate(q1,old.body1_normal));
+    const auto dot=[](Vec3 a,Vec3 b) {
+        return a.x*b.x+a.y*b.y+a.z*b.z;
+    };
+    if(dot(old.body0_normal,old_normal_1_in_0)<=same_normal)
+        return false;
+    const Vec3 p0=mass_position(actor0),p1=mass_position(actor1);
+    for(std::size_t k=0;k<old.anchor_count;++k) {
+        const Vec3 local=rotate(q1,old.body1_anchors[k]);
+        const Vec3 world{local.x+p1.x,local.y+p1.y,local.z+p1.z};
+        const Vec3 in0=rotate_inverse(q0,{
+            world.x-p0.x,world.y-p0.y,world.z-p0.z});
+        const Vec3 delta{
+            old.body0_anchors[k].x-in0.x,
+            old.body0_anchors[k].y-in0.y,
+            old.body0_anchors[k].z-in0.z};
+        if(std::abs(dot(delta,old.body0_normal))>=correlation_distance)
+            return false;
+    }
+    return true;
+}
+
 void Scene::update_contacts() {
     // Gu narrowphase consumes the sum of both PxShapeCore contact offsets.
     next_manifolds_.clear();
@@ -4001,6 +4032,7 @@ void Scene::update_contacts() {
     const auto new_lookup_generation=indexed_manifold_generation_;
     gpu_pcm_pairs_.clear();
     gpu_pcm_results_.clear();
+    gpu_pcm_friction_history_masks_.clear();
     const bool source_gpu_pcm =
         gpu_broadphase_ && gpu_broadphase_->has_gpu_pcm_box() &&
         pcm_box_box_enabled_;
@@ -11034,6 +11066,7 @@ void Scene::advance_collision(bool force_update) {
 void Scene::advance_collision_internal(
     bool force_update,bool checkpointed) {
     speculative_connectivity_prepared_=false;
+    gpu_pcm_friction_history_masks_.clear();
     // Begin one complete source publication. The first pass can rebuild
     // island membership before third-pass lost-edge repair, so preserve
     // any resulting sleep candidates across both passes of this frame.
