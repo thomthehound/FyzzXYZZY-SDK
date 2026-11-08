@@ -158,8 +158,13 @@ EdgeIndex history. Host-only Gu epochs journal only the prior/current touch
 words from the existing resident 84-byte contact records; mixed epochs retain
 the full GPU manifold journal but snapshot only touch words for CPU-owned
 managers. A rejected transaction restores the original device touch epoch
-before another producer can update that EdgeIndex. This does not move public
-Sc graph reconciliation or current Dy task construction to the device.
+before another producer can update that EdgeIndex. In mixed frames, CPU Gu
+uploads enter the ordered source queue immediately after their witnesses are
+ready, independently of the preceding GPU PCM witness readback. Sc's host
+join retires only producer tokens preceding that readback; later uploaded
+CPU Gu and device touch publication stay in flight for GPU consumers.
+This does not move public Sc graph reconciliation, friction correlation or
+current Dy task construction to the device.
 
 **Current migration boundary:** general GPU PCM still downloads its 84-byte
 contact records before CPU Sc friction correlation and accurate-island
