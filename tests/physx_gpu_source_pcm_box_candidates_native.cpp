@@ -7,6 +7,7 @@
 #include "physx_gpu/source_pcm_sparse_epa_native.h"
 #include "physx_gpu/source_pcm_epa_native.h"
 #include "physx_gpu/source_pcm_sc_contact_stream_native.h"
+#include "physx_gpu/source_sc_contact_history_native.h"
 
 #include <algorithm>
 #include <array>
@@ -45,7 +46,7 @@ void verify(Context& context,const char* transform_shader,
             const char* candidate_shader,const char* compact_shader,
             const char* gjk_shader,const char* epa_shader,
             const char* gjk_reduce_shader,const char* gjk_publish_shader,
-            const char* epa_reset_shader) {
+            const char* epa_reset_shader,const char* journal_shader) {
     // Exercise every contact lane with byte-exact IEEE float preservation.
     SourcePcmGpuContactStreamNative fixture{};
     fixture.edge_handle=197u;
@@ -1089,19 +1090,96 @@ void verify(Context& context,const char* transform_shader,
                 fyzz::native::GpuPcmTouchTransition::Persists,
             "Reset source Sc edge discarded its previously published touch");
 
+    // Host-only and mixed Gu producers publish through one EdgeIndex.
+    // Both journal layouts restore every byte of a rejected contact history.
+    {
+        constexpr std::size_t n=4u;
+        constexpr std::array<std::uint32_t,n> touch_edges{
+            17u,30u,43u,56u};
+        std::array<fyzz::native::GpuPcmBoxResult,n> gu{};
+        std::array<std::array<std::uint32_t,60>,n> before{};
+        for(std::size_t i=0u;i<n;++i) {
+            gu[i].edge=touch_edges[i];
+            gu[i].set_primitive(i<2u?1u:0u,i==1u || i==2u);
+            before[i][3]=0xabcdef00u+static_cast<std::uint32_t>(i);
+            before[i][18]=7u+static_cast<std::uint32_t>(i);
+            before[i][19]=11u+static_cast<std::uint32_t>(i);
+            context.upload(root,edge_offset+touch_edges[i]*240u,
+                           before[i].data(),240u);
+        }
+        context.upload(root,output_offset,gu.data(),sizeof(gu));
+        const auto journal_buffer=context.create_buffer(
+            n*240u,MemoryPlacement::DeviceLocal);
+        const auto journal_data=addresses.register_slice(
+            journal_buffer,0u,n*240u);
+        SourceScContactHistoryNativeStage history(
+            context,shader(journal_shader));
+        const auto check=[&](bool touched) {
+            for(std::size_t i=0u;i<n;++i) {
+                std::array<std::uint32_t,60> actual{};
+                context.download(root,edge_offset+touch_edges[i]*240u,
+                                 actual.data(),240u);
+                if(!touched) {
+                    require(actual==before[i],
+                        "Rejected Sc Gu epoch did not restore EdgeIndex history");
+                    continue;
+                }
+                const bool expected_current=i<2u;
+                const bool expected_prior=i==1u || i==2u;
+                require(actual[18]==static_cast<std::uint32_t>(expected_current) &&
+                        actual[19]==static_cast<std::uint32_t>(expected_prior) &&
+                        actual[3]==before[i][3],
+                        "Device Sc touch disagrees with source Gu transition");
+            }
+        };
+        const auto run=[&](bool mixed) {
+            if(mixed) {
+                std::array<SourcePcmBoxPairNative,n> source{};
+                for(std::size_t i=0u;i<n;++i)
+                    source[i]={1u,6u,touch_edges[i],0u,
+                        (i&1u)?source_pcm_host_gu_bit:1u};
+                context.upload(root,pair_offset,source.data(),sizeof(source));
+            }
+            SourceSapDmaNative stream(context,addresses);
+            if(mixed)
+                history.append(stream,addresses,
+                    SourceScContactHistoryNativeStage::Phase::Snapshot,
+                    pair_data,edge_data,journal_data,
+                    static_cast<std::uint32_t>(n),edge_capacity);
+            history.append(stream,addresses,
+                mixed?SourceScContactHistoryNativeStage::Phase::PublishHostTouch:
+                      SourceScContactHistoryNativeStage::Phase::PublishHostWithSnapshot,
+                output_data,edge_data,journal_data,
+                static_cast<std::uint32_t>(n),edge_capacity);
+            stream.wait_at_fetch();
+            check(true);
+            history.append(stream,addresses,
+                mixed?SourceScContactHistoryNativeStage::Phase::Restore:
+                      SourceScContactHistoryNativeStage::Phase::RestoreHost,
+                mixed?pair_data:output_data,edge_data,journal_data,
+                static_cast<std::uint32_t>(n),edge_capacity);
+            stream.wait_at_fetch();
+            check(false);
+        };
+        run(false);
+        run(true);
+        addresses.unregister_slice(journal_data);
+        context.destroy_buffer(journal_buffer);
+    }
+
     release_allocations();
 }
 }
 int main(int argc,char** argv) {
     try {
-        require(argc==9,
-                "Expected transforms, PCM, compact, GJK, EPA, reducer, publisher and reset shaders");
+        require(argc==10,
+                "Expected transforms, PCM, compact, GJK, EPA, reducer, publisher, reset and contact-history shaders");
 #ifdef FYZZXYZZY_TEST_D3D12
         Context context(Backend::D3D12);
 #else
         Context context(Backend::Vulkan);
 #endif
-        verify(context,argv[1],argv[2],argv[3],argv[4],argv[5],argv[6],argv[7],argv[8]);
+        verify(context,argv[1],argv[2],argv[3],argv[4],argv[5],argv[6],argv[7],argv[8],argv[9]);
         std::cout<<"Source PCM GPU box candidate parity PASS\n";
         return 0;
     }catch(const std::exception& error) {

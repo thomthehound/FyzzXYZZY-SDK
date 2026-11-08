@@ -552,12 +552,19 @@ if(FYZZXYZZY_BUILD_VULKAN)
       DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_dy_contact_pgs_native.hlsli")
     add_custom_target(fyzzxyzzy_source_dy_convex_shader
       DEPENDS "${FYZZXYZZY_SOURCE_DY_CONVEX_SPV}")
+    set(FYZZXYZZY_SOURCE_SC_CONTACT_JOURNAL_SPV
+      "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_source_sc_contact_history_native.spv")
+    fyzzxyzzy_compile_hlsl("${FYZZXYZZY_SOURCE_SC_CONTACT_JOURNAL_SPV}"
+      "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_sc_contact_history_native.hlsl"
+      cs_6_0 main)
+    add_custom_target(fyzzxyzzy_source_sc_contact_history_shader
+      DEPENDS "${FYZZXYZZY_SOURCE_SC_CONTACT_JOURNAL_SPV}")
     fyzzxyzzy_add_gpu_test(fyzzxyzzy_source_pcm_box_candidates
       SOURCES tests/physx_gpu_source_pcm_box_candidates_native.cpp src/native/GuPCMContactBoxBox.cpp src/native/GuPCMGjkEpa.cpp
       INCLUDES "${CMAKE_CURRENT_SOURCE_DIR}/src"
       LIBRARIES FyzzXYZZY::Compute fyzzxyzzy_source_gpu_primitives
-      DEPENDS fyzzxyzzy_source_sc_box_bounds_shader fyzzxyzzy_source_pcm_box_candidates_shader fyzzxyzzy_source_pcm_epa_work_shader fyzzxyzzy_source_pcm_gjk_shader fyzzxyzzy_source_pcm_epa_shader
-      ARGS "${FYZZXYZZY_SC_BOX_BOUNDS_SPV}" "${FYZZXYZZY_SOURCE_PCM_BOX_SPV}" "${FYZZXYZZY_SOURCE_PCM_EPA_WORK_SPV_COMPACT}" "${FYZZXYZZY_SOURCE_PCM_GJK_SPV}" "${FYZZXYZZY_SOURCE_PCM_EPA_SPV}" "${FYZZXYZZY_SOURCE_PCM_GJK_REDUCE_SPV}" "${FYZZXYZZY_SOURCE_PCM_GJK_PUBLISH_SPV}" "${FYZZXYZZY_SOURCE_PCM_EPA_ARGS_RESET_SPV}")
+      DEPENDS fyzzxyzzy_source_sc_box_bounds_shader fyzzxyzzy_source_pcm_box_candidates_shader fyzzxyzzy_source_pcm_epa_work_shader fyzzxyzzy_source_pcm_gjk_shader fyzzxyzzy_source_pcm_epa_shader fyzzxyzzy_source_sc_contact_history_shader
+      ARGS "${FYZZXYZZY_SC_BOX_BOUNDS_SPV}" "${FYZZXYZZY_SOURCE_PCM_BOX_SPV}" "${FYZZXYZZY_SOURCE_PCM_EPA_WORK_SPV_COMPACT}" "${FYZZXYZZY_SOURCE_PCM_GJK_SPV}" "${FYZZXYZZY_SOURCE_PCM_EPA_SPV}" "${FYZZXYZZY_SOURCE_PCM_GJK_REDUCE_SPV}" "${FYZZXYZZY_SOURCE_PCM_GJK_PUBLISH_SPV}" "${FYZZXYZZY_SOURCE_PCM_EPA_ARGS_RESET_SPV}" "${FYZZXYZZY_SOURCE_SC_CONTACT_JOURNAL_SPV}")
 
 
     # Source aggregate.cu::updateAggregateBounds, original 32-lane
@@ -854,11 +861,6 @@ if(FYZZXYZZY_BUILD_VULKAN)
       DEPENDS ${FYZZXYZZY_NATIVE_GPU_SAP_SPIRV_BINARIES})
     add_dependencies(fyzzxyzzy_source_gpu_aggregate_world_bundle
       fyzzxyzzy_native_gpu_sap_shaders)
-    set(FYZZXYZZY_SOURCE_SC_CONTACT_JOURNAL_SPV
-      "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_source_sc_contact_history_native.spv")
-    fyzzxyzzy_compile_hlsl("${FYZZXYZZY_SOURCE_SC_CONTACT_JOURNAL_SPV}"
-      "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_sc_contact_history_native.hlsl"
-      cs_6_0 main)
     set(_pcm_binaries
       "${FYZZXYZZY_SOURCE_PCM_BOX_SPV}"
       "${FYZZXYZZY_SOURCE_PCM_EPA_WORK_SPV_COMPACT}"

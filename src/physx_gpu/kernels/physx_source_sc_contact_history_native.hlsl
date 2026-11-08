@@ -32,6 +32,29 @@ ConstantBuffer<Parameters> p:register(b0,space0);
 void main(uint3 dispatch:SV_DispatchThreadID) {
     const uint word=p.wordStart+dispatch.x;
     if(word>=p.wordCount)return;
+    if(p.phase==3u || p.phase==4u) {
+        // A host-only epoch snapshots and publishes its touch in one lane.
+        // Mixed epochs have already journaled GPU and host-owned edges.
+        const uint edge=pairInputs.Load(p.pairBias+word*84u);
+        if(edge>=p.edgeCapacity)return;
+        const uint packed=pairInputs.Load(p.pairBias+word*84u+4u);
+        const uint transition=(packed>>13u)&3u;
+        const uint cache=p.edgeBias+edge*240u+72u;
+        if(p.phase==4u)
+            checkpoint.Store2(p.checkpointBias+word*8u,
+                              edgeCaches.Load2(cache));
+        edgeCaches.Store2(cache,uint2(
+            transition==1u || transition==2u?1u:0u,
+            transition==2u || transition==3u?1u:0u));
+        return;
+    }
+    if(p.phase==5u) {
+        const uint edge=pairInputs.Load(p.pairBias+word*84u);
+        if(edge>=p.edgeCapacity)return;
+        edgeCaches.Store2(p.edgeBias+edge*240u+72u,
+            checkpoint.Load2(p.checkpointBias+word*8u));
+        return;
+    }
     const uint record=word/60u;
     const uint lane=word%60u;
     if(p.phase==0u) {
@@ -40,8 +63,9 @@ void main(uint3 dispatch:SV_DispatchThreadID) {
             edgeCaches.Store(p.edgeBias+edge*240u+lane*4u,0u);
         return;
     }
-    // Primitive Gu belongs to Sc's CPU cache, not this device journal.
-    if((pairInputs.Load(p.pairBias+record*20u+16u)&0x10000000u)!=0u)
+    // Primitive Gu does not own numerical PCM cache state.
+    if((pairInputs.Load(p.pairBias+record*20u+16u)&0x10000000u)!=0u &&
+       lane!=18u && lane!=19u)
         return;
     const uint edge=pairInputs.Load(p.pairBias+record*20u+8u);
     if(edge>=p.edgeCapacity)return;
