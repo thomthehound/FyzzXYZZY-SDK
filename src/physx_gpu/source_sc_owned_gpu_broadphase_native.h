@@ -344,6 +344,10 @@ public:
     SourceDyLaunchStats dy_launch_stats() const noexcept {
         return dy_distance_?dy_distance_->last_schedule():SourceDyLaunchStats{};
     }
+    const SourceSapDmaNative::SubmissionStats&
+    stream_submission_stats() const noexcept {
+        return stream_.submission_stats();
+    }
     std::size_t pcm_pair_upload_bytes() const noexcept {
         return pcm_ ? pcm_->last_pair_upload_bytes() : 0u;
     }

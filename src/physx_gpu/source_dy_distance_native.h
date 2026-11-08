@@ -1334,15 +1334,8 @@ public:
             {mapped.buffer,mapped.offset,host_.data(),output_bytes},{}
         }};
         if(pcm_completion)downloads[1]=*pcm_completion;
-        stream_.submit();
-        try {
-            context_.download_batch(std::span<const compute::DownloadSpan>(
-                downloads.data(),pcm_completion?2u:1u));
-        } catch(...) {
-            stream_.wait_at_fetch();
-            throw;
-        }
-        stream_.wait_at_fetch();
+        stream_.fetch(std::span<const compute::DownloadSpan>(
+            downloads.data(),pcm_completion?2u:1u));
         for(const auto id:pending_actor_locals_)
             actor_local_valid_[id]=1u;
         for(std::size_t i=0;i<tasks.size();++i)

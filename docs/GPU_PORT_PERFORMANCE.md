@@ -101,6 +101,45 @@ A technically correct hybrid configuration is acceptable when its
 synchronization and frame cost meet the same measured performance gate.
 Neither full device residency nor fewer CPU instructions alone qualifies.
 
+### Frame execution contract
+
+One source scene owns one ordered GPU command stream and the simulation
+transaction. The CPU owns authored input validation, sparse source-handle
+changes, contact-manager lifetimes, island connectivity, task admission,
+public events and the final commit. GPU stages own dense SAP, PCM contact
+geometry, numerical constraint preparation, solving and integration.
+
+Every stage has an explicit producer, consumer and completion dependency:
+
+1. **Admit:** validate authored changes, snapshot only required host inputs
+   and journal source state before scheduling work that can mutate history.
+2. **Execute:** append GPU uploads, copies and dispatches in dependency
+   order; submit without waiting while independent CPU topology or task
+   work proceeds. Reuse device contact and motion allocations across
+   PCM and Dy rather than repacking their contents through the host.
+3. **Join only for data:** Sc fetches reports or contact topology only
+   when its next CPU decision actually consumes unknown GPU output.
+   Bounded analytic classifications may instead run on the CPU during
+   device work, with GPU result agreement checked before commit.
+4. **Publish:** group dependent GPU outputs into one source fetch.
+   The stream retires its own submission and staging tokens. Publish
+   body/contact results and persistent history only after validation;
+   rejected epochs restore their source journals.
+
+A fetch is a transaction boundary, not a default boundary between
+kernels. A stage with no work creates no submission. CPU prediction is
+not a general replacement for GPU PCM: numerical duplication must earn
+its cost in saved synchronization on real hardware. Do not introduce
+separate ownership of Sc handles, manifolds or rigid state to avoid
+a transfer.
+
+The source stream reports upload batches/bytes, command batches, fetch
+batches/spans/bytes and host blocking fetch wall time. Evaluate these
+as per-frame deltas together with device dispatch cost and complete-frame
+latency. Host blocking fetch wall time includes the GPU wait, transfer
+and host copy; it is not a GPU kernel duration. Software adapters validate
+API behavior but do not set the physical-GPU performance budget.
+
 ## Target hardware, API floors, and layered feature paths
 
 **Shipping baseline (user direction, October 14, 2026):**

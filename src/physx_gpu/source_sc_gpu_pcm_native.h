@@ -137,14 +137,8 @@ public:
             // island state. Fetch the already-submitted GPU result at
             // the commit boundary, not before CPU Sc processing.
             const auto extra=deferred_verification_download();
-            try {
-                context_.download_batch(
-                    std::span<const compute::DownloadSpan>(&*extra,1u));
-            } catch(...) {
-                stream_.wait_at_fetch();
-                throw;
-            }
-            stream_.wait_at_fetch();
+            stream_.fetch(std::span<const compute::DownloadSpan>(
+                &*extra,1u));
             verify_deferred_results();
         }
         if(!pcm_transaction_pending_)return;
@@ -454,17 +448,7 @@ public:
             last_deferred_contact_download_bytes_=readback_bytes;
             return;
         }
-        try {
-            context_.download_batch(downloads);
-        } catch (...) {
-            // Readback failure may not strand source GPU submission
-            // tokens or their heap allocations.
-            stream_.wait_at_fetch();
-            throw;
-        }
-        // The readback fence has already completed. Retire the source
-        // command/upload tokens without an intervening CPU/GPU stall.
-        stream_.wait_at_fetch();
+        stream_.fetch(downloads);
         for(std::uint32_t i=0u;i<pair_count;++i) {
             const auto& packed=readback_[i];
             const auto header=unpack_source_pcm_gpu_header_native(packed);

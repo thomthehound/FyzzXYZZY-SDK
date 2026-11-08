@@ -2094,7 +2094,7 @@ void verify_sphere_gpu_solver(
 
 void verify_deferred_primitive_pcm_solver(
     fyzz::compute::Backend backend,const char* sap,
-    const char* pcm,const char* dy_shader,bool single_frame=false) {
+    const char* pcm,const char* dy_shader) {
     using namespace fyzz;
     std::ifstream source(dy_shader,std::ios::binary);
     require(bool(source),"Primitive GPU Dy shader bundle unavailable");
@@ -2126,15 +2126,23 @@ void verify_deferred_primitive_pcm_solver(
     const auto actual=make(gpu);
     const auto expected=make(cpu);
     constexpr float dt=1.f/120.f;
-    for(unsigned frame=0u;frame<(single_frame?1u:5u);++frame) {
+    for(unsigned frame=0u;frame<5u;++frame) {
         if(frame==2u || frame==3u) {
             const Vec3 p=frame==2u
                 ?Vec3{0.f,4.f,0.f}:Vec3{0.f,0.48f,0.f};
             cpu.set_position(expected[0],p);
             gpu.set_position(actual[0],p);
         }
+        const auto before_fetch=producer->stream_submission_stats();
         cpu.step(dt);
         gpu.step(dt);
+        const auto& completed=producer->stream_submission_stats();
+        require(completed.fetch_batches==before_fetch.fetch_batches+1u &&
+                completed.fetch_spans==before_fetch.fetch_spans+2u &&
+                completed.fetch_bytes-before_fetch.fetch_bytes==
+                    producer->dy_distance_transfer_bytes().second+
+                    producer->pcm_deferred_contact_readback_bytes(),
+            "Deferred primitive contact/Dy result used multiple fetch boundaries");
         require(producer->pcm_contact_readback_bytes()==0u &&
                 producer->pcm_deferred_contact_readback_bytes()==
                     2u*sizeof(physx_gpu::SourcePcmGpuContactStreamNative) &&
@@ -2913,8 +2921,7 @@ int main(int argc,char** argv) {
                 scenario=="coupled_solver" || scenario=="legacy_gu_solver" ||
                 scenario=="mixed_solver" || scenario=="distance_solver" ||
                 scenario=="compound_shapes" || scenario=="compound_solver" ||
-                scenario=="sphere_solver" || scenario=="primitive_deferred" ||
-                scenario=="convex_plane" ||
+                scenario=="sphere_solver" || scenario=="convex_plane" ||
                 scenario=="convex_finite" || scenario=="wide_islands" ||
                 scenario=="wide_islands_10k" ||
                 scenario=="zero_response_wide" ||
@@ -2943,10 +2950,6 @@ int main(int argc,char** argv) {
                     verify_deferred_primitive_pcm_solver(
                         backend,argv[1],argv[2],argv[3]);
                 });
-        if(scenario=="primitive_deferred")
-            fyzz::tests::measure_gpu_case("sc_pcm","primitive_deferred",
-                [&]{verify_deferred_primitive_pcm_solver(
-                    backend,argv[1],argv[2],argv[3],true);});
         if(scenario=="all" || scenario=="convex_plane")
             fyzz::tests::measure_gpu_case("sc_pcm","convex_plane",
                 [&]{
