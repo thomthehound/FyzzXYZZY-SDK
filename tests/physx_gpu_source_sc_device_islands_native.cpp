@@ -13,6 +13,8 @@
 #include <iostream>
 #include <iterator>
 #include <stdexcept>
+#include <span>
+#include <utility>
 #include <vector>
 
 namespace {
