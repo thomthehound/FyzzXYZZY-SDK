@@ -21,6 +21,20 @@
 
 namespace fyzz::native {
 struct GpuPcmFrictionAnchorFixture {
+    static void verify_early_speculative_admission(
+        const Scene& reference,const Scene& gpu) {
+        if(!gpu.speculative_connectivity_prepared_ ||
+           reference.speculative_island_count_!=
+               gpu.speculative_island_count_ ||
+           reference.accurate_island_count_!=
+               gpu.accurate_island_count_ ||
+           reference.speculative_islands_.node_island!=
+               gpu.speculative_islands_.node_island ||
+           reference.accurate_islands_.node_island!=
+               gpu.accurate_islands_.node_island)
+            throw std::runtime_error(
+                "Early speculative Sc admission changed source island ownership");
+    }
     static std::uint32_t contact_manager_edge(const Scene& scene,Pair shapes) {
         return scene.contact_edge_index(shapes);
     }
@@ -282,6 +296,8 @@ void verify(fyzz::compute::Backend backend,const char* sap,
         }
     };
     check(true);
+    native::GpuPcmFrictionAnchorFixture::verify_early_speculative_admission(
+        cpu,gpu);
     const auto edge=gpu.contact_edge_index({gpu_a,gpu_b});
     // CPU Sc and GPU Dy consume the same 84-byte source record.
     // No expanded per-manager host staging record is needed.
@@ -371,6 +387,8 @@ void verify(fyzz::compute::Backend backend,const char* sap,
         if(i==0u)distant_gpu=id;
     }
     check(true);
+    native::GpuPcmFrictionAnchorFixture::verify_early_speculative_admission(
+        cpu,gpu);
     // Deliberately reject a speculative Gu manager refresh: it writes
     // an empty witness and a physical-touch loss into an existing
     // EdgeIndex. The device must restore the accepted full witness
