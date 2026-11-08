@@ -96,6 +96,7 @@ public:
     }
 
     void invalidate_after_rollback() noexcept {
+        result_pending_=false;
         published_pair_count_=0u;
         rebuild_required_=true;
         if(pcm_transaction_pending_) {
@@ -114,6 +115,8 @@ public:
     }
 
     void commit_step() {
+        if(result_pending_)
+            throw std::logic_error("Source PCM epoch committed before Sc publication");
         if(!pcm_transaction_pending_)return;
         published_edge_span_bytes_=std::max(
             published_edge_span_bytes_,pending_edge_span_bytes_);
@@ -153,7 +156,7 @@ public:
         rebuild_required_=false;
     }
 
-    void generate(std::span<const native::GpuPcmBoxPair> requests,
+    void enqueue(std::span<const native::GpuPcmBoxPair> requests,
                   std::span<native::GpuPcmBoxResult> output,
                   std::uint32_t shape_capacity) {
         if(requests.size()!=output.size())
@@ -450,15 +453,26 @@ public:
                 dense_contacts_.getDevicePtr()+first*stride,bytes);
             gpu_downloads_.push_back({
                 mapped.buffer,mapped.offset,output.data()+first,bytes});
-            last_contact_download_bytes_+=bytes;
         }
         pcm_transaction_pending_=true;
+        result_pending_=true;
         journal_pair_count_=pair_count;
         journal_edge_capacity_=edge_capacity;
         pending_edge_span_bytes_=std::size_t(edge_capacity)*240u;
+        // The same ordered queue continues while Sc processes CPU-owned
+        // contact managers ahead of its first GPU witness consumer.
+        stream_.submit();
+    }
+    void finish(std::span<const native::GpuPcmBoxPair> requests,
+                std::span<native::GpuPcmBoxResult> output) {
+        if(!result_pending_ || requests.size()!=journal_pair_count_ ||
+           output.size()!=requests.size())
+            throw std::logic_error("Source PCM join has no matching queued epoch");
         if(!gpu_downloads_.empty())stream_.fetch(gpu_downloads_);
-        else stream_.submit();
-        for(std::uint32_t i=0u;i<pair_count;++i) {
+        else stream_.wait_at_fetch();
+        for(const auto& span:gpu_downloads_)
+            last_contact_download_bytes_+=span.bytes;
+        for(std::uint32_t i=0u;i<journal_pair_count_;++i) {
             const auto& stored=output[i];
             const auto& request=requests[i];
             const auto selected_count=
@@ -478,7 +492,8 @@ public:
                 throw std::logic_error(
                     "Source GPU PCM publication disagrees with original Sc manager");
         }
-        published_pair_count_=pair_count;
+        published_pair_count_=journal_pair_count_;
+        result_pending_=false;
         rebuild_required_=false;
     }
     CudaDeviceAddressMap::Address contact_stream_address() const noexcept {
@@ -574,6 +589,7 @@ private:
     bool reset_manifolds_=false;
     bool rebuild_required_=false;
     bool pcm_transaction_pending_=false,restore_pending_=false;
+    bool result_pending_=false;
     std::uint32_t journal_pair_count_=0u,journal_edge_capacity_=0u;
     std::size_t pending_edge_span_bytes_=0u;
     std::uint32_t published_pair_count_=0u;
