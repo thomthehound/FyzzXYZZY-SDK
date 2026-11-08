@@ -1141,13 +1141,14 @@ void verify(Context& context,const char* transform_shader,
                 context.upload(root,pair_offset,source.data(),sizeof(source));
             }
             SourceSapDmaNative stream(context,addresses);
+            if(mixed)
+                history.append(stream,addresses,
+                    SourceScContactHistoryNativeStage::Phase::Snapshot,
+                    pair_data,edge_data,journal_data,
+                    static_cast<std::uint32_t>(n),edge_capacity);
             history.append(stream,addresses,
-                mixed?SourceScContactHistoryNativeStage::Phase::Snapshot:
-                      SourceScContactHistoryNativeStage::Phase::SnapshotHost,
-                mixed?pair_data:output_data,edge_data,journal_data,
-                static_cast<std::uint32_t>(n),edge_capacity);
-            history.append(stream,addresses,
-                SourceScContactHistoryNativeStage::Phase::PublishHostTouch,
+                mixed?SourceScContactHistoryNativeStage::Phase::PublishHostTouch:
+                      SourceScContactHistoryNativeStage::Phase::PublishHostWithSnapshot,
                 output_data,edge_data,journal_data,
                 static_cast<std::uint32_t>(n),edge_capacity);
             stream.wait_at_fetch();
