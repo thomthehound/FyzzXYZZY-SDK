@@ -251,8 +251,14 @@ public:
     SubmissionId submit_upload_batch(const std::vector<UploadSpan>& uploads);
 
     void download(BufferId id, std::size_t offset, void* data, std::size_t bytes) const;
-    // One submission and wait for all nonempty device-local readbacks.
-    // Source buffer ownership and original CPU output addresses are retained.
+    // Submit one ordered GPU readback into Context-owned staging without
+    // blocking the caller. Destination pointers remain borrowed until
+    // finish_download_batch; false retires the transfer without publishing
+    // bytes from a rejected scene transaction. One outstanding readback
+    // batch per Context retains the existing reusable staging allocation.
+    SubmissionId submit_download_batch(std::span<const DownloadSpan> downloads);
+    void finish_download_batch(SubmissionId id, bool publish = true);
+    // Synchronous wrapper for callers with an immediate host dependency.
     void download_batch(std::span<const DownloadSpan> downloads) const;
 
     // Submits a GPU transfer and completes it before returning.
