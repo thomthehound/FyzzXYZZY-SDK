@@ -2911,7 +2911,8 @@ int main(int argc,char** argv) {
                 scenario=="coupled_solver" || scenario=="legacy_gu_solver" ||
                 scenario=="mixed_solver" || scenario=="distance_solver" ||
                 scenario=="compound_shapes" || scenario=="compound_solver" ||
-                scenario=="sphere_solver" || scenario=="convex_plane" ||
+                scenario=="sphere_solver" || scenario=="primitive_deferred" ||
+                scenario=="convex_plane" ||
                 scenario=="convex_finite" || scenario=="wide_islands" ||
                 scenario=="wide_islands_10k" ||
                 scenario=="zero_response_wide" ||
@@ -2940,6 +2941,10 @@ int main(int argc,char** argv) {
                     verify_deferred_primitive_pcm_solver(
                         backend,argv[1],argv[2],argv[3]);
                 });
+        if(scenario=="primitive_deferred")
+            fyzz::tests::measure_gpu_case("sc_pcm","primitive_deferred",
+                [&]{verify_deferred_primitive_pcm_solver(
+                    backend,argv[1],argv[2],argv[3]);});
         if(scenario=="all" || scenario=="convex_plane")
             fyzz::tests::measure_gpu_case("sc_pcm","convex_plane",
                 [&]{
