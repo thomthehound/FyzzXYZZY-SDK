@@ -9,6 +9,7 @@
 #include "physx_gpu/source_pcm_epa_native.h"
 #include "physx_gpu/source_pcm_sc_contact_stream_native.h"
 #include "physx_gpu/source_sc_contact_islands_native.h"
+#include "physx_gpu/source_sc_contact_history_native.h"
 #include "physx_port/gpucommon/PxgCudaBuffer.h"
 
 #include <algorithm>
@@ -65,7 +66,8 @@ public:
         compute::ShaderBinary gjk_publish,
         compute::ShaderBinary epa_args_reset,compute::ShaderBinary epa,
         compute::ShaderBinary face_contacts,
-        compute::ShaderBinary contact_islands)
+        compute::ShaderBinary contact_islands,
+        compute::ShaderBinary contact_journal)
         : context_(context),addresses_(addresses),stream_(stream),sc_(sc),
           transforms_(transforms),geometry_(geometry),
           convex_vertices_(convex_vertices),
@@ -85,13 +87,15 @@ public:
           epa_stage_(context,std::move(epa)),
           face_stage_(context,std::move(face_contacts),true),
           islands_stage_(context,std::move(contact_islands)),
+          journal_stage_(context,std::move(contact_journal)),
           pairs_(allocator,physx::PxsHeapStats::eNARROWPHASE),
           results_(allocator,physx::PxsHeapStats::eNARROWPHASE),
           candidates_(allocator,physx::PxsHeapStats::eNARROWPHASE),
           edges_(allocator,physx::PxsHeapStats::eNARROWPHASE),
           work_(allocator,physx::PxsHeapStats::eNARROWPHASE),
           dense_contacts_(allocator,physx::PxsHeapStats::eNARROWPHASE),
-          graph_(allocator,physx::PxsHeapStats::eNARROWPHASE) {
+          graph_(allocator,physx::PxsHeapStats::eNARROWPHASE),
+          journal_(allocator,physx::PxsHeapStats::eNARROWPHASE) {
         if(!stream_.bound_to(context_,addresses_))
             throw std::invalid_argument("Source Sc GPU PCM has another device stream");
         if(staged_gjk_)
@@ -113,7 +117,24 @@ public:
         if(indirect_buffer_)context_.destroy_buffer(indirect_buffer_);
     }
 
-    void invalidate_after_rollback() noexcept { reset_manifolds_=true; }
+    void invalidate_after_rollback() noexcept {
+        reset_manifolds_=true;
+        if(pcm_transaction_pending_) {
+            // A submitted PCM epoch may have changed Gu witnesses even
+            // when Sc/Dy later rejected the complete simulation frame.
+            restore_pending_=journal_pair_count_!=0u;
+            pcm_transaction_pending_=false;
+            published_pair_count_=0u;
+        }
+    }
+
+    void commit_step() noexcept {
+        if(!pcm_transaction_pending_)return;
+        published_edge_span_bytes_=std::max(
+            published_edge_span_bytes_,pending_edge_span_bytes_);
+        pcm_transaction_pending_=false;
+        journal_pair_count_=0u;
+    }
 
     void set_contact_graph(
         std::span<const native::GpuScContactGraphEdge> edges,
@@ -134,6 +155,21 @@ public:
                   std::uint32_t shape_capacity) {
         if(requests.size()!=output.size())
             throw std::invalid_argument("Source Sc GPU PCM result count mismatch");
+        if(pcm_transaction_pending_)
+            throw std::logic_error("Sc PCM frame advanced before its prior epoch committed");
+        if(restore_pending_) {
+            // The previous pair descriptors and journal must be consumed
+            // before new scene uploads can replace either allocation.
+            journal_stage_.append(stream_,addresses_,
+                SourceScContactHistoryNativeStage::Phase::Restore,
+                pairs_.getDevicePtr(),edges_.getDevicePtr(),
+                journal_.getDevicePtr(),journal_pair_count_,
+                journal_edge_capacity_);
+            stream_.submit();
+            stream_.wait_at_fetch();
+            restore_pending_=false;
+            journal_pair_count_=0u;
+        }
         // The previous successful source stream is authoritative for
         // whether this pair buffer has usable resident input records.
         const auto previous_count=published_pair_count_;
@@ -257,6 +293,9 @@ public:
         edges_.allocateCopyPrefixAsync(requested_edge_bytes,
             published_edge_span_bytes_,stream_,PX_FL);
         if(pair_count) {
+            journal_.allocate(source_allocation_bytes(pair_count,240u),PX_FL);
+        }
+        if(pair_count) {
             work_.allocate(source_allocation_bytes(pair_count,4u),PX_FL);
             dense_contacts_.allocate(source_allocation_bytes(
                 pair_count,sizeof(SourcePcmGpuContactStreamNative)),PX_FL);
@@ -321,6 +360,23 @@ public:
             last_graph_upload_bytes_+=bytes;
         }
         stream_.queue_uploads(graph_uploads_);
+
+        // The source EdgeIndex pool is allowed to grow beyond previously
+        // committed history. Initialize only newly admitted records;
+        // recycled slots retain their original PCM reset semantics.
+        const auto initialized_edges=static_cast<std::uint32_t>(
+            std::min<std::size_t>(edge_capacity,
+                                 published_edge_span_bytes_/240u));
+        if(initialized_edges<edge_capacity)
+            journal_stage_.append(stream_,addresses_,
+                SourceScContactHistoryNativeStage::Phase::Initialize,
+                pairs_.getDevicePtr(),edges_.getDevicePtr(),
+                journal_.getDevicePtr(),0u,edge_capacity,initialized_edges);
+        if(pair_count)
+            journal_stage_.append(stream_,addresses_,
+                SourceScContactHistoryNativeStage::Phase::Snapshot,
+                pairs_.getDevicePtr(),edges_.getDevicePtr(),
+                journal_.getDevicePtr(),pair_count,edge_capacity);
 
         candidates_stage_.append(stream_,addresses_,
             transforms_.getDevicePtr(),geometry_.getDevicePtr(),
@@ -402,6 +458,10 @@ public:
             graph_error.buffer,graph_error.offset,
             graph_error_host_.data(),sizeof(graph_error_host_)});
         stream_.submit();
+        pcm_transaction_pending_=true;
+        journal_pair_count_=pair_count;
+        journal_edge_capacity_=edge_capacity;
+        pending_edge_span_bytes_=std::size_t(edge_capacity)*240u;
         try {
             context_.download_batch(downloads);
         } catch (...) {
@@ -451,8 +511,6 @@ public:
                         std::size_t(stored.count)*sizeof(packed.contacts[0]));
         }
         published_pair_count_=pair_count;
-        published_edge_span_bytes_=std::max(
-            published_edge_span_bytes_,std::size_t(edge_capacity)*240u);
         last_contact_download_bytes_=readback_bytes;
     }
     CudaDeviceAddressMap::Address contact_stream_address() const noexcept {
@@ -512,7 +570,8 @@ private:
     SourcePcmEpaNativeStage gjk_stage_,gjk_reduce_stage_,gjk_publish_stage_,epa_stage_,face_stage_;
     std::optional<SourcePcmEpaNativeStage> primitive_gjk_stage_;
     SourceScContactIslandsNativeStage islands_stage_;
-    physx::PxgCudaBuffer pairs_,results_,candidates_,edges_,work_,dense_contacts_,graph_;
+    SourceScContactHistoryNativeStage journal_stage_;
+    physx::PxgCudaBuffer pairs_,results_,candidates_,edges_,work_,dense_contacts_,graph_,journal_;
     compute::BufferId indirect_buffer_=0u;
     CudaDeviceAddressMap::Address indirect_address_=0u;
     std::vector<SourcePcmBoxPairNative> pair_host_;
@@ -525,6 +584,9 @@ private:
     std::array<std::uint32_t,1> graph_error_host_{};
     std::uint32_t graph_rigid_count_=0u;
     bool reset_manifolds_=false;
+    bool pcm_transaction_pending_=false,restore_pending_=false;
+    std::uint32_t journal_pair_count_=0u,journal_edge_capacity_=0u;
+    std::size_t pending_edge_span_bytes_=0u;
     std::uint32_t published_pair_count_=0u;
     std::size_t last_pair_upload_bytes_=0u;
     std::size_t last_contact_download_bytes_=0u;
