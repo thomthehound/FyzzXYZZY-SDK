@@ -334,10 +334,13 @@ static_assert(sizeof(GpuDyContactManifold)==20u);
 struct GpuDyContactPrepBody {
     float position[3]{},linear_velocity[3]{},angular_velocity[3]{};
     float sqrt_inverse_inertia[9]{};
-    float inverse_mass=0.0f,reserved=0.0f;
+    float inverse_mass=0.0f;
+    // Inline nonintegrated bodies retain their source solver ordinal.
+    std::uint32_t solver_ordinal=0xffffffffu;
     float orientation[4]{};
 };
 static_assert(sizeof(GpuDyContactPrepBody)==96u &&
+              offsetof(GpuDyContactPrepBody,solver_ordinal)==76u &&
               offsetof(GpuDyContactPrepBody,orientation)==80u);
 struct GpuDyContactPrepPair {
     GpuDyContactPrepBody body0{},body1{};

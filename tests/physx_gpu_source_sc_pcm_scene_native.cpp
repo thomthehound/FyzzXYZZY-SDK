@@ -1261,6 +1261,12 @@ void verify_gpu_coupled_solver(
                 kinematic_gpu,{target_x,2.f,0.f},identity);
             cpu.step(dt);
             gpu.step(dt);
+            const auto schedule=producer->dy_launch_stats();
+            require(schedule.device_source_descriptors>0u &&
+                    schedule.source_descriptor_upload_bytes==
+                        schedule.device_source_descriptors*
+                            sizeof(std::uint32_t),
+                "Moving kinematic contact reuploaded a full host Dy descriptor");
             const native::Pair pair{kinematic_cpu,responder_cpu};
             const auto contains=[&](const native::Scene& scene) {
                 const auto pairs=scene.pairs();

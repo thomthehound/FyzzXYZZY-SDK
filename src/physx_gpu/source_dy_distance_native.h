@@ -494,6 +494,7 @@ public:
             const auto offset=static_begin+inline_bodies_.size()*
                 sizeof(native::GpuDyContactPrepBody);
             inline_bodies_.push_back(body);
+            inline_bodies_.back().solver_ordinal=ordinal;
             return narrow(offset); // An aligned offset; low bit clear.
         };
         for(const auto& desc:descriptors) {
@@ -851,20 +852,12 @@ public:
                 if(desc.index>=0x40000000u)
                     throw std::overflow_error(
                         "Sc source descriptor index exceeds device token range");
-                // Kinematic velocities still enter contact PGS through
-                // their read-only solver rows. Preserve those ordinals
-                // when contact prep encodes the participant inline.
-                const bool contact=(desc.row_count&255u)==0u;
-                const bool missing_kinematic=
-                    (((desc.row_count&0x100u)==0u) &&
-                     desc.row0!=invalid) ||
-                    (((desc.row_count&0x200u)==0u) &&
-                     desc.row1!=invalid);
-                if(contact &&
-                   (!missing_kinematic || manifolds[desc.index].patch_count==0u)) {
+                // Kinematic ordinals live in the packed inline contact
+                // body. Every native contact uses the manager token.
+                if((desc.row_count&255u)==0u) {
                     source_descriptor_tokens_.push_back(
                         0xc0000000u|desc.index);
-                }else if(!contact && rows[desc.index].reserved==2u) {
+                }else if(rows[desc.index].reserved==2u) {
                     source_descriptor_tokens_.push_back(
                         0x80000000u|desc.index);
                 }else {
