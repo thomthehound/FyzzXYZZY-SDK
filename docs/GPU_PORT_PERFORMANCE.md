@@ -150,6 +150,19 @@ topology churn; stationary contact scenes still wait for the original
 general PCM host join. This is a scheduling improvement, not completion
 of device-owned accurate topology admission.
 
+GPU PCM friction patches now derive their contact-space extent on
+device from the resident Gu witness range during the existing friction
+anchor selection. The same four-or-fewer contact positions feed extent,
+two-anchor persistence and replacement selection; they are fetched once
+within that preparation. CPU Sc no longer reduces or retains PCM contact
+bounds when GPU Dy owns the numerical patch. The 32-byte patch record
+still conveys source materials and correlated row identity, but no
+host-computed diagonal or second copy of contact geometry. CPU Dy
+continues using its original contact bounds when selected. A source
+contact geometry fetch remains necessary for current Sc accurate-island
+publication and normal-dependent correlation; this retires only the
+PCM friction-extent computation and dependency, not the frame fence.
+
 Production reviews must identify **each necessary GPU → CPU → GPU handoff**,
 the value crossing it, the consumer forcing synchronization, and whether
 the handoff occurs in quiet frames, during authored changes, or only at
