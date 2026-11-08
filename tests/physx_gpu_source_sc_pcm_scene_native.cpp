@@ -590,15 +590,16 @@ void verify(fyzz::compute::Backend backend,const char* sap,
     // Collision-only commit must retire it even without a Dy solve.
     producer->commit_gpu_step();
 
-    // Reject a fully fetched GPU PCM epoch while its independent host
-    // Gu upload may still be outstanding, then reuse the exact EdgeIndex
-    // records without observing stale primitive data.
+    // Roll back while the Gu witness DMA and later primitive upload
+    // are both outstanding. Neither rejected host data nor GPU contact
+    // results may escape their common source transaction.
     std::array<native::GpuPcmBoxResult,2> abandoned_mixed{};
     abandoned_mixed[1]=primitive;
     producer->enqueue_gpu_pcm_box_contacts(mixed,abandoned_mixed);
     producer->enqueue_host_pcm_contacts(mixed,abandoned_mixed);
-    producer->finish_gpu_pcm_box_contacts();
     producer->invalidate_after_rollback();
+    require(abandoned_mixed[0].packed_counts==0u,
+        "Rejected mixed PCM DMA published an abandoned GPU witness");
     std::array<native::GpuPcmBoxResult,2> restored{};
     restored[1]=primitive;
     producer->enqueue_gpu_pcm_box_contacts(mixed,restored);
