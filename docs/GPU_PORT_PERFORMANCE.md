@@ -168,6 +168,18 @@ contact geometry fetch remains necessary for current Sc accurate-island
 publication and normal-dependent correlation; this retires only the
 PCM friction-extent computation and dependency, not the frame fence.
 
+Previously published PCM friction anchors also have a geometry-only
+validation phase that uses cached body-local normals, anchor separation
+and authored mass poses. Sc now evaluates that unchanged-input phase on
+the CPU while general GPU PCM executes and stores up to 32 admission
+bits per current manager. Once Gu reports its new normal, Sc consumes
+the validated cache entries in original patch order and performs the
+remaining new-normal correlation. This removes relative-anchor
+transformations from the PCM-to-Dy critical path without duplicating
+them or uploading the masks. The extra host scratch is four bytes per
+current GPU PCM manager when prior history exists; quiet or first-touch
+frames skip it. The accurate contact/island admission fence remains.
+
 Production reviews must identify **each necessary GPU → CPU → GPU handoff**,
 the value crossing it, the consumer forcing synchronization, and whether
 the handoff occurs in quiet frames, during authored changes, or only at
