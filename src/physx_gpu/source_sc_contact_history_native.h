@@ -63,7 +63,8 @@ public:
         const bool host_stream=phase==Phase::PublishHostTouch ||
             phase==Phase::SnapshotHost || phase==Phase::RestoreHost;
         const std::uint64_t word_count=phase==Phase::PublishHostTouch
-            ?records:std::uint64_t(records)*60u;
+            ?records:(phase==Phase::SnapshotHost || phase==Phase::RestoreHost)
+                ?std::uint64_t(records)*2u:std::uint64_t(records)*60u;
         if(word_count>std::numeric_limits<std::uint32_t>::max())
             throw std::overflow_error("Sc contact journal word count overflow");
         const auto words=static_cast<std::uint32_t>(word_count);
@@ -73,7 +74,8 @@ public:
             ?edgeBytes:source_allocation_bytes(pairCount,
                 host_stream?84u:20u);
         const auto journalBytes=phase==Phase::Initialize
-            ?edgeBytes:source_allocation_bytes(pairCount,240u);
+            ?edgeBytes:source_allocation_bytes(pairCount,
+                host_stream?8u:240u);
         compute::DispatchCommand dispatch{};
         dispatch.pipeline=pipeline_;
         dispatch.buffers={
