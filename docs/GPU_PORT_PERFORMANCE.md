@@ -62,6 +62,12 @@ update, and no pending aggregate work. The first frame, motion-class
 changes, authored shape edits and rejected epochs retain their normal
 source update/fetch boundary.
 
+The native PCM candidate kernel completes plane and primitive-sphere
+contacts directly. Frames containing only those Sc-classified contacts
+omit GJK/EPA dispatches; mixed scenes retain GPU-compacted continuation
+worklists. D3D12 staged GJK consumes that worklist by indirect dispatch,
+without a host-side worklist fetch.
+
 Production reviews must identify **each necessary GPU → CPU → GPU handoff**,
 the value crossing it, the consumer forcing synchronization, and whether
 the handoff occurs in quiet frames, during authored changes, or only at

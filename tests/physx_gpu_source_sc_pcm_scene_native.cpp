@@ -1964,6 +1964,8 @@ void verify_sphere_gpu_solver(
         }
         cpu.step(dt);
         gpu.step(dt);
+        require(producer->pcm_continuation_commands()==0u,
+            "Sphere/plane PCM scheduled unnecessary GJK/EPA continuation");
         const auto integrated=producer->dy_gpu_integrated_body_count();
         const auto resident=producer->dy_resident_pose_count();
         const auto uploaded=producer->dy_host_pose_upload_bytes();

@@ -103,6 +103,8 @@ struct GpuPcmBoxPair {
     float plane_height=0.0f;
     float contact_distance=0.0f;
     bool previously_touching=false;
+    // Sc geometry guarantees the candidate stage completes this pair.
+    bool candidate_complete=false;
 };
 enum class GpuPcmTouchTransition : std::uint32_t {
     None=0,Found=1,Persists=2,Lost=3

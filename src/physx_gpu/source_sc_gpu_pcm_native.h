@@ -165,6 +165,7 @@ public:
         last_pair_upload_bytes_=0u;
         last_contact_download_bytes_=0u;
         last_edge_history_copy_bytes_=0u;
+        last_continuation_commands_=0u;
         if(requests.empty())return;
         if((!shape_capacity && !requests.empty()) ||
            requests.size()>std::numeric_limits<std::uint32_t>::max())
@@ -172,12 +173,18 @@ public:
         const auto pair_count=static_cast<std::uint32_t>(requests.size());
         std::uint32_t candidate_count=0u;
         std::uint32_t largest_edge=0u;
+        bool needs_continuation=false;
         bool full_upload=reset_manifolds_ ||
             previous_count!=pair_count || pair_host_.size()!=pair_count;
         std::uint32_t first_dirty=pair_count,last_dirty=0u;
         pair_host_.resize(pair_count);
         for(std::uint32_t i=0u;i<pair_count;++i) {
             const auto& request=requests[i];
+            needs_continuation|=!request.candidate_complete;
+            if(request.candidate_complete && !request.plane_pair &&
+               request.candidate_capacity!=1u)
+                throw std::invalid_argument(
+                    "Candidate-complete finite PCM must use sphere geometry");
             if(request.first==request.second)
                 throw std::invalid_argument("Sc PCM pair references one actor twice");
             if(request.plane_pair &&
@@ -318,48 +325,39 @@ public:
             indirect_address_,dense_contacts_.getDevicePtr(),
             convex_vertices_.getDevicePtr(),convex_vertex_count_,
             pair_count,shape_capacity,candidate_capacity,edge_capacity);
-        sparse_stage_.append(stream_,addresses_,
-            results_.getDevicePtr(),work_.getDevicePtr(),
-            indirect_address_,pair_count);
-        const auto append_gjk=[&](const SourcePcmEpaNativeStage& stage,
-                                   std::uint32_t pass) {
-            stage.append(stream_,addresses_,
-                transforms_.getDevicePtr(),geometry_.getDevicePtr(),
-                pairs_.getDevicePtr(),results_.getDevicePtr(),
-                candidates_.getDevicePtr(),edges_.getDevicePtr(),
-                work_.getDevicePtr(),indirect_address_,
-                dense_contacts_.getDevicePtr(),
-                convex_vertices_.getDevicePtr(),convex_vertex_count_,
-                pair_count,shape_capacity,candidate_capacity,edge_capacity,
-                0u,0u,0u,0u,pass);
-        };
-        if(staged_gjk_) {
-            // The GPU compacted status-3 list drives every staged GJK
-            // pass. The list remains immutable until EPA work is rebuilt.
-            const auto& advance=!convex_vertex_count_
-                ?*primitive_gjk_stage_:gjk_stage_;
-            for(std::uint32_t pass=0u;pass<32u;++pass) {
-                append_gjk(advance,pass);
-                append_gjk(gjk_reduce_stage_,pass);
-            }
-            append_gjk(advance,32u);
-            append_gjk(gjk_publish_stage_,32u);
-        }else append_gjk(gjk_stage_,0u);
-        epa_pending_stage_.append(stream_,addresses_,
-            results_.getDevicePtr(),work_.getDevicePtr(),
-            indirect_address_,pair_count);
-        epa_stage_.append(stream_,addresses_,
-            transforms_.getDevicePtr(),geometry_.getDevicePtr(),
-            pairs_.getDevicePtr(),results_.getDevicePtr(),
-            candidates_.getDevicePtr(),edges_.getDevicePtr(),
-            work_.getDevicePtr(),indirect_address_,
-            dense_contacts_.getDevicePtr(),
-            convex_vertices_.getDevicePtr(),convex_vertex_count_,
-            pair_count,shape_capacity,candidate_capacity,edge_capacity,
-            convex_surface_.getDevicePtr(),convex_surface_bytes_,
-            convex_faces_base_,convex_indices_base_);
-        if(convex_vertex_count_)
-            face_stage_.append(stream_,addresses_,
+        const auto before_continuation=stream_.commands().size();
+        if(needs_continuation) {
+            sparse_stage_.append(stream_,addresses_,
+                results_.getDevicePtr(),work_.getDevicePtr(),
+                indirect_address_,pair_count);
+            const auto append_gjk=[&](const SourcePcmEpaNativeStage& stage,
+                                       std::uint32_t pass) {
+                stage.append(stream_,addresses_,
+                    transforms_.getDevicePtr(),geometry_.getDevicePtr(),
+                    pairs_.getDevicePtr(),results_.getDevicePtr(),
+                    candidates_.getDevicePtr(),edges_.getDevicePtr(),
+                    work_.getDevicePtr(),indirect_address_,
+                    dense_contacts_.getDevicePtr(),
+                    convex_vertices_.getDevicePtr(),convex_vertex_count_,
+                    pair_count,shape_capacity,candidate_capacity,edge_capacity,
+                    0u,0u,0u,0u,pass);
+            };
+            if(staged_gjk_) {
+                // The GPU compacted status-3 list drives every staged GJK
+                // pass. The list remains immutable until EPA work is rebuilt.
+                const auto& advance=!convex_vertex_count_
+                    ?*primitive_gjk_stage_:gjk_stage_;
+                for(std::uint32_t pass=0u;pass<32u;++pass) {
+                    append_gjk(advance,pass);
+                    append_gjk(gjk_reduce_stage_,pass);
+                }
+                append_gjk(advance,32u);
+                append_gjk(gjk_publish_stage_,32u);
+            }else append_gjk(gjk_stage_,0u);
+            epa_pending_stage_.append(stream_,addresses_,
+                results_.getDevicePtr(),work_.getDevicePtr(),
+                indirect_address_,pair_count);
+            epa_stage_.append(stream_,addresses_,
                 transforms_.getDevicePtr(),geometry_.getDevicePtr(),
                 pairs_.getDevicePtr(),results_.getDevicePtr(),
                 candidates_.getDevicePtr(),edges_.getDevicePtr(),
@@ -369,6 +367,20 @@ public:
                 pair_count,shape_capacity,candidate_capacity,edge_capacity,
                 convex_surface_.getDevicePtr(),convex_surface_bytes_,
                 convex_faces_base_,convex_indices_base_);
+            if(convex_vertex_count_)
+                face_stage_.append(stream_,addresses_,
+                    transforms_.getDevicePtr(),geometry_.getDevicePtr(),
+                    pairs_.getDevicePtr(),results_.getDevicePtr(),
+                    candidates_.getDevicePtr(),edges_.getDevicePtr(),
+                    work_.getDevicePtr(),indirect_address_,
+                    dense_contacts_.getDevicePtr(),
+                    convex_vertices_.getDevicePtr(),convex_vertex_count_,
+                    pair_count,shape_capacity,candidate_capacity,edge_capacity,
+                    convex_surface_.getDevicePtr(),convex_surface_bytes_,
+                    convex_faces_base_,convex_indices_base_);
+        }
+        last_continuation_commands_=
+            stream_.commands().size()-before_continuation;
 
         // Fetch the losslessly packed device stream, then reconstruct
         // Sc's original host record. The Dy shader reads the same device
@@ -448,6 +460,9 @@ public:
     std::size_t last_edge_history_copy_bytes() const noexcept {
         return last_edge_history_copy_bytes_;
     }
+    std::size_t last_continuation_commands() const noexcept {
+        return last_continuation_commands_;
+    }
 private:
     compute::Context& context_;
     CudaDeviceAddressMap& addresses_;
@@ -480,6 +495,7 @@ private:
     std::size_t last_pair_upload_bytes_=0u;
     std::size_t last_contact_download_bytes_=0u;
     std::size_t last_edge_history_copy_bytes_=0u;
+    std::size_t last_continuation_commands_=0u;
     std::size_t published_edge_span_bytes_=0u;
 };
 } // namespace fyzz::physx_gpu
