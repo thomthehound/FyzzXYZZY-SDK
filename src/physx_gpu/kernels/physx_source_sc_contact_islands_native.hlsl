@@ -60,6 +60,7 @@ void errorBit(uint bit) {
 // contacts read physical-touch state from the GuPCM edge cache.
 bool connected(uint4 edge) {
     if((edge.z&4u)!=0u)return true;
+    if((edge.z&8u)!=0u)return false;
     if(edge.w>=header(5u)) {
         errorBit(2u);
         return false;

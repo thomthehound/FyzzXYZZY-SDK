@@ -4038,7 +4038,8 @@ void Scene::update_contacts() {
             gpu_sc_graph_edges_.push_back({
                 first.body,second.body,
                 (actors_[first.body].motion==Motion::Dynamic?1u:0u)|
-                (actors_[second.body].motion==Motion::Dynamic?2u:0u),
+                (actors_[second.body].motion==Motion::Dynamic?2u:0u)|
+                (!island_edges_[edge].pcm_cache.initialized?8u:0u),
                 edge});
         }
         for(const EdgeIndex edge:active_constraint_handles_) {
@@ -4054,8 +4055,6 @@ void Scene::update_contacts() {
         }
         if(actors_.size()>=std::numeric_limits<std::uint32_t>::max())
             throw std::overflow_error("Sc GPU rigid graph exceeds BodyId address space");
-        gpu_broadphase_->set_gpu_sc_contact_graph(
-            gpu_sc_graph_edges_,static_cast<std::uint32_t>(actors_.size()));
         gpu_pcm_pairs_.reserve(previous_pairs_.size());
         std::size_t prior_touch_cursor=0u;
         for(std::size_t i=0;i<previous_pairs_.size();++i) {
@@ -4101,6 +4100,23 @@ void Scene::update_contacts() {
                     previously_touching});
             }
         }
+        // A newly admitted manager has no valid prior Gu witness. The
+        // existing PCM request clears its old EdgeIndex history before
+        // publishing a touch; a dormant new manager must not inherit
+        // the previous occupant's physical-touch state.
+        std::size_t requested=0u;
+        for(auto& graph_edge:gpu_sc_graph_edges_) {
+            if((graph_edge.flags&4u)!=0u)break;
+            if(requested<gpu_pcm_pairs_.size() &&
+               gpu_pcm_pairs_[requested].edge==graph_edge.edge) {
+                graph_edge.flags&=~8u;
+                ++requested;
+            }
+        }
+        if(requested!=gpu_pcm_pairs_.size())
+            throw std::logic_error("Sc PCM graph omitted an admitted contact manager");
+        gpu_broadphase_->set_gpu_sc_contact_graph(
+            gpu_sc_graph_edges_,static_cast<std::uint32_t>(actors_.size()));
         gpu_pcm_results_.resize(gpu_pcm_pairs_.size());
     }
     // The GPU contact stream now includes plane-box managers in source

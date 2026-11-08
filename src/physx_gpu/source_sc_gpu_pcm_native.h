@@ -151,7 +151,7 @@ public:
             throw std::out_of_range("Sc contact graph exceeds source rigid address range");
         for(const auto& edge:edges)
             if(edge.body_a>=rigid_count || edge.body_b>=rigid_count ||
-               edge.edge==0xffffffffu || (edge.flags&~7u)!=0u)
+               edge.edge==0xffffffffu || (edge.flags&~15u)!=0u)
                 throw std::invalid_argument("Source Sc graph references invalid EdgeIndex or rigid actor");
         graph_sources_=edges;
         graph_rigid_watermark_=rigid_count;
