@@ -856,6 +856,12 @@ void verify_coupled_rigid_stack(
                     "GPU coupled rigid stack diverged from source Sc/Dy motion");
         }
         const auto roots=producer->contact_island_roots();
+        const auto edge_counts=producer->contact_island_edge_counts();
+        std::size_t owned_managers=0u;
+        for(const auto count:edge_counts)owned_managers+=count;
+        require(edge_counts.size()==roots.size() &&
+                owned_managers==gpu.contacts().size(),
+            "Device Sc component manager membership differs from current Gu contacts");
         for(std::size_t i=0;i<dynamic_gpu.size();++i)
             for(std::size_t j=i+1u;j<dynamic_gpu.size();++j) {
                 const auto a=dynamic_gpu[i],b=dynamic_gpu[j];
@@ -1598,6 +1604,11 @@ void verify_gpu_distance_solver(
         cpu.step(dt);
         gpu.step(dt);
         const auto roots=producer->contact_island_roots();
+        const auto edge_counts=producer->contact_island_edge_counts();
+        std::size_t owned_joints=0u;
+        for(const auto count:edge_counts)owned_joints+=count;
+        require(owned_joints==3u,
+            "Device Sc joint-only island list lost an authored constraint");
         require(anchored_gpu<roots.size() &&
                 roots[ids_gpu[0]]==roots[ids_gpu[1]] &&
                 roots[ids_gpu[2]]==roots[ids_gpu[3]] &&
