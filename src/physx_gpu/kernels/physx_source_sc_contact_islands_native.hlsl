@@ -45,10 +45,17 @@ uint edgeRootAddress(uint edge) {
 uint rootOf(uint node,uint size) {
     uint cursor=node;
     for(uint hop=0u;hop<size;++hop) {
-        const uint next=graph.Load(parentAddress(cursor));
-        if(next==cursor)return cursor;
-        if(next>cursor || next>=size)break;
-        cursor=next;
+        const uint parent=graph.Load(parentAddress(cursor));
+        if(parent==cursor)return cursor;
+        if(parent>cursor || parent>=size)break;
+        const uint grand=graph.Load(parentAddress(parent));
+        if(grand>parent || grand>=size)break;
+        // Every hook points toward a smaller BodyId. Atomic pointer
+        // halving preserves that order across concurrent union attempts
+        // and avoids walking long serialized contact chains repeatedly.
+        uint prior;
+        graph.InterlockedMin(parentAddress(cursor),grand,prior);
+        cursor=grand;
     }
     return 0xffffffffu;
 }
