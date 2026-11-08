@@ -195,12 +195,9 @@ public:
         for(std::uint32_t i=0u;i<pair_count;++i) {
             const auto& request=requests[i];
             needs_continuation|=!request.candidate_complete;
-            if(request.host_generated) {
-                validate_host_contact(request,output[i]);
-                if(!request.candidate_complete)
-                    throw std::logic_error(
-                        "CPU source Gu cannot own GPU continuation pair");
-            }
+            if(request.host_generated && !request.candidate_complete)
+                throw std::logic_error(
+                    "CPU source Gu cannot own GPU continuation pair");
             if(!request.plane_pair && request.candidate_capacity==4u) {
                 first_face_pair=std::min(first_face_pair,i);
                 face_pair_end=i+1u;
@@ -323,23 +320,6 @@ public:
                 pairs_.getDevicePtr()+std::size_t(first_dirty)*stride,
                 pair_host_.data()+first_dirty,bytes});
             last_pair_upload_bytes_=bytes;
-        }
-        // Sc primitive slots share the GPU PCM world-contact ABI.
-        // Transfer only contiguous host-owned spans; general GPU
-        // publishers fill the remaining ordinals in this same buffer.
-        for(std::size_t i=0u;i<pair_count;) {
-            if(!requests[i].host_generated) {
-                ++i;
-                continue;
-            }
-            const auto first=i;
-            while(i<pair_count && requests[i].host_generated)++i;
-            const auto stride=sizeof(native::GpuPcmBoxResult);
-            const auto bytes=(i-first)*stride;
-            uploads.push_back({
-                dense_contacts_.getDevicePtr()+first*stride,
-                output.data()+first,bytes});
-            last_host_contact_upload_bytes_+=bytes;
         }
         if(!uploads.empty())stream_.queue_uploads(uploads);
         reset_manifolds_=false;
@@ -472,6 +452,28 @@ public:
             throw std::logic_error("Source PCM join has no queued epoch");
         const auto requests=pending_requests_;
         const auto output=pending_output_;
+        // GPU general PCM has already been submitted. The independent
+        // CPU primitive generators finish now; upload their disjoint
+        // ordinal ranges after GPU work, before Dy consumes this arena.
+        auto& uploads=stream_.upload_scratch();
+        for(std::size_t i=0u;i<requests.size();) {
+            if(!requests[i].host_generated) {
+                ++i;
+                continue;
+            }
+            const auto first=i;
+            while(i<requests.size() && requests[i].host_generated) {
+                validate_host_contact(requests[i],output[i]);
+                ++i;
+            }
+            const auto stride=sizeof(native::GpuPcmBoxResult);
+            const auto bytes=(i-first)*stride;
+            uploads.push_back({
+                dense_contacts_.getDevicePtr()+first*stride,
+                output.data()+first,bytes});
+            last_host_contact_upload_bytes_+=bytes;
+        }
+        if(!uploads.empty())stream_.queue_uploads(uploads);
         if(!gpu_downloads_.empty())stream_.fetch(gpu_downloads_);
         else stream_.wait_at_fetch();
         for(const auto& span:gpu_downloads_)
