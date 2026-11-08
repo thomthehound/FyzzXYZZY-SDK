@@ -1278,6 +1278,9 @@ private:
         std::uint8_t anchor_count = 0;
         bool broken = false;
     };
+    bool cached_friction_patch_valid(
+        const FrictionPatch& patch,const Actor& actor0,
+        const Actor& actor1) const;
     struct SolverContactFriction {
         Vec3 tangent{};
         Vec3 ra_x_t_sqrt_inertia{};
@@ -2216,6 +2219,9 @@ private:
     // records; edge identity and rollback ownership remain with Sc.
     std::vector<GpuPcmBoxPair> gpu_pcm_pairs_;
     std::vector<GpuPcmBoxResult> gpu_pcm_results_;
+    // Source friction cache geometry is independent of current PCM Gu.
+    // Each bit is a previous friction patch validated while GPU Gu runs.
+    std::vector<std::uint32_t> gpu_pcm_friction_history_masks_;
     // Publish swaps are reversible without copying the source-owned
     // contact/pair arenas. Rollback keeps externally held Gu spans valid.
     std::uint64_t pair_epoch_=0;
