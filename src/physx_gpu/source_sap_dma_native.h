@@ -144,7 +144,9 @@ public:
             bytes+=output.bytes;
         }
         submit();
+        const auto prior_token_count=tokens_.size();
         pending_fetch_=context_.submit_download_batch(outputs);
+        pending_fetch_token_count_=prior_token_count;
         ++stats_.readback_submissions;
         pending_fetch_bytes_=bytes;
         pending_fetch_spans_=outputs.size();
@@ -159,7 +161,16 @@ public:
         const auto start=std::chrono::steady_clock::now();
         context_.finish_download_batch(pending_fetch_,true);
         pending_fetch_=0;
-        wait_at_fetch();
+        // Later Sc uploads and device-continuation dispatches may already
+        // be queued after this DMA. Their ordered tokens are not host
+        // dependencies of the downloaded Gu witnesses.
+        if(pending_fetch_token_count_) {
+            context_.wait_submissions(std::span<const compute::SubmissionId>(
+                tokens_.data(),pending_fetch_token_count_));
+            tokens_.erase(tokens_.begin(),
+                tokens_.begin()+pending_fetch_token_count_);
+        }
+        pending_fetch_token_count_=0;
         const auto elapsed=std::chrono::steady_clock::now()-start;
         ++stats_.fetch_batches;
         stats_.fetch_spans+=pending_fetch_spans_;
@@ -180,6 +191,7 @@ public:
             // retains any unretired submission until final teardown.
         }
         pending_fetch_=0;
+        pending_fetch_token_count_=0;
         pending_fetch_spans_=0;
         pending_fetch_bytes_=0;
         try {wait_at_fetch();} catch (...) {}
@@ -264,6 +276,7 @@ private:
     std::vector<compute::UploadSpan> resolved_uploads_;
     std::vector<compute::SubmissionId> tokens_;
     compute::SubmissionId pending_fetch_=0;
+    std::size_t pending_fetch_token_count_=0;
     std::size_t pending_fetch_bytes_=0,pending_fetch_spans_=0;
     SubmissionStats stats_;
 };
