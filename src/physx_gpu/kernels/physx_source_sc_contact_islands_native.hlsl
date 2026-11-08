@@ -23,38 +23,35 @@ struct Parameters {
 ConstantBuffer<Parameters> p:register(b0,space0);
 #endif
 
-// Header: edgeCount, rigidWatermark, pairOffset, rootOffset, errorOffset,
- // contactEdgeCapacity, componentCountsOffset, componentHeadsOffset,
- // linksOffset, edgeRootOffset, graphEdgeCapacity.
+// The original accurate graph and its speculative counterpart share
+// one Sc allocation and EdgeIndex input stream. Only accurate contact
+// connectivity consults Gu's physical-touch bit.
 uint header(uint word) {return graph.Load(p.graphBias+word*4u);}
-uint parentAddress(uint node) {
-    return p.graphBias+header(3u)+node*4u;
+uint parentAddress(uint node,bool speculative) {
+    return p.graphBias+header(speculative?11u:3u)+node*4u;
 }
-uint componentCountAddress(uint root) {
-    return p.graphBias+header(6u)+root*4u;
+uint componentCountAddress(uint root,bool speculative) {
+    return p.graphBias+header(speculative?12u:6u)+root*4u;
 }
-uint componentHeadAddress(uint root) {
-    return p.graphBias+header(7u)+root*4u;
+uint componentHeadAddress(uint root,bool speculative) {
+    return p.graphBias+header(speculative?13u:7u)+root*4u;
 }
-uint componentNextAddress(uint edgeOrdinal) {
-    return p.graphBias+header(8u)+edgeOrdinal*4u;
+uint componentNextAddress(uint ordinal,bool speculative) {
+    return p.graphBias+header(speculative?14u:8u)+ordinal*4u;
 }
-uint edgeRootAddress(uint edge) {
-    return p.graphBias+header(9u)+edge*4u;
+uint edgeRootAddress(uint edge,bool speculative) {
+    return p.graphBias+header(speculative?15u:9u)+edge*4u;
 }
-uint rootOf(uint node,uint size) {
+uint rootOf(uint node,uint size,bool speculative) {
     uint cursor=node;
     for(uint hop=0u;hop<size;++hop) {
-        const uint parent=graph.Load(parentAddress(cursor));
+        const uint parent=graph.Load(parentAddress(cursor,speculative));
         if(parent==cursor)return cursor;
         if(parent>cursor || parent>=size)break;
-        const uint grand=graph.Load(parentAddress(parent));
+        const uint grand=graph.Load(parentAddress(parent,speculative));
         if(grand>parent || grand>=size)break;
-        // Every hook points toward a smaller BodyId. Atomic pointer
-        // halving preserves that order across concurrent union attempts
-        // and avoids walking long serialized contact chains repeatedly.
         uint prior;
-        graph.InterlockedMin(parentAddress(cursor),grand,prior);
+        graph.InterlockedMin(parentAddress(cursor,speculative),grand,prior);
         cursor=grand;
     }
     return 0xffffffffu;
@@ -63,9 +60,7 @@ void errorBit(uint bit) {
     uint ignored;
     graph.InterlockedOr(p.graphBias+header(4u),bit,ignored);
 }
-// Contact and constraint EdgeIndices share one Sc graph, but only
-// contacts read physical-touch state from the GuPCM edge cache.
-bool connected(uint4 edge) {
+bool physicallyConnected(uint4 edge) {
     if((edge.z&4u)!=0u)return true;
     if((edge.z&8u)!=0u)return false;
     if(edge.w>=header(5u)) {
@@ -74,7 +69,39 @@ bool connected(uint4 edge) {
     }
     return (edgeCaches.Load(p.contactBias+edge.w*240u+72u)&1u)!=0u;
 }
-
+void unite(uint a,uint b,uint rigidCount,bool speculative) {
+    for(uint attempt=0u;attempt<rigidCount;++attempt) {
+        const uint rootA=rootOf(a,rigidCount,speculative);
+        const uint rootB=rootOf(b,rigidCount,speculative);
+        if(rootA==0xffffffffu || rootB==0xffffffffu) {
+            errorBit(speculative?256u:8u);
+            return;
+        }
+        if(rootA==rootB)return;
+        const uint high=max(rootA,rootB),low=min(rootA,rootB);
+        uint previous;
+        graph.InterlockedCompareExchange(parentAddress(high,speculative),
+                                         high,low,previous);
+        if(previous==high)return;
+    }
+    errorBit(speculative?512u:16u);
+}
+void publish(uint ordinal,uint4 edge,uint node,uint rigidCount,
+             bool speculative) {
+    const uint root=graph.Load(parentAddress(node,speculative));
+    if(root>=rigidCount ||
+       ((edge.z&3u)==3u &&
+        root!=graph.Load(parentAddress(edge.y,speculative)))) {
+        errorBit(speculative?1024u:64u);
+        return;
+    }
+    graph.Store(edgeRootAddress(edge.w,speculative),root);
+    uint previous;
+    graph.InterlockedExchange(componentHeadAddress(root,speculative),
+                              ordinal,previous);
+    graph.Store(componentNextAddress(ordinal,speculative),previous);
+    graph.InterlockedAdd(componentCountAddress(root,speculative),1u,previous);
+}
 [numthreads(128,1,1)]
 void main(uint3 dispatch:SV_DispatchThreadID) {
     const uint i=p.unused+dispatch.x;
@@ -84,78 +111,60 @@ void main(uint3 dispatch:SV_DispatchThreadID) {
     if(p.phase==0u) {
         if(i==0u)graph.Store(p.graphBias+header(4u),0u);
         if(i<rigidCount) {
-            graph.Store(parentAddress(i),i);
-            graph.Store(componentCountAddress(i),0u);
-            graph.Store(componentHeadAddress(i),0xffffffffu);
+            for(uint mode=0u;mode<2u;++mode) {
+                const bool speculative=mode!=0u;
+                graph.Store(parentAddress(i,speculative),i);
+                graph.Store(componentCountAddress(i,speculative),0u);
+                graph.Store(componentHeadAddress(i,speculative),0xffffffffu);
+            }
         }
-        if(i<header(10u))
-            graph.Store(edgeRootAddress(i),0xffffffffu);
+        if(i<header(10u)) {
+            graph.Store(edgeRootAddress(i,false),0xffffffffu);
+            graph.Store(edgeRootAddress(i,true),0xffffffffu);
+        }
         return;
     }
     if(p.phase==1u) {
         if(i>=edgeCount)return;
-        const uint4 pair=graph.Load4(pairBase+i*16u);
-        // The first two fields are Sc BodyIds. Bit 0/1 mark dynamic
-        // rigid endpoints; every pair retains its source EdgeIndex.
-        if(pair.x>=rigidCount || pair.y>=rigidCount) {
-            errorBit(1u);
-            return;
-        }
-        if(!connected(pair) || pair.x==pair.y ||
-           (pair.z&3u)!=3u)return;
-        // Root hooking always points larger indices toward smaller roots.
-        // Concurrent hooks remain acyclic and a completed successful
-        // pass resolves every edge, including chains across workgroups.
-        for(uint attempt=0u;attempt<rigidCount;++attempt) {
-            const uint a=rootOf(pair.x,rigidCount);
-            const uint b=rootOf(pair.y,rigidCount);
-            if(a==0xffffffffu || b==0xffffffffu) {
-                errorBit(8u);
-                return;
-            }
-            if(a==b)return;
-            const uint high=max(a,b),low=min(a,b);
-            uint previous;
-            graph.InterlockedCompareExchange(parentAddress(high),
-                                             high,low,previous);
-            if(previous==high)return;
-        }
-        errorBit(16u);
-        return;
-    }
-    if(p.phase==2u && i<rigidCount) {
-        const uint root=rootOf(i,rigidCount);
-        if(root==0xffffffffu) {
-            errorBit(32u);
-            return;
-        }
-        graph.Store(parentAddress(i),root);
-        return;
-    }
-    if(p.phase==3u && i<edgeCount) {
         const uint4 edge=graph.Load4(pairBase+i*16u);
-        if(edge.x>=rigidCount || edge.y>=rigidCount ||
-           (edge.z&3u)==0u || !connected(edge))
-            return;
-        // The same source contact or joint EdgeIndex contributes to
-        // exactly one accurate dynamic island. Static and kinematic
-        // endpoints are terminals, not members of another island.
-        const uint node=(edge.z&1u)!=0u?edge.x:edge.y;
-        const uint root=graph.Load(parentAddress(node));
-        if(root>=rigidCount ||
-           ((edge.z&3u)==3u &&
-            root!=graph.Load(parentAddress(edge.y)))) {
-            errorBit(64u);
+        if(edge.x>=rigidCount || edge.y>=rigidCount) {
+            errorBit(1u);
             return;
         }
         if(edge.w>=header(10u)) {
             errorBit(128u);
             return;
         }
-        graph.Store(edgeRootAddress(edge.w),root);
-        uint previous;
-        graph.InterlockedExchange(componentHeadAddress(root),i,previous);
-        graph.Store(componentNextAddress(i),previous);
-        graph.InterlockedAdd(componentCountAddress(root),1u,previous);
+        const bool accurate=physicallyConnected(edge);
+        if(edge.x==edge.y || (edge.z&3u)!=3u)return;
+        // Source speculative connectivity follows contact admission;
+        // accurate connectivity follows physical touch and live joints.
+        unite(edge.x,edge.y,rigidCount,true);
+        if(accurate)unite(edge.x,edge.y,rigidCount,false);
+        return;
+    }
+    if(p.phase==2u && i<rigidCount) {
+        for(uint mode=0u;mode<2u;++mode) {
+            const bool speculative=mode!=0u;
+            const uint root=rootOf(i,rigidCount,speculative);
+            if(root==0xffffffffu) {
+                errorBit(speculative?2048u:32u);
+                continue;
+            }
+            graph.Store(parentAddress(i,speculative),root);
+        }
+        return;
+    }
+    if(p.phase==3u && i<edgeCount) {
+        const uint4 edge=graph.Load4(pairBase+i*16u);
+        if(edge.x>=rigidCount || edge.y>=rigidCount ||
+           (edge.z&3u)==0u)return;
+        if(edge.w>=header(10u)) {
+            errorBit(128u);
+            return;
+        }
+        const uint node=(edge.z&1u)!=0u?edge.x:edge.y;
+        publish(i,edge,node,rigidCount,true);
+        if(physicallyConnected(edge))publish(i,edge,node,rigidCount,false);
     }
 }

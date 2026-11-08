@@ -357,7 +357,7 @@ public:
         // The accurate graph shares this Sc PCM source manager stream.
         // Physical touch determines connectivity; static endpoints
         // remain graph terminals rather than merging dynamic islands.
-        const auto graph_pair_offset=std::size_t(48u);
+        const auto graph_pair_offset=std::size_t(64u);
         const auto graph_root_offset=graph_pair_offset+
             std::size_t(graph_count)*sizeof(SourceScContactGraphPairNative);
         const auto graph_count_offset=graph_root_offset+
@@ -369,7 +369,17 @@ public:
         const auto graph_edge_root_offset=graph_link_offset+
             std::size_t(graph_count)*sizeof(std::uint32_t);
         const auto graph_edge_count=largest_graph_edge+1u;
-        const auto graph_error_offset=graph_edge_root_offset+
+        const auto speculative_root_offset=graph_edge_root_offset+
+            std::size_t(graph_edge_count)*sizeof(std::uint32_t);
+        const auto speculative_count_offset=speculative_root_offset+
+            std::size_t(rigid_count)*sizeof(std::uint32_t);
+        const auto speculative_head_offset=speculative_count_offset+
+            std::size_t(rigid_count)*sizeof(std::uint32_t);
+        const auto speculative_link_offset=speculative_head_offset+
+            std::size_t(rigid_count)*sizeof(std::uint32_t);
+        const auto speculative_edge_root_offset=speculative_link_offset+
+            std::size_t(graph_count)*sizeof(std::uint32_t);
+        const auto graph_error_offset=speculative_edge_root_offset+
             std::size_t(graph_edge_count)*sizeof(std::uint32_t);
         if(graph_error_offset>std::numeric_limits<std::uint32_t>::max()-127u)
             throw std::overflow_error("Sc device contact graph exceeds source address range");
@@ -391,7 +401,12 @@ public:
             static_cast<std::uint32_t>(graph_head_offset),
             static_cast<std::uint32_t>(graph_link_offset),
             static_cast<std::uint32_t>(graph_edge_root_offset),
-            graph_edge_count,0u};
+            graph_edge_count,
+            static_cast<std::uint32_t>(speculative_root_offset),
+            static_cast<std::uint32_t>(speculative_count_offset),
+            static_cast<std::uint32_t>(speculative_head_offset),
+            static_cast<std::uint32_t>(speculative_link_offset),
+            static_cast<std::uint32_t>(speculative_edge_root_offset)};
         if(full_graph) {
             first_graph_dirty=0u;
             last_graph_dirty=graph_count;
@@ -624,8 +639,21 @@ public:
     std::uint32_t graph_rigid_count() const noexcept {
         return graph_pair_host_.empty()?0u:graph_rigid_count_;
     }
-    // Explicit diagnostic snapshot. No production frame downloads roots.
+    // Explicit diagnostics; production frames do not download island data.
     std::vector<std::uint32_t> contact_island_edge_counts() const {
+        return read_island_edge_counts(false);
+    }
+    std::vector<std::uint32_t> speculative_contact_island_edge_counts() const {
+        return read_island_edge_counts(true);
+    }
+    std::vector<std::uint32_t> contact_island_roots() const {
+        return read_island_roots(false);
+    }
+    std::vector<std::uint32_t> speculative_contact_island_roots() const {
+        return read_island_roots(true);
+    }
+private:
+    std::vector<std::uint32_t> read_island_edge_counts(bool speculative) const {
         if(graph_pair_host_.empty())return {};
         std::vector<std::uint32_t> counts(graph_rigid_count_);
         std::vector<std::uint32_t> heads(graph_rigid_count_);
@@ -639,14 +667,16 @@ public:
                 physical.buffer,physical.offset,target,bytes};
         };
         const std::array<compute::DownloadSpan,4> downloads{{
-            read(graph_header_[3],roots.data(),roots.size()*sizeof(roots[0])),
-            read(graph_header_[6],counts.data(),counts.size()*sizeof(counts[0])),
-            read(graph_header_[7],heads.data(),heads.size()*sizeof(heads[0])),
-            read(graph_header_[8],next.data(),next.size()*sizeof(next[0]))
+            read(graph_header_[speculative?11u:3u],roots.data(),
+                 roots.size()*sizeof(roots[0])),
+            read(graph_header_[speculative?12u:6u],counts.data(),
+                 counts.size()*sizeof(counts[0])),
+            read(graph_header_[speculative?13u:7u],heads.data(),
+                 heads.size()*sizeof(heads[0])),
+            read(graph_header_[speculative?14u:8u],next.data(),
+                 next.size()*sizeof(next[0]))
         }};
         context_.download_batch(downloads);
-        // Validate the actual GPU-generated manager lists rather than
-        // trusting a counter that could conceal a lost or duplicated edge.
         std::vector<std::uint8_t> seen(graph_pair_host_.size(),0u);
         for(std::size_t root=0u;root<counts.size();++root) {
             std::uint32_t cursor=heads[root];
@@ -668,12 +698,12 @@ public:
         }
         return counts;
     }
-    std::vector<std::uint32_t> contact_island_roots() const {
+    std::vector<std::uint32_t> read_island_roots(bool speculative) const {
         if(graph_pair_host_.empty())return {};
         std::vector<std::uint32_t> roots(graph_rigid_count_);
         const auto bytes=roots.size()*sizeof(roots[0]);
         const auto physical=addresses_.resolve(
-            graph_.getDevicePtr()+graph_header_[3],bytes);
+            graph_.getDevicePtr()+graph_header_[speculative?11u:3u],bytes);
         const std::array<compute::DownloadSpan,1> readback{{
             {physical.buffer,physical.offset,roots.data(),bytes}
         }};
@@ -709,7 +739,7 @@ private:
     std::uint32_t graph_rigid_watermark_=0u;
     std::vector<SourceScContactGraphPairNative> graph_pair_host_;
     std::vector<SourceSapUpload> graph_uploads_;
-    std::array<std::uint32_t,12> graph_header_{};
+    std::array<std::uint32_t,16> graph_header_{};
     std::array<std::uint32_t,1> graph_error_host_{};
     std::uint32_t graph_rigid_count_=0u;
     bool reset_manifolds_=false;
