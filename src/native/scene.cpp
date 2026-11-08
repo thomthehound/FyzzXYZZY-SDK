@@ -5789,14 +5789,14 @@ void Scene::update_island_connectivity(bool speculative_only) {
             if(accurate_pass) {
                 admit_nodes(accurate_islands_);
                 for(Pair shapes:found_contacts_) {
-                const Pair pair=body_pair(shapes);
-                merge(accurate_islands_,pair,contact_edge_index(shapes));
-                const auto id=contact_edge_index(shapes);
-                const BodyId node=dynamic_node(pair.a)?pair.a:pair.b;
-                if(id!=invalid_edge && dynamic_node(node))
-                    append_accurate_island_edge(
-                        id,accurate_islands_.node_island[node]);
-            }
+                    const Pair pair=body_pair(shapes);
+                    merge(accurate_islands_,pair,contact_edge_index(shapes));
+                    const auto id=contact_edge_index(shapes);
+                    const BodyId node=dynamic_node(pair.a)?pair.a:pair.b;
+                    if(id!=invalid_edge && dynamic_node(node))
+                        append_accurate_island_edge(
+                            id,accurate_islands_.node_island[node]);
+                }
                 for(EdgeIndex id:active_constraint_handles_)
                     if(island_edges_[id].live && !island_edges_[id].retiring) {
                         const Pair pair=island_edges_[id].pair;
@@ -5846,16 +5846,16 @@ void Scene::update_island_connectivity(bool speculative_only) {
         if(accurate_pass)
             for(Pair shapes:found_contacts_) {
                 const Pair pair=body_pair(shapes);
-            if(merge(accurate_islands_,pair,contact_edge_index(shapes))) {
-                --accurate_island_count_;
-                order_changed=true;
+                if(merge(accurate_islands_,pair,contact_edge_index(shapes))) {
+                    --accurate_island_count_;
+                    order_changed=true;
+                }
+                const auto id=contact_edge_index(shapes);
+                const BodyId node=dynamic_node(pair.a)?pair.a:pair.b;
+                if(id!=invalid_edge && dynamic_node(node))
+                    append_accurate_island_edge(
+                        id,accurate_islands_.node_island[node]);
             }
-            const auto id=contact_edge_index(shapes);
-            const BodyId node=dynamic_node(pair.a)?pair.a:pair.b;
-            if(id!=invalid_edge && dynamic_node(node))
-                append_accurate_island_edge(
-                    id,accurate_islands_.node_island[node]);
-        }
     }
     if(order_changed)rebuild_accurate_island_offsets();
     // Reserve each graph's wake/deactivation storage when its own
