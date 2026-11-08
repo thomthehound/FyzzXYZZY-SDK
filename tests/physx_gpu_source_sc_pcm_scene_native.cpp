@@ -41,6 +41,24 @@ struct GpuPcmFrictionAnchorFixture {
                     "Source GPU PCM published outside its Sc Gu contact arena");
         }
     }
+    static void verify_device_contact_order(const Scene& scene,
+                                            bool require_pcm,
+                                            bool require_cpu) {
+        std::size_t pcm_count=0u,cpu_count=0u;
+        for(const auto index:scene.indexed_managers_) {
+            const auto& manager=scene.manifolds_[index];
+            if(!manager.friction_patch_count)continue;
+            if(manager.pcm_result_index==
+               std::numeric_limits<std::uint32_t>::max())
+                cpu_count+=manager.count;
+            else pcm_count+=manager.count;
+        }
+        if((require_pcm && !pcm_count) ||
+           (require_cpu && !cpu_count) ||
+           scene.gpu_dy_contact_order_.size()!=cpu_count)
+            throw std::runtime_error(
+                "GPU Dy still uploads resident PCM contact order or omitted CPU Gu order");
+    }
     static std::size_t cpu_gu_anchor_bytes(const Scene& scene) {
         std::size_t count=0u;
         for(const auto index:scene.indexed_managers_) {
@@ -1157,6 +1175,9 @@ void verify_gpu_coupled_solver(
         require(producer->dy_pcm_contact_upload_bytes_saved()==
                     device_rows*sizeof(native::GpuDyContactPoint),
                 "Source PCM-derived Dy contacts still upload CPU shadow rows");
+        if(device_rows)
+            native::GpuPcmFrictionAnchorFixture::verify_device_contact_order(
+                gpu,true,false);
         require(producer->dy_distance_dispatch_count()==frame+1u &&
                 producer->dy_gpu_integrated_body_count()>0u,
             "Source coupled Sc scene never published GPU-integrated poses");
@@ -1434,6 +1455,8 @@ void verify_cpu_gu_gpu_dy_solver(
                 producer->dy_cpu_gu_geometry_bytes()%sizeof(
                     native::GpuDyGuContactInput)==0u,
             "CPU Gu inputs did not use compact single-batch source upload");
+        native::GpuPcmFrictionAnchorFixture::verify_device_contact_order(
+            gpu,false,false);
         require(producer->dy_friction_anchor_upload_bytes()==
                     producer->dy_friction_prepared_rows()*
                         sizeof(native::GpuDyFrictionAnchorInput)/2u,
@@ -1524,6 +1547,8 @@ void verify_mixed_gu_pcm_gpu_dy_solver(
                         sizeof(native::GpuDyGuContactInput) &&
                     producer->dy_upload_span_count()==1u,
                 "Mixed source Gu and PCM rows did not enter one GPU Dy task");
+            native::GpuPcmFrictionAnchorFixture::verify_device_contact_order(
+                gpu,true,true);
             const auto expected_cpu_anchors=
                 native::GpuPcmFrictionAnchorFixture::cpu_gu_anchor_bytes(gpu);
             require(expected_cpu_anchors>0u &&

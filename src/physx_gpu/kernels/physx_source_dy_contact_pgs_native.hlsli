@@ -23,6 +23,21 @@ void storeFrictionScalar(uint addr,float value,uint rowIndex,bool finalPass) {
         arena.Store(target+12u,asuint(value));
     }
 }
+// The source PCM producer already writes contact points in Gu order.
+// The high bit selects that resident range; CPU Gu patches retain
+// their explicit correlated-order upload.
+static const uint sourceDyDirectContactOrder=0x80000000u;
+bool sourceDyContactOrderValid(uint order,uint count) {
+    const uint begin=order&~sourceDyDirectContactOrder;
+    const uint limit=(order&sourceDyDirectContactOrder)!=0u
+        ?p.contactCount:p.orderCount;
+    return begin<=limit && count<=limit-begin;
+}
+uint sourceDyContactOrderPoint(uint order,uint relative) {
+    const uint index=(order&~sourceDyDirectContactOrder)+relative;
+    return (order&sourceDyDirectContactOrder)!=0u
+        ?index:arena.Load(p.orderBias+index*4u);
+}
 bool contactImpulse(uint a,uint b,uint ao,uint bo,
                     float3 n,float3 ja,float3 jb,
                     inout float3 va,inout float3 vb,
@@ -67,7 +82,8 @@ void solveContact(uint4 descriptor,uint errorAddress,bool biased,
     // otherwise unused patch offsets. They have no contact rows to read.
     if(manager.y==0u)return;
     if(manager.x>p.patchCount || manager.y>p.patchCount-manager.x ||
-       manager.z>p.orderCount || manager.w>p.orderCount-manager.z) {
+       manager.z>p.contactCount ||
+       manager.w>p.contactCount-manager.z) {
         arena.InterlockedOr(errorAddress,64u);
         return;
     }
@@ -89,22 +105,22 @@ void solveContact(uint4 descriptor,uint errorAddress,bool biased,
         vb=asfloat(arena.Load3(bo));
         ab=asfloat(arena.Load3(bo+12u));
     }
-    uint cursor=manager.z;
+    uint contactCursor=0u;
     for(uint patchIndex=manager.x;patchIndex<manager.x+manager.y;++patchIndex) {
         uint po=p.patchBias+patchIndex*32u;
         uint4 patch=arena.Load4(po);
         uint4 settings=arena.Load4(po+16u);
         if(patch.x>p.frictionCount || patch.z>2u ||
            patch.z*2u>p.frictionCount-patch.x ||
-           cursor>p.orderCount || patch.y>p.orderCount-cursor ||
-           settings.z!=cursor) {
+           contactCursor>manager.w ||
+           patch.y>manager.w-contactCursor ||
+           !sourceDyContactOrderValid(settings.z,patch.y)) {
             arena.InterlockedOr(errorAddress,128u);
             return;
         }
         precise float normalImpulse=0.0;
         for(uint i=0;i<patch.y;++i) {
-            uint pointIndex=arena.Load(
-                p.orderBias+(cursor++)*4u);
+            uint pointIndex=sourceDyContactOrderPoint(settings.z,i);
             if(pointIndex>=p.contactCount) {
                 arena.InterlockedOr(errorAddress,256u);
                 return;
@@ -134,6 +150,7 @@ void solveContact(uint4 descriptor,uint errorAddress,bool biased,
             storeContactScalar(co+56u,nextForce,pointIndex,finalPass);
             normalImpulse+=nextForce;
         }
+        contactCursor+=patch.y;
         if(!frictionEnabled || patch.z==0u)continue;
         float coeff=patch.z==2u?0.5:1.0;
         precise float maxStatic=asfloat(settings.x)*coeff*normalImpulse;
@@ -195,7 +212,7 @@ void solveContact(uint4 descriptor,uint errorAddress,bool biased,
             arena.Store(reportAddress,(report&~1u)|(broken?1u:0u));
         }
     }
-    if(cursor!=manager.z+manager.w)
+    if(contactCursor!=manager.w)
         arena.InterlockedOr(errorAddress,512u);
 }
 
@@ -620,7 +637,7 @@ void prepareFrictionPatch(uint patchIndex,uint pairIndex,uint errorAddress) {
     }
     if(patch.z==0u)return;
     uint orderOffset=arena.Load(po+24u);
-    if(patch.y==0u || orderOffset>=p.orderCount ||
+    if(patch.y==0u || !sourceDyContactOrderValid(orderOffset,patch.y) ||
        patch.x>p.frictionCount || patch.z>2u ||
        patch.z*2u>p.frictionCount-patch.x) {
         arena.InterlockedOr(errorAddress,16384u);
@@ -628,7 +645,7 @@ void prepareFrictionPatch(uint patchIndex,uint pairIndex,uint errorAddress) {
     }
     // setupFinalizeSolverConstraints chooses the first normal from the
     // source's reverse correlated contact-run list for this patch.
-    uint first=arena.Load(p.orderBias+orderOffset*4u);
+    uint first=sourceDyContactOrderPoint(orderOffset,0u);
     if(first>=p.contactCount) {
         arena.InterlockedOr(errorAddress,16384u);
         return;
