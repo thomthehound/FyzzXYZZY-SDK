@@ -524,9 +524,9 @@ void verify(fyzz::compute::Backend backend,const char* sap,
             std::fabs(cpu_body.position.z-gpu_body.position.z)<0.002f,
             "Source GPU PCM did not feed the existing Sc/Dy rigid solve");
 
-    // GPU general PCM must start before its independent CPU primitive
-    // witness exists. The latter is staged only at the join; both
-    // preserve their original ordinals in the same resident contact arena.
+    // GPU general PCM starts before its independent CPU primitive
+    // witness exists. The bounded Gu span is submitted before Sc's
+    // numerical witness join; both preserve their original ordinals.
     const auto sphere_a=gpu.add_static_sphere(
         0.5f,{100.f,2.f,0.f});
     const auto sphere_b=gpu.add_dynamic_sphere(
@@ -561,6 +561,13 @@ void verify(fyzz::compute::Backend backend,const char* sap,
     primitive.set_primitive(emitted,true);
     primitive.normal=points[0].normal;
     primitive.points[0]={points[0].position,points[0].separation};
+    producer->enqueue_host_pcm_contacts(mixed,mixed_results);
+    const auto after_early_gu=producer->stream_submission_stats();
+    require(after_early_gu.upload_batches==after_mixed.upload_batches+1u &&
+            after_early_gu.fetch_batches==after_mixed.fetch_batches &&
+            producer->pcm_host_contact_upload_bytes()==
+                sizeof(physx_gpu::SourcePcmGpuContactStreamNative),
+        "Mixed CPU Gu was not submitted before Sc joined GPU witnesses");
     producer->finish_gpu_pcm_box_contacts();
     require(producer->pcm_host_contact_upload_bytes()==
                 sizeof(physx_gpu::SourcePcmGpuContactStreamNative) &&
@@ -577,7 +584,7 @@ void verify(fyzz::compute::Backend backend,const char* sap,
     require(after_join.upload_batches==after_mixed.upload_batches+1u &&
             after_join.fetch_batches==after_mixed.fetch_batches+1u,
         "Mixed PCM added a redundant upload or GPU witness fetch");
-    // The late host upload remains ordered on the original device queue.
+    // The early host upload remains ordered after the GPU witness DMA.
     // Collision-only commit must retire it even without a Dy solve.
     producer->commit_gpu_step();
 
@@ -587,11 +594,13 @@ void verify(fyzz::compute::Backend backend,const char* sap,
     std::array<native::GpuPcmBoxResult,2> abandoned_mixed{};
     abandoned_mixed[1]=primitive;
     producer->enqueue_gpu_pcm_box_contacts(mixed,abandoned_mixed);
+    producer->enqueue_host_pcm_contacts(mixed,abandoned_mixed);
     producer->finish_gpu_pcm_box_contacts();
     producer->invalidate_after_rollback();
     std::array<native::GpuPcmBoxResult,2> restored{};
     restored[1]=primitive;
     producer->enqueue_gpu_pcm_box_contacts(mixed,restored);
+    producer->enqueue_host_pcm_contacts(mixed,restored);
     producer->finish_gpu_pcm_box_contacts();
     require(restored[0].edge==edge &&
             restored[0].status()==0u &&
