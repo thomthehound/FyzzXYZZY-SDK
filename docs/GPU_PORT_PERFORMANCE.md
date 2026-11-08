@@ -137,6 +137,19 @@ nor a separate solver pass is introduced. The remaining general PCM
 contact-readback and CPU Sc accurate-island/friction-admission boundary
 is unaffected.
 
+Speculative IslandSim first-pass admission now follows GPU PCM enqueue and
+precedes the GPU Gu witness join when a general PCM frame also has SAP
+pair deltas or structural island changes. This CPU work consumes only
+broadphase overlap and authored constraint edges, while accurate IslandSim
+still consumes actual Gu touch. The two existing graph owners are staged
+independently within one rollback transaction. Lost-edge route repair and
+sleep decisions remain after source wake processing; moving either ahead
+of that dependency would change island semantics. No new GPU submission
+or transfer is introduced. The amount of useful overlap depends on sparse
+topology churn; stationary contact scenes still wait for the original
+general PCM host join. This is a scheduling improvement, not completion
+of device-owned accurate topology admission.
+
 Production reviews must identify **each necessary GPU → CPU → GPU handoff**,
 the value crossing it, the consumer forcing synchronization, and whether
 the handoff occurs in quiet frames, during authored changes, or only at
