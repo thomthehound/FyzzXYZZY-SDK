@@ -125,6 +125,18 @@ before accurate island and Dy task publication; this is not yet a removal
 of the host-dependent contact/solver boundary. Transfer bytes remain
 unchanged, and CPU/GPU overlap is not itself a measured speedup.
 
+GPU Dy contact ordering now treats source PCM points as an implicit
+contiguous range in the resident Gu arena. Each PCM friction patch carries
+its source solver-row offset; Dy derives normal preparation, PGS and
+friction-header indices on device. CPU-origin Gu retains explicit correlated
+contact indices, packed without PCM gaps. This removes four bytes of
+host-uploaded order data per GPU PCM contact and keeps the original
+correlation sequence, patch bounds and Gu-indexed force writeback. The
+packed patch metadata retains its existing size; neither a new buffer
+nor a separate solver pass is introduced. The remaining general PCM
+contact-readback and CPU Sc accurate-island/friction-admission boundary
+is unaffected.
+
 Production reviews must identify **each necessary GPU → CPU → GPU handoff**,
 the value crossing it, the consumer forcing synchronization, and whether
 the handoff occurs in quiet frames, during authored changes, or only at
