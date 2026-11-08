@@ -3956,27 +3956,27 @@ std::uint8_t Scene::generate_pcm_plane_box(
 std::uint8_t Scene::publish_gpu_pcm_box_box(
     const GpuPcmBoxResult& gpu,PcmManifoldCache& cache,
     std::span<ContactPoint> output) {
-    if(gpu.status!=0u || gpu.count>4u)
+    if(gpu.status()!=0u || gpu.count()>4u)
         throw std::logic_error("Source GPU PCM returned an invalid Sc manifold");
     // The original EdgeIndex cache retains B-local witnesses on device.
     // This frame's device stream already contains Gu world contacts.
     cache.initialized=true;
-    if(!gpu.count)return 0u;
+    if(!gpu.count())return 0u;
     const float sq=gpu.normal.x*gpu.normal.x+
                    gpu.normal.y*gpu.normal.y+
                    gpu.normal.z*gpu.normal.z;
     if(!(sq>0.f) || !std::isfinite(sq) || !finite(gpu.normal))
         throw std::overflow_error("Source GPU PCM normal is invalid");
-    if(gpu.count>output.size())
+    if(gpu.count()>output.size())
         throw std::logic_error("Source GPU PCM contact arena exhausted");
-    for(std::uint8_t i=0;i<gpu.count;++i) {
+    for(std::uint8_t i=0;i<gpu.count();++i) {
         const auto& p=gpu.points[i];
         const ContactPoint contact{p.position,gpu.normal,p.separation};
         if(!finite(contact.position) || !std::isfinite(contact.separation))
             throw std::overflow_error("Source GPU PCM witness invalid");
         output[i]=contact;
     }
-    return static_cast<std::uint8_t>(gpu.count);
+    return static_cast<std::uint8_t>(gpu.count());
 }
 void Scene::update_contacts() {
     // Gu narrowphase consumes the sum of both PxShapeCore contact offsets.
@@ -4139,18 +4139,9 @@ void Scene::update_contacts() {
                         -points[0].normal.z};
             }
             auto& result=gpu_pcm_results_[i];
+            result={};
             result.edge=request.edge;
-            result.status=0u;
-            result.count=count;
-            result.cached_count=count;
-            result.selected_and_regenerated=count;
-            result.touch_transition=count
-                ?(request.previously_touching
-                    ?GpuPcmTouchTransition::Persists
-                    :GpuPcmTouchTransition::Found)
-                :(request.previously_touching
-                    ?GpuPcmTouchTransition::Lost
-                    :GpuPcmTouchTransition::None);
+            result.set_primitive(count,request.previously_touching);
             if(count) {
                 result.normal=points[0].normal;
                 for(std::size_t j=0u;j<count;++j)
@@ -4272,23 +4263,23 @@ void Scene::update_contacts() {
                         throw std::logic_error(
                             "Source GPU PCM result lost Sc EdgeIndex order");
                     const auto& result=gpu_pcm_results_[gpu_pcm_index];
-                    if(result.status!=0u || result.count>4u)
+                    if(result.status()!=0u || result.count()>4u)
                         throw std::logic_error(
                             "Source GPU PCM returned an invalid Sc manifold");
                     // The source Gu arena is the only published contact
                     // storage. Decode device witnesses into that arena,
                     // not into a temporary four-contact buffer first.
                     const auto offset=next_contact_points_.size();
-                    next_contact_points_.resize(offset+result.count);
+                    next_contact_points_.resize(offset+result.count());
                     manifold.pcm_result_index=
                         static_cast<std::uint32_t>(gpu_pcm_index++);
-                    device_touch=result.touch_transition;
+                    device_touch=result.touch_transition();
                     // Empty Gu results have no backing point array.
                     // Never do pointer arithmetic on a null arena data().
                     std::span<ContactPoint> contacts{};
-                    if(result.count)
+                    if(result.count())
                         contacts={next_contact_points_.data()+offset,
-                                  result.count};
+                                  result.count()};
                     manifold.count=publish_gpu_pcm_box_box(
                         result,island_edges_[edge].pcm_cache,contacts);
                     island_edges_[edge].pcm_cache.device_history=

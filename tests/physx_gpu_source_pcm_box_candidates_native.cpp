@@ -60,25 +60,27 @@ void verify(Context& context,const char* transform_shader,
         fixture.contacts[i].position[2]=float(i)*0.5f;
         fixture.contacts[i].separation=-0.375f*float(i+1u);
     }
-    const auto unpacked=unpack_source_pcm_sc_contact_native(fixture);
-    require(unpacked.edge_handle==197u && unpacked.cached_count==4u &&
-            unpacked.status==0u && unpacked.emitted_count==4u &&
-            unpacked.selected_and_regenerated==0x80000004u &&
-            unpacked.touch_transition==fyzz::native::GpuPcmTouchTransition::Found &&
-            std::memcmp(unpacked.normal,fixture.normal,
+    fyzz::native::GpuPcmBoxResult unpacked{};
+    std::memcpy(&unpacked,&fixture,sizeof(fixture));
+    require(unpacked.edge==197u && unpacked.cached_count()==4u &&
+            unpacked.status()==0u && unpacked.count()==4u &&
+            unpacked.selected_and_regenerated()==0x80000004u &&
+            unpacked.touch_transition()==fyzz::native::GpuPcmTouchTransition::Found &&
+            std::memcmp(&unpacked.normal,fixture.normal,
                         sizeof(unpacked.normal))==0 &&
-            std::memcmp(unpacked.contacts,fixture.contacts,
-                        sizeof(unpacked.contacts))==0,
+            std::memcmp(unpacked.points.data(),fixture.contacts,
+                        sizeof(fixture.contacts))==0,
             "Packed GPU PCM record changed a full four-witness Gu manifold");
     // An invalid source manager must remain rejectable after counter
     // saturation; never turn an out-of-range count into a valid witness.
     fixture.packed_counts=7u|(1u<<3u)|(7u<<6u)|(1u<<9u)|(7u<<10u)|
         (3u<<13u);
-    const auto invalid_stream=unpack_source_pcm_sc_contact_native(fixture);
-    require(invalid_stream.edge_handle==197u && invalid_stream.cached_count==7u &&
-            invalid_stream.status==1u && invalid_stream.emitted_count==7u &&
-            invalid_stream.selected_and_regenerated==0x80000007u &&
-            invalid_stream.touch_transition==fyzz::native::GpuPcmTouchTransition::Lost,
+    fyzz::native::GpuPcmBoxResult invalid_stream{};
+    std::memcpy(&invalid_stream,&fixture,sizeof(fixture));
+    require(invalid_stream.edge==197u && invalid_stream.cached_count()==7u &&
+            invalid_stream.status()==1u && invalid_stream.count()==7u &&
+            invalid_stream.selected_and_regenerated()==0x80000007u &&
+            invalid_stream.touch_transition()==fyzz::native::GpuPcmTouchTransition::Lost,
             "Packed PCM counters hid an invalid Sc source manager");
     constexpr float z=0.3826834323650898f;
     constexpr float w=0.9238795325112867f;
@@ -198,10 +200,9 @@ void verify(Context& context,const char* transform_shader,
     const std::size_t work_offset=
         edge_offset+edge_caches.size()*sizeof(edge_caches[0])+16u;
     const std::size_t output_offset=work_offset+(pairs.size()+1u)*4u+16u;
-    std::vector<SourcePcmGpuContactStreamNative> packed(pairs.size());
-    std::vector<SourcePcmScContactStreamNative> published(pairs.size());
+    std::vector<fyzz::native::GpuPcmBoxResult> published(pairs.size());
     const auto root=context.create_buffer(
-        output_offset+packed.size()*sizeof(packed[0])+16u);
+        output_offset+published.size()*sizeof(published[0])+16u);
     const auto args_buffer=context.create_buffer(16u,MemoryPlacement::DeviceLocal);
     context.upload(root,input_offset,boxes.data(),sizeof(boxes));
     context.upload(root,pair_offset,pairs.data(),sizeof(pairs));
@@ -221,7 +222,7 @@ void verify(Context& context,const char* transform_shader,
     const auto work_data=addresses.register_slice(
         root,work_offset,(pairs.size()+1u)*4u);
     const auto output_data=addresses.register_slice(
-        root,output_offset,packed.size()*sizeof(packed[0]));
+        root,output_offset,published.size()*sizeof(published[0]));
     const auto args_data=addresses.register_slice(args_buffer,0u,12u);
     const auto release_allocations=[&] {
     addresses.unregister_slice(args_data);
@@ -241,13 +242,12 @@ void verify(Context& context,const char* transform_shader,
     context.destroy_buffer(root);
     };
     const auto download_publication=[&] {
-        context.download(root,output_offset,packed.data(),
-                         packed.size()*sizeof(packed[0]));
-        for(std::size_t i=0u;i<packed.size();++i)
-            published[i]=unpack_source_pcm_sc_contact_native(packed[i]);
+        context.download(root,output_offset,published.data(),
+                         published.size()*sizeof(published[0]));
     };
-    require(sizeof(packed[0])==84u && sizeof(published[0])==100u,
-            "Source PCM packed GPU record does not preserve compact device storage");
+    require(sizeof(published[0])==84u &&
+            sizeof(published[0])==sizeof(SourcePcmGpuContactStreamNative),
+            "Source PCM host record does not share the device ABI");
     SourceScBoxTransformBoundsNativeStage producer(
         context,shader(transform_shader));
     SourcePcmBoxCandidatesNativeStage pcm(context,shader(candidate_shader));
@@ -313,12 +313,12 @@ void verify(Context& context,const char* transform_shader,
                      edge_caches.size()*sizeof(edge_caches[0]));
     download_publication();
     for(std::size_t i=0;i<pairs.size();++i) {
-        require(published[i].edge_handle==results[i].edge_handle &&
-                published[i].status==results[i].status,
+        require(published[i].edge==results[i].edge_handle &&
+                published[i].status()==results[i].status,
                 "Candidate owner failed Sc contact publication");
         if(results[i].status==0u)
-            require(published[i].emitted_count<=published[i].cached_count &&
-                    published[i].cached_count<=4u,
+            require(published[i].count()<=published[i].cached_count() &&
+                    published[i].cached_count()<=4u,
                     "Candidate owner emitted invalid Sc contact count");
     }
     std::array<SourceScBoxTransformInputNative,capacity> by_id{};
@@ -885,20 +885,20 @@ void verify(Context& context,const char* transform_shader,
             "GPU EPA continuation did not consume one sparse work item");
     download_publication();
     const auto& epa_published=published[penetration_pair];
-    if(!(epa_published.edge_handle==edge && epa_published.status==0u &&
-         epa_published.cached_count==1u && epa_published.emitted_count==1u &&
-         epa_published.selected_and_regenerated==0x80000001u &&
-         near(epa_published.contacts[0].separation,expected_epa.separation)))
+    if(!(epa_published.edge==edge && epa_published.status()==0u &&
+         epa_published.cached_count()==1u && epa_published.count()==1u &&
+         epa_published.selected_and_regenerated()==0x80000001u &&
+         near(epa_published.points[0].separation,expected_epa.separation)))
         throw std::runtime_error(
             "Sparse EPA publication mismatch pair="+
             std::to_string(penetration_pair)+
             " edge="+std::to_string(edge)+"/"+
-            std::to_string(epa_published.edge_handle)+
-            " status="+std::to_string(epa_published.status)+
-            " cache="+std::to_string(epa_published.cached_count)+
-            " emit="+std::to_string(epa_published.emitted_count)+
-            " selected="+std::to_string(epa_published.selected_and_regenerated)+
-            " depth="+std::to_string(epa_published.contacts[0].separation)+
+            std::to_string(epa_published.edge)+
+            " status="+std::to_string(epa_published.status())+
+            " cache="+std::to_string(epa_published.cached_count())+
+            " emit="+std::to_string(epa_published.count())+
+            " selected="+std::to_string(epa_published.selected_and_regenerated())+
+            " depth="+std::to_string(epa_published.points[0].separation)+
             "/"+std::to_string(expected_epa.separation)+
             " candidate="+std::to_string(results[penetration_pair].candidate_count)+
             " result_status="+std::to_string(results[penetration_pair].status));
@@ -935,11 +935,11 @@ void verify(Context& context,const char* transform_shader,
                      candidates.size()*sizeof(candidates[0]));
     download_publication();
     const auto& quiet_published=published[penetration_pair];
-    require(quiet_published.edge_handle==edge && quiet_published.status==0u &&
-            quiet_published.cached_count==1u &&
-            quiet_published.emitted_count==1u &&
-            quiet_published.selected_and_regenerated==1u &&
-            near(quiet_published.contacts[0].separation,expected_epa.separation),
+    require(quiet_published.edge==edge && quiet_published.status()==0u &&
+            quiet_published.cached_count()==1u &&
+            quiet_published.count()==1u &&
+            quiet_published.selected_and_regenerated()==1u &&
+            near(quiet_published.points[0].separation,expected_epa.separation),
             "Quiet Sc refresh did not preserve its Gu world contact");
     const auto& quiet=results[penetration_pair];
     const auto& cached=candidates[pairs[penetration_pair].candidate_offset];
@@ -1066,26 +1066,26 @@ void verify(Context& context,const char* transform_shader,
                    static_cast<std::uint32_t>(candidates.size()),edge_capacity);
         stream.wait_at_fetch();
         download_publication();
-        require(published[0].status==0u,
+        require(published[0].status()==0u,
                 "Source device Sc touch publication failed");
     };
     boxes[0].position[0]=100.f;
     advance_touch();
-    require(published[0].emitted_count==0u &&
-            published[0].touch_transition==
+    require(published[0].count()==0u &&
+            published[0].touch_transition()==
                 fyzz::native::GpuPcmTouchTransition::Lost,
             "Separating the same GPU Sc edge did not publish touch loss");
     boxes[0].position[0]=original_x;
     advance_touch();
-    require(published[0].emitted_count>0u &&
-            published[0].touch_transition==
+    require(published[0].count()>0u &&
+            published[0].touch_transition()==
                 fyzz::native::GpuPcmTouchTransition::Found,
             "Returning GPU Sc contact did not publish a new physical touch");
     pairs[0].candidate_capacity|=
         source_pcm_reset_cache_bit|source_pcm_prior_touch_bit;
     advance_touch();
-    require(published[0].emitted_count>0u &&
-            published[0].touch_transition==
+    require(published[0].count()>0u &&
+            published[0].touch_transition()==
                 fyzz::native::GpuPcmTouchTransition::Persists,
             "Reset source Sc edge discarded its previously published touch");
 

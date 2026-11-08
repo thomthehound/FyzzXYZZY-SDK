@@ -265,8 +265,8 @@ void verify(fyzz::compute::Backend backend,const char* sap,
     };
     check(true);
     const auto edge=gpu.contact_edge_index({gpu_a,gpu_b});
-    // The device's 84-byte stream reconstructs Sc's world-space Gu
-    // contacts and the physical-touch transition on the same EdgeIndex.
+    // CPU Sc and GPU Dy consume the same 84-byte source record.
+    // No expanded per-manager host staging record is needed.
     const std::array<native::GpuPcmBoxPair,1> request{{
         {gpu_a,gpu_b,edge,false}
     }};
@@ -276,24 +276,33 @@ void verify(fyzz::compute::Backend backend,const char* sap,
     require(producer->pcm_contact_readback_bytes()==
                 sizeof(physx_gpu::SourcePcmGpuContactStreamNative),
             "Direct GPU PCM readback did not use the compact device stream");
-    require(direct[0].edge==edge && direct[0].status==0u &&
-            direct[0].cached_count<=4u &&
-            direct[0].count<=direct[0].cached_count &&
-            (direct[0].selected_and_regenerated&0x7fffffffu)<=4u &&
-            direct[0].count>0u &&
-            direct[0].touch_transition==native::GpuPcmTouchTransition::Persists &&
+    require(direct[0].edge==edge && direct[0].status()==0u &&
+            direct[0].cached_count()<=4u &&
+            direct[0].count()<=direct[0].cached_count() &&
+            (direct[0].selected_and_regenerated()&0x7fffffffu)<=4u &&
+            direct[0].count()>0u &&
+            direct[0].touch_transition()==native::GpuPcmTouchTransition::Persists &&
             std::isfinite(direct[0].normal.x) &&
             std::isfinite(direct[0].points[0].separation),
             "Direct Sc GPU PCM readback disagrees with the shader record");
+    physx_gpu::SourcePcmGpuContactStreamNative raw{};
+    std::memcpy(&raw,&direct[0],sizeof(raw));
+    const auto header=physx_gpu::unpack_source_pcm_gpu_header_native(raw);
+    require(header.edge_handle==direct[0].edge &&
+            header.cached_count==direct[0].cached_count() &&
+            header.emitted_count==direct[0].count() &&
+            header.touch_transition==
+                static_cast<std::uint32_t>(direct[0].touch_transition()),
+        "Source Sc result does not share the 84-byte GPU contact ABI");
     // A quiet refresh must reuse Sc's original device pair descriptor:
     // the GPU still runs PCM, but no pair-list HtoD submission is needed.
     std::array<native::GpuPcmBoxResult,1> repeated{};
     producer->generate_gpu_pcm_box_contacts(request,repeated);
     producer->commit_gpu_step();
     require(producer->pcm_pair_upload_bytes()==0u &&
-            repeated[0].status==0u && repeated[0].edge==edge &&
-            repeated[0].count>0u &&
-            repeated[0].touch_transition==native::GpuPcmTouchTransition::Persists,
+            repeated[0].status()==0u && repeated[0].edge==edge &&
+            repeated[0].count()>0u &&
+            repeated[0].touch_transition()==native::GpuPcmTouchTransition::Persists,
             "Stable Sc PCM manager unexpectedly re-uploaded source pair input");
     // Explicitly invalidate a live Sc EdgeIndex. A newly admitted or
     // rejected source frame uses the identical candidate-owned reset.
@@ -306,12 +315,12 @@ void verify(fyzz::compute::Backend backend,const char* sap,
     require(producer->pcm_pair_upload_bytes()==
                 sizeof(physx_gpu::SourcePcmBoxPairNative),
             "Source PCM reset did not refresh its GPU pair descriptor");
-    require(reset[0].edge==edge && reset[0].status==0u &&
-            reset[0].count>0u &&
-            reset[0].touch_transition==native::GpuPcmTouchTransition::Persists &&
-            (reset[0].selected_and_regenerated&0x80000000u)!=0u,
+    require(reset[0].edge==edge && reset[0].status()==0u &&
+            reset[0].count()>0u &&
+            reset[0].touch_transition()==native::GpuPcmTouchTransition::Persists &&
+            (reset[0].selected_and_regenerated()&0x80000000u)!=0u,
             "Source GPU PCM failed to regenerate a reset EdgeIndex");
-    for(std::uint32_t i=0u;i<reset[0].count;++i)
+    for(std::uint32_t i=0u;i<reset[0].count();++i)
         require(std::isfinite(reset[0].points[i].separation) &&
                 std::fabs(reset[0].points[i].separation-
                           direct[0].points[i].separation)<0.002f,
@@ -335,17 +344,17 @@ void verify(fyzz::compute::Backend backend,const char* sap,
     }};
     std::array<native::GpuPcmBoxResult,1> rejected{};
     producer->generate_gpu_pcm_box_contacts(failed_request,rejected);
-    require(rejected[0].count==0u &&
-            rejected[0].touch_transition==native::GpuPcmTouchTransition::Lost,
+    require(rejected[0].count()==0u &&
+            rejected[0].touch_transition()==native::GpuPcmTouchTransition::Lost,
         "Rejected Sc PCM refresh did not mutate speculative touch history");
     producer->invalidate_after_rollback();
     std::array<native::GpuPcmBoxResult,1> recovered{};
     producer->generate_gpu_pcm_box_contacts(request,recovered);
-    require(recovered[0].status==0u &&
-            recovered[0].count>0u &&
-            recovered[0].touch_transition==
+    require(recovered[0].status()==0u &&
+            recovered[0].count()>0u &&
+            recovered[0].touch_transition()==
                 native::GpuPcmTouchTransition::Persists &&
-            recovered[0].cached_count<=4u,
+            recovered[0].cached_count()<=4u,
         "Sc device contact journal failed to restore committed PCM history");
     producer->commit_gpu_step();
     check(true,true);

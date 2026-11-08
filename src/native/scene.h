@@ -113,28 +113,48 @@ struct GpuPcmBoxWorldPoint {
     Vec3 position{};
     float separation=0.0f;
 };
-// The GPU Sc contact-stream shader publishes an 84-byte device record;
-// Sc's host-facing contact and transition record is 100 bytes.
-// Download directly into the scene's result array without repacking an
-// additional host-side copy of every Gu contact.
+// The same 84-byte Gu record is authored by bounded CPU primitives,
+// published by the GPU PCM shader, and consumed by GPU Dy. Sc receives
+// GPU records directly in its result arena without a second host copy.
+// Packed counts: cached [0:2], status [3:5], selected [6:8],
+// regenerated [9], emitted [10:12], touch transition [13:14].
 struct GpuPcmBoxResult {
     std::uint32_t edge=0;
-    std::uint32_t cached_count=0;
-    std::uint32_t status=0;
-    // Lower 31 bits: selected count; upper bit: regenerated manifold.
-    std::uint32_t selected_and_regenerated=0;
+    std::uint32_t packed_counts=0;
     Vec3 normal{};
-    std::uint32_t count=0;
     std::array<GpuPcmBoxWorldPoint,4> points{};
-    GpuPcmTouchTransition touch_transition=GpuPcmTouchTransition::None;
+
+    std::uint32_t cached_count() const noexcept {
+        return packed_counts&7u;
+    }
+    std::uint32_t status() const noexcept {
+        return (packed_counts>>3u)&7u;
+    }
+    std::uint32_t selected_and_regenerated() const noexcept {
+        return ((packed_counts>>6u)&7u) |
+            (((packed_counts>>9u)&1u)<<31u);
+    }
+    std::uint32_t count() const noexcept {
+        return (packed_counts>>10u)&7u;
+    }
+    GpuPcmTouchTransition touch_transition() const noexcept {
+        return static_cast<GpuPcmTouchTransition>((packed_counts>>13u)&3u);
+    }
+    void set_primitive(std::uint32_t count,bool previously_touching) noexcept {
+        const std::uint32_t transition=count
+            ?(previously_touching?2u:1u)
+            :(previously_touching?3u:0u);
+        packed_counts=count | (count<<6u) | (1u<<9u) |
+            (count<<10u) | (transition<<13u);
+    }
 };
 static_assert(sizeof(GpuPcmBoxWorldPoint)==16u);
 static_assert(std::is_trivially_copyable_v<GpuPcmBoxResult> &&
               std::is_standard_layout_v<GpuPcmBoxResult> &&
-              sizeof(GpuPcmBoxResult)==100u &&
-              offsetof(GpuPcmBoxResult,normal)==16u &&
-              offsetof(GpuPcmBoxResult,count)==28u &&
-              offsetof(GpuPcmBoxResult,points)==32u);
+              sizeof(GpuPcmBoxResult)==84u &&
+              offsetof(GpuPcmBoxResult,packed_counts)==4u &&
+              offsetof(GpuPcmBoxResult,normal)==8u &&
+              offsetof(GpuPcmBoxResult,points)==20u);
 // Transient source Dy 1D PGS buffer ABI. Original Sc actor IDs and
 // task ownership remain with Scene; the GPU consumes resolved row slots.
 struct GpuDyDistanceBody {
