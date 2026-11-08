@@ -29,7 +29,11 @@ struct GpuPcmFrictionAnchorFixture {
            reference.accurate_island_count_!=
                gpu.accurate_island_count_)
             throw std::runtime_error(
-                "Early speculative Sc admission changed source island counts");
+                "Early speculative Sc admission changed source island counts: " +
+                std::to_string(reference.speculative_island_count_) + "/" +
+                std::to_string(gpu.speculative_island_count_) + " speculative, " +
+                std::to_string(reference.accurate_island_count_) + "/" +
+                std::to_string(gpu.accurate_island_count_) + " accurate");
         for(std::size_t a=0u;a<reference.actors_.size();++a) {
             if(!reference.actors_[a].alive ||
                reference.actors_[a].motion!=Scene::Motion::Dynamic)continue;
