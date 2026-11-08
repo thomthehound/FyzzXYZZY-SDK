@@ -1232,6 +1232,51 @@ void verify_gpu_coupled_solver(
              <<" host_upload_bytes="<<uploaded_bytes
              <<" host_contact_prep_bytes_saved="<<saved_prep_bytes
              <<" host_download_bytes="<<downloaded_bytes<<'\n';
+    if(spring_mode==0u) {
+        // A moving kinematic contact supplies read-only solver velocity.
+        // Its body ordinal must survive the native GPU descriptor
+        // reconstruction even though it owns no writable PGS endpoint.
+        const Vec3 kinematic_position{30.f,2.f,0.f};
+        const Vec3 dynamic_position{30.8f,2.f,0.f};
+        const Vec3 extents{0.5f,0.5f,0.5f};
+        const auto kinematic_cpu=cpu.add_dynamic_box(
+            extents,kinematic_position,1.f);
+        const auto kinematic_gpu=gpu.add_dynamic_box(
+            extents,kinematic_position,1.f);
+        const auto responder_cpu=cpu.add_dynamic_box(
+            extents,dynamic_position,1.f);
+        const auto responder_gpu=gpu.add_dynamic_box(
+            extents,dynamic_position,1.f);
+        cpu.set_kinematic(kinematic_cpu,true);
+        gpu.set_kinematic(kinematic_gpu,true);
+        RigidBodyDynamics dynamics{};
+        dynamics.gravity_enabled=false;
+        cpu.set_dynamics(responder_cpu,dynamics);
+        gpu.set_dynamics(responder_gpu,dynamics);
+        constexpr Quat identity{0.f,0.f,0.f,1.f};
+        for(float target_x:{30.1f,30.2f}) {
+            cpu.set_kinematic_target(
+                kinematic_cpu,{target_x,2.f,0.f},identity);
+            gpu.set_kinematic_target(
+                kinematic_gpu,{target_x,2.f,0.f},identity);
+            cpu.step(dt);
+            gpu.step(dt);
+            const native::Pair pair{kinematic_cpu,responder_cpu};
+            require(has_pair(cpu.pairs(),pair) &&
+                    has_pair(gpu.pairs(),pair) &&
+                    std::any_of(gpu.contacts().begin(),gpu.contacts().end(),
+                        [&](const auto& contact) {
+                            return contact.pair==pair && contact.count>0u;
+                        }),
+                "Moving kinematic contact was omitted from Sc GPU admission");
+            const auto actual=gpu.body_state(responder_gpu);
+            const auto expected=cpu.body_state(responder_cpu);
+            require(std::fabs(actual.position.x-expected.position.x)<0.03f &&
+                    std::fabs(actual.velocity.x-expected.velocity.x)<0.03f &&
+                    std::fabs(actual.velocity.y-expected.velocity.y)<0.03f,
+                "GPU contact descriptor lost moving kinematic solver velocity");
+        }
+    }
 }
 
 // The optional legacy Gu generator remains the source authority when
