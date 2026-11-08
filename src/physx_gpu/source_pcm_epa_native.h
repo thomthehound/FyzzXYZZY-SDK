@@ -23,11 +23,16 @@ public:
                             compute::ShaderBinary shader,
                             bool face_geometry=false,
                             bool direct_gjk=false,
-                            bool staged_push_constants=false)
+                            bool staged_push_constants=false,
+                            bool compact_staged_gjk=false)
         : context_(context),face_geometry_(face_geometry),
           direct_gjk_(direct_gjk),
+          compact_staged_gjk_(compact_staged_gjk),
           step_parameters_(staged_push_constants || (direct_gjk &&
               shader.format==compute::ShaderFormat::Dxil)) {
+        if(compact_staged_gjk_ && (!direct_gjk_ || !step_parameters_))
+            throw std::invalid_argument(
+                "Compacted staged GJK requires the explicit source pass");
         const auto& device=context.device_info();
         if(!device.max_workgroup_count[0] ||
            !device.max_storage_buffer_range)
@@ -75,8 +80,9 @@ public:
         if(!pair_count)return;
         const auto group_count=face_geometry_
             ?(std::uint64_t(pair_count)+63u)/64u
-            :direct_gjk_?(std::uint64_t(pair_count)+31u)/32u
-                        :std::uint64_t(pair_count);
+            :direct_gjk_ && !compact_staged_gjk_
+                ?(std::uint64_t(pair_count)+31u)/32u
+                :std::uint64_t(pair_count);
         if(!shape_capacity || !candidate_capacity || !edge_capacity ||
            group_count>context_.device_info().max_workgroup_count[0])
             throw std::out_of_range(
@@ -129,19 +135,19 @@ public:
                         ?convex_surface_bytes
                         :source_allocation_bytes(shape_capacity,32u),
                      9u,compute::BufferAccess::Read));
-        if(face_geometry_ || direct_gjk_) {
-            // GJK lanes read pending Sc statuses directly; only EPA
-            // requires a compacted indirect worklist.
+        if(face_geometry_ || (direct_gjk_ && !compact_staged_gjk_)) {
+            // Non-staged GuGJK and convex face contacts use the dense
+            // source pair extent; the other stages consume GPU worklists.
             dispatch.groups={
                 static_cast<std::uint32_t>(group_count),1u,1u};
         }else {
             const auto arguments=addresses.resolve(dispatch_args,12u);
             if(arguments.offset%4u)
-                throw std::invalid_argument("Source EPA indirect arguments misaligned");
+                throw std::invalid_argument("Source PCM indirect arguments misaligned");
             for(const auto& binding:dispatch.buffers)
                 if(binding.buffer==arguments.buffer)
                     throw std::invalid_argument(
-                        "Source EPA indirect arguments alias Sc data");
+                        "Source PCM indirect arguments alias Sc data");
             dispatch.indirect=compute::DispatchIndirectArgs{
                 arguments.buffer,arguments.offset};
         }
@@ -183,6 +189,7 @@ private:
     compute::Context& context_;
     bool face_geometry_=false;
     bool direct_gjk_=false;
+    bool compact_staged_gjk_=false;
     bool step_parameters_=false;
     compute::PipelineId pipeline_=0;
     std::size_t alignment_=0;

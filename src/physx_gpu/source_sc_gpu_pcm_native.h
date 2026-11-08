@@ -79,9 +79,9 @@ public:
           epa_pending_stage_(context,std::move(compact),4u,
                              std::move(epa_args_reset)),
           staged_gjk_(gjk.format==compute::ShaderFormat::Dxil),
-          gjk_stage_(context,std::move(gjk),false,true),
-          gjk_reduce_stage_(context,std::move(gjk_reduce),false,true),
-          gjk_publish_stage_(context,std::move(gjk_publish),false,true),
+          gjk_stage_(context,std::move(gjk),false,true,false,staged_gjk_),
+          gjk_reduce_stage_(context,std::move(gjk_reduce),false,true,false,staged_gjk_),
+          gjk_publish_stage_(context,std::move(gjk_publish),false,true,false,staged_gjk_),
           epa_stage_(context,std::move(epa)),
           face_stage_(context,std::move(face_contacts),true),
           journal_stage_(context,std::move(contact_journal)),
@@ -95,7 +95,8 @@ public:
         if(!stream_.bound_to(context_,addresses_))
             throw std::invalid_argument("Source Sc GPU PCM has another device stream");
         if(staged_gjk_)
-            primitive_gjk_stage_.emplace(context_,std::move(gjk_primitive),false,true);
+            primitive_gjk_stage_.emplace(
+                context_,std::move(gjk_primitive),false,true,false,true);
         // D3D12 indirect arguments require their own physical resource.
         // Separate source buddy-heap allocations can share one root UAV.
         indirect_buffer_=context_.create_buffer(
@@ -333,6 +334,8 @@ public:
                 0u,0u,0u,0u,pass);
         };
         if(staged_gjk_) {
+            // The GPU compacted status-3 list drives every staged GJK
+            // pass. The list remains immutable until EPA work is rebuilt.
             const auto& advance=!convex_vertex_count_
                 ?*primitive_gjk_stage_:gjk_stage_;
             for(std::uint32_t pass=0u;pass<32u;++pass) {
