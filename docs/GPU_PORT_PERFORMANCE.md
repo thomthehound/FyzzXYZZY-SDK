@@ -55,8 +55,8 @@ forces a device fence can be more expensive than a larger GPU kernel.
 Conversely, a multi-pass GPU allocator or full device-history rebuild
 can cost more than updating a sparse CPU-side index from existing reports.
 
-A successfully fetched, unchanged source AABB history needs no repeated
-SAP submission or readback. The quiet-frame bypass requires an owned Sc
+After its required final history-convergence pass, an unchanged source
+AABB history needs no repeated SAP submission or readback. The quiet-frame bypass requires an owned Sc
 ElementSim, no pending source shape or cached-pose edits, no forced SAP
 update, and no pending aggregate work. The first frame, motion-class
 changes, authored shape edits and rejected epochs retain their normal

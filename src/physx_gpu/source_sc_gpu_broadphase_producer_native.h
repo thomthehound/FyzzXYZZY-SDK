@@ -80,6 +80,7 @@ public:
            !aabb_.aggregate_gpu_work_pending()) {
             found_.clear();
             lost_.clear();
+            last_frame_=SourceSapSceneFrameNativeResult{};
             return {found_,lost_,false,false};
         }
         // A rejected Sc/Dy frame may have advanced the source GPU
