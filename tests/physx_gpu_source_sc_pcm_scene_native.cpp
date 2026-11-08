@@ -582,8 +582,10 @@ void verify(fyzz::compute::Backend backend,const char* sap,
         "Late CPU Gu upload or general PCM readback lost source ordinals");
     const auto after_join=producer->stream_submission_stats();
     require(after_join.upload_batches==after_mixed.upload_batches+1u &&
-            after_join.fetch_batches==after_mixed.fetch_batches+1u,
-        "Mixed PCM added a redundant upload or GPU witness fetch");
+            after_join.fetch_batches==after_mixed.fetch_batches+1u &&
+            after_join.deferred_submissions_after_fetch==
+                after_mixed.deferred_submissions_after_fetch+1u,
+        "Mixed PCM joined later GPU work or duplicated witness transfers");
     // The early host upload remains ordered after the GPU witness DMA.
     // Collision-only commit must retire it even without a Dy solve.
     producer->commit_gpu_step();
