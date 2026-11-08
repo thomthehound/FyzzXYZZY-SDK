@@ -4161,6 +4161,43 @@ void Scene::update_contacts() {
     if(gpu_results_pending &&
        (island_topology_dirty_ || !found_.empty() || !lost_.empty()))
         update_island_connectivity(true);
+    // The previous source friction patch's relative normal and local
+    // anchor separation depend on authored poses, not this frame's Gu.
+    // Evaluate those unchanged-input tests while GPU PCM runs. After
+    // Gu joins, only the new contact-normal correlation remains.
+    if(gpu_results_pending && !friction_patches_.empty()) {
+        gpu_pcm_friction_history_masks_.assign(gpu_pcm_pairs_.size(),0u);
+        for(std::size_t i=0u;i<gpu_pcm_pairs_.size();++i) {
+            const EdgeIndex edge=gpu_pcm_pairs_[i].edge;
+            if(edge>=friction_by_edge_.size())continue;
+            const Pair pair=island_edges_[edge].shapes;
+            const auto& history=friction_by_edge_[edge];
+            if(history.epoch!=friction_cache_epoch_ ||
+               !history.count || history.pair!=pair ||
+               history.offset>friction_patches_.size() ||
+               history.count>friction_patches_.size()-history.offset)
+                continue;
+            if(history.count>32u)
+                throw std::logic_error(
+                    "Source friction history exceeds patch correlation limit");
+            const bool reversed=island_edges_[edge].gu_order_reversed;
+            const Shape& shape0=shapes_[reversed?pair.b:pair.a];
+            const Shape& shape1=shapes_[reversed?pair.a:pair.b];
+            const auto& m0=shape0.material;
+            const auto& m1=shape1.material;
+            if(m0.disable_friction || m1.disable_friction ||
+               m0.disable_strong_friction || m1.disable_strong_friction)
+                continue;
+            const Actor& actor0=actors_[shape0.body];
+            const Actor& actor1=actors_[shape1.body];
+            std::uint32_t valid=0u;
+            for(std::size_t j=0u;j<history.count;++j)
+                if(cached_friction_patch_valid(
+                    friction_patches_[history.offset+j],actor0,actor1))
+                    valid|=1u<<j;
+            gpu_pcm_friction_history_masks_[i]=valid;
+        }
+    }
     if(host_pair_count) {
         // The same Sc cache owns primitive witnesses even when this
         // frame also schedules general device PCM contacts.
