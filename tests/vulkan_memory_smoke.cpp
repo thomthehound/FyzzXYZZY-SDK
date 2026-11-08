@@ -154,6 +154,54 @@ int main() {
             retained_small,retained_grow};
         context.wait_submissions(retained);
 
+        // The readback copy is submitted before its host publication.
+        // A rejected transaction must discard staging without writing
+        // to the caller's borrowed result arena.
+        constexpr std::uint32_t sentinel=0x4e7b2391u;
+        std::array<std::uint32_t,3> deferred{sentinel,sentinel,sentinel};
+        const std::array<DownloadSpan,2> deferred_spans{{
+            {local_src,0,deferred.data(),sizeof(std::uint32_t)},
+            {local_src,4*sizeof(std::uint32_t),
+                deferred.data()+1,2*sizeof(std::uint32_t)}
+        }};
+        const auto transfer=context.submit_download_batch(deferred_spans);
+        if(deferred[0]!=sentinel || deferred[1]!=sentinel ||
+           deferred[2]!=sentinel)
+            throw std::runtime_error(
+                "Asynchronous readback published before source fetch");
+        bool rejected_overlap=false;
+        try {
+            context.submit_download_batch(deferred_spans);
+        } catch(const std::logic_error&) {
+            rejected_overlap=true;
+        }
+        if(!rejected_overlap)
+            throw std::runtime_error(
+                "Compute admitted overlapping asynchronous readback owners");
+        context.finish_download_batch(transfer);
+        if(deferred[0]!=source[0] ||
+           deferred[1]!=patch_values[0] ||
+           deferred[2]!=patch_values[1])
+            throw std::runtime_error(
+                "Asynchronous source readback lost ordered Gu bytes");
+        bool rejected_duplicate=false;
+        try {
+            context.finish_download_batch(transfer);
+        } catch(const std::logic_error&) {
+            rejected_duplicate=true;
+        }
+        if(!rejected_duplicate)
+            throw std::runtime_error(
+                "Completed asynchronous readback retained its transaction");
+
+        deferred.fill(sentinel);
+        const auto discarded=context.submit_download_batch(deferred_spans);
+        context.finish_download_batch(discarded,false);
+        if(deferred[0]!=sentinel || deferred[1]!=sentinel ||
+           deferred[2]!=sentinel)
+            throw std::runtime_error(
+                "Abandoned asynchronous source readback mutated host output");
+
         // A blocking single-buffer fetch is allowed to complete earlier
         // work, but the originating stream still owns its submission ID.
         const SubmissionId direct_device=context.submit_copy_buffer(

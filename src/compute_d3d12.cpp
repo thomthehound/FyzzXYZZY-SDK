@@ -287,6 +287,7 @@ struct Context::Impl {
         // One-off HtoD batch staging belongs to the submission itself.
         // It is dropped on fence completion, not retained in command cache.
         ComPtr<ID3D12Resource> owned_upload;
+        ComPtr<ID3D12Resource> owned_readback;
         // Legacy D3D12 cannot set one subresource to both COPY_SOURCE
         // and COPY_DEST. Non-overlapping same-resource DtoD therefore
         // uses an all-device-local scratch resource, fence-owned by this
@@ -322,6 +323,13 @@ struct Context::Impl {
     // The source report fetch waits for completion before its next use.
     // One completed READBACK heap serves subsequent batches.
     ComPtr<ID3D12Resource> completed_readback;
+    struct PendingReadback {
+        SubmissionId submission=0;
+        std::size_t bytes=0;
+        ComPtr<ID3D12Resource> staging;
+        std::vector<DownloadSpan> outputs;
+    };
+    PendingReadback pending_readback_{};
     std::vector<BufferId> readback_sources;
     static constexpr std::size_t kMaxRecycled = 8;
     BufferId next_buffer = 1;
@@ -441,6 +449,7 @@ struct Context::Impl {
 
     void recycle_completed(Submission&& submission) {
         submission.owned_upload.Reset(); // GPU completed; staging no longer referenced.
+        submission.owned_readback.Reset();
         if (!submission.owned_copy_scratch.empty()) {
             auto& candidate = submission.owned_copy_scratch.front();
             if (candidate &&
@@ -854,11 +863,17 @@ struct Context::Impl {
         staging->Unmap(0, &written);
     }
 
-    void download_batch(std::span<const DownloadSpan> downloads) {
-        if(downloads.empty())return;
+    SubmissionId submit_download_batch(
+            std::span<const DownloadSpan> downloads) {
+        if(downloads.empty())
+            throw std::invalid_argument("Empty D3D12 GPU readback batch");
+        if(pending_readback_.submission)
+            throw std::logic_error("D3D12 GPU readback already in flight");
         std::size_t bytes=0;
         readback_sources.clear();
         readback_sources.reserve(downloads.size());
+        // The source destination-span allocation is reused across frames.
+        pending_readback_.outputs.assign(downloads.begin(),downloads.end());
         for(const auto& item:downloads) {
             const auto& source=get_buffer(item.source);
             validate_range(source.bytes,item.source_offset,item.bytes);
@@ -890,19 +905,47 @@ struct Context::Impl {
         for(const auto id:readback_sources)
             transition(cmd.commands.Get(),get_buffer(id).resource.Get(),
                 D3D12_RESOURCE_STATE_COPY_SOURCE,D3D12_RESOURCE_STATE_COMMON);
-        wait_submission(enqueue(std::move(cmd)));
-        void* mapped=nullptr;
-        D3D12_RANGE read{0,bytes};
-        check(staging->Map(0,&read,&mapped),"Map batched GPU readback");
-        offset=0;
-        for(const auto& item:downloads) {
-            std::memcpy(item.data,
-                static_cast<const std::uint8_t*>(mapped)+offset,item.bytes);
-            offset+=item.bytes;
+        // Keep the READBACK heap alive even if queue signalling fails
+        // after command execution has already begun.
+        cmd.owned_readback=staging;
+        const SubmissionId id=enqueue(std::move(cmd));
+        pending_readback_.submission=id;
+        pending_readback_.bytes=bytes;
+        pending_readback_.staging=std::move(staging);
+        return id;
+    }
+
+    void finish_download_batch(SubmissionId id,bool publish) {
+        if(!pending_readback_.submission || pending_readback_.submission!=id)
+            throw std::logic_error("Unknown D3D12 GPU readback batch");
+        if(submissions.find(id)!=submissions.end())
+            wait_submission(id);
+        auto& pending=pending_readback_;
+        if(publish) {
+            void* mapped=nullptr;
+            D3D12_RANGE read{0,pending.bytes};
+            check(pending.staging->Map(0,&read,&mapped),
+                  "Map asynchronous GPU readback");
+            std::size_t offset=0;
+            for(const auto& item:pending.outputs) {
+                std::memcpy(item.data,
+                    static_cast<const std::uint8_t*>(mapped)+offset,item.bytes);
+                offset+=item.bytes;
+            }
+            D3D12_RANGE written{0,0};
+            pending.staging->Unmap(0,&written);
         }
-        D3D12_RANGE written{0,0};
-        staging->Unmap(0,&written);
-        completed_readback=std::move(staging);
+        if(!completed_readback ||
+           completed_readback->GetDesc().Width<pending.staging->GetDesc().Width)
+            completed_readback=std::move(pending.staging);
+        pending_readback_.submission=0;
+        pending_readback_.bytes=0;
+        pending_readback_.outputs.clear();
+    }
+
+    void download_batch(std::span<const DownloadSpan> downloads) {
+        if(downloads.empty())return;
+        finish_download_batch(submit_download_batch(downloads),true);
     }
 
     PipelineId create_pipeline(const ComputePipelineDesc& desc) {
@@ -1471,6 +1514,13 @@ void Context::download(BufferId id, std::size_t offset, void* data, std::size_t 
     impl_->download(id, offset, data, bytes);
 }
 
+SubmissionId Context::submit_download_batch(
+        std::span<const DownloadSpan> downloads) {
+    return impl_->submit_download_batch(downloads);
+}
+void Context::finish_download_batch(SubmissionId id,bool publish) {
+    impl_->finish_download_batch(id,publish);
+}
 void Context::download_batch(std::span<const DownloadSpan> downloads) const {
     impl_->download_batch(downloads);
 }

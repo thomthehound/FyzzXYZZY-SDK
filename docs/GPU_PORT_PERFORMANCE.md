@@ -114,9 +114,16 @@ introducing another registry, a GPU scatter kernel or an intermediate
 CPU/GPU completion boundary. General PCM now submits its device candidate/continuation work before
 Sc computes CPU-classified primitive Gu witnesses or traverses the ordered
 contact managers. CPU Gu fills disjoint source ordinals while GPU PCM runs.
-At the join, Sc first fetches and validates general GPU witnesses, then
-submits primitive Gu uploads into their disjoint resident slots without
-waiting for those uploads. Accurate island and friction preparation can
+General GPU PCM now submits its final packed-witness DMA immediately
+after the last contact kernel, before Sc's independent speculative
+IslandSim and CPU primitive Gu work. Both Vulkan and D3D12 retain one
+reusable readback staging allocation owned by the Context. No host
+destination is published until the original source Sc join completes
+the ordered transfer. This overlaps GPU readback with independent CPU
+work without adding a queue, readback copy or completion fence.
+At the join, Sc validates the already-submitted general GPU witnesses,
+then submits primitive Gu uploads into their disjoint resident slots
+without waiting for those uploads. Accurate island and friction preparation can
 proceed on the host while the upload is in flight; ordered GPU Dy reads
 the completed stream on the same queue. Collision-only transactions
 retire the asynchronous upload at their existing commit boundary.

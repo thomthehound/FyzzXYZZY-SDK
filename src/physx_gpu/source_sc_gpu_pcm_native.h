@@ -96,6 +96,9 @@ public:
     }
 
     void invalidate_after_rollback() noexcept {
+        // A rejected Sc transaction must not publish its outstanding
+        // asynchronous witness DMA into the borrowed Gu result arena.
+        stream_.abandon_fetch();
         host_upload_pending_=false;
         result_pending_=false;
         pending_requests_={};
@@ -452,9 +455,11 @@ public:
         journal_pair_count_=pair_count;
         journal_edge_capacity_=edge_capacity;
         pending_edge_span_bytes_=std::size_t(edge_capacity)*240u;
-        // The same ordered queue continues while Sc processes CPU-owned
-        // contact managers ahead of its first GPU witness consumer.
-        stream_.submit();
+        // The DMA follows the last PCM shader immediately, while Sc
+        // independently admits speculative topology and CPU Gu.
+        // No host wait occurs until the first GPU witness consumer.
+        if(gpu_downloads_.empty())stream_.submit();
+        else stream_.begin_fetch(gpu_downloads_);
     }
     void finish() {
         if(!result_pending_)
@@ -465,7 +470,7 @@ public:
         // Sc needs the GPU witnesses now, not the CPU Gu device upload.
         // Fetch/validate the former before scheduling the latter so
         // the independent upload does not extend Sc's host join.
-        if(!gpu_downloads_.empty())stream_.fetch(gpu_downloads_);
+        if(!gpu_downloads_.empty())stream_.finish_fetch();
         else stream_.wait_at_fetch();
         for(const auto& span:gpu_downloads_)
             last_contact_download_bytes_+=span.bytes;

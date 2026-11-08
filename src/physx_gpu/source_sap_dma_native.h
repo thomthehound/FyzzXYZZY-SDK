@@ -42,6 +42,7 @@ public:
         std::size_t upload_spans = 0;
         std::size_t upload_bytes = 0;
         std::size_t fetch_batches = 0;
+        std::size_t readback_submissions = 0;
         std::size_t fetch_spans = 0;
         std::size_t fetch_bytes = 0;
         // Host wall time includes ordered GPU completion and readback.
@@ -128,11 +129,14 @@ public:
     // Submit existing source-ordered device commands without a host wait.
     compute::SubmissionId submit() { return flush_gpu_commands(); }
 
-    // One source fetch boundary submits all pending GPU commands, reads
-    // the requested outputs together, and retires their owned staging
-    // and command tokens. The caller never reaps the same queue itself.
-    // A readback failure still retires submitted source resources.
-    void fetch(std::span<const compute::DownloadSpan> outputs) {
+    // Arm the host transfer as soon as its final producer dispatch has
+    // been submitted. The Context owns readback staging until finish_fetch,
+    // so independent source CPU work can overlap both compute and DMA.
+    void begin_fetch(std::span<const compute::DownloadSpan> outputs) {
+        if(pending_fetch_)
+            throw std::logic_error("Source GPU readback already pending");
+        if(outputs.empty())
+            throw std::invalid_argument("Source asynchronous fetch is empty");
         std::size_t bytes=0;
         for(const auto& output:outputs) {
             if(output.bytes>std::numeric_limits<std::size_t>::max()-bytes)
@@ -140,21 +144,63 @@ public:
             bytes+=output.bytes;
         }
         submit();
+        pending_fetch_=context_.submit_download_batch(outputs);
+        ++stats_.readback_submissions;
+        pending_fetch_bytes_=bytes;
+        pending_fetch_spans_=outputs.size();
+    }
+
+    // The submitted readback fence covers all earlier source commands
+    // on this Context queue. Retire the prior submission tokens only
+    // after the independent witness DMA has been published to Sc.
+    void finish_fetch() {
+        if(!pending_fetch_)
+            throw std::logic_error("Source GPU readback was not armed");
         const auto start=std::chrono::steady_clock::now();
-        try {
-            context_.download_batch(outputs);
-        } catch(...) {
-            wait_at_fetch();
-            throw;
-        }
+        context_.finish_download_batch(pending_fetch_,true);
+        pending_fetch_=0;
         wait_at_fetch();
         const auto elapsed=std::chrono::steady_clock::now()-start;
         ++stats_.fetch_batches;
-        stats_.fetch_spans+=outputs.size();
-        stats_.fetch_bytes+=bytes;
+        stats_.fetch_spans+=pending_fetch_spans_;
+        stats_.fetch_bytes+=pending_fetch_bytes_;
         stats_.fetch_wall_ns+=static_cast<std::uint64_t>(
             std::chrono::duration_cast<std::chrono::nanoseconds>(
                 elapsed).count());
+        pending_fetch_spans_=0;
+        pending_fetch_bytes_=0;
+    }
+
+    void abandon_fetch() noexcept {
+        if(!pending_fetch_)return;
+        try {
+            context_.finish_download_batch(pending_fetch_,false);
+        } catch (...) {
+            // A lost GPU cannot publish rejected source data; Context
+            // retains any unretired submission until final teardown.
+        }
+        pending_fetch_=0;
+        pending_fetch_spans_=0;
+        pending_fetch_bytes_=0;
+        try {wait_at_fetch();} catch (...) {}
+    }
+
+    // Existing synchronous fetches use the same staging/transfer path.
+    void fetch(std::span<const compute::DownloadSpan> outputs) {
+        if(pending_fetch_)
+            throw std::logic_error("Source fetch overlaps another readback");
+        if(outputs.empty()) {
+            const auto start=std::chrono::steady_clock::now();
+            wait_at_fetch();
+            const auto elapsed=std::chrono::steady_clock::now()-start;
+            ++stats_.fetch_batches;
+            stats_.fetch_wall_ns+=static_cast<std::uint64_t>(
+                std::chrono::duration_cast<std::chrono::nanoseconds>(
+                    elapsed).count());
+            return;
+        }
+        begin_fetch(outputs);
+        finish_fetch();
     }
 
     // Readiness of the most recent source-ordered GPU submission. The caller
@@ -163,6 +209,10 @@ public:
     bool gpu_complete() const {
         if (!pending_.empty())
             throw std::logic_error("PhysX source GPU commands not submitted");
+        // The readback is itself the newest ordered queue submission.
+        // Do not announce Sc completion while its witness DMA is pending.
+        if(pending_fetch_)
+            return context_.submission_complete(pending_fetch_);
         return tokens_.empty() || context_.submission_complete(tokens_.back());
     }
 
@@ -175,6 +225,7 @@ public:
     // resources and drop only commands that never entered the native queue.
     // This is not a recovery path: the source scene is being destroyed.
     bool finish_shutdown() noexcept {
+        abandon_fetch();
         try {
             wait_at_fetch();
             return true;
@@ -212,6 +263,8 @@ private:
     std::vector<SourceSapUpload> upload_scratch_;
     std::vector<compute::UploadSpan> resolved_uploads_;
     std::vector<compute::SubmissionId> tokens_;
+    compute::SubmissionId pending_fetch_=0;
+    std::size_t pending_fetch_bytes_=0,pending_fetch_spans_=0;
     SubmissionStats stats_;
 };
 

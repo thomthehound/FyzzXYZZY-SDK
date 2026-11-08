@@ -294,6 +294,12 @@ struct Context::Impl {
     // host-visible readback arena; it never overlaps another GPU fetch.
     BufferId readback_staging_ = 0;
     std::size_t readback_staging_bytes_ = 0;
+    struct PendingReadback {
+        SubmissionId submission=0;
+        std::size_t bytes=0;
+        std::vector<DownloadSpan> outputs;
+    };
+    PendingReadback pending_readback_{};
     BufferId next_buffer = 1;
     PipelineId next_pipeline = 1;
     SubmissionId next_submission = 1;
@@ -977,8 +983,12 @@ struct Context::Impl {
         release_buffer(staging);
     }
 
-    void download_batch(std::span<const DownloadSpan> downloads) {
-        if(downloads.empty())return;
+    SubmissionId submit_download_batch(
+            std::span<const DownloadSpan> downloads) {
+        if(downloads.empty())
+            throw std::invalid_argument("Empty Vulkan GPU readback batch");
+        if(pending_readback_.submission)
+            throw std::logic_error("Vulkan GPU readback already in flight");
         std::size_t bytes=0;
         for(const auto& item:downloads) {
             const auto& source=get(item.source);
@@ -989,13 +999,10 @@ struct Context::Impl {
                 throw std::invalid_argument("Invalid Vulkan GPU readback span");
             bytes+=item.bytes;
         }
-        // The fetch is synchronous, so completed readback memory can be
-        // reused without a per-frame VkBuffer or device-memory allocation.
+        // Retain allocation capacity across all source readback epochs.
+        // The destination addresses remain borrowed until completion.
+        pending_readback_.outputs.assign(downloads.begin(),downloads.end());
         if(bytes>readback_staging_bytes_) {
-            // Source GPU commands may already be queued before this
-            // readback. Ordinary destroy_buffer waits/reaps ALL Context
-            // tokens, including still-owned source stream submissions.
-            // Retire only the previous completed staging allocation.
             if(readback_staging_)retire_buffer(readback_staging_);
             readback_staging_=0;
             readback_staging_bytes_=0;
@@ -1003,44 +1010,50 @@ struct Context::Impl {
                 bytes,MemoryPlacement::HostVisible,false);
             readback_staging_bytes_=bytes;
         }
-        const auto staging_id=readback_staging_;
-        bool enqueued=false;
-        try {
-            std::vector<BatchCommand> copies;
-            copies.reserve(downloads.size());
-            std::size_t offset=0;
-            for(const auto& item:downloads) {
-                copies.emplace_back(CopyCommand{
-                    item.source,item.source_offset,staging_id,offset,
-                    item.bytes});
-                offset+=item.bytes;
-            }
-            const auto submission=submit_batch(copies);
-            enqueued=true;
-            wait_submission(submission);
-            enqueued=false;
-            const auto& buffer=get(staging_id);
+        std::vector<BatchCommand> copies;
+        copies.reserve(downloads.size());
+        std::size_t offset=0;
+        for(const auto& item:downloads) {
+            copies.emplace_back(CopyCommand{
+                item.source,item.source_offset,readback_staging_,offset,
+                item.bytes});
+            offset+=item.bytes;
+        }
+        const SubmissionId id=submit_batch(copies);
+        pending_readback_.submission=id;
+        pending_readback_.bytes=bytes;
+        return id;
+    }
+
+    void finish_download_batch(SubmissionId id,bool publish) {
+        if(!pending_readback_.submission || pending_readback_.submission!=id)
+            throw std::logic_error("Unknown Vulkan GPU readback batch");
+        // The source stream may already have reaped this submission when
+        // joining a newer ordered batch. The staging still belongs here.
+        if(submissions.find(id)!=submissions.end())
+            wait_submission(id);
+        if(publish) {
+            const auto& buffer=get(readback_staging_);
             void* mapped=nullptr;
             require(vkMapMemory(device,buffer.memory,0,VK_WHOLE_SIZE,0,&mapped),
-                    "vkMapMemory batched GPU readback");
-            offset=0;
-            for(const auto& item:downloads) {
+                    "vkMapMemory asynchronous GPU readback");
+            std::size_t offset=0;
+            for(const auto& item:pending_readback_.outputs) {
                 std::memcpy(item.data,
                     static_cast<const std::uint8_t*>(mapped)+offset,
                     item.bytes);
                 offset+=item.bytes;
             }
             vkUnmapMemory(device,buffer.memory);
-        } catch(...) {
-            if(enqueued) {
-                // The GPU still owns this arena until its outstanding
-                // source transfer completes; never recycle it early.
-                readback_staging_=0;
-                readback_staging_bytes_=0;
-                retire_buffer(staging_id);
-            }
-            throw;
         }
+        pending_readback_.submission=0;
+        pending_readback_.bytes=0;
+        pending_readback_.outputs.clear();
+    }
+
+    void download_batch(std::span<const DownloadSpan> downloads) {
+        if(downloads.empty())return;
+        finish_download_batch(submit_download_batch(downloads),true);
     }
 
     const Pipeline& get_pipeline(PipelineId id) const {
@@ -1906,6 +1919,13 @@ void Context::download(BufferId id, std::size_t offset, void* data, std::size_t 
     impl_->transfer(id, offset, data, bytes, false);
 }
 
+SubmissionId Context::submit_download_batch(
+        std::span<const DownloadSpan> downloads) {
+    return impl_->submit_download_batch(downloads);
+}
+void Context::finish_download_batch(SubmissionId id,bool publish) {
+    impl_->finish_download_batch(id,publish);
+}
 void Context::download_batch(std::span<const DownloadSpan> downloads) const {
     impl_->download_batch(downloads);
 }
