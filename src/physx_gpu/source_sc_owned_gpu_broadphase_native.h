@@ -407,8 +407,8 @@ public:
     void enqueue_host_pcm_contacts(
             std::span<const native::GpuPcmBoxPair> requests,
             std::span<const native::GpuPcmBoxResult> results) override {
-        if(!pcm_ || !dy_distance_)
-            throw std::logic_error("Source Sc/Dy primitive PCM is unavailable");
+        if(!pcm_)
+            throw std::logic_error("Source Sc GPU PCM is unavailable");
         pcm_->enqueue_host_contacts(requests,results);
     }
     bool supports_host_pcm_contacts() const noexcept override {
