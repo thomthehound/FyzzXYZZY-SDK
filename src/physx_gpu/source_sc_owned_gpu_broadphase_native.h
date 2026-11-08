@@ -404,6 +404,13 @@ public:
             throw std::logic_error("Source Sc GPU PCM shaders not installed");
         pcm_->finish();
     }
+    void enqueue_host_pcm_contacts(
+            std::span<const native::GpuPcmBoxPair> requests,
+            std::span<const native::GpuPcmBoxResult> results) override {
+        if(!pcm_ || !dy_distance_)
+            throw std::logic_error("Source Sc/Dy primitive PCM is unavailable");
+        pcm_->enqueue_host_contacts(requests,results);
+    }
     bool supports_host_pcm_contacts() const noexcept override {
         return pcm_ && dy_distance_;
     }
