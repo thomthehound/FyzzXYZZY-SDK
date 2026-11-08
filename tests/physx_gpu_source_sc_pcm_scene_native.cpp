@@ -309,6 +309,21 @@ void verify(fyzz::compute::Backend backend,const char* sap,
         if(i==0u)distant_gpu=id;
     }
     check(true);
+    // A contact EdgeIndex reused by a newly admitted but dormant
+    // manager has not yet refreshed its Gu witness. Its previous
+    // occupant's retained physical-touch bit must not join islands.
+    const std::array<native::GpuScContactGraphEdge,1> dormant_reuse{{
+        {gpu_a,gpu_b,1u|8u,edge}
+    }};
+    producer->set_gpu_sc_contact_graph(
+        dormant_reuse,std::max(gpu_a,gpu_b)+1u);
+    const std::array<native::GpuPcmBoxPair,0> no_refresh{};
+    std::array<native::GpuPcmBoxResult,0> no_contacts{};
+    producer->generate_gpu_pcm_box_contacts(no_refresh,no_contacts);
+    const auto dormant_counts=producer->contact_island_edge_counts();
+    require(dormant_counts[gpu_a]==0u,
+        "Dormant recycled manager inherited the prior GPU touch");
+    producer->commit_gpu_step();
     // Deliberately reject a speculative Gu manager refresh: it writes
     // an empty witness and a physical-touch loss into an existing
     // EdgeIndex. The device must restore the accepted full witness
