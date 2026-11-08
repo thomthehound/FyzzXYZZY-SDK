@@ -2337,9 +2337,6 @@ void Scene::update_gpu_pairs(bool force_update) {
             convex_face_indices_);
         uploaded_convex_vertex_count_=convex_vertices_.size();
     }
-    const bool source_owned_pairs=gpu_broadphase_->source_owned_pair_history(
-        gpu_pair_refilter_dirty_ ||
-        (sap_pair_registry_dirty_ && !previous_pairs_.empty()));
     const auto reports=gpu_broadphase_->advance(
         gpu_broadphase_boxes_,force_update,dirty_);
     if(reports.overflow)
@@ -2351,8 +2348,7 @@ void Scene::update_gpu_pairs(bool force_update) {
     // The existing source BP pair hash retains those memberships for
     // ScShapeSim/ScBodySim refiltering. This is NOT another CPU SAP:
     // only GPU found/lost reports can insert an overlap.
-    if(!source_owned_pairs && sap_pair_registry_dirty_ &&
-       !reports.full_rebuild) {
+    if(sap_pair_registry_dirty_ && !reports.full_rebuild) {
         // Scripted GPU fixtures may resume after a rejected Sc frame.
         // Their delta-only report contract retains Sc's last published
         // contacts. The real source owner returns a full GPU rebuild.
@@ -2420,32 +2416,6 @@ void Scene::update_gpu_pairs(bool force_update) {
         plane_pair_membership_dirty_=false;
     };
 
-    if(source_owned_pairs) {
-        // The original GPU SAP endpoints and aggregate pair histories
-        // retain even overlaps currently ineligible for Sc managers.
-        // Ordinary source reports can enter Sc's sorted delta merge
-        // without recreating a CPU hash of every broadphase overlap.
-        sap_pair_registry_dirty_=false;
-        if(gpu_pair_refilter_dirty_ && !reports.full_rebuild)
-            throw std::logic_error(
-                "Native GPU SAP refilter requires a complete device overlap report");
-        if(reports.full_rebuild) {
-            if(!reports.lost.empty())
-                throw std::invalid_argument(
-                    "Reconstructed GPU SAP returned stale lost pairs");
-            pending_pairs_.clear();
-            pending_pairs_.reserve(reports.found.size());
-            for(const Pair pair:reports.found)
-                if(shapes_[pair.a].motion==Motion::Dynamic ||
-                   shapes_[pair.b].motion==Motion::Dynamic)
-                    pending_pairs_.push_back(pair);
-            // The original source EdgeIndex merge retains unchanged
-            // contact managers and retires removed ones after third pass.
-            append_plane_managers(false,true);
-            gpu_pair_refilter_dirty_=false;
-            return;
-        }
-    }else {
     if(reports.full_rebuild) {
         if(!reports.lost.empty())
             throw std::invalid_argument(
@@ -2517,8 +2487,6 @@ void Scene::update_gpu_pairs(bool force_update) {
         append_plane_managers(false,true);
         gpu_pair_refilter_dirty_=false;
         return;
-    }
-
     }
 
     // On ordinary frames Sc consumes only source found/lost deltas.

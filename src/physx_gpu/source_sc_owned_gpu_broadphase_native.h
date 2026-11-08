@@ -248,10 +248,6 @@ public:
         convex_surface_faces_base_=faces_base;
         convex_surface_indices_base_=indices_base;
     }
-    bool source_owned_pair_history(bool require_full_report) override {
-        if(require_full_report)producer_->request_full_overlap_report();
-        return true;
-    }
     native::GpuBroadphaseReports advance(
         std::span<const native::GpuBroadphaseBox> live,
         bool force_update,bool geometry_dirty) override {

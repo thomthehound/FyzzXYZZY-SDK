@@ -24,12 +24,8 @@ struct GpuPcmFrictionAnchorFixture {
     static std::uint32_t contact_manager_edge(const Scene& scene,Pair shapes) {
         return scene.contact_edge_index(shapes);
     }
-    static void verify_source_pair_ownership(const Scene& scene) {
-        if(!scene.sap_pairs_.active_pairs.empty() ||
-           !scene.sap_pairs_.states.empty() ||
-           !scene.sap_pairs_.hash_table.empty())
-            throw std::runtime_error(
-                "Native GPU SAP retained a redundant host overlap registry");
+    static bool source_bp_contains(const Scene& scene,Pair shapes) {
+        return scene.sap_pairs_.find(shapes)!=Scene::SapPairManager::invalid;
     }
     static void verify_pcm_contact_arena(const Scene& scene) {
         const auto* base=scene.contact_points_.data();
@@ -1078,7 +1074,6 @@ void verify_gpu_coupled_solver(
         cpu.step(dt);
         gpu.step(dt);
         native::GpuPcmFrictionAnchorFixture::verify(cpu,gpu);
-        native::GpuPcmFrictionAnchorFixture::verify_source_pair_ownership(gpu);
         require(producer->source_handle_projection_count()==1u,
             "Source GPU SAP remapped unchanged Sc ElementSim handles");
         if(frame>0u)
@@ -1297,10 +1292,10 @@ void verify_gpu_coupled_solver(
                 "GPU contact descriptor lost moving kinematic solver velocity");
         }
 
-        // Reclassifying an overlapping pair from kinematic/kinematic
-        // to dynamic/kinematic must discover the previously ineligible
-        // finite SAP overlap from the original GPU source history.
-        // Its source pair identity survives both refilter directions.
+        // Refiltering a previously ineligible finite BP overlap does
+        // not require invalidating or rebuilding the device SAP history.
+        // Sc's sparse BP membership index retains that overlap while its
+        // shared contact EdgeIndex follows the source motion-class rules.
         const Vec3 left{60.f,2.f,0.f},right{60.75f,2.f,0.f};
         const auto left_cpu=cpu.add_dynamic_box(extents,left,1.f);
         const auto left_gpu=gpu.add_dynamic_box(extents,left,1.f);
@@ -1310,55 +1305,52 @@ void verify_gpu_coupled_solver(
         gpu.set_kinematic(left_gpu,true);
         cpu.set_kinematic(right_cpu,true);
         gpu.set_kinematic(right_gpu,true);
-        const native::Pair expected_pair{left_cpu,right_cpu};
-        const auto admitted=[&](const native::Scene& source) {
-            const auto current=source.pairs();
-            return std::find(current.begin(),current.end(),expected_pair)!=
-                   current.end();
+        const native::Pair pair{left_gpu,right_gpu};
+        const auto admitted=[&](const native::Scene& scene) {
+            const auto current=scene.pairs();
+            return std::find(current.begin(),current.end(),pair)!=current.end();
         };
         cpu.advance_collision();
         gpu.advance_collision();
-        require(!admitted(cpu) && !admitted(gpu),
-            "Kinematic-only overlap unexpectedly retained a Sc contact manager");
-        native::GpuPcmFrictionAnchorFixture::verify_source_pair_ownership(gpu);
+        require(!admitted(cpu) && !admitted(gpu) &&
+                native::GpuPcmFrictionAnchorFixture::source_bp_contains(gpu,pair),
+            "Sc BP registry lost a kinematic overlap before refiltering");
+        const auto projection_count=producer->source_handle_projection_count();
         cpu.set_kinematic(left_cpu,false);
         gpu.set_kinematic(left_gpu,false);
         cpu.advance_collision();
         gpu.advance_collision();
         require(admitted(cpu) && admitted(gpu),
-            "Native GPU full overlap report omitted reclassified contact");
-        const auto shared_edge=
-            native::GpuPcmFrictionAnchorFixture::contact_manager_edge(
-                gpu,expected_pair);
-        require(shared_edge!=std::numeric_limits<std::uint32_t>::max(),
-            "Reclassified contact did not receive its Sc EdgeIndex");
-        native::GpuPcmFrictionAnchorFixture::verify_source_pair_ownership(gpu);
-        // Rebuilding broadphase membership cannot recycle an unchanged
-        // Sc contact manager merely because either endpoint changes its
-        // motion group. Reuse the exact original shared EdgeIndex.
+            "Sparse Sc refilter did not admit a previously ineligible overlap");
+        const auto edge=native::GpuPcmFrictionAnchorFixture::
+            contact_manager_edge(gpu,pair);
+        require(edge!=std::numeric_limits<std::uint32_t>::max(),
+            "Refiltered manager has no shared Sc EdgeIndex");
         cpu.set_kinematic(right_cpu,false);
         gpu.set_kinematic(right_gpu,false);
         cpu.advance_collision();
         gpu.advance_collision();
         require(admitted(cpu) && admitted(gpu) &&
-                native::GpuPcmFrictionAnchorFixture::contact_manager_edge(
-                    gpu,expected_pair)==shared_edge,
-            "Native SAP refilter replaced an unchanged Sc contact manager");
+                native::GpuPcmFrictionAnchorFixture::
+                    contact_manager_edge(gpu,pair)==edge,
+            "Refiltering replaced an unchanged Sc contact manager");
         cpu.set_kinematic(left_cpu,true);
         gpu.set_kinematic(left_gpu,true);
         cpu.advance_collision();
         gpu.advance_collision();
         require(admitted(cpu) && admitted(gpu) &&
-                native::GpuPcmFrictionAnchorFixture::contact_manager_edge(
-                    gpu,expected_pair)==shared_edge,
-            "Kinematic refilter recycled a live shared EdgeIndex");
+                native::GpuPcmFrictionAnchorFixture::
+                    contact_manager_edge(gpu,pair)==edge,
+            "Motion-class edit retired a live Sc contact EdgeIndex");
         cpu.set_kinematic(right_cpu,true);
         gpu.set_kinematic(right_gpu,true);
         cpu.advance_collision();
         gpu.advance_collision();
-        require(!admitted(cpu) && !admitted(gpu),
-            "Native GPU pair refilter retained a kinematic-only manager");
-        native::GpuPcmFrictionAnchorFixture::verify_source_pair_ownership(gpu);
+        require(!admitted(cpu) && !admitted(gpu) &&
+                native::GpuPcmFrictionAnchorFixture::source_bp_contains(gpu,pair),
+            "Kinematic-only refilter lost retained BP overlap membership");
+        require(producer->source_handle_projection_count()==projection_count,
+            "Motion-class refilter rebuilt source SAP handles");
     }
 }
 

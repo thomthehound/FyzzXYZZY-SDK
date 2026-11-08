@@ -69,13 +69,6 @@ public:
         sc_actor_element_ids_=&source_sc_elements_->handles();
     }
 
-    void request_full_overlap_report() noexcept {
-        invalidated_=true;
-        handles_dirty_=true;
-        if(source_sc_elements_)
-            source_sc_elements_->invalidate_device_cached_poses();
-    }
-
     native::GpuBroadphaseReports advance(
         std::span<const native::GpuBroadphaseBox> live_boxes,
         bool force_update, bool /* geometry_dirty */) override {
