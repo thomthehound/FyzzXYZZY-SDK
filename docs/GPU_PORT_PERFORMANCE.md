@@ -113,9 +113,14 @@ more fragmented. This bounds transfer-command overhead without
 introducing another registry, a GPU scatter kernel or an intermediate
 CPU/GPU completion boundary. General PCM now submits its device candidate/continuation work before
 Sc computes CPU-classified primitive Gu witnesses or traverses the ordered
-contact managers. CPU Gu fills disjoint source ordinals while GPU PCM runs;
-those primitive spans are validated and uploaded at the first GPU witness
-join. General results still use one batched readback, and Dy consumes the
+contact managers. CPU Gu fills disjoint source ordinals while GPU PCM runs.
+At the join, Sc first fetches and validates general GPU witnesses, then
+submits primitive Gu uploads into their disjoint resident slots without
+waiting for those uploads. Accurate island and friction preparation can
+proceed on the host while the upload is in flight; ordered GPU Dy reads
+the completed stream on the same queue. Collision-only transactions
+retire the asynchronous upload at their existing commit boundary.
+General results still use one batched readback, and Dy consumes the
 unchanged resident stream. When pair descriptors also change, separating
 their early upload from the delayed primitive upload can add one upload
 submission per mixed frame. There is no second contact stream or solver
