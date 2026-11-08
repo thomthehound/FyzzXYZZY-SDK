@@ -4176,14 +4176,17 @@ void Scene::update_contacts() {
             }
         }
     }
+    const bool gpu_results_pending=
+        source_gpu_pcm && host_pair_count<gpu_pcm_pairs_.size();
     if(source_gpu_pcm) {
         if(host_pair_count==gpu_pcm_pairs_.size() && host_pair_count)
             gpu_broadphase_->upload_host_pcm_contacts(
                 gpu_pcm_pairs_,gpu_pcm_results_);
         else
-            gpu_broadphase_->generate_gpu_pcm_box_contacts(
+            gpu_broadphase_->enqueue_gpu_pcm_box_contacts(
                 gpu_pcm_pairs_,gpu_pcm_results_);
     }
+    bool gpu_results_joined=!gpu_results_pending;
     std::size_t gpu_pcm_index=0u;
     std::size_t old_cursor = 0;
     std::size_t old_cache_cursor=0;
@@ -4289,8 +4292,19 @@ void Scene::update_contacts() {
             }else {
                 step_checkpoint_.save_edge(*this,edge);
                 if(source_gpu_pcm) {
-                    if(gpu_pcm_index>=gpu_pcm_results_.size() ||
-                       gpu_pcm_results_[gpu_pcm_index].edge!=edge)
+                    if(gpu_pcm_index>=gpu_pcm_results_.size())
+                        throw std::logic_error(
+                            "Source GPU PCM result lost Sc EdgeIndex order");
+                    // CPU Gu managers preceding the first general pair
+                    // publish while GPU PCM runs on the same source queue.
+                    // Only a GPU-owned numerical witness requires the join.
+                    if(!gpu_results_joined &&
+                       !gpu_pcm_pairs_[gpu_pcm_index].host_generated) {
+                        gpu_broadphase_->finish_gpu_pcm_box_contacts(
+                            gpu_pcm_pairs_,gpu_pcm_results_);
+                        gpu_results_joined=true;
+                    }
+                    if(gpu_pcm_results_[gpu_pcm_index].edge!=edge)
                         throw std::logic_error(
                             "Source GPU PCM result lost Sc EdgeIndex order");
                     const auto& result=gpu_pcm_results_[gpu_pcm_index];
@@ -4596,6 +4610,9 @@ void Scene::update_contacts() {
         }
         if(previously_touching)++old_cursor;
     }
+    if(gpu_results_pending && !gpu_results_joined)
+        throw std::logic_error(
+            "Source GPU PCM stream had no matching Sc join");
     if(source_gpu_pcm && gpu_pcm_index!=gpu_pcm_results_.size())
         throw std::logic_error(
             "Source GPU PCM stream left an active Sc contact manager unconsumed");
