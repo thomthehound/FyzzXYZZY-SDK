@@ -367,6 +367,17 @@ uint sourceDyGraphRoot(uint ordinal) {
     const uint root=scIslandGraph.Load(bias+roots+actor*4u);
     return root<capacity?root:invalidBody;
 }
+uint sourceDyGraphEdgeRoot(uint edge) {
+    const uint bias=arena.Load(p.integrationBias+40u);
+    if(edge>=scIslandGraph.Load(bias+40u))return invalidBody;
+    const uint offset=scIslandGraph.Load(bias+36u);
+    return scIslandGraph.Load(bias+offset+edge*4u);
+}
+uint sourceDyGraphManagerCount(uint root) {
+    const uint bias=arena.Load(p.integrationBias+40u);
+    const uint offset=scIslandGraph.Load(bias+24u);
+    return scIslandGraph.Load(bias+offset+root*4u);
+}
 
 // Sc owns task membership. One workgroup colors independent source
 // constraints concurrently while preserving per-body greedy precedence.
@@ -410,13 +421,35 @@ void sourceDyPartitionTask(uint taskId,uint scratch,uint errorAddress,
             arena.InterlockedOr(errorAddress,1048576u);
             continue;
         }
-        if(da && db && arena.Load(p.integrationBias+44u)!=0u) {
-            const uint rootA=sourceDyGraphRoot(desc.y);
-            const uint rootB=sourceDyGraphRoot(desc.z);
-            if(rootA==invalidBody || rootB==invalidBody ||
-               rootA!=rootB) {
+        if(arena.Load(p.integrationBias+44u)!=0u) {
+            const uint rootA=da?sourceDyGraphRoot(desc.y):invalidBody;
+            const uint rootB=db?sourceDyGraphRoot(desc.z):invalidBody;
+            const uint owner=da?rootA:rootB;
+            if(owner==invalidBody ||
+               (da && db && rootA!=rootB) ||
+               sourceDyGraphManagerCount(owner)==0u) {
                 arena.InterlockedOr(errorAddress,2097152u);
                 continue;
+            }
+            // A GPU PCM manager cannot enter PGS without a physical
+            // touch in the device-owned EdgeIndex island list.
+            if((desc.w&255u)==0u) {
+                if(desc.x>=p.manifoldCount) {
+                    arena.InterlockedOr(errorAddress,2097152u);
+                    continue;
+                }
+                const uint manifold=p.manifoldBias+desc.x*20u;
+                const uint prepIndex=arena.Load(manifold+16u);
+                if(prepIndex>=p.prepCount) {
+                    arena.InterlockedOr(errorAddress,2097152u);
+                    continue;
+                }
+                const uint prep=p.prepBias+prepIndex*64u;
+                if(arena.Load(prep+48u)!=0xffffffffu &&
+                   sourceDyGraphEdgeRoot(arena.Load(prep+52u))!=owner) {
+                    arena.InterlockedOr(errorAddress,2097152u);
+                    continue;
+                }
             }
         }
         // Constraint endpoints are authoritative even when a solver
@@ -721,6 +754,17 @@ float3 sourceDyJointInertia(uint ordinal,float3 angular) {
 bool sourceDyPrepareJointGeometry(uint4 desc,uint endError) {
     const uint first=p.distanceBias+desc.x*64u;
     const uint source=arena.Load(first+60u);
+    if(arena.Load(p.integrationBias+44u)!=0u) {
+        const float massA=asfloat(arena.Load(first+36u));
+        const float massB=asfloat(arena.Load(first+40u));
+        const uint sourceRoot=massA>0.0f
+            ?sourceDyGraphRoot(desc.y):sourceDyGraphRoot(desc.z);
+        if(sourceRoot==invalidBody ||
+           sourceDyGraphEdgeRoot(arena.Load(source+152u))!=sourceRoot) {
+            arena.InterlockedOr(endError,8192u);
+            return false;
+        }
+    }
     if(arena.Load(source+144u)!=arena.Load(first+48u) ||
        arena.Load(source+148u)!=arena.Load(first+52u)) {
         arena.InterlockedOr(endError,8192u);

@@ -241,15 +241,19 @@ struct GpuDyJointInput {
     std::uint32_t kind=0u;
     // Stable ScConstraintSim identity, independent of solver row order.
     std::uint32_t source_slot=0xffffffffu,source_generation=0u;
+    // The live IslandSim EdgeIndex used for device-root admission,
+    // separate from the recyclable authored ScConstraintSim slot.
+    std::uint32_t source_edge=0xffffffffu;
 };
-static_assert(sizeof(GpuDyJointInput)==152u &&
+static_assert(sizeof(GpuDyJointInput)==156u &&
               offsetof(GpuDyJointInput,actor_a_position)==56u &&
               offsetof(GpuDyJointInput,actor_b_position)==84u &&
               offsetof(GpuDyJointInput,center_a)==112u &&
               offsetof(GpuDyJointInput,center_b)==124u &&
               offsetof(GpuDyJointInput,kind)==140u &&
               offsetof(GpuDyJointInput,source_slot)==144u &&
-              offsetof(GpuDyJointInput,source_generation)==148u);
+              offsetof(GpuDyJointInput,source_generation)==148u &&
+              offsetof(GpuDyJointInput,source_edge)==152u);
 struct GpuDyDistanceDescriptor {
     std::uint32_t index=0,row0=0,row1=0,row_count=0;
 };
