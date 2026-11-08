@@ -483,7 +483,8 @@ void verify(fyzz::compute::Backend backend,const char* sap,
                 sizeof(physx_gpu::SourcePcmGpuContactStreamNative) &&
             mixed_results[0].edge==edge &&
             mixed_results[0].status()==0u &&
-            mixed_results[0].count()>0u &&
+            mixed_results[0].cached_count()<=4u &&
+            mixed_results[0].count()<=mixed_results[0].cached_count() &&
             primitive.edge==sphere_edge &&
             primitive.count()==1u,
         "Late CPU Gu upload or general PCM readback lost source ordinals");
