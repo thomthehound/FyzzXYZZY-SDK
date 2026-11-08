@@ -119,13 +119,29 @@ struct GpuPcmFrictionAnchorFixture {
         for(std::size_t i=0u;i<reference.size();++i) {
             const auto& a=reference[i];
             const auto& b=actual[i];
+            // PCM friction extent belongs to the resident Gu producer
+            // when GPU Dy owns preparation. Its CPU mirror deliberately
+            // retains no numerical bounds; source touch, patch identity,
+            // normals and local anchor history remain authoritative here.
+            const auto manager=std::lower_bound(
+                gpu.manifolds_.begin(),gpu.manifolds_.end(),b.pair,
+                [](const auto& m,Pair pair) {return m.pair<pair;});
+            const bool resident_bounds=
+                gpu.gpu_broadphase_ &&
+                gpu.gpu_broadphase_->has_gpu_dy_distance() &&
+                manager!=gpu.manifolds_.end() &&
+                manager->pair==b.pair &&
+                manager->pcm_result_index!=
+                    std::numeric_limits<std::uint32_t>::max();
             if(a.pair!=b.pair || a.contact_count!=b.contact_count ||
                a.anchor_count!=b.anchor_count ||
                !near(a.normal,b.normal) ||
-               !near(a.bounds_min,b.bounds_min) ||
-               !near(a.bounds_max,b.bounds_max))
+               (resident_bounds
+                  ?(!near(b.bounds_min,{}) || !near(b.bounds_max,{}))
+                  :(!near(a.bounds_min,b.bounds_min) ||
+                    !near(a.bounds_max,b.bounds_max))))
                 throw std::runtime_error(
-                    "GPU PCM changed source correlated friction topology");
+                    "GPU PCM changed source correlated friction topology or restored host-owned bounds");
             for(std::size_t k=0u;k<a.anchor_count;++k)
                 if(!near(a.body0_anchors[k],b.body0_anchors[k]) ||
                    !near(a.body1_anchors[k],b.body1_anchors[k]))

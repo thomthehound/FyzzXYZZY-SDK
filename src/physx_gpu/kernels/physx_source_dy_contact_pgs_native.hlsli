@@ -512,6 +512,29 @@ void growPcmFrictionAnchors(uint patchIndex,uint pairIndex,
     // and Dy tangent preparation. Only a rejected-frame recovery reads
     // the compact host anchor input through PCM's spare Gu offset slot.
     uint history=p.writebackBias+arena.Load(pair+52u)*64u;
+    // The source PCM manager has one contiguous correlated contact run.
+    // Reuse this resident geometry for both source patch extent and
+    // anchor selection, rather than uploading the host-computed diagonal.
+    float3 contacts[4];
+    float separations[4];
+    float3 lower=float3(0.f,0.f,0.f);
+    float3 upper=float3(0.f,0.f,0.f);
+    [loop]
+    for(uint j=0u;j<patch.y;++j) {
+        const uint src=stream+20u+j*16u;
+        contacts[j]=asfloat(pcmContacts.Load3(src));
+        separations[j]=asfloat(pcmContacts.Load(src+12u));
+        if(j==0u) {
+            lower=contacts[j];
+            upper=contacts[j];
+        } else {
+            lower=min(lower,contacts[j]);
+            upper=max(upper,contacts[j]);
+        }
+    }
+    const float3 extent=upper-lower;
+    precise float diagonal=(extent.x*extent.x+extent.y*extent.y)+
+        extent.z*extent.z;
     uint count=patch.z;
     if(count>0u) {
         if((patch.w&0x40000000u)!=0u) {
@@ -543,7 +566,7 @@ void growPcmFrictionAnchors(uint patchIndex,uint pairIndex,
     if(count==2u) {
         float3 delta=local0-local1;
         float distance=delta.x*delta.x+delta.y*delta.y+delta.z*delta.z;
-        keepPair=distance*4.0f>=asfloat(arena.Load(po+28u));
+        keepPair=distance*4.0f>=diagonal;
         if(!keepPair)count=0u;
     }
     float3 anchors[2];
@@ -563,10 +586,8 @@ void growPcmFrictionAnchors(uint patchIndex,uint pairIndex,
         float limit=asfloat(arena.Load(pair+8u))+0.04f;
         [loop]
         for(uint j=0u;j<patch.y;++j) {
-            uint src=stream+20u+j*16u;
-            float separation=asfloat(pcmContacts.Load(src+12u));
-            if(separation>=limit)continue;
-            float3 world=asfloat(pcmContacts.Load3(src));
+            if(separations[j]>=limit)continue;
+            float3 world=contacts[j];
             if(count==0u) {
                 anchors[0]=world;
                 selected[0]=j;
