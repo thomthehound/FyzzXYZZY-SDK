@@ -97,6 +97,8 @@ public:
 
     void invalidate_after_rollback() noexcept {
         result_pending_=false;
+        pending_requests_={};
+        pending_output_={};
         published_pair_count_=0u;
         rebuild_required_=true;
         if(pcm_transaction_pending_) {
@@ -456,6 +458,8 @@ public:
         }
         pcm_transaction_pending_=true;
         result_pending_=true;
+        pending_requests_=requests;
+        pending_output_=output;
         journal_pair_count_=pair_count;
         journal_edge_capacity_=edge_capacity;
         pending_edge_span_bytes_=std::size_t(edge_capacity)*240u;
@@ -463,11 +467,11 @@ public:
         // contact managers ahead of its first GPU witness consumer.
         stream_.submit();
     }
-    void finish(std::span<const native::GpuPcmBoxPair> requests,
-                std::span<native::GpuPcmBoxResult> output) {
-        if(!result_pending_ || requests.size()!=journal_pair_count_ ||
-           output.size()!=requests.size())
-            throw std::logic_error("Source PCM join has no matching queued epoch");
+    void finish() {
+        if(!result_pending_)
+            throw std::logic_error("Source PCM join has no queued epoch");
+        const auto requests=pending_requests_;
+        const auto output=pending_output_;
         if(!gpu_downloads_.empty())stream_.fetch(gpu_downloads_);
         else stream_.wait_at_fetch();
         for(const auto& span:gpu_downloads_)
@@ -494,6 +498,8 @@ public:
         }
         published_pair_count_=journal_pair_count_;
         result_pending_=false;
+        pending_requests_={};
+        pending_output_={};
         rebuild_required_=false;
     }
     CudaDeviceAddressMap::Address contact_stream_address() const noexcept {
@@ -590,6 +596,10 @@ private:
     bool rebuild_required_=false;
     bool pcm_transaction_pending_=false,restore_pending_=false;
     bool result_pending_=false;
+    // Borrowed Sc views survive until finish() or rollback; GPU output
+    // is written directly into the enqueued Sc result arena at the join.
+    std::span<const native::GpuPcmBoxPair> pending_requests_{};
+    std::span<native::GpuPcmBoxResult> pending_output_{};
     std::uint32_t journal_pair_count_=0u,journal_edge_capacity_=0u;
     std::size_t pending_edge_span_bytes_=0u;
     std::uint32_t published_pair_count_=0u;
