@@ -298,10 +298,16 @@ public:
         // slots may be needed when their rigid actors wake again.
         const auto requested_edge_bytes=source_allocation_bytes(
             edge_capacity,240u);
-        if(requested_edge_bytes>edges_.getSize())
+        const bool edge_grew=requested_edge_bytes>edges_.getSize();
+        if(edge_grew)
             last_edge_history_copy_bytes_=published_edge_span_bytes_;
         edges_.allocateCopyPrefixAsync(requested_edge_bytes,
             published_edge_span_bytes_,stream_,PX_FL);
+        // A grown EdgeIndex pool must retain its last committed prefix
+        // even if later frame preparation fails before PCM submission.
+        // Submit the source device copy without a host fence. Failed
+        // steps can then discard only the unsubmitted PCM commands.
+        if(edge_grew && published_edge_span_bytes_)stream_.submit();
         if(pair_count) {
             journal_.allocate(source_allocation_bytes(pair_count,240u),PX_FL);
         }

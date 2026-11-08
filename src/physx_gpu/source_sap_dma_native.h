@@ -112,6 +112,11 @@ public:
         return upload_scratch_;
     }
 
+    // Rejected Sc transactions must never submit commands that were
+    // staged but never accepted into the native queue. Previously
+    // submitted source copy/upload tokens remain owned by Context.
+    void discard_unsubmitted_commands() noexcept { pending_.clear(); }
+
     // Submit existing source-ordered device commands without a host wait.
     compute::SubmissionId submit() { return flush_gpu_commands(); }
 

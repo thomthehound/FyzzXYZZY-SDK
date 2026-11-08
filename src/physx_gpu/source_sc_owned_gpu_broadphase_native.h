@@ -461,6 +461,7 @@ public:
         return pcm_ && pcm_->needs_contact_rebuild();
     }
     void invalidate_after_rollback() noexcept override {
+        stream_.discard_unsubmitted_commands();
         producer_->invalidate_after_rollback();
         if(pcm_)pcm_->invalidate_after_rollback();
         if(dy_distance_)dy_distance_->invalidate_after_rollback();
