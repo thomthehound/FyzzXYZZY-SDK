@@ -21,6 +21,9 @@
 
 namespace fyzz::native {
 struct GpuPcmFrictionAnchorFixture {
+    static EdgeIndex contact_manager_edge(const Scene& scene,Pair shapes) {
+        return scene.contact_edge_index(shapes);
+    }
     static void verify_source_pair_ownership(const Scene& scene) {
         if(!scene.sap_pairs_.active_pairs.empty() ||
            !scene.sap_pairs_.states.empty() ||
@@ -1324,9 +1327,33 @@ void verify_gpu_coupled_solver(
         gpu.advance_collision();
         require(admitted(cpu) && admitted(gpu),
             "Native GPU full overlap report omitted reclassified contact");
+        const auto shared_edge=
+            native::GpuPcmFrictionAnchorFixture::contact_manager_edge(
+                gpu,expected_pair);
+        require(shared_edge!=std::numeric_limits<std::uint32_t>::max(),
+            "Reclassified contact did not receive its Sc EdgeIndex");
         native::GpuPcmFrictionAnchorFixture::verify_source_pair_ownership(gpu);
+        // Rebuilding broadphase membership cannot recycle an unchanged
+        // Sc contact manager merely because either endpoint changes its
+        // motion group. Reuse the exact original shared EdgeIndex.
+        cpu.set_kinematic(right_cpu,false);
+        gpu.set_kinematic(right_gpu,false);
+        cpu.advance_collision();
+        gpu.advance_collision();
+        require(admitted(cpu) && admitted(gpu) &&
+                native::GpuPcmFrictionAnchorFixture::contact_manager_edge(
+                    gpu,expected_pair)==shared_edge,
+            "Native SAP refilter replaced an unchanged Sc contact manager");
         cpu.set_kinematic(left_cpu,true);
         gpu.set_kinematic(left_gpu,true);
+        cpu.advance_collision();
+        gpu.advance_collision();
+        require(admitted(cpu) && admitted(gpu) &&
+                native::GpuPcmFrictionAnchorFixture::contact_manager_edge(
+                    gpu,expected_pair)==shared_edge,
+            "Kinematic refilter recycled a live shared EdgeIndex");
+        cpu.set_kinematic(right_cpu,true);
+        gpu.set_kinematic(right_gpu,true);
         cpu.advance_collision();
         gpu.advance_collision();
         require(!admitted(cpu) && !admitted(gpu),
