@@ -4114,6 +4114,14 @@ void Scene::update_contacts() {
                 ++host_pair_count;
             }
     }
+    const bool gpu_results_pending=
+        source_gpu_pcm && host_pair_count<gpu_pcm_pairs_.size();
+    // General GPU PCM starts before Sc produces any host primitive Gu.
+    // Both numerical producers occupy disjoint ordinals in the same
+    // contact allocation. The host spans are staged only at the join.
+    if(gpu_results_pending || (source_gpu_pcm && gpu_pcm_pairs_.empty()))
+        gpu_broadphase_->enqueue_gpu_pcm_box_contacts(
+            gpu_pcm_pairs_,gpu_pcm_results_);
     if(host_pair_count) {
         // The same Sc cache owns primitive witnesses even when this
         // frame also schedules general device PCM contacts.
@@ -4176,16 +4184,9 @@ void Scene::update_contacts() {
             }
         }
     }
-    const bool gpu_results_pending=
-        source_gpu_pcm && host_pair_count<gpu_pcm_pairs_.size();
-    if(source_gpu_pcm) {
-        if(host_pair_count==gpu_pcm_pairs_.size() && host_pair_count)
-            gpu_broadphase_->upload_host_pcm_contacts(
-                gpu_pcm_pairs_,gpu_pcm_results_);
-        else
-            gpu_broadphase_->enqueue_gpu_pcm_box_contacts(
-                gpu_pcm_pairs_,gpu_pcm_results_);
-    }
+    if(source_gpu_pcm && !gpu_results_pending && host_pair_count)
+        gpu_broadphase_->upload_host_pcm_contacts(
+            gpu_pcm_pairs_,gpu_pcm_results_);
     bool gpu_results_joined=!gpu_results_pending;
     std::size_t gpu_pcm_index=0u;
     std::size_t old_cursor = 0;
