@@ -1010,15 +1010,30 @@ void prepareNormals(uint begin,uint end,uint lane,uint endError) {
         if(pairIndex>=p.prepCount ||
            manager.x>p.patchCount ||
            manager.y>p.patchCount-manager.x ||
-           manager.z>p.orderCount ||
-           manager.w>p.orderCount-manager.z) {
+           manager.z>p.contactCount ||
+           manager.w>p.contactCount-manager.z) {
             arena.InterlockedOr(endError,4096u);
             continue;
         }
-        for(uint c=lane&3u;c<manager.w;c+=4u) {
-            uint index=arena.Load(p.orderBias+(manager.z+c)*4u);
-            prepareContactRow(index,pairIndex,manager.z,manager.w,endError);
+        uint covered=0u;
+        for(uint patchIndex=manager.x;patchIndex<manager.x+manager.y;
+            ++patchIndex) {
+            const uint po=p.patchBias+patchIndex*32u;
+            const uint count=arena.Load(po+4u);
+            const uint order=arena.Load(po+24u);
+            if(covered>manager.w || count>manager.w-covered ||
+               !sourceDyContactOrderValid(order,count)) {
+                arena.InterlockedOr(endError,4096u);
+                break;
+            }
+            for(uint c=lane&3u;c<count;c+=4u) {
+                const uint index=sourceDyContactOrderPoint(order,c);
+                prepareContactRow(index,pairIndex,manager.z,manager.w,endError);
+            }
+            covered+=count;
         }
+        if(covered!=manager.w)
+            arena.InterlockedOr(endError,4096u);
     }
 }
 
@@ -1034,8 +1049,8 @@ void prepareFriction(uint begin,uint end,uint lane,uint endError) {
         if(pairIndex>=p.prepCount ||
            manager.x>p.patchCount ||
            manager.y>p.patchCount-manager.x ||
-           manager.z>p.orderCount ||
-           manager.w>p.orderCount-manager.z)
+           manager.z>p.contactCount ||
+           manager.w>p.contactCount-manager.z)
             continue;
         for(uint patchIndex=manager.x+(lane&3u);
             patchIndex<manager.x+manager.y;patchIndex+=4u) {
