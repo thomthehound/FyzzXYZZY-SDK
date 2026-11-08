@@ -47,6 +47,9 @@ public:
         std::size_t fetch_bytes = 0;
         // Host wall time includes ordered GPU completion and readback.
         std::uint64_t fetch_wall_ns = 0;
+        // Submitted after a witness DMA, but intentionally not joined
+        // when its earlier host-facing result becomes visible.
+        std::size_t deferred_submissions_after_fetch = 0;
     };
     const SubmissionStats& submission_stats() const noexcept { return stats_; }
 
@@ -161,6 +164,8 @@ public:
         const auto start=std::chrono::steady_clock::now();
         context_.finish_download_batch(pending_fetch_,true);
         pending_fetch_=0;
+        stats_.deferred_submissions_after_fetch+=
+            tokens_.size()-pending_fetch_token_count_;
         // Later Sc uploads and device-continuation dispatches may already
         // be queued after this DMA. Their ordered tokens are not host
         // dependencies of the downloaded Gu witnesses.
