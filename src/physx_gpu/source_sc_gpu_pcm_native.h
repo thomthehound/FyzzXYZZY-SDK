@@ -577,10 +577,44 @@ public:
     std::vector<std::uint32_t> contact_island_edge_counts() const {
         if(graph_pair_host_.empty())return {};
         std::vector<std::uint32_t> counts(graph_rigid_count_);
-        const auto bytes=counts.size()*sizeof(counts[0]);
-        const auto physical=addresses_.resolve(
-            graph_.getDevicePtr()+graph_header_[6],bytes);
-        context_.download(physical.buffer,physical.offset,counts.data(),bytes);
+        std::vector<std::uint32_t> heads(graph_rigid_count_);
+        std::vector<std::uint32_t> roots(graph_rigid_count_);
+        std::vector<std::uint32_t> next(graph_pair_host_.size());
+        const auto read=[&](std::uint32_t offset,void* target,
+                            std::size_t bytes) {
+            const auto physical=addresses_.resolve(
+                graph_.getDevicePtr()+offset,bytes);
+            return compute::DownloadSpan{
+                physical.buffer,physical.offset,target,bytes};
+        };
+        const std::array<compute::DownloadSpan,4> downloads{{
+            read(graph_header_[3],roots.data(),roots.size()*sizeof(roots[0])),
+            read(graph_header_[6],counts.data(),counts.size()*sizeof(counts[0])),
+            read(graph_header_[7],heads.data(),heads.size()*sizeof(heads[0])),
+            read(graph_header_[8],next.data(),next.size()*sizeof(next[0]))
+        }};
+        context_.download_batch(downloads);
+        // Validate the actual GPU-generated manager lists rather than
+        // trusting a counter that could conceal a lost or duplicated edge.
+        std::vector<std::uint8_t> seen(graph_pair_host_.size(),0u);
+        for(std::size_t root=0u;root<counts.size();++root) {
+            std::uint32_t cursor=heads[root];
+            std::size_t members=0u;
+            while(cursor!=0xffffffffu) {
+                if(cursor>=seen.size() || seen[cursor] ||
+                   ++members>graph_pair_host_.size())
+                    throw std::logic_error("GPU Sc island edge list is cyclic or duplicated");
+                seen[cursor]=1u;
+                const auto& edge=graph_pair_host_[cursor];
+                const auto owner=(edge.flags&1u)!=0u?edge.body_a:edge.body_b;
+                if((edge.flags&3u)==0u || owner>=roots.size() ||
+                   roots[owner]!=root)
+                    throw std::logic_error("GPU Sc island edge belongs to another root");
+                cursor=next[cursor];
+            }
+            if(members!=counts[root])
+                throw std::logic_error("GPU Sc island edge list disagrees with device count");
+        }
         return counts;
     }
     std::vector<std::uint32_t> contact_island_roots() const {
