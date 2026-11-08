@@ -60,7 +60,11 @@ AABB history needs no repeated SAP submission or readback. The quiet-frame bypas
 ElementSim, no pending source shape or cached-pose edits, no forced SAP
 update, and no pending aggregate work. The first frame, motion-class
 changes, authored shape edits and rejected epochs retain their normal
-source update/fetch boundary.
+source update/fetch boundary. Source AABB preparation validates all
+live Sc geometry once while selecting the original created/updated/changed
+handles into reusable sparse indices. It publishes those indices in
+source order after validation, without rescanning the full shape list or
+building another AABB owner.
 
 The native PCM candidate kernel completes plane and primitive-sphere
 contacts directly. Frames containing only those Sc-classified contacts

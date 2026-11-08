@@ -34,6 +34,7 @@ struct SourceSapSceneBounds {
 struct SourceSapSceneBoundsScratch {
     std::vector<std::uint32_t> visit_epochs;
     std::vector<physx::PxBounds3> prepared_bounds;
+    std::vector<std::size_t> dirty_indices;
     std::uint32_t epoch=0;
 };
 
@@ -92,6 +93,7 @@ inline void write_source_sap_scene_bounds(
     // source handle population each frame. All writes remain deferred
     // until every geometry and group value has passed validation.
     scratch.visit_epochs.resize(output.bounds.size(),0u);
+    scratch.dirty_indices.clear();
     if(!gpu_records)scratch.prepared_bounds.resize(boxes.size());
     // Reserve the following stamp for created/updated volumes in this
     // frame. Both stamps are distinct from every previous frame.
@@ -102,6 +104,22 @@ inline void write_source_sap_scene_bounds(
         scratch.epoch+=2u;
     }
     const auto changed_epoch=scratch.epoch+1u;
+    if(changes) {
+        // Mark source-created/updated handles before the live scan.
+        // The normal epoch stamp replaces these temporary marks after
+        // their dirty indices have been selected in source box order.
+        const auto mark=[&](std::span<const physx::Bp::ShapeHandle> handles) {
+            for(const auto handle:handles) {
+                if(handle>=output.bounds.size() ||
+                   handle>=BP_INVALID_BP_HANDLE)
+                    throw std::out_of_range(
+                        "Source SAP delta references an invalid volume");
+                scratch.visit_epochs[handle]=changed_epoch;
+            }
+        };
+        mark(changes->created);
+        mark(changes->updated);
+    }
     const auto stage_bounds=[&](std::size_t i) {
         const auto& box=boxes[i];
         const auto& p=box.position;
@@ -124,7 +142,13 @@ inline void write_source_sap_scene_bounds(
             throw std::out_of_range("Source SAP shape volume handle outside AABB manager");
         if(scratch.visit_epochs[handle]==scratch.epoch)
             throw std::invalid_argument("Source SAP assigned a volume handle twice");
+        const bool delta_dirty=changes &&
+            (scratch.visit_epochs[handle]==changed_epoch ||
+             ((handle>>5u)<changes->changed_bitmap_words.size() &&
+              (changes->changed_bitmap_words[handle>>5u] &
+               (1u<<(handle&31u)))));
         scratch.visit_epochs[handle]=scratch.epoch;
+        if(delta_dirty)scratch.dirty_indices.push_back(i);
         const auto finite=[](float x){return std::isfinite(x);};
         const auto& p=box.position;
         const auto& e=box.half_extents;
@@ -215,46 +239,17 @@ inline void write_source_sap_scene_bounds(
     };
 
     if(changes) {
-        // The original GPU manager's updated list is empty by design;
-        // mChangedHandleMap instead identifies changed shape bounds.
-        // Source created/updated lists still apply for other callers.
-        for(const auto handle:changes->created)
-            scratch.visit_epochs[handle]=changed_epoch;
-        for(const auto handle:changes->updated)
-            scratch.visit_epochs[handle]=changed_epoch;
-        const auto changed_words=changes->changed_bitmap_words;
-        if(gpu_records) {
-            // All geometry, membership and delta streams are validated.
-            // Select and publish changed transforms in the same pass.
-            gpu_records->clear();
-            for(std::size_t i=0;i<boxes.size();++i) {
-                const auto handle=source_handles[i];
-                if(scratch.visit_epochs[handle]!=changed_epoch &&
-                   ((handle>>5u)>=changed_words.size() ||
-                    !(changed_words[handle>>5u] & (1u<<(handle&31u)))))
-                    continue;
-                publish(i);
-            }
-            return;
-        }
-        // Host AABB writes remain staged until all selected bounds pass
-        // poseExtent validation; a rejected input cannot partially commit.
-        for(std::size_t i=0;i<boxes.size();++i) {
-            const auto handle=source_handles[i];
-            if((handle>>5u)<changed_words.size() &&
-               (changed_words[handle>>5u] & (1u<<(handle&31u))))
-                scratch.visit_epochs[handle]=changed_epoch;
-            if(scratch.visit_epochs[handle]==changed_epoch)
-                stage_bounds(i);
-        }
+        // All source geometry and delta streams are validated before
+        // any borrowed AABB array is modified. Selected indices retain
+        // source order without rescanning unchanged live shapes.
+        if(!gpu_records)
+            for(const auto i:scratch.dirty_indices)stage_bounds(i);
     }
-
     if(gpu_records)gpu_records->clear();
-    for(std::size_t i=0;i<boxes.size();++i) {
-        if(changes &&
-           scratch.visit_epochs[source_handles[i]]!=changed_epoch)
-            continue;
-        publish(i);
+    if(changes) {
+        for(const auto i:scratch.dirty_indices)publish(i);
+    }else {
+        for(std::size_t i=0;i<boxes.size();++i)publish(i);
     }
 }
 

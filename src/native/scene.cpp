@@ -2294,7 +2294,8 @@ void Scene::update_gpu_pairs(bool force_update) {
     // afterIntegration patches the changed source body entries directly
     // using its existing task-owned island ranges. Constraint/Gu dirty
     // publications do not imply any change to this finite-box view.
-    // The source GPU AABB still validates and fetches every frame.
+    // The source AABB validates admitted SAP frames; converged quiet
+    // frames do not need another source GPU submission or fetch.
     if(!gpu_broadphase_snapshot_current_) {
         gpu_broadphase_snapshot_current_=false;
         gpu_broadphase_boxes_.clear();
@@ -10848,8 +10849,8 @@ void Scene::advance_collision_internal(
     // No parallel timestep or dynamics scheduler is introduced.
     // Source PxgAABBManager/PxgCudaBroadPhaseSap owns the update/fetch
     // when selected. CPU SAP must not even prepare its endpoint state.
-    // GPU update runs on quiet frames too: the source forces one final
-    // bounds/history convergence after movement stops.
+    // SAP executes its required final bounds/history convergence after
+    // motion, then skips unchanged quiet frames.
     if(gpu_broadphase_)update_gpu_pairs(force_update);
     if (dirty_ || force_update ||
         (gpu_broadphase_ &&
