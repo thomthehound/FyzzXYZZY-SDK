@@ -1262,8 +1262,11 @@ void verify_gpu_coupled_solver(
             cpu.step(dt);
             gpu.step(dt);
             const native::Pair pair{kinematic_cpu,responder_cpu};
-            require(has_pair(cpu.pairs(),pair) &&
-                    has_pair(gpu.pairs(),pair) &&
+            const auto contains=[&](const native::Scene& scene) {
+                const auto pairs=scene.pairs();
+                return std::find(pairs.begin(),pairs.end(),pair)!=pairs.end();
+            };
+            require(contains(cpu) && contains(gpu) &&
                     std::any_of(gpu.contacts().begin(),gpu.contacts().end(),
                         [&](const auto& contact) {
                             return contact.pair==pair && contact.count>0u;
