@@ -8560,6 +8560,8 @@ void Scene::solve_gpu_distance_constraints(float seconds) {
     }
     gpu_dy_patches_.resize(friction_patches_.size());
     gpu_dy_manifolds_.assign(manifolds_.size(),{});
+    gpu_dy_contact_order_.clear();
+    constexpr std::uint32_t device_contact_order=0x80000000u;
     for(const auto manager_index:indexed_managers_) {
         const auto& m=manifolds_[manager_index];
         if(m.prepared_friction_epoch!=friction_cache_epoch_)
@@ -8611,12 +8613,32 @@ void Scene::solve_gpu_distance_constraints(float seconds) {
                 patch.bounds_max.z-patch.bounds_min.z};
             const float diagonal=extent.x*extent.x+
                 extent.y*extent.y+extent.z*extent.z;
+            std::uint32_t order_offset;
+            if(m.pcm_result_index!=
+               std::numeric_limits<std::uint32_t>::max()) {
+                if(cursor>=device_contact_order ||
+                   patch.contact_count>device_contact_order-cursor)
+                    throw std::overflow_error(
+                        "GPU PCM direct contact order exceeds address space");
+                // PCM retains source order in the resident contact arena.
+                // Do not upload a second list of identical indices.
+                order_offset=device_contact_order|narrow(cursor);
+            } else {
+                order_offset=narrow(gpu_dy_contact_order_.size());
+                if(cursor>solver_contact_order_.size() ||
+                   patch.contact_count>solver_contact_order_.size()-cursor)
+                    throw std::logic_error(
+                        "CPU Gu contact correlation order is incomplete");
+                for(std::size_t k=0;k<patch.contact_count;++k)
+                    gpu_dy_contact_order_.push_back(
+                        narrow(solver_contact_order_[cursor+k]));
+            }
             gpu_dy_patches_[i]={
                 narrow(patch.row_offset),patch.contact_count,
                 patch.anchor_count,(patch.broken?1u:0u)|
                     (pcm_growth?0x80000000u:0u),
                 patch.static_friction,patch.dynamic_friction,
-                narrow(cursor),pcm_growth
+                order_offset,pcm_growth
                     ? std::bit_cast<std::uint32_t>(diagonal):0u};
             cursor+=patch.contact_count;
         }
@@ -8636,9 +8658,6 @@ void Scene::solve_gpu_distance_constraints(float seconds) {
         manager.order_offset=desc.row1;
         manager.prep_index=desc.row_count;
     }
-    gpu_dy_contact_order_.resize(solver_contact_order_.size());
-    for(std::size_t i=0;i<solver_contact_order_.size();++i)
-        gpu_dy_contact_order_[i]=narrow(solver_contact_order_[i]);
     gpu_broadphase_->solve_gpu_dy_distance(
         gpu_dy_bodies_,gpu_dy_rows_,ordered_constraints_,
         {},gpu_dy_body_ordinals_,gpu_dy_tasks_,
