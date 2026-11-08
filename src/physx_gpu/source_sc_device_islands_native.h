@@ -17,7 +17,7 @@
 namespace fyzz::physx_gpu {
 
 // Transient view of stable Sc contact-manager and constraint identities.
-// Only responding dynamic nodes have a dense ordinal. Static and
+// Only responding solver nodes have a dense ordinal. Static and
 // kinematic endpoints use invalid_node and cannot bridge two islands.
 struct SourceScDeviceIslandEdge {
     std::uint32_t edge_index=0;
@@ -38,7 +38,7 @@ struct SourceScDeviceIslandAdmission {
 static_assert(sizeof(SourceScDeviceIslandAdmission)==24u);
 
 struct SourceScDeviceIslandCount {
-    std::uint32_t dynamic_nodes=0,admitted_edges=0;
+    std::uint32_t responding_nodes=0,admitted_edges=0;
 };
 static_assert(sizeof(SourceScDeviceIslandCount)==8u);
 
