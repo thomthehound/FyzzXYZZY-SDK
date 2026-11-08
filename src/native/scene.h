@@ -400,10 +400,18 @@ public:
     // GPU PCM is explicit; source SAP-only worlds retain their existing
     // CPU narrowphase. An enabled producer must never fall back to CPU Gu.
     virtual bool has_gpu_pcm_box() const noexcept { return false; }
-    virtual void generate_gpu_pcm_box_contacts(
+    // The existing scene stream submits GPU PCM without waiting for Sc.
+    // Sc joins at its first GPU-owned contact consumer; input and result
+    // spans remain alive until that join. No second contact owner exists.
+    virtual void enqueue_gpu_pcm_box_contacts(
         std::span<const GpuPcmBoxPair>,
         std::span<GpuPcmBoxResult>) {
         throw std::logic_error("Source GPU PCM stages are not installed");
+    }
+    virtual void finish_gpu_pcm_box_contacts(
+        std::span<const GpuPcmBoxPair>,
+        std::span<GpuPcmBoxResult>) {
+        throw std::logic_error("Source GPU PCM publication is unavailable");
     }
     // Sc can generate bounded primitive Gu witnesses once, then upload
     // their existing source-ordered records for device Dy preparation.
