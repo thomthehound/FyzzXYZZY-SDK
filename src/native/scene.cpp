@@ -5040,7 +5040,11 @@ void Scene::split_lost_island(bool accurate,BodyId seed) {
             .fetch_add(1,std::memory_order_relaxed);
 }
 
-void Scene::update_island_connectivity() {
+void Scene::update_island_connectivity(bool speculative_only) {
+    const bool speculative_pass=
+        speculative_only || !speculative_connectivity_prepared_;
+    const bool accurate_pass=!speculative_only;
+    if(speculative_only)speculative_connectivity_prepared_=true;
     // PxsIslandSim::IslandSim's node-to-island IDs and persistent island
     // handle slots are now the authoritative connectivity owner. The
     // speculative and accurate graphs share source contact-manager edge
@@ -5089,31 +5093,42 @@ void Scene::update_island_connectivity() {
                 --total;
             }
         };
-        for(Pair pair:found_)
-            change_static(speculative_islands_,body_pair(pair),true);
-        for(Pair pair:lost_)
-            change_static(speculative_islands_,body_pair(pair),false);
-        for(Pair pair:found_contacts_)
-            change_static(accurate_islands_,body_pair(pair),true);
-        for(Pair pair:lost_contacts_)
-            change_static(accurate_islands_,body_pair(pair),false);
+        if(speculative_pass) {
+            for(Pair pair:found_)
+                change_static(speculative_islands_,body_pair(pair),true);
+            for(Pair pair:lost_)
+                change_static(speculative_islands_,body_pair(pair),false);
+        }
+        if(accurate_pass) {
+            for(Pair pair:found_contacts_)
+                change_static(accurate_islands_,body_pair(pair),true);
+            for(Pair pair:lost_contacts_)
+                change_static(accurate_islands_,body_pair(pair),false);
+        }
     }
     if(!rebuild) {
         // No newly connected dynamic edges means no island membership,
         // handle or solver batch change. Preserve the source's quiet
         // publication contract without touching island revision/epochs.
         bool dynamic_found=false;
-        for(Pair pair:found_)
-            if(dynamic_edge(body_pair(pair))) {dynamic_found=true;break;}
-        if(!dynamic_found)
+        if(speculative_pass)
+            for(Pair pair:found_)
+                if(dynamic_edge(body_pair(pair))) {
+                    dynamic_found=true;
+                    break;
+                }
+        if(accurate_pass && !dynamic_found)
             for(Pair pair:found_contacts_)
-                if(dynamic_edge(body_pair(pair))) {dynamic_found=true;break;}
+                if(dynamic_edge(body_pair(pair))) {
+                    dynamic_found=true;
+                    break;
+                }
         if(!dynamic_found) {
-            // Even a static-only touch is a source contact-manager edge
-            // in its awake dynamic island; it cannot be skipped merely
-            // because dynamic connectivity and handles remain unchanged.
-            for(Pair shapes:found_contacts_) {
-                const Pair pair=body_pair(shapes);
+            // A static-only Gu touch still joins its existing accurate
+            // island's contact list, but not the speculative graph.
+            if(accurate_pass)
+                for(Pair shapes:found_contacts_) {
+                    const Pair pair=body_pair(shapes);
                     const auto id=contact_edge_index(shapes);
                     const BodyId node=dynamic_node(pair.a)?pair.a:pair.b;
                     if(id!=invalid_edge && dynamic_node(node))
