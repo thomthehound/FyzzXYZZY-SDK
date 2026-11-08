@@ -21,7 +21,7 @@
 
 namespace fyzz::native {
 struct GpuPcmFrictionAnchorFixture {
-    static EdgeIndex contact_manager_edge(const Scene& scene,Pair shapes) {
+    static std::uint32_t contact_manager_edge(const Scene& scene,Pair shapes) {
         return scene.contact_edge_index(shapes);
     }
     static void verify_source_pair_ownership(const Scene& scene) {
