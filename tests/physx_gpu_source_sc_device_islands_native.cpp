@@ -135,9 +135,9 @@ void verify(Context& context,const char* filename) {
             "Device Sc merged unrelated accurate islands");
     const auto connected=count(first,0u);
     const auto independent=count(first,4u);
-    require(connected.dynamic_nodes==3u &&
+    require(connected.responding_nodes==3u &&
             connected.admitted_edges==3u &&
-            independent.dynamic_nodes==2u &&
+            independent.responding_nodes==2u &&
             independent.admitted_edges==1u &&
             count(first,3u).admitted_edges==1u &&
             count(first,6u).admitted_edges==1u,
@@ -196,7 +196,7 @@ void verify(Context& context,const char* filename) {
     for(std::uint32_t i=0u;i<chain_nodes;++i)
         require(root(long_chain,i)==0u,
                 "Device accurate connectivity left a deep graph disconnected");
-    require(count(long_chain,0u).dynamic_nodes==chain_nodes &&
+    require(count(long_chain,0u).responding_nodes==chain_nodes &&
             count(long_chain,0u).admitted_edges==chain_nodes-1u,
             "Device island admission lost joint constraints under contention");
     for(std::size_t i=0u;i<chain.size();++i)
