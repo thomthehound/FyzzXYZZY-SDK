@@ -287,7 +287,7 @@ void verify(fyzz::compute::Backend backend,const char* sap,
     }
     require(rejected_early_commit,
         "GPU PCM accepted a frame before Sc joined its numerical witnesses");
-    producer->finish_gpu_pcm_box_contacts(request,direct);
+    producer->finish_gpu_pcm_box_contacts();
     producer->commit_gpu_step();
     require(producer->pcm_contact_readback_bytes()==
                 sizeof(physx_gpu::SourcePcmGpuContactStreamNative),
@@ -314,7 +314,7 @@ void verify(fyzz::compute::Backend backend,const char* sap,
     // the GPU still runs PCM, but no pair-list HtoD submission is needed.
     std::array<native::GpuPcmBoxResult,1> repeated{};
     producer->enqueue_gpu_pcm_box_contacts(request,repeated);
-    producer->finish_gpu_pcm_box_contacts(request,repeated);
+    producer->finish_gpu_pcm_box_contacts();
     producer->commit_gpu_step();
     require(producer->pcm_pair_upload_bytes()==0u &&
             repeated[0].status()==0u && repeated[0].edge==edge &&
@@ -328,7 +328,7 @@ void verify(fyzz::compute::Backend backend,const char* sap,
     }};
     std::array<native::GpuPcmBoxResult,1> reset{};
     producer->enqueue_gpu_pcm_box_contacts(reset_request,reset);
-    producer->finish_gpu_pcm_box_contacts(reset_request,reset);
+    producer->finish_gpu_pcm_box_contacts();
     producer->commit_gpu_step();
     require(producer->pcm_pair_upload_bytes()==
                 sizeof(physx_gpu::SourcePcmBoxPairNative),
@@ -362,14 +362,14 @@ void verify(fyzz::compute::Backend backend,const char* sap,
     }};
     std::array<native::GpuPcmBoxResult,1> rejected{};
     producer->enqueue_gpu_pcm_box_contacts(failed_request,rejected);
-    producer->finish_gpu_pcm_box_contacts(failed_request,rejected);
+    producer->finish_gpu_pcm_box_contacts();
     require(rejected[0].count()==0u &&
             rejected[0].touch_transition()==native::GpuPcmTouchTransition::Lost,
         "Rejected Sc PCM refresh did not mutate speculative touch history");
     producer->invalidate_after_rollback();
     std::array<native::GpuPcmBoxResult,1> recovered{};
     producer->enqueue_gpu_pcm_box_contacts(request,recovered);
-    producer->finish_gpu_pcm_box_contacts(request,recovered);
+    producer->finish_gpu_pcm_box_contacts();
     require(recovered[0].status()==0u &&
             recovered[0].count()>0u &&
             recovered[0].touch_transition()==
@@ -385,7 +385,7 @@ void verify(fyzz::compute::Backend backend,const char* sap,
     producer->invalidate_after_rollback();
     std::array<native::GpuPcmBoxResult,1> retried{};
     producer->enqueue_gpu_pcm_box_contacts(request,retried);
-    producer->finish_gpu_pcm_box_contacts(request,retried);
+    producer->finish_gpu_pcm_box_contacts();
     require(retried[0].status()==0u && retried[0].count()>0u &&
             retried[0].touch_transition()==
                 native::GpuPcmTouchTransition::Persists,
