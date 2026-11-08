@@ -4072,28 +4072,54 @@ void Scene::update_contacts() {
         }
         gpu_pcm_results_.resize(gpu_pcm_pairs_.size());
     }
-    // A bounded primitive PCM manager is cheaper to classify once on
-    // the Sc CPU than to execute duplicate GPU PCM and fetch its results.
-    // Dy still prepares and solves against the same packed GPU stream,
-    // uploaded once from the Sc-owned Gu contacts.
-    const bool host_primitive=source_gpu_pcm &&
-        gpu_broadphase_->supports_host_pcm_contacts() &&
-        !gpu_pcm_pairs_.empty() &&
-        std::all_of(gpu_pcm_pairs_.begin(),gpu_pcm_pairs_.end(),
-            [this](const GpuPcmBoxPair& request) {
-                return request.candidate_complete &&
-                    (request.candidate_capacity==1u ||
-                     (request.plane_pair &&
-                      request.candidate_capacity==16u &&
-                      shapes_[request.second].geometry==Geometry::Box));
-            });
-    if(source_gpu_pcm && !host_primitive)
-        gpu_broadphase_->generate_gpu_pcm_box_contacts(
-            gpu_pcm_pairs_,gpu_pcm_results_);
-    if(host_primitive) {
-        // No independent Gu cache or CPU/GPU contact computation pair.
+    // Admit bounded CPU Gu classifications per manager, not only for
+    // primitive-only batches. Select at most four contiguous runs in
+    // source pair order to bound GPU upload and readback spans.
+    struct HostRun { std::size_t first=0u,end=0u; };
+    std::array<HostRun,4> host_runs{};
+    std::size_t host_run_count=0u;
+    std::size_t host_pair_count=0u;
+    if(source_gpu_pcm && gpu_broadphase_->supports_host_pcm_contacts()) {
+        const auto eligible=[this](const GpuPcmBoxPair& request) {
+            return request.candidate_complete &&
+                (request.candidate_capacity==1u ||
+                 (request.plane_pair &&
+                  request.candidate_capacity==16u &&
+                  shapes_[request.second].geometry==Geometry::Box));
+        };
+        for(std::size_t i=0u;i<gpu_pcm_pairs_.size();) {
+            if(!eligible(gpu_pcm_pairs_[i])) {
+                ++i;
+                continue;
+            }
+            const std::size_t first=i;
+            do { ++i; }while(i<gpu_pcm_pairs_.size() &&
+                           eligible(gpu_pcm_pairs_[i]));
+            if(host_run_count<host_runs.size())
+                host_runs[host_run_count++]={first,i};
+            else {
+                std::size_t shortest=0u;
+                for(std::size_t j=1u;j<host_run_count;++j)
+                    if(host_runs[j].end-host_runs[j].first<
+                       host_runs[shortest].end-host_runs[shortest].first)
+                        shortest=j;
+                if(i-first>host_runs[shortest].end-
+                           host_runs[shortest].first)
+                    host_runs[shortest]={first,i};
+            }
+        }
+        for(std::size_t j=0u;j<host_run_count;++j)
+            for(std::size_t i=host_runs[j].first;i<host_runs[j].end;++i) {
+                gpu_pcm_pairs_[i].host_generated=true;
+                ++host_pair_count;
+            }
+    }
+    if(host_pair_count) {
+        // The same Sc cache owns primitive witnesses even when this
+        // frame also schedules general device PCM contacts.
         for(std::size_t i=0u;i<gpu_pcm_pairs_.size();++i) {
             const auto& request=gpu_pcm_pairs_[i];
+            if(!request.host_generated)continue;
             const Shape& first=shapes_[request.first];
             const Shape& second=shapes_[request.second];
             const Shape& sphere=first.geometry==Geometry::Sphere
@@ -4150,9 +4176,14 @@ void Scene::update_contacts() {
             }
         }
     }
-    if(host_primitive)
-        gpu_broadphase_->upload_host_pcm_contacts(
-            gpu_pcm_pairs_,gpu_pcm_results_);
+    if(source_gpu_pcm) {
+        if(host_pair_count==gpu_pcm_pairs_.size() && host_pair_count)
+            gpu_broadphase_->upload_host_pcm_contacts(
+                gpu_pcm_pairs_,gpu_pcm_results_);
+        else
+            gpu_broadphase_->generate_gpu_pcm_box_contacts(
+                gpu_pcm_pairs_,gpu_pcm_results_);
+    }
     std::size_t gpu_pcm_index=0u;
     std::size_t old_cursor = 0;
     std::size_t old_cache_cursor=0;
@@ -4283,7 +4314,7 @@ void Scene::update_contacts() {
                     manifold.count=publish_gpu_pcm_box_box(
                         result,island_edges_[edge].pcm_cache,contacts);
                     island_edges_[edge].pcm_cache.device_history=
-                        !host_primitive;
+                        !gpu_pcm_pairs_[manifold.pcm_result_index].host_generated;
                 }else {
                     manifold.count=convex_pair
                         ?generate_pcm_convex_pair(

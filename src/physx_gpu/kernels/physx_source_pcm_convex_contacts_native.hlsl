@@ -80,6 +80,8 @@ void main(uint3 thread : SV_DispatchThreadID) {
     if(p.surfaceBytes==0u)return;
     const uint i=thread.x;
     if(i>=p.pairCount)return;
+    const uint source=p.pairBias+i*20u;
+    if((pairs.Load(source+16u)&0x10000000u)!=0u)return;
     const uint result=p.resultBias+i*32u;
     // Direct GJK and sparse EPA both publish into Sc's result stream.
     // Quiet cached managers retain their existing four-point manifold.
@@ -87,11 +89,10 @@ void main(uint3 thread : SV_DispatchThreadID) {
        results.Load(result)!=1u ||
        results.Load(result+20u)!=1u ||
        results.Load(result+28u)==0u)return;
-    const uint source=p.pairBias+i*20u;
     const uint a=pairs.Load(source),b=pairs.Load(source+4u);
     const uint edge=pairs.Load(source+8u);
     const uint first=pairs.Load(source+12u);
-    const uint limit=pairs.Load(source+16u)&0x1fffffffu;
+    const uint limit=pairs.Load(source+16u)&0x0fffffffu;
     if(a>=p.shapeCapacity || b>=p.shapeCapacity ||
        edge>=p.edgeCapacity || first>p.candidateCapacity ||
        limit>p.candidateCapacity-first)return;

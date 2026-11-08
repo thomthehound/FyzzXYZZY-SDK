@@ -133,34 +133,8 @@ public:
         if(pcm_transaction_pending_)
             throw std::logic_error("Source PCM host upload before GPU epoch commit");
         restore_rejected_epoch();
-        for(std::size_t i=0;i<requests.size();++i) {
-            const auto& request=requests[i];
-            const auto& result=results[i];
-            if(!request.candidate_complete ||
-               !(request.candidate_capacity==1u ||
-                 (request.plane_pair && request.candidate_capacity==16u)) ||
-               request.edge!=result.edge || result.count()>4u ||
-               result.status()!=0u ||
-               result.cached_count()!=result.count() ||
-               (result.selected_and_regenerated()&0x7fffffffu)!=result.count() ||
-               ((result.count()!=0u)!=
-                (result.touch_transition()==native::GpuPcmTouchTransition::Found ||
-                 result.touch_transition()==native::GpuPcmTouchTransition::Persists)))
-                throw std::logic_error("Invalid source Gu primitive contact stream");
-            if(!result.count())continue;
-            const auto n=result.normal;
-            if(!std::isfinite(n.x) || !std::isfinite(n.y) ||
-               !std::isfinite(n.z))
-                throw std::overflow_error("Nonfinite Sc primitive PCM normal");
-            for(std::uint32_t j=0u;j<result.count();++j) {
-                const auto& point=result.points[j];
-                if(!std::isfinite(point.position.x) ||
-                   !std::isfinite(point.position.y) ||
-                   !std::isfinite(point.position.z) ||
-                   !std::isfinite(point.separation))
-                    throw std::overflow_error("Nonfinite Sc primitive PCM witness");
-            }
-        }
+        for(std::size_t i=0;i<requests.size();++i)
+            validate_host_contact(requests[i],results[i]);
         const auto bytes=source_allocation_bytes(
             requests.size(),sizeof(SourcePcmGpuContactStreamNative));
         dense_contacts_.allocate(bytes,PX_FL);
@@ -216,6 +190,12 @@ public:
         for(std::uint32_t i=0u;i<pair_count;++i) {
             const auto& request=requests[i];
             needs_continuation|=!request.candidate_complete;
+            if(request.host_generated) {
+                validate_host_contact(request,output[i]);
+                if(!request.candidate_complete)
+                    throw std::logic_error(
+                        "CPU source Gu cannot own GPU continuation pair");
+            }
             if(!request.plane_pair && request.candidate_capacity==4u) {
                 first_face_pair=std::min(first_face_pair,i);
                 face_pair_end=i+1u;
@@ -247,8 +227,9 @@ public:
                request.candidate_capacity!=16u)
                 throw std::invalid_argument(
                     "GPU PCM candidate count must match its geometry");
-            const auto reservation=request.plane_pair?0u:
-                request.candidate_capacity;
+            const auto reservation=
+                request.host_generated || request.plane_pair
+                    ?0u:request.candidate_capacity;
             if(reservation>
                std::numeric_limits<std::uint32_t>::max()-candidate_count)
                 throw std::out_of_range(
@@ -262,10 +243,12 @@ public:
                     std::bit_cast<std::uint32_t>(request.plane_height),
                     second,request.edge,
                     std::bit_cast<std::uint32_t>(request.contact_distance),
-                    source_pcm_plane_bit | reset | prior}
+                    source_pcm_plane_bit | reset | prior |
+                        (request.host_generated?source_pcm_host_gu_bit:0u)}
                 : SourcePcmBoxPairNative{
                     first,second,request.edge,candidate_count,
-                    request.candidate_capacity | reset | prior};
+                    request.candidate_capacity | reset | prior |
+                        (request.host_generated?source_pcm_host_gu_bit:0u)};
             candidate_count+=reservation;
             // Sc's previous pair records are the transfer baseline.
             // Preserve a single ordered upload by widening one dirty
@@ -327,16 +310,33 @@ public:
             first_dirty=0u;
             last_dirty=pair_count;
         }
+        auto& uploads=stream_.upload_scratch();
         if(first_dirty<last_dirty) {
             const auto stride=sizeof(pair_host_[0]);
             const auto bytes=std::size_t(last_dirty-first_dirty)*stride;
-            auto& uploads=stream_.upload_scratch();
             uploads.push_back({
                 pairs_.getDevicePtr()+std::size_t(first_dirty)*stride,
                 pair_host_.data()+first_dirty,bytes});
-            stream_.queue_uploads(uploads);
             last_pair_upload_bytes_=bytes;
         }
+        // Sc primitive slots share the GPU PCM world-contact ABI.
+        // Transfer only contiguous host-owned spans; general GPU
+        // publishers fill the remaining ordinals in this same buffer.
+        for(std::size_t i=0u;i<pair_count;) {
+            if(!requests[i].host_generated) {
+                ++i;
+                continue;
+            }
+            const auto first=i;
+            while(i<pair_count && requests[i].host_generated)++i;
+            const auto stride=sizeof(native::GpuPcmBoxResult);
+            const auto bytes=(i-first)*stride;
+            uploads.push_back({
+                dense_contacts_.getDevicePtr()+first*stride,
+                output.data()+first,bytes});
+            last_host_contact_upload_bytes_+=bytes;
+        }
+        if(!uploads.empty())stream_.queue_uploads(uploads);
         reset_manifolds_=false;
         // The source EdgeIndex pool is allowed to grow beyond previously
         // committed history. Initialize only newly admitted records;
@@ -432,20 +432,32 @@ public:
         last_continuation_commands_=
             stream_.commands().size()-before_continuation;
 
-        // Sc's result arena has the same packed ABI as the GPU stream.
-        // Download once into its final destination; Dy reads the unchanged
-        // device buffer without a second transfer or conversion pass.
-        const auto readback_bytes=output.size_bytes();
-        const auto mapped=addresses_.resolve(
-            dense_contacts_.getDevicePtr(),readback_bytes);
-        const std::array<compute::DownloadSpan,1> downloads{{
-            {mapped.buffer,mapped.offset,output.data(),readback_bytes}
-        }};
+        // Only general GPU Gu slots cross into Sc. The primitive
+        // slots are already present in output and resident in the
+        // unchanged 84-byte PCM stream used by Dy. All readback spans
+        // share one GPU completion boundary.
+        gpu_downloads_.clear();
+        for(std::size_t i=0u;i<pair_count;) {
+            if(requests[i].host_generated) {
+                ++i;
+                continue;
+            }
+            const auto first=i;
+            while(i<pair_count && !requests[i].host_generated)++i;
+            const auto stride=sizeof(native::GpuPcmBoxResult);
+            const auto bytes=(i-first)*stride;
+            const auto mapped=addresses_.resolve(
+                dense_contacts_.getDevicePtr()+first*stride,bytes);
+            gpu_downloads_.push_back({
+                mapped.buffer,mapped.offset,output.data()+first,bytes});
+            last_contact_download_bytes_+=bytes;
+        }
         pcm_transaction_pending_=true;
         journal_pair_count_=pair_count;
         journal_edge_capacity_=edge_capacity;
         pending_edge_span_bytes_=std::size_t(edge_capacity)*240u;
-        stream_.fetch(downloads);
+        if(!gpu_downloads_.empty())stream_.fetch(gpu_downloads_);
+        else stream_.submit();
         for(std::uint32_t i=0u;i<pair_count;++i) {
             const auto& stored=output[i];
             const auto& request=requests[i];
@@ -467,7 +479,6 @@ public:
                     "Source GPU PCM publication disagrees with original Sc manager");
         }
         published_pair_count_=pair_count;
-        last_contact_download_bytes_=readback_bytes;
         rebuild_required_=false;
     }
     CudaDeviceAddressMap::Address contact_stream_address() const noexcept {
@@ -495,6 +506,34 @@ public:
         return last_face_pair_scan_count_;
     }
 private:
+    static void validate_host_contact(
+            const native::GpuPcmBoxPair& request,
+            const native::GpuPcmBoxResult& result) {
+        if(!request.candidate_complete ||
+           !(request.candidate_capacity==1u ||
+             (request.plane_pair && request.candidate_capacity==16u)) ||
+           request.edge!=result.edge || result.count()>4u ||
+           result.status()!=0u ||
+           result.cached_count()!=result.count() ||
+           (result.selected_and_regenerated()&0x7fffffffu)!=result.count() ||
+           ((result.count()!=0u)!=
+            (result.touch_transition()==native::GpuPcmTouchTransition::Found ||
+             result.touch_transition()==native::GpuPcmTouchTransition::Persists)))
+            throw std::logic_error("Invalid source Gu primitive contact stream");
+        if(!result.count())return;
+        const auto n=result.normal;
+        if(!std::isfinite(n.x) || !std::isfinite(n.y) ||
+           !std::isfinite(n.z))
+            throw std::overflow_error("Nonfinite Sc primitive PCM normal");
+        for(std::uint32_t j=0u;j<result.count();++j) {
+            const auto& point=result.points[j];
+            if(!std::isfinite(point.position.x) ||
+               !std::isfinite(point.position.y) ||
+               !std::isfinite(point.position.z) ||
+               !std::isfinite(point.separation))
+                throw std::overflow_error("Nonfinite Sc primitive PCM witness");
+        }
+    }
     void restore_rejected_epoch() {
         if(!restore_pending_)return;
         // A rejected GPU Gu journal must be restored before another
@@ -531,6 +570,7 @@ private:
     compute::BufferId indirect_buffer_=0u;
     CudaDeviceAddressMap::Address indirect_address_=0u;
     std::vector<SourcePcmBoxPairNative> pair_host_;
+    std::vector<compute::DownloadSpan> gpu_downloads_;
     bool reset_manifolds_=false;
     bool rebuild_required_=false;
     bool pcm_transaction_pending_=false,restore_pending_=false;

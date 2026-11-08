@@ -103,8 +103,11 @@ struct GpuPcmBoxPair {
     float plane_height=0.0f;
     float contact_distance=0.0f;
     bool previously_touching=false;
-    // Sc geometry guarantees the candidate stage completes this pair.
+    // Sc classifies this bounded primitive manager. Its packed Gu
+    // contact occupies the original PCM ordinal in the device stream;
+    // general managers in the same batch remain GPU-owned.
     bool candidate_complete=false;
+    bool host_generated=false;
 };
 enum class GpuPcmTouchTransition : std::uint32_t {
     None=0,Found=1,Persists=2,Lost=3

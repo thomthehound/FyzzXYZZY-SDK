@@ -2192,12 +2192,27 @@ void verify_host_primitive_pcm_solver(
     };
     const auto cpu_general=add_general(cpu);
     const auto gpu_general=add_general(gpu);
+    // The second CPU primitive run lies AFTER the general box pair in
+    // Sc source order. Both host islands must retain their device slots.
+    const auto add_remote_sphere=[](native::Scene& scene) {
+        scene.add_static_sphere(0.5f,{100.f,5.f,0.f});
+        const auto moving=scene.add_dynamic_sphere(
+            0.5f,{100.7f,5.f,0.f},1.f);
+        RigidBodyDynamics no_gravity{};
+        no_gravity.gravity_enabled=false;
+        scene.set_dynamics(moving,no_gravity);
+    };
+    add_remote_sphere(cpu);
+    add_remote_sphere(gpu);
     cpu.step(dt);
     gpu.step(dt);
-    require(producer->pcm_contact_readback_bytes()>0u &&
-            producer->pcm_host_contact_upload_bytes()==0u &&
+    require(producer->pcm_contact_readback_bytes()==
+                sizeof(physx_gpu::SourcePcmGpuContactStreamNative) &&
+            producer->pcm_host_contact_upload_bytes()==
+                5u*sizeof(physx_gpu::SourcePcmGpuContactStreamNative) &&
             cpu.contacts().size()==gpu.contacts().size(),
-        "Mixed box/primitive frame lost GPU PCM ownership");
+        "Mixed Sc PCM fetched primitive contacts or lost general GPU Gu");
+    native::GpuPcmFrictionAnchorFixture::verify(cpu,gpu);
     cpu.remove(cpu_general);
     gpu.remove(gpu_general);
     cpu.step(dt);

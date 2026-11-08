@@ -31,7 +31,10 @@ constexpr std::uint32_t source_pcm_reset_cache_bit=0x80000000u;
 constexpr std::uint32_t source_pcm_plane_bit=0x40000000u;
 // Seed the edge's prior physical-touch state when its Gu cache resets.
 constexpr std::uint32_t source_pcm_prior_touch_bit=0x20000000u;
-constexpr std::uint32_t source_pcm_candidate_capacity_mask=0x1fffffffu;
+// CPU Gu has already published this Sc ordinal into the resident PCM
+// stream. Only GPU-owned pairs participate in device witness updates.
+constexpr std::uint32_t source_pcm_host_gu_bit=0x10000000u;
+constexpr std::uint32_t source_pcm_candidate_capacity_mask=0x0fffffffu;
 
 // GuPCMContactBoxBox::pcmContactBoxBox requires local A/B witnesses and a
 // B-local normal before the source persistent-manifold reduction.
