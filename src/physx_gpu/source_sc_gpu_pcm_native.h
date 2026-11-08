@@ -135,6 +135,7 @@ public:
             published_edge_span_bytes_,pending_edge_span_bytes_);
         pcm_transaction_pending_=false;
         journal_pair_count_=0u;
+        journal_host_only_=false;
     }
 
     // Primitive CPU Gu contacts are already authoritative for Sc.
@@ -149,21 +150,63 @@ public:
         if(pcm_transaction_pending_)
             throw std::logic_error("Source PCM host upload before GPU epoch commit");
         restore_rejected_epoch();
-        for(std::size_t i=0;i<requests.size();++i)
+        std::uint32_t largest_edge=0u;
+        for(std::size_t i=0;i<requests.size();++i) {
             validate_host_contact(requests[i],results[i]);
+            if(requests[i].edge==std::numeric_limits<std::uint32_t>::max())
+                throw std::out_of_range("Source Sc edge watermark overflow");
+            largest_edge=std::max(largest_edge,requests[i].edge);
+        }
+        const auto pair_count=static_cast<std::uint32_t>(requests.size());
+        const auto edge_capacity=largest_edge+1u;
         const auto bytes=source_allocation_bytes(
-            requests.size(),sizeof(SourcePcmGpuContactStreamNative));
+            pair_count,sizeof(SourcePcmGpuContactStreamNative));
         dense_contacts_.allocate(bytes,PX_FL);
-        const auto transfer=results.size_bytes();
+        const auto requested_edge_bytes=source_allocation_bytes(
+            edge_capacity,240u);
+        const bool edge_grew=requested_edge_bytes>edges_.getSize();
+        last_edge_history_copy_bytes_=edge_grew
+            ?published_edge_span_bytes_:0u;
+        edges_.allocateCopyPrefixAsync(requested_edge_bytes,
+            published_edge_span_bytes_,stream_,PX_FL);
+        if(edge_grew && published_edge_span_bytes_)stream_.submit();
+        journal_.allocate(source_allocation_bytes(pair_count,240u),PX_FL);
+
+        // The host Gu stream already contains every EdgeIndex and touch
+        // transition. Use it for the same device history transaction
+        // without uploading a redundant pair-index stream.
         auto& uploads=stream_.upload_scratch();
         uploads.push_back({
-            dense_contacts_.getDevicePtr(),results.data(),transfer});
+            dense_contacts_.getDevicePtr(),results.data(),results.size_bytes()});
         stream_.queue_uploads(uploads);
-        published_pair_count_=static_cast<std::uint32_t>(requests.size());
+        const auto initialized_edges=static_cast<std::uint32_t>(
+            std::min<std::size_t>(edge_capacity,
+                                  published_edge_span_bytes_/240u));
+        if(initialized_edges<edge_capacity)
+            journal_stage_.append(stream_,addresses_,
+                SourceScContactHistoryNativeStage::Phase::Initialize,
+                dense_contacts_.getDevicePtr(),edges_.getDevicePtr(),
+                journal_.getDevicePtr(),0u,edge_capacity,initialized_edges);
+        journal_stage_.append(stream_,addresses_,
+            SourceScContactHistoryNativeStage::Phase::SnapshotHost,
+            dense_contacts_.getDevicePtr(),edges_.getDevicePtr(),
+            journal_.getDevicePtr(),pair_count,edge_capacity);
+        journal_stage_.append(stream_,addresses_,
+            SourceScContactHistoryNativeStage::Phase::PublishHostTouch,
+            dense_contacts_.getDevicePtr(),edges_.getDevicePtr(),
+            journal_.getDevicePtr(),pair_count,edge_capacity);
+        // Submit the snapshot before Sc can reject this epoch.
+        pcm_transaction_pending_=true;
+        journal_host_only_=true;
+        journal_pair_count_=pair_count;
+        journal_edge_capacity_=edge_capacity;
+        pending_edge_span_bytes_=std::size_t(edge_capacity)*240u;
+        published_pair_count_=pair_count;
+        host_upload_pending_=true;
+        stream_.submit();
         last_pair_upload_bytes_=0u;
         last_contact_download_bytes_=0u;
-        last_host_contact_upload_bytes_=transfer;
-        last_edge_history_copy_bytes_=0u;
+        last_host_contact_upload_bytes_=results.size_bytes();
         last_continuation_commands_=0u;
         last_face_pair_scan_count_=0u;
         rebuild_required_=false;
@@ -454,6 +497,7 @@ public:
         pending_output_=output;
         journal_pair_count_=pair_count;
         journal_edge_capacity_=edge_capacity;
+        journal_host_only_=false;
         pending_edge_span_bytes_=std::size_t(edge_capacity)*240u;
         // The DMA follows the last PCM shader immediately, while Sc
         // independently admits speculative topology and CPU Gu.
@@ -515,6 +559,14 @@ public:
         }
         if(!uploads.empty()) {
             stream_.queue_uploads(uploads);
+            // The final source contact stream carries both CPU Gu and
+            // GPU PCM touch transitions. The same device EdgeIndex is
+            // visible to downstream accurate-connectivity consumers.
+            journal_stage_.append(stream_,addresses_,
+                SourceScContactHistoryNativeStage::Phase::PublishHostTouch,
+                dense_contacts_.getDevicePtr(),edges_.getDevicePtr(),
+                journal_.getDevicePtr(),journal_pair_count_,
+                journal_edge_capacity_);
             host_upload_pending_=true;
         }
         published_pair_count_=journal_pair_count_;
@@ -581,14 +633,18 @@ private:
         // A rejected GPU Gu journal must be restored before another
         // producer can touch the same persistent EdgeIndex history.
         journal_stage_.append(stream_,addresses_,
-            SourceScContactHistoryNativeStage::Phase::Restore,
-            pairs_.getDevicePtr(),edges_.getDevicePtr(),
-            journal_.getDevicePtr(),journal_pair_count_,
-            journal_edge_capacity_);
+            journal_host_only_
+                ?SourceScContactHistoryNativeStage::Phase::RestoreHost
+                :SourceScContactHistoryNativeStage::Phase::Restore,
+            journal_host_only_?dense_contacts_.getDevicePtr():
+                               pairs_.getDevicePtr(),
+            edges_.getDevicePtr(),journal_.getDevicePtr(),
+            journal_pair_count_,journal_edge_capacity_);
         stream_.submit();
         stream_.wait_at_fetch();
         restore_pending_=false;
         journal_pair_count_=0u;
+        journal_host_only_=false;
     }
     compute::Context& context_;
     CudaDeviceAddressMap& addresses_;
@@ -617,6 +673,7 @@ private:
     bool rebuild_required_=false;
     bool pcm_transaction_pending_=false,restore_pending_=false;
     bool result_pending_=false,host_upload_pending_=false;
+    bool journal_host_only_=false;
     // Borrowed Sc views survive until finish() or rollback; GPU output
     // is written directly into the enqueued Sc result arena at the join.
     std::span<const native::GpuPcmBoxPair> pending_requests_{};
