@@ -1293,6 +1293,45 @@ void verify_gpu_coupled_solver(
                     std::fabs(actual.velocity.y-expected.velocity.y)<0.03f,
                 "GPU contact descriptor lost moving kinematic solver velocity");
         }
+
+        // Reclassifying an overlapping pair from kinematic/kinematic
+        // to dynamic/kinematic must discover the previously ineligible
+        // finite SAP overlap from the original GPU source history.
+        // Its source pair identity survives both refilter directions.
+        const Vec3 left{60.f,2.f,0.f},right{60.75f,2.f,0.f};
+        const auto left_cpu=cpu.add_dynamic_box(extents,left,1.f);
+        const auto left_gpu=gpu.add_dynamic_box(extents,left,1.f);
+        const auto right_cpu=cpu.add_dynamic_box(extents,right,1.f);
+        const auto right_gpu=gpu.add_dynamic_box(extents,right,1.f);
+        cpu.set_kinematic(left_cpu,true);
+        gpu.set_kinematic(left_gpu,true);
+        cpu.set_kinematic(right_cpu,true);
+        gpu.set_kinematic(right_gpu,true);
+        const native::Pair expected_pair{left_cpu,right_cpu};
+        const auto admitted=[&](const native::Scene& source) {
+            const auto current=source.pairs();
+            return std::find(current.begin(),current.end(),expected_pair)!=
+                   current.end();
+        };
+        cpu.advance_collision();
+        gpu.advance_collision();
+        require(!admitted(cpu) && !admitted(gpu),
+            "Kinematic-only overlap unexpectedly retained a Sc contact manager");
+        native::GpuPcmFrictionAnchorFixture::verify_source_pair_ownership(gpu);
+        cpu.set_kinematic(left_cpu,false);
+        gpu.set_kinematic(left_gpu,false);
+        cpu.advance_collision();
+        gpu.advance_collision();
+        require(admitted(cpu) && admitted(gpu),
+            "Native GPU full overlap report omitted reclassified contact");
+        native::GpuPcmFrictionAnchorFixture::verify_source_pair_ownership(gpu);
+        cpu.set_kinematic(left_cpu,true);
+        gpu.set_kinematic(left_gpu,true);
+        cpu.advance_collision();
+        gpu.advance_collision();
+        require(!admitted(cpu) && !admitted(gpu),
+            "Native GPU pair refilter retained a kinematic-only manager");
+        native::GpuPcmFrictionAnchorFixture::verify_source_pair_ownership(gpu);
     }
 }
 
