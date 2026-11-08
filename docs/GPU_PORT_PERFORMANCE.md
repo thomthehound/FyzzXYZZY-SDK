@@ -111,8 +111,16 @@ with at most four host-contact runs and five GPU-result runs; the
 remaining primitive managers are device-generated when a batch is
 more fragmented. This bounds transfer-command overhead without
 introducing another registry, a GPU scatter kernel or an intermediate
-CPU/GPU completion boundary. General PCM still joins Sc before the
-accurate island and Dy task publication.
+CPU/GPU completion boundary. General PCM now submits its device candidate/continuation work before
+Sc traverses the source-ordered Gu managers. The GPU results join at the
+first GPU-owned Sc witness consumer, allowing preceding CPU Gu work to
+overlap this submission. This uses the same source queue and one batched
+readback; it adds no second contact stream or solver path. General PCM
+still joins Sc before the accurate island and Dy task publication, so
+this is a scheduling improvement opportunity, not device-resident
+contact/solver execution. The mixed-run transfer-byte total is unchanged:
+replacing primitive GPU readbacks with equal-sized CPU uploads does not
+by itself establish an end-to-end speedup.
 
 Production reviews must identify **each necessary GPU → CPU → GPU handoff**,
 the value crossing it, the consumer forcing synchronization, and whether
