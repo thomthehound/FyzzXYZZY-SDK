@@ -707,6 +707,23 @@ if(FYZZXYZZY_BUILD_D3D12)
 
 
 
+    # Source Sc device accurate-island graph and ordered Dy admission.
+    set(FYZZXYZZY_SOURCE_SC_DEVICE_ISLAND_DXIL
+      "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_source_sc_device_islands_native.dxil")
+    fyzzxyzzy_compile_hlsl("${FYZZXYZZY_SOURCE_SC_DEVICE_ISLAND_DXIL}"
+      "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_sc_device_islands_native.hlsl"
+      cs_6_0 main)
+    add_custom_target(fyzzxyzzy_source_sc_device_island_shader_d3d12
+      DEPENDS "${FYZZXYZZY_SOURCE_SC_DEVICE_ISLAND_DXIL}")
+    fyzzxyzzy_add_gpu_test(fyzzxyzzy_source_sc_device_islands_d3d12
+      SOURCES tests/physx_gpu_source_sc_device_islands_native.cpp
+      DEFINITIONS FYZZXYZZY_TEST_D3D12=1
+      INCLUDES "${CMAKE_CURRENT_SOURCE_DIR}/src"
+      LIBRARIES FyzzXYZZY::ComputeD3D12 fyzzxyzzy_source_gpu_primitives_d3d12
+      DEPENDS fyzzxyzzy_source_sc_device_island_shader_d3d12
+      ARGS "${FYZZXYZZY_SOURCE_SC_DEVICE_ISLAND_DXIL}")
+    set_tests_properties(fyzzxyzzy_source_sc_device_islands_d3d12
+      PROPERTIES ENVIRONMENT "FYZZXYZZY_D3D12_DEBUG=1" TIMEOUT 180)
     # Source aggregate.cu::updateAggregateBounds, original 32-lane
     # aggregate member reduction (4 warps per native workgroup).
     set(FYZZXYZZY_SOURCE_AGGREGATE_BOUNDS_DXIL
