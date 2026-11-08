@@ -1401,14 +1401,40 @@ public:
                    manager.patch_offset>patches.size() ||
                    manager.patch_count>patches.size()-manager.patch_offset)
                     throw std::logic_error("Source Dy contact writeback range invalid");
-                for(std::size_t j=manager.order_offset;
-                    j<manager.order_offset+manager.contact_count;++j) {
-                    const auto index=contact_order[j];
-                    if(index>=contact_forces.size())
-                        throw std::logic_error("Source Dy contact writeback index invalid");
-                    std::memcpy(&contact_forces[index],
-                        host_.data()+result_offsets[2]+index*4u,4u);
+                // The source contact order is implicit for PCM patches:
+                // their Gu points already occupy the resident solver
+                // arena consecutively. CPU Gu patches retain their
+                // explicit correlation order, packed without PCM holes.
+                std::size_t written=0u;
+                for(std::size_t patch_index=manager.patch_offset;
+                    patch_index<manager.patch_offset+manager.patch_count;
+                    ++patch_index) {
+                    const auto& patch=patches[patch_index];
+                    constexpr std::uint32_t direct=0x80000000u;
+                    const bool resident=(patch.order_offset&direct)!=0u;
+                    const std::size_t begin=patch.order_offset&~direct;
+                    const std::size_t limit=resident
+                        ?contact_forces.size():contact_order.size();
+                    if(begin>limit || patch.contact_count>limit-begin ||
+                       written>manager.contact_count ||
+                       patch.contact_count>manager.contact_count-written)
+                        throw std::logic_error(
+                            "Source Dy contact patch order is invalid");
+                    for(std::size_t k=0u;k<patch.contact_count;++k) {
+                        const auto index=resident
+                            ?begin+k:contact_order[begin+k];
+                        if(index<manager.order_offset ||
+                           index>=manager.order_offset+manager.contact_count)
+                            throw std::logic_error(
+                                "Source Dy contact writeback index invalid");
+                        std::memcpy(&contact_forces[index],
+                            host_.data()+result_offsets[2]+index*4u,4u);
+                    }
+                    written+=patch.contact_count;
                 }
+                if(written!=manager.contact_count)
+                    throw std::logic_error(
+                        "Source Dy contact writeback omitted Gu rows");
                 for(std::size_t j=manager.patch_offset;
                     j<manager.patch_offset+manager.patch_count;++j) {
                     auto& patch=patches[j];
