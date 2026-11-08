@@ -1936,11 +1936,7 @@ private:
                   alignof(ConstraintDescriptor)==4u);
     // Stable conflict scatter resolves source ActorIDs to dense solver
     // row indices; the static-world participant has no writable row.
-    struct SolverConstraintDescriptor {
-        std::uint32_t index=0;
-        std::uint32_t row0=0, row1=0;
-        std::uint32_t row_count=0;
-    };
+    using SolverConstraintDescriptor=GpuDyDistanceDescriptor;
     static_assert(sizeof(SolverConstraintDescriptor)==16u &&
                   alignof(SolverConstraintDescriptor)==4u);
     static constexpr std::uint32_t invalid_solver_row=
@@ -2068,7 +2064,6 @@ private:
     bool gpu_dy_pose_ready_=false;
     std::vector<GpuDyJointRow> gpu_dy_rows_;
     std::vector<GpuDyJointInput> gpu_dy_joint_inputs_;
-    std::vector<GpuDyDistanceDescriptor> gpu_dy_descriptors_;
     std::vector<std::uint32_t> gpu_dy_body_ordinals_;
     std::vector<GpuDyDistanceTask> gpu_dy_tasks_;
     std::vector<float> gpu_dy_contact_forces_;

@@ -7083,14 +7083,43 @@ void Scene::partition_constraints() {
     for(auto& task:solver_tasks_) {
         const std::size_t manager_end=task.manager_end;
         const std::size_t descriptor_begin=constraint_descriptors_.size();
-        // Source setupDescTask queues 1D edges before contact managers
-        // in each active-island task chain; both enter the SAME body
-        // conflict allocator and stable partition scatter.
+        const auto gpu_first=ordered_constraints_.size();
+        // Source setupDescTask admits 1D edges before contact managers.
+        // Native Dy receives their solver-row descriptors directly; CPU
+        // PGS retains the ActorID descriptor stream.
         const auto narrow_index=[](std::size_t index) {
             if(index>std::numeric_limits<std::uint32_t>::max())
                 throw std::overflow_error(
                     "Source Dy descriptor index exceeds GPU address range");
             return static_cast<std::uint32_t>(index);
+        };
+        const auto dense_row=[&](BodyId id) {
+            const auto& actor=actors_[id];
+            if(!rigid_node(actor.motion))return invalid_solver_row;
+            if(actor.solver_row_generation!=solver_preparation_generation_ ||
+               actor.solver_row_index>=solver_rows_.size() ||
+               actor.solver_row_index>=invalid_solver_row)
+                throw std::logic_error(
+                    "Native device partition references an unprepared solver body");
+            return static_cast<std::uint32_t>(actor.solver_row_index);
+        };
+        const auto admit=[&](std::uint32_t index,BodyId a,BodyId b,
+                             std::uint32_t row_count) {
+            if(!gpu_integration) {
+                constraint_descriptors_.push_back({index,a,b,row_count});
+                return;
+            }
+            const auto& actor_a=actors_[a];
+            const auto& actor_b=actors_[b];
+            const bool dynamic_a=actor_a.motion==Motion::Dynamic;
+            const bool dynamic_b=actor_b.motion==Motion::Dynamic;
+            if((dynamic_a && actor_a.sleeping) ||
+               (dynamic_b && actor_b.sleeping) ||
+               (!dynamic_a && !dynamic_b))
+                return;
+            ordered_constraints_.push_back({
+                index,dense_row(a),dense_row(b),row_count |
+                    (dynamic_a?0x100u:0u)|(dynamic_b?0x200u:0u)});
         };
         for(std::size_t j=joint_begin;j<task.joint_end;++j) {
             const auto& edge=island_edges_[indexed_joints_[j]];
@@ -7100,8 +7129,7 @@ void Scene::partition_constraints() {
                  joint.kind==JointKind::Fixed?6u:5u);
             const auto a=joint.swapped?edge.pair.b:edge.pair.a;
             const auto b=joint.swapped?edge.pair.a:edge.pair.b;
-            constraint_descriptors_.push_back({
-                narrow_index(joint_row_begin),a,b,count});
+            admit(narrow_index(joint_row_begin),a,b,count);
             joint_row_begin+=count;
         }
         for(std::size_t j=manager_begin;j<manager_end;++j) {
@@ -7109,53 +7137,15 @@ void Scene::partition_constraints() {
             const auto& manifold=manifolds_[index];
             const bool reversed=island_edges_[
                 manifold.edge_handle].gu_order_reversed;
-            // ScNPhaseCore::shouldSwapBodies determines Dy's oriented
-            // endpoints before the source partition scatter. Every
-            // position/velocity pass consumes these same resolved IDs.
-            constraint_descriptors_.push_back({
-                narrow_index(index),
-                shapes_[reversed?manifold.pair.b:manifold.pair.a].body,
-                shapes_[reversed?manifold.pair.a:manifold.pair.b].body,
-                false});
+            admit(narrow_index(index),
+                  shapes_[reversed?manifold.pair.b:manifold.pair.a].body,
+                  shapes_[reversed?manifold.pair.a:manifold.pair.b].body,0u);
         }
-        // Sc publishes source-order task descriptors for device Dy.
-        // The GPU assigns conflict partitions and performs stable scatter.
-        // Row-count bits 8 and 9 describe dynamic endpoints until the
-        // device strips them before running the original PGS solver.
         if(gpu_integration) {
-            const auto dense_row=[&](BodyId id) {
-                const auto& actor=actors_[id];
-                if(!rigid_node(actor.motion))return invalid_solver_row;
-                if(actor.solver_row_generation!=solver_preparation_generation_ ||
-                   actor.solver_row_index>=solver_rows_.size() ||
-                   actor.solver_row_index>=invalid_solver_row)
-                    throw std::logic_error(
-                        "Native device partition references an unprepared solver body");
-                return static_cast<std::uint32_t>(actor.solver_row_index);
-            };
-            const auto first=ordered_constraints_.size();
-            for(std::size_t i=descriptor_begin;
-                i<constraint_descriptors_.size();++i) {
-                const auto& source=constraint_descriptors_[i];
-                const auto& a=actors_[source.body0];
-                const auto& b=actors_[source.body1];
-                const bool dynamic_a=a.motion==Motion::Dynamic;
-                const bool dynamic_b=b.motion==Motion::Dynamic;
-                if((dynamic_a && a.sleeping) ||
-                   (dynamic_b && b.sleeping) ||
-                   (!dynamic_a && !dynamic_b))
-                    continue;
-                ordered_constraints_.push_back({
-                    source.index,dense_row(source.body0),
-                    dense_row(source.body1),source.row_count |
-                        (dynamic_a?0x100u:0u) |
-                        (dynamic_b?0x200u:0u)});
-            }
-            const auto count=ordered_constraints_.size()-first;
+            const auto count=ordered_constraints_.size()-gpu_first;
             if(count>std::numeric_limits<std::size_t>::max()-partition_base)
                 throw std::overflow_error("Device Dy task partition capacity overflow");
             partition_base+=count;
-            // Device coloring writes partition ends; Sc retains only the ranges.
             task.partition_end=partition_base;
             task.constraint_end=ordered_constraints_.size();
             manager_begin=manager_end;
@@ -8440,11 +8430,6 @@ void Scene::solve_gpu_distance_constraints(float seconds) {
     if(gpu_dy_rows_.size()!=joint_rows_.size())
         throw std::logic_error(
             "Source GPU 1D row preparation did not cover source rows");
-    gpu_dy_descriptors_.resize(ordered_constraints_.size());
-    for(std::size_t i=0;i<ordered_constraints_.size();++i) {
-        const auto& d=ordered_constraints_[i];
-        gpu_dy_descriptors_[i]={d.index,d.row0,d.row1,d.row_count};
-    }
     gpu_dy_body_ordinals_.resize(solver_active_ids_.size());
     for(std::size_t i=0;i<solver_active_ids_.size();++i)
         gpu_dy_body_ordinals_[i]=narrow(
@@ -8570,7 +8555,7 @@ void Scene::solve_gpu_distance_constraints(float seconds) {
     // Zero-response managers have no DyContactPrep record. Preserve
     // their original endpoint ordinals and dynamic classification in
     // the otherwise unused manifold slots for device task admission.
-    for(const auto& desc:gpu_dy_descriptors_) {
+    for(const auto& desc:ordered_constraints_) {
         if((desc.row_count&255u)!=0u)continue;
         if(desc.index>=gpu_dy_manifolds_.size())
             throw std::logic_error("GPU Dy zero-response manager index invalid");
@@ -8584,7 +8569,7 @@ void Scene::solve_gpu_distance_constraints(float seconds) {
     for(std::size_t i=0;i<solver_contact_order_.size();++i)
         gpu_dy_contact_order_[i]=narrow(solver_contact_order_[i]);
     gpu_broadphase_->solve_gpu_dy_distance(
-        gpu_dy_bodies_,gpu_dy_rows_,gpu_dy_descriptors_,
+        gpu_dy_bodies_,gpu_dy_rows_,ordered_constraints_,
         {},gpu_dy_body_ordinals_,gpu_dy_tasks_,
         gpu_dy_contact_forces_,gpu_dy_gu_inputs_,
         {},gpu_dy_friction_anchors_,
