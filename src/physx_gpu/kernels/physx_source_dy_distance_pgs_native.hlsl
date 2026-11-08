@@ -425,30 +425,33 @@ void sourceDyPartitionTask(uint taskId,uint scratch,uint errorAddress,
             const uint rootA=da?sourceDyGraphRoot(desc.y):invalidBody;
             const uint rootB=db?sourceDyGraphRoot(desc.z):invalidBody;
             const uint owner=da?rootA:rootB;
-            if(owner==invalidBody ||
-               (da && db && rootA!=rootB) ||
-               sourceDyGraphManagerCount(owner)==0u) {
+            if(owner==invalidBody || (da && db && rootA!=rootB)) {
                 arena.InterlockedOr(errorAddress,2097152u);
                 continue;
             }
-            // A GPU PCM manager cannot enter PGS without a physical
-            // touch in the device-owned EdgeIndex island list.
+            // A GPU PCM manager cannot enter PGS without physical touch
+            // in the device-owned EdgeIndex island list. A zero-response
+            // manager has no prepared rows; CPU Gu managers still use
+            // their original source input until their GPU admission.
             if((desc.w&255u)==0u) {
                 if(desc.x>=p.manifoldCount) {
                     arena.InterlockedOr(errorAddress,2097152u);
                     continue;
                 }
                 const uint manifold=p.manifoldBias+desc.x*20u;
-                const uint prepIndex=arena.Load(manifold+16u);
-                if(prepIndex>=p.prepCount) {
-                    arena.InterlockedOr(errorAddress,2097152u);
-                    continue;
-                }
-                const uint prep=p.prepBias+prepIndex*64u;
-                if(arena.Load(prep+48u)!=0xffffffffu &&
-                   sourceDyGraphEdgeRoot(arena.Load(prep+52u))!=owner) {
-                    arena.InterlockedOr(errorAddress,2097152u);
-                    continue;
+                if(arena.Load(manifold+4u)!=0u) {
+                    const uint prepIndex=arena.Load(manifold+16u);
+                    if(prepIndex>=p.prepCount) {
+                        arena.InterlockedOr(errorAddress,2097152u);
+                        continue;
+                    }
+                    const uint prep=p.prepBias+prepIndex*64u;
+                    if(arena.Load(prep+48u)!=0xffffffffu &&
+                       (sourceDyGraphManagerCount(owner)==0u ||
+                        sourceDyGraphEdgeRoot(arena.Load(prep+52u))!=owner)) {
+                        arena.InterlockedOr(errorAddress,2097152u);
+                        continue;
+                    }
                 }
             }
         }
