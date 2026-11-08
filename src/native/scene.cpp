@@ -4300,8 +4300,7 @@ void Scene::update_contacts() {
                     // Only a GPU-owned numerical witness requires the join.
                     if(!gpu_results_joined &&
                        !gpu_pcm_pairs_[gpu_pcm_index].host_generated) {
-                        gpu_broadphase_->finish_gpu_pcm_box_contacts(
-                            gpu_pcm_pairs_,gpu_pcm_results_);
+                        gpu_broadphase_->finish_gpu_pcm_box_contacts();
                         gpu_results_joined=true;
                     }
                     if(gpu_pcm_results_[gpu_pcm_index].edge!=edge)
