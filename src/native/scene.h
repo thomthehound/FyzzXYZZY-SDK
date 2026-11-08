@@ -378,6 +378,12 @@ public:
         std::span<const ConvexFace>,std::span<const std::uint32_t>) {
         throw std::logic_error("GPU geometry owner cannot accept convex faces");
     }
+    // Native SAP owns complete overlap history. An authored refilter
+    // requests a complete device report rather than a CPU pair mirror.
+    // Scripted producers retain their explicit delta/report contract.
+    virtual bool source_owned_pair_history(bool /*require_full_report*/) {
+        return false;
+    }
     virtual GpuBroadphaseReports advance(
         std::span<const GpuBroadphaseBox> live_boxes,
         bool force_update,bool geometry_dirty)=0;

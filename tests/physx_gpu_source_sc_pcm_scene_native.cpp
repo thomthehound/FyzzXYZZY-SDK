@@ -21,6 +21,13 @@
 
 namespace fyzz::native {
 struct GpuPcmFrictionAnchorFixture {
+    static void verify_source_pair_ownership(const Scene& scene) {
+        if(!scene.sap_pairs_.active_pairs.empty() ||
+           !scene.sap_pairs_.states.empty() ||
+           !scene.sap_pairs_.hash_table.empty())
+            throw std::runtime_error(
+                "Native GPU SAP retained a redundant host overlap registry");
+    }
     static void verify_pcm_contact_arena(const Scene& scene) {
         const auto* base=scene.contact_points_.data();
         for(const auto& manager:scene.manifolds_) {
@@ -1068,6 +1075,7 @@ void verify_gpu_coupled_solver(
         cpu.step(dt);
         gpu.step(dt);
         native::GpuPcmFrictionAnchorFixture::verify(cpu,gpu);
+        native::GpuPcmFrictionAnchorFixture::verify_source_pair_ownership(gpu);
         require(producer->source_handle_projection_count()==1u,
             "Source GPU SAP remapped unchanged Sc ElementSim handles");
         if(frame>0u)
