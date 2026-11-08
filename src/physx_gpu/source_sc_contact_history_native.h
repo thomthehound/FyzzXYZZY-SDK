@@ -19,7 +19,10 @@ namespace fyzz::physx_gpu {
 // it is not another EdgeIndex allocator or a contact-manifold owner.
 class SourceScContactHistoryNativeStage final {
 public:
-    enum class Phase:std::uint32_t { Initialize=0u,Snapshot=1u,Restore=2u };
+    enum class Phase:std::uint32_t {
+        Initialize=0u,Snapshot=1u,Restore=2u,
+        PublishHostTouch=3u,SnapshotHost=4u,RestoreHost=5u
+    };
     SourceScContactHistoryNativeStage(
         compute::Context& context,compute::ShaderBinary shader)
         : context_(context) {
@@ -57,14 +60,18 @@ public:
         const auto records=phase==Phase::Initialize
             ?edgeCapacity-clearBegin:pairCount;
         if(!records)return;
-        if(std::uint64_t(records)*60u>
-           std::numeric_limits<std::uint32_t>::max())
+        const bool host_stream=phase==Phase::PublishHostTouch ||
+            phase==Phase::SnapshotHost || phase==Phase::RestoreHost;
+        const std::uint64_t word_count=phase==Phase::PublishHostTouch
+            ?records:std::uint64_t(records)*60u;
+        if(word_count>std::numeric_limits<std::uint32_t>::max())
             throw std::overflow_error("Sc contact journal word count overflow");
-        const auto words=records*60u;
+        const auto words=static_cast<std::uint32_t>(word_count);
         std::array<std::uint32_t,8> args{};
         const auto edgeBytes=source_allocation_bytes(edgeCapacity,240u);
         const auto pairBytes=phase==Phase::Initialize
-            ?edgeBytes:source_allocation_bytes(pairCount,20u);
+            ?edgeBytes:source_allocation_bytes(pairCount,
+                host_stream?84u:20u);
         const auto journalBytes=phase==Phase::Initialize
             ?edgeBytes:source_allocation_bytes(pairCount,240u);
         compute::DispatchCommand dispatch{};
@@ -77,9 +84,11 @@ public:
                 alignment_,1u,compute::BufferAccess::ReadWrite,args[1],max_view_),
             source_native_view(addresses,
                 phase==Phase::Initialize?edges:journal,journalBytes,
-                alignment_,2u,phase==Phase::Restore?
-                    compute::BufferAccess::Read:
-                    compute::BufferAccess::ReadWrite,args[2],max_view_)};
+                alignment_,2u,
+                    phase==Phase::Restore || phase==Phase::RestoreHost ||
+                        phase==Phase::PublishHostTouch
+                        ?compute::BufferAccess::Read
+                        :compute::BufferAccess::ReadWrite,args[2],max_view_)};
         args[3]=static_cast<std::uint32_t>(phase);
         args[5]=words;
         args[6]=edgeCapacity;
