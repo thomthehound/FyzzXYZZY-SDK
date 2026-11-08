@@ -32,6 +32,18 @@ ConstantBuffer<Parameters> p:register(b0,space0);
 void main(uint3 dispatch:SV_DispatchThreadID) {
     const uint word=p.wordStart+dispatch.x;
     if(word>=p.wordCount)return;
+    if(p.phase==3u) {
+        // Every Gu producer shares the same resident EdgeIndex touch.
+        const uint edge=pairInputs.Load(p.pairBias+word*84u);
+        if(edge>=p.edgeCapacity)return;
+        const uint packed=pairInputs.Load(p.pairBias+word*84u+4u);
+        const uint transition=(packed>>13u)&3u;
+        edgeCaches.Store(p.edgeBias+edge*240u+72u,
+            transition==1u || transition==2u?1u:0u);
+        edgeCaches.Store(p.edgeBias+edge*240u+76u,
+            transition==2u || transition==3u?1u:0u);
+        return;
+    }
     const uint record=word/60u;
     const uint lane=word%60u;
     if(p.phase==0u) {
@@ -40,14 +52,14 @@ void main(uint3 dispatch:SV_DispatchThreadID) {
             edgeCaches.Store(p.edgeBias+edge*240u+lane*4u,0u);
         return;
     }
-    // Primitive Gu belongs to Sc's CPU cache, not this device journal.
-    if((pairInputs.Load(p.pairBias+record*20u+16u)&0x10000000u)!=0u)
-        return;
-    const uint edge=pairInputs.Load(p.pairBias+record*20u+8u);
+    const bool host_stream=p.phase==4u || p.phase==5u;
+    const uint edge=host_stream
+        ?pairInputs.Load(p.pairBias+record*84u)
+        :pairInputs.Load(p.pairBias+record*20u+8u);
     if(edge>=p.edgeCapacity)return;
     const uint cache=p.edgeBias+edge*240u+lane*4u;
     const uint saved=p.checkpointBias+word*4u;
-    if(p.phase==1u)
+    if(p.phase==1u || p.phase==4u)
         checkpoint.Store(saved,edgeCaches.Load(cache));
     else
         edgeCaches.Store(cache,checkpoint.Load(saved));
