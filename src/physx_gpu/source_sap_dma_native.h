@@ -42,6 +42,7 @@ public:
         std::size_t upload_spans = 0;
         std::size_t upload_bytes = 0;
         std::size_t fetch_batches = 0;
+        std::size_t readback_submissions = 0;
         std::size_t fetch_spans = 0;
         std::size_t fetch_bytes = 0;
         // Host wall time includes ordered GPU completion and readback.
@@ -144,6 +145,7 @@ public:
         }
         submit();
         pending_fetch_=context_.submit_download_batch(outputs);
+        ++stats_.readback_submissions;
         pending_fetch_bytes_=bytes;
         pending_fetch_spans_=outputs.size();
     }
@@ -219,6 +221,7 @@ public:
     // resources and drop only commands that never entered the native queue.
     // This is not a recovery path: the source scene is being destroyed.
     bool finish_shutdown() noexcept {
+        abandon_fetch();
         try {
             wait_at_fetch();
             return true;
