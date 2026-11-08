@@ -30,10 +30,12 @@ Sc contact managers. Without that bundle, narrowphase remains on the CPU.
 An explicit GPU Dy shader also runs contact and distance-constraint
 preparation, partitioned PGS, correlated friction and rigid body integration
 for the admitted box/plane scene. This remains a **hybrid** pipeline: Sc
-still prepares contact-manager and task metadata on the CPU, publishes
+prepares sparse contact-manager and task metadata on the CPU, publishes
 GPU narrowphase results through host-visible contact streams, and fetches
-GPU solver results. General geometry, articulations, deformables and an
-entirely device-resident physics frame are not yet supported.
+GPU solver results. The performance target is a continuous GPU numerical
+path without mandatory intermediate host readbacks, **not** GPU execution
+of every scene-management operation. General geometry, articulations and
+deformables are not yet supported.
 
 Use `ExecutionMode::NativeCpu` for the independent CPU scene. The ordinary
 `World` default still uses the optional reference CPU backend, and direct

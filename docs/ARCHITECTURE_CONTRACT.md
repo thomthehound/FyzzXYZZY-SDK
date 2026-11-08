@@ -42,12 +42,14 @@ a new controller simply to make another increment independently testable.
   degrees of freedom under the scene lifetime. Typed interactions connect
   them with reciprocal response and explicit substep/completion contracts.
   A reserved node enum or rigid-body substitute does not implement a solver.
-- GPU compute is the primary full-physics implementation target. The
-  selected GPU scene must retain shape/transform, broadphase, contact,
-  constraint and integrated body state on the device across dependent stages.
-  The host owns scene admission and required public result publication,
-  not a mandatory intermediate CPU copy of each device result. Device
-  stage submissions remain in the one scene task graph and resource owner.
+- GPU compute is the primary execution target for dense, repeatedly updated
+  physics data and numerical work. Persist device-produced contacts,
+  constraint state, velocities and poses across dependent GPU stages. The
+  CPU may own sparse topology, contact-manager handles, island/task metadata,
+  authoring, callbacks and retirement when that placement minimizes total
+  cost and preserves scene semantics. A host-owned decision is not a reason
+  to fetch its entire device input or interrupt the GPU queue each frame.
+  Device submissions and CPU work remain in one scene task graph.
 - Native CPU execution is an explicit fallback for unsupported devices and
   a correctness baseline. Reference CPU execution is only an independent
   comparison mode. Production behavior must not silently switch backends
@@ -76,6 +78,39 @@ connected-island parallelism, cross-allocation addressing and residency must
 be qualified before pointer-rich articulation/nonrigid intake scales up.
 A blanket FP64 requirement, one-workgroup task mapping or bounded arena ABI
 is not accepted as the general engine architecture without that evidence.
+
+### Heterogeneous execution and synchronization
+
+Choose each operation's processor from **end-to-end frame cost**, not an
+all-CPU or all-GPU ownership target. Sparse, branch-heavy or low-volume
+operations can remain on the CPU even when their consumers are GPU kernels.
+Large regular scans, contact generation, numerical preparation, solving and
+integration belong on the GPU when supported and performant. Ownership,
+execution location and data residency are separate decisions.
+
+- A CPU operation is acceptable on the simulation critical path when its
+  useful work and data handoff cost less than the equivalent GPU operation.
+  Do not migrate allocators, contact-manager identity or island bookkeeping
+  solely to obtain a device-resident label.
+- Preserve GPU-produced numerical data for later GPU work. Avoid a mandatory
+  GPU completion → CPU readback/decision → GPU resubmission between stages
+  that can consume the same device records. Transfer compact events,
+  identities and authored changes rather than bulk contact/body snapshots.
+- A host-side view may be maintained for filtering, public events or task
+  authoring when its delta update is cheaper than reconstructing GPU state.
+  Identify the authoritative owner, supported divergence window and
+  retirement/rollback rule; never create an untracked second simulation.
+- Distinguish quiet steady-state frames, topology churn, explicit callbacks
+  and public fetch. Synchronization justified by a topology change or API
+  visibility does not authorize an unconditional per-frame wait.
+- Compare alternatives using host and GPU critical-path time, queue stalls,
+  transfer bytes, submissions, memory growth and physical adapter results.
+  UMA coherence does not itself eliminate synchronization; separate
+  device-memory bandwidth from CPU/GPU completion dependencies.
+
+A placement change without a demonstrated critical-path benefit is not
+progress toward the GPU-performance gate. Correctness may justify a
+temporary hybrid boundary; record its cost and the consumer that requires it.
 
 ## 3. Source-faithful production integration
 

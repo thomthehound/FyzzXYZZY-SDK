@@ -38,6 +38,33 @@ measurement requirements and capability/performance acceptance.
   remain necessary but are *not* a performance substitute. Do not
   claim a speedup or parity without a reproducible benchmark.
 
+## CPU/GPU placement and synchronization
+
+Residency is a means of reducing transfers and preserving device work, not
+a requirement that every simulation-control operation execute in a shader.
+Use the CPU for sparse, branch-heavy topology edits, handle retirement,
+event classification and task metadata when the measured total cost is
+lower. Keep dense broadphase, contact generation, constraint preparation,
+iterative solving and integration on the GPU where supported. Do not move
+low-volume work to the device merely to remove CPU ownership.
+
+The critical-path budget includes CPU work, host blocking, GPU queue idle
+time, upload/download bytes, synchronization, dispatch overhead, device
+work, allocation and resource retirement. A short CPU operation that
+forces a device fence can be more expensive than a larger GPU kernel.
+Conversely, a multi-pass GPU allocator or full device-history rebuild
+can cost more than updating a sparse CPU-side index from existing reports.
+
+Production reviews must identify **each necessary GPU → CPU → GPU handoff**,
+the value crossing it, the consumer forcing synchronization, and whether
+the handoff occurs in quiet frames, during authored changes, or only at
+public result fetch. Prefer batched submissions, device-to-device
+dependencies, compact delta/event transfers and deferred host observation.
+CPU-authored views must declare their owner and update/rollback contract.
+A technically correct hybrid configuration is acceptable when its
+synchronization and frame cost meet the same measured performance gate.
+Neither full device residency nor fewer CPU instructions alone qualifies.
+
 ## Target hardware, API floors, and layered feature paths
 
 **Shipping baseline (user direction, October 14, 2026):**
