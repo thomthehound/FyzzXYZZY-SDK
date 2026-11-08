@@ -162,6 +162,18 @@ void verify(Context& context,const char* filename) {
             admitted(first,8u).island_root==0u,
             "Device Sc admitted an inactive touch or discarded a live edge");
 
+    // Removing one edge of a cycle must not split the component while
+    // its surviving route remains connected.
+    auto surviving_route=evaluate(7u,edges,{0u,0u,1u,1u,0u,1u});
+    no_errors(surviving_route);
+    require(root(surviving_route,0u)==0u &&
+            root(surviving_route,1u)==0u &&
+            root(surviving_route,2u)==0u &&
+            count(surviving_route,0u).admitted_edges==2u &&
+            admitted(surviving_route,0u).island_root==invalid &&
+            admitted(surviving_route,8u).island_root==0u,
+            "Lost chord split an island with a surviving accurate route");
+
     // A lost bridge and chord split the previously connected island.
     auto split=evaluate(7u,edges,{0u,0u,1u,1u,0u,0u});
     no_errors(split);
@@ -181,6 +193,16 @@ void verify(Context& context,const char* filename) {
             count(merged,1u).admitted_edges==3u &&
             admitted(merged,2u).island_root==1u,
             "Found contact did not merge exactly its accurate components");
+
+    // A no-edge frame leaves each responding node as a singleton;
+    // no dormant previous-frame component may survive.
+    auto empty=evaluate(7u,{}, {0u});
+    no_errors(empty);
+    for(std::uint32_t i=0u;i<7u;++i)
+        require(root(empty,i)==i &&
+                count(empty,i).responding_nodes==1u &&
+                count(empty,i).admitted_edges==0u,
+                "Quiet zero-edge device graph retained an old union");
 
     // An adversarial source order forces multiple simultaneous root
     // changes. Concurrent CAS unions must resolve one canonical root,
