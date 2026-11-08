@@ -333,6 +333,20 @@ void verify(fyzz::compute::Backend backend,const char* sap,
     const auto deferred_counts=producer->contact_island_edge_counts();
     require(deferred_counts[gpu_a]==0u,
         "Committed graph-only Sc epoch changed dormant EdgeIndex ownership");
+    // Reject a graph-only frame after the contact's Gu history is
+    // already committed. There were no new PCM witnesses to undo.
+    producer->generate_gpu_pcm_box_contacts(no_refresh,no_contacts);
+    producer->invalidate_after_rollback();
+    producer->set_gpu_sc_contact_graph(
+        dormant_reuse,std::max(gpu_a,gpu_b)+1u);
+    std::array<native::GpuPcmBoxResult,1> after_graph_rollback{};
+    producer->generate_gpu_pcm_box_contacts(request,after_graph_rollback);
+    require(after_graph_rollback[0].edge==edge &&
+            after_graph_rollback[0].status==0u &&
+            after_graph_rollback[0].count>0u &&
+            (after_graph_rollback[0].selected_and_regenerated&0x80000000u)==0u,
+        "Graph-only rollback unnecessarily discarded committed Gu PCM witnesses");
+    producer->commit_gpu_step();
     // Deliberately reject a speculative Gu manager refresh: it writes
     // an empty witness and a physical-touch loss into an existing
     // EdgeIndex. The device must restore the accepted full witness

@@ -126,9 +126,9 @@ public:
             restore_pending_=journal_pair_count_!=0u;
             pcm_transaction_pending_=false;
             published_pair_count_=0u;
-            // Full witness history is restored, so its original
-            // warmstart and physical touch remain valid on retry.
-            reset_manifolds_=!restore_pending_;
+            // A graph-only epoch does not mutate Gu witnesses. Refreshed
+            // PCM epochs restore their journal before the next submission.
+            reset_manifolds_=false;
         } else reset_manifolds_=true;
     }
 
