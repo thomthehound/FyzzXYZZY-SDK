@@ -25,25 +25,6 @@
 
 namespace fyzz::physx_gpu {
 
-// The Sc result span is the exact output of the source GPU contact shader.
-// Both representations are defined layouts, not an implicit C++ struct cast.
-static_assert(sizeof(native::GpuPcmBoxResult)==
-              sizeof(SourcePcmScContactStreamNative));
-static_assert(offsetof(native::GpuPcmBoxResult,edge)==
-              offsetof(SourcePcmScContactStreamNative,edge_handle));
-static_assert(offsetof(native::GpuPcmBoxResult,cached_count)==
-              offsetof(SourcePcmScContactStreamNative,cached_count));
-static_assert(offsetof(native::GpuPcmBoxResult,status)==
-              offsetof(SourcePcmScContactStreamNative,status));
-static_assert(offsetof(native::GpuPcmBoxResult,selected_and_regenerated)==
-              offsetof(SourcePcmScContactStreamNative,selected_and_regenerated));
-static_assert(offsetof(native::GpuPcmBoxResult,normal)==
-              offsetof(SourcePcmScContactStreamNative,normal));
-static_assert(offsetof(native::GpuPcmBoxResult,count)==
-              offsetof(SourcePcmScContactStreamNative,emitted_count));
-static_assert(offsetof(native::GpuPcmBoxResult,points)==
-              offsetof(SourcePcmScContactStreamNative,contacts));
-
 // Sc owns every EdgeIndex and its lifetime. Device buffers below are
 // physical mirrors for the source PCM kernels, never a pair registry.
 class SourceScGpuPcmNative final {
@@ -152,53 +133,41 @@ public:
         if(pcm_transaction_pending_)
             throw std::logic_error("Source PCM host upload before GPU epoch commit");
         restore_rejected_epoch();
-        host_contacts_.resize(requests.size());
         for(std::size_t i=0;i<requests.size();++i) {
             const auto& request=requests[i];
             const auto& result=results[i];
             if(!request.candidate_complete ||
                !(request.candidate_capacity==1u ||
                  (request.plane_pair && request.candidate_capacity==16u)) ||
-               request.edge!=result.edge || result.count>4u ||
-               result.status!=0u ||
-               ((result.count!=0u)!=
-                (result.touch_transition==native::GpuPcmTouchTransition::Found ||
-                 result.touch_transition==native::GpuPcmTouchTransition::Persists)))
+               request.edge!=result.edge || result.count()>4u ||
+               result.status()!=0u ||
+               result.cached_count()!=result.count() ||
+               (result.selected_and_regenerated()&0x7fffffffu)!=result.count() ||
+               ((result.count()!=0u)!=
+                (result.touch_transition()==native::GpuPcmTouchTransition::Found ||
+                 result.touch_transition()==native::GpuPcmTouchTransition::Persists)))
                 throw std::logic_error("Invalid source Gu primitive contact stream");
-            auto& packed=host_contacts_[i];
-            packed={};
-            packed.edge_handle=result.edge;
-            const auto count=static_cast<std::uint32_t>(result.count);
-            packed.packed_counts=count | (count<<6u) | (1u<<9u) |
-                (count<<10u) |
-                (static_cast<std::uint32_t>(result.touch_transition)<<13u);
-            if(!count)continue;
+            if(!result.count())continue;
             const auto n=result.normal;
             if(!std::isfinite(n.x) || !std::isfinite(n.y) ||
                !std::isfinite(n.z))
                 throw std::overflow_error("Nonfinite Sc primitive PCM normal");
-            packed.normal[0]=n.x;
-            packed.normal[1]=n.y;
-            packed.normal[2]=n.z;
-            for(std::uint32_t j=0u;j<count;++j) {
+            for(std::uint32_t j=0u;j<result.count();++j) {
                 const auto& point=result.points[j];
                 if(!std::isfinite(point.position.x) ||
                    !std::isfinite(point.position.y) ||
                    !std::isfinite(point.position.z) ||
                    !std::isfinite(point.separation))
                     throw std::overflow_error("Nonfinite Sc primitive PCM witness");
-                packed.contacts[j]={
-                    {point.position.x,point.position.y,point.position.z},
-                    point.separation};
             }
         }
         const auto bytes=source_allocation_bytes(
             requests.size(),sizeof(SourcePcmGpuContactStreamNative));
         dense_contacts_.allocate(bytes,PX_FL);
-        const auto transfer=requests.size()*sizeof(host_contacts_[0]);
+        const auto transfer=results.size_bytes();
         auto& uploads=stream_.upload_scratch();
         uploads.push_back({
-            dense_contacts_.getDevicePtr(),host_contacts_.data(),transfer});
+            dense_contacts_.getDevicePtr(),results.data(),transfer});
         stream_.queue_uploads(uploads);
         published_pair_count_=static_cast<std::uint32_t>(requests.size());
         last_pair_upload_bytes_=0u;
@@ -310,9 +279,6 @@ public:
             pair_host_[i]=next;
         }
         const auto edge_capacity=largest_edge+1u;
-        // Reserve the download destination before queueing any source
-        // allocation or GPU work. Its address remains fixed through fetch.
-        readback_.resize(pair_count);
         if(pair_count) {
             const auto requested_pair_bytes=source_allocation_bytes(pair_count,20u);
             const auto previous_pair_capacity=pairs_.getSize();
@@ -466,55 +432,39 @@ public:
         last_continuation_commands_=
             stream_.commands().size()-before_continuation;
 
-        // Fetch the losslessly packed device stream, then reconstruct
-        // Sc's original host record. The Dy shader reads the same device
-        // allocation; no GPU repacking command or second fence is needed.
-        const auto readback_bytes=readback_.size()*sizeof(readback_[0]);
+        // Sc's result arena has the same packed ABI as the GPU stream.
+        // Download once into its final destination; Dy reads the unchanged
+        // device buffer without a second transfer or conversion pass.
+        const auto readback_bytes=output.size_bytes();
         const auto mapped=addresses_.resolve(
             dense_contacts_.getDevicePtr(),readback_bytes);
         const std::array<compute::DownloadSpan,1> downloads{{
-            {mapped.buffer,mapped.offset,readback_.data(),readback_bytes}
+            {mapped.buffer,mapped.offset,output.data(),readback_bytes}
         }};
-        stream_.submit();
         pcm_transaction_pending_=true;
         journal_pair_count_=pair_count;
         journal_edge_capacity_=edge_capacity;
         pending_edge_span_bytes_=std::size_t(edge_capacity)*240u;
         stream_.fetch(downloads);
         for(std::uint32_t i=0u;i<pair_count;++i) {
-            const auto& packed=readback_[i];
-            const auto header=unpack_source_pcm_gpu_header_native(packed);
-            auto& stored=output[i];
-            stored.edge=header.edge_handle;
-            stored.cached_count=header.cached_count;
-            stored.status=header.status;
-            stored.selected_and_regenerated=header.selected_and_regenerated;
-            stored.count=header.emitted_count;
-            stored.touch_transition=static_cast<native::GpuPcmTouchTransition>(
-                header.touch_transition);
+            const auto& stored=output[i];
             const auto& request=requests[i];
             const auto selected_count=
-                stored.selected_and_regenerated&0x7fffffffu;
+                stored.selected_and_regenerated()&0x7fffffffu;
             const bool regenerated=
-                (stored.selected_and_regenerated&0x80000000u)!=0u;
+                (stored.selected_and_regenerated()&0x80000000u)!=0u;
             // A quiet refresh retains persistent witnesses beyond the
             // contact-distance window. Sc filters them at publication.
-            if(stored.edge!=request.edge || stored.status!=0u ||
-               selected_count>4u || stored.cached_count>4u ||
-               selected_count>stored.cached_count ||
-               (regenerated && selected_count!=stored.cached_count) ||
-               stored.count>stored.cached_count ||
-               ((stored.touch_transition==native::GpuPcmTouchTransition::Found ||
-                 stored.touch_transition==native::GpuPcmTouchTransition::Persists)
-                  != (stored.count>0u)))
+            if(stored.edge!=request.edge || stored.status()!=0u ||
+               selected_count>4u || stored.cached_count()>4u ||
+               selected_count>stored.cached_count() ||
+               (regenerated && selected_count!=stored.cached_count()) ||
+               stored.count()>stored.cached_count() ||
+               ((stored.touch_transition()==native::GpuPcmTouchTransition::Found ||
+                 stored.touch_transition()==native::GpuPcmTouchTransition::Persists)
+                  != (stored.count()>0u)))
                 throw std::logic_error(
                     "Source GPU PCM publication disagrees with original Sc manager");
-            // Only live Gu contacts cross into Sc's host manifold arena;
-            // do not copy unused lanes or materialize a second 100-byte
-            // temporary record for every pair.
-            std::memcpy(&stored.normal,packed.normal,sizeof(packed.normal));
-            std::memcpy(stored.points.data(),packed.contacts,
-                        std::size_t(stored.count)*sizeof(packed.contacts[0]));
         }
         published_pair_count_=pair_count;
         last_contact_download_bytes_=readback_bytes;
@@ -581,8 +531,6 @@ private:
     compute::BufferId indirect_buffer_=0u;
     CudaDeviceAddressMap::Address indirect_address_=0u;
     std::vector<SourcePcmBoxPairNative> pair_host_;
-    std::vector<SourcePcmGpuContactStreamNative> readback_;
-    std::vector<SourcePcmGpuContactStreamNative> host_contacts_;
     bool reset_manifolds_=false;
     bool rebuild_required_=false;
     bool pcm_transaction_pending_=false,restore_pending_=false;

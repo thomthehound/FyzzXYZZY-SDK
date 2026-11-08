@@ -88,7 +88,16 @@ switching its plane-box manager to CPU Gu history; switching back to
 GPU Gu resets the device edge cache from Sc's authoritative lifetime
 and prior-touch flags. General box-box and cooked convex contacts
 remain GPU generated, with their required intermediate Sc contact
-publication and transactional device journal.
+publication and transactional device journal. Their 84-byte Gu output
+now downloads directly into Sc's source-ordered result array without
+expanding each record to a separate 100-byte host structure. Primitive
+CPU Gu uploads that same array unchanged for GPU Dy, without an
+intermediate host stream or packing pass. Both producer paths share
+the exact device contact ABI; Sc copies only emitted witnesses into
+its authoritative, pair-ordered public Gu arena. This eliminates
+redundant host record storage and copies, not the remaining general
+PCM -> Sc synchronization needed for friction correlation and touch
+publication.
 
 Production reviews must identify **each necessary GPU → CPU → GPU handoff**,
 the value crossing it, the consumer forcing synchronization, and whether
