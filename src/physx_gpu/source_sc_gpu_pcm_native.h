@@ -188,11 +188,7 @@ public:
                 dense_contacts_.getDevicePtr(),edges_.getDevicePtr(),
                 journal_.getDevicePtr(),0u,edge_capacity,initialized_edges);
         journal_stage_.append(stream_,addresses_,
-            SourceScContactHistoryNativeStage::Phase::SnapshotHost,
-            dense_contacts_.getDevicePtr(),edges_.getDevicePtr(),
-            journal_.getDevicePtr(),pair_count,edge_capacity);
-        journal_stage_.append(stream_,addresses_,
-            SourceScContactHistoryNativeStage::Phase::PublishHostTouch,
+            SourceScContactHistoryNativeStage::Phase::PublishHostWithSnapshot,
             dense_contacts_.getDevicePtr(),edges_.getDevicePtr(),
             journal_.getDevicePtr(),pair_count,edge_capacity);
         // Submit the snapshot before Sc can reject this epoch.
