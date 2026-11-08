@@ -118,14 +118,16 @@ public:
     }
 
     void invalidate_after_rollback() noexcept {
-        reset_manifolds_=true;
         if(pcm_transaction_pending_) {
             // A submitted PCM epoch may have changed Gu witnesses even
             // when Sc/Dy later rejected the complete simulation frame.
             restore_pending_=journal_pair_count_!=0u;
             pcm_transaction_pending_=false;
             published_pair_count_=0u;
-        }
+            // Full witness history is restored, so its original
+            // warmstart and physical touch remain valid on retry.
+            reset_manifolds_=!restore_pending_;
+        } else reset_manifolds_=true;
     }
 
     void commit_step() noexcept {
