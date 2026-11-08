@@ -319,11 +319,17 @@ public:
         // The accurate graph shares this Sc PCM source manager stream.
         // Physical touch determines connectivity; static endpoints
         // remain graph terminals rather than merging dynamic islands.
-        const auto graph_pair_offset=std::size_t(32u);
+        const auto graph_pair_offset=std::size_t(48u);
         const auto graph_root_offset=graph_pair_offset+
             std::size_t(graph_count)*sizeof(SourceScContactGraphPairNative);
-        const auto graph_error_offset=graph_root_offset+
+        const auto graph_count_offset=graph_root_offset+
             std::size_t(rigid_count)*sizeof(std::uint32_t);
+        const auto graph_head_offset=graph_count_offset+
+            std::size_t(rigid_count)*sizeof(std::uint32_t);
+        const auto graph_link_offset=graph_head_offset+
+            std::size_t(rigid_count)*sizeof(std::uint32_t);
+        const auto graph_error_offset=graph_link_offset+
+            std::size_t(graph_count)*sizeof(std::uint32_t);
         if(graph_error_offset>std::numeric_limits<std::uint32_t>::max()-127u)
             throw std::overflow_error("Sc device contact graph exceeds source address range");
         const auto graph_bytes=(graph_error_offset+4u+127u)&~std::size_t(127u);
@@ -339,7 +345,11 @@ public:
             static_cast<std::uint32_t>(graph_pair_offset),
             static_cast<std::uint32_t>(graph_root_offset),
             static_cast<std::uint32_t>(graph_error_offset),
-            edge_capacity,0u,0u};
+            edge_capacity,
+            static_cast<std::uint32_t>(graph_count_offset),
+            static_cast<std::uint32_t>(graph_head_offset),
+            static_cast<std::uint32_t>(graph_link_offset),
+            0u,0u,0u};
         if(full_graph) {
             first_graph_dirty=0u;
             last_graph_dirty=graph_count;
@@ -558,6 +568,15 @@ public:
         return graph_pair_host_.empty()?0u:graph_rigid_count_;
     }
     // Explicit diagnostic snapshot. No production frame downloads roots.
+    std::vector<std::uint32_t> contact_island_edge_counts() const {
+        if(graph_pair_host_.empty())return {};
+        std::vector<std::uint32_t> counts(graph_rigid_count_);
+        const auto bytes=counts.size()*sizeof(counts[0]);
+        const auto physical=addresses_.resolve(
+            graph_.getDevicePtr()+graph_header_[6],bytes);
+        context_.download(physical.buffer,physical.offset,counts.data(),bytes);
+        return counts;
+    }
     std::vector<std::uint32_t> contact_island_roots() const {
         if(graph_pair_host_.empty())return {};
         std::vector<std::uint32_t> roots(graph_rigid_count_);
@@ -597,7 +616,7 @@ private:
     std::uint32_t graph_rigid_watermark_=0u;
     std::vector<SourceScContactGraphPairNative> graph_pair_host_;
     std::vector<SourceSapUpload> graph_uploads_;
-    std::array<std::uint32_t,8> graph_header_{};
+    std::array<std::uint32_t,12> graph_header_{};
     std::array<std::uint32_t,1> graph_error_host_{};
     std::uint32_t graph_rigid_count_=0u;
     bool reset_manifolds_=false;
