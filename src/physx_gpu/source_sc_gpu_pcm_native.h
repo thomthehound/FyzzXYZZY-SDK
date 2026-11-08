@@ -143,10 +143,12 @@ public:
                 graph_.getDevicePtr()+graph_header_[4],
                 sizeof(graph_error_host_));
             stream_.submit();
+            const std::array<compute::DownloadSpan,1> readback{{
+                {physical.buffer,physical.offset,graph_error_host_.data(),
+                 sizeof(graph_error_host_)}
+            }};
             try {
-                context_.download(physical.buffer,physical.offset,
-                                  graph_error_host_.data(),
-                                  sizeof(graph_error_host_));
+                context_.download_batch(readback);
             } catch (...) {
                 stream_.wait_at_fetch();
                 throw;
@@ -672,8 +674,10 @@ public:
         const auto bytes=roots.size()*sizeof(roots[0]);
         const auto physical=addresses_.resolve(
             graph_.getDevicePtr()+graph_header_[3],bytes);
-        context_.download(physical.buffer,physical.offset,
-                          roots.data(),bytes);
+        const std::array<compute::DownloadSpan,1> readback{{
+            {physical.buffer,physical.offset,roots.data(),bytes}
+        }};
+        context_.download_batch(readback);
         return roots;
     }
 private:
