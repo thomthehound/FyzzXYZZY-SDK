@@ -7885,17 +7885,22 @@ void Scene::prepare_constraints(float seconds) {
             cp.start=0u;
             cp.count=manifold.count;
             cp.normal=manifold.points.front().normal;
-            cp.bounds_min=cp.bounds_max=manifold.points.front().position;
-            for(std::size_t j=1;j<manifold.count;++j) {
-                const auto& p=manifold.points[j].position;
-                cp.bounds_min={
-                    std::min(cp.bounds_min.x,p.x),
-                    std::min(cp.bounds_min.y,p.y),
-                    std::min(cp.bounds_min.z,p.z)};
-                cp.bounds_max={
-                    std::max(cp.bounds_max.x,p.x),
-                    std::max(cp.bounds_max.y,p.y),
-                    std::max(cp.bounds_max.z,p.z)};
+            if(!gpu_normal_prep) {
+                // CPU Dy owns the exact contact bounds for correlation.
+                // Device Dy derives the extent from its resident PCM
+                // witnesses during friction-anchor preparation instead.
+                cp.bounds_min=cp.bounds_max=manifold.points.front().position;
+                for(std::size_t j=1;j<manifold.count;++j) {
+                    const auto& p=manifold.points[j].position;
+                    cp.bounds_min={
+                        std::min(cp.bounds_min.x,p.x),
+                        std::min(cp.bounds_min.y,p.y),
+                        std::min(cp.bounds_min.z,p.z)};
+                    cp.bounds_max={
+                        std::max(cp.bounds_max.x,p.x),
+                        std::max(cp.bounds_max.y,p.y),
+                        std::max(cp.bounds_max.z,p.z)};
+                }
             }
             contact_patch_scratch_.push_back(cp);
         }else {
@@ -8667,12 +8672,6 @@ void Scene::solve_gpu_distance_constraints(float seconds) {
                     pack(anchor.local_b,patch.body1_anchors[k]);
                 }
             }
-            const auto extent=Vec3{
-                patch.bounds_max.x-patch.bounds_min.x,
-                patch.bounds_max.y-patch.bounds_min.y,
-                patch.bounds_max.z-patch.bounds_min.z};
-            const float diagonal=extent.x*extent.x+
-                extent.y*extent.y+extent.z*extent.z;
             std::uint32_t order_offset;
             if(m.pcm_result_index!=
                std::numeric_limits<std::uint32_t>::max()) {
@@ -8697,8 +8696,7 @@ void Scene::solve_gpu_distance_constraints(float seconds) {
                 patch.anchor_count,(patch.broken?1u:0u)|
                     (pcm_growth?0x80000000u:0u),
                 patch.static_friction,patch.dynamic_friction,
-                order_offset,pcm_growth
-                    ? std::bit_cast<std::uint32_t>(diagonal):0u};
+                order_offset,0u};
             cursor+=patch.contact_count;
         }
         if(cursor!=m.solver_offset+m.count)
