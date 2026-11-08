@@ -155,9 +155,10 @@ loop, contact registry, island manager or solver-state truth.
 
 **Current migration boundary:** general GPU PCM still downloads its 84-byte
 contact records before CPU Sc friction correlation and accurate-island
-scheduling. The ordered PCM enqueue/join permits independent earlier CPU Gu
-work to overlap device execution, but does not remove that synchronization
-dependency. The next integration gate is GPU-consumed touch and friction/task
+scheduling. The ordered PCM enqueue/join starts general GPU PCM before
+independent CPU primitive witness generation, with those host-owned contact
+slots uploaded afterward. It overlaps both numerical producers but does not
+remove the final same-frame Sc synchronization dependency. The next integration gate is GPU-consumed touch and friction/task
 admission with correct same-frame connectivity, followed by compact public
 reconciliation. Only then can normal GPU PCM -> Dy be considered free of an
 intermediate host witness fence. Test rollback between enqueue and join,
