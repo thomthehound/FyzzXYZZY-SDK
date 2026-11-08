@@ -4260,9 +4260,14 @@ void Scene::update_contacts() {
             }
         }
     }
-    if(source_gpu_pcm && !gpu_results_pending && host_pair_count)
-        gpu_broadphase_->upload_host_pcm_contacts(
-            gpu_pcm_pairs_,gpu_pcm_results_);
+    if(source_gpu_pcm && host_pair_count) {
+        if(gpu_results_pending)
+            gpu_broadphase_->enqueue_host_pcm_contacts(
+                gpu_pcm_pairs_,gpu_pcm_results_);
+        else
+            gpu_broadphase_->upload_host_pcm_contacts(
+                gpu_pcm_pairs_,gpu_pcm_results_);
+    }
     bool gpu_results_joined=!gpu_results_pending;
     std::size_t gpu_pcm_index=0u;
     std::size_t old_cursor = 0;
