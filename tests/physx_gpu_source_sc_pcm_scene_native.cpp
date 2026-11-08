@@ -320,6 +320,9 @@ void verify(fyzz::compute::Backend backend,const char* sap,
     const std::array<native::GpuPcmBoxPair,0> no_refresh{};
     std::array<native::GpuPcmBoxResult,0> no_contacts{};
     producer->generate_gpu_pcm_box_contacts(no_refresh,no_contacts);
+    const auto dormant_roots=producer->contact_island_roots();
+    require(dormant_roots[gpu_a]==gpu_a,
+        "Pending graph-only Sc roots failed to preserve source queue ownership");
     const auto dormant_counts=producer->contact_island_edge_counts();
     require(dormant_counts[gpu_a]==0u,
         "Dormant recycled manager inherited the prior GPU touch");

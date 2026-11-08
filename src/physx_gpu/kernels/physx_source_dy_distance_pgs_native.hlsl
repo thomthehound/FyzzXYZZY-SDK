@@ -394,6 +394,16 @@ void sourceDyPartitionTask(uint taskId,uint scratch,uint errorAddress,
     const uint cursors=scratch+views.z;
     const uint bodyState=scratch+views.w;
     const uint task=p.taskBias+taskId*36u;
+    // A deferred Sc graph can precede Dy without a host fetch. Reject
+    // malformed topology on device before partitioning solver work.
+    if(lane==0u && arena.Load(p.integrationBias+44u)!=0u) {
+        const uint graphBias=arena.Load(p.integrationBias+40u);
+        const uint errorOffset=scIslandGraph.Load(graphBias+16u);
+        if(scIslandGraph.Load(graphBias+errorOffset)!=0u)
+            arena.InterlockedOr(errorAddress,4194304u);
+    }
+    AllMemoryBarrierWithGroupSync();
+    if(arena.Load(errorAddress)!=0u)return;
     const uint4 ranges=arena.Load4(task);
     const uint first=ranges.x,last=ranges.y;
     const uint partitionFirst=ranges.z,partitionCapacity=ranges.w;
