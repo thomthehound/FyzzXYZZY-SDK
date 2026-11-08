@@ -158,8 +158,12 @@ contact records before CPU Sc friction correlation and accurate-island
 scheduling. The ordered PCM enqueue/join starts general GPU PCM before
 independent CPU primitive witness generation and speculative IslandSim
 first/second-pass topology admission. Both numerical producers and SAP-owned
-speculative graph admission can run before Sc observes GPU contact witnesses;
-only actual-touch accurate topology waits for Gu. Lost-edge route repair,
+speculative graph admission can run before Sc observes GPU contact witnesses.
+The packed witness DMA is submitted immediately after the final PCM
+kernel and remains Context-owned until Sc reaches its actual-touch join.
+Both API backends publish the borrowed Gu arena only on completion;
+a rejected transaction discards its DMA without exposing stale contacts.
+Only actual-touch accurate topology waits for Gu. Lost-edge route repair,
 wake/sleep decisions and Dy task admission retain their source dependencies.
 This overlap does not remove the final same-frame Sc synchronization
 dependency. The next integration gate is GPU-consumed touch and friction/task
