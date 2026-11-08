@@ -77,7 +77,7 @@ bool connected(uint4 edge) {
 
 [numthreads(128,1,1)]
 void main(uint3 dispatch:SV_DispatchThreadID) {
-    const uint i=dispatch.x;
+    const uint i=p.unused+dispatch.x;
     const uint edgeCount=header(0u);
     const uint rigidCount=header(1u);
     const uint pairBase=p.graphBias+header(2u);
