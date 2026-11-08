@@ -1395,9 +1395,9 @@ public:
                     throw std::logic_error("Source Dy manager writeback index invalid");
                 const auto& manager=manifolds[desc.index];
                 if(!manager.patch_count)continue;
-                if(manager.order_offset>contact_order.size() ||
+                if(manager.order_offset>contact_forces.size() ||
                    manager.contact_count>
-                       contact_order.size()-manager.order_offset ||
+                       contact_forces.size()-manager.order_offset ||
                    manager.patch_offset>patches.size() ||
                    manager.patch_count>patches.size()-manager.patch_offset)
                     throw std::logic_error("Source Dy contact writeback range invalid");
