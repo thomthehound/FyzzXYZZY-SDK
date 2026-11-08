@@ -308,6 +308,11 @@ void verify(fyzz::compute::Backend backend,const char* sap,
         const auto id=gpu.add_static_box({0.5f,0.5f,0.5f},position);
         if(i==0u)distant_gpu=id;
     }
+    // Keep an independent dynamic rigid node to exercise speculative
+    // graph union without a physical-touch witness.
+    cpu.add_dynamic_box({0.5f,0.5f,0.5f},{250.f,1.f,0.f},1.f);
+    const BodyId independent_gpu=gpu.add_dynamic_box(
+        {0.5f,0.5f,0.5f},{250.f,1.f,0.f},1.f);
     check(true);
     // A contact EdgeIndex reused by a newly admitted but dormant
     // manager has not yet refreshed its Gu witness. Its previous
@@ -326,7 +331,31 @@ void verify(fyzz::compute::Backend backend,const char* sap,
     const auto dormant_counts=producer->contact_island_edge_counts();
     require(dormant_counts[gpu_a]==0u,
         "Dormant recycled manager inherited the prior GPU touch");
+    const auto dormant_speculative_counts=
+        producer->speculative_contact_island_edge_counts();
+    require(dormant_speculative_counts[gpu_a]==1u,
+        "Speculative graph omitted admitted non-touching manager");
     producer->commit_gpu_step();
+    // Two dynamic actors joined by a speculative-only manager share
+    // wake connectivity, but their accurate islands remain separate.
+    const std::array<native::GpuScContactGraphEdge,1> speculative_only{{
+        {gpu_a,independent_gpu,3u|8u,edge}
+    }};
+    producer->set_gpu_sc_contact_graph(
+        speculative_only,independent_gpu+1u);
+    producer->generate_gpu_pcm_box_contacts(no_refresh,no_contacts);
+    const auto speculative_roots=
+        producer->speculative_contact_island_roots();
+    const auto accurate_roots=producer->contact_island_roots();
+    const auto speculative_counts=
+        producer->speculative_contact_island_edge_counts();
+    require(speculative_roots[gpu_a]==speculative_roots[independent_gpu] &&
+            accurate_roots[gpu_a]!=accurate_roots[independent_gpu] &&
+            speculative_counts[speculative_roots[gpu_a]]==1u,
+        "Speculative-only manager failed to join GPU wake components");
+    producer->commit_gpu_step();
+    producer->set_gpu_sc_contact_graph(
+        dormant_reuse,std::max(gpu_a,gpu_b)+1u);
     // The next graph-only epoch is not explicitly observed before
     // commit. Dy and Sc must share its queued work without a PCM fetch.
     producer->generate_gpu_pcm_box_contacts(no_refresh,no_contacts);
@@ -897,12 +926,20 @@ void verify_coupled_rigid_stack(
                     "GPU coupled rigid stack diverged from source Sc/Dy motion");
         }
         const auto roots=producer->contact_island_roots();
+        const auto speculative_roots=
+            producer->speculative_contact_island_roots();
         const auto edge_counts=producer->contact_island_edge_counts();
+        const auto speculative_edge_counts=
+            producer->speculative_contact_island_edge_counts();
         std::size_t owned_managers=0u;
         for(const auto count:edge_counts)owned_managers+=count;
+        std::size_t admitted_managers=0u;
+        for(const auto count:speculative_edge_counts)admitted_managers+=count;
         require(edge_counts.size()==roots.size() &&
-                owned_managers==gpu.contacts().size(),
-            "Device Sc component manager membership differs from current Gu contacts");
+                speculative_roots.size()==roots.size() &&
+                owned_managers==gpu.contacts().size() &&
+                admitted_managers==gpu.pairs().size(),
+            "Device Sc accurate/speculative membership differs from source managers");
         for(std::size_t i=0;i<dynamic_gpu.size();++i)
             for(std::size_t j=i+1u;j<dynamic_gpu.size();++j) {
                 const auto a=dynamic_gpu[i],b=dynamic_gpu[j];
@@ -910,6 +947,10 @@ void verify_coupled_rigid_stack(
                     ((gpu.accurate_island_id(a)==gpu.accurate_island_id(b))==
                      (roots[a]==roots[b])),
                     "Device PCM island connectivity diverged from Sc accurate graph");
+                require(
+                    (gpu.speculative_island_id(a)==gpu.speculative_island_id(b))==
+                    (speculative_roots[a]==speculative_roots[b]),
+                    "Device speculative roots diverged from source Sc connectivity");
             }
         require(gpu.solved_result_frame()==gpu.frame_index(),
                 "GPU coupled rigid stack did not complete Dy solve");
