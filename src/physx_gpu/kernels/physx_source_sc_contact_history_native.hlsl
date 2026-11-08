@@ -40,6 +40,9 @@ void main(uint3 dispatch:SV_DispatchThreadID) {
             edgeCaches.Store(p.edgeBias+edge*240u+lane*4u,0u);
         return;
     }
+    // Primitive Gu belongs to Sc's CPU cache, not this device journal.
+    if((pairInputs.Load(p.pairBias+record*20u+16u)&0x10000000u)!=0u)
+        return;
     const uint edge=pairInputs.Load(p.pairBias+record*20u+8u);
     if(edge>=p.edgeCapacity)return;
     const uint cache=p.edgeBias+edge*240u+lane*4u;

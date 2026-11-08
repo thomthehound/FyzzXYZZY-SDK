@@ -99,6 +99,21 @@ redundant host record storage and copies, not the remaining general
 PCM -> Sc synchronization needed for friction correlation and touch
 publication.
 
+Mixed general/primitive PCM batches now admit up to four contiguous
+primitive runs directly on the Sc CPU, preserving their original pair
+ordinals in the GPU Dy contact stream. Only general GPU-owned ranges
+download their 84-byte witnesses; host primitive ranges upload once
+into the same allocation. The candidate kernel leaves CPU Gu records
+and their device EdgeIndex history untouched, and the transactional
+journal snapshots and restores only GPU-owned managers. Uploads and
+readbacks remain batched within the existing ordered source stream,
+with at most four host-contact runs and five GPU-result runs; the
+remaining primitive managers are device-generated when a batch is
+more fragmented. This bounds transfer-command overhead without
+introducing another registry, a GPU scatter kernel or an intermediate
+CPU/GPU completion boundary. General PCM still joins Sc before the
+accurate island and Dy task publication.
+
 Production reviews must identify **each necessary GPU → CPU → GPU handoff**,
 the value crossing it, the consumer forcing synchronization, and whether
 the handoff occurs in quiet frames, during authored changes, or only at

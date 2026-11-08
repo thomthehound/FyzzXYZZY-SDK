@@ -438,8 +438,14 @@ void main(uint3 thread : SV_DispatchThreadID) {
     uint edge=pairs.Load(source+8u);
     uint first=pairs.Load(source+12u);
     uint flags=pairs.Load(source+16u);
-    uint limit=flags&0x1fffffffu;
+    uint limit=flags&0x0fffffffu;
     uint result=p.resultBias+i*32u;
+    if((flags&0x10000000u)!=0u) {
+        // Sc's bounded Gu witness already occupies this output slot.
+        // Leave its contact stream and device witness history untouched.
+        results.Store(result+8u,0u);
+        return;
+    }
     if(edge<p.edgeCapacity) {
         uint state=p.edgeCacheBias+edge*240u;
         uint prior=(flags&0x80000000u)!=0u
