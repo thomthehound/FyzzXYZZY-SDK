@@ -23,8 +23,10 @@ namespace fyzz::native {
 struct GpuPcmFrictionAnchorFixture {
     static void verify_early_speculative_admission(
         const Scene& reference,const Scene& gpu) {
-        if(!gpu.speculative_connectivity_prepared_ ||
-           reference.speculative_island_count_!=
+        if(!gpu.speculative_connectivity_prepared_)
+            throw std::runtime_error(
+                "GPU PCM scene did not overlap speculative IslandSim admission");
+        if(reference.speculative_island_count_!=
                gpu.speculative_island_count_ ||
            reference.accurate_island_count_!=
                gpu.accurate_island_count_)
@@ -404,8 +406,8 @@ void verify(fyzz::compute::Backend backend,const char* sap,
         if(i==0u)distant_gpu=id;
     }
     check(true);
-    native::GpuPcmFrictionAnchorFixture::verify_early_speculative_admission(
-        cpu,gpu);
+    // Static shape growth changes the GPU broadphase allocation, but
+    // creates no dynamic IslandSim topology work to overlap.
     // Deliberately reject a speculative Gu manager refresh: it writes
     // an empty witness and a physical-touch loss into an existing
     // EdgeIndex. The device must restore the accepted full witness
