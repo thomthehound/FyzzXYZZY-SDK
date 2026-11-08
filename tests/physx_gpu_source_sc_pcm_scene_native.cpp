@@ -27,13 +27,26 @@ struct GpuPcmFrictionAnchorFixture {
            reference.speculative_island_count_!=
                gpu.speculative_island_count_ ||
            reference.accurate_island_count_!=
-               gpu.accurate_island_count_ ||
-           reference.speculative_islands_.node_island!=
-               gpu.speculative_islands_.node_island ||
-           reference.accurate_islands_.node_island!=
-               gpu.accurate_islands_.node_island)
+               gpu.accurate_island_count_)
             throw std::runtime_error(
-                "Early speculative Sc admission changed source island ownership");
+                "Early speculative Sc admission changed source island counts");
+        for(std::size_t a=0u;a<reference.actors_.size();++a) {
+            if(!reference.actors_[a].alive ||
+               reference.actors_[a].motion!=Motion::Dynamic)continue;
+            for(std::size_t b=a+1u;b<reference.actors_.size();++b) {
+                if(!reference.actors_[b].alive ||
+                   reference.actors_[b].motion!=Motion::Dynamic)continue;
+                const auto eq=[a,b](const auto& graph) {
+                    return graph.node_island[a]==graph.node_island[b];
+                };
+                if(eq(reference.speculative_islands_)!=
+                       eq(gpu.speculative_islands_) ||
+                   eq(reference.accurate_islands_)!=
+                       eq(gpu.accurate_islands_))
+                    throw std::runtime_error(
+                        "Early speculative Sc admission changed source island connectivity");
+            }
+        }
     }
     static std::uint32_t contact_manager_edge(const Scene& scene,Pair shapes) {
         return scene.contact_edge_index(shapes);
@@ -982,6 +995,9 @@ void verify_coupled_rigid_stack(
     for(std::uint32_t frame=0u;frame<12u;++frame) {
         cpu.step(dt);
         gpu.step(dt);
+        if(frame==0u)
+            native::GpuPcmFrictionAnchorFixture::verify_early_speculative_admission(
+                cpu,gpu);
         require(cpu.pairs().size()==gpu.pairs().size() &&
                 cpu.contacts().size()==gpu.contacts().size(),
                 "GPU coupled rigid stack lost Sc contact-manager parity");
