@@ -63,18 +63,14 @@ public:
         command.push_constants.resize(sizeof(args));
         const auto queue=[&](std::uint32_t phase,std::uint32_t count) {
             args[2]=phase;
-            for(std::uint32_t first=0u;first<count;) {
+            for(std::uint64_t first=0u;first<count;) {
                 const auto groups=std::min<std::uint64_t>(
-                    maxGroups,(std::uint64_t(count-first)+127u)/128u);
-                // graph phases use a global id offset only when the
-                // device limit requires more than one command.
-                if(first!=0u)
-                    throw std::overflow_error(
-                        "Sc island graph exceeds one device dispatch domain");
+                    maxGroups,(std::uint64_t(count)-first+127u)/128u);
+                args[3]=static_cast<std::uint32_t>(first);
                 command.groups={static_cast<std::uint32_t>(groups),1u,1u};
                 std::memcpy(command.push_constants.data(),args.data(),sizeof(args));
                 stream.commands().emplace_back(command);
-                first+=static_cast<std::uint32_t>(groups*128u);
+                first+=groups*128u;
             }
         };
         // Initialize the original EdgeIndex lookup even for worlds whose
