@@ -166,6 +166,7 @@ public:
         last_contact_download_bytes_=0u;
         last_edge_history_copy_bytes_=0u;
         last_continuation_commands_=0u;
+        last_face_pair_scan_count_=0u;
         if(requests.empty())return;
         if((!shape_capacity && !requests.empty()) ||
            requests.size()>std::numeric_limits<std::uint32_t>::max())
@@ -174,6 +175,7 @@ public:
         std::uint32_t candidate_count=0u;
         std::uint32_t largest_edge=0u;
         bool needs_continuation=false;
+        std::uint32_t first_face_pair=pair_count,face_pair_end=0u;
         bool full_upload=reset_manifolds_ ||
             previous_count!=pair_count || pair_host_.size()!=pair_count;
         std::uint32_t first_dirty=pair_count,last_dirty=0u;
@@ -181,6 +183,10 @@ public:
         for(std::uint32_t i=0u;i<pair_count;++i) {
             const auto& request=requests[i];
             needs_continuation|=!request.candidate_complete;
+            if(!request.plane_pair && request.candidate_capacity==4u) {
+                first_face_pair=std::min(first_face_pair,i);
+                face_pair_end=i+1u;
+            }
             if(request.candidate_complete && !request.plane_pair &&
                request.candidate_capacity!=1u)
                 throw std::invalid_argument(
@@ -370,17 +376,28 @@ public:
                 pair_count,shape_capacity,candidate_capacity,edge_capacity,
                 convex_surface_.getDevicePtr(),convex_surface_bytes_,
                 convex_faces_base_,convex_indices_base_);
-            if(convex_vertex_count_)
+            // Sc has already classified which finite pairs contain
+            // convex geometry. Shift source pair/result/contact views
+            // to that interval without a separate index upload, GPU
+            // compaction or report readback.
+            if(first_face_pair<face_pair_end &&
+               convex_vertex_count_ && convex_surface_bytes_) {
+                const auto span=face_pair_end-first_face_pair;
+                last_face_pair_scan_count_=span;
                 face_stage_.append(stream_,addresses_,
                     transforms_.getDevicePtr(),geometry_.getDevicePtr(),
-                    pairs_.getDevicePtr(),results_.getDevicePtr(),
+                    pairs_.getDevicePtr()+std::size_t(first_face_pair)*20u,
+                    results_.getDevicePtr()+std::size_t(first_face_pair)*32u,
                     candidates_.getDevicePtr(),edges_.getDevicePtr(),
                     work_.getDevicePtr(),indirect_address_,
-                    dense_contacts_.getDevicePtr(),
+                    dense_contacts_.getDevicePtr()+
+                        std::size_t(first_face_pair)*
+                            sizeof(SourcePcmGpuContactStreamNative),
                     convex_vertices_.getDevicePtr(),convex_vertex_count_,
-                    pair_count,shape_capacity,candidate_capacity,edge_capacity,
+                    span,shape_capacity,candidate_capacity,edge_capacity,
                     convex_surface_.getDevicePtr(),convex_surface_bytes_,
                     convex_faces_base_,convex_indices_base_);
+            }
         }
         last_continuation_commands_=
             stream_.commands().size()-before_continuation;
@@ -466,6 +483,9 @@ public:
     std::size_t last_continuation_commands() const noexcept {
         return last_continuation_commands_;
     }
+    std::size_t last_face_pair_scan_count() const noexcept {
+        return last_face_pair_scan_count_;
+    }
 private:
     compute::Context& context_;
     CudaDeviceAddressMap& addresses_;
@@ -499,6 +519,7 @@ private:
     std::size_t last_contact_download_bytes_=0u;
     std::size_t last_edge_history_copy_bytes_=0u;
     std::size_t last_continuation_commands_=0u;
+    std::size_t last_face_pair_scan_count_=0u;
     std::size_t published_edge_span_bytes_=0u;
 };
 } // namespace fyzz::physx_gpu

@@ -2873,6 +2873,8 @@ int main(int argc,char** argv) {
                         "Finite convex GPU case requires compiled hull Dy shader");
                     verify_convex_finite_gpu_solver(
                         backend,argv[1],argv[2],argv[3],argv[4]);
+                    verify_convex_face_dispatch_window(
+                        backend,argv[1],argv[2]);
                 });
         if(scenario=="all" || scenario=="scene")
             fyzz::tests::measure_gpu_case("sc_pcm","scene",

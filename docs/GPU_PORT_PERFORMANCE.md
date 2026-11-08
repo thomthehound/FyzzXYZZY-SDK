@@ -67,7 +67,10 @@ contacts directly. Frames containing only those Sc-classified contacts
 omit GJK/EPA dispatches. Vulkan's direct GJK scans source pair status
 without a redundant status-3 compaction; D3D12's staged GJK consumes
 a GPU-compact 32-lane indirect worklist. Both paths compact EPA work
-on the GPU, without a host-side worklist fetch.
+on the GPU, without a host-side worklist fetch. Sc also bounds convex
+face expansion to the source-ordered range containing finite convex
+pairs. Scenes with cooked hulls but no finite convex contacts dispatch
+no face shader, without another GPU index buffer or upload.
 
 Production reviews must identify **each necessary GPU → CPU → GPU handoff**,
 the value crossing it, the consumer forcing synchronization, and whether
