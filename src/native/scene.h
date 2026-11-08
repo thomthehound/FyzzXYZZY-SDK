@@ -408,9 +408,7 @@ public:
         std::span<GpuPcmBoxResult>) {
         throw std::logic_error("Source GPU PCM stages are not installed");
     }
-    virtual void finish_gpu_pcm_box_contacts(
-        std::span<const GpuPcmBoxPair>,
-        std::span<GpuPcmBoxResult>) {
+    virtual void finish_gpu_pcm_box_contacts() {
         throw std::logic_error("Source GPU PCM publication is unavailable");
     }
     // Sc can generate bounded primitive Gu witnesses once, then upload
