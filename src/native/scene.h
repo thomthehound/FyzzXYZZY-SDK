@@ -411,6 +411,14 @@ public:
     virtual void finish_gpu_pcm_box_contacts() {
         throw std::logic_error("Source GPU PCM publication is unavailable");
     }
+    // A mixed frame submits bounded CPU Gu into the resident source
+    // contact stream as soon as those witnesses are available. Sc's
+    // subsequent GPU witness join must not wait for this later upload.
+    virtual void enqueue_host_pcm_contacts(
+        std::span<const GpuPcmBoxPair>,
+        std::span<const GpuPcmBoxResult>) {
+        throw std::logic_error("Source GPU PCM host input is unavailable");
+    }
     // Sc can generate bounded primitive Gu witnesses once, then upload
     // their existing source-ordered records for device Dy preparation.
     // General GPU PCM keeps device ownership of its contact generation.
