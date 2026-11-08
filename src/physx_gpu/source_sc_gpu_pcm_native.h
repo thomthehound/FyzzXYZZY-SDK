@@ -133,10 +133,18 @@ public:
 
     void commit_step() {
         if(!deferred_expected_.empty()) {
+            // CPU Sc has finished publishing its analytic contact and
+            // island state. Fetch the already-submitted GPU result at
+            // the commit boundary, not before CPU Sc processing.
             const auto extra=deferred_verification_download();
+            try {
+                context_.download_batch(
+                    std::span<const compute::DownloadSpan>(&*extra,1u));
+            } catch(...) {
+                stream_.wait_at_fetch();
+                throw;
+            }
             stream_.wait_at_fetch();
-            context_.download_batch(
-                std::span<const compute::DownloadSpan>(&*extra,1u));
             verify_deferred_results();
         }
         if(!pcm_transaction_pending_)return;

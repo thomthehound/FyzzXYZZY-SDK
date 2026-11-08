@@ -84,9 +84,12 @@ also collects the GPU contacts for independent count, transition,
 normal and witness validation before the Sc epoch commits. The same
 84-byte records are still transferred for this validation, but **after**
 Dy instead of at a PCM -> Sc -> Dy intermediate fence; there is no new
-GPU submission or host geometry upload. Collision-only queries retain
-the synchronous source publication. Finite box-box and cooked convex contact topology remains an
-intermediate GPU/CPU synchronization dependency.
+GPU submission or host geometry upload. Collision-only primitive
+queries also overlap Sc contact/island publication with PCM execution,
+then verify device contacts at Sc's commit boundary. They still fetch
+GPU contacts before returning, without introducing a solver dispatch
+or an intermediate Sc wait. Finite box-box and cooked convex contacts
+still require the intermediate GPU/CPU synchronization.
 
 Production reviews must identify **each necessary GPU → CPU → GPU handoff**,
 the value crossing it, the consumer forcing synchronization, and whether

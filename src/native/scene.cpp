@@ -3978,7 +3978,7 @@ std::uint8_t Scene::publish_gpu_pcm_box_box(
     }
     return static_cast<std::uint8_t>(gpu.count);
 }
-void Scene::update_contacts(bool gpu_dy_follows) {
+void Scene::update_contacts() {
     // Gu narrowphase consumes the sum of both PxShapeCore contact offsets.
     next_manifolds_.clear();
     next_contact_points_.clear();
@@ -4076,8 +4076,7 @@ void Scene::update_contacts(bool gpu_dy_follows) {
     // The GPU outcome is checked at the existing Dy fetch boundary.
     bool deferred_pcm=false;
     if(source_gpu_pcm) {
-        const bool analytic=gpu_dy_follows &&
-            gpu_broadphase_->has_gpu_dy_distance() &&
+        const bool analytic=gpu_broadphase_->has_gpu_dy_distance() &&
             !gpu_pcm_pairs_.empty() &&
             std::all_of(gpu_pcm_pairs_.begin(),gpu_pcm_pairs_.end(),
                 [this](const GpuPcmBoxPair& request) {
@@ -10573,7 +10572,7 @@ void Scene::step(float seconds) {
         accurate_islands_.active_nodes.size();
     speculative_islands_.initial_active_node_count=
         speculative_islands_.active_nodes.size();
-    advance_collision_internal(false,true,true);
+    advance_collision_internal(false,true);
     // The source first/second-pass wakeIslands handoffs precede
     // third-pass processLostEdges, preserving old-island wake reach.
     activate_published_islands();
@@ -10910,7 +10909,7 @@ void Scene::advance_collision(bool force_update) {
         synchronize_active_island_nodes();
 }
 void Scene::advance_collision_internal(
-    bool force_update,bool checkpointed,bool gpu_dy_follows) {
+    bool force_update,bool checkpointed) {
     // Begin one complete source publication. The first pass can rebuild
     // island membership before third-pass lost-edge repair, so preserve
     // any resulting sleep candidates across both passes of this frame.
@@ -10946,7 +10945,7 @@ void Scene::advance_collision_internal(
             update_pairs();
         }
         publish_pairs();
-        update_contacts(gpu_dy_follows);
+        update_contacts();
     } else {
         // A quiet query/step still publishes empty per-frame event
         // streams. Rotate only their reusable buffers so a later

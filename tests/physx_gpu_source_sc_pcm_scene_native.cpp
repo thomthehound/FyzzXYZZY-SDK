@@ -2071,11 +2071,13 @@ void verify_sphere_gpu_solver(
     gpu.add_static_box({0.5f,0.5f,0.5f},{20.f,10.f,0.f});
     cpu.add_dynamic_sphere(0.25f,{20.f,10.f,0.f},1.f);
     gpu.add_dynamic_sphere(0.25f,{20.f,10.f,0.f},1.f);
+    const auto solved_before=producer->dy_distance_dispatch_count();
     cpu.advance_collision(true);
     gpu.advance_collision(true);
-    require(producer->pcm_deferred_contact_readback_bytes()==0u &&
-            producer->pcm_contact_readback_bytes()>0u,
-        "Collision-only source PCM incorrectly deferred its GPU fetch");
+    require(producer->pcm_contact_readback_bytes()==0u &&
+            producer->pcm_deferred_contact_readback_bytes()>0u &&
+            producer->dy_distance_dispatch_count()==solved_before,
+        "Collision-only Sc PCM did not join deferred contact verification at commit");
     const auto embedded=[](const native::Scene& scene) -> native::ContactPoint {
         for(const auto& manager:scene.contacts())
             for(const auto& point:manager.points)
