@@ -399,12 +399,10 @@ public:
             throw std::logic_error("Source Sc GPU PCM shaders not installed");
         pcm_->enqueue(requests,results,aabb_->capacity());
     }
-    void finish_gpu_pcm_box_contacts(
-            std::span<const native::GpuPcmBoxPair> requests,
-            std::span<native::GpuPcmBoxResult> results) override {
+    void finish_gpu_pcm_box_contacts() override {
         if(!pcm_)
             throw std::logic_error("Source Sc GPU PCM shaders not installed");
-        pcm_->finish(requests,results);
+        pcm_->finish();
     }
     bool supports_host_pcm_contacts() const noexcept override {
         return pcm_ && dy_distance_;
