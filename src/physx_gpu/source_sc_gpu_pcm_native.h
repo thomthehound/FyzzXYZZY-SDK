@@ -119,6 +119,7 @@ public:
 
     void invalidate_after_rollback() noexcept {
         graph_rebuild_pending_=true;
+        graph_validation_pending_=false;
         if(pcm_transaction_pending_) {
             // A submitted PCM epoch may have changed Gu witnesses even
             // when Sc/Dy later rejected the complete simulation frame.
@@ -135,8 +136,27 @@ public:
         return graph_rebuild_pending_ || restore_pending_;
     }
 
-    void commit_step() noexcept {
+    void commit_step() {
         if(!pcm_transaction_pending_)return;
+        if(graph_validation_pending_) {
+            const auto physical=addresses_.resolve(
+                graph_.getDevicePtr()+graph_header_[4],
+                sizeof(graph_error_host_));
+            stream_.submit();
+            try {
+                context_.download(physical.buffer,physical.offset,
+                                  graph_error_host_.data(),
+                                  sizeof(graph_error_host_));
+            } catch (...) {
+                stream_.wait_at_fetch();
+                throw;
+            }
+            stream_.wait_at_fetch();
+            graph_validation_pending_=false;
+            if(graph_error_host_[0]!=0u)
+                throw std::logic_error(
+                    "Source GPU Sc contact island graph rejected an EdgeIndex");
+        }
         published_edge_span_bytes_=std::max(
             published_edge_span_bytes_,pending_edge_span_bytes_);
         pcm_transaction_pending_=false;
@@ -472,6 +492,21 @@ public:
             edges_.getDevicePtr(),source_allocation_bytes(edge_capacity,240u),
             graph_count,rigid_count,graph_edge_count);
 
+        // Without refreshed PCM contacts the graph has no Sc contact
+        // payload to fetch. Leave its validation on the ordered GPU queue
+        // until the final Sc commit, after Dy has consumed its roots.
+        if(pair_count==0u) {
+            stream_.submit();
+            pcm_transaction_pending_=true;
+            journal_pair_count_=0u;
+            journal_edge_capacity_=edge_capacity;
+            pending_edge_span_bytes_=std::size_t(edge_capacity)*240u;
+            graph_validation_pending_=true;
+            published_pair_count_=0u;
+            graph_rebuild_pending_=false;
+            return;
+        }
+
         // Fetch the losslessly packed device stream, then reconstruct
         // Sc's original host record. The Dy shader reads the same device
         // allocation; no GPU repacking command or second fence is needed.
@@ -661,7 +696,7 @@ private:
     std::uint32_t graph_rigid_count_=0u;
     bool reset_manifolds_=false;
     bool pcm_transaction_pending_=false,restore_pending_=false;
-    bool graph_rebuild_pending_=false;
+    bool graph_rebuild_pending_=false,graph_validation_pending_=false;
     std::uint32_t journal_pair_count_=0u,journal_edge_capacity_=0u;
     std::size_t pending_edge_span_bytes_=0u;
     std::uint32_t published_pair_count_=0u;

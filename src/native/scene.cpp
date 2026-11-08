@@ -10867,6 +10867,9 @@ void Scene::advance_collision(bool force_update) {
         // island repair passes have already joined, so handle retirement
         // may complete inside the failure-atomic collision transaction.
         retire_destroyed_contact_edges();
+        // A graph-only Sc epoch stays on device through its consumers.
+        // Validate and accept it inside this publication checkpoint.
+        if(gpu_broadphase_)gpu_broadphase_->commit_gpu_step();
     } catch (...) {
         step_checkpoint_.rollback(*this);
         throw;
@@ -10880,7 +10883,6 @@ void Scene::advance_collision(bool force_update) {
     consume_deactivated_contact_interactions();
     if(!accurate_islands_.nodes_to_deactivate.empty())
         synchronize_active_island_nodes();
-    if(gpu_broadphase_)gpu_broadphase_->commit_gpu_step();
 }
 void Scene::advance_collision_internal(
     bool force_update, bool checkpointed) {

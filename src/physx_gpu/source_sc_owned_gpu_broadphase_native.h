@@ -459,7 +459,7 @@ public:
         producer_->set_actor_motion(id,motion);
     }
     void post_reports_cleanup() override { producer_->post_reports_cleanup(); }
-    void commit_gpu_step() noexcept override {
+    void commit_gpu_step() override {
         if(pcm_)pcm_->commit_step();
     }
     bool needs_gpu_contact_rebuild() const noexcept override {

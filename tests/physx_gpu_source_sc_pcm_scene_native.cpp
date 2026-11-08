@@ -324,6 +324,15 @@ void verify(fyzz::compute::Backend backend,const char* sap,
     require(dormant_counts[gpu_a]==0u,
         "Dormant recycled manager inherited the prior GPU touch");
     producer->commit_gpu_step();
+    // The next graph-only epoch is not explicitly observed before
+    // commit. Dy and Sc must share its queued work without a PCM fetch.
+    producer->generate_gpu_pcm_box_contacts(no_refresh,no_contacts);
+    require(producer->pcm_contact_readback_bytes()==0u,
+        "Graph-only Sc epoch downloaded a PCM contact stream");
+    producer->commit_gpu_step();
+    const auto deferred_counts=producer->contact_island_edge_counts();
+    require(deferred_counts[gpu_a]==0u,
+        "Committed graph-only Sc epoch changed dormant EdgeIndex ownership");
     // Deliberately reject a speculative Gu manager refresh: it writes
     // an empty witness and a physical-touch loss into an existing
     // EdgeIndex. The device must restore the accepted full witness
