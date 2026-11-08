@@ -10894,7 +10894,9 @@ void Scene::advance_collision_internal(
     // bounds/history convergence after movement stops.
     if(gpu_broadphase_)update_gpu_pairs(force_update);
     if (dirty_ || force_update ||
-        (gpu_broadphase_ && broadphase_pair_membership_changed_)) {
+        (gpu_broadphase_ &&
+         (broadphase_pair_membership_changed_ ||
+          gpu_broadphase_->needs_gpu_contact_rebuild()))) {
         if(!gpu_broadphase_) {
             update_bounds();
             update_pairs();

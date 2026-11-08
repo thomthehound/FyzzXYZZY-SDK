@@ -457,6 +457,9 @@ public:
     void commit_gpu_step() noexcept override {
         if(pcm_)pcm_->commit_step();
     }
+    bool needs_gpu_contact_rebuild() const noexcept override {
+        return pcm_ && pcm_->needs_contact_rebuild();
+    }
     void invalidate_after_rollback() noexcept override {
         producer_->invalidate_after_rollback();
         if(pcm_)pcm_->invalidate_after_rollback();

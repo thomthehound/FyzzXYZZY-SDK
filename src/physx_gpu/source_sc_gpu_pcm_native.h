@@ -118,6 +118,7 @@ public:
     }
 
     void invalidate_after_rollback() noexcept {
+        graph_rebuild_pending_=true;
         if(pcm_transaction_pending_) {
             // A submitted PCM epoch may have changed Gu witnesses even
             // when Sc/Dy later rejected the complete simulation frame.
@@ -128,6 +129,10 @@ public:
             // warmstart and physical touch remain valid on retry.
             reset_manifolds_=!restore_pending_;
         } else reset_manifolds_=true;
+    }
+
+    bool needs_contact_rebuild() const noexcept {
+        return graph_rebuild_pending_ || restore_pending_;
     }
 
     void commit_step() noexcept {
@@ -180,7 +185,10 @@ public:
         last_contact_download_bytes_=0u;
         last_edge_history_copy_bytes_=0u;
         last_graph_upload_bytes_=0u;
-        if(requests.empty() && graph_sources_.empty())return;
+        if(requests.empty() && graph_sources_.empty()) {
+            graph_rebuild_pending_=false;
+            return;
+        }
         if((!shape_capacity && !requests.empty()) ||
            requests.size()>std::numeric_limits<std::uint32_t>::max())
             throw std::out_of_range("Source GPU PCM pair capacity overflow");
@@ -513,6 +521,7 @@ public:
                         std::size_t(stored.count)*sizeof(packed.contacts[0]));
         }
         published_pair_count_=pair_count;
+        graph_rebuild_pending_=false;
         last_contact_download_bytes_=readback_bytes;
     }
     CudaDeviceAddressMap::Address contact_stream_address() const noexcept {
@@ -587,6 +596,7 @@ private:
     std::uint32_t graph_rigid_count_=0u;
     bool reset_manifolds_=false;
     bool pcm_transaction_pending_=false,restore_pending_=false;
+    bool graph_rebuild_pending_=false;
     std::uint32_t journal_pair_count_=0u,journal_edge_capacity_=0u;
     std::size_t pending_edge_span_bytes_=0u;
     std::uint32_t published_pair_count_=0u;
