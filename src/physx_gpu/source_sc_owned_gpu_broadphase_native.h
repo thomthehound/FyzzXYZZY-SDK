@@ -384,6 +384,11 @@ public:
             throw std::logic_error("GPU Sc contact graph is not installed");
         return pcm_->contact_island_roots();
     }
+    std::vector<std::uint32_t> contact_island_edge_counts() const {
+        if(!pcm_)
+            throw std::logic_error("GPU Sc contact graph is not installed");
+        return pcm_->contact_island_edge_counts();
+    }
     void set_gpu_sc_contact_graph(
         std::span<const native::GpuScContactGraphEdge> edges,
         std::uint32_t rigid_count) override {
