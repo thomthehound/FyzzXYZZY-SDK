@@ -305,6 +305,9 @@ public:
                 input.active=1u|dy_flags;
             }
         }
+        const auto pending_graph_error=pcm_?
+            pcm_->pending_graph_error_address():0u;
+        std::uint32_t graph_error=0u;
         dy_distance_->solve(bodies,rows,descriptors,partitions,ordinals,tasks,
                             contact_forces,cpu_gu,friction,anchors,patches,manifolds,contact_order,
                             contact_prep,integration,integrated_poses,
@@ -320,7 +323,11 @@ public:
                             device_unconstrained_preparation,sleep_states,
                             joint_inputs,
                             pcm_?pcm_->graph_address():0u,
-                            pcm_?pcm_->graph_storage_bytes():0u);
+                            pcm_?pcm_->graph_storage_bytes():0u,
+                            pending_graph_error,
+                            pending_graph_error?&graph_error:nullptr);
+        if(pending_graph_error)
+            pcm_->validate_graph_at_solver_fetch(graph_error);
         ++dy_distance_dispatch_count_;
     }
     std::size_t dy_resident_pose_count() const noexcept {

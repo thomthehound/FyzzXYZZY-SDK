@@ -163,6 +163,20 @@ public:
         journal_pair_count_=0u;
     }
 
+    CudaDeviceAddressMap::Address pending_graph_error_address() const noexcept {
+        return graph_validation_pending_
+            ?graph_.getDevicePtr()+graph_header_[4]:0u;
+    }
+
+    void validate_graph_at_solver_fetch(std::uint32_t error) {
+        if(!graph_validation_pending_)
+            throw std::logic_error("Sc graph validation has no pending GPU epoch");
+        if(error!=0u)
+            throw std::logic_error(
+                "Source GPU Sc contact island graph rejected an EdgeIndex");
+        graph_validation_pending_=false;
+    }
+
     void set_contact_graph(
         std::span<const native::GpuScContactGraphEdge> edges,
         std::uint32_t rigid_count) {

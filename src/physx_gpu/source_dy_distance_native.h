@@ -232,7 +232,12 @@ public:
                std::span<native::GpuDySleepState> sleep_states={},
                std::span<const native::GpuDyJointInput> joint_inputs={},
                CudaDeviceAddressMap::Address sc_graph=0u,
-               std::size_t sc_graph_bytes=0u) {
+               std::size_t sc_graph_bytes=0u,
+               CudaDeviceAddressMap::Address graph_error_address=0u,
+               std::uint32_t* graph_error_output=nullptr) {
+        if((graph_error_address==0u)!=(graph_error_output==nullptr))
+            throw std::invalid_argument(
+                "Sc graph error readback requires an output and address");
         if(integration.size()<bodies.size() ||
            integrated_poses.size()!=integration.size() ||
            (tasks.empty() && integration.size()==bodies.size()))
@@ -1279,11 +1284,22 @@ public:
         launch(Launch::FreeBodies,{0u,(free_bodies+127u)/128u},
                narrow(integration.size()));
         const auto mapped=addresses_.resolve(address+history_bytes,output_bytes);
-        const std::array<compute::DownloadSpan,1> downloads{
-            {mapped.buffer,mapped.offset,host_.data(),output_bytes}};
+        std::array<compute::DownloadSpan,2> downloads{{
+            {mapped.buffer,mapped.offset,host_.data(),output_bytes},
+            {}
+        }};
+        std::size_t download_count=1u;
+        if(graph_error_address) {
+            const auto error=addresses_.resolve(
+                graph_error_address,sizeof(std::uint32_t));
+            downloads[download_count++]={
+                error.buffer,error.offset,graph_error_output,
+                sizeof(std::uint32_t)};
+        }
         stream_.submit();
         try {
-            context_.download_batch(downloads);
+            context_.download_batch(std::span(
+                downloads.data(),download_count));
         } catch(...) {
             stream_.wait_at_fetch();
             throw;
