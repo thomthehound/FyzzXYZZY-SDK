@@ -154,6 +154,16 @@ int main() {
             retained_small,retained_grow};
         context.wait_submissions(retained);
 
+        // A blocking single-buffer fetch is allowed to complete earlier
+        // work, but the originating stream still owns its submission ID.
+        const SubmissionId direct_device=context.submit_copy_buffer(
+            local_src,0,local_dst,0,sizeof(source));
+        context.download(local_dst,0,result.data(),sizeof(result));
+        if(result[0]!=source[0] || result[4]!=patch_values[0])
+            throw std::runtime_error(
+                "Blocking Vulkan device readback lost ordered source data");
+        context.wait_submission(direct_device);
+
         // Source SAP descriptor allocations may be host-visible. A
         // batched readback must still fence an earlier GPU write to
         // such an allocation, without requiring its token to be reaped.
@@ -175,6 +185,15 @@ int main() {
             throw std::runtime_error(
                 "Source descriptor readback did not complete earlier GPU commands");
         context.wait_submission(descriptor_write);
+        const SubmissionId direct_mapped=context.submit_copy_buffer(
+            local_src,0,mapped_descriptor,0,sizeof(source));
+        context.download(mapped_descriptor,0,descriptor_words.data(),
+                         sizeof(descriptor_words));
+        if(descriptor_words[0]!=source[0] ||
+           descriptor_words[1]!=source[1])
+            throw std::runtime_error(
+                "Blocking Vulkan mapped readback lost ordered source data");
+        context.wait_submission(direct_mapped);
         context.destroy_buffer(mapped_descriptor);
 
         // A copy-only batch creates no descriptor pool.

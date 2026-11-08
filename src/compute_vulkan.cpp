@@ -556,6 +556,24 @@ struct Context::Impl {
         }
     }
 
+    // Direct CPU mapping must observe the newest ordered GPU submission,
+    // but its token stays with the stream that submitted it.
+    void wait_for_host_access() {
+        if(submissions.empty())return;
+        const Submission* newest=nullptr;
+        SubmissionId newest_id=0u;
+        for(const auto& [id,submission]:submissions)
+            if(!newest || id>newest_id) {
+                newest=&submission;
+                newest_id=id;
+            }
+        const VkFence fence=newest->fence;
+        const VkResult result=vkWaitForFences(
+            device,1,&fence,VK_TRUE,UINT64_MAX);
+        if(result==VK_ERROR_DEVICE_LOST)device_lost=true;
+        require(result,"vkWaitForFences host transfer");
+    }
+
     void destroy_pipeline_handles(Pipeline& pipeline) noexcept {
         if (pipeline.pipeline != VK_NULL_HANDLE) {
             vkDestroyPipeline(device, pipeline.pipeline, nullptr);
@@ -926,7 +944,6 @@ struct Context::Impl {
 
     void transfer(BufferId id, std::size_t offset, void* data,
                   std::size_t bytes, bool upload) {
-        wait_all();
         const Buffer& buffer = get(id);
         validate_range(buffer.bytes, offset, bytes);
         if (bytes == 0) {
@@ -936,6 +953,7 @@ struct Context::Impl {
             throw std::invalid_argument("Null compute transfer data");
         }
         if (buffer.placement == MemoryPlacement::HostVisible) {
+            wait_for_host_access();
             map_transfer(buffer, offset, data, bytes, upload);
             return;
         }
