@@ -4070,8 +4070,8 @@ void Scene::update_contacts(bool gpu_dy_follows) {
         }
         gpu_pcm_results_.resize(gpu_pcm_pairs_.size());
     }
-    // Only analytic, single-witness Sc managers can produce the exact
-    // source Gu classification independently of the device stream. CPU
+    // Primitive sphere and plane-box managers produce source Gu
+    // topology independently of the device numerical stream. CPU
     // Sc publishes topology while GPU PCM prepares numerical Dy inputs.
     // The GPU outcome is checked at the existing Dy fetch boundary.
     bool deferred_pcm=false;
@@ -4080,8 +4080,12 @@ void Scene::update_contacts(bool gpu_dy_follows) {
             gpu_broadphase_->has_gpu_dy_distance() &&
             !gpu_pcm_pairs_.empty() &&
             std::all_of(gpu_pcm_pairs_.begin(),gpu_pcm_pairs_.end(),
-                [](const GpuPcmBoxPair& request) {
-                    return request.candidate_capacity==1u;
+                [this](const GpuPcmBoxPair& request) {
+                    return request.candidate_complete &&
+                        (request.candidate_capacity==1u ||
+                         (request.plane_pair &&
+                          request.candidate_capacity==16u &&
+                          shapes_[request.second].geometry==Geometry::Box));
                 });
         if(analytic)
             deferred_pcm=gpu_broadphase_->begin_gpu_pcm_contacts_deferred(
@@ -4091,18 +4095,30 @@ void Scene::update_contacts(bool gpu_dy_follows) {
                 gpu_pcm_pairs_,gpu_pcm_results_);
     }
     if(deferred_pcm) {
-        // A sphere's one-contact Gu source is bounded O(1) CPU work.
-        // No GPU contact record crosses to Sc before Dy execution.
+        // Primitive source Gu classification overlaps GPU PCM; only
+        // existing Sc-owned contact and island metadata is published.
         for(std::size_t i=0u;i<gpu_pcm_pairs_.size();++i) {
             const auto& request=gpu_pcm_pairs_[i];
             const Shape& first=shapes_[request.first];
             const Shape& second=shapes_[request.second];
             const Shape& sphere=first.geometry==Geometry::Sphere
                 ?first:second;
-            std::array<ContactPoint,1> points{};
+            std::array<ContactPoint,4> points{};
             std::uint8_t count=0u;
             const float distance=first.contact_offset+second.contact_offset;
-            if(request.plane_pair) {
+            if(request.plane_pair &&
+               second.geometry==Geometry::Box) {
+                // Eight bounded corner tests and the original Sc
+                // persistent PCM cache determine the CPU contact run.
+                step_checkpoint_.save_edge(*this,request.edge);
+                count=generate_pcm_plane_box(
+                    first,second,distance,
+                    island_edges_[request.edge].pcm_cache,points);
+                for(std::size_t j=0u;j<count;++j)
+                    points[j].normal={
+                        -points[j].normal.x,-points[j].normal.y,
+                        -points[j].normal.z};
+            }else if(request.plane_pair) {
                 // GPU plane contacts are already in Sc's final +Y
                 // orientation. The CPU-only Gu path reverses twice.
                 count=source_pcm_sphere_plane(
@@ -4138,7 +4154,9 @@ void Scene::update_contacts(bool gpu_dy_follows) {
                     :GpuPcmTouchTransition::None);
             if(count) {
                 result.normal=points[0].normal;
-                result.points[0]={points[0].position,points[0].separation};
+                for(std::size_t j=0u;j<count;++j)
+                    result.points[j]={
+                        points[j].position,points[j].separation};
             }
         }
     }

@@ -155,7 +155,9 @@ public:
             !std::all_of(requests.begin(),requests.end(),
                 [](const auto& request) {
                     return request.candidate_complete &&
-                           request.candidate_capacity==1u;
+                           (request.candidate_capacity==1u ||
+                            (request.plane_pair &&
+                             request.candidate_capacity==16u));
                 })))
             throw std::invalid_argument(
                 "Deferred source PCM requires analytic single-witness managers");

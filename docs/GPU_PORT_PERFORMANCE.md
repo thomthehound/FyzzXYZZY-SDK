@@ -76,17 +76,17 @@ face expansion to the source-ordered range containing finite convex
 pairs. Scenes with cooked hulls but no finite convex contacts dispatch
 no face shader, without another GPU index buffer or upload.
 
-Analytic single-witness PCM frames with GPU Dy no longer fetch PCM
-results before Sc schedules the solver. Sc classifies sphere contacts
-in bounded CPU work while the device builds its own numerical contact
-stream. Dy reads that resident stream, and its existing final download
+Primitive PCM frames with GPU Dy no longer fetch PCM results before
+Sc schedules the solver. Sc classifies sphere contacts and finite
+plane-box corner witnesses in bounded CPU work while the device builds
+its own numerical contact stream. Dy reads that resident stream, and its existing final download
 also collects the GPU contacts for independent count, transition,
 normal and witness validation before the Sc epoch commits. The same
 84-byte records are still transferred for this validation, but **after**
 Dy instead of at a PCM -> Sc -> Dy intermediate fence; there is no new
 GPU submission or host geometry upload. Collision-only queries retain
-the synchronous source publication. General box and convex contact
-topology remains an intermediate GPU/CPU synchronization dependency.
+the synchronous source publication. Finite box-box and cooked convex contact topology remains an
+intermediate GPU/CPU synchronization dependency.
 
 Production reviews must identify **each necessary GPU → CPU → GPU handoff**,
 the value crossing it, the consumer forcing synchronization, and whether

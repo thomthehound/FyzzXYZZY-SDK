@@ -2090,6 +2090,78 @@ void verify_sphere_gpu_solver(
         "GPU embedded sphere did not preserve source PCM exit-face witness");
 }
 
+void verify_deferred_primitive_pcm_solver(
+    fyzz::compute::Backend backend,const char* sap,
+    const char* pcm,const char* dy_shader) {
+    using namespace fyzz;
+    std::ifstream source(dy_shader,std::ios::binary);
+    require(bool(source),"Primitive GPU Dy shader bundle unavailable");
+    const std::vector<char> data(
+        std::istreambuf_iterator<char>{source},std::istreambuf_iterator<char>{});
+    compute::ShaderBinary dy{};
+    dy.format=backend==compute::Backend::Vulkan
+        ?compute::ShaderFormat::Spirv:compute::ShaderFormat::Dxil;
+    dy.bytes.assign(data.begin(),data.end());
+
+    native::Scene cpu,gpu;
+    auto owner=std::make_unique<physx_gpu::SourceScOwnedGpuBroadphaseNative>(
+        backend,load_native_gpu_sap_shaders(backend,sap),128u,128u,
+        std::nullopt,load_native_gpu_pcm_shaders(backend,pcm),std::move(dy));
+    auto* producer=owner.get();
+    gpu.set_gpu_broadphase(std::move(owner));
+    const auto make=[](native::Scene& scene) {
+        scene.add_static_floor(0.f);
+        const auto box=scene.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{0.f,0.48f,0.f},1.f);
+        const auto sphere=scene.add_dynamic_sphere(
+            0.4f,{6.f,0.38f,0.f},1.f);
+        RigidBodyDynamics dynamics{};
+        dynamics.gravity_enabled=false;
+        scene.set_dynamics(box,dynamics);
+        scene.set_dynamics(sphere,dynamics);
+        return std::array<BodyId,2>{box,sphere};
+    };
+    const auto actual=make(gpu);
+    const auto expected=make(cpu);
+    constexpr float dt=1.f/120.f;
+    for(unsigned frame=0u;frame<5u;++frame) {
+        if(frame==2u || frame==3u) {
+            const Vec3 p=frame==2u
+                ?Vec3{0.f,4.f,0.f}:Vec3{0.f,0.48f,0.f};
+            cpu.set_position(expected[0],p);
+            gpu.set_position(actual[0],p);
+        }
+        cpu.step(dt);
+        gpu.step(dt);
+        require(producer->pcm_contact_readback_bytes()==0u &&
+                producer->pcm_deferred_contact_readback_bytes()==
+                    2u*sizeof(physx_gpu::SourcePcmGpuContactStreamNative) &&
+                producer->dy_gpu_integrated_body_count()==2u,
+            "Plane-box/sphere GPU frame reinstated the PCM-to-Sc fence");
+        require(cpu.contacts().size()==gpu.contacts().size(),
+            "Deferred primitive PCM changed the Sc touch graph");
+        if(frame==2u)
+            require(cpu.contacts().size()==1u,
+                "Lifted source plane-box retained its physical touch");
+        else
+            require(cpu.contacts().size()==2u,
+                "Restored source plane-box lost its physical touch");
+        for(std::size_t i=0u;i<cpu.contacts().size();++i) {
+            const auto& a=cpu.contacts()[i],&b=gpu.contacts()[i];
+            require(a.pair==b.pair && a.count==b.count,
+                "Deferred primitive Gu manager identity changed");
+            for(std::size_t j=0u;j<a.count;++j) {
+                const auto& x=a.points[j],&y=b.points[j];
+                require(std::fabs(x.position.x-y.position.x)<0.003f &&
+                        std::fabs(x.position.y-y.position.y)<0.003f &&
+                        std::fabs(x.position.z-y.position.z)<0.003f &&
+                        std::fabs(x.separation-y.separation)<0.003f,
+                    "Deferred primitive Gu witnesses differ");
+            }
+        }
+    }
+}
+
 void verify_compound_actor_gpu_solver(
     fyzz::compute::Backend backend,const char* sap,const char* pcm,const char* dy_shader) {
     using namespace fyzz;
@@ -2862,8 +2934,12 @@ int main(int argc,char** argv) {
                 [&]{verify_compound_actor_gpu_solver(backend,argv[1],argv[2],argv[3]);});
         if(scenario=="all" || scenario=="sphere_solver")
             fyzz::tests::measure_gpu_case("sc_pcm","sphere_solver",
-                [&]{verify_sphere_gpu_solver(
-                    backend,argv[1],argv[2],argv[3]);});
+                [&]{
+                    verify_sphere_gpu_solver(
+                        backend,argv[1],argv[2],argv[3]);
+                    verify_deferred_primitive_pcm_solver(
+                        backend,argv[1],argv[2],argv[3]);
+                });
         if(scenario=="all" || scenario=="convex_plane")
             fyzz::tests::measure_gpu_case("sc_pcm","convex_plane",
                 [&]{
