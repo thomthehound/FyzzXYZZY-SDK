@@ -118,7 +118,8 @@ public:
                  4u,compute::BufferAccess::Write),
             view(edge_cache,source_allocation_bytes(edge_capacity,240u),
                  5u,compute::BufferAccess::ReadWrite),
-            view(work,source_allocation_bytes(pair_count,4u),
+            view(work,source_allocation_bytes(
+                     std::size_t(pair_count)+compact_staged_gjk_,4u),
                  6u,compute::BufferAccess::Read),
             view(output,source_allocation_bytes(pair_count,84u),
                  7u,compute::BufferAccess::Write),
