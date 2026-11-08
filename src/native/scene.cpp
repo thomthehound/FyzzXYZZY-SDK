@@ -3978,6 +3978,37 @@ std::uint8_t Scene::publish_gpu_pcm_box_box(
     }
     return static_cast<std::uint8_t>(gpu.count());
 }
+bool Scene::cached_friction_patch_valid(
+    const FrictionPatch& old,const Actor& actor0,
+    const Actor& actor1) const {
+    if(old.broken || old.disable_strong_friction || old.anchor_count==0u)
+        return false;
+    constexpr float same_normal=0.999f;
+    constexpr float correlation_distance=0.025f;
+    const Quat q0=mass_orientation(actor0),q1=mass_orientation(actor1);
+    const Vec3 old_normal_1_in_0=
+        rotate_inverse(q0,rotate(q1,old.body1_normal));
+    const auto dot=[](Vec3 a,Vec3 b) {
+        return a.x*b.x+a.y*b.y+a.z*b.z;
+    };
+    if(dot(old.body0_normal,old_normal_1_in_0)<=same_normal)
+        return false;
+    const Vec3 p0=mass_position(actor0),p1=mass_position(actor1);
+    for(std::size_t k=0;k<old.anchor_count;++k) {
+        const Vec3 local=rotate(q1,old.body1_anchors[k]);
+        const Vec3 world{local.x+p1.x,local.y+p1.y,local.z+p1.z};
+        const Vec3 in0=rotate_inverse(q0,{
+            world.x-p0.x,world.y-p0.y,world.z-p0.z});
+        const Vec3 delta{
+            old.body0_anchors[k].x-in0.x,
+            old.body0_anchors[k].y-in0.y,
+            old.body0_anchors[k].z-in0.z};
+        if(std::abs(dot(delta,old.body0_normal))>=correlation_distance)
+            return false;
+    }
+    return true;
+}
+
 void Scene::update_contacts() {
     // Gu narrowphase consumes the sum of both PxShapeCore contact offsets.
     next_manifolds_.clear();
@@ -4001,6 +4032,7 @@ void Scene::update_contacts() {
     const auto new_lookup_generation=indexed_manifold_generation_;
     gpu_pcm_pairs_.clear();
     gpu_pcm_results_.clear();
+    gpu_pcm_friction_history_masks_.clear();
     const bool source_gpu_pcm =
         gpu_broadphase_ && gpu_broadphase_->has_gpu_pcm_box() &&
         pcm_box_box_enabled_;
@@ -4129,6 +4161,43 @@ void Scene::update_contacts() {
     if(gpu_results_pending &&
        (island_topology_dirty_ || !found_.empty() || !lost_.empty()))
         update_island_connectivity(true);
+    // The previous source friction patch's relative normal and local
+    // anchor separation depend on authored poses, not this frame's Gu.
+    // Evaluate those unchanged-input tests while GPU PCM runs. After
+    // Gu joins, only the new contact-normal correlation remains.
+    if(gpu_results_pending && !friction_patches_.empty()) {
+        gpu_pcm_friction_history_masks_.assign(gpu_pcm_pairs_.size(),0u);
+        for(std::size_t i=0u;i<gpu_pcm_pairs_.size();++i) {
+            const EdgeIndex edge=gpu_pcm_pairs_[i].edge;
+            if(edge>=friction_by_edge_.size())continue;
+            const Pair pair=island_edges_[edge].shapes;
+            const auto& history=friction_by_edge_[edge];
+            if(history.epoch!=friction_cache_epoch_ ||
+               !history.count || history.pair!=pair ||
+               history.offset>friction_patches_.size() ||
+               history.count>friction_patches_.size()-history.offset)
+                continue;
+            if(history.count>32u)
+                throw std::logic_error(
+                    "Source friction history exceeds patch correlation limit");
+            const bool reversed=island_edges_[edge].gu_order_reversed;
+            const Shape& shape0=shapes_[reversed?pair.b:pair.a];
+            const Shape& shape1=shapes_[reversed?pair.a:pair.b];
+            const auto& m0=shape0.material;
+            const auto& m1=shape1.material;
+            if(m0.disable_friction || m1.disable_friction ||
+               m0.disable_strong_friction || m1.disable_strong_friction)
+                continue;
+            const Actor& actor0=actors_[shape0.body];
+            const Actor& actor1=actors_[shape1.body];
+            std::uint32_t valid=0u;
+            for(std::size_t j=0u;j<history.count;++j)
+                if(cached_friction_patch_valid(
+                    friction_patches_[history.offset+j],actor0,actor1))
+                    valid|=1u<<j;
+            gpu_pcm_friction_history_masks_[i]=valid;
+        }
+    }
     if(host_pair_count) {
         // The same Sc cache owns primitive witnesses even when this
         // frame also schedules general device PCM contacts.
@@ -7697,7 +7766,6 @@ void Scene::prepare_constraints(float seconds) {
     // PXC_SAME_NORMAL and DyCorrelationBuffer::MAX_FRICTION_PATCHES.
     constexpr float same_normal = 0.999f;
     constexpr float friction_offset_threshold = 0.04f;
-    constexpr float correlation_distance = 0.025f;
     const auto local_point = [this](const Actor& actor, Vec3 world) {
         const Quat q = mass_orientation(actor);
         const Vec3 p=mass_position(actor);
@@ -7947,25 +8015,14 @@ void Scene::prepare_constraints(float seconds) {
             for(std::size_t previous=history.offset;
                 previous<history.offset+history.count;++previous) {
                 const auto& old=friction_patches_[previous];
-                if(old.broken || old.disable_strong_friction ||
-                   old.anchor_count==0)continue;
-                const Vec3 old_normal_1_world=
-                    rotate(mass_orientation(actor1),old.body1_normal);
-                const Vec3 old_normal_1_in_0=
-                    local_normal(actor0,old_normal_1_world);
-                if(dot(old.body0_normal,old_normal_1_in_0)<=same_normal)
-                    continue;
-                bool separated=false;
-                for(std::size_t k=0;k<old.anchor_count;++k) {
-                    const Vec3 p1_in0=local_point(actor0,
-                        world_point(actor1,old.body1_anchors[k]));
-                    if(std::abs(dot(sub(old.body0_anchors[k],p1_in0),
-                                    old.body0_normal))>=correlation_distance) {
-                        separated=true;
-                        break;
-                    }
-                }
-                if(separated)continue;
+                const bool checked_before_gu=
+                    manifold.pcm_result_index<
+                        gpu_pcm_friction_history_masks_.size();
+                const bool valid=checked_before_gu
+                    ?(gpu_pcm_friction_history_masks_[manifold.pcm_result_index] &
+                       (1u<<(previous-history.offset)))!=0u
+                    :cached_friction_patch_valid(old,actor0,actor1);
+                if(!valid)continue;
                 if(manifold.friction_patch_count==max_source_patches)
                     throw std::overflow_error(
                         "Native source cached friction exceeds 32 patches");
@@ -11034,6 +11091,7 @@ void Scene::advance_collision(bool force_update) {
 void Scene::advance_collision_internal(
     bool force_update,bool checkpointed) {
     speculative_connectivity_prepared_=false;
+    gpu_pcm_friction_history_masks_.clear();
     // Begin one complete source publication. The first pass can rebuild
     // island membership before third-pass lost-edge repair, so preserve
     // any resulting sleep candidates across both passes of this frame.

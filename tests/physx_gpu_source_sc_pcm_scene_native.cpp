@@ -92,6 +92,14 @@ struct GpuPcmFrictionAnchorFixture {
             throw std::runtime_error(
                 "GPU Dy still uploads resident PCM contact order or omitted CPU Gu order");
     }
+    static bool had_early_friction_history(const Scene& scene) {
+        const auto& masks=scene.gpu_pcm_friction_history_masks_;
+        if(!masks.empty() && masks.size()!=scene.gpu_pcm_pairs_.size())
+            throw std::runtime_error(
+                "Source early friction history lost the PCM manager stream");
+        return std::any_of(masks.begin(),masks.end(),
+            [](std::uint32_t bits) {return bits!=0u;});
+    }
     static std::size_t cpu_gu_anchor_bytes(const Scene& scene) {
         std::size_t count=0u;
         for(const auto index:scene.indexed_managers_) {
@@ -1139,6 +1147,7 @@ void verify_gpu_coupled_solver(
     constexpr float dt=1.f/120.f;
     bool saw_contact=false,saw_force=false,saw_friction=false;
     bool saw_correlated_multi_point=false;
+    bool saw_early_pcm_history=false;
     bool saw_device_pcm_contact_rows=false;
     bool saw_compact_prep=false;
     std::int64_t saved_prep_bytes=0;
@@ -1167,6 +1176,9 @@ void verify_gpu_coupled_solver(
         cpu.step(dt);
         gpu.step(dt);
         native::GpuPcmFrictionAnchorFixture::verify(cpu,gpu);
+        saw_early_pcm_history |=
+            native::GpuPcmFrictionAnchorFixture::
+                had_early_friction_history(gpu);
         require(producer->source_handle_projection_count()==1u,
             "Source GPU SAP remapped unchanged Sc ElementSim handles");
         if(frame>0u)
@@ -1319,6 +1331,9 @@ void verify_gpu_coupled_solver(
     }
     require(saw_device_pcm_contact_rows,
         "Source Dy did not consume device-owned PCM contact rows");
+    if(spring_mode==0u)
+        require(saw_early_pcm_history,
+            "Persistent PCM friction history was not validated during GPU Gu");
     require(saw_compact_prep,
         "Source Dy contact prep did not reuse GPU-resident body inputs");
     require(saw_contact && saw_force && saw_friction &&
