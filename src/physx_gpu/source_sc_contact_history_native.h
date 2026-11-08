@@ -21,7 +21,7 @@ class SourceScContactHistoryNativeStage final {
 public:
     enum class Phase:std::uint32_t {
         Initialize=0u,Snapshot=1u,Restore=2u,
-        PublishHostTouch=3u,SnapshotHost=4u,RestoreHost=5u
+        PublishHostTouch=3u,PublishHostWithSnapshot=4u,RestoreHost=5u
     };
     SourceScContactHistoryNativeStage(
         compute::Context& context,compute::ShaderBinary shader)
@@ -61,10 +61,10 @@ public:
             ?edgeCapacity-clearBegin:pairCount;
         if(!records)return;
         const bool host_stream=phase==Phase::PublishHostTouch ||
-            phase==Phase::SnapshotHost || phase==Phase::RestoreHost;
-        const std::uint64_t word_count=phase==Phase::PublishHostTouch
-            ?records:(phase==Phase::SnapshotHost || phase==Phase::RestoreHost)
-                ?std::uint64_t(records)*2u:std::uint64_t(records)*60u;
+            phase==Phase::PublishHostWithSnapshot ||
+            phase==Phase::RestoreHost;
+        const std::uint64_t word_count=host_stream
+            ?records:std::uint64_t(records)*60u;
         if(word_count>std::numeric_limits<std::uint32_t>::max())
             throw std::overflow_error("Sc contact journal word count overflow");
         const auto words=static_cast<std::uint32_t>(word_count);
