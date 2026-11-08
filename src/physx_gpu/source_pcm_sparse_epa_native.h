@@ -58,8 +58,8 @@ public:
         if(compact_)context_.destroy_compute_pipeline(compact_);
     }
 
-    // dispatch_args is the native 12-byte {x,y,z} indirect launch record.
-    // A following one-thread-per-EPA-pair kernel consumes x GPU-side.
+    // The indirect record counts 32-lane GJK workgroups or EPA items.
+    // Status-3 compaction stores its exact item count at work[0].
     void append(std::vector<compute::BatchCommand>& commands,
                 const CudaDeviceAddressMap& addresses,
                 CudaDeviceAddressMap::Address results,
@@ -83,8 +83,9 @@ public:
         const auto inputs=std::array<compute::BufferBinding,3>{
             view(results,source_allocation_bytes(pair_count,32u),
                  0u,compute::BufferAccess::Read),
-            view(work,source_allocation_bytes(pair_count,4u),
-                 1u,compute::BufferAccess::Write),
+            view(work,source_allocation_bytes(
+                     std::size_t(pair_count)+(required_status_==3u),4u),
+                 1u,compute::BufferAccess::ReadWrite),
             view(dispatch_args,12u,2u,compute::BufferAccess::ReadWrite)};
         if(inputs[2].buffer==inputs[0].buffer ||
            inputs[2].buffer==inputs[1].buffer)

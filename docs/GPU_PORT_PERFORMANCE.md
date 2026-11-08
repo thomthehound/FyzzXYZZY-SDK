@@ -38,6 +38,108 @@ measurement requirements and capability/performance acceptance.
   remain necessary but are *not* a performance substitute. Do not
   claim a speedup or parity without a reproducible benchmark.
 
+## CPU/GPU placement and synchronization
+
+Residency is a means of reducing transfers and preserving device work, not
+a requirement that every simulation-control operation execute in a shader.
+Use the CPU for sparse, branch-heavy topology edits, handle retirement,
+event classification and task metadata when the measured total cost is
+lower. Keep dense broadphase, contact generation, constraint preparation,
+iterative solving and integration on the GPU where supported. Do not move
+low-volume work to the device merely to remove CPU ownership.
+
+The critical-path budget includes CPU work, host blocking, GPU queue idle
+time, upload/download bytes, synchronization, dispatch overhead, device
+work, allocation and resource retirement. A short CPU operation that
+forces a device fence can be more expensive than a larger GPU kernel.
+Conversely, a multi-pass GPU allocator or full device-history rebuild
+can cost more than updating a sparse CPU-side index from existing reports.
+
+After its required final history-convergence pass, an unchanged source
+AABB history needs no repeated SAP submission or readback. The quiet-frame bypass requires an owned Sc
+ElementSim, no pending source shape or cached-pose edits, no forced SAP
+update, and no pending aggregate work. The first frame, motion-class
+changes, authored shape edits and rejected epochs retain their normal
+source update/fetch boundary. Source AABB preparation validates all
+live Sc geometry once while selecting the original created/updated/changed
+handles into reusable sparse indices. It publishes those indices in
+source order after validation, without rescanning the full shape list or
+building another AABB owner.
+
+The native PCM candidate kernel completes plane and primitive-sphere
+contacts directly. Frames containing only those Sc-classified contacts
+omit GJK/EPA dispatches. Vulkan's direct GJK scans source pair status
+without a redundant status-3 compaction; D3D12's staged GJK consumes
+a GPU-compact 32-lane indirect worklist. Both paths compact EPA work
+on the GPU, without a host-side worklist fetch. Sc also bounds convex
+face expansion to the source-ordered range containing finite convex
+pairs. Scenes with cooked hulls but no finite convex contacts dispatch
+no face shader, without another GPU index buffer or upload.
+
+For primitive-only PCM refreshes, Sc now computes its bounded sphere
+and plane-box Gu witnesses once on the CPU, publishes the original Sc
+contact and island topology, and uploads the resulting 84-byte-per-manager
+world-contact stream directly for GPU Dy. The shader no longer repeats
+these analytic contact calculations; no intermediate PCM readback,
+GJK/EPA dispatch or GPU witness journal is needed. Collision-only
+primitive queries use the same single-source Gu classification and
+device stream. A GPU-origin contact cache is invalidated before
+switching its plane-box manager to CPU Gu history; switching back to
+GPU Gu resets the device edge cache from Sc's authoritative lifetime
+and prior-touch flags. General box-box and cooked convex contacts
+remain GPU generated, with their required intermediate Sc contact
+publication and transactional device journal.
+
+Production reviews must identify **each necessary GPU → CPU → GPU handoff**,
+the value crossing it, the consumer forcing synchronization, and whether
+the handoff occurs in quiet frames, during authored changes, or only at
+public result fetch. Prefer batched submissions, device-to-device
+dependencies, compact delta/event transfers and deferred host observation.
+CPU-authored views must declare their owner and update/rollback contract.
+A technically correct hybrid configuration is acceptable when its
+synchronization and frame cost meet the same measured performance gate.
+Neither full device residency nor fewer CPU instructions alone qualifies.
+
+### Frame execution contract
+
+One source scene owns one ordered GPU command stream and the simulation
+transaction. The CPU owns authored input validation, sparse source-handle
+changes, contact-manager lifetimes, island connectivity, task admission,
+public events and the final commit. GPU stages own dense SAP, PCM contact
+geometry, numerical constraint preparation, solving and integration.
+
+Every stage has an explicit producer, consumer and completion dependency:
+
+1. **Admit:** validate authored changes, snapshot only required host inputs
+   and journal source state before scheduling work that can mutate history.
+2. **Execute:** append GPU uploads, copies and dispatches in dependency
+   order; submit without waiting while independent CPU topology or task
+   work proceeds. Reuse device contact and motion allocations across
+   PCM and Dy rather than repacking their contents through the host.
+3. **Join only for data:** Sc fetches reports or contact topology only
+   when its next CPU decision actually consumes unknown GPU output.
+   Bounded primitive classifications execute once on the CPU and send
+   their compact Gu results to GPU Dy; general numerical PCM remains
+   device-owned.
+4. **Publish:** group dependent GPU outputs into one source fetch.
+   The stream retires its own submission and staging tokens. Publish
+   body/contact results and persistent history only after validation;
+   rejected epochs restore their source journals.
+
+A fetch is a transaction boundary, not a default boundary between
+kernels. A stage with no work creates no submission. CPU prediction is
+not a general replacement for GPU PCM: numerical duplication must earn
+its cost in saved synchronization on real hardware. Do not introduce
+separate ownership of Sc handles, manifolds or rigid state to avoid
+a transfer.
+
+The source stream reports upload batches/bytes, command batches, fetch
+batches/spans/bytes and host blocking fetch wall time. Evaluate these
+as per-frame deltas together with device dispatch cost and complete-frame
+latency. Host blocking fetch wall time includes the GPU wait, transfer
+and host copy; it is not a GPU kernel duration. Software adapters validate
+API behavior but do not set the physical-GPU performance budget.
+
 ## Target hardware, API floors, and layered feature paths
 
 **Shipping baseline (user direction, October 14, 2026):**

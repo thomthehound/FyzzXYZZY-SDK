@@ -5,8 +5,11 @@
 
 #include "physx_gpu/cuda_device_address_map.h"
 
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <limits>
+#include <span>
 #include <stdexcept>
 #include <utility>
 #include <vector>
@@ -38,6 +41,11 @@ public:
         std::size_t command_batches = 0;
         std::size_t upload_spans = 0;
         std::size_t upload_bytes = 0;
+        std::size_t fetch_batches = 0;
+        std::size_t fetch_spans = 0;
+        std::size_t fetch_bytes = 0;
+        // Host wall time includes ordered GPU completion and readback.
+        std::uint64_t fetch_wall_ns = 0;
     };
     const SubmissionStats& submission_stats() const noexcept { return stats_; }
 
@@ -112,8 +120,42 @@ public:
         return upload_scratch_;
     }
 
+    // Rejected Sc transactions must never submit commands that were
+    // staged but never accepted into the native queue. Previously
+    // submitted source copy/upload tokens remain owned by Context.
+    void discard_unsubmitted_commands() noexcept { pending_.clear(); }
+
     // Submit existing source-ordered device commands without a host wait.
     compute::SubmissionId submit() { return flush_gpu_commands(); }
+
+    // One source fetch boundary submits all pending GPU commands, reads
+    // the requested outputs together, and retires their owned staging
+    // and command tokens. The caller never reaps the same queue itself.
+    // A readback failure still retires submitted source resources.
+    void fetch(std::span<const compute::DownloadSpan> outputs) {
+        std::size_t bytes=0;
+        for(const auto& output:outputs) {
+            if(output.bytes>std::numeric_limits<std::size_t>::max()-bytes)
+                throw std::overflow_error("Source GPU fetch size overflow");
+            bytes+=output.bytes;
+        }
+        submit();
+        const auto start=std::chrono::steady_clock::now();
+        try {
+            context_.download_batch(outputs);
+        } catch(...) {
+            wait_at_fetch();
+            throw;
+        }
+        wait_at_fetch();
+        const auto elapsed=std::chrono::steady_clock::now()-start;
+        ++stats_.fetch_batches;
+        stats_.fetch_spans+=outputs.size();
+        stats_.fetch_bytes+=bytes;
+        stats_.fetch_wall_ns+=static_cast<std::uint64_t>(
+            std::chrono::duration_cast<std::chrono::nanoseconds>(
+                elapsed).count());
+    }
 
     // Readiness of the most recent source-ordered GPU submission. The caller
     // must first submit the pending source stage commands (the completion

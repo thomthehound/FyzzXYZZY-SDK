@@ -60,7 +60,12 @@ ConstantBuffer<Parameters> p : register(b0,space0);
 
 [numthreads(32,1,1)]
 void main(uint3 thread:SV_DispatchThreadID) {
+#ifdef FYZZXYZZY_GJK_STAGED_REDUCE
+    if(thread.x>=work.Load(p.workBias))return;
+    const uint i=work.Load(p.workBias+(thread.x+1u)*4u);
+#else
     const uint i=thread.x;
+#endif
     if(i>=p.pairCount)return;
     const uint result=p.resultBias+i*32u;
     if(results.Load(result+8u)!=3u)return;

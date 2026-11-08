@@ -1022,6 +1022,11 @@ if(FYZZXYZZY_BUILD_D3D12)
       DEPENDS ${FYZZXYZZY_NATIVE_GPU_SAP_DXIL_BINARIES})
     add_dependencies(fyzzxyzzy_source_gpu_aggregate_world_bundle_d3d12
       fyzzxyzzy_native_gpu_sap_shaders_d3d12)
+    set(FYZZXYZZY_SOURCE_SC_CONTACT_JOURNAL_DXIL
+      "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_source_sc_contact_history_native.dxil")
+    fyzzxyzzy_compile_hlsl("${FYZZXYZZY_SOURCE_SC_CONTACT_JOURNAL_DXIL}"
+      "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_sc_contact_history_native.hlsl"
+      cs_6_0 main)
     set(_pcm_binaries
       "${FYZZXYZZY_SOURCE_PCM_BOX_DXIL}"
       "${FYZZXYZZY_SOURCE_PCM_EPA_WORK_DXIL_COMPACT}"
@@ -1031,10 +1036,11 @@ if(FYZZXYZZY_BUILD_D3D12)
       "${FYZZXYZZY_SOURCE_PCM_GJK_REDUCE_DXIL}"
       "${FYZZXYZZY_SOURCE_PCM_GJK_PUBLISH_DXIL}"
       "${FYZZXYZZY_SOURCE_PCM_EPA_ARGS_RESET_DXIL}"
-      "${FYZZXYZZY_SOURCE_PCM_GJK_PRIMITIVE_DXIL}")
-    set(_pcm_stages Candidates EpaCompact GjkContact EpaContact FaceContacts GjkReduce GjkPublish EpaArgsReset GjkPrimitive)
+      "${FYZZXYZZY_SOURCE_PCM_GJK_PRIMITIVE_DXIL}"
+      "${FYZZXYZZY_SOURCE_SC_CONTACT_JOURNAL_DXIL}")
+    set(_pcm_stages Candidates EpaCompact GjkContact EpaContact FaceContacts GjkReduce GjkPublish EpaArgsReset GjkPrimitive ContactJournal)
     set(_pcm_manifest "FYZZXYZZY_SOURCE_PCM_1 DXIL\n")
-    foreach(_idx RANGE 0 8)
+    foreach(_idx RANGE 0 9)
       list(GET _pcm_stages ${_idx} _stage)
       list(GET _pcm_binaries ${_idx} _binary)
       get_filename_component(_name "${_binary}" NAME)

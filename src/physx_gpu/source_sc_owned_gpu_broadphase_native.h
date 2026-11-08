@@ -150,7 +150,8 @@ public:
                 take_pcm_shader(*pcm_shaders,NativeGpuPcmStage::GjkPublish),
                 take_pcm_shader(*pcm_shaders,NativeGpuPcmStage::EpaArgsReset),
                 take_pcm_shader(*pcm_shaders,NativeGpuPcmStage::EpaContact),
-                take_pcm_shader(*pcm_shaders,NativeGpuPcmStage::FaceContacts));
+                take_pcm_shader(*pcm_shaders,NativeGpuPcmStage::FaceContacts),
+                take_pcm_shader(*pcm_shaders,NativeGpuPcmStage::ContactJournal));
         if(dy_shader)
             dy_distance_=std::make_unique<SourceDyDistanceNativeStage>(
                 context_,addresses_,stream_,allocators_.deviceAlloc,
@@ -331,11 +332,18 @@ public:
     std::uint64_t source_handle_projection_count() const noexcept {
         return producer_->source_handle_projection_count();
     }
+    std::uint64_t source_sap_fetch_count() const noexcept {
+        return producer_->source_sap_fetch_count();
+    }
     std::size_t dy_gpu_integrated_body_count() const noexcept {
         return dy_distance_?dy_distance_->last_integrated_body_count():0u;
     }
     SourceDyLaunchStats dy_launch_stats() const noexcept {
         return dy_distance_?dy_distance_->last_schedule():SourceDyLaunchStats{};
+    }
+    const SourceSapDmaNative::SubmissionStats&
+    stream_submission_stats() const noexcept {
+        return stream_.submission_stats();
     }
     std::size_t pcm_pair_upload_bytes() const noexcept {
         return pcm_ ? pcm_->last_pair_upload_bytes() : 0u;
@@ -343,8 +351,17 @@ public:
     std::size_t pcm_contact_readback_bytes() const noexcept {
         return pcm_ ? pcm_->last_contact_download_bytes() : 0u;
     }
+    std::size_t pcm_host_contact_upload_bytes() const noexcept {
+        return pcm_ ? pcm_->last_host_contact_upload_bytes() : 0u;
+    }
     std::size_t pcm_edge_history_copy_bytes() const noexcept {
         return pcm_ ? pcm_->last_edge_history_copy_bytes() : 0u;
+    }
+    std::size_t pcm_continuation_commands() const noexcept {
+        return pcm_ ? pcm_->last_continuation_commands() : 0u;
+    }
+    std::size_t pcm_face_pair_scan_count() const noexcept {
+        return pcm_ ? pcm_->last_face_pair_scan_count() : 0u;
     }
     std::size_t dy_pcm_device_contact_rows() const noexcept {
         return dy_distance_ ? dy_distance_->last_reused_pcm_contact_rows() : 0u;
@@ -381,6 +398,16 @@ public:
         if(!pcm_)
             throw std::logic_error("Source Sc GPU PCM shaders not installed");
         pcm_->generate(requests,results,aabb_->capacity());
+    }
+    bool supports_host_pcm_contacts() const noexcept override {
+        return pcm_ && dy_distance_;
+    }
+    void upload_host_pcm_contacts(
+            std::span<const native::GpuPcmBoxPair> requests,
+            std::span<const native::GpuPcmBoxResult> results) override {
+        if(!pcm_ || !dy_distance_)
+            throw std::logic_error("Source Sc/Dy primitive PCM is unavailable");
+        pcm_->upload_host_contacts(requests,results);
     }
     void authorize_device_integrated_pose(BodyId id) override {
         producer_->authorize_device_integrated_pose(id);
@@ -438,7 +465,14 @@ public:
         producer_->set_actor_motion(id,motion);
     }
     void post_reports_cleanup() override { producer_->post_reports_cleanup(); }
+    void commit_gpu_step() override {
+        if(pcm_)pcm_->commit_step();
+    }
+    bool needs_gpu_contact_rebuild() const noexcept override {
+        return pcm_ && pcm_->needs_contact_rebuild();
+    }
     void invalidate_after_rollback() noexcept override {
+        stream_.discard_unsubmitted_commands();
         producer_->invalidate_after_rollback();
         if(pcm_)pcm_->invalidate_after_rollback();
         if(dy_distance_)dy_distance_->invalidate_after_rollback();

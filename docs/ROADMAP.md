@@ -68,7 +68,7 @@ independent physical checks remain necessary.
 | Compound shape-element and body identities now separate collision history from rigid Dy response | Shared geometry ownership, per-shape filters/triggers and complete public scene semantics | Scene and geometry |
 | Native CPU/GPU rigid rows use source PxReal; compiled SPIR-V/DXIL checks reject FP64 requirements | Extend error/conditioning and cost validation with each subsystem; numerical representation follows the supported physical domain | Every capability |
 | Wide Dy conflict partitions run across multiple workgroups in one ordered submission. Compact tasks retain one fused workgroup. | Measure the dispatch crossover and connected-island scaling on physical GPUs | Device foundation |
-| Scene builds host task/constraint/contact arrays; Dy solve downloads before returning | Express device dependencies and public-result visibility separately; retain intermediate device authority | Device foundation |
+| Scene builds host task/constraint/contact arrays; Dy solve downloads before returning | Preserve efficient CPU metadata ownership where useful; remove bulk readbacks and mandatory host joins between GPU numerical stages, separating public fetch from internal dependencies | Device foundation |
 | Direct buffer views/32-bit offsets cover the current bounded stage set | Qualify local offsets plus cross-allocation references before pointer-rich solver/nonrigid intake | Device foundation |
 | Existing memory timing harness compares two offset-loading forms of one SAP operation | Add actual nested/multi-allocation source accesses; current results cannot select a general ABI | Device foundation |
 | Software GPU CI and case wall-time metrics exist | Physical GPU frame/quality/scaling measurements; case wall time is not GPU kernel time | Every capability |
@@ -97,7 +97,7 @@ available without reducing the supported physics or hiding unstable cases.
 | Solver composition | Keep source PGS, TGS, reduced-coordinate articulation, FEM and PBD algorithms with their numerical state. Typed coupling must return reaction to every dynamic endpoint; no generic rigid-row surrogate for a deformable body. |
 | Time and visibility | One scene clock and dependency graph; subsystem substeps and coupling iterations have explicit joins. API fetch/callback visibility does not force every internal stage onto the host. |
 | Storage | Source-owned persistent pools, local 32-bit offsets for hot known-arena accesses, 64-bit segmented logical references for cross-allocation traversal. Physical lowering may differ by backend. Resolve stable references outside iterative solve loops. |
-| Execution | CPU/compute backends implement storage, dispatch, dependencies and completion. They do not own a second physics scene or dictate contact semantics. Vulkan BDA and D3D12 descriptor views may specialize the same logical operation. |
+| Execution | CPU and GPU placement follows measured end-to-end latency and throughput. Keep sparse structural work on the CPU when cheaper, while device numerical streams remain resident across dependent stages. CPU/compute backends do not own a second scene. Vulkan BDA and D3D12 descriptor views may specialize the same logical operation. |
 | Extension | New materials, fields, contacts and solvers attach to existing topology/time/lifetime contracts. Add concrete state when a working capability needs it; avoid a speculative universal framework. |
 | Fidelity | PhysX establishes initial algorithms and observable behavior. Preserve required numerical/dependency contracts; source class names, CUDA launch geometry and physical ABI are not permanent architectural constraints. Prove equivalent lowerings and measure improvements. |
 
@@ -170,9 +170,14 @@ articulation or nonrigid kernel intake:
   be source-derived; one workgroup per island/task is not accepted merely
   because many small islands run concurrently.
 - Keep device-generated contacts, prepared rows, velocities and integrated
-  poses across dependent stages and frames. Transfer authored changes and
-  requested public results; metadata readbacks must not recreate an
-  unconditional host-controlled physics pipeline.
+  poses across dependent stages and frames. CPU-owned sparse Sc contact
+  manager and island metadata may remain when cheaper, but it must consume
+  compact changes rather than force a complete GPU result fetch. Transfer
+  authored changes and requested public results; metadata readbacks must
+  not create an unconditional GPU → CPU → GPU dependency.
+- Measure refiltering and topology churn separately from quiet frames.
+  Do not rebuild full device broadphase history to avoid a cheap host
+  overlap lookup unless measured critical-path cost establishes a win.
 - Keep the existing scene allocator, task owner and backend hazard tracking.
   Retire transitional host mirrors as their consumers migrate. Publish
   failures atomically; device loss may invalidate the scene and require
@@ -181,11 +186,13 @@ articulation or nonrigid kernel intake:
 **Exit workloads:** steady and changing mixed-primitive scenes at 1K, 10K
 and 100K active bodies where resources permit, plus a single connected
 constraint/contact network and many independent islands. Record numerical
-quality, peak memory, dispatch/transfer/wait counts and critical path. GPU
-stages continue without an obligatory host contact/body readback. Host
-callbacks and requested results have named visibility boundaries. Both APIs
-must produce equivalent admitted behavior; physical GPU performance and
-addressing qualification are separate from software CI.
+quality, peak memory, dispatch/transfer/wait counts and critical path.
+Normal GPU numerical stages progress without an obligatory intermediate
+host contact/body readback, regardless of whether sparse metadata is
+CPU-owned. Test authored churn, host callbacks and requested results as
+separate visibility boundaries. Both APIs must produce equivalent admitted
+behavior; physical GPU performance and addressing qualification are
+separate from software CI.
 
 ### Geometry — primitives, convex, meshes and queries
 

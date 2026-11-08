@@ -21,6 +21,12 @@
 
 namespace fyzz::native {
 struct GpuPcmFrictionAnchorFixture {
+    static std::uint32_t contact_manager_edge(const Scene& scene,Pair shapes) {
+        return scene.contact_edge_index(shapes);
+    }
+    static bool source_bp_contains(const Scene& scene,Pair shapes) {
+        return scene.sap_pairs_.find(shapes)!=Scene::SapPairManager::invalid;
+    }
     static void verify_pcm_contact_arena(const Scene& scene) {
         const auto* base=scene.contact_points_.data();
         for(const auto& manager:scene.manifolds_) {
@@ -163,15 +169,24 @@ void verify_compound_shape_gpu_pairs(
             contains(created.found,{1u,2u}) &&
             !contains(created.found,{0u,1u}),
         "Source GPU broadphase did not preserve compound shape pairs");
+    const auto initial_fetches=gpu.source_sap_fetch_count();
+    const auto converged=gpu.advance(shapes,false,false);
+    require(converged.found.empty() && converged.lost.empty() &&
+            gpu.source_sap_fetch_count()==initial_fetches+1u,
+        "Source SAP skipped its required final history-convergence pass");
     const auto quiet=gpu.advance(shapes,false,false);
-    require(quiet.found.empty() && quiet.lost.empty(),
-        "Source GPU broadphase republished unchanged compound shape pairs");
+    require(quiet.found.empty() && quiet.lost.empty() &&
+            gpu.source_sap_fetch_count()==initial_fetches+1u &&
+            !gpu.last_frame().update.execute_gpu_stages,
+        "Unchanged source AABB submitted or fetched another SAP frame");
     // ScBodySim changes one rigid actor's motion and refilters every attached
     // ElementSim, even when the shapes overlap each other.
     gpu.set_actor_motion(0u,Motion::Kinematic);
     shapes[0].motion=Motion::Kinematic;
     shapes[1].motion=Motion::Kinematic;
     const auto kinematic=gpu.advance(shapes,false,true);
+    require(gpu.source_sap_fetch_count()==initial_fetches+2u,
+        "Motion-class refilter did not advance source GPU SAP");
     require(kinematic.found.empty() && kinematic.lost.empty(),
         "Compound actor kinematic transition changed stable GPU shape pairs");
     gpu.set_actor_motion(0u,Motion::Dynamic);
@@ -184,6 +199,8 @@ void verify_compound_shape_gpu_pairs(
     shapes[0].position={4.f,0.f,0.f};
     gpu.mark_shape_bounds_changed(0u,0.02f);
     const auto changed=gpu.advance(shapes,false,true);
+    require(gpu.source_sap_fetch_count()==initial_fetches+4u,
+        "Shape-bound update failed to resume source GPU SAP");
     require(changed.found.empty() && changed.lost.size()==1u &&
             contains(changed.lost,{0u,2u}),
         "Edited Sc shape retired the wrong GPU contact candidate");
@@ -255,6 +272,7 @@ void verify(fyzz::compute::Backend backend,const char* sap,
     }};
     std::array<native::GpuPcmBoxResult,1> direct{};
     producer->generate_gpu_pcm_box_contacts(request,direct);
+    producer->commit_gpu_step();
     require(producer->pcm_contact_readback_bytes()==
                 sizeof(physx_gpu::SourcePcmGpuContactStreamNative),
             "Direct GPU PCM readback did not use the compact device stream");
@@ -271,6 +289,7 @@ void verify(fyzz::compute::Backend backend,const char* sap,
     // the GPU still runs PCM, but no pair-list HtoD submission is needed.
     std::array<native::GpuPcmBoxResult,1> repeated{};
     producer->generate_gpu_pcm_box_contacts(request,repeated);
+    producer->commit_gpu_step();
     require(producer->pcm_pair_upload_bytes()==0u &&
             repeated[0].status==0u && repeated[0].edge==edge &&
             repeated[0].count>0u &&
@@ -283,6 +302,7 @@ void verify(fyzz::compute::Backend backend,const char* sap,
     }};
     std::array<native::GpuPcmBoxResult,1> reset{};
     producer->generate_gpu_pcm_box_contacts(reset_request,reset);
+    producer->commit_gpu_step();
     require(producer->pcm_pair_upload_bytes()==
                 sizeof(physx_gpu::SourcePcmBoxPairNative),
             "Source PCM reset did not refresh its GPU pair descriptor");
@@ -298,12 +318,37 @@ void verify(fyzz::compute::Backend backend,const char* sap,
                 "Source GPU PCM reset altered the Gu witness");
     // Force the original AABB volume domain to grow while the first
     // contact manager retains GPU-local cached shape geometry.
+    BodyId distant_gpu=std::numeric_limits<BodyId>::max();
     for(std::uint32_t i=0u;i<36u;++i) {
         const Vec3 position{20.f+3.f*float(i),1.f,0.f};
         cpu.add_static_box({0.5f,0.5f,0.5f},position);
-        gpu.add_static_box({0.5f,0.5f,0.5f},position);
+        const auto id=gpu.add_static_box({0.5f,0.5f,0.5f},position);
+        if(i==0u)distant_gpu=id;
     }
     check(true);
+    // Deliberately reject a speculative Gu manager refresh: it writes
+    // an empty witness and a physical-touch loss into an existing
+    // EdgeIndex. The device must restore the accepted full witness
+    // before another source publication or island calculation.
+    const std::array<native::GpuPcmBoxPair,1> failed_request{{
+        {gpu_a,distant_gpu,edge,true,16u,false,0.f,0.f,true}
+    }};
+    std::array<native::GpuPcmBoxResult,1> rejected{};
+    producer->generate_gpu_pcm_box_contacts(failed_request,rejected);
+    require(rejected[0].count==0u &&
+            rejected[0].touch_transition==native::GpuPcmTouchTransition::Lost,
+        "Rejected Sc PCM refresh did not mutate speculative touch history");
+    producer->invalidate_after_rollback();
+    std::array<native::GpuPcmBoxResult,1> recovered{};
+    producer->generate_gpu_pcm_box_contacts(request,recovered);
+    require(recovered[0].status==0u &&
+            recovered[0].count>0u &&
+            recovered[0].touch_transition==
+                native::GpuPcmTouchTransition::Persists &&
+            recovered[0].cached_count<=4u,
+        "Sc device contact journal failed to restore committed PCM history");
+    producer->commit_gpu_step();
+    check(true,true);
     require(gpu.contact_edge_index({gpu_a,gpu_b})==edge,
             "AABB capacity growth discarded an unchanged GPU PCM manifold");
     cpu.set_position(cpu_a,{0.02f,1.0f,0.0f});
@@ -787,11 +832,12 @@ void verify_coupled_rigid_stack(
     using namespace fyzz;
     native::Scene cpu;
     native::Scene gpu;
-    gpu.set_gpu_broadphase(
-        std::make_unique<physx_gpu::SourceScOwnedGpuBroadphaseNative>(
-            backend,load_native_gpu_sap_shaders(backend,sap),
-            128u,128u,std::nullopt,
-            load_native_gpu_pcm_shaders(backend,pcm)));
+    auto owner=std::make_unique<physx_gpu::SourceScOwnedGpuBroadphaseNative>(
+        backend,load_native_gpu_sap_shaders(backend,sap),
+        128u,128u,std::nullopt,
+        load_native_gpu_pcm_shaders(backend,pcm));
+    auto* producer=owner.get();
+    gpu.set_gpu_broadphase(std::move(owner));
     cpu.add_static_box({0.5f,0.5f,0.5f},{0.f,-0.5f,0.f});
     const BodyId fixed_gpu=gpu.add_static_box(
         {0.5f,0.5f,0.5f},{0.f,-0.5f,0.f});
@@ -826,6 +872,19 @@ void verify_coupled_rigid_stack(
                     std::fabs(a.velocity.z-b.velocity.z)<0.025f,
                     "GPU coupled rigid stack diverged from source Sc/Dy motion");
         }
+        // CPU-owned island topology remains source-equivalent while
+        // GPU Dy consumes its compact task and descriptor stream.
+        for(std::size_t i=0;i<dynamic_cpu.size();++i)
+            for(std::size_t j=i+1u;j<dynamic_cpu.size();++j) {
+                const auto ca=dynamic_cpu[i],cb=dynamic_cpu[j];
+                const auto ga=dynamic_gpu[i],gb=dynamic_gpu[j];
+                require(
+                    (cpu.accurate_island_id(ca)==cpu.accurate_island_id(cb))==
+                    (gpu.accurate_island_id(ga)==gpu.accurate_island_id(gb)) &&
+                    (cpu.speculative_island_id(ca)==cpu.speculative_island_id(cb))==
+                    (gpu.speculative_island_id(ga)==gpu.speculative_island_id(gb)),
+                    "GPU scene diverged from source Sc island membership");
+            }
         require(gpu.solved_result_frame()==gpu.frame_index(),
                 "GPU coupled rigid stack did not complete Dy solve");
     }
@@ -969,6 +1028,12 @@ void verify_gpu_coupled_solver(
         require(schedule.device_colored_tasks>0u &&
                 schedule.device_colored_descriptors>0u,
             "Coupled Dy solver skipped device-owned constraint partitioning");
+        require(schedule.device_source_descriptors==
+                    schedule.device_colored_descriptors &&
+                schedule.source_descriptor_upload_bytes<
+                    schedule.device_colored_descriptors*
+                        sizeof(native::GpuDyDistanceDescriptor),
+            "Source Sc still uploads complete contact/constraint descriptors");
         require(schedule.device_initialized_bodies>0u &&
                 schedule.device_world_motion_bodies>0u &&
                 schedule.device_world_motion_bodies<=
@@ -1100,6 +1165,120 @@ void verify_gpu_coupled_solver(
              <<" host_upload_bytes="<<uploaded_bytes
              <<" host_contact_prep_bytes_saved="<<saved_prep_bytes
              <<" host_download_bytes="<<downloaded_bytes<<'\n';
+    if(spring_mode==0u) {
+        // A moving kinematic contact supplies read-only solver velocity.
+        // Its body ordinal must survive the native GPU descriptor
+        // reconstruction even though it owns no writable PGS endpoint.
+        const Vec3 kinematic_position{30.f,2.f,0.f};
+        const Vec3 dynamic_position{30.8f,2.f,0.f};
+        const Vec3 extents{0.5f,0.5f,0.5f};
+        const auto kinematic_cpu=cpu.add_dynamic_box(
+            extents,kinematic_position,1.f);
+        const auto kinematic_gpu=gpu.add_dynamic_box(
+            extents,kinematic_position,1.f);
+        const auto responder_cpu=cpu.add_dynamic_box(
+            extents,dynamic_position,1.f);
+        const auto responder_gpu=gpu.add_dynamic_box(
+            extents,dynamic_position,1.f);
+        cpu.set_kinematic(kinematic_cpu,true);
+        gpu.set_kinematic(kinematic_gpu,true);
+        RigidBodyDynamics dynamics{};
+        dynamics.gravity_enabled=false;
+        cpu.set_dynamics(responder_cpu,dynamics);
+        gpu.set_dynamics(responder_gpu,dynamics);
+        constexpr Quat identity{0.f,0.f,0.f,1.f};
+        for(float target_x:{30.1f,30.2f}) {
+            cpu.set_kinematic_target(
+                kinematic_cpu,{target_x,2.f,0.f},identity);
+            gpu.set_kinematic_target(
+                kinematic_gpu,{target_x,2.f,0.f},identity);
+            cpu.step(dt);
+            gpu.step(dt);
+            const auto schedule=producer->dy_launch_stats();
+            require(schedule.device_source_descriptors>0u &&
+                    schedule.source_descriptor_upload_bytes==
+                        schedule.device_source_descriptors*
+                            sizeof(std::uint32_t),
+                "Moving kinematic contact reuploaded a full host Dy descriptor");
+            const native::Pair pair{kinematic_cpu,responder_cpu};
+            const auto contains=[&](const native::Scene& scene) {
+                const auto pairs=scene.pairs();
+                return std::find(pairs.begin(),pairs.end(),pair)!=pairs.end();
+            };
+            require(contains(cpu) && contains(gpu) &&
+                    std::any_of(gpu.contacts().begin(),gpu.contacts().end(),
+                        [&](const auto& contact) {
+                            return contact.pair==pair && contact.count>0u;
+                        }),
+                "Moving kinematic contact was omitted from Sc GPU admission");
+            const auto actual=gpu.body_state(responder_gpu);
+            const auto expected=cpu.body_state(responder_cpu);
+            require(std::fabs(actual.position.x-expected.position.x)<0.03f &&
+                    std::fabs(actual.velocity.x-expected.velocity.x)<0.03f &&
+                    std::fabs(actual.velocity.y-expected.velocity.y)<0.03f,
+                "GPU contact descriptor lost moving kinematic solver velocity");
+        }
+
+        // Refiltering a previously ineligible finite BP overlap does
+        // not require invalidating or rebuilding the device SAP history.
+        // Sc's sparse BP membership index retains that overlap while its
+        // shared contact EdgeIndex follows the source motion-class rules.
+        const Vec3 left{60.f,2.f,0.f},right{60.75f,2.f,0.f};
+        const auto left_cpu=cpu.add_dynamic_box(extents,left,1.f);
+        const auto left_gpu=gpu.add_dynamic_box(extents,left,1.f);
+        const auto right_cpu=cpu.add_dynamic_box(extents,right,1.f);
+        const auto right_gpu=gpu.add_dynamic_box(extents,right,1.f);
+        cpu.set_kinematic(left_cpu,true);
+        gpu.set_kinematic(left_gpu,true);
+        cpu.set_kinematic(right_cpu,true);
+        gpu.set_kinematic(right_gpu,true);
+        const native::Pair pair{left_gpu,right_gpu};
+        const auto admitted=[&](const native::Scene& scene) {
+            const auto current=scene.pairs();
+            return std::find(current.begin(),current.end(),pair)!=current.end();
+        };
+        cpu.advance_collision();
+        gpu.advance_collision();
+        require(!admitted(cpu) && !admitted(gpu) &&
+                native::GpuPcmFrictionAnchorFixture::source_bp_contains(gpu,pair),
+            "Sc BP registry lost a kinematic overlap before refiltering");
+        const auto projection_count=producer->source_handle_projection_count();
+        cpu.set_kinematic(left_cpu,false);
+        gpu.set_kinematic(left_gpu,false);
+        cpu.advance_collision();
+        gpu.advance_collision();
+        require(admitted(cpu) && admitted(gpu),
+            "Sparse Sc refilter did not admit a previously ineligible overlap");
+        const auto edge=native::GpuPcmFrictionAnchorFixture::
+            contact_manager_edge(gpu,pair);
+        require(edge!=std::numeric_limits<std::uint32_t>::max(),
+            "Refiltered manager has no shared Sc EdgeIndex");
+        cpu.set_kinematic(right_cpu,false);
+        gpu.set_kinematic(right_gpu,false);
+        cpu.advance_collision();
+        gpu.advance_collision();
+        require(admitted(cpu) && admitted(gpu) &&
+                native::GpuPcmFrictionAnchorFixture::
+                    contact_manager_edge(gpu,pair)==edge,
+            "Refiltering replaced an unchanged Sc contact manager");
+        cpu.set_kinematic(left_cpu,true);
+        gpu.set_kinematic(left_gpu,true);
+        cpu.advance_collision();
+        gpu.advance_collision();
+        require(admitted(cpu) && admitted(gpu) &&
+                native::GpuPcmFrictionAnchorFixture::
+                    contact_manager_edge(gpu,pair)==edge,
+            "Motion-class edit retired a live Sc contact EdgeIndex");
+        cpu.set_kinematic(right_cpu,true);
+        gpu.set_kinematic(right_gpu,true);
+        cpu.advance_collision();
+        gpu.advance_collision();
+        require(!admitted(cpu) && !admitted(gpu) &&
+                native::GpuPcmFrictionAnchorFixture::source_bp_contains(gpu,pair),
+            "Kinematic-only refilter lost retained BP overlap membership");
+        require(producer->source_handle_projection_count()==projection_count,
+            "Motion-class refilter rebuilt source SAP handles");
+    }
 }
 
 // The optional legacy Gu generator remains the source authority when
@@ -1440,7 +1619,8 @@ void verify_mixed_gu_pcm_gpu_dy_solver(
 // The explicitly installed device Dy 1D stage must replace the
 // production PGS solve, not merely compute a disconnected fixture result.
 void verify_gpu_distance_solver(
-    fyzz::compute::Backend backend,const char* sap,const char* dy_shader) {
+    fyzz::compute::Backend backend,const char* sap,
+    const char* pcm,const char* dy_shader) {
     using namespace fyzz;
     std::ifstream input(dy_shader,std::ios::binary);
     require(bool(input),"Compiled source Dy shader unavailable");
@@ -1458,7 +1638,8 @@ void verify_gpu_distance_solver(
     auto owner=std::make_unique<
         physx_gpu::SourceScOwnedGpuBroadphaseNative>(
             backend,load_native_gpu_sap_shaders(backend,sap),
-            128u,128u,std::nullopt,std::nullopt,std::move(shader));
+            128u,128u,std::nullopt,
+            load_native_gpu_pcm_shaders(backend,pcm),std::move(shader));
     auto* producer=owner.get();
     require(producer->has_gpu_dy_distance(),
             "Explicit source Dy distance stage was not installed");
@@ -1557,6 +1738,17 @@ void verify_gpu_distance_solver(
         }
         cpu.step(dt);
         gpu.step(dt);
+        require(gpu.accurate_island_id(ids_gpu[0])==
+                    gpu.accurate_island_id(ids_gpu[1]) &&
+                gpu.accurate_island_id(ids_gpu[2])==
+                    gpu.accurate_island_id(ids_gpu[3]) &&
+                gpu.accurate_island_id(ids_gpu[0])!=
+                    gpu.accurate_island_id(ids_gpu[2]) &&
+                gpu.accurate_island_id(anchored_gpu)!=
+                    gpu.accurate_island_id(ids_gpu[0]) &&
+                gpu.accurate_island_id(anchored_gpu)!=
+                    gpu.accurate_island_id(ids_gpu[2]),
+            "Sc joint-only island membership lost authored constraints");
         const auto cached=producer->last_frame().device_cached_box_count;
         if(frame==0 || frame==8)
             require(cached==0u,
@@ -1672,6 +1864,11 @@ void verify_gpu_distance_solver(
     // authored frame or distance, even when the bodies remain unchanged.
     cpu.retire_constraint(recycled_cpu);
     gpu.retire_constraint(recycled_gpu);
+    cpu.step(dt);
+    gpu.step(dt);
+    require(gpu.accurate_island_id(ids_gpu[2])!=
+                gpu.accurate_island_id(ids_gpu[3]),
+        "Retired Sc joint retained a stale dynamic island link");
     cpu.create_anchored_distance_constraint(ids_cpu[2],ids_cpu[3],
         {0.0f,0.15f,0.0f},{0.0f,-0.15f,0.0f},3.2f);
     gpu.create_anchored_distance_constraint(ids_gpu[2],ids_gpu[3],
@@ -1679,6 +1876,9 @@ void verify_gpu_distance_solver(
     for(unsigned frame=0u;frame<3u;++frame) {
         cpu.step(dt);
         gpu.step(dt);
+        require(gpu.accurate_island_id(ids_gpu[2])==
+                    gpu.accurate_island_id(ids_gpu[3]),
+            "Recycled joint did not reconnect the accurate island");
         const auto stats=producer->dy_launch_stats();
         if(!(stats.device_joint_geometry_count==3u &&
              stats.device_joint_metadata_upload_bytes==
@@ -1764,6 +1964,8 @@ void verify_sphere_gpu_solver(
         }
         cpu.step(dt);
         gpu.step(dt);
+        require(producer->pcm_continuation_commands()==0u,
+            "Sphere/plane PCM scheduled unnecessary GJK/EPA continuation");
         const auto integrated=producer->dy_gpu_integrated_body_count();
         const auto resident=producer->dy_resident_pose_count();
         const auto uploaded=producer->dy_host_pose_upload_bytes();
@@ -1787,6 +1989,8 @@ void verify_sphere_gpu_solver(
             "GPU sphere scene changed Sc PCM/Gu manager identity");
         if(frame==0u) {
             const auto pcm_bytes=producer->pcm_contact_readback_bytes();
+            const auto host_contact_bytes=
+                producer->pcm_host_contact_upload_bytes();
             const auto pcm_rows=producer->dy_pcm_device_contact_rows();
             const auto cpu_bytes=producer->dy_cpu_gu_geometry_bytes();
             // Sc admits one speculative plane manager per dynamic
@@ -1794,15 +1998,16 @@ void verify_sphere_gpu_solver(
             // touch, but their GPU PCM records still execute this frame.
             constexpr std::size_t pcm_managers=5u;
             if(gpu.contacts().size()!=3u || cpu_bytes!=0u ||
-               pcm_rows!=3u ||
-               pcm_bytes!=pcm_managers*sizeof(
+               pcm_rows!=3u || pcm_bytes!=0u ||
+               host_contact_bytes!=pcm_managers*sizeof(
                    physx_gpu::SourcePcmGpuContactStreamNative)) {
                 throw std::runtime_error(
                     "Sphere GPU contact path: managers="+
                     std::to_string(gpu.contacts().size())+
                     " device_rows="+std::to_string(pcm_rows)+
                     " cpu_gu_bytes="+std::to_string(cpu_bytes)+
-                    " pcm_readback_bytes="+std::to_string(pcm_bytes));
+                    " pcm_readback_bytes="+std::to_string(pcm_bytes)+
+                    " host_pcm_upload_bytes="+std::to_string(host_contact_bytes));
             }
             require(cpu.contacts().size()==3u,
                 "Source sphere impact fixtures lost a contact manager");
@@ -1866,8 +2071,13 @@ void verify_sphere_gpu_solver(
     gpu.add_static_box({0.5f,0.5f,0.5f},{20.f,10.f,0.f});
     cpu.add_dynamic_sphere(0.25f,{20.f,10.f,0.f},1.f);
     gpu.add_dynamic_sphere(0.25f,{20.f,10.f,0.f},1.f);
+    const auto solved_before=producer->dy_distance_dispatch_count();
     cpu.advance_collision(true);
     gpu.advance_collision(true);
+    require(producer->pcm_contact_readback_bytes()==0u &&
+            producer->pcm_host_contact_upload_bytes()>0u &&
+            producer->dy_distance_dispatch_count()==solved_before,
+        "Collision-only primitive PCM unexpectedly fetched GPU contacts");
     const auto embedded=[](const native::Scene& scene) -> native::ContactPoint {
         for(const auto& manager:scene.contacts())
             for(const auto& point:manager.points)
@@ -1880,6 +2090,122 @@ void verify_sphere_gpu_solver(
             std::fabs(expected.normal.z-actual.normal.z)<0.0004f &&
             std::fabs(actual.position.z-0.5f)<0.0004f,
         "GPU embedded sphere did not preserve source PCM exit-face witness");
+}
+
+void verify_host_primitive_pcm_solver(
+    fyzz::compute::Backend backend,const char* sap,
+    const char* pcm,const char* dy_shader) {
+    using namespace fyzz;
+    std::ifstream source(dy_shader,std::ios::binary);
+    require(bool(source),"Primitive GPU Dy shader bundle unavailable");
+    const std::vector<char> data(
+        std::istreambuf_iterator<char>{source},std::istreambuf_iterator<char>{});
+    compute::ShaderBinary dy{};
+    dy.format=backend==compute::Backend::Vulkan
+        ?compute::ShaderFormat::Spirv:compute::ShaderFormat::Dxil;
+    dy.bytes.assign(data.begin(),data.end());
+
+    native::Scene cpu,gpu;
+    auto owner=std::make_unique<physx_gpu::SourceScOwnedGpuBroadphaseNative>(
+        backend,load_native_gpu_sap_shaders(backend,sap),128u,128u,
+        std::nullopt,load_native_gpu_pcm_shaders(backend,pcm),std::move(dy));
+    auto* producer=owner.get();
+    gpu.set_gpu_broadphase(std::move(owner));
+    const auto make=[](native::Scene& scene) {
+        scene.add_static_floor(0.f);
+        const auto box=scene.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{0.f,0.48f,0.f},1.f);
+        const auto sphere=scene.add_dynamic_sphere(
+            0.4f,{6.f,0.38f,0.f},1.f);
+        RigidBodyDynamics dynamics{};
+        dynamics.gravity_enabled=false;
+        scene.set_dynamics(box,dynamics);
+        scene.set_dynamics(sphere,dynamics);
+        return std::array<BodyId,2>{box,sphere};
+    };
+    const auto actual=make(gpu);
+    const auto expected=make(cpu);
+    constexpr float dt=1.f/120.f;
+    for(unsigned frame=0u;frame<5u;++frame) {
+        if(frame==2u || frame==3u) {
+            const Vec3 p=frame==2u
+                ?Vec3{0.f,4.f,0.f}:Vec3{0.f,0.48f,0.f};
+            cpu.set_position(expected[0],p);
+            gpu.set_position(actual[0],p);
+        }
+        const auto before_fetch=producer->stream_submission_stats();
+        cpu.step(dt);
+        gpu.step(dt);
+        const auto& completed=producer->stream_submission_stats();
+        require(completed.fetch_batches==before_fetch.fetch_batches+1u &&
+                completed.fetch_spans==before_fetch.fetch_spans+1u &&
+                completed.fetch_bytes-before_fetch.fetch_bytes==
+                    producer->dy_distance_transfer_bytes().second,
+            "Primitive PCM introduced an unnecessary GPU readback");
+        require(producer->pcm_contact_readback_bytes()==0u &&
+                producer->pcm_host_contact_upload_bytes()==
+                    2u*sizeof(physx_gpu::SourcePcmGpuContactStreamNative) &&
+                producer->dy_gpu_integrated_body_count()==2u,
+            "Primitive CPU Sc/GPU Dy path duplicated numerical PCM work");
+        require(cpu.contacts().size()==gpu.contacts().size(),
+            "Deferred primitive PCM changed the Sc touch graph");
+        if(frame==2u)
+            require(cpu.contacts().size()==1u,
+                "Lifted source plane-box retained its physical touch");
+        else
+            require(cpu.contacts().size()==2u,
+                "Restored source plane-box lost its physical touch");
+        for(std::size_t i=0u;i<cpu.contacts().size();++i) {
+            const auto& a=cpu.contacts()[i],&b=gpu.contacts()[i];
+            require(a.pair==b.pair && a.count==b.count,
+                "Deferred primitive Gu manager identity changed");
+            for(std::size_t j=0u;j<a.count;++j) {
+                const auto& x=a.points[j],&y=b.points[j];
+                require(std::fabs(x.position.x-y.position.x)<0.003f &&
+                        std::fabs(x.position.y-y.position.y)<0.003f &&
+                        std::fabs(x.position.z-y.position.z)<0.003f &&
+                        std::fabs(x.separation-y.separation)<0.003f,
+                    "Deferred primitive Gu witnesses differ");
+            }
+        }
+    }
+
+    // Switch CPU primitive -> mixed GPU Gu -> CPU primitive. Sc must
+    // regenerate the correct side's persistent EdgeIndex witness cache.
+    const auto add_general=[](native::Scene& scene) {
+        scene.add_static_box({0.5f,0.5f,0.5f},{50.f,5.f,0.f});
+        const auto moving=scene.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{50.997f,5.f,0.f},1.f);
+        RigidBodyDynamics no_gravity{};
+        no_gravity.gravity_enabled=false;
+        scene.set_dynamics(moving,no_gravity);
+        return moving;
+    };
+    const auto cpu_general=add_general(cpu);
+    const auto gpu_general=add_general(gpu);
+    cpu.step(dt);
+    gpu.step(dt);
+    require(producer->pcm_contact_readback_bytes()>0u &&
+            producer->pcm_host_contact_upload_bytes()==0u &&
+            cpu.contacts().size()==gpu.contacts().size(),
+        "Mixed box/primitive frame lost GPU PCM ownership");
+    cpu.remove(cpu_general);
+    gpu.remove(gpu_general);
+    cpu.step(dt);
+    gpu.step(dt);
+    require(producer->pcm_contact_readback_bytes()==0u &&
+            producer->pcm_host_contact_upload_bytes()>0u &&
+            cpu.contacts().size()==gpu.contacts().size(),
+        "Primitive frame failed to resume Sc CPU PCM ownership");
+    for(std::size_t i=0u;i<cpu.contacts().size();++i) {
+        const auto& a=cpu.contacts()[i],&b=gpu.contacts()[i];
+        require(a.pair==b.pair && a.count==b.count,
+            "PCM producer transition changed Sc contact identity");
+        for(std::size_t j=0u;j<a.count;++j)
+            require(std::fabs(a.points[j].separation-
+                              b.points[j].separation)<0.003f,
+                "PCM producer transition reused stale Gu witnesses");
+    }
 }
 
 void verify_compound_actor_gpu_solver(
@@ -2329,8 +2655,13 @@ void verify_gpu_wide_island_solver(
         require(schedule.device_generated_bytes==
                     schedule.device_colored_descriptors*
                         (sizeof(native::GpuDyDistanceDescriptor)+
-                         sizeof(std::uint32_t)),
-                "Device Dy coloring still uploads its derived output arrays");
+                         sizeof(std::uint32_t)) &&
+                schedule.device_source_descriptors==
+                    schedule.device_colored_descriptors &&
+                schedule.source_descriptor_upload_bytes<=
+                    schedule.device_colored_descriptors*
+                        sizeof(std::uint32_t),
+                "Source Sc did not materialize Dy descriptors on the device");
         require(producer->dy_upload_span_count()==1u &&
                 producer->dy_gpu_integrated_body_count()==actual.bodies.size() &&
                 producer->dy_pcm_device_contact_rows()>=actual.bodies.size() &&
@@ -2649,8 +2980,12 @@ int main(int argc,char** argv) {
                 [&]{verify_compound_actor_gpu_solver(backend,argv[1],argv[2],argv[3]);});
         if(scenario=="all" || scenario=="sphere_solver")
             fyzz::tests::measure_gpu_case("sc_pcm","sphere_solver",
-                [&]{verify_sphere_gpu_solver(
-                    backend,argv[1],argv[2],argv[3]);});
+                [&]{
+                    verify_sphere_gpu_solver(
+                        backend,argv[1],argv[2],argv[3]);
+                    verify_host_primitive_pcm_solver(
+                        backend,argv[1],argv[2],argv[3]);
+                });
         if(scenario=="all" || scenario=="convex_plane")
             fyzz::tests::measure_gpu_case("sc_pcm","convex_plane",
                 [&]{
@@ -2666,6 +3001,8 @@ int main(int argc,char** argv) {
                         "Finite convex GPU case requires compiled hull Dy shader");
                     verify_convex_finite_gpu_solver(
                         backend,argv[1],argv[2],argv[3],argv[4]);
+                    verify_convex_face_dispatch_window(
+                        backend,argv[1],argv[2]);
                 });
         if(scenario=="all" || scenario=="scene")
             fyzz::tests::measure_gpu_case("sc_pcm","scene",
@@ -2697,7 +3034,8 @@ int main(int argc,char** argv) {
                     backend,argv[1],argv[2],argv[3]);});
         if(scenario=="all" || scenario=="distance_solver")
             fyzz::tests::measure_gpu_case("sc_pcm","distance_solver",
-                [&]{verify_gpu_distance_solver(backend,argv[1],argv[3]);});
+                [&]{verify_gpu_distance_solver(
+                    backend,argv[1],argv[2],argv[3]);});
         if(scenario=="all" || scenario=="free_integration")
             fyzz::tests::measure_gpu_case("sc_pcm","free_integration",
                 [&]{verify_gpu_free_integration(backend,argv[1],argv[2],argv[3]);});

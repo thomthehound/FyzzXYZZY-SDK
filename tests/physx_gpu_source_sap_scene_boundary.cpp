@@ -98,7 +98,7 @@ void test_source_scene_boundary() {
     (void)prepare_source_sap_scene_update(
         actors,handles,target,quiet,filter,false,false,scratch);
     require(bounds_equal() && distances==beforeDistances &&
-            groups==beforeGroups,
+            groups==beforeGroups && scratch.dirty_indices.empty(),
             "Quiet source SAP frame rewrote persistent AABB manager arrays");
 
     // The original GPU AABB manager never populates the CPU updated
@@ -116,7 +116,8 @@ void test_source_scene_boundary() {
             std::fabs(bounds[0].minimum.x-3.0f)<1.0e-6f &&
             std::fabs(bounds[3].minimum.x+8.0f)<1.0e-6f &&
             distances[0]==0.3125f &&
-            distances[3]==beforeDistances[3],
+            distances[3]==beforeDistances[3] &&
+            scratch.dirty_indices==std::vector<std::size_t>{0u},
             "GPU changed bitmap with empty updated list lost moved Sc bounds");
 
     // Source bitmap word indices above 31 must preserve volume-handle
@@ -151,7 +152,8 @@ void test_source_scene_boundary() {
     require(high_frame.getNumUpdatedHandles()==0u &&
             high_frame.getNumCreatedHandles()==0u &&
             std::fabs(high_bounds[36].minimum.x-6.f)<1.0e-6f &&
-            high_bounds[2].minimum.x==initial_low,
+            high_bounds[2].minimum.x==initial_low &&
+            high_scratch.dirty_indices==std::vector<std::size_t>{0u},
             "Source GPU changed bitmap failed at 32-bit volume boundary");
 
     // Source handles removed earlier may retain dirty bits until the
@@ -167,7 +169,8 @@ void test_source_scene_boundary() {
         filter,true,true,high_scratch);
     require(high_bounds[36].minimum.x==before_high &&
             high_bounds[2].minimum.x==before_low &&
-            high_groups[5]==physx::Bp::FilterGroup::eINVALID,
+            high_groups[5]==physx::Bp::FilterGroup::eINVALID &&
+            high_scratch.dirty_indices.empty(),
             "Stale source GPU changed bit improperly rewrote a live volume");
 
     // Only the authoritative updated handle is reconstructed, even when
@@ -374,6 +377,7 @@ void test_gpu_box_records() {
     require(records.size()==1u &&
             records[0].element_index==36u &&
             records[0].position[0]==7.f &&
+            scratch.dirty_indices==std::vector<std::size_t>{0u} &&
             bounds[36].isEmpty() && bounds[2].isEmpty(),
             "GPU source changed-handle bitmap staged an unchanged shape");
 
@@ -393,6 +397,7 @@ void test_gpu_box_records() {
             records[0].element_index==2u &&
             records[0].position[0]==-30.f &&
             resident.reused_records==1u &&
+            scratch.dirty_indices==std::vector<std::size_t>{0u,1u} &&
             bounds[36].isEmpty() && bounds[2].isEmpty(),
             "Sc device-resident shape was packed or dirty peer omitted");
     // Created/updated source deltas and changed bitmap bits select each
@@ -405,7 +410,8 @@ void test_gpu_box_records() {
             records[0].element_index==36u &&
             records[1].element_index==2u &&
             records[0].position[0]==7.f &&
-            records[1].position[0]==-30.f,
+            records[1].position[0]==-30.f &&
+            scratch.dirty_indices==std::vector<std::size_t>{0u,1u},
             "Overlapping source GPU create and changed bits duplicated transforms");
 
     resident.reused_records=0u;

@@ -120,10 +120,12 @@ void exercise(Context& context) {
                 .descriptor_gpu_buffers.broadphase.getDevicePtr();
             const auto descriptorView = addresses.resolve(
                 descriptorGpu, sizeof(physx::PxgBroadPhaseDesc));
-            stream.wait_at_fetch();
             physx::PxgBroadPhaseDesc uploaded{};
-            context.download(descriptorView.buffer, descriptorView.offset,
-                             &uploaded, sizeof(uploaded));
+            const std::array<DownloadSpan,1> descriptorFetch{{
+                {descriptorView.buffer,descriptorView.offset,
+                 &uploaded,sizeof(uploaded)}
+            }};
+            stream.fetch(descriptorFetch);
             require(uploaded.numCreatedHandles == 1u &&
                     uploaded.numRemovedHandles == 0u &&
                     uploaded.numPreviousHandles == 0u &&
@@ -138,18 +140,20 @@ void exercise(Context& context) {
             const auto createdView = addresses.resolve(
                 createdGpu, sizeof(physx::PxU32));
             physx::PxU32 observedHandle = ~physx::PxU32{0};
-            context.download(createdView.buffer, createdView.offset,
-                             &observedHandle, sizeof(observedHandle));
-            require(observedHandle == created.front(),
-                    "Original SAP created handle was not uploaded on source stream");
-
             const auto boundsGpu = reinterpret_cast<std::uintptr_t>(
                 uploaded.updateData_fpBounds);
             const auto boundsView = addresses.resolve(
                 boundsGpu, sizeof(physx::PxBounds3));
             physx::PxBounds3 observedBounds;
-            context.download(boundsView.buffer, boundsView.offset,
-                             &observedBounds, sizeof(observedBounds));
+            const std::array<DownloadSpan,2> sourceFetch{{
+                {createdView.buffer,createdView.offset,
+                 &observedHandle,sizeof(observedHandle)},
+                {boundsView.buffer,boundsView.offset,
+                 &observedBounds,sizeof(observedBounds)}
+            }};
+            stream.fetch(sourceFetch);
+            require(observedHandle == created.front(),
+                    "Original SAP created handle was not uploaded on source stream");
             require(observedBounds.minimum.x == -1.0f &&
                     observedBounds.minimum.y == -2.0f &&
                     observedBounds.maximum.z == 3.0f,
@@ -179,8 +183,17 @@ void exercise(Context& context) {
                 manager.flushDeferredDeallocs();
             }
             physx::PxgBroadPhaseDesc quietDescriptor{};
-            context.download(descriptorView.buffer, descriptorView.offset,
-                             &quietDescriptor, sizeof(quietDescriptor));
+            const std::array<DownloadSpan,1> quietFetch{{
+                {descriptorView.buffer,descriptorView.offset,
+                 &quietDescriptor,sizeof(quietDescriptor)}
+            }};
+            stream.fetch(quietFetch);
+            const auto& fetch=stream.submission_stats();
+            require(fetch.fetch_batches==3u && fetch.fetch_spans==4u &&
+                    fetch.fetch_bytes==sizeof(uploaded)+
+                        sizeof(observedHandle)+sizeof(observedBounds)+
+                        sizeof(quietDescriptor),
+                    "Source stream fetched duplicate or missing GPU data");
             require(quietDescriptor.numCreatedHandles == 0u &&
                     quietDescriptor.numRemovedHandles == 0u &&
                     quietDescriptor.numPreviousHandles == 1u &&

@@ -272,6 +272,60 @@ inline void verify_convex_finite_gpu_solver(
     }
 }
 
+inline void verify_convex_face_dispatch_window(
+    fyzz::compute::Backend backend,const char* sap,const char* pcm) {
+    using namespace fyzz;
+    constexpr std::array<Vec3,4> vertices{{
+        {0.f,0.f,0.f},{1.f,0.f,0.f},{0.f,1.f,0.f},{0.f,0.f,1.f}}};
+    constexpr std::array<ConvexTriangle,4> faces{{
+        {0,2,1},{0,1,3},{0,3,2},{1,2,3}}};
+    const auto hull=cook_convex_mesh(vertices,faces);
+    native::Scene cpu,gpu;
+    auto owner=std::make_unique<physx_gpu::SourceScOwnedGpuBroadphaseNative>(
+        backend,load_native_gpu_sap_shaders(backend,sap),128u,128u,
+        std::nullopt,load_native_gpu_pcm_shaders(backend,pcm));
+    auto* producer=owner.get();
+    gpu.set_gpu_broadphase(std::move(owner));
+    const auto assemble=[&](native::Scene& scene) {
+        scene.add_static_box({0.5f,0.5f,0.5f},{0.f,0.f,0.f});
+        scene.add_dynamic_box({0.5f,0.5f,0.5f},{0.5f,0.f,0.f},1.f);
+        const auto fixed_hull=scene.create_body({{4.f,0.f,0.f},{}},false);
+        scene.attach_convex(fixed_hull,hull,{});
+        scene.add_dynamic_box({0.4f,0.4f,0.4f},
+                              {4.35f,0.15f,0.25f},1.f);
+        scene.add_static_box({0.5f,0.5f,0.5f},{8.f,0.f,0.f});
+        scene.add_dynamic_box({0.5f,0.5f,0.5f},{8.5f,0.f,0.f},1.f);
+        return fixed_hull;
+    };
+    const auto cpu_hull=assemble(cpu);
+    const auto gpu_hull=assemble(gpu);
+    const auto check=[&](std::size_t managers,std::size_t face_span) {
+        cpu.advance_collision(true);
+        gpu.advance_collision(true);
+        if(cpu.contacts().size()!=managers ||
+           gpu.contacts().size()!=managers ||
+           producer->pcm_face_pair_scan_count()!=face_span ||
+           producer->pcm_contact_readback_bytes()!=
+               managers*sizeof(physx_gpu::SourcePcmGpuContactStreamNative))
+            throw std::runtime_error(
+                "Convex face GPU dispatch did not respect Sc pair range");
+        for(std::size_t i=0u;i<managers;++i)
+            if(cpu.contacts()[i].pair!=gpu.contacts()[i].pair ||
+               cpu.contacts()[i].count!=gpu.contacts()[i].count)
+                throw std::runtime_error(
+                    "Bounded convex face dispatch changed source Gu contacts");
+    };
+    check(3u,1u);
+    // Cooked vertices remain device-resident while only the two
+    // box contacts are active; no convex face shader should execute.
+    cpu.set_position(cpu_hull,{80.f,0.f,0.f});
+    gpu.set_position(gpu_hull,{80.f,0.f,0.f});
+    check(2u,0u);
+    cpu.set_position(cpu_hull,{4.f,0.f,0.f});
+    gpu.set_position(gpu_hull,{4.f,0.f,0.f});
+    check(3u,1u);
+}
+
 inline void verify_convex_plane_gpu_solver(
     fyzz::compute::Backend backend,const char* sap,
     const char* pcm,const char* dy_shader,const char* convex_dy_shader) {
@@ -366,6 +420,8 @@ inline void verify_convex_plane_gpu_solver(
         }
         cpu.step(1.f/120.f);
         gpu.step(1.f/120.f);
+        check(producer->pcm_face_pair_scan_count()==0u,
+            "Plane-only cooked hulls dispatched finite convex face expansion");
         check(cpu.contacts().size()==gpu.contacts().size(),
             "Cooked convex GPU changed plane Sc manager count");
         if(frame==0u) {

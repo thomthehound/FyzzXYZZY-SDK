@@ -2294,7 +2294,8 @@ void Scene::update_gpu_pairs(bool force_update) {
     // afterIntegration patches the changed source body entries directly
     // using its existing task-owned island ranges. Constraint/Gu dirty
     // publications do not imply any change to this finite-box view.
-    // The source GPU AABB still validates and fetches every frame.
+    // The source AABB validates admitted SAP frames; converged quiet
+    // frames do not need another source GPU submission or fetch.
     if(!gpu_broadphase_snapshot_current_) {
         gpu_broadphase_snapshot_current_=false;
         gpu_broadphase_boxes_.clear();
@@ -4055,24 +4056,111 @@ void Scene::update_contacts() {
                 gpu_pcm_pairs_.push_back({
                     a.geometry==Geometry::Plane?pair.a:pair.b,
                     a.geometry==Geometry::Plane?pair.b:pair.a,
-                    edge,!island_edges_[edge].pcm_cache.initialized,
+                    edge,(!island_edges_[edge].pcm_cache.initialized ||
+                          !island_edges_[edge].pcm_cache.device_history),
                     sphere?1u:16u,true,floor.position.y,
-                    a.contact_offset+b.contact_offset,previously_touching});
+                    a.contact_offset+b.contact_offset,previously_touching,true});
             }else {
                 const bool swapped=island_edges_[edge].gu_order_reversed;
                 gpu_pcm_pairs_.push_back({
                     swapped?pair.b:pair.a,swapped?pair.a:pair.b,edge,
-                    !island_edges_[edge].pcm_cache.initialized,
+                    (!island_edges_[edge].pcm_cache.initialized ||
+                     !island_edges_[edge].pcm_cache.device_history),
                     convex?4u:(sphere?1u:16u),false,0.f,0.f,
-                    previously_touching});
+                    previously_touching,sphere && !convex});
             }
         }
         gpu_pcm_results_.resize(gpu_pcm_pairs_.size());
     }
-    // The GPU contact stream now includes plane-box managers in source
-    // EdgeIndex order; Sc does not generate a parallel host manifold.
-    if(source_gpu_pcm)
+    // A bounded primitive PCM manager is cheaper to classify once on
+    // the Sc CPU than to execute duplicate GPU PCM and fetch its results.
+    // Dy still prepares and solves against the same packed GPU stream,
+    // uploaded once from the Sc-owned Gu contacts.
+    const bool host_primitive=source_gpu_pcm &&
+        gpu_broadphase_->supports_host_pcm_contacts() &&
+        !gpu_pcm_pairs_.empty() &&
+        std::all_of(gpu_pcm_pairs_.begin(),gpu_pcm_pairs_.end(),
+            [this](const GpuPcmBoxPair& request) {
+                return request.candidate_complete &&
+                    (request.candidate_capacity==1u ||
+                     (request.plane_pair &&
+                      request.candidate_capacity==16u &&
+                      shapes_[request.second].geometry==Geometry::Box));
+            });
+    if(source_gpu_pcm && !host_primitive)
         gpu_broadphase_->generate_gpu_pcm_box_contacts(
+            gpu_pcm_pairs_,gpu_pcm_results_);
+    if(host_primitive) {
+        // No independent Gu cache or CPU/GPU contact computation pair.
+        for(std::size_t i=0u;i<gpu_pcm_pairs_.size();++i) {
+            const auto& request=gpu_pcm_pairs_[i];
+            const Shape& first=shapes_[request.first];
+            const Shape& second=shapes_[request.second];
+            const Shape& sphere=first.geometry==Geometry::Sphere
+                ?first:second;
+            std::array<ContactPoint,4> points{};
+            std::uint8_t count=0u;
+            const float distance=first.contact_offset+second.contact_offset;
+            if(request.plane_pair &&
+               second.geometry==Geometry::Box) {
+                // Eight bounded corner tests and the original Sc
+                // persistent PCM cache determine the CPU contact run.
+                step_checkpoint_.save_edge(*this,request.edge);
+                auto& cache=island_edges_[request.edge].pcm_cache;
+                // The last GPU-only frame retained its witnesses in
+                // device Gu history, not this host cache. Regenerate
+                // host primitive witnesses from authoritative geometry.
+                if(cache.device_history)cache={};
+                count=generate_pcm_plane_box(
+                    first,second,distance,cache,points);
+                for(std::size_t j=0u;j<count;++j)
+                    points[j].normal={
+                        -points[j].normal.x,-points[j].normal.y,
+                        -points[j].normal.z};
+            }else if(request.plane_pair) {
+                // GPU plane contacts are already in Sc's final +Y
+                // orientation. The CPU-only Gu path reverses twice.
+                count=source_pcm_sphere_plane(
+                    sphere.position,sphere.radius,first.position.y,
+                    distance,points);
+            }else if(first.geometry==Geometry::Sphere &&
+                     second.geometry==Geometry::Sphere) {
+                count=source_pcm_sphere_sphere(
+                    first.position,first.radius,second.position,second.radius,
+                    distance,points);
+            }else {
+                const Shape& box=first.geometry==Geometry::Box?first:second;
+                count=source_pcm_sphere_box(
+                    sphere.position,sphere.radius,box.position,
+                    box.orientation,box.half_extents,distance,points);
+                if(count && first.geometry==Geometry::Box)
+                    points[0].normal={
+                        -points[0].normal.x,-points[0].normal.y,
+                        -points[0].normal.z};
+            }
+            auto& result=gpu_pcm_results_[i];
+            result.edge=request.edge;
+            result.status=0u;
+            result.count=count;
+            result.cached_count=count;
+            result.selected_and_regenerated=count;
+            result.touch_transition=count
+                ?(request.previously_touching
+                    ?GpuPcmTouchTransition::Persists
+                    :GpuPcmTouchTransition::Found)
+                :(request.previously_touching
+                    ?GpuPcmTouchTransition::Lost
+                    :GpuPcmTouchTransition::None);
+            if(count) {
+                result.normal=points[0].normal;
+                for(std::size_t j=0u;j<count;++j)
+                    result.points[j]={
+                        points[j].position,points[j].separation};
+            }
+        }
+    }
+    if(host_primitive)
+        gpu_broadphase_->upload_host_pcm_contacts(
             gpu_pcm_pairs_,gpu_pcm_results_);
     std::size_t gpu_pcm_index=0u;
     std::size_t old_cursor = 0;
@@ -4203,6 +4291,8 @@ void Scene::update_contacts() {
                                   result.count};
                     manifold.count=publish_gpu_pcm_box_box(
                         result,island_edges_[edge].pcm_cache,contacts);
+                    island_edges_[edge].pcm_cache.device_history=
+                        !host_primitive;
                 }else {
                     manifold.count=convex_pair
                         ?generate_pcm_convex_pair(
@@ -7032,14 +7122,43 @@ void Scene::partition_constraints() {
     for(auto& task:solver_tasks_) {
         const std::size_t manager_end=task.manager_end;
         const std::size_t descriptor_begin=constraint_descriptors_.size();
-        // Source setupDescTask queues 1D edges before contact managers
-        // in each active-island task chain; both enter the SAME body
-        // conflict allocator and stable partition scatter.
+        const auto gpu_first=ordered_constraints_.size();
+        // Source setupDescTask admits 1D edges before contact managers.
+        // Native Dy receives their solver-row descriptors directly; CPU
+        // PGS retains the ActorID descriptor stream.
         const auto narrow_index=[](std::size_t index) {
             if(index>std::numeric_limits<std::uint32_t>::max())
                 throw std::overflow_error(
                     "Source Dy descriptor index exceeds GPU address range");
             return static_cast<std::uint32_t>(index);
+        };
+        const auto dense_row=[&](BodyId id) {
+            const auto& actor=actors_[id];
+            if(!rigid_node(actor.motion))return invalid_solver_row;
+            if(actor.solver_row_generation!=solver_preparation_generation_ ||
+               actor.solver_row_index>=solver_rows_.size() ||
+               actor.solver_row_index>=invalid_solver_row)
+                throw std::logic_error(
+                    "Native device partition references an unprepared solver body");
+            return static_cast<std::uint32_t>(actor.solver_row_index);
+        };
+        const auto admit=[&](std::uint32_t index,BodyId a,BodyId b,
+                             std::uint32_t row_count) {
+            if(!gpu_integration) {
+                constraint_descriptors_.push_back({index,a,b,row_count});
+                return;
+            }
+            const auto& actor_a=actors_[a];
+            const auto& actor_b=actors_[b];
+            const bool dynamic_a=actor_a.motion==Motion::Dynamic;
+            const bool dynamic_b=actor_b.motion==Motion::Dynamic;
+            if((dynamic_a && actor_a.sleeping) ||
+               (dynamic_b && actor_b.sleeping) ||
+               (!dynamic_a && !dynamic_b))
+                return;
+            ordered_constraints_.push_back({
+                index,dense_row(a),dense_row(b),row_count |
+                    (dynamic_a?0x100u:0u)|(dynamic_b?0x200u:0u)});
         };
         for(std::size_t j=joint_begin;j<task.joint_end;++j) {
             const auto& edge=island_edges_[indexed_joints_[j]];
@@ -7049,8 +7168,7 @@ void Scene::partition_constraints() {
                  joint.kind==JointKind::Fixed?6u:5u);
             const auto a=joint.swapped?edge.pair.b:edge.pair.a;
             const auto b=joint.swapped?edge.pair.a:edge.pair.b;
-            constraint_descriptors_.push_back({
-                narrow_index(joint_row_begin),a,b,count});
+            admit(narrow_index(joint_row_begin),a,b,count);
             joint_row_begin+=count;
         }
         for(std::size_t j=manager_begin;j<manager_end;++j) {
@@ -7058,53 +7176,15 @@ void Scene::partition_constraints() {
             const auto& manifold=manifolds_[index];
             const bool reversed=island_edges_[
                 manifold.edge_handle].gu_order_reversed;
-            // ScNPhaseCore::shouldSwapBodies determines Dy's oriented
-            // endpoints before the source partition scatter. Every
-            // position/velocity pass consumes these same resolved IDs.
-            constraint_descriptors_.push_back({
-                narrow_index(index),
-                shapes_[reversed?manifold.pair.b:manifold.pair.a].body,
-                shapes_[reversed?manifold.pair.a:manifold.pair.b].body,
-                false});
+            admit(narrow_index(index),
+                  shapes_[reversed?manifold.pair.b:manifold.pair.a].body,
+                  shapes_[reversed?manifold.pair.a:manifold.pair.b].body,0u);
         }
-        // Sc publishes source-order task descriptors for device Dy.
-        // The GPU assigns conflict partitions and performs stable scatter.
-        // Row-count bits 8 and 9 describe dynamic endpoints until the
-        // device strips them before running the original PGS solver.
         if(gpu_integration) {
-            const auto dense_row=[&](BodyId id) {
-                const auto& actor=actors_[id];
-                if(!rigid_node(actor.motion))return invalid_solver_row;
-                if(actor.solver_row_generation!=solver_preparation_generation_ ||
-                   actor.solver_row_index>=solver_rows_.size() ||
-                   actor.solver_row_index>=invalid_solver_row)
-                    throw std::logic_error(
-                        "Native device partition references an unprepared solver body");
-                return static_cast<std::uint32_t>(actor.solver_row_index);
-            };
-            const auto first=ordered_constraints_.size();
-            for(std::size_t i=descriptor_begin;
-                i<constraint_descriptors_.size();++i) {
-                const auto& source=constraint_descriptors_[i];
-                const auto& a=actors_[source.body0];
-                const auto& b=actors_[source.body1];
-                const bool dynamic_a=a.motion==Motion::Dynamic;
-                const bool dynamic_b=b.motion==Motion::Dynamic;
-                if((dynamic_a && a.sleeping) ||
-                   (dynamic_b && b.sleeping) ||
-                   (!dynamic_a && !dynamic_b))
-                    continue;
-                ordered_constraints_.push_back({
-                    source.index,dense_row(source.body0),
-                    dense_row(source.body1),source.row_count |
-                        (dynamic_a?0x100u:0u) |
-                        (dynamic_b?0x200u:0u)});
-            }
-            const auto count=ordered_constraints_.size()-first;
+            const auto count=ordered_constraints_.size()-gpu_first;
             if(count>std::numeric_limits<std::size_t>::max()-partition_base)
                 throw std::overflow_error("Device Dy task partition capacity overflow");
             partition_base+=count;
-            // Device coloring writes partition ends; Sc retains only the ranges.
             task.partition_end=partition_base;
             task.constraint_end=ordered_constraints_.size();
             manager_begin=manager_end;
@@ -8382,11 +8462,6 @@ void Scene::solve_gpu_distance_constraints(float seconds) {
     if(gpu_dy_rows_.size()!=joint_rows_.size())
         throw std::logic_error(
             "Source GPU 1D row preparation did not cover source rows");
-    gpu_dy_descriptors_.resize(ordered_constraints_.size());
-    for(std::size_t i=0;i<ordered_constraints_.size();++i) {
-        const auto& d=ordered_constraints_[i];
-        gpu_dy_descriptors_[i]={d.index,d.row0,d.row1,d.row_count};
-    }
     gpu_dy_body_ordinals_.resize(solver_active_ids_.size());
     for(std::size_t i=0;i<solver_active_ids_.size();++i)
         gpu_dy_body_ordinals_[i]=narrow(
@@ -8509,11 +8584,24 @@ void Scene::solve_gpu_distance_constraints(float seconds) {
         if(cursor!=m.solver_offset+m.count)
             throw std::logic_error("GPU Dy source patch contact stream truncated");
     }
+    // Zero-response managers have no DyContactPrep record. Preserve
+    // their original endpoint ordinals and dynamic classification in
+    // the otherwise unused manifold slots for device task admission.
+    for(const auto& desc:ordered_constraints_) {
+        if((desc.row_count&255u)!=0u)continue;
+        if(desc.index>=gpu_dy_manifolds_.size())
+            throw std::logic_error("GPU Dy zero-response manager index invalid");
+        auto& manager=gpu_dy_manifolds_[desc.index];
+        if(manager.patch_count!=0u)continue;
+        manager.patch_offset=desc.row0;
+        manager.order_offset=desc.row1;
+        manager.prep_index=desc.row_count;
+    }
     gpu_dy_contact_order_.resize(solver_contact_order_.size());
     for(std::size_t i=0;i<solver_contact_order_.size();++i)
         gpu_dy_contact_order_[i]=narrow(solver_contact_order_[i]);
     gpu_broadphase_->solve_gpu_dy_distance(
-        gpu_dy_bodies_,gpu_dy_rows_,gpu_dy_descriptors_,
+        gpu_dy_bodies_,gpu_dy_rows_,ordered_constraints_,
         {},gpu_dy_body_ordinals_,gpu_dy_tasks_,
         gpu_dy_contact_forces_,gpu_dy_gu_inputs_,
         {},gpu_dy_friction_anchors_,
@@ -10743,6 +10831,7 @@ void Scene::step(float seconds) {
     // A failed stage above leaves it unpublished; rollback restores the
     // previously completed result generation and all its buffers.
     solved_result_frame_=frame_index_;
+    if(gpu_broadphase_)gpu_broadphase_->commit_gpu_step();
     // Solver and lost-edge producers have both completed before this
     // successful step returns its published body and contact results.
     activity_checkpoint_active_=false;
@@ -10808,6 +10897,8 @@ void Scene::advance_collision(bool force_update) {
         // island repair passes have already joined, so handle retirement
         // may complete inside the failure-atomic collision transaction.
         retire_destroyed_contact_edges();
+        // Accept the PCM history only after the Sc publication commits.
+        if(gpu_broadphase_)gpu_broadphase_->commit_gpu_step();
     } catch (...) {
         step_checkpoint_.rollback(*this);
         throw;
@@ -10823,7 +10914,7 @@ void Scene::advance_collision(bool force_update) {
         synchronize_active_island_nodes();
 }
 void Scene::advance_collision_internal(
-    bool force_update, bool checkpointed) {
+    bool force_update,bool checkpointed) {
     // Begin one complete source publication. The first pass can rebuild
     // island membership before third-pass lost-edge repair, so preserve
     // any resulting sleep candidates across both passes of this frame.
@@ -10847,11 +10938,13 @@ void Scene::advance_collision_internal(
     // No parallel timestep or dynamics scheduler is introduced.
     // Source PxgAABBManager/PxgCudaBroadPhaseSap owns the update/fetch
     // when selected. CPU SAP must not even prepare its endpoint state.
-    // GPU update runs on quiet frames too: the source forces one final
-    // bounds/history convergence after movement stops.
+    // SAP executes its required final bounds/history convergence after
+    // motion, then skips unchanged quiet frames.
     if(gpu_broadphase_)update_gpu_pairs(force_update);
     if (dirty_ || force_update ||
-        (gpu_broadphase_ && broadphase_pair_membership_changed_)) {
+        (gpu_broadphase_ &&
+         (broadphase_pair_membership_changed_ ||
+          gpu_broadphase_->needs_gpu_contact_rebuild()))) {
         if(!gpu_broadphase_) {
             update_bounds();
             update_pairs();
