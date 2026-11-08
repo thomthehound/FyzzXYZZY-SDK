@@ -44,20 +44,25 @@ void main(uint3 dispatch:SV_DispatchThreadID) {
             transition==2u || transition==3u?1u:0u);
         return;
     }
-    const uint record=word/60u;
-    const uint lane=word%60u;
+    const bool host_stream=p.phase==4u || p.phase==5u;
+    const uint record=host_stream?word/2u:word/60u;
+    const uint lane=host_stream?word%2u:word%60u;
     if(p.phase==0u) {
         const uint edge=p.clearBegin+record;
         if(edge<p.edgeCapacity)
             edgeCaches.Store(p.edgeBias+edge*240u+lane*4u,0u);
         return;
     }
-    const bool host_stream=p.phase==4u || p.phase==5u;
+    if(!host_stream &&
+       (pairInputs.Load(p.pairBias+record*20u+16u)&0x10000000u)!=0u &&
+       lane!=18u && lane!=19u)
+        return;
     const uint edge=host_stream
         ?pairInputs.Load(p.pairBias+record*84u)
         :pairInputs.Load(p.pairBias+record*20u+8u);
     if(edge>=p.edgeCapacity)return;
-    const uint cache=p.edgeBias+edge*240u+lane*4u;
+    const uint cache=p.edgeBias+edge*240u+
+        (host_stream?72u+lane*4u:lane*4u);
     const uint saved=p.checkpointBias+word*4u;
     if(p.phase==1u || p.phase==4u)
         checkpoint.Store(saved,edgeCaches.Load(cache));
