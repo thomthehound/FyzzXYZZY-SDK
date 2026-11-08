@@ -63,12 +63,14 @@ void solveContact(uint4 descriptor,uint errorAddress,bool biased,
     }
     uint4 manager=arena.Load4(
         p.manifoldBias+descriptor.x*20u);
+    // Zero-response descriptors carry source endpoint ordinals in the
+    // otherwise unused patch offsets. They have no contact rows to read.
+    if(manager.y==0u)return;
     if(manager.x>p.patchCount || manager.y>p.patchCount-manager.x ||
        manager.z>p.orderCount || manager.w>p.orderCount-manager.z) {
         arena.InterlockedOr(errorAddress,64u);
         return;
     }
-    if(manager.y==0u)return;
     uint a=descriptor.y,b=descriptor.z;
     uint ao=p.bodyBias+a*52u,bo=p.bodyBias+b*52u;
     float ma=0.f,mb=0.f;
