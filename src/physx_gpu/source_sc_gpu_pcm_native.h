@@ -96,6 +96,9 @@ public:
     }
 
     void invalidate_after_rollback() noexcept {
+        result_pending_=false;
+        pending_requests_={};
+        pending_output_={};
         published_pair_count_=0u;
         rebuild_required_=true;
         if(pcm_transaction_pending_) {
@@ -114,6 +117,8 @@ public:
     }
 
     void commit_step() {
+        if(result_pending_)
+            throw std::logic_error("Source PCM epoch committed before Sc publication");
         if(!pcm_transaction_pending_)return;
         published_edge_span_bytes_=std::max(
             published_edge_span_bytes_,pending_edge_span_bytes_);
@@ -153,7 +158,7 @@ public:
         rebuild_required_=false;
     }
 
-    void generate(std::span<const native::GpuPcmBoxPair> requests,
+    void enqueue(std::span<const native::GpuPcmBoxPair> requests,
                   std::span<native::GpuPcmBoxResult> output,
                   std::uint32_t shape_capacity) {
         if(requests.size()!=output.size())
@@ -190,12 +195,9 @@ public:
         for(std::uint32_t i=0u;i<pair_count;++i) {
             const auto& request=requests[i];
             needs_continuation|=!request.candidate_complete;
-            if(request.host_generated) {
-                validate_host_contact(request,output[i]);
-                if(!request.candidate_complete)
-                    throw std::logic_error(
-                        "CPU source Gu cannot own GPU continuation pair");
-            }
+            if(request.host_generated && !request.candidate_complete)
+                throw std::logic_error(
+                    "CPU source Gu cannot own GPU continuation pair");
             if(!request.plane_pair && request.candidate_capacity==4u) {
                 first_face_pair=std::min(first_face_pair,i);
                 face_pair_end=i+1u;
@@ -319,23 +321,6 @@ public:
                 pair_host_.data()+first_dirty,bytes});
             last_pair_upload_bytes_=bytes;
         }
-        // Sc primitive slots share the GPU PCM world-contact ABI.
-        // Transfer only contiguous host-owned spans; general GPU
-        // publishers fill the remaining ordinals in this same buffer.
-        for(std::size_t i=0u;i<pair_count;) {
-            if(!requests[i].host_generated) {
-                ++i;
-                continue;
-            }
-            const auto first=i;
-            while(i<pair_count && requests[i].host_generated)++i;
-            const auto stride=sizeof(native::GpuPcmBoxResult);
-            const auto bytes=(i-first)*stride;
-            uploads.push_back({
-                dense_contacts_.getDevicePtr()+first*stride,
-                output.data()+first,bytes});
-            last_host_contact_upload_bytes_+=bytes;
-        }
         if(!uploads.empty())stream_.queue_uploads(uploads);
         reset_manifolds_=false;
         // The source EdgeIndex pool is allowed to grow beyond previously
@@ -450,15 +435,50 @@ public:
                 dense_contacts_.getDevicePtr()+first*stride,bytes);
             gpu_downloads_.push_back({
                 mapped.buffer,mapped.offset,output.data()+first,bytes});
-            last_contact_download_bytes_+=bytes;
         }
         pcm_transaction_pending_=true;
+        result_pending_=true;
+        pending_requests_=requests;
+        pending_output_=output;
         journal_pair_count_=pair_count;
         journal_edge_capacity_=edge_capacity;
         pending_edge_span_bytes_=std::size_t(edge_capacity)*240u;
+        // The same ordered queue continues while Sc processes CPU-owned
+        // contact managers ahead of its first GPU witness consumer.
+        stream_.submit();
+    }
+    void finish() {
+        if(!result_pending_)
+            throw std::logic_error("Source PCM join has no queued epoch");
+        const auto requests=pending_requests_;
+        const auto output=pending_output_;
+        // GPU general PCM has already been submitted. The independent
+        // CPU primitive generators finish now; upload their disjoint
+        // ordinal ranges after GPU work, before Dy consumes this arena.
+        auto& uploads=stream_.upload_scratch();
+        for(std::size_t i=0u;i<requests.size();) {
+            if(!requests[i].host_generated) {
+                ++i;
+                continue;
+            }
+            const auto first=i;
+            while(i<requests.size() && requests[i].host_generated) {
+                validate_host_contact(requests[i],output[i]);
+                ++i;
+            }
+            const auto stride=sizeof(native::GpuPcmBoxResult);
+            const auto bytes=(i-first)*stride;
+            uploads.push_back({
+                dense_contacts_.getDevicePtr()+first*stride,
+                output.data()+first,bytes});
+            last_host_contact_upload_bytes_+=bytes;
+        }
+        if(!uploads.empty())stream_.queue_uploads(uploads);
         if(!gpu_downloads_.empty())stream_.fetch(gpu_downloads_);
-        else stream_.submit();
-        for(std::uint32_t i=0u;i<pair_count;++i) {
+        else stream_.wait_at_fetch();
+        for(const auto& span:gpu_downloads_)
+            last_contact_download_bytes_+=span.bytes;
+        for(std::uint32_t i=0u;i<journal_pair_count_;++i) {
             const auto& stored=output[i];
             const auto& request=requests[i];
             const auto selected_count=
@@ -478,7 +498,10 @@ public:
                 throw std::logic_error(
                     "Source GPU PCM publication disagrees with original Sc manager");
         }
-        published_pair_count_=pair_count;
+        published_pair_count_=journal_pair_count_;
+        result_pending_=false;
+        pending_requests_={};
+        pending_output_={};
         rebuild_required_=false;
     }
     CudaDeviceAddressMap::Address contact_stream_address() const noexcept {
@@ -574,6 +597,11 @@ private:
     bool reset_manifolds_=false;
     bool rebuild_required_=false;
     bool pcm_transaction_pending_=false,restore_pending_=false;
+    bool result_pending_=false;
+    // Borrowed Sc views survive until finish() or rollback; GPU output
+    // is written directly into the enqueued Sc result arena at the join.
+    std::span<const native::GpuPcmBoxPair> pending_requests_{};
+    std::span<native::GpuPcmBoxResult> pending_output_{};
     std::uint32_t journal_pair_count_=0u,journal_edge_capacity_=0u;
     std::size_t pending_edge_span_bytes_=0u;
     std::uint32_t published_pair_count_=0u;

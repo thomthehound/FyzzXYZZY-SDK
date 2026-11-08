@@ -112,6 +112,61 @@ A placement change without a demonstrated critical-path benefit is not
 progress toward the GPU-performance gate. Correctness may justify a
 temporary hybrid boundary; record its cost and the consumer that requires it.
 
+### Binding scene execution graph
+
+The scene owns **one simulation transaction** and one dependency graph across
+CPU and device work. A function call is not a completion edge. Every stage
+declares its producer, consumers, residency, possible host observation and
+rollback lifetime; backends lower those dependencies without introducing
+another simulation scheduler.
+
+| Stage | Authority and work placement | Required successor |
+| --- | --- | --- |
+| Admit | CPU validates authored changes, sparse handles, filters and topology edits; device mirrors only the inputs needed for execution | Sparse changes and device uploads become visible before their consumers |
+| Broadphase | GPU processes dense bounds, persistent overlap history and reports; CPU admits or retires stable contact-manager identities from required report deltas | Manager admission precedes new contact work |
+| Narrowphase | Each manager has exactly one numerical Gu producer, CPU or GPU. GPU-owned witnesses and persistent device contact history remain resident | Device touch state drives device constraint admission without full witness readback |
+| Frame topology | CPU owns stable scene handles, callbacks and persistent public graph. GPU owns same-frame accurate contact connectivity, affected island routing and numerical task admission when those depend on GPU touch | Actual touch, not speculative overlap, determines active constraint connectivity |
+| Dynamics | GPU consumes resident contact, friction, joint and body streams for preparation, partitioning, solving, integration and sleep decisions; sparse CPU-only work enters through explicit dependencies | Device-dependent stages run in ordered submissions without a default host fence between them |
+| Publish | One scene completion boundary validates compact topology/event deltas and requested results, reconciles public CPU views and commits all persistent histories | Failed transactions retire or restore submitted device work before state reuse |
+
+**Ownership is distinct from observation.** The CPU can own an EdgeIndex and
+its published lifecycle without owning the numerical witnesses occupying its
+device slot. The GPU can own the current frame's accurate contact graph while
+the CPU maintains stable identifiers and a reconciled public graph. Neither
+may independently invent touch transitions. Cached contact/friction history
+has one owner per epoch, with explicit invalidation when its producer changes.
+
+**Normal-frame dependencies must remain on-device** from general GPU
+contact generation through contact/friction correlation, accurate task
+admission, constraint preparation and solving. Sc may consume compact
+transitions or topology changes at the final publication boundary.
+Callbacks, CPU-only geometry and sparse topology edits may require earlier
+host joins, but must identify the actual consuming task and affect only the
+necessary workload; they are not permission for a global per-frame witness
+download. A numerical operation is never duplicated on both processors as
+an implicit verification or scheduling strategy.
+
+**No false connectivity shortcut.** Broadphase overlap can feed speculative
+waking and admission; it cannot stand in for accurate contact connectivity.
+Mixed rigid, articulated and nonrigid interactions must use typed responding
+nodes, ordered constraints and explicit cross-system dependencies within
+this same graph. A new feature must not require a second independent frame
+loop, contact registry, island manager or solver-state truth.
+
+**Current migration boundary:** general GPU PCM still downloads its 84-byte
+contact records before CPU Sc friction correlation and accurate-island
+scheduling. The ordered PCM enqueue/join starts general GPU PCM before
+independent CPU primitive witness generation, with those host-owned contact
+slots uploaded afterward. It overlaps both numerical producers but does not
+remove the final same-frame Sc synchronization dependency. The next integration gate is GPU-consumed touch and friction/task
+admission with correct same-frame connectivity, followed by compact public
+reconciliation. Only then can normal GPU PCM -> Dy be considered free of an
+intermediate host witness fence. Test rollback between enqueue and join,
+mixed producer ownership, topology splits/merges, anchor persistence, sleep
+transitions and both API backends. Physical-device traces must show the
+actual critical path, transfer counts and queue idle intervals before
+claiming a performance improvement.
+
 ## 3. Source-faithful production integration
 
 For each change identify its native FyzzXYZZY production caller, authoritative

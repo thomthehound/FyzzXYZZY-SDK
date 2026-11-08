@@ -392,12 +392,17 @@ public:
         return dy_distance_ ? dy_distance_->last_transfer_bytes()
                             : std::pair<std::size_t,std::size_t>{};
     }
-    void generate_gpu_pcm_box_contacts(
+    void enqueue_gpu_pcm_box_contacts(
             std::span<const native::GpuPcmBoxPair> requests,
             std::span<native::GpuPcmBoxResult> results) override {
         if(!pcm_)
             throw std::logic_error("Source Sc GPU PCM shaders not installed");
-        pcm_->generate(requests,results,aabb_->capacity());
+        pcm_->enqueue(requests,results,aabb_->capacity());
+    }
+    void finish_gpu_pcm_box_contacts() override {
+        if(!pcm_)
+            throw std::logic_error("Source Sc GPU PCM shaders not installed");
+        pcm_->finish();
     }
     bool supports_host_pcm_contacts() const noexcept override {
         return pcm_ && dy_distance_;

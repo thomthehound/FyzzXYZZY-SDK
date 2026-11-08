@@ -111,8 +111,19 @@ with at most four host-contact runs and five GPU-result runs; the
 remaining primitive managers are device-generated when a batch is
 more fragmented. This bounds transfer-command overhead without
 introducing another registry, a GPU scatter kernel or an intermediate
-CPU/GPU completion boundary. General PCM still joins Sc before the
-accurate island and Dy task publication.
+CPU/GPU completion boundary. General PCM now submits its device candidate/continuation work before
+Sc computes CPU-classified primitive Gu witnesses or traverses the ordered
+contact managers. CPU Gu fills disjoint source ordinals while GPU PCM runs;
+those primitive spans are validated and uploaded at the first GPU witness
+join. General results still use one batched readback, and Dy consumes the
+unchanged resident stream. When pair descriptors also change, separating
+their early upload from the delayed primitive upload can add one upload
+submission per mixed frame. There is no second contact stream or solver
+path. The overlap may justify that submission, but physical-device
+measurements must establish the crossover. General PCM still joins Sc
+before accurate island and Dy task publication; this is not yet a removal
+of the host-dependent contact/solver boundary. Transfer bytes remain
+unchanged, and CPU/GPU overlap is not itself a measured speedup.
 
 Production reviews must identify **each necessary GPU → CPU → GPU handoff**,
 the value crossing it, the consumer forcing synchronization, and whether
