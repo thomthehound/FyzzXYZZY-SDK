@@ -328,9 +328,6 @@ public:
             pair_count,shape_capacity,candidate_capacity,edge_capacity);
         const auto before_continuation=stream_.commands().size();
         if(needs_continuation) {
-            sparse_stage_.append(stream_,addresses_,
-                results_.getDevicePtr(),work_.getDevicePtr(),
-                indirect_address_,pair_count);
             const auto append_gjk=[&](const SourcePcmEpaNativeStage& stage,
                                        std::uint32_t pass) {
                 stage.append(stream_,addresses_,
@@ -344,6 +341,11 @@ public:
                     0u,0u,0u,0u,pass);
             };
             if(staged_gjk_) {
+                // Direct Vulkan GJK scans source pair status in one pass;
+                // only D3D12's staged continuation consumes this list.
+                sparse_stage_.append(stream_,addresses_,
+                    results_.getDevicePtr(),work_.getDevicePtr(),
+                    indirect_address_,pair_count);
                 // The GPU compacted status-3 list drives every staged GJK
                 // pass. The list remains immutable until EPA work is rebuilt.
                 const auto& advance=!convex_vertex_count_

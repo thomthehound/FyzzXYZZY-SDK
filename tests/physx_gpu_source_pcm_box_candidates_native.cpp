@@ -381,6 +381,23 @@ void verify(Context& context,const char* transform_shader,
     context.download(args_buffer,0u,indirect.data(),sizeof(indirect));
     context.download(root,work_offset,work.data(),work.size()*4u);
     verify_work(admitted_results);
+    // Thirty-five pending pairs must launch two 32-lane groups without
+    // duplicating or omitting the partially occupied final group.
+    auto dense_results=results;
+    for(auto& result:dense_results)result.status=3u;
+    context.upload(root,result_offset,dense_results.data(),sizeof(dense_results));
+    {
+        seed_compaction();
+        SourceSapDmaNative stream(context,addresses);
+        sparse.append(stream,addresses,result_data,work_data,args_data,
+                      static_cast<std::uint32_t>(pairs.size()));
+        stream.wait_at_fetch();
+    }
+    context.download(args_buffer,0u,indirect.data(),sizeof(indirect));
+    context.download(root,work_offset,work.data(),work.size()*4u);
+    verify_work(dense_results);
+    require(indirect[0]==2u,
+            "Dense GJK worklist did not use two full-width indirect groups");
     // Empty Sc streams have no EPA consumer or GPU reset dispatch.
     const auto prior_indirect=indirect;
     {

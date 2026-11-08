@@ -64,9 +64,10 @@ source update/fetch boundary.
 
 The native PCM candidate kernel completes plane and primitive-sphere
 contacts directly. Frames containing only those Sc-classified contacts
-omit GJK/EPA dispatches; mixed scenes retain GPU-compacted continuation
-worklists. D3D12 staged GJK consumes that worklist by indirect dispatch,
-without a host-side worklist fetch.
+omit GJK/EPA dispatches. Vulkan's direct GJK scans source pair status
+without a redundant status-3 compaction; D3D12's staged GJK consumes
+a GPU-compact 32-lane indirect worklist. Both paths compact EPA work
+on the GPU, without a host-side worklist fetch.
 
 Production reviews must identify **each necessary GPU → CPU → GPU handoff**,
 the value crossing it, the consumer forcing synchronization, and whether
