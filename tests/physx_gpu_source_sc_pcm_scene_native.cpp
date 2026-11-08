@@ -271,7 +271,15 @@ void verify(fyzz::compute::Backend backend,const char* sap,
         {gpu_a,gpu_b,edge,false}
     }};
     std::array<native::GpuPcmBoxResult,1> direct{};
-    producer->generate_gpu_pcm_box_contacts(request,direct);
+    const auto before_enqueue=producer->stream_submission_stats();
+    producer->enqueue_gpu_pcm_box_contacts(request,direct);
+    const auto queued=producer->stream_submission_stats();
+    require(queued.command_batches>before_enqueue.command_batches &&
+            queued.fetch_batches==before_enqueue.fetch_batches &&
+            queued.fetch_bytes==before_enqueue.fetch_bytes &&
+            direct[0].packed_counts==0u,
+        "GPU PCM enqueue blocked or published Sc witnesses before its join");
+    producer->finish_gpu_pcm_box_contacts(request,direct);
     producer->commit_gpu_step();
     require(producer->pcm_contact_readback_bytes()==
                 sizeof(physx_gpu::SourcePcmGpuContactStreamNative),
@@ -297,7 +305,8 @@ void verify(fyzz::compute::Backend backend,const char* sap,
     // A quiet refresh must reuse Sc's original device pair descriptor:
     // the GPU still runs PCM, but no pair-list HtoD submission is needed.
     std::array<native::GpuPcmBoxResult,1> repeated{};
-    producer->generate_gpu_pcm_box_contacts(request,repeated);
+    producer->enqueue_gpu_pcm_box_contacts(request,repeated);
+    producer->finish_gpu_pcm_box_contacts(request,repeated);
     producer->commit_gpu_step();
     require(producer->pcm_pair_upload_bytes()==0u &&
             repeated[0].status()==0u && repeated[0].edge==edge &&
@@ -310,7 +319,8 @@ void verify(fyzz::compute::Backend backend,const char* sap,
         {gpu_a,gpu_b,edge,true,16u,false,0.f,0.f,true}
     }};
     std::array<native::GpuPcmBoxResult,1> reset{};
-    producer->generate_gpu_pcm_box_contacts(reset_request,reset);
+    producer->enqueue_gpu_pcm_box_contacts(reset_request,reset);
+    producer->finish_gpu_pcm_box_contacts(reset_request,reset);
     producer->commit_gpu_step();
     require(producer->pcm_pair_upload_bytes()==
                 sizeof(physx_gpu::SourcePcmBoxPairNative),
@@ -343,19 +353,35 @@ void verify(fyzz::compute::Backend backend,const char* sap,
         {gpu_a,distant_gpu,edge,true,16u,false,0.f,0.f,true}
     }};
     std::array<native::GpuPcmBoxResult,1> rejected{};
-    producer->generate_gpu_pcm_box_contacts(failed_request,rejected);
+    producer->enqueue_gpu_pcm_box_contacts(failed_request,rejected);
+    producer->finish_gpu_pcm_box_contacts(failed_request,rejected);
     require(rejected[0].count()==0u &&
             rejected[0].touch_transition()==native::GpuPcmTouchTransition::Lost,
         "Rejected Sc PCM refresh did not mutate speculative touch history");
     producer->invalidate_after_rollback();
     std::array<native::GpuPcmBoxResult,1> recovered{};
-    producer->generate_gpu_pcm_box_contacts(request,recovered);
+    producer->enqueue_gpu_pcm_box_contacts(request,recovered);
+    producer->finish_gpu_pcm_box_contacts(request,recovered);
     require(recovered[0].status()==0u &&
             recovered[0].count()>0u &&
             recovered[0].touch_transition()==
                 native::GpuPcmTouchTransition::Persists &&
             recovered[0].cached_count()<=4u,
         "Sc device contact journal failed to restore committed PCM history");
+    producer->commit_gpu_step();
+    // An unobserved GPU PCM epoch still modifies device witness history.
+    // Rollback must retire that queued epoch before the next Sc contact
+    // result can be joined, without requiring an abandoned host readback.
+    std::array<native::GpuPcmBoxResult,1> abandoned{};
+    producer->enqueue_gpu_pcm_box_contacts(failed_request,abandoned);
+    producer->invalidate_after_rollback();
+    std::array<native::GpuPcmBoxResult,1> retried{};
+    producer->enqueue_gpu_pcm_box_contacts(request,retried);
+    producer->finish_gpu_pcm_box_contacts(request,retried);
+    require(retried[0].status()==0u && retried[0].count()>0u &&
+            retried[0].touch_transition()==
+                native::GpuPcmTouchTransition::Persists,
+        "Unjoined GPU PCM epoch contaminated a subsequent Sc publication");
     producer->commit_gpu_step();
     check(true,true);
     require(gpu.contact_edge_index({gpu_a,gpu_b})==edge,
