@@ -542,10 +542,12 @@ void verify(fyzz::compute::Backend backend,const char* sap,
     producer->enqueue_gpu_pcm_box_contacts(mixed,mixed_results);
     const auto after_mixed=producer->stream_submission_stats();
     require(after_mixed.command_batches>before_mixed.command_batches &&
+            after_mixed.readback_submissions==
+                before_mixed.readback_submissions+1u &&
             after_mixed.fetch_batches==before_mixed.fetch_batches &&
             producer->pcm_host_contact_upload_bytes()==0u &&
             mixed_results[1].packed_counts==0u,
-        "Mixed GPU PCM waited for CPU Gu before submitting device work");
+        "Mixed PCM failed to submit witness DMA ahead of the Sc join");
     std::array<native::ContactPoint,1> points{};
     const auto emitted=native::source_pcm_sphere_sphere(
         {100.f,2.f,0.f},0.5f,{100.7f,2.f,0.f},0.5f,0.04f,points);
