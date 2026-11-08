@@ -1456,7 +1456,7 @@ void verify_cpu_gu_gpu_dy_solver(
                     native::GpuDyGuContactInput)==0u,
             "CPU Gu inputs did not use compact single-batch source upload");
         native::GpuPcmFrictionAnchorFixture::verify_device_contact_order(
-            gpu,false,true);
+            gpu,false,false);
         require(producer->dy_friction_anchor_upload_bytes()==
                     producer->dy_friction_prepared_rows()*
                         sizeof(native::GpuDyFrictionAnchorInput)/2u,
