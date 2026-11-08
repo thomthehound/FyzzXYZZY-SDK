@@ -170,7 +170,7 @@ public:
         edges_.allocateCopyPrefixAsync(requested_edge_bytes,
             published_edge_span_bytes_,stream_,PX_FL);
         if(edge_grew && published_edge_span_bytes_)stream_.submit();
-        journal_.allocate(source_allocation_bytes(pair_count,240u),PX_FL);
+        journal_.allocate(source_allocation_bytes(pair_count,8u),PX_FL);
 
         // The host Gu stream already contains every EdgeIndex and touch
         // transition. Use it for the same device history transaction
