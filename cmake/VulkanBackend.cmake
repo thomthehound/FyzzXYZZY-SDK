@@ -567,6 +567,20 @@ if(FYZZXYZZY_BUILD_VULKAN)
       ARGS "${FYZZXYZZY_SC_BOX_BOUNDS_SPV}" "${FYZZXYZZY_SOURCE_PCM_BOX_SPV}" "${FYZZXYZZY_SOURCE_PCM_EPA_WORK_SPV_COMPACT}" "${FYZZXYZZY_SOURCE_PCM_GJK_SPV}" "${FYZZXYZZY_SOURCE_PCM_EPA_SPV}" "${FYZZXYZZY_SOURCE_PCM_GJK_REDUCE_SPV}" "${FYZZXYZZY_SOURCE_PCM_GJK_PUBLISH_SPV}" "${FYZZXYZZY_SOURCE_PCM_EPA_ARGS_RESET_SPV}" "${FYZZXYZZY_SOURCE_SC_CONTACT_JOURNAL_SPV}")
 
 
+    # Source Sc device accurate-island graph and ordered Dy admission.
+    set(FYZZXYZZY_SOURCE_SC_DEVICE_ISLAND_SPV
+      "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_source_sc_device_islands_native.spv")
+    fyzzxyzzy_compile_hlsl("${FYZZXYZZY_SOURCE_SC_DEVICE_ISLAND_SPV}"
+      "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_sc_device_islands_native.hlsl"
+      cs_6_0 main)
+    add_custom_target(fyzzxyzzy_source_sc_device_island_shader
+      DEPENDS "${FYZZXYZZY_SOURCE_SC_DEVICE_ISLAND_SPV}")
+    fyzzxyzzy_add_gpu_test(fyzzxyzzy_source_sc_device_islands
+      SOURCES tests/physx_gpu_source_sc_device_islands_native.cpp
+      INCLUDES "${CMAKE_CURRENT_SOURCE_DIR}/src"
+      LIBRARIES FyzzXYZZY::Compute fyzzxyzzy_source_gpu_primitives
+      DEPENDS fyzzxyzzy_source_sc_device_island_shader
+      ARGS "${FYZZXYZZY_SOURCE_SC_DEVICE_ISLAND_SPV}")
     # Source aggregate.cu::updateAggregateBounds, original 32-lane
     # aggregate member reduction (4 warps per native workgroup).
     set(FYZZXYZZY_SOURCE_AGGREGATE_BOUNDS_SPV
