@@ -440,6 +440,54 @@ void verify(fyzz::compute::Backend backend,const char* sap,
             std::fabs(cpu_body.position.y-gpu_body.position.y)<0.002f &&
             std::fabs(cpu_body.position.z-gpu_body.position.z)<0.002f,
             "Source GPU PCM did not feed the existing Sc/Dy rigid solve");
+
+    // GPU general PCM must start before its independent CPU primitive
+    // witness exists. The latter is staged only at the join; both
+    // preserve their original ordinals in the same resident contact arena.
+    const auto sphere_a=gpu.add_static_sphere(
+        0.5f,{100.f,2.f,0.f});
+    const auto sphere_b=gpu.add_dynamic_sphere(
+        0.5f,{100.7f,2.f,0.f},1.f);
+    gpu.advance_collision(true);
+    const auto sphere_edge=gpu.contact_edge_index({sphere_a,sphere_b});
+    require(sphere_edge!=std::numeric_limits<std::uint32_t>::max() &&
+            sphere_edge!=edge,
+            "Mixed late-Gu fixture lost its independent Sc edge");
+    const std::array<native::GpuPcmBoxPair,2> mixed{{
+        {gpu_a,gpu_b,edge,false},
+        {sphere_a,sphere_b,sphere_edge,false,1u,false,0.f,0.f,
+         true,true,true}
+    }};
+    std::array<native::GpuPcmBoxResult,2> mixed_results{};
+    const auto before_mixed=producer->stream_submission_stats();
+    producer->enqueue_gpu_pcm_box_contacts(mixed,mixed_results);
+    const auto after_mixed=producer->stream_submission_stats();
+    require(after_mixed.command_batches>before_mixed.command_batches &&
+            after_mixed.fetch_batches==before_mixed.fetch_batches &&
+            producer->pcm_host_contact_upload_bytes()==0u &&
+            mixed_results[1].packed_counts==0u,
+        "Mixed GPU PCM waited for CPU Gu before submitting device work");
+    std::array<native::ContactPoint,1> points{};
+    const auto emitted=native::source_pcm_sphere_sphere(
+        {100.f,2.f,0.f},0.5f,{100.7f,2.f,0.f},0.5f,0.04f,points);
+    require(emitted==1u,"Late CPU Gu fixture failed to generate contact");
+    auto& primitive=mixed_results[1];
+    primitive.edge=sphere_edge;
+    primitive.set_primitive(emitted,true);
+    primitive.normal=points[0].normal;
+    primitive.points[0]={points[0].position,points[0].separation};
+    producer->finish_gpu_pcm_box_contacts();
+    require(producer->pcm_host_contact_upload_bytes()==
+                sizeof(physx_gpu::SourcePcmGpuContactStreamNative) &&
+            producer->pcm_contact_readback_bytes()==
+                sizeof(physx_gpu::SourcePcmGpuContactStreamNative) &&
+            mixed_results[0].edge==edge &&
+            mixed_results[0].status()==0u &&
+            mixed_results[0].count()>0u &&
+            primitive.edge==sphere_edge &&
+            primitive.count()==1u,
+        "Late CPU Gu upload or general PCM readback lost source ordinals");
+    producer->commit_gpu_step();
 }
 
 // Sparse live Sc managers keep their original edge handles. GPU readback
