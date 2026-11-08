@@ -279,6 +279,14 @@ void verify(fyzz::compute::Backend backend,const char* sap,
             queued.fetch_bytes==before_enqueue.fetch_bytes &&
             direct[0].packed_counts==0u,
         "GPU PCM enqueue blocked or published Sc witnesses before its join");
+    bool rejected_early_commit=false;
+    try {
+        producer->commit_gpu_step();
+    } catch(const std::logic_error&) {
+        rejected_early_commit=true;
+    }
+    require(rejected_early_commit,
+        "GPU PCM accepted a frame before Sc joined its numerical witnesses");
     producer->finish_gpu_pcm_box_contacts(request,direct);
     producer->commit_gpu_step();
     require(producer->pcm_contact_readback_bytes()==
