@@ -197,7 +197,7 @@ void verify(Context& context,const char* transform_shader,
         candidate_offset+candidates.size()*sizeof(candidates[0])+4u;
     const std::size_t work_offset=
         edge_offset+edge_caches.size()*sizeof(edge_caches[0])+16u;
-    const std::size_t output_offset=work_offset+pairs.size()*4u+16u;
+    const std::size_t output_offset=work_offset+(pairs.size()+1u)*4u+16u;
     std::vector<SourcePcmGpuContactStreamNative> packed(pairs.size());
     std::vector<SourcePcmScContactStreamNative> published(pairs.size());
     const auto root=context.create_buffer(
@@ -219,7 +219,7 @@ void verify(Context& context,const char* transform_shader,
     const auto edge_data=addresses.register_slice(
         root,edge_offset,edge_caches.size()*sizeof(edge_caches[0]));
     const auto work_data=addresses.register_slice(
-        root,work_offset,pairs.size()*4u);
+        root,work_offset,(pairs.size()+1u)*4u);
     const auto output_data=addresses.register_slice(
         root,output_offset,packed.size()*sizeof(packed[0]));
     const auto args_data=addresses.register_slice(args_buffer,0u,12u);
@@ -251,21 +251,22 @@ void verify(Context& context,const char* transform_shader,
     SourceScBoxTransformBoundsNativeStage producer(
         context,shader(transform_shader));
     SourcePcmBoxCandidatesNativeStage pcm(context,shader(candidate_shader));
-    SourcePcmSparseEpaNativeStage sparse(context,shader(compact_shader));
+    SourcePcmSparseEpaNativeStage sparse(
+        context,shader(compact_shader),3u,shader(epa_reset_shader));
     SourcePcmSparseEpaNativeStage epa_pending(
         context,shader(compact_shader),4u,shader(epa_reset_shader));
-    SourcePcmEpaNativeStage gjk(
-        context,shader(gjk_shader),false,true);
-    SourcePcmEpaNativeStage gjk_reduce(
-        context,shader(gjk_reduce_shader),false,true);
-    SourcePcmEpaNativeStage gjk_publish(
-        context,shader(gjk_publish_shader),false,true,true);
-    SourcePcmEpaNativeStage epa(context,shader(epa_shader));
 #ifdef FYZZXYZZY_TEST_D3D12
     constexpr bool staged_gjk=true;
 #else
     constexpr bool staged_gjk=false;
 #endif
+    SourcePcmEpaNativeStage gjk(
+        context,shader(gjk_shader),false,true,false,staged_gjk);
+    SourcePcmEpaNativeStage gjk_reduce(
+        context,shader(gjk_reduce_shader),false,true,false,staged_gjk);
+    SourcePcmEpaNativeStage gjk_publish(
+        context,shader(gjk_publish_shader),false,true,true,staged_gjk);
+    SourcePcmEpaNativeStage epa(context,shader(epa_shader));
     const auto append_gjk_stage=[&](SourceSapDmaNative& stream,
                                     const SourcePcmEpaNativeStage& stage,
                                     std::uint32_t pass) {
@@ -332,7 +333,7 @@ void verify(Context& context,const char* transform_shader,
     // The actual source PCM results, not synthetic pair flags, generate
     // the sparse EPA worklist and native indirect dispatch dimensions.
     std::array<std::uint32_t,3> indirect{};
-    std::vector<std::uint32_t> work(pairs.size());
+    std::vector<std::uint32_t> work(pairs.size()+1u);
     context.download(args_buffer,0u,indirect.data(),sizeof(indirect));
     const std::array<std::uint32_t,3> empty_indirect{0u,1u,1u};
     // Standalone synthetic worklists initialize the same argument record
@@ -346,15 +347,17 @@ void verify(Context& context,const char* transform_shader,
         const auto expected=std::count_if(
             source_results.begin(),source_results.end(),
             [](const auto& result){return result.status==3u;});
-        if(indirect[0]!=expected || indirect[1]!=1u || indirect[2]!=1u)
+        if(indirect[0]!=(expected+31u)/32u ||
+           indirect[1]!=1u || indirect[2]!=1u || work[0]!=expected)
             throw std::runtime_error(
                 "GPU sparse EPA indirect count differs from admitted PCM results");
         std::vector<std::uint8_t> seen(pairs.size());
         for(std::size_t i=0;i<expected;++i) {
-            require(work[i]<pairs.size() && !seen[work[i]] &&
-                    source_results[work[i]].status==3u,
-                    "GPU sparse EPA queue lost or duplicated an Sc edge");
-            seen[work[i]]=1u;
+            const auto index=work[i+1u];
+            require(index<pairs.size() && !seen[index] &&
+                    source_results[index].status==3u,
+                    "GPU sparse GJK queue lost or duplicated an Sc edge");
+            seen[index]=1u;
         }
     };
     // Actual GPU PCM classification is the authority for admission.
@@ -423,7 +426,7 @@ void verify(Context& context,const char* transform_shader,
     context.download(root,work_offset,work.data(),work.size()*4u);
     verify_work(initial_admissions);
     std::clog<<"PCM fixture: initial sparse worklist count="
-             <<indirect[0]<<"\n"<<std::flush;
+             <<work[0]<<"\n"<<std::flush;
 
     {
         SourceSapDmaNative stream(context,addresses);
@@ -431,13 +434,15 @@ void verify(Context& context,const char* transform_shader,
         stream.wait_at_fetch();
     }
     context.download(root,result_offset,results.data(),sizeof(results));
-    for(std::size_t k=0;k<indirect[0];++k)
-        std::clog<<"PCM fixture: sparse GJK pair="<<work[k]
-                 <<" before="<<initial_admissions[work[k]].status
-                 <<" after="<<results[work[k]].status
-                 <<" count="<<results[work[k]].candidate_count
-                 <<" progress="<<results[work[k]].selected_indices
+    for(std::size_t k=0;k<work[0];++k) {
+        const auto index=work[k+1u];
+        std::clog<<"PCM fixture: sparse GJK pair="<<index
+                 <<" before="<<initial_admissions[index].status
+                 <<" after="<<results[index].status
+                 <<" count="<<results[index].candidate_count
+                 <<" progress="<<results[index].selected_indices
                  <<"\n"<<std::flush;
+    }
     std::clog<<"PCM fixture: initial sparse GJK complete, EPA pending="
              <<std::count_if(results.begin(),results.end(),
                  [](const auto& result){return result.status==4u;})

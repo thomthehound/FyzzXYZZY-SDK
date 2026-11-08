@@ -74,16 +74,11 @@ ConstantBuffer<Parameters> p : register(b0,space0);
 // Sparse admission is recorded in the dense Sc pair result buffer.
 // One lane owns each pending pair. No simplex data is shared between lanes,
 // and GJK requires no workgroup barriers or private global scratch.
-#ifdef FYZZXYZZY_GJK_STAGED_ADVANCE
-[numthreads(1,1,1)]
-#else
 [numthreads(32,1,1)]
-#endif
 void main(uint3 thread : SV_DispatchThreadID) {
 #ifdef FYZZXYZZY_GJK_STAGED_ADVANCE
-    // The indirect group count and the work indices are produced
-    // by the preceding GPU status-3 compaction.
-    const uint i=work.Load(p.workBias+thread.x*4u);
+    if(thread.x>=work.Load(p.workBias))return;
+    const uint i=work.Load(p.workBias+(thread.x+1u)*4u);
 #else
     const uint i=thread.x;
 #endif

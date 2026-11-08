@@ -80,9 +80,8 @@ public:
         if(!pair_count)return;
         const auto group_count=face_geometry_
             ?(std::uint64_t(pair_count)+63u)/64u
-            :direct_gjk_ && !compact_staged_gjk_
-                ?(std::uint64_t(pair_count)+31u)/32u
-                :std::uint64_t(pair_count);
+            :direct_gjk_?(std::uint64_t(pair_count)+31u)/32u
+                        :std::uint64_t(pair_count);
         if(!shape_capacity || !candidate_capacity || !edge_capacity ||
            group_count>context_.device_info().max_workgroup_count[0])
             throw std::out_of_range(

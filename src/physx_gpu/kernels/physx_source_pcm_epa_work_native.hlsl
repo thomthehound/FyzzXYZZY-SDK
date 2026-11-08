@@ -35,11 +35,22 @@ void compact(uint3 thread : SV_DispatchThreadID) {
     // Select the GPU result state required by this worklist.
     if(results.Load(params.resultBias+i*32u+8u)!=params.requiredStatus)return;
     uint destination;
-    dispatchArgs.InterlockedAdd(params.argsBias,1u,destination);
-    work.Store(params.workBias+destination*4u,i);
+    if(params.requiredStatus==3u) {
+        // GJK uses one 32-lane workgroup per compact group.
+        work.InterlockedAdd(params.workBias,1u,destination);
+        if((destination&31u)==0u) {
+            uint ignored;
+            dispatchArgs.InterlockedAdd(params.argsBias,1u,ignored);
+        }
+        work.Store(params.workBias+(destination+1u)*4u,i);
+    }else {
+        dispatchArgs.InterlockedAdd(params.argsBias,1u,destination);
+        work.Store(params.workBias+destination*4u,i);
+    }
 }
 
 [numthreads(1,1,1)]
 void reset(uint3 thread : SV_DispatchThreadID) {
     dispatchArgs.Store3(params.argsBias,uint3(0u,1u,1u));
+    if(params.requiredStatus==3u)work.Store(params.workBias,0u);
 }

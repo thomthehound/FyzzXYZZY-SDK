@@ -75,7 +75,7 @@ public:
           convex_faces_base_(convex_faces_base),
           convex_indices_base_(convex_indices_base),
           candidates_stage_(context,std::move(candidate)),
-          sparse_stage_(context,compact),
+          sparse_stage_(context,compact,3u,epa_args_reset),
           epa_pending_stage_(context,std::move(compact),4u,
                              std::move(epa_args_reset)),
           staged_gjk_(gjk.format==compute::ShaderFormat::Dxil),
@@ -279,7 +279,8 @@ public:
             journal_.allocate(source_allocation_bytes(pair_count,240u),PX_FL);
         }
         if(pair_count) {
-            work_.allocate(source_allocation_bytes(pair_count,4u),PX_FL);
+            work_.allocate(source_allocation_bytes(
+                std::size_t(pair_count)+1u,4u),PX_FL);
             dense_contacts_.allocate(source_allocation_bytes(
                 pair_count,sizeof(SourcePcmGpuContactStreamNative)),PX_FL);
         }

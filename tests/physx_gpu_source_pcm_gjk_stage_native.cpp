@@ -86,7 +86,7 @@ void verify(Context& context,const char* advance_dxil,
     constexpr std::size_t candidate_offset=aligned(result_offset+sizeof(result));
     constexpr std::size_t edge_offset=aligned(candidate_offset+40u);
     constexpr std::size_t work_offset=aligned(edge_offset+sizeof(edge));
-    constexpr std::size_t output_offset=aligned(work_offset+4u);
+    constexpr std::size_t output_offset=aligned(work_offset+8u);
     constexpr std::size_t total_bytes=output_offset+84u;
     static_assert(total_bytes%4u==0u);
     std::array<std::uint8_t,total_bytes> data{};
@@ -95,6 +95,9 @@ void verify(Context& context,const char* advance_dxil,
     std::memcpy(data.data()+pair_offset,&pair,sizeof(pair));
     std::memcpy(data.data()+result_offset,&result,sizeof(result));
     std::memcpy(data.data()+edge_offset,&edge,sizeof(edge));
+    const std::array<std::uint32_t,2> compact_work{1u,0u};
+    std::memcpy(data.data()+work_offset,compact_work.data(),
+                sizeof(compact_work));
 
     const auto root=context.create_buffer(data.size(),MemoryPlacement::DeviceLocal);
     const auto indirect=context.create_buffer(16u,MemoryPlacement::DeviceLocal);
@@ -112,7 +115,7 @@ void verify(Context& context,const char* advance_dxil,
     const auto result_address=addresses.register_slice(root,result_offset,sizeof(result));
     const auto candidate_address=addresses.register_slice(root,candidate_offset,40u);
     const auto edge_address=addresses.register_slice(root,edge_offset,sizeof(edge));
-    const auto work_address=addresses.register_slice(root,work_offset,4u);
+    const auto work_address=addresses.register_slice(root,work_offset,8u);
     const auto output_address=addresses.register_slice(root,output_offset,84u);
     const auto indirect_address=addresses.register_slice(indirect,0u,12u);
     {

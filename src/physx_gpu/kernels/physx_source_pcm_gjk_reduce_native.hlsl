@@ -58,14 +58,11 @@ ConstantBuffer<Parameters> p : register(b0,space0);
 #include "physx_source_pcm_box_gjk_native.hlsli"
 #include "physx_source_pcm_gjk_state_native.hlsli"
 
-#ifdef FYZZXYZZY_GJK_STAGED_REDUCE
-[numthreads(1,1,1)]
-#else
 [numthreads(32,1,1)]
-#endif
 void main(uint3 thread:SV_DispatchThreadID) {
 #ifdef FYZZXYZZY_GJK_STAGED_REDUCE
-    const uint i=work.Load(p.workBias+thread.x*4u);
+    if(thread.x>=work.Load(p.workBias))return;
+    const uint i=work.Load(p.workBias+(thread.x+1u)*4u);
 #else
     const uint i=thread.x;
 #endif
