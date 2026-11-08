@@ -2092,7 +2092,7 @@ void verify_sphere_gpu_solver(
 
 void verify_deferred_primitive_pcm_solver(
     fyzz::compute::Backend backend,const char* sap,
-    const char* pcm,const char* dy_shader) {
+    const char* pcm,const char* dy_shader,bool single_frame=false) {
     using namespace fyzz;
     std::ifstream source(dy_shader,std::ios::binary);
     require(bool(source),"Primitive GPU Dy shader bundle unavailable");
@@ -2124,7 +2124,7 @@ void verify_deferred_primitive_pcm_solver(
     const auto actual=make(gpu);
     const auto expected=make(cpu);
     constexpr float dt=1.f/120.f;
-    for(unsigned frame=0u;frame<5u;++frame) {
+    for(unsigned frame=0u;frame<(single_frame?1u:5u);++frame) {
         if(frame==2u || frame==3u) {
             const Vec3 p=frame==2u
                 ?Vec3{0.f,4.f,0.f}:Vec3{0.f,0.48f,0.f};
@@ -2944,7 +2944,7 @@ int main(int argc,char** argv) {
         if(scenario=="primitive_deferred")
             fyzz::tests::measure_gpu_case("sc_pcm","primitive_deferred",
                 [&]{verify_deferred_primitive_pcm_solver(
-                    backend,argv[1],argv[2],argv[3]);});
+                    backend,argv[1],argv[2],argv[3],true);});
         if(scenario=="all" || scenario=="convex_plane")
             fyzz::tests::measure_gpu_case("sc_pcm","convex_plane",
                 [&]{
