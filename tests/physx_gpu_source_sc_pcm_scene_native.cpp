@@ -567,6 +567,33 @@ void verify(fyzz::compute::Backend backend,const char* sap,
             primitive.edge==sphere_edge &&
             primitive.count()==1u,
         "Late CPU Gu upload or general PCM readback lost source ordinals");
+    const auto after_join=producer->stream_submission_stats();
+    require(after_join.upload_batches==after_mixed.upload_batches+1u &&
+            after_join.fetch_batches==after_mixed.fetch_batches+1u,
+        "Mixed PCM added a redundant upload or GPU witness fetch");
+    // The late host upload remains ordered on the original device queue.
+    // Collision-only commit must retire it even without a Dy solve.
+    producer->commit_gpu_step();
+
+    // Reject a fully fetched GPU PCM epoch while its independent host
+    // Gu upload may still be outstanding, then reuse the exact EdgeIndex
+    // records without observing stale primitive data.
+    std::array<native::GpuPcmBoxResult,2> abandoned_mixed{};
+    abandoned_mixed[1]=primitive;
+    producer->enqueue_gpu_pcm_box_contacts(mixed,abandoned_mixed);
+    producer->finish_gpu_pcm_box_contacts();
+    producer->invalidate_after_rollback();
+    std::array<native::GpuPcmBoxResult,2> restored{};
+    restored[1]=primitive;
+    producer->enqueue_gpu_pcm_box_contacts(mixed,restored);
+    producer->finish_gpu_pcm_box_contacts();
+    require(restored[0].edge==edge &&
+            restored[0].status()==0u &&
+            restored[1].edge==sphere_edge &&
+            restored[1].count()==1u &&
+            producer->pcm_host_contact_upload_bytes()==
+                sizeof(physx_gpu::SourcePcmGpuContactStreamNative),
+        "Rejected late primitive upload contaminated the next PCM epoch");
     producer->commit_gpu_step();
 }
 

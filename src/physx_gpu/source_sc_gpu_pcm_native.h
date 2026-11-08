@@ -96,6 +96,7 @@ public:
     }
 
     void invalidate_after_rollback() noexcept {
+        host_upload_pending_=false;
         result_pending_=false;
         pending_requests_={};
         pending_output_={};
@@ -120,6 +121,13 @@ public:
         if(result_pending_)
             throw std::logic_error("Source PCM epoch committed before Sc publication");
         if(!pcm_transaction_pending_)return;
+        // A collision-only publication has no Dy device consumer to
+        // retire the primitive upload. Complete it at the existing Sc
+        // transaction commit, after independent island publication.
+        if(host_upload_pending_) {
+            stream_.wait_at_fetch();
+            host_upload_pending_=false;
+        }
         published_edge_span_bytes_=std::max(
             published_edge_span_bytes_,pending_edge_span_bytes_);
         pcm_transaction_pending_=false;
@@ -173,6 +181,7 @@ public:
         last_pair_upload_bytes_=0u;
         last_contact_download_bytes_=0u;
         last_host_contact_upload_bytes_=0u;
+        host_upload_pending_=false;
         last_edge_history_copy_bytes_=0u;
         last_continuation_commands_=0u;
         last_face_pair_scan_count_=0u;
@@ -452,9 +461,35 @@ public:
             throw std::logic_error("Source PCM join has no queued epoch");
         const auto requests=pending_requests_;
         const auto output=pending_output_;
-        // GPU general PCM has already been submitted. The independent
-        // CPU primitive generators finish now; upload their disjoint
-        // ordinal ranges after GPU work, before Dy consumes this arena.
+        // General GPU PCM and host Gu occupy disjoint source ordinals.
+        // Sc needs the GPU witnesses now, not the CPU Gu device upload.
+        // Fetch/validate the former before scheduling the latter so
+        // the independent upload does not extend Sc's host join.
+        if(!gpu_downloads_.empty())stream_.fetch(gpu_downloads_);
+        else stream_.wait_at_fetch();
+        for(const auto& span:gpu_downloads_)
+            last_contact_download_bytes_+=span.bytes;
+        for(std::uint32_t i=0u;i<journal_pair_count_;++i) {
+            const auto& stored=output[i];
+            const auto& request=requests[i];
+            const auto selected_count=
+                stored.selected_and_regenerated()&0x7fffffffu;
+            const bool regenerated=
+                (stored.selected_and_regenerated()&0x80000000u)!=0u;
+            if(stored.edge!=request.edge || stored.status()!=0u ||
+               selected_count>4u || stored.cached_count()>4u ||
+               selected_count>stored.cached_count() ||
+               (regenerated && selected_count!=stored.cached_count()) ||
+               stored.count()>stored.cached_count() ||
+               ((stored.touch_transition()==native::GpuPcmTouchTransition::Found ||
+                 stored.touch_transition()==native::GpuPcmTouchTransition::Persists)
+                  != (stored.count()>0u)))
+                throw std::logic_error(
+                    "Source GPU PCM publication disagrees with original Sc manager");
+        }
+        // CPU Gu is already published to Sc's host result arena.
+        // Snapshot its device upload on this same ordered queue while
+        // Sc begins accurate-island and friction preparation.
         auto& uploads=stream_.upload_scratch();
         for(std::size_t i=0u;i<requests.size();) {
             if(!requests[i].host_generated) {
@@ -473,30 +508,9 @@ public:
                 output.data()+first,bytes});
             last_host_contact_upload_bytes_+=bytes;
         }
-        if(!uploads.empty())stream_.queue_uploads(uploads);
-        if(!gpu_downloads_.empty())stream_.fetch(gpu_downloads_);
-        else stream_.wait_at_fetch();
-        for(const auto& span:gpu_downloads_)
-            last_contact_download_bytes_+=span.bytes;
-        for(std::uint32_t i=0u;i<journal_pair_count_;++i) {
-            const auto& stored=output[i];
-            const auto& request=requests[i];
-            const auto selected_count=
-                stored.selected_and_regenerated()&0x7fffffffu;
-            const bool regenerated=
-                (stored.selected_and_regenerated()&0x80000000u)!=0u;
-            // A quiet refresh retains persistent witnesses beyond the
-            // contact-distance window. Sc filters them at publication.
-            if(stored.edge!=request.edge || stored.status()!=0u ||
-               selected_count>4u || stored.cached_count()>4u ||
-               selected_count>stored.cached_count() ||
-               (regenerated && selected_count!=stored.cached_count()) ||
-               stored.count()>stored.cached_count() ||
-               ((stored.touch_transition()==native::GpuPcmTouchTransition::Found ||
-                 stored.touch_transition()==native::GpuPcmTouchTransition::Persists)
-                  != (stored.count()>0u)))
-                throw std::logic_error(
-                    "Source GPU PCM publication disagrees with original Sc manager");
+        if(!uploads.empty()) {
+            stream_.queue_uploads(uploads);
+            host_upload_pending_=true;
         }
         published_pair_count_=journal_pair_count_;
         result_pending_=false;
@@ -597,7 +611,7 @@ private:
     bool reset_manifolds_=false;
     bool rebuild_required_=false;
     bool pcm_transaction_pending_=false,restore_pending_=false;
-    bool result_pending_=false;
+    bool result_pending_=false,host_upload_pending_=false;
     // Borrowed Sc views survive until finish() or rollback; GPU output
     // is written directly into the enqueued Sc result arena at the join.
     std::span<const native::GpuPcmBoxPair> pending_requests_{};
