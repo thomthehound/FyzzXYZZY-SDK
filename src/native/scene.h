@@ -104,14 +104,6 @@ struct GpuPcmBoxPair {
     float contact_distance=0.0f;
     bool previously_touching=false;
 };
-// The current Sc contact-manager and constraint EdgeIndex view.
-// Bit 2 marks an authored joint; physical touch for contacts is read
-// from the persistent GPU PCM EdgeIndex cache.
-struct GpuScContactGraphEdge {
-    BodyId body_a=0xffffffffu,body_b=0xffffffffu;
-    std::uint32_t flags=0u,edge=0xffffffffu;
-};
-static_assert(sizeof(GpuScContactGraphEdge)==16u);
 enum class GpuPcmTouchTransition : std::uint32_t {
     None=0,Found=1,Persists=2,Lost=3
 };
@@ -241,19 +233,15 @@ struct GpuDyJointInput {
     std::uint32_t kind=0u;
     // Stable ScConstraintSim identity, independent of solver row order.
     std::uint32_t source_slot=0xffffffffu,source_generation=0u;
-    // The live IslandSim EdgeIndex used for device-root admission,
-    // separate from the recyclable authored ScConstraintSim slot.
-    std::uint32_t source_edge=0xffffffffu;
 };
-static_assert(sizeof(GpuDyJointInput)==156u &&
+static_assert(sizeof(GpuDyJointInput)==152u &&
               offsetof(GpuDyJointInput,actor_a_position)==56u &&
               offsetof(GpuDyJointInput,actor_b_position)==84u &&
               offsetof(GpuDyJointInput,center_a)==112u &&
               offsetof(GpuDyJointInput,center_b)==124u &&
               offsetof(GpuDyJointInput,kind)==140u &&
               offsetof(GpuDyJointInput,source_slot)==144u &&
-              offsetof(GpuDyJointInput,source_generation)==148u &&
-              offsetof(GpuDyJointInput,source_edge)==152u);
+              offsetof(GpuDyJointInput,source_generation)==148u);
 struct GpuDyDistanceDescriptor {
     std::uint32_t index=0,row0=0,row1=0,row_count=0;
 };
@@ -387,10 +375,6 @@ public:
     // GPU PCM is explicit; source SAP-only worlds retain their existing
     // CPU narrowphase. An enabled producer must never fall back to CPU Gu.
     virtual bool has_gpu_pcm_box() const noexcept { return false; }
-    virtual void set_gpu_sc_contact_graph(
-        std::span<const GpuScContactGraphEdge>,std::uint32_t) {
-        throw std::logic_error("Source GPU Sc contact graph unavailable");
-    }
     virtual void generate_gpu_pcm_box_contacts(
         std::span<const GpuPcmBoxPair>,
         std::span<GpuPcmBoxResult>) {
@@ -1196,9 +1180,6 @@ private:
     struct SolverBodyRow {
         SolverBody solver{};
         SolverBodyData data{};
-        // Every admitted solver row, including zero-response contact
-        // endpoints, retains its original Sc actor identity.
-        BodyId actor_id=std::numeric_limits<BodyId>::max();
         // DySolverControl::saveMotionVelocities saves the solver deltas
         // after position iterations, before conclude/velocity iterations.
         // DyBodyCoreIntegrator uses this snapshot to advance the pose,
@@ -2190,7 +2171,6 @@ private:
     // Sc's ordered contact-manager stream borrows these GPU per-frame
     // records; edge identity and rollback ownership remain with Sc.
     std::vector<GpuPcmBoxPair> gpu_pcm_pairs_;
-    std::vector<GpuScContactGraphEdge> gpu_sc_graph_edges_;
     std::vector<GpuPcmBoxResult> gpu_pcm_results_;
     // Publish swaps are reversible without copying the source-owned
     // contact/pair arenas. Rollback keeps externally held Gu spans valid.

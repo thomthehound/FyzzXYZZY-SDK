@@ -30,15 +30,11 @@ RWByteAddressBuffer scGeometry : register(u4,space0);
 [[vk::binding(5,0)]]
 #endif
 RWByteAddressBuffer scActorLocals : register(u5,space0);
+#ifdef FYZZXYZZY_CONVEX
 #ifdef __spirv__
 [[vk::binding(6,0)]]
 #endif
-RWByteAddressBuffer scIslandGraph : register(u6,space0);
-#ifdef FYZZXYZZY_CONVEX
-#ifdef __spirv__
-[[vk::binding(7,0)]]
-#endif
-RWByteAddressBuffer scHullVertices : register(u7,space0);
+RWByteAddressBuffer scHullVertices : register(u6,space0);
 #endif
 
 struct Parameters {
@@ -229,7 +225,7 @@ float3 sourceDyMotionMod(uint input,uint stream) {
 // before contact/joint PGS; free flight performs it immediately before
 // integrateCore. No host solver-state shadow participates.
 bool sourceDyPreIntegrateBody(uint ordinal) {
-    const uint input=p.integrationBias+48u+ordinal*80u;
+    const uint input=p.integrationBias+40u+ordinal*76u;
     if((arena.Load(input+44u)&32u)==0u)return true;
     const uint local=arena.Load(input+60u);
     if(local==invalidBody)return false;
@@ -288,7 +284,7 @@ bool sourceDyPreIntegrateBody(uint ordinal) {
     return true;
 }
 void sourceDyInvalidatePreparedVelocity(uint ordinal) {
-    const uint input=p.integrationBias+48u+ordinal*80u;
+    const uint input=p.integrationBias+40u+ordinal*76u;
     const uint local=arena.Load(input+60u);
     if(local==invalidBody)return;
     const uint3 invalid=uint3(0x7fc00000u,0x7fc00000u,0x7fc00000u);
@@ -353,32 +349,6 @@ bool sourceDyPrepareSleep(uint input,uint local,
 
 #include "physx_source_dy_contact_pgs_native.hlsli"
 
-// Dynamic constraint endpoints must share the root published by the
-// device contact/constraint EdgeIndex graph. The solver consumes this
-// graph before assigning any PGS color; no host island label is trusted
-// as proof of physical connectivity.
-uint sourceDyGraphRoot(uint ordinal) {
-    const uint header=p.integrationBias+40u;
-    const uint bias=arena.Load(header);
-    const uint actor=arena.Load(p.integrationBias+48u+ordinal*80u+76u);
-    const uint capacity=scIslandGraph.Load(bias+4u);
-    if(actor>=capacity)return invalidBody;
-    const uint roots=scIslandGraph.Load(bias+12u);
-    const uint root=scIslandGraph.Load(bias+roots+actor*4u);
-    return root<capacity?root:invalidBody;
-}
-uint sourceDyGraphEdgeRoot(uint edge) {
-    const uint bias=arena.Load(p.integrationBias+40u);
-    if(edge>=scIslandGraph.Load(bias+40u))return invalidBody;
-    const uint offset=scIslandGraph.Load(bias+36u);
-    return scIslandGraph.Load(bias+offset+edge*4u);
-}
-uint sourceDyGraphManagerCount(uint root) {
-    const uint bias=arena.Load(p.integrationBias+40u);
-    const uint offset=scIslandGraph.Load(bias+24u);
-    return scIslandGraph.Load(bias+offset+root*4u);
-}
-
 // Sc owns task membership. One workgroup colors independent source
 // constraints concurrently while preserving per-body greedy precedence.
 // Static reservations follow the source descriptor encounter order.
@@ -395,16 +365,6 @@ void sourceDyPartitionTask(uint taskId,uint scratch,uint errorAddress,
     const uint cursors=scratch+views.z;
     const uint bodyState=scratch+views.w;
     const uint task=p.taskBias+taskId*36u;
-    // A deferred Sc graph can precede Dy without a host fetch. Reject
-    // malformed topology on device before partitioning solver work.
-    if(lane==0u && arena.Load(p.integrationBias+44u)!=0u) {
-        const uint graphBias=arena.Load(p.integrationBias+40u);
-        const uint errorOffset=scIslandGraph.Load(graphBias+16u);
-        if(scIslandGraph.Load(graphBias+errorOffset)!=0u)
-            arena.InterlockedOr(errorAddress,4194304u);
-    }
-    AllMemoryBarrierWithGroupSync();
-    if(arena.Load(errorAddress)!=0u)return;
     const uint4 ranges=arena.Load4(task);
     const uint first=ranges.x,last=ranges.y;
     const uint partitionFirst=ranges.z,partitionCapacity=ranges.w;
@@ -497,40 +457,6 @@ void sourceDyPartitionTask(uint taskId,uint scratch,uint errorAddress,
            (db && desc.z>=p.bodyCount)) {
             arena.InterlockedOr(errorAddress,1048576u);
             continue;
-        }
-        if(arena.Load(p.integrationBias+44u)!=0u) {
-            const uint rootA=da?sourceDyGraphRoot(desc.y):invalidBody;
-            const uint rootB=db?sourceDyGraphRoot(desc.z):invalidBody;
-            const uint owner=da?rootA:rootB;
-            if(owner==invalidBody || (da && db && rootA!=rootB)) {
-                arena.InterlockedOr(errorAddress,2097152u);
-                continue;
-            }
-            // A GPU PCM manager cannot enter PGS without physical touch
-            // in the device-owned EdgeIndex island list. A zero-response
-            // manager has no prepared rows; CPU Gu managers still use
-            // their original source input until their GPU admission.
-            if((desc.w&255u)==0u) {
-                if(desc.x>=p.manifoldCount) {
-                    arena.InterlockedOr(errorAddress,2097152u);
-                    continue;
-                }
-                const uint manifold=p.manifoldBias+desc.x*20u;
-                if(arena.Load(manifold+4u)!=0u) {
-                    const uint prepIndex=arena.Load(manifold+16u);
-                    if(prepIndex>=p.prepCount) {
-                        arena.InterlockedOr(errorAddress,2097152u);
-                        continue;
-                    }
-                    const uint prep=p.prepBias+prepIndex*64u;
-                    if(arena.Load(prep+48u)!=0xffffffffu &&
-                       (sourceDyGraphManagerCount(owner)==0u ||
-                        sourceDyGraphEdgeRoot(arena.Load(prep+52u))!=owner)) {
-                        arena.InterlockedOr(errorAddress,2097152u);
-                        continue;
-                    }
-                }
-            }
         }
         // Constraint endpoints are authoritative even when a solver
         // task omits a body from its integration writeback ordinal list.
@@ -838,7 +764,7 @@ bool sourceDyJointActorFrame(uint ordinal,uint fallback,uint centerFallback,
     actorAxes=asfloat(arena.Load4(fallback+12u));
     massCenter=asfloat(arena.Load3(centerFallback));
     if(ordinal!=invalidBody) {
-        const uint input=p.integrationBias+48u+ordinal*80u;
+        const uint input=p.integrationBias+40u+ordinal*76u;
         if((arena.Load(input+44u)&128u)!=0u) {
             const uint local=arena.Load(input+60u);
             if(local==invalidBody)return false;
@@ -853,7 +779,7 @@ bool sourceDyJointActorFrame(uint ordinal,uint fallback,uint centerFallback,
 }
 float3 sourceDyJointInertia(uint ordinal,float3 angular) {
     if(ordinal==invalidBody)return 0.0f;
-    const uint input=p.integrationBias+48u+ordinal*80u;
+    const uint input=p.integrationBias+40u+ordinal*76u;
     return asfloat(arena.Load3(input))*angular.x+
            asfloat(arena.Load3(input+12u))*angular.y+
            asfloat(arena.Load3(input+24u))*angular.z;
@@ -861,17 +787,6 @@ float3 sourceDyJointInertia(uint ordinal,float3 angular) {
 bool sourceDyPrepareJointGeometry(uint4 desc,uint endError) {
     const uint first=p.distanceBias+desc.x*64u;
     const uint source=arena.Load(first+60u);
-    if(arena.Load(p.integrationBias+44u)!=0u) {
-        const float massA=asfloat(arena.Load(first+36u));
-        const float massB=asfloat(arena.Load(first+40u));
-        const uint sourceRoot=massA>0.0f
-            ?sourceDyGraphRoot(desc.y):sourceDyGraphRoot(desc.z);
-        if(sourceRoot==invalidBody ||
-           sourceDyGraphEdgeRoot(arena.Load(source+152u))!=sourceRoot) {
-            arena.InterlockedOr(endError,8192u);
-            return false;
-        }
-    }
     if(arena.Load(source+144u)!=arena.Load(first+48u) ||
        arena.Load(source+148u)!=arena.Load(first+52u)) {
         arena.InterlockedOr(endError,8192u);
@@ -914,8 +829,8 @@ bool sourceDyPrepareJointGeometry(uint4 desc,uint endError) {
         float3(1.0f,0.0f,0.0f),float3(0.0f,1.0f,0.0f),float3(0.0f,0.0f,1.0f)};
     const float mass0=asfloat(arena.Load(first+36u));
     const float mass1=asfloat(arena.Load(first+40u));
-    const uint inputA=p.integrationBias+48u+desc.y*80u;
-    const uint inputB=p.integrationBias+48u+desc.z*80u;
+    const uint inputA=p.integrationBias+40u+desc.y*76u;
+    const uint inputB=p.integrationBias+40u+desc.z*76u;
     const float3 vA=desc.y==invalidBody?0.0f:sourceDyPreparedVelocity(inputA,false);
     const float3 vB=desc.z==invalidBody?0.0f:sourceDyPreparedVelocity(inputB,false);
     const float3 omegaA=desc.y==invalidBody?0.0f:sourceDyPreparedVelocity(inputA,true);
@@ -1030,8 +945,8 @@ void prepareJointRows(uint4 desc,uint lane,uint endError) {
     }
     const float inverseMassA=asfloat(arena.Load(massRow+36u));
     const float inverseMassB=asfloat(arena.Load(massRow+40u));
-    const uint inputA=p.integrationBias+48u+desc.y*80u;
-    const uint inputB=p.integrationBias+48u+desc.z*80u;
+    const uint inputA=p.integrationBias+40u+desc.y*76u;
+    const uint inputB=p.integrationBias+40u+desc.z*76u;
     float3 va=0.0f,vb=0.0f,wa=0.0f,wb=0.0f;
     if(desc.y!=invalidBody) {
         va=sourceDyPreparedVelocity(inputA,false);
@@ -1164,7 +1079,7 @@ void saveMotion(uint index,uint endError) {
 void integrateBody(uint ordinal) {
     float3 linearDelta=0.0f;
     float3 angularState=0.0f;
-    const uint input=p.integrationBias+48u+ordinal*80u;
+    const uint input=p.integrationBias+40u+ordinal*76u;
     const uint inputFlags=arena.Load(input+44u);
     [branch]
     if(ordinal<p.bodyCount) {
@@ -1410,7 +1325,7 @@ float3 sourceDyRotateOrdered(float4 q,float3 v) {
     return float3(x,y,z);
 }
 bool sourceDyPrepareWorldInertia(uint ordinal) {
-    const uint input=p.integrationBias+48u+ordinal*80u;
+    const uint input=p.integrationBias+40u+ordinal*76u;
     // Bit 14 does not overlap velocity changes [8:13] or force mods [16:27].
     if((arena.Load(input+44u)&0x4000u)==0u)return true;
     const uint local=arena.Load(input+60u);
@@ -1457,7 +1372,7 @@ void initializeSolverBody(uint ordinal,uint source) {
     arena.Store4(target+32u,zero);
     uint massBits=0u;
     if(source==invalidBody) {
-        const uint input=p.integrationBias+48u+ordinal*80u;
+        const uint input=p.integrationBias+40u+ordinal*76u;
         const uint local=arena.Load(input+60u);
         if(local!=invalidBody)
             massBits=scActorLocals.Load(local+28u);

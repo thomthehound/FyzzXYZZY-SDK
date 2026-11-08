@@ -314,77 +314,7 @@ void verify(fyzz::compute::Backend backend,const char* sap,
         const auto id=gpu.add_static_box({0.5f,0.5f,0.5f},position);
         if(i==0u)distant_gpu=id;
     }
-    // Keep an independent dynamic rigid node to exercise speculative
-    // graph union without a physical-touch witness.
-    cpu.add_dynamic_box({0.5f,0.5f,0.5f},{250.f,1.f,0.f},1.f);
-    const BodyId independent_gpu=gpu.add_dynamic_box(
-        {0.5f,0.5f,0.5f},{250.f,1.f,0.f},1.f);
     check(true);
-    // A contact EdgeIndex reused by a newly admitted but dormant
-    // manager has not yet refreshed its Gu witness. Its previous
-    // occupant's retained physical-touch bit must not join islands.
-    const std::array<native::GpuScContactGraphEdge,1> dormant_reuse{{
-        {gpu_a,gpu_b,1u|8u,edge}
-    }};
-    producer->set_gpu_sc_contact_graph(
-        dormant_reuse,std::max(gpu_a,gpu_b)+1u);
-    const std::array<native::GpuPcmBoxPair,0> no_refresh{};
-    std::array<native::GpuPcmBoxResult,0> no_contacts{};
-    producer->generate_gpu_pcm_box_contacts(no_refresh,no_contacts);
-    const auto dormant_roots=producer->contact_island_roots();
-    require(dormant_roots[gpu_a]==gpu_a,
-        "Pending graph-only Sc roots failed to preserve source queue ownership");
-    const auto dormant_counts=producer->contact_island_edge_counts();
-    require(dormant_counts[gpu_a]==0u,
-        "Dormant recycled manager inherited the prior GPU touch");
-    const auto dormant_speculative_counts=
-        producer->speculative_contact_island_edge_counts();
-    require(dormant_speculative_counts[gpu_a]==1u,
-        "Speculative graph omitted admitted non-touching manager");
-    producer->commit_gpu_step();
-    // Two dynamic actors joined by a speculative-only manager share
-    // wake connectivity, but their accurate islands remain separate.
-    const std::array<native::GpuScContactGraphEdge,1> speculative_only{{
-        {gpu_a,independent_gpu,3u|8u,edge}
-    }};
-    producer->set_gpu_sc_contact_graph(
-        speculative_only,independent_gpu+1u);
-    producer->generate_gpu_pcm_box_contacts(no_refresh,no_contacts);
-    const auto speculative_roots=
-        producer->speculative_contact_island_roots();
-    const auto accurate_roots=producer->contact_island_roots();
-    const auto speculative_counts=
-        producer->speculative_contact_island_edge_counts();
-    require(speculative_roots[gpu_a]==speculative_roots[independent_gpu] &&
-            accurate_roots[gpu_a]!=accurate_roots[independent_gpu] &&
-            speculative_counts[speculative_roots[gpu_a]]==1u,
-        "Speculative-only manager failed to join GPU wake components");
-    producer->commit_gpu_step();
-    producer->set_gpu_sc_contact_graph(
-        dormant_reuse,std::max(gpu_a,gpu_b)+1u);
-    // The next graph-only epoch is not explicitly observed before
-    // commit. Dy and Sc must share its queued work without a PCM fetch.
-    producer->generate_gpu_pcm_box_contacts(no_refresh,no_contacts);
-    require(producer->pcm_contact_readback_bytes()==0u,
-        "Graph-only Sc epoch downloaded a PCM contact stream");
-    producer->commit_gpu_step();
-    const auto deferred_counts=producer->contact_island_edge_counts();
-    require(deferred_counts[gpu_a]==0u,
-        "Committed graph-only Sc epoch changed dormant EdgeIndex ownership");
-    // Reject a graph-only frame after the contact's Gu history is
-    // already committed. There were no new PCM witnesses to undo.
-    producer->generate_gpu_pcm_box_contacts(no_refresh,no_contacts);
-    producer->invalidate_after_rollback();
-    producer->set_gpu_sc_contact_graph(
-        dormant_reuse,std::max(gpu_a,gpu_b)+1u);
-    std::array<native::GpuPcmBoxResult,1> after_graph_rollback{};
-    producer->generate_gpu_pcm_box_contacts(request,after_graph_rollback);
-    require(after_graph_rollback[0].edge==edge &&
-            after_graph_rollback[0].status==0u &&
-            after_graph_rollback[0].count>0u &&
-            (after_graph_rollback[0].selected_and_regenerated&0x80000000u)==0u,
-        "Graph-only rollback unnecessarily discarded committed Gu PCM witnesses");
-    producer->commit_gpu_step();
     // Deliberately reject a speculative Gu manager refresh: it writes
     // an empty witness and a physical-touch loss into an existing
     // EdgeIndex. The device must restore the accepted full witness
@@ -931,32 +861,18 @@ void verify_coupled_rigid_stack(
                     std::fabs(a.velocity.z-b.velocity.z)<0.025f,
                     "GPU coupled rigid stack diverged from source Sc/Dy motion");
         }
-        const auto roots=producer->contact_island_roots();
-        const auto speculative_roots=
-            producer->speculative_contact_island_roots();
-        const auto edge_counts=producer->contact_island_edge_counts();
-        const auto speculative_edge_counts=
-            producer->speculative_contact_island_edge_counts();
-        std::size_t owned_managers=0u;
-        for(const auto count:edge_counts)owned_managers+=count;
-        std::size_t admitted_managers=0u;
-        for(const auto count:speculative_edge_counts)admitted_managers+=count;
-        require(edge_counts.size()==roots.size() &&
-                speculative_roots.size()==roots.size() &&
-                owned_managers==gpu.contacts().size() &&
-                admitted_managers==gpu.pairs().size(),
-            "Device Sc accurate/speculative membership differs from source managers");
-        for(std::size_t i=0;i<dynamic_gpu.size();++i)
-            for(std::size_t j=i+1u;j<dynamic_gpu.size();++j) {
-                const auto a=dynamic_gpu[i],b=dynamic_gpu[j];
-                require(a<roots.size() && b<roots.size() &&
-                    ((gpu.accurate_island_id(a)==gpu.accurate_island_id(b))==
-                     (roots[a]==roots[b])),
-                    "Device PCM island connectivity diverged from Sc accurate graph");
+        // CPU-owned island topology remains source-equivalent while
+        // GPU Dy consumes its compact task and descriptor stream.
+        for(std::size_t i=0;i<dynamic_cpu.size();++i)
+            for(std::size_t j=i+1u;j<dynamic_cpu.size();++j) {
+                const auto ca=dynamic_cpu[i],cb=dynamic_cpu[j];
+                const auto ga=dynamic_gpu[i],gb=dynamic_gpu[j];
                 require(
-                    (gpu.speculative_island_id(a)==gpu.speculative_island_id(b))==
-                    (speculative_roots[a]==speculative_roots[b]),
-                    "Device speculative roots diverged from source Sc connectivity");
+                    (cpu.accurate_island_id(ca)==cpu.accurate_island_id(cb))==
+                    (gpu.accurate_island_id(ga)==gpu.accurate_island_id(gb)) &&
+                    (cpu.speculative_island_id(ca)==cpu.speculative_island_id(cb))==
+                    (gpu.speculative_island_id(ga)==gpu.speculative_island_id(gb)),
+                    "GPU scene diverged from source Sc island membership");
             }
         require(gpu.solved_result_frame()==gpu.frame_index(),
                 "GPU coupled rigid stack did not complete Dy solve");
@@ -1811,19 +1727,17 @@ void verify_gpu_distance_solver(
         }
         cpu.step(dt);
         gpu.step(dt);
-        const auto roots=producer->contact_island_roots();
-        const auto edge_counts=producer->contact_island_edge_counts();
-        std::size_t owned_joints=0u;
-        for(const auto count:edge_counts)owned_joints+=count;
-        require(owned_joints==3u,
-            "Device Sc joint-only island list lost an authored constraint");
-        require(anchored_gpu<roots.size() &&
-                roots[ids_gpu[0]]==roots[ids_gpu[1]] &&
-                roots[ids_gpu[2]]==roots[ids_gpu[3]] &&
-                roots[ids_gpu[0]]!=roots[ids_gpu[2]] &&
-                roots[anchored_gpu]!=roots[ids_gpu[0]] &&
-                roots[anchored_gpu]!=roots[ids_gpu[2]],
-            "GPU Sc joint-only island roots differ from authored connections");
+        require(gpu.accurate_island_id(ids_gpu[0])==
+                    gpu.accurate_island_id(ids_gpu[1]) &&
+                gpu.accurate_island_id(ids_gpu[2])==
+                    gpu.accurate_island_id(ids_gpu[3]) &&
+                gpu.accurate_island_id(ids_gpu[0])!=
+                    gpu.accurate_island_id(ids_gpu[2]) &&
+                gpu.accurate_island_id(anchored_gpu)!=
+                    gpu.accurate_island_id(ids_gpu[0]) &&
+                gpu.accurate_island_id(anchored_gpu)!=
+                    gpu.accurate_island_id(ids_gpu[2]),
+            "Sc joint-only island membership lost authored constraints");
         const auto cached=producer->last_frame().device_cached_box_count;
         if(frame==0 || frame==8)
             require(cached==0u,
@@ -1941,10 +1855,9 @@ void verify_gpu_distance_solver(
     gpu.retire_constraint(recycled_gpu);
     cpu.step(dt);
     gpu.step(dt);
-    const auto split_roots=producer->contact_island_roots();
-    require(ids_gpu[3]<split_roots.size() &&
-            split_roots[ids_gpu[2]]!=split_roots[ids_gpu[3]],
-        "Retired Sc joint retained a stale GPU dynamic island link");
+    require(gpu.accurate_island_id(ids_gpu[2])!=
+                gpu.accurate_island_id(ids_gpu[3]),
+        "Retired Sc joint retained a stale dynamic island link");
     cpu.create_anchored_distance_constraint(ids_cpu[2],ids_cpu[3],
         {0.0f,0.15f,0.0f},{0.0f,-0.15f,0.0f},3.2f);
     gpu.create_anchored_distance_constraint(ids_gpu[2],ids_gpu[3],
@@ -1952,10 +1865,9 @@ void verify_gpu_distance_solver(
     for(unsigned frame=0u;frame<3u;++frame) {
         cpu.step(dt);
         gpu.step(dt);
-        const auto restored_roots=producer->contact_island_roots();
-        require(ids_gpu[3]<restored_roots.size() &&
-                restored_roots[ids_gpu[2]]==restored_roots[ids_gpu[3]],
-            "Recycled joint did not reconnect its GPU accurate island");
+        require(gpu.accurate_island_id(ids_gpu[2])==
+                    gpu.accurate_island_id(ids_gpu[3]),
+            "Recycled joint did not reconnect the accurate island");
         const auto stats=producer->dy_launch_stats();
         if(!(stats.device_joint_geometry_count==3u &&
              stats.device_joint_metadata_upload_bytes==

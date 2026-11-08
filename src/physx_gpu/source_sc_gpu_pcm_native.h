@@ -8,7 +8,6 @@
 #include "physx_gpu/source_pcm_sparse_epa_native.h"
 #include "physx_gpu/source_pcm_epa_native.h"
 #include "physx_gpu/source_pcm_sc_contact_stream_native.h"
-#include "physx_gpu/source_sc_contact_islands_native.h"
 #include "physx_gpu/source_sc_contact_history_native.h"
 #include "physx_port/gpucommon/PxgCudaBuffer.h"
 
@@ -66,7 +65,6 @@ public:
         compute::ShaderBinary gjk_publish,
         compute::ShaderBinary epa_args_reset,compute::ShaderBinary epa,
         compute::ShaderBinary face_contacts,
-        compute::ShaderBinary contact_islands,
         compute::ShaderBinary contact_journal)
         : context_(context),addresses_(addresses),stream_(stream),sc_(sc),
           transforms_(transforms),geometry_(geometry),
@@ -86,7 +84,6 @@ public:
           gjk_publish_stage_(context,std::move(gjk_publish),false,true),
           epa_stage_(context,std::move(epa)),
           face_stage_(context,std::move(face_contacts),true),
-          islands_stage_(context,std::move(contact_islands)),
           journal_stage_(context,std::move(contact_journal)),
           pairs_(allocator,physx::PxsHeapStats::eNARROWPHASE),
           results_(allocator,physx::PxsHeapStats::eNARROWPHASE),
@@ -94,7 +91,6 @@ public:
           edges_(allocator,physx::PxsHeapStats::eNARROWPHASE),
           work_(allocator,physx::PxsHeapStats::eNARROWPHASE),
           dense_contacts_(allocator,physx::PxsHeapStats::eNARROWPHASE),
-          graph_(allocator,physx::PxsHeapStats::eNARROWPHASE),
           journal_(allocator,physx::PxsHeapStats::eNARROWPHASE) {
         if(!stream_.bound_to(context_,addresses_))
             throw std::invalid_argument("Source Sc GPU PCM has another device stream");
@@ -118,79 +114,27 @@ public:
     }
 
     void invalidate_after_rollback() noexcept {
-        graph_rebuild_pending_=true;
-        graph_validation_pending_=false;
         if(pcm_transaction_pending_) {
             // A submitted PCM epoch may have changed Gu witnesses even
             // when Sc/Dy later rejected the complete simulation frame.
             restore_pending_=journal_pair_count_!=0u;
             pcm_transaction_pending_=false;
             published_pair_count_=0u;
-            // A graph-only epoch does not mutate Gu witnesses. Refreshed
-            // PCM epochs restore their journal before the next submission.
+            // Refreshed PCM epochs restore their journal before the next submission.
             reset_manifolds_=false;
         } else reset_manifolds_=true;
     }
 
     bool needs_contact_rebuild() const noexcept {
-        return graph_rebuild_pending_ || restore_pending_;
+        return restore_pending_;
     }
 
     void commit_step() {
         if(!pcm_transaction_pending_)return;
-        if(graph_validation_pending_) {
-            const auto physical=addresses_.resolve(
-                graph_.getDevicePtr()+graph_header_[4],
-                sizeof(graph_error_host_));
-            stream_.submit();
-            const std::array<compute::DownloadSpan,1> readback{{
-                {physical.buffer,physical.offset,graph_error_host_.data(),
-                 sizeof(graph_error_host_)}
-            }};
-            try {
-                context_.download_batch(readback);
-            } catch (...) {
-                stream_.wait_at_fetch();
-                throw;
-            }
-            stream_.wait_at_fetch();
-            graph_validation_pending_=false;
-            if(graph_error_host_[0]!=0u)
-                throw std::logic_error(
-                    "Source GPU Sc contact island graph rejected an EdgeIndex");
-        }
         published_edge_span_bytes_=std::max(
             published_edge_span_bytes_,pending_edge_span_bytes_);
         pcm_transaction_pending_=false;
         journal_pair_count_=0u;
-    }
-
-    CudaDeviceAddressMap::Address pending_graph_error_address() const noexcept {
-        return graph_validation_pending_
-            ?graph_.getDevicePtr()+graph_header_[4]:0u;
-    }
-
-    void validate_graph_at_solver_fetch(std::uint32_t error) {
-        if(!graph_validation_pending_)
-            throw std::logic_error("Sc graph validation has no pending GPU epoch");
-        if(error!=0u)
-            throw std::logic_error(
-                "Source GPU Sc contact island graph rejected an EdgeIndex");
-        graph_validation_pending_=false;
-    }
-
-    void set_contact_graph(
-        std::span<const native::GpuScContactGraphEdge> edges,
-        std::uint32_t rigid_count) {
-        if(edges.size()>std::numeric_limits<std::uint32_t>::max() ||
-           (!rigid_count && !edges.empty()))
-            throw std::out_of_range("Sc contact graph exceeds source rigid address range");
-        for(const auto& edge:edges)
-            if(edge.body_a>=rigid_count || edge.body_b>=rigid_count ||
-               edge.edge==0xffffffffu || (edge.flags&~15u)!=0u)
-                throw std::invalid_argument("Source Sc graph references invalid EdgeIndex or rigid actor");
-        graph_sources_=edges;
-        graph_rigid_watermark_=rigid_count;
     }
 
     void generate(std::span<const native::GpuPcmBoxPair> requests,
@@ -220,36 +164,13 @@ public:
         last_pair_upload_bytes_=0u;
         last_contact_download_bytes_=0u;
         last_edge_history_copy_bytes_=0u;
-        last_graph_upload_bytes_=0u;
-        if(requests.empty() && graph_sources_.empty()) {
-            graph_rebuild_pending_=false;
-            return;
-        }
+        if(requests.empty())return;
         if((!shape_capacity && !requests.empty()) ||
            requests.size()>std::numeric_limits<std::uint32_t>::max())
             throw std::out_of_range("Source GPU PCM pair capacity overflow");
         const auto pair_count=static_cast<std::uint32_t>(requests.size());
         std::uint32_t candidate_count=0u;
         std::uint32_t largest_edge=0u;
-        std::uint32_t largest_graph_edge=0u;
-        const auto graph_count=static_cast<std::uint32_t>(graph_sources_.size());
-        const auto rigid_count=graph_rigid_watermark_;
-        const auto old_graph_count=graph_pair_host_.size();
-        const auto old_graph_rigid_count=graph_rigid_count_;
-        graph_pair_host_.resize(graph_count);
-        std::uint32_t first_graph_dirty=graph_count,last_graph_dirty=0u;
-        for(std::uint32_t i=0u;i<graph_count;++i) {
-            const auto& link=graph_sources_[i];
-            largest_graph_edge=std::max(largest_graph_edge,link.edge);
-            if((link.flags&4u)==0u)
-                largest_edge=std::max(largest_edge,link.edge);
-            if(i>=old_graph_count ||
-               std::memcmp(&graph_pair_host_[i],&link,sizeof(link))!=0) {
-                first_graph_dirty=std::min(first_graph_dirty,i);
-                last_graph_dirty=i+1u;
-            }
-            graph_pair_host_[i]=link;
-        }
         bool full_upload=reset_manifolds_ ||
             previous_count!=pair_count || pair_host_.size()!=pair_count;
         std::uint32_t first_dirty=pair_count,last_dirty=0u;
@@ -354,63 +275,6 @@ public:
             dense_contacts_.allocate(source_allocation_bytes(
                 pair_count,sizeof(SourcePcmGpuContactStreamNative)),PX_FL);
         }
-        // The accurate graph shares this Sc PCM source manager stream.
-        // Physical touch determines connectivity; static endpoints
-        // remain graph terminals rather than merging dynamic islands.
-        const auto graph_pair_offset=std::size_t(64u);
-        const auto graph_root_offset=graph_pair_offset+
-            std::size_t(graph_count)*sizeof(SourceScContactGraphPairNative);
-        const auto graph_count_offset=graph_root_offset+
-            std::size_t(rigid_count)*sizeof(std::uint32_t);
-        const auto graph_head_offset=graph_count_offset+
-            std::size_t(rigid_count)*sizeof(std::uint32_t);
-        const auto graph_link_offset=graph_head_offset+
-            std::size_t(rigid_count)*sizeof(std::uint32_t);
-        const auto graph_edge_root_offset=graph_link_offset+
-            std::size_t(graph_count)*sizeof(std::uint32_t);
-        const auto graph_edge_count=largest_graph_edge+1u;
-        const auto speculative_root_offset=graph_edge_root_offset+
-            std::size_t(graph_edge_count)*sizeof(std::uint32_t);
-        const auto speculative_count_offset=speculative_root_offset+
-            std::size_t(rigid_count)*sizeof(std::uint32_t);
-        const auto speculative_head_offset=speculative_count_offset+
-            std::size_t(rigid_count)*sizeof(std::uint32_t);
-        const auto speculative_link_offset=speculative_head_offset+
-            std::size_t(rigid_count)*sizeof(std::uint32_t);
-        const auto speculative_edge_root_offset=speculative_link_offset+
-            std::size_t(graph_count)*sizeof(std::uint32_t);
-        const auto graph_error_offset=speculative_edge_root_offset+
-            std::size_t(graph_edge_count)*sizeof(std::uint32_t);
-        if(graph_error_offset>std::numeric_limits<std::uint32_t>::max()-127u)
-            throw std::overflow_error("Sc device contact graph exceeds source address range");
-        const auto graph_bytes=(graph_error_offset+4u+127u)&~std::size_t(127u);
-        const auto old_graph_capacity=graph_.getSize();
-        const auto old_graph_address=graph_.getDevicePtr();
-        graph_.allocate(graph_bytes,PX_FL);
-        const bool full_graph=old_graph_count!=graph_count ||
-            old_graph_rigid_count!=rigid_count ||
-            graph_bytes>old_graph_capacity ||
-            graph_.getDevicePtr()!=old_graph_address;
-        graph_rigid_count_=rigid_count;
-        graph_header_={graph_count,rigid_count,
-            static_cast<std::uint32_t>(graph_pair_offset),
-            static_cast<std::uint32_t>(graph_root_offset),
-            static_cast<std::uint32_t>(graph_error_offset),
-            edge_capacity,
-            static_cast<std::uint32_t>(graph_count_offset),
-            static_cast<std::uint32_t>(graph_head_offset),
-            static_cast<std::uint32_t>(graph_link_offset),
-            static_cast<std::uint32_t>(graph_edge_root_offset),
-            graph_edge_count,
-            static_cast<std::uint32_t>(speculative_root_offset),
-            static_cast<std::uint32_t>(speculative_count_offset),
-            static_cast<std::uint32_t>(speculative_head_offset),
-            static_cast<std::uint32_t>(speculative_link_offset),
-            static_cast<std::uint32_t>(speculative_edge_root_offset)};
-        if(full_graph) {
-            first_graph_dirty=0u;
-            last_graph_dirty=graph_count;
-        }
         // Sc's reset intent travels with the source pair. The GPU
         // candidate owner initializes its own EdgeIndex record before
         // refreshing it, without a separate upload per new manager.
@@ -429,21 +293,6 @@ public:
             last_pair_upload_bytes_=bytes;
         }
         reset_manifolds_=false;
-        graph_uploads_.clear();
-        graph_uploads_.push_back({
-            graph_.getDevicePtr(),graph_header_.data(),sizeof(graph_header_)});
-        last_graph_upload_bytes_=sizeof(graph_header_);
-        if(first_graph_dirty<last_graph_dirty) {
-            const auto stride=sizeof(SourceScContactGraphPairNative);
-            const auto bytes=std::size_t(last_graph_dirty-first_graph_dirty)*stride;
-            graph_uploads_.push_back({
-                graph_.getDevicePtr()+graph_pair_offset+
-                    std::size_t(first_graph_dirty)*stride,
-                graph_pair_host_.data()+first_graph_dirty,bytes});
-            last_graph_upload_bytes_+=bytes;
-        }
-        stream_.queue_uploads(graph_uploads_);
-
         // The source EdgeIndex pool is allowed to grow beyond previously
         // committed history. Initialize only newly admitted records;
         // recycled slots retain their original PCM reset semantics.
@@ -518,43 +367,15 @@ public:
                 convex_surface_.getDevicePtr(),convex_surface_bytes_,
                 convex_faces_base_,convex_indices_base_);
 
-        islands_stage_.append(stream_,addresses_,
-            graph_.getDevicePtr(),graph_bytes,
-            edges_.getDevicePtr(),source_allocation_bytes(edge_capacity,240u),
-            graph_count,rigid_count,graph_edge_count);
-
-        // Without refreshed PCM contacts the graph has no Sc contact
-        // payload to fetch. Leave its validation on the ordered GPU queue
-        // until the final Sc commit, after Dy has consumed its roots.
-        if(pair_count==0u) {
-            stream_.submit();
-            pcm_transaction_pending_=true;
-            journal_pair_count_=0u;
-            journal_edge_capacity_=edge_capacity;
-            pending_edge_span_bytes_=std::size_t(edge_capacity)*240u;
-            graph_validation_pending_=true;
-            published_pair_count_=0u;
-            graph_rebuild_pending_=false;
-            return;
-        }
-
         // Fetch the losslessly packed device stream, then reconstruct
         // Sc's original host record. The Dy shader reads the same device
         // allocation; no GPU repacking command or second fence is needed.
         const auto readback_bytes=readback_.size()*sizeof(readback_[0]);
-        const auto graph_error=addresses_.resolve(
-            graph_.getDevicePtr()+graph_error_offset,sizeof(graph_error_host_));
-        std::vector<compute::DownloadSpan> downloads;
-        downloads.reserve(2u);
-        if(readback_bytes) {
-            const auto mapped=addresses_.resolve(
-                dense_contacts_.getDevicePtr(),readback_bytes);
-            downloads.push_back({
-                mapped.buffer,mapped.offset,readback_.data(),readback_bytes});
-        }
-        downloads.push_back({
-            graph_error.buffer,graph_error.offset,
-            graph_error_host_.data(),sizeof(graph_error_host_)});
+        const auto mapped=addresses_.resolve(
+            dense_contacts_.getDevicePtr(),readback_bytes);
+        const std::array<compute::DownloadSpan,1> downloads{{
+            {mapped.buffer,mapped.offset,readback_.data(),readback_bytes}
+        }};
         stream_.submit();
         pcm_transaction_pending_=true;
         journal_pair_count_=pair_count;
@@ -571,8 +392,6 @@ public:
         // The readback fence has already completed. Retire the source
         // command/upload tokens without an intervening CPU/GPU stall.
         stream_.wait_at_fetch();
-        if(graph_error_host_[0]!=0u)
-            throw std::logic_error("Source GPU Sc contact island graph rejected an EdgeIndex");
         for(std::uint32_t i=0u;i<pair_count;++i) {
             const auto& packed=readback_[i];
             const auto header=unpack_source_pcm_gpu_header_native(packed);
@@ -609,7 +428,6 @@ public:
                         std::size_t(stored.count)*sizeof(packed.contacts[0]));
         }
         published_pair_count_=pair_count;
-        graph_rebuild_pending_=false;
         last_contact_download_bytes_=readback_bytes;
     }
     CudaDeviceAddressMap::Address contact_stream_address() const noexcept {
@@ -626,89 +444,6 @@ public:
     }
     std::size_t last_edge_history_copy_bytes() const noexcept {
         return last_edge_history_copy_bytes_;
-    }
-    CudaDeviceAddressMap::Address graph_address() const noexcept {
-        return graph_pair_host_.empty()?0u:graph_.getDevicePtr();
-    }
-    std::size_t last_graph_upload_bytes() const noexcept {
-        return last_graph_upload_bytes_;
-    }
-    std::size_t graph_storage_bytes() const noexcept {
-        return graph_pair_host_.empty()?0u:graph_.getSize();
-    }
-    std::uint32_t graph_rigid_count() const noexcept {
-        return graph_pair_host_.empty()?0u:graph_rigid_count_;
-    }
-    // Explicit diagnostics; production frames do not download island data.
-    std::vector<std::uint32_t> contact_island_edge_counts() const {
-        return read_island_edge_counts(false);
-    }
-    std::vector<std::uint32_t> speculative_contact_island_edge_counts() const {
-        return read_island_edge_counts(true);
-    }
-    std::vector<std::uint32_t> contact_island_roots() const {
-        return read_island_roots(false);
-    }
-    std::vector<std::uint32_t> speculative_contact_island_roots() const {
-        return read_island_roots(true);
-    }
-private:
-    std::vector<std::uint32_t> read_island_edge_counts(bool speculative) const {
-        if(graph_pair_host_.empty())return {};
-        std::vector<std::uint32_t> counts(graph_rigid_count_);
-        std::vector<std::uint32_t> heads(graph_rigid_count_);
-        std::vector<std::uint32_t> roots(graph_rigid_count_);
-        std::vector<std::uint32_t> next(graph_pair_host_.size());
-        const auto read=[&](std::uint32_t offset,void* target,
-                            std::size_t bytes) {
-            const auto physical=addresses_.resolve(
-                graph_.getDevicePtr()+offset,bytes);
-            return compute::DownloadSpan{
-                physical.buffer,physical.offset,target,bytes};
-        };
-        const std::array<compute::DownloadSpan,4> downloads{{
-            read(graph_header_[speculative?11u:3u],roots.data(),
-                 roots.size()*sizeof(roots[0])),
-            read(graph_header_[speculative?12u:6u],counts.data(),
-                 counts.size()*sizeof(counts[0])),
-            read(graph_header_[speculative?13u:7u],heads.data(),
-                 heads.size()*sizeof(heads[0])),
-            read(graph_header_[speculative?14u:8u],next.data(),
-                 next.size()*sizeof(next[0]))
-        }};
-        context_.download_batch(downloads);
-        std::vector<std::uint8_t> seen(graph_pair_host_.size(),0u);
-        for(std::size_t root=0u;root<counts.size();++root) {
-            std::uint32_t cursor=heads[root];
-            std::size_t members=0u;
-            while(cursor!=0xffffffffu) {
-                if(cursor>=seen.size() || seen[cursor] ||
-                   ++members>graph_pair_host_.size())
-                    throw std::logic_error("GPU Sc island edge list is cyclic or duplicated");
-                seen[cursor]=1u;
-                const auto& edge=graph_pair_host_[cursor];
-                const auto owner=(edge.flags&1u)!=0u?edge.body_a:edge.body_b;
-                if((edge.flags&3u)==0u || owner>=roots.size() ||
-                   roots[owner]!=root)
-                    throw std::logic_error("GPU Sc island edge belongs to another root");
-                cursor=next[cursor];
-            }
-            if(members!=counts[root])
-                throw std::logic_error("GPU Sc island edge list disagrees with device count");
-        }
-        return counts;
-    }
-    std::vector<std::uint32_t> read_island_roots(bool speculative) const {
-        if(graph_pair_host_.empty())return {};
-        std::vector<std::uint32_t> roots(graph_rigid_count_);
-        const auto bytes=roots.size()*sizeof(roots[0]);
-        const auto physical=addresses_.resolve(
-            graph_.getDevicePtr()+graph_header_[speculative?11u:3u],bytes);
-        const std::array<compute::DownloadSpan,1> readback{{
-            {physical.buffer,physical.offset,roots.data(),bytes}
-        }};
-        context_.download_batch(readback);
-        return roots;
     }
 private:
     compute::Context& context_;
@@ -728,30 +463,20 @@ private:
     bool staged_gjk_=false;
     SourcePcmEpaNativeStage gjk_stage_,gjk_reduce_stage_,gjk_publish_stage_,epa_stage_,face_stage_;
     std::optional<SourcePcmEpaNativeStage> primitive_gjk_stage_;
-    SourceScContactIslandsNativeStage islands_stage_;
     SourceScContactHistoryNativeStage journal_stage_;
-    physx::PxgCudaBuffer pairs_,results_,candidates_,edges_,work_,dense_contacts_,graph_,journal_;
+    physx::PxgCudaBuffer pairs_,results_,candidates_,edges_,work_,dense_contacts_,journal_;
     compute::BufferId indirect_buffer_=0u;
     CudaDeviceAddressMap::Address indirect_address_=0u;
     std::vector<SourcePcmBoxPairNative> pair_host_;
     std::vector<SourcePcmGpuContactStreamNative> readback_;
-    std::span<const SourceScContactGraphPairNative> graph_sources_;
-    std::uint32_t graph_rigid_watermark_=0u;
-    std::vector<SourceScContactGraphPairNative> graph_pair_host_;
-    std::vector<SourceSapUpload> graph_uploads_;
-    std::array<std::uint32_t,16> graph_header_{};
-    std::array<std::uint32_t,1> graph_error_host_{};
-    std::uint32_t graph_rigid_count_=0u;
     bool reset_manifolds_=false;
     bool pcm_transaction_pending_=false,restore_pending_=false;
-    bool graph_rebuild_pending_=false,graph_validation_pending_=false;
     std::uint32_t journal_pair_count_=0u,journal_edge_capacity_=0u;
     std::size_t pending_edge_span_bytes_=0u;
     std::uint32_t published_pair_count_=0u;
     std::size_t last_pair_upload_bytes_=0u;
     std::size_t last_contact_download_bytes_=0u;
     std::size_t last_edge_history_copy_bytes_=0u;
-    std::size_t last_graph_upload_bytes_=0u;
     std::size_t published_edge_span_bytes_=0u;
 };
 } // namespace fyzz::physx_gpu

@@ -151,7 +151,6 @@ public:
                 take_pcm_shader(*pcm_shaders,NativeGpuPcmStage::EpaArgsReset),
                 take_pcm_shader(*pcm_shaders,NativeGpuPcmStage::EpaContact),
                 take_pcm_shader(*pcm_shaders,NativeGpuPcmStage::FaceContacts),
-                take_pcm_shader(*pcm_shaders,NativeGpuPcmStage::ContactIslands),
                 take_pcm_shader(*pcm_shaders,NativeGpuPcmStage::ContactJournal));
         if(dy_shader)
             dy_distance_=std::make_unique<SourceDyDistanceNativeStage>(
@@ -305,9 +304,6 @@ public:
                 input.active=1u|dy_flags;
             }
         }
-        const auto pending_graph_error=pcm_?
-            pcm_->pending_graph_error_address():0u;
-        std::uint32_t graph_error=0u;
         dy_distance_->solve(bodies,rows,descriptors,partitions,ordinals,tasks,
                             contact_forces,cpu_gu,friction,anchors,patches,manifolds,contact_order,
                             contact_prep,integration,integrated_poses,
@@ -321,13 +317,7 @@ public:
                             anchor_impulses,device_initial_bodies,
                             device_world_motion,
                             device_unconstrained_preparation,sleep_states,
-                            joint_inputs,
-                            pcm_?pcm_->graph_address():0u,
-                            pcm_?pcm_->graph_storage_bytes():0u,
-                            pending_graph_error,
-                            pending_graph_error?&graph_error:nullptr);
-        if(pending_graph_error)
-            pcm_->validate_graph_at_solver_fetch(graph_error);
+                            joint_inputs);
         ++dy_distance_dispatch_count_;
     }
     std::size_t dy_resident_pose_count() const noexcept {
@@ -385,33 +375,6 @@ public:
     dy_distance_transfer_bytes() const noexcept {
         return dy_distance_ ? dy_distance_->last_transfer_bytes()
                             : std::pair<std::size_t,std::size_t>{};
-    }
-    std::vector<std::uint32_t> contact_island_roots() const {
-        if(!pcm_)
-            throw std::logic_error("GPU Sc contact graph is not installed");
-        return pcm_->contact_island_roots();
-    }
-    std::vector<std::uint32_t> contact_island_edge_counts() const {
-        if(!pcm_)
-            throw std::logic_error("GPU Sc contact graph is not installed");
-        return pcm_->contact_island_edge_counts();
-    }
-    std::vector<std::uint32_t> speculative_contact_island_roots() const {
-        if(!pcm_)
-            throw std::logic_error("GPU Sc contact graph is not installed");
-        return pcm_->speculative_contact_island_roots();
-    }
-    std::vector<std::uint32_t> speculative_contact_island_edge_counts() const {
-        if(!pcm_)
-            throw std::logic_error("GPU Sc contact graph is not installed");
-        return pcm_->speculative_contact_island_edge_counts();
-    }
-    void set_gpu_sc_contact_graph(
-        std::span<const native::GpuScContactGraphEdge> edges,
-        std::uint32_t rigid_count) override {
-        if(!pcm_)
-            throw std::logic_error("Source GPU PCM contact graph not installed");
-        pcm_->set_contact_graph(edges,rigid_count);
     }
     void generate_gpu_pcm_box_contacts(
             std::span<const native::GpuPcmBoxPair> requests,

@@ -854,11 +854,6 @@ if(FYZZXYZZY_BUILD_VULKAN)
       DEPENDS ${FYZZXYZZY_NATIVE_GPU_SAP_SPIRV_BINARIES})
     add_dependencies(fyzzxyzzy_source_gpu_aggregate_world_bundle
       fyzzxyzzy_native_gpu_sap_shaders)
-    set(FYZZXYZZY_SOURCE_SC_CONTACT_ISLANDS_SPV
-      "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_source_sc_contact_islands_native.spv")
-    fyzzxyzzy_compile_hlsl("${FYZZXYZZY_SOURCE_SC_CONTACT_ISLANDS_SPV}"
-      "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_sc_contact_islands_native.hlsl"
-      cs_6_0 main)
     set(FYZZXYZZY_SOURCE_SC_CONTACT_JOURNAL_SPV
       "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_source_sc_contact_history_native.spv")
     fyzzxyzzy_compile_hlsl("${FYZZXYZZY_SOURCE_SC_CONTACT_JOURNAL_SPV}"
@@ -874,11 +869,10 @@ if(FYZZXYZZY_BUILD_VULKAN)
       "${FYZZXYZZY_SOURCE_PCM_GJK_PUBLISH_SPV}"
       "${FYZZXYZZY_SOURCE_PCM_EPA_ARGS_RESET_SPV}"
       "${FYZZXYZZY_SOURCE_PCM_GJK_SPV}"
-      "${FYZZXYZZY_SOURCE_SC_CONTACT_ISLANDS_SPV}"
       "${FYZZXYZZY_SOURCE_SC_CONTACT_JOURNAL_SPV}")
-    set(_pcm_stages Candidates EpaCompact GjkContact EpaContact FaceContacts GjkReduce GjkPublish EpaArgsReset GjkPrimitive ContactIslands ContactJournal)
+    set(_pcm_stages Candidates EpaCompact GjkContact EpaContact FaceContacts GjkReduce GjkPublish EpaArgsReset GjkPrimitive ContactJournal)
     set(_pcm_manifest "FYZZXYZZY_SOURCE_PCM_1 SPIRV\n")
-    foreach(_idx RANGE 0 10)
+    foreach(_idx RANGE 0 9)
       list(GET _pcm_stages ${_idx} _stage)
       list(GET _pcm_binaries ${_idx} _binary)
       get_filename_component(_name "${_binary}" NAME)

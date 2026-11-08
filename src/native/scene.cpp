@@ -4022,39 +4022,6 @@ void Scene::update_contacts() {
             (!dynamic_a || actors_[a.body].sleeping) && (!dynamic_b || actors_[b.body].sleeping);
     };
     if(source_gpu_pcm) {
-        // All live manager EdgeIndices belong to this graph, including
-        // dormant PCM contacts and authored joints that did not change.
-        gpu_sc_graph_edges_.clear();
-        gpu_sc_graph_edges_.reserve(previous_pairs_.size()+
-                                    active_constraint_handles_.size());
-        for(std::size_t i=0;i<previous_pairs_.size();++i) {
-            const auto pair=previous_pairs_[i];
-            const auto edge=active_edge_handles_[i];
-            const auto& first=shapes_[pair.a];
-            const auto& second=shapes_[pair.b];
-            const bool plane=first.geometry==Geometry::Plane ||
-                second.geometry==Geometry::Plane;
-            if(plane && !pcm_plane_box_enabled_)continue;
-            gpu_sc_graph_edges_.push_back({
-                first.body,second.body,
-                (actors_[first.body].motion==Motion::Dynamic?1u:0u)|
-                (actors_[second.body].motion==Motion::Dynamic?2u:0u)|
-                (!island_edges_[edge].pcm_cache.initialized?8u:0u),
-                edge});
-        }
-        for(const EdgeIndex edge:active_constraint_handles_) {
-            const auto& joint=island_edges_[edge];
-            if(!joint.live || joint.retiring ||
-               joint.type!=IslandEdgeType::Constraint)
-                continue;
-            gpu_sc_graph_edges_.push_back({
-                joint.pair.a,joint.pair.b,
-                4u|(actors_[joint.pair.a].motion==Motion::Dynamic?1u:0u)|
-                (actors_[joint.pair.b].motion==Motion::Dynamic?2u:0u),
-                edge});
-        }
-        if(actors_.size()>=std::numeric_limits<std::uint32_t>::max())
-            throw std::overflow_error("Sc GPU rigid graph exceeds BodyId address space");
         gpu_pcm_pairs_.reserve(previous_pairs_.size());
         std::size_t prior_touch_cursor=0u;
         for(std::size_t i=0;i<previous_pairs_.size();++i) {
@@ -4100,23 +4067,6 @@ void Scene::update_contacts() {
                     previously_touching});
             }
         }
-        // A newly admitted manager has no valid prior Gu witness. The
-        // existing PCM request clears its old EdgeIndex history before
-        // publishing a touch; a dormant new manager must not inherit
-        // the previous occupant's physical-touch state.
-        std::size_t requested=0u;
-        for(auto& graph_edge:gpu_sc_graph_edges_) {
-            if((graph_edge.flags&4u)!=0u)break;
-            if(requested<gpu_pcm_pairs_.size() &&
-               gpu_pcm_pairs_[requested].edge==graph_edge.edge) {
-                graph_edge.flags&=~8u;
-                ++requested;
-            }
-        }
-        if(requested!=gpu_pcm_pairs_.size())
-            throw std::logic_error("Sc PCM graph omitted an admitted contact manager");
-        gpu_broadphase_->set_gpu_sc_contact_graph(
-            gpu_sc_graph_edges_,static_cast<std::uint32_t>(actors_.size()));
         gpu_pcm_results_.resize(gpu_pcm_pairs_.size());
     }
     // The GPU contact stream now includes plane-box managers in source
@@ -6730,7 +6680,6 @@ Scene::SolverBodyRow& Scene::admit_solver_row(BodyId id) {
     if(actor.solver_row_generation!=solver_preparation_generation_) {
         const auto index=solver_rows_.size();
         solver_rows_.emplace_back();
-        solver_rows_.back().actor_id=id;
         actor.solver_row_index=index;
         actor.solver_row_generation=solver_preparation_generation_;
     }
@@ -7401,7 +7350,6 @@ void Scene::prepare_constraints(float seconds) {
             input.kind=static_cast<std::uint32_t>(joint.kind);
             input.source_slot=edge.constraint_id;
             input.source_generation=joint.generation;
-            input.source_edge=edge_id;
             if(gpu_dy_joint_inputs_.size()>=std::numeric_limits<std::uint32_t>::max())
                 throw std::overflow_error("Native GPU joint admission count overflow");
             const auto source_index=static_cast<std::uint32_t>(gpu_dy_joint_inputs_.size());
@@ -8333,12 +8281,6 @@ void Scene::solve_gpu_distance_constraints(float seconds) {
     }
     const auto integration_count=solver_rows_.size()+gpu_dy_free_ids_.size();
     gpu_dy_integration_inputs_.assign(integration_count,{});
-    for(std::size_t i=0;i<solver_rows_.size();++i) {
-        const auto id=solver_rows_[i].actor_id;
-        if(id>=actors_.size() || !actors_[id].alive)
-            throw std::logic_error("Dy source solver row lost its rigid actor");
-        gpu_dy_integration_inputs_[i].source_actor=id;
-    }
     gpu_dy_integrated_poses_.resize(integration_count);
     gpu_dy_sleep_states_.resize(integration_count);
     const auto pack_integration=[&](BodyId id,const Actor& actor,
@@ -10865,8 +10807,7 @@ void Scene::advance_collision(bool force_update) {
         // island repair passes have already joined, so handle retirement
         // may complete inside the failure-atomic collision transaction.
         retire_destroyed_contact_edges();
-        // A graph-only Sc epoch stays on device through its consumers.
-        // Validate and accept it inside this publication checkpoint.
+        // Accept the PCM history only after the Sc publication commits.
         if(gpu_broadphase_)gpu_broadphase_->commit_gpu_step();
     } catch (...) {
         step_checkpoint_.rollback(*this);
