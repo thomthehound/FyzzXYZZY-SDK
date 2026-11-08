@@ -106,6 +106,8 @@ struct SourceDyLaunchStats {
     std::size_t tile_bytes=0u;
     // Shader-written descriptor and partition bytes omitted from HtoD.
     std::size_t device_generated_bytes=0u;
+    std::size_t device_source_descriptors=0u;
+    std::size_t source_descriptor_upload_bytes=0u;
     // Native Sc initializes transient solver bodies from the resident
     // actor inverse masses; standalone Dy retains explicit input support.
     std::size_t device_initialized_bodies=0u;
@@ -836,17 +838,52 @@ public:
             ? bodies.size()*sizeof(float):0u;
         const std::size_t integration_bytes=mass_offset+mass_bytes;
         last_host_pose_upload_bytes_=host_poses_.size()*sizeof(SourceDyHostPoseNative);
-        // Transient source-order descriptors and conflict-coloring state
-        // share the existing Dy arena; no separate scene state is built.
-        if(device_partitions &&
-           (descriptors.size()>
-                (std::numeric_limits<std::uint32_t>::max()-20u)/24u ||
-            bodies.size()>
-                (std::numeric_limits<std::uint32_t>::max()-20u-
-                    descriptors.size()*24u)/12u))
-            throw std::overflow_error("Device Dy partition scratch exceeds address space");
-        const std::size_t partition_scratch_bytes=device_partitions
-            ? 20u+descriptors.size()*24u+bodies.size()*12u:0u;
+        // Native Sc transfers source-order manager and joint identities.
+        // Contact prep already encodes active body ordinals; device-owned
+        // 1D geometry carries the same ordinals in its first row.
+        const bool source_descriptors=device_partitions &&
+            device_initial_bodies && device_world_motion;
+        source_descriptor_tokens_.clear();
+        source_descriptor_full_.clear();
+        if(source_descriptors) {
+            source_descriptor_tokens_.reserve(descriptors.size());
+            for(const auto& desc:descriptors) {
+                if(desc.index>=0x40000000u)
+                    throw std::overflow_error(
+                        "Sc source descriptor index exceeds device token range");
+                if((desc.row_count&255u)==0u) {
+                    source_descriptor_tokens_.push_back(
+                        0xc0000000u|desc.index);
+                }else if(rows[desc.index].reserved==2u) {
+                    source_descriptor_tokens_.push_back(
+                        0x80000000u|desc.index);
+                }else {
+                    if(source_descriptor_full_.size()>=0x40000000u)
+                        throw std::overflow_error(
+                            "Dy source descriptor table exceeds device token range");
+                    source_descriptor_tokens_.push_back(
+                        static_cast<std::uint32_t>(source_descriptor_full_.size()));
+                    source_descriptor_full_.push_back(desc);
+                }
+            }
+        }
+        const std::uint64_t scratch_bytes=device_partitions
+            ?(source_descriptors?28ull:20ull)+
+                std::uint64_t(descriptors.size())*24ull+
+                std::uint64_t(bodies.size())*12ull+
+                std::uint64_t(source_descriptor_full_.size())*16ull
+            :0ull;
+        if(scratch_bytes>std::numeric_limits<std::uint32_t>::max())
+            throw std::overflow_error(
+                "Device Dy partition scratch exceeds address space");
+        const auto partition_scratch_bytes=
+            static_cast<std::size_t>(scratch_bytes);
+        last_schedule_.device_source_descriptors=
+            source_descriptors?descriptors.size():0u;
+        last_schedule_.source_descriptor_upload_bytes=source_descriptors
+            ?source_descriptor_tokens_.size()*sizeof(std::uint32_t)+
+                source_descriptor_full_.size()*sizeof(native::GpuDyDistanceDescriptor)
+            :descriptors.size_bytes();
         if(rows.size_bytes()>std::numeric_limits<std::uint32_t>::max())
             throw std::overflow_error("Device Dy joint rows exceed 32-bit view");
         constexpr std::size_t count=16u;
@@ -975,13 +1012,32 @@ public:
                             sizeof(native::GpuDyContactPrepBody));
         if(device_partitions) {
             const auto n=descriptors.size();
+            const std::size_t header_bytes=source_descriptors?24u:20u;
             const std::array<std::uint32_t,5> scratch_header{
-                20u,narrow(20u+n*16u),narrow(20u+n*20u),
-                narrow(20u+n*24u),
+                narrow(header_bytes),narrow(header_bytes+n*16u),
+                narrow(header_bytes+n*20u),
+                narrow(header_bytes+n*24u),
                 tiles_.empty()?0u:narrow(offsets[14])};
             std::memcpy(host_.data()+offsets[15],scratch_header.data(),
                         sizeof(scratch_header));
-            if(n)
+            if(source_descriptors) {
+                const std::uint32_t mode=1u;
+                std::memcpy(host_.data()+offsets[15]+20u,
+                            &mode,sizeof(mode));
+                if(n)
+                    std::memcpy(host_.data()+offsets[15]+scratch_header[1],
+                                source_descriptor_tokens_.data(),
+                                n*sizeof(std::uint32_t));
+                const auto table=offsets[15]+scratch_header[3]+
+                    bodies.size()*12u;
+                const auto total=narrow(source_descriptor_full_.size());
+                std::memcpy(host_.data()+table,&total,sizeof(total));
+                if(total)
+                    std::memcpy(host_.data()+table+4u,
+                                source_descriptor_full_.data(),
+                                source_descriptor_full_.size()*
+                                    sizeof(native::GpuDyDistanceDescriptor));
+            }else if(n)
                 std::memcpy(host_.data()+offsets[15]+20u,
                             descriptors.data(),descriptors.size_bytes());
         }
@@ -1156,12 +1212,21 @@ public:
             std::memcpy(host_.data()+offsets[12]+integration_header_bytes,
                         packed_integration_.data(),
                         packed_integration_.size()*sizeof(SourceDyPackedIntegrationNative));
-        // First-row metadata references the retained Sc constraint slot
-        // rather than a per-frame array ordinal. Row order is unchanged.
+        // Device-authored joint rows carry their source endpoint ordinals
+        // until geometric preparation replaces the transient first-row
+        // axis. The retained constraint pointer remains at +60.
         for(const auto& descriptor:descriptors) {
             if((descriptor.row_count&255u)==0u)continue;
             const auto& first=rows[descriptor.index];
             if(first.reserved!=2u)continue;
+            if(source_descriptors) {
+                const std::array<std::uint32_t,3> source{
+                    descriptor.row0,descriptor.row1,descriptor.row_count};
+                std::memcpy(host_.data()+offsets[1]+
+                        std::size_t(descriptor.index)*
+                            sizeof(native::GpuDyJointRow),
+                            source.data(),sizeof(source));
+            }
             const auto index=std::bit_cast<std::uint32_t>(first.applied_force);
             const auto slot=joint_inputs[index].source_slot;
             const auto address=narrow(std::size_t(params[28])+joint_base+
@@ -1937,6 +2002,8 @@ private:
     std::uint64_t max_view_=0u;
     std::vector<std::uint8_t> host_;
     std::vector<SourceDyPackedContactPrepNative> packed_;
+    std::vector<std::uint32_t> source_descriptor_tokens_;
+    std::vector<native::GpuDyDistanceDescriptor> source_descriptor_full_;
     std::vector<SourceDyPackedIntegrationNative> packed_integration_;
     std::vector<SourceDyHostPoseNative> host_poses_;
     std::vector<SourceDyActorLocalNative> actor_local_host_;

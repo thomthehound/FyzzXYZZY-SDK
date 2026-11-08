@@ -8567,6 +8567,19 @@ void Scene::solve_gpu_distance_constraints(float seconds) {
         if(cursor!=m.solver_offset+m.count)
             throw std::logic_error("GPU Dy source patch contact stream truncated");
     }
+    // Zero-response managers have no DyContactPrep record. Preserve
+    // their original endpoint ordinals and dynamic classification in
+    // the otherwise unused manifold slots for device task admission.
+    for(const auto& desc:gpu_dy_descriptors_) {
+        if((desc.row_count&255u)!=0u)continue;
+        if(desc.index>=gpu_dy_manifolds_.size())
+            throw std::logic_error("GPU Dy zero-response manager index invalid");
+        auto& manager=gpu_dy_manifolds_[desc.index];
+        if(manager.patch_count!=0u)continue;
+        manager.patch_offset=desc.row0;
+        manager.order_offset=desc.row1;
+        manager.prep_index=desc.row_count;
+    }
     gpu_dy_contact_order_.resize(solver_contact_order_.size());
     for(std::size_t i=0;i<solver_contact_order_.size();++i)
         gpu_dy_contact_order_[i]=narrow(solver_contact_order_[i]);

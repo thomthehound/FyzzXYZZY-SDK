@@ -1095,6 +1095,12 @@ void verify_gpu_coupled_solver(
         require(schedule.device_colored_tasks>0u &&
                 schedule.device_colored_descriptors>0u,
             "Coupled Dy solver skipped device-owned constraint partitioning");
+        require(schedule.device_source_descriptors==
+                    schedule.device_colored_descriptors &&
+                schedule.source_descriptor_upload_bytes<
+                    schedule.device_colored_descriptors*
+                        sizeof(native::GpuDyDistanceDescriptor),
+            "Source Sc still uploads complete contact/constraint descriptors");
         require(schedule.device_initialized_bodies>0u &&
                 schedule.device_world_motion_bodies>0u &&
                 schedule.device_world_motion_bodies<=
@@ -2480,8 +2486,13 @@ void verify_gpu_wide_island_solver(
         require(schedule.device_generated_bytes==
                     schedule.device_colored_descriptors*
                         (sizeof(native::GpuDyDistanceDescriptor)+
-                         sizeof(std::uint32_t)),
-                "Device Dy coloring still uploads its derived output arrays");
+                         sizeof(std::uint32_t)) &&
+                schedule.device_source_descriptors==
+                    schedule.device_colored_descriptors &&
+                schedule.source_descriptor_upload_bytes<=
+                    schedule.device_colored_descriptors*
+                        sizeof(std::uint32_t),
+                "Source Sc did not materialize Dy descriptors on the device");
         require(producer->dy_upload_span_count()==1u &&
                 producer->dy_gpu_integrated_body_count()==actual.bodies.size() &&
                 producer->dy_pcm_device_contact_rows()>=actual.bodies.size() &&

@@ -320,6 +320,9 @@ struct GpuDyContactPatch {
 };
 static_assert(sizeof(GpuDyContactPatch)==32u);
 struct GpuDyContactManifold {
+    // With no prepared patches, these fields carry the source body's
+    // solver ordinals and endpoint flags until device partitioning.
+    // No contact-prep or writeback path reads them in that state.
     std::uint32_t patch_offset=0,patch_count=0;
     std::uint32_t order_offset=0,contact_count=0;
     std::uint32_t prep_index=0xffffffffu;

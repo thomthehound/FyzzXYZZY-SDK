@@ -422,8 +422,70 @@ void sourceDyPartitionTask(uint taskId,uint scratch,uint errorAddress,
         dyNextWave=0u;dySerial=0u;
     }
     AllMemoryBarrierWithGroupSync();
+    // The native Sc path transfers only encounter-order manager/joint
+    // identities. Expand source descriptors from the existing resident
+    // contact prep and joint-row records before partition coloring.
+    const bool sourceDescriptors=views.x==24u;
+    const uint sourceTable=bodyState+p.bodyCount*12u;
+    const uint sourceCount=sourceDescriptors?arena.Load(sourceTable):0u;
     for(uint i=first+lane;i<last;i+=128u) {
-        const uint4 desc=arena.Load4(raw+i*16u);
+        uint4 desc;
+        if(sourceDescriptors) {
+            const uint token=arena.Load(colors+i*4u);
+            const uint kind=token>>30u;
+            const uint index=token&0x3fffffffu;
+            if(kind==3u) {
+                if(index>=p.manifoldCount) {
+                    arena.InterlockedOr(errorAddress,1048576u);
+                    continue;
+                }
+                const uint manager=p.manifoldBias+index*20u;
+                if(arena.Load(manager+4u)==0u) {
+                    // Zero-response managers have no contact prep.
+                    // Their otherwise unused manifold slots retain
+                    // the source ordinals and endpoint classification.
+                    desc=uint4(index,arena.Load(manager),
+                               arena.Load(manager+8u),
+                               arena.Load(manager+16u));
+                } else {
+                    const uint prepIndex=arena.Load(manager+16u);
+                    if(prepIndex>=p.prepCount) {
+                        arena.InterlockedOr(errorAddress,1048576u);
+                        continue;
+                    }
+                    const uint prep=p.prepBias+prepIndex*64u;
+                    const uint refA=arena.Load(prep);
+                    const uint refB=arena.Load(prep+4u);
+                    const bool dynamicA=(refA&1u)!=0u;
+                    const bool dynamicB=(refB&1u)!=0u;
+                    desc=uint4(index,
+                               dynamicA?(refA>>1u):invalidBody,
+                               dynamicB?(refB>>1u):invalidBody,
+                               (dynamicA?0x100u:0u)|
+                               (dynamicB?0x200u:0u));
+                }
+            } else if(kind==2u) {
+                if(index>=p.rowCount) {
+                    arena.InterlockedOr(errorAddress,1048576u);
+                    continue;
+                }
+                // Device-authored 1D Jacobians replace these source
+                // ordinals before any PGS read of their row geometry.
+                const uint row=p.distanceBias+index*64u;
+                desc=uint4(index,arena.Load(row),
+                           arena.Load(row+4u),arena.Load(row+8u));
+            } else if(kind==0u) {
+                if(token>=sourceCount) {
+                    arena.InterlockedOr(errorAddress,1048576u);
+                    continue;
+                }
+                desc=arena.Load4(sourceTable+4u+token*16u);
+            } else {
+                arena.InterlockedOr(errorAddress,1048576u);
+                continue;
+            }
+            arena.Store4(raw+i*16u,desc);
+        } else desc=arena.Load4(raw+i*16u);
         const bool da=(desc.w&0x100u)!=0u;
         const bool db=(desc.w&0x200u)!=0u;
         if((desc.w&~0x3ffu)!=0u || (!da && !db) ||
