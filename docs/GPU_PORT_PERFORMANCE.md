@@ -76,20 +76,19 @@ face expansion to the source-ordered range containing finite convex
 pairs. Scenes with cooked hulls but no finite convex contacts dispatch
 no face shader, without another GPU index buffer or upload.
 
-Primitive PCM frames with GPU Dy no longer fetch PCM results before
-Sc schedules the solver. Sc classifies sphere contacts and finite
-plane-box corner witnesses in bounded CPU work while the device builds
-its own numerical contact stream. Dy reads that resident stream, and its existing final download
-also collects the GPU contacts for independent count, transition,
-normal and witness validation before the Sc epoch commits. The same
-84-byte records are still transferred for this validation, but **after**
-Dy instead of at a PCM -> Sc -> Dy intermediate fence; there is no new
-GPU submission or host geometry upload. Collision-only primitive
-queries also overlap Sc contact/island publication with PCM execution,
-then verify device contacts at Sc's commit boundary. They still fetch
-GPU contacts before returning, without introducing a solver dispatch
-or an intermediate Sc wait. Finite box-box and cooked convex contacts
-still require the intermediate GPU/CPU synchronization.
+For primitive-only PCM refreshes, Sc now computes its bounded sphere
+and plane-box Gu witnesses once on the CPU, publishes the original Sc
+contact and island topology, and uploads the resulting 84-byte-per-manager
+world-contact stream directly for GPU Dy. The shader no longer repeats
+these analytic contact calculations; no intermediate PCM readback,
+GJK/EPA dispatch or GPU witness journal is needed. Collision-only
+primitive queries use the same single-source Gu classification and
+device stream. A GPU-origin contact cache is invalidated before
+switching its plane-box manager to CPU Gu history; switching back to
+GPU Gu resets the device edge cache from Sc's authoritative lifetime
+and prior-touch flags. General box-box and cooked convex contacts
+remain GPU generated, with their required intermediate Sc contact
+publication and transactional device journal.
 
 Production reviews must identify **each necessary GPU → CPU → GPU handoff**,
 the value crossing it, the consumer forcing synchronization, and whether
@@ -119,8 +118,9 @@ Every stage has an explicit producer, consumer and completion dependency:
    PCM and Dy rather than repacking their contents through the host.
 3. **Join only for data:** Sc fetches reports or contact topology only
    when its next CPU decision actually consumes unknown GPU output.
-   Bounded analytic classifications may instead run on the CPU during
-   device work, with GPU result agreement checked before commit.
+   Bounded primitive classifications execute once on the CPU and send
+   their compact Gu results to GPU Dy; general numerical PCM remains
+   device-owned.
 4. **Publish:** group dependent GPU outputs into one source fetch.
    The stream retires its own submission and staging tokens. Publish
    body/contact results and persistent history only after validation;

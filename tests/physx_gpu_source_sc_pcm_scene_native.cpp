@@ -1989,8 +1989,8 @@ void verify_sphere_gpu_solver(
             "GPU sphere scene changed Sc PCM/Gu manager identity");
         if(frame==0u) {
             const auto pcm_bytes=producer->pcm_contact_readback_bytes();
-            const auto deferred_bytes=
-                producer->pcm_deferred_contact_readback_bytes();
+            const auto host_contact_bytes=
+                producer->pcm_host_contact_upload_bytes();
             const auto pcm_rows=producer->dy_pcm_device_contact_rows();
             const auto cpu_bytes=producer->dy_cpu_gu_geometry_bytes();
             // Sc admits one speculative plane manager per dynamic
@@ -1999,7 +1999,7 @@ void verify_sphere_gpu_solver(
             constexpr std::size_t pcm_managers=5u;
             if(gpu.contacts().size()!=3u || cpu_bytes!=0u ||
                pcm_rows!=3u || pcm_bytes!=0u ||
-               deferred_bytes!=pcm_managers*sizeof(
+               host_contact_bytes!=pcm_managers*sizeof(
                    physx_gpu::SourcePcmGpuContactStreamNative)) {
                 throw std::runtime_error(
                     "Sphere GPU contact path: managers="+
@@ -2007,7 +2007,7 @@ void verify_sphere_gpu_solver(
                     " device_rows="+std::to_string(pcm_rows)+
                     " cpu_gu_bytes="+std::to_string(cpu_bytes)+
                     " pcm_readback_bytes="+std::to_string(pcm_bytes)+
-                    " deferred_bytes="+std::to_string(deferred_bytes));
+                    " host_pcm_upload_bytes="+std::to_string(host_contact_bytes));
             }
             require(cpu.contacts().size()==3u,
                 "Source sphere impact fixtures lost a contact manager");
@@ -2075,9 +2075,9 @@ void verify_sphere_gpu_solver(
     cpu.advance_collision(true);
     gpu.advance_collision(true);
     require(producer->pcm_contact_readback_bytes()==0u &&
-            producer->pcm_deferred_contact_readback_bytes()>0u &&
+            producer->pcm_host_contact_upload_bytes()>0u &&
             producer->dy_distance_dispatch_count()==solved_before,
-        "Collision-only Sc PCM did not join deferred contact verification at commit");
+        "Collision-only primitive PCM unexpectedly fetched GPU contacts");
     const auto embedded=[](const native::Scene& scene) -> native::ContactPoint {
         for(const auto& manager:scene.contacts())
             for(const auto& point:manager.points)
@@ -2092,7 +2092,7 @@ void verify_sphere_gpu_solver(
         "GPU embedded sphere did not preserve source PCM exit-face witness");
 }
 
-void verify_deferred_primitive_pcm_solver(
+void verify_host_primitive_pcm_solver(
     fyzz::compute::Backend backend,const char* sap,
     const char* pcm,const char* dy_shader) {
     using namespace fyzz;
@@ -2138,16 +2138,15 @@ void verify_deferred_primitive_pcm_solver(
         gpu.step(dt);
         const auto& completed=producer->stream_submission_stats();
         require(completed.fetch_batches==before_fetch.fetch_batches+1u &&
-                completed.fetch_spans==before_fetch.fetch_spans+2u &&
+                completed.fetch_spans==before_fetch.fetch_spans+1u &&
                 completed.fetch_bytes-before_fetch.fetch_bytes==
-                    producer->dy_distance_transfer_bytes().second+
-                    producer->pcm_deferred_contact_readback_bytes(),
-            "Deferred primitive contact/Dy result used multiple fetch boundaries");
+                    producer->dy_distance_transfer_bytes().second,
+            "Primitive PCM introduced an unnecessary GPU readback");
         require(producer->pcm_contact_readback_bytes()==0u &&
-                producer->pcm_deferred_contact_readback_bytes()==
+                producer->pcm_host_contact_upload_bytes()==
                     2u*sizeof(physx_gpu::SourcePcmGpuContactStreamNative) &&
                 producer->dy_gpu_integrated_body_count()==2u,
-            "Plane-box/sphere GPU frame reinstated the PCM-to-Sc fence");
+            "Primitive CPU Sc/GPU Dy path duplicated numerical PCM work");
         require(cpu.contacts().size()==gpu.contacts().size(),
             "Deferred primitive PCM changed the Sc touch graph");
         if(frame==2u)
@@ -2169,6 +2168,43 @@ void verify_deferred_primitive_pcm_solver(
                     "Deferred primitive Gu witnesses differ");
             }
         }
+    }
+
+    // Switch CPU primitive -> mixed GPU Gu -> CPU primitive. Sc must
+    // regenerate the correct side's persistent EdgeIndex witness cache.
+    const auto add_general=[](native::Scene& scene) {
+        scene.add_static_box({0.5f,0.5f,0.5f},{50.f,5.f,0.f});
+        const auto moving=scene.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{50.997f,5.f,0.f},1.f);
+        RigidBodyDynamics no_gravity{};
+        no_gravity.gravity_enabled=false;
+        scene.set_dynamics(moving,no_gravity);
+        return moving;
+    };
+    const auto cpu_general=add_general(cpu);
+    const auto gpu_general=add_general(gpu);
+    cpu.step(dt);
+    gpu.step(dt);
+    require(producer->pcm_contact_readback_bytes()>0u &&
+            producer->pcm_host_contact_upload_bytes()==0u &&
+            cpu.contacts().size()==gpu.contacts().size(),
+        "Mixed box/primitive frame lost GPU PCM ownership");
+    cpu.remove(cpu_general);
+    gpu.remove(gpu_general);
+    cpu.step(dt);
+    gpu.step(dt);
+    require(producer->pcm_contact_readback_bytes()==0u &&
+            producer->pcm_host_contact_upload_bytes()>0u &&
+            cpu.contacts().size()==gpu.contacts().size(),
+        "Primitive frame failed to resume Sc CPU PCM ownership");
+    for(std::size_t i=0u;i<cpu.contacts().size();++i) {
+        const auto& a=cpu.contacts()[i],&b=gpu.contacts()[i];
+        require(a.pair==b.pair && a.count==b.count,
+            "PCM producer transition changed Sc contact identity");
+        for(std::size_t j=0u;j<a.count;++j)
+            require(std::fabs(a.points[j].separation-
+                              b.points[j].separation)<0.003f,
+                "PCM producer transition reused stale Gu witnesses");
     }
 }
 
@@ -2947,7 +2983,7 @@ int main(int argc,char** argv) {
                 [&]{
                     verify_sphere_gpu_solver(
                         backend,argv[1],argv[2],argv[3]);
-                    verify_deferred_primitive_pcm_solver(
+                    verify_host_primitive_pcm_solver(
                         backend,argv[1],argv[2],argv[3]);
                 });
         if(scenario=="all" || scenario=="convex_plane")

@@ -115,7 +115,8 @@ public:
     }
 
     void invalidate_after_rollback() noexcept {
-        deferred_expected_={};
+        published_pair_count_=0u;
+        rebuild_required_=true;
         if(pcm_transaction_pending_) {
             // A submitted PCM epoch may have changed Gu witnesses even
             // when Sc/Dy later rejected the complete simulation frame.
@@ -128,19 +129,10 @@ public:
     }
 
     bool needs_contact_rebuild() const noexcept {
-        return restore_pending_;
+        return restore_pending_ || rebuild_required_;
     }
 
     void commit_step() {
-        if(!deferred_expected_.empty()) {
-            // CPU Sc has finished publishing its analytic contact and
-            // island state. Fetch the already-submitted GPU result at
-            // the commit boundary, not before CPU Sc processing.
-            const auto extra=deferred_verification_download();
-            stream_.fetch(std::span<const compute::DownloadSpan>(
-                &*extra,1u));
-            verify_deferred_results();
-        }
         if(!pcm_transaction_pending_)return;
         published_edge_span_bytes_=std::max(
             published_edge_span_bytes_,pending_edge_span_bytes_);
@@ -148,50 +140,98 @@ public:
         journal_pair_count_=0u;
     }
 
+    // Primitive CPU Gu contacts are already authoritative for Sc.
+    // Upload their Dy layout once rather than executing GPU PCM and
+    // downloading a duplicate numerical manifold for verification.
+    void upload_host_contacts(
+            std::span<const native::GpuPcmBoxPair> requests,
+            std::span<const native::GpuPcmBoxResult> results) {
+        if(requests.empty() || requests.size()!=results.size() ||
+           requests.size()>std::numeric_limits<std::uint32_t>::max())
+            throw std::invalid_argument("Invalid Sc primitive PCM upload");
+        if(pcm_transaction_pending_)
+            throw std::logic_error("Source PCM host upload before GPU epoch commit");
+        restore_rejected_epoch();
+        host_contacts_.resize(requests.size());
+        for(std::size_t i=0;i<requests.size();++i) {
+            const auto& request=requests[i];
+            const auto& result=results[i];
+            if(!request.candidate_complete ||
+               !(request.candidate_capacity==1u ||
+                 (request.plane_pair && request.candidate_capacity==16u)) ||
+               request.edge!=result.edge || result.count>4u ||
+               result.status!=0u ||
+               ((result.count!=0u)!=
+                (result.touch_transition==native::GpuPcmTouchTransition::Found ||
+                 result.touch_transition==native::GpuPcmTouchTransition::Persists)))
+                throw std::logic_error("Invalid source Gu primitive contact stream");
+            auto& packed=host_contacts_[i];
+            packed={};
+            packed.edge_handle=result.edge;
+            const auto count=static_cast<std::uint32_t>(result.count);
+            packed.packed_counts=count | (count<<6u) | (1u<<9u) |
+                (count<<10u) |
+                (static_cast<std::uint32_t>(result.touch_transition)<<13u);
+            if(!count)continue;
+            const auto n=result.normal;
+            if(!std::isfinite(n.x) || !std::isfinite(n.y) ||
+               !std::isfinite(n.z))
+                throw std::overflow_error("Nonfinite Sc primitive PCM normal");
+            packed.normal[0]=n.x;
+            packed.normal[1]=n.y;
+            packed.normal[2]=n.z;
+            for(std::uint32_t j=0u;j<count;++j) {
+                const auto& point=result.points[j];
+                if(!std::isfinite(point.position.x) ||
+                   !std::isfinite(point.position.y) ||
+                   !std::isfinite(point.position.z) ||
+                   !std::isfinite(point.separation))
+                    throw std::overflow_error("Nonfinite Sc primitive PCM witness");
+                packed.contacts[j]={
+                    {point.position.x,point.position.y,point.position.z},
+                    point.separation};
+            }
+        }
+        const auto bytes=source_allocation_bytes(
+            requests.size(),sizeof(SourcePcmGpuContactStreamNative));
+        dense_contacts_.allocate(bytes,PX_FL);
+        const auto transfer=requests.size()*sizeof(host_contacts_[0]);
+        auto& uploads=stream_.upload_scratch();
+        uploads.push_back({
+            dense_contacts_.getDevicePtr(),host_contacts_.data(),transfer});
+        stream_.queue_uploads(uploads);
+        published_pair_count_=static_cast<std::uint32_t>(requests.size());
+        last_pair_upload_bytes_=0u;
+        last_contact_download_bytes_=0u;
+        last_host_contact_upload_bytes_=transfer;
+        last_edge_history_copy_bytes_=0u;
+        last_continuation_commands_=0u;
+        last_face_pair_scan_count_=0u;
+        rebuild_required_=false;
+    }
+
     void generate(std::span<const native::GpuPcmBoxPair> requests,
                   std::span<native::GpuPcmBoxResult> output,
-                  std::uint32_t shape_capacity,
-                  bool defer_host_fetch=false) {
-        if(defer_host_fetch &&
-           (requests.empty() ||
-            !std::all_of(requests.begin(),requests.end(),
-                [](const auto& request) {
-                    return request.candidate_complete &&
-                           (request.candidate_capacity==1u ||
-                            (request.plane_pair &&
-                             request.candidate_capacity==16u));
-                })))
-            throw std::invalid_argument(
-                "Deferred source PCM requires analytic single-witness managers");
+                  std::uint32_t shape_capacity) {
         if(requests.size()!=output.size())
             throw std::invalid_argument("Source Sc GPU PCM result count mismatch");
         if(pcm_transaction_pending_)
             throw std::logic_error("Sc PCM frame advanced before its prior epoch committed");
-        if(restore_pending_) {
-            // The previous pair descriptors and journal must be consumed
-            // before new scene uploads can replace either allocation.
-            journal_stage_.append(stream_,addresses_,
-                SourceScContactHistoryNativeStage::Phase::Restore,
-                pairs_.getDevicePtr(),edges_.getDevicePtr(),
-                journal_.getDevicePtr(),journal_pair_count_,
-                journal_edge_capacity_);
-            stream_.submit();
-            stream_.wait_at_fetch();
-            restore_pending_=false;
-            journal_pair_count_=0u;
-        }
+        restore_rejected_epoch();
         // The previous successful source stream is authoritative for
         // whether this pair buffer has usable resident input records.
         const auto previous_count=published_pair_count_;
         published_pair_count_=0u;
         last_pair_upload_bytes_=0u;
         last_contact_download_bytes_=0u;
-        last_deferred_contact_download_bytes_=0u;
-        deferred_expected_={};
+        last_host_contact_upload_bytes_=0u;
         last_edge_history_copy_bytes_=0u;
         last_continuation_commands_=0u;
         last_face_pair_scan_count_=0u;
-        if(requests.empty())return;
+        if(requests.empty()) {
+            rebuild_required_=false;
+            return;
+        }
         if((!shape_capacity && !requests.empty()) ||
            requests.size()>std::numeric_limits<std::uint32_t>::max())
             throw std::out_of_range("Source GPU PCM pair capacity overflow");
@@ -440,14 +480,6 @@ public:
         journal_pair_count_=pair_count;
         journal_edge_capacity_=edge_capacity;
         pending_edge_span_bytes_=std::size_t(edge_capacity)*240u;
-        if(defer_host_fetch) {
-            // Sc publishes analytic topology while the GPU prepares Dy.
-            // The PCM result joins Dy's existing final download.
-            deferred_expected_=output;
-            published_pair_count_=pair_count;
-            last_deferred_contact_download_bytes_=readback_bytes;
-            return;
-        }
         stream_.fetch(downloads);
         for(std::uint32_t i=0u;i<pair_count;++i) {
             const auto& packed=readback_[i];
@@ -486,59 +518,7 @@ public:
         }
         published_pair_count_=pair_count;
         last_contact_download_bytes_=readback_bytes;
-    }
-    std::optional<compute::DownloadSpan>
-    deferred_verification_download() {
-        if(deferred_expected_.empty())return std::nullopt;
-        const auto bytes=readback_.size()*sizeof(readback_[0]);
-        const auto mapped=addresses_.resolve(
-            dense_contacts_.getDevicePtr(),bytes);
-        return compute::DownloadSpan{
-            mapped.buffer,mapped.offset,readback_.data(),bytes};
-    }
-    void verify_deferred_results() {
-        if(deferred_expected_.empty())return;
-        // Check source Gu outcome after Dy's final GPU fence, without
-        // introducing an intermediate device -> CPU -> device wait.
-        for(std::size_t i=0u;i<deferred_expected_.size();++i) {
-            const auto& expected=deferred_expected_[i];
-            const auto& actual=readback_[i];
-            const auto header=unpack_source_pcm_gpu_header_native(actual);
-            if(header.edge_handle!=expected.edge ||
-               header.status!=0u ||
-               header.emitted_count!=expected.count ||
-               header.touch_transition!=
-                   static_cast<std::uint32_t>(expected.touch_transition)) {
-                deferred_expected_={};
-                throw std::logic_error(
-                    "Deferred GPU PCM contact topology differs from Sc");
-            }
-            if(!expected.count)continue;
-            const auto close=[](float a,float b) {
-                return std::isfinite(a) && std::isfinite(b) &&
-                       std::abs(a-b)<=0.002f;
-            };
-            if(!close(actual.normal[0],expected.normal.x) ||
-               !close(actual.normal[1],expected.normal.y) ||
-               !close(actual.normal[2],expected.normal.z)) {
-                deferred_expected_={};
-                throw std::logic_error(
-                    "Deferred GPU PCM contact normal differs from Sc");
-            }
-            for(std::size_t j=0u;j<expected.count;++j) {
-                const auto& a=actual.contacts[j];
-                const auto& b=expected.points[j];
-                if(!close(a.position[0],b.position.x) ||
-                   !close(a.position[1],b.position.y) ||
-                   !close(a.position[2],b.position.z) ||
-                   !close(a.separation,b.separation)) {
-                    deferred_expected_={};
-                    throw std::logic_error(
-                        "Deferred GPU PCM contact witness differs from Sc");
-                }
-            }
-        }
-        deferred_expected_={};
+        rebuild_required_=false;
     }
     CudaDeviceAddressMap::Address contact_stream_address() const noexcept {
         return published_pair_count_?dense_contacts_.getDevicePtr():0u;
@@ -552,8 +532,8 @@ public:
     std::size_t last_contact_download_bytes() const noexcept {
         return last_contact_download_bytes_;
     }
-    std::size_t last_deferred_contact_download_bytes() const noexcept {
-        return last_deferred_contact_download_bytes_;
+    std::size_t last_host_contact_upload_bytes() const noexcept {
+        return last_host_contact_upload_bytes_;
     }
     std::size_t last_edge_history_copy_bytes() const noexcept {
         return last_edge_history_copy_bytes_;
@@ -565,6 +545,20 @@ public:
         return last_face_pair_scan_count_;
     }
 private:
+    void restore_rejected_epoch() {
+        if(!restore_pending_)return;
+        // A rejected GPU Gu journal must be restored before another
+        // producer can touch the same persistent EdgeIndex history.
+        journal_stage_.append(stream_,addresses_,
+            SourceScContactHistoryNativeStage::Phase::Restore,
+            pairs_.getDevicePtr(),edges_.getDevicePtr(),
+            journal_.getDevicePtr(),journal_pair_count_,
+            journal_edge_capacity_);
+        stream_.submit();
+        stream_.wait_at_fetch();
+        restore_pending_=false;
+        journal_pair_count_=0u;
+    }
     compute::Context& context_;
     CudaDeviceAddressMap& addresses_;
     SourceSapDmaNative& stream_;
@@ -588,15 +582,16 @@ private:
     CudaDeviceAddressMap::Address indirect_address_=0u;
     std::vector<SourcePcmBoxPairNative> pair_host_;
     std::vector<SourcePcmGpuContactStreamNative> readback_;
-    std::span<const native::GpuPcmBoxResult> deferred_expected_{};
+    std::vector<SourcePcmGpuContactStreamNative> host_contacts_;
     bool reset_manifolds_=false;
+    bool rebuild_required_=false;
     bool pcm_transaction_pending_=false,restore_pending_=false;
     std::uint32_t journal_pair_count_=0u,journal_edge_capacity_=0u;
     std::size_t pending_edge_span_bytes_=0u;
     std::uint32_t published_pair_count_=0u;
     std::size_t last_pair_upload_bytes_=0u;
     std::size_t last_contact_download_bytes_=0u;
-    std::size_t last_deferred_contact_download_bytes_=0u;
+    std::size_t last_host_contact_upload_bytes_=0u;
     std::size_t last_edge_history_copy_bytes_=0u;
     std::size_t last_continuation_commands_=0u;
     std::size_t last_face_pair_scan_count_=0u;

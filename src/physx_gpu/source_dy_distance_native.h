@@ -229,8 +229,7 @@ public:
                bool device_world_motion=false,
                bool device_unconstrained_preparation=false,
                std::span<native::GpuDySleepState> sleep_states={},
-               std::span<const native::GpuDyJointInput> joint_inputs={},
-               std::optional<compute::DownloadSpan> pcm_completion={}) {
+               std::span<const native::GpuDyJointInput> joint_inputs={}) {
         if(integration.size()<bodies.size() ||
            integrated_poses.size()!=integration.size() ||
            (tasks.empty() && integration.size()==bodies.size()))
@@ -1330,12 +1329,10 @@ public:
         launch(Launch::FreeBodies,{0u,(free_bodies+127u)/128u},
                narrow(integration.size()));
         const auto mapped=addresses_.resolve(address+history_bytes,output_bytes);
-        std::array<compute::DownloadSpan,2> downloads{{
-            {mapped.buffer,mapped.offset,host_.data(),output_bytes},{}
+        const std::array<compute::DownloadSpan,1> downloads{{
+            {mapped.buffer,mapped.offset,host_.data(),output_bytes}
         }};
-        if(pcm_completion)downloads[1]=*pcm_completion;
-        stream_.fetch(std::span<const compute::DownloadSpan>(
-            downloads.data(),pcm_completion?2u:1u));
+        stream_.fetch(downloads);
         for(const auto id:pending_actor_locals_)
             actor_local_valid_[id]=1u;
         for(std::size_t i=0;i<tasks.size();++i)

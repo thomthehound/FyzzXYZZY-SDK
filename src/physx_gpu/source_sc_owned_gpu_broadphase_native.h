@@ -317,10 +317,7 @@ public:
                             anchor_impulses,device_initial_bodies,
                             device_world_motion,
                             device_unconstrained_preparation,sleep_states,
-                            joint_inputs,
-                            pcm_?pcm_->deferred_verification_download()
-                                :std::nullopt);
-        if(pcm_)pcm_->verify_deferred_results();
+                            joint_inputs);
         ++dy_distance_dispatch_count_;
     }
     std::size_t dy_resident_pose_count() const noexcept {
@@ -354,8 +351,8 @@ public:
     std::size_t pcm_contact_readback_bytes() const noexcept {
         return pcm_ ? pcm_->last_contact_download_bytes() : 0u;
     }
-    std::size_t pcm_deferred_contact_readback_bytes() const noexcept {
-        return pcm_ ? pcm_->last_deferred_contact_download_bytes() : 0u;
+    std::size_t pcm_host_contact_upload_bytes() const noexcept {
+        return pcm_ ? pcm_->last_host_contact_upload_bytes() : 0u;
     }
     std::size_t pcm_edge_history_copy_bytes() const noexcept {
         return pcm_ ? pcm_->last_edge_history_copy_bytes() : 0u;
@@ -402,12 +399,15 @@ public:
             throw std::logic_error("Source Sc GPU PCM shaders not installed");
         pcm_->generate(requests,results,aabb_->capacity());
     }
-    bool begin_gpu_pcm_contacts_deferred(
+    bool supports_host_pcm_contacts() const noexcept override {
+        return pcm_ && dy_distance_;
+    }
+    void upload_host_pcm_contacts(
             std::span<const native::GpuPcmBoxPair> requests,
-            std::span<native::GpuPcmBoxResult> results) override {
-        if(!pcm_ || !dy_distance_)return false;
-        pcm_->generate(requests,results,aabb_->capacity(),true);
-        return true;
+            std::span<const native::GpuPcmBoxResult> results) override {
+        if(!pcm_ || !dy_distance_)
+            throw std::logic_error("Source Sc/Dy primitive PCM is unavailable");
+        pcm_->upload_host_contacts(requests,results);
     }
     void authorize_device_integrated_pose(BodyId id) override {
         producer_->authorize_device_integrated_pose(id);

@@ -4056,46 +4056,42 @@ void Scene::update_contacts() {
                 gpu_pcm_pairs_.push_back({
                     a.geometry==Geometry::Plane?pair.a:pair.b,
                     a.geometry==Geometry::Plane?pair.b:pair.a,
-                    edge,!island_edges_[edge].pcm_cache.initialized,
+                    edge,(!island_edges_[edge].pcm_cache.initialized ||
+                          !island_edges_[edge].pcm_cache.device_history),
                     sphere?1u:16u,true,floor.position.y,
                     a.contact_offset+b.contact_offset,previously_touching,true});
             }else {
                 const bool swapped=island_edges_[edge].gu_order_reversed;
                 gpu_pcm_pairs_.push_back({
                     swapped?pair.b:pair.a,swapped?pair.a:pair.b,edge,
-                    !island_edges_[edge].pcm_cache.initialized,
+                    (!island_edges_[edge].pcm_cache.initialized ||
+                     !island_edges_[edge].pcm_cache.device_history),
                     convex?4u:(sphere?1u:16u),false,0.f,0.f,
                     previously_touching,sphere && !convex});
             }
         }
         gpu_pcm_results_.resize(gpu_pcm_pairs_.size());
     }
-    // Primitive sphere and plane-box managers produce source Gu
-    // topology independently of the device numerical stream. CPU
-    // Sc publishes topology while GPU PCM prepares numerical Dy inputs.
-    // The GPU outcome is checked at the existing Dy fetch boundary.
-    bool deferred_pcm=false;
-    if(source_gpu_pcm) {
-        const bool analytic=gpu_broadphase_->has_gpu_dy_distance() &&
-            !gpu_pcm_pairs_.empty() &&
-            std::all_of(gpu_pcm_pairs_.begin(),gpu_pcm_pairs_.end(),
-                [this](const GpuPcmBoxPair& request) {
-                    return request.candidate_complete &&
-                        (request.candidate_capacity==1u ||
-                         (request.plane_pair &&
-                          request.candidate_capacity==16u &&
-                          shapes_[request.second].geometry==Geometry::Box));
-                });
-        if(analytic)
-            deferred_pcm=gpu_broadphase_->begin_gpu_pcm_contacts_deferred(
-                gpu_pcm_pairs_,gpu_pcm_results_);
-        if(!deferred_pcm)
-            gpu_broadphase_->generate_gpu_pcm_box_contacts(
-                gpu_pcm_pairs_,gpu_pcm_results_);
-    }
-    if(deferred_pcm) {
-        // Primitive source Gu classification overlaps GPU PCM; only
-        // existing Sc-owned contact and island metadata is published.
+    // A bounded primitive PCM manager is cheaper to classify once on
+    // the Sc CPU than to execute duplicate GPU PCM and fetch its results.
+    // Dy still prepares and solves against the same packed GPU stream,
+    // uploaded once from the Sc-owned Gu contacts.
+    const bool host_primitive=source_gpu_pcm &&
+        gpu_broadphase_->supports_host_pcm_contacts() &&
+        !gpu_pcm_pairs_.empty() &&
+        std::all_of(gpu_pcm_pairs_.begin(),gpu_pcm_pairs_.end(),
+            [this](const GpuPcmBoxPair& request) {
+                return request.candidate_complete &&
+                    (request.candidate_capacity==1u ||
+                     (request.plane_pair &&
+                      request.candidate_capacity==16u &&
+                      shapes_[request.second].geometry==Geometry::Box));
+            });
+    if(source_gpu_pcm && !host_primitive)
+        gpu_broadphase_->generate_gpu_pcm_box_contacts(
+            gpu_pcm_pairs_,gpu_pcm_results_);
+    if(host_primitive) {
+        // No independent Gu cache or CPU/GPU contact computation pair.
         for(std::size_t i=0u;i<gpu_pcm_pairs_.size();++i) {
             const auto& request=gpu_pcm_pairs_[i];
             const Shape& first=shapes_[request.first];
@@ -4110,9 +4106,13 @@ void Scene::update_contacts() {
                 // Eight bounded corner tests and the original Sc
                 // persistent PCM cache determine the CPU contact run.
                 step_checkpoint_.save_edge(*this,request.edge);
+                auto& cache=island_edges_[request.edge].pcm_cache;
+                // The last GPU-only frame retained its witnesses in
+                // device Gu history, not this host cache. Regenerate
+                // host primitive witnesses from authoritative geometry.
+                if(cache.device_history)cache={};
                 count=generate_pcm_plane_box(
-                    first,second,distance,
-                    island_edges_[request.edge].pcm_cache,points);
+                    first,second,distance,cache,points);
                 for(std::size_t j=0u;j<count;++j)
                     points[j].normal={
                         -points[j].normal.x,-points[j].normal.y,
@@ -4159,6 +4159,9 @@ void Scene::update_contacts() {
             }
         }
     }
+    if(host_primitive)
+        gpu_broadphase_->upload_host_pcm_contacts(
+            gpu_pcm_pairs_,gpu_pcm_results_);
     std::size_t gpu_pcm_index=0u;
     std::size_t old_cursor = 0;
     std::size_t old_cache_cursor=0;
@@ -4288,6 +4291,8 @@ void Scene::update_contacts() {
                                   result.count};
                     manifold.count=publish_gpu_pcm_box_box(
                         result,island_edges_[edge].pcm_cache,contacts);
+                    island_edges_[edge].pcm_cache.device_history=
+                        !host_primitive;
                 }else {
                     manifold.count=convex_pair
                         ?generate_pcm_convex_pair(
