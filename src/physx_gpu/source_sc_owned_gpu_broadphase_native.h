@@ -151,7 +151,8 @@ public:
                 take_pcm_shader(*pcm_shaders,NativeGpuPcmStage::EpaArgsReset),
                 take_pcm_shader(*pcm_shaders,NativeGpuPcmStage::EpaContact),
                 take_pcm_shader(*pcm_shaders,NativeGpuPcmStage::FaceContacts),
-                take_pcm_shader(*pcm_shaders,NativeGpuPcmStage::ContactJournal));
+                take_pcm_shader(*pcm_shaders,NativeGpuPcmStage::ContactJournal),
+                take_pcm_shader(*pcm_shaders,NativeGpuPcmStage::DeviceIslands));
         if(dy_shader)
             dy_distance_=std::make_unique<SourceDyDistanceNativeStage>(
                 context_,addresses_,stream_,allocators_.deviceAlloc,
@@ -365,6 +366,19 @@ public:
     std::uint32_t device_pcm_touch_capacity() const noexcept {
         return pcm_ ? pcm_->device_edge_history_capacity() : 0u;
     }
+    void enqueue_device_island_admission(
+            std::span<const SourceScDeviceIslandEdge> edges,
+            std::span<const std::uint32_t> node_flags) {
+        if(!pcm_)
+            throw std::logic_error("Source Sc GPU island admission unavailable");
+        pcm_->enqueue_device_islands(edges,node_flags);
+    }
+    CudaDeviceAddressMap::Address device_island_work_address() const noexcept {
+        return pcm_?pcm_->device_island_work_address():0u;
+    }
+    SourceScDeviceIslandLayout device_island_layout() const noexcept {
+        return pcm_?pcm_->device_island_layout():SourceScDeviceIslandLayout{};
+    }
     std::size_t pcm_host_contact_upload_bytes() const noexcept {
         return pcm_ ? pcm_->last_host_contact_upload_bytes() : 0u;
     }
@@ -508,6 +522,7 @@ public:
     }
 
 private:
+    friend struct SourceScDeviceIslandFixture;
     // Shared with the reference PhysX runtime; released after GPU owners.
     std::shared_ptr<physx_runtime::Foundation> foundation_;
     compute::Context context_;
