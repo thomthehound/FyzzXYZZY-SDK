@@ -142,14 +142,13 @@ public:
                 CudaDeviceAddressMap::Address output,
                 std::uint32_t node_count,std::uint32_t edge_count,
                 std::uint32_t edge_capacity) const {
-        if(!node_count) {
-            if(edge_count)
-                throw std::invalid_argument("Device Sc edges lack dynamic nodes");
-            return;
-        }
+        // Even a frame without responding nodes must clear the device
+        // runnable-task header. Reused output storage may contain a
+        // preceding frame's nonzero task admission.
         const auto layout=SourceScDeviceIslandLayout::for_counts(
             node_count,edge_count);
-        if(!output || !node_flags || (edge_count && !edges) ||
+        if(!output || (node_count && !node_flags) ||
+           (edge_count && !edges) ||
            (edge_capacity && !touch_history))
             throw std::invalid_argument("Missing device Sc island resource");
         if(layout.bytes>max_view_)
@@ -162,7 +161,9 @@ public:
             ?source_allocation_bytes(edge_capacity,240u):edge_bytes;
         const auto edge_address=edge_count?edges:output;
         const auto touch_address=edge_capacity?touch_history:edge_address;
-        const auto node_bytes=source_allocation_bytes(node_count,4u);
+        const auto node_bytes=node_count
+            ?source_allocation_bytes(node_count,4u):layout.bytes;
+        const auto node_address=node_count?node_flags:output;
         std::array<std::uint32_t,14> args{};
         compute::DispatchCommand dispatch{};
         dispatch.pipeline=pipeline_;
@@ -171,7 +172,7 @@ public:
                 alignment_,0u,compute::BufferAccess::Read,args[0],max_view_),
             source_native_view(addresses,touch_address,touch_bytes,
                 alignment_,1u,compute::BufferAccess::Read,args[1],max_view_),
-            source_native_view(addresses,node_flags,node_bytes,
+            source_native_view(addresses,node_address,node_bytes,
                 alignment_,2u,compute::BufferAccess::Read,
                 args[2],max_view_),
             source_native_view(addresses,output,layout.bytes,
@@ -207,7 +208,7 @@ public:
                     count-first,groups*128u));
             }
         };
-        launch(0u,node_count);
+        launch(0u,std::max(1u,node_count));
         launch(1u,edge_count);
         launch(2u,std::max(node_count,edge_count));
         launch(3u,node_count);
