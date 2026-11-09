@@ -283,8 +283,42 @@ public:
         bool device_unconstrained_preparation=false,
         std::span<native::GpuDySleepState> sleep_states={},
         std::span<const native::GpuDyJointInput> joint_inputs={}) override {
+        enqueue_gpu_dy_distance(bodies,rows,descriptors,partitions,
+            ordinals,tasks,contact_forces,cpu_gu,friction,anchors,
+            patches,manifolds,contact_order,contact_prep,integration,
+            integrated_poses,device_partitions,anchor_impulses,
+            device_initial_bodies,device_world_motion,
+            device_unconstrained_preparation,sleep_states,joint_inputs);
+        finish_gpu_dy_distance();
+    }
+    void enqueue_gpu_dy_distance(
+        std::span<native::GpuDyDistanceBody> bodies,
+        std::span<native::GpuDyJointRow> rows,
+        std::span<const native::GpuDyDistanceDescriptor> descriptors,
+        std::span<const std::uint32_t> partitions,
+        std::span<const std::uint32_t> ordinals,
+        std::span<native::GpuDyDistanceTask> tasks,
+        std::span<float> contact_forces,
+        std::span<const native::GpuDyGuContactInput> cpu_gu,
+        std::span<native::GpuDyFrictionWriteback> friction,
+        std::span<const native::GpuDyFrictionAnchorInput> anchors,
+        std::span<native::GpuDyContactPatch> patches,
+        std::span<const native::GpuDyContactManifold> manifolds,
+        std::span<const std::uint32_t> contact_order,
+        std::span<const native::GpuDyContactPrepPair> contact_prep,
+        std::span<native::GpuDyBodyIntegrationInput> integration,
+        std::span<native::GpuDyIntegratedPose> integrated_poses,
+        bool device_partitions=false,
+        std::span<native::GpuDyFrictionAnchorImpulse> anchor_impulses={},
+        bool device_initial_bodies=false,
+        bool device_world_motion=false,
+        bool device_unconstrained_preparation=false,
+        std::span<native::GpuDySleepState> sleep_states={},
+        std::span<const native::GpuDyJointInput> joint_inputs={}) {
         if(!dy_distance_)
             throw std::logic_error("Source GPU Dy shader not installed");
+        if(dy_distance_->has_queued_solve())
+            throw std::logic_error("Source GPU Dy numerical epoch already queued");
         if(pcm_ && !pcm_->device_contact_ready())
             throw std::logic_error(
                 "Source Dy cannot consume an incomplete PCM contact epoch");
@@ -308,7 +342,7 @@ public:
                 input.active=1u|dy_flags;
             }
         }
-        dy_distance_->solve(bodies,rows,descriptors,partitions,ordinals,tasks,
+        dy_distance_->enqueue(bodies,rows,descriptors,partitions,ordinals,tasks,
                             contact_forces,cpu_gu,friction,anchors,patches,manifolds,contact_order,
                             contact_prep,integration,integrated_poses,
                             pcm_?pcm_->device_contact_stream_address():0u,
@@ -323,6 +357,14 @@ public:
                             device_unconstrained_preparation,sleep_states,
                             joint_inputs);
         ++dy_distance_dispatch_count_;
+    }
+    void finish_gpu_dy_distance() {
+        if(!dy_distance_ || !dy_distance_->has_queued_solve())
+            throw std::logic_error("Source GPU Dy has no queued numerical epoch");
+        dy_distance_->finish();
+    }
+    bool has_queued_gpu_dy_distance() const noexcept {
+        return dy_distance_ && dy_distance_->has_queued_solve();
     }
     std::size_t dy_resident_pose_count() const noexcept {
         return dy_distance_ ? dy_distance_->last_resident_pose_count() : 0u;
