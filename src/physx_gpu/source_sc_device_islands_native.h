@@ -166,6 +166,7 @@ struct SourceScDeviceIslandLayout {
 struct SourceScDeviceIslandDyView {
     CudaDeviceAddressMap::Address work=0u;
     SourceScDeviceIslandLayout layout{};
+    compute::DispatchIndirectArgs task_dispatch{};
 };
 class SourceScDeviceIslandsNativeStage final {
 public:
