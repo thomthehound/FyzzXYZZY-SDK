@@ -185,8 +185,12 @@ existing physical indirect resource after island compaction; it requires no
 additional host upload, allocation or synchronization boundary.
 
 CPU Gu and GPU PCM publish physical-touch transitions into the same device
-EdgeIndex history. Host-only Gu epochs journal only the prior/current touch
-words from the existing resident 84-byte contact records; mixed epochs retain
+EdgeIndex history. Accurate device connectivity and new-touch wake admission
+read that resident history for both Gu producers. Sc-authored edge metadata
+cannot override a missing physical touch or invent a new-touch transition.
+Only authored joints connect independently of the contact history.
+Host-only Gu epochs journal only the prior/current touch words from the
+existing resident 84-byte contact records; mixed epochs retain
 the full GPU manifold journal but snapshot only touch words for CPU-owned
 managers. A rejected transaction restores the original device touch epoch
 before another producer can update that EdgeIndex. In mixed frames, CPU Gu
