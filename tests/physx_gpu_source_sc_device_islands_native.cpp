@@ -181,6 +181,8 @@ void verify(Context& context,const char* filename) {
     const auto independent=count(first,4u);
     const auto initial=header(first);
     require(initial.runnable_components==2u &&
+            initial.dispatch_x==2u &&
+            initial.dispatch_y==1u && initial.dispatch_z==1u &&
             initial.responding_nodes==5u &&
             initial.admitted_edges==4u &&
             task(first,0u).responding_nodes==3u &&
@@ -358,6 +360,9 @@ void verify(Context& context,const char* filename) {
             count(dormant,0u).responding_nodes==3u &&
             count(dormant,0u).admitted_edges==3u &&
             header(dormant).runnable_components==0u &&
+            header(dormant).dispatch_x==0u &&
+            header(dormant).dispatch_y==1u &&
+            header(dormant).dispatch_z==1u &&
             header(dormant).responding_nodes==0u &&
             header(dormant).admitted_edges==0u,
             "Dormant source islands generated redundant GPU Dy tasks");
@@ -373,6 +378,7 @@ void verify(Context& context,const char* filename) {
     require(header(no_dynamic).runnable_components==0u &&
             header(no_dynamic).responding_nodes==0u &&
             header(no_dynamic).admitted_edges==0u &&
+            header(no_dynamic).dispatch_x==0u &&
             admitted(no_dynamic,0u).source_index==91u &&
             admitted(no_dynamic,0u).island_root==invalid &&
             admitted(no_dynamic,1u).source_index==92u &&
@@ -382,7 +388,10 @@ void verify(Context& context,const char* filename) {
     no_errors(empty_scene);
     require(header(empty_scene).runnable_components==0u &&
             header(empty_scene).responding_nodes==0u &&
-            header(empty_scene).admitted_edges==0u,
+            header(empty_scene).admitted_edges==0u &&
+            header(empty_scene).dispatch_x==0u &&
+            header(empty_scene).dispatch_y==1u &&
+            header(empty_scene).dispatch_z==1u,
             "Empty frame retained a previous device task header");
 
     // An adversarial source order forces multiple simultaneous root
