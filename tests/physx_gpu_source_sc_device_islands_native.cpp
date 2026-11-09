@@ -14,7 +14,6 @@
 #include <iterator>
 #include <stdexcept>
 #include <span>
-#include <tuple>
 #include <utility>
 #include <vector>
 
@@ -51,6 +50,11 @@ T load(std::span<const std::byte> bytes,std::size_t offset) {
 }
 
 void verify(Context& context,const char* filename) {
+    struct DeviceResult {
+        SourceScDeviceIslandLayout first{};
+        std::vector<std::byte> second{};
+        std::uint32_t node_count=0u;
+    };
     SourceScDeviceIslandsNativeStage stage(context,load_shader(filename));
     const auto evaluate=[&](std::uint32_t node_count,
                             const std::vector<SourceScDeviceIslandEdge>& edges,
@@ -128,7 +132,7 @@ void verify(Context& context,const char* filename) {
         context.destroy_buffer(node_buffer);
         context.destroy_buffer(touch_buffer);
         context.destroy_buffer(edge_buffer);
-        return std::tuple{layout,std::move(bytes),node_count};
+        return DeviceResult{layout,std::move(bytes),node_count};
     };
     const auto root=[&](const auto& result,std::size_t node) {
         return load<std::uint32_t>(result.second,
@@ -160,7 +164,7 @@ void verify(Context& context,const char* filename) {
         std::vector<std::uint8_t> visited(summary.runnable_components,0u);
         std::uint32_t nodes=0u,edges=0u;
         for(std::size_t root_id=0u;
-            root_id<std::get<2>(result);++root_id) {
+            root_id<result.node_count;++root_id) {
             // Task roots need not be numerically ordered or contiguous.
             const auto record=count(result,root_id);
             if(record.task_index==invalid)continue;
