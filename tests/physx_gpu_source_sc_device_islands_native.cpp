@@ -368,6 +368,29 @@ void verify(Context& context,const char* filename) {
                 header(*result).dispatch_x==0u,
                 "Device Sc accepted an out-of-range typed Dy source token");
 
+    // A broadphase overlap without physical touch is not a solver
+    // constraint. It has no Dy source record and must not invalidate
+    // otherwise runnable independent bodies. The same source identity
+    // becomes mandatory as soon as the contact physically touches.
+    const std::vector<SourceScDeviceIslandEdge> separated_contact{
+        {0u,0u,1u,invalid,0u}
+    };
+    const std::vector<std::uint32_t> separate_flags{0x10104u,0x104u};
+    auto no_touch_source=evaluate(2u,separated_contact,{0u},
+        separate_flags,{},SourceScDeviceIslandSources{});
+    no_errors(no_touch_source);
+    check_task_mapping(no_touch_source);
+    require(root(no_touch_source,0u)!=root(no_touch_source,1u) &&
+            header(no_touch_source).runnable_components==1u &&
+            header(no_touch_source).admitted_edges==0u &&
+            admitted(no_touch_source,0u).island_root==invalid,
+            "Inactive contact incorrectly required a Dy numerical record");
+    auto touching_missing_source=evaluate(2u,separated_contact,{1u},
+        separate_flags,{0u},SourceScDeviceIslandSources{});
+    require((header(touching_missing_source).errors&64u)!=0u &&
+            header(touching_missing_source).dispatch_x==0u,
+            "Touching contact admitted a missing numerical source record");
+
     // Response-disabled physical connectivity still admits every
     // responding body, even without a numerical source-table entry.
     // Its token is never consumed by Dy.
