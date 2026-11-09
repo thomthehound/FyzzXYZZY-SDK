@@ -355,8 +355,12 @@ void verify(fyzz::compute::Backend backend,const char* sap,
             queued.readback_submissions==before_enqueue.readback_submissions+1u &&
             queued.fetch_batches==before_enqueue.fetch_batches &&
             queued.fetch_bytes==before_enqueue.fetch_bytes &&
-            direct[0].packed_counts==0u,
-        "GPU PCM enqueue blocked or published Sc witnesses before its join");
+            direct[0].packed_counts==0u &&
+            producer->device_pcm_contact_count()==1u &&
+            producer->device_pcm_contact_stream()!=0u &&
+            producer->device_pcm_touch_history()!=0u &&
+            producer->device_pcm_touch_capacity()>edge,
+        "GPU PCM enqueue did not expose resident Gu before the host join");
     bool rejected_early_commit=false;
     try {
         producer->commit_gpu_step();
@@ -550,8 +554,11 @@ void verify(fyzz::compute::Backend backend,const char* sap,
                 before_mixed.readback_submissions+1u &&
             after_mixed.fetch_batches==before_mixed.fetch_batches &&
             producer->pcm_host_contact_upload_bytes()==0u &&
-            mixed_results[1].packed_counts==0u,
-        "Mixed PCM failed to submit witness DMA ahead of the Sc join");
+            mixed_results[1].packed_counts==0u &&
+            producer->device_pcm_contact_count()==0u &&
+            producer->device_pcm_contact_stream()==0u &&
+            producer->device_pcm_touch_history()==0u,
+        "Incomplete mixed Gu stream leaked into device task admission");
     std::array<native::ContactPoint,1> points{};
     const auto emitted=native::source_pcm_sphere_sphere(
         {100.f,2.f,0.f},0.5f,{100.7f,2.f,0.f},0.5f,0.04f,points);
@@ -566,8 +573,12 @@ void verify(fyzz::compute::Backend backend,const char* sap,
     require(after_early_gu.upload_batches==after_mixed.upload_batches+1u &&
             after_early_gu.fetch_batches==after_mixed.fetch_batches &&
             producer->pcm_host_contact_upload_bytes()==
-                sizeof(physx_gpu::SourcePcmGpuContactStreamNative),
-        "Mixed CPU Gu was not submitted before Sc joined GPU witnesses");
+                sizeof(physx_gpu::SourcePcmGpuContactStreamNative) &&
+            producer->device_pcm_contact_count()==mixed.size() &&
+            producer->device_pcm_contact_stream()!=0u &&
+            producer->device_pcm_touch_history()!=0u &&
+            producer->device_pcm_touch_capacity()>sphere_edge,
+        "Mixed Gu was not device-ready before Sc joined GPU witnesses");
     producer->finish_gpu_pcm_box_contacts();
     require(producer->pcm_host_contact_upload_bytes()==
                 sizeof(physx_gpu::SourcePcmGpuContactStreamNative) &&
@@ -598,6 +609,10 @@ void verify(fyzz::compute::Backend backend,const char* sap,
     producer->enqueue_gpu_pcm_box_contacts(mixed,abandoned_mixed);
     producer->enqueue_host_pcm_contacts(mixed,abandoned_mixed);
     producer->invalidate_after_rollback();
+    require(producer->device_pcm_contact_count()==0u &&
+            producer->device_pcm_contact_stream()==0u &&
+            producer->device_pcm_touch_history()==0u,
+        "Rejected PCM transaction retained an executable device contact view");
     require(abandoned_mixed[0].packed_counts==0u,
         "Rejected mixed PCM DMA published an abandoned GPU witness");
     std::array<native::GpuPcmBoxResult,2> restored{};
