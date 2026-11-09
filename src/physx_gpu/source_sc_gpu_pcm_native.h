@@ -572,7 +572,8 @@ public:
     // host witness join or another contact-manager registry.
     void enqueue_device_islands(
             std::span<const SourceScDeviceIslandEdge> edges,
-            std::span<const std::uint32_t> node_flags) {
+            std::span<const std::uint32_t> node_flags,
+            SourceScDeviceIslandSources sources) {
         if(island_work_ready_ || !device_contact_ready())
             throw std::logic_error(
                 "Device island admission requires one complete queued Gu epoch");
@@ -623,7 +624,7 @@ public:
             device_edge_history_address(),
             node_count?island_nodes_.getDevicePtr():0u,
             island_work_.getDevicePtr(),
-            node_count,edge_count,edge_capacity);
+            node_count,edge_count,edge_capacity,sources);
         // Reuse the PCM indirect resource once its earlier launches
         // have completed on this ordered queue.
         stream_.queue_device_copy(
