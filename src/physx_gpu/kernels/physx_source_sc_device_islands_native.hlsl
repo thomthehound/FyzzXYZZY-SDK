@@ -25,7 +25,8 @@ RWByteAddressBuffer work:register(u3,space0);
 struct Parameters {
     uint edgeBias,touchBias,nodeBias,workBias;
     uint rootBias,countBias,admissionBias,taskBias;
-    uint nodeCount,edgeCount,edgeCapacity,phase,first,maxGroups;
+    uint blockBias,nodeCount,edgeCount,edgeCapacity;
+    uint phase,first,maxGroups,blockCount;
 };
 #ifdef __spirv__
 [[vk::push_constant]] Parameters p;
@@ -114,8 +115,32 @@ void connectNodes(uint a,uint b) {
     reject(8u);
 }
 
+// Root-ordered task admission has deterministic numerics even when
+// independent source islands are processed by different workgroups.
+// One group scans each 128-root tile; one group prefixes their totals.
+// This is linear work, with no host count fetch or global spin barrier.
+groupshared uint taskScan[128];
+groupshared uint taskCarry;
+
+bool runnableRoot(uint index) {
+    if(index>=p.nodeCount || work.Load(p.workBias)!=0u ||
+       work.Load(p.rootBias+index*4u)!=index)return false;
+    const uint count=p.countBias+index*24u;
+    return work.Load(count)!=0u && work.Load(count+8u)!=0u;
+}
+void inclusiveTaskScan(uint lane) {
+    [unroll]
+    for(uint step=1u;step<128u;step<<=1u) {
+        const uint previous=lane>=step?taskScan[lane-step]:0u;
+        GroupMemoryBarrierWithGroupSync();
+        taskScan[lane]+=previous;
+        GroupMemoryBarrierWithGroupSync();
+    }
+}
+
 [numthreads(128,1,1)]
-void main(uint3 thread:SV_DispatchThreadID) {
+void main(uint3 thread:SV_DispatchThreadID,
+          uint3 group:SV_GroupID,uint3 lane:SV_GroupThreadID) {
     const uint index=p.first+thread.x;
     if(p.phase==0u) {
         if(index==0u) {
@@ -201,30 +226,61 @@ void main(uint3 thread:SV_DispatchThreadID) {
         return;
     }
     if(p.phase==3u) {
-        // Invalid topology or iteration metadata must never launch
-        // numerical work. Publish the error with zero runnable tasks.
-        if(work.Load(p.workBias)!=0u ||
-           index>=p.nodeCount ||
-           work.Load(p.rootBias+index*4u)!=index)
-            return;
+        const uint active=runnableRoot(index)?1u:0u;
+        taskScan[lane.x]=active;
+        GroupMemoryBarrierWithGroupSync();
+        // Workgroup-wide reduction; only the total is needed here.
+        for(uint stride=64u;stride!=0u;stride>>=1u) {
+            if(lane.x<stride)
+                taskScan[lane.x]+=taskScan[lane.x+stride];
+            GroupMemoryBarrierWithGroupSync();
+        }
+        if(lane.x==0u)
+            work.Store(p.blockBias+(index/128u)*4u,taskScan[0]);
+        return;
+    }
+    if(p.phase==4u) {
+        if(group.x!=0u)return;
+        if(lane.x==0u)taskCarry=0u;
+        GroupMemoryBarrierWithGroupSync();
+        for(uint start=0u;start<p.blockCount;start+=128u) {
+            const uint block=start+lane.x;
+            const uint value=block<p.blockCount
+                ?work.Load(p.blockBias+block*4u):0u;
+            taskScan[lane.x]=value;
+            GroupMemoryBarrierWithGroupSync();
+            inclusiveTaskScan(lane.x);
+            const uint prefix=taskCarry+taskScan[lane.x]-value;
+            if(block<p.blockCount)
+                work.Store(p.blockBias+block*4u,prefix);
+            GroupMemoryBarrierWithGroupSync();
+            if(lane.x==0u)taskCarry+=taskScan[127u];
+            GroupMemoryBarrierWithGroupSync();
+        }
+        if(lane.x==0u) {
+            work.Store(p.workBias+4u,taskCarry);
+            work.Store(p.workBias+16u,min(taskCarry,p.maxGroups));
+        }
+        return;
+    }
+    if(p.phase==5u) {
+        const uint active=runnableRoot(index)?1u:0u;
+        taskScan[lane.x]=active;
+        GroupMemoryBarrierWithGroupSync();
+        inclusiveTaskScan(lane.x);
+        if(active==0u)return;
         const uint count=p.countBias+index*24u;
+        const uint task=work.Load(p.blockBias+(index/128u)*4u)+
+                        taskScan[lane.x]-1u;
         const uint nodes=work.Load(count);
-        const uint seeds=work.Load(count+8u);
-        if(!nodes || !seeds)return;
         const uint edges=work.Load(count+4u);
         const uint position=work.Load(count+12u);
         const uint velocity=work.Load(count+16u);
-        uint task;
-        work.InterlockedAdd(p.workBias+4u,1u,task);
-        uint previous;
-        work.InterlockedMax(p.workBias+16u,
-                            min(task+1u,p.maxGroups),previous);
-        // Task ordinals exist only for active roots. Edges retain
-        // source order and read this root slot directly during Dy prep.
         work.Store(count+20u,task);
         const uint dst=p.taskBias+task*20u;
         work.Store4(dst,uint4(index,nodes,edges,position));
         work.Store(dst+16u,velocity);
+        uint previous;
         work.InterlockedAdd(p.workBias+8u,nodes,previous);
         work.InterlockedAdd(p.workBias+12u,edges,previous);
     }

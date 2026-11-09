@@ -88,7 +88,8 @@ static_assert(sizeof(SourceScDeviceIslandHeader)==32u &&
 // edge records. No CPU readback is required between these phases.
 struct SourceScDeviceIslandLayout {
     std::size_t roots=sizeof(SourceScDeviceIslandHeader);
-    std::size_t counts=0u,admissions=0u,tasks=0u,bytes=0u;
+    std::size_t counts=0u,admissions=0u,tasks=0u;
+    std::size_t block_offsets=0u,bytes=0u;
     static SourceScDeviceIslandLayout for_counts(
         std::uint32_t node_count,std::uint32_t edge_count) {
         const auto align=[](std::uint64_t value) {
@@ -106,8 +107,12 @@ struct SourceScDeviceIslandLayout {
             align(std::uint64_t(result.admissions)+
                   std::uint64_t(edge_count)*
                       sizeof(SourceScDeviceIslandAdmission)));
-        const auto bytes=align(std::uint64_t(result.tasks)+
-            std::uint64_t(node_count)*sizeof(SourceScDeviceIslandTask));
+        result.block_offsets=static_cast<std::size_t>(
+            align(std::uint64_t(result.tasks)+std::uint64_t(node_count)*
+                  sizeof(SourceScDeviceIslandTask)));
+        const auto block_count=(std::uint64_t(node_count)+127u)/128u;
+        const auto bytes=align(std::uint64_t(result.block_offsets)+
+                               block_count*sizeof(std::uint32_t));
         if(bytes>std::numeric_limits<std::uint32_t>::max())
             throw std::out_of_range("Device Sc island work exceeds 32-bit view");
         result.bytes=static_cast<std::size_t>(bytes);
@@ -134,7 +139,7 @@ public:
         pipeline.storage_buffer_binding_count=4u;
         pipeline.storage_buffer_views.assign(
             4u,compute::StorageBufferViewKind::RawReadWrite);
-        pipeline.push_constant_bytes=56u;
+        pipeline.push_constant_bytes=64u;
         pipeline_=context_.create_compute_pipeline(pipeline);
     }
     SourceScDeviceIslandsNativeStage(
@@ -180,7 +185,7 @@ public:
         const auto node_bytes=node_count
             ?source_allocation_bytes(node_count,4u):layout.bytes;
         const auto node_address=node_count?node_flags:output;
-        std::array<std::uint32_t,14> args{};
+        std::array<std::uint32_t,16> args{};
         compute::DispatchCommand dispatch{};
         dispatch.pipeline=pipeline_;
         dispatch.buffers={
@@ -204,19 +209,21 @@ public:
         args[5]=offset(layout.counts,args[3]);
         args[6]=offset(layout.admissions,args[3]);
         args[7]=offset(layout.tasks,args[3]);
-        args[8]=node_count;
-        args[9]=edge_count;
-        args[10]=edge_capacity;
+        args[8]=offset(layout.block_offsets,args[3]);
+        args[9]=node_count;
+        args[10]=edge_count;
+        args[11]=edge_capacity;
         const auto max_groups=context_.device_info().max_workgroup_count[0];
-        args[13]=max_groups;
+        args[14]=max_groups;
+        args[15]=(node_count+127u)/128u;
         dispatch.push_constants.resize(sizeof(args));
         std::vector<compute::BatchCommand> commands;
         const auto launch=[&](std::uint32_t phase,std::uint32_t count) {
-            args[11]=phase;
+            args[12]=phase;
             for(std::uint32_t first=0u;first<count;) {
                 const auto groups=std::min<std::uint64_t>(
                     max_groups,(std::uint64_t(count-first)+127u)/128u);
-                args[12]=first;
+                args[13]=first;
                 dispatch.groups={static_cast<std::uint32_t>(groups),1u,1u};
                 std::memcpy(dispatch.push_constants.data(),
                             args.data(),sizeof(args));
@@ -228,7 +235,12 @@ public:
         launch(0u,std::max(1u,node_count));
         launch(1u,edge_count);
         launch(2u,std::max(node_count,edge_count));
-        launch(3u,node_count);
+        // Stable task ordinals are the exclusive prefix of runnable
+        // roots. The compact block scan avoids atomic task ordering,
+        // and the final scatter preserves the canonical root order.
+        launch(3u,std::max(1u,node_count));
+        launch(4u,1u);
+        launch(5u,node_count);
         auto& ordered=stream.commands();
         ordered.insert(ordered.end(),commands.begin(),commands.end());
     }

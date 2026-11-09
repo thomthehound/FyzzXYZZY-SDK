@@ -169,12 +169,14 @@ void verify(Context& context,const char* filename) {
         const auto summary=header(result);
         std::vector<std::uint8_t> visited(summary.runnable_components,0u);
         std::uint32_t nodes=0u,edges=0u;
+        std::uint32_t next_task=0u;
         for(std::size_t root_id=0u;
             root_id<result.node_count;++root_id) {
             // Task roots need not be numerically ordered or contiguous.
             const auto record=count(result,root_id);
             if(record.task_index==invalid)continue;
-            require(record.task_index<summary.runnable_components &&
+            require(record.task_index==next_task++ &&
+                    record.task_index<summary.runnable_components &&
                     !visited[record.task_index],
                     "Device Sc task ordinal aliases another active component");
             visited[record.task_index]=1u;
@@ -219,6 +221,7 @@ void verify(Context& context,const char* filename) {
             root(first,4u)==4u && root(first,5u)==4u &&
             root(first,6u)==6u,
             "Device Sc merged unrelated accurate islands");
+    check_task_mapping(first);
     const auto connected=count(first,0u);
     const auto independent=count(first,4u);
     const auto initial=header(first);
@@ -557,6 +560,26 @@ void verify(Context& context,const char* filename) {
             header(empty_scene).dispatch_y==1u &&
             header(empty_scene).dispatch_z==1u,
             "Empty frame retained a previous device task header");
+
+    // The prefix crosses 128-block boundaries without nondeterministic
+    // task scatter or a CPU island count. Almost all nodes are dormant;
+    // sparse active roots exercise the first, last and middle blocks.
+    constexpr std::uint32_t prefix_nodes=16385u;
+    std::vector<std::uint32_t> prefix_flags(prefix_nodes,4u|0x100u);
+    for(const std::uint32_t root_id:{0u,127u,128u,16383u,16384u})
+        prefix_flags[root_id]|=source_sc_device_island_active_bit;
+    auto prefix=evaluate(prefix_nodes,{}, {},prefix_flags);
+    no_errors(prefix);
+    check_task_mapping(prefix);
+    require(header(prefix).runnable_components==5u &&
+            header(prefix).dispatch_x==5u &&
+            task(prefix,0u).root==0u &&
+            task(prefix,127u).root==127u &&
+            task(prefix,128u).root==128u &&
+            task(prefix,16383u).root==16383u &&
+            task(prefix,16384u).root==16384u &&
+            count(prefix,16384u).task_index==4u,
+            "Device Sc hierarchical task prefix lost canonical root ordering");
 
     // An adversarial source order forces multiple simultaneous root
     // changes. Concurrent CAS unions must resolve one canonical root,
