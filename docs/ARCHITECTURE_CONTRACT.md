@@ -176,7 +176,10 @@ contact and joint source tokens without another body-sort pipeline,
 dispatch or upload. Direct joint-row tokens are permitted only when
 the source ordinal addresses device-authored 1D geometry; other joints
 refer to the full Dy descriptor table. Numerical table ordinals are
-not interchangeable with graph-edge ordinals. Dormant and response-disabled edges do not occupy
+not interchangeable with graph-edge ordinals. Device admission receives
+the explicit capacities of the contact-manager, device-joint-row and full
+descriptor tables; an out-of-range numerical token invalidates the
+resident task launch before Dy may consume it. Dormant and response-disabled edges do not occupy
 numerical descriptor slots. Independent components can
 execute concurrently, but their task identity is stable across runs;
 constraints sharing a responding body retain the required solver ordering.
