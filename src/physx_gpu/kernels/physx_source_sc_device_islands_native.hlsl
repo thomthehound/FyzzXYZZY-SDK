@@ -32,6 +32,8 @@ ConstantBuffer<Parameters> p:register(b0,space0);
 static const uint invalid=0xffffffffu;
 static const uint contactEdge=0u;
 static const uint jointEdge=1u;
+static const uint noResponse=2u;
+static const uint permittedKinds=jointEdge|noResponse;
 
 void reject(uint bits) {
     uint previous;
@@ -44,8 +46,12 @@ bool validNode(uint node) {
     return false;
 }
 bool edgeConnected(uint edge,uint kind) {
-    if(kind==jointEdge)return true;
-    if(kind!=contactEdge || edge>=p.edgeCapacity) {
+    if((kind&~permittedKinds)!=0u) {
+        reject(1u);
+        return false;
+    }
+    if((kind&jointEdge)!=0u)return true;
+    if(edge>=p.edgeCapacity) {
         reject(1u);
         return false;
     }
@@ -134,7 +140,7 @@ void main(uint3 thread:SV_DispatchThreadID) {
             const uint node=edge.y!=invalid?edge.y:edge.z;
             if(node!=invalid) {
                 owner=findRoot(node);
-                if(owner!=invalid) {
+                if(owner!=invalid && (kind&noResponse)==0u) {
                     uint previous;
                     work.InterlockedAdd(p.countBias+owner*8u+4u,
                                         1u,previous);
