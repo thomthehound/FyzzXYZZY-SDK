@@ -47,9 +47,27 @@ struct SourceScDeviceIslandFixture {
                layout.response_order+
                    std::uint64_t(header.admitted_edges)*4u>work.size() ||
                layout.response_tokens+
-                   std::uint64_t(header.admitted_edges)*4u>work.size())
+                   std::uint64_t(header.admitted_edges)*4u>work.size() ||
+               layout.body_order+
+                   std::uint64_t(header.responding_nodes)*4u>work.size())
                 throw std::runtime_error("Device Sc response work exceeds its allocation");
             std::uint32_t previous_root=0u,previous_edge=0u;
+            std::uint32_t previous_body_root=0u,previous_body=0u;
+            for(std::uint32_t i=0u;i<header.responding_nodes;++i) {
+                std::uint32_t node=0u;
+                std::memcpy(&node,work.data()+layout.body_order+i*4u,4u);
+                if(node>=((layout.counts-layout.roots)/sizeof(std::uint32_t)))
+                    throw std::runtime_error(
+                        "Device Sc body order references an invalid node");
+                std::uint32_t root=0u;
+                std::memcpy(&root,work.data()+layout.roots+node*4u,4u);
+                if(i!=0u && (root<previous_body_root ||
+                   (root==previous_body_root && node<=previous_body)))
+                    throw std::runtime_error(
+                        "Device Sc body order differs from canonical task roots");
+                previous_body_root=root;
+                previous_body=node;
+            }
             for(std::uint32_t i=0u;i<header.admitted_edges;++i) {
                 std::uint32_t edge=0u;
                 std::memcpy(&edge,work.data()+layout.response_order+i*4u,4u);

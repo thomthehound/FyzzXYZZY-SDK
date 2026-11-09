@@ -162,13 +162,13 @@ limits are the maxima of all admitted component nodes, not merely the seed.
 Device component roots are transient execution IDs, while EdgeIndex and
 source-ordered constraint identity remain stable. Runnable component tasks
 are compacted by a device-resident prefix in canonical root order rather
-than racing to claim atomic task ordinals. The same prefix reserves
-contiguous response-descriptor spans for runnable components, without
-another host count or a per-component allocation. A stable device
-response-index scatter fills those spans in original Sc encounter order.
-Small streams use one direct GPU phase; larger streams use global stable
-radix passes by canonical root. The same scatter writes source-typed Dy
-contact-manager and device-owned joint descriptor tokens without another
+than racing to claim atomic task ordinals. The same prefix reserves exclusive body and response-descriptor spans
+for runnable components, without another host count or a per-component
+allocation. A single stable device root/type sort fills responding-body spans in
+source-node order and response spans in original Sc encounter order.
+Small streams use one direct GPU phase; larger streams share global
+radix passes across both input types. The same scatter writes typed
+contact and joint source tokens without another body-sort pipeline,
 dispatch or upload. Dormant and response-disabled edges do not occupy
 numerical descriptor slots. Independent components can
 execute concurrently, but their task identity is stable across runs;

@@ -172,7 +172,7 @@ void verify(Context& context,const char* filename) {
                 "Device Sc header omitted source admission capacity");
         std::vector<std::uint8_t> visited(summary.runnable_components,0u);
         std::uint32_t nodes=0u,edges=0u;
-        std::uint32_t next_task=0u,next_response=0u;
+        std::uint32_t next_task=0u,next_response=0u,next_body=0u;
         for(std::size_t root_id=0u;
             root_id<result.node_count;++root_id) {
             // Task roots need not be numerically ordered or contiguous.
@@ -191,18 +191,36 @@ void verify(Context& context,const char* filename) {
                     entry.admitted_edges==record.admitted_edges &&
                     entry.position_iterations==record.position_iterations &&
                     entry.velocity_iterations==record.velocity_iterations &&
-                    entry.response_begin==next_response,
+                    entry.response_begin==next_response &&
+                     entry.body_begin==next_body,
                     "Device Sc root-to-task mapping or response prefix is invalid");
             next_response+=record.admitted_edges;
+            next_body+=record.responding_nodes;
             nodes+=record.responding_nodes;
             edges+=record.admitted_edges;
         }
         require(nodes==summary.responding_nodes &&
                 edges==summary.admitted_edges &&
                 next_response==summary.admitted_edges &&
+                next_body==summary.responding_nodes &&
                 std::all_of(visited.begin(),visited.end(),
                             [](std::uint8_t v){return v!=0u;}),
                 "Device Sc runnable task mapping has a missing component");
+        std::vector<std::pair<std::uint32_t,std::uint32_t>> expected_bodies{};
+        for(std::uint32_t node=0u;node<result.node_count;++node) {
+            const auto owner=root(result,node);
+            if(owner<result.node_count &&
+               count(result,owner).task_index!=invalid)
+                expected_bodies.emplace_back(owner,node);
+        }
+        std::stable_sort(expected_bodies.begin(),expected_bodies.end(),
+            [](const auto& a,const auto& b){return a.first<b.first;});
+        require(expected_bodies.size()==summary.responding_nodes,
+                "Device Sc body prefix disagrees with responding nodes");
+        for(std::size_t i=0u;i<expected_bodies.size();++i)
+            require(load<std::uint32_t>(result.second,
+                        result.first.body_order+i*4u)==expected_bodies[i].second,
+                    "Device Sc body scatter reordered a solver node");
         std::vector<std::pair<std::uint32_t,std::uint32_t>> expected{};
         for(std::uint32_t edge=0u;edge<result.edge_count;++edge) {
             const auto record=admitted(result,edge);
@@ -663,7 +681,7 @@ void verify(Context& context,const char* filename) {
     no_errors(short_radix);
     check_task_mapping(short_radix);
     require(header(short_radix).runnable_components==2u &&
-            short_radix.first.response_order==
+            short_radix.first.response_order!=
                 short_radix.first.response_scratch,
             "Device Sc single-pass radix output did not select scratch");
 
