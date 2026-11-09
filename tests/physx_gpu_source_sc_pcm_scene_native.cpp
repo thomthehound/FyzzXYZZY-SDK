@@ -437,29 +437,29 @@ void verify(fyzz::compute::Backend backend,const char* sap,
     require(producer->has_gpu_pcm_box(),
             "GPU scene has no installed native Gu PCM producer");
     gpu.set_gpu_broadphase(std::move(owner));
-    // CPU Gu-only connectivity is an actual source owner workload.
-    // It neither allocates fictitious PCM history nor waits for a host
-    // contact stream, and a committed empty epoch retires its task view.
+    // Authored joints need no contact-history allocation. Contact
+    // managers, including CPU Gu, instead require resident EdgeIndex
+    // physical-touch publication before device task admission.
     constexpr std::uint32_t invalid_edge=0xffffffffu;
-    const std::array<physx_gpu::SourceScDeviceIslandEdge,1> host_edge{{
+    const std::array<physx_gpu::SourceScDeviceIslandEdge,1> joint_edge{{
         {0u,0u,invalid_edge,0u,
-         physx_gpu::source_sc_device_island_host_touch_bit}
+         physx_gpu::source_sc_device_island_joint_bit}
     }};
-    const std::array<std::uint32_t,1> host_flags{{
+    const std::array<std::uint32_t,1> joint_flags{{
         4u|(1u<<8u)|physx_gpu::source_sc_device_island_active_bit
     }};
     require(producer->device_pcm_touch_capacity()==0u,
-        "Fresh CPU Gu source unexpectedly owns PCM EdgeIndex history");
-    producer->enqueue_device_island_admission(host_edge,host_flags);
-    const auto host_task=physx_gpu::SourceScDeviceIslandFixture::read(*producer);
-    require(host_task.errors==0u &&
-            host_task.runnable_components==1u &&
-            host_task.responding_nodes==1u &&
-            host_task.admitted_edges==1u,
-        "CPU Gu-only Sc task admission required device PCM witnesses");
+        "Fresh source scene unexpectedly owns contact history");
+    producer->enqueue_device_island_admission(joint_edge,joint_flags);
+    const auto joint_task=physx_gpu::SourceScDeviceIslandFixture::read(*producer);
+    require(joint_task.errors==0u &&
+            joint_task.runnable_components==1u &&
+            joint_task.responding_nodes==1u &&
+            joint_task.admitted_edges==1u,
+        "Joint-only Sc task admission required contact witnesses");
     producer->commit_gpu_step();
     require(producer->device_island_work_address()==0u,
-        "Committed CPU Gu-only task survived its source epoch");
+        "Committed joint-only task survived its source epoch");
     const auto cpu_a=cpu.add_dynamic_box(
         {0.5f,0.5f,0.5f},{0.0f,1.0f,0.0f},1.0f);
     const auto cpu_b=cpu.add_static_box(
