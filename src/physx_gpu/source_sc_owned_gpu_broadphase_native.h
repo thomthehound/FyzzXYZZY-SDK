@@ -381,10 +381,11 @@ public:
     }
     void enqueue_device_island_admission(
             std::span<const SourceScDeviceIslandEdge> edges,
-            std::span<const std::uint32_t> node_flags) {
+            std::span<const std::uint32_t> node_flags,
+            SourceScDeviceIslandSources sources) {
         if(!pcm_)
             throw std::logic_error("Source Sc GPU island admission unavailable");
-        pcm_->enqueue_device_islands(edges,node_flags);
+        pcm_->enqueue_device_islands(edges,node_flags,sources);
     }
     CudaDeviceAddressMap::Address device_island_work_address() const noexcept {
         return pcm_?pcm_->device_island_work_address():0u;
