@@ -450,7 +450,8 @@ void verify(fyzz::compute::Backend backend,const char* sap,
     }};
     require(producer->device_pcm_touch_capacity()==0u,
         "Fresh source scene unexpectedly owns contact history");
-    producer->enqueue_device_island_admission(joint_edge,joint_flags);
+    producer->enqueue_device_island_admission(joint_edge,joint_flags,
+        physx_gpu::SourceScDeviceIslandSources{0u,0u,1u});
     const auto joint_task=physx_gpu::SourceScDeviceIslandFixture::read(*producer);
     require(joint_task.errors==0u &&
             joint_task.runnable_components==1u &&
@@ -536,7 +537,8 @@ void verify(fyzz::compute::Backend backend,const char* sap,
     const std::array<std::uint32_t,1> source_nodes{{
         4u|(4u<<8u)|physx_gpu::source_sc_device_island_active_bit
     }};
-    producer->enqueue_device_island_admission(source_edges,source_nodes);
+    producer->enqueue_device_island_admission(source_edges,source_nodes,
+        physx_gpu::SourceScDeviceIslandSources{1u,0u,0u});
     const auto graph=physx_gpu::SourceScDeviceIslandFixture::read(*producer);
     require(graph.errors==0u &&
             graph.runnable_components==1u &&
@@ -764,7 +766,8 @@ void verify(fyzz::compute::Backend backend,const char* sap,
     const std::array<std::uint32_t,2> mixed_nodes{{
         source_nodes[0],source_nodes[0]
     }};
-    producer->enqueue_device_island_admission(mixed_edges,mixed_nodes);
+    producer->enqueue_device_island_admission(mixed_edges,mixed_nodes,
+        physx_gpu::SourceScDeviceIslandSources{2u,0u,0u});
     const auto mixed_graph=physx_gpu::SourceScDeviceIslandFixture::read(*producer);
     require(mixed_graph.errors==0u &&
             mixed_graph.runnable_components==2u &&
@@ -802,7 +805,8 @@ void verify(fyzz::compute::Backend backend,const char* sap,
     abandoned_mixed[1]=primitive;
     producer->enqueue_gpu_pcm_box_contacts(mixed,abandoned_mixed);
     producer->enqueue_host_pcm_contacts(mixed,abandoned_mixed);
-    producer->enqueue_device_island_admission(mixed_edges,mixed_nodes);
+    producer->enqueue_device_island_admission(mixed_edges,mixed_nodes,
+        physx_gpu::SourceScDeviceIslandSources{2u,0u,0u});
     producer->invalidate_after_rollback();
     require(producer->device_pcm_contact_count()==0u &&
             producer->device_pcm_contact_stream()==0u &&
@@ -817,7 +821,8 @@ void verify(fyzz::compute::Backend backend,const char* sap,
     restored[1]=primitive;
     producer->enqueue_gpu_pcm_box_contacts(mixed,restored);
     producer->enqueue_host_pcm_contacts(mixed,restored);
-    producer->enqueue_device_island_admission(mixed_edges,mixed_nodes);
+    producer->enqueue_device_island_admission(mixed_edges,mixed_nodes,
+        physx_gpu::SourceScDeviceIslandSources{2u,0u,0u});
     const auto recovered_graph=physx_gpu::SourceScDeviceIslandFixture::read(*producer);
     require(recovered_graph.errors==0u &&
             recovered_graph.runnable_components==2u &&
