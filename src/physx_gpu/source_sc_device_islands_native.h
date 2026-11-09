@@ -31,6 +31,14 @@ struct SourceScDeviceIslandEdge {
     std::uint32_t kind=0;
 };
 static_assert(sizeof(SourceScDeviceIslandEdge)==20u);
+// Typed numerical table capacities belong to Dy's source preparation.
+// Edge ordinals cannot substitute for contact-manager, joint-row or
+// full-descriptor ordinals, even when the island graph is valid.
+struct SourceScDeviceIslandSources {
+    std::uint32_t contact_managers=0u;
+    std::uint32_t joint_rows=0u;
+    std::uint32_t full_descriptors=0u;
+};
 inline constexpr std::uint32_t source_sc_device_island_joint_bit=1u;
 inline constexpr std::uint32_t source_sc_device_island_no_response_bit=2u;
 // Direct joint tokens require device-authored 1D rows; other joints
@@ -194,7 +202,8 @@ public:
                 CudaDeviceAddressMap::Address node_flags,
                 CudaDeviceAddressMap::Address output,
                 std::uint32_t node_count,std::uint32_t edge_count,
-                std::uint32_t edge_capacity) const {
+                std::uint32_t edge_capacity,
+                SourceScDeviceIslandSources sources) const {
         // Even a frame without responding nodes must clear the device
         // runnable-task header. Reused output storage may contain a
         // preceding frame's nonzero task admission.
@@ -260,6 +269,9 @@ public:
         args[23]=static_cast<std::uint32_t>(
             std::uint64_t(node_count)+edge_count);
         args[24]=offset(layout.response_order,args[3]);
+        args[19]=sources.contact_managers;
+        args[25]=sources.joint_rows;
+        args[26]=sources.full_descriptors;
         dispatch.push_constants.resize(sizeof(args));
         std::vector<compute::BatchCommand> commands;
         const auto launch=[&](std::uint32_t phase,std::uint32_t count) {
