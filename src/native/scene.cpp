@@ -7275,11 +7275,22 @@ void Scene::partition_constraints() {
     std::size_t manager_begin=0;
     std::size_t joint_begin=0, joint_row_begin=0;
     std::size_t partition_base=0;
+    std::size_t prepared_body_begin=0u;
     pending_dynamic_constraints_.clear();
     for(auto& task:solver_tasks_) {
         const std::size_t manager_end=task.manager_end;
         const std::size_t descriptor_begin=constraint_descriptors_.size();
         const auto gpu_first=ordered_constraints_.size();
+        // GPU coloring does not need host contact endpoint ordinals
+        // unless this task could use wide numerical tiling. The upper
+        // bound includes sleeping descriptors so this decision cannot
+        // incorrectly classify a wide task as compact.
+        constexpr std::size_t wide_min=4u*128u;
+        const auto potential_descriptors=
+            task.joint_end-joint_begin+manager_end-manager_begin;
+        const bool compact_gpu_task=gpu_integration &&
+            (potential_descriptors<wide_min ||
+             task.solver_body_end-prepared_body_begin<wide_min);
         // Source setupDescTask admits 1D edges before contact managers.
         // Native Dy receives their solver-row descriptors directly; CPU
         // PGS retains the ActorID descriptor stream.
@@ -7313,9 +7324,18 @@ void Scene::partition_constraints() {
                (dynamic_b && actor_b.sleeping) ||
                (!dynamic_a && !dynamic_b))
                 return;
-            ordered_constraints_.push_back({
-                index,dense_row(a),dense_row(b),row_count |
-                    (dynamic_a?0x100u:0u)|(dynamic_b?0x200u:0u)});
+            const auto flags=row_count |
+                (dynamic_a?0x100u:0u)|(dynamic_b?0x200u:0u);
+            if(compact_gpu_task && row_count==0u) {
+                // The device expands contacts from the already
+                // prepared manager table. Only zero-patch contacts
+                // need their endpoint ordinals for GPU coloring.
+                ordered_constraints_.push_back({
+                    index,invalid_solver_row,invalid_solver_row,flags});
+            }else {
+                ordered_constraints_.push_back({
+                    index,dense_row(a),dense_row(b),flags});
+            }
         };
         for(std::size_t j=joint_begin;j<task.joint_end;++j) {
             const auto& edge=island_edges_[indexed_joints_[j]];
@@ -7346,6 +7366,7 @@ void Scene::partition_constraints() {
             task.constraint_end=ordered_constraints_.size();
             manager_begin=manager_end;
             joint_begin=task.joint_end;
+            prepared_body_begin=task.solver_body_end;
             continue;
         }
         const auto pair_of=[&](std::size_t index) {
@@ -8777,8 +8798,32 @@ void Scene::solve_gpu_distance_constraints(float seconds) {
             throw std::logic_error("GPU Dy zero-response manager index invalid");
         auto& manager=gpu_dy_manifolds_[desc.index];
         if(manager.patch_count!=0u)continue;
-        manager.patch_offset=desc.row0;
-        manager.order_offset=desc.row1;
+        auto row0=desc.row0,row1=desc.row1;
+        if(row0==invalid_solver_row && row1==invalid_solver_row) {
+            // Compact numerical contacts carry only their manager
+            // token. Recover endpoints solely for zero-response
+            // managers, which have no device contact-prep record.
+            const auto& manifold=manifolds_[desc.index];
+            const auto pair=manifold.pair;
+            const bool reversed=island_edges_[
+                manifold.edge_handle].gu_order_reversed;
+            const auto dense_row=[&](BodyId id) {
+                const auto& actor=actors_[id];
+                if(!rigid_node(actor.motion))return invalid_solver_row;
+                if(actor.solver_row_generation!=solver_preparation_generation_ ||
+                   actor.solver_row_index>=solver_rows_.size() ||
+                   actor.solver_row_index>=invalid_solver_row)
+                    throw std::logic_error(
+                        "Source zero-response manager lacks a prepared solver row");
+                return static_cast<std::uint32_t>(actor.solver_row_index);
+            };
+            row0=dense_row(shapes_[
+                reversed?pair.b:pair.a].body);
+            row1=dense_row(shapes_[
+                reversed?pair.a:pair.b].body);
+        }
+        manager.patch_offset=row0;
+        manager.order_offset=row1;
         manager.prep_index=desc.row_count;
     }
     if(explicit_order_cursor!=gpu_dy_contact_order_.size())

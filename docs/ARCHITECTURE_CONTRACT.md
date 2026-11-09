@@ -194,6 +194,15 @@ uploads enter the ordered source queue immediately after their witnesses are
 ready, independently of the preceding GPU PCM witness readback. Sc's host
 join retires only producer tokens preceding that readback; later uploaded
 CPU Gu and device touch publication stay in flight for GPU consumers.
+For compact GPU tasks, Scene now emits contact-manager identities without
+resolving their numerical solver-row endpoints on the CPU. Native Dy
+reconstructs responding contacts from its resident contact-preparation
+table. Only zero-response managers, which have no contact-preparation
+record, resolve their endpoint ordinals during the final source-manifold
+publication. Wide tasks still supply full endpoints for their host launch
+bounds; the production coupled-scene regression verifies that compact
+contact descriptors never carry redundant CPU-resolved endpoints.
+
 Dy's GPU-owned compact tasks now bypass host endpoint-degree
 classification entirely. The host planner scans source descriptors only for
 tasks with at least 512 body ordinals and 512 response descriptors, where

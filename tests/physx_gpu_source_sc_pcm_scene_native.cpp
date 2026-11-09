@@ -198,6 +198,20 @@ struct GpuPcmFrictionAnchorFixture {
         return std::any_of(masks.begin(),masks.end(),
             [](std::uint32_t bits) {return bits!=0u;});
     }
+    static void verify_compact_gpu_contact_admission(const Scene& scene) {
+        std::size_t compact=0u;
+        for(const auto& descriptor:scene.ordered_constraints_) {
+            if((descriptor.row_count&255u)!=0u)continue;
+            if(descriptor.row0!=Scene::invalid_solver_row ||
+               descriptor.row1!=Scene::invalid_solver_row)
+                throw std::runtime_error(
+                    "Compact GPU contact retained redundant host solver endpoints");
+            ++compact;
+        }
+        if(!compact)
+            throw std::runtime_error(
+                "Compact GPU contact admission test had no contact descriptors");
+    }
     static std::size_t cpu_gu_anchor_bytes(const Scene& scene) {
         std::size_t count=0u;
         for(const auto index:scene.indexed_managers_) {
@@ -1407,6 +1421,8 @@ void verify_coupled_rigid_stack(
     for(std::uint32_t frame=0u;frame<12u;++frame) {
         cpu.step(dt);
         gpu.step(dt);
+        native::GpuPcmFrictionAnchorFixture::
+            verify_compact_gpu_contact_admission(gpu);
         if(frame==0u)
             native::GpuPcmFrictionAnchorFixture::verify_early_speculative_admission(
                 cpu,gpu);
