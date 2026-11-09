@@ -3730,7 +3730,8 @@ int main(int argc,char** argv) {
                 scenario=="star_island" ||
                 scenario=="dual_hub" ||
                 scenario=="star_island_10k" ||
-                scenario=="free_integration",
+                scenario=="free_integration" ||
+                scenario=="device_admission",
                 "Unknown GPU scene regression scenario");
 #ifdef FYZZXYZZY_TEST_D3D12
         constexpr auto backend=fyzz::compute::Backend::D3D12;
@@ -3770,6 +3771,10 @@ int main(int argc,char** argv) {
                     verify_convex_face_dispatch_window(
                         backend,argv[1],argv[2]);
                 });
+        if(scenario=="device_admission")
+            fyzz::tests::measure_gpu_case("sc_pcm","device_admission",
+                [&]{verify_device_sc_dy_task_admission(
+                    backend,argv[1],argv[2],argv[3]);});
         if(scenario=="all" || scenario=="scene")
             fyzz::tests::measure_gpu_case("sc_pcm","scene",
                 [&]{
