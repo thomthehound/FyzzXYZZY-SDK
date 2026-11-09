@@ -5,6 +5,7 @@
 #include "native/scene.h"
 #include "physx_gpu/source_native_view.h"
 #include "physx_gpu/source_sap_dma_native.h"
+#include "physx_gpu/source_sc_device_islands_native.h"
 #include "physx_port/gpucommon/PxgCudaBuffer.h"
 
 #include <algorithm>
@@ -273,7 +274,8 @@ public:
                bool device_world_motion=false,
                bool device_unconstrained_preparation=false,
                std::span<native::GpuDySleepState> sleep_states={},
-               std::span<const native::GpuDyJointInput> joint_inputs={}) {
+               std::span<const native::GpuDyJointInput> joint_inputs={},
+               std::optional<SourceScDeviceIslandDyView> device_admission=std::nullopt) {
         if(pending_solve_)
             throw std::logic_error("Source Dy numerical epoch already queued");
 
@@ -885,6 +887,11 @@ public:
         // 1D geometry carries the same ordinals in its first row.
         const bool source_descriptors=device_partitions &&
             device_initial_bodies && device_world_motion;
+        if(device_admission &&
+           (!source_descriptors || !device_admission->work ||
+            tasks.empty()))
+            throw std::invalid_argument(
+                "Source Dy device island admission requires source-indexed numerical input");
         source_descriptor_tokens_.clear();
         source_descriptor_full_.clear();
         if(source_descriptors) {
@@ -912,7 +919,7 @@ public:
             }
         }
         const std::uint64_t scratch_bytes=device_partitions
-            ?(source_descriptors?28ull:20ull)+
+            ?(source_descriptors?(device_admission?44ull:28ull):20ull)+
                 std::uint64_t(descriptors.size())*24ull+
                 std::uint64_t(bodies.size())*12ull+
                 std::uint64_t(source_descriptor_full_.size())*16ull
@@ -1056,7 +1063,8 @@ public:
                             sizeof(native::GpuDyContactPrepBody));
         if(device_partitions) {
             const auto n=descriptors.size();
-            const std::size_t header_bytes=source_descriptors?24u:20u;
+            const std::size_t header_bytes=source_descriptors
+                ?(device_admission?40u:24u):20u;
             const std::array<std::uint32_t,5> scratch_header{
                 narrow(header_bytes),narrow(header_bytes+n*16u),
                 narrow(header_bytes+n*20u),
@@ -1065,10 +1073,10 @@ public:
             std::memcpy(host_.data()+offsets[15],scratch_header.data(),
                         sizeof(scratch_header));
             if(source_descriptors) {
-                const std::uint32_t mode=1u;
+                const std::uint32_t mode=device_admission?2u:1u;
                 std::memcpy(host_.data()+offsets[15]+20u,
                             &mode,sizeof(mode));
-                if(n)
+                if(n && !device_admission)
                     std::memcpy(host_.data()+offsets[15]+scratch_header[1],
                                 source_descriptor_tokens_.data(),
                                 n*sizeof(std::uint32_t));
@@ -1303,6 +1311,37 @@ public:
         const auto previous_spans=stream_.submission_stats().upload_spans;
         stream_.queue_uploads({{
             address+upload_begin,host_.data()+upload_begin,uploaded_bytes}});
+        // The Sc producer and Dy consumer use the same ordered source
+        // stream. GPU-to-GPU copies replace the transient task/ordinal/
+        // token inputs after the shared host upload; no Sc witness fetch
+        // or host graph readback occurs between their submissions.
+        if(device_admission) {
+            const auto& view=*device_admission;
+            const auto& layout=view.layout;
+            const auto in_range=[&](std::size_t offset,std::size_t bytes) {
+                return offset<=layout.bytes && bytes<=layout.bytes-offset;
+            };
+            if(!in_range(0u,16u) ||
+               !in_range(layout.tasks,tasks.size_bytes()) ||
+               !in_range(layout.body_order,body_ordinals.size_bytes()) ||
+               !in_range(layout.response_tokens,
+                         descriptors.size_bytes()/sizeof(native::GpuDyDistanceDescriptor)*
+                             sizeof(std::uint32_t)))
+                throw std::out_of_range(
+                    "Source Sc device admission view exceeds its allocation");
+            stream_.queue_device_copy(address+offsets[15]+24u,
+                                      view.work,16u);
+            stream_.queue_device_copy(address+offsets[5],
+                                      view.work+layout.tasks,tasks.size_bytes());
+            if(!body_ordinals.empty())
+                stream_.queue_device_copy(address+offsets[4],
+                    view.work+layout.body_order,body_ordinals.size_bytes());
+            if(!descriptors.empty())
+                stream_.queue_device_copy(address+offsets[15]+40u+
+                    descriptors.size()*16u,
+                    view.work+layout.response_tokens,
+                    descriptors.size()*sizeof(std::uint32_t));
+        }
         last_upload_spans_=stream_.submission_stats().upload_spans-
                            previous_spans;
         for(std::size_t i=0;i<11u;++i)
@@ -1374,6 +1413,10 @@ public:
                     launch(Launch::Motion,body_tiles_,iteration);
             }
             launch(Launch::Integrate,body_tiles_);
+            launch(Launch::PublishErrors,{0u,(tasks.size()+127u)/128u});
+        }else if(device_admission) {
+            // Even compact tasks must report a failed resident Sc epoch,
+            // including an indirect launch with a mismatched task count.
             launch(Launch::PublishErrors,{0u,(tasks.size()+127u)/128u});
         }
         // The integration extent fits in launchControl's upper bits
