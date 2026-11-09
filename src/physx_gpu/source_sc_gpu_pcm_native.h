@@ -621,6 +621,13 @@ public:
             node_count?island_nodes_.getDevicePtr():0u,
             island_work_.getDevicePtr(),
             node_count,edge_count,edge_capacity);
+        // Reuse the PCM indirect resource once its earlier launches
+        // have completed on this ordered queue.
+        stream_.queue_device_copy(
+            indirect_address_,
+            island_work_.getDevicePtr()+
+                offsetof(SourceScDeviceIslandHeader,dispatch_x),
+            sizeof(compute::DispatchSize));
         stream_.submit();
         island_work_ready_=true;
     }
@@ -629,6 +636,11 @@ public:
     }
     SourceScDeviceIslandLayout device_island_layout() const noexcept {
         return island_work_ready_?island_layout_:SourceScDeviceIslandLayout{};
+    }
+    std::optional<compute::DispatchIndirectArgs>
+    device_island_indirect_args() const noexcept {
+        if(!island_work_ready_)return std::nullopt;
+        return compute::DispatchIndirectArgs{indirect_buffer_,0u};
     }
 
     void finish() {

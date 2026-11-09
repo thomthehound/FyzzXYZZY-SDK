@@ -392,6 +392,10 @@ public:
     SourceScDeviceIslandLayout device_island_layout() const noexcept {
         return pcm_?pcm_->device_island_layout():SourceScDeviceIslandLayout{};
     }
+    std::optional<compute::DispatchIndirectArgs>
+    device_island_indirect_args() const noexcept {
+        return pcm_?pcm_->device_island_indirect_args():std::nullopt;
+    }
     std::size_t pcm_host_contact_upload_bytes() const noexcept {
         return pcm_ ? pcm_->last_host_contact_upload_bytes() : 0u;
     }

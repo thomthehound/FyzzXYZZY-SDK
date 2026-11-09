@@ -36,6 +36,16 @@ struct SourceScDeviceIslandFixture {
         SourceScDeviceIslandHeader header{};
         owner.context_.download(resolved.buffer,resolved.offset,
                                 &header,sizeof(header));
+        const auto launch=owner.pcm_->device_island_indirect_args();
+        if(!launch)
+            throw std::runtime_error("Device Sc indirect task launch unavailable");
+        std::array<std::uint32_t,3> groups{};
+        owner.context_.download(launch->buffer,launch->offset,
+                                groups.data(),sizeof(groups));
+        if(groups!=std::array<std::uint32_t,3>{
+                header.dispatch_x,header.dispatch_y,header.dispatch_z})
+            throw std::runtime_error(
+                "Device Sc indirect launch differs from resident task header");
         return header;
     }
 };
@@ -695,6 +705,7 @@ void verify(fyzz::compute::Backend backend,const char* sap,
             producer->device_pcm_contact_stream()==0u &&
             producer->device_pcm_touch_history()==0u &&
             producer->device_island_work_address()==0u &&
+            !producer->device_island_indirect_args().has_value() &&
             !physx_gpu::SourceScDeviceIslandFixture::pcm_ready(*producer),
         "Rejected PCM transaction retained an executable device task view");
     require(abandoned_mixed[0].packed_counts==0u,

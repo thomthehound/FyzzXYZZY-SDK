@@ -167,6 +167,9 @@ contiguous response-descriptor spans for runnable components, without
 another host count or a per-component allocation. Independent components can
 execute concurrently, but their task identity is stable across runs;
 constraints sharing a responding body retain the required solver ordering.
+The generated indirect launch triple is copied into the source queue's
+existing physical indirect resource after island compaction; it requires no
+additional host upload, allocation or synchronization boundary.
 
 CPU Gu and GPU PCM publish physical-touch transitions into the same device
 EdgeIndex history. Host-only Gu epochs journal only the prior/current touch
