@@ -107,8 +107,10 @@ void connectNodes(uint a,uint b) {
 void main(uint3 thread:SV_DispatchThreadID) {
     const uint index=p.first+thread.x;
     if(p.phase==0u) {
-        if(index==0u)
+        if(index==0u) {
             work.Store4(p.workBias,uint4(0u,0u,0u,0u));
+            work.Store4(p.workBias+16u,uint4(0u,1u,1u,0u));
+        }
         if(index<p.nodeCount) {
             work.Store(p.rootBias+index*4u,index);
             const uint count=p.countBias+index*20u;
@@ -185,10 +187,11 @@ void main(uint3 thread:SV_DispatchThreadID) {
         const uint velocity=work.Load(count+16u);
         uint task;
         work.InterlockedAdd(p.workBias+4u,1u,task);
+        uint previous;
+        work.InterlockedAdd(p.workBias+16u,1u,previous);
         const uint dst=p.taskBias+task*20u;
         work.Store4(dst,uint4(index,nodes,edges,position));
         work.Store(dst+16u,velocity);
-        uint previous;
         work.InterlockedAdd(p.workBias+8u,nodes,previous);
         work.InterlockedAdd(p.workBias+12u,edges,previous);
     }
