@@ -877,6 +877,16 @@ void verify_device_sc_dy_task_admission(
     }};
     std::array<native::GpuPcmBoxResult,1> witness{};
     std::array<native::GpuDyDistanceBody,1> body{};
+    std::array<native::GpuDyDistanceDescriptor,1> descriptors{{
+        {1u,0u,0xffffffffu,0x100u}
+    }};
+    // The host descriptor addresses manager 1; the resident Sc token
+    // addresses manager 0. Only manager 0 has a responding endpoint.
+    // A retained host token therefore rejects numerical admission.
+    std::array<native::GpuDyContactManifold,2> managers{{
+        {0u,0u,0xffffffffu,0u,0x100u},
+        {0xffffffffu,0u,0xffffffffu,0u,0u}
+    }};
     std::array<std::uint32_t,1> ordinals{0u};
     std::array<native::GpuDyDistanceTask,1> tasks{};
     std::array<native::GpuDyBodyIntegrationInput,1> inputs{};
@@ -886,7 +896,7 @@ void verify_device_sc_dy_task_admission(
         body={};
         body[0].inverse_mass=1.f;
         tasks={};
-        tasks[0]={0u,0u,0u,0u,0u,1u,4u,1u,0x4000u};
+        tasks[0]={0u,1u,0u,1u,0u,1u,4u,1u,0x4000u};
         inputs={};
         poses={};
         sleep={};
@@ -908,17 +918,19 @@ void verify_device_sc_dy_task_admission(
         in.wake_counter=0.4f;
         in.seconds=seconds;
         producer->enqueue_gpu_dy_distance(
-            body,{},{},{},ordinals,tasks,
-            {},{},{},{},{},{},{},{},
+            body,{},descriptors,{},ordinals,tasks,
+            {},{},{},{},{},managers,{},{},
             inputs,poses,true,{},true,true,true,sleep);
     };
     const std::array<std::uint32_t,1> single_node{{
         4u|(1u<<8u)|physx_gpu::source_sc_device_island_active_bit
     }};
     producer->enqueue_gpu_pcm_box_contacts(requests,witness);
+    const std::array<physx_gpu::SourceScDeviceIslandEdge,1> touching{{
+        {edge,0u,0xffffffffu,0u,0u}
+    }};
     producer->enqueue_device_island_admission(
-        std::span<const physx_gpu::SourceScDeviceIslandEdge>{},
-        single_node,physx_gpu::SourceScDeviceIslandSources{});
+        touching,single_node,physx_gpu::SourceScDeviceIslandSources{2u,0u,0u});
     dispatch();
     require(producer->has_queued_gpu_dy_distance() &&
             witness[0].packed_counts==0u,
@@ -945,7 +957,7 @@ void verify_device_sc_dy_task_admission(
     }};
     producer->enqueue_gpu_pcm_box_contacts(requests,witness);
     producer->enqueue_device_island_admission(
-        bridge,two_nodes,physx_gpu::SourceScDeviceIslandSources{});
+        bridge,two_nodes,physx_gpu::SourceScDeviceIslandSources{2u,0u,0u});
     dispatch();
     producer->finish_gpu_pcm_box_contacts();
     bool rejected=false;
