@@ -896,25 +896,30 @@ public:
         source_descriptor_tokens_.clear();
         source_descriptor_full_.clear();
         if(source_descriptors) {
-            source_descriptor_tokens_.reserve(descriptors.size());
+            if(!device_admission)
+                source_descriptor_tokens_.reserve(descriptors.size());
             for(const auto& desc:descriptors) {
                 if(desc.index>=0x40000000u)
                     throw std::overflow_error(
                         "Sc source descriptor index exceeds device token range");
-                // Kinematic ordinals live in the packed inline contact
-                // body. Every native contact uses the manager token.
+                // Resident Sc admission supplies these source tokens.
+                // The CPU still authors full 1D descriptors that are
+                // not constructed from the device joint-row table.
                 if((desc.row_count&255u)==0u) {
-                    source_descriptor_tokens_.push_back(
-                        0xc0000000u|desc.index);
+                    if(!device_admission)
+                        source_descriptor_tokens_.push_back(
+                            0xc0000000u|desc.index);
                 }else if(rows[desc.index].reserved==2u) {
-                    source_descriptor_tokens_.push_back(
-                        0x80000000u|desc.index);
+                    if(!device_admission)
+                        source_descriptor_tokens_.push_back(
+                            0x80000000u|desc.index);
                 }else {
                     if(source_descriptor_full_.size()>=0x40000000u)
                         throw std::overflow_error(
                             "Dy source descriptor table exceeds device token range");
-                    source_descriptor_tokens_.push_back(
-                        static_cast<std::uint32_t>(source_descriptor_full_.size()));
+                    if(!device_admission)
+                        source_descriptor_tokens_.push_back(
+                            static_cast<std::uint32_t>(source_descriptor_full_.size()));
                     source_descriptor_full_.push_back(desc);
                 }
             }
