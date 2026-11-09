@@ -153,6 +153,17 @@ nodes, ordered constraints and explicit cross-system dependencies within
 this same graph. A new feature must not require a second independent frame
 loop, contact registry, island manager or solver-state truth.
 
+**Connectivity and solver response are separate facts.** An accurate
+contact or authored joint can connect responding nodes without producing
+constraint rows. Device island admission preserves that connectivity while
+excluding response-disabled edges from numerical task counts. An active seed
+can admit its entire connected component; its position/velocity iteration
+limits are the maxima of all admitted component nodes, not merely the seed.
+Device component roots are transient execution IDs, while EdgeIndex and
+source-ordered constraint identity remain stable. Independent components may
+be scheduled in any order, but constraints sharing a responding body retain
+the required solver ordering.
+
 CPU Gu and GPU PCM publish physical-touch transitions into the same device
 EdgeIndex history. Host-only Gu epochs journal only the prior/current touch
 words from the existing resident 84-byte contact records; mixed epochs retain
