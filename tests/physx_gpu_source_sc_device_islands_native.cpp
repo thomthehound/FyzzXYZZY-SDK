@@ -14,6 +14,7 @@
 #include <iterator>
 #include <stdexcept>
 #include <span>
+#include <tuple>
 #include <utility>
 #include <vector>
 
@@ -127,7 +128,7 @@ void verify(Context& context,const char* filename) {
         context.destroy_buffer(node_buffer);
         context.destroy_buffer(touch_buffer);
         context.destroy_buffer(edge_buffer);
-        return std::pair{layout,std::move(bytes)};
+        return std::tuple{layout,std::move(bytes),node_count};
     };
     const auto root=[&](const auto& result,std::size_t node) {
         return load<std::uint32_t>(result.second,
@@ -153,6 +154,37 @@ void verify(Context& context,const char* filename) {
             if(item.root==root_id)return item;
         }
         throw std::runtime_error("Missing source device island task");
+    };
+    const auto check_task_mapping=[&](const auto& result) {
+        const auto summary=header(result);
+        std::vector<std::uint8_t> visited(summary.runnable_components,0u);
+        std::uint32_t nodes=0u,edges=0u;
+        for(std::size_t root_id=0u;
+            root_id<std::get<2>(result);++root_id) {
+            // Task roots need not be numerically ordered or contiguous.
+            const auto record=count(result,root_id);
+            if(record.task_index==invalid)continue;
+            require(record.task_index<summary.runnable_components &&
+                    !visited[record.task_index],
+                    "Device Sc task ordinal aliases another active component");
+            visited[record.task_index]=1u;
+            const auto entry=load<SourceScDeviceIslandTask>(result.second,
+                result.first.tasks+
+                record.task_index*sizeof(SourceScDeviceIslandTask));
+            require(entry.root==root_id &&
+                    entry.responding_nodes==record.responding_nodes &&
+                    entry.admitted_edges==record.admitted_edges &&
+                    entry.position_iterations==record.position_iterations &&
+                    entry.velocity_iterations==record.velocity_iterations,
+                    "Device Sc root-to-task mapping changes source task inputs");
+            nodes+=record.responding_nodes;
+            edges+=record.admitted_edges;
+        }
+        require(nodes==summary.responding_nodes &&
+                edges==summary.admitted_edges &&
+                std::all_of(visited.begin(),visited.end(),
+                            [](std::uint8_t v){return v!=0u;}),
+                "Device Sc runnable task mapping has a missing component");
     };
     const auto no_errors=[&](const auto& result) {
         require(load<std::uint32_t>(result.second,0u)==0u,
@@ -206,6 +238,7 @@ void verify(Context& context,const char* filename) {
             count(first,3u).active_seeds==0u &&
             count(first,6u).admitted_edges==1u,
             "Device Sc accurate island admission counts are incorrect");
+    check_task_mapping(first);
     for(std::size_t i=0u;i<edges.size();++i) {
         const auto value=admitted(first,i);
         require(value.source_index==edges[i].source_index &&
@@ -264,6 +297,7 @@ void verify(Context& context,const char* filename) {
     // A lost bridge and chord split the previously connected island.
     auto split=evaluate(7u,edges,{0u,0u,1u,1u,0u,0u});
     no_errors(split);
+    check_task_mapping(split);
     require(root(split,0u)==0u && root(split,1u)==1u &&
             root(split,2u)==1u && root(split,3u)==3u &&
             count(split,0u).admitted_edges==0u &&
@@ -291,6 +325,7 @@ void verify(Context& context,const char* filename) {
     bridge.push_back({6u,2u,4u,19u,0u});
     auto joined=evaluate(7u,bridge,{1u,0u,1u,1u,0u,1u,1u});
     no_errors(joined);
+    check_task_mapping(joined);
     require(root(joined,0u)==root(joined,4u) &&
             root(joined,5u)==0u &&
             count(joined,0u).responding_nodes==5u &&
