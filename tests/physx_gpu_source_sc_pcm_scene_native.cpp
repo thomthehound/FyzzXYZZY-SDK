@@ -45,6 +45,8 @@ struct SourceScDeviceIslandFixture {
                    std::uint64_t(header.source_edges)*
                        sizeof(SourceScDeviceIslandAdmission)>work.size() ||
                layout.response_order+
+                   std::uint64_t(header.admitted_edges)*4u>work.size() ||
+               layout.response_tokens+
                    std::uint64_t(header.admitted_edges)*4u>work.size())
                 throw std::runtime_error("Device Sc response work exceeds its allocation");
             std::uint32_t previous_root=0u,previous_edge=0u;
@@ -56,12 +58,19 @@ struct SourceScDeviceIslandFixture {
                 SourceScDeviceIslandAdmission record{};
                 std::memcpy(&record,work.data()+layout.admissions+
                             std::size_t(edge)*sizeof(record),sizeof(record));
+                const std::uint32_t expected_tag=
+                    (record.kind&source_sc_device_island_joint_bit)
+                        ?0x80000000u:0xc0000000u;
+                std::uint32_t token=0u;
+                std::memcpy(&token,work.data()+layout.response_tokens+i*4u,4u);
                 if(record.island_root==0xffffffffu ||
                    (record.kind&source_sc_device_island_no_response_bit)!=0u ||
+                   record.source_index>=0x40000000u ||
+                   token!=(expected_tag|record.source_index) ||
                    (i!=0u && (record.island_root<previous_root ||
                     (record.island_root==previous_root && edge<=previous_edge))))
                     throw std::runtime_error(
-                        "Device Sc response order differs from source island admission");
+                        "Device Sc response identity/order differs from source admission");
                 previous_root=record.island_root;
                 previous_edge=edge;
             }

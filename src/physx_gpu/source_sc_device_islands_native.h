@@ -90,13 +90,14 @@ static_assert(sizeof(SourceScDeviceIslandHeader)==32u &&
 
 // One source-owned transient allocation holds union parents (finally
 // canonical island roots), per-root admission counts and source-ordered
-// edge records, and a stable response-index stream. No CPU readback
-// is required between these phases.
+// edge records, a stable response-index stream and typed Dy source
+// tokens. No CPU readback is required between these phases.
 struct SourceScDeviceIslandLayout {
     std::size_t roots=sizeof(SourceScDeviceIslandHeader);
     std::size_t counts=0u,admissions=0u,tasks=0u;
     std::size_t block_offsets=0u,response_primary=0u,response_scratch=0u;
-    std::size_t response_order=0u,radix_histogram=0u,bytes=0u;
+    std::size_t response_order=0u,response_tokens=0u;
+    std::size_t radix_histogram=0u,bytes=0u;
     static std::uint32_t radix_passes(std::uint32_t nodes) noexcept {
         return nodes<=0xffu?1u:nodes<=0xffffu?2u:
                nodes<=0xffffffu?3u:4u;
@@ -140,6 +141,9 @@ struct SourceScDeviceIslandLayout {
             if(radix_passes(node_count)&1u)
                 result.response_order=result.response_scratch;
         }
+        result.response_tokens=static_cast<std::size_t>(align(bytes));
+        bytes=align(std::uint64_t(result.response_tokens)+
+                    std::uint64_t(edge_count)*sizeof(std::uint32_t));
         if(bytes>std::numeric_limits<std::uint32_t>::max())
             throw std::out_of_range("Device Sc island work exceeds 32-bit view");
         result.bytes=static_cast<std::size_t>(bytes);
@@ -166,7 +170,7 @@ public:
         pipeline.storage_buffer_binding_count=4u;
         pipeline.storage_buffer_views.assign(
             4u,compute::StorageBufferViewKind::RawReadWrite);
-        pipeline.push_constant_bytes=80u;
+        pipeline.push_constant_bytes=96u;
         pipeline_=context_.create_compute_pipeline(pipeline);
     }
     SourceScDeviceIslandsNativeStage(
@@ -212,7 +216,7 @@ public:
         const auto node_bytes=node_count
             ?source_allocation_bytes(node_count,4u):layout.bytes;
         const auto node_address=node_count?node_flags:output;
-        std::array<std::uint32_t,20> args{};
+        std::array<std::uint32_t,24> args{};
         compute::DispatchCommand dispatch{};
         dispatch.pipeline=pipeline_;
         dispatch.buffers={
@@ -249,6 +253,8 @@ public:
             ?offset(layout.response_scratch,args[3]):args[16];
         args[18]=layout.radix_histogram
             ?offset(layout.radix_histogram,args[3]):args[16];
+        args[20]=offset(layout.response_tokens,args[3]);
+        args[21]=SourceScDeviceIslandLayout::radix_passes(node_count);
         dispatch.push_constants.resize(sizeof(args));
         std::vector<compute::BatchCommand> commands;
         const auto launch=[&](std::uint32_t phase,std::uint32_t count) {

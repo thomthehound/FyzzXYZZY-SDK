@@ -167,8 +167,10 @@ contiguous response-descriptor spans for runnable components, without
 another host count or a per-component allocation. A stable device
 response-index scatter fills those spans in original Sc encounter order.
 Small streams use one direct GPU phase; larger streams use global stable
-radix passes by canonical root. Dormant and response-disabled edges
-do not occupy numerical descriptor slots. Independent components can
+radix passes by canonical root. The same scatter writes source-typed Dy
+contact-manager and device-owned joint descriptor tokens without another
+dispatch or upload. Dormant and response-disabled edges do not occupy
+numerical descriptor slots. Independent components can
 execute concurrently, but their task identity is stable across runs;
 constraints sharing a responding body retain the required solver ordering.
 The generated indirect launch triple is copied into the source queue's

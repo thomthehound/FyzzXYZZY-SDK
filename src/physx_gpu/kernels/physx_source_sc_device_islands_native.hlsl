@@ -28,6 +28,7 @@ struct Parameters {
     uint blockBias,nodeCount,edgeCount,edgeCapacity;
     uint phase,first,maxGroups,blockCount;
     uint responseBiasA,responseBiasB,histBias,reserved;
+    uint tokenBias,radixPasses,spare0,spare1;
 };
 #ifdef __spirv__
 [[vk::push_constant]] Parameters p;
@@ -137,6 +138,22 @@ uint responseRoot(uint edgeIndex) {
         return p.nodeCount;
     return work.Load(p.countBias+root*24u+20u)!=invalid
         ?root:p.nodeCount;
+}
+
+// Dy source descriptors encode contact-managers with tag 3 and
+// device-authored 1D joint rows with tag 2. The source ordinal
+// stays authoritative; no second host descriptor enumeration is needed
+// to determine the type of each admitted response.
+uint responseToken(uint edgeIndex) {
+    const uint address=p.admissionBias+edgeIndex*24u;
+    const uint source=work.Load(address);
+    if(source>=0x40000000u) {
+        reject(64u);
+        work.Store(p.workBias+16u,0u);
+        return invalid;
+    }
+    const uint kind=work.Load(address+20u);
+    return ((kind&jointEdge)!=0u?0x80000000u:0xc0000000u)|source;
 }
 
 bool runnableRoot(uint index) {
@@ -333,6 +350,7 @@ void main(uint3 thread:SV_DispatchThreadID,
         const uint task=work.Load(p.countBias+root*24u+20u);
         const uint begin=work.Load(p.taskBias+task*24u+20u);
         work.Store(p.responseBiasA+(begin+ordinal)*4u,index);
+        work.Store(p.tokenBias+(begin+ordinal)*4u,responseToken(index));
         return;
     }
     if(p.phase<7u)return;
@@ -417,8 +435,11 @@ void main(uint3 thread:SV_DispatchThreadID,
             const uint digit=radixDigits[lane.x];
             const uint position=work.Load(
                 p.histBias+block*1024u+digit*4u)+radixRanks[lane.x];
-            work.Store(target+position*4u,
-                       work.Load(source+index*4u));
+            const uint edge=work.Load(source+index*4u);
+            work.Store(target+position*4u,edge);
+            if(pass+1u==p.radixPasses &&
+               position<work.Load(p.workBias+12u))
+                work.Store(p.tokenBias+position*4u,responseToken(edge));
         }
     }
 }

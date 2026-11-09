@@ -216,10 +216,18 @@ void verify(Context& context,const char* filename) {
             [](const auto& a,const auto& b){return a.first<b.first;});
         require(expected.size()==summary.admitted_edges,
                 "Device Sc response count disagrees with source admissions");
-        for(std::size_t i=0u;i<expected.size();++i)
+        for(std::size_t i=0u;i<expected.size();++i) {
+            const auto edge=expected[i].second;
+            const auto record=admitted(result,edge);
+            const auto tag=(record.kind&source_sc_device_island_joint_bit)
+                ?0x80000000u:0xc0000000u;
             require(load<std::uint32_t>(result.second,
-                        result.first.response_order+i*4u)==expected[i].second,
+                        result.first.response_order+i*4u)==edge &&
+                    load<std::uint32_t>(result.second,
+                        result.first.response_tokens+i*4u)==
+                            (tag|record.source_index),
                     "Device Sc response scatter reordered a source descriptor");
+        }
     };
     const auto no_errors=[&](const auto& result) {
         require(load<std::uint32_t>(result.second,0u)==0u,
@@ -687,6 +695,16 @@ void verify(Context& context,const char* filename) {
         require(admitted(long_chain,i).island_root==0u &&
                 admitted(long_chain,i).source_index==chain[i].source_index,
                 "Device island joint admission lost source ordering");
+
+    // A source descriptor index needs 30 bits; larger identifiers
+    // must invalidate indirect numerical launch, not alias its tag.
+    auto oversized_source=edges;
+    oversized_source[0].source_index=0x40000000u;
+    const auto invalid_token=evaluate(7u,oversized_source,
+                                      {1u,0u,1u,1u,0u,1u});
+    require((header(invalid_token).errors&64u)!=0u &&
+            header(invalid_token).dispatch_x==0u,
+            "Device Sc source token overflow could launch the wrong constraint");
 
     // Malformed generation/edge/node handles must not silently join
     // unrelated solver bodies or access unallocated GPU touch history.
