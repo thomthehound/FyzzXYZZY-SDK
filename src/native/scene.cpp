@@ -7569,6 +7569,8 @@ void Scene::prepare_constraints(float seconds) {
                     c[0].z*v.x+c[1].z*v.y+c[2].z*v.z};
     };
     solver_contact_points_.clear();
+    prepared_contact_rows_=0u;
+    gpu_dy_gu_inputs_.clear();
     solver_contact_order_.clear();
     gpu_dy_contact_order_.clear();
     joint_rows_.clear();
@@ -7838,7 +7840,7 @@ void Scene::prepare_constraints(float seconds) {
             (actor_a.motion==Motion::Dynamic && !actor_a.sleeping) ||
             (actor_b.motion==Motion::Dynamic && !actor_b.sleeping);
         if(!active_dynamic) {
-            manifold.solver_offset=solver_contact_points_.size();
+            manifold.solver_offset=prepared_contact_rows_;
             manifold.friction_patch_offset=next_friction_patches_.size();
             manifold.friction_patch_count=0;
             // No Dy contact rows are admitted for dormant Gu managers.
@@ -7868,7 +7870,7 @@ void Scene::prepare_constraints(float seconds) {
             ? prepared_solver_row(id0).data : world_solver_row_.data;
         const auto& b = rigid_node(actors_[id1].motion)
             ? prepared_solver_row(id1).data : world_solver_row_.data;
-        manifold.solver_offset = solver_contact_points_.size();
+        manifold.solver_offset = prepared_contact_rows_;
         manifold.friction_patch_offset = next_friction_patches_.size();
         manifold.friction_patch_count = 0;
         const Actor& actor0 = actors_[id0];
@@ -8239,6 +8241,15 @@ void Scene::prepare_constraints(float seconds) {
                 prep.pcm_pair_index=manifold.pcm_result_index;
                 prep.pcm_edge=edge;
             }
+            if(manifold.pcm_result_index==
+               std::numeric_limits<std::uint32_t>::max()) {
+                if(gpu_dy_gu_inputs_.size()>=
+                   std::numeric_limits<std::uint32_t>::max())
+                    throw std::overflow_error(
+                        "Source CPU Gu geometry exceeds 32-bit view");
+                prep.cpu_gu_offset=static_cast<std::uint32_t>(
+                    gpu_dy_gu_inputs_.size());
+            }
             gpu_dy_contact_prep_indices_[manager_index]=
                 static_cast<std::uint32_t>(gpu_dy_contact_prep_pairs_.size());
             gpu_dy_contact_prep_pairs_.push_back(prep);
@@ -8278,13 +8289,22 @@ void Scene::prepare_constraints(float seconds) {
             const Vec3 normal=header_normals[
                 patch_id-manifold.friction_patch_offset];
             if(gpu_normal_prep) {
-                // Source correlation fixes the header normal and Gu
-                // index; the GPU prepares the independent numeric row.
-                SolverContactPoint row{};
-                row.normal=normal;
-                row.friction_patch=patch_id;
-                row.max_impulse=pair_max_impulse;
-                solver_contact_points_.push_back(row);
+                // Sc retains the Gu ordinal, not a shadow Jacobian.
+                // CPU Gu packs the correlated header normal while
+                // PCM geometry remains in the resident contact stream.
+                if(manifold.pcm_result_index==
+                   std::numeric_limits<std::uint32_t>::max()) {
+                    GpuDyGuContactInput gu{};
+                    gu.normal[0]=normal.x;
+                    gu.normal[1]=normal.y;
+                    gu.normal[2]=normal.z;
+                    gu.position[0]=contact.position.x;
+                    gu.position[1]=contact.position.y;
+                    gu.position[2]=contact.position.z;
+                    gu.separation=contact.separation;
+                    gpu_dy_gu_inputs_.push_back(gu);
+                }
+                ++prepared_contact_rows_;
                 continue;
             }
             Vec3 ra_x_n = cross(sub(contact.position,a.position),normal);
@@ -8369,6 +8389,7 @@ void Scene::prepare_constraints(float seconds) {
                 !std::isfinite(row.velocity_multiplier))
                 throw std::overflow_error("Native Dy contact preparation overflow");
             solver_contact_points_.push_back(row);
+            ++prepared_contact_rows_;
         }
         // DyFrictionCorrelation::growPatches: retain up to two anchors
         // spread across each friction patch's contact bounds; the anchors
@@ -8688,8 +8709,13 @@ void Scene::solve_gpu_distance_constraints(float seconds) {
     // Sc owns Gu point identity and correlated patch normals. The GPU
     // constructs every writable Dy contact row; only CPU-origin Gu
     // geometry needs a compact source upload.
-    gpu_dy_contact_forces_.resize(solver_contact_points_.size());
-    gpu_dy_gu_inputs_.clear();
+    if(!solver_contact_points_.empty())
+        throw std::logic_error("GPU Dy materialized CPU numerical contact rows");
+    gpu_dy_contact_forces_.resize(prepared_contact_rows_);
+    // Contact correlation already packed the Gu header normals in
+    // source order. Validate that every CPU-origin manager owns its
+    // exact range without traversing shadow solver contacts again.
+    std::size_t cpu_gu_cursor=0u;
     for(const auto manager_index:indexed_managers_) {
         const auto& m=manifolds_[manager_index];
         if(!m.friction_patch_count)continue;
@@ -8699,19 +8725,20 @@ void Scene::solve_gpu_distance_constraints(float seconds) {
         const auto prep_index=gpu_dy_contact_prep_indices_[manager_index];
         if(prep_index>=gpu_dy_contact_prep_pairs_.size())
             throw std::logic_error("Source GPU Dy contact pair index invalid");
-        auto& prep=gpu_dy_contact_prep_pairs_[prep_index];
-        if(prep.pcm_pair_index!=0xffffffffu)continue;
-        prep.cpu_gu_offset=narrow(gpu_dy_gu_inputs_.size());
-        for(std::size_t j=0;j<m.count;++j) {
-            const auto& from=solver_contact_points_[m.solver_offset+j];
-            const auto& point=m.points[j];
-            native::GpuDyGuContactInput input{};
-            pack(input.normal,from.normal);
-            pack(input.position,point.position);
-            input.separation=point.separation;
-            gpu_dy_gu_inputs_.push_back(input);
+        const auto& prep=gpu_dy_contact_prep_pairs_[prep_index];
+        if(prep.pcm_pair_index!=0xffffffffu) {
+            if(prep.cpu_gu_offset!=0xffffffffu)
+                throw std::logic_error("Resident PCM acquired CPU Gu geometry");
+            continue;
         }
+        if(prep.cpu_gu_offset!=cpu_gu_cursor ||
+           cpu_gu_cursor>gpu_dy_gu_inputs_.size() ||
+           m.count>gpu_dy_gu_inputs_.size()-cpu_gu_cursor)
+            throw std::logic_error("Source CPU Gu geometry lost numerical contact order");
+        cpu_gu_cursor+=m.count;
     }
+    if(cpu_gu_cursor!=gpu_dy_gu_inputs_.size())
+        throw std::logic_error("Source CPU Gu geometry has trailing records");
     // One source friction anchor generates the two correlated tangents.
     // The device constructs both 56-byte tangent rows and returns one
     // combined world impulse per source friction anchor.
@@ -8740,8 +8767,8 @@ void Scene::solve_gpu_distance_constraints(float seconds) {
         // A dormant Gu manager retains geometry but has no prepared
         // normal rows; source CPU PGS skips its zero-patch descriptor.
         if(!m.friction_patch_count)continue;
-        if(m.solver_offset>solver_contact_points_.size() ||
-           m.count>solver_contact_points_.size()-m.solver_offset)
+        if(m.solver_offset>prepared_contact_rows_ ||
+           m.count>prepared_contact_rows_-m.solver_offset)
             throw std::logic_error("GPU Dy contact row window invalid");
         if(manager_index>=gpu_dy_contact_prep_indices_.size() ||
            gpu_dy_contact_prep_indices_[manager_index]==0xffffffffu)
@@ -8873,8 +8900,9 @@ void Scene::solve_gpu_distance_constraints(float seconds) {
     gpu_dy_pose_ready_=true;
     // Dy keeps transient PGS deltas on device. Sc receives world-space
     // final and position-phase velocities needed by its task continuations.
-    for(std::size_t i=0;i<solver_contact_points_.size();++i)
-        solver_contact_points_[i].applied_force=gpu_dy_contact_forces_[i];
+    if(!solver_contact_points_.empty() ||
+       gpu_dy_contact_forces_.size()!=prepared_contact_rows_)
+        throw std::logic_error("GPU Dy returned mismatched contact force slots");
     // Solved friction rows stay on device; Sc receives only the anchor
     // world impulses needed by its existing source patch writeback.
     // Sc retains the authoritative body-local strong-friction history.
@@ -9380,13 +9408,18 @@ void Scene::write_back_contacts(std::size_t first,std::size_t last) {
             throw std::logic_error(
                 "Active Dy writeback references invalid Gu contact owner");
         if(manifold.friction_patch_count==0)continue;
-        if(manifold.solver_offset > solver_contact_points_.size() ||
-           manifold.count > solver_contact_points_.size()-manifold.solver_offset)
+        const std::size_t row_count=gpu_dy_pose_ready_
+            ?gpu_dy_contact_forces_.size():solver_contact_points_.size();
+        if(manifold.solver_offset>row_count ||
+           manifold.count>row_count-manifold.solver_offset)
             throw std::logic_error(
                 "Native Dy contact writeback offset exceeds solver rows");
         for (std::size_t i=0;i<manifold.count;++i) {
-            const double impulse=solver_contact_points_[
-                manifold.solver_offset+i].applied_force;
+            const double impulse=gpu_dy_pose_ready_
+                ?static_cast<double>(gpu_dy_contact_forces_[
+                    manifold.solver_offset+i])
+                :static_cast<double>(solver_contact_points_[
+                    manifold.solver_offset+i].applied_force);
             // Source DySolverConstraintsShared::solveDynamicContacts
             // clamps the compliant recurrence from above, but does NOT
             // clamp it to zero after multiplying the previous impulse

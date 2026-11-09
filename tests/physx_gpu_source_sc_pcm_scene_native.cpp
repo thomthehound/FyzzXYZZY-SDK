@@ -186,9 +186,12 @@ struct GpuPcmFrictionAnchorFixture {
         }
         if((require_pcm && !pcm_count) ||
            (require_cpu && !cpu_count) ||
-           scene.gpu_dy_contact_order_.size()!=cpu_count)
+           scene.gpu_dy_contact_order_.size()!=cpu_count ||
+           scene.gpu_dy_gu_inputs_.size()!=cpu_count ||
+           scene.gpu_dy_contact_forces_.size()!=scene.prepared_contact_rows_ ||
+           !scene.solver_contact_points_.empty())
             throw std::runtime_error(
-                "GPU Dy still uploads resident PCM contact order or omitted CPU Gu order");
+                "GPU Dy duplicated CPU numerical contact rows or lost Gu order");
     }
     static bool had_early_friction_history(const Scene& scene) {
         const auto& masks=scene.gpu_pcm_friction_history_masks_;

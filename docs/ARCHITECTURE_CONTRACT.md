@@ -210,6 +210,14 @@ wide GPU tiling can change the launch schedule. Smaller tasks retain their
 existing device-colored fused path without dense degree-array clearing or
 redundant host numerical inspection.
 
+Native GPU Dy no longer allocates CPU numerical contact-Jacobian rows
+during Sc friction correlation. Sc maintains the source Gu row ordinal
+and packs CPU Gu's 28-byte contact input directly while the exact correlated
+header normal is in scope; PCM contact geometry stays resident. Device
+normal impulses return directly into the original Gu-indexed Sc writeback
+without first copying through a CPU solver-row mirror. The CPU PGS path
+retains its normal rows unchanged.
+
 The source Dy numerical stage submits its existing solver command graph
 independently of the CPU result fetch. Its queued execution consumes the
 device-ready PCM/CPU Gu stream after the input producers, and the normal

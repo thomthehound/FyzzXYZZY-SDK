@@ -1784,6 +1784,8 @@ private:
     // Reusable flat Dy normal-constraint stream; patch ownership and all
     // point offsets remain with this scene, not with allocating manifolds.
     std::vector<SolverContactPoint> solver_contact_points_;
+    // GPU Dy keeps source Gu ordinals but no CPU numerical normal rows.
+    std::size_t prepared_contact_rows_=0u;
     // DyFrictionCorrelation::ContactPatchData is constructed from
     // CONTIGUOUS runs of compatible Gu contacts before friction patch
     // correlation; one reused scratch arena, not per-manager objects.
