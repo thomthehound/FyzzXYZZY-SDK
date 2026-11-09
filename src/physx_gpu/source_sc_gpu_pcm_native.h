@@ -101,6 +101,7 @@ public:
         stream_.abandon_fetch();
         host_upload_pending_=false;
         result_pending_=false;
+        pending_host_inputs_=false;
         pending_requests_={};
         pending_output_={};
         published_pair_count_=0u;
@@ -198,6 +199,7 @@ public:
         journal_edge_capacity_=edge_capacity;
         pending_edge_span_bytes_=std::size_t(edge_capacity)*240u;
         published_pair_count_=pair_count;
+        pending_host_inputs_=false;
         host_upload_pending_=true;
         stream_.submit();
         last_pair_upload_bytes_=0u;
@@ -224,6 +226,7 @@ public:
         last_contact_download_bytes_=0u;
         last_host_contact_upload_bytes_=0u;
         host_upload_pending_=false;
+        pending_host_inputs_=false;
         last_edge_history_copy_bytes_=0u;
         last_continuation_commands_=0u;
         last_face_pair_scan_count_=0u;
@@ -494,6 +497,8 @@ public:
         journal_pair_count_=pair_count;
         journal_edge_capacity_=edge_capacity;
         journal_host_only_=false;
+        pending_host_inputs_=std::any_of(requests.begin(),requests.end(),
+            [](const auto& request){return request.host_generated;});
         pending_edge_span_bytes_=std::size_t(edge_capacity)*240u;
         // The DMA follows the last PCM shader immediately, while Sc
         // independently admits speculative topology and CPU Gu.
@@ -582,15 +587,33 @@ public:
         }
         // CPU Gu was submitted before this host witness join. No later
         // device continuation can extend the readback dependency.
-        if(std::any_of(requests.begin(),requests.end(),
-                       [](const auto& request){return request.host_generated;}) &&
-           !host_upload_pending_)
+        if(pending_host_inputs_ && !host_upload_pending_)
             throw std::logic_error("Mixed PCM host Gu was not admitted before fetch");
         published_pair_count_=journal_pair_count_;
         result_pending_=false;
+        pending_host_inputs_=false;
         pending_requests_={};
         pending_output_={};
         rebuild_required_=false;
+    }
+    // GPU task admission consumes the queued numerical stream without
+    // joining its host witness DMA. Mixed epochs become complete only
+    // after their bounded CPU Gu upload enters the same ordered queue.
+    // A rejected transaction invalidates the view immediately.
+    std::uint32_t device_contact_pair_count() const noexcept {
+        if(restore_pending_ ||
+           (result_pending_ && pending_host_inputs_ && !host_upload_pending_))
+            return 0u;
+        return result_pending_?journal_pair_count_:published_pair_count_;
+    }
+    CudaDeviceAddressMap::Address device_contact_stream_address() const noexcept {
+        return device_contact_pair_count()?dense_contacts_.getDevicePtr():0u;
+    }
+    CudaDeviceAddressMap::Address device_edge_history_address() const noexcept {
+        return device_contact_pair_count()?edges_.getDevicePtr():0u;
+    }
+    std::uint32_t device_edge_history_capacity() const noexcept {
+        return device_contact_pair_count()?journal_edge_capacity_:0u;
     }
     CudaDeviceAddressMap::Address contact_stream_address() const noexcept {
         return published_pair_count_?dense_contacts_.getDevicePtr():0u;
@@ -690,6 +713,7 @@ private:
     bool rebuild_required_=false;
     bool pcm_transaction_pending_=false,restore_pending_=false;
     bool result_pending_=false,host_upload_pending_=false;
+    bool pending_host_inputs_=false;
     bool journal_host_only_=false;
     // Borrowed Sc views survive until finish() or rollback; GPU output
     // is written directly into the enqueued Sc result arena at the join.
