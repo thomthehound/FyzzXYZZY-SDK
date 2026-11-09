@@ -701,7 +701,7 @@ public:
     CudaDeviceAddressMap::Address device_edge_history_address() const noexcept {
         return device_edge_history_capacity()?edges_.getDevicePtr():0u;
     }
-     std::size_t last_pair_upload_bytes() const noexcept {
+    std::size_t last_pair_upload_bytes() const noexcept {
         return last_pair_upload_bytes_;
     }
     std::size_t last_contact_download_bytes() const noexcept {
