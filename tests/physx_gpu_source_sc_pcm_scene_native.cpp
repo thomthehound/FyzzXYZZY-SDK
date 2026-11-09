@@ -811,6 +811,15 @@ void verify_queued_pcm_dy(fyzz::compute::Backend backend,const char* sap,
             producer->has_queued_gpu_dy_distance() &&
             witness[0].packed_counts==0u,
         "Premature host Dy join discarded its queued numerical result");
+    bool premature_commit_rejected=false;
+    try {
+        producer->commit_gpu_step();
+    } catch(const std::logic_error&) {
+        premature_commit_rejected=true;
+    }
+    require(premature_commit_rejected &&
+            producer->has_queued_gpu_dy_distance(),
+        "Source Sc committed before GPU Dy published numerical results");
     producer->finish_gpu_pcm_box_contacts();
     require(witness[0].status()==0u && witness[0].count()>0u,
         "Queued PCM witness was invalid after early Dy dispatch");

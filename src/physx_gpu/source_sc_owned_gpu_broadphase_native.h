@@ -551,6 +551,9 @@ public:
     }
     void post_reports_cleanup() override { producer_->post_reports_cleanup(); }
     void commit_gpu_step() override {
+        if(dy_distance_ && dy_distance_->has_queued_solve())
+            throw std::logic_error(
+                "Source Sc frame cannot commit before Dy numerical writeback");
         if(pcm_)pcm_->commit_step();
     }
     bool needs_gpu_contact_rebuild() const noexcept override {
