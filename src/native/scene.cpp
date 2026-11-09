@@ -7791,6 +7791,8 @@ void Scene::prepare_constraints(float seconds) {
         }
     }
     solver_friction_rows_.clear();
+    prepared_friction_rows_=0u;
+    gpu_dy_friction_anchors_.clear();
     next_friction_patches_.clear();
     // PXC_SAME_NORMAL and DyCorrelationBuffer::MAX_FRICTION_PATCHES.
     constexpr float same_normal = 0.999f;
@@ -8402,7 +8404,7 @@ void Scene::prepare_constraints(float seconds) {
             // local-to-world error/Jacobians for disabled patches.
             if (patch.disable_friction) {
                 patch.anchor_count=0;
-                patch.row_offset=solver_friction_rows_.size();
+                patch.row_offset=prepared_friction_rows_;
                 continue;
             }
             if(gpu_normal_prep && manifold.pcm_result_index!=
@@ -8415,8 +8417,12 @@ void Scene::prepare_constraints(float seconds) {
                    patch.contact_count!=manifold.count)
                     throw std::logic_error(
                         "Source GPU PCM friction is not one correlated patch");
-                patch.row_offset=solver_friction_rows_.size();
-                solver_friction_rows_.insert(solver_friction_rows_.end(),4u,{});
+                patch.row_offset=prepared_friction_rows_;
+                // Device PCM grows up to two anchors in its own numerical
+                // workspace; only their compact source slots are needed.
+                gpu_dy_friction_anchors_.resize(
+                    gpu_dy_friction_anchors_.size()+2u);
+                prepared_friction_rows_+=4u;
                 continue;
             }
             const Vec3 extent=sub(patch.bounds_max,patch.bounds_min);
@@ -8501,21 +8507,25 @@ void Scene::prepare_constraints(float seconds) {
                 }
             }
             patch.anchor_count=count;
-            patch.row_offset=solver_friction_rows_.size();
+            patch.row_offset=prepared_friction_rows_;
             if (count==0) continue;
             // DyContactPrep.cpp constructs tangents from relative linear
             // velocity, with the same 0.7071f normal-axis fallback and
             // 1e-4 squared-tangent threshold as the source.
             if(gpu_normal_prep) {
-                // Correlation and anchor retention are source-owned. GPU
-                // preparation constructs each patch's tangent basis.
-                for(std::size_t k=0;k<count;++k)
-                    for(std::size_t axis=0;axis<2u;++axis) {
-                        SolverContactFriction fr{};
-                        fr.ra_x_t_sqrt_inertia=patch.body0_anchors[k];
-                        fr.rb_x_t_sqrt_inertia=patch.body1_anchors[k];
-                        solver_friction_rows_.push_back(fr);
-                    }
+                // Sc retains the body-local anchors; the device authors
+                // both tangent Jacobians without CPU row placeholders.
+                for(std::size_t k=0u;k<count;++k) {
+                    GpuDyFrictionAnchorInput anchor{};
+                    const Vec3 x=patch.body0_anchors[k];
+                    const Vec3 y=patch.body1_anchors[k];
+                    anchor.local_a[0]=x.x;anchor.local_a[1]=x.y;
+                    anchor.local_a[2]=x.z;
+                    anchor.local_b[0]=y.x;anchor.local_b[1]=y.y;
+                    anchor.local_b[2]=y.z;
+                    gpu_dy_friction_anchors_.push_back(anchor);
+                }
+                prepared_friction_rows_+=count*2u;
                 continue;
             }
             const Vec3 n=header_normals[
@@ -8564,6 +8574,7 @@ void Scene::prepare_constraints(float seconds) {
                     solver_friction_rows_.push_back(fr);
                 }
             }
+            prepared_friction_rows_+=count*2u;
         }
     }
     // Swap only after the new rows and patch anchors are fully prepared.
@@ -8742,16 +8753,12 @@ void Scene::solve_gpu_distance_constraints(float seconds) {
     // One source friction anchor generates the two correlated tangents.
     // The device constructs both 56-byte tangent rows and returns one
     // combined world impulse per source friction anchor.
-    if(solver_friction_rows_.size()%2u)
-        throw std::logic_error("Source friction anchor has incomplete tangents");
-    gpu_dy_friction_impulses_.resize(solver_friction_rows_.size()/2u);
-    gpu_dy_friction_anchors_.resize(solver_friction_rows_.size()/2u);
-    for(std::size_t i=0;i<gpu_dy_friction_anchors_.size();++i) {
-        const auto& from=solver_friction_rows_[2u*i];
-        auto& anchor=gpu_dy_friction_anchors_[i];
-        pack(anchor.local_a,from.ra_x_t_sqrt_inertia);
-        pack(anchor.local_b,from.rb_x_t_sqrt_inertia);
-    }
+    if(!solver_friction_rows_.empty() ||
+       (prepared_friction_rows_&1u)!=0u ||
+       gpu_dy_friction_anchors_.size()!=prepared_friction_rows_/2u)
+        throw std::logic_error(
+            "GPU Dy must consume only source-correlated friction anchors");
+    gpu_dy_friction_impulses_.resize(gpu_dy_friction_anchors_.size());
     gpu_dy_patches_.resize(friction_patches_.size());
     gpu_dy_manifolds_.assign(manifolds_.size(),{});
     std::size_t explicit_order_cursor=0u;
@@ -8781,10 +8788,10 @@ void Scene::solve_gpu_distance_constraints(float seconds) {
         for(std::size_t i=m.friction_patch_offset;
             i<m.friction_patch_offset+m.friction_patch_count;++i) {
             const auto& patch=friction_patches_[i];
-            if(patch.row_offset>solver_friction_rows_.size() ||
+            if(patch.row_offset>prepared_friction_rows_ ||
                patch.anchor_count>2u ||
                patch.anchor_count*2u>
-                   solver_friction_rows_.size()-patch.row_offset ||
+                   prepared_friction_rows_-patch.row_offset ||
                patch.contact_count>m.count-(cursor-m.solver_offset))
                 throw std::logic_error("GPU Dy friction patch rows invalid");
             const bool pcm_growth=m.pcm_result_index!=
@@ -9437,14 +9444,15 @@ void Scene::write_back_contacts(std::size_t first,std::size_t last) {
                 friction_patches_.size()-manifold.friction_patch_offset)
             throw std::logic_error(
                 "Native Dy friction writeback exceeds correlated patches");
+        const std::size_t friction_rows=gpu_dy_pose_ready_
+            ?prepared_friction_rows_:solver_friction_rows_.size();
         for (std::size_t p=manifold.friction_patch_offset;
              p<manifold.friction_patch_offset+
                  manifold.friction_patch_count; ++p) {
             const auto& source=friction_patches_[p];
             if (!(source.pair==manifold.pair) || source.anchor_count>2 ||
-                source.row_offset>solver_friction_rows_.size() ||
-                source.anchor_count*2>
-                    solver_friction_rows_.size()-source.row_offset)
+                source.row_offset>friction_rows ||
+                source.anchor_count*2>friction_rows-source.row_offset)
                 throw std::logic_error(
                     "Native Dy friction writeback patch ownership invalid");
             FrictionPatchWriteback& result=friction_impulse_writeback_[p];

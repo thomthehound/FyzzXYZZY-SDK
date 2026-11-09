@@ -189,7 +189,10 @@ struct GpuPcmFrictionAnchorFixture {
            scene.gpu_dy_contact_order_.size()!=cpu_count ||
            scene.gpu_dy_gu_inputs_.size()!=cpu_count ||
            scene.gpu_dy_contact_forces_.size()!=scene.prepared_contact_rows_ ||
-           !scene.solver_contact_points_.empty())
+           scene.gpu_dy_friction_anchors_.size()*2u!=
+               scene.prepared_friction_rows_ ||
+           !scene.solver_contact_points_.empty() ||
+           !scene.solver_friction_rows_.empty())
             throw std::runtime_error(
                 "GPU Dy duplicated CPU numerical contact rows or lost Gu order");
     }

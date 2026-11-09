@@ -215,8 +215,11 @@ during Sc friction correlation. Sc maintains the source Gu row ordinal
 and packs CPU Gu's 28-byte contact input directly while the exact correlated
 header normal is in scope; PCM contact geometry stays resident. Device
 normal impulses return directly into the original Gu-indexed Sc writeback
-without first copying through a CPU solver-row mirror. The CPU PGS path
-retains its normal rows unchanged.
+without first copying through a CPU solver-row mirror. GPU Dy's friction path also packs source-ordered 24-byte body-local
+anchors directly during Sc correlation, retaining exact tangent-row
+offsets without allocating CPU tangent-row placeholders. Device Dy
+constructs both tangents per anchor and returns compact world impulses.
+CPU PGS retains its full contact and friction rows unchanged.
 
 The source Dy numerical stage submits its existing solver command graph
 independently of the CPU result fetch. Its queued execution consumes the

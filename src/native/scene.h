@@ -2093,6 +2093,8 @@ private:
     std::vector<FrictionManagerSpan> next_friction_by_edge_;
     std::uint64_t friction_cache_epoch_=0;
     std::vector<SolverContactFriction> solver_friction_rows_;
+    // GPU Dy retains source tangent offsets without CPU numerical rows.
+    std::size_t prepared_friction_rows_=0u;
     // DyDynamics::mWorldSolverBody / mWorldSolverBodyData: one zero-mass
     // solver body shared by all static collision participants.
     SolverBodyRow world_solver_row_{};
