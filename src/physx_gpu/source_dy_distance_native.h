@@ -189,6 +189,7 @@ public:
         }
     }
     void invalidate_after_rollback() noexcept {
+        pending_solve_.reset();
         std::fill(actor_local_valid_.begin(),actor_local_valid_.end(),0u);
         std::fill(actor_velocity_valid_.begin(),actor_velocity_valid_.end(),0u);
         std::fill(actor_pose_valid_.begin(),actor_pose_valid_.end(),0u);
@@ -230,6 +231,50 @@ public:
                bool device_unconstrained_preparation=false,
                std::span<native::GpuDySleepState> sleep_states={},
                std::span<const native::GpuDyJointInput> joint_inputs={}) {
+        enqueue(bodies,rows,descriptors,partition_ends,body_ordinals,
+                tasks,contact_forces,cpu_gu,friction,anchors,patches,
+                manifolds,contact_order,contact_prep,integration,
+                integrated_poses,pcm_contacts,pcm_pair_count,shape_cache,
+                shape_bounds,shape_geometry,shape_capacity,convex_vertices,
+                convex_vertex_count,device_partitions,anchor_impulses,
+                device_initial_bodies,device_world_motion,
+                device_unconstrained_preparation,sleep_states,joint_inputs);
+        finish();
+    }
+    void enqueue(std::span<native::GpuDyDistanceBody> bodies,
+               std::span<native::GpuDyJointRow> rows,
+               std::span<const native::GpuDyDistanceDescriptor> descriptors,
+               std::span<const std::uint32_t> partition_ends,
+               std::span<const std::uint32_t> body_ordinals,
+               std::span<native::GpuDyDistanceTask> tasks,
+               std::span<float> contact_forces,
+               std::span<const native::GpuDyGuContactInput> cpu_gu,
+               std::span<native::GpuDyFrictionWriteback> friction,
+               std::span<const native::GpuDyFrictionAnchorInput> anchors,
+               std::span<native::GpuDyContactPatch> patches,
+               std::span<const native::GpuDyContactManifold> manifolds,
+               std::span<const std::uint32_t> contact_order,
+               std::span<const native::GpuDyContactPrepPair> contact_prep,
+               std::span<native::GpuDyBodyIntegrationInput> integration,
+               std::span<native::GpuDyIntegratedPose> integrated_poses,
+               CudaDeviceAddressMap::Address pcm_contacts,
+               std::uint32_t pcm_pair_count,
+               CudaDeviceAddressMap::Address shape_cache,
+               CudaDeviceAddressMap::Address shape_bounds,
+               CudaDeviceAddressMap::Address shape_geometry,
+               std::uint32_t shape_capacity,
+               CudaDeviceAddressMap::Address convex_vertices,
+               std::uint32_t convex_vertex_count,
+               bool device_partitions=false,
+               std::span<native::GpuDyFrictionAnchorImpulse> anchor_impulses={},
+               bool device_initial_bodies=false,
+               bool device_world_motion=false,
+               bool device_unconstrained_preparation=false,
+               std::span<native::GpuDySleepState> sleep_states={},
+               std::span<const native::GpuDyJointInput> joint_inputs={}) { 
+        if(pending_solve_)
+            throw std::logic_error("Source Dy numerical epoch already queued");
+
         if(integration.size()<bodies.size() ||
            integrated_poses.size()!=integration.size() ||
            (tasks.empty() && integration.size()==bodies.size()))
@@ -1329,8 +1374,68 @@ public:
         launch(Launch::FreeBodies,{0u,(free_bodies+127u)/128u},
                narrow(integration.size()));
         const auto mapped=addresses_.resolve(address+history_bytes,output_bytes);
+        // Numerical dispatch is ordered after PCM and host Gu uploads,
+        // but does not consume the outstanding Sc witness readback.
+        // Result publication joins only when Sc explicitly needs Dy.
+        stream_.submit();
+        pending_solve_.emplace(PendingSolve{
+            .bodies=bodies,.tasks=tasks,.contact_forces=contact_forces,
+            .friction=friction,.anchor_impulses=anchor_impulses,
+            .patches=patches,.integration=integration,
+            .integrated_poses=integrated_poses,.sleep_states=sleep_states,
+            .descriptors=descriptors,.body_ordinals=body_ordinals,
+            .manifolds=manifolds,.contact_order=contact_order,
+            .contact_prep=contact_prep,.result_offsets=result_offsets,
+            .output_buffer=mapped.buffer,.output_offset=mapped.offset,
+            .output_bytes=output_bytes,
+            .free_velocity_offset=free_velocity_offset,
+            .friction_count=friction_count,
+            .uploaded_bytes=uploaded_bytes,
+            .reused_pcm_rows=reused_pcm_rows,
+            .compact_anchor_bytes=compact_anchor_bytes,
+            .prep_bytes=prep_bytes,.inline_body_bytes=inline_body_bytes,
+            .compact_friction=compact_friction,
+            .device_unconstrained_preparation=device_unconstrained_preparation,
+            .device_world_motion=device_world_motion});
+    }
+    bool has_queued_solve() const noexcept {
+        return pending_solve_.has_value();
+    }
+    void finish() {
+        if(!pending_solve_)
+            throw std::logic_error("No queued source Dy numerical epoch");
+        auto pending=std::move(*pending_solve_);
+        pending_solve_.reset();
+        const auto bodies=pending.bodies;
+        const auto tasks=pending.tasks;
+        const auto contact_forces=pending.contact_forces;
+        const auto friction=pending.friction;
+        const auto anchor_impulses=pending.anchor_impulses;
+        const auto patches=pending.patches;
+        const auto integration=pending.integration;
+        const auto integrated_poses=pending.integrated_poses;
+        const auto sleep_states=pending.sleep_states;
+        const auto descriptors=pending.descriptors;
+        const auto body_ordinals=pending.body_ordinals;
+        const auto manifolds=pending.manifolds;
+        const auto contact_order=pending.contact_order;
+        const auto contact_prep=pending.contact_prep;
+        const auto result_offsets=pending.result_offsets;
+        const auto output_bytes=pending.output_bytes;
+        const auto free_velocity_offset=pending.free_velocity_offset;
+        const auto friction_count=pending.friction_count;
+        const auto uploaded_bytes=pending.uploaded_bytes;
+        const auto reused_pcm_rows=pending.reused_pcm_rows;
+        const auto compact_anchor_bytes=pending.compact_anchor_bytes;
+        const auto prep_bytes=pending.prep_bytes;
+        const auto inline_body_bytes=pending.inline_body_bytes;
+        const auto compact_friction=pending.compact_friction;
+        const auto device_unconstrained_preparation=
+            pending.device_unconstrained_preparation;
+        const auto device_world_motion=pending.device_world_motion;
         const std::array<compute::DownloadSpan,1> downloads{{
-            {mapped.buffer,mapped.offset,host_.data(),output_bytes}
+            {pending.output_buffer,pending.output_offset,
+             host_.data(),output_bytes}
         }};
         stream_.fetch(downloads);
         for(const auto id:pending_actor_locals_)
@@ -1615,6 +1720,33 @@ public:
         return last_contact_prep_upload_saving_;
     }
 private:
+    struct PendingSolve {
+        std::span<native::GpuDyDistanceBody> bodies{};
+        std::span<native::GpuDyDistanceTask> tasks{};
+        std::span<float> contact_forces{};
+        std::span<native::GpuDyFrictionWriteback> friction{};
+        std::span<native::GpuDyFrictionAnchorImpulse> anchor_impulses{};
+        std::span<native::GpuDyContactPatch> patches{};
+        std::span<native::GpuDyBodyIntegrationInput> integration{};
+        std::span<native::GpuDyIntegratedPose> integrated_poses{};
+        std::span<native::GpuDySleepState> sleep_states{};
+        std::span<const native::GpuDyDistanceDescriptor> descriptors{};
+        std::span<const std::uint32_t> body_ordinals{};
+        std::span<const native::GpuDyContactManifold> manifolds{};
+        std::span<const std::uint32_t> contact_order{};
+        std::span<const native::GpuDyContactPrepPair> contact_prep{};
+        std::array<std::size_t,6> result_offsets{};
+        compute::BufferId output_buffer=0u;
+        std::size_t output_offset=0u,output_bytes=0u;
+        std::size_t free_velocity_offset=0u,friction_count=0u;
+        std::size_t uploaded_bytes=0u,reused_pcm_rows=0u;
+        std::size_t compact_anchor_bytes=0u,prep_bytes=0u;
+        std::size_t inline_body_bytes=0u;
+        bool compact_friction=false;
+        bool device_unconstrained_preparation=false;
+        bool device_world_motion=false;
+    };
+    std::optional<PendingSolve> pending_solve_{};
     enum class Launch : std::uint32_t {
         Fused, Normals, Friction, Partition, Motion, Integrate, PublishErrors,
         FreeBodies, Color, InitializeBodies
