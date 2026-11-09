@@ -162,7 +162,9 @@ limits are the maxima of all admitted component nodes, not merely the seed.
 Device component roots are transient execution IDs, while EdgeIndex and
 source-ordered constraint identity remain stable. Runnable component tasks
 are compacted by a device-resident prefix in canonical root order rather
-than racing to claim atomic task ordinals. Independent components can
+than racing to claim atomic task ordinals. The same prefix reserves
+contiguous response-descriptor spans for runnable components, without
+another host count or a per-component allocation. Independent components can
 execute concurrently, but their task identity is stable across runs;
 constraints sharing a responding body retain the required solver ordering.
 
