@@ -851,6 +851,28 @@ void verify_queued_pcm_dy(fyzz::compute::Backend backend,const char* sap,
             poses[0].valid==1u,
         "Rolled-back source GPU numerical epoch failed to regenerate");
     producer->commit_gpu_step();
+
+    // Reject after Sc has already joined PCM, but while the Dy GPU
+    // output remains outstanding. Its submitted commands must finish
+    // before the next source arena allocation can reuse those bytes.
+    std::array<native::GpuPcmBoxResult,1> joined{};
+    launch(joined,inputs,poses);
+    producer->finish_gpu_pcm_box_contacts();
+    require(producer->has_queued_gpu_dy_distance() &&
+            joined[0].status()==0u,
+        "PCM witness join unexpectedly consumed deferred Dy numerical work");
+    producer->invalidate_after_rollback();
+    require(!producer->has_queued_gpu_dy_distance() &&
+            producer->device_pcm_contact_count()==0u,
+        "Rollback after PCM witness publication retained pending Dy work");
+    std::array<native::GpuPcmBoxResult,1> retry{};
+    launch(retry,inputs,poses);
+    producer->finish_gpu_pcm_box_contacts();
+    producer->finish_gpu_dy_distance();
+    require(retry[0].status()==0u && retry[0].count()>0u &&
+            poses[0].valid==1u,
+        "Rejected joined-PCM GPU Dy epoch corrupted its subsequent retry");
+    producer->commit_gpu_step();
 }
 
 // Sparse live Sc managers keep their original edge handles. GPU readback
