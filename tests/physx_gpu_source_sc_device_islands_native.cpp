@@ -573,18 +573,32 @@ void verify(Context& context,const char* filename) {
     std::vector<std::uint32_t> prefix_flags(prefix_nodes,4u|0x100u);
     for(const std::uint32_t root_id:{0u,127u,128u,16383u,16384u})
         prefix_flags[root_id]|=source_sc_device_island_active_bit;
-    auto prefix=evaluate(prefix_nodes,{}, {},prefix_flags);
+    const std::vector<SourceScDeviceIslandEdge> prefix_edges{
+        {6u,16384u,invalid,42u,source_sc_device_island_joint_bit},
+        {4u,128u,invalid,43u,source_sc_device_island_joint_bit},
+        {2u,0u,invalid,44u,source_sc_device_island_joint_bit},
+        {3u,0u,invalid,45u,source_sc_device_island_joint_bit|
+                                source_sc_device_island_no_response_bit},
+        {5u,16383u,invalid,46u,source_sc_device_island_joint_bit},
+    };
+    auto prefix=evaluate(prefix_nodes,prefix_edges,{},prefix_flags);
     no_errors(prefix);
     check_task_mapping(prefix);
     require(header(prefix).runnable_components==5u &&
             header(prefix).dispatch_x==5u &&
+            header(prefix).admitted_edges==4u &&
             task(prefix,0u).root==0u &&
             task(prefix,127u).root==127u &&
             task(prefix,128u).root==128u &&
             task(prefix,16383u).root==16383u &&
             task(prefix,16384u).root==16384u &&
+            task(prefix,0u).response_begin==0u &&
+            task(prefix,127u).response_begin==1u &&
+            task(prefix,128u).response_begin==1u &&
+            task(prefix,16383u).response_begin==2u &&
+            task(prefix,16384u).response_begin==3u &&
             count(prefix,16384u).task_index==4u,
-            "Device Sc hierarchical task prefix lost canonical root ordering");
+            "Device Sc prefix reordered roots or cross-block response offsets");
 
     // An adversarial source order forces multiple simultaneous root
     // changes. Concurrent CAS unions must resolve one canonical root,
