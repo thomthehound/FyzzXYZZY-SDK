@@ -531,12 +531,15 @@ public:
         stream_.discard_unsubmitted_commands();
         producer_->invalidate_after_rollback();
         if(pcm_)pcm_->invalidate_after_rollback();
-        if(dy_distance_ && dy_distance_->has_queued_solve()) {
-            // A rejected frame may have GPU Dy commands in flight even
-            // after PCM's earlier readback has been joined.
+        if(dy_distance_) {
+            // The GPU may still own a Dy output transfer even if its
+            // result join threw after consuming the pending task token.
+            // Retire that transfer and its ordered solver commands before
+            // the next scene transaction can reuse their allocations.
+            stream_.abandon_fetch();
             try { stream_.wait_at_fetch(); } catch (...) {}
+            dy_distance_->invalidate_after_rollback();
         }
-        if(dy_distance_)dy_distance_->invalidate_after_rollback();
     }
     const SourceSapSceneFrameNativeResult& last_frame() const {
         return producer_->last_frame();
