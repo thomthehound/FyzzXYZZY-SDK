@@ -1057,10 +1057,11 @@ if(FYZZXYZZY_BUILD_D3D12)
       "${FYZZXYZZY_SOURCE_PCM_GJK_PUBLISH_DXIL}"
       "${FYZZXYZZY_SOURCE_PCM_EPA_ARGS_RESET_DXIL}"
       "${FYZZXYZZY_SOURCE_PCM_GJK_PRIMITIVE_DXIL}"
-      "${FYZZXYZZY_SOURCE_SC_CONTACT_JOURNAL_DXIL}")
-    set(_pcm_stages Candidates EpaCompact GjkContact EpaContact FaceContacts GjkReduce GjkPublish EpaArgsReset GjkPrimitive ContactJournal)
+      "${FYZZXYZZY_SOURCE_SC_CONTACT_JOURNAL_DXIL}"
+       "${FYZZXYZZY_SOURCE_SC_DEVICE_ISLAND_DXIL}")
+    set(_pcm_stages Candidates EpaCompact GjkContact EpaContact FaceContacts GjkReduce GjkPublish EpaArgsReset GjkPrimitive ContactJournal DeviceIslands)
     set(_pcm_manifest "FYZZXYZZY_SOURCE_PCM_1 DXIL\n")
-    foreach(_idx RANGE 0 9)
+    foreach(_idx RANGE 0 10)
       list(GET _pcm_stages ${_idx} _stage)
       list(GET _pcm_binaries ${_idx} _binary)
       get_filename_component(_name "${_binary}" NAME)
