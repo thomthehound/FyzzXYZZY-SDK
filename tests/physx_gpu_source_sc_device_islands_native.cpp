@@ -134,6 +134,18 @@ void verify(Context& context,const char* filename) {
             result.first.admissions+
             edge*sizeof(SourceScDeviceIslandAdmission));
     };
+    const auto header=[&](const auto& result) {
+        return load<SourceScDeviceIslandHeader>(result.second,0u);
+    };
+    const auto task=[&](const auto& result,std::uint32_t root_id) {
+        const auto summary=header(result);
+        for(std::uint32_t i=0u;i<summary.runnable_components;++i) {
+            const auto item=load<SourceScDeviceIslandTask>(result.second,
+                result.first.tasks+i*sizeof(SourceScDeviceIslandTask));
+            if(item.root==root_id)return item;
+        }
+        throw std::runtime_error("Missing source device island task");
+    };
     const auto no_errors=[&](const auto& result) {
         require(load<std::uint32_t>(result.second,0u)==0u,
                 "Device accurate island rejected valid source topology");
@@ -159,6 +171,17 @@ void verify(Context& context,const char* filename) {
             "Device Sc merged unrelated accurate islands");
     const auto connected=count(first,0u);
     const auto independent=count(first,4u);
+    const auto initial=header(first);
+    require(initial.runnable_components==2u &&
+            initial.responding_nodes==5u &&
+            initial.admitted_edges==4u &&
+            task(first,0u).responding_nodes==3u &&
+            task(first,0u).admitted_edges==3u &&
+            task(first,0u).position_iterations==6u &&
+            task(first,0u).velocity_iterations==2u &&
+            task(first,4u).responding_nodes==2u &&
+            task(first,4u).admitted_edges==1u,
+            "Device Sc runnable task stream omitted or mixed components");
     require(connected.responding_nodes==3u &&
             connected.admitted_edges==3u &&
             connected.active_seeds==1u &&
@@ -220,6 +243,7 @@ void verify(Context& context,const char* filename) {
             count(no_response,0u).admitted_edges==1u &&
             count(no_response,0u).active_seeds==1u &&
             count(no_response,0u).position_iterations==6u &&
+            task(no_response,0u).admitted_edges==1u &&
             admitted(no_response,0u).island_root==0u &&
             admitted(no_response,0u).kind==2u &&
             admitted(no_response,1u).island_root==0u &&
@@ -236,6 +260,7 @@ void verify(Context& context,const char* filename) {
             count(split,1u).admitted_edges==1u &&
             count(split,1u).active_seeds==0u &&
             count(split,1u).position_iterations==6u &&
+            header(split).runnable_components==2u &&
             admitted(split,0u).island_root==invalid &&
             admitted(split,8u).island_root==invalid,
             "Lost source touches did not split accurate device connectivity");
@@ -263,7 +288,11 @@ void verify(Context& context,const char* filename) {
             count(joined,0u).active_seeds==2u &&
             count(joined,0u).position_iterations==6u &&
             count(joined,0u).velocity_iterations==2u &&
-            admitted(joined,9u).island_root==0u,
+            admitted(joined,9u).island_root==0u &&
+            header(joined).runnable_components==1u &&
+            header(joined).responding_nodes==5u &&
+            header(joined).admitted_edges==5u &&
+            task(joined,0u).admitted_edges==5u,
             "A new contact failed to propagate active Dy admission");
     auto detached=evaluate(7u,bridge,{1u,0u,1u,1u,0u,1u,0u});
     no_errors(detached);
@@ -273,7 +302,11 @@ void verify(Context& context,const char* filename) {
             count(detached,0u).active_seeds==1u &&
             count(detached,4u).responding_nodes==2u &&
             count(detached,4u).active_seeds==1u &&
-            admitted(detached,9u).island_root==invalid,
+            admitted(detached,9u).island_root==invalid &&
+            header(detached).runnable_components==2u &&
+            header(detached).responding_nodes==5u &&
+            header(detached).admitted_edges==4u &&
+            task(detached,4u).admitted_edges==1u,
             "Lost contact retained a cross-island Dy task dependency");
 
     // A no-edge frame leaves each responding node as a singleton;
@@ -298,8 +331,28 @@ void verify(Context& context,const char* filename) {
             count(joints_only,0u).admitted_edges==2u &&
             count(joints_only,0u).active_seeds==1u &&
             count(joints_only,0u).position_iterations==6u &&
-            count(joints_only,0u).velocity_iterations==2u,
+            count(joints_only,0u).velocity_iterations==2u &&
+            header(joints_only).runnable_components==1u &&
+            header(joints_only).responding_nodes==3u &&
+            task(joints_only,0u).admitted_edges==2u,
             "Joint-only islands require nonexistent PCM touch storage");
+
+    // Dormant components retain their exact connectivity but enqueue
+    // no numerical Dy task until an authored or interacting node wakes.
+    auto dormant_flags=std::vector<std::uint32_t>{
+        4u|0x100u,5u|0x200u,6u|0x100u,4u|0x200u,
+        5u|0x100u,6u|0x200u,4u|0x100u};
+    auto dormant=evaluate(7u,edges,{1u,0u,1u,1u,0u,1u},
+                          dormant_flags);
+    no_errors(dormant);
+    require(root(dormant,1u)==0u &&
+            root(dormant,5u)==4u &&
+            count(dormant,0u).responding_nodes==3u &&
+            count(dormant,0u).admitted_edges==3u &&
+            header(dormant).runnable_components==0u &&
+            header(dormant).responding_nodes==0u &&
+            header(dormant).admitted_edges==0u,
+            "Dormant source islands generated redundant GPU Dy tasks");
 
     // An adversarial source order forces multiple simultaneous root
     // changes. Concurrent CAS unions must resolve one canonical root,
@@ -315,7 +368,11 @@ void verify(Context& context,const char* filename) {
     for(std::uint32_t i=0u;i<chain_nodes;++i)
         require(root(long_chain,i)==0u,
                 "Device accurate connectivity left a deep graph disconnected");
-    require(count(long_chain,0u).responding_nodes==chain_nodes &&
+    require(header(long_chain).runnable_components==1u &&
+            header(long_chain).responding_nodes==chain_nodes &&
+            header(long_chain).admitted_edges==chain_nodes-1u &&
+            task(long_chain,0u).admitted_edges==chain_nodes-1u &&
+            count(long_chain,0u).responding_nodes==chain_nodes &&
             count(long_chain,0u).admitted_edges==chain_nodes-1u &&
             count(long_chain,0u).active_seeds==65u &&
             count(long_chain,0u).position_iterations==6u &&
