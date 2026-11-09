@@ -305,11 +305,14 @@ public:
                 input.active=1u|dy_flags;
             }
         }
+        if(pcm_ && !pcm_->device_contact_ready())
+            throw std::logic_error(
+                "Source Dy cannot consume an incomplete PCM contact epoch");
         dy_distance_->solve(bodies,rows,descriptors,partitions,ordinals,tasks,
                             contact_forces,cpu_gu,friction,anchors,patches,manifolds,contact_order,
                             contact_prep,integration,integrated_poses,
-                            pcm_?pcm_->contact_stream_address():0u,
-                            pcm_?pcm_->contact_stream_pair_count():0u,
+                            pcm_?pcm_->device_contact_stream_address():0u,
+                            pcm_?pcm_->device_contact_pair_count():0u,
                             box_cache_.getDevicePtr(),
                             sap_->pre_broadphase_buffers().bounds.getDevicePtr(),
                             box_geometry_.getDevicePtr(),aabb_->capacity(),

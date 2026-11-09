@@ -573,8 +573,7 @@ public:
     void enqueue_device_islands(
             std::span<const SourceScDeviceIslandEdge> edges,
             std::span<const std::uint32_t> node_flags) {
-        if(island_work_ready_ || restore_pending_ ||
-           (result_pending_ && pending_host_inputs_ && !host_upload_pending_))
+        if(island_work_ready_ || !device_contact_ready())
             throw std::logic_error(
                 "Device island admission requires one complete queued Gu epoch");
         if(edges.size()>std::numeric_limits<std::uint32_t>::max() ||
@@ -677,10 +676,13 @@ public:
     // joining its host witness DMA. Mixed epochs become complete only
     // after their bounded CPU Gu upload enters the same ordered queue.
     // A rejected transaction invalidates the view immediately.
+    bool device_contact_ready() const noexcept {
+        return !restore_pending_ &&
+            (!rebuild_required_ || pcm_transaction_pending_) &&
+            (!result_pending_ || !pending_host_inputs_ || host_upload_pending_);
+    }
     std::uint32_t device_contact_pair_count() const noexcept {
-        if(restore_pending_ ||
-           (result_pending_ && pending_host_inputs_ && !host_upload_pending_))
-            return 0u;
+        if(!device_contact_ready())return 0u;
         return result_pending_?journal_pair_count_:published_pair_count_;
     }
     CudaDeviceAddressMap::Address device_contact_stream_address() const noexcept {
@@ -690,10 +692,7 @@ public:
     // even when no new PCM pair is admitted this frame. The journal
     // high-watermark and the last published EdgeIndex prefix coexist.
     std::uint32_t device_edge_history_capacity() const noexcept {
-        if(restore_pending_ ||
-           (rebuild_required_ && !pcm_transaction_pending_) ||
-           (result_pending_ && pending_host_inputs_ && !host_upload_pending_))
-            return 0u;
+        if(!device_contact_ready())return 0u;
         const auto published=static_cast<std::uint32_t>(
             published_edge_span_bytes_/240u);
         return pcm_transaction_pending_
@@ -702,13 +701,7 @@ public:
     CudaDeviceAddressMap::Address device_edge_history_address() const noexcept {
         return device_edge_history_capacity()?edges_.getDevicePtr():0u;
     }
-    CudaDeviceAddressMap::Address contact_stream_address() const noexcept {
-        return published_pair_count_?dense_contacts_.getDevicePtr():0u;
-    }
-    std::uint32_t contact_stream_pair_count() const noexcept {
-        return published_pair_count_;
-    }
-    std::size_t last_pair_upload_bytes() const noexcept {
+     std::size_t last_pair_upload_bytes() const noexcept {
         return last_pair_upload_bytes_;
     }
     std::size_t last_contact_download_bytes() const noexcept {
