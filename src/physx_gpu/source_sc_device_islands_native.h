@@ -82,7 +82,8 @@ struct SourceScDeviceIslandHeader {
     // The launch is capped by the API's workgroup limit; a Dy consumer
     // strides over runnable_components when the grid is saturated.
     std::uint32_t dispatch_x=0,dispatch_y=1,dispatch_z=1;
-    std::uint32_t reserved=0;
+    // Number of source admissions, including dormant and nonresponding edges.
+    std::uint32_t source_edges=0u;
 };
 static_assert(sizeof(SourceScDeviceIslandHeader)==32u &&
               offsetof(SourceScDeviceIslandHeader,dispatch_x)==16u);

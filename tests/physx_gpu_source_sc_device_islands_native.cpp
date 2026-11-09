@@ -168,6 +168,8 @@ void verify(Context& context,const char* filename) {
     };
     const auto check_task_mapping=[&](const auto& result) {
         const auto summary=header(result);
+        require(summary.source_edges==result.edge_count,
+                "Device Sc header omitted source admission capacity");
         std::vector<std::uint8_t> visited(summary.runnable_components,0u);
         std::uint32_t nodes=0u,edges=0u;
         std::uint32_t next_task=0u,next_response=0u;
@@ -638,6 +640,24 @@ void verify(Context& context,const char* filename) {
     require(header(radix).runnable_components==3u &&
             header(radix).admitted_edges>300u,
             "Device Sc multi-tile response scatter missed runnable components");
+
+    // An odd number of radix passes must publish the scratch output
+    // as the final response stream.
+    std::vector<std::uint32_t> short_flags(5u,4u|0x100u);
+    short_flags[0u]|=source_sc_device_island_active_bit;
+    short_flags[4u]|=source_sc_device_island_active_bit;
+    std::vector<SourceScDeviceIslandEdge> short_edges;
+    for(std::uint32_t i=0u;i<385u;++i)
+        short_edges.push_back({i,i%3u==0u?0u:i%3u==1u?4u:3u,
+            invalid,385u-i,source_sc_device_island_joint_bit|
+            (i%13u==0u?source_sc_device_island_no_response_bit:0u)});
+    auto short_radix=evaluate(5u,short_edges,{},short_flags);
+    no_errors(short_radix);
+    check_task_mapping(short_radix);
+    require(header(short_radix).runnable_components==2u &&
+            short_radix.first.response_order==
+                short_radix.first.response_scratch,
+            "Device Sc single-pass radix output did not select scratch");
 
     // An adversarial source order forces multiple simultaneous root
     // changes. Concurrent CAS unions must resolve one canonical root,

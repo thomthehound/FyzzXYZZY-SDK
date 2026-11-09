@@ -164,7 +164,7 @@ void main(uint3 thread:SV_DispatchThreadID,
     if(p.phase==0u) {
         if(index==0u) {
             work.Store4(p.workBias,uint4(0u,0u,0u,0u));
-            work.Store4(p.workBias+16u,uint4(0u,1u,1u,0u));
+            work.Store4(p.workBias+16u,uint4(0u,1u,1u,p.edgeCount));
         }
         if(index<p.nodeCount) {
             work.Store(p.rootBias+index*4u,index);

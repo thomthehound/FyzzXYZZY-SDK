@@ -12,12 +12,14 @@
 #include <array>
 #include <chrono>
 #include <cmath>
+#include <cstddef>
 #include <cstring>
 #include <fstream>
 #include <iostream>
 #include <iterator>
 #include <stdexcept>
 #include <string_view>
+#include <vector>
 
 namespace fyzz::physx_gpu {
 struct SourceScDeviceIslandFixture {
@@ -30,12 +32,40 @@ struct SourceScDeviceIslandFixture {
         // An ordered direct download observes this task result without
         // touching the pending PCM witness DMA or its source tokens.
         // Production Dy consumes the buffer without a host observation.
-        const auto bytes=owner.pcm_->device_island_layout().bytes;
+        const auto layout=owner.pcm_->device_island_layout();
         const auto resolved=owner.addresses_.resolve(
-            owner.pcm_->device_island_work_address(),bytes);
-        SourceScDeviceIslandHeader header{};
+            owner.pcm_->device_island_work_address(),layout.bytes);
+        std::vector<std::byte> work(layout.bytes);
         owner.context_.download(resolved.buffer,resolved.offset,
-                                &header,sizeof(header));
+                                work.data(),work.size());
+        SourceScDeviceIslandHeader header{};
+        std::memcpy(&header,work.data(),sizeof(header));
+        if(header.errors==0u) {
+            if(layout.admissions+
+                   std::uint64_t(header.source_edges)*
+                       sizeof(SourceScDeviceIslandAdmission)>work.size() ||
+               layout.response_order+
+                   std::uint64_t(header.admitted_edges)*4u>work.size())
+                throw std::runtime_error("Device Sc response work exceeds its allocation");
+            std::uint32_t previous_root=0u,previous_edge=0u;
+            for(std::uint32_t i=0u;i<header.admitted_edges;++i) {
+                std::uint32_t edge=0u;
+                std::memcpy(&edge,work.data()+layout.response_order+i*4u,4u);
+                if(edge>=header.source_edges)
+                    throw std::runtime_error("Device Sc response referenced a missing source edge");
+                SourceScDeviceIslandAdmission record{};
+                std::memcpy(&record,work.data()+layout.admissions+
+                            std::size_t(edge)*sizeof(record),sizeof(record));
+                if(record.island_root==0xffffffffu ||
+                   (record.kind&source_sc_device_island_no_response_bit)!=0u ||
+                   (i!=0u && (record.island_root<previous_root ||
+                    (record.island_root==previous_root && edge<=previous_edge))))
+                    throw std::runtime_error(
+                        "Device Sc response order differs from source island admission");
+                previous_root=record.island_root;
+                previous_edge=edge;
+            }
+        }
         const auto launch=owner.pcm_->device_island_indirect_args();
         if(!launch)
             throw std::runtime_error("Device Sc indirect task launch unavailable");
