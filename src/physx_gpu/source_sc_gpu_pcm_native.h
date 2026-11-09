@@ -585,11 +585,13 @@ public:
         constexpr std::uint32_t invalid=0xffffffffu;
         for(const auto& edge:edges) {
             if(edge.edge_index==invalid ||
-               (edge.kind&~31u)!=0u ||
-               ((edge.kind&5u)==5u) ||
-               ((edge.kind&16u)!=0u && (edge.kind&1u)==0u) ||
-               ((edge.kind&8u)!=0u && (edge.kind&4u)==0u) ||
-               ((edge.kind&5u)==0u && edge.edge_index>=edge_capacity) ||
+               (edge.kind&~(source_sc_device_island_joint_bit|
+                             source_sc_device_island_no_response_bit|
+                             source_sc_device_island_device_joint_bit))!=0u ||
+               ((edge.kind&source_sc_device_island_device_joint_bit)!=0u &&
+                (edge.kind&source_sc_device_island_joint_bit)==0u) ||
+               ((edge.kind&source_sc_device_island_joint_bit)==0u &&
+                edge.edge_index>=edge_capacity) ||
                (edge.node_a!=invalid && edge.node_a>=node_count) ||
                (edge.node_b!=invalid && edge.node_b>=node_count))
                 throw std::invalid_argument("Device Sc island edge is not admitted");
