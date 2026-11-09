@@ -78,8 +78,10 @@ void verify(Context& context,const char* filename) {
             record_bytes,touches.size()*record_bytes);
         const auto touch_buffer=context.create_buffer(
             touch_bytes,MemoryPlacement::DeviceLocal);
+        const auto node_bytes=std::max<std::size_t>(
+            sizeof(std::uint32_t),node_flags.size()*sizeof(node_flags[0]));
         const auto node_buffer=context.create_buffer(
-            node_flags.size()*sizeof(node_flags[0]),MemoryPlacement::DeviceLocal);
+            node_bytes,MemoryPlacement::DeviceLocal);
         const auto output_buffer=context.create_buffer(
             layout.bytes,MemoryPlacement::DeviceLocal);
         CudaDeviceAddressMap addresses{};
@@ -88,14 +90,20 @@ void verify(Context& context,const char* filename) {
         const auto touch_addr=addresses.register_slice(
             touch_buffer,0u,touch_bytes);
         const auto node_addr=addresses.register_slice(
-            node_buffer,0u,node_flags.size()*sizeof(node_flags[0]));
+            node_buffer,0u,node_bytes);
         const auto output_addr=addresses.register_slice(
             output_buffer,0u,layout.bytes);
         if(!edges.empty())
             context.upload(edge_buffer,0u,edges.data(),
                            edges.size()*sizeof(edges[0]));
-        context.upload(node_buffer,0u,node_flags.data(),
-                       node_flags.size()*sizeof(node_flags[0]));
+        if(!node_flags.empty())
+            context.upload(node_buffer,0u,node_flags.data(),
+                           node_flags.size()*sizeof(node_flags[0]));
+        if(!node_count) {
+            constexpr std::array<std::uint32_t,4> prior{
+                0xffffffffu,0xffffffffu,0xffffffffu,0xffffffffu};
+            context.upload(output_buffer,0u,prior.data(),sizeof(prior));
+        }
         std::vector<std::uint32_t> history(touches.size()*60u,0u);
         for(std::size_t i=0u;i<touches.size();++i)
             history[i*60u+18u]=touches[i];
@@ -353,6 +361,29 @@ void verify(Context& context,const char* filename) {
             header(dormant).responding_nodes==0u &&
             header(dormant).admitted_edges==0u,
             "Dormant source islands generated redundant GPU Dy tasks");
+
+    // No responding nodes may coexist with live static/kinematic
+    // managers. The task header must be zeroed even when last frame's
+    // output allocation contains a nonzero runnable task count.
+    auto no_dynamic=evaluate(0u,{
+        {0u,invalid,invalid,91u,0u},
+        {42u,invalid,invalid,92u,1u},
+    },{1u});
+    no_errors(no_dynamic);
+    require(header(no_dynamic).runnable_components==0u &&
+            header(no_dynamic).responding_nodes==0u &&
+            header(no_dynamic).admitted_edges==0u &&
+            admitted(no_dynamic,0u).source_index==91u &&
+            admitted(no_dynamic,0u).island_root==invalid &&
+            admitted(no_dynamic,1u).source_index==92u &&
+            admitted(no_dynamic,1u).island_root==invalid,
+            "Nonresponding-only frame replayed stale Dy task admission");
+    auto empty_scene=evaluate(0u,{}, {});
+    no_errors(empty_scene);
+    require(header(empty_scene).runnable_components==0u &&
+            header(empty_scene).responding_nodes==0u &&
+            header(empty_scene).admitted_edges==0u,
+            "Empty frame retained a previous device task header");
 
     // An adversarial source order forces multiple simultaneous root
     // changes. Concurrent CAS unions must resolve one canonical root,
