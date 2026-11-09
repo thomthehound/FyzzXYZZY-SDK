@@ -1438,8 +1438,6 @@ void verify_coupled_rigid_stack(
     for(std::uint32_t frame=0u;frame<12u;++frame) {
         cpu.step(dt);
         gpu.step(dt);
-        native::GpuPcmFrictionAnchorFixture::
-            verify_compact_gpu_contact_admission(gpu);
         if(frame==0u)
             native::GpuPcmFrictionAnchorFixture::verify_early_speculative_admission(
                 cpu,gpu);
@@ -1590,6 +1588,8 @@ void verify_gpu_coupled_solver(
         }
         cpu.step(dt);
         gpu.step(dt);
+        native::GpuPcmFrictionAnchorFixture::
+            verify_compact_gpu_contact_admission(gpu);
         native::GpuPcmFrictionAnchorFixture::verify(cpu,gpu);
         saw_early_pcm_history |=
             native::GpuPcmFrictionAnchorFixture::
