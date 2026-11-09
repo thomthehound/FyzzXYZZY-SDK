@@ -16,12 +16,16 @@ RWByteAddressBuffer edgeHistory:register(u1,space0);
 #ifdef __spirv__
 [[vk::binding(2,0)]]
 #endif
-RWByteAddressBuffer work:register(u2,space0);
+RWByteAddressBuffer nodeFlags:register(u2,space0);
+#ifdef __spirv__
+[[vk::binding(3,0)]]
+#endif
+RWByteAddressBuffer work:register(u3,space0);
 
 struct Parameters {
-    uint edgeBias,touchBias,workBias,rootBias;
-    uint countBias,admissionBias,nodeCount,edgeCount;
-    uint edgeCapacity,phase,first,unused;
+    uint edgeBias,touchBias,nodeBias,workBias;
+    uint rootBias,countBias,admissionBias,nodeCount;
+    uint edgeCount,edgeCapacity,phase,first,unused;
 };
 #ifdef __spirv__
 [[vk::push_constant]] Parameters p;
@@ -106,7 +110,9 @@ void main(uint3 thread:SV_DispatchThreadID) {
         if(index==0u)work.Store(p.workBias,0u);
         if(index<p.nodeCount) {
             work.Store(p.rootBias+index*4u,index);
-            work.Store2(p.countBias+index*8u,uint2(0u,0u));
+            const uint count=p.countBias+index*20u;
+            work.Store4(count,uint4(0u,0u,0u,0u));
+            work.Store(count+16u,0u);
         }
         return;
     }
@@ -126,8 +132,18 @@ void main(uint3 thread:SV_DispatchThreadID) {
             const uint root=findRoot(index);
             if(root!=invalid) {
                 work.Store(p.rootBias+index*4u,root);
+                const uint flags=nodeFlags.Load(p.nodeBias+index*4u);
+                const uint position=flags&255u;
+                const uint velocity=(flags>>8u)&255u;
+                if(!position || !velocity ||
+                   (flags&0xfffe0000u)!=0u)reject(16u);
+                const uint count=p.countBias+root*20u;
                 uint previous;
-                work.InterlockedAdd(p.countBias+root*8u,1u,previous);
+                work.InterlockedAdd(count,1u,previous);
+                if((flags&0x10000u)!=0u)
+                    work.InterlockedAdd(count+8u,1u,previous);
+                work.InterlockedMax(count+12u,position,previous);
+                work.InterlockedMax(count+16u,velocity,previous);
             }
         }
         if(index>=p.edgeCount)return;
@@ -142,7 +158,7 @@ void main(uint3 thread:SV_DispatchThreadID) {
                 owner=findRoot(node);
                 if(owner!=invalid && (kind&noResponse)==0u) {
                     uint previous;
-                    work.InterlockedAdd(p.countBias+owner*8u+4u,
+                    work.InterlockedAdd(p.countBias+owner*20u+4u,
                                         1u,previous);
                 }
             }
