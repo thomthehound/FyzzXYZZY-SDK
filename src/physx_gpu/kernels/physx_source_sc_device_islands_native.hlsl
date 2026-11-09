@@ -119,8 +119,8 @@ void connectNodes(uint a,uint b) {
 // independent source islands are processed by different workgroups.
 // One group scans each 128-root tile; one group prefixes their totals.
 // This is linear work, with no host count fetch or global spin barrier.
-groupshared uint taskScan[128];
-groupshared uint taskCarry;
+groupshared uint taskScan[128],responseScan[128];
+groupshared uint taskCarry,responseCarry;
 
 bool runnableRoot(uint index) {
     if(index>=p.nodeCount || work.Load(p.workBias)!=0u ||
@@ -132,8 +132,10 @@ void inclusiveTaskScan(uint lane) {
     [unroll]
     for(uint step=1u;step<128u;step<<=1u) {
         const uint previous=lane>=step?taskScan[lane-step]:0u;
+        const uint edges=lane>=step?responseScan[lane-step]:0u;
         GroupMemoryBarrierWithGroupSync();
         taskScan[lane]+=previous;
+        responseScan[lane]+=edges;
         GroupMemoryBarrierWithGroupSync();
     }
 }
@@ -228,60 +230,75 @@ void main(uint3 thread:SV_DispatchThreadID,
     if(p.phase==3u) {
         const uint active=runnableRoot(index)?1u:0u;
         taskScan[lane.x]=active;
+        responseScan[lane.x]=active!=0u
+            ?work.Load(p.countBias+index*24u+4u):0u;
         GroupMemoryBarrierWithGroupSync();
-        // Workgroup-wide reduction; only the total is needed here.
         for(uint stride=64u;stride!=0u;stride>>=1u) {
-            if(lane.x<stride)
+            if(lane.x<stride) {
                 taskScan[lane.x]+=taskScan[lane.x+stride];
+                responseScan[lane.x]+=responseScan[lane.x+stride];
+            }
             GroupMemoryBarrierWithGroupSync();
         }
         if(lane.x==0u && p.blockCount!=0u)
-            work.Store(p.blockBias+(index/128u)*4u,taskScan[0]);
+            work.Store2(p.blockBias+(index/128u)*8u,
+                        uint2(taskScan[0],responseScan[0]));
         return;
     }
     if(p.phase==4u) {
         if(group.x!=0u)return;
-        if(lane.x==0u)taskCarry=0u;
+        if(lane.x==0u) {
+            taskCarry=0u;
+            responseCarry=0u;
+        }
         GroupMemoryBarrierWithGroupSync();
         for(uint start=0u;start<p.blockCount;start+=128u) {
             const uint block=start+lane.x;
-            const uint value=block<p.blockCount
-                ?work.Load(p.blockBias+block*4u):0u;
-            taskScan[lane.x]=value;
+            const uint2 value=block<p.blockCount
+                ?work.Load2(p.blockBias+block*8u):uint2(0u,0u);
+            taskScan[lane.x]=value.x;
+            responseScan[lane.x]=value.y;
             GroupMemoryBarrierWithGroupSync();
             inclusiveTaskScan(lane.x);
-            const uint prefix=taskCarry+taskScan[lane.x]-value;
+            const uint2 prefix=uint2(
+                taskCarry+taskScan[lane.x]-value.x,
+                responseCarry+responseScan[lane.x]-value.y);
             if(block<p.blockCount)
-                work.Store(p.blockBias+block*4u,prefix);
+                work.Store2(p.blockBias+block*8u,prefix);
             GroupMemoryBarrierWithGroupSync();
-            if(lane.x==0u)taskCarry+=taskScan[127u];
+            if(lane.x==0u) {
+                taskCarry+=taskScan[127u];
+                responseCarry+=responseScan[127u];
+            }
             GroupMemoryBarrierWithGroupSync();
         }
         if(lane.x==0u) {
             work.Store(p.workBias+4u,taskCarry);
+            work.Store(p.workBias+12u,responseCarry);
             work.Store(p.workBias+16u,min(taskCarry,p.maxGroups));
         }
         return;
     }
     if(p.phase==5u) {
         const uint active=runnableRoot(index)?1u:0u;
+        const uint count=p.countBias+index*24u;
+        const uint edges=active!=0u?work.Load(count+4u):0u;
         taskScan[lane.x]=active;
+        responseScan[lane.x]=edges;
         GroupMemoryBarrierWithGroupSync();
         inclusiveTaskScan(lane.x);
         if(active==0u)return;
-        const uint count=p.countBias+index*24u;
-        const uint task=work.Load(p.blockBias+(index/128u)*4u)+
-                        taskScan[lane.x]-1u;
+        const uint2 base=work.Load2(p.blockBias+(index/128u)*8u);
+        const uint task=base.x+taskScan[lane.x]-1u;
+        const uint response=base.y+responseScan[lane.x]-edges;
         const uint nodes=work.Load(count);
-        const uint edges=work.Load(count+4u);
         const uint position=work.Load(count+12u);
         const uint velocity=work.Load(count+16u);
         work.Store(count+20u,task);
-        const uint dst=p.taskBias+task*20u;
+        const uint dst=p.taskBias+task*24u;
         work.Store4(dst,uint4(index,nodes,edges,position));
-        work.Store(dst+16u,velocity);
+        work.Store2(dst+16u,uint2(velocity,response));
         uint previous;
         work.InterlockedAdd(p.workBias+8u,nodes,previous);
-        work.InterlockedAdd(p.workBias+12u,edges,previous);
     }
 }

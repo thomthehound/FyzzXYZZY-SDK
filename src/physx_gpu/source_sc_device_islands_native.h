@@ -69,8 +69,12 @@ static_assert(sizeof(SourceScDeviceIslandCount)==24u);
 struct SourceScDeviceIslandTask {
     std::uint32_t root=0,responding_nodes=0,admitted_edges=0;
     std::uint32_t position_iterations=0,velocity_iterations=0;
+    // Exclusive prefix of the runnable components' response edges.
+    // A stable device descriptor scatter can write this task's compact
+    // source-ordered constraint span starting at response_begin.
+    std::uint32_t response_begin=0u;
 };
-static_assert(sizeof(SourceScDeviceIslandTask)==20u);
+static_assert(sizeof(SourceScDeviceIslandTask)==24u);
 struct SourceScDeviceIslandHeader {
     std::uint32_t errors=0,runnable_components=0;
     std::uint32_t responding_nodes=0,admitted_edges=0;
@@ -112,7 +116,7 @@ struct SourceScDeviceIslandLayout {
                   sizeof(SourceScDeviceIslandTask)));
         const auto block_count=(std::uint64_t(node_count)+127u)/128u;
         const auto bytes=align(std::uint64_t(result.block_offsets)+
-                               block_count*sizeof(std::uint32_t));
+                               block_count*sizeof(std::uint32_t)*2u);
         if(bytes>std::numeric_limits<std::uint32_t>::max())
             throw std::out_of_range("Device Sc island work exceeds 32-bit view");
         result.bytes=static_cast<std::size_t>(bytes);

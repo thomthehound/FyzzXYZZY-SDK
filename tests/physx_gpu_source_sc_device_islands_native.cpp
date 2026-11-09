@@ -169,7 +169,7 @@ void verify(Context& context,const char* filename) {
         const auto summary=header(result);
         std::vector<std::uint8_t> visited(summary.runnable_components,0u);
         std::uint32_t nodes=0u,edges=0u;
-        std::uint32_t next_task=0u;
+        std::uint32_t next_task=0u,next_response=0u;
         for(std::size_t root_id=0u;
             root_id<result.node_count;++root_id) {
             // Task roots need not be numerically ordered or contiguous.
@@ -187,13 +187,16 @@ void verify(Context& context,const char* filename) {
                     entry.responding_nodes==record.responding_nodes &&
                     entry.admitted_edges==record.admitted_edges &&
                     entry.position_iterations==record.position_iterations &&
-                    entry.velocity_iterations==record.velocity_iterations,
-                    "Device Sc root-to-task mapping changes source task inputs");
+                    entry.velocity_iterations==record.velocity_iterations &&
+                    entry.response_begin==next_response,
+                    "Device Sc root-to-task mapping or response prefix is invalid");
+            next_response+=record.admitted_edges;
             nodes+=record.responding_nodes;
             edges+=record.admitted_edges;
         }
         require(nodes==summary.responding_nodes &&
                 edges==summary.admitted_edges &&
+                next_response==summary.admitted_edges &&
                 std::all_of(visited.begin(),visited.end(),
                             [](std::uint8_t v){return v!=0u;}),
                 "Device Sc runnable task mapping has a missing component");
@@ -235,7 +238,9 @@ void verify(Context& context,const char* filename) {
             task(first,0u).position_iterations==6u &&
             task(first,0u).velocity_iterations==2u &&
             task(first,4u).responding_nodes==2u &&
-            task(first,4u).admitted_edges==1u,
+            task(first,4u).admitted_edges==1u &&
+            task(first,0u).response_begin==0u &&
+            task(first,4u).response_begin==3u,
             "Device Sc runnable task stream omitted or mixed components");
     require(connected.responding_nodes==3u &&
             connected.admitted_edges==3u &&
