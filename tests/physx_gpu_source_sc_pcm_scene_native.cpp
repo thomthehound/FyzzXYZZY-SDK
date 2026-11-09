@@ -199,18 +199,35 @@ struct GpuPcmFrictionAnchorFixture {
             [](std::uint32_t bits) {return bits!=0u;});
     }
     static void verify_compact_gpu_contact_admission(const Scene& scene) {
-        std::size_t compact=0u;
-        for(const auto& descriptor:scene.ordered_constraints_) {
-            if((descriptor.row_count&255u)!=0u)continue;
-            if(descriptor.row0!=Scene::invalid_solver_row ||
-               descriptor.row1!=Scene::invalid_solver_row)
-                throw std::runtime_error(
-                    "Compact GPU contact retained redundant host solver endpoints");
-            ++compact;
+        std::size_t manager_begin=0u,joint_begin=0u;
+        std::size_t body_begin=0u,descriptor_begin=0u,contact_count=0u;
+        for(const auto& task:scene.solver_tasks_) {
+            const auto potential=task.joint_end-joint_begin+
+                task.manager_end-manager_begin;
+            const bool compact=
+                potential<gpu_dy_wide_task_threshold ||
+                task.solver_body_end-body_begin<gpu_dy_wide_task_threshold;
+            for(std::size_t i=descriptor_begin;i<task.constraint_end;++i) {
+                const auto& descriptor=scene.ordered_constraints_[i];
+                if((descriptor.row_count&255u)!=0u)continue;
+                ++contact_count;
+                const bool has_endpoints=
+                    descriptor.row0!=Scene::invalid_solver_row ||
+                    descriptor.row1!=Scene::invalid_solver_row;
+                if(compact==has_endpoints)
+                    throw std::runtime_error(compact
+                        ? "Compact GPU contact retained host solver endpoints"
+                        : "Wide GPU contact lost its scheduling endpoints");
+            }
+            manager_begin=task.manager_end;
+            joint_begin=task.joint_end;
+            body_begin=task.solver_body_end;
+            descriptor_begin=task.constraint_end;
         }
-        if(!compact)
+        if(descriptor_begin!=scene.ordered_constraints_.size() ||
+           !contact_count)
             throw std::runtime_error(
-                "Compact GPU contact admission test had no contact descriptors");
+                "GPU task admission failed to cover source contact descriptors");
     }
     static std::size_t cpu_gu_anchor_bytes(const Scene& scene) {
         std::size_t count=0u;
