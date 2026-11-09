@@ -158,13 +158,21 @@ void verify(Context& context,const char* filename) {
         return load<SourceScDeviceIslandHeader>(result.second,0u);
     };
     const auto task=[&](const auto& result,std::uint32_t root_id) {
-        const auto summary=header(result);
-        for(std::uint32_t i=0u;i<summary.runnable_components;++i) {
-            const auto item=load<SourceScDeviceIslandTask>(result.second,
-                result.first.tasks+i*sizeof(SourceScDeviceIslandTask));
-            if(item.root==root_id)return item;
-        }
-        throw std::runtime_error("Missing source device island task");
+        if(root_id>=result.node_count)
+            throw std::runtime_error("Device Sc task root exceeds node view");
+        const auto index=count(result,root_id).task_index;
+        if(index==invalid || index>=header(result).runnable_components)
+            throw std::runtime_error("Missing source device island task");
+        return load<SourceScDeviceIslandTask>(result.second,
+            result.first.tasks+index*sizeof(SourceScDeviceIslandTask));
+    };
+    const auto task_nodes=[&](const auto& result,std::uint32_t root_id) {
+        const auto entry=task(result,root_id);
+        return entry.body_end-entry.body_begin;
+    };
+    const auto task_edges=[&](const auto& result,std::uint32_t root_id) {
+        const auto entry=task(result,root_id);
+        return entry.descriptor_end-entry.descriptor_begin;
     };
     const auto check_task_mapping=[&](const auto& result) {
         const auto summary=header(result);
@@ -186,13 +194,15 @@ void verify(Context& context,const char* filename) {
             const auto entry=load<SourceScDeviceIslandTask>(result.second,
                 result.first.tasks+
                 record.task_index*sizeof(SourceScDeviceIslandTask));
-            require(entry.root==root_id &&
-                    entry.responding_nodes==record.responding_nodes &&
-                    entry.admitted_edges==record.admitted_edges &&
+            require(entry.descriptor_begin==next_response &&
+                    entry.descriptor_end==next_response+record.admitted_edges &&
+                    entry.partition_begin==entry.descriptor_begin &&
+                    entry.partition_end==entry.descriptor_end &&
+                    entry.body_begin==next_body &&
+                    entry.body_end==next_body+record.responding_nodes &&
                     entry.position_iterations==record.position_iterations &&
                     entry.velocity_iterations==record.velocity_iterations &&
-                    entry.response_begin==next_response &&
-                     entry.body_begin==next_body,
+                    entry.error==0u,
                     "Device Sc root-to-task mapping or response prefix is invalid");
             next_response+=record.admitted_edges;
             next_body+=record.responding_nodes;
@@ -315,8 +325,8 @@ void verify(Context& context,const char* filename) {
     no_errors(direct_split);
     check_task_mapping(direct_split);
     require(header(direct_split).runnable_components==2u &&
-            task(direct_split,0u).response_begin==0u &&
-            task(direct_split,2u).response_begin==2u &&
+            task(direct_split,0u).descriptor_begin==0u &&
+            task(direct_split,2u).descriptor_begin==2u &&
             load<std::uint32_t>(direct_split.second,
                 direct_split.first.response_order+0u)==1u &&
             load<std::uint32_t>(direct_split.second,
@@ -343,14 +353,14 @@ void verify(Context& context,const char* filename) {
             initial.dispatch_y==1u && initial.dispatch_z==1u &&
             initial.responding_nodes==5u &&
             initial.admitted_edges==4u &&
-            task(first,0u).responding_nodes==3u &&
-            task(first,0u).admitted_edges==3u &&
+            task_nodes(first,0u)==3u &&
+            task_edges(first,0u)==3u &&
             task(first,0u).position_iterations==6u &&
             task(first,0u).velocity_iterations==2u &&
-            task(first,4u).responding_nodes==2u &&
-            task(first,4u).admitted_edges==1u &&
-            task(first,0u).response_begin==0u &&
-            task(first,4u).response_begin==3u,
+            task_nodes(first,4u)==2u &&
+            task_edges(first,4u)==1u &&
+            task(first,0u).descriptor_begin==0u &&
+            task(first,4u).descriptor_begin==3u,
             "Device Sc runnable task stream omitted or mixed components");
     require(connected.responding_nodes==3u &&
             connected.admitted_edges==3u &&
@@ -414,7 +424,7 @@ void verify(Context& context,const char* filename) {
             count(no_response,0u).admitted_edges==1u &&
             count(no_response,0u).active_seeds==1u &&
             count(no_response,0u).position_iterations==6u &&
-            task(no_response,0u).admitted_edges==1u &&
+            task_edges(no_response,0u)==1u &&
             admitted(no_response,0u).island_root==0u &&
             admitted(no_response,0u).kind==2u &&
             admitted(no_response,1u).island_root==0u &&
@@ -465,7 +475,7 @@ void verify(Context& context,const char* filename) {
             header(joined).runnable_components==1u &&
             header(joined).responding_nodes==5u &&
             header(joined).admitted_edges==5u &&
-            task(joined,0u).admitted_edges==5u,
+            task_edges(joined,0u)==5u,
             "A new contact failed to propagate active Dy admission");
     auto detached=evaluate(7u,bridge,{1u,0u,1u,1u,0u,1u,0u});
     no_errors(detached);
@@ -479,7 +489,7 @@ void verify(Context& context,const char* filename) {
             header(detached).runnable_components==2u &&
             header(detached).responding_nodes==5u &&
             header(detached).admitted_edges==4u &&
-            task(detached,4u).admitted_edges==1u,
+            task_edges(detached,4u)==1u,
             "Lost contact retained a cross-island Dy task dependency");
 
     // A no-edge frame leaves each responding node as a singleton;
@@ -586,7 +596,7 @@ void verify(Context& context,const char* filename) {
             count(joints_only,0u).velocity_iterations==2u &&
             header(joints_only).runnable_components==1u &&
             header(joints_only).responding_nodes==3u &&
-            task(joints_only,0u).admitted_edges==2u,
+            task_edges(joints_only,0u)==2u,
             "Joint-only islands require nonexistent PCM touch storage");
 
     // Dormant components retain their exact connectivity but enqueue
@@ -697,16 +707,16 @@ void verify(Context& context,const char* filename) {
     require(header(prefix).runnable_components==5u &&
             header(prefix).dispatch_x==5u &&
             header(prefix).admitted_edges==4u &&
-            task(prefix,0u).root==0u &&
-            task(prefix,127u).root==127u &&
-            task(prefix,128u).root==128u &&
-            task(prefix,16383u).root==16383u &&
-            task(prefix,16384u).root==16384u &&
-            task(prefix,0u).response_begin==0u &&
-            task(prefix,127u).response_begin==1u &&
-            task(prefix,128u).response_begin==1u &&
-            task(prefix,16383u).response_begin==2u &&
-            task(prefix,16384u).response_begin==3u &&
+            count(prefix,0u).task_index==0u &&
+            count(prefix,127u).task_index==1u &&
+            count(prefix,128u).task_index==2u &&
+            count(prefix,16383u).task_index==3u &&
+            count(prefix,16384u).task_index==4u &&
+            task(prefix,0u).descriptor_begin==0u &&
+            task(prefix,127u).descriptor_begin==1u &&
+            task(prefix,128u).descriptor_begin==1u &&
+            task(prefix,16383u).descriptor_begin==2u &&
+            task(prefix,16384u).descriptor_begin==3u &&
             count(prefix,16384u).task_index==4u,
             "Device Sc prefix reordered roots or cross-block response offsets");
 
@@ -766,7 +776,7 @@ void verify(Context& context,const char* filename) {
     require(header(long_chain).runnable_components==1u &&
             header(long_chain).responding_nodes==chain_nodes &&
             header(long_chain).admitted_edges==chain_nodes-1u &&
-            task(long_chain,0u).admitted_edges==chain_nodes-1u &&
+            task_edges(long_chain,0u)==chain_nodes-1u &&
             count(long_chain,0u).responding_nodes==chain_nodes &&
             count(long_chain,0u).admitted_edges==chain_nodes-1u &&
             count(long_chain,0u).active_seeds==65u &&

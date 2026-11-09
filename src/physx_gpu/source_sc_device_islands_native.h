@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 #pragma once
 
+#include "native/scene.h"
 #include "physx_gpu/source_native_view.h"
 #include "physx_gpu/source_sap_dma_native.h"
 
@@ -70,15 +71,10 @@ static_assert(sizeof(SourceScDeviceIslandCount)==24u);
 // Task admission is selected after every component has published its
 // active seeds and iteration maxima. The root is a transient device
 // ordinal, not a public IslandSim handle or a persistent scheduling ID.
-struct SourceScDeviceIslandTask {
-    std::uint32_t root=0,responding_nodes=0,admitted_edges=0;
-    std::uint32_t position_iterations=0,velocity_iterations=0;
-    // Exclusive prefix of the runnable components' response edges.
-    // A stable device descriptor scatter can write this task's compact
-    // source-ordered constraint span starting at response_begin.
-    std::uint32_t response_begin=0u,body_begin=0u,reserved=0u;
-};
-static_assert(sizeof(SourceScDeviceIslandTask)==32u);
+// The device prefix writes the numerical solver's task record directly.
+// The root-to-task index remains in SourceScDeviceIslandCount.
+using SourceScDeviceIslandTask=native::GpuDyDistanceTask;
+static_assert(sizeof(SourceScDeviceIslandTask)==36u);
 struct SourceScDeviceIslandHeader {
     std::uint32_t errors=0,runnable_components=0;
     std::uint32_t responding_nodes=0,admitted_edges=0;

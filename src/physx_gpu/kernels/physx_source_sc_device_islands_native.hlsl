@@ -172,11 +172,11 @@ void scatterItem(uint position,uint item) {
     const uint root=itemRoot(item);
     if(root==p.nodeCount)return;
     const uint ordinal=work.Load(p.countBias+root*24u+20u);
-    const uint task=p.taskBias+ordinal*32u;
-    const uint bodyCount=work.Load(task+4u);
-    const uint responseCount=work.Load(task+8u);
-    const uint responseBegin=work.Load(task+20u);
-    const uint bodyBegin=work.Load(task+24u);
+    const uint task=p.taskBias+ordinal*36u;
+    const uint responseBegin=work.Load(task);
+    const uint responseCount=work.Load(task+4u)-responseBegin;
+    const uint bodyBegin=work.Load(task+16u);
+    const uint bodyCount=work.Load(task+20u)-bodyBegin;
     const uint start=bodyBegin+responseBegin;
     if(position<start) {
         reject(128u);work.Store(p.workBias+16u,0u);return;
@@ -379,9 +379,12 @@ void main(uint3 thread:SV_DispatchThreadID,
         const uint position=work.Load(count+12u);
         const uint velocity=work.Load(count+16u);
         work.Store(count+20u,task);
-        const uint dst=p.taskBias+task*32u;
-        work.Store4(dst,uint4(index,nodes,edges,position));
-        work.Store4(dst+16u,uint4(velocity,response,bodyBegin,0u));
+        const uint dst=p.taskBias+task*36u;
+        work.Store4(dst,uint4(response,response+edges,
+                              response,response+edges));
+        work.Store4(dst+16u,uint4(bodyBegin,bodyBegin+nodes,
+                                  position,velocity));
+        work.Store(dst+32u,0u);
         return;
     }
     if(p.phase==6u) {
@@ -402,8 +405,8 @@ void main(uint3 thread:SV_DispatchThreadID,
                 ++ordinal;
         }
         const uint taskId=work.Load(p.countBias+(key/3u)*24u+20u);
-        const uint task=p.taskBias+taskId*32u;
-        const uint begin=work.Load(task+20u)+work.Load(task+24u);
+        const uint task=p.taskBias+taskId*36u;
+        const uint begin=work.Load(task)+work.Load(task+16u);
         scatterItem(begin+ordinal,index);
         return;
     }

@@ -171,7 +171,7 @@ radix passes across both input types. Within each canonical island the
 device orders responding bodies first, then source-sorted 1D constraints,
 then contact managers. The authored joint input preserves descending
 constraint identity within its type; the device does not invent a
-second joint ordering. The same scatter writes typed
+second joint ordering. The compact root prefix now emits the exact 36-byte native GPU Dy task ABI directly: descriptor and partition capacity ranges, body ranges, iteration maxima, and the error word. Root identity remains in the per-root task-index map, avoiding a second task stream or conversion dispatch. The same scatter writes typed
 contact and joint source tokens without another body-sort pipeline,
 dispatch or upload. Direct joint-row tokens are permitted only when
 the source ordinal addresses device-authored 1D geometry; other joints
