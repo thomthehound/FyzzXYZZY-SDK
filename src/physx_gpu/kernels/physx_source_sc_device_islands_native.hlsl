@@ -51,6 +51,10 @@ bool validNode(uint node) {
     return false;
 }
 bool edgeConnected(uint edge,uint kind) {
+    if(edge==invalid) {
+        reject(1u);
+        return false;
+    }
     if((kind&~permittedKinds)!=0u) {
         reject(1u);
         return false;

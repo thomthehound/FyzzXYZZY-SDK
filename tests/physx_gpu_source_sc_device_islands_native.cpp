@@ -400,6 +400,26 @@ void verify(Context& context,const char* filename) {
             header(rejected_host_joint).runnable_components==0u,
             "Device Sc accepted contradictory CPU Gu/joint edge metadata");
 
+    auto only_host=evaluate(1u,{
+        {0u,0u,invalid,23u,source_sc_device_island_host_touch_bit},
+    },{},{
+        4u|0x100u|source_sc_device_island_active_bit});
+    no_errors(only_host);
+    check_task_mapping(only_host);
+    require(header(only_host).runnable_components==1u &&
+            header(only_host).responding_nodes==1u &&
+            header(only_host).admitted_edges==1u &&
+            admitted(only_host,0u).island_root==0u,
+            "CPU Gu-only scene required nonexistent device PCM history");
+    auto invalid_handle=evaluate(1u,{
+        {invalid,0u,invalid,23u,source_sc_device_island_host_touch_bit},
+    },{},{
+        4u|0x100u|source_sc_device_island_active_bit});
+    require((header(invalid_handle).errors&1u)!=0u &&
+            header(invalid_handle).runnable_components==0u &&
+            admitted(invalid_handle,0u).island_root==invalid,
+            "Invalid Sc EdgeIndex admitted a CPU Gu device task");
+
     // Joint-only admission works without any contact-history allocation.
     auto joints_only=evaluate(3u,{
         {71u,0u,1u,0u,1u},
