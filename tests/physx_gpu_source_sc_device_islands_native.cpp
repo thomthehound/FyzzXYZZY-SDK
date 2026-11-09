@@ -59,7 +59,8 @@ void verify(Context& context,const char* filename) {
     const auto evaluate=[&](std::uint32_t node_count,
                             const std::vector<SourceScDeviceIslandEdge>& edges,
                             std::vector<std::uint32_t> touches,
-                            std::vector<std::uint32_t> node_flags={}) {
+                            std::vector<std::uint32_t> node_flags={},
+                            std::vector<std::uint32_t> prior_touches={}) {
         constexpr std::size_t record_bytes=240u;
         // Joint-only scenes have no physical-touch arena. Active seeds
         // and authored iteration limits remain separate from connectivity.
@@ -109,9 +110,14 @@ void verify(Context& context,const char* filename) {
                 0xffffffffu,0xffffffffu,0xffffffffu,0xffffffffu};
             context.upload(output_buffer,0u,prior.data(),sizeof(prior));
         }
+        if(prior_touches.empty())prior_touches=touches;
+        require(prior_touches.size()==touches.size(),
+                "Device Sc test touch snapshots have different capacities");
         std::vector<std::uint32_t> history(touches.size()*60u,0u);
-        for(std::size_t i=0u;i<touches.size();++i)
+        for(std::size_t i=0u;i<touches.size();++i) {
             history[i*60u+18u]=touches[i];
+            history[i*60u+19u]=prior_touches[i];
+        }
         if(!history.empty())
             context.upload(touch_buffer,0u,history.data(),
                            history.size()*sizeof(history[0]));
@@ -405,6 +411,46 @@ void verify(Context& context,const char* filename) {
             header(dormant).responding_nodes==0u &&
             header(dormant).admitted_edges==0u,
             "Dormant source islands generated redundant GPU Dy tasks");
+
+    // A physically new contact wakes an otherwise dormant dynamic
+    // component before Sc has consumed its host Gu witness. A persistent
+    // touch does not repeatedly wake it; losing that touch does not
+    // synthesize an active numerical task.
+    const std::vector<SourceScDeviceIslandEdge> wake_edges{
+        {0u,0u,1u,20u,0u},
+        {1u,1u,2u,21u,0u},
+    };
+    const std::vector<std::uint32_t> sleeping_flags{
+        4u|0x100u,5u|0x200u,6u|0x100u};
+    auto found_wake=evaluate(3u,wake_edges,{1u,1u},
+                             sleeping_flags,{0u,1u});
+    no_errors(found_wake);
+    check_task_mapping(found_wake);
+    require(root(found_wake,0u)==0u &&
+            root(found_wake,2u)==0u &&
+            count(found_wake,0u).active_seeds==1u &&
+            header(found_wake).runnable_components==1u &&
+            header(found_wake).responding_nodes==3u &&
+            header(found_wake).admitted_edges==2u &&
+            task(found_wake,0u).position_iterations==6u,
+            "New physical touch failed to wake GPU accurate component");
+    auto continued=evaluate(3u,wake_edges,{1u,1u},
+                            sleeping_flags,{1u,1u});
+    no_errors(continued);
+    check_task_mapping(continued);
+    require(root(continued,0u)==0u &&
+            header(continued).runnable_components==0u &&
+            count(continued,0u).active_seeds==0u,
+            "Persistent physical touch repeatedly woke a dormant island");
+    auto removed=evaluate(3u,wake_edges,{0u,1u},
+                          sleeping_flags,{1u,1u});
+    no_errors(removed);
+    check_task_mapping(removed);
+    require(root(removed,0u)==0u &&
+            root(removed,1u)==1u &&
+            header(removed).runnable_components==0u &&
+            count(removed,1u).active_seeds==0u,
+            "Lost physical touch emitted a spurious device wake task");
 
     // No responding nodes may coexist with live static/kinematic
     // managers. The task header must be zeroed even when last frame's

@@ -42,10 +42,10 @@ struct SourceScDeviceIslandAdmission {
 };
 static_assert(sizeof(SourceScDeviceIslandAdmission)==24u);
 
-// Task admission uses active seeds, not a CPU-resolved component state.
-// Sc supplies the authored iteration words and active seeds once per
-// participating node; GPU connectivity propagates those seeds through
-// the actual touching and joint-connected component.
+// Sc supplies authored iteration words and active-node seeds. A newly
+// touching GPU PCM contact also contributes an activation reason from
+// the committed prior touch snapshot. GPU connectivity propagates both
+// through the accurate component without a CPU witness join.
 inline constexpr std::uint32_t source_sc_device_island_active_bit=1u<<16u;
 inline constexpr std::uint32_t source_sc_device_island_iteration_mask=0xffffu;
 struct SourceScDeviceIslandCount {

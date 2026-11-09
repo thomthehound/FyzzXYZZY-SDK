@@ -159,10 +159,22 @@ void main(uint3 thread:SV_DispatchThreadID) {
             const uint node=edge.y!=invalid?edge.y:edge.z;
             if(node!=invalid) {
                 owner=findRoot(node);
-                if(owner!=invalid && (kind&noResponse)==0u) {
+                if(owner!=invalid) {
                     uint previous;
-                    work.InterlockedAdd(p.countBias+owner*24u+4u,
-                                        1u,previous);
+                    if((kind&noResponse)==0u)
+                        work.InterlockedAdd(p.countBias+owner*24u+4u,
+                                            1u,previous);
+                    // A contact that became physically touching in
+                    // this PCM epoch activates its accurate component.
+                    // Joint edges and persistent contacts do not
+                    // manufacture an additional wake reason.
+                    if((kind&jointEdge)==0u) {
+                        const uint cache=p.touchBias+edge.x*240u;
+                        const uint prior=edgeHistory.Load(cache+76u)&1u;
+                        if(prior==0u)
+                            work.InterlockedAdd(p.countBias+owner*24u+8u,
+                                                1u,previous);
+                    }
                 }
             }
         }
