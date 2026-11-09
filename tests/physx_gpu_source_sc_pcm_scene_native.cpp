@@ -21,6 +21,9 @@
 
 namespace fyzz::physx_gpu {
 struct SourceScDeviceIslandFixture {
+    static bool pcm_ready(const SourceScOwnedGpuBroadphaseNative& owner) {
+        return owner.pcm_ && owner.pcm_->device_contact_ready();
+    }
     static SourceScDeviceIslandHeader read(SourceScOwnedGpuBroadphaseNative& owner) {
         if(!owner.pcm_ || !owner.pcm_->device_island_work_address())
             throw std::runtime_error("Device Sc task work was not queued");
@@ -617,7 +620,8 @@ void verify(fyzz::compute::Backend backend,const char* sap,
             mixed_results[1].packed_counts==0u &&
             producer->device_pcm_contact_count()==0u &&
             producer->device_pcm_contact_stream()==0u &&
-            producer->device_pcm_touch_history()==0u,
+            producer->device_pcm_touch_history()==0u &&
+            !physx_gpu::SourceScDeviceIslandFixture::pcm_ready(*producer),
         "Incomplete mixed Gu stream leaked into device task admission");
     std::array<native::ContactPoint,1> points{};
     const auto emitted=native::source_pcm_sphere_sphere(
@@ -637,7 +641,8 @@ void verify(fyzz::compute::Backend backend,const char* sap,
             producer->device_pcm_contact_count()==mixed.size() &&
             producer->device_pcm_contact_stream()!=0u &&
             producer->device_pcm_touch_history()!=0u &&
-            producer->device_pcm_touch_capacity()>sphere_edge,
+            producer->device_pcm_touch_capacity()>sphere_edge &&
+            physx_gpu::SourceScDeviceIslandFixture::pcm_ready(*producer),
         "Mixed Gu was not device-ready before Sc joined GPU witnesses");
     const std::array<physx_gpu::SourceScDeviceIslandEdge,2> mixed_edges{{
         {edge,0u,no_node,0u,0u},
@@ -689,7 +694,8 @@ void verify(fyzz::compute::Backend backend,const char* sap,
     require(producer->device_pcm_contact_count()==0u &&
             producer->device_pcm_contact_stream()==0u &&
             producer->device_pcm_touch_history()==0u &&
-            producer->device_island_work_address()==0u,
+            producer->device_island_work_address()==0u &&
+            !physx_gpu::SourceScDeviceIslandFixture::pcm_ready(*producer),
         "Rejected PCM transaction retained an executable device task view");
     require(abandoned_mixed[0].packed_counts==0u,
         "Rejected mixed PCM DMA published an abandoned GPU witness");

@@ -285,6 +285,9 @@ public:
         std::span<const native::GpuDyJointInput> joint_inputs={}) override {
         if(!dy_distance_)
             throw std::logic_error("Source GPU Dy shader not installed");
+        if(pcm_ && !pcm_->device_contact_ready())
+            throw std::logic_error(
+                "Source Dy cannot consume an incomplete PCM contact epoch");
         // Resolve the first attached shape into the ElementSim cache.
         // Body integration also covers shapes without a device target.
         for(auto& input:integration) {
@@ -305,9 +308,6 @@ public:
                 input.active=1u|dy_flags;
             }
         }
-        if(pcm_ && !pcm_->device_contact_ready())
-            throw std::logic_error(
-                "Source Dy cannot consume an incomplete PCM contact epoch");
         dy_distance_->solve(bodies,rows,descriptors,partitions,ordinals,tasks,
                             contact_forces,cpu_gu,friction,anchors,patches,manifolds,contact_order,
                             contact_prep,integration,integrated_poses,
