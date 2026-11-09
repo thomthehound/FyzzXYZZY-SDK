@@ -249,6 +249,33 @@ void verify(Context& context,const char* filename) {
             admitted(merged,2u).island_root==1u,
             "Found contact did not merge exactly its accurate components");
 
+    // A newly touching edge joins the previously independent awake
+    // island into one device task. Losing that edge immediately
+    // restores two accurate tasks with separate active seeds.
+    auto bridge=edges;
+    bridge.push_back({6u,2u,4u,19u,0u});
+    auto joined=evaluate(7u,bridge,{1u,0u,1u,1u,0u,1u,1u});
+    no_errors(joined);
+    require(root(joined,0u)==root(joined,4u) &&
+            root(joined,5u)==0u &&
+            count(joined,0u).responding_nodes==5u &&
+            count(joined,0u).admitted_edges==5u &&
+            count(joined,0u).active_seeds==2u &&
+            count(joined,0u).position_iterations==6u &&
+            count(joined,0u).velocity_iterations==2u &&
+            admitted(joined,9u).island_root==0u,
+            "A new contact failed to propagate active Dy admission");
+    auto detached=evaluate(7u,bridge,{1u,0u,1u,1u,0u,1u,0u});
+    no_errors(detached);
+    require(root(detached,0u)==0u &&
+            root(detached,4u)==4u &&
+            count(detached,0u).responding_nodes==3u &&
+            count(detached,0u).active_seeds==1u &&
+            count(detached,4u).responding_nodes==2u &&
+            count(detached,4u).active_seeds==1u &&
+            admitted(detached,9u).island_root==invalid,
+            "Lost contact retained a cross-island Dy task dependency");
+
     // A no-edge frame leaves each responding node as a singleton;
     // no dormant previous-frame component may survive.
     auto empty=evaluate(7u,{}, {0u});
