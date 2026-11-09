@@ -328,7 +328,8 @@ public:
                                 ?std::optional<SourceScDeviceIslandDyView>{
                                     SourceScDeviceIslandDyView{
                                         pcm_->device_island_work_address(),
-                                        pcm_->device_island_layout()}}
+                                        pcm_->device_island_layout(),
+                                        *pcm_->device_island_indirect_args()}}
                                 :std::nullopt);
         ++dy_distance_dispatch_count_;
     }
