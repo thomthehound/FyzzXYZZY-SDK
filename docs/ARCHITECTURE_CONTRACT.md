@@ -187,7 +187,14 @@ execute concurrently, but their task identity is stable across runs;
 constraints sharing a responding body retain the required solver ordering.
 The generated indirect launch triple is copied into the source queue's
 existing physical indirect resource after island compaction; it requires no
-additional host upload, allocation or synchronization boundary.
+additional host upload, allocation or synchronization boundary. Native Dy
+copies the task, body-ordinal and response-token streams between resident
+source allocations. Its compact-task numerical launch consumes the device
+indirect triple rather than a CPU workgroup count. The queued Dy shader
+checks device admission errors and actual task/body/descriptor extents
+against its numerical input before initialization. Large tiled tasks retain
+their explicit partition launch dependencies until the device-owned wide
+scheduler is complete.
 
 CPU Gu and GPU PCM publish physical-touch transitions into the same device
 EdgeIndex history. Accurate device connectivity and new-touch wake admission
