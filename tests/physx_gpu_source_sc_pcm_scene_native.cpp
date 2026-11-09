@@ -675,10 +675,10 @@ void verify(fyzz::compute::Backend backend,const char* sap,
     producer->enqueue_gpu_pcm_box_contacts(mixed,restored);
     producer->enqueue_host_pcm_contacts(mixed,restored);
     producer->enqueue_device_island_admission(mixed_edges,mixed_nodes);
-    const auto recovered=physx_gpu::SourceScDeviceIslandFixture::read(*producer);
-    require(recovered.errors==0u &&
-            recovered.runnable_components==2u &&
-            recovered.admitted_edges==2u,
+    const auto recovered_graph=physx_gpu::SourceScDeviceIslandFixture::read(*producer);
+    require(recovered_graph.errors==0u &&
+            recovered_graph.runnable_components==2u &&
+            recovered_graph.admitted_edges==2u,
         "Rolled-back PCM regenerated an incorrect device island task");
     producer->finish_gpu_pcm_box_contacts();
     require(restored[0].edge==edge &&
