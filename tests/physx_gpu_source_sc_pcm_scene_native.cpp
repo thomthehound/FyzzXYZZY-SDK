@@ -938,9 +938,10 @@ void verify_device_sc_dy_task_admission(
     producer->finish_gpu_pcm_box_contacts();
     producer->finish_gpu_dy_distance();
     require(tasks[0].error==0u && poses[0].valid==1u &&
+            producer->dy_launch_stats().device_island_indirect_dispatches==1u &&
             std::fabs(poses[0].position[0]-
                       (2.f+0.5f*seconds))<0.002f,
-        "Dy did not execute the resident Sc task instead of the poisoned host task");
+        "Dy did not indirectly execute the resident Sc task");
     producer->commit_gpu_step();
 
     // The work allocation has room for two nodes, but Sc admits two
