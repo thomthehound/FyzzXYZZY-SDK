@@ -4150,7 +4150,8 @@ void Scene::update_contacts() {
         source_gpu_pcm && host_pair_count<gpu_pcm_pairs_.size();
     // General GPU PCM starts before Sc produces any host primitive Gu.
     // Both numerical producers occupy disjoint ordinals in the same
-    // contact allocation. The host spans are staged only at the join.
+    // contact allocation. The host spans enter the source queue before
+    // the GPU witness join, preserving the later device dependency.
     if(gpu_results_pending || (source_gpu_pcm && gpu_pcm_pairs_.empty()))
         gpu_broadphase_->enqueue_gpu_pcm_box_contacts(
             gpu_pcm_pairs_,gpu_pcm_results_);
