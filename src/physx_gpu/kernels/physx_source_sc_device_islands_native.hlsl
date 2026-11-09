@@ -175,7 +175,10 @@ void main(uint3 thread:SV_DispatchThreadID) {
         return;
     }
     if(p.phase==3u) {
-        if(index>=p.nodeCount ||
+        // Invalid topology or iteration metadata must never launch
+        // numerical work. Publish the error with zero runnable tasks.
+        if(work.Load(p.workBias)!=0u ||
+           index>=p.nodeCount ||
            work.Load(p.rootBias+index*4u)!=index)
             return;
         const uint count=p.countBias+index*20u;
