@@ -24,9 +24,9 @@ struct SourceScDeviceIslandFixture {
     static SourceScDeviceIslandHeader read(SourceScOwnedGpuBroadphaseNative& owner) {
         if(!owner.pcm_ || !owner.pcm_->device_island_work_address())
             throw std::runtime_error("Device Sc task work was not queued");
-        // Fixture-only completion. Production Dy consumes the same
-        // buffer on the ordered GPU queue without this host observation.
-        owner.stream_.wait_at_fetch();
+        // An ordered direct download observes this task result without
+        // touching the pending PCM witness DMA or its source tokens.
+        // Production Dy consumes the buffer without a host observation.
         const auto bytes=owner.pcm_->device_island_layout().bytes;
         const auto resolved=owner.addresses_.resolve(
             owner.pcm_->device_island_work_address(),bytes);
