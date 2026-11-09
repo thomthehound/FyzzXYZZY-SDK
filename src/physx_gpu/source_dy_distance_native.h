@@ -1405,6 +1405,11 @@ public:
     void finish() {
         if(!pending_solve_)
             throw std::logic_error("No queued source Dy numerical epoch");
+        // The same Context owns PCM witness staging. A premature host
+        // join must not discard Dy's already submitted numerical result.
+        if(stream_.has_pending_fetch())
+            throw std::logic_error(
+                "Source Dy result join precedes pending PCM witness DMA");
         auto pending=std::move(*pending_solve_);
         pending_solve_.reset();
         const auto bodies=pending.bodies;

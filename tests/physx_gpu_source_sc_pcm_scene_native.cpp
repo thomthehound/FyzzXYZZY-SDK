@@ -801,6 +801,16 @@ void verify_queued_pcm_dy(fyzz::compute::Backend backend,const char* sap,
     }
     require(duplicate_rejected && producer->has_queued_gpu_dy_distance(),
         "Dy reused active numerical output before its owning fetch");
+    bool premature_join_rejected=false;
+    try {
+        producer->finish_gpu_dy_distance();
+    } catch(const std::logic_error&) {
+        premature_join_rejected=true;
+    }
+    require(premature_join_rejected &&
+            producer->has_queued_gpu_dy_distance() &&
+            witness[0].packed_counts==0u,
+        "Premature host Dy join discarded its queued numerical result");
     producer->finish_gpu_pcm_box_contacts();
     require(witness[0].status()==0u && witness[0].count()>0u,
         "Queued PCM witness was invalid after early Dy dispatch");

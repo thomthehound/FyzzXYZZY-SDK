@@ -52,6 +52,7 @@ public:
         std::size_t deferred_submissions_after_fetch = 0;
     };
     const SubmissionStats& submission_stats() const noexcept { return stats_; }
+    bool has_pending_fetch() const noexcept { return pending_fetch_!=0u; }
 
     SourceSapDmaNative(compute::Context& context,
                        const CudaDeviceAddressMap& addresses) noexcept
