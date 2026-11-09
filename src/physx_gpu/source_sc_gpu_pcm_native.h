@@ -585,8 +585,9 @@ public:
         constexpr std::uint32_t invalid=0xffffffffu;
         for(const auto& edge:edges) {
             if(edge.edge_index==invalid ||
-               (edge.kind&~15u)!=0u ||
+               (edge.kind&~31u)!=0u ||
                ((edge.kind&5u)==5u) ||
+               ((edge.kind&16u)!=0u && (edge.kind&1u)==0u) ||
                ((edge.kind&8u)!=0u && (edge.kind&4u)==0u) ||
                ((edge.kind&5u)==0u && edge.edge_index>=edge_capacity) ||
                (edge.node_a!=invalid && edge.node_a>=node_count) ||

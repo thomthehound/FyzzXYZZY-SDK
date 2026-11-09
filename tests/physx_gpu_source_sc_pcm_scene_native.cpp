@@ -77,8 +77,10 @@ struct SourceScDeviceIslandFixture {
                 std::memcpy(&record,work.data()+layout.admissions+
                             std::size_t(edge)*sizeof(record),sizeof(record));
                 const std::uint32_t expected_tag=
-                    (record.kind&source_sc_device_island_joint_bit)
-                        ?0x80000000u:0xc0000000u;
+                    (record.kind&source_sc_device_island_joint_bit)==0u
+                        ?0xc0000000u:
+                        ((record.kind&source_sc_device_island_device_joint_bit)!=0u
+                            ?0x80000000u:0u);
                 std::uint32_t token=0u;
                 std::memcpy(&token,work.data()+layout.response_tokens+i*4u,4u);
                 if(record.island_root==0xffffffffu ||

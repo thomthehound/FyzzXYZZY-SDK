@@ -237,8 +237,10 @@ void verify(Context& context,const char* filename) {
         for(std::size_t i=0u;i<expected.size();++i) {
             const auto edge=expected[i].second;
             const auto record=admitted(result,edge);
-            const auto tag=(record.kind&source_sc_device_island_joint_bit)
-                ?0x80000000u:0xc0000000u;
+            const auto tag=(record.kind&source_sc_device_island_joint_bit)==0u
+                ?0xc0000000u:
+                ((record.kind&source_sc_device_island_device_joint_bit)!=0u
+                    ?0x80000000u:0u);
             require(load<std::uint32_t>(result.second,
                         result.first.response_order+i*4u)==edge &&
                     load<std::uint32_t>(result.second,
@@ -254,7 +256,8 @@ void verify(Context& context,const char* filename) {
 
     std::vector<SourceScDeviceIslandEdge> edges{
         {0u,0u,1u,10u,0u}, // Contact: found
-        {31u,1u,2u,11u,1u}, // Joint: always connected
+        {31u,1u,2u,11u,source_sc_device_island_joint_bit|
+            source_sc_device_island_device_joint_bit}, // Device 1D row
         {1u,2u,3u,12u,0u}, // Contact: separated
         {2u,4u,5u,13u,0u}, // Independent touching island
         {32u,3u,invalid,14u,1u}, // Joint to static body

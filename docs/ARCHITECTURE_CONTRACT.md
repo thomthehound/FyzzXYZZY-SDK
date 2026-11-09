@@ -169,7 +169,10 @@ source-node order and response spans in original Sc encounter order.
 Small streams use one direct GPU phase; larger streams share global
 radix passes across both input types. The same scatter writes typed
 contact and joint source tokens without another body-sort pipeline,
-dispatch or upload. Dormant and response-disabled edges do not occupy
+dispatch or upload. Direct joint-row tokens are permitted only when
+the source ordinal addresses device-authored 1D geometry; other joints
+refer to the full Dy descriptor table. Numerical table ordinals are
+not interchangeable with graph-edge ordinals. Dormant and response-disabled edges do not occupy
 numerical descriptor slots. Independent components can
 execute concurrently, but their task identity is stable across runs;
 constraints sharing a responding body retain the required solver ordering.

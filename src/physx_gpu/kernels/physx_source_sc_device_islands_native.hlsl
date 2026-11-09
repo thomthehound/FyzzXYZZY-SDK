@@ -43,7 +43,8 @@ static const uint jointEdge=1u;
 static const uint noResponse=2u;
 static const uint hostTouch=4u;
 static const uint hostFound=8u;
-static const uint permittedKinds=jointEdge|noResponse|hostTouch|hostFound;
+static const uint deviceJoint=16u;
+static const uint permittedKinds=jointEdge|noResponse|hostTouch|hostFound|deviceJoint;
 
 void reject(uint bits) {
     uint previous;
@@ -62,7 +63,8 @@ bool edgeConnected(uint edge,uint kind) {
     }
     if((kind&~permittedKinds)!=0u ||
        ((kind&hostFound)!=0u && (kind&hostTouch)==0u) ||
-       ((kind&jointEdge)!=0u && (kind&(hostTouch|hostFound))!=0u)) {
+       ((kind&jointEdge)!=0u && (kind&(hostTouch|hostFound))!=0u) ||
+       ((kind&deviceJoint)!=0u && (kind&jointEdge)==0u)) {
         reject(1u);
         return false;
     }
@@ -142,7 +144,11 @@ uint responseToken(uint edgeIndex) {
         return invalid;
     }
     const uint kind=work.Load(address+20u);
-    return ((kind&jointEdge)!=0u?0x80000000u:0xc0000000u)|source;
+    // Dy token kinds: 0=full 1D descriptor, 2=device joint row,
+    // 3=contact manager. Every source index has a typed table owner.
+    const uint tag=(kind&jointEdge)==0u?0xc0000000u:
+        ((kind&deviceJoint)!=0u?0x80000000u:0u);
+    return tag|source;
 }
 uint itemRoot(uint item) {
     if(item>=p.nodeCount)return responseRoot(item-p.nodeCount);
