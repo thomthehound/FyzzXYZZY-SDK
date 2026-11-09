@@ -436,6 +436,8 @@ void verify(Context& context,const char* filename) {
                                  malformed_flags);
     const auto error=load<std::uint32_t>(rejected.second,0u);
     require((error&19u)==19u &&
+            header(rejected).runnable_components==0u &&
+            header(rejected).dispatch_x==0u &&
             admitted(rejected,0u).island_root==invalid &&
             admitted(rejected,1u).island_root==invalid &&
             admitted(rejected,2u).island_root==invalid,
