@@ -113,9 +113,9 @@ void main(uint3 thread:SV_DispatchThreadID) {
         }
         if(index<p.nodeCount) {
             work.Store(p.rootBias+index*4u,index);
-            const uint count=p.countBias+index*20u;
+            const uint count=p.countBias+index*24u;
             work.Store4(count,uint4(0u,0u,0u,0u));
-            work.Store(count+16u,0u);
+            work.Store2(count+16u,uint2(0u,invalid));
         }
         return;
     }
@@ -140,7 +140,7 @@ void main(uint3 thread:SV_DispatchThreadID) {
                 const uint velocity=(flags>>8u)&255u;
                 if(!position || !velocity ||
                    (flags&0xfffe0000u)!=0u)reject(16u);
-                const uint count=p.countBias+root*20u;
+                const uint count=p.countBias+root*24u;
                 uint previous;
                 work.InterlockedAdd(count,1u,previous);
                 if((flags&0x10000u)!=0u)
@@ -161,7 +161,7 @@ void main(uint3 thread:SV_DispatchThreadID) {
                 owner=findRoot(node);
                 if(owner!=invalid && (kind&noResponse)==0u) {
                     uint previous;
-                    work.InterlockedAdd(p.countBias+owner*20u+4u,
+                    work.InterlockedAdd(p.countBias+owner*24u+4u,
                                         1u,previous);
                 }
             }
@@ -181,7 +181,7 @@ void main(uint3 thread:SV_DispatchThreadID) {
            index>=p.nodeCount ||
            work.Load(p.rootBias+index*4u)!=index)
             return;
-        const uint count=p.countBias+index*20u;
+        const uint count=p.countBias+index*24u;
         const uint nodes=work.Load(count);
         const uint seeds=work.Load(count+8u);
         if(!nodes || !seeds)return;
@@ -193,6 +193,9 @@ void main(uint3 thread:SV_DispatchThreadID) {
         uint previous;
         work.InterlockedMax(p.workBias+16u,
                             min(task+1u,p.maxGroups),previous);
+        // Task ordinals exist only for active roots. Edges retain
+        // source order and read this root slot directly during Dy prep.
+        work.Store(count+20u,task);
         const uint dst=p.taskBias+task*20u;
         work.Store4(dst,uint4(index,nodes,edges,position));
         work.Store(dst+16u,velocity);
