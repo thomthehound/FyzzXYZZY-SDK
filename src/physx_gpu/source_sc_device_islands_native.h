@@ -215,7 +215,8 @@ public:
         args[11]=edge_capacity;
         const auto max_groups=context_.device_info().max_workgroup_count[0];
         args[14]=max_groups;
-        args[15]=(node_count+127u)/128u;
+        args[15]=static_cast<std::uint32_t>(
+            (std::uint64_t(node_count)+127u)/128u);
         dispatch.push_constants.resize(sizeof(args));
         std::vector<compute::BatchCommand> commands;
         const auto launch=[&](std::uint32_t phase,std::uint32_t count) {
