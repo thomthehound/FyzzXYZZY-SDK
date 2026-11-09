@@ -9,6 +9,7 @@
 #include "physx_gpu/source_pcm_epa_native.h"
 #include "physx_gpu/source_pcm_sc_contact_stream_native.h"
 #include "physx_gpu/source_sc_contact_history_native.h"
+#include "physx_gpu/source_sc_device_islands_native.h"
 #include "physx_port/gpucommon/PxgCudaBuffer.h"
 
 #include <algorithm>
@@ -46,7 +47,8 @@ public:
         compute::ShaderBinary gjk_publish,
         compute::ShaderBinary epa_args_reset,compute::ShaderBinary epa,
         compute::ShaderBinary face_contacts,
-        compute::ShaderBinary contact_journal)
+        compute::ShaderBinary contact_journal,
+        compute::ShaderBinary device_islands)
         : context_(context),addresses_(addresses),stream_(stream),sc_(sc),
           transforms_(transforms),geometry_(geometry),
           convex_vertices_(convex_vertices),
@@ -66,13 +68,17 @@ public:
           epa_stage_(context,std::move(epa)),
           face_stage_(context,std::move(face_contacts),true),
           journal_stage_(context,std::move(contact_journal)),
+          island_stage_(context,std::move(device_islands)),
           pairs_(allocator,physx::PxsHeapStats::eNARROWPHASE),
           results_(allocator,physx::PxsHeapStats::eNARROWPHASE),
           candidates_(allocator,physx::PxsHeapStats::eNARROWPHASE),
           edges_(allocator,physx::PxsHeapStats::eNARROWPHASE),
           work_(allocator,physx::PxsHeapStats::eNARROWPHASE),
           dense_contacts_(allocator,physx::PxsHeapStats::eNARROWPHASE),
-          journal_(allocator,physx::PxsHeapStats::eNARROWPHASE) {
+          journal_(allocator,physx::PxsHeapStats::eNARROWPHASE),
+          island_edges_(allocator,physx::PxsHeapStats::eNARROWPHASE),
+          island_nodes_(allocator,physx::PxsHeapStats::eNARROWPHASE),
+          island_work_(allocator,physx::PxsHeapStats::eNARROWPHASE) {
         if(!stream_.bound_to(context_,addresses_))
             throw std::invalid_argument("Source Sc GPU PCM has another device stream");
         if(staged_gjk_)
@@ -101,6 +107,7 @@ public:
         stream_.abandon_fetch();
         host_upload_pending_=false;
         result_pending_=false;
+        island_work_ready_=false;
         pending_host_inputs_=false;
         pending_requests_={};
         pending_output_={};
@@ -136,6 +143,7 @@ public:
             published_edge_span_bytes_,pending_edge_span_bytes_);
         pcm_transaction_pending_=false;
         journal_pair_count_=0u;
+        island_work_ready_=false;
         journal_host_only_=false;
     }
 
@@ -226,6 +234,7 @@ public:
         last_contact_download_bytes_=0u;
         last_host_contact_upload_bytes_=0u;
         host_upload_pending_=false;
+        island_work_ready_=false;
         pending_host_inputs_=false;
         last_edge_history_copy_bytes_=0u;
         last_continuation_commands_=0u;
@@ -554,6 +563,69 @@ public:
         host_upload_pending_=true;
     }
 
+    // Sc supplies only stable, typed endpoints and authored iteration
+    // metadata. GPU PCM publishes actual touch on the same queue; the
+    // accurate island stage consumes its resident history without a
+    // host witness join or another contact-manager registry.
+    void enqueue_device_islands(
+            std::span<const SourceScDeviceIslandEdge> edges,
+            std::span<const std::uint32_t> node_flags) {
+        if(island_work_ready_ || restore_pending_ ||
+           (result_pending_ && pending_host_inputs_ && !host_upload_pending_))
+            throw std::logic_error(
+                "Device island admission requires one complete queued Gu epoch");
+        if(edges.size()>std::numeric_limits<std::uint32_t>::max() ||
+           node_flags.size()>std::numeric_limits<std::uint32_t>::max())
+            throw std::overflow_error("Device Sc island input exceeds 32-bit view");
+        const auto node_count=static_cast<std::uint32_t>(node_flags.size());
+        const auto edge_count=static_cast<std::uint32_t>(edges.size());
+        const auto edge_capacity=device_edge_history_capacity();
+        constexpr std::uint32_t invalid=0xffffffffu;
+        for(const auto& edge:edges) {
+            if((edge.kind&~3u)!=0u ||
+               (edge.kind&1u)==0u && edge.edge_index>=edge_capacity ||
+               edge.node_a!=invalid && edge.node_a>=node_count ||
+               edge.node_b!=invalid && edge.node_b>=node_count)
+                throw std::invalid_argument("Device Sc island edge is not admitted");
+        }
+        for(const auto word:node_flags)
+            if((word&0xffu)==0u || ((word>>8u)&0xffu)==0u ||
+               (word&0xfffe0000u)!=0u)
+                throw std::invalid_argument("Device Sc node iterations invalid");
+        island_layout_=SourceScDeviceIslandLayout::for_counts(
+            node_count,edge_count);
+        island_work_.allocate(island_layout_.bytes,PX_FL);
+        if(edge_count)
+            island_edges_.allocate(source_allocation_bytes(
+                edge_count,sizeof(SourceScDeviceIslandEdge)),PX_FL);
+        if(node_count)
+            island_nodes_.allocate(source_allocation_bytes(
+                node_count,sizeof(std::uint32_t)),PX_FL);
+        auto& uploads=stream_.upload_scratch();
+        if(edge_count)
+            uploads.push_back({
+                island_edges_.getDevicePtr(),edges.data(),edges.size_bytes()});
+        if(node_count)
+            uploads.push_back({
+                island_nodes_.getDevicePtr(),node_flags.data(),
+                node_flags.size_bytes()});
+        if(!uploads.empty())stream_.queue_uploads(uploads);
+        island_stage_.append(stream_,addresses_,
+            edge_count?island_edges_.getDevicePtr():0u,
+            device_edge_history_address(),
+            node_count?island_nodes_.getDevicePtr():0u,
+            island_work_.getDevicePtr(),
+            node_count,edge_count,edge_capacity);
+        stream_.submit();
+        island_work_ready_=true;
+    }
+    CudaDeviceAddressMap::Address device_island_work_address() const noexcept {
+        return island_work_ready_?island_work_.getDevicePtr():0u;
+    }
+    SourceScDeviceIslandLayout device_island_layout() const noexcept {
+        return island_work_ready_?island_layout_:SourceScDeviceIslandLayout{};
+    }
+
     void finish() {
         if(!result_pending_)
             throw std::logic_error("Source PCM join has no queued epoch");
@@ -704,7 +776,10 @@ private:
     SourcePcmEpaNativeStage gjk_stage_,gjk_reduce_stage_,gjk_publish_stage_,epa_stage_,face_stage_;
     std::optional<SourcePcmEpaNativeStage> primitive_gjk_stage_;
     SourceScContactHistoryNativeStage journal_stage_;
+    SourceScDeviceIslandsNativeStage island_stage_;
     physx::PxgCudaBuffer pairs_,results_,candidates_,edges_,work_,dense_contacts_,journal_;
+    physx::PxgCudaBuffer island_edges_,island_nodes_,island_work_;
+    SourceScDeviceIslandLayout island_layout_{};
     compute::BufferId indirect_buffer_=0u;
     CudaDeviceAddressMap::Address indirect_address_=0u;
     std::vector<SourcePcmBoxPairNative> pair_host_;
@@ -714,6 +789,7 @@ private:
     bool pcm_transaction_pending_=false,restore_pending_=false;
     bool result_pending_=false,host_upload_pending_=false;
     bool pending_host_inputs_=false;
+    bool island_work_ready_=false;
     bool journal_host_only_=false;
     // Borrowed Sc views survive until finish() or rollback; GPU output
     // is written directly into the enqueued Sc result arena at the join.
