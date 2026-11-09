@@ -103,6 +103,7 @@ struct SourceDyLaunchStats {
     std::size_t wide_tasks=0u;
     std::size_t max_partition_groups=0u;
     std::size_t dispatches=0u;
+    std::size_t device_island_indirect_dispatches=0u;
     std::size_t tile_bytes=0u;
     // Shader-written descriptor and partition bytes omitted from HtoD.
     std::size_t device_generated_bytes=0u;
@@ -889,9 +890,9 @@ public:
             device_initial_bodies && device_world_motion;
         if(device_admission &&
            (!source_descriptors || !device_admission->work ||
-            tasks.empty()))
+            !device_admission->task_dispatch.buffer || tasks.empty()))
             throw std::invalid_argument(
-                "Source Dy device island admission requires source-indexed numerical input");
+                "Source Dy device island admission requires resident numerical task launch");
         source_descriptor_tokens_.clear();
         source_descriptor_full_.clear();
         if(source_descriptors) {
@@ -1371,6 +1372,27 @@ public:
                 (device_partitions?0x80000000u:0u)|
                 (device_partitions && !wide_tasks_.empty() &&
                  phase!=Launch::Color ?0x40000000u:0u);
+            // Compact tasks have no cross-workgroup dependencies. Their
+            // workgroup count is published by the Sc device prefix, so
+            // dispatch directly from that result instead of recopying a
+            // host task count into the launch command.
+            if(device_admission && phase==Launch::Fused &&
+               wide_tasks_.empty()) {
+                if(range.begin!=0u || range.count!=tasks.size() ||
+                   range.count>max_groups)
+                    throw std::out_of_range(
+                        "Source device Sc task launch exceeds compact dispatch bounds");
+                params[8]=0u;
+                dispatch.groups={1u,1u,1u};
+                dispatch.indirect=device_admission->task_dispatch;
+                std::memcpy(dispatch.push_constants.data(),params.data(),sizeof(params));
+                stream_.commands().emplace_back(dispatch);
+                dispatch.indirect.reset();
+                ++last_schedule_.dispatches;
+                ++last_schedule_.device_island_indirect_dispatches;
+                return;
+            }
+            dispatch.indirect.reset();
             for(std::size_t group=0;group<range.count;) {
                 const auto count=std::min<std::size_t>(max_groups,range.count-group);
                 params[8]=narrow(range.begin+group);
