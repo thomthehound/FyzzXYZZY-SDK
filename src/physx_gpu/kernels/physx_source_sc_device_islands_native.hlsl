@@ -235,7 +235,7 @@ void main(uint3 thread:SV_DispatchThreadID,
                 taskScan[lane.x]+=taskScan[lane.x+stride];
             GroupMemoryBarrierWithGroupSync();
         }
-        if(lane.x==0u)
+        if(lane.x==0u && p.blockCount!=0u)
             work.Store(p.blockBias+(index/128u)*4u,taskScan[0]);
         return;
     }
