@@ -34,6 +34,7 @@ static_assert(sizeof(SourceScDeviceIslandEdge)==20u);
 // admission records, not another persistent edge or island registry.
 // An invalid root means the edge has no connected responding endpoint.
 // The kind bits determine whether a connected edge admits a solver row.
+// The root's count record contains the compact GPU task ordinal.
 struct SourceScDeviceIslandAdmission {
     std::uint32_t source_index=0,edge_index=0;
     std::uint32_t node_a=0xffffffffu,node_b=0xffffffffu;
@@ -51,8 +52,10 @@ struct SourceScDeviceIslandCount {
     std::uint32_t responding_nodes=0,admitted_edges=0;
     std::uint32_t active_seeds=0u;
     std::uint32_t position_iterations=0u,velocity_iterations=0u;
+    // Set only for runnable roots; dormant islands have no Dy task.
+    std::uint32_t task_index=0xffffffffu;
 };
-static_assert(sizeof(SourceScDeviceIslandCount)==20u);
+static_assert(sizeof(SourceScDeviceIslandCount)==24u);
 
 // Task admission is selected after every component has published its
 // active seeds and iteration maxima. The root is a transient device
