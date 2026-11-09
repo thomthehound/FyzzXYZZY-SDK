@@ -12,6 +12,7 @@
 #include <fstream>
 #include <iostream>
 #include <iterator>
+#include <optional>
 #include <stdexcept>
 #include <span>
 #include <utility>
@@ -60,7 +61,8 @@ void verify(Context& context,const char* filename) {
                             const std::vector<SourceScDeviceIslandEdge>& edges,
                             std::vector<std::uint32_t> touches,
                             std::vector<std::uint32_t> node_flags={},
-                            std::vector<std::uint32_t> prior_touches={}) {
+                            std::vector<std::uint32_t> prior_touches={},
+                            std::optional<SourceScDeviceIslandSources> limits=std::nullopt) {
         constexpr std::size_t record_bytes=240u;
         // Joint-only scenes have no physical-touch arena. Active seeds
         // and authored iteration limits remain separate from connectivity.
@@ -121,10 +123,23 @@ void verify(Context& context,const char* filename) {
         if(!history.empty())
             context.upload(touch_buffer,0u,history.data(),
                            history.size()*sizeof(history[0]));
+        // Default fixture limits represent actual typed Dy source
+        // tables; targeted tests can narrow one independently.
+        SourceScDeviceIslandSources sources{};
+        for(const auto& edge:edges) {
+            if((edge.kind&source_sc_device_island_no_response_bit)!=0u ||
+               edge.source_index>=0x40000000u)continue;
+            auto& count=(edge.kind&source_sc_device_island_joint_bit)==0u
+                ?sources.contact_managers:
+                (edge.kind&source_sc_device_island_device_joint_bit)!=0u
+                    ?sources.joint_rows:sources.full_descriptors;
+            count=std::max(count,edge.source_index+1u);
+        }
+        if(limits)sources=*limits;
         SourceSapDmaNative stream(context,addresses);
         stage.append(stream,addresses,edge_addr,touch_addr,node_addr,output_addr,
                      node_count,static_cast<std::uint32_t>(edges.size()),
-                     static_cast<std::uint32_t>(touches.size()));
+                     static_cast<std::uint32_t>(touches.size()),sources);
         stream.wait_at_fetch();
         std::vector<std::byte> bytes(layout.bytes);
         context.download(output_buffer,0u,bytes.data(),bytes.size());
@@ -333,6 +348,25 @@ void verify(Context& context,const char* filename) {
             load<std::uint32_t>(direct_split.second,
                 direct_split.first.response_order+12u)==2u,
         "Device Sc direct scatter misdecoded a nonzero island root");
+
+    // An otherwise valid connected graph must not launch Dy with a
+    // token that exceeds its *own* numerical table. Contact managers,
+    // device-authored rows and full joint descriptors have independent
+    // ordinal spaces even when they occur in the same island.
+    const std::vector<std::uint32_t> typed_flags{
+        0x10104u,0x104u
+    };
+    const auto bad_manager=evaluate(2u,interleaved,{1u,1u},
+        typed_flags,{},SourceScDeviceIslandSources{41u,20u,21u});
+    const auto bad_joint_row=evaluate(2u,interleaved,{1u,1u},
+        typed_flags,{},SourceScDeviceIslandSources{42u,19u,21u});
+    const auto bad_full_joint=evaluate(2u,interleaved,{1u,1u},
+        typed_flags,{},SourceScDeviceIslandSources{42u,20u,20u});
+    for(const auto* result:{&bad_manager,&bad_joint_row,&bad_full_joint})
+        require((header(*result).errors&64u)!=0u &&
+                header(*result).runnable_components==0u &&
+                header(*result).dispatch_x==0u,
+                "Device Sc accepted an out-of-range typed Dy source token");
 
     auto first=evaluate(7u,edges,{1u,0u,1u,1u,0u,1u});
     no_errors(first);
