@@ -41,10 +41,8 @@ static const uint invalid=0xffffffffu;
 static const uint contactEdge=0u;
 static const uint jointEdge=1u;
 static const uint noResponse=2u;
-static const uint hostTouch=4u;
-static const uint hostFound=8u;
 static const uint deviceJoint=16u;
-static const uint permittedKinds=jointEdge|noResponse|hostTouch|hostFound|deviceJoint;
+static const uint permittedKinds=jointEdge|noResponse|deviceJoint;
 
 void reject(uint bits) {
     uint previous;
@@ -62,16 +60,14 @@ bool edgeConnected(uint edge,uint kind) {
         return false;
     }
     if((kind&~permittedKinds)!=0u ||
-       ((kind&hostFound)!=0u && (kind&hostTouch)==0u) ||
-       ((kind&jointEdge)!=0u && (kind&(hostTouch|hostFound))!=0u) ||
        ((kind&deviceJoint)!=0u && (kind&jointEdge)==0u)) {
         reject(1u);
         return false;
     }
     if((kind&jointEdge)!=0u)return true;
-    // Only CPU Gu may author this bit; it must already have published
-    // physical touch. Device PCM contacts never bypass EdgeIndex history.
-    if((kind&hostTouch)!=0u)return true;
+    // Both host Gu and device PCM publish physical touch to the same
+    // EdgeIndex history before accurate admission. No source flag
+    // substitutes for the committed/current resident touch state.
     if(edge>=p.edgeCapacity) {
         reject(1u);
         return false;
@@ -279,14 +275,9 @@ void main(uint3 thread:SV_DispatchThreadID,
                     if((kind&noResponse)==0u)
                         work.InterlockedAdd(p.countBias+owner*24u+4u,
                                             1u,previous);
-                    // A contact that became physically touching in
-                    // this PCM epoch activates its accurate component.
-                    // Joint edges and persistent contacts do not
-                    // manufacture an additional wake reason.
-                    if((kind&hostFound)!=0u) {
-                        work.InterlockedAdd(p.countBias+owner*24u+8u,
-                                            1u,previous);
-                    }else if((kind&(jointEdge|hostTouch))==0u) {
+                    // Physical new-touch activation is derived from
+                    // the journaled prior state for both Gu producers.
+                    if((kind&jointEdge)==0u) {
                         const uint cache=p.touchBias+edge.x*240u;
                         const uint prior=edgeHistory.Load(cache+76u)&1u;
                         if(prior==0u)
