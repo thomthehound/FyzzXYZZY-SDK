@@ -392,14 +392,19 @@ void main(uint3 thread:SV_DispatchThreadID,
         }
         const uint key=itemKey(index);
         if(key==invalid)return;
+        // Rank across bodies, joints and contacts in the same root.
+        // Equal-key items retain original source encounter order.
         uint ordinal=0u;
-        for(uint i=0u;i<index;++i)
-            if(itemKey(i)==key)++ordinal;
+        for(uint i=0u;i<p.combinedCount;++i) {
+            const uint other=itemKey(i);
+            if(other/3u==key/3u &&
+               (other<key || (other==key && i<index)))
+                ++ordinal;
+        }
         const uint taskId=work.Load(p.countBias+(key/3u)*24u+20u);
         const uint task=p.taskBias+taskId*32u;
         const uint begin=work.Load(task+20u)+work.Load(task+24u);
-        const uint bodies=work.Load(task+4u);
-        scatterItem(begin+((key%3u)!=0u?bodies:0u)+ordinal,index);
+        scatterItem(begin+ordinal,index);
         return;
     }
     if(p.phase<7u)return;

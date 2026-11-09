@@ -248,12 +248,17 @@ void verify(Context& context,const char* filename) {
                 ?0xc0000000u:
                 ((record.kind&source_sc_device_island_device_joint_bit)!=0u
                     ?0x80000000u:0u);
-            require(load<std::uint32_t>(result.second,
-                        result.first.response_order+i*4u)==edge &&
-                    load<std::uint32_t>(result.second,
-                        result.first.response_tokens+i*4u)==
-                            (tag|record.source_index),
-                    "Device Sc response scatter reordered a source descriptor");
+            const auto observed=load<std::uint32_t>(
+                result.second,result.first.response_order+i*4u);
+            const auto token=load<std::uint32_t>(
+                result.second,result.first.response_tokens+i*4u);
+            if(observed!=edge || token!=(tag|record.source_index))
+                throw std::runtime_error(
+                    "Device Sc response mismatch at " +
+                    std::to_string(i) + ": edge=" +
+                    std::to_string(observed) + ", expected=" +
+                    std::to_string(edge) + ", token=" +
+                    std::to_string(token));
         }
     };
     const auto no_errors=[&](const auto& result) {

@@ -508,6 +508,11 @@ public:
         assigned_.assign(contact_prep.size(),0u);
         const auto ref_body=[&](const native::GpuDyContactPrepBody& body,
                                 std::uint32_t ordinal) -> std::uint32_t {
+            if(ordinal!=invalid && body.solver_ordinal!=invalid &&
+               ordinal!=body.solver_ordinal)
+                throw std::logic_error(
+                    "Source Dy descriptor disagrees with prepared contact body");
+            if(ordinal==invalid)ordinal=body.solver_ordinal;
             // An awake zero-inverse-mass dynamic still has source motion.
             // GPU preintegration owns it, unlike static/kinematic inline
             // participants whose velocities Sc prepares independently.

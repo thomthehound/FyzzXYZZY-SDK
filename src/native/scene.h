@@ -351,7 +351,8 @@ struct GpuDyContactPrepBody {
     float position[3]{},linear_velocity[3]{},angular_velocity[3]{};
     float sqrt_inverse_inertia[9]{};
     float inverse_mass=0.0f;
-    // Inline nonintegrated bodies retain their source solver ordinal.
+    // Solver-row identity is shared with compact contact descriptors.
+    // Static participants retain the invalid ordinal.
     std::uint32_t solver_ordinal=0xffffffffu;
     float orientation[4]{};
 };

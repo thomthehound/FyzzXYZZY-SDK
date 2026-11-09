@@ -8189,6 +8189,21 @@ void Scene::prepare_constraints(float seconds) {
             native::GpuDyContactPrepPair prep{};
             pack_body(prep.body0,a);
             pack_body(prep.body1,b);
+            // The prepared contact endpoints already own their solver
+            // rows. Compact Dy descriptors omit duplicate row indices.
+            const auto pack_ordinal=[&](native::GpuDyContactPrepBody& out,
+                                        const Actor& actor) {
+                if(!rigid_node(actor.motion))return;
+                if(actor.solver_row_generation!=solver_preparation_generation_ ||
+                   actor.solver_row_index>=solver_rows_.size() ||
+                   actor.solver_row_index>=invalid_solver_row)
+                    throw std::logic_error(
+                        "GPU Dy contact preparation lacks a solver row");
+                out.solver_ordinal=
+                    static_cast<std::uint32_t>(actor.solver_row_index);
+            };
+            pack_ordinal(prep.body0,actor0);
+            pack_ordinal(prep.body1,actor1);
             // Gu anchors are actor-local, including the immovable shape.
             // World solver-body data uses a zero-mass static sentinel.
             const auto pack_pose=[this](native::GpuDyContactPrepBody& out,
