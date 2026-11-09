@@ -231,7 +231,14 @@ void verify(Context& context,const char* filename) {
             expected.emplace_back(record.island_root,edge);
         }
         std::stable_sort(expected.begin(),expected.end(),
-            [](const auto& a,const auto& b){return a.first<b.first;});
+            [&](const auto& a,const auto& b) {
+                if(a.first!=b.first)return a.first<b.first;
+                const bool jointA=(admitted(result,a.second).kind&
+                    source_sc_device_island_joint_bit)!=0u;
+                const bool jointB=(admitted(result,b.second).kind&
+                    source_sc_device_island_joint_bit)!=0u;
+                return jointA && !jointB;
+            });
         require(expected.size()==summary.admitted_edges,
                 "Device Sc response count disagrees with source admissions");
         for(std::size_t i=0u;i<expected.size();++i) {
@@ -266,6 +273,25 @@ void verify(Context& context,const char* filename) {
         {4u,0u,2u,17u,0u}, // Inactive chord
         {5u,2u,0u,18u,0u}  // Active redundant chord
     };
+    // Device numeric order must place source 1D descriptors before
+    // contacts even when Sc's input graph interleaves both kinds.
+    const std::vector<SourceScDeviceIslandEdge> interleaved{
+        {0u,0u,1u,40u,source_sc_device_island_host_touch_bit|
+                         source_sc_device_island_host_found_bit},
+        {31u,0u,1u,20u,source_sc_device_island_joint_bit},
+        {1u,1u,0u,41u,source_sc_device_island_host_touch_bit},
+        {32u,1u,0u,19u,source_sc_device_island_joint_bit|
+                          source_sc_device_island_device_joint_bit}
+    };
+    auto ordered=evaluate(2u,interleaved,{}, {0x10000u|0x104u,0x104u});
+    no_errors(ordered);
+    check_task_mapping(ordered);
+    for(std::uint32_t i=0u;i<4u;++i)
+        require(load<std::uint32_t>(ordered.second,
+                    ordered.first.response_order+i*4u)==
+                    std::array<std::uint32_t,4>{1u,3u,0u,2u}[i],
+                "Device Sc numerical admission did not place joints first");
+
     auto first=evaluate(7u,edges,{1u,0u,1u,1u,0u,1u});
     no_errors(first);
     require(root(first,0u)==0u && root(first,1u)==0u &&

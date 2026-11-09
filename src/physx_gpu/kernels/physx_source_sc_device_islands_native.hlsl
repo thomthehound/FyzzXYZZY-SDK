@@ -159,8 +159,14 @@ uint itemRoot(uint item) {
 }
 uint itemKey(uint item) {
     const uint root=itemRoot(item);
-    return root==p.nodeCount?invalid:
-        (root<<1u)|(item>=p.nodeCount?1u:0u);
+    if(root==p.nodeCount)return invalid;
+    if(item<p.nodeCount)return root*3u;
+    const uint edge=item-p.nodeCount;
+    const uint kind=work.Load(p.admissionBias+edge*24u+20u);
+    // setupDescTask admits 1D rows before contact managers. Preserve
+    // original source order within each type; Sc supplies joint edges
+    // in descending Constraint.index order.
+    return root*3u+((kind&jointEdge)!=0u?1u:2u);
 }
 void scatterItem(uint position,uint item) {
     const uint root=itemRoot(item);

@@ -103,7 +103,9 @@ struct SourceScDeviceIslandLayout {
     std::size_t response_order=0u,body_order=0u,response_tokens=0u;
     std::size_t radix_histogram=0u,bytes=0u;
     static std::uint32_t radix_passes(std::uint32_t nodes) noexcept {
-        const auto key=std::uint64_t(nodes)*2u+1u;
+        // Body, joint and contact identities share root-ordered
+        // keys, with 1D constraints preceding contact managers.
+        const auto key=std::uint64_t(nodes)*3u+2u;
         return key<=0xffu?1u:key<=0xffffu?2u:
                key<=0xffffffu?3u:4u;
     }

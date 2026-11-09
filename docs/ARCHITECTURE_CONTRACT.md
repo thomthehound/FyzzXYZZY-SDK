@@ -167,7 +167,11 @@ for runnable components, without another host count or a per-component
 allocation. A single stable device root/type sort fills responding-body spans in
 source-node order and response spans in original Sc encounter order.
 Small streams use one direct GPU phase; larger streams share global
-radix passes across both input types. The same scatter writes typed
+radix passes across both input types. Within each canonical island the
+device orders responding bodies first, then source-sorted 1D constraints,
+then contact managers. The authored joint input preserves descending
+constraint identity within its type; the device does not invent a
+second joint ordering. The same scatter writes typed
 contact and joint source tokens without another body-sort pipeline,
 dispatch or upload. Direct joint-row tokens are permitted only when
 the source ordinal addresses device-authored 1D geometry; other joints
