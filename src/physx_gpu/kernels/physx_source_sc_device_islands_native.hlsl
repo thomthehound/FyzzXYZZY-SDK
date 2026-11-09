@@ -25,7 +25,7 @@ RWByteAddressBuffer work:register(u3,space0);
 struct Parameters {
     uint edgeBias,touchBias,nodeBias,workBias;
     uint rootBias,countBias,admissionBias,taskBias;
-    uint nodeCount,edgeCount,edgeCapacity,phase,first,unused;
+    uint nodeCount,edgeCount,edgeCapacity,phase,first,maxGroups;
 };
 #ifdef __spirv__
 [[vk::push_constant]] Parameters p;
@@ -188,7 +188,8 @@ void main(uint3 thread:SV_DispatchThreadID) {
         uint task;
         work.InterlockedAdd(p.workBias+4u,1u,task);
         uint previous;
-        work.InterlockedAdd(p.workBias+16u,1u,previous);
+        work.InterlockedMax(p.workBias+16u,
+                            min(task+1u,p.maxGroups),previous);
         const uint dst=p.taskBias+task*20u;
         work.Store4(dst,uint4(index,nodes,edges,position));
         work.Store(dst+16u,velocity);
