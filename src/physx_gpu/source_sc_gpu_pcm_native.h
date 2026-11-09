@@ -688,7 +688,8 @@ public:
     // even when no new PCM pair is admitted this frame. The journal
     // high-watermark and the last published EdgeIndex prefix coexist.
     std::uint32_t device_edge_history_capacity() const noexcept {
-        if(restore_pending_ || rebuild_required_ ||
+        if(restore_pending_ ||
+           (rebuild_required_ && !pcm_transaction_pending_) ||
            (result_pending_ && pending_host_inputs_ && !host_upload_pending_))
             return 0u;
         const auto published=static_cast<std::uint32_t>(
