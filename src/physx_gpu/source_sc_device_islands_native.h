@@ -160,6 +160,13 @@ struct SourceScDeviceIslandLayout {
     }
 };
 
+// The device source stream is an ordered producer for Dy's transient
+// task, body-ordinal, and typed descriptor arrays. The GPU header is
+// validated on the numerical queue before any solver reads these arrays.
+struct SourceScDeviceIslandDyView {
+    CudaDeviceAddressMap::Address work=0u;
+    SourceScDeviceIslandLayout layout{};
+};
 class SourceScDeviceIslandsNativeStage final {
 public:
     SourceScDeviceIslandsNativeStage(
