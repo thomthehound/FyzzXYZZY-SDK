@@ -160,9 +160,11 @@ excluding response-disabled edges from numerical task counts. An active seed
 can admit its entire connected component; its position/velocity iteration
 limits are the maxima of all admitted component nodes, not merely the seed.
 Device component roots are transient execution IDs, while EdgeIndex and
-source-ordered constraint identity remain stable. Independent components may
-be scheduled in any order, but constraints sharing a responding body retain
-the required solver ordering.
+source-ordered constraint identity remain stable. Runnable component tasks
+are compacted by a device-resident prefix in canonical root order rather
+than racing to claim atomic task ordinals. Independent components can
+execute concurrently, but their task identity is stable across runs;
+constraints sharing a responding body retain the required solver ordering.
 
 CPU Gu and GPU PCM publish physical-touch transitions into the same device
 EdgeIndex history. Host-only Gu epochs journal only the prior/current touch
