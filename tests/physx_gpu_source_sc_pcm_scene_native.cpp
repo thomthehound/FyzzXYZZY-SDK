@@ -720,6 +720,120 @@ void verify(fyzz::compute::Backend backend,const char* sap,
     producer->commit_gpu_step();
 }
 
+// A PCM readback may remain pending while independent Dy integration
+// executes on the same Context queue. The Dy result is fetched only
+// after Sc has explicitly joined the earlier witness DMA.
+void verify_queued_pcm_dy(fyzz::compute::Backend backend,const char* sap,
+                          const char* pcm,const char* dy_shader) {
+    using namespace fyzz;
+    std::ifstream input(dy_shader,std::ios::binary);
+    require(bool(input),"Source queued Dy shader unavailable");
+    compute::ShaderBinary shader{};
+    shader.format=backend==compute::Backend::Vulkan
+        ?compute::ShaderFormat::Spirv:compute::ShaderFormat::Dxil;
+    shader.bytes.assign(std::istreambuf_iterator<char>{input},
+                        std::istreambuf_iterator<char>{});
+    native::Scene scene;
+    auto owner=std::make_unique<physx_gpu::SourceScOwnedGpuBroadphaseNative>(
+        backend,load_native_gpu_sap_shaders(backend,sap),128u,128u,
+        std::nullopt,load_native_gpu_pcm_shaders(backend,pcm),
+        std::move(shader));
+    auto* producer=owner.get();
+    scene.set_gpu_broadphase(std::move(owner));
+    const auto moving=scene.add_dynamic_box(
+        {0.5f,0.5f,0.5f},{0.f,1.f,0.f},1.f);
+    const auto fixed=scene.add_static_box(
+        {0.5f,0.5f,0.5f},{0.8f,1.f,0.f});
+    scene.advance_collision(true);
+    const auto edge=scene.contact_edge_index({moving,fixed});
+    require(edge!=std::numeric_limits<std::uint32_t>::max(),
+        "Queued PCM/Dy test could not find source Sc contact manager");
+
+    constexpr float seconds=1.f/120.f;
+    const std::array<native::GpuPcmBoxPair,1> request{{
+        {moving,fixed,edge,false}
+    }};
+    const auto launch=[&](std::array<native::GpuPcmBoxResult,1>& witness,
+                          std::array<native::GpuDyBodyIntegrationInput,1>& inputs,
+                          std::array<native::GpuDyIntegratedPose,1>& poses) {
+        witness={};
+        inputs={};
+        poses={};
+        auto& body=inputs[0];
+        body.active=1u;
+        body.position[0]=2.f;
+        body.position[1]=1.f;
+        body.orientation[3]=1.f;
+        body.actor_position[0]=2.f;
+        body.actor_position[1]=1.f;
+        body.actor_orientation[3]=1.f;
+        body.linear_velocity[0]=0.5f;
+        body.seconds=seconds;
+        body.source_actor=0u;
+        body.source_inverse_mass=1.f;
+        body.max_linear_speed_squared=100.f;
+        body.max_angular_speed_squared=100.f;
+        body.wake_counter=0.4f;
+        producer->enqueue_gpu_pcm_box_contacts(request,witness);
+        producer->enqueue_gpu_dy_distance(
+            {},{},{},{},{},{},{},{},{},{},{},{},{},{},
+            inputs,poses);
+    };
+    std::array<native::GpuPcmBoxResult,1> witness{};
+    std::array<native::GpuDyBodyIntegrationInput,1> inputs{};
+    std::array<native::GpuDyIntegratedPose,1> poses{};
+    const auto before=producer->stream_submission_stats();
+    launch(witness,inputs,poses);
+    const auto queued=producer->stream_submission_stats();
+    require(producer->has_queued_gpu_dy_distance() &&
+            witness[0].packed_counts==0u &&
+            queued.fetch_batches==before.fetch_batches &&
+            queued.readback_submissions==before.readback_submissions+1u &&
+            producer->device_pcm_contact_count()==1u,
+        "Dy numerical dispatch joined PCM witness DMA on the host");
+    bool duplicate_rejected=false;
+    try {
+        producer->enqueue_gpu_dy_distance(
+            {},{},{},{},{},{},{},{},{},{},{},{},{},{},
+            inputs,poses);
+    } catch(const std::logic_error&) {
+        duplicate_rejected=true;
+    }
+    require(duplicate_rejected && producer->has_queued_gpu_dy_distance(),
+        "Dy reused active numerical output before its owning fetch");
+    producer->finish_gpu_pcm_box_contacts();
+    require(witness[0].status()==0u && witness[0].count()>0u,
+        "Queued PCM witness was invalid after early Dy dispatch");
+    producer->finish_gpu_dy_distance();
+    require(!producer->has_queued_gpu_dy_distance() &&
+            poses[0].valid==1u &&
+            std::fabs(poses[0].position[0]-
+                      (2.f+0.5f*seconds))<0.002f &&
+            std::fabs(poses[0].position[1]-1.f)<0.002f &&
+            producer->stream_submission_stats().fetch_batches==
+                before.fetch_batches+2u,
+        "Queued GPU Dy failed to publish integrated body after PCM join");
+    producer->commit_gpu_step();
+
+    // Reject a numerical epoch before either source result is fetched.
+    // Neither borrowed output may survive the common rollback boundary.
+    std::array<native::GpuPcmBoxResult,1> rejected{};
+    launch(rejected,inputs,poses);
+    producer->invalidate_after_rollback();
+    require(!producer->has_queued_gpu_dy_distance() &&
+            producer->device_pcm_contact_count()==0u &&
+            rejected[0].packed_counts==0u,
+        "Rollback retained GPU PCM or numerical Dy publication");
+    std::array<native::GpuPcmBoxResult,1> recovered{};
+    launch(recovered,inputs,poses);
+    producer->finish_gpu_pcm_box_contacts();
+    producer->finish_gpu_dy_distance();
+    require(recovered[0].status()==0u && recovered[0].count()>0u &&
+            poses[0].valid==1u,
+        "Rolled-back source GPU numerical epoch failed to regenerate");
+    producer->commit_gpu_step();
+}
+
 // Sparse live Sc managers keep their original edge handles. GPU readback
 // must scale with active managers, not the largest surviving edge index.
 void verify_sparse_contact_stream(
@@ -3363,7 +3477,10 @@ int main(int argc,char** argv) {
                 });
         if(scenario=="all" || scenario=="scene")
             fyzz::tests::measure_gpu_case("sc_pcm","scene",
-                [&]{verify(backend,argv[1],argv[2]);});
+                [&]{
+                    verify(backend,argv[1],argv[2]);
+                    verify_queued_pcm_dy(backend,argv[1],argv[2],argv[3]);
+                });
         if(scenario=="all" || scenario=="sparse_contacts")
             fyzz::tests::measure_gpu_case("sc_pcm","sparse_contacts",
                 [&]{
