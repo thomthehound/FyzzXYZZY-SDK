@@ -693,7 +693,8 @@ public:
             return 0u;
         const auto published=static_cast<std::uint32_t>(
             published_edge_span_bytes_/240u);
-        return std::max(published,journal_edge_capacity_);
+        return pcm_transaction_pending_
+            ?std::max(published,journal_edge_capacity_):published;
     }
     CudaDeviceAddressMap::Address device_edge_history_address() const noexcept {
         return device_edge_history_capacity()?edges_.getDevicePtr():0u;
