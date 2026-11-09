@@ -179,6 +179,26 @@ void verify(Context& context,const char* filename) {
             admitted(surviving_route,8u).island_root==0u,
             "Lost chord split an island with a surviving accurate route");
 
+    // Accurate connectedness is independent of Dy row admission.
+    // A zero-impulse contact or a response-disabled constraint remains
+    // a graph edge but must not consume a solver descriptor or task slot.
+    auto nonresponding=edges;
+    nonresponding[0].kind=2u;
+    nonresponding[1].kind=3u;
+    auto no_response=evaluate(7u,nonresponding,{1u,0u,1u,1u,0u,1u});
+    no_errors(no_response);
+    require(root(no_response,0u)==0u &&
+            root(no_response,1u)==0u &&
+            root(no_response,2u)==0u &&
+            count(no_response,0u).responding_nodes==3u &&
+            count(no_response,0u).admitted_edges==1u &&
+            admitted(no_response,0u).island_root==0u &&
+            admitted(no_response,0u).kind==2u &&
+            admitted(no_response,1u).island_root==0u &&
+            admitted(no_response,1u).kind==3u &&
+            admitted(no_response,8u).island_root==0u,
+            "Device Sc conflated topology with Dy response admission");
+
     // A lost bridge and chord split the previously connected island.
     auto split=evaluate(7u,edges,{0u,0u,1u,1u,0u,0u});
     no_errors(split);
@@ -248,11 +268,13 @@ void verify(Context& context,const char* filename) {
     auto bad_edges=edges;
     bad_edges[0].edge_index=128u;
     bad_edges[1].node_b=1024u;
+    bad_edges[2].kind=4u;
     const auto rejected=evaluate(7u,bad_edges,{1u,0u,1u,1u,0u,1u});
     const auto error=load<std::uint32_t>(rejected.second,0u);
     require((error&3u)==3u &&
             admitted(rejected,0u).island_root==invalid &&
-            admitted(rejected,1u).island_root==invalid,
+            admitted(rejected,1u).island_root==invalid &&
+            admitted(rejected,2u).island_root==invalid,
             "Device Sc accepted invalid touch or responding endpoint");
 }
 } // namespace
