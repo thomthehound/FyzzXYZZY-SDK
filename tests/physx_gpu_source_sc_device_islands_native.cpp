@@ -294,14 +294,13 @@ void verify(Context& context,const char* filename) {
     // Device numeric order must place source 1D descriptors before
     // contacts even when Sc's input graph interleaves both kinds.
     const std::vector<SourceScDeviceIslandEdge> interleaved{
-        {0u,0u,1u,40u,source_sc_device_island_host_touch_bit|
-                         source_sc_device_island_host_found_bit},
+        {0u,0u,1u,40u,0u},
         {31u,0u,1u,20u,source_sc_device_island_joint_bit},
-        {1u,1u,0u,41u,source_sc_device_island_host_touch_bit},
+        {1u,1u,0u,41u,0u},
         {32u,1u,0u,19u,source_sc_device_island_joint_bit|
                           source_sc_device_island_device_joint_bit}
     };
-    auto ordered=evaluate(2u,interleaved,{}, {0x10000u|0x104u,0x104u});
+    auto ordered=evaluate(2u,interleaved,{1u,1u}, {0x10000u|0x104u,0x104u});
     no_errors(ordered);
     check_task_mapping(ordered);
     for(std::uint32_t i=0u;i<4u;++i)
@@ -313,14 +312,12 @@ void verify(Context& context,const char* filename) {
     // In the small direct-scatter path, nonzero component roots must
     // decode the same three-way key as radix-sorted components.
     const std::vector<SourceScDeviceIslandEdge> split_types{
-        {0u,0u,1u,3u,source_sc_device_island_host_touch_bit|
-                       source_sc_device_island_host_found_bit},
+        {0u,0u,1u,3u,0u},
         {31u,0u,1u,2u,source_sc_device_island_joint_bit},
-        {1u,2u,3u,7u,source_sc_device_island_host_touch_bit|
-                       source_sc_device_island_host_found_bit},
+        {1u,2u,3u,7u,0u},
         {32u,3u,2u,6u,source_sc_device_island_joint_bit}
     };
-    auto direct_split=evaluate(4u,split_types,{},
+    auto direct_split=evaluate(4u,split_types,{1u,1u},
         {0x10104u,0x104u,0x10104u,0x104u});
     no_errors(direct_split);
     check_task_mapping(direct_split);
@@ -502,13 +499,17 @@ void verify(Context& context,const char* filename) {
                 count(empty,i).admitted_edges==0u,
                 "Quiet zero-edge device graph retained an old union");
 
-    // A touching CPU Gu manager joins the same accurate graph as
-    // device PCM and authored joints. No fake device touch history or
-    // readback is needed for a contact already published by the host.
+    // CPU Gu and device PCM publish into the same EdgeIndex touch
+    // history. Physical connectivity cannot be asserted by a host bit.
     auto mixed_gu=edges;
-    mixed_gu.push_back({
-        70u,3u,4u,22u,source_sc_device_island_host_touch_bit});
-    auto host_connected=evaluate(7u,mixed_gu,{1u,0u,1u,1u,0u,1u});
+    mixed_gu.push_back({70u,3u,4u,22u,0u});
+    std::vector<std::uint32_t> gu_touches(71u,0u);
+    constexpr std::array<std::uint32_t,6> pcm_touches{1u,0u,1u,1u,0u,1u};
+    std::copy(pcm_touches.begin(),pcm_touches.end(),gu_touches.begin());
+    gu_touches[70u]=1u;
+    auto new_gu_prior=gu_touches;
+    new_gu_prior[70u]=0u;
+    auto host_connected=evaluate(7u,mixed_gu,gu_touches);
     no_errors(host_connected);
     check_task_mapping(host_connected);
     require(root(host_connected,3u)==root(host_connected,4u) &&
@@ -518,18 +519,14 @@ void verify(Context& context,const char* filename) {
             admitted(host_connected,9u).source_index==22u &&
             admitted(host_connected,9u).island_root==3u,
             "Published CPU Gu touch lost device accurate connectivity");
-    // Sc has already computed a new CPU Gu contact. Its physical
-    // transition wakes the connected dormant component without reading
-    // or fabricating any GPU PCM prior-touch history.
+    // The same published contact is new only when the journaled prior
+    // touch is zero. A source-side kind flag cannot manufacture a wake.
     auto cpu_gu_new=mixed_gu;
-    cpu_gu_new.back().kind=
-        source_sc_device_island_host_touch_bit|
-        source_sc_device_island_host_found_bit;
     const std::vector<std::uint32_t> dormant_gu_flags{
         4u|0x100u,5u|0x200u,6u|0x100u,4u|0x200u,
         5u|0x100u,6u|0x200u,4u|0x100u};
-    auto host_found=evaluate(7u,cpu_gu_new,
-                             {1u,0u,1u,1u,0u,1u},dormant_gu_flags);
+    auto host_found=evaluate(7u,cpu_gu_new,gu_touches,
+                             dormant_gu_flags,new_gu_prior);
     no_errors(host_found);
     check_task_mapping(host_found);
     require(root(host_found,3u)==root(host_found,4u) &&
@@ -539,42 +536,45 @@ void verify(Context& context,const char* filename) {
             header(host_found).admitted_edges==3u,
             "New CPU Gu contact did not wake its accurate device island");
     auto host_persists=evaluate(
-        7u,mixed_gu,{1u,0u,1u,1u,0u,1u},dormant_gu_flags);
+        7u,mixed_gu,gu_touches,dormant_gu_flags);
     no_errors(host_persists);
     require(header(host_persists).runnable_components==0u &&
             count(host_persists,3u).active_seeds==0u,
             "Persistent CPU Gu touch repeatedly woke a dormant component");
-    auto malformed_host=cpu_gu_new;
-    malformed_host.back().kind=source_sc_device_island_host_found_bit;
-    auto rejected_host=evaluate(
-        7u,malformed_host,{1u,0u,1u,1u,0u,1u});
+    auto lost_gu_touches=gu_touches;
+    lost_gu_touches[70u]=0u;
+    auto disconnected_gu=evaluate(7u,mixed_gu,lost_gu_touches);
+    no_errors(disconnected_gu);
+    require(root(disconnected_gu,3u)!=root(disconnected_gu,4u) &&
+            admitted(disconnected_gu,9u).island_root==invalid,
+            "CPU Gu contact bypassed its device physical-touch state");
+
+    auto malformed_host=mixed_gu;
+    malformed_host.back().kind=4u;
+    auto rejected_host=evaluate(7u,malformed_host,gu_touches);
     require((header(rejected_host).errors&1u)!=0u &&
             header(rejected_host).runnable_components==0u,
-            "Source Sc accepted a CPU Gu new-touch without physical touch");
+            "Source Sc accepted a host physical-touch override");
     auto invalid_host_joint=mixed_gu;
-    invalid_host_joint.back().kind=
-        source_sc_device_island_host_touch_bit|
-        source_sc_device_island_joint_bit;
+    invalid_host_joint.back().kind=source_sc_device_island_device_joint_bit;
     auto rejected_host_joint=evaluate(
-        7u,invalid_host_joint,{1u,0u,1u,1u,0u,1u});
+        7u,invalid_host_joint,gu_touches);
     require((header(rejected_host_joint).errors&1u)!=0u &&
             header(rejected_host_joint).runnable_components==0u,
-            "Device Sc accepted contradictory CPU Gu/joint edge metadata");
+            "Device Sc accepted device-joint metadata on a contact edge");
 
     auto only_host=evaluate(1u,{
-        {0u,0u,invalid,23u,source_sc_device_island_host_touch_bit|
-                             source_sc_device_island_host_found_bit},
-    },{},{4u|0x100u});
+        {0u,0u,invalid,23u,0u},
+    },{1u},{4u|0x100u},{0u});
     no_errors(only_host);
     check_task_mapping(only_host);
     require(header(only_host).runnable_components==1u &&
             header(only_host).responding_nodes==1u &&
-            header(only_host).admitted_edges==1u &&
-            admitted(only_host,0u).island_root==0u,
-            "CPU Gu-only scene required nonexistent device PCM history");
+            header(only_host).admitted_edges==1u,
+            "CPU Gu-only scene lost device EdgeIndex history admission");
     auto invalid_handle=evaluate(1u,{
-        {invalid,0u,invalid,23u,source_sc_device_island_host_touch_bit},
-    },{},{
+        {invalid,0u,invalid,23u,0u},
+    },{1u},{
         4u|0x100u|source_sc_device_island_active_bit});
     require((header(invalid_handle).errors&1u)!=0u &&
             header(invalid_handle).runnable_components==0u &&
