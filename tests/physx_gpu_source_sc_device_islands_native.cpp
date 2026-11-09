@@ -53,7 +53,7 @@ void verify(Context& context,const char* filename) {
     struct DeviceResult {
         SourceScDeviceIslandLayout first{};
         std::vector<std::byte> second{};
-        std::uint32_t node_count=0u;
+        std::uint32_t node_count=0u,edge_count=0u;
     };
     SourceScDeviceIslandsNativeStage stage(context,load_shader(filename));
     const auto evaluate=[&](std::uint32_t node_count,
@@ -138,7 +138,8 @@ void verify(Context& context,const char* filename) {
         context.destroy_buffer(node_buffer);
         context.destroy_buffer(touch_buffer);
         context.destroy_buffer(edge_buffer);
-        return DeviceResult{layout,std::move(bytes),node_count};
+        return DeviceResult{layout,std::move(bytes),node_count,
+                            static_cast<std::uint32_t>(edges.size())};
     };
     const auto root=[&](const auto& result,std::size_t node) {
         return load<std::uint32_t>(result.second,
@@ -200,6 +201,23 @@ void verify(Context& context,const char* filename) {
                 std::all_of(visited.begin(),visited.end(),
                             [](std::uint8_t v){return v!=0u;}),
                 "Device Sc runnable task mapping has a missing component");
+        std::vector<std::pair<std::uint32_t,std::uint32_t>> expected{};
+        for(std::uint32_t edge=0u;edge<result.edge_count;++edge) {
+            const auto record=admitted(result,edge);
+            if(record.island_root==invalid ||
+               (record.kind&source_sc_device_island_no_response_bit)!=0u ||
+               count(result,record.island_root).task_index==invalid)
+                continue;
+            expected.emplace_back(record.island_root,edge);
+        }
+        std::stable_sort(expected.begin(),expected.end(),
+            [](const auto& a,const auto& b){return a.first<b.first;});
+        require(expected.size()==summary.admitted_edges,
+                "Device Sc response count disagrees with source admissions");
+        for(std::size_t i=0u;i<expected.size();++i)
+            require(load<std::uint32_t>(result.second,
+                        result.first.response_order+i*4u)==expected[i].second,
+                    "Device Sc response scatter reordered a source descriptor");
     };
     const auto no_errors=[&](const auto& result) {
         require(load<std::uint32_t>(result.second,0u)==0u,
@@ -599,6 +617,27 @@ void verify(Context& context,const char* filename) {
             task(prefix,16384u).response_begin==3u &&
             count(prefix,16384u).task_index==4u,
             "Device Sc prefix reordered roots or cross-block response offsets");
+
+    // Interleaved response streams span multiple radix tiles and root
+    // bytes; dormant and no-response edges sort past runnable work.
+    constexpr std::uint32_t radix_nodes=257u;
+    std::vector<std::uint32_t> radix_flags(radix_nodes,4u|0x100u);
+    for(const auto id:{0u,127u,256u})
+        radix_flags[id]|=source_sc_device_island_active_bit;
+    std::vector<SourceScDeviceIslandEdge> radix_edges;
+    for(std::uint32_t i=0u;i<517u;++i) {
+        const auto owner=i%4u==0u?0u:i%4u==1u?256u:
+                         i%4u==2u?127u:1u;
+        radix_edges.push_back({i,owner,invalid,517u-i,
+            source_sc_device_island_joint_bit|
+            (i%17u==0u?source_sc_device_island_no_response_bit:0u)});
+    }
+    auto radix=evaluate(radix_nodes,radix_edges,{},radix_flags);
+    no_errors(radix);
+    check_task_mapping(radix);
+    require(header(radix).runnable_components==3u &&
+            header(radix).admitted_edges>300u,
+            "Device Sc multi-tile response scatter missed runnable components");
 
     // An adversarial source order forces multiple simultaneous root
     // changes. Concurrent CAS unions must resolve one canonical root,

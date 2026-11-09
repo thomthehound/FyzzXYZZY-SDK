@@ -89,11 +89,17 @@ static_assert(sizeof(SourceScDeviceIslandHeader)==32u &&
 
 // One source-owned transient allocation holds union parents (finally
 // canonical island roots), per-root admission counts and source-ordered
-// edge records. No CPU readback is required between these phases.
+// edge records, and a stable response-index stream. No CPU readback
+// is required between these phases.
 struct SourceScDeviceIslandLayout {
     std::size_t roots=sizeof(SourceScDeviceIslandHeader);
     std::size_t counts=0u,admissions=0u,tasks=0u;
-    std::size_t block_offsets=0u,bytes=0u;
+    std::size_t block_offsets=0u,response_primary=0u,response_scratch=0u;
+    std::size_t response_order=0u,radix_histogram=0u,bytes=0u;
+    static std::uint32_t radix_passes(std::uint32_t nodes) noexcept {
+        return nodes<=0xffu?1u:nodes<=0xffffu?2u:
+               nodes<=0xffffffu?3u:4u;
+    }
     static SourceScDeviceIslandLayout for_counts(
         std::uint32_t node_count,std::uint32_t edge_count) {
         const auto align=[](std::uint64_t value) {
@@ -115,8 +121,24 @@ struct SourceScDeviceIslandLayout {
             align(std::uint64_t(result.tasks)+std::uint64_t(node_count)*
                   sizeof(SourceScDeviceIslandTask)));
         const auto block_count=(std::uint64_t(node_count)+127u)/128u;
-        const auto bytes=align(std::uint64_t(result.block_offsets)+
-                               block_count*sizeof(std::uint32_t)*2u);
+        result.response_primary=static_cast<std::size_t>(
+            align(std::uint64_t(result.block_offsets)+
+                  block_count*sizeof(std::uint32_t)*2u));
+        result.response_order=result.response_primary;
+        auto bytes=align(std::uint64_t(result.response_primary)+
+                         std::uint64_t(edge_count)*4u);
+        // Small source streams scatter directly. Larger streams use
+        // stable radix passes, with scratch confined to this transaction.
+        if(edge_count>256u) {
+            result.response_scratch=static_cast<std::size_t>(bytes);
+            result.radix_histogram=static_cast<std::size_t>(
+                align(bytes+std::uint64_t(edge_count)*4u));
+            const auto edge_blocks=(std::uint64_t(edge_count)+127u)/128u;
+            bytes=align(std::uint64_t(result.radix_histogram)+
+                        edge_blocks*256u*sizeof(std::uint32_t));
+            if(radix_passes(node_count)&1u)
+                result.response_order=result.response_scratch;
+        }
         if(bytes>std::numeric_limits<std::uint32_t>::max())
             throw std::out_of_range("Device Sc island work exceeds 32-bit view");
         result.bytes=static_cast<std::size_t>(bytes);
@@ -143,7 +165,7 @@ public:
         pipeline.storage_buffer_binding_count=4u;
         pipeline.storage_buffer_views.assign(
             4u,compute::StorageBufferViewKind::RawReadWrite);
-        pipeline.push_constant_bytes=64u;
+        pipeline.push_constant_bytes=80u;
         pipeline_=context_.create_compute_pipeline(pipeline);
     }
     SourceScDeviceIslandsNativeStage(
@@ -189,7 +211,7 @@ public:
         const auto node_bytes=node_count
             ?source_allocation_bytes(node_count,4u):layout.bytes;
         const auto node_address=node_count?node_flags:output;
-        std::array<std::uint32_t,16> args{};
+        std::array<std::uint32_t,20> args{};
         compute::DispatchCommand dispatch{};
         dispatch.pipeline=pipeline_;
         dispatch.buffers={
@@ -221,6 +243,11 @@ public:
         args[14]=max_groups;
         args[15]=static_cast<std::uint32_t>(
             (std::uint64_t(node_count)+127u)/128u);
+        args[16]=offset(layout.response_primary,args[3]);
+        args[17]=layout.response_scratch
+            ?offset(layout.response_scratch,args[3]):args[16];
+        args[18]=layout.radix_histogram
+            ?offset(layout.radix_histogram,args[3]):args[16];
         dispatch.push_constants.resize(sizeof(args));
         std::vector<compute::BatchCommand> commands;
         const auto launch=[&](std::uint32_t phase,std::uint32_t count) {
@@ -246,6 +273,18 @@ public:
         launch(3u,std::max(1u,node_count));
         launch(4u,1u);
         launch(5u,node_count);
+        // Stable response ordinals are source-ordered within each root.
+        // Large graphs radix-sort the source indices by canonical root;
+        // the final list is dense in the existing response offsets.
+        launch(6u,edge_count);
+        if(edge_count>256u)
+            for(std::uint32_t pass=0u;
+                pass<SourceScDeviceIslandLayout::radix_passes(node_count);
+                ++pass) {
+                launch(7u+pass*3u,edge_count);
+                launch(8u+pass*3u,1u);
+                launch(9u+pass*3u,edge_count);
+            }
         auto& ordered=stream.commands();
         ordered.insert(ordered.end(),commands.begin(),commands.end());
     }

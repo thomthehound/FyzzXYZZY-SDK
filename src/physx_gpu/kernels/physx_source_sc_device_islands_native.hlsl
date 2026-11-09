@@ -27,6 +27,7 @@ struct Parameters {
     uint rootBias,countBias,admissionBias,taskBias;
     uint blockBias,nodeCount,edgeCount,edgeCapacity;
     uint phase,first,maxGroups,blockCount;
+    uint responseBiasA,responseBiasB,histBias,reserved;
 };
 #ifdef __spirv__
 [[vk::push_constant]] Parameters p;
@@ -121,6 +122,22 @@ void connectNodes(uint a,uint b) {
 // This is linear work, with no host count fetch or global spin barrier.
 groupshared uint taskScan[128],responseScan[128];
 groupshared uint taskCarry,responseCarry;
+groupshared uint radixBuckets[256],radixOffsets[256],radixTotals[256];
+groupshared uint radixDigits[128],radixRanks[128];
+
+// A nonresponse or dormant admission sorts after every runnable edge.
+// Stable sorting the original source indices preserves edge order
+// within a component without racing for an atomic descriptor ordinal.
+uint responseRoot(uint edgeIndex) {
+    if(work.Load(p.workBias)!=0u)return p.nodeCount;
+    const uint a=p.admissionBias+edgeIndex*24u;
+    const uint root=work.Load(a+16u);
+    if(root==invalid || root>=p.nodeCount ||
+       (work.Load(a+20u)&noResponse)!=0u)
+        return p.nodeCount;
+    return work.Load(p.countBias+root*24u+20u)!=invalid
+        ?root:p.nodeCount;
+}
 
 bool runnableRoot(uint index) {
     if(index>=p.nodeCount || work.Load(p.workBias)!=0u ||
@@ -300,5 +317,108 @@ void main(uint3 thread:SV_DispatchThreadID,
         work.Store2(dst+16u,uint2(velocity,response));
         uint previous;
         work.InterlockedAdd(p.workBias+8u,nodes,previous);
+        return;
+    }
+    if(p.phase==6u) {
+        if(index>=p.edgeCount)return;
+        if(p.edgeCount>256u) {
+            work.Store(p.responseBiasA+index*4u,index);
+            return;
+        }
+        const uint root=responseRoot(index);
+        if(root==p.nodeCount)return;
+        uint ordinal=0u;
+        for(uint i=0u;i<index;++i)
+            if(responseRoot(i)==root)++ordinal;
+        const uint task=work.Load(p.countBias+root*24u+20u);
+        const uint begin=work.Load(p.taskBias+task*24u+20u);
+        work.Store(p.responseBiasA+(begin+ordinal)*4u,index);
+        return;
+    }
+    if(p.phase<7u)return;
+    const uint pass=(p.phase-7u)/3u;
+    const uint operation=(p.phase-7u)%3u;
+    const uint shift=pass*8u;
+    const uint source=(pass&1u)!=0u?p.responseBiasB:p.responseBiasA;
+    const uint target=(pass&1u)!=0u?p.responseBiasA:p.responseBiasB;
+    const uint blocks=(p.edgeCount+127u)/128u;
+    const uint block=index/128u;
+    if(operation==0u) {
+        radixBuckets[lane.x]=0u;
+        radixBuckets[lane.x+128u]=0u;
+        GroupMemoryBarrierWithGroupSync();
+        if(index<p.edgeCount) {
+            const uint edge=work.Load(source+index*4u);
+            const uint digit=(responseRoot(edge)>>shift)&255u;
+            uint previous;
+            InterlockedAdd(radixBuckets[digit],1u,previous);
+        }
+        GroupMemoryBarrierWithGroupSync();
+        const uint base=p.histBias+block*1024u;
+        work.Store(base+lane.x*4u,radixBuckets[lane.x]);
+        work.Store(base+(lane.x+128u)*4u,radixBuckets[lane.x+128u]);
+        return;
+    }
+    if(operation==1u) {
+        // Each lane prefixes one bucket across the edge tiles.
+        // A single group then prefixes the 256 bucket totals.
+        if(group.x!=0u)return;
+        const uint bucket0=lane.x,bucket1=lane.x+128u;
+        uint total0=0u,total1=0u;
+        for(uint b=0u;b<blocks;++b) {
+            total0+=work.Load(p.histBias+b*1024u+bucket0*4u);
+            total1+=work.Load(p.histBias+b*1024u+bucket1*4u);
+        }
+        radixTotals[bucket0]=total0;
+        radixTotals[bucket1]=total1;
+        GroupMemoryBarrierWithGroupSync();
+        if(lane.x==0u) {
+            uint carry=0u;
+            for(uint b=0u;b<256u;++b) {
+                radixOffsets[b]=carry;
+                carry+=radixTotals[b];
+            }
+            if(carry!=p.edgeCount) {
+                reject(32u);
+                work.Store(p.workBias+16u,0u);
+            }
+        }
+        GroupMemoryBarrierWithGroupSync();
+        uint cursor0=radixOffsets[bucket0];
+        uint cursor1=radixOffsets[bucket1];
+        for(uint b=0u;b<blocks;++b) {
+            const uint a=p.histBias+b*1024u;
+            const uint c0=work.Load(a+bucket0*4u);
+            const uint c1=work.Load(a+bucket1*4u);
+            work.Store(a+bucket0*4u,cursor0);
+            work.Store(a+bucket1*4u,cursor1);
+            cursor0+=c0;
+            cursor1+=c1;
+        }
+        return;
+    }
+    if(operation==2u) {
+        radixDigits[lane.x]=invalid;
+        if(index<p.edgeCount) {
+            const uint edge=work.Load(source+index*4u);
+            radixDigits[lane.x]=(responseRoot(edge)>>shift)&255u;
+        }
+        GroupMemoryBarrierWithGroupSync();
+        if(lane.x==0u) {
+            for(uint i=0u;i<256u;++i)radixBuckets[i]=0u;
+            for(uint i=0u;i<128u;++i) {
+                const uint digit=radixDigits[i];
+                if(digit==invalid)continue;
+                radixRanks[i]=radixBuckets[digit]++;
+            }
+        }
+        GroupMemoryBarrierWithGroupSync();
+        if(index<p.edgeCount) {
+            const uint digit=radixDigits[lane.x];
+            const uint position=work.Load(
+                p.histBias+block*1024u+digit*4u)+radixRanks[lane.x];
+            work.Store(target+position*4u,
+                       work.Load(source+index*4u));
+        }
     }
 }
