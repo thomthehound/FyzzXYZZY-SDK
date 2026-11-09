@@ -24,8 +24,8 @@ RWByteAddressBuffer work:register(u3,space0);
 
 struct Parameters {
     uint edgeBias,touchBias,nodeBias,workBias;
-    uint rootBias,countBias,admissionBias,nodeCount;
-    uint edgeCount,edgeCapacity,phase,first,unused;
+    uint rootBias,countBias,admissionBias,taskBias;
+    uint nodeCount,edgeCount,edgeCapacity,phase,first,unused;
 };
 #ifdef __spirv__
 [[vk::push_constant]] Parameters p;
@@ -107,7 +107,8 @@ void connectNodes(uint a,uint b) {
 void main(uint3 thread:SV_DispatchThreadID) {
     const uint index=p.first+thread.x;
     if(p.phase==0u) {
-        if(index==0u)work.Store(p.workBias,0u);
+        if(index==0u)
+            work.Store4(p.workBias,uint4(0u,0u,0u,0u));
         if(index<p.nodeCount) {
             work.Store(p.rootBias+index*4u,index);
             const uint count=p.countBias+index*20u;
@@ -169,5 +170,26 @@ void main(uint3 thread:SV_DispatchThreadID) {
                     uint4(edge.w,edge.x,edge.y,edge.z));
         work.Store2(p.admissionBias+index*24u+16u,
                     uint2(owner,kind));
+        return;
+    }
+    if(p.phase==3u) {
+        if(index>=p.nodeCount ||
+           work.Load(p.rootBias+index*4u)!=index)
+            return;
+        const uint count=p.countBias+index*20u;
+        const uint nodes=work.Load(count);
+        const uint seeds=work.Load(count+8u);
+        if(!nodes || !seeds)return;
+        const uint edges=work.Load(count+4u);
+        const uint position=work.Load(count+12u);
+        const uint velocity=work.Load(count+16u);
+        uint task;
+        work.InterlockedAdd(p.workBias+4u,1u,task);
+        const uint dst=p.taskBias+task*20u;
+        work.Store4(dst,uint4(index,nodes,edges,position));
+        work.Store(dst+16u,velocity);
+        uint previous;
+        work.InterlockedAdd(p.workBias+8u,nodes,previous);
+        work.InterlockedAdd(p.workBias+12u,edges,previous);
     }
 }
