@@ -53,9 +53,20 @@ void verify(Context& context,const char* filename) {
     SourceScDeviceIslandsNativeStage stage(context,load_shader(filename));
     const auto evaluate=[&](std::uint32_t node_count,
                             const std::vector<SourceScDeviceIslandEdge>& edges,
-                            std::vector<std::uint32_t> touches) {
+                            std::vector<std::uint32_t> touches,
+                            std::vector<std::uint32_t> node_flags={}) {
         constexpr std::size_t record_bytes=240u;
-        // Joint-only scenes have no physical-touch arena.
+        // Joint-only scenes have no physical-touch arena. Active seeds
+        // and authored iteration limits remain separate from connectivity.
+        if(node_flags.empty()) {
+            node_flags.resize(node_count);
+            for(std::uint32_t node=0u;node<node_count;++node)
+                node_flags[node]=(4u+node%3u)|
+                    ((1u+node%2u)<<8u)|
+                    (node%4u==0u?source_sc_device_island_active_bit:0u);
+        }
+        require(node_flags.size()==node_count,
+                "Device Sc test node metadata does not cover its graph");
         const auto layout=SourceScDeviceIslandLayout::for_counts(
             node_count,static_cast<std::uint32_t>(edges.size()));
         const auto input_bytes=std::max<std::size_t>(
@@ -67,6 +78,8 @@ void verify(Context& context,const char* filename) {
             record_bytes,touches.size()*record_bytes);
         const auto touch_buffer=context.create_buffer(
             touch_bytes,MemoryPlacement::DeviceLocal);
+        const auto node_buffer=context.create_buffer(
+            node_flags.size()*sizeof(node_flags[0]),MemoryPlacement::DeviceLocal);
         const auto output_buffer=context.create_buffer(
             layout.bytes,MemoryPlacement::DeviceLocal);
         CudaDeviceAddressMap addresses{};
@@ -74,11 +87,15 @@ void verify(Context& context,const char* filename) {
             edge_buffer,0u,input_bytes);
         const auto touch_addr=addresses.register_slice(
             touch_buffer,0u,touch_bytes);
+        const auto node_addr=addresses.register_slice(
+            node_buffer,0u,node_flags.size()*sizeof(node_flags[0]));
         const auto output_addr=addresses.register_slice(
             output_buffer,0u,layout.bytes);
         if(!edges.empty())
             context.upload(edge_buffer,0u,edges.data(),
                            edges.size()*sizeof(edges[0]));
+        context.upload(node_buffer,0u,node_flags.data(),
+                       node_flags.size()*sizeof(node_flags[0]));
         std::vector<std::uint32_t> history(touches.size()*60u,0u);
         for(std::size_t i=0u;i<touches.size();++i)
             history[i*60u+18u]=touches[i];
@@ -86,18 +103,20 @@ void verify(Context& context,const char* filename) {
             context.upload(touch_buffer,0u,history.data(),
                            history.size()*sizeof(history[0]));
         SourceSapDmaNative stream(context,addresses);
-        stage.append(stream,addresses,edge_addr,touch_addr,output_addr,
+        stage.append(stream,addresses,edge_addr,touch_addr,node_addr,output_addr,
                      node_count,static_cast<std::uint32_t>(edges.size()),
                      static_cast<std::uint32_t>(touches.size()));
         stream.wait_at_fetch();
         std::vector<std::byte> bytes(layout.bytes);
         context.download(output_buffer,0u,bytes.data(),bytes.size());
         addresses.unregister_slice(output_addr);
+        addresses.unregister_slice(node_addr);
         addresses.unregister_slice(touch_addr);
         addresses.unregister_slice(edge_addr);
         require(addresses.live_allocations()==0u,
                 "Device Sc island stage leaked virtual allocations");
         context.destroy_buffer(output_buffer);
+        context.destroy_buffer(node_buffer);
         context.destroy_buffer(touch_buffer);
         context.destroy_buffer(edge_buffer);
         return std::pair{layout,std::move(bytes)};
@@ -142,9 +161,16 @@ void verify(Context& context,const char* filename) {
     const auto independent=count(first,4u);
     require(connected.responding_nodes==3u &&
             connected.admitted_edges==3u &&
+            connected.active_seeds==1u &&
+            connected.position_iterations==6u &&
+            connected.velocity_iterations==2u &&
             independent.responding_nodes==2u &&
             independent.admitted_edges==1u &&
+            independent.active_seeds==1u &&
+            independent.position_iterations==6u &&
+            independent.velocity_iterations==2u &&
             count(first,3u).admitted_edges==1u &&
+            count(first,3u).active_seeds==0u &&
             count(first,6u).admitted_edges==1u,
             "Device Sc accurate island admission counts are incorrect");
     for(std::size_t i=0u;i<edges.size();++i) {
@@ -192,6 +218,8 @@ void verify(Context& context,const char* filename) {
             root(no_response,2u)==0u &&
             count(no_response,0u).responding_nodes==3u &&
             count(no_response,0u).admitted_edges==1u &&
+            count(no_response,0u).active_seeds==1u &&
+            count(no_response,0u).position_iterations==6u &&
             admitted(no_response,0u).island_root==0u &&
             admitted(no_response,0u).kind==2u &&
             admitted(no_response,1u).island_root==0u &&
@@ -206,6 +234,8 @@ void verify(Context& context,const char* filename) {
             root(split,2u)==1u && root(split,3u)==3u &&
             count(split,0u).admitted_edges==0u &&
             count(split,1u).admitted_edges==1u &&
+            count(split,1u).active_seeds==0u &&
+            count(split,1u).position_iterations==6u &&
             admitted(split,0u).island_root==invalid &&
             admitted(split,8u).island_root==invalid,
             "Lost source touches did not split accurate device connectivity");
@@ -238,7 +268,10 @@ void verify(Context& context,const char* filename) {
     require(root(joints_only,0u)==0u &&
             root(joints_only,1u)==0u &&
             root(joints_only,2u)==0u &&
-            count(joints_only,0u).admitted_edges==2u,
+            count(joints_only,0u).admitted_edges==2u &&
+            count(joints_only,0u).active_seeds==1u &&
+            count(joints_only,0u).position_iterations==6u &&
+            count(joints_only,0u).velocity_iterations==2u,
             "Joint-only islands require nonexistent PCM touch storage");
 
     // An adversarial source order forces multiple simultaneous root
@@ -256,7 +289,10 @@ void verify(Context& context,const char* filename) {
         require(root(long_chain,i)==0u,
                 "Device accurate connectivity left a deep graph disconnected");
     require(count(long_chain,0u).responding_nodes==chain_nodes &&
-            count(long_chain,0u).admitted_edges==chain_nodes-1u,
+            count(long_chain,0u).admitted_edges==chain_nodes-1u &&
+            count(long_chain,0u).active_seeds==65u &&
+            count(long_chain,0u).position_iterations==6u &&
+            count(long_chain,0u).velocity_iterations==2u,
             "Device island admission lost joint constraints under contention");
     for(std::size_t i=0u;i<chain.size();++i)
         require(admitted(long_chain,i).island_root==0u &&
@@ -269,9 +305,13 @@ void verify(Context& context,const char* filename) {
     bad_edges[0].edge_index=128u;
     bad_edges[1].node_b=1024u;
     bad_edges[2].kind=4u;
-    const auto rejected=evaluate(7u,bad_edges,{1u,0u,1u,1u,0u,1u});
+    std::vector<std::uint32_t> malformed_flags{
+        4u|0x10000u|0x100u,5u|0x200u,6u|0x100u,
+        4u|0x200u,0u,6u|0x200u,4u|0x100u};
+    const auto rejected=evaluate(7u,bad_edges,{1u,0u,1u,1u,0u,1u},
+                                 malformed_flags);
     const auto error=load<std::uint32_t>(rejected.second,0u);
-    require((error&3u)==3u &&
+    require((error&19u)==19u &&
             admitted(rejected,0u).island_root==invalid &&
             admitted(rejected,1u).island_root==invalid &&
             admitted(rejected,2u).island_root==invalid,
