@@ -385,7 +385,7 @@ void sourceDyPartitionTask(uint taskId,uint scratch,uint errorAddress,
     // The native Sc path transfers only encounter-order manager/joint
     // identities. Expand source descriptors from the existing resident
     // contact prep and joint-row records before partition coloring.
-    const bool sourceDescriptors=views.x==24u;
+    const bool sourceDescriptors=views.x==24u || views.x==40u;
     const uint sourceTable=bodyState+p.bodyCount*12u;
     const uint sourceCount=sourceDescriptors?arena.Load(sourceTable):0u;
     for(uint i=first+lane;i<last;i+=128u) {
@@ -1407,6 +1407,25 @@ void main(uint3 group:SV_GroupID,uint3 lane:SV_GroupThreadID) {
     const bool precolored=(p.launchControl&0x40000000u)!=0u;
     const uint iter=(p.launchControl&0x1fffffffu)>>4u;
     const uint index=p.launchBegin+group.x;
+    // A submitted Sc island graph can differ from CPU-predicted counts
+    // because contact activation is owned by resident Gu history. Reject
+    // the entire numerical epoch before initializing any solver body.
+    // The task error report still runs, including compact-only scenes.
+    if(devicePartitions) {
+        const uint4 schedule=arena.Load4(p.integrationBias+16u);
+        if(schedule.w!=0u && arena.Load(schedule.w)==40u) {
+            const uint4 header=arena.Load4(schedule.w+24u);
+            if(header.x!=0u || header.y!=schedule.z ||
+               header.z!=schedule.x || header.w!=schedule.y) {
+                if(phase==publishErrors) {
+                    const uint task=index*128u+lane.x;
+                    if(task<schedule.z)
+                        publishTaskError(task,0x01000000u);
+                }
+                return;
+            }
+        }
+    }
     if(phase==initializeBodiesTile) {
         const uint ordinal=index*128u+lane.x;
         if(ordinal<p.bodyCount) {
