@@ -24,11 +24,15 @@ struct SourceScDeviceIslandEdge {
     std::uint32_t node_a=0xffffffffu,node_b=0xffffffffu;
     std::uint32_t source_index=0;
     // Bit 0 selects joint (1) or physical contact (0); bit 1 marks
-    // an edge with no solver response. Connected, nonresponding contacts
-    // still belong to accurate topology, including zero-impulse pairs.
+    // an edge with no solver response. Bit 2 selects a touching CPU Gu
+    // manager whose physical contact has already been published by Sc.
+    // GPU PCM managers always read authoritative device touch history.
     std::uint32_t kind=0;
 };
 static_assert(sizeof(SourceScDeviceIslandEdge)==20u);
+inline constexpr std::uint32_t source_sc_device_island_joint_bit=1u;
+inline constexpr std::uint32_t source_sc_device_island_no_response_bit=2u;
+inline constexpr std::uint32_t source_sc_device_island_host_touch_bit=4u;
 
 // Entries preserve the source input order. They are GPU-consumed Dy
 // admission records, not another persistent edge or island registry.

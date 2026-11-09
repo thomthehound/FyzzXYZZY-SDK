@@ -374,6 +374,32 @@ void verify(Context& context,const char* filename) {
                 count(empty,i).admitted_edges==0u,
                 "Quiet zero-edge device graph retained an old union");
 
+    // A touching CPU Gu manager joins the same accurate graph as
+    // device PCM and authored joints. No fake device touch history or
+    // readback is needed for a contact already published by the host.
+    auto mixed_gu=edges;
+    mixed_gu.push_back({
+        70u,3u,4u,22u,source_sc_device_island_host_touch_bit});
+    auto host_connected=evaluate(7u,mixed_gu,{1u,0u,1u,1u,0u,1u});
+    no_errors(host_connected);
+    check_task_mapping(host_connected);
+    require(root(host_connected,3u)==root(host_connected,4u) &&
+            root(host_connected,3u)!=root(host_connected,0u) &&
+            count(host_connected,3u).responding_nodes==3u &&
+            count(host_connected,3u).admitted_edges==3u &&
+            admitted(host_connected,9u).source_index==22u &&
+            admitted(host_connected,9u).island_root==3u,
+            "Published CPU Gu touch lost device accurate connectivity");
+    auto invalid_host_joint=mixed_gu;
+    invalid_host_joint.back().kind=
+        source_sc_device_island_host_touch_bit|
+        source_sc_device_island_joint_bit;
+    auto rejected_host_joint=evaluate(
+        7u,invalid_host_joint,{1u,0u,1u,1u,0u,1u});
+    require((header(rejected_host_joint).errors&1u)!=0u &&
+            header(rejected_host_joint).runnable_components==0u,
+            "Device Sc accepted contradictory CPU Gu/joint edge metadata");
+
     // Joint-only admission works without any contact-history allocation.
     auto joints_only=evaluate(3u,{
         {71u,0u,1u,0u,1u},
@@ -513,7 +539,7 @@ void verify(Context& context,const char* filename) {
     auto bad_edges=edges;
     bad_edges[0].edge_index=128u;
     bad_edges[1].node_b=1024u;
-    bad_edges[2].kind=4u;
+    bad_edges[2].kind=8u;
     std::vector<std::uint32_t> malformed_flags{
         4u|0x10000u|0x100u,5u|0x200u,6u|0x100u,
         4u|0x200u,0u,6u|0x200u,4u|0x100u};
