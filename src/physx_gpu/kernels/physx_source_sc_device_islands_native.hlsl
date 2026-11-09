@@ -27,9 +27,9 @@ struct Parameters {
     uint rootBias,countBias,admissionBias,taskBias;
     uint blockBias,nodeCount,edgeCount,edgeCapacity;
     uint phase,first,maxGroups,blockCount;
-    uint responseBiasA,responseBiasB,histBias,reserved;
+    uint responseBiasA,responseBiasB,histBias,contactManagerCount;
     uint tokenBias,radixPasses,bodyOrderBias,combinedCount;
-    uint responseOrderBias,pad0,pad1,pad2;
+    uint responseOrderBias,jointRowCount,fullDescriptorCount,pad2;
 };
 #ifdef __spirv__
 [[vk::push_constant]] Parameters p;
@@ -53,6 +53,19 @@ bool validNode(uint node) {
     if(node<p.nodeCount)return true;
     reject(2u);
     return false;
+}
+bool validSource(uint source,uint kind) {
+    // Nonresponding edges still carry accurate connectivity but do not
+    // address any numerical table. All admitted numerical response
+    // tokens must resolve within their typed Dy input table.
+    if((kind&noResponse)!=0u)return true;
+    const uint limit=(kind&jointEdge)==0u?p.contactManagerCount:
+        (kind&deviceJoint)!=0u?p.jointRowCount:p.fullDescriptorCount;
+    if(source>=limit || source>=0x40000000u) {
+        reject(64u);
+        return false;
+    }
+    return true;
 }
 bool edgeConnected(uint edge,uint kind) {
     if(edge==invalid) {
@@ -235,7 +248,8 @@ void main(uint3 thread:SV_DispatchThreadID,
         const uint input=p.edgeBias+index*20u;
         const uint4 edge=scEdges.Load4(input);
         const uint kind=scEdges.Load(input+16u);
-        if(!validNode(edge.y) || !validNode(edge.z))return;
+        if(!validNode(edge.y) || !validNode(edge.z) ||
+           !validSource(edge.w,kind))return;
         if(!edgeConnected(edge.x,kind))return;
         if(edge.y!=invalid && edge.z!=invalid)
             connectNodes(edge.y,edge.z);
@@ -266,7 +280,7 @@ void main(uint3 thread:SV_DispatchThreadID,
         const uint kind=scEdges.Load(input+16u);
         uint owner=invalid;
         if(validNode(edge.y) && validNode(edge.z) &&
-           edgeConnected(edge.x,kind)) {
+           validSource(edge.w,kind) && edgeConnected(edge.x,kind)) {
             const uint node=edge.y!=invalid?edge.y:edge.z;
             if(node!=invalid) {
                 owner=findRoot(node);
