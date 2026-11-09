@@ -66,8 +66,8 @@ struct SourceScDeviceIslandHeader {
     std::uint32_t errors=0,runnable_components=0;
     std::uint32_t responding_nodes=0,admitted_edges=0;
     // This triple is directly consumable as DispatchIndirectArgs at +16.
-    // Each runnable component admits one task group; a later Dy
-    // consumer may further tile wide components without host counts.
+    // The launch is capped by the API's workgroup limit; a Dy consumer
+    // strides over runnable_components when the grid is saturated.
     std::uint32_t dispatch_x=0,dispatch_y=1,dispatch_z=1;
     std::uint32_t reserved=0;
 };
@@ -198,9 +198,10 @@ public:
         args[8]=node_count;
         args[9]=edge_count;
         args[10]=edge_capacity;
+        const auto max_groups=context_.device_info().max_workgroup_count[0];
+        args[13]=max_groups;
         dispatch.push_constants.resize(sizeof(args));
         std::vector<compute::BatchCommand> commands;
-        const auto max_groups=context_.device_info().max_workgroup_count[0];
         const auto launch=[&](std::uint32_t phase,std::uint32_t count) {
             args[11]=phase;
             for(std::uint32_t first=0u;first<count;) {
