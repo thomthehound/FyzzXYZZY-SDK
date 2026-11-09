@@ -271,7 +271,7 @@ public:
                bool device_world_motion=false,
                bool device_unconstrained_preparation=false,
                std::span<native::GpuDySleepState> sleep_states={},
-               std::span<const native::GpuDyJointInput> joint_inputs={}) { 
+               std::span<const native::GpuDyJointInput> joint_inputs={}) {
         if(pending_solve_)
             throw std::logic_error("Source Dy numerical epoch already queued");
 
@@ -1391,6 +1391,7 @@ public:
             .free_velocity_offset=free_velocity_offset,
             .friction_count=friction_count,
             .uploaded_bytes=uploaded_bytes,
+            .cpu_gu_bytes=cpu_gu.size_bytes(),
             .reused_pcm_rows=reused_pcm_rows,
             .compact_anchor_bytes=compact_anchor_bytes,
             .prep_bytes=prep_bytes,.inline_body_bytes=inline_body_bytes,
@@ -1664,7 +1665,7 @@ public:
         last_reused_pcm_contact_rows_=reused_pcm_rows;
         last_omitted_pcm_upload_bytes_=
             reused_pcm_rows*sizeof(native::GpuDyContactPoint);
-        last_cpu_gu_geometry_bytes_=cpu_gu.size_bytes();
+        last_cpu_gu_geometry_bytes_=pending.cpu_gu_bytes;
         last_friction_anchor_upload_bytes_=compact_anchor_bytes;
         for(const auto& manager:manifolds) {
             if(!manager.patch_count || manager.prep_index>=contact_prep.size())
@@ -1739,7 +1740,7 @@ private:
         compute::BufferId output_buffer=0u;
         std::size_t output_offset=0u,output_bytes=0u;
         std::size_t free_velocity_offset=0u,friction_count=0u;
-        std::size_t uploaded_bytes=0u,reused_pcm_rows=0u;
+        std::size_t uploaded_bytes=0u,cpu_gu_bytes=0u,reused_pcm_rows=0u;
         std::size_t compact_anchor_bytes=0u,prep_bytes=0u;
         std::size_t inline_body_bytes=0u;
         bool compact_friction=false;
