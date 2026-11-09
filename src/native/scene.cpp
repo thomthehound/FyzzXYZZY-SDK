@@ -7285,7 +7285,7 @@ void Scene::partition_constraints() {
         // unless this task could use wide numerical tiling. The upper
         // bound includes sleeping descriptors so this decision cannot
         // incorrectly classify a wide task as compact.
-        constexpr std::size_t wide_min=4u*128u;
+        constexpr std::size_t wide_min=gpu_dy_wide_task_threshold;
         const auto potential_descriptors=
             task.joint_end-joint_begin+manager_end-manager_begin;
         const bool compact_gpu_task=gpu_integration &&

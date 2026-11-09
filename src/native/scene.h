@@ -279,6 +279,9 @@ struct GpuDyDistanceTask {
     std::uint32_t error=0u;
 };
 static_assert(sizeof(GpuDyDistanceTask)==36u);
+// Both Sc endpoint admission and Dy wide-task scheduling use this gate.
+// Compact tasks never require host endpoint-degree analysis.
+inline constexpr std::uint32_t gpu_dy_wide_task_threshold=4u*128u;
 
 // DyContactPrep normal and friction rows use source PxReal arithmetic
 // with separate Gu-indexed contact-force writeback.

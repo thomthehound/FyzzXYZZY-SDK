@@ -1775,7 +1775,7 @@ private:
         std::uint32_t ordinals,std::uint32_t bodies) {
         constexpr std::uint32_t threads=128u;
         constexpr std::uint32_t prep_managers=threads/4u;
-        constexpr std::uint32_t wide_min=4u*threads;
+        constexpr std::uint32_t wide_min=native::gpu_dy_wide_task_threshold;
         wide_tasks_.clear();
         tiles_.clear();
         partition_tiles_.clear();
@@ -2030,7 +2030,7 @@ private:
         constexpr std::uint32_t prep_managers=threads/4u;
         // Tile only when one partition can supply four full groups.
         // Smaller tasks keep their partition dependencies in one group.
-        constexpr std::uint32_t wide_min=4u*threads;
+        constexpr std::uint32_t wide_min=native::gpu_dy_wide_task_threshold;
         wide_tasks_.clear();
         tiles_.clear();
         partition_tiles_.clear();
