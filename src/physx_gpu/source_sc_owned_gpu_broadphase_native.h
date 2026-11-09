@@ -351,6 +351,20 @@ public:
     std::size_t pcm_contact_readback_bytes() const noexcept {
         return pcm_ ? pcm_->last_contact_download_bytes() : 0u;
     }
+    // The device dependency is ready as soon as the source contact
+    // producer and all host Gu spans are queued, not when Sc joins DMA.
+    CudaDeviceAddressMap::Address device_pcm_contact_stream() const noexcept {
+        return pcm_ ? pcm_->device_contact_stream_address() : 0u;
+    }
+    std::uint32_t device_pcm_contact_count() const noexcept {
+        return pcm_ ? pcm_->device_contact_pair_count() : 0u;
+    }
+    CudaDeviceAddressMap::Address device_pcm_touch_history() const noexcept {
+        return pcm_ ? pcm_->device_edge_history_address() : 0u;
+    }
+    std::uint32_t device_pcm_touch_capacity() const noexcept {
+        return pcm_ ? pcm_->device_edge_history_capacity() : 0u;
+    }
     std::size_t pcm_host_contact_upload_bytes() const noexcept {
         return pcm_ ? pcm_->last_host_contact_upload_bytes() : 0u;
     }
