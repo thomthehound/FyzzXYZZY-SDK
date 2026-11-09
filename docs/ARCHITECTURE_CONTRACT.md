@@ -174,8 +174,16 @@ uploads enter the ordered source queue immediately after their witnesses are
 ready, independently of the preceding GPU PCM witness readback. Sc's host
 join retires only producer tokens preceding that readback; later uploaded
 CPU Gu and device touch publication stay in flight for GPU consumers.
-This does not move public Sc graph reconciliation, friction correlation or
-current Dy task construction to the device.
+The source Dy numerical stage submits its existing solver command graph
+independently of the CPU result fetch. Its queued execution consumes the
+device-ready PCM/CPU Gu stream after the input producers, and the normal
+single Dy readback, task-error checks and Sc writeback occur at the result
+join. A pending Dy epoch cannot be overwritten or published on rollback.
+The shared Context retains one outstanding readback batch, so the PCM
+witness DMA must be retired before Dy requests its final result transfer.
+Current native Scene still prepares CPU accurate island/friction/Dy task
+descriptors after its GPU witness join; the new dispatch boundary does not
+by itself retire that CPU scheduling dependency.
 
 **Current migration boundary:** general GPU PCM still downloads its 84-byte
 contact records before CPU Sc friction correlation and accurate-island
