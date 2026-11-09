@@ -842,6 +842,124 @@ void verify(fyzz::compute::Backend backend,const char* sap,
 // A PCM readback may remain pending while independent Dy integration
 // executes on the same Context queue. The Dy result is fetched only
 // after Sc has explicitly joined the earlier witness DMA.
+// Dy consumes the physical task and body-ordinal stream produced by
+// Sc on the same source queue. The deliberately poisoned host task is
+// not the numerical input. An inconsistent device header must reject
+// the epoch before any motion or contact writeback is committed.
+void verify_device_sc_dy_task_admission(
+    fyzz::compute::Backend backend,const char* sap,const char* pcm,
+    const char* dy_shader) {
+    using namespace fyzz;
+    std::ifstream file(dy_shader,std::ios::binary);
+    require(bool(file),"Device Sc/Dy shader unavailable");
+    compute::ShaderBinary shader{};
+    shader.format=backend==compute::Backend::Vulkan
+        ?compute::ShaderFormat::Spirv:compute::ShaderFormat::Dxil;
+    shader.bytes.assign(std::istreambuf_iterator<char>{file},
+                        std::istreambuf_iterator<char>{});
+    native::Scene scene;
+    auto owner=std::make_unique<physx_gpu::SourceScOwnedGpuBroadphaseNative>(
+        backend,load_native_gpu_sap_shaders(backend,sap),128u,128u,
+        std::nullopt,load_native_gpu_pcm_shaders(backend,pcm),
+        std::move(shader));
+    auto* producer=owner.get();
+    scene.set_gpu_broadphase(std::move(owner));
+    const auto moving=scene.add_dynamic_box(
+        {0.5f,0.5f,0.5f},{0.f,1.f,0.f},1.f);
+    const auto fixed=scene.add_static_box(
+        {0.5f,0.5f,0.5f},{0.8f,1.f,0.f});
+    scene.advance_collision(true);
+    const auto edge=scene.contact_edge_index({moving,fixed});
+    require(edge!=0xffffffffu,"Device Sc/Dy test lost its Sc manager");
+    constexpr float seconds=1.f/120.f;
+    const std::array<native::GpuPcmBoxPair,1> requests{{
+        {moving,fixed,edge,false}
+    }};
+    std::array<native::GpuPcmBoxResult,1> witness{};
+    std::array<native::GpuDyDistanceBody,1> body{};
+    std::array<std::uint32_t,1> ordinals{0u};
+    std::array<native::GpuDyDistanceTask,1> tasks{};
+    std::array<native::GpuDyBodyIntegrationInput,1> inputs{};
+    std::array<native::GpuDyIntegratedPose,1> poses{};
+    std::array<native::GpuDySleepState,1> sleep{};
+    const auto dispatch=[&] {
+        body={};
+        body[0].inverse_mass=1.f;
+        tasks={};
+        tasks[0]={0u,0u,0u,0u,0u,1u,4u,1u,0x4000u};
+        inputs={};
+        poses={};
+        sleep={};
+        auto& in=inputs[0];
+        in.active=1u;
+        in.source_actor=moving;
+        in.source_element=0xffffffffu;
+        in.source_inverse_mass=1.f;
+        in.position[0]=2.f;
+        in.position[1]=1.f;
+        in.orientation[3]=1.f;
+        in.actor_position[0]=2.f;
+        in.actor_position[1]=1.f;
+        in.actor_orientation[3]=1.f;
+        in.mass_local_orientation[3]=1.f;
+        in.linear_velocity[0]=0.5f;
+        in.max_linear_speed_squared=100.f;
+        in.max_angular_speed_squared=100.f;
+        in.wake_counter=0.4f;
+        in.seconds=seconds;
+        producer->enqueue_gpu_dy_distance(
+            body,{},{},{},ordinals,tasks,
+            {},{},{},{},{},{},{},{},
+            inputs,poses,true,{},true,true,true,sleep);
+    };
+    const std::array<std::uint32_t,1> single_node{{
+        4u|(1u<<8u)|physx_gpu::source_sc_device_island_active_bit
+    }};
+    producer->enqueue_gpu_pcm_box_contacts(requests,witness);
+    producer->enqueue_device_island_admission(
+        std::span<const physx_gpu::SourceScDeviceIslandEdge>{},
+        single_node,physx_gpu::SourceScDeviceIslandSources{});
+    dispatch();
+    require(producer->has_queued_gpu_dy_distance() &&
+            witness[0].packed_counts==0u,
+        "Device Sc/Dy consumed the PCM witness before numerical dispatch");
+    producer->finish_gpu_pcm_box_contacts();
+    producer->finish_gpu_dy_distance();
+    require(tasks[0].error==0u && poses[0].valid==1u &&
+            std::fabs(poses[0].position[0]-
+                      (2.f+0.5f*seconds))<0.002f,
+        "Dy did not execute the resident Sc task instead of the poisoned host task");
+    producer->commit_gpu_step();
+
+    // The work allocation has room for two nodes, but Sc admits two
+    // responding nodes while the Dy caller provides only one. Runtime
+    // validation must fail before any free body is integrated.
+    witness={};
+    const std::array<physx_gpu::SourceScDeviceIslandEdge,1> bridge{{
+        {edge,0u,1u,0xffffffffu,
+         physx_gpu::source_sc_device_island_joint_bit|
+         physx_gpu::source_sc_device_island_no_response_bit}
+    }};
+    const std::array<std::uint32_t,2> two_nodes{{
+        single_node[0],4u|(1u<<8u)
+    }};
+    producer->enqueue_gpu_pcm_box_contacts(requests,witness);
+    producer->enqueue_device_island_admission(
+        bridge,two_nodes,physx_gpu::SourceScDeviceIslandSources{});
+    dispatch();
+    producer->finish_gpu_pcm_box_contacts();
+    bool rejected=false;
+    try {
+        producer->finish_gpu_dy_distance();
+    }catch(const std::overflow_error&) {
+        rejected=true;
+    }
+    require(rejected && poses[0].valid==0u &&
+            (tasks[0].error&0x01000000u)!=0u,
+        "Dy accepted device Sc island counts inconsistent with its numerical tables");
+    producer->invalidate_after_rollback();
+}
+
 void verify_queued_pcm_dy(fyzz::compute::Backend backend,const char* sap,
                           const char* pcm,const char* dy_shader) {
     using namespace fyzz;
@@ -3644,6 +3762,8 @@ int main(int argc,char** argv) {
                 [&]{
                     verify(backend,argv[1],argv[2]);
                     verify_queued_pcm_dy(backend,argv[1],argv[2],argv[3]);
+                    verify_device_sc_dy_task_admission(
+                        backend,argv[1],argv[2],argv[3]);
                 });
         if(scenario=="all" || scenario=="sparse_contacts")
             fyzz::tests::measure_gpu_case("sc_pcm","sparse_contacts",
