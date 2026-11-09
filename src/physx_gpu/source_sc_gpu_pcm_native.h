@@ -636,8 +636,8 @@ public:
         const auto output=pending_output_;
         // General GPU PCM and host Gu occupy disjoint source ordinals.
         // Sc needs the GPU witnesses now, not the CPU Gu device upload.
-        // Fetch/validate the former before scheduling the latter so
-        // the independent upload does not extend Sc's host join.
+        // The independent CPU Gu upload was already queued after the
+        // witness DMA; only the earlier GPU result is a host dependency.
         if(!gpu_downloads_.empty())stream_.finish_fetch();
         else stream_.wait_at_fetch();
         for(const auto& span:gpu_downloads_)
