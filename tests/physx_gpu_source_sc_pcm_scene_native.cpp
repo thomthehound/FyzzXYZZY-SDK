@@ -1579,8 +1579,9 @@ void verify_gpu_coupled_solver(
         const auto [uploaded,downloaded]=producer->dy_distance_transfer_bytes();
         const auto schedule=producer->dy_launch_stats();
         require(schedule.device_colored_tasks>0u &&
-                schedule.device_colored_descriptors>0u,
-            "Coupled Dy solver skipped device-owned constraint partitioning");
+                schedule.device_colored_descriptors>0u &&
+                schedule.host_degree_scanned_descriptors==0u,
+            "Coupled Dy retained redundant host constraint-degree scanning");
         require(schedule.device_source_descriptors==
                     schedule.device_colored_descriptors &&
                 schedule.source_descriptor_upload_bytes<
@@ -3217,6 +3218,7 @@ void verify_gpu_wide_island_solver(
         const auto schedule=producer->dy_launch_stats();
         require(schedule.device_colored_tasks>=1u &&
                 schedule.device_colored_descriptors>=connected_bodies &&
+                schedule.host_degree_scanned_descriptors>=connected_bodies-2u &&
                 schedule.device_joint_input_rows>=connected_bodies/2u &&
                 schedule.device_joint_geometry_count>=connected_bodies/2u,
             "Wide Dy task lost device joint preparation or coloring");

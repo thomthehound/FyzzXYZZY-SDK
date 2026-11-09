@@ -97,6 +97,8 @@ static_assert(sizeof(SourceDyActorLocalNative)==144u &&
 struct SourceDyLaunchStats {
     std::size_t device_colored_tasks=0u;
     std::size_t device_colored_descriptors=0u;
+    // Only wide-task candidates require a host degree analysis.
+    std::size_t host_degree_scanned_descriptors=0u;
     std::size_t wide_tasks=0u;
     std::size_t max_partition_groups=0u;
     std::size_t dispatches=0u;
@@ -1783,10 +1785,26 @@ private:
         last_schedule_.device_colored_tasks=tasks.size();
         last_schedule_.device_colored_descriptors=descriptors.size();
         last_schedule_.max_partition_groups=tasks.empty()?0u:1u;
-        degree_dynamic_.assign(bodies,0u);
-        degree_static_.assign(bodies,0u);
-        color_bounds_.assign(tasks.size(),0u);
-        partition_endpoint_counts_.assign(tasks.size(),0u);
+        const bool has_wide_candidate=std::any_of(
+            tasks.begin(),tasks.end(),[&](const auto& task) {
+                return task.descriptor_end>=task.descriptor_begin &&
+                    task.body_end>=task.body_begin &&
+                    task.descriptor_end-task.descriptor_begin>=wide_min &&
+                    task.body_end-task.body_begin>=wide_min;
+            });
+        if(has_wide_candidate) {
+            degree_dynamic_.assign(bodies,0u);
+            degree_static_.assign(bodies,0u);
+            color_bounds_.assign(tasks.size(),0u);
+            partition_endpoint_counts_.assign(tasks.size(),0u);
+        }else {
+            // Compact tasks are already GPU-colored. Do not zero or
+            // rescan dense host endpoint-degree arrays for their launch.
+            degree_dynamic_.clear();
+            degree_static_.clear();
+            color_bounds_.clear();
+            partition_endpoint_counts_.clear();
+        }
         fused_tiles_={0u,tasks.size()};
         prep_tiles_={};
         body_tiles_={};
@@ -1808,6 +1826,18 @@ private:
                task.velocity_iterations>255u)
                 throw std::invalid_argument(
                     "Source device Dy task ranges are inconsistent");
+            const auto count=task.descriptor_end-task.descriptor_begin;
+            const auto writable=task.body_end-task.body_begin;
+            // A task below either wide threshold always uses the
+            // device-colored fused path; its host endpoint analysis
+            // cannot change launch selection or partition semantics.
+            if(count<wide_min || writable<wide_min) {
+                descriptor_end=task.descriptor_end;
+                partition_end=task.partition_end;
+                body_end=task.body_end;
+                continue;
+            }
+            last_schedule_.host_degree_scanned_descriptors+=count;
             std::size_t dynamic_edges=0u,static_edges=0u;
             for(std::uint32_t i=task.descriptor_begin;
                 i<task.descriptor_end;++i) {
@@ -1882,7 +1912,6 @@ private:
             }
             partition_endpoint_counts_[task_id]=
                 static_cast<std::uint32_t>(partition_endpoints);
-            const auto count=task.descriptor_end-task.descriptor_begin;
             bound=std::min<std::size_t>(count,bound);
             color_bounds_[task_id]=static_cast<std::uint32_t>(bound);
             descriptor_end=task.descriptor_end;
@@ -1898,7 +1927,6 @@ private:
             const std::size_t parallel_width=dynamic_edges
                 ?(dynamic_edges-1u)/max_dynamic_conflicts+1u
                 :static_edges?(static_edges-1u)/max_static_degree+1u:0u;
-            const auto writable=std::size_t(task.body_end-task.body_begin);
             const auto groups=(partition_endpoints+threads-1u)/threads;
             // Color count multiplied by conservative workgroups must not
             // exceed one tile per source descriptor. In particular, a

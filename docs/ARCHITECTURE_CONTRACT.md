@@ -190,6 +190,13 @@ uploads enter the ordered source queue immediately after their witnesses are
 ready, independently of the preceding GPU PCM witness readback. Sc's host
 join retires only producer tokens preceding that readback; later uploaded
 CPU Gu and device touch publication stay in flight for GPU consumers.
+Dy's GPU-owned compact tasks now bypass host endpoint-degree
+classification entirely. The host planner scans source descriptors only for
+tasks with at least 512 body ordinals and 512 response descriptors, where
+wide GPU tiling can change the launch schedule. Smaller tasks retain their
+existing device-colored fused path without dense degree-array clearing or
+redundant host numerical inspection.
+
 The source Dy numerical stage submits its existing solver command graph
 independently of the CPU result fetch. Its queued execution consumes the
 device-ready PCM/CPU Gu stream after the input producers, and the normal
