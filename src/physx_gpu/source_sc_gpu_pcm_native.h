@@ -131,7 +131,10 @@ public:
     void commit_step() {
         if(result_pending_)
             throw std::logic_error("Source PCM epoch committed before Sc publication");
-        if(!pcm_transaction_pending_)return;
+        if(!pcm_transaction_pending_) {
+            island_work_ready_=false;
+            return;
+        }
         // A collision-only publication has no Dy device consumer to
         // retire the primitive upload. Complete it at the existing Sc
         // transaction commit, after independent island publication.
@@ -681,11 +684,19 @@ public:
     CudaDeviceAddressMap::Address device_contact_stream_address() const noexcept {
         return device_contact_pair_count()?dense_contacts_.getDevicePtr():0u;
     }
-    CudaDeviceAddressMap::Address device_edge_history_address() const noexcept {
-        return device_contact_pair_count()?edges_.getDevicePtr():0u;
-    }
+    // Dormant managers can retain their last committed physical touch
+    // even when no new PCM pair is admitted this frame. The journal
+    // high-watermark and the last published EdgeIndex prefix coexist.
     std::uint32_t device_edge_history_capacity() const noexcept {
-        return device_contact_pair_count()?journal_edge_capacity_:0u;
+        if(restore_pending_ || rebuild_required_ ||
+           (result_pending_ && pending_host_inputs_ && !host_upload_pending_))
+            return 0u;
+        const auto published=static_cast<std::uint32_t>(
+            published_edge_span_bytes_/240u);
+        return std::max(published,journal_edge_capacity_);
+    }
+    CudaDeviceAddressMap::Address device_edge_history_address() const noexcept {
+        return device_edge_history_capacity()?edges_.getDevicePtr():0u;
     }
     CudaDeviceAddressMap::Address contact_stream_address() const noexcept {
         return published_pair_count_?dense_contacts_.getDevicePtr():0u;
