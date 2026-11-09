@@ -54,11 +54,25 @@ struct SourceScDeviceIslandCount {
 };
 static_assert(sizeof(SourceScDeviceIslandCount)==20u);
 
+// Task admission is selected after every component has published its
+// active seeds and iteration maxima. The root is a transient device
+// ordinal, not a public IslandSim handle or a persistent scheduling ID.
+struct SourceScDeviceIslandTask {
+    std::uint32_t root=0,responding_nodes=0,admitted_edges=0;
+    std::uint32_t position_iterations=0,velocity_iterations=0;
+};
+static_assert(sizeof(SourceScDeviceIslandTask)==20u);
+struct SourceScDeviceIslandHeader {
+    std::uint32_t errors=0,runnable_components=0;
+    std::uint32_t responding_nodes=0,admitted_edges=0;
+};
+static_assert(sizeof(SourceScDeviceIslandHeader)==16u);
+
 // One source-owned transient allocation holds union parents (finally
 // canonical island roots), per-root admission counts and source-ordered
 // edge records. No CPU readback is required between these phases.
 struct SourceScDeviceIslandLayout {
-    std::size_t roots=16u,counts=0u,admissions=0u,bytes=0u;
+    std::size_t roots=16u,counts=0u,admissions=0u,tasks=0u,bytes=0u;
     static SourceScDeviceIslandLayout for_counts(
         std::uint32_t node_count,std::uint32_t edge_count) {
         const auto align=[](std::uint64_t value) {
@@ -72,8 +86,12 @@ struct SourceScDeviceIslandLayout {
             align(std::uint64_t(result.counts)+
                   std::uint64_t(node_count)*
                       sizeof(SourceScDeviceIslandCount)));
-        const auto bytes=align(std::uint64_t(result.admissions)+
-                               std::uint64_t(edge_count)*24u);
+        result.tasks=static_cast<std::size_t>(
+            align(std::uint64_t(result.admissions)+
+                  std::uint64_t(edge_count)*
+                      sizeof(SourceScDeviceIslandAdmission)));
+        const auto bytes=align(std::uint64_t(result.tasks)+
+            std::uint64_t(node_count)*sizeof(SourceScDeviceIslandTask));
         if(bytes>std::numeric_limits<std::uint32_t>::max())
             throw std::out_of_range("Device Sc island work exceeds 32-bit view");
         result.bytes=static_cast<std::size_t>(bytes);
@@ -100,7 +118,7 @@ public:
         pipeline.storage_buffer_binding_count=4u;
         pipeline.storage_buffer_views.assign(
             4u,compute::StorageBufferViewKind::RawReadWrite);
-        pipeline.push_constant_bytes=52u;
+        pipeline.push_constant_bytes=56u;
         pipeline_=context_.create_compute_pipeline(pipeline);
     }
     SourceScDeviceIslandsNativeStage(
@@ -145,7 +163,7 @@ public:
         const auto edge_address=edge_count?edges:output;
         const auto touch_address=edge_capacity?touch_history:edge_address;
         const auto node_bytes=source_allocation_bytes(node_count,4u);
-        std::array<std::uint32_t,13> args{};
+        std::array<std::uint32_t,14> args{};
         compute::DispatchCommand dispatch{};
         dispatch.pipeline=pipeline_;
         dispatch.buffers={
@@ -168,18 +186,19 @@ public:
         args[4]=offset(layout.roots,args[3]);
         args[5]=offset(layout.counts,args[3]);
         args[6]=offset(layout.admissions,args[3]);
-        args[7]=node_count;
-        args[8]=edge_count;
-        args[9]=edge_capacity;
+        args[7]=offset(layout.tasks,args[3]);
+        args[8]=node_count;
+        args[9]=edge_count;
+        args[10]=edge_capacity;
         dispatch.push_constants.resize(sizeof(args));
         std::vector<compute::BatchCommand> commands;
         const auto max_groups=context_.device_info().max_workgroup_count[0];
         const auto launch=[&](std::uint32_t phase,std::uint32_t count) {
-            args[10]=phase;
+            args[11]=phase;
             for(std::uint32_t first=0u;first<count;) {
                 const auto groups=std::min<std::uint64_t>(
                     max_groups,(std::uint64_t(count-first)+127u)/128u);
-                args[11]=first;
+                args[12]=first;
                 dispatch.groups={static_cast<std::uint32_t>(groups),1u,1u};
                 std::memcpy(dispatch.push_constants.data(),
                             args.data(),sizeof(args));
@@ -191,6 +210,7 @@ public:
         launch(0u,node_count);
         launch(1u,edge_count);
         launch(2u,std::max(node_count,edge_count));
+        launch(3u,node_count);
         auto& ordered=stream.commands();
         ordered.insert(ordered.end(),commands.begin(),commands.end());
     }
