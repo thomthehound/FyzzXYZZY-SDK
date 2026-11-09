@@ -19,6 +19,25 @@
 #include <stdexcept>
 #include <string_view>
 
+namespace fyzz::physx_gpu {
+struct SourceScDeviceIslandFixture {
+    static SourceScDeviceIslandHeader read(SourceScOwnedGpuBroadphaseNative& owner) {
+        if(!owner.pcm_ || !owner.pcm_->device_island_work_address())
+            throw std::runtime_error("Device Sc task work was not queued");
+        // Fixture-only completion. Production Dy consumes the same
+        // buffer on the ordered GPU queue without this host observation.
+        owner.stream_.wait_at_fetch();
+        const auto bytes=owner.pcm_->device_island_layout().bytes;
+        const auto resolved=owner.addresses_.resolve(
+            owner.pcm_->device_island_work_address(),bytes);
+        SourceScDeviceIslandHeader header{};
+        owner.context_.download(resolved.buffer,resolved.offset,
+                                &header,sizeof(header));
+        return header;
+    }
+};
+} // namespace fyzz::physx_gpu
+
 namespace fyzz::native {
 struct GpuPcmFrictionAnchorFixture {
     static void verify_early_speculative_admission(
@@ -369,6 +388,24 @@ void verify(fyzz::compute::Backend backend,const char* sap,
     }
     require(rejected_early_commit,
         "GPU PCM accepted a frame before Sc joined its numerical witnesses");
+    // Use actual device PCM touch, not a fixture-initialized contact
+    // history. Execute accurate connectivity before host Gu publication.
+    constexpr std::uint32_t no_node=0xffffffffu;
+    const std::array<physx_gpu::SourceScDeviceIslandEdge,1> source_edges{{
+        {edge,0u,no_node,0u,0u}
+    }};
+    const std::array<std::uint32_t,1> source_nodes{{
+        4u|(4u<<8u)|physx_gpu::source_sc_device_island_active_bit
+    }};
+    producer->enqueue_device_island_admission(source_edges,source_nodes);
+    const auto graph=physx_gpu::SourceScDeviceIslandFixture::read(*producer);
+    require(graph.errors==0u &&
+            graph.runnable_components==1u &&
+            graph.responding_nodes==1u &&
+            graph.admitted_edges==1u &&
+            graph.dispatch_x==1u &&
+            direct[0].packed_counts==0u,
+        "Device Sc task admission waited for host PCM witness publication");
     producer->finish_gpu_pcm_box_contacts();
     producer->commit_gpu_step();
     require(producer->pcm_contact_readback_bytes()==
@@ -579,6 +616,21 @@ void verify(fyzz::compute::Backend backend,const char* sap,
             producer->device_pcm_touch_history()!=0u &&
             producer->device_pcm_touch_capacity()>sphere_edge,
         "Mixed Gu was not device-ready before Sc joined GPU witnesses");
+    const std::array<physx_gpu::SourceScDeviceIslandEdge,2> mixed_edges{{
+        {edge,0u,no_node,0u,0u},
+        {sphere_edge,1u,no_node,1u,0u}
+    }};
+    const std::array<std::uint32_t,2> mixed_nodes{{
+        source_nodes[0],source_nodes[0]
+    }};
+    producer->enqueue_device_island_admission(mixed_edges,mixed_nodes);
+    const auto mixed_graph=physx_gpu::SourceScDeviceIslandFixture::read(*producer);
+    require(mixed_graph.errors==0u &&
+            mixed_graph.runnable_components==2u &&
+            mixed_graph.responding_nodes==2u &&
+            mixed_graph.admitted_edges==2u &&
+            mixed_results[0].packed_counts==0u,
+        "Mixed CPU Gu/GPU PCM device connectivity required Sc witness join");
     producer->finish_gpu_pcm_box_contacts();
     require(producer->pcm_host_contact_upload_bytes()==
                 sizeof(physx_gpu::SourcePcmGpuContactStreamNative) &&
