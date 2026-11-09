@@ -323,7 +323,13 @@ public:
                             anchor_impulses,device_initial_bodies,
                             device_world_motion,
                             device_unconstrained_preparation,sleep_states,
-                            joint_inputs);
+                            joint_inputs,
+                            pcm_ && pcm_->device_island_work_address()
+                                ?std::optional<SourceScDeviceIslandDyView>{
+                                    SourceScDeviceIslandDyView{
+                                        pcm_->device_island_work_address(),
+                                        pcm_->device_island_layout()}}
+                                :std::nullopt);
         ++dy_distance_dispatch_count_;
     }
     void finish_gpu_dy_distance() override {
