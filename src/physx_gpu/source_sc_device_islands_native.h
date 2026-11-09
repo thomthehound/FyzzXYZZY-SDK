@@ -23,13 +23,17 @@ struct SourceScDeviceIslandEdge {
     std::uint32_t edge_index=0;
     std::uint32_t node_a=0xffffffffu,node_b=0xffffffffu;
     std::uint32_t source_index=0;
-    std::uint32_t kind=0; // 0: physical contact, 1: connected 1D constraint
+    // Bit 0 selects joint (1) or physical contact (0); bit 1 marks
+    // an edge with no solver response. Connected, nonresponding contacts
+    // still belong to accurate topology, including zero-impulse pairs.
+    std::uint32_t kind=0;
 };
 static_assert(sizeof(SourceScDeviceIslandEdge)==20u);
 
 // Entries preserve the source input order. They are GPU-consumed Dy
 // admission records, not another persistent edge or island registry.
-// Invalid owner means this edge has no current responding island.
+// An invalid root means the edge has no connected responding endpoint.
+// The kind bits determine whether a connected edge admits a solver row.
 struct SourceScDeviceIslandAdmission {
     std::uint32_t source_index=0,edge_index=0;
     std::uint32_t node_a=0xffffffffu,node_b=0xffffffffu;
