@@ -586,9 +586,9 @@ public:
         constexpr std::uint32_t invalid=0xffffffffu;
         for(const auto& edge:edges) {
             if((edge.kind&~3u)!=0u ||
-               (edge.kind&1u)==0u && edge.edge_index>=edge_capacity ||
-               edge.node_a!=invalid && edge.node_a>=node_count ||
-               edge.node_b!=invalid && edge.node_b>=node_count)
+               ((edge.kind&1u)==0u && edge.edge_index>=edge_capacity) ||
+               (edge.node_a!=invalid && edge.node_a>=node_count) ||
+               (edge.node_b!=invalid && edge.node_b>=node_count))
                 throw std::invalid_argument("Device Sc island edge is not admitted");
         }
         for(const auto word:node_flags)
