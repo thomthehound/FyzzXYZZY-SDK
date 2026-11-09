@@ -8519,7 +8519,10 @@ void Scene::solve_gpu_distance_constraints(float seconds) {
     // Source Dy owns task, body and 1D row order; the device receives
     // transient packed views of those exact prepared source inputs.
     if(ordered_constraints_.empty() && solver_active_ids_.empty() &&
-       gpu_dy_free_ids_.empty())return;
+       gpu_dy_free_ids_.empty()) {
+        begin_contact_writeback();
+        return;
+    }
     const auto narrow=[](std::size_t value) {
         if(value>=std::numeric_limits<std::uint32_t>::max())
             throw std::overflow_error("Native GPU Dy row index exceeds 32 bits");
@@ -8781,7 +8784,7 @@ void Scene::solve_gpu_distance_constraints(float seconds) {
     if(explicit_order_cursor!=gpu_dy_contact_order_.size())
         throw std::logic_error(
             "GPU Dy explicit Gu contact order was not fully consumed");
-    gpu_broadphase_->solve_gpu_dy_distance(
+    gpu_broadphase_->enqueue_gpu_dy_distance(
         gpu_dy_bodies_,gpu_dy_rows_,ordered_constraints_,
         {},gpu_dy_body_ordinals_,gpu_dy_tasks_,
         gpu_dy_contact_forces_,gpu_dy_gu_inputs_,
@@ -8791,7 +8794,10 @@ void Scene::solve_gpu_distance_constraints(float seconds) {
         gpu_dy_integration_inputs_,gpu_dy_integrated_poses_,true,
         gpu_dy_friction_impulses_,true,true,true,gpu_dy_sleep_states_,
         gpu_dy_joint_inputs_);
-    gpu_dy_pose_ready_=true;
+    // Sc's Gu-indexed force buffer and retired-manager bookkeeping are
+    // independent of the submitted numerical solve. Prepare them while
+    // the ordered GPU Dy task graph executes, before its result join.
+    begin_contact_writeback();
     const auto consume_preintegration=[this](BodyId id) {
         auto& actor=actors_[id];
         actor.pending_angular_velocity_delta={};
@@ -8803,6 +8809,8 @@ void Scene::solve_gpu_distance_constraints(float seconds) {
     };
     for(const BodyId id:solver_active_ids_)consume_preintegration(id);
     for(const BodyId id:gpu_dy_free_ids_)consume_preintegration(id);
+    gpu_broadphase_->finish_gpu_dy_distance();
+    gpu_dy_pose_ready_=true;
     // Dy keeps transient PGS deltas on device. Sc receives world-space
     // final and position-phase velocities needed by its task continuations.
     for(std::size_t i=0;i<solver_contact_points_.size();++i)
@@ -10848,11 +10856,11 @@ void Scene::step(float seconds) {
     join.dispatch_solver_tasks(
         solver_task_completion_stamps_,solver_task_completion_generation_);
     prepare_constraints(seconds);
-    begin_contact_writeback();
     const bool gpu_dy_distance=
         gpu_broadphase_ && gpu_broadphase_->has_gpu_dy_distance();
     gpu_dy_pose_ready_=false;
     if(gpu_dy_distance)solve_gpu_distance_constraints(seconds);
+    else begin_contact_writeback();
     // Each source Dy group owns independent accurate islands and disjoint
     // contact, friction, distance and solver-body rows. Admit complete
     // PGS -> PxsSolverEndTask chains when both ranges justify the worker.

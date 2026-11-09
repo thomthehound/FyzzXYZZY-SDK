@@ -429,7 +429,7 @@ public:
         throw std::logic_error("Source GPU host PCM stream unavailable");
     }
     virtual bool has_gpu_dy_distance() const noexcept { return false; }
-    virtual void solve_gpu_dy_distance(
+    virtual void enqueue_gpu_dy_distance(
         std::span<GpuDyDistanceBody>,
         std::span<GpuDyJointRow>,
         std::span<const GpuDyDistanceDescriptor>,
@@ -453,6 +453,9 @@ public:
         std::span<GpuDySleepState> /*sleep_states*/={},
         std::span<const GpuDyJointInput> /*joint_inputs*/={}) {
         throw std::logic_error("Source GPU Dy shader is not installed");
+    }
+    virtual void finish_gpu_dy_distance() {
+        throw std::logic_error("Source GPU Dy result is not available");
     }
     // Sc's afterIntegration authorizes the source ElementSim device pose.
     virtual void authorize_device_integrated_pose(BodyId) {

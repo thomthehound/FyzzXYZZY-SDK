@@ -259,38 +259,6 @@ public:
     bool has_gpu_dy_distance() const noexcept override {
         return bool(dy_distance_);
     }
-    void solve_gpu_dy_distance(
-        std::span<native::GpuDyDistanceBody> bodies,
-        std::span<native::GpuDyJointRow> rows,
-        std::span<const native::GpuDyDistanceDescriptor> descriptors,
-        std::span<const std::uint32_t> partitions,
-        std::span<const std::uint32_t> ordinals,
-        std::span<native::GpuDyDistanceTask> tasks,
-        std::span<float> contact_forces,
-        std::span<const native::GpuDyGuContactInput> cpu_gu,
-        std::span<native::GpuDyFrictionWriteback> friction,
-        std::span<const native::GpuDyFrictionAnchorInput> anchors,
-        std::span<native::GpuDyContactPatch> patches,
-        std::span<const native::GpuDyContactManifold> manifolds,
-        std::span<const std::uint32_t> contact_order,
-        std::span<const native::GpuDyContactPrepPair> contact_prep,
-        std::span<native::GpuDyBodyIntegrationInput> integration,
-        std::span<native::GpuDyIntegratedPose> integrated_poses,
-        bool device_partitions=false,
-        std::span<native::GpuDyFrictionAnchorImpulse> anchor_impulses={},
-        bool device_initial_bodies=false,
-        bool device_world_motion=false,
-        bool device_unconstrained_preparation=false,
-        std::span<native::GpuDySleepState> sleep_states={},
-        std::span<const native::GpuDyJointInput> joint_inputs={}) override {
-        enqueue_gpu_dy_distance(bodies,rows,descriptors,partitions,
-            ordinals,tasks,contact_forces,cpu_gu,friction,anchors,
-            patches,manifolds,contact_order,contact_prep,integration,
-            integrated_poses,device_partitions,anchor_impulses,
-            device_initial_bodies,device_world_motion,
-            device_unconstrained_preparation,sleep_states,joint_inputs);
-        finish_gpu_dy_distance();
-    }
     void enqueue_gpu_dy_distance(
         std::span<native::GpuDyDistanceBody> bodies,
         std::span<native::GpuDyJointRow> rows,
@@ -314,7 +282,7 @@ public:
         bool device_world_motion=false,
         bool device_unconstrained_preparation=false,
         std::span<native::GpuDySleepState> sleep_states={},
-        std::span<const native::GpuDyJointInput> joint_inputs={}) {
+        std::span<const native::GpuDyJointInput> joint_inputs={}) override {
         if(!dy_distance_)
             throw std::logic_error("Source GPU Dy shader not installed");
         if(dy_distance_->has_queued_solve())
@@ -358,7 +326,7 @@ public:
                             joint_inputs);
         ++dy_distance_dispatch_count_;
     }
-    void finish_gpu_dy_distance() {
+    void finish_gpu_dy_distance() override {
         if(!dy_distance_ || !dy_distance_->has_queued_solve())
             throw std::logic_error("Source GPU Dy has no queued numerical epoch");
         dy_distance_->finish();
@@ -563,6 +531,11 @@ public:
         stream_.discard_unsubmitted_commands();
         producer_->invalidate_after_rollback();
         if(pcm_)pcm_->invalidate_after_rollback();
+        if(dy_distance_ && dy_distance_->has_queued_solve()) {
+            // A rejected frame may have GPU Dy commands in flight even
+            // after PCM's earlier readback has been joined.
+            try { stream_.wait_at_fetch(); } catch (...) {}
+        }
         if(dy_distance_)dy_distance_->invalidate_after_rollback();
     }
     const SourceSapSceneFrameNativeResult& last_frame() const {
