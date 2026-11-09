@@ -644,10 +644,10 @@ void verify(fyzz::compute::Backend backend,const char* sap,
             primitive.count()==1u,
         "Late CPU Gu upload or general PCM readback lost source ordinals");
     const auto after_join=producer->stream_submission_stats();
-    require(after_join.upload_batches==after_mixed.upload_batches+1u &&
+    require(after_join.upload_batches==after_mixed.upload_batches+2u &&
             after_join.fetch_batches==after_mixed.fetch_batches+1u &&
             after_join.deferred_submissions_after_fetch==
-                after_mixed.deferred_submissions_after_fetch+1u,
+                after_mixed.deferred_submissions_after_fetch+2u,
         "Mixed PCM joined later GPU work or duplicated witness transfers");
     // The early host upload remains ordered after the GPU witness DMA.
     // Collision-only commit must retire it even without a Dy solve.
@@ -660,17 +660,25 @@ void verify(fyzz::compute::Backend backend,const char* sap,
     abandoned_mixed[1]=primitive;
     producer->enqueue_gpu_pcm_box_contacts(mixed,abandoned_mixed);
     producer->enqueue_host_pcm_contacts(mixed,abandoned_mixed);
+    producer->enqueue_device_island_admission(mixed_edges,mixed_nodes);
     producer->invalidate_after_rollback();
     require(producer->device_pcm_contact_count()==0u &&
             producer->device_pcm_contact_stream()==0u &&
-            producer->device_pcm_touch_history()==0u,
-        "Rejected PCM transaction retained an executable device contact view");
+            producer->device_pcm_touch_history()==0u &&
+            producer->device_island_work_address()==0u,
+        "Rejected PCM transaction retained an executable device task view");
     require(abandoned_mixed[0].packed_counts==0u,
         "Rejected mixed PCM DMA published an abandoned GPU witness");
     std::array<native::GpuPcmBoxResult,2> restored{};
     restored[1]=primitive;
     producer->enqueue_gpu_pcm_box_contacts(mixed,restored);
     producer->enqueue_host_pcm_contacts(mixed,restored);
+    producer->enqueue_device_island_admission(mixed_edges,mixed_nodes);
+    const auto recovered=physx_gpu::SourceScDeviceIslandFixture::read(*producer);
+    require(recovered.errors==0u &&
+            recovered.runnable_components==2u &&
+            recovered.admitted_edges==2u,
+        "Rolled-back PCM regenerated an incorrect device island task");
     producer->finish_gpu_pcm_box_contacts();
     require(restored[0].edge==edge &&
             restored[0].status()==0u &&
