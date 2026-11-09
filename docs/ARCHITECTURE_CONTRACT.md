@@ -181,9 +181,13 @@ single Dy readback, task-error checks and Sc writeback occur at the result
 join. A pending Dy epoch cannot be overwritten or published on rollback.
 The shared Context retains one outstanding readback batch, so the PCM
 witness DMA must be retired before Dy requests its final result transfer.
-Current native Scene still prepares CPU accurate island/friction/Dy task
-descriptors after its GPU witness join; the new dispatch boundary does not
-by itself retire that CPU scheduling dependency.
+Native Scene now enqueues GPU Dy numerical work before initializing
+its Gu-indexed result buffers and consuming source force modifications.
+The existing Dy completion join still validates numerical results before
+Sc publishes contact impulses, integrated poses and sleep state. CPU
+accurate-island/friction/Dy descriptor construction still happens after
+the PCM witness join; this scheduling overlap does not retire that
+earlier CPU admission dependency.
 
 **Current migration boundary:** general GPU PCM still downloads its 84-byte
 contact records before CPU Sc friction correlation and accurate-island
