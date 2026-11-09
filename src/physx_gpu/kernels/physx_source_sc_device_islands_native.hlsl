@@ -395,11 +395,11 @@ void main(uint3 thread:SV_DispatchThreadID,
         uint ordinal=0u;
         for(uint i=0u;i<index;++i)
             if(itemKey(i)==key)++ordinal;
-        const uint taskId=work.Load(p.countBias+(key>>1u)*24u+20u);
+        const uint taskId=work.Load(p.countBias+(key/3u)*24u+20u);
         const uint task=p.taskBias+taskId*32u;
         const uint begin=work.Load(task+20u)+work.Load(task+24u);
         const uint bodies=work.Load(task+4u);
-        scatterItem(begin+((key&1u)!=0u?bodies:0u)+ordinal,index);
+        scatterItem(begin+((key%3u)!=0u?bodies:0u)+ordinal,index);
         return;
     }
     if(p.phase<7u)return;

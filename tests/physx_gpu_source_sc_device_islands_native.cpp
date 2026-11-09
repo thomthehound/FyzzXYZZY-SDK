@@ -257,8 +257,10 @@ void verify(Context& context,const char* filename) {
         }
     };
     const auto no_errors=[&](const auto& result) {
-        require(load<std::uint32_t>(result.second,0u)==0u,
-                "Device accurate island rejected valid source topology");
+        const auto errors=load<std::uint32_t>(result.second,0u);
+        require(errors==0u,
+                "Device accurate island rejected valid source topology: error=" +
+                    std::to_string(errors));
     };
 
     std::vector<SourceScDeviceIslandEdge> edges{
@@ -291,6 +293,33 @@ void verify(Context& context,const char* filename) {
                     ordered.first.response_order+i*4u)==
                     std::array<std::uint32_t,4>{1u,3u,0u,2u}[i],
                 "Device Sc numerical admission did not place joints first");
+
+    // In the small direct-scatter path, nonzero component roots must
+    // decode the same three-way key as radix-sorted components.
+    const std::vector<SourceScDeviceIslandEdge> split_types{
+        {0u,0u,1u,3u,source_sc_device_island_host_touch_bit|
+                       source_sc_device_island_host_found_bit},
+        {31u,0u,1u,2u,source_sc_device_island_joint_bit},
+        {1u,2u,3u,7u,source_sc_device_island_host_touch_bit|
+                       source_sc_device_island_host_found_bit},
+        {32u,3u,2u,6u,source_sc_device_island_joint_bit}
+    };
+    auto split=evaluate(4u,split_types,{},
+        {0x10104u,0x104u,0x10104u,0x104u});
+    no_errors(split);
+    check_task_mapping(split);
+    require(header(split).runnable_components==2u &&
+            task(split,0u).response_begin==0u &&
+            task(split,2u).response_begin==2u &&
+            load<std::uint32_t>(split.second,
+                split.first.response_order+0u)==1u &&
+            load<std::uint32_t>(split.second,
+                split.first.response_order+4u)==0u &&
+            load<std::uint32_t>(split.second,
+                split.first.response_order+8u)==3u &&
+            load<std::uint32_t>(split.second,
+                split.first.response_order+12u)==2u,
+        "Device Sc direct scatter misdecoded a nonzero island root");
 
     auto first=evaluate(7u,edges,{1u,0u,1u,1u,0u,1u});
     no_errors(first);
