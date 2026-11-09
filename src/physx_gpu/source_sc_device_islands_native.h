@@ -65,14 +65,21 @@ static_assert(sizeof(SourceScDeviceIslandTask)==20u);
 struct SourceScDeviceIslandHeader {
     std::uint32_t errors=0,runnable_components=0;
     std::uint32_t responding_nodes=0,admitted_edges=0;
+    // This triple is directly consumable as DispatchIndirectArgs at +16.
+    // Each runnable component admits one task group; a later Dy
+    // consumer may further tile wide components without host counts.
+    std::uint32_t dispatch_x=0,dispatch_y=1,dispatch_z=1;
+    std::uint32_t reserved=0;
 };
-static_assert(sizeof(SourceScDeviceIslandHeader)==16u);
+static_assert(sizeof(SourceScDeviceIslandHeader)==32u &&
+              offsetof(SourceScDeviceIslandHeader,dispatch_x)==16u);
 
 // One source-owned transient allocation holds union parents (finally
 // canonical island roots), per-root admission counts and source-ordered
 // edge records. No CPU readback is required between these phases.
 struct SourceScDeviceIslandLayout {
-    std::size_t roots=16u,counts=0u,admissions=0u,tasks=0u,bytes=0u;
+    std::size_t roots=sizeof(SourceScDeviceIslandHeader);
+    std::size_t counts=0u,admissions=0u,tasks=0u,bytes=0u;
     static SourceScDeviceIslandLayout for_counts(
         std::uint32_t node_count,std::uint32_t edge_count) {
         const auto align=[](std::uint64_t value) {
