@@ -368,6 +368,23 @@ void verify(Context& context,const char* filename) {
                 header(*result).dispatch_x==0u,
                 "Device Sc accepted an out-of-range typed Dy source token");
 
+    // Response-disabled physical connectivity still admits every
+    // responding body, even without a numerical source-table entry.
+    // Its token is never consumed by Dy.
+    auto connectivity_only=evaluate(2u,{
+        {0u,0u,1u,invalid,source_sc_device_island_no_response_bit},
+    },{1u},{0x10104u,0x104u},{0u},
+        SourceScDeviceIslandSources{});
+    no_errors(connectivity_only);
+    check_task_mapping(connectivity_only);
+    require(root(connectivity_only,0u)==root(connectivity_only,1u) &&
+            count(connectivity_only,0u).responding_nodes==2u &&
+            count(connectivity_only,0u).admitted_edges==0u &&
+            header(connectivity_only).runnable_components==1u &&
+            header(connectivity_only).responding_nodes==2u &&
+            header(connectivity_only).admitted_edges==0u,
+            "Response-disabled contact lost accurate connectivity without a Dy source");
+
     auto first=evaluate(7u,edges,{1u,0u,1u,1u,0u,1u});
     no_errors(first);
     require(root(first,0u)==0u && root(first,1u)==0u &&
