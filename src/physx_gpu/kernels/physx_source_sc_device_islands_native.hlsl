@@ -249,8 +249,8 @@ void main(uint3 thread:SV_DispatchThreadID,
         const uint4 edge=scEdges.Load4(input);
         const uint kind=scEdges.Load(input+16u);
         if(!validNode(edge.y) || !validNode(edge.z) ||
-           !validSource(edge.w,kind))return;
-        if(!edgeConnected(edge.x,kind))return;
+           !edgeConnected(edge.x,kind))return;
+        if(!validSource(edge.w,kind))return;
         if(edge.y!=invalid && edge.z!=invalid)
             connectNodes(edge.y,edge.z);
         return;
@@ -280,7 +280,7 @@ void main(uint3 thread:SV_DispatchThreadID,
         const uint kind=scEdges.Load(input+16u);
         uint owner=invalid;
         if(validNode(edge.y) && validNode(edge.z) &&
-           validSource(edge.w,kind) && edgeConnected(edge.x,kind)) {
+           edgeConnected(edge.x,kind) && validSource(edge.w,kind)) {
             const uint node=edge.y!=invalid?edge.y:edge.z;
             if(node!=invalid) {
                 owner=findRoot(node);
