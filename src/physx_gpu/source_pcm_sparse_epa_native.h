@@ -41,18 +41,18 @@ public:
         if(compact_shader.format==compute::ShaderFormat::Spirv)
             compact_shader.entry_point="compact";
         desc.shader=std::move(compact_shader);
-#if defined(FYZZXYZZY_PROFILE_GPU)
-        desc.profile_name=required_status_==3u?"pcm.epa_compact":"pcm.gjk_compact";
-#endif
         compact_=context_.create_compute_pipeline(desc);
+#if defined(FYZZXYZZY_PROFILE_GPU)
+        context_.set_pipeline_profile_label(compact_,required_status_==3u?"pcm.epa_compact":"pcm.gjk_compact");
+#endif
         if(reset_shader) {
             if(reset_shader->format==compute::ShaderFormat::Spirv)
                 reset_shader->entry_point="reset";
             desc.shader=std::move(*reset_shader);
-#if defined(FYZZXYZZY_PROFILE_GPU)
-            desc.profile_name="pcm.indirect_reset";
-#endif
             reset_=context_.create_compute_pipeline(desc);
+#if defined(FYZZXYZZY_PROFILE_GPU)
+            context_.set_pipeline_profile_label(reset_,"pcm.indirect_reset");
+#endif
         }
     }
     SourcePcmSparseEpaNativeStage(
