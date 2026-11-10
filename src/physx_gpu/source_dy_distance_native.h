@@ -1685,7 +1685,7 @@ public:
         // The GPU task stream defines body writeback ownership; its
         // descriptor ordinals need not match the CPU's public Gu index
         // permutation. Source-manager identity owns contact/patch output.
-        const publish_descriptor=[&](const native::GpuDyDistanceDescriptor& desc) {
+        const auto publish_descriptor=[&](const native::GpuDyDistanceDescriptor& desc) {
             // Joint impulses remain local to the GPU PGS row.
             // No Sc task consumes a host copy after solve.
             if((desc.row_count&255u)!=0u)return;
