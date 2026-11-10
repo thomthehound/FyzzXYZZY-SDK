@@ -4424,6 +4424,18 @@ int main(int argc,char** argv) {
 #else
         constexpr auto backend=fyzz::compute::Backend::Vulkan;
 #endif
+        const auto adapters=fyzz::compute::enumerate_devices(backend);
+        require(!adapters.empty(),"No compute adapter is available");
+        const auto& adapter=adapters.front();
+        std::cout<<"FYZZXYZZY_ADAPTER backend="
+                 <<(backend==fyzz::compute::Backend::D3D12?"d3d12":"vulkan")
+                 <<" ordinal="<<adapter.ordinal
+                 <<" vendor_id="<<adapter.vendor_id
+                 <<" device_id="<<adapter.device_id
+                 <<" subgroup_size="<<adapter.subgroup_size
+                 <<" max_workgroup_count_x="<<adapter.max_workgroup_count[0]
+                 <<" unified_memory="<<adapter.unified_memory
+                 <<" name=\""<<adapter.name<<"\"\n";
         verify_rigid_shader_requirements(backend,argv[3]);
         if(scenario=="all" || scenario=="compound_shapes")
             fyzz::tests::measure_gpu_case("sc_pcm","compound_shapes",
