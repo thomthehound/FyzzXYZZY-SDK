@@ -213,6 +213,17 @@ Large tiled tasks retain
 their explicit partition launch dependencies until the device-owned wide
 scheduler is complete.
 
+For compact PCM-owned production frames, Scene submits the existing
+source-indexed contact-manager and 1D row identities with active solver
+body ordinals through its GPU producer. The resident accurate graph owns
+the numerical task/response/body boundaries, while CPU IslandSim retains
+stable public handles and task completion. Wide tiled tasks continue to
+use their existing numerical partition scheduler. The Gu witness join
+and Sc friction/constraint table preparation still precede this submission;
+the device admission does not yet eliminate that earlier CPU boundary.
+Zero authored velocity iterations are valid and retain Dy's mandatory
+final solve/writeback iteration.
+
 CPU Gu and GPU PCM publish physical-touch transitions into the same device
 EdgeIndex history. Accurate device connectivity and new-touch wake admission
 read that resident history for both Gu producers. Sc-authored edge metadata
