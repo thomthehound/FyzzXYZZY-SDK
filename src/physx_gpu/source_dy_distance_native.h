@@ -166,20 +166,20 @@ public:
         pipeline.storage_buffer_views.assign(
             6u,compute::StorageBufferViewKind::RawReadWrite);
         pipeline.push_constant_bytes=128u;
-#if defined(FYZZXYZZY_PROFILE_GPU)
-        pipeline.profile_name="dy.distance_pgs";
-#endif
         pipeline_=context_.create_compute_pipeline(pipeline);
+#if defined(FYZZXYZZY_PROFILE_GPU)
+        context_.set_pipeline_profile_label(pipeline_,"dy.distance_pgs");
+#endif
         if(convex_shader) {
             try {
                 pipeline.shader=std::move(*convex_shader);
                 pipeline.storage_buffer_binding_count=7u;
                 pipeline.storage_buffer_views.assign(
                     7u,compute::StorageBufferViewKind::RawReadWrite);
-#if defined(FYZZXYZZY_PROFILE_GPU)
-                pipeline.profile_name="dy.convex";
-#endif
                 convex_pipeline_=context_.create_compute_pipeline(pipeline);
+#if defined(FYZZXYZZY_PROFILE_GPU)
+                context_.set_pipeline_profile_label(convex_pipeline_,"dy.convex");
+#endif
             }catch(...) {
                 context_.destroy_compute_pipeline(pipeline_);
                 pipeline_=0u;
