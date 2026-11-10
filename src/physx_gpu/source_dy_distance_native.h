@@ -1012,8 +1012,14 @@ public:
         // and writes both sorted descriptors and partition ends itself.
         // Place those output-only ranges after the contact/friction rows;
         // compact anchors must remain adjacent to contact rows.
-        const std::array<std::size_t,count> order=device_initial_bodies
+        // Resident Sc tasks and body ordinals are GPU copy destinations,
+        // not CPU packet inputs. Keep them beyond the host upload cutoff,
+        // alongside Dy's other device-written numerical ranges.
+        const std::array<std::size_t,count> order=device_admission
             ? std::array<std::size_t,count>{
+                1u,8u,9u,10u,11u,12u,14u,15u,13u,6u,7u,0u,2u,3u,4u,5u}
+            : device_initial_bodies
+                ? std::array<std::size_t,count>{
                 1u,5u,8u,4u,9u,10u,11u,12u,14u,15u,13u,6u,7u,0u,2u,3u}
             : device_partitions
                 ? std::array<std::size_t,count>{
@@ -1021,7 +1027,8 @@ public:
                 : std::array<std::size_t,count>{
                     0u,1u,5u,8u,2u,3u,4u,9u,10u,11u,12u,14u,15u,13u,6u,7u};
         last_schedule_.device_generated_bytes=device_partitions
-            ? bytes[2]+bytes[3]:0u;
+            ? bytes[2]+bytes[3]+
+                (device_admission?bytes[4]+bytes[5]:0u):0u;
         std::array<std::size_t,count> offsets{};
         // The original Dy heap retains an EdgeIndex-keyed Sc anchor
         // prefix. Solver output follows it and remains the sole readback;
@@ -1053,7 +1060,8 @@ public:
             if(i!=6u && i!=7u && i!=11u && i!=12u &&
                i!=13u && i!=15u && bytes[i] &&
                (!device_initial_bodies || i!=0u) &&
-               (!device_partitions || (i!=2u && i!=3u)))
+               (!device_partitions || (i!=2u && i!=3u)) &&
+               (!device_admission || (i!=4u && i!=5u)))
                 std::memcpy(host_.data()+offsets[i],sources[i],bytes[i]);
         if(prep_bytes)
             std::memcpy(host_.data()+offsets[11],packed_.data(),prep_bytes);
