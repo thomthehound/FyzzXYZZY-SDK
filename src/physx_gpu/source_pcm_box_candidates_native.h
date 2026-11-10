@@ -100,6 +100,9 @@ public:
         desc.storage_buffer_views.assign(
             9u,compute::StorageBufferViewKind::RawReadWrite);
         desc.push_constant_bytes=56u;
+#if defined(FYZZXYZZY_PROFILE_GPU)
+        desc.profile_name="pcm.candidates";
+#endif
         pipeline_=context_.create_compute_pipeline(desc);
     }
     SourcePcmBoxCandidatesNativeStage(const SourcePcmBoxCandidatesNativeStage&)=delete;
