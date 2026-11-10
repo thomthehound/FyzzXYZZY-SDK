@@ -911,8 +911,12 @@ void verify_device_sc_dy_indirect_api(
         {},{},{},{},{},{},{},{},
         inputs,poses,true,{},true,true,true,sleep);
     require(producer->has_queued_gpu_dy_distance() &&
-            producer->dy_launch_stats().device_island_indirect_dispatches==1u,
-        "Source Sc task admission did not schedule device-indirect Dy");
+            producer->dy_launch_stats().device_island_indirect_dispatches==1u &&
+            producer->dy_launch_stats().device_generated_bytes==
+                sizeof(tasks)+sizeof(ordinals) &&
+            producer->dy_launch_stats().source_descriptor_upload_bytes==0u &&
+            producer->dy_upload_span_count()==2u,
+        "Source Sc task admission retained a host numerical task upload");
     producer->finish_gpu_dy_distance();
     require(tasks[0].error==0u && tasks[1].error==0u &&
             poses[0].valid==1u && poses[1].valid==1u &&
