@@ -52,9 +52,15 @@ SourceSapIncrementalCountsNativeStage::SourceSapIncrementalCountsNativeStage(
         compute::StorageBufferViewKind::RawReadWrite);
     desc.push_constant_bytes=sizeof(Params);
     desc.shader=std::move(first);
+    #if defined(FYZZXYZZY_PROFILE_GPU)
+    desc.profile_name="sap.incremental_counts_first";
+#endif
     first_=context_.create_compute_pipeline(desc);
     try {
         desc.shader=std::move(second);
+        #if defined(FYZZXYZZY_PROFILE_GPU)
+        desc.profile_name="sap.incremental_counts_second";
+#endif
         second_=context_.create_compute_pipeline(desc);
     }catch(...) {
         context_.destroy_compute_pipeline(first_);
