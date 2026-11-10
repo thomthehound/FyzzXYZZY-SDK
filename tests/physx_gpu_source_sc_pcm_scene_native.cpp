@@ -2714,10 +2714,16 @@ void verify_gpu_distance_solver(
         // Five dynamic solver bodies and three disjoint task reports.
         // Joint impulses stay in their device PGS rows, not the
         // completed Sc result stream.
-        constexpr std::size_t expected_output=
+        constexpr std::size_t numerical_output=
             5u*(52u+sizeof(native::GpuDyIntegratedPose))+
             3u*sizeof(std::uint32_t);
-        require(downloaded==expected_output && downloaded<uploaded/2u,
+        const auto& admission=producer->dy_launch_stats();
+        const std::size_t scheduling_output=admission.device_island_indirect_dispatches
+            ?16u+admission.device_colored_tasks*sizeof(native::GpuDyDistanceTask)+
+                 admission.device_world_motion_bodies*sizeof(std::uint32_t)
+            :0u;
+        require(downloaded==numerical_output+scheduling_output &&
+                downloaded<uploaded/2u,
             "Source Dy GPU fetched transient joint row impulses");
         const auto fixed_expected=cpu.body_state(anchored_cpu);
         const auto fixed_actual=gpu.body_state(anchored_gpu);
@@ -3074,10 +3080,11 @@ void verify_host_primitive_pcm_solver(
         gpu.step(dt);
         const auto& completed=producer->stream_submission_stats();
         require(completed.fetch_batches==before_fetch.fetch_batches+1u &&
-                completed.fetch_spans==before_fetch.fetch_spans+1u &&
+                completed.fetch_spans==before_fetch.fetch_spans+4u &&
+                producer->dy_launch_stats().device_island_indirect_dispatches==1u &&
                 completed.fetch_bytes-before_fetch.fetch_bytes==
                     producer->dy_distance_transfer_bytes().second,
-            "Primitive PCM introduced an unnecessary GPU readback");
+            "Primitive PCM introduced an extra GPU synchronization or lost admission metadata");
         require(producer->pcm_contact_readback_bytes()==0u &&
                 producer->pcm_host_contact_upload_bytes()==
                     2u*sizeof(physx_gpu::SourcePcmGpuContactStreamNative) &&
@@ -3328,7 +3335,8 @@ void verify_gpu_free_integration(
         gpu.step(1.f/30.f);
         require(producer->dy_distance_dispatch_count()==frame+1u &&
                 producer->dy_gpu_integrated_body_count()==actual.size() &&
-                producer->dy_upload_span_count()==1u,
+                producer->dy_upload_span_count()==
+                    1u+producer->dy_launch_stats().device_island_indirect_dispatches,
                 "GPU Dy did not integrate every active body in one upload");
         const auto resident=producer->dy_resident_pose_count();
         const auto metadata=producer->dy_launch_stats();
@@ -3399,7 +3407,9 @@ void verify_gpu_free_integration(
                 (!contacts || schedule.device_world_inertia_bodies>0u),
             "Contact-only native Dy skipped resident world-inertia preparation");
         if(contacts) {
-            require(!released && schedule.dispatches==2u &&
+            require(!released &&
+                    schedule.dispatches==2u+
+                        schedule.device_island_indirect_dispatches &&
                     schedule.device_initialization_dispatches==0u &&
                     schedule.device_initialized_bodies>0u &&
                     schedule.device_world_motion_bodies>0u &&
