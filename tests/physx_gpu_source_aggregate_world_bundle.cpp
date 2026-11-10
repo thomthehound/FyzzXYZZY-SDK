@@ -519,12 +519,46 @@ void run(fyzz::compute::Backend backend,
     require(rejected,
         "Incomplete aggregate GPU shader set reached source Sc admission");
 
+    // The combined configuration validates solver dependencies and
+    // backend format before creating the compute Context.
+    auto missing_dy=fyzz::NativeGpuPipelineShaders{.sap=sap};
+    missing_dy.convex_dy=sap.front();
+    rejected=false;
+    try {
+        (void)fyzz::create_native_gpu_world(
+            backend,std::move(missing_dy));
+    }catch(const std::invalid_argument&) {
+        rejected=true;
+    }
+    require(rejected,
+        "Native GPU pipeline accepted convex Dy without numerical Dy");
+    auto wrong_dy=sap.front();
+    wrong_dy.format=backend==fyzz::compute::Backend::Vulkan
+        ?fyzz::compute::ShaderFormat::Dxil:
+         fyzz::compute::ShaderFormat::Spirv;
+    auto incompatible=fyzz::NativeGpuPipelineShaders{.sap=sap};
+    incompatible.dy=std::move(wrong_dy);
+    rejected=false;
+    try {
+        (void)fyzz::create_native_gpu_world(
+            backend,std::move(incompatible));
+    }catch(const std::invalid_argument&) {
+        rejected=true;
+    }
+    require(rejected,
+        "Native GPU pipeline accepted Dy from the wrong compute backend");
+
     // This constructs all twelve real backend pipelines in the same
     // Context as the thirty-four source SAP kernels. The ordinary
     // actor-only scene continues to use exactly the same Sc/PCM/Dy path.
     auto world=fyzz::create_native_gpu_world(
         backend,std::move(sap),std::move(aggregate),
         {fyzz::ExecutionMode::NativePortableGpu,true});
+    rejected=false;
+    try {world.set_gpu_dy_enabled(false);}
+    catch(const std::logic_error&) {rejected=true;}
+    require(rejected,
+        "GPU SAP/aggregate World accepted a missing numerical Dy executor");
     const auto body=world.add_dynamic_box(
         {0.25f,0.25f,0.25f},{0.0f,2.0f,0.0f},1.0f);
 

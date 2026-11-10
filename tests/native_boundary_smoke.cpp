@@ -26,6 +26,11 @@ int main() {
         throw std::runtime_error("Reference-only build boundary bypassed");
 
     World native_cpu(WorldOptions{ExecutionMode::NativeCpu});
+    bool unsupported_dy=false;
+    try {native_cpu.set_gpu_dy_enabled(true);}
+    catch(const std::logic_error&) {unsupported_dy=true;}
+    if(!unsupported_dy)
+        throw std::runtime_error("CPU World admitted GPU numerical execution");
     const auto native_id = native_cpu.add_dynamic_box(
         {0.25f,0.25f,0.25f}, {0,2,0}, 1);
     if (native_cpu.body_state(native_id).position.y != 2)
