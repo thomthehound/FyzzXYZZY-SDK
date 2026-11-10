@@ -4148,6 +4148,9 @@ void Scene::update_contacts() {
     }
     const bool gpu_results_pending=
         source_gpu_pcm && host_pair_count<gpu_pcm_pairs_.size();
+    if(source_gpu_pcm && gpu_broadphase_->has_gpu_dy_distance() &&
+       island_edges_.size()>std::numeric_limits<std::uint32_t>::max())
+        throw std::overflow_error("Sc EdgeIndex watermark exceeds GPU history capacity");
     // General GPU PCM starts before Sc produces any host primitive Gu.
     // Both numerical producers occupy disjoint ordinals in the same
     // contact allocation. The host spans enter the source queue before
@@ -4156,7 +4159,7 @@ void Scene::update_contacts() {
         gpu_broadphase_->enqueue_gpu_pcm_box_contacts(
             gpu_pcm_pairs_,gpu_pcm_results_,
             gpu_broadphase_->has_gpu_dy_distance()
-                ?narrow(island_edges_.size()):0u);
+                ?static_cast<std::uint32_t>(island_edges_.size()):0u);
     // The speculative IslandSim consumes SAP membership, never Gu
     // witness geometry. Admit its first/second-pass topology on the CPU
     // while the same scene stream executes general GPU PCM. Accurate
@@ -4271,7 +4274,7 @@ void Scene::update_contacts() {
             gpu_broadphase_->upload_host_pcm_contacts(
                 gpu_pcm_pairs_,gpu_pcm_results_,
                 gpu_broadphase_->has_gpu_dy_distance()
-                    ?narrow(island_edges_.size()):0u);
+                    ?static_cast<std::uint32_t>(island_edges_.size()):0u);
     }
     bool gpu_results_joined=!gpu_results_pending;
     std::size_t gpu_pcm_index=0u;
