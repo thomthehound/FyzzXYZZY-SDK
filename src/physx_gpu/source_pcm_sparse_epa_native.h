@@ -41,6 +41,9 @@ public:
         if(compact_shader.format==compute::ShaderFormat::Spirv)
             compact_shader.entry_point="compact";
         desc.shader=std::move(compact_shader);
+#if defined(FYZZXYZZY_PROFILE_GPU)
+        desc.profile_name=required_status_==3u?"pcm.epa_compact":"pcm.gjk_compact";
+#endif
         compact_=context_.create_compute_pipeline(desc);
         if(reset_shader) {
             if(reset_shader->format==compute::ShaderFormat::Spirv)
