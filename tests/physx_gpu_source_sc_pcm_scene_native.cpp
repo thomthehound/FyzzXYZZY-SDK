@@ -2031,6 +2031,7 @@ void verify_gpu_coupled_solver(
     double max_normal_error=0.0,max_friction_error=0.0;
     float max_position_error=0.f,max_velocity_error=0.f;
     std::size_t uploaded_bytes=0,downloaded_bytes=0;
+    std::array<double,11> cpu_step_ms{},gpu_step_ms{};
     for(std::uint32_t frame=0;frame<12u;++frame) {
         if(frame==4u || frame==8u) {
             capped_dynamics.max_contact_impulse=frame==4u
@@ -2050,8 +2051,19 @@ void verify_gpu_coupled_solver(
                 {current.position.x+0.12f,current.position.y,
                  current.position.z},current.orientation);
         }
+        const auto start_step=std::chrono::steady_clock::now();
         cpu.step(dt);
+        const auto cpu_done=std::chrono::steady_clock::now();
         gpu.step(dt);
+        if(frame>0u) {
+            const auto gpu_done=std::chrono::steady_clock::now();
+            cpu_step_ms[frame-1u]=
+                std::chrono::duration<double,std::milli>(
+                    cpu_done-start_step).count();
+            gpu_step_ms[frame-1u]=
+                std::chrono::duration<double,std::milli>(
+                    gpu_done-cpu_done).count();
+        }
         native::GpuPcmFrictionAnchorFixture::
             verify_compact_gpu_contact_admission(gpu);
         native::GpuPcmFrictionAnchorFixture::verify(cpu,gpu);
@@ -2223,6 +2235,14 @@ void verify_gpu_coupled_solver(
     require(saw_contact && saw_force && saw_friction &&
             saw_correlated_multi_point,
         "Source coupled GPU test never exercised multi-point contact/friction");
+    std::sort(cpu_step_ms.begin(),cpu_step_ms.end());
+    std::sort(gpu_step_ms.begin(),gpu_step_ms.end());
+    std::cout<<"FYZZXYZZY_METRIC suite=dy_pgs spring_mode="<<spring_mode
+             <<" sampled_frames=11"
+             <<" cpu_step_p50_ms="<<cpu_step_ms[5]
+             <<" gpu_step_p50_ms="<<gpu_step_ms[5]
+             <<" cpu_step_p90_ms="<<cpu_step_ms[9]
+             <<" gpu_step_p90_ms="<<gpu_step_ms[9]<<'\n';
     std::cout<<"FYZZXYZZY_METRIC suite=dy_pgs spring_mode="<<spring_mode
              <<" frames=12 gpu_dispatches="
              <<producer->dy_distance_dispatch_count()
