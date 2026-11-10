@@ -70,8 +70,8 @@ struct SourceScDeviceIslandHeader {
     std::uint32_t errors=0,runnable_components=0;
     std::uint32_t responding_nodes=0,admitted_edges=0;
     // This triple is directly consumable as DispatchIndirectArgs at +16.
-    // The launch is capped by the API's workgroup limit; a Dy consumer
-    // strides over runnable_components when the grid is saturated.
+    // Device admission requires a task capacity within the backend's
+    // workgroup limit; larger frames use the chunked Sc task schedule.
     std::uint32_t dispatch_x=0,dispatch_y=1,dispatch_z=1;
     // Number of source admissions, including dormant and nonresponding edges.
     std::uint32_t source_edges=0u;

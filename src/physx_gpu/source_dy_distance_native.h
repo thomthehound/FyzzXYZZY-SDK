@@ -283,6 +283,10 @@ public:
                std::optional<SourceScDeviceIslandDyView> device_admission=std::nullopt) {
         if(pending_solve_)
             throw std::logic_error("Source Dy numerical epoch already queued");
+        if(device_admission &&
+           tasks.size()>context_.device_info().max_workgroup_count[0])
+            throw std::out_of_range(
+                "Device Sc compact tasks exceed indirect GPU Dy launch capacity");
 
         if(integration.size()<bodies.size() ||
            integrated_poses.size()!=integration.size() ||

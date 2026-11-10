@@ -8950,7 +8950,14 @@ void Scene::solve_gpu_distance_constraints(float seconds) {
     // Free-flight islands do not need contact/constraint task admission.
     // CPU-generated primitive PCM cannot benefit from replaying its
     // already published contact graph on the GPU.
+    const auto device_task_capacity=std::max(
+        gpu_dy_tasks_.size(),
+        std::min(active_accurate_island_batches_.size(),
+                 solver_active_ids_.size()));
+    // Device indirect admission launches one workgroup per runnable task.
+    // Larger task capacities retain the existing chunked GPU Dy launch.
     const bool device_island_admission=
+        device_task_capacity<=gpu_broadphase_->gpu_dy_direct_task_limit() &&
         gpu_dy_responding_island_count_>gpu_dy_tasks_.size() &&
         gpu_broadphase_->has_gpu_pcm_box() && pcm_box_box_enabled_ &&
         std::any_of(gpu_pcm_pairs_.begin(),gpu_pcm_pairs_.end(),
@@ -9039,11 +9046,8 @@ void Scene::solve_gpu_distance_constraints(float seconds) {
         // The CPU accurate island count is an upper bound for the
         // device's runnable roots. It is no longer a numerical task
         // boundary; all actual ranges come back from resident admission.
-        const auto task_capacity=std::max(gpu_dy_tasks_.size(),
-            std::min(active_accurate_island_batches_.size(),
-                     solver_active_ids_.size()));
         const GpuDyDistanceTask last=gpu_dy_tasks_.back();
-        gpu_dy_tasks_.resize(task_capacity,{
+        gpu_dy_tasks_.resize(device_task_capacity,{
             last.descriptor_end,last.descriptor_end,
             last.partition_end,last.partition_end,
             last.body_end,last.body_end,0u,0u,0u});

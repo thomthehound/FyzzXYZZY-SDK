@@ -458,6 +458,9 @@ public:
         throw std::logic_error("Source GPU host PCM stream unavailable");
     }
     virtual bool has_gpu_dy_distance() const noexcept { return false; }
+    virtual std::uint32_t gpu_dy_direct_task_limit() const noexcept {
+        return 0u;
+    }
     virtual void enqueue_gpu_dy_island_admission(
         std::span<const GpuDyIslandEdge>,
         std::span<const std::uint32_t>,GpuDyIslandSources) {
