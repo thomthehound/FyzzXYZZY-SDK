@@ -1006,26 +1006,22 @@ public:
             throw std::overflow_error(
                 "Source GPU free-body velocity writeback exceeds 32-bit view");
         output_bytes+=free_velocity_bytes+free_sleep_bytes;
-        // The device owns the actual admitted counts and compact task/
-        // body order. Return these records in the existing Dy result
-        // transfer so Sc publication never trusts placeholder host
-        // task boundaries or waits for a second scheduling readback.
+        // Actual compact tasks and body ordinals are separate spans of
+        // the same ordered Dy result fetch, not GPU copies to a mirror
+        // region. Their destinations follow numerical output in host
+        // staging; the device arena retains only its real output extent.
         const std::size_t device_header_offset=output_bytes;
         const std::size_t device_task_offset=output_bytes+
             (device_admission?16u:0u);
         const std::size_t device_ordinal_offset=device_task_offset+
             (device_admission?tasks.size_bytes():0u);
-        if(device_admission) {
-            const auto ordinal_bytes=body_ordinals.size_bytes();
-            if(device_ordinal_offset>
-                   std::numeric_limits<std::uint32_t>::max() ||
-               ordinal_bytes>
-                   std::numeric_limits<std::uint32_t>::max()-
-                       device_ordinal_offset)
-                throw std::overflow_error(
-                    "Resident Sc Dy scheduling result exceeds 32-bit address space");
-            output_bytes=device_ordinal_offset+ordinal_bytes;
-        }
+        const std::size_t host_result_bytes=device_ordinal_offset+
+            (device_admission?body_ordinals.size_bytes():0u);
+        if(device_admission &&
+           (host_result_bytes<device_ordinal_offset ||
+            host_result_bytes>std::numeric_limits<std::uint32_t>::max()))
+            throw std::overflow_error(
+                "Resident Sc Dy scheduling result exceeds address space");
         last_schedule_.free_velocity_readback_bytes=free_velocity_bytes;
         last_schedule_.sleep_readback_bytes=
             device_unconstrained_preparation
@@ -1079,7 +1075,7 @@ public:
         // The contact shader addresses anchors backward from contactBias.
         // Keep the compact anchor region immediately before contact rows.
         const auto input_end=offsets[6];
-        host_.resize(input_end);
+        host_.resize(std::max(input_end,host_result_bytes));
         for(std::size_t i=0;i<count;++i)
             if(i!=6u && i!=7u && i!=11u && i!=12u &&
                i!=13u && i!=15u && bytes[i] &&
@@ -1511,19 +1507,27 @@ public:
         // because the packed arena is limited to 32-bit byte offsets.
         launch(Launch::FreeBodies,{0u,(free_bodies+127u)/128u},
                narrow(integration.size()));
-        if(device_admission) {
-            stream_.queue_device_copy(
-                address+history_bytes+device_header_offset,
-                address+offsets[15]+24u,16u);
-            stream_.queue_device_copy(
-                address+history_bytes+device_task_offset,
-                address+offsets[5],tasks.size_bytes());
-            if(!body_ordinals.empty())
-                stream_.queue_device_copy(
-                    address+history_bytes+device_ordinal_offset,
-                    address+offsets[4],body_ordinals.size_bytes());
-        }
         const auto mapped=addresses_.resolve(address+history_bytes,output_bytes);
+        compute::BufferId device_meta_buffer=0u;
+        std::size_t device_meta_offset=0u,device_task_source=0u,
+                    device_ordinal_source=0u;
+        if(device_admission) {
+            const auto metadata=addresses_.resolve(
+                address+offsets[15]+24u,16u);
+            const auto device_tasks=addresses_.resolve(
+                address+offsets[5],tasks.size_bytes());
+            const auto device_ordinals=addresses_.resolve(
+                address+offsets[4],
+                std::max<std::size_t>(4u,body_ordinals.size_bytes()));
+            if(metadata.buffer!=device_tasks.buffer ||
+               metadata.buffer!=device_ordinals.buffer)
+                throw std::logic_error(
+                    "Device Dy scheduling spans crossed the numerical allocation");
+            device_meta_buffer=metadata.buffer;
+            device_meta_offset=metadata.offset;
+            device_task_source=device_tasks.offset;
+            device_ordinal_source=device_ordinals.offset;
+        }
         // Numerical dispatch is ordered after PCM and host Gu uploads,
         // but does not consume the outstanding Sc witness readback.
         // Result publication joins only when Sc explicitly needs Dy.
@@ -1538,6 +1542,10 @@ public:
             .contact_prep=contact_prep,.result_offsets=result_offsets,
             .output_buffer=mapped.buffer,.output_offset=mapped.offset,
             .output_bytes=output_bytes,
+            .device_meta_buffer=device_meta_buffer,
+            .device_meta_source=device_meta_offset,
+            .device_task_source=device_task_source,
+            .device_ordinal_source=device_ordinal_source,
             .device_admission=device_admission.has_value(),
             .device_header_offset=device_header_offset,
             .device_task_offset=device_task_offset,
@@ -1593,11 +1601,20 @@ public:
         const auto device_unconstrained_preparation=
             pending.device_unconstrained_preparation;
         const auto device_world_motion=pending.device_world_motion;
-        const std::array<compute::DownloadSpan,1> downloads{{
+        const std::array<compute::DownloadSpan,4> downloads{{
             {pending.output_buffer,pending.output_offset,
-             host_.data(),output_bytes}
+             host_.data(),output_bytes},
+            {pending.device_meta_buffer,pending.device_meta_source,
+             host_.data()+pending.device_header_offset,16u},
+            {pending.device_meta_buffer,pending.device_task_source,
+             host_.data()+pending.device_task_offset,tasks.size_bytes()},
+            {pending.device_meta_buffer,pending.device_ordinal_source,
+             host_.data()+pending.device_ordinal_offset,
+             body_ordinals.size_bytes()}
         }};
-        stream_.fetch(downloads);
+        const std::size_t download_count=!pending.device_admission?1u:
+            body_ordinals.empty()?3u:4u;
+        stream_.fetch(std::span(downloads.data(),download_count));
         admitted_body_ordinals_.clear();
         bool invalid_device_admission=false;
         if(pending.device_admission) {
@@ -1852,7 +1869,9 @@ public:
             for(std::size_t index=bodies.size();index<integration.size();++index)
                 if(integration[index].active&1u)mirror_pose(index);
         }
-        last_transfer_bytes_={uploaded_bytes,output_bytes};
+        last_transfer_bytes_={uploaded_bytes,
+            output_bytes+(pending.device_admission
+                ?16u+tasks.size_bytes()+body_ordinals.size_bytes():0u)};
         last_reused_pcm_contact_rows_=reused_pcm_rows;
         last_omitted_pcm_upload_bytes_=
             reused_pcm_rows*sizeof(native::GpuDyContactPoint);
@@ -1930,6 +1949,9 @@ private:
         std::array<std::size_t,6> result_offsets{};
         compute::BufferId output_buffer=0u;
         std::size_t output_offset=0u,output_bytes=0u;
+        compute::BufferId device_meta_buffer=0u;
+        std::size_t device_meta_source=0u,device_task_source=0u,
+                    device_ordinal_source=0u;
         bool device_admission=false;
         std::size_t device_header_offset=0u,device_task_offset=0u,
                     device_ordinal_offset=0u;
