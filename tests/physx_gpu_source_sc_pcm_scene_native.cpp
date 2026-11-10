@@ -2080,9 +2080,10 @@ void verify_gpu_coupled_solver(
         require(schedule.device_colored_tasks>0u &&
                 schedule.device_colored_descriptors>0u &&
                 schedule.host_degree_scanned_descriptors==0u &&
-                schedule.device_island_indirect_dispatches==1u &&
-                schedule.device_admitted_tasks>0u &&
-                schedule.device_admitted_bodies>0u,
+                schedule.device_island_indirect_dispatches==0u &&
+                schedule.device_admitted_tasks==0u &&
+                schedule.source_descriptor_upload_bytes==
+                    schedule.device_colored_descriptors*sizeof(std::uint32_t),
             "Coupled Dy retained redundant host constraint-degree scanning");
         require(schedule.device_source_descriptors==
                     schedule.device_colored_descriptors &&
@@ -2258,8 +2259,9 @@ void verify_gpu_coupled_solver(
             gpu.step(dt);
             const auto schedule=producer->dy_launch_stats();
             require(schedule.device_source_descriptors>0u &&
-                    schedule.device_island_indirect_dispatches==1u &&
-                    schedule.source_descriptor_upload_bytes==0u,
+                    schedule.device_island_indirect_dispatches==0u &&
+                    schedule.source_descriptor_upload_bytes==
+                        schedule.device_source_descriptors*sizeof(std::uint32_t),
                 "Moving kinematic contact retained a host numerical descriptor upload");
             const native::Pair pair{kinematic_cpu,responder_cpu};
             const auto contains=[&](const native::Scene& scene) {
@@ -2493,8 +2495,8 @@ void verify_mixed_gu_pcm_gpu_dy_solver(
                     producer->dy_pcm_device_contact_rows()>0u &&
                     producer->dy_cpu_gu_geometry_bytes()>=
                         sizeof(native::GpuDyGuContactInput) &&
-                    producer->dy_upload_span_count()==2u &&
-                    producer->dy_launch_stats().device_island_indirect_dispatches==1u,
+                    producer->dy_upload_span_count()==1u &&
+                    producer->dy_launch_stats().device_island_indirect_dispatches==0u,
                 "Mixed source Gu and PCM rows did not enter device-authored Dy tasks");
             native::GpuPcmFrictionAnchorFixture::verify_device_contact_order(
                 gpu,true,true);
