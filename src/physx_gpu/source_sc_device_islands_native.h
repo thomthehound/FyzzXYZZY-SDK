@@ -20,25 +20,11 @@ namespace fyzz::physx_gpu {
 // Transient view of stable Sc contact-manager and constraint identities.
 // Only responding solver nodes have a dense ordinal. Static and
 // kinematic endpoints use invalid_node and cannot bridge two islands.
-struct SourceScDeviceIslandEdge {
-    std::uint32_t edge_index=0;
-    std::uint32_t node_a=0xffffffffu,node_b=0xffffffffu;
-    std::uint32_t source_index=0;
-    // Bit 0 selects joint (1) or physical contact (0); bit 1 marks
-    // an edge with no solver response. Bit 4 selects device-authored
-    // joint rows rather than full source 1D descriptors. Both Gu
-    // producers derive physical touch from persistent EdgeIndex history.
-    std::uint32_t kind=0;
-};
+using SourceScDeviceIslandEdge=native::GpuDyIslandEdge;
+using SourceScDeviceIslandSources=native::GpuDyIslandSources;
 static_assert(sizeof(SourceScDeviceIslandEdge)==20u);
-// Typed numerical table capacities belong to Dy's source preparation.
-// Edge ordinals cannot substitute for contact-manager, joint-row or
-// full-descriptor ordinals, even when the island graph is valid.
-struct SourceScDeviceIslandSources {
-    std::uint32_t contact_managers=0u;
-    std::uint32_t joint_rows=0u;
-    std::uint32_t full_descriptors=0u;
-};
+// Typed numerical table ordinals are distinct from graph-edge identities.
+// Every source index is validated against its own resident Dy table.
 inline constexpr std::uint32_t source_sc_device_island_joint_bit=1u;
 inline constexpr std::uint32_t source_sc_device_island_no_response_bit=2u;
 // Direct joint tokens require device-authored 1D rows; other joints
