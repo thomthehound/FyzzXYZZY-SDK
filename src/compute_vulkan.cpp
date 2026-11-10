@@ -293,7 +293,9 @@ struct Context::Impl {
         DescriptorReuse descriptors;
     };
     static constexpr std::size_t kMaxCachedBatches = 8;
-
+#if defined(FYZZXYZZY_PROFILE_GPU)
+    std::uint64_t profile_context_id=hardware_profile::allocate_context_id();
+#endif
     VkInstance instance = VK_NULL_HANDLE;
     VkPhysicalDevice physical = VK_NULL_HANDLE;
     VkDevice device = VK_NULL_HANDLE;
