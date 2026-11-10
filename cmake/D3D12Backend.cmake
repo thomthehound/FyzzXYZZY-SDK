@@ -1084,11 +1084,23 @@ if(FYZZXYZZY_BUILD_D3D12)
       LIBRARIES FyzzXYZZY::NativeGpuWorldD3D12
       DEPENDS fyzzxyzzy_native_gpu_sap_shaders_d3d12 fyzzxyzzy_native_gpu_pcm_shaders_d3d12 fyzzxyzzy_source_dy_distance_shader_d3d12 fyzzxyzzy_source_dy_convex_shader_d3d12
       ARGS ${_sc_pcm_scene_args} scene)
-    # Exercise the exact Sc-to-Dy indirect task dependency on WARP
-    # without software execution of full PCM contact geometry.
-    add_test(NAME fyzzxyzzy_source_sc_indirect_api_d3d12
-      COMMAND fyzzxyzzy_source_sc_gpu_pcm_scene_d3d12
-        ${_sc_pcm_scene_args} indirect_api)
+    # Exercise Sc's actual GPU task prefix and indirect launch ABI
+    # without constructing unrelated simulation pipelines on WARP.
+    set(FYZZXYZZY_SOURCE_SC_INDIRECT_PROBE_DXIL
+      "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_source_sc_indirect_probe_native.dxil")
+    fyzzxyzzy_compile_hlsl("${FYZZXYZZY_SOURCE_SC_INDIRECT_PROBE_DXIL}"
+      "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_sc_indirect_probe_native.hlsl"
+      cs_6_0 main)
+    add_custom_target(fyzzxyzzy_source_sc_indirect_probe_shader_d3d12
+      DEPENDS "${FYZZXYZZY_SOURCE_SC_INDIRECT_PROBE_DXIL}")
+    fyzzxyzzy_add_gpu_test(fyzzxyzzy_source_sc_indirect_api_d3d12
+      SOURCES tests/physx_gpu_source_sc_indirect_api.cpp
+      INCLUDES "${CMAKE_CURRENT_SOURCE_DIR}/src"
+      LIBRARIES FyzzXYZZY::ComputeD3D12 fyzzxyzzy_source_gpu_primitives_d3d12
+      DEPENDS fyzzxyzzy_source_sc_device_island_shader_d3d12
+        fyzzxyzzy_source_sc_indirect_probe_shader_d3d12
+      ARGS "${FYZZXYZZY_SOURCE_SC_DEVICE_ISLAND_DXIL}"
+        "${FYZZXYZZY_SOURCE_SC_INDIRECT_PROBE_DXIL}")
     set_tests_properties(fyzzxyzzy_source_sc_indirect_api_d3d12
       PROPERTIES TIMEOUT 45)
     # Independent scene cases share one executable. Give each WARP
