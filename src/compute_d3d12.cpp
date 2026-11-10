@@ -312,6 +312,7 @@ struct Context::Impl {
 #if defined(FYZZXYZZY_PROFILE_GPU)
         std::vector<ProfileOp> profile_ops;
         std::uint64_t profile_trace_id=0u;
+        std::uint32_t query_capacity=0u;
 #endif
     };
 
@@ -1269,9 +1270,11 @@ struct Context::Impl {
         }
         Submission submission = new_commands(&pipeline_sequence, descriptor_count);
 #if defined(FYZZXYZZY_PROFILE_GPU)
-        if(hardware_trace) {
+        if(hardware_trace &&
+           submission.query_capacity<=commands.size()) {
             submission.query_heap.Reset();
             submission.query_readback.Reset();
+            submission.query_capacity=0u;
         }
 #endif
         // Legacy D3D12 requires staging nonoverlapping copies within one
@@ -1303,9 +1306,13 @@ struct Context::Impl {
                 desc.Count=static_cast<UINT>(commands.size()+1u);
             }
 #endif
-            if (!submission.query_heap)
+            if (!submission.query_heap) {
                 check(device->CreateQueryHeap(&desc, IID_PPV_ARGS(&submission.query_heap)),
                       "CreateQueryHeap(timestamp)");
+#if defined(FYZZXYZZY_PROFILE_GPU)
+                submission.query_capacity=desc.Count;
+#endif
+            }
             if (!submission.query_readback)
                 submission.query_readback = allocate_resource(
                     device.Get(),
