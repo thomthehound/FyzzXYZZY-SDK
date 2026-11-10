@@ -4394,7 +4394,7 @@ void verify_gpu_high_degree_coloring(
 
 void qualify_hardware_scene(
     fyzz::compute::Backend backend,const char* sap,const char* pcm,
-    const char* dy_path,std::uint32_t body_count) {
+    const char* dy_path,std::uint32_t body_count,bool gpu_first) {
     using namespace fyzz;
     const auto compiled=[backend](const char* path) {
         std::ifstream file(path,std::ios::binary);
@@ -4459,8 +4459,14 @@ void qualify_hardware_scene(
         return final_states;
     };
     std::vector<double> cpu_ms,gpu_ms;
-    const auto cpu_states=run(false,cpu_ms);
-    const auto gpu_states=run(true,gpu_ms);
+    std::vector<BodyState> cpu_states,gpu_states;
+    if(gpu_first) {
+        gpu_states=run(true,gpu_ms);
+        cpu_states=run(false,cpu_ms);
+    } else {
+        cpu_states=run(false,cpu_ms);
+        gpu_states=run(true,gpu_ms);
+    }
     float max_position_error=0.f,max_velocity_error=0.f;
     for(std::uint32_t i=0u;i<body_count;++i) {
         const auto& a=cpu_states[i];
@@ -4516,6 +4522,10 @@ int main(int argc,char** argv) {
              std::string_view(argv[4]).ends_with(".dxil"));
         const std::string_view scenario=argc>=6?argv[5]:
             (argc==5 && !has_convex_shader?argv[4]:"all");
+        if((scenario=="hardware_scene_1k" || scenario=="hardware_scene_10k") &&
+           argc==7)
+            require(std::string_view(argv[6])=="gpu-first",
+                    "Unknown hardware scenario execution-order selector");
         require(scenario=="all" || scenario=="scene" ||
                 scenario=="aggregate_coupled" ||
                 scenario=="sparse_contacts" || scenario=="coupled_stack" ||
@@ -4686,7 +4696,8 @@ int main(int argc,char** argv) {
             fyzz::tests::measure_gpu_case("hardware_scene",scenario,
                 [&]{qualify_hardware_scene(
                     backend,argv[1],argv[2],argv[3],
-                    scenario=="hardware_scene_1k"?1000u:10000u);});
+                    scenario=="hardware_scene_1k"?1000u:10000u,
+                    argc==7 && std::string_view(argv[6])=="gpu-first");});
         std::cout<<"Native Sc GPU PCM scene "<<scenario<<" PASS\n";
         return 0;
     }catch(const std::exception& error) {
