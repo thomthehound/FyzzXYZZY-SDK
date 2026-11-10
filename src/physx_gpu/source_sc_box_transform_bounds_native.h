@@ -85,6 +85,9 @@ public:
         desc.storage_buffer_views.assign(
             5u,compute::StorageBufferViewKind::RawReadWrite);
         desc.push_constant_bytes=24u;
+        #if defined(FYZZXYZZY_PROFILE_GPU)
+        desc.profile_name="sc.box_bounds";
+#endif
         pipeline_=context_.create_compute_pipeline(desc);
     }
     SourceScBoxTransformBoundsNativeStage(
