@@ -104,6 +104,9 @@ struct SourceDyLaunchStats {
     std::size_t max_partition_groups=0u;
     std::size_t dispatches=0u;
     std::size_t device_island_indirect_dispatches=0u;
+    std::size_t device_admitted_tasks=0u;
+    std::size_t device_admitted_bodies=0u;
+    std::size_t device_admitted_descriptors=0u;
     std::size_t tile_bytes=0u;
     // Device-written descriptors, partition ranges, tasks, and ordinals
     // omitted from the host numerical input packet.
@@ -1602,6 +1605,9 @@ public:
                admitted[3]>descriptors.size())
                 throw std::overflow_error(
                     "Resident Sc Dy scheduling result exceeds declared capacities");
+            last_schedule_.device_admitted_tasks=admitted[1];
+            last_schedule_.device_admitted_bodies=admitted[2];
+            last_schedule_.device_admitted_descriptors=admitted[3];
             if(admitted[1])
                 std::memcpy(tasks.data(),
                     host_.data()+pending.device_task_offset,
