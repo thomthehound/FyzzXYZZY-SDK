@@ -56,6 +56,9 @@ VkInstance create_instance() {
     VkInstanceCreateInfo create{};
     create.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO;
     create.pApplicationInfo = &application;
+#if defined(FYZZXYZZY_PROFILE_GPU)
+    std::uint64_t profile_context_id=hardware_profile::allocate_context_id();
+#endif
     VkInstance instance = VK_NULL_HANDLE;
     require(vkCreateInstance(&create, nullptr, &instance), "vkCreateInstance");
     return instance;
@@ -549,7 +552,8 @@ struct Context::Impl {
             const auto& operation=submission.profile_ops[i];
             const auto elapsed=(ticks[i+1u]-ticks[i])&mask;
             std::printf(
-                "FYZZXYZZY_TRACE kind=gpu backend=vulkan trace_id=%llu submission=%llu op=%llu type=%s pipeline=%llu indirect=%u x=%u y=%u z=%u copy_bytes=%llu duration_ns=%.0f\n",
+                "FYZZXYZZY_TRACE kind=gpu backend=vulkan context=%llu trace_id=%llu submission=%llu op=%llu type=%s pipeline=%llu indirect=%u x=%u y=%u z=%u copy_bytes=%llu duration_ns=%.0f\n",
+                static_cast<unsigned long long>(profile_context_id),
                 static_cast<unsigned long long>(submission.profile_trace_id),
                 static_cast<unsigned long long>(id),
                 static_cast<unsigned long long>(i),
@@ -2063,7 +2067,14 @@ SubmissionId Context::submit_copy_buffer(BufferId source, std::size_t source_off
 }
 
 PipelineId Context::create_compute_pipeline(const ComputePipelineDesc& description) {
-    return impl_->create_pipeline(description);
+    const auto id=impl_->create_pipeline(description);
+#if defined(FYZZXYZZY_PROFILE_GPU)
+    std::printf("FYZZXYZZY_TRACE kind=pipeline backend=vulkan context=%llu pipeline=%llu label=%s\n",
+        static_cast<unsigned long long>(impl_->profile_context_id),
+        static_cast<unsigned long long>(id),
+        description.profile_name.empty()?"unlabeled":description.profile_name.c_str());
+#endif
+    return id;
 }
 
 void Context::destroy_compute_pipeline(PipelineId id) { impl_->destroy_pipeline(id); }
