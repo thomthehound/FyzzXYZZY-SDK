@@ -273,7 +273,7 @@ void main(uint3 thread:SV_DispatchThreadID,
                 const uint velocity=(flags>>8u)&255u;
                 const bool responds=(flags&nonrespondingNode)==0u;
                 if((flags&0xfffc0000u)!=0u ||
-                   (responds && (!position || !velocity)))reject(16u);
+                   (responds && !position))reject(16u);
                 const uint count=p.countBias+root*24u;
                 uint previous;
                 if(responds) {
