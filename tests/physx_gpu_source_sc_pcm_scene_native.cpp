@@ -944,6 +944,7 @@ void verify_device_sc_dy_indirect_api(
     // The unused second slot is capacity, not a host-authored task.
     // It intentionally violates range and iteration invariants.
     tasks[1].descriptor_begin=37u;
+    tasks[1].partition_end=999u;
     tasks[1].body_end=0u;
     tasks[1].position_iterations=0u;
     tasks[1].error=0x4000u;
