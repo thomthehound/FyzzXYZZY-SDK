@@ -1386,13 +1386,16 @@ public:
                 return offset<=layout.bytes && bytes<=layout.bytes-offset;
             };
             if(!in_range(0u,16u) ||
-               !in_range(layout.tasks,tasks.size_bytes()) ||
-               !in_range(layout.body_order,body_ordinals.size_bytes()) ||
-               !in_range(layout.response_tokens,
-                         descriptors.size_bytes()/sizeof(native::GpuDyDistanceDescriptor)*
-                             sizeof(std::uint32_t)))
+               layout.tasks>layout.block_offsets ||
+               layout.body_order>layout.response_tokens ||
+               layout.response_tokens>layout.bytes ||
+               tasks.size_bytes()>layout.block_offsets-layout.tasks ||
+               body_ordinals.size_bytes()>
+                   layout.response_tokens-layout.body_order ||
+               descriptors.size()> (layout.bytes-layout.response_tokens)/
+                   sizeof(std::uint32_t))
                 throw std::out_of_range(
-                    "Source Sc device admission view exceeds its allocation");
+                    "Source Sc device admission capacity exceeds its typed stream");
             stream_.queue_device_copy(address+offsets[15]+24u,
                                       view.work,16u);
             stream_.queue_device_copy(address+offsets[5],
