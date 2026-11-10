@@ -4,6 +4,7 @@
 
 #include "physx_gpu/source_sc_gpu_broadphase_producer_native.h"
 #include "physx_gpu/source_sap_aggregate_owned_stages_native.h"
+#include "hardware_profile.h"
 #include "fyzzxyzzy/native_gpu_world.h"
 #include "physx_foundation_lifetime.h"
 #include "physx_gpu/source_physx_root_callback.h"
@@ -286,6 +287,7 @@ public:
         bool device_unconstrained_preparation=false,
         std::span<native::GpuDySleepState> sleep_states={},
         std::span<const native::GpuDyJointInput> joint_inputs={}) override {
+        FYZZ_PROFILE_SCOPE("dy.device_enqueue");
         if(!dy_distance_)
             throw std::logic_error("Source GPU Dy shader not installed");
         if(dy_distance_->has_queued_solve())
@@ -335,8 +337,26 @@ public:
                                         *pcm_->device_island_indirect_args()}}
                                 :std::nullopt);
         ++dy_distance_dispatch_count_;
+        const auto& schedule=dy_distance_->last_schedule();
+        FYZZ_PROFILE_COUNTER("dy.dispatches",schedule.dispatches);
+        FYZZ_PROFILE_COUNTER("dy.indirect_dispatches",schedule.device_island_indirect_dispatches);
+        FYZZ_PROFILE_COUNTER("dy.wide_tasks",schedule.wide_tasks);
+        FYZZ_PROFILE_COUNTER("dy.partition_groups",schedule.max_partition_groups);
+        FYZZ_PROFILE_COUNTER("dy.tile_bytes",schedule.tile_bytes);
+        FYZZ_PROFILE_COUNTER("dy.device_colored_descriptors",schedule.device_colored_descriptors);
+        FYZZ_PROFILE_COUNTER("dy.host_degree_scanned",schedule.host_degree_scanned_descriptors);
+        FYZZ_PROFILE_COUNTER("dy.device_admitted_tasks",schedule.device_admitted_tasks);
+        FYZZ_PROFILE_COUNTER("dy.device_admitted_descriptors",schedule.device_admitted_descriptors);
+        FYZZ_PROFILE_COUNTER("dy.device_generated_bytes",schedule.device_generated_bytes);
+        FYZZ_PROFILE_COUNTER("dy.source_descriptor_upload_bytes",schedule.source_descriptor_upload_bytes);
+        FYZZ_PROFILE_COUNTER("dy.body_upload_bytes",schedule.device_body_upload_bytes);
+        FYZZ_PROFILE_COUNTER("dy.actor_local_upload_bytes",schedule.actor_local_upload_bytes);
+        FYZZ_PROFILE_COUNTER("dy.resident_poses_reused",schedule.reused_actor_local_poses);
+        FYZZ_PROFILE_COUNTER("dy.resident_velocities_reused",schedule.resident_velocity_reuses);
+        FYZZ_PROFILE_COUNTER("dy.sleep_readback_bytes",schedule.sleep_readback_bytes);
     }
     void finish_gpu_dy_distance() override {
+        FYZZ_PROFILE_SCOPE("dy.device_result_join");
         if(!dy_distance_ || !dy_distance_->has_queued_solve())
             throw std::logic_error("Source GPU Dy has no queued numerical epoch");
         dy_distance_->finish();
