@@ -86,6 +86,13 @@ public:
         if(staged_gjk_)
             primitive_gjk_stage_.emplace(
                 context_,std::move(gjk_primitive),false,true,false,true);
+#if defined(FYZZXYZZY_PROFILE_GPU)
+        gjk_stage_.set_profile_label("pcm.gjk_initial");
+        gjk_reduce_stage_.set_profile_label("pcm.gjk_reduce");
+        gjk_publish_stage_.set_profile_label("pcm.gjk_publish");
+        if(primitive_gjk_stage_)
+            primitive_gjk_stage_->set_profile_label("pcm.gjk_primitive");
+#endif
         // PCM GJK/EPA and Sc island admission share one physical
         // indirect-argument resource.
         // D3D12 indirect arguments require their own physical resource.
