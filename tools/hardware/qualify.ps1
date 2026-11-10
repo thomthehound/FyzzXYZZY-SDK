@@ -190,6 +190,10 @@ function Invoke-Scenario($Config, [string]$Case, [string]$Phase, [int]$Index) {
     $logPath = Join-Path $out $logName
     $argv = @($Config.Arguments) + @($Case)
     if ($Case -eq 'aggregate_coupled') { $argv += $Config.Aggregate }
+    if ($Case.StartsWith('hardware_scene_') -and $Phase -eq 'sample' -and
+        ($Index % 2) -eq 1) {
+        $argv += 'gpu-first'
+    }
     $clock = [Diagnostics.Stopwatch]::StartNew()
     $lines = @(& $Config.Executable @argv 2>&1 | ForEach-Object { "$_" })
     $status = $LASTEXITCODE
