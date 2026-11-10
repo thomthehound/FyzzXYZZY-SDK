@@ -279,6 +279,19 @@ struct GpuDyDistanceTask {
     std::uint32_t error=0u;
 };
 static_assert(sizeof(GpuDyDistanceTask)==36u);
+// Transient Sc edge identities and typed Dy numerical table bounds.
+// These are borrowed per-step views, not persistent public island IDs.
+struct GpuDyIslandEdge {
+    std::uint32_t edge_index=0;
+    std::uint32_t node_a=0xffffffffu,node_b=0xffffffffu;
+    std::uint32_t source_index=0,kind=0;
+};
+static_assert(sizeof(GpuDyIslandEdge)==20u);
+struct GpuDyIslandSources {
+    std::uint32_t contact_managers=0u;
+    std::uint32_t joint_rows=0u;
+    std::uint32_t full_descriptors=0u;
+};
 // Both Sc endpoint admission and Dy wide-task scheduling use this gate.
 // Compact tasks never require host endpoint-degree analysis.
 inline constexpr std::uint32_t gpu_dy_wide_task_threshold=4u*128u;
@@ -433,6 +446,11 @@ public:
         throw std::logic_error("Source GPU host PCM stream unavailable");
     }
     virtual bool has_gpu_dy_distance() const noexcept { return false; }
+    virtual void enqueue_gpu_dy_island_admission(
+        std::span<const GpuDyIslandEdge>,
+        std::span<const std::uint32_t>,GpuDyIslandSources) {
+        throw std::logic_error("Device Sc accurate-island admission is unavailable");
+    }
     virtual void enqueue_gpu_dy_distance(
         std::span<GpuDyDistanceBody>,
         std::span<GpuDyJointRow>,
@@ -2112,6 +2130,8 @@ private:
     std::vector<GpuDyJointRow> gpu_dy_rows_;
     std::vector<GpuDyJointInput> gpu_dy_joint_inputs_;
     std::vector<std::uint32_t> gpu_dy_body_ordinals_;
+    std::vector<std::uint32_t> gpu_dy_island_node_flags_;
+    std::vector<GpuDyIslandEdge> gpu_dy_island_edges_;
     std::vector<GpuDyDistanceTask> gpu_dy_tasks_;
     std::vector<float> gpu_dy_contact_forces_;
     std::vector<GpuDyGuContactInput> gpu_dy_gu_inputs_;
