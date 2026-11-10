@@ -201,12 +201,14 @@ $correctness = @(
     'plane_only_pcm', 'single_island', 'distance_solver', 'free_integration',
     'sparse_contacts', 'compound_solver', 'sphere_solver',
     'convex_plane', 'convex_finite', 'aggregate_coupled',
-    'wide_islands', 'zero_response_wide', 'dual_hub', 'star_island'
+    'wide_islands', 'zero_response_wide', 'dual_hub', 'star_island',
+    'hardware_scene_1k'
 )
-$profiles = @('coupled_solver', 'mixed_solver', 'single_island', 'wide_islands')
+$profiles = @('hardware_scene_1k', 'coupled_solver', 'mixed_solver',
+    'single_island', 'wide_islands')
 if ($Scale) {
-    $correctness += @('star_island_10k', 'wide_islands_10k')
-    $profiles += 'star_island_10k'
+    $correctness += @('hardware_scene_10k', 'star_island_10k', 'wide_islands_10k')
+    $profiles += @('hardware_scene_10k', 'star_island_10k')
 }
 foreach ($config in $configs) {
     foreach ($case in $correctness) {
