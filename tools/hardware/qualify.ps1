@@ -228,6 +228,11 @@ function Invoke-Scenario($Config, [string]$Case, [string]$Phase, [int]$Index) {
     if ($traceRecords.Count -gt 0) {
         Add-Content -LiteralPath $traces -Value $traceRecords.ToArray() -Encoding utf8
     }
+    if (@($lines | Where-Object {
+        $_.StartsWith('FYZZXYZZY_TRACE kind=overflow ')
+    }).Count -ne 0) {
+        throw "Profiling trace capacity exceeded: $logPath"
+    }
     if ($Case.StartsWith('hardware_scene_') -and
         -not (@($lines | Where-Object {
             $_.StartsWith('FYZZXYZZY_TRACE kind=gpu ')
