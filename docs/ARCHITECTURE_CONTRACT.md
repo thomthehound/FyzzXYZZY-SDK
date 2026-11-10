@@ -124,27 +124,26 @@ another simulation scheduler.
 | --- | --- | --- |
 | Admit | CPU validates authored changes, sparse handles, filters and topology edits; device mirrors only the inputs needed for execution | Sparse changes and device uploads become visible before their consumers |
 | Broadphase | GPU processes dense bounds, persistent overlap history and reports; CPU admits or retires stable contact-manager identities from required report deltas | Manager admission precedes new contact work |
-| Narrowphase | Each manager has exactly one numerical Gu producer, CPU or GPU. GPU-owned witnesses and persistent device contact history remain resident | Device touch state drives device constraint admission without full witness readback |
-| Frame topology | CPU owns stable scene handles, callbacks and persistent public graph. GPU owns same-frame accurate contact connectivity, affected island routing and numerical task admission when those depend on GPU touch | Actual touch, not speculative overlap, determines active constraint connectivity |
-| Dynamics | GPU consumes resident contact, friction, joint and body streams for preparation, partitioning, solving, integration and sleep decisions; sparse CPU-only work enters through explicit dependencies | Device-dependent stages run in ordered submissions without a default host fence between them |
+| Narrowphase | Each manager has one numerical Gu producer, CPU or GPU. GPU-owned witnesses and contact history remain resident where they have GPU consumers | The actual Gu touch, not speculative overlap, determines accurate connectivity; Sc may join witnesses needed for CPU correlation |
+| Frame topology | CPU Sc owns persistent identity, active island routing and public graph. Transient GPU admission splits compact numerical groups where it exposes useful independent tasks | Sc task ranges or device-admitted ranges supply Dy without a second persistent graph |
+| Dynamics | CPU or GPU Dy consumes the prepared rigid contact, joint and body streams. Execution can change between completed frames in the same Scene | Each selected numerical stage completes before authoritative Sc writeback and publication |
 | Publish | One scene completion boundary validates compact topology/event deltas and requested results, reconciles public CPU views and commits all persistent histories | Failed transactions retire or restore submitted device work before state reuse |
 
 **Ownership is distinct from observation.** The CPU can own an EdgeIndex and
 its published lifecycle without owning the numerical witnesses occupying its
-device slot. The GPU can own the current frame's accurate contact graph while
-the CPU maintains stable identifiers and a reconciled public graph. Neither
+device slot. The GPU can construct a transient numerical contact graph while
+the CPU maintains stable identifiers and authoritative active islands. Neither
 may independently invent touch transitions. Cached contact/friction history
 has one owner per epoch, with explicit invalidation when its producer changes.
 
-**Normal-frame dependencies must remain on-device** from general GPU
-contact generation through contact/friction correlation, accurate task
-admission, constraint preparation and solving. Sc may consume compact
-transitions or topology changes at the final publication boundary.
-Callbacks, CPU-only geometry and sparse topology edits may require earlier
-host joins, but must identify the actual consuming task and affect only the
-necessary workload; they are not permission for a global per-frame witness
-download. A numerical operation is never duplicated on both processors as
-an implicit verification or scheduling strategy.
+**Preserve useful producer-to-consumer locality.** GPU contact generation
+can feed device correlation and numerical solve directly when supported and
+less expensive. CPU Sc friction correlation or accurate-island work may
+consume GPU witnesses at an explicit earlier join when that division
+minimizes whole-frame cost. A host join must have a real consumer; a GPU
+launch must expose useful parallelism or computation. Measure transfer,
+submission and waiting costs before moving these dependencies. Neither
+processor duplicates numerical operations for implicit verification.
 
 **No false connectivity shortcut.** Broadphase overlap can feed speculative
 waking and admission; it cannot stand in for accurate contact connectivity.
@@ -213,16 +212,14 @@ Large tiled tasks retain
 their explicit partition launch dependencies until the device-owned wide
 scheduler is complete.
 
-For compact PCM-owned production frames, Scene submits the existing
-source-indexed contact-manager and 1D row identities with active solver
-body ordinals through its GPU producer. The resident accurate graph owns
-the numerical task/response/body boundaries, while CPU IslandSim retains
-stable public handles and task completion. Wide tiled tasks continue to
-use their existing numerical partition scheduler. The Gu witness join
-and Sc friction/constraint table preparation still precede this submission;
-the device admission does not yet eliminate that earlier CPU boundary.
-Zero authored velocity iterations are valid and retain Dy's mandatory
-final solve/writeback iteration.
+For compact PCM-owned production frames, Scene ordinarily reuses its
+already prepared numerical task boundaries. When Sc has batched multiple
+responding islands into fewer tasks, transient device accurate admission
+can expose additional independent task/body/response ranges. Wide tiled
+tasks retain their existing numerical partition scheduler. The Gu witness
+join and Sc friction/constraint preparation precede both execution choices
+when those operations consume contact geometry. Zero authored velocity
+iterations retain Dy's mandatory final solve/writeback iteration.
 
 CPU Gu and GPU PCM publish physical-touch transitions into the same device
 EdgeIndex history. Accurate device connectivity and new-touch wake admission
@@ -286,27 +283,22 @@ accurate-island/friction/Dy descriptor construction still happens after
 the PCM witness join; this scheduling overlap does not retire that
 earlier CPU admission dependency.
 
-**Current migration boundary:** general GPU PCM still downloads its 84-byte
-contact records before CPU Sc friction correlation and accurate-island
-scheduling. The ordered PCM enqueue/join starts general GPU PCM before
-independent CPU primitive witness generation and speculative IslandSim
-first/second-pass topology admission. Both numerical producers and SAP-owned
-speculative graph admission can run before Sc observes GPU contact witnesses.
-The packed witness DMA is submitted immediately after the final PCM
-kernel and remains Context-owned until Sc reaches its actual-touch join.
-Both API backends publish the borrowed Gu arena only on completion;
-a rejected transaction discards its DMA without exposing stale contacts.
-Only actual-touch accurate topology waits for Gu. Lost-edge route repair,
-wake/sleep decisions and Dy task admission retain their source dependencies.
-This overlap does not remove the final same-frame Sc synchronization
-dependency. The next integration gate is GPU-consumed touch and friction/task
-admission with correct same-frame connectivity, followed by compact public
-reconciliation. Only then can normal GPU PCM -> Dy be considered free of an
-intermediate host witness fence. Test rollback between enqueue and join,
-mixed producer ownership, topology splits/merges, anchor persistence, sleep
-transitions and both API backends. Physical-device traces must show the
-actual critical path, transfer counts and queue idle intervals before
-claiming a performance improvement.
+**Current hybrid execution boundary:** general GPU PCM publishes its
+contact witnesses for CPU Sc correlation and accurate-island routing before
+Dy's numerical execution. Independent CPU Gu work overlaps the queued GPU
+PCM generation and witness transfer. GPU and CPU Dy share the authoritative
+Sc scene, contact history and completion contract; changing executor only
+invalidates affected device pose caches. A transient device admission pass
+is selected only when it exposes numerical parallelism absent from the
+existing CPU task groups. The witness join is a measurable cost, not an
+unconditional migration requirement.
+
+Qualify CPU and GPU critical paths and scene-consumer synchronization before
+moving this boundary. Verify failure recovery across queued witness fetch,
+mixed contact producers, topology splits/merges, anchor persistence,
+sleep transitions, and executor changes on both APIs. A performance
+improvement requires physical-device evidence of the critical path and
+queue occupancy, not a device-residency count.
 
 ## 3. Source-faithful production integration
 
