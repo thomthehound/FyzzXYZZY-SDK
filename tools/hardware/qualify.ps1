@@ -61,7 +61,7 @@ function Get-ScenarioMetrics([string[]]$Lines) {
         }
         $metrics += $fields
     }
-    return ,$metrics
+    return $metrics
 }
 
 function Get-Executable([string]$Build, [string]$Name) {
