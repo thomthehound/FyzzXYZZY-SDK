@@ -1598,7 +1598,7 @@ public:
              host_.data(),output_bytes}
         }};
         stream_.fetch(downloads);
-        std::vector<std::uint32_t> admitted_body_ordinals;
+        admitted_body_ordinals_.clear();
         if(pending.device_admission) {
             std::array<std::uint32_t,4> admitted{};
             std::memcpy(admitted.data(),
@@ -1618,12 +1618,12 @@ public:
             for(std::size_t i=admitted[1];i<tasks.size();++i)
                 tasks[i].error=0u;
             tasks=tasks.first(admitted[1]);
-            admitted_body_ordinals.resize(admitted[2]);
+            admitted_body_ordinals_.resize(admitted[2]);
             if(admitted[2])
-                std::memcpy(admitted_body_ordinals.data(),
+                std::memcpy(admitted_body_ordinals_.data(),
                     host_.data()+pending.device_ordinal_offset,
                     admitted[2]*sizeof(std::uint32_t));
-            body_ordinals=admitted_body_ordinals;
+            body_ordinals=admitted_body_ordinals_;
         }
         for(const auto id:pending_actor_locals_)
             actor_local_valid_[id]=1u;
@@ -2338,6 +2338,7 @@ private:
     std::size_t alignment_=0u;
     std::uint64_t max_view_=0u;
     std::vector<std::uint8_t> host_;
+    std::vector<std::uint32_t> admitted_body_ordinals_;
     std::vector<SourceDyPackedContactPrepNative> packed_;
     std::vector<std::uint32_t> source_descriptor_tokens_;
     std::vector<native::GpuDyDistanceDescriptor> source_descriptor_full_;
