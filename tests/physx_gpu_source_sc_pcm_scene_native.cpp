@@ -4442,9 +4442,16 @@ void qualify_hardware_scene(
         for(std::uint32_t frame=0u;frame<warmup+measured;++frame) {
             const auto start=std::chrono::steady_clock::now();
             world.step(dt);
-            if(frame>=warmup)
-                step_ms.push_back(std::chrono::duration<double,std::milli>(
-                    std::chrono::steady_clock::now()-start).count());
+            if(frame>=warmup) {
+                const auto elapsed=std::chrono::duration<double,std::milli>(
+                    std::chrono::steady_clock::now()-start).count();
+                step_ms.push_back(elapsed);
+                std::cout<<"FYZZXYZZY_METRIC suite=hardware_step"
+                         <<" bodies="<<body_count
+                         <<" gpu_dy="<<gpu_dy
+                         <<" sample="<<(frame-warmup)
+                         <<" step_ms="<<elapsed<<'\n';
+            }
         }
         std::vector<BodyState> final_states;
         final_states.reserve(body_count);
