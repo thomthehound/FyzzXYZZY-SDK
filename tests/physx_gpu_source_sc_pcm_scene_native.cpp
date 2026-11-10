@@ -941,6 +941,11 @@ void verify_device_sc_dy_indirect_api(
         std::span<const physx_gpu::SourceScDeviceIslandEdge>{},
         partly_active,physx_gpu::SourceScDeviceIslandSources{});
     tasks[0].error=0x4000u;
+    // The unused second slot is capacity, not a host-authored task.
+    // It intentionally violates range and iteration invariants.
+    tasks[1].descriptor_begin=37u;
+    tasks[1].body_end=0u;
+    tasks[1].position_iterations=0u;
     tasks[1].error=0x4000u;
     poses={};
     producer->enqueue_gpu_dy_distance(
