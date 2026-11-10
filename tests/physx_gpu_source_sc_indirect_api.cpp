@@ -12,6 +12,7 @@
 #include <iostream>
 #include <iterator>
 #include <stdexcept>
+#include <utility>
 
 namespace {
 using namespace fyzz::compute;
