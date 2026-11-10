@@ -40,10 +40,10 @@ SourceSapIncrementalPairsNativeStage::SourceSapIncrementalPairsNativeStage(
     desc.storage_buffer_views.assign(kViews,
         compute::StorageBufferViewKind::RawReadWrite);
     desc.push_constant_bytes=sizeof(Params);
-    #if defined(FYZZXYZZY_PROFILE_GPU)
-    desc.profile_name="sap.incremental_pairs";
-#endif
     pipeline_=context_.create_compute_pipeline(desc);
+#if defined(FYZZXYZZY_PROFILE_GPU)
+    context_.set_pipeline_profile_label(pipeline_,"sap.incremental_pairs");
+#endif
 }
 SourceSapIncrementalPairsNativeStage::~SourceSapIncrementalPairsNativeStage(){
     if(pipeline_)context_.destroy_compute_pipeline(pipeline_);
