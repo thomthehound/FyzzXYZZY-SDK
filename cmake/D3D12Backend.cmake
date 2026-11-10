@@ -1084,13 +1084,13 @@ if(FYZZXYZZY_BUILD_D3D12)
       LIBRARIES FyzzXYZZY::NativeGpuWorldD3D12
       DEPENDS fyzzxyzzy_native_gpu_sap_shaders_d3d12 fyzzxyzzy_native_gpu_pcm_shaders_d3d12 fyzzxyzzy_source_dy_distance_shader_d3d12 fyzzxyzzy_source_dy_convex_shader_d3d12
       ARGS ${_sc_pcm_scene_args} scene)
-    # Exercise the actual Sc-to-Dy indirect task dependency on WARP.
-    # The full numerical scene matrix remains physical-GPU acceptance.
-    add_test(NAME fyzzxyzzy_source_sc_device_admission_d3d12
+    # Exercise the exact Sc-to-Dy indirect task dependency on WARP
+    # without software execution of full PCM contact geometry.
+    add_test(NAME fyzzxyzzy_source_sc_indirect_api_d3d12
       COMMAND fyzzxyzzy_source_sc_gpu_pcm_scene_d3d12
-        ${_sc_pcm_scene_args} device_admission)
-    set_tests_properties(fyzzxyzzy_source_sc_device_admission_d3d12
-      PROPERTIES TIMEOUT 90)
+        ${_sc_pcm_scene_args} indirect_api)
+    set_tests_properties(fyzzxyzzy_source_sc_indirect_api_d3d12
+      PROPERTIES TIMEOUT 45)
     # Independent scene cases share one executable. Give each WARP
     # workload its own timeout and keep its timing in the CTest log.
     set(_sc_pcm_scene_tests fyzzxyzzy_source_sc_gpu_pcm_scene_d3d12)
