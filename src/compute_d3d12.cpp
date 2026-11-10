@@ -621,18 +621,12 @@ struct Context::Impl {
             if(ticks[i+1u]<ticks[i])
                 throw std::runtime_error("D3D12 hardware timestamp counter regressed");
             const auto elapsed=ticks[i+1u]-ticks[i];
-            std::printf(
-                "FYZZXYZZY_TRACE kind=gpu backend=d3d12 context=%llu trace_id=%llu submission=%llu op=%llu type=%s pipeline=%llu indirect=%u x=%u y=%u z=%u copy_bytes=%llu duration_ns=%.0f\n",
-                static_cast<unsigned long long>(profile_context_id),
-                static_cast<unsigned long long>(submission.profile_trace_id),
-                static_cast<unsigned long long>(id),
-                static_cast<unsigned long long>(i),
-                operation.pipeline?"dispatch":"copy",
-                static_cast<unsigned long long>(operation.pipeline),
-                unsigned(operation.indirect),
-                operation.x,operation.y,operation.z,
-                static_cast<unsigned long long>(operation.bytes),
-                static_cast<double>(elapsed)*1.0e9/static_cast<double>(trace_frequency));
+            hardware_profile::gpu_event({
+                "d3d12",operation.pipeline?"dispatch":"copy",
+                profile_context_id,submission.profile_trace_id,
+                id,i,operation.pipeline,operation.bytes,
+                operation.x,operation.y,operation.z,operation.indirect,
+                static_cast<double>(elapsed)*1.0e9/static_cast<double>(trace_frequency)});
         }
     }
 #endif
@@ -1624,11 +1618,9 @@ const DeviceInfo& Context::device_info() const { return impl_->info; }
 BufferId Context::create_buffer(std::size_t bytes, MemoryPlacement placement) {
     const auto id=impl_->create_buffer(bytes, placement);
 #if defined(FYZZXYZZY_PROFILE_GPU)
-    std::printf("FYZZXYZZY_TRACE kind=buffer backend=d3d12 context=%llu trace_id=%llu action=create buffer=%llu bytes=%llu placement=%u\n",
-        static_cast<unsigned long long>(impl_->profile_context_id),
-        static_cast<unsigned long long>(hardware_profile::current_trace_id()),
-        static_cast<unsigned long long>(id),
-        static_cast<unsigned long long>(bytes),unsigned(placement));
+    hardware_profile::buffer_event({
+        "d3d12","create",impl_->profile_context_id,
+        hardware_profile::current_trace_id(),id,bytes,unsigned(placement)});
 #endif
     return id;
 }
@@ -1638,11 +1630,9 @@ void Context::destroy_buffer(BufferId id) {
 #endif
     impl_->destroy_buffer(id);
 #if defined(FYZZXYZZY_PROFILE_GPU)
-    std::printf("FYZZXYZZY_TRACE kind=buffer backend=d3d12 context=%llu trace_id=%llu action=destroy buffer=%llu bytes=%llu\n",
-        static_cast<unsigned long long>(impl_->profile_context_id),
-        static_cast<unsigned long long>(hardware_profile::current_trace_id()),
-        static_cast<unsigned long long>(id),
-        static_cast<unsigned long long>(bytes));
+    hardware_profile::buffer_event({
+        "d3d12","destroy",impl_->profile_context_id,
+        hardware_profile::current_trace_id(),id,bytes,0u});
 #endif
 }
 void Context::retire_buffer(BufferId id) {
@@ -1651,11 +1641,9 @@ void Context::retire_buffer(BufferId id) {
 #endif
     impl_->retire_buffer(id);
 #if defined(FYZZXYZZY_PROFILE_GPU)
-    std::printf("FYZZXYZZY_TRACE kind=buffer backend=d3d12 context=%llu trace_id=%llu action=retire buffer=%llu bytes=%llu\n",
-        static_cast<unsigned long long>(impl_->profile_context_id),
-        static_cast<unsigned long long>(hardware_profile::current_trace_id()),
-        static_cast<unsigned long long>(id),
-        static_cast<unsigned long long>(bytes));
+    hardware_profile::buffer_event({
+        "d3d12","retire",impl_->profile_context_id,
+        hardware_profile::current_trace_id(),id,bytes,0u});
 #endif
 }
 bool Context::buffer_is_host_visible(BufferId id) const {
@@ -1705,9 +1693,8 @@ PipelineId Context::create_compute_pipeline(const ComputePipelineDesc& desc) {
 }
 #if defined(FYZZXYZZY_PROFILE_GPU)
 void Context::set_pipeline_profile_label(PipelineId id,const char* label) const noexcept {
-    std::printf("FYZZXYZZY_TRACE kind=pipeline backend=d3d12 context=%llu pipeline=%llu label=%s\n",
-        static_cast<unsigned long long>(impl_->profile_context_id),
-        static_cast<unsigned long long>(id),label);
+    hardware_profile::pipeline_event({
+        "d3d12",label,impl_->profile_context_id,id});
 }
 #endif
 void Context::destroy_compute_pipeline(PipelineId id) { impl_->destroy_pipeline(id); }
