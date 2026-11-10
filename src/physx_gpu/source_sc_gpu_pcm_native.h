@@ -76,6 +76,8 @@ public:
           work_(allocator,physx::PxsHeapStats::eNARROWPHASE),
           dense_contacts_(allocator,physx::PxsHeapStats::eNARROWPHASE),
           journal_(allocator,physx::PxsHeapStats::eNARROWPHASE),
+          gu_touch_records_(allocator,physx::PxsHeapStats::eNARROWPHASE),
+          gu_touch_journal_(allocator,physx::PxsHeapStats::eNARROWPHASE),
           island_edges_(allocator,physx::PxsHeapStats::eNARROWPHASE),
           island_nodes_(allocator,physx::PxsHeapStats::eNARROWPHASE),
           island_work_(allocator,physx::PxsHeapStats::eNARROWPHASE) {
@@ -116,7 +118,7 @@ public:
         if(pcm_transaction_pending_) {
             // A submitted PCM epoch may have changed Gu witnesses even
             // when Sc/Dy later rejected the complete simulation frame.
-            restore_pending_=journal_pair_count_!=0u;
+            restore_pending_=journal_pair_count_!=0u || gu_touch_count_!=0u;
             pcm_transaction_pending_=false;
             published_pair_count_=0u;
             // Refreshed PCM epochs restore their journal before the next submission.
@@ -146,6 +148,7 @@ public:
             published_edge_span_bytes_,pending_edge_span_bytes_);
         pcm_transaction_pending_=false;
         journal_pair_count_=0u;
+        gu_touch_count_=0u;
         island_work_ready_=false;
         journal_host_only_=false;
     }
@@ -570,6 +573,33 @@ public:
         host_upload_pending_=true;
     }
 
+    // Legacy CPU Gu publishes only its existing EdgeIndex and physical
+    // transition, never a second contact-manager or PCM witness. The
+    // resident touch journal remains authoritative for both producers.
+    void enqueue_cpu_gu_touches(
+            std::span<const native::GpuGuTouchRecord> touches) {
+        if(touches.empty())return;
+        if(!pcm_transaction_pending_ || !device_contact_ready() ||
+           gu_touch_count_ || touches.size()>std::numeric_limits<std::uint32_t>::max())
+            throw std::logic_error("CPU Gu touch journal has no active PCM epoch");
+        const auto capacity=device_edge_history_capacity();
+        for(const auto& record:touches)
+            if(record.edge_index>=capacity || (record.touch_bits&~3u)!=0u)
+                throw std::out_of_range("CPU Gu touch exceeds resident EdgeIndex history");
+        gu_touch_count_=static_cast<std::uint32_t>(touches.size());
+        const auto bytes=touches.size_bytes();
+        gu_touch_records_.allocate(bytes,PX_FL);
+        gu_touch_journal_.allocate(bytes,PX_FL);
+        auto& uploads=stream_.upload_scratch();
+        uploads.push_back({
+            gu_touch_records_.getDevicePtr(),touches.data(),bytes});
+        stream_.queue_uploads(uploads);
+        journal_stage_.append(stream_,addresses_,
+            SourceScContactHistoryNativeStage::Phase::PublishGuTouch,
+            gu_touch_records_.getDevicePtr(),edges_.getDevicePtr(),
+            gu_touch_journal_.getDevicePtr(),gu_touch_count_,capacity);
+    }
+
     // Sc supplies only stable, typed endpoints and authored iteration
     // metadata. GPU PCM publishes actual touch on the same queue; the
     // accurate island stage consumes its resident history without a
@@ -772,6 +802,14 @@ private:
     }
     void restore_rejected_epoch() {
         if(!restore_pending_)return;
+        // Undo CPU-only Gu transitions first, then restore the preceding
+        // PCM snapshot. Both affect one authoritative device history.
+        if(gu_touch_count_)
+            journal_stage_.append(stream_,addresses_,
+                SourceScContactHistoryNativeStage::Phase::RestoreGuTouch,
+                gu_touch_records_.getDevicePtr(),edges_.getDevicePtr(),
+                gu_touch_journal_.getDevicePtr(),gu_touch_count_,
+                journal_edge_capacity_);
         // A rejected GPU Gu journal must be restored before another
         // producer can touch the same persistent EdgeIndex history.
         journal_stage_.append(stream_,addresses_,
@@ -786,6 +824,7 @@ private:
         stream_.wait_at_fetch();
         restore_pending_=false;
         journal_pair_count_=0u;
+        gu_touch_count_=0u;
         journal_host_only_=false;
     }
     compute::Context& context_;
@@ -808,6 +847,7 @@ private:
     SourceScContactHistoryNativeStage journal_stage_;
     SourceScDeviceIslandsNativeStage island_stage_;
     physx::PxgCudaBuffer pairs_,results_,candidates_,edges_,work_,dense_contacts_,journal_;
+    physx::PxgCudaBuffer gu_touch_records_,gu_touch_journal_;
     physx::PxgCudaBuffer island_edges_,island_nodes_,island_work_;
     SourceScDeviceIslandLayout island_layout_{};
     compute::BufferId indirect_buffer_=0u;
@@ -826,6 +866,7 @@ private:
     std::span<const native::GpuPcmBoxPair> pending_requests_{};
     std::span<native::GpuPcmBoxResult> pending_output_{};
     std::uint32_t journal_pair_count_=0u,journal_edge_capacity_=0u;
+    std::uint32_t gu_touch_count_=0u;
     std::size_t pending_edge_span_bytes_=0u;
     std::uint32_t published_pair_count_=0u;
     std::size_t last_pair_upload_bytes_=0u;
