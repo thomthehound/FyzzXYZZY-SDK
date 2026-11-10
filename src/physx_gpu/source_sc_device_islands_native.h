@@ -62,6 +62,7 @@ static_assert(sizeof(SourceScDeviceIslandAdmission)==24u);
 // journaled prior touch snapshot. GPU connectivity propagates both
 // through the accurate component without a CPU witness join.
 inline constexpr std::uint32_t source_sc_device_island_active_bit=1u<<16u;
+inline constexpr std::uint32_t source_sc_device_island_nonresponding_bit=1u<<17u;
 inline constexpr std::uint32_t source_sc_device_island_iteration_mask=0xffffu;
 struct SourceScDeviceIslandCount {
     std::uint32_t responding_nodes=0,admitted_edges=0;
