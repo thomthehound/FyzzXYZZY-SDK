@@ -37,10 +37,10 @@ SourceSapUpdatedNativeStage::SourceSapUpdatedNativeStage(
     desc.storage_buffer_views.assign(
         10u,compute::StorageBufferViewKind::RawReadWrite);
     desc.push_constant_bytes=12u*sizeof(std::uint32_t);
-    #if defined(FYZZXYZZY_PROFILE_GPU)
-    desc.profile_name="sap.updated_bounds";
-#endif
     pipeline_=context_.create_compute_pipeline(desc);
+#if defined(FYZZXYZZY_PROFILE_GPU)
+    context_.set_pipeline_profile_label(pipeline_,"sap.updated_bounds");
+#endif
 }
 SourceSapUpdatedNativeStage::~SourceSapUpdatedNativeStage() {
     if(pipeline_)context_.destroy_compute_pipeline(pipeline_);
