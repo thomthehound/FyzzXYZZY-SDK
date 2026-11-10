@@ -155,6 +155,14 @@ inline std::uint64_t allocate_context_id() noexcept {
 inline std::uint64_t current_trace_id() noexcept {
     return current.active?current.trace_id:0u;
 }
+inline std::uint64_t current_frame_begin() noexcept {
+    return current.active?current.begin:0u;
+}
+inline void begin_worker(std::uint64_t trace_id,std::uint64_t origin) noexcept {
+    current.begin=origin;
+    current.trace_id=trace_id;
+    current.active=trace_id!=0u;
+}
 inline void begin_frame() noexcept {
     current.begin=now_ns();
     current.trace_id=next_trace_id.fetch_add(1u,std::memory_order_relaxed);
@@ -208,17 +216,8 @@ inline void pipeline_event(PipelineEvent event) noexcept {
     }
     archive.pipelines[archive.pipeline_count++]=event;
 }
-inline void end_frame(std::uint64_t frame,bool gpu_dy,bool success) noexcept {
-    if(!current.active)return;
-    const auto end=now_ns();
-    current.active=false;
-    if(archive.frame_count==archive.frames.size())
-        ++archive.dropped;
-    else
-        archive.frames[archive.frame_count++]={
-            current.trace_id,frame,current.begin,end,gpu_dy,success};
-    // Frame-relative CPU spans and counters are correlated by trace ID.
-    // Their frame number is filled from the last completed transaction.
+inline void complete_thread_trace(std::uint64_t frame) noexcept {
+    // Thread-local spans are correlated by the shared submission trace ID.
     for(std::size_t i=archive.cpu_count;i>0u;--i) {
         auto& v=archive.cpu[i-1u];
         if(v.trace_id!=current.trace_id)break;
@@ -231,6 +230,22 @@ inline void end_frame(std::uint64_t frame,bool gpu_dy,bool success) noexcept {
         if(v.trace_id!=current.trace_id)break;
         v.frame=frame;
     }
+}
+inline void end_worker(std::uint64_t frame) noexcept {
+    if(!current.active)return;
+    current.active=false;
+    complete_thread_trace(frame);
+}
+inline void end_frame(std::uint64_t frame,bool gpu_dy,bool success) noexcept {
+    if(!current.active)return;
+    const auto end=now_ns();
+    current.active=false;
+    if(archive.frame_count==archive.frames.size())
+        ++archive.dropped;
+    else
+        archive.frames[archive.frame_count++]={
+            current.trace_id,frame,current.begin,end,gpu_dy,success};
+    complete_thread_trace(frame);
 }
 inline void flush() noexcept {
     archive.flush();
