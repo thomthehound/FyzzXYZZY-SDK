@@ -386,10 +386,10 @@ public:
     std::uint32_t device_pcm_touch_capacity() const noexcept {
         return pcm_ ? pcm_->device_edge_history_capacity() : 0u;
     }
-    void enqueue_device_island_admission(
-            std::span<const SourceScDeviceIslandEdge> edges,
+    void enqueue_gpu_dy_island_admission(
+            std::span<const native::GpuDyIslandEdge> edges,
             std::span<const std::uint32_t> node_flags,
-            SourceScDeviceIslandSources sources) {
+            native::GpuDyIslandSources sources) override {
         if(!pcm_)
             throw std::logic_error("Source Sc GPU island admission unavailable");
         pcm_->enqueue_device_islands(edges,node_flags,sources);
