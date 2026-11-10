@@ -1431,12 +1431,16 @@ void main(uint3 group:SV_GroupID,uint3 lane:SV_GroupThreadID) {
         }
     }
     if(phase==initializeBodiesTile) {
-        const uint ordinal=index*128u+lane.x;
-        if(ordinal<admittedBodies) {
-            initializeSolverBody(ordinal,arena.Load(p.integrationBias+36u));
-            if(!sourceDyPreIntegrateBody(ordinal) ||
-               !sourceDyPrepareWorldInertia(ordinal))
-                sourceDyInvalidatePreparedVelocity(ordinal);
+        const uint position=index*128u+lane.x;
+        if(position<admittedBodies) {
+            const uint ordinal=admittedTasks!=invalidBody
+                ?arena.Load(p.ordinalBias+position*4u):position;
+            if(ordinal<p.bodyCount) {
+                initializeSolverBody(ordinal,arena.Load(p.integrationBias+36u));
+                if(!sourceDyPreIntegrateBody(ordinal) ||
+                   !sourceDyPrepareWorldInertia(ordinal))
+                    sourceDyInvalidatePreparedVelocity(ordinal);
+            }
         }
         return;
     }
@@ -1457,10 +1461,14 @@ void main(uint3 group:SV_GroupID,uint3 lane:SV_GroupThreadID) {
             const uint ordinal=(index-schedule.z)*128u+lane.x;
             const uint source=arena.Load(p.integrationBias+36u);
             if(source!=0u && ordinal<admittedBodies) {
-                initializeSolverBody(ordinal,source);
-                if(!sourceDyPreIntegrateBody(ordinal) ||
-                   !sourceDyPrepareWorldInertia(ordinal))
-                    sourceDyInvalidatePreparedVelocity(ordinal);
+                const uint body=admittedTasks!=invalidBody
+                    ?arena.Load(p.ordinalBias+ordinal*4u):ordinal;
+                if(body<p.bodyCount) {
+                    initializeSolverBody(body,source);
+                    if(!sourceDyPreIntegrateBody(body) ||
+                       !sourceDyPrepareWorldInertia(body))
+                        sourceDyInvalidatePreparedVelocity(body);
+                }
             }
             return;
         }
@@ -1472,10 +1480,14 @@ void main(uint3 group:SV_GroupID,uint3 lane:SV_GroupThreadID) {
             const uint source=arena.Load(p.integrationBias+36u);
             if(source!=0u) {
                 if(lane.x<admittedBodies) {
-                    initializeSolverBody(lane.x,source);
-                    if(!sourceDyPreIntegrateBody(lane.x) ||
-                       !sourceDyPrepareWorldInertia(lane.x))
-                        sourceDyInvalidatePreparedVelocity(lane.x);
+                    const uint body=admittedTasks!=invalidBody
+                        ?arena.Load(p.ordinalBias+lane.x*4u):lane.x;
+                    if(body<p.bodyCount) {
+                        initializeSolverBody(body,source);
+                        if(!sourceDyPreIntegrateBody(body) ||
+                           !sourceDyPrepareWorldInertia(body))
+                            sourceDyInvalidatePreparedVelocity(body);
+                    }
                 }
                 AllMemoryBarrierWithGroupSync();
             }
