@@ -1682,33 +1682,17 @@ public:
                 std::memcpy(&sleep_states[index],output+24u,
                             sizeof(native::GpuDySleepState));
             }
-        // The source task graph identifies every GPU-written slot. Rows
-        // excluded from its descriptor/ordinal ranges retain their original
-        // CPU values rather than requiring device-side output seeding.
-        for(const auto& task:tasks) {
-            for(std::size_t i=task.body_begin;i<task.body_end;++i) {
-                const auto index=body_ordinals[i];
-                if(index>=bodies.size())
-                    throw std::logic_error("Source Dy body writeback index invalid");
-                if(device_unconstrained_preparation) {
-                    const auto* output=host_.data()+result_offsets[0]+index*52u;
-                    std::memcpy(&bodies[index],output,24u);
-                    std::memcpy(&sleep_states[index],output+24u,
-                                sizeof(native::GpuDySleepState));
-                }else
-                    std::memcpy(&bodies[index],
-                        host_.data()+result_offsets[0]+index*48u,48u);
-            }
-            for(std::size_t i=task.descriptor_begin;
-                i<task.descriptor_end;++i) {
-                const auto& desc=descriptors[i];
+        // The GPU task stream defines body writeback ownership; its
+        // descriptor ordinals need not match the CPU's public Gu index
+        // permutation. Source-manager identity owns contact/patch output.
+        const publish_descriptor=[&](const native::GpuDyDistanceDescriptor& desc) {
                 // Joint impulses remain local to the GPU PGS row.
                 // No Sc task consumes a host copy after solve.
-                if((desc.row_count&255u)!=0u)continue;
+                if((desc.row_count&255u)!=0u)return;
                 if(desc.index>=manifolds.size())
                     throw std::logic_error("Source Dy manager writeback index invalid");
                 const auto& manager=manifolds[desc.index];
-                if(!manager.patch_count)continue;
+                if(!manager.patch_count)return;
                 if(manager.order_offset>contact_forces.size() ||
                    manager.contact_count>
                        contact_forces.size()-manager.order_offset ||
@@ -1790,8 +1774,31 @@ public:
                         patch.broken=report&1u;
                     }else if(count)patch.broken=report;
                 }
+
+        };
+        for(const auto& task:tasks) {
+            for(std::size_t i=task.body_begin;i<task.body_end;++i) {
+                const auto index=body_ordinals[i];
+                if(index>=bodies.size())
+                    throw std::logic_error("Source Dy body writeback index invalid");
+                if(device_unconstrained_preparation) {
+                    const auto* output=host_.data()+result_offsets[0]+index*52u;
+                    std::memcpy(&bodies[index],output,24u);
+                    std::memcpy(&sleep_states[index],output+24u,
+                                sizeof(native::GpuDySleepState));
+                }else
+                    std::memcpy(&bodies[index],
+                        host_.data()+result_offsets[0]+index*48u,48u);
             }
+
         }
+        if(pending.device_admission) {
+            for(const auto& desc:descriptors)
+                publish_descriptor(desc);
+        }else for(const auto& task:tasks)
+            for(std::size_t i=task.descriptor_begin;
+                i<task.descriptor_end;++i)
+                publish_descriptor(descriptors[i]);
         // Sc's final world velocities are the device pool's next-frame
         // baseline. Update the host comparison mirror from the same
         // fetched result, never by replaying PGS on the CPU.
