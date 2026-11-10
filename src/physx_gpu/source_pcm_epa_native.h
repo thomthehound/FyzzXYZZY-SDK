@@ -48,6 +48,10 @@ public:
             compute::StorageBufferViewKind::RawReadWrite);
         desc.push_constant_bytes=face_geometry_?72u:
             (step_parameters_?60u:56u);
+#if defined(FYZZXYZZY_PROFILE_GPU)
+        desc.profile_name=face_geometry_?"pcm.face_contacts":
+            (direct_gjk_?"pcm.gjk":"pcm.epa");
+#endif
         pipeline_=context_.create_compute_pipeline(desc);
     }
     SourcePcmEpaNativeStage(const SourcePcmEpaNativeStage&)=delete;
