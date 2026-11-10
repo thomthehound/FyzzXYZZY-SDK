@@ -33,6 +33,9 @@ SourceSapCreatedNativeStage::SourceSapCreatedNativeStage(
     desc.storage_buffer_views.assign(
         9u,compute::StorageBufferViewKind::RawReadWrite);
     desc.push_constant_bytes=12u*sizeof(std::uint32_t);
+    #if defined(FYZZXYZZY_PROFILE_GPU)
+    desc.profile_name="sap.created_pairs";
+#endif
     pipeline_=context_.create_compute_pipeline(desc);
 }
 SourceSapCreatedNativeStage::~SourceSapCreatedNativeStage(){
