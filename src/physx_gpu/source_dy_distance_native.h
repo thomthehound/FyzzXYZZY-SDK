@@ -317,7 +317,8 @@ public:
         if(device_partitions) {
             build_device_launch_plan(tasks,descriptors,narrow(partition_count),
                                      narrow(body_ordinals.size()),
-                                     narrow(bodies.size()));
+                                     narrow(bodies.size()),
+                                     device_admission.has_value());
         } else {
             build_launch_plan(tasks,partition_ends,narrow(descriptors.size()),
                               narrow(body_ordinals.size()));
@@ -1987,7 +1988,8 @@ private:
         std::span<const native::GpuDyDistanceTask> tasks,
         std::span<const native::GpuDyDistanceDescriptor> descriptors,
         std::uint32_t partition_count,
-        std::uint32_t ordinals,std::uint32_t bodies) {
+        std::uint32_t ordinals,std::uint32_t bodies,
+        bool resident_admission) {
         constexpr std::uint32_t threads=128u;
         constexpr std::uint32_t prep_managers=threads/4u;
         constexpr std::uint32_t wide_min=native::gpu_dy_wide_task_threshold;
@@ -2000,6 +2002,21 @@ private:
         last_schedule_.device_colored_tasks=tasks.size();
         last_schedule_.device_colored_descriptors=descriptors.size();
         last_schedule_.max_partition_groups=tasks.empty()?0u:1u;
+        if(resident_admission) {
+            // The host supplies numerical capacities, not runnable task
+            // ranges. GPU Sc writes the compact tasks and their actual
+            // count before device Dy dispatch, so unused slots cannot
+            // enter the host's sequential task-range validation or
+            // endpoint-degree analysis.
+            degree_dynamic_.clear();
+            degree_static_.clear();
+            color_bounds_.clear();
+            partition_endpoint_counts_.clear();
+            fused_tiles_={0u,tasks.size()};
+            prep_tiles_={};
+            body_tiles_={};
+            return;
+        }
         const bool has_wide_candidate=std::any_of(
             tasks.begin(),tasks.end(),[&](const auto& task) {
                 return task.descriptor_end>=task.descriptor_begin &&
