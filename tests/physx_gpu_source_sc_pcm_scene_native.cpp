@@ -1943,7 +1943,10 @@ void verify_gpu_coupled_solver(
         const auto schedule=producer->dy_launch_stats();
         require(schedule.device_colored_tasks>0u &&
                 schedule.device_colored_descriptors>0u &&
-                schedule.host_degree_scanned_descriptors==0u,
+                schedule.host_degree_scanned_descriptors==0u &&
+                schedule.device_island_indirect_dispatches==1u &&
+                schedule.device_admitted_tasks>0u &&
+                schedule.device_admitted_bodies>0u,
             "Coupled Dy retained redundant host constraint-degree scanning");
         require(schedule.device_source_descriptors==
                     schedule.device_colored_descriptors &&
@@ -1970,7 +1973,7 @@ void verify_gpu_coupled_solver(
         saw_device_pcm_contact_rows |= device_rows>0u;
         saved_prep_bytes+=prep_saving;
         saw_compact_prep|=prep_saving>0u;
-        require(producer->dy_upload_span_count()==1u &&
+        require(producer->dy_upload_span_count()==2u &&
                 producer->dy_cpu_gu_geometry_bytes()==0u,
             "PCM-only Dy source stage fragmented its HtoD upload");
         require(producer->dy_friction_prepared_rows()>0u &&
@@ -2355,8 +2358,9 @@ void verify_mixed_gu_pcm_gpu_dy_solver(
                     producer->dy_pcm_device_contact_rows()>0u &&
                     producer->dy_cpu_gu_geometry_bytes()>=
                         sizeof(native::GpuDyGuContactInput) &&
-                    producer->dy_upload_span_count()==1u,
-                "Mixed source Gu and PCM rows did not enter one GPU Dy task");
+                    producer->dy_upload_span_count()==2u &&
+                    producer->dy_launch_stats().device_island_indirect_dispatches==1u,
+                "Mixed source Gu and PCM rows did not enter device-authored Dy tasks");
             native::GpuPcmFrictionAnchorFixture::verify_device_contact_order(
                 gpu,true,true);
             const auto expected_cpu_anchors=
