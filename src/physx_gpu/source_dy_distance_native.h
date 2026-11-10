@@ -1331,12 +1331,13 @@ public:
                     integration_header.data(),sizeof(integration_header));
         const auto previous_spans=stream_.submission_stats().upload_spans;
         if(device_admission) {
-            const std::array<SourceSapUpload,2> uploads{{
-                {address+upload_begin,host_.data()+upload_begin,
-                 device_skip_begin-upload_begin},
-                {address+device_skip_end,host_.data()+device_skip_end,
-                 input_end-device_skip_end}
-            }};
+            auto& uploads=stream_.upload_scratch();
+            uploads.push_back({
+                address+upload_begin,host_.data()+upload_begin,
+                device_skip_begin-upload_begin});
+            uploads.push_back({
+                address+device_skip_end,host_.data()+device_skip_end,
+                input_end-device_skip_end});
             // One staging submission carries two real source spans;
             // no host packet fills the device-generated scratch gap.
             stream_.queue_uploads(uploads);
