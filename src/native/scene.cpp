@@ -2285,6 +2285,23 @@ void Scene::set_gpu_broadphase(
             "Native GPU SAP owner must be installed before actor admission");
     gpu_broadphase_=std::move(producer);
 }
+void Scene::set_gpu_dy_enabled(bool enabled) {
+    if(!gpu_broadphase_ || !gpu_broadphase_->has_gpu_dy_distance())
+        throw std::logic_error(
+            "GPU Dy execution selection requires an installed numerical solver");
+    if(gpu_dy_enabled_==enabled)return;
+    // A CPU-integrated frame must not inherit a prior GPU-authorized
+    // ElementSim pose. The next SAP/Dy submission uses the published Sc pose.
+    for(const ShapeId id:live_shape_ids_) {
+        const auto& shape=shapes_[id];
+        if(shape.simulation_shape_enabled &&
+           shape.geometry!=Geometry::Plane)
+            gpu_broadphase_->mark_shape_bounds_changed(id,shape.contact_offset);
+    }
+    gpu_broadphase_snapshot_current_=false;
+    gpu_dy_enabled_=enabled;
+    dirty_=true;
+}
 
 // Source GPU fetch -> Sc pair stream. This is the same pending pair and
 // contact-edge publication used by the native CPU branch, but it never
@@ -7057,8 +7074,7 @@ void Scene::prepare_solver_bodies() {
     // Dy::DynamicsContext::iterateIslandsNodes hands contiguous accurate
     // island nodes to preIntegrationParallel. Free-flight bodies retain the
     // source no-constraint integration path without preparing unused rows.
-    const bool gpu_world_inertia=gpu_broadphase_ &&
-        gpu_broadphase_->has_gpu_dy_distance();
+    const bool gpu_world_inertia=gpu_dy_active();
     for(std::size_t island:active_accurate_island_batches_) {
         // Contact and joint geometry consume the same resident Dy inertia.
         // CPU execution alone requires a host world-response matrix.
@@ -7169,8 +7185,7 @@ void Scene::partition_constraints() {
     solver_tasks_.clear();
     gpu_dy_free_ids_.clear();
     gpu_dy_responding_island_count_=0u;
-    const bool gpu_integration=gpu_broadphase_ &&
-        gpu_broadphase_->has_gpu_dy_distance();
+    const bool gpu_integration=gpu_dy_active();
     std::size_t joint_task_begin=0;
     const auto sort_constraints=[&] {
         // DyDynamicsBase::ConstraintLess compares Dy::Constraint::index
@@ -7597,8 +7612,7 @@ void Scene::prepare_constraints(float seconds) {
     joint_rows_.clear();
     gpu_dy_rows_.clear();
     gpu_dy_joint_inputs_.clear();
-    const bool gpu_normal_prep=
-        gpu_broadphase_ && gpu_broadphase_->has_gpu_dy_distance();
+    const bool gpu_normal_prep=gpu_dy_active();
     gpu_dy_contact_prep_pairs_.clear();
     if(gpu_normal_prep)
         gpu_dy_contact_prep_indices_.assign(manifolds_.size(),0xffffffffu);
@@ -8604,6 +8618,32 @@ void Scene::prepare_constraints(float seconds) {
     friction_by_edge_.swap(next_friction_by_edge_);
     friction_cache_epoch_=next_cache_epoch;
 }
+void Scene::publish_cpu_gu_touch_history() {
+    // CPU Gu touch transitions update the shared EdgeIndex history even
+    // when the already prepared Sc task groups need no device admission.
+    if(gpu_broadphase_ && gpu_broadphase_->has_gpu_dy_distance() &&
+       gpu_broadphase_->has_gpu_pcm_box() && pcm_box_box_enabled_ &&
+       !gpu_pcm_pairs_.empty()) {
+        constexpr std::uint32_t invalid=0xffffffffu;
+        // Sc publishes live Gu touch bits while building the contact
+        // manifold. Only retired touches still require edge lookup here.
+        for(const Pair pair:lost_contacts_) {
+            const EdgeIndex edge=contact_edge_index(pair);
+            if(edge==invalid_edge)continue;
+            const auto it=std::lower_bound(
+                gpu_pcm_pairs_.begin(),gpu_pcm_pairs_.end(),pair,
+                [this](const GpuPcmBoxPair& record,Pair key) {
+                    return island_edges_[record.edge].shapes<key;
+                });
+            if(it!=gpu_pcm_pairs_.end() &&
+               island_edges_[it->edge].shapes==pair)continue;
+            gpu_dy_gu_touches_.push_back({edge,2u});
+        }
+        if(!gpu_dy_gu_touches_.empty())
+            gpu_broadphase_->enqueue_cpu_gu_touch_history(
+                gpu_dy_gu_touches_);
+    }
+}
 void Scene::solve_gpu_distance_constraints(float seconds) {
     // Source Dy owns task, body and 1D row order; the device receives
     // transient packed views of those exact prepared source inputs.
@@ -8919,29 +8959,6 @@ void Scene::solve_gpu_distance_constraints(float seconds) {
                        task.body_end-task.body_begin<
                            gpu_dy_wide_task_threshold;
             });
-    // CPU Gu touch transitions update the shared EdgeIndex history even
-    // when the already prepared Sc task groups need no device admission.
-    if(gpu_broadphase_->has_gpu_pcm_box() && pcm_box_box_enabled_ &&
-       !gpu_pcm_pairs_.empty()) {
-        constexpr std::uint32_t invalid=0xffffffffu;
-        // Sc publishes live Gu touch bits while building the contact
-        // manifold. Only retired touches still require edge lookup here.
-        for(const Pair pair:lost_contacts_) {
-            const EdgeIndex edge=contact_edge_index(pair);
-            if(edge==invalid_edge)continue;
-            const auto it=std::lower_bound(
-                gpu_pcm_pairs_.begin(),gpu_pcm_pairs_.end(),pair,
-                [this](const GpuPcmBoxPair& record,Pair key) {
-                    return island_edges_[record.edge].shapes<key;
-                });
-            if(it!=gpu_pcm_pairs_.end() &&
-               island_edges_[it->edge].shapes==pair)continue;
-            gpu_dy_gu_touches_.push_back({edge,2u});
-        }
-        if(!gpu_dy_gu_touches_.empty())
-            gpu_broadphase_->enqueue_cpu_gu_touch_history(
-                gpu_dy_gu_touches_);
-    }
     if(device_island_admission) {
         constexpr std::uint32_t active_node=1u<<16u;
         constexpr std::uint32_t nonresponding_node=1u<<17u;
@@ -10664,7 +10681,7 @@ void Scene::prepare_unconstrained_velocities(float seconds) {
         auto& actor=actors_[accurate_island_nodes_[index]];
         if(actor.sleeping)continue;
         const auto& d=actor.dynamics;
-        if(gpu_broadphase_ && gpu_broadphase_->has_gpu_dy_distance()) {
+        if(gpu_dy_active()) {
             // Dy's float gravity term cannot be admitted if its
             // timestep product already overflows the source arithmetic.
             if(d.gravity_enabled && !std::isfinite(gravity*seconds))
@@ -11111,8 +11128,8 @@ void Scene::step(float seconds) {
     join.dispatch_solver_tasks(
         solver_task_completion_stamps_,solver_task_completion_generation_);
     prepare_constraints(seconds);
-    const bool gpu_dy_distance=
-        gpu_broadphase_ && gpu_broadphase_->has_gpu_dy_distance();
+    publish_cpu_gu_touch_history();
+    const bool gpu_dy_distance=gpu_dy_active();
     gpu_dy_pose_ready_=false;
     if(gpu_dy_distance)solve_gpu_distance_constraints(seconds);
     else begin_contact_writeback();
@@ -11529,6 +11546,9 @@ public:
     }
     void remove_constraint(ConstraintId id) override {
         scene_.retire_constraint(id);
+    }
+    void set_gpu_dy_enabled(bool enabled) override {
+        scene_.set_gpu_dy_enabled(enabled);
     }
     void step(float seconds) override { scene_.step(seconds); }
     BodyState body_state(BodyId id) const override { return scene_.body_state(id); }

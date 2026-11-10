@@ -2475,6 +2475,68 @@ void verify_cpu_gu_gpu_dy_solver(
 // Explicit diagnostic plane Gu combines with device box PCM inside
 // one Dy task. Default GPU plane PCM is verified separately; the
 // diagnostic selection preserves CPU-origin Gu upload coverage.
+
+void verify_dy_execution_switch(
+    fyzz::compute::Backend backend,const char* sap,
+    const char* pcm,const char* dy_shader) {
+    using namespace fyzz;
+    std::ifstream file(dy_shader,std::ios::binary);
+    require(bool(file),"Compiled switchable Dy shader missing");
+    std::vector<char> bytes(
+        std::istreambuf_iterator<char>{file},
+        std::istreambuf_iterator<char>{});
+    compute::ShaderBinary shader{};
+    shader.format=backend==compute::Backend::Vulkan
+        ? compute::ShaderFormat::Spirv:compute::ShaderFormat::Dxil;
+    shader.bytes.assign(bytes.begin(),bytes.end());
+    native::Scene cpu,gpu;
+    cpu.set_enhanced_determinism(true);
+    gpu.set_enhanced_determinism(true);
+    cpu.set_pcm_plane_box(false);
+    gpu.set_pcm_plane_box(false);
+    cpu.set_contact_notifications(true);
+    gpu.set_contact_notifications(true);
+    auto owner=std::make_unique<physx_gpu::SourceScOwnedGpuBroadphaseNative>(
+        backend,load_native_gpu_sap_shaders(backend,sap),
+        128u,128u,std::nullopt,
+        load_native_gpu_pcm_shaders(backend,pcm),std::move(shader));
+    auto* producer=owner.get();
+    gpu.set_gpu_broadphase(std::move(owner));
+    cpu.add_static_floor(0.f);
+    gpu.add_static_floor(0.f);
+    cpu.add_static_box({0.5f,0.5f,0.5f},{5.f,10.f,0.f});
+    gpu.add_static_box({0.5f,0.5f,0.5f},{5.f,10.f,0.f});
+    std::array<BodyId,3> a{},b{};
+    for(std::size_t i=0u;i<2u;++i) {
+        const Vec3 p=i==0u?Vec3{0.f,0.43f,0.f}:
+                               Vec3{5.f,10.84f,0.f};
+        a[i]=cpu.add_dynamic_box({0.5f,0.5f,0.5f},p,1.f);
+        b[i]=gpu.add_dynamic_box({0.5f,0.5f,0.5f},p,1.f);
+    }
+    a[2]=cpu.add_dynamic_box({0.25f,0.25f,0.25f},
+                             {20.f,5.f,0.f},1.f);
+    b[2]=gpu.add_dynamic_box({0.25f,0.25f,0.25f},
+                             {20.f,5.f,0.f},1.f);
+    constexpr std::array<bool,6> schedule{true,false,true,true,false,true};
+    std::uint64_t gpu_dispatches=0u;
+    for(std::size_t frame=0u;frame<schedule.size();++frame) {
+        gpu.set_gpu_dy_enabled(schedule[frame]);
+        cpu.step(1.f/120.f);
+        gpu.step(1.f/120.f);
+        gpu_dispatches+=schedule[frame]?1u:0u;
+        require(producer->dy_distance_dispatch_count()==gpu_dispatches,
+            "CPU-selected Dy unexpectedly submitted a GPU numerical solve");
+        require(cpu.contacts().size()==gpu.contacts().size() &&
+                cpu.solved_normal_impulses().size()==
+                    gpu.solved_normal_impulses().size() &&
+                cpu.contact_events().size()==gpu.contact_events().size(),
+            "Switching Dy execution changed Sc contact publication");
+        for(std::size_t i=0u;i<a.size();++i)
+            test::compound_compare_state(
+                gpu.body_state(b[i]),cpu.body_state(a[i]),0.03f,
+                "GPU SAP/PCM and switched CPU/GPU Dy diverged");
+    }
+}
 void verify_mixed_gu_pcm_gpu_dy_solver(
     fyzz::compute::Backend backend,const char* sap,
     const char* pcm,const char* dy_shader) {
@@ -4166,7 +4228,8 @@ int main(int argc,char** argv) {
                 scenario=="sparse_contacts" || scenario=="coupled_stack" ||
                 scenario=="coupled_solver" || scenario=="single_island" ||
                 scenario=="legacy_gu_solver" ||
-                scenario=="mixed_solver" || scenario=="distance_solver" ||
+                scenario=="mixed_solver" || scenario=="dy_switch" ||
+                scenario=="distance_solver" ||
                 scenario=="compound_shapes" || scenario=="compound_solver" ||
                 scenario=="sphere_solver" || scenario=="convex_plane" ||
                 scenario=="convex_finite" || scenario=="wide_islands" ||
@@ -4257,6 +4320,10 @@ int main(int argc,char** argv) {
         if(scenario=="all" || scenario=="legacy_gu_solver")
             fyzz::tests::measure_gpu_case("sc_pcm","legacy_gu_solver",
                 [&]{verify_cpu_gu_gpu_dy_solver(
+                    backend,argv[1],argv[2],argv[3]);});
+        if(scenario=="all" || scenario=="dy_switch")
+            fyzz::tests::measure_gpu_case("sc_pcm","dy_switch",
+                [&]{verify_dy_execution_switch(
                     backend,argv[1],argv[2],argv[3]);});
         if(scenario=="all" || scenario=="mixed_solver")
             fyzz::tests::measure_gpu_case("sc_pcm","mixed_solver",

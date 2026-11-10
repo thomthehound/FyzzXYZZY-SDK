@@ -693,6 +693,9 @@ public:
     // The production GPU SAP/AABB owner is attached before any actor is
     // admitted. A selected GPU scene never silently runs native CPU SAP.
     void set_gpu_broadphase(std::unique_ptr<GpuBroadphaseProducer> producer);
+    // Select numerical Dy execution between completed frames. Sc, SAP,
+    // PCM, contact history and published body state retain one owner.
+    void set_gpu_dy_enabled(bool enabled);
     Scene(Scene&&) = default;
     Scene& operator=(Scene&&) = default;
     // Configured only at World construction, before scene admission.
@@ -1450,6 +1453,7 @@ private:
     void erase_body_friction_history(BodyId id);
     void erase_friction_history(std::uint32_t id,bool body_scope);
     void wake_shape_partners(ShapeId id);
+    void publish_cpu_gu_touch_history();
     void solve_gpu_distance_constraints(float seconds);
     void solve_constraint_task(std::size_t task_index);
     void integrate_solver_task(std::size_t task_index,float seconds,
@@ -2252,6 +2256,11 @@ private:
     // The GPU owner is the only broadphase producer in GPU mode; these
     // cached shape views are reused, never a duplicate SAP/pair registry.
     std::unique_ptr<GpuBroadphaseProducer> gpu_broadphase_;
+    bool gpu_dy_enabled_=true;
+    bool gpu_dy_active() const noexcept {
+        return gpu_dy_enabled_ && gpu_broadphase_ &&
+            gpu_broadphase_->has_gpu_dy_distance();
+    }
     std::vector<GpuBroadphaseBox> gpu_broadphase_boxes_;
     // This is a reusable Sc-to-BP input view, not an actor-state owner.
     // A rejected transaction revokes its validity before the next fetch.

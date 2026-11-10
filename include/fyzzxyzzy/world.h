@@ -322,6 +322,10 @@ public:
     virtual void remove_constraint(ConstraintId) {
         throw std::logic_error("This backend cannot retire a constraint");
     }
+    // Explicit solver placement for GPU-backed native scenes.
+    virtual void set_gpu_dy_enabled(bool) {
+        throw std::logic_error("This backend has no selectable GPU Dy solver");
+    }
     virtual void step(float seconds) = 0;
     virtual BodyState body_state(BodyId id) const = 0;
     virtual std::optional<RaycastHit> raycast(
@@ -456,6 +460,7 @@ public:
     ConstraintId add_prismatic_constraint(
         BodyId a,BodyId b,Transform local_a,Transform local_b);
     void remove_constraint(ConstraintId id);
+    void set_gpu_dy_enabled(bool enabled);
     void step(float seconds);
     BodyState body_state(BodyId id) const;
     // Closest actual-geometry hit in world units, through attached query
