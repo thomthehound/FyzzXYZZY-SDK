@@ -17,6 +17,7 @@
 #include <fstream>
 #include <iostream>
 #include <iterator>
+#include <limits>
 #include <stdexcept>
 #include <string_view>
 #include <vector>
@@ -2672,6 +2673,40 @@ void verify_dy_execution_switch(
                 gpu.body_state(b[i]),cpu.body_state(a[i]),0.03f,
                 "GPU SAP/PCM and switched CPU/GPU Dy diverged");
     }
+    // A rejected CPU Dy frame must roll back the same GPU SAP/PCM
+    // transaction before numerical execution returns to the device.
+    gpu.set_gpu_dy_enabled(false);
+    const auto published=gpu.body_state(b[2]);
+    const auto frame=gpu.frame_index();
+    const auto solved=gpu.solved_result_frame();
+    const auto prior_contacts=gpu.contacts().size();
+    const float extreme=std::numeric_limits<float>::max()*0.75f;
+    gpu.set_angular_velocity(b[2],{extreme,0.f,0.f});
+    gpu.add_spatial_velocity_mod(
+        b[2],{extreme,0.f,0.f},ForceMode::VelocityChange,true);
+    bool rejected=false;
+    try {gpu.step(1.f/120.f);}
+    catch(const std::overflow_error&) {rejected=true;}
+    require(rejected && gpu.frame_index()==frame &&
+            gpu.solved_result_frame()==solved &&
+            gpu.contacts().size()==prior_contacts &&
+            producer->dy_distance_dispatch_count()==gpu_dispatches &&
+            gpu.body_state(b[2]).position.x==published.position.x,
+        "Rejected CPU Dy frame corrupted GPU contact or numerical lifetime");
+    gpu.clear_spatial_velocity_mod(
+        b[2],ForceMode::VelocityChange,true);
+    gpu.set_angular_velocity(b[2],published.angular_velocity);
+    gpu.set_gpu_dy_enabled(true);
+    cpu.step(1.f/120.f);
+    gpu.step(1.f/120.f);
+    require(producer->dy_distance_dispatch_count()==gpu_dispatches+1u &&
+            cpu.contacts().size()==gpu.contacts().size() &&
+            cpu.contact_events().size()==gpu.contact_events().size(),
+        "CPU Dy rollback prevented subsequent GPU PCM/Dy execution");
+    for(std::size_t i=0u;i<a.size();++i)
+        test::compound_compare_state(
+            gpu.body_state(b[i]),cpu.body_state(a[i]),0.03f,
+            "Recovered GPU Dy frame diverged after CPU Dy rollback");
 }
  
 // Explicit diagnostic plane Gu combines with device box PCM inside
