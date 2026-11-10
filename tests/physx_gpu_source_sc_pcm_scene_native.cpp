@@ -26,6 +26,18 @@ struct SourceScDeviceIslandFixture {
     static bool pcm_ready(const SourceScOwnedGpuBroadphaseNative& owner) {
         return owner.pcm_ && owner.pcm_->device_contact_ready();
     }
+    static std::array<std::uint32_t,2> touch(
+            SourceScOwnedGpuBroadphaseNative& owner,std::uint32_t edge) {
+        if(edge>=owner.device_pcm_touch_capacity())
+            return {0xffffffffu,0xffffffffu};
+        const auto address=owner.device_pcm_touch_history()+
+            std::size_t(edge)*240u+72u;
+        const auto view=owner.addresses_.resolve(address,8u);
+        std::array<std::uint32_t,2> state{};
+        owner.context_.download(view.buffer,view.offset,
+                                state.data(),sizeof(state));
+        return state;
+    }
     static SourceScDeviceIslandHeader read(SourceScOwnedGpuBroadphaseNative& owner) {
         if(!owner.pcm_ || !owner.pcm_->device_island_work_address())
             throw std::runtime_error("Device Sc task work was not queued");
@@ -154,6 +166,15 @@ struct GpuPcmFrictionAnchorFixture {
     }
     static std::uint32_t contact_manager_edge(const Scene& scene,Pair shapes) {
         return scene.contact_edge_index(shapes);
+    }
+    static std::string island_source_edges(const Scene& scene) {
+        std::string result;
+        for(const auto& edge:scene.gpu_dy_island_edges_) {
+            result+=" ["+std::to_string(edge.edge_index)+":"+
+                std::to_string(edge.source_index)+":"+
+                std::to_string(edge.kind)+"]";
+        }
+        return result;
     }
     static bool source_bp_contains(const Scene& scene,Pair shapes) {
         return scene.sap_pairs_.find(shapes)!=Scene::SapPairManager::invalid;
@@ -2413,7 +2434,23 @@ void verify_mixed_gu_pcm_gpu_dy_solver(
                         " task_count="+std::to_string(admission.device_admitted_tasks)+
                         " body_count="+std::to_string(admission.device_admitted_bodies)+
                         " response_count="+std::to_string(admission.device_admitted_descriptors)+
-                        " source_count="+std::to_string(admission.device_colored_descriptors));
+                        " source_count="+std::to_string(admission.device_colored_descriptors)+
+                        " input_edges="+native::GpuPcmFrictionAnchorFixture::
+                            island_source_edges(gpu)+
+                        [&]{
+                            std::string state;
+                            for(const auto& manager:gpu.contacts()) {
+                                const auto touch=physx_gpu::SourceScDeviceIslandFixture::
+                                    touch(*producer,manager.edge_handle);
+                                state+=" [edge="+std::to_string(manager.edge_handle)+
+                                    " pcm="+std::to_string(
+                                        manager.pcm_result_index!=0xffffffffu)+
+                                    " rows="+std::to_string(manager.friction_patch_count)+
+                                    " touch="+std::to_string(touch[0])+
+                                    "/"+std::to_string(touch[1])+"]";
+                            }
+                            return state;
+                        }());
                 }
             }
             for(std::size_t i=0;i<cpu.solved_friction_patches().size();++i) {
