@@ -924,6 +924,34 @@ void verify_device_sc_dy_indirect_api(
             std::fabs(poses[1].position[0]-(10.f+0.75f*seconds))<0.002f,
         "Device-indirect Dy omitted an isolated responding body");
     producer->commit_gpu_step();
+
+    // The declared task/body capacity is deliberately larger than the
+    // source graph's one runnable island. GPU admission owns the valid
+    // prefix; no CPU predicted task, body or descriptor count is read
+    // back to choose a numerical launch or publish extra body motion.
+    const std::array<std::uint32_t,2> partly_active{{
+        nodes[0],nodes[1]&~physx_gpu::source_sc_device_island_active_bit
+    }};
+    producer->enqueue_gpu_pcm_box_contacts(no_pairs,no_witness);
+    producer->enqueue_device_island_admission(
+        std::span<const physx_gpu::SourceScDeviceIslandEdge>{},
+        partly_active,physx_gpu::SourceScDeviceIslandSources{});
+    tasks[0].error=0x4000u;
+    tasks[1].error=0x4000u;
+    poses={};
+    producer->enqueue_gpu_dy_distance(
+        bodies,{},{},{},ordinals,tasks,
+        {},{},{},{},{},{},{},{},
+        inputs,poses,true,{},true,true,true,sleep);
+    producer->finish_gpu_dy_distance();
+    require(producer->dy_launch_stats().device_admitted_tasks==1u &&
+            producer->dy_launch_stats().device_admitted_bodies==1u &&
+            producer->dy_launch_stats().device_admitted_descriptors==0u &&
+            tasks[0].body_begin==0u && tasks[0].body_end==1u &&
+            tasks[0].error==0u && tasks[1].error==0u &&
+            poses[0].valid==1u && poses[1].valid==0u,
+        "Dy used the host task capacity instead of the device admission");
+    producer->commit_gpu_step();
 }
 
 // Dy consumes the physical task and body-ordinal stream produced by
