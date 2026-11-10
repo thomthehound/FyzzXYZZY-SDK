@@ -4503,6 +4503,7 @@ void qualify_hardware_scene(
     std::cout<<"FYZZXYZZY_METRIC suite=hardware_scene"
              <<" bodies="<<body_count
              <<" samples="<<measured
+             <<" gpu_first="<<gpu_first
              <<" cpu_step_p50_ms="<<percentile(cpu_ms,0.50)
              <<" gpu_step_p50_ms="<<percentile(gpu_ms,0.50)
              <<" cpu_step_p95_ms="<<percentile(cpu_ms,0.95)
