@@ -89,21 +89,33 @@ SourceSapRadixNativeStage::SourceSapRadixNativeStage(
     desc.push_constant_bytes=sizeof(RankParams);
     try {
         desc.shader=std::move(initialize);
+        #if defined(FYZZXYZZY_PROFILE_GPU)
+        desc.profile_name="sap.radix_init";
+#endif
         init_pipeline_=context_.create_compute_pipeline(desc);
         desc.shader=using_wave_count_?std::move(count_wave):std::move(count);
         desc.storage_buffer_binding_count=6u;
         desc.storage_buffer_views.assign(6u,compute::StorageBufferViewKind::RawReadWrite);
         desc.push_constant_bytes=sizeof(CountParams);
+        #if defined(FYZZXYZZY_PROFILE_GPU)
+        desc.profile_name="sap.radix_count";
+#endif
         count_pipeline_=context_.create_compute_pipeline(desc);
         desc.shader=using_wave_scatter_?std::move(scatter_wave):std::move(scatter);
         desc.storage_buffer_binding_count=15u;
         desc.storage_buffer_views.assign(15u,compute::StorageBufferViewKind::RawReadWrite);
         desc.push_constant_bytes=sizeof(ScatterParams);
+        #if defined(FYZZXYZZY_PROFILE_GPU)
+        desc.profile_name="sap.radix_scatter";
+#endif
         scatter_pipeline_=context_.create_compute_pipeline(desc);
         desc.shader=std::move(gather);
         desc.storage_buffer_binding_count=9u;
         desc.storage_buffer_views.assign(9u,compute::StorageBufferViewKind::RawReadWrite);
         desc.push_constant_bytes=sizeof(GatherParams);
+        #if defined(FYZZXYZZY_PROFILE_GPU)
+        desc.profile_name="sap.radix_gather";
+#endif
         gather_pipeline_=context_.create_compute_pipeline(desc);
     } catch(...) {
         if(gather_pipeline_)context_.destroy_compute_pipeline(gather_pipeline_);
