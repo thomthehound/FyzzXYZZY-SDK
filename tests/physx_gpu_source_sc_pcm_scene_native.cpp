@@ -4476,7 +4476,7 @@ void qualify_hardware_scene(
             std::fabs(a.velocity.x-b.velocity.x),
             std::fabs(a.velocity.y-b.velocity.y),
             std::fabs(a.velocity.z-b.velocity.z)});
-        require(a.position.y>0.3f && b.position.y>0.3f,
+        require(a.position.y>0.44f && b.position.y>0.44f,
                 "Hardware scene lost physical platform contact");
     }
     require(max_position_error<0.05f && max_velocity_error<0.05f,
