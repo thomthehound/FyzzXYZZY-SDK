@@ -338,8 +338,7 @@ foreach ($line in [System.IO.File]::ReadLines($traces)) {
         }
     }
 }
-$stages = [System.Collections.Generic.Dictionary[
-    string,System.Collections.Generic.List[double]]]::new()
+$stages = [System.Collections.Generic.Dictionary[string,System.Collections.Generic.List[double]]]::new()
 foreach ($line in [System.IO.File]::ReadLines($traces)) {
     $record = ConvertFrom-Json -InputObject $line
     if ($record.phase -ne 'sample') { continue }
