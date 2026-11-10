@@ -2067,15 +2067,15 @@ SubmissionId Context::submit_copy_buffer(BufferId source, std::size_t source_off
 }
 
 PipelineId Context::create_compute_pipeline(const ComputePipelineDesc& description) {
-    const auto id=impl_->create_pipeline(description);
+    return impl_->create_pipeline(description);
+}
 #if defined(FYZZXYZZY_PROFILE_GPU)
+void Context::set_pipeline_profile_label(PipelineId id,const char* label) const noexcept {
     std::printf("FYZZXYZZY_TRACE kind=pipeline backend=vulkan context=%llu pipeline=%llu label=%s\n",
         static_cast<unsigned long long>(impl_->profile_context_id),
-        static_cast<unsigned long long>(id),
-        description.profile_name.empty()?"unlabeled":description.profile_name.c_str());
-#endif
-    return id;
+        static_cast<unsigned long long>(id),label);
 }
+#endif
 
 void Context::destroy_compute_pipeline(PipelineId id) { impl_->destroy_pipeline(id); }
 
