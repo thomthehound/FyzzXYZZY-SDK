@@ -309,9 +309,11 @@ public:
                    bodies[i].inverse_mass!=0.0f)
                     throw std::logic_error(
                         "Native Dy inactive solver row has nonzero inverse mass");
-        const auto partition_count=device_partitions
-            ? (tasks.empty()?0u:tasks.back().partition_end)
-            : partition_ends.size();
+        const auto partition_count=device_admission
+            ? descriptors.size()
+            : device_partitions
+                ? (tasks.empty()?0u:tasks.back().partition_end)
+                : partition_ends.size();
         if(partition_count>std::numeric_limits<std::uint32_t>::max()/4u)
             throw std::overflow_error("Source Dy partition arena exceeds 32-bit offsets");
         if(device_partitions) {
