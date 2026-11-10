@@ -69,6 +69,9 @@ SourceSapReportNativeStage::SourceSapReportNativeStage(
             compute::StorageBufferViewKind::RawReadWrite);
         desc.shader = using_wave_ ? std::move(first_wave) :
                                     std::move(first_portable);
+        #if defined(FYZZXYZZY_PROFILE_GPU)
+        desc.profile_name="sap.report_first";
+#endif
         first_ = context_.create_compute_pipeline(desc);
 
         desc.storage_buffer_binding_count = 13u;
@@ -76,12 +79,18 @@ SourceSapReportNativeStage::SourceSapReportNativeStage(
             compute::StorageBufferViewKind::RawReadWrite);
         desc.shader = using_wave_ ? std::move(second_wave) :
                                     std::move(second_portable);
+        #if defined(FYZZXYZZY_PROFILE_GPU)
+        desc.profile_name="sap.report_second";
+#endif
         second_ = context_.create_compute_pipeline(desc);
 
         desc.storage_buffer_binding_count = 7u;
         desc.storage_buffer_views.assign(7u,
             compute::StorageBufferViewKind::RawReadWrite);
         desc.shader = std::move(copy_shader);
+        #if defined(FYZZXYZZY_PROFILE_GPU)
+        desc.profile_name="sap.report_copy";
+#endif
         copy_ = context_.create_compute_pipeline(desc);
     } catch (...) {
         if (copy_) context_.destroy_compute_pipeline(copy_);
