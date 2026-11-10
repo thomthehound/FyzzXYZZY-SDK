@@ -1407,6 +1407,8 @@ void main(uint3 group:SV_GroupID,uint3 lane:SV_GroupThreadID) {
     const bool precolored=(p.launchControl&0x40000000u)!=0u;
     const uint iter=(p.launchControl&0x1fffffffu)>>4u;
     const uint index=p.launchBegin+group.x;
+    uint admittedTasks=0xffffffffu;
+    uint admittedBodies=p.bodyCount;
     // A submitted Sc island graph can differ from CPU-predicted counts
     // because contact activation is owned by resident Gu history. Reject
     // the entire numerical epoch before initializing any solver body.
@@ -1415,8 +1417,8 @@ void main(uint3 group:SV_GroupID,uint3 lane:SV_GroupThreadID) {
         const uint4 schedule=arena.Load4(p.integrationBias+16u);
         if(schedule.w!=0u && arena.Load(schedule.w)==40u) {
             const uint4 header=arena.Load4(schedule.w+24u);
-            if(header.x!=0u || header.y!=schedule.z ||
-               header.z!=schedule.x || header.w!=schedule.y) {
+            if(header.x!=0u || header.y>schedule.z ||
+               header.z>schedule.x || header.w>schedule.y) {
                 if(phase==publishErrors) {
                     const uint task=index*128u+lane.x;
                     if(task<schedule.z)
@@ -1424,11 +1426,13 @@ void main(uint3 group:SV_GroupID,uint3 lane:SV_GroupThreadID) {
                 }
                 return;
             }
+            admittedTasks=header.y;
+            admittedBodies=header.z;
         }
     }
     if(phase==initializeBodiesTile) {
         const uint ordinal=index*128u+lane.x;
-        if(ordinal<p.bodyCount) {
+        if(ordinal<admittedBodies) {
             initializeSolverBody(ordinal,arena.Load(p.integrationBias+36u));
             if(!sourceDyPreIntegrateBody(ordinal) ||
                !sourceDyPrepareWorldInertia(ordinal))
@@ -1452,7 +1456,7 @@ void main(uint3 group:SV_GroupID,uint3 lane:SV_GroupThreadID) {
         if(phase==colorTile && index>=schedule.z) {
             const uint ordinal=(index-schedule.z)*128u+lane.x;
             const uint source=arena.Load(p.integrationBias+36u);
-            if(source!=0u && ordinal<p.bodyCount) {
+            if(source!=0u && ordinal<admittedBodies) {
                 initializeSolverBody(ordinal,source);
                 if(!sourceDyPreIntegrateBody(ordinal) ||
                    !sourceDyPrepareWorldInertia(ordinal))
@@ -1464,10 +1468,10 @@ void main(uint3 group:SV_GroupID,uint3 lane:SV_GroupThreadID) {
         // of bodies before their fused PGS. Larger or independent tasks
         // use a separate initialization dispatch for global ordering.
         if(fused && !precolored && schedule.z==1u &&
-           p.bodyCount<=128u) {
+           admittedBodies<=128u) {
             const uint source=arena.Load(p.integrationBias+36u);
             if(source!=0u) {
-                if(lane.x<p.bodyCount) {
+                if(lane.x<admittedBodies) {
                     initializeSolverBody(lane.x,source);
                     if(!sourceDyPreIntegrateBody(lane.x) ||
                        !sourceDyPrepareWorldInertia(lane.x))
@@ -1479,9 +1483,11 @@ void main(uint3 group:SV_GroupID,uint3 lane:SV_GroupThreadID) {
         if(phase==publishErrors) {
             const uint task=index*128u+lane.x;
             if(task<schedule.z)
-                publishTaskError(task,arena.Load(p.taskBias+task*36u+32u));
+                publishTaskError(task,task<admittedTasks
+                    ?arena.Load(p.taskBias+task*36u+32u):0u);
             return;
         }
+        if(index>=admittedTasks)return;
 
         // A frame containing only compact tasks uses direct task indices.
         uint4 tile=uint4(index,0u,0u,0u);
