@@ -88,6 +88,8 @@ Results are written beneath `build-hardware-evidence/<UTC timestamp>/`:
   plus pooled CPU/GPU whole-scene frame percentiles for 1K/10K workloads.
 - `stages.json`: sampled per-stage CPU-scope and GPU-command-segment
   p50/p95/p99, grouped by API, workload and explicitly selected Dy executor.
+  CPU scopes can nest and GPU segments include dependencies; their totals
+  must not be added as independent portions of a frame.
 - Individual logs: full correctness diagnostics and native scene metrics.
 
 The hardware-scene fixture creates two equivalent production Worlds
@@ -124,11 +126,11 @@ full allocation/residency high-water measurements, descriptor/pipeline
 churn accounting, 100K whole-scene throughput, and workload contact/constraint
 counts beyond the rigid-body totals. Logical buffer events do not account
 for the buddy allocator's physical residency, committed heap sizes or
-fence-delayed resource release. The profiling build supplies CPU stage spans,
-important host joins and per-command GPU segments but does not yet
-expose a calibrated heterogeneous critical-path timeline. Timestamp queries
-alter execution cost; compare normal Release frame times separately from
-instrumented runs. Compare GPU and CPU Dy on equivalent configurations
+fence-delayed resource release. The profiling build supplies main-thread CPU stage spans,
+important host joins and per-command GPU segments, but worker-thread spans
+are not yet attributed and the GPU timeline is not calibrated to host time.
+Timestamp queries alter execution cost; compare normal Release frame times
+separately from instrumented runs. Compare GPU and CPU Dy on equivalent configurations
 and solver quality before setting a crossover policy. In particular,
 measure the PCM-to-Sc witness join against its actual CPU consumer rather
 than assuming its removal improves the frame.
