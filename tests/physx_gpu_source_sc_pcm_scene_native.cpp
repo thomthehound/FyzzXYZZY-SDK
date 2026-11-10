@@ -694,6 +694,43 @@ void verify(fyzz::compute::Backend backend,const char* sap,
                 native::GpuPcmTouchTransition::Persists,
         "Unjoined GPU PCM epoch contaminated a subsequent Sc publication");
     producer->commit_gpu_step();
+    // A CPU-only Gu EdgeIndex is journaled independently of the GPU
+    // PCM contact list. Rejecting the combined epoch must restore its
+    // exact previous touch words without disturbing the PCM manager.
+    if(edge==0xfffffffeu)
+        throw std::overflow_error("Sc Gu rollback test EdgeIndex exhausted");
+    const auto gu_edge=edge+1u;
+    const std::array<native::GpuGuTouchRecord,1> gu_touch{{
+        {gu_edge,1u}
+    }};
+    std::array<native::GpuPcmBoxResult,1> shared_pending{};
+    producer->enqueue_gpu_pcm_box_contacts(
+        request,shared_pending,gu_edge+1u);
+    producer->enqueue_cpu_gu_touch_history(gu_touch);
+    const std::array<std::uint32_t,1> one_active{{
+        4u|physx_gpu::source_sc_device_island_active_bit
+    }};
+    producer->enqueue_gpu_dy_island_admission(
+        std::span<const native::GpuDyIslandEdge>{},one_active,
+        native::GpuDyIslandSources{});
+    producer->finish_gpu_pcm_box_contacts();
+    const auto changed=physx_gpu::SourceScDeviceIslandFixture::touch(
+        *producer,gu_edge);
+    require(changed[0]==1u && changed[1]==0u,
+            "CPU-only Gu physical touch did not reach device history");
+    producer->invalidate_after_rollback();
+    std::array<native::GpuPcmBoxResult,1> restored_pcm{};
+    producer->enqueue_gpu_pcm_box_contacts(
+        request,restored_pcm,gu_edge+1u);
+    producer->finish_gpu_pcm_box_contacts();
+    const auto restored_touch=physx_gpu::SourceScDeviceIslandFixture::touch(
+        *producer,gu_edge);
+    require(restored_touch[0]==0u && restored_touch[1]==0u &&
+            restored_pcm[0].count()>0u &&
+            restored_pcm[0].touch_transition()==
+                native::GpuPcmTouchTransition::Persists,
+            "Rejected CPU Gu touch changed the committed device epoch");
+    producer->commit_gpu_step();
     check(true,true);
     require(gpu.contact_edge_index({gpu_a,gpu_b})==edge,
             "AABB capacity growth discarded an unchanged GPU PCM manifold");
