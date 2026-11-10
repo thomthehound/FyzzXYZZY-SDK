@@ -4033,6 +4033,7 @@ void Scene::update_contacts() {
     gpu_pcm_pairs_.clear();
     gpu_pcm_results_.clear();
     gpu_pcm_friction_history_masks_.clear();
+    gpu_dy_gu_touches_.clear();
     const bool source_gpu_pcm =
         gpu_broadphase_ && gpu_broadphase_->has_gpu_pcm_box() &&
         pcm_box_box_enabled_;
@@ -4104,6 +4105,8 @@ void Scene::update_contacts() {
         }
         gpu_pcm_results_.resize(gpu_pcm_pairs_.size());
     }
+    const bool source_device_gu_history=source_gpu_pcm &&
+        gpu_broadphase_->has_gpu_dy_distance() && !gpu_pcm_pairs_.empty();
     // Admit bounded CPU Gu classifications per manager, not only for
     // primitive-only batches. Select at most four contiguous runs in
     // source pair order to bound GPU upload and readback spans.
@@ -4693,6 +4696,11 @@ void Scene::update_contacts() {
             next_lost_contacts_.push_back(pair);
         }
         if(manifold.count>0u) {
+            if(source_device_gu_history &&
+               manifold.pcm_result_index==
+                   std::numeric_limits<std::uint32_t>::max())
+                gpu_dy_gu_touches_.push_back({
+                    edge,previously_touching?3u:1u});
             next_manifold_by_edge_[edge]={
                 next_manifolds_.size(),new_lookup_generation};
             next_manifolds_.push_back(manifold);
@@ -8916,20 +8924,8 @@ void Scene::solve_gpu_distance_constraints(float seconds) {
     if(gpu_broadphase_->has_gpu_pcm_box() && pcm_box_box_enabled_ &&
        !gpu_pcm_pairs_.empty()) {
         constexpr std::uint32_t invalid=0xffffffffu;
-        // The source PCM pair set omits ordinary CPU Gu (for example,
-        // a plane with PCM disabled). Publish those physical transitions
-        // to the same device EdgeIndex cache before graph admission.
-        // This journal restores its old words if the frame rolls back.
-        gpu_dy_gu_touches_.clear();
-        gpu_dy_gu_touches_.reserve(
-            manifolds_.size()+lost_contacts_.size());
-        for(const auto& manifold:manifolds_) {
-            if(manifold.pcm_result_index!=invalid)continue;
-            const bool found=std::binary_search(
-                found_contacts_.begin(),found_contacts_.end(),manifold.pair);
-            gpu_dy_gu_touches_.push_back({
-                manifold.edge_handle,found?1u:3u});
-        }
+        // Sc publishes live Gu touch bits while building the contact
+        // manifold. Only retired touches still require edge lookup here.
         for(const Pair pair:lost_contacts_) {
             const EdgeIndex edge=contact_edge_index(pair);
             if(edge==invalid_edge)continue;
