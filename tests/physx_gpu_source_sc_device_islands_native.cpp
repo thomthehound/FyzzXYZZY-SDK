@@ -324,6 +324,18 @@ void verify(Context& context,const char* filename) {
                     std::array<std::uint32_t,4>{1u,3u,0u,2u}[i],
                 "Device Sc numerical admission did not place joints first");
 
+    // PxRigidDynamic permits zero requested velocity iterations; the
+    // mandatory final velocity/writeback pass is a Dy solver rule,
+    // not an Sc admission restriction.
+    const auto zero_velocity=evaluate(1u,{}, {},
+        {4u|source_sc_device_island_active_bit});
+    no_errors(zero_velocity);
+    check_task_mapping(zero_velocity);
+    require(header(zero_velocity).runnable_components==1u &&
+            task(zero_velocity,0u).position_iterations==4u &&
+            task(zero_velocity,0u).velocity_iterations==0u,
+            "Device Sc rejected a valid zero-velocity iteration body");
+
     // In the small direct-scatter path, nonzero component roots must
     // decode the same three-way key as radix-sorted components.
     const std::vector<SourceScDeviceIslandEdge> split_types{
