@@ -869,26 +869,27 @@ void verify_device_sc_dy_indirect_api(
     const std::array<native::GpuPcmBoxPair,0> no_pairs{};
     std::array<native::GpuPcmBoxResult,0> no_witness{};
     producer->enqueue_gpu_pcm_box_contacts(no_pairs,no_witness);
-    const std::array<std::uint32_t,2> nodes{{
+    const std::array<std::uint32_t,3> nodes{{
         4u|(1u<<8u)|physx_gpu::source_sc_device_island_active_bit,
+        physx_gpu::source_sc_device_island_nonresponding_bit,
         5u|(2u<<8u)|physx_gpu::source_sc_device_island_active_bit
     }};
     producer->enqueue_device_island_admission(
         std::span<const physx_gpu::SourceScDeviceIslandEdge>{},nodes,
         physx_gpu::SourceScDeviceIslandSources{});
-    std::array<native::GpuDyDistanceBody,2> bodies{};
-    for(auto& body:bodies)body.inverse_mass=1.f;
-    const std::array<std::uint32_t,2> ordinals{{0u,1u}};
+    std::array<native::GpuDyDistanceBody,3> bodies{};
+    bodies[0].inverse_mass=bodies[2].inverse_mass=1.f;
+    const std::array<std::uint32_t,2> ordinals{{0u,2u}};
     std::array<native::GpuDyDistanceTask,2> tasks{{
         {0u,0u,0u,0u,0u,1u,4u,1u,0x4000u},
         {0u,0u,0u,0u,1u,2u,5u,2u,0x4000u}
     }};
-    std::array<native::GpuDyBodyIntegrationInput,2> inputs{};
-    std::array<native::GpuDyIntegratedPose,2> poses{};
-    std::array<native::GpuDySleepState,2> sleep{};
+    std::array<native::GpuDyBodyIntegrationInput,3> inputs{};
+    std::array<native::GpuDyIntegratedPose,3> poses{};
+    std::array<native::GpuDySleepState,3> sleep{};
     constexpr float seconds=1.f/120.f;
-    for(std::size_t i=0u;i<inputs.size();++i) {
-        auto& in=inputs[i];
+    for(std::size_t i=0u;i<actors.size();++i) {
+        auto& in=inputs[ordinals[i]];
         in.active=1u;
         in.source_actor=actors[i];
         in.source_element=0xffffffffu;
@@ -919,9 +920,10 @@ void verify_device_sc_dy_indirect_api(
         "Source Sc task admission retained a host numerical task upload");
     producer->finish_gpu_dy_distance();
     require(tasks[0].error==0u && tasks[1].error==0u &&
-            poses[0].valid==1u && poses[1].valid==1u &&
+            poses[0].valid==1u && poses[2].valid==1u &&
+            poses[1].valid==0u &&
             std::fabs(poses[0].position[0]-(2.f+0.5f*seconds))<0.002f &&
-            std::fabs(poses[1].position[0]-(10.f+0.75f*seconds))<0.002f,
+            std::fabs(poses[2].position[0]-(10.f+0.75f*seconds))<0.002f,
         "Device-indirect Dy omitted an isolated responding body");
     producer->commit_gpu_step();
 
@@ -929,8 +931,9 @@ void verify_device_sc_dy_indirect_api(
     // source graph's one runnable island. GPU admission owns the valid
     // prefix; no CPU predicted task, body or descriptor count is read
     // back to choose a numerical launch or publish extra body motion.
-    const std::array<std::uint32_t,2> partly_active{{
-        nodes[0],nodes[1]&~physx_gpu::source_sc_device_island_active_bit
+    const std::array<std::uint32_t,3> partly_active{{
+        nodes[0],nodes[1],
+        nodes[2]&~physx_gpu::source_sc_device_island_active_bit
     }};
     producer->enqueue_gpu_pcm_box_contacts(no_pairs,no_witness);
     producer->enqueue_device_island_admission(
@@ -949,7 +952,8 @@ void verify_device_sc_dy_indirect_api(
             producer->dy_launch_stats().device_admitted_descriptors==0u &&
             tasks[0].body_begin==0u && tasks[0].body_end==1u &&
             tasks[0].error==0u && tasks[1].error==0u &&
-            poses[0].valid==1u && poses[1].valid==0u,
+            poses[0].valid==1u && poses[1].valid==0u &&
+            poses[2].valid==0u,
         "Dy used the host task capacity instead of the device admission");
     producer->commit_gpu_step();
 }
