@@ -8,6 +8,7 @@
 #include <array>
 #include <cstddef>
 #include <filesystem>
+#include <optional>
 
 namespace fyzz {
 
@@ -83,6 +84,19 @@ NativeGpuPcmShaders load_native_gpu_pcm_shaders(
 // and binaries can be deployed together, with paths relative to the manifest.
 NativeGpuSapShaders load_native_gpu_sap_shaders(
     compute::Backend backend,const std::filesystem::path& manifest);
+
+// Compiled pipeline stages share one GPU Context, source heap and queue.
+struct NativeGpuPipelineShaders {
+    NativeGpuSapShaders sap{};
+    std::optional<NativeGpuAggregateShaders> aggregates;
+    std::optional<NativeGpuPcmShaders> pcm;
+    std::optional<compute::ShaderBinary> dy;
+    std::optional<compute::ShaderBinary> convex_dy;
+};
+
+World create_native_gpu_world(
+    compute::Backend backend,NativeGpuPipelineShaders stages,
+    WorldOptions options={ExecutionMode::NativePortableGpu});
 
 // Construct a World with one native Context, original PhysX GPU buddy heap,
 // AABB/SAP owners, stream and source Sc/PCM/Dy scene. No reference PhysX
