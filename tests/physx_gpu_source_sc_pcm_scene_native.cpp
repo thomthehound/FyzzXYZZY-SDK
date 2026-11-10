@@ -4391,6 +4391,7 @@ void verify_gpu_high_degree_coloring(
 }
 
 
+
 void qualify_hardware_scene(
     fyzz::compute::Backend backend,const char* sap,const char* pcm,
     const char* dy_path,std::uint32_t body_count) {
@@ -4415,63 +4416,58 @@ void qualify_hardware_scene(
                 .dy=compiled(dy_path)},
             {.execution=ExecutionMode::NativePortableGpu});
     };
-    World cpu=create(),gpu=create();
-    cpu.set_gpu_dy_enabled(false);
-    gpu.set_gpu_dy_enabled(true);
     const auto width=static_cast<std::uint32_t>(
         std::ceil(std::sqrt(static_cast<double>(body_count))));
     const float spacing=3.0f;
     const float origin=0.5f*float(width-1u)*spacing;
     const float platform_extent=float(width)*spacing*0.5f+1.f;
-    const Vec3 platform_half{platform_extent,0.5f,platform_extent};
-    const Vec3 platform_position{0.f,-0.5f,0.f};
-    cpu.add_static_box(platform_half,platform_position);
-    gpu.add_static_box(platform_half,platform_position);
-    std::vector<BodyId> cpu_bodies,gpu_bodies;
-    cpu_bodies.reserve(body_count);
-    gpu_bodies.reserve(body_count);
-    for(std::uint32_t i=0u;i<body_count;++i) {
-        const Vec3 position{
-            float(i%width)*spacing-origin,0.48f,
-            float(i/width)*spacing-origin};
-        cpu_bodies.push_back(cpu.add_dynamic_box(
-            {0.5f,0.5f,0.5f},position,1.f));
-        gpu_bodies.push_back(gpu.add_dynamic_box(
-            {0.5f,0.5f,0.5f},position,1.f));
-    }
     constexpr float dt=1.f/120.f;
     constexpr std::uint32_t warmup=4u;
     const std::uint32_t measured=body_count>=10000u?16u:48u;
-    std::vector<double> cpu_ms,gpu_ms;
-    cpu_ms.reserve(measured);
-    gpu_ms.reserve(measured);
-    for(std::uint32_t frame=0u;frame<warmup+measured;++frame) {
-        const auto start=std::chrono::steady_clock::now();
-        cpu.step(dt);
-        const auto cpu_done=std::chrono::steady_clock::now();
-        gpu.step(dt);
-        const auto gpu_done=std::chrono::steady_clock::now();
-        if(frame>=warmup) {
-            cpu_ms.push_back(std::chrono::duration<double,std::milli>(
-                cpu_done-start).count());
-            gpu_ms.push_back(std::chrono::duration<double,std::milli>(
-                gpu_done-cpu_done).count());
+    const auto run=[&](bool gpu_dy,std::vector<double>& step_ms) {
+        World world=create();
+        world.set_gpu_dy_enabled(gpu_dy);
+        world.add_static_box(
+            {platform_extent,0.5f,platform_extent},{0.f,-0.5f,0.f});
+        std::vector<BodyId> ids;
+        ids.reserve(body_count);
+        for(std::uint32_t i=0u;i<body_count;++i) {
+            const Vec3 position{
+                float(i%width)*spacing-origin,0.48f,
+                float(i/width)*spacing-origin};
+            ids.push_back(world.add_dynamic_box(
+                {0.5f,0.5f,0.5f},position,1.f));
         }
-    }
+        step_ms.reserve(measured);
+        for(std::uint32_t frame=0u;frame<warmup+measured;++frame) {
+            const auto start=std::chrono::steady_clock::now();
+            world.step(dt);
+            if(frame>=warmup)
+                step_ms.push_back(std::chrono::duration<double,std::milli>(
+                    std::chrono::steady_clock::now()-start).count());
+        }
+        std::vector<BodyState> final_states;
+        final_states.reserve(body_count);
+        for(const BodyId id:ids)
+            final_states.push_back(world.body_state(id));
+        return final_states;
+    };
+    std::vector<double> cpu_ms,gpu_ms;
+    const auto cpu_states=run(false,cpu_ms);
+    const auto gpu_states=run(true,gpu_ms);
     float max_position_error=0.f,max_velocity_error=0.f;
     for(std::uint32_t i=0u;i<body_count;++i) {
-        const auto a=cpu.body_state(cpu_bodies[i]);
-        const auto b=gpu.body_state(gpu_bodies[i]);
+        const auto& a=cpu_states[i];
+        const auto& b=gpu_states[i];
         for(const auto values:std::array<std::array<float,2>,6>{{
                 {a.position.x,b.position.x},
                 {a.position.y,b.position.y},
                 {a.position.z,b.position.z},
                 {a.velocity.x,b.velocity.x},
                 {a.velocity.y,b.velocity.y},
-                {a.velocity.z,b.velocity.z}}}) {
+                {a.velocity.z,b.velocity.z}}})
             require(std::isfinite(values[0]) && std::isfinite(values[1]),
                     "Hardware scene published nonfinite rigid state");
-        }
         max_position_error=std::max({max_position_error,
             std::fabs(a.position.x-b.position.x),
             std::fabs(a.position.y-b.position.y),
