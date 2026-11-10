@@ -8889,7 +8889,10 @@ void Scene::solve_gpu_distance_constraints(float seconds) {
     // islands instead take their task/body/response schedule from the
     // resident Gu EdgeIndex graph. Reuse the already prepared source
     // tables; no CPU contact or 1D descriptor is reconstructed here.
+    // Sc's single accurate island is already one numerical task.
+    // Rebuilding its root and descriptor order on the GPU adds no workgroup.
     const bool device_island_admission=
+        active_accurate_island_batches_.size()>1u &&
         gpu_broadphase_->has_gpu_pcm_box() && pcm_box_box_enabled_ &&
         !gpu_pcm_pairs_.empty() && !gpu_dy_tasks_.empty() && !solver_active_ids_.empty() &&
         std::all_of(gpu_dy_tasks_.begin(),gpu_dy_tasks_.end(),

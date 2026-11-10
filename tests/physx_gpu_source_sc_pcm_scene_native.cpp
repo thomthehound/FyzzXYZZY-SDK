@@ -1882,6 +1882,61 @@ void verify_coupled_rigid_stack(
     require(coupled,
             "GPU coupled rigid stack never admitted dynamic-dynamic contacts");
 }
+
+void verify_gpu_single_island_hybrid_solver(
+    fyzz::compute::Backend backend,const char* sap,
+    const char* pcm,const char* dy_shader) {
+    using namespace fyzz;
+    std::ifstream file(dy_shader,std::ios::binary);
+    require(bool(file),"Source Dy shader bundle missing");
+    std::vector<char> bytes(
+        std::istreambuf_iterator<char>{file},
+        std::istreambuf_iterator<char>{});
+    compute::ShaderBinary shader{};
+    shader.format=backend==compute::Backend::Vulkan
+        ?compute::ShaderFormat::Spirv:compute::ShaderFormat::Dxil;
+    shader.bytes.assign(bytes.begin(),bytes.end());
+    native::Scene cpu,gpu;
+    auto owner=std::make_unique<physx_gpu::SourceScOwnedGpuBroadphaseNative>(
+        backend,load_native_gpu_sap_shaders(backend,sap),
+        128u,128u,std::nullopt,
+        load_native_gpu_pcm_shaders(backend,pcm),std::move(shader));
+    auto* producer=owner.get();
+    gpu.set_gpu_broadphase(std::move(owner));
+    cpu.add_static_box({0.5f,0.5f,0.5f},{0.f,0.f,0.f});
+    gpu.add_static_box({0.5f,0.5f,0.5f},{0.f,0.f,0.f});
+    std::array<BodyId,2> a{},b{};
+    for(std::size_t i=0;i<a.size();++i) {
+        const Vec3 p{0.f,0.83f+float(i)*0.83f,0.f};
+        a[i]=cpu.add_dynamic_box({0.5f,0.5f,0.5f},p,1.f);
+        b[i]=gpu.add_dynamic_box({0.5f,0.5f,0.5f},p,1.f);
+    }
+    for(unsigned frame=0u;frame<6u;++frame) {
+        cpu.step(1.f/120.f);
+        gpu.step(1.f/120.f);
+        const auto schedule=producer->dy_launch_stats();
+        require(gpu.largest_accurate_island_size()==2u &&
+                cpu.contacts().size()==gpu.contacts().size() &&
+                gpu.contacts().size()==2u &&
+                producer->dy_pcm_device_contact_rows()>0u &&
+                producer->dy_gpu_integrated_body_count()==2u &&
+                schedule.device_colored_tasks>0u &&
+                schedule.device_colored_descriptors>=2u &&
+                schedule.device_island_indirect_dispatches==0u,
+            "Single accurate island redundantly rebuilt its numerical schedule");
+        for(std::size_t i=0;i<a.size();++i)
+            test::compound_compare_state(
+                gpu.body_state(b[i]),cpu.body_state(a[i]),0.03f,
+                "Single-island hybrid GPU Dy diverged from CPU PGS");
+        if(frame==0u)
+            std::cout<<"FYZZXYZZY_METRIC suite=sc_pcm case=single_island"
+                     <<" dy_dispatches="<<schedule.dispatches
+                     <<" island_indirect_dispatches="
+                     <<schedule.device_island_indirect_dispatches
+                     <<" descriptor_upload_bytes="
+                     <<schedule.source_descriptor_upload_bytes<<'\n';
+    }
+}
 // Source Gu PCM rows, friction patches, and 1D joints share the same
 // production Dy task partitions and device execution on both backends.
 void verify_gpu_coupled_solver(
@@ -4048,7 +4103,8 @@ int main(int argc,char** argv) {
             (argc==5 && !has_convex_shader?argv[4]:"all");
         require(scenario=="all" || scenario=="scene" ||
                 scenario=="sparse_contacts" || scenario=="coupled_stack" ||
-                scenario=="coupled_solver" || scenario=="legacy_gu_solver" ||
+                scenario=="coupled_solver" || scenario=="single_island" ||
+                scenario=="legacy_gu_solver" ||
                 scenario=="mixed_solver" || scenario=="distance_solver" ||
                 scenario=="compound_shapes" || scenario=="compound_solver" ||
                 scenario=="sphere_solver" || scenario=="convex_plane" ||
@@ -4126,6 +4182,10 @@ int main(int argc,char** argv) {
         if(scenario=="all" || scenario=="coupled_stack")
             fyzz::tests::measure_gpu_case("sc_pcm","coupled_stack",
                 [&]{verify_coupled_rigid_stack(backend,argv[1],argv[2]);});
+        if(scenario=="all" || scenario=="single_island")
+            fyzz::tests::measure_gpu_case("sc_pcm","single_island",
+                [&]{verify_gpu_single_island_hybrid_solver(
+                    backend,argv[1],argv[2],argv[3]);});
         if(scenario=="all" || scenario=="coupled_solver")
             fyzz::tests::measure_gpu_case("sc_pcm","coupled_solver",
                 [&]{
