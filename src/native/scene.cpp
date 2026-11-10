@@ -8883,7 +8883,7 @@ void Scene::solve_gpu_distance_constraints(float seconds) {
     // resident Gu EdgeIndex graph. Reuse the already prepared source
     // tables; no CPU contact or 1D descriptor is reconstructed here.
     const bool device_island_admission=
-        gpu_broadphase_->has_gpu_pcm_box() &&
+        gpu_broadphase_->has_gpu_pcm_box() && pcm_box_box_enabled_ &&
         !gpu_dy_tasks_.empty() && !solver_active_ids_.empty() &&
         std::all_of(gpu_dy_tasks_.begin(),gpu_dy_tasks_.end(),
             [](const GpuDyDistanceTask& task) {
