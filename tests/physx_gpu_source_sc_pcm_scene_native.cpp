@@ -2146,7 +2146,8 @@ void verify_gpu_coupled_solver(
         saw_device_pcm_contact_rows |= device_rows>0u;
         saved_prep_bytes+=prep_saving;
         saw_compact_prep|=prep_saving>0u;
-        require(producer->dy_upload_span_count()==2u &&
+        require(producer->dy_upload_span_count()==
+                    1u+schedule.device_island_indirect_dispatches &&
                 producer->dy_cpu_gu_geometry_bytes()==0u,
             "PCM-only Dy source stage fragmented its HtoD upload");
         require(producer->dy_friction_prepared_rows()>0u &&
