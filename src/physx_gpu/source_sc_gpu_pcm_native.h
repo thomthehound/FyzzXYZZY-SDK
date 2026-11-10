@@ -85,10 +85,10 @@ public:
         if(staged_gjk_)
             primitive_gjk_stage_.emplace(
                 context_,std::move(gjk_primitive),false,true,false,true);
-        // Device task admission and its indirect launch resource are
-        // installed only alongside a numerical Dy consumer.
-        if(!device_islands)return;
-        island_stage_.emplace(context_,std::move(*device_islands));
+        // Island task admission is optional; PCM GJK/EPA also uses the
+        // shared physical indirect-argument resource.
+        if(device_islands)
+            island_stage_.emplace(context_,std::move(*device_islands));
         // D3D12 indirect arguments require their own physical resource.
         // Separate source buddy-heap allocations can share one root UAV.
         indirect_buffer_=context_.create_buffer(
