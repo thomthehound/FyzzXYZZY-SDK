@@ -568,6 +568,24 @@ public:
             throw std::logic_error(
                 "Source Sc frame cannot commit before Dy numerical writeback");
         if(pcm_)pcm_->commit_step();
+#if defined(FYZZXYZZY_PROFILE_GPU)
+        const auto heap=manager_->getDeviceHeapStats();
+        FYZZ_PROFILE_COUNTER("heap.device_reserved_bytes",manager_->getDeviceMemorySize());
+        FYZZ_PROFILE_COUNTER("heap.broadphase_live_bytes",
+            heap.stats[physx::PxsHeapStats::eBROADPHASE]);
+        FYZZ_PROFILE_COUNTER("heap.narrowphase_live_bytes",
+            heap.stats[physx::PxsHeapStats::eNARROWPHASE]);
+        FYZZ_PROFILE_COUNTER("heap.solver_live_bytes",
+            heap.stats[physx::PxsHeapStats::eSOLVER]);
+        FYZZ_PROFILE_COUNTER("pcm.pair_upload_bytes",
+            pcm_?pcm_->last_pair_upload_bytes():0u);
+        FYZZ_PROFILE_COUNTER("pcm.witness_readback_bytes",
+            pcm_?pcm_->last_contact_download_bytes():0u);
+        FYZZ_PROFILE_COUNTER("pcm.host_contact_upload_bytes",
+            pcm_?pcm_->last_host_contact_upload_bytes():0u);
+        FYZZ_PROFILE_COUNTER("pcm.edge_history_copy_bytes",
+            pcm_?pcm_->last_edge_history_copy_bytes():0u);
+#endif
     }
     bool needs_gpu_contact_rebuild() const noexcept override {
         return pcm_ && pcm_->needs_contact_rebuild();
