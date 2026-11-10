@@ -1899,24 +1899,29 @@ struct Context::Impl {
                 vkCmdWriteTimestamp(commands, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, timestamps, 1);
             }
             require(vkEndCommandBuffer(commands), "vkEndCommandBuffer");
+#if defined(FYZZXYZZY_PROFILE_GPU)
+            std::vector<ProfileOp> recorded_ops;
+            if(hardware_trace) {
+                recorded_ops.reserve(operations.size());
+                for(const auto& operation:operations) {
+                    if(const auto* copy=std::get_if<CopyCommand>(&operation))
+                        recorded_ops.push_back({0u,copy->bytes,0u,0u,0u,false});
+                    else {
+                        const auto& dispatch=std::get<DispatchCommand>(operation);
+                        recorded_ops.push_back({
+                            dispatch.pipeline,0u,dispatch.groups.x,dispatch.groups.y,
+                            dispatch.groups.z,dispatch.indirect.has_value()});
+                    }
+                }
+            }
+#endif
             const SubmissionId id = enqueue(commands, pool);
             auto& submitted = submissions.at(id);
             submitted.timestamps = timestamps;
 #if defined(FYZZXYZZY_PROFILE_GPU)
             if(hardware_trace) {
                 submitted.profile_trace_id=hardware_profile::current_trace_id();
-                submitted.profile_ops.reserve(operations.size());
-                for(const auto& operation:operations) {
-                    if(const auto* copy=std::get_if<CopyCommand>(&operation))
-                        submitted.profile_ops.push_back(
-                            {0u,copy->bytes,0u,0u,0u,false});
-                    else {
-                        const auto& dispatch=std::get<DispatchCommand>(operation);
-                        submitted.profile_ops.push_back({
-                            dispatch.pipeline,0u,dispatch.groups.x,dispatch.groups.y,
-                            dispatch.groups.z,dispatch.indirect.has_value()});
-                    }
-                }
+                submitted.profile_ops=std::move(recorded_ops);
             }
 #endif
             submitted.cacheable_batch = true;
