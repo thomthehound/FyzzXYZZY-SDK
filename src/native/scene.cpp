@@ -8628,7 +8628,6 @@ void Scene::publish_cpu_gu_touch_history() {
        gpu_broadphase_->has_gpu_pcm_box() &&
        (pcm_box_box_enabled_ || pcm_plane_box_enabled_) &&
        !gpu_pcm_pairs_.empty()) {
-        constexpr std::uint32_t invalid=0xffffffffu;
         // Sc publishes live Gu touch bits while building the contact
         // manifold. Only retired touches still require edge lookup here.
         for(const Pair pair:lost_contacts_) {

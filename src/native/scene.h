@@ -429,7 +429,7 @@ public:
     virtual void enqueue_gpu_pcm_box_contacts(
         std::span<const GpuPcmBoxPair>,
         std::span<GpuPcmBoxResult>,
-        std::uint32_t edge_capacity=0u) {
+        std::uint32_t=0u) {
         throw std::logic_error("Source GPU PCM stages are not installed");
     }
     virtual void finish_gpu_pcm_box_contacts() {
@@ -454,7 +454,7 @@ public:
     virtual void upload_host_pcm_contacts(
         std::span<const GpuPcmBoxPair>,
         std::span<const GpuPcmBoxResult>,
-        std::uint32_t edge_capacity=0u) {
+        std::uint32_t=0u) {
         throw std::logic_error("Source GPU host PCM stream unavailable");
     }
     virtual bool has_gpu_dy_distance() const noexcept { return false; }
