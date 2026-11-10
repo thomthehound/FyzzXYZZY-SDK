@@ -317,6 +317,79 @@ foreach ($config in $configs) {
 }
 $summary | ConvertTo-Json -Depth 5 |
     Set-Content -LiteralPath (Join-Path $out 'summary.json') -Encoding utf8
+
+if (-not (Test-Path -LiteralPath $traces -PathType Leaf)) {
+    throw "Profiling produced no trace file: $traces"
+}
+$pipelineLabels = @{}
+$frameModes = @{}
+foreach ($line in [System.IO.File]::ReadLines($traces)) {
+    $record = ConvertFrom-Json -InputObject $line
+    if ($record.phase -ne 'sample') { continue }
+    $event = $record.event
+    if ($event.kind -eq 'pipeline') {
+        $key = "$($record.log)|$($event.context)|$($event.pipeline)"
+        $pipelineLabels[$key] = $event.label
+    } elseif ($event.kind -eq 'frame' -and $event.success -eq 1) {
+        $key = "$($record.log)|$($event.trace_id)"
+        $frameModes[$key] = [pscustomobject]@{
+            mode = if ($event.gpu_dy -eq 1) { 'gpu-dy' } else { 'cpu-dy' }
+            frame = [long]$event.frame
+        }
+    }
+}
+$stages = [System.Collections.Generic.Dictionary[
+    string,System.Collections.Generic.List[double]]]::new()
+foreach ($line in [System.IO.File]::ReadLines($traces)) {
+    $record = ConvertFrom-Json -InputObject $line
+    if ($record.phase -ne 'sample') { continue }
+    $event = $record.event
+    if ($event.kind -notin @('cpu','gpu') -or $event.trace_id -eq 0) {
+        continue
+    }
+    $frameKey = "$($record.log)|$($event.trace_id)"
+    if (-not $frameModes.ContainsKey($frameKey)) { continue }
+    $frame = $frameModes[$frameKey]
+    if ($record.case.StartsWith('hardware_scene_') -and $frame.frame -le 4) {
+        continue
+    }
+    if ($event.kind -eq 'cpu') {
+        $stage = $event.stage
+    } else {
+        $pipelineKey = "$($record.log)|$($event.context)|$($event.pipeline)"
+        $stage = if ($event.type -eq 'copy') {
+            'gpu.copy'
+        } elseif ($pipelineLabels.ContainsKey($pipelineKey)) {
+            $pipelineLabels[$pipelineKey]
+        } else {
+            'gpu.unlabeled'
+        }
+    }
+    $key = "$($record.backend)|$($record.case)|$($frame.mode)|$($event.kind)|$stage"
+    if (-not $stages.ContainsKey($key)) {
+        $stages[$key] = [System.Collections.Generic.List[double]]::new()
+    }
+    $stages[$key].Add(([double]$event.duration_ns / 1000000.0))
+}
+$stageSummary = foreach ($key in ($stages.Keys | Sort-Object)) {
+    $parts = $key -split '\|', 5
+    $samples = $stages[$key]
+    $values = [double[]]$samples.ToArray()
+    [pscustomobject][ordered]@{
+        backend = $parts[0]
+        case = $parts[1]
+        executor = $parts[2]
+        timeline = $parts[3]
+        stage = $parts[4]
+        segments = $values.Count
+        segment_p50_ms = (Percentile $values 0.50)
+        segment_p95_ms = (Percentile $values 0.95)
+        segment_p99_ms = (Percentile $values 0.99)
+        total_segment_ms = [double](($values | Measure-Object -Sum).Sum)
+    }
+}
+$stageSummary | ConvertTo-Json -Depth 6 |
+    Set-Content -LiteralPath (Join-Path $out 'stages.json') -Encoding utf8
 Write-Host "Hardware qualification passed. Evidence: $out"
 Write-Host 'Process timings include device creation and shader setup; in-scene step metrics are in runs.jsonl.'
 ) {
