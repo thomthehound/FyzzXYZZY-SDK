@@ -2290,17 +2290,17 @@ void Scene::set_gpu_dy_enabled(bool enabled) {
         throw std::logic_error(
             "GPU Dy execution selection requires an installed numerical solver");
     if(gpu_dy_enabled_==enabled)return;
-    // A CPU-integrated frame must not inherit a prior GPU-authorized
-    // ElementSim pose. The next SAP/Dy submission uses the published Sc pose.
+    // Only GPU-integrated dynamic ElementSim poses need revocation.
+    // Their Sc input records already contain the last published poses.
+    dirty_=true;
     for(const ShapeId id:live_shape_ids_) {
         const auto& shape=shapes_[id];
         if(shape.simulation_shape_enabled &&
+           shape.motion==Motion::Dynamic &&
            shape.geometry!=Geometry::Plane)
             gpu_broadphase_->mark_shape_bounds_changed(id,shape.contact_offset);
     }
-    gpu_broadphase_snapshot_current_=false;
     gpu_dy_enabled_=enabled;
-    dirty_=true;
 }
 
 // Source GPU fetch -> Sc pair stream. This is the same pending pair and

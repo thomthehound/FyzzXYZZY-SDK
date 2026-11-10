@@ -2472,9 +2472,8 @@ void verify_cpu_gu_gpu_dy_solver(
     require(saw_contact,"Source legacy Gu fixture never generated a contact");
 }
 
-// Explicit diagnostic plane Gu combines with device box PCM inside
-// one Dy task. Default GPU plane PCM is verified separately; the
-// diagnostic selection preserves CPU-origin Gu upload coverage.
+// An already-admitted native scene can change numerical executor while
+// retaining its independent SAP, PCM and contact-edge publication.
 
 void verify_dy_execution_switch(
     fyzz::compute::Backend backend,const char* sap,
@@ -2524,8 +2523,10 @@ void verify_dy_execution_switch(
         cpu.step(1.f/120.f);
         gpu.step(1.f/120.f);
         gpu_dispatches+=schedule[frame]?1u:0u;
-        require(producer->dy_distance_dispatch_count()==gpu_dispatches,
-            "CPU-selected Dy unexpectedly submitted a GPU numerical solve");
+        require(producer->dy_distance_dispatch_count()==gpu_dispatches &&
+                (!schedule[frame] ||
+                 producer->dy_pcm_device_contact_rows()>0u),
+            "CPU/GPU Dy selection lost numerical ownership or GPU PCM input");
         require(cpu.contacts().size()==gpu.contacts().size() &&
                 cpu.solved_normal_impulses().size()==
                     gpu.solved_normal_impulses().size() &&
@@ -2537,6 +2538,10 @@ void verify_dy_execution_switch(
                 "GPU SAP/PCM and switched CPU/GPU Dy diverged");
     }
 }
+ 
+// Explicit diagnostic plane Gu combines with device box PCM inside
+// one Dy task. Default GPU plane PCM is verified separately; the
+// diagnostic selection preserves CPU-origin Gu upload coverage.
 void verify_mixed_gu_pcm_gpu_dy_solver(
     fyzz::compute::Backend backend,const char* sap,
     const char* pcm,const char* dy_shader) {
