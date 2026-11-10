@@ -277,7 +277,7 @@ foreach ($config in $configs) {
             Where-Object { $_.backend -eq $config.Api -and
                 $_.case -eq $case -and $_.phase -eq 'sample' } |
             ForEach-Object { [double]$_.process_wall_ms })
-        $summary += [pscustomobject][ordered]@{
+        $entry = [ordered]@{
             backend = $config.Api
             case = $case
             samples = $times.Count
@@ -285,6 +285,29 @@ foreach ($config in $configs) {
             process_wall_p95_ms = (Percentile $times 0.95)
             process_wall_p99_ms = (Percentile $times 0.99)
         }
+        if ($case.StartsWith('hardware_scene_')) {
+            $selected = @($records | Where-Object {
+                $_.backend -eq $config.Api -and
+                $_.case -eq $case -and $_.phase -eq 'sample'
+            })
+            foreach ($executor in @('cpu', 'gpu')) {
+                $gpuValue = if ($executor -eq 'gpu') { 1.0 } else { 0.0 }
+                $frames = @($selected | ForEach-Object {
+                    $_.metrics | Where-Object {
+                        $_.suite -eq 'hardware_step' -and
+                        $_.gpu_dy -eq $gpuValue
+                    } | ForEach-Object { [double]$_.step_ms }
+                })
+                if ($frames.Count -eq 0) {
+                    throw "No $executor whole-scene frame samples for $($config.Api) $case."
+                }
+                $entry[($executor + '_frame_samples')] = $frames.Count
+                $entry[($executor + '_frame_p50_ms')] = (Percentile $frames 0.50)
+                $entry[($executor + '_frame_p95_ms')] = (Percentile $frames 0.95)
+                $entry[($executor + '_frame_p99_ms')] = (Percentile $frames 0.99)
+            }
+        }
+        $summary += [pscustomobject]$entry
     }
 }
 $summary | ConvertTo-Json -Depth 5 |
