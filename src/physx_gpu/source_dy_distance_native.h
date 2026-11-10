@@ -1129,7 +1129,22 @@ public:
         friction_history_capacity_=next_history_capacity_;
         joint_source_capacity_=next_joint_capacity;
         const auto address=arena_.getDevicePtr();
-        const std::size_t uploaded_bytes=input_end-upload_begin;
+        // Sc supplies the descriptor tokens and Dy computes the raw
+        // descriptors, colors, cursors, and body partition state. None
+        // of those scratch arrays has a host source in a device-owned
+        // island epoch. Skip their entire contiguous upload window.
+        const auto device_skip_begin=device_admission
+            ?offsets[15]+40u:0u;
+        const auto device_skip_end=device_admission
+            ?device_skip_begin+descriptors.size()*24u+bodies.size()*12u:0u;
+        if(device_admission &&
+           (device_skip_begin<upload_begin ||
+            device_skip_end<device_skip_begin ||
+            device_skip_end>input_end))
+            throw std::out_of_range(
+                "Source Sc numerical scratch upload window is invalid");
+        const std::size_t uploaded_bytes=input_end-upload_begin-
+            (device_admission?device_skip_end-device_skip_begin:0u);
         // Adjacent Sc constraint slot edits share one DMA into the
         // resident Dy allocation, not the transient solver-row upload.
         joint_source_uploads_.clear();
@@ -1315,7 +1330,17 @@ public:
         std::memcpy(host_.data()+offsets[12],
                     integration_header.data(),sizeof(integration_header));
         const auto previous_spans=stream_.submission_stats().upload_spans;
-        stream_.queue_uploads({{
+        if(device_admission) {
+            const std::array<SourceSapUpload,2> uploads{{
+                {address+upload_begin,host_.data()+upload_begin,
+                 device_skip_begin-upload_begin},
+                {address+device_skip_end,host_.data()+device_skip_end,
+                 input_end-device_skip_end}
+            }};
+            // One staging submission carries two real source spans;
+            // no host packet fills the device-generated scratch gap.
+            stream_.queue_uploads(uploads);
+        }else stream_.queue_uploads({{
             address+upload_begin,host_.data()+upload_begin,uploaded_bytes}});
         // The Sc producer and Dy consumer use the same ordered source
         // stream. GPU-to-GPU copies replace the transient task/ordinal/
