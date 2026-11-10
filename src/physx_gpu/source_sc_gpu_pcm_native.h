@@ -155,7 +155,8 @@ public:
     // downloading a duplicate numerical manifold for verification.
     void upload_host_contacts(
             std::span<const native::GpuPcmBoxPair> requests,
-            std::span<const native::GpuPcmBoxResult> results) {
+            std::span<const native::GpuPcmBoxResult> results,
+            std::uint32_t minimum_edge_capacity=0u) {
         if(requests.empty() || requests.size()!=results.size() ||
            requests.size()>std::numeric_limits<std::uint32_t>::max())
             throw std::invalid_argument("Invalid Sc primitive PCM upload");
@@ -170,7 +171,8 @@ public:
             largest_edge=std::max(largest_edge,requests[i].edge);
         }
         const auto pair_count=static_cast<std::uint32_t>(requests.size());
-        const auto edge_capacity=largest_edge+1u;
+        const auto edge_capacity=std::max(
+            largest_edge+1u,minimum_edge_capacity);
         const auto bytes=source_allocation_bytes(
             pair_count,sizeof(SourcePcmGpuContactStreamNative));
         dense_contacts_.allocate(bytes,PX_FL);
@@ -223,7 +225,8 @@ public:
 
     void enqueue(std::span<const native::GpuPcmBoxPair> requests,
                   std::span<native::GpuPcmBoxResult> output,
-                  std::uint32_t shape_capacity) {
+                  std::uint32_t shape_capacity,
+                  std::uint32_t minimum_edge_capacity=0u) {
         if(requests.size()!=output.size())
             throw std::invalid_argument("Source Sc GPU PCM result count mismatch");
         if(pcm_transaction_pending_)
@@ -329,7 +332,8 @@ public:
             }
             pair_host_[i]=next;
         }
-        const auto edge_capacity=largest_edge+1u;
+        const auto edge_capacity=std::max(
+            largest_edge+1u,minimum_edge_capacity);
         if(pair_count) {
             const auto requested_pair_bytes=source_allocation_bytes(pair_count,20u);
             const auto previous_pair_capacity=pairs_.getSize();
