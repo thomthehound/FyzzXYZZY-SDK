@@ -60,12 +60,13 @@ backend-selected adapter, numerical device limits and UMA classification.
 
 ## Workload and evidence
 
-The correctness run covers integrated Scene contact and device admission,
-the indirect API, coupled PCM/Gu/1D rigid solving, CPU/GPU Dy switching,
+The correctness run covers production-World 1K independently contacting bodies,
+integrated Scene contact and device admission, the indirect API, coupled
+PCM/Gu/1D rigid solving, CPU/GPU Dy switching,
 plane-only PCM, solver recovery, free integration, finite and convex
 geometry, aggregate coupling, mixed producers, wide islands and
-nonresponding constraints. With `-Scale`, it adds 10K star-island and
-wide-island cases. These stress tests retain the fixture's assertions;
+nonresponding constraints. With `-Scale`, it adds a production-World 10K contacting-body
+comparison and 10K star-island and wide-island cases. These stress tests retain the fixture's assertions;
 they do not downsize the simulation to achieve a pass.
 
 Results are written beneath `build-hardware-evidence/<UTC timestamp>/`:
@@ -77,13 +78,21 @@ Results are written beneath `build-hardware-evidence/<UTC timestamp>/`:
 - `summary.json`: sampled process-wall p50/p95/p99 for each profiled case.
 - Individual logs: full correctness diagnostics and native scene metrics.
 
-The coupled-solver fixture measures eleven in-process steady-state CPU/GPU
-steps per solver mode and reports their p50/p90, contact/friction/pose
-errors, upload/download bytes, dispatch counts, and saved preparation.
-These are **step** measurements; the script's p50/p95/p99 are explicitly
-**whole-process** timings that also include startup and pipeline setup.
-Neither is a GPU timestamp. Do not substitute them for device-stage
-critical-path measurements.
+The hardware-scene fixture creates two equivalent production Worlds
+sequentially, with the same GPU broadphase and PCM stages but different
+explicit numerical executors. Each World owns only its own context. It
+measures 48 completed frames at 1K bodies or 16 at 10K, after four warm-up
+frames, and checks all final body positions and velocities. Its p50/p95/p99
+are **whole-scene step** durations inclusive of host work, transfers and
+synchronization. It uses one static platform and isolated dynamic contacts;
+actor count and contact complexity are reported separately from the wide
+constraint workloads.
+
+The coupled-solver fixture additionally measures eleven in-process CPU/GPU
+steps per solver mode and reports p50/p90, contact/friction/pose errors,
+upload/download bytes, dispatch counts and saved preparation. The script's
+p50/p95/p99 are **whole-process** timings that include startup and pipeline
+setup. None of these values is a device-stage timestamp.
 
 ## Acceptance and next measurements
 
@@ -91,8 +100,8 @@ A passing appliance establishes real-device execution of its covered
 correctness scenarios, including the coupled numerical paths and switching.
 The remaining hardware gate requires device stage timestamps, host wait
 and overlap attribution, buffer-allocation peaks, descriptor/pipeline
-churn, and 1K/10K/100K *whole-scene* throughput with measured contacts
-and constraint counts. Compare GPU and CPU Dy on equivalent configurations
+churn, 100K whole-scene throughput, and workload contact/constraint counts
+beyond the rigid-body totals. Compare GPU and CPU Dy on equivalent configurations
 and solver quality before setting a crossover policy. In particular,
 measure the PCM-to-Sc witness join against its actual CPU consumer rather
 than assuming its removal improves the frame.
