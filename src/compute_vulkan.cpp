@@ -9,6 +9,9 @@
 
 #include <cstring>
 #include <cstdlib>
+#if defined(FYZZXYZZY_PROFILE_GPU)
+#include <cstdio>
+#endif
 #include <algorithm>
 #include <limits>
 #include <span>
@@ -254,6 +257,14 @@ struct Context::Impl {
         std::vector<VkDescriptorBufferInfo> views;
         std::vector<BufferId> buffer_ids;
     };
+#if defined(FYZZXYZZY_PROFILE_GPU)
+    struct ProfileOp {
+        PipelineId pipeline=0;
+        std::size_t bytes=0u;
+        std::uint32_t x=0u,y=0u,z=0u;
+        bool indirect=false;
+    };
+#endif
     struct Submission {
         VkCommandBuffer commands = VK_NULL_HANDLE;
         VkDescriptorPool descriptor_pool = VK_NULL_HANDLE;
@@ -263,6 +274,9 @@ struct Context::Impl {
         std::uint32_t descriptor_capacity = 0;
         std::uint32_t set_capacity = 0;
         DescriptorReuse descriptors{};
+#if defined(FYZZXYZZY_PROFILE_GPU)
+        std::vector<ProfileOp> profile_ops;
+#endif
     };
     struct CachedBatch {
         VkCommandBuffer commands = VK_NULL_HANDLE;
@@ -511,6 +525,36 @@ struct Context::Impl {
         }
     }
 
+#if defined(FYZZXYZZY_PROFILE_GPU)
+    void report_gpu_profile(SubmissionId id,const Submission& submission) {
+        if(submission.profile_ops.empty() ||
+           submission.timestamps==VK_NULL_HANDLE)return;
+        const std::size_t count=submission.profile_ops.size()+1u;
+        std::vector<std::uint64_t> ticks(count);
+        const auto result=vkGetQueryPoolResults(
+            device,submission.timestamps,0,static_cast<std::uint32_t>(count),
+            ticks.size()*sizeof(std::uint64_t),ticks.data(),
+            sizeof(std::uint64_t),VK_QUERY_RESULT_64_BIT);
+        require(result,"vkGetQueryPoolResults hardware trace");
+        const std::uint64_t mask=timestamp_valid_bits==64u
+            ?~std::uint64_t{0}
+            :((std::uint64_t{1}<<timestamp_valid_bits)-1u);
+        for(std::size_t i=0u;i<submission.profile_ops.size();++i) {
+            const auto& operation=submission.profile_ops[i];
+            const auto elapsed=(ticks[i+1u]-ticks[i])&mask;
+            std::printf(
+                "FYZZXYZZY_TRACE kind=gpu backend=vulkan submission=%llu op=%llu type=%s pipeline=%llu indirect=%u x=%u y=%u z=%u copy_bytes=%llu duration_ns=%.0f\n",
+                static_cast<unsigned long long>(id),
+                static_cast<unsigned long long>(i),
+                operation.pipeline?"dispatch":"copy",
+                static_cast<unsigned long long>(operation.pipeline),
+                unsigned(operation.indirect),
+                operation.x,operation.y,operation.z,
+                static_cast<unsigned long long>(operation.bytes),
+                static_cast<double>(elapsed)*limits.timestampPeriod);
+        }
+    }
+#endif
     bool submission_complete(SubmissionId id) const {
         const auto it = submissions.find(id);
         if (it == submissions.end()) {
@@ -535,6 +579,9 @@ struct Context::Impl {
             device,1,&fence,VK_TRUE,UINT64_MAX);
         if(result==VK_ERROR_DEVICE_LOST)device_lost=true;
         require(result,"vkWaitForFences");
+#if defined(FYZZXYZZY_PROFILE_GPU)
+        report_gpu_profile(id,it->second);
+#endif
         retire_submission(it->second);
         submissions.erase(it);
         release_retired_through(id);
@@ -558,6 +605,9 @@ struct Context::Impl {
         // earlier source upload and kernel allocation.
         for(const auto id:ordered) {
             auto it=submissions.find(id);
+#if defined(FYZZXYZZY_PROFILE_GPU)
+            report_gpu_profile(id,it->second);
+#endif
             retire_submission(it->second);
             submissions.erase(it);
         }
@@ -1389,6 +1439,11 @@ struct Context::Impl {
     SubmissionId submit_batch(const std::vector<BatchCommand>& operations,
                               bool profile = false,
                               bool independent_uploads = false) {
+#if defined(FYZZXYZZY_PROFILE_GPU)
+        const bool hardware_trace=!profile && timestamp_valid_bits>0u &&
+            limits.timestampPeriod>0.0f;
+        profile=profile || hardware_trace;
+#endif
         if (operations.empty()) {
             throw std::invalid_argument("Compute batch must contain an operation");
         }
@@ -1647,6 +1702,13 @@ struct Context::Impl {
                 query.sType = VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO;
                 query.queryType = VK_QUERY_TYPE_TIMESTAMP;
                 query.queryCount = 2;
+#if defined(FYZZXYZZY_PROFILE_GPU)
+                if(hardware_trace) {
+                    if(operations.size()>=std::numeric_limits<std::uint32_t>::max())
+                        throw std::out_of_range("Hardware trace query count exceeds 32-bit range");
+                    query.queryCount=static_cast<std::uint32_t>(operations.size()+1u);
+                }
+#endif
                 require(vkCreateQueryPool(device, &query, nullptr, &timestamps),
                         "vkCreateQueryPool");
                 vkCmdResetQueryPool(commands, timestamps, 0, 2);
@@ -1723,6 +1785,9 @@ struct Context::Impl {
                 }
             };
 
+#if defined(FYZZXYZZY_PROFILE_GPU)
+            std::uint32_t hardware_query_index=1u;
+#endif
             for (const BatchCommand& operation : operations) {
                 operation_uses.clear();
                 if (const auto* copy = std::get_if<CopyCommand>(&operation)) {
@@ -1751,6 +1816,11 @@ struct Context::Impl {
                     region.size = copy->bytes;
                     vkCmdCopyBuffer(commands, get(copy->source).buffer,
                                     get(copy->destination).buffer, 1, &region);
+#if defined(FYZZXYZZY_PROFILE_GPU)
+                    if(hardware_trace)
+                        vkCmdWriteTimestamp(commands,VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
+                                            timestamps,hardware_query_index++);
+#endif
                     continue;
                 }
 
@@ -1803,6 +1873,11 @@ struct Context::Impl {
                 else
                     vkCmdDispatch(commands, dispatch.groups.x, dispatch.groups.y,
                                   dispatch.groups.z);
+#if defined(FYZZXYZZY_PROFILE_GPU)
+                if(hardware_trace)
+                    vkCmdWriteTimestamp(commands,VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
+                                        timestamps,hardware_query_index++);
+#endif
             }
 
             VkMemoryBarrier to_host{};
@@ -1812,12 +1887,32 @@ struct Context::Impl {
             vkCmdPipelineBarrier(commands, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
                                  VK_PIPELINE_STAGE_HOST_BIT, 0, 1, &to_host,
                                  0, nullptr, 0, nullptr);
-            if (timestamps != VK_NULL_HANDLE)
+            if (timestamps != VK_NULL_HANDLE) {
+#if defined(FYZZXYZZY_PROFILE_GPU)
+                if(!hardware_trace)
+#endif
                 vkCmdWriteTimestamp(commands, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, timestamps, 1);
+            }
             require(vkEndCommandBuffer(commands), "vkEndCommandBuffer");
             const SubmissionId id = enqueue(commands, pool);
             auto& submitted = submissions.at(id);
             submitted.timestamps = timestamps;
+#if defined(FYZZXYZZY_PROFILE_GPU)
+            if(hardware_trace) {
+                submitted.profile_ops.reserve(operations.size());
+                for(const auto& operation:operations) {
+                    if(const auto* copy=std::get_if<CopyCommand>(&operation))
+                        submitted.profile_ops.push_back(
+                            {0u,copy->bytes,0u,0u,0u,false});
+                    else {
+                        const auto& dispatch=std::get<DispatchCommand>(operation);
+                        submitted.profile_ops.push_back({
+                            dispatch.pipeline,0u,dispatch.groups.x,dispatch.groups.y,
+                            dispatch.groups.z,dispatch.indirect.has_value()});
+                    }
+                }
+            }
+#endif
             submitted.cacheable_batch = true;
             submitted.descriptor_capacity = descriptor_capacity;
             submitted.set_capacity = set_capacity;
