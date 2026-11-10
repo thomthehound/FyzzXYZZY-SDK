@@ -42,6 +42,7 @@ static const uint contactEdge=0u;
 static const uint jointEdge=1u;
 static const uint noResponse=2u;
 static const uint deviceJoint=16u;
+static const uint nonrespondingNode=0x20000u;
 static const uint permittedKinds=jointEdge|noResponse|deviceJoint;
 
 void reject(uint bits) {
@@ -113,6 +114,10 @@ uint findRoot(uint node) {
     reject(4u);
     return invalid;
 }
+bool respondingNode(uint node) {
+    return node!=invalid && node<p.nodeCount &&
+        (nodeFlags.Load(p.nodeBias+node*4u)&nonrespondingNode)==0u;
+}
 void connectNodes(uint a,uint b) {
     if(a==b)return;
     for(uint attempt=0u;attempt<p.nodeCount;++attempt) {
@@ -161,7 +166,8 @@ uint responseToken(uint edgeIndex) {
 }
 uint itemRoot(uint item) {
     if(item>=p.nodeCount)return responseRoot(item-p.nodeCount);
-    if(work.Load(p.workBias)!=0u)return p.nodeCount;
+    if(!respondingNode(item) || work.Load(p.workBias)!=0u)
+        return p.nodeCount;
     const uint root=work.Load(p.rootBias+item*4u);
     if(root>=p.nodeCount)return p.nodeCount;
     return work.Load(p.countBias+root*24u+20u)!=invalid?root:p.nodeCount;
@@ -251,7 +257,9 @@ void main(uint3 thread:SV_DispatchThreadID,
         if(!validNode(edge.y) || !validNode(edge.z) ||
            !edgeConnected(edge.x,kind))return;
         if(!validSource(edge.w,kind))return;
-        if(edge.y!=invalid && edge.z!=invalid)
+        // Static/kinematic endpoints do not connect two dynamic
+        // components through a shared nonresponding body.
+        if(respondingNode(edge.y) && respondingNode(edge.z))
             connectNodes(edge.y,edge.z);
         return;
     }
@@ -263,15 +271,18 @@ void main(uint3 thread:SV_DispatchThreadID,
                 const uint flags=nodeFlags.Load(p.nodeBias+index*4u);
                 const uint position=flags&255u;
                 const uint velocity=(flags>>8u)&255u;
-                if(!position || !velocity ||
-                   (flags&0xfffe0000u)!=0u)reject(16u);
+                const bool responds=(flags&nonrespondingNode)==0u;
+                if((flags&0xfffc0000u)!=0u ||
+                   (responds && (!position || !velocity)))reject(16u);
                 const uint count=p.countBias+root*24u;
                 uint previous;
-                work.InterlockedAdd(count,1u,previous);
+                if(responds) {
+                    work.InterlockedAdd(count,1u,previous);
+                    work.InterlockedMax(count+12u,position,previous);
+                    work.InterlockedMax(count+16u,velocity,previous);
+                }
                 if((flags&0x10000u)!=0u)
                     work.InterlockedAdd(count+8u,1u,previous);
-                work.InterlockedMax(count+12u,position,previous);
-                work.InterlockedMax(count+16u,velocity,previous);
             }
         }
         if(index>=p.edgeCount)return;
@@ -281,7 +292,8 @@ void main(uint3 thread:SV_DispatchThreadID,
         uint owner=invalid;
         if(validNode(edge.y) && validNode(edge.z) &&
            edgeConnected(edge.x,kind) && validSource(edge.w,kind)) {
-            const uint node=edge.y!=invalid?edge.y:edge.z;
+            const uint node=respondingNode(edge.y)?edge.y:
+                respondingNode(edge.z)?edge.z:invalid;
             if(node!=invalid) {
                 owner=findRoot(node);
                 if(owner!=invalid) {
