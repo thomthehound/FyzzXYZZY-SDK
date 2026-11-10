@@ -842,6 +842,86 @@ void verify(fyzz::compute::Backend backend,const char* sap,
 // A PCM readback may remain pending while independent Dy integration
 // executes on the same Context queue. The Dy result is fetched only
 // after Sc has explicitly joined the earlier witness DMA.
+// Contact-free Sc admission exercises the exact Vulkan/D3D12 indirect
+// binding and Dy task ordering without running GJK on software GPUs.
+void verify_device_sc_dy_indirect_api(
+    fyzz::compute::Backend backend,const char* sap,const char* pcm,
+    const char* dy_shader) {
+    using namespace fyzz;
+    std::ifstream file(dy_shader,std::ios::binary);
+    require(bool(file),"Source indirect Dy shader unavailable");
+    compute::ShaderBinary shader{};
+    shader.format=backend==compute::Backend::Vulkan
+        ?compute::ShaderFormat::Spirv:compute::ShaderFormat::Dxil;
+    shader.bytes.assign(std::istreambuf_iterator<char>{file},
+                        std::istreambuf_iterator<char>{});
+    native::Scene scene;
+    auto owner=std::make_unique<physx_gpu::SourceScOwnedGpuBroadphaseNative>(
+        backend,load_native_gpu_sap_shaders(backend,sap),128u,128u,
+        std::nullopt,load_native_gpu_pcm_shaders(backend,pcm),
+        std::move(shader));
+    auto* producer=owner.get();
+    scene.set_gpu_broadphase(std::move(owner));
+    const std::array<BodyId,2> actors{{
+        scene.add_dynamic_box({0.5f,0.5f,0.5f},{2.f,1.f,0.f},1.f),
+        scene.add_dynamic_box({0.5f,0.5f,0.5f},{10.f,1.f,0.f},1.f)
+    }};
+    const std::array<native::GpuPcmBoxPair,0> no_pairs{};
+    std::array<native::GpuPcmBoxResult,0> no_witness{};
+    producer->enqueue_gpu_pcm_box_contacts(no_pairs,no_witness);
+    const std::array<std::uint32_t,2> nodes{{
+        4u|(1u<<8u)|physx_gpu::source_sc_device_island_active_bit,
+        5u|(2u<<8u)|physx_gpu::source_sc_device_island_active_bit
+    }};
+    producer->enqueue_device_island_admission(
+        std::span<const physx_gpu::SourceScDeviceIslandEdge>{},nodes,
+        physx_gpu::SourceScDeviceIslandSources{});
+    std::array<native::GpuDyDistanceBody,2> bodies{};
+    for(auto& body:bodies)body.inverse_mass=1.f;
+    const std::array<std::uint32_t,2> ordinals{{0u,1u}};
+    std::array<native::GpuDyDistanceTask,2> tasks{{
+        {0u,0u,0u,0u,0u,1u,4u,1u,0x4000u},
+        {0u,0u,0u,0u,1u,2u,5u,2u,0x4000u}
+    }};
+    std::array<native::GpuDyBodyIntegrationInput,2> inputs{};
+    std::array<native::GpuDyIntegratedPose,2> poses{};
+    std::array<native::GpuDySleepState,2> sleep{};
+    constexpr float seconds=1.f/120.f;
+    for(std::size_t i=0u;i<inputs.size();++i) {
+        auto& in=inputs[i];
+        in.active=1u;
+        in.source_actor=actors[i];
+        in.source_element=0xffffffffu;
+        in.source_inverse_mass=1.f;
+        in.position[0]=2.f+8.f*float(i);
+        in.position[1]=1.f;
+        in.orientation[3]=1.f;
+        in.actor_position[0]=in.position[0];
+        in.actor_position[1]=in.position[1];
+        in.actor_orientation[3]=1.f;
+        in.mass_local_orientation[3]=1.f;
+        in.linear_velocity[0]=0.5f+0.25f*float(i);
+        in.max_linear_speed_squared=100.f;
+        in.max_angular_speed_squared=100.f;
+        in.wake_counter=0.4f;
+        in.seconds=seconds;
+    }
+    producer->enqueue_gpu_dy_distance(
+        bodies,{},{},{},ordinals,tasks,
+        {},{},{},{},{},{},{},{},
+        inputs,poses,true,{},true,true,true,sleep);
+    require(producer->has_queued_gpu_dy_distance() &&
+            producer->dy_launch_stats().device_island_indirect_dispatches==1u,
+        "Source Sc task admission did not schedule device-indirect Dy");
+    producer->finish_gpu_dy_distance();
+    require(tasks[0].error==0u && tasks[1].error==0u &&
+            poses[0].valid==1u && poses[1].valid==1u &&
+            std::fabs(poses[0].position[0]-(2.f+0.5f*seconds))<0.002f &&
+            std::fabs(poses[1].position[0]-(10.f+0.75f*seconds))<0.002f,
+        "Device-indirect Dy omitted an isolated responding body");
+    producer->commit_gpu_step();
+}
+
 // Dy consumes the physical task and body-ordinal stream produced by
 // Sc on the same source queue. The deliberately poisoned host task is
 // not the numerical input. An inconsistent device header must reject
@@ -3795,7 +3875,8 @@ int main(int argc,char** argv) {
                 scenario=="dual_hub" ||
                 scenario=="star_island_10k" ||
                 scenario=="free_integration" ||
-                scenario=="device_admission",
+                scenario=="device_admission" ||
+                scenario=="indirect_api",
                 "Unknown GPU scene regression scenario");
 #ifdef FYZZXYZZY_TEST_D3D12
         constexpr auto backend=fyzz::compute::Backend::D3D12;
@@ -3835,6 +3916,10 @@ int main(int argc,char** argv) {
                     verify_convex_face_dispatch_window(
                         backend,argv[1],argv[2]);
                 });
+        if(scenario=="indirect_api")
+            fyzz::tests::measure_gpu_case("sc_pcm","indirect_api",
+                [&]{verify_device_sc_dy_indirect_api(
+                    backend,argv[1],argv[2],argv[3]);});
         if(scenario=="device_admission")
             fyzz::tests::measure_gpu_case("sc_pcm","device_admission",
                 [&]{verify_device_sc_dy_task_admission(
