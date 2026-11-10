@@ -4,6 +4,7 @@
 
 #if defined(FYZZXYZZY_PROFILE_GPU)
 #include <array>
+#include <atomic>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
@@ -34,14 +35,20 @@ struct Frame {
     std::size_t event_count=0u;
     std::size_t counter_count=0u;
     std::uint64_t begin=0u;
+    std::uint64_t trace_id=0u;
     bool active=false;
 };
 inline thread_local Frame current;
+inline std::atomic<std::uint64_t> next_trace_id{1u};
+inline std::uint64_t current_trace_id() noexcept {
+    return current.active?current.trace_id:0u;
+}
 
 inline void begin_frame() noexcept {
     current.event_count=0u;
     current.counter_count=0u;
     current.begin=now_ns();
+    current.trace_id=next_trace_id.fetch_add(1u,std::memory_order_relaxed);
     current.active=true;
 }
 struct Scope {
@@ -67,14 +74,16 @@ inline void end_frame(std::uint64_t frame,bool gpu_dy,bool success) noexcept {
     current.active=false;
     const auto origin=current.begin;
     std::printf(
-        "FYZZXYZZY_TRACE kind=frame frame=%llu gpu_dy=%u success=%u start_ns=%llu end_ns=%llu\n",
+        "FYZZXYZZY_TRACE kind=frame trace_id=%llu frame=%llu gpu_dy=%u success=%u start_ns=%llu end_ns=%llu\n",
+        static_cast<unsigned long long>(current.trace_id),
         static_cast<unsigned long long>(frame),unsigned(gpu_dy),unsigned(success),
         static_cast<unsigned long long>(origin),
         static_cast<unsigned long long>(end));
     for(std::size_t i=0u;i<current.event_count;++i) {
         const auto& event=current.events[i];
         std::printf(
-            "FYZZXYZZY_TRACE kind=cpu frame=%llu stage=%s start_ns=%llu end_ns=%llu duration_ns=%llu\n",
+            "FYZZXYZZY_TRACE kind=cpu trace_id=%llu frame=%llu stage=%s start_ns=%llu end_ns=%llu duration_ns=%llu\n",
+            static_cast<unsigned long long>(current.trace_id),
             static_cast<unsigned long long>(frame),event.label,
             static_cast<unsigned long long>(event.begin-origin),
             static_cast<unsigned long long>(event.end-origin),
@@ -82,7 +91,8 @@ inline void end_frame(std::uint64_t frame,bool gpu_dy,bool success) noexcept {
     }
     for(std::size_t i=0u;i<current.counter_count;++i) {
         const auto& metric=current.counters[i];
-        std::printf("FYZZXYZZY_TRACE kind=counter frame=%llu name=%s value=%llu\n",
+        std::printf("FYZZXYZZY_TRACE kind=counter trace_id=%llu frame=%llu name=%s value=%llu\n",
+                    static_cast<unsigned long long>(current.trace_id),
                     static_cast<unsigned long long>(frame),metric.label,
                     static_cast<unsigned long long>(metric.value));
     }
