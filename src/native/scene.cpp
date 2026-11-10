@@ -6336,10 +6336,21 @@ void Scene::run_third_pass_worker() noexcept {
         const bool integrate_solver=work.integrate_solver;
         const float seconds=work.seconds;
         RigidStepJoin* const solver_join=work.solver_join;
+#if defined(FYZZXYZZY_PROFILE_GPU)
+        const auto trace_id=work.trace_id;
+        const auto trace_origin=work.trace_origin;
+        const auto trace_frame=work.trace_frame;
+#endif
         work.pending=false;
         lock.unlock();
+#if defined(FYZZXYZZY_PROFILE_GPU)
+        hardware_profile::begin_worker(trace_id,trace_origin);
+#endif
         bool split=false;
         std::exception_ptr error;
+        {
+        FYZZ_PROFILE_SCOPE(solver_first!=invalid_instance
+            ?"dy.worker_solver":"sc.worker_third_pass");
         try {
             if(solver_first!=invalid_instance) {
                 // Each independent source Dy task chain can progress
@@ -6360,6 +6371,10 @@ void Scene::run_third_pass_worker() noexcept {
                     : process_third_pass_island_task(false);
             }
         } catch(...) {error=std::current_exception();}
+        }
+#if defined(FYZZXYZZY_PROFILE_GPU)
+        hardware_profile::end_worker(trace_frame);
+#endif
         lock.lock();
         work.split=split;
         work.error=error;
@@ -6391,6 +6406,11 @@ void Scene::dispatch_third_pass_worker(
         work.solver_first=solver_first;
         work.solver_end=solver_first==invalid_instance
             ? 0:solver_tasks_.size();
+#if defined(FYZZXYZZY_PROFILE_GPU)
+        work.trace_id=hardware_profile::current_trace_id();
+        work.trace_origin=hardware_profile::current_frame_begin();
+        work.trace_frame=frame_index_;
+#endif
         work.done=false;
         work.split=false;
         work.error={};
