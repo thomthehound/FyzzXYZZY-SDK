@@ -185,6 +185,12 @@ Dormant and response-disabled edges do not occupy
 numerical descriptor slots. Independent components can
 execute concurrently, but their task identity is stable across runs;
 constraints sharing a responding body retain the required solver ordering.
+Nonresponding static and kinematic endpoint nodes may participate in
+source-edge admission but never enter the responding-body prefix or
+connect otherwise independent dynamic components through a shared
+nonresponding endpoint. Their zero iteration words are valid, and Dy
+initializes only the actual emitted solver-body ordinals rather than
+assuming a dense responding prefix.
 The generated indirect launch triple is copied into the source queue's
 existing physical indirect resource after island compaction; it requires no
 additional host upload, allocation or synchronization boundary. Native Dy
@@ -198,9 +204,10 @@ workgroup count. The host provides bounded numerical allocations, not an
 exact prediction of runnable roots or response counts. The queued Dy shader
 rejects admission errors and any task/body/descriptor count exceeding its
 own buffer capacity before initializing numerical state. Unused capacity
-does not launch numerical work or publish body integration. Dy appends
-the actual compact task records and body ordinals to its existing result
-transfer and reconciles writeback from those GPU-authored ranges.
+does not launch numerical work or publish body integration. Dy fetches
+the actual compact task records and body ordinals as additional spans in
+its existing result batch, without extra GPU mirror copies or an additional
+host synchronization. Writeback uses those GPU-authored ranges.
 Rejected epochs retain their original task-error reporting before rollback.
 Large tiled tasks retain
 their explicit partition launch dependencies until the device-owned wide
