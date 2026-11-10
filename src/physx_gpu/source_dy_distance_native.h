@@ -1599,31 +1599,33 @@ public:
         }};
         stream_.fetch(downloads);
         admitted_body_ordinals_.clear();
+        bool invalid_device_admission=false;
         if(pending.device_admission) {
             std::array<std::uint32_t,4> admitted{};
             std::memcpy(admitted.data(),
                 host_.data()+pending.device_header_offset,sizeof(admitted));
-            if(admitted[0]!=0u || admitted[1]>tasks.size() ||
-               admitted[2]>body_ordinals.size() ||
-               admitted[3]>descriptors.size())
-                throw std::overflow_error(
-                    "Resident Sc Dy scheduling result exceeds declared capacities");
-            last_schedule_.device_admitted_tasks=admitted[1];
-            last_schedule_.device_admitted_bodies=admitted[2];
-            last_schedule_.device_admitted_descriptors=admitted[3];
-            if(admitted[1])
-                std::memcpy(tasks.data(),
-                    host_.data()+pending.device_task_offset,
-                    admitted[1]*sizeof(native::GpuDyDistanceTask));
-            for(std::size_t i=admitted[1];i<tasks.size();++i)
-                tasks[i].error=0u;
-            tasks=tasks.first(admitted[1]);
-            admitted_body_ordinals_.resize(admitted[2]);
-            if(admitted[2])
-                std::memcpy(admitted_body_ordinals_.data(),
-                    host_.data()+pending.device_ordinal_offset,
-                    admitted[2]*sizeof(std::uint32_t));
-            body_ordinals=admitted_body_ordinals_;
+            invalid_device_admission=
+                admitted[0]!=0u || admitted[1]>tasks.size() ||
+                admitted[2]>body_ordinals.size() ||
+                admitted[3]>descriptors.size();
+            if(!invalid_device_admission) {
+                last_schedule_.device_admitted_tasks=admitted[1];
+                last_schedule_.device_admitted_bodies=admitted[2];
+                last_schedule_.device_admitted_descriptors=admitted[3];
+                if(admitted[1])
+                    std::memcpy(tasks.data(),
+                        host_.data()+pending.device_task_offset,
+                        admitted[1]*sizeof(native::GpuDyDistanceTask));
+                for(std::size_t i=admitted[1];i<tasks.size();++i)
+                    tasks[i].error=0u;
+                tasks=tasks.first(admitted[1]);
+                admitted_body_ordinals_.resize(admitted[2]);
+                if(admitted[2])
+                    std::memcpy(admitted_body_ordinals_.data(),
+                        host_.data()+pending.device_ordinal_offset,
+                        admitted[2]*sizeof(std::uint32_t));
+                body_ordinals=admitted_body_ordinals_;
+            }
         }
         for(const auto id:pending_actor_locals_)
             actor_local_valid_[id]=1u;
@@ -1635,6 +1637,9 @@ public:
                 throw std::overflow_error(
                     "Source Dy GPU solver task "+std::to_string(i)+
                     " rejected flags "+std::to_string(tasks[i].error));
+        if(invalid_device_admission)
+            throw std::overflow_error(
+                "Resident Sc Dy scheduling result exceeds declared capacities");
         const auto fetch_pose=[&](std::size_t index) {
             auto& pose=integrated_poses[index];
             std::memcpy(&pose,host_.data()+result_offsets[5]+
