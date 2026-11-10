@@ -26,6 +26,23 @@ struct SourceScDeviceIslandFixture {
     static bool pcm_ready(const SourceScOwnedGpuBroadphaseNative& owner) {
         return owner.pcm_ && owner.pcm_->device_contact_ready();
     }
+    static std::string contact_records(SourceScOwnedGpuBroadphaseNative& owner) {
+        const auto count=owner.device_pcm_contact_count();
+        const auto source=owner.device_pcm_contact_stream();
+        if(!count || !source)return {};
+        const auto bytes=std::size_t(count)*sizeof(native::GpuPcmBoxResult);
+        const auto view=owner.addresses_.resolve(source,bytes);
+        std::vector<native::GpuPcmBoxResult> records(count);
+        owner.context_.download(view.buffer,view.offset,records.data(),bytes);
+        std::string result;
+        for(std::size_t i=0u;i<records.size();++i)
+            result+=" [slot="+std::to_string(i)+
+                " edge="+std::to_string(records[i].edge)+
+                " count="+std::to_string(records[i].count())+
+                " transition="+std::to_string(static_cast<std::uint32_t>(
+                    records[i].touch_transition()))+"]";
+        return result;
+    }
     static std::array<std::uint32_t,2> touch(
             SourceScOwnedGpuBroadphaseNative& owner,std::uint32_t edge) {
         if(edge>=owner.device_pcm_touch_capacity())
@@ -2437,6 +2454,8 @@ void verify_mixed_gu_pcm_gpu_dy_solver(
                         " source_count="+std::to_string(admission.device_colored_descriptors)+
                         " input_edges="+native::GpuPcmFrictionAnchorFixture::
                             island_source_edges(gpu)+
+                        " resident_contacts="+physx_gpu::SourceScDeviceIslandFixture::
+                            contact_records(*producer)+
                         [&]{
                             std::string state;
                             for(const auto& manager:gpu.contacts()) {
