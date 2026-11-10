@@ -44,16 +44,16 @@ SourceSapEndpointHistogramsNativeStage::SourceSapEndpointHistogramsNativeStage(
         compute::StorageBufferViewKind::RawReadWrite);
     desc.push_constant_bytes=sizeof(Params);
     desc.shader=std::move(first);
-    #if defined(FYZZXYZZY_PROFILE_GPU)
-    desc.profile_name="sap.endpoint_histogram_first";
-#endif
     first_=context_.create_compute_pipeline(desc);
+#if defined(FYZZXYZZY_PROFILE_GPU)
+    context_.set_pipeline_profile_label(first_,"sap.endpoint_histogram_first");
+#endif
     try{
         desc.shader=std::move(second);
-        #if defined(FYZZXYZZY_PROFILE_GPU)
-        desc.profile_name="sap.endpoint_histogram_second";
-#endif
         second_=context_.create_compute_pipeline(desc);
+#if defined(FYZZXYZZY_PROFILE_GPU)
+        context_.set_pipeline_profile_label(second_,"sap.endpoint_histogram_second");
+#endif
     }catch(...){
         context_.destroy_compute_pipeline(first_);
         first_=0;
