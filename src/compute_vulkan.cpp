@@ -1716,7 +1716,7 @@ struct Context::Impl {
 #endif
                 require(vkCreateQueryPool(device, &query, nullptr, &timestamps),
                         "vkCreateQueryPool");
-                vkCmdResetQueryPool(commands, timestamps, 0, 2);
+                vkCmdResetQueryPool(commands, timestamps, 0, query.queryCount);
                 vkCmdWriteTimestamp(commands, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, timestamps, 0);
             }
 
