@@ -8878,6 +8878,112 @@ void Scene::solve_gpu_distance_constraints(float seconds) {
     if(explicit_order_cursor!=gpu_dy_contact_order_.size())
         throw std::logic_error(
             "GPU Dy explicit Gu contact order was not fully consumed");
+    // Sc retains stable public IslandSim identities. Compact numerical
+    // islands instead take their task/body/response schedule from the
+    // resident Gu EdgeIndex graph. Reuse the already prepared source
+    // tables; no CPU contact or 1D descriptor is reconstructed here.
+    const bool device_island_admission=
+        gpu_broadphase_->has_gpu_pcm_box() &&
+        !gpu_dy_tasks_.empty() && !solver_active_ids_.empty() &&
+        std::all_of(gpu_dy_tasks_.begin(),gpu_dy_tasks_.end(),
+            [](const GpuDyDistanceTask& task) {
+                return task.descriptor_end-task.descriptor_begin<
+                           gpu_dy_wide_task_threshold ||
+                       task.body_end-task.body_begin<
+                           gpu_dy_wide_task_threshold;
+            });
+    if(device_island_admission) {
+        constexpr std::uint32_t active_node=1u<<16u;
+        constexpr std::uint32_t nonresponding_node=1u<<17u;
+        constexpr std::uint32_t joint_edge=1u;
+        constexpr std::uint32_t no_response=2u;
+        constexpr std::uint32_t device_joint=16u;
+        constexpr std::uint32_t invalid=0xffffffffu;
+        gpu_dy_island_node_flags_.assign(
+            solver_rows_.size(),nonresponding_node);
+        const auto node_of=[&](BodyId id) {
+            if(id>=actors_.size())return invalid;
+            const auto& actor=actors_[id];
+            if(actor.motion!=Motion::Dynamic || actor.sleeping ||
+               actor.solver_row_generation!=solver_preparation_generation_ ||
+               actor.solver_row_index>=solver_rows_.size())
+                return invalid;
+            return narrow(actor.solver_row_index);
+        };
+        for(const BodyId id:solver_active_ids_) {
+            const auto row=node_of(id);
+            if(row==invalid)
+                throw std::logic_error(
+                    "Source Dy responding body lacks a prepared ordinal");
+            const auto& iter=actors_[id].dynamics;
+            gpu_dy_island_node_flags_[row]=active_node|
+                std::uint32_t(iter.position_iterations)|
+                (std::uint32_t(iter.velocity_iterations)<<8u);
+        }
+        gpu_dy_island_edges_.clear();
+        gpu_dy_island_edges_.reserve(ordered_constraints_.size());
+        std::size_t joint_cursor=0u,joint_row_cursor=0u;
+        std::uint32_t full_source_count=0u;
+        const auto joint_count=[&](EdgeIndex edge) {
+            const auto kind=constraint_records_[
+                island_edges_[edge].constraint_id].kind;
+            return kind==JointKind::Distance?1u:
+                kind==JointKind::Spherical?3u:
+                kind==JointKind::Fixed?6u:5u;
+        };
+        for(const auto& desc:ordered_constraints_) {
+            const std::uint32_t rows=desc.row_count&255u;
+            if(rows) {
+                while(joint_cursor<indexed_joints_.size() &&
+                      joint_row_cursor<desc.index) {
+                    joint_row_cursor+=joint_count(indexed_joints_[joint_cursor]);
+                    ++joint_cursor;
+                }
+                if(joint_cursor>=indexed_joints_.size() ||
+                   joint_row_cursor!=desc.index ||
+                   desc.index>=gpu_dy_rows_.size())
+                    throw std::logic_error(
+                        "Source device island joint row lost Sc edge identity");
+                const auto edge=indexed_joints_[joint_cursor];
+                const auto pair=island_edges_[edge].pair;
+                const bool direct=gpu_dy_rows_[desc.index].reserved==2u;
+                gpu_dy_island_edges_.push_back({
+                    edge,node_of(pair.a),node_of(pair.b),
+                    direct?desc.index:full_source_count,
+                    joint_edge|(direct?device_joint:0u)});
+                if(!direct)++full_source_count;
+            }else {
+                if(desc.index>=manifolds_.size())
+                    throw std::logic_error(
+                        "Source device island contact index is invalid");
+                const auto& manifold=manifolds_[desc.index];
+                const auto pair=manifold.pair;
+                gpu_dy_island_edges_.push_back({
+                    manifold.edge_handle,
+                    node_of(shapes_[pair.a].body),
+                    node_of(shapes_[pair.b].body),desc.index,
+                    manifold.friction_patch_count==0u?no_response:0u});
+            }
+        }
+        // The CPU accurate island count is an upper bound for the
+        // device's runnable roots. It is no longer a numerical task
+        // boundary; all actual ranges come back from resident admission.
+        const auto task_capacity=active_accurate_island_batches_.size();
+        if(task_capacity<gpu_dy_tasks_.size() ||
+           task_capacity>solver_active_ids_.size())
+            throw std::logic_error(
+                "Source device island task capacity violates Sc ownership");
+        const GpuDyDistanceTask last=gpu_dy_tasks_.back();
+        gpu_dy_tasks_.resize(task_capacity,{
+            last.descriptor_end,last.descriptor_end,
+            last.partition_end,last.partition_end,
+            last.body_end,last.body_end,0u,0u,0u});
+        gpu_broadphase_->enqueue_gpu_dy_island_admission(
+            gpu_dy_island_edges_,gpu_dy_island_node_flags_,
+            GpuDyIslandSources{
+                narrow(gpu_dy_manifolds_.size()),
+                narrow(gpu_dy_rows_.size()),full_source_count});
+    }
     gpu_broadphase_->enqueue_gpu_dy_distance(
         gpu_dy_bodies_,gpu_dy_rows_,ordered_constraints_,
         {},gpu_dy_body_ordinals_,gpu_dy_tasks_,
