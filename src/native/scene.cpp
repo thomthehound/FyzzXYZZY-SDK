@@ -11036,7 +11036,6 @@ void Scene::complete_solver_end_task(
     integrate_solver_task(task_index,seconds,ready_nodes);
 }
 void Scene::step(float seconds) {
-    FYZZ_PROFILE_SCOPE("sc.frame");
     for(EdgeIndex edge:active_constraint_handles_)
         if(island_edges_[edge].constraint_id==invalid_edge)
             throw std::logic_error(
