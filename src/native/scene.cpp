@@ -8968,9 +8968,9 @@ void Scene::solve_gpu_distance_constraints(float seconds) {
         // The CPU accurate island count is an upper bound for the
         // device's runnable roots. It is no longer a numerical task
         // boundary; all actual ranges come back from resident admission.
-        const auto task_capacity=active_accurate_island_batches_.size();
-        if(task_capacity<gpu_dy_tasks_.size() ||
-           task_capacity>solver_active_ids_.size())
+        const auto task_capacity=std::min(
+            active_accurate_island_batches_.size(),solver_active_ids_.size());
+        if(task_capacity<gpu_dy_tasks_.size())
             throw std::logic_error(
                 "Source device island task capacity violates Sc ownership");
         const GpuDyDistanceTask last=gpu_dy_tasks_.back();
