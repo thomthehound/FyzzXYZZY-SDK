@@ -223,17 +223,20 @@ public:
             throw std::invalid_argument("Missing device Sc island resource");
         if(layout.bytes>max_view_)
             throw std::out_of_range("Device Sc island output view unavailable");
-        const auto edge_bytes=edge_count
-            ?source_allocation_bytes(edge_count,
-                sizeof(SourceScDeviceIslandEdge))
-            :layout.bytes;
-        const auto touch_bytes=edge_capacity
-            ?source_allocation_bytes(edge_capacity,240u):edge_bytes;
-        const auto edge_address=edge_count?edges:output;
-        const auto touch_address=edge_capacity?touch_history:edge_address;
         const auto node_bytes=node_count
             ?source_allocation_bytes(node_count,4u):layout.bytes;
         const auto node_address=node_count?node_flags:output;
+        // A joint-only or isolated-body epoch has no contact edge
+        // storage. Bind its already-existing read-only node input for
+        // unused edge/history slots, never alias writable work output.
+        const auto edge_bytes=edge_count
+            ?source_allocation_bytes(edge_count,
+                sizeof(SourceScDeviceIslandEdge))
+            :node_bytes;
+        const auto edge_address=edge_count?edges:node_address;
+        const auto touch_bytes=edge_capacity
+            ?source_allocation_bytes(edge_capacity,240u):edge_bytes;
+        const auto touch_address=edge_capacity?touch_history:edge_address;
         std::array<std::uint32_t,28> args{};
         compute::DispatchCommand dispatch{};
         dispatch.pipeline=pipeline_;
