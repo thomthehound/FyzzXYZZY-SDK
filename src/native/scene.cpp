@@ -4154,7 +4154,9 @@ void Scene::update_contacts() {
     // the GPU witness join, preserving the later device dependency.
     if(gpu_results_pending || (source_gpu_pcm && gpu_pcm_pairs_.empty()))
         gpu_broadphase_->enqueue_gpu_pcm_box_contacts(
-            gpu_pcm_pairs_,gpu_pcm_results_);
+            gpu_pcm_pairs_,gpu_pcm_results_,
+            gpu_broadphase_->has_gpu_dy_distance()
+                ?narrow(island_edges_.size()):0u);
     // The speculative IslandSim consumes SAP membership, never Gu
     // witness geometry. Admit its first/second-pass topology on the CPU
     // while the same scene stream executes general GPU PCM. Accurate
@@ -4267,7 +4269,9 @@ void Scene::update_contacts() {
                 gpu_pcm_pairs_,gpu_pcm_results_);
         else
             gpu_broadphase_->upload_host_pcm_contacts(
-                gpu_pcm_pairs_,gpu_pcm_results_);
+                gpu_pcm_pairs_,gpu_pcm_results_,
+                gpu_broadphase_->has_gpu_dy_distance()
+                    ?narrow(island_edges_.size()):0u);
     }
     bool gpu_results_joined=!gpu_results_pending;
     std::size_t gpu_pcm_index=0u;
@@ -8884,7 +8888,7 @@ void Scene::solve_gpu_distance_constraints(float seconds) {
     // tables; no CPU contact or 1D descriptor is reconstructed here.
     const bool device_island_admission=
         gpu_broadphase_->has_gpu_pcm_box() && pcm_box_box_enabled_ &&
-        !gpu_dy_tasks_.empty() && !solver_active_ids_.empty() &&
+        !gpu_pcm_pairs_.empty() && !gpu_dy_tasks_.empty() && !solver_active_ids_.empty() &&
         std::all_of(gpu_dy_tasks_.begin(),gpu_dy_tasks_.end(),
             [](const GpuDyDistanceTask& task) {
                 return task.descriptor_end-task.descriptor_begin<
@@ -8976,6 +8980,35 @@ void Scene::solve_gpu_distance_constraints(float seconds) {
             last.descriptor_end,last.descriptor_end,
             last.partition_end,last.partition_end,
             last.body_end,last.body_end,0u,0u,0u});
+        // The source PCM pair set omits ordinary CPU Gu (for example,
+        // a plane with PCM disabled). Publish those physical transitions
+        // to the same device EdgeIndex cache before graph admission.
+        // This journal restores its old words if the frame rolls back.
+        gpu_dy_gu_touches_.clear();
+        gpu_dy_gu_touches_.reserve(
+            manifolds_.size()+lost_contacts_.size());
+        for(const auto& manifold:manifolds_) {
+            if(manifold.pcm_result_index!=invalid)continue;
+            const bool found=std::binary_search(
+                found_contacts_.begin(),found_contacts_.end(),manifold.pair);
+            gpu_dy_gu_touches_.push_back({
+                manifold.edge_handle,found?1u:3u});
+        }
+        for(const Pair pair:lost_contacts_) {
+            const EdgeIndex edge=contact_edge_index(pair);
+            if(edge==invalid_edge)continue;
+            const auto it=std::lower_bound(
+                gpu_pcm_pairs_.begin(),gpu_pcm_pairs_.end(),pair,
+                [this](const GpuPcmBoxPair& record,Pair key) {
+                    return island_edges_[record.edge].shapes<key;
+                });
+            if(it!=gpu_pcm_pairs_.end() &&
+               island_edges_[it->edge].shapes==pair)continue;
+            gpu_dy_gu_touches_.push_back({edge,2u});
+        }
+        if(!gpu_dy_gu_touches_.empty())
+            gpu_broadphase_->enqueue_cpu_gu_touch_history(
+                gpu_dy_gu_touches_);
         gpu_broadphase_->enqueue_gpu_dy_island_admission(
             gpu_dy_island_edges_,gpu_dy_island_node_flags_,
             GpuDyIslandSources{
