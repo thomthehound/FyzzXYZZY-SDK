@@ -1669,15 +1669,15 @@ SubmissionId Context::submit_copy_buffer(BufferId source, std::size_t so, Buffer
     return impl_->submit_batch({CopyCommand{source, so, dest, dst, count}});
 }
 PipelineId Context::create_compute_pipeline(const ComputePipelineDesc& desc) {
-    const auto id=impl_->create_pipeline(desc);
+    return impl_->create_pipeline(desc);
+}
 #if defined(FYZZXYZZY_PROFILE_GPU)
+void Context::set_pipeline_profile_label(PipelineId id,const char* label) const noexcept {
     std::printf("FYZZXYZZY_TRACE kind=pipeline backend=d3d12 context=%llu pipeline=%llu label=%s\n",
         static_cast<unsigned long long>(impl_->profile_context_id),
-        static_cast<unsigned long long>(id),
-        desc.profile_name.empty()?"unlabeled":desc.profile_name.c_str());
-#endif
-    return id;
+        static_cast<unsigned long long>(id),label);
 }
+#endif
 void Context::destroy_compute_pipeline(PipelineId id) { impl_->destroy_pipeline(id); }
 void Context::dispatch(PipelineId pipeline, DispatchSize groups,
                        const std::vector<BufferBinding>& buffers,
