@@ -862,6 +862,45 @@ void verify(Context& context,const char* filename) {
                 admitted(long_chain,i).source_index==chain[i].source_index,
                 "Device island joint admission lost source ordering");
 
+    // Two moving rigid bodies attached to one kinematic node must not
+    // merge through that nonresponding endpoint. The kinematic neither
+    // acquires a solver-body ordinal nor shifts the authored body order.
+    const std::vector<std::uint32_t> kinematic_flags{
+        4u|0x100u|source_sc_device_island_active_bit,
+        source_sc_device_island_nonresponding_bit,
+        5u|0x200u|source_sc_device_island_active_bit};
+    const std::vector<SourceScDeviceIslandEdge> kinematic_joints{
+        {0u,0u,1u,0u,source_sc_device_island_joint_bit|
+             source_sc_device_island_no_response_bit},
+        {1u,2u,1u,0u,source_sc_device_island_joint_bit|
+             source_sc_device_island_no_response_bit}};
+    const auto independent_dynamic=evaluate(
+        3u,kinematic_joints,{},kinematic_flags);
+    no_errors(independent_dynamic);
+    check_task_mapping(independent_dynamic);
+    require(root(independent_dynamic,0u)!=root(independent_dynamic,2u) &&
+            count(independent_dynamic,1u).responding_nodes==0u &&
+            header(independent_dynamic).runnable_components==2u &&
+            header(independent_dynamic).responding_nodes==2u &&
+            load<std::uint32_t>(independent_dynamic.second,
+                independent_dynamic.first.body_order)==0u &&
+            load<std::uint32_t>(independent_dynamic.second,
+                independent_dynamic.first.body_order+4u)==2u,
+            "Nonresponding kinematic incorrectly united dynamic islands");
+
+    // A touching contact with that endpoint still admits its dynamic
+    // response token and body, without integrating the kinematic row.
+    const auto dynamic_kinematic_contact=evaluate(
+        3u,{{0u,0u,1u,0u,0u}},{1u},kinematic_flags,{0u},
+        SourceScDeviceIslandSources{1u,0u,0u});
+    no_errors(dynamic_kinematic_contact);
+    check_task_mapping(dynamic_kinematic_contact);
+    require(header(dynamic_kinematic_contact).runnable_components==2u &&
+            header(dynamic_kinematic_contact).responding_nodes==2u &&
+            header(dynamic_kinematic_contact).admitted_edges==1u &&
+            count(dynamic_kinematic_contact,0u).admitted_edges==1u,
+            "Kinematic contact lost its dynamic numerical admission");
+
     // A source descriptor index needs 30 bits; larger identifiers
     // must invalidate indirect numerical launch, not alias its tag.
     auto oversized_source=edges;
