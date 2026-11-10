@@ -29,7 +29,7 @@ struct Parameters {
     uint phase,first,maxGroups,blockCount;
     uint responseBiasA,responseBiasB,histBias,contactManagerCount;
     uint tokenBias,radixPasses,bodyOrderBias,combinedCount;
-    uint responseOrderBias,jointRowCount,fullDescriptorCount,pad2;
+    uint responseOrderBias,jointRowCount,fullDescriptorCount,blockTilesBias;
 };
 #ifdef __spirv__
 [[vk::push_constant]] Parameters p;
@@ -343,22 +343,81 @@ void main(uint3 thread:SV_DispatchThreadID,
         return;
     }
     if(p.phase==4u) {
+        // Small root sets use one workgroup and no tile carry.
+        if(p.blockCount<=128u) {
+            if(group.x!=0u)return;
+            if(lane.x==0u) {
+                taskCarry=0u;responseCarry=0u;bodyCarry=0u;
+            }
+            GroupMemoryBarrierWithGroupSync();
+            for(uint start=0u;start<p.blockCount;start+=128u) {
+                const uint block=start+lane.x;
+                const uint4 value=block<p.blockCount
+                    ?work.Load4(p.blockBias+block*16u):uint4(0u,0u,0u,0u);
+                taskScan[lane.x]=value.x;
+                responseScan[lane.x]=value.y;
+                bodyScan[lane.x]=value.z;
+                GroupMemoryBarrierWithGroupSync();
+                inclusiveTaskScan(lane.x);
+                if(block<p.blockCount)
+                    work.Store4(p.blockBias+block*16u,uint4(
+                        taskCarry+taskScan[lane.x]-value.x,
+                        responseCarry+responseScan[lane.x]-value.y,
+                        bodyCarry+bodyScan[lane.x]-value.z,0u));
+                GroupMemoryBarrierWithGroupSync();
+                if(lane.x==0u) {
+                    taskCarry+=taskScan[127u];
+                    responseCarry+=responseScan[127u];
+                    bodyCarry+=bodyScan[127u];
+                }
+                GroupMemoryBarrierWithGroupSync();
+            }
+            if(lane.x==0u) {
+                work.Store(p.workBias+4u,taskCarry);
+                work.Store(p.workBias+8u,bodyCarry);
+                work.Store(p.workBias+12u,responseCarry);
+                work.Store(p.workBias+16u,min(taskCarry,p.maxGroups));
+            }
+            return;
+        }
+
+        const uint block=index;
+        const uint4 value=block<p.blockCount
+            ?work.Load4(p.blockBias+block*16u):uint4(0u,0u,0u,0u);
+        taskScan[lane.x]=value.x;
+        responseScan[lane.x]=value.y;
+        bodyScan[lane.x]=value.z;
+        GroupMemoryBarrierWithGroupSync();
+        inclusiveTaskScan(lane.x);
+        if(block<p.blockCount)
+            work.Store4(p.blockBias+block*16u,uint4(
+                taskScan[lane.x]-value.x,
+                responseScan[lane.x]-value.y,
+                bodyScan[lane.x]-value.z,0u));
+        if(lane.x==127u)
+            work.Store4(p.blockTilesBias+(block/128u)*16u,
+                uint4(taskScan[127u],responseScan[127u],bodyScan[127u],0u));
+        return;
+    }
+    if(p.phase==5u) {
         if(group.x!=0u)return;
         if(lane.x==0u) {
             taskCarry=0u;responseCarry=0u;bodyCarry=0u;
         }
         GroupMemoryBarrierWithGroupSync();
-        for(uint start=0u;start<p.blockCount;start+=128u) {
-            const uint block=start+lane.x;
-            const uint4 value=block<p.blockCount
-                ?work.Load4(p.blockBias+block*16u):uint4(0u,0u,0u,0u);
+        const uint tileCount=(p.blockCount+127u)/128u;
+        for(uint start=0u;start<tileCount;start+=128u) {
+            const uint tile=start+lane.x;
+            const uint4 value=tile<tileCount
+                ?work.Load4(p.blockTilesBias+tile*16u):
+                 uint4(0u,0u,0u,0u);
             taskScan[lane.x]=value.x;
             responseScan[lane.x]=value.y;
             bodyScan[lane.x]=value.z;
             GroupMemoryBarrierWithGroupSync();
             inclusiveTaskScan(lane.x);
-            if(block<p.blockCount)
-                work.Store4(p.blockBias+block*16u,uint4(
+            if(tile<tileCount)
+                work.Store4(p.blockTilesBias+tile*16u,uint4(
                     taskCarry+taskScan[lane.x]-value.x,
                     responseCarry+responseScan[lane.x]-value.y,
                     bodyCarry+bodyScan[lane.x]-value.z,0u));
@@ -378,7 +437,7 @@ void main(uint3 thread:SV_DispatchThreadID,
         }
         return;
     }
-    if(p.phase==5u) {
+    if(p.phase==6u) {
         const uint active=runnableRoot(index)?1u:0u;
         const uint count=p.countBias+index*24u;
         const uint edges=active!=0u?work.Load(count+4u):0u;
@@ -389,7 +448,9 @@ void main(uint3 thread:SV_DispatchThreadID,
         GroupMemoryBarrierWithGroupSync();
         inclusiveTaskScan(lane.x);
         if(active==0u)return;
-        const uint3 base=work.Load3(p.blockBias+(index/128u)*16u);
+        uint3 base=work.Load3(p.blockBias+(index/128u)*16u);
+        if(p.blockCount>128u)
+            base+=work.Load3(p.blockTilesBias+(index/16384u)*16u);
         const uint task=base.x+taskScan[lane.x]-1u;
         const uint response=base.y+responseScan[lane.x]-edges;
         const uint bodyBegin=base.z+bodyScan[lane.x]-nodes;
@@ -404,7 +465,7 @@ void main(uint3 thread:SV_DispatchThreadID,
         work.Store(dst+32u,0u);
         return;
     }
-    if(p.phase==6u) {
+    if(p.phase==7u) {
         if(index>=p.combinedCount)return;
         if(p.combinedCount>256u) {
             work.Store(p.responseBiasA+index*4u,index);
@@ -427,9 +488,9 @@ void main(uint3 thread:SV_DispatchThreadID,
         scatterItem(begin+ordinal,index);
         return;
     }
-    if(p.phase<7u)return;
-    const uint pass=(p.phase-7u)/3u;
-    const uint operation=(p.phase-7u)%3u;
+    if(p.phase<8u)return;
+    const uint pass=(p.phase-8u)/3u;
+    const uint operation=(p.phase-8u)%3u;
     const uint shift=pass*8u;
     const uint source=(pass&1u)!=0u?p.responseBiasB:p.responseBiasA;
     const uint target=(pass&1u)!=0u?p.responseBiasA:p.responseBiasB;

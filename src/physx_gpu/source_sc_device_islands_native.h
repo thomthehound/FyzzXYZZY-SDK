@@ -86,7 +86,8 @@ static_assert(sizeof(SourceScDeviceIslandHeader)==32u &&
 struct SourceScDeviceIslandLayout {
     std::size_t roots=sizeof(SourceScDeviceIslandHeader);
     std::size_t counts=0u,admissions=0u,tasks=0u;
-    std::size_t block_offsets=0u,response_primary=0u,response_scratch=0u;
+    std::size_t block_offsets=0u,block_tiles=0u;
+    std::size_t response_primary=0u,response_scratch=0u;
     std::size_t response_order=0u,body_order=0u,response_tokens=0u;
     std::size_t radix_histogram=0u,bytes=0u;
     static std::uint32_t radix_passes(std::uint32_t nodes) noexcept {
@@ -120,9 +121,15 @@ struct SourceScDeviceIslandLayout {
             align(std::uint64_t(result.tasks)+std::uint64_t(node_count)*
                   sizeof(SourceScDeviceIslandTask)));
         const auto block_count=(std::uint64_t(node_count)+127u)/128u;
-        result.response_primary=static_cast<std::size_t>(
-            align(std::uint64_t(result.block_offsets)+
-                  block_count*sizeof(std::uint32_t)*4u));
+        const auto block_end=align(
+            std::uint64_t(result.block_offsets)+block_count*16u);
+        if(block_count>128u) {
+            result.block_tiles=static_cast<std::size_t>(block_end);
+            result.response_primary=static_cast<std::size_t>(
+                align(block_end+((block_count+127u)/128u)*16u));
+        } else {
+            result.response_primary=static_cast<std::size_t>(block_end);
+        }
         auto bytes=align(std::uint64_t(result.response_primary)+combined*4u);
         if(combined>256u) {
             result.response_scratch=static_cast<std::size_t>(bytes);
@@ -270,6 +277,8 @@ public:
         args[19]=sources.contact_managers;
         args[25]=sources.joint_rows;
         args[26]=sources.full_descriptors;
+        args[27]=layout.block_tiles
+            ?offset(layout.block_tiles,args[3]):args[8];
         dispatch.push_constants.resize(sizeof(args));
         std::vector<compute::BatchCommand> commands;
         const auto launch=[&](std::uint32_t phase,std::uint32_t count) {
@@ -293,19 +302,22 @@ public:
         // roots. The compact block scan avoids atomic task ordering,
         // and the final scatter preserves the canonical root order.
         launch(3u,std::max(1u,node_count));
-        launch(4u,1u);
-        launch(5u,node_count);
+        const auto blocks=static_cast<std::uint32_t>(
+            (std::uint64_t(node_count)+127u)/128u);
+        launch(4u,blocks>128u?blocks:1u);
+        if(blocks>128u)launch(5u,1u);
+        launch(6u,node_count);
         // A single root/type sort generates both body and response spans.
         const auto combined=static_cast<std::uint32_t>(
             std::uint64_t(node_count)+edge_count);
-        launch(6u,combined);
+        launch(7u,combined);
         if(combined>256u)
             for(std::uint32_t pass=0u;
                 pass<SourceScDeviceIslandLayout::radix_passes(node_count);
                 ++pass) {
-                launch(7u+pass*3u,combined);
-                launch(8u+pass*3u,1u);
-                launch(9u+pass*3u,combined);
+                launch(8u+pass*3u,combined);
+                launch(9u+pass*3u,1u);
+                launch(10u+pass*3u,combined);
             }
         auto& ordered=stream.commands();
         ordered.insert(ordered.end(),commands.begin(),commands.end());

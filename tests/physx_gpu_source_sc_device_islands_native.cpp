@@ -775,9 +775,10 @@ void verify(Context& context,const char* filename) {
     // The prefix crosses 128-block boundaries without nondeterministic
     // task scatter or a CPU island count. Almost all nodes are dormant;
     // sparse active roots exercise the first, last and middle blocks.
-    constexpr std::uint32_t prefix_nodes=16385u;
+    constexpr std::uint32_t prefix_nodes=32769u;
     std::vector<std::uint32_t> prefix_flags(prefix_nodes,4u|0x100u);
-    for(const std::uint32_t root_id:{0u,127u,128u,16383u,16384u})
+    for(const std::uint32_t root_id:{
+            0u,127u,128u,16383u,16384u,32767u,32768u})
         prefix_flags[root_id]|=source_sc_device_island_active_bit;
     const std::vector<SourceScDeviceIslandEdge> prefix_edges{
         {6u,16384u,invalid,42u,source_sc_device_island_joint_bit},
@@ -786,24 +787,30 @@ void verify(Context& context,const char* filename) {
         {3u,0u,invalid,45u,source_sc_device_island_joint_bit|
                                 source_sc_device_island_no_response_bit},
         {5u,16383u,invalid,46u,source_sc_device_island_joint_bit},
+        {7u,32767u,invalid,47u,source_sc_device_island_joint_bit},
+        {8u,32768u,invalid,48u,source_sc_device_island_joint_bit},
     };
     auto prefix=evaluate(prefix_nodes,prefix_edges,{},prefix_flags);
     no_errors(prefix);
     check_task_mapping(prefix);
-    require(header(prefix).runnable_components==5u &&
-            header(prefix).dispatch_x==5u &&
-            header(prefix).admitted_edges==4u &&
+    require(header(prefix).runnable_components==7u &&
+            header(prefix).dispatch_x==7u &&
+            header(prefix).admitted_edges==6u &&
             count(prefix,0u).task_index==0u &&
             count(prefix,127u).task_index==1u &&
             count(prefix,128u).task_index==2u &&
             count(prefix,16383u).task_index==3u &&
             count(prefix,16384u).task_index==4u &&
+            count(prefix,32767u).task_index==5u &&
+            count(prefix,32768u).task_index==6u &&
             task(prefix,0u).descriptor_begin==0u &&
             task(prefix,127u).descriptor_begin==1u &&
             task(prefix,128u).descriptor_begin==1u &&
             task(prefix,16383u).descriptor_begin==2u &&
             task(prefix,16384u).descriptor_begin==3u &&
-            count(prefix,16384u).task_index==4u,
+            task(prefix,32767u).descriptor_begin==4u &&
+            task(prefix,32768u).descriptor_begin==5u &&
+            count(prefix,32768u).task_index==6u,
             "Device Sc prefix reordered roots or cross-block response offsets");
 
     // Interleaved response streams span multiple radix tiles and root
