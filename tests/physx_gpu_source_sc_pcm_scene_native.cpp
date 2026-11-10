@@ -2436,6 +2436,17 @@ void verify_mixed_gu_pcm_gpu_dy_solver(
             }
             require(saw_plane && saw_pcm,
                 "Mixed Dy task did not retain both source contact producers");
+            // Both producers publish to the same persistent device Gu
+            // history. CPU-only plane contacts must not disappear from
+            // the GPU accurate graph just because they lack a PCM slot.
+            for(const auto& manager:gpu.contacts()) {
+                if(manager.pcm_result_index!=0xffffffffu || !manager.count)
+                    continue;
+                const auto touch=physx_gpu::SourceScDeviceIslandFixture::
+                    touch(*producer,manager.edge_handle);
+                require(touch[0]==1u && touch[1]==(frame>0u?1u:0u),
+                    "CPU Gu touch was not journaled to the shared GPU EdgeIndex");
+            }
             for(std::size_t i=0;i<cpu.solved_normal_impulses().size();++i) {
                 const auto expected=cpu.solved_normal_impulses()[i];
                 const auto actual=gpu.solved_normal_impulses()[i];
