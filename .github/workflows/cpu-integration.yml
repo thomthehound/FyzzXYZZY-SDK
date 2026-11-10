@@ -357,7 +357,7 @@ jobs:
   native-no-physx-linux:
     name: Independent SDK / Vulkan without PhysX
     runs-on: ubuntu-26.04
-    timeout-minutes: 12
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v7
       - name: Record Ubuntu release for package-cache isolation
@@ -411,11 +411,16 @@ jobs:
           test -f build-native/libfyzzxyzzy_core.a
           test -f build-native/libfyzzxyzzy_compute.a
           test -f build-native/libfyzzxyzzy_source_gpu_primitives.a
+      - name: Compile instrumented Vulkan scene with the production execution graph
+        shell: bash
+        run: |
+          cmake -S . -B build-profile-vulkan -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON -DFYZZXYZZY_ENABLE_PHYSX_SOURCE=OFF -DFYZZXYZZY_BUILD_VULKAN=ON -DFYZZXYZZY_BUILD_SOURCE_GPU_TESTS=ON -DFYZZXYZZY_PROFILE_GPU=ON -DFETCHCONTENT_FULLY_DISCONNECTED=ON
+          cmake --build build-profile-vulkan --target fyzzxyzzy_source_sc_gpu_pcm_scene --parallel 4
 
   native-no-physx-windows:
     name: Independent SDK / D3D12 without PhysX
     runs-on: windows-latest
-    timeout-minutes: 20
+    timeout-minutes: 35
     steps:
       - uses: actions/checkout@v7
       - name: Locate Windows SDK DXC for reference-free source GPU conformance
@@ -445,3 +450,10 @@ jobs:
           $measurements | Tee-Object -FilePath $env:GITHUB_STEP_SUMMARY -Append
           if (Test-Path 'build-native/_deps/fyzzxyzzy_physx-src') { throw 'Native-only build unexpectedly fetched source dependencies' }
           if (-not (Test-Path 'build-native/Release/fyzzxyzzy_source_gpu_primitives_d3d12.lib')) { throw 'Independent source GPU primitive library missing' }
+      - name: Compile instrumented D3D12 scene with the production execution graph
+        shell: pwsh
+        run: |
+          cmake -S . -B build-profile-d3d12 -A x64 -DBUILD_TESTING=ON -DFYZZXYZZY_ENABLE_PHYSX_SOURCE=OFF -DFYZZXYZZY_BUILD_D3D12=ON -DFYZZXYZZY_BUILD_SOURCE_GPU_TESTS=ON -DFYZZXYZZY_PROFILE_GPU=ON -DFETCHCONTENT_FULLY_DISCONNECTED=ON "-DFYZZXYZZY_DXC=$env:FYZZXYZZY_DXC"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cmake --build build-profile-d3d12 --config Release --target fyzzxyzzy_source_sc_gpu_pcm_scene_d3d12 --parallel 4
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
