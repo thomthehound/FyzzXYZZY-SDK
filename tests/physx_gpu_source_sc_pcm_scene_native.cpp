@@ -848,14 +848,6 @@ void verify_device_sc_dy_indirect_api(
     fyzz::compute::Backend backend,const char* sap,const char* pcm,
     const char* dy_shader) {
     using namespace fyzz;
-    const auto begin=std::chrono::steady_clock::now();
-    const auto checkpoint=[&](const char* stage) {
-        const auto ms=std::chrono::duration_cast<std::chrono::milliseconds>(
-            std::chrono::steady_clock::now()-begin).count();
-        std::cerr<<"FYZZXYZZY_METRIC sc_indirect_stage="<<stage
-                 <<" elapsed_ms="<<ms<<std::endl;
-    };
-    checkpoint("start");
     std::ifstream file(dy_shader,std::ios::binary);
     require(bool(file),"Source indirect Dy shader unavailable");
     compute::ShaderBinary shader{};
@@ -870,7 +862,6 @@ void verify_device_sc_dy_indirect_api(
         std::move(shader));
     auto* producer=owner.get();
     scene.set_gpu_broadphase(std::move(owner));
-    checkpoint("context_ready");
     const std::array<BodyId,2> actors{{
         scene.add_dynamic_box({0.5f,0.5f,0.5f},{2.f,1.f,0.f},1.f),
         scene.add_dynamic_box({0.5f,0.5f,0.5f},{10.f,1.f,0.f},1.f)
@@ -878,7 +869,6 @@ void verify_device_sc_dy_indirect_api(
     const std::array<native::GpuPcmBoxPair,0> no_pairs{};
     std::array<native::GpuPcmBoxResult,0> no_witness{};
     producer->enqueue_gpu_pcm_box_contacts(no_pairs,no_witness);
-    checkpoint("pcm_empty");
     const std::array<std::uint32_t,2> nodes{{
         4u|(1u<<8u)|physx_gpu::source_sc_device_island_active_bit,
         5u|(2u<<8u)|physx_gpu::source_sc_device_island_active_bit
@@ -886,7 +876,6 @@ void verify_device_sc_dy_indirect_api(
     producer->enqueue_device_island_admission(
         std::span<const physx_gpu::SourceScDeviceIslandEdge>{},nodes,
         physx_gpu::SourceScDeviceIslandSources{});
-    checkpoint("sc_submitted");
     std::array<native::GpuDyDistanceBody,2> bodies{};
     for(auto& body:bodies)body.inverse_mass=1.f;
     const std::array<std::uint32_t,2> ordinals{{0u,1u}};
@@ -921,7 +910,6 @@ void verify_device_sc_dy_indirect_api(
         bodies,{},{},{},ordinals,tasks,
         {},{},{},{},{},{},{},{},
         inputs,poses,true,{},true,true,true,sleep);
-    checkpoint("dy_submitted");
     require(producer->has_queued_gpu_dy_distance() &&
             producer->dy_launch_stats().device_island_indirect_dispatches==1u &&
             producer->dy_launch_stats().device_generated_bytes==
@@ -930,14 +918,12 @@ void verify_device_sc_dy_indirect_api(
             producer->dy_upload_span_count()==2u,
         "Source Sc task admission retained a host numerical task upload");
     producer->finish_gpu_dy_distance();
-    checkpoint("dy_finished");
     require(tasks[0].error==0u && tasks[1].error==0u &&
             poses[0].valid==1u && poses[1].valid==1u &&
             std::fabs(poses[0].position[0]-(2.f+0.5f*seconds))<0.002f &&
             std::fabs(poses[1].position[0]-(10.f+0.75f*seconds))<0.002f,
         "Device-indirect Dy omitted an isolated responding body");
     producer->commit_gpu_step();
-    checkpoint("committed");
 }
 
 // Dy consumes the physical task and body-ordinal stream produced by
