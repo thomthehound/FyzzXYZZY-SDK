@@ -49,6 +49,9 @@ public:
             if(reset_shader->format==compute::ShaderFormat::Spirv)
                 reset_shader->entry_point="reset";
             desc.shader=std::move(*reset_shader);
+#if defined(FYZZXYZZY_PROFILE_GPU)
+            desc.profile_name="pcm.indirect_reset";
+#endif
             reset_=context_.create_compute_pipeline(desc);
         }
     }
