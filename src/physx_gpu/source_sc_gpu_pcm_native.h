@@ -600,7 +600,7 @@ public:
         for(const auto word:node_flags)
             if((word&0xfffc0000u)!=0u ||
                ((word&source_sc_device_island_nonresponding_bit)==0u &&
-                ((word&0xffu)==0u || ((word>>8u)&0xffu)==0u)))
+                (word&0xffu)==0u))
                 throw std::invalid_argument("Device Sc node iterations invalid");
         island_layout_=SourceScDeviceIslandLayout::for_counts(
             node_count,edge_count);
