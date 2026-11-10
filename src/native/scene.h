@@ -2144,6 +2144,7 @@ private:
     std::vector<std::uint32_t> gpu_dy_body_ordinals_;
     std::vector<std::uint32_t> gpu_dy_island_node_flags_;
     std::vector<GpuDyIslandEdge> gpu_dy_island_edges_;
+    std::vector<GpuGuTouchRecord> gpu_dy_gu_touches_;
     std::vector<GpuDyDistanceTask> gpu_dy_tasks_;
     std::vector<float> gpu_dy_contact_forces_;
     std::vector<GpuDyGuContactInput> gpu_dy_gu_inputs_;
