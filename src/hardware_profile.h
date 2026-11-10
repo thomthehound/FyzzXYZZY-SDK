@@ -40,6 +40,10 @@ struct Frame {
 };
 inline thread_local Frame current;
 inline std::atomic<std::uint64_t> next_trace_id{1u};
+inline std::atomic<std::uint64_t> next_context_id{1u};
+inline std::uint64_t allocate_context_id() noexcept {
+    return next_context_id.fetch_add(1u,std::memory_order_relaxed);
+}
 inline std::uint64_t current_trace_id() noexcept {
     return current.active?current.trace_id:0u;
 }
