@@ -6,6 +6,7 @@
 #include <array>
 #include <cmath>
 #include <limits>
+#include <iostream>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -507,7 +508,12 @@ inline void prismatic_joint_response(World& world,World* reference) {
     float last_slide=0.0f;
     for(unsigned frame=0;frame<24u;++frame) {
         world.add_body_torque(actual.body,{0.1f,0.12f,-0.08f});
-        world.step(dt);
+        try { world.step(dt); }
+        catch(...) {
+            std::cerr<<"FYZZXYZZY_METRIC suite=prismatic"
+                     <<" rejected_frame="<<frame<<'\n';
+            throw;
+        }
         if(reference) {
             reference->add_body_torque(expected.body,{0.1f,0.12f,-0.08f});
             reference->step(dt);
