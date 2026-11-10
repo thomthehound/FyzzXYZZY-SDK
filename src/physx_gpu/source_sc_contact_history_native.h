@@ -42,6 +42,9 @@ public:
         desc.storage_buffer_views.assign(
             3u,compute::StorageBufferViewKind::RawReadWrite);
         desc.push_constant_bytes=32u;
+#if defined(FYZZXYZZY_PROFILE_GPU)
+        desc.profile_name="sc.contact_history";
+#endif
         pipeline_=context_.create_compute_pipeline(desc);
     }
     SourceScContactHistoryNativeStage(const SourceScContactHistoryNativeStage&)=delete;
