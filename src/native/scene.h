@@ -2087,6 +2087,7 @@ private:
         void publish_results();
     };
     std::vector<SolverTask> solver_tasks_;
+    std::size_t gpu_dy_responding_island_count_=0u;
     // Frame-local PxsSolverEndTask completions are keyed by the actual
     // task descriptor; stamps avoid allocating/clearing a new registry.
     std::vector<std::uint32_t> solver_task_completion_stamps_;

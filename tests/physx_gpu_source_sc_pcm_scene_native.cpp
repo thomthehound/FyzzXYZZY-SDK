@@ -1911,9 +1911,23 @@ void verify_gpu_single_island_hybrid_solver(
         a[i]=cpu.add_dynamic_box({0.5f,0.5f,0.5f},p,1.f);
         b[i]=gpu.add_dynamic_box({0.5f,0.5f,0.5f},p,1.f);
     }
-    // The joint preserves one accurate island as contacts evolve.
+    // The joint preserves one responding island while independent
+    // free-flight actors exercise CPU task grouping without GPU graph work.
     cpu.create_center_distance_constraint(a[0],a[1],0.83f);
     gpu.create_center_distance_constraint(b[0],b[1],0.83f);
+    constexpr unsigned free_count=8u;
+    std::array<BodyId,free_count> free_cpu{},free_gpu{};
+    RigidBodyDynamics free_dynamics{};
+    free_dynamics.gravity_enabled=false;
+    for(unsigned i=0u;i<free_count;++i) {
+        const Vec3 p{20.f+4.f*float(i),5.f,0.f};
+        free_cpu[i]=cpu.add_dynamic_box({0.3f,0.3f,0.3f},p,1.f);
+        free_gpu[i]=gpu.add_dynamic_box({0.3f,0.3f,0.3f},p,1.f);
+        cpu.set_dynamics(free_cpu[i],free_dynamics);
+        gpu.set_dynamics(free_gpu[i],free_dynamics);
+        cpu.set_velocity(free_cpu[i],{0.25f,0.f,0.f});
+        gpu.set_velocity(free_gpu[i],{0.25f,0.f,0.f});
+    }
     bool saw_pcm_contact=false;
     for(unsigned frame=0u;frame<6u;++frame) {
         cpu.step(1.f/120.f);
@@ -1922,7 +1936,8 @@ void verify_gpu_single_island_hybrid_solver(
         saw_pcm_contact|=producer->dy_pcm_device_contact_rows()>0u;
         require(gpu.largest_accurate_island_size()==2u &&
                 cpu.contacts().size()==gpu.contacts().size() &&
-                producer->dy_gpu_integrated_body_count()==2u &&
+                gpu.active_accurate_island_count()>1u &&
+                producer->dy_gpu_integrated_body_count()==2u+free_count &&
                 schedule.device_colored_tasks>0u &&
                 schedule.device_colored_descriptors>0u &&
                 schedule.device_island_indirect_dispatches==0u,
@@ -1931,6 +1946,10 @@ void verify_gpu_single_island_hybrid_solver(
             test::compound_compare_state(
                 gpu.body_state(b[i]),cpu.body_state(a[i]),0.03f,
                 "Single-island hybrid GPU Dy diverged from CPU PGS");
+        for(unsigned i=0u;i<free_count;++i)
+            test::compound_compare_state(
+                gpu.body_state(free_gpu[i]),cpu.body_state(free_cpu[i]),
+                0.003f,"Hybrid GPU free-flight integration diverged");
         if(frame==0u)
             std::cout<<"FYZZXYZZY_METRIC suite=sc_pcm case=single_island"
                      <<" dy_dispatches="<<schedule.dispatches

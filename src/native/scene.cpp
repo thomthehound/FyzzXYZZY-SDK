@@ -7160,6 +7160,7 @@ void Scene::partition_constraints() {
     indexed_joints_.clear();
     solver_tasks_.clear();
     gpu_dy_free_ids_.clear();
+    gpu_dy_responding_island_count_=0u;
     const bool gpu_integration=gpu_broadphase_ &&
         gpu_broadphase_->has_gpu_dy_distance();
     std::size_t joint_task_begin=0;
@@ -7228,6 +7229,9 @@ void Scene::partition_constraints() {
             throw std::logic_error("Source 1D edge list truncated");
         task_body_count+=island.count;
         task_constraint_count+=island.contact_count+island.constraint_count;
+        // Only islands with prepared numerical bodies can gain a Dy task
+        // from device island admission; free-flight islands are separate.
+        const auto prepared_before_island=prepared_solver_bodies;
         // DyDynamics.cpp::preIntegrationParallel accumulates the
         // maximum PxsBodyCore solverIterationCounts word over precisely
         // this source task's node array, including unconstrained bodies.
@@ -7245,6 +7249,8 @@ void Scene::partition_constraints() {
             else if(gpu_integration && !actors_[id].sleeping)
                 gpu_dy_free_ids_.push_back(id);
         }
+        if(prepared_solver_bodies!=prepared_before_island)
+            ++gpu_dy_responding_island_count_;
         // DyDynamicsContext::updatePostKinematic breaks after EVERY
         // accurate island with eENABLE_ENHANCED_DETERMINISM; the
         // regular path retains source 128-body/min-one-contact batching.
@@ -8889,10 +8895,10 @@ void Scene::solve_gpu_distance_constraints(float seconds) {
     // islands instead take their task/body/response schedule from the
     // resident Gu EdgeIndex graph. Reuse the already prepared source
     // tables; no CPU contact or 1D descriptor is reconstructed here.
-    // CPU tasks already expose one workgroup per active accurate island
-    // unless Sc has batched several islands into one numerical task.
+    // Free-flight islands do not need contact/constraint task admission.
+    // Split CPU task groups only when multiple responding islands share one.
     const bool device_island_admission=
-        active_accurate_island_batches_.size()>solver_tasks_.size() &&
+        gpu_dy_responding_island_count_>gpu_dy_tasks_.size() &&
         gpu_broadphase_->has_gpu_pcm_box() && pcm_box_box_enabled_ &&
         !gpu_pcm_pairs_.empty() && !gpu_dy_tasks_.empty() && !solver_active_ids_.empty() &&
         std::all_of(gpu_dy_tasks_.begin(),gpu_dy_tasks_.end(),
