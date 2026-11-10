@@ -105,7 +105,8 @@ struct SourceDyLaunchStats {
     std::size_t dispatches=0u;
     std::size_t device_island_indirect_dispatches=0u;
     std::size_t tile_bytes=0u;
-    // Shader-written descriptor and partition bytes omitted from HtoD.
+    // Device-written descriptors, partition ranges, tasks, and ordinals
+    // omitted from the host numerical input packet.
     std::size_t device_generated_bytes=0u;
     std::size_t device_source_descriptors=0u;
     std::size_t source_descriptor_upload_bytes=0u;
