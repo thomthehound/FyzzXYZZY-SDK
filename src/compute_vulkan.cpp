@@ -2,6 +2,9 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #include "fyzzxyzzy/compute.h"
+#if defined(FYZZXYZZY_PROFILE_GPU)
+#include "hardware_profile.h"
+#endif
 
 #include <vulkan/vulkan.h>
 
@@ -276,6 +279,7 @@ struct Context::Impl {
         DescriptorReuse descriptors{};
 #if defined(FYZZXYZZY_PROFILE_GPU)
         std::vector<ProfileOp> profile_ops;
+        std::uint64_t profile_trace_id=0u;
 #endif
     };
     struct CachedBatch {
@@ -543,7 +547,8 @@ struct Context::Impl {
             const auto& operation=submission.profile_ops[i];
             const auto elapsed=(ticks[i+1u]-ticks[i])&mask;
             std::printf(
-                "FYZZXYZZY_TRACE kind=gpu backend=vulkan submission=%llu op=%llu type=%s pipeline=%llu indirect=%u x=%u y=%u z=%u copy_bytes=%llu duration_ns=%.0f\n",
+                "FYZZXYZZY_TRACE kind=gpu backend=vulkan trace_id=%llu submission=%llu op=%llu type=%s pipeline=%llu indirect=%u x=%u y=%u z=%u copy_bytes=%llu duration_ns=%.0f\n",
+                static_cast<unsigned long long>(submission.profile_trace_id),
                 static_cast<unsigned long long>(id),
                 static_cast<unsigned long long>(i),
                 operation.pipeline?"dispatch":"copy",
@@ -1899,6 +1904,7 @@ struct Context::Impl {
             submitted.timestamps = timestamps;
 #if defined(FYZZXYZZY_PROFILE_GPU)
             if(hardware_trace) {
+                submitted.profile_trace_id=hardware_profile::current_trace_id();
                 submitted.profile_ops.reserve(operations.size());
                 for(const auto& operation:operations) {
                     if(const auto* copy=std::get_if<CopyCommand>(&operation))
