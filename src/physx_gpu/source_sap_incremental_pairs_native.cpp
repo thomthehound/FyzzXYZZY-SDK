@@ -40,6 +40,9 @@ SourceSapIncrementalPairsNativeStage::SourceSapIncrementalPairsNativeStage(
     desc.storage_buffer_views.assign(kViews,
         compute::StorageBufferViewKind::RawReadWrite);
     desc.push_constant_bytes=sizeof(Params);
+    #if defined(FYZZXYZZY_PROFILE_GPU)
+    desc.profile_name="sap.incremental_pairs";
+#endif
     pipeline_=context_.create_compute_pipeline(desc);
 }
 SourceSapIncrementalPairsNativeStage::~SourceSapIncrementalPairsNativeStage(){
