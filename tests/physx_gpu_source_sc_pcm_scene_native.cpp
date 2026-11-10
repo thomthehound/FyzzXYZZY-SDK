@@ -868,6 +868,8 @@ void verify_device_sc_dy_task_admission(
         {0.5f,0.5f,0.5f},{0.f,1.f,0.f},1.f);
     const auto fixed=scene.add_static_box(
         {0.5f,0.5f,0.5f},{0.8f,1.f,0.f});
+    const auto independent=scene.add_dynamic_box(
+        {0.5f,0.5f,0.5f},{8.f,1.f,0.f},1.f);
     scene.advance_collision(true);
     const auto edge=scene.contact_edge_index({moving,fixed});
     require(edge!=0xffffffffu,"Device Sc/Dy test lost its Sc manager");
@@ -945,6 +947,66 @@ void verify_device_sc_dy_task_admission(
                       (2.f+0.5f*seconds))<0.002f,
         "Dy did not indirectly execute the resident Sc task");
     producer->commit_gpu_step();
+
+    // The indirect launch also has to execute every independent
+    // source task, not merely the first workgroup from a host hint.
+    // One physically touching manager belongs to node 0; node 1 is a
+    // separate awake solver body with no numerical constraint.
+    {
+        std::array<native::GpuDyDistanceBody,2> bodies{};
+        for(auto& item:bodies)item.inverse_mass=1.f;
+        const std::array<std::uint32_t,2> body_order{{0u,1u}};
+        std::array<native::GpuDyDistanceTask,2> active_tasks{{
+            {0u,1u,0u,1u,0u,1u,4u,1u,0x4000u},
+            {1u,1u,1u,1u,1u,2u,5u,1u,0x4000u}
+        }};
+        std::array<native::GpuDyBodyIntegrationInput,2> active_inputs{};
+        std::array<native::GpuDyIntegratedPose,2> active_poses{};
+        std::array<native::GpuDySleepState,2> active_sleep{};
+        for(std::size_t i=0u;i<2u;++i) {
+            auto& in=active_inputs[i];
+            in.active=1u;
+            in.source_actor=i==0u?moving:independent;
+            in.source_element=0xffffffffu;
+            in.source_inverse_mass=1.f;
+            in.position[0]=2.f+8.f*float(i);
+            in.position[1]=1.f;
+            in.orientation[3]=1.f;
+            in.actor_position[0]=in.position[0];
+            in.actor_position[1]=in.position[1];
+            in.actor_orientation[3]=1.f;
+            in.mass_local_orientation[3]=1.f;
+            in.linear_velocity[0]=0.5f+0.25f*float(i);
+            in.max_linear_speed_squared=100.f;
+            in.max_angular_speed_squared=100.f;
+            in.wake_counter=0.4f;
+            in.seconds=seconds;
+        }
+        const std::array<std::uint32_t,2> active_nodes{{
+            single_node[0],
+            5u|(1u<<8u)|physx_gpu::source_sc_device_island_active_bit
+        }};
+        witness={};
+        producer->enqueue_gpu_pcm_box_contacts(requests,witness);
+        producer->enqueue_device_island_admission(
+            touching,active_nodes,
+            physx_gpu::SourceScDeviceIslandSources{2u,0u,0u});
+        producer->enqueue_gpu_dy_distance(
+            bodies,{},descriptors,{},body_order,active_tasks,
+            {},{},{},{},{},managers,{},{},
+            active_inputs,active_poses,true,{},true,true,true,active_sleep);
+        producer->finish_gpu_pcm_box_contacts();
+        producer->finish_gpu_dy_distance();
+        require(active_tasks[0].error==0u && active_tasks[1].error==0u &&
+                active_poses[0].valid==1u && active_poses[1].valid==1u &&
+                producer->dy_launch_stats().device_island_indirect_dispatches==1u &&
+                std::fabs(active_poses[0].position[0]-
+                          (2.f+0.5f*seconds))<0.002f &&
+                std::fabs(active_poses[1].position[0]-
+                          (10.f+0.75f*seconds))<0.002f,
+            "Resident Sc indirect launch omitted an independent Dy task");
+        producer->commit_gpu_step();
+    }
 
     // The work allocation has room for two nodes, but Sc admits two
     // responding nodes while the Dy caller provides only one. Runtime
