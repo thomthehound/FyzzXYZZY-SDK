@@ -7,6 +7,9 @@
 // setup; this layer never interprets CUDA virtual addresses.
 
 #include "fyzzxyzzy/compute.h"
+#if defined(FYZZXYZZY_PROFILE_GPU)
+#include "hardware_profile.h"
+#endif
 
 #ifndef _WIN32
 #error D3D12 compute is Windows-only
@@ -308,6 +311,7 @@ struct Context::Impl {
         std::uint64_t fence_value = 0;
 #if defined(FYZZXYZZY_PROFILE_GPU)
         std::vector<ProfileOp> profile_ops;
+        std::uint64_t profile_trace_id=0u;
 #endif
     };
 
@@ -457,6 +461,7 @@ struct Context::Impl {
             submission.fence_value = 0;
 #if defined(FYZZXYZZY_PROFILE_GPU)
             submission.profile_ops.clear();
+            submission.profile_trace_id=0u;
 #endif
             return submission;
         }
@@ -614,7 +619,8 @@ struct Context::Impl {
                 throw std::runtime_error("D3D12 hardware timestamp counter regressed");
             const auto elapsed=ticks[i+1u]-ticks[i];
             std::printf(
-                "FYZZXYZZY_TRACE kind=gpu backend=d3d12 submission=%llu op=%llu type=%s pipeline=%llu indirect=%u x=%u y=%u z=%u copy_bytes=%llu duration_ns=%.0f\n",
+                "FYZZXYZZY_TRACE kind=gpu backend=d3d12 trace_id=%llu submission=%llu op=%llu type=%s pipeline=%llu indirect=%u x=%u y=%u z=%u copy_bytes=%llu duration_ns=%.0f\n",
+                static_cast<unsigned long long>(submission.profile_trace_id),
                 static_cast<unsigned long long>(id),
                 static_cast<unsigned long long>(i),
                 operation.pipeline?"dispatch":"copy",
@@ -1560,6 +1566,7 @@ struct Context::Impl {
         }
 #if defined(FYZZXYZZY_PROFILE_GPU)
         if(hardware_trace) {
+            submission.profile_trace_id=hardware_profile::current_trace_id();
             submission.profile_ops.reserve(commands.size());
             for(const auto& operation:commands) {
                 if(const auto* copy=std::get_if<CopyCommand>(&operation))
