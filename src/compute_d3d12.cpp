@@ -25,6 +25,9 @@
 #include <array>
 #include <cstdlib>
 #include <cstring>
+#if defined(FYZZXYZZY_PROFILE_GPU)
+#include <cstdio>
+#endif
 #include <iostream>
 #include <limits>
 #include <stdexcept>
@@ -274,6 +277,14 @@ struct Context::Impl {
         std::size_t bytes = 0;
         ID3D12Resource* resource = nullptr;
     };
+#if defined(FYZZXYZZY_PROFILE_GPU)
+    struct ProfileOp {
+        PipelineId pipeline=0;
+        std::size_t bytes=0u;
+        std::uint32_t x=0u,y=0u,z=0u;
+        bool indirect=false;
+    };
+#endif
     struct Submission {
         // A descriptor heap belongs to its completed command submission.
         // These identities describe the live entries in that exact heap.
@@ -295,6 +306,9 @@ struct Context::Impl {
         // optional future performance optimization.
         std::vector<ComPtr<ID3D12Resource>> owned_copy_scratch;
         std::uint64_t fence_value = 0;
+#if defined(FYZZXYZZY_PROFILE_GPU)
+        std::vector<ProfileOp> profile_ops;
+#endif
     };
 
     ComPtr<ID3D12Device> device;
@@ -336,6 +350,9 @@ struct Context::Impl {
     PipelineId next_pipeline = 1;
     SubmissionId next_submission = 1;
     std::uint64_t next_fence = 1;
+#if defined(FYZZXYZZY_PROFILE_GPU)
+    std::uint64_t trace_frequency = 0;
+#endif
     // ExecuteCommandLists can succeed even if queue->Signal fails. This
     // fence value must never be used as a completion target.
     std::uint64_t first_unsignaled_fence = 0;
@@ -379,6 +396,10 @@ struct Context::Impl {
         D3D12_COMMAND_QUEUE_DESC q{};
         q.Type = D3D12_COMMAND_LIST_TYPE_COMPUTE;
         check(device->CreateCommandQueue(&q, IID_PPV_ARGS(&queue)), "CreateCommandQueue");
+#if defined(FYZZXYZZY_PROFILE_GPU)
+        if(FAILED(queue->GetTimestampFrequency(&trace_frequency)))
+            trace_frequency=0u;
+#endif
         check(device->CreateFence(0, D3D12_FENCE_FLAG_NONE,
                                   IID_PPV_ARGS(&fence)), "CreateFence");
         completion_event = CreateEventW(nullptr, FALSE, FALSE, nullptr);
@@ -434,6 +455,9 @@ struct Context::Impl {
             check(submission.commands->Reset(submission.allocator.Get(), nullptr),
                   "ResetCommandList");
             submission.fence_value = 0;
+#if defined(FYZZXYZZY_PROFILE_GPU)
+            submission.profile_ops.clear();
+#endif
             return submission;
         }
         Submission submission;
@@ -572,11 +596,44 @@ struct Context::Impl {
         }
     }
 
+#if defined(FYZZXYZZY_PROFILE_GPU)
+    void report_gpu_profile(SubmissionId id,Submission& submission) {
+        if(submission.profile_ops.empty() || !trace_frequency)return;
+        const auto count=submission.profile_ops.size()+1u;
+        void* mapped=nullptr;
+        const D3D12_RANGE read{0,count*sizeof(std::uint64_t)};
+        check(submission.query_readback->Map(0,&read,&mapped),
+              "Map hardware GPU timestamp query");
+        std::vector<std::uint64_t> ticks(count);
+        std::memcpy(ticks.data(),mapped,read.End);
+        const D3D12_RANGE written{0,0};
+        submission.query_readback->Unmap(0,&written);
+        for(std::size_t i=0u;i<submission.profile_ops.size();++i) {
+            const auto& operation=submission.profile_ops[i];
+            if(ticks[i+1u]<ticks[i])
+                throw std::runtime_error("D3D12 hardware timestamp counter regressed");
+            const auto elapsed=ticks[i+1u]-ticks[i];
+            std::printf(
+                "FYZZXYZZY_TRACE kind=gpu backend=d3d12 submission=%llu op=%llu type=%s pipeline=%llu indirect=%u x=%u y=%u z=%u copy_bytes=%llu duration_ns=%.0f\n",
+                static_cast<unsigned long long>(id),
+                static_cast<unsigned long long>(i),
+                operation.pipeline?"dispatch":"copy",
+                static_cast<unsigned long long>(operation.pipeline),
+                unsigned(operation.indirect),
+                operation.x,operation.y,operation.z,
+                static_cast<unsigned long long>(operation.bytes),
+                static_cast<double>(elapsed)*1.0e9/static_cast<double>(trace_frequency));
+        }
+    }
+#endif
     void wait_submission(SubmissionId id) {
         auto it = submissions.find(id);
         if (it == submissions.end()) throw std::invalid_argument("Unknown D3D12 submission");
         const auto completed = it->second.fence_value;
         wait_value(completed);
+#if defined(FYZZXYZZY_PROFILE_GPU)
+        report_gpu_profile(id,it->second);
+#endif
         recycle_completed(std::move(it->second));
         submissions.erase(it);
         release_retired_through(completed);
@@ -598,6 +655,9 @@ struct Context::Impl {
         wait_value(last_fence);
         for(const auto id:ordered) {
             auto it=submissions.find(id);
+#if defined(FYZZXYZZY_PROFILE_GPU)
+            report_gpu_profile(id,it->second);
+#endif
             recycle_completed(std::move(it->second));
             submissions.erase(it);
         }
@@ -608,8 +668,12 @@ struct Context::Impl {
         if (submissions.empty()) return;
         const auto completed = next_fence - 1;
         wait_value(completed);
-        for (auto& entry : submissions)
+        for (auto& entry : submissions) {
+#if defined(FYZZXYZZY_PROFILE_GPU)
+            report_gpu_profile(entry.first,entry.second);
+#endif
             recycle_completed(std::move(entry.second));
+        }
         submissions.clear();
         release_retired_through(completed);
     }
@@ -1153,6 +1217,10 @@ struct Context::Impl {
 
     SubmissionId submit_batch(const std::vector<BatchCommand>& commands,
                               bool profile = false) {
+#if defined(FYZZXYZZY_PROFILE_GPU)
+        const bool hardware_trace=!profile && trace_frequency!=0u;
+        profile=profile || hardware_trace;
+#endif
         if (commands.empty()) throw std::invalid_argument("Empty D3D12 command batch");
         std::size_t descriptor_count = 0;
         bool uses_indirect = false;
@@ -1196,6 +1264,12 @@ struct Context::Impl {
                   "CreateCommandSignature");
         }
         Submission submission = new_commands(&pipeline_sequence, descriptor_count);
+#if defined(FYZZXYZZY_PROFILE_GPU)
+        if(hardware_trace) {
+            submission.query_heap.Reset();
+            submission.query_readback.Reset();
+        }
+#endif
         // Legacy D3D12 requires staging nonoverlapping copies within one
         // buffer. All such copies in this command batch can share one
         // device-local scratch allocation, with ordered state transitions
@@ -1218,12 +1292,25 @@ struct Context::Impl {
             D3D12_QUERY_HEAP_DESC desc{};
             desc.Type = D3D12_QUERY_HEAP_TYPE_TIMESTAMP;
             desc.Count = 2;
+#if defined(FYZZXYZZY_PROFILE_GPU)
+            if(hardware_trace) {
+                if(commands.size()>=std::numeric_limits<UINT>::max())
+                    throw std::out_of_range("Hardware trace query count exceeds 32-bit range");
+                desc.Count=static_cast<UINT>(commands.size()+1u);
+            }
+#endif
             if (!submission.query_heap)
                 check(device->CreateQueryHeap(&desc, IID_PPV_ARGS(&submission.query_heap)),
                       "CreateQueryHeap(timestamp)");
             if (!submission.query_readback)
                 submission.query_readback = allocate_resource(
-                    device.Get(), 2 * sizeof(std::uint64_t),
+                    device.Get(),
+#if defined(FYZZXYZZY_PROFILE_GPU)
+                    static_cast<std::size_t>(hardware_trace?desc.Count:2u) *
+#else
+                    2u *
+#endif
+                    sizeof(std::uint64_t),
                     D3D12_HEAP_TYPE_READBACK, D3D12_RESOURCE_FLAG_NONE,
                     D3D12_RESOURCE_STATE_COPY_DEST);
             submission.commands->EndQuery(submission.query_heap.Get(),
@@ -1299,6 +1386,9 @@ struct Context::Impl {
             }
         };
         UINT descriptor_index = 0;
+#if defined(FYZZXYZZY_PROFILE_GPU)
+        UINT hardware_query_index=1u;
+#endif
         for (const BatchCommand& op : commands) {
             if (const auto* copy = std::get_if<CopyCommand>(&op)) {
                 auto& src = get_buffer(copy->source);
@@ -1333,6 +1423,11 @@ struct Context::Impl {
                         copy->source_offset, copy->bytes);
                 }
                 resource_access[copy->destination].pending_write = true;
+#if defined(FYZZXYZZY_PROFILE_GPU)
+                if(hardware_trace)
+                    submission.commands->EndQuery(submission.query_heap.Get(),
+                        D3D12_QUERY_TYPE_TIMESTAMP,hardware_query_index++);
+#endif
                 continue;
             }
             const auto& cmd = std::get<DispatchCommand>(op);
@@ -1425,6 +1520,11 @@ struct Context::Impl {
             }else
                 submission.commands->Dispatch(
                     cmd.groups.x,cmd.groups.y,cmd.groups.z);
+#if defined(FYZZXYZZY_PROFILE_GPU)
+            if(hardware_trace)
+                submission.commands->EndQuery(submission.query_heap.Get(),
+                    D3D12_QUERY_TYPE_TIMESTAMP,hardware_query_index++);
+#endif
             for (std::size_t slot = 0; slot < cmd.buffers.size(); ++slot) {
                 const auto kind = pipeline.view_kinds[slot];
                 const bool writable = kind == StorageBufferViewKind::RawReadWrite ||
@@ -1444,12 +1544,36 @@ struct Context::Impl {
                        D3D12_RESOURCE_STATE_COPY_SOURCE,
                        D3D12_RESOURCE_STATE_COPY_DEST);
         if (profile) {
+#if defined(FYZZXYZZY_PROFILE_GPU)
+            if(!hardware_trace)
+#endif
             submission.commands->EndQuery(submission.query_heap.Get(),
                                            D3D12_QUERY_TYPE_TIMESTAMP, 1);
             submission.commands->ResolveQueryData(
                 submission.query_heap.Get(), D3D12_QUERY_TYPE_TIMESTAMP,
-                0, 2, submission.query_readback.Get(), 0);
+#if defined(FYZZXYZZY_PROFILE_GPU)
+                0,hardware_trace?static_cast<UINT>(commands.size()+1u):2u,
+#else
+                0, 2,
+#endif
+                submission.query_readback.Get(), 0);
         }
+#if defined(FYZZXYZZY_PROFILE_GPU)
+        if(hardware_trace) {
+            submission.profile_ops.reserve(commands.size());
+            for(const auto& operation:commands) {
+                if(const auto* copy=std::get_if<CopyCommand>(&operation))
+                    submission.profile_ops.push_back(
+                        {0u,copy->bytes,0u,0u,0u,false});
+                else {
+                    const auto& dispatch=std::get<DispatchCommand>(operation);
+                    submission.profile_ops.push_back({
+                        dispatch.pipeline,0u,dispatch.groups.x,dispatch.groups.y,
+                        dispatch.groups.z,dispatch.indirect.has_value()});
+                }
+            }
+        }
+#endif
         return enqueue(std::move(submission));
     }
 
