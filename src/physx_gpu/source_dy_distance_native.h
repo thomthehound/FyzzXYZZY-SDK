@@ -176,6 +176,9 @@ public:
                 pipeline.storage_buffer_binding_count=7u;
                 pipeline.storage_buffer_views.assign(
                     7u,compute::StorageBufferViewKind::RawReadWrite);
+#if defined(FYZZXYZZY_PROFILE_GPU)
+                pipeline.profile_name="dy.convex";
+#endif
                 convex_pipeline_=context_.create_compute_pipeline(pipeline);
             }catch(...) {
                 context_.destroy_compute_pipeline(pipeline_);
