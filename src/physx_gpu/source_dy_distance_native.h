@@ -1003,6 +1003,26 @@ public:
             throw std::overflow_error(
                 "Source GPU free-body velocity writeback exceeds 32-bit view");
         output_bytes+=free_velocity_bytes+free_sleep_bytes;
+        // The device owns the actual admitted counts and compact task/
+        // body order. Return these records in the existing Dy result
+        // transfer so Sc publication never trusts placeholder host
+        // task boundaries or waits for a second scheduling readback.
+        const std::size_t device_header_offset=output_bytes;
+        const std::size_t device_task_offset=output_bytes+
+            (device_admission?16u:0u);
+        const std::size_t device_ordinal_offset=device_task_offset+
+            (device_admission?tasks.size_bytes():0u);
+        if(device_admission) {
+            const auto ordinal_bytes=body_ordinals.size_bytes();
+            if(device_ordinal_offset>
+                   std::numeric_limits<std::uint32_t>::max() ||
+               ordinal_bytes>
+                   std::numeric_limits<std::uint32_t>::max()-
+                       device_ordinal_offset)
+                throw std::overflow_error(
+                    "Resident Sc Dy scheduling result exceeds 32-bit address space");
+            output_bytes=device_ordinal_offset+ordinal_bytes;
+        }
         last_schedule_.free_velocity_readback_bytes=free_velocity_bytes;
         last_schedule_.sleep_readback_bytes=
             device_unconstrained_preparation
@@ -1485,6 +1505,18 @@ public:
         // because the packed arena is limited to 32-bit byte offsets.
         launch(Launch::FreeBodies,{0u,(free_bodies+127u)/128u},
                narrow(integration.size()));
+        if(device_admission) {
+            stream_.queue_device_copy(
+                address+history_bytes+device_header_offset,
+                address+offsets[15]+24u,16u);
+            stream_.queue_device_copy(
+                address+history_bytes+device_task_offset,
+                address+offsets[5],tasks.size_bytes());
+            if(!body_ordinals.empty())
+                stream_.queue_device_copy(
+                    address+history_bytes+device_ordinal_offset,
+                    address+offsets[4],body_ordinals.size_bytes());
+        }
         const auto mapped=addresses_.resolve(address+history_bytes,output_bytes);
         // Numerical dispatch is ordered after PCM and host Gu uploads,
         // but does not consume the outstanding Sc witness readback.
@@ -1500,6 +1532,10 @@ public:
             .contact_prep=contact_prep,.result_offsets=result_offsets,
             .output_buffer=mapped.buffer,.output_offset=mapped.offset,
             .output_bytes=output_bytes,
+            .device_admission=device_admission.has_value(),
+            .device_header_offset=device_header_offset,
+            .device_task_offset=device_task_offset,
+            .device_ordinal_offset=device_ordinal_offset,
             .free_velocity_offset=free_velocity_offset,
             .friction_count=friction_count,
             .uploaded_bytes=uploaded_bytes,
@@ -1525,7 +1561,7 @@ public:
         auto pending=std::move(*pending_solve_);
         pending_solve_.reset();
         const auto bodies=pending.bodies;
-        const auto tasks=pending.tasks;
+        auto tasks=pending.tasks;
         const auto contact_forces=pending.contact_forces;
         const auto friction=pending.friction;
         const auto anchor_impulses=pending.anchor_impulses;
@@ -1534,7 +1570,7 @@ public:
         const auto integrated_poses=pending.integrated_poses;
         const auto sleep_states=pending.sleep_states;
         const auto descriptors=pending.descriptors;
-        const auto body_ordinals=pending.body_ordinals;
+        std::span<const std::uint32_t> body_ordinals=pending.body_ordinals;
         const auto manifolds=pending.manifolds;
         const auto contact_order=pending.contact_order;
         const auto contact_prep=pending.contact_prep;
@@ -1556,6 +1592,30 @@ public:
              host_.data(),output_bytes}
         }};
         stream_.fetch(downloads);
+        std::vector<std::uint32_t> admitted_body_ordinals;
+        if(pending.device_admission) {
+            std::array<std::uint32_t,4> admitted{};
+            std::memcpy(admitted.data(),
+                host_.data()+pending.device_header_offset,sizeof(admitted));
+            if(admitted[0]!=0u || admitted[1]>tasks.size() ||
+               admitted[2]>body_ordinals.size() ||
+               admitted[3]>descriptors.size())
+                throw std::overflow_error(
+                    "Resident Sc Dy scheduling result exceeds declared capacities");
+            if(admitted[1])
+                std::memcpy(tasks.data(),
+                    host_.data()+pending.device_task_offset,
+                    admitted[1]*sizeof(native::GpuDyDistanceTask));
+            for(std::size_t i=admitted[1];i<tasks.size();++i)
+                tasks[i].error=0u;
+            tasks=tasks.first(admitted[1]);
+            admitted_body_ordinals.resize(admitted[2]);
+            if(admitted[2])
+                std::memcpy(admitted_body_ordinals.data(),
+                    host_.data()+pending.device_ordinal_offset,
+                    admitted[2]*sizeof(std::uint32_t));
+            body_ordinals=admitted_body_ordinals;
+        }
         for(const auto id:pending_actor_locals_)
             actor_local_valid_[id]=1u;
         for(std::size_t i=0;i<tasks.size();++i)
@@ -1856,6 +1916,9 @@ private:
         std::array<std::size_t,6> result_offsets{};
         compute::BufferId output_buffer=0u;
         std::size_t output_offset=0u,output_bytes=0u;
+        bool device_admission=false;
+        std::size_t device_header_offset=0u,device_task_offset=0u,
+                    device_ordinal_offset=0u;
         std::size_t free_velocity_offset=0u,friction_count=0u;
         std::size_t uploaded_bytes=0u,cpu_gu_bytes=0u,reused_pcm_rows=0u;
         std::size_t compact_anchor_bytes=0u,prep_bytes=0u;
