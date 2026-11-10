@@ -913,6 +913,12 @@ if(FYZZXYZZY_BUILD_VULKAN)
         "${FYZZXYZZY_SOURCE_DY_DISTANCE_SPV}"
         "${FYZZXYZZY_SOURCE_DY_CONVEX_SPV}" aggregate_coupled
         "${CMAKE_CURRENT_BINARY_DIR}/kernels/fyzzxyzzy_native_aggregate_spirv.manifest")
+    add_test(NAME fyzzxyzzy_source_sc_gpu_pcm_scene_plane_only_pcm
+      COMMAND fyzzxyzzy_source_sc_gpu_pcm_scene
+        "${CMAKE_CURRENT_BINARY_DIR}/kernels/fyzzxyzzy_native_sap_spirv.manifest"
+        "${CMAKE_CURRENT_BINARY_DIR}/kernels/fyzzxyzzy_native_pcm_spv.manifest"
+        "${FYZZXYZZY_SOURCE_DY_DISTANCE_SPV}"
+        "${FYZZXYZZY_SOURCE_DY_CONVEX_SPV}" plane_only_pcm)
     add_test(NAME fyzzxyzzy_source_sc_gpu_pcm_scene_dy_switch
       COMMAND fyzzxyzzy_source_sc_gpu_pcm_scene
         "${CMAKE_CURRENT_BINARY_DIR}/kernels/fyzzxyzzy_native_sap_spirv.manifest"

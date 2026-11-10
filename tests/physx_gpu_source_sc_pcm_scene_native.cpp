@@ -2561,6 +2561,55 @@ void verify_integrated_aggregate_gpu_pipeline(
     require(gpu.body_state(a).position.y<3.f,
             "Integrated aggregate release invalidated live body state");
 }
+
+void verify_plane_pcm_without_finite_pcm(
+    fyzz::compute::Backend backend,const char* sap,
+    const char* pcm,const char* dy_shader) {
+    using namespace fyzz;
+    std::ifstream file(dy_shader,std::ios::binary);
+    require(bool(file),"Plane-only PCM Dy shader missing");
+    const std::vector<char> bytes{
+        std::istreambuf_iterator<char>{file},std::istreambuf_iterator<char>{}};
+    compute::ShaderBinary shader{};
+    shader.format=backend==compute::Backend::Vulkan
+        ?compute::ShaderFormat::Spirv:compute::ShaderFormat::Dxil;
+    shader.bytes.assign(bytes.begin(),bytes.end());
+    native::Scene cpu,gpu;
+    cpu.set_pcm_box_box(false);
+    gpu.set_pcm_box_box(false);
+    auto producer=std::make_unique<physx_gpu::SourceScOwnedGpuBroadphaseNative>(
+        backend,load_native_gpu_sap_shaders(backend,sap),
+        128u,128u,std::nullopt,
+        load_native_gpu_pcm_shaders(backend,pcm),std::move(shader));
+    auto* source=producer.get();
+    gpu.set_gpu_broadphase(std::move(producer));
+    cpu.add_static_floor(0.f);
+    gpu.add_static_floor(0.f);
+    cpu.add_static_box({0.5f,0.5f,0.5f},{5.f,2.f,0.f});
+    gpu.add_static_box({0.5f,0.5f,0.5f},{5.f,2.f,0.f});
+    cpu.add_static_sphere(0.5f,{10.f,2.f,0.f});
+    gpu.add_static_sphere(0.5f,{10.f,2.f,0.f});
+    const std::array<BodyId,3> c{
+        cpu.add_dynamic_box({0.5f,0.5f,0.5f},{0.f,0.43f,0.f},1.f),
+        cpu.add_dynamic_box({0.5f,0.5f,0.5f},{5.4f,2.f,0.f},1.f),
+        cpu.add_dynamic_sphere(0.5f,{10.75f,2.f,0.f},1.f)};
+    const std::array<BodyId,3> g{
+        gpu.add_dynamic_box({0.5f,0.5f,0.5f},{0.f,0.43f,0.f},1.f),
+        gpu.add_dynamic_box({0.5f,0.5f,0.5f},{5.4f,2.f,0.f},1.f),
+        gpu.add_dynamic_sphere(0.5f,{10.75f,2.f,0.f},1.f)};
+    for(unsigned frame=0u;frame<3u;++frame) {
+        cpu.step(1.f/120.f);
+        gpu.step(1.f/120.f);
+        require(source->pcm_host_contact_upload_bytes()>0u &&
+                cpu.contacts().size()==3u &&
+                cpu.contacts().size()==gpu.contacts().size(),
+            "Plane-only PCM did not preserve finite legacy Gu contacts");
+        for(std::size_t i=0u;i<c.size();++i)
+            test::compound_compare_state(gpu.body_state(g[i]),
+                cpu.body_state(c[i]),0.035f,
+                "Plane-only GPU PCM and finite Gu motion diverged");
+    }
+}
 void verify_dy_execution_switch(
     fyzz::compute::Backend backend,const char* sap,
     const char* pcm,const char* dy_shader) {
@@ -4321,6 +4370,7 @@ int main(int argc,char** argv) {
                 scenario=="coupled_solver" || scenario=="single_island" ||
                 scenario=="legacy_gu_solver" ||
                 scenario=="mixed_solver" || scenario=="dy_switch" ||
+                scenario=="plane_only_pcm" ||
                 scenario=="distance_solver" ||
                 scenario=="compound_shapes" || scenario=="compound_solver" ||
                 scenario=="sphere_solver" || scenario=="convex_plane" ||
@@ -4420,6 +4470,10 @@ int main(int argc,char** argv) {
                 [&]{verify_integrated_aggregate_gpu_pipeline(
                     backend,argv[1],argv[2],argv[3],argv[4],argv[6]);});
         }
+        if(scenario=="all" || scenario=="plane_only_pcm")
+            fyzz::tests::measure_gpu_case("sc_pcm","plane_only_pcm",
+                [&]{verify_plane_pcm_without_finite_pcm(
+                    backend,argv[1],argv[2],argv[3]);});
         if(scenario=="all" || scenario=="dy_switch")
             fyzz::tests::measure_gpu_case("sc_pcm","dy_switch",
                 [&]{verify_dy_execution_switch(

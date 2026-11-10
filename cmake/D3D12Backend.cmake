@@ -1114,7 +1114,7 @@ if(FYZZXYZZY_BUILD_D3D12)
     # workload its own timeout and keep its timing in the CTest log.
     set(_sc_pcm_scene_tests fyzzxyzzy_source_sc_gpu_pcm_scene_d3d12)
     foreach(_case IN ITEMS compound_shapes compound_solver sphere_solver convex_plane convex_finite
-        sparse_contacts coupled_stack coupled_solver single_island dy_switch legacy_gu_solver
+        sparse_contacts coupled_stack coupled_solver single_island dy_switch plane_only_pcm legacy_gu_solver
         mixed_solver distance_solver free_integration wide_islands zero_response_wide
         dual_hub star_island star_island_10k)
       set(_test "fyzzxyzzy_source_sc_gpu_pcm_scene_${_case}_d3d12")
