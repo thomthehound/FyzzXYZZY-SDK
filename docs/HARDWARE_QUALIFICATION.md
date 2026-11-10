@@ -10,27 +10,32 @@ separate solver, or alternative runtime ownership.
 
 ## Preparation
 
-Build the source-GPU scene fixture in **Release** configuration with the
-independent native core:
+Build the source-GPU scene fixture as an **instrumented Release-optimization
+variant**, with the independent native core. Separate build directories keep
+profiling compilation and query resources out of normal Release binaries:
 
 ```powershell
-cmake -S . -B build-native -G Ninja `
+cmake -S . -B build-profile-vulkan -G Ninja `
   -DCMAKE_BUILD_TYPE=Release `
   -DFYZZXYZZY_BUILD_VULKAN=ON -DFYZZXYZZY_BUILD_D3D12=OFF `
   -DFYZZXYZZY_ENABLE_PHYSX_SOURCE=OFF `
-  -DFYZZXYZZY_BUILD_SOURCE_GPU_TESTS=ON
-cmake --build build-native --target fyzzxyzzy_source_sc_gpu_pcm_scene --parallel 8
+  -DFYZZXYZZY_BUILD_SOURCE_GPU_TESTS=ON `
+  -DFYZZXYZZY_PROFILE_GPU=ON
+cmake --build build-profile-vulkan --target fyzzxyzzy_source_sc_gpu_pcm_scene --parallel 8
 
-cmake -S . -B build-native-d3d12 -G Ninja `
+cmake -S . -B build-profile-d3d12 -G Ninja `
   -DCMAKE_BUILD_TYPE=Release `
   -DFYZZXYZZY_BUILD_VULKAN=OFF -DFYZZXYZZY_BUILD_D3D12=ON `
   -DFYZZXYZZY_ENABLE_PHYSX_SOURCE=OFF `
-  -DFYZZXYZZY_BUILD_SOURCE_GPU_TESTS=ON
-cmake --build build-native-d3d12 --target fyzzxyzzy_source_sc_gpu_pcm_scene_d3d12 --parallel 8
+  -DFYZZXYZZY_BUILD_SOURCE_GPU_TESTS=ON `
+  -DFYZZXYZZY_PROFILE_GPU=ON
+cmake --build build-profile-d3d12 --target fyzzxyzzy_source_sc_gpu_pcm_scene_d3d12 --parallel 8
 ```
 
 Use a development shell with MSVC and DXC accessible, and a Vulkan SDK for
-the Vulkan build. Existing configured Release directories can be reused.
+the Vulkan build. Normal Release builds omit the profiling option (OFF by
+default), so no tracepoint, timestamp-query or telemetry-buffer code is
+included. The appliance rejects builds without the enabled option.
 
 ## Run
 
@@ -38,11 +43,11 @@ the Vulkan build. Existing configured Release directories can be reused.
 pwsh -NoProfile -File tools/hardware/qualify.ps1 -Backend Both -Scale
 ```
 
-The default uses `build-native` and `build-native-d3d12`. To override:
+The default uses `build-profile-vulkan` and `build-profile-d3d12`. To override:
 
 ```powershell
 pwsh -NoProfile -File tools/hardware/qualify.ps1 `
-  -VulkanBuild build-native -D3D12Build build-native-d3d12 `
+  -VulkanBuild build-profile-vulkan -D3D12Build build-profile-d3d12 `
   -OutputDirectory build-hardware-evidence -Samples 7 -WarmupRuns 2 -Scale
 ```
 
@@ -74,8 +79,12 @@ Results are written beneath `build-hardware-evidence/<UTC timestamp>/`:
 - `metadata.json`: host OS, graphics drivers, source revision, build paths,
   run parameters.
 - `runs.jsonl`: backend, scenario, phase, process-wall duration, selected
-  adapter, structured `FYZZXYZZY_METRIC` fields and corresponding log.
-- `summary.json`: sampled process-wall p50/p95/p99 for each profiled case.
+  adapter, per-frame `FYZZXYZZY_METRIC` fields and corresponding log.
+- `trace.jsonl`: frame-correlated CPU phase spans, source queue waits,
+  upload/download counts, scene graph workload counts, and per-command GPU
+  timestamp segments. Each record identifies its scenario, run and trace ID.
+- `summary.json`: sampled whole-process p50/p95/p99 for each profiled case,
+  plus pooled CPU/GPU whole-scene frame percentiles for 1K/10K workloads.
 - Individual logs: full correctness diagnostics and native scene metrics.
 
 The hardware-scene fixture creates two equivalent production Worlds
@@ -84,7 +93,8 @@ explicit numerical executors. Each World owns only its own context. It
 measures 48 completed frames at 1K bodies or 16 at 10K, after four warm-up
 frames, and checks all final body positions and velocities. Its p50/p95/p99
 are **whole-scene step** durations inclusive of host work, transfers and
-synchronization. It uses one static platform and isolated dynamic contacts;
+synchronization. Every measured frame is retained for cross-run percentiles.
+It uses one static platform and isolated dynamic contacts;
 actor count and contact complexity are reported separately from the wide
 constraint workloads.
 
@@ -92,16 +102,25 @@ The coupled-solver fixture additionally measures eleven in-process CPU/GPU
 steps per solver mode and reports p50/p90, contact/friction/pose errors,
 upload/download bytes, dispatch counts and saved preparation. The script's
 p50/p95/p99 are **whole-process** timings that include startup and pipeline
-setup. None of these values is a device-stage timestamp.
+setup. Separately, the profiling variant captures GPU command timestamp
+segments within the actual Vulkan/D3D12 submission, and resolves them only
+at the existing completion fence. Those segments include queue-local
+ordering/barrier costs; they are not isolated ALU kernel time. GPU clocks
+are not calibrated to the host clock, so do not reconstruct precise CPU/GPU
+overlap from these timestamps alone.
 
 ## Acceptance and next measurements
 
 A passing appliance establishes real-device execution of its covered
 correctness scenarios, including the coupled numerical paths and switching.
-The remaining hardware gate requires device stage timestamps, host wait
-and overlap attribution, buffer-allocation peaks, descriptor/pipeline
-churn, 100K whole-scene throughput, and workload contact/constraint counts
-beyond the rigid-body totals. Compare GPU and CPU Dy on equivalent configurations
+The remaining hardware gate requires calibrated CPU/GPU overlap attribution,
+full allocation/residency high-water measurements, descriptor/pipeline
+churn accounting, 100K whole-scene throughput, and workload contact/constraint
+counts beyond the rigid-body totals. The profiling build supplies CPU stage
+spans, important host joins and per-command GPU segments but does not yet
+expose a calibrated heterogeneous critical-path timeline. Timestamp queries
+and log emission themselves alter execution cost; compare normal Release
+frame times separately from instrumented runs. Compare GPU and CPU Dy on equivalent configurations
 and solver quality before setting a crossover policy. In particular,
 measure the PCM-to-Sc witness join against its actual CPU consumer rather
 than assuming its removal improves the frame.
