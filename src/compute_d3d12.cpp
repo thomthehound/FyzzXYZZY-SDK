@@ -1622,10 +1622,42 @@ Context::Context(Context&&) noexcept = default;
 Context& Context::operator=(Context&&) noexcept = default;
 const DeviceInfo& Context::device_info() const { return impl_->info; }
 BufferId Context::create_buffer(std::size_t bytes, MemoryPlacement placement) {
-    return impl_->create_buffer(bytes, placement);
+    const auto id=impl_->create_buffer(bytes, placement);
+#if defined(FYZZXYZZY_PROFILE_GPU)
+    std::printf("FYZZXYZZY_TRACE kind=buffer backend=d3d12 context=%llu trace_id=%llu action=create buffer=%llu bytes=%llu placement=%u\n",
+        static_cast<unsigned long long>(impl_->profile_context_id),
+        static_cast<unsigned long long>(hardware_profile::current_trace_id()),
+        static_cast<unsigned long long>(id),
+        static_cast<unsigned long long>(bytes),unsigned(placement));
+#endif
+    return id;
 }
-void Context::destroy_buffer(BufferId id) { impl_->destroy_buffer(id); }
-void Context::retire_buffer(BufferId id) { impl_->retire_buffer(id); }
+void Context::destroy_buffer(BufferId id) {
+#if defined(FYZZXYZZY_PROFILE_GPU)
+    const auto bytes=impl_->get_buffer(id).bytes;
+#endif
+    impl_->destroy_buffer(id);
+#if defined(FYZZXYZZY_PROFILE_GPU)
+    std::printf("FYZZXYZZY_TRACE kind=buffer backend=d3d12 context=%llu trace_id=%llu action=destroy buffer=%llu bytes=%llu\n",
+        static_cast<unsigned long long>(impl_->profile_context_id),
+        static_cast<unsigned long long>(hardware_profile::current_trace_id()),
+        static_cast<unsigned long long>(id),
+        static_cast<unsigned long long>(bytes));
+#endif
+}
+void Context::retire_buffer(BufferId id) {
+#if defined(FYZZXYZZY_PROFILE_GPU)
+    const auto bytes=impl_->get_buffer(id).bytes;
+#endif
+    impl_->retire_buffer(id);
+#if defined(FYZZXYZZY_PROFILE_GPU)
+    std::printf("FYZZXYZZY_TRACE kind=buffer backend=d3d12 context=%llu trace_id=%llu action=retire buffer=%llu bytes=%llu\n",
+        static_cast<unsigned long long>(impl_->profile_context_id),
+        static_cast<unsigned long long>(hardware_profile::current_trace_id()),
+        static_cast<unsigned long long>(id),
+        static_cast<unsigned long long>(bytes));
+#endif
+}
 bool Context::buffer_is_host_visible(BufferId id) const {
     return impl_->get_buffer(id).host_visible;
 }
