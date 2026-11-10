@@ -101,7 +101,8 @@ are **whole-scene step** durations inclusive of host work, transfers and
 synchronization. Every measured frame is retained for cross-run percentiles.
 It uses one static platform and isolated dynamic contacts;
 actor count and contact complexity are reported separately from the wide
-constraint workloads.
+constraint workloads. Sampled runs alternate the CPU/GPU executor order to
+reduce systematic thermal and startup-order bias.
 
 The coupled-solver fixture additionally measures eleven in-process CPU/GPU
 steps per solver mode and reports p50/p90, contact/friction/pose errors,
