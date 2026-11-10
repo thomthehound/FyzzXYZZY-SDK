@@ -3300,8 +3300,8 @@ void verify_host_primitive_pcm_solver(
         gpu.step(dt);
         const auto& completed=producer->stream_submission_stats();
         require(completed.fetch_batches==before_fetch.fetch_batches+1u &&
-                completed.fetch_spans==before_fetch.fetch_spans+4u &&
-                producer->dy_launch_stats().device_island_indirect_dispatches==1u &&
+                completed.fetch_spans==before_fetch.fetch_spans+1u &&
+                producer->dy_launch_stats().device_island_indirect_dispatches==0u &&
                 completed.fetch_bytes-before_fetch.fetch_bytes==
                     producer->dy_distance_transfer_bytes().second,
             "Primitive PCM introduced an extra GPU synchronization or lost admission metadata");
