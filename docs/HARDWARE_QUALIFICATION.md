@@ -80,10 +80,12 @@ Results are written beneath `build-hardware-evidence/<UTC timestamp>/`:
   run parameters.
 - `runs.jsonl`: backend, scenario, phase, process-wall duration, selected
   adapter, per-frame `FYZZXYZZY_METRIC` fields and corresponding log.
-- `trace.jsonl`: frame-correlated CPU phase spans, source queue waits,
-  upload/download counts, scene graph workload counts, named GPU command
-  segments, and logical buffer creation/retirement. Every record identifies
-  its scenario and run; frame-owned records carry a trace ID.
+- `trace.jsonl`: frame-correlated CPU/main-and-worker phase spans,
+  source queue waits, stage transfer and scheduling counts, named GPU command
+  segments, and logical buffer creation/retirement. Committed-frame counters
+  include device heap root reservations, active broadphase/narrowphase/solver
+  allocations and PCM witness-transfer sizes. Every record identifies its
+  scenario and run; frame-owned records carry a trace ID.
 - `summary.json`: sampled whole-process p50/p95/p99 for each profiled case,
   plus pooled CPU/GPU whole-scene frame percentiles for 1K/10K workloads.
 - `stages.json`: sampled per-stage CPU-scope and GPU-command-segment
@@ -125,13 +127,14 @@ correctness scenarios, including the coupled numerical paths and switching.
 The remaining hardware gate requires calibrated CPU/GPU overlap attribution,
 full allocation/residency high-water measurements, descriptor/pipeline
 churn accounting, 100K whole-scene throughput, and workload contact/constraint
-counts beyond the rigid-body totals. Logical buffer events do not account
-for the buddy allocator's physical residency, committed heap sizes or
-fence-delayed resource release. The profiling build supplies main-thread CPU stage spans,
-important host joins and per-command GPU segments, but worker-thread spans
-are not yet attributed and the GPU timeline is not calibrated to host time.
-Timestamp queries alter execution cost; compare normal Release frame times
-separately from instrumented runs. Compare GPU and CPU Dy on equivalent configurations
+counts beyond the rigid-body totals. Device heap root reservations and
+live heap categories are sampled at the committed frame boundary, but they
+do not capture transient intra-frame peaks, native backend staging heaps,
+descriptor resources or fence-delayed resource release. The profiling build
+includes main/worker CPU spans, important host joins and per-command GPU
+segments, but the GPU clock is not calibrated to host time. Timestamp
+queries alter execution cost; compare normal Release frame times separately
+from instrumented runs. Compare GPU and CPU Dy on equivalent configurations
 and solver quality before setting a crossover policy. In particular,
 measure the PCM-to-Sc witness join against its actual CPU consumer rather
 than assuming its removal improves the frame.
