@@ -189,8 +189,12 @@ The generated indirect launch triple is copied into the source queue's
 existing physical indirect resource after island compaction; it requires no
 additional host upload, allocation or synchronization boundary. Native Dy
 copies the task, body-ordinal and response-token streams between resident
-source allocations. Its compact-task numerical launch consumes the device
-indirect triple rather than a CPU workgroup count. The queued Dy shader
+source allocations. Task and body-ordinal destinations are outside the Dy
+host-upload extent; raw descriptors, colors and partition-state scratch are
+also omitted from the source packet. The remaining input prefix and
+numerical source-table suffix share one staging submission. Its compact-task
+numerical launch consumes the device indirect triple rather than a CPU
+workgroup count. The queued Dy shader
 checks device admission errors and actual task/body/descriptor extents
 against its numerical input before initialization. Large tiled tasks retain
 their explicit partition launch dependencies until the device-owned wide
