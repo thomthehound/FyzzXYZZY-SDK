@@ -2398,10 +2398,24 @@ void verify_mixed_gu_pcm_gpu_dy_solver(
             }
             require(saw_plane && saw_pcm,
                 "Mixed Dy task did not retain both source contact producers");
-            for(std::size_t i=0;i<cpu.solved_normal_impulses().size();++i)
-                require(std::fabs(cpu.solved_normal_impulses()[i]-
-                                  gpu.solved_normal_impulses()[i])<0.08,
-                    "Mixed CPU Gu/GPU PCM normal impulse lost source ordinal");
+            for(std::size_t i=0;i<cpu.solved_normal_impulses().size();++i) {
+                const auto expected=cpu.solved_normal_impulses()[i];
+                const auto actual=gpu.solved_normal_impulses()[i];
+                if(std::fabs(expected-actual)>=0.08) {
+                    const auto admission=producer->dy_launch_stats();
+                    throw std::runtime_error(
+                        "Mixed CPU Gu/GPU PCM normal impulse lost source ordinal"
+                        " plane_first="+std::to_string(plane_first)+
+                        " frame="+std::to_string(frame)+
+                        " index="+std::to_string(i)+
+                        " cpu="+std::to_string(expected)+
+                        " gpu="+std::to_string(actual)+
+                        " task_count="+std::to_string(admission.device_admitted_tasks)+
+                        " body_count="+std::to_string(admission.device_admitted_bodies)+
+                        " response_count="+std::to_string(admission.device_admitted_descriptors)+
+                        " source_count="+std::to_string(admission.device_colored_descriptors));
+                }
+            }
             for(std::size_t i=0;i<cpu.solved_friction_patches().size();++i) {
                 const auto& a=cpu.solved_friction_patches()[i];
                 const auto& b=gpu.solved_friction_patches()[i];
