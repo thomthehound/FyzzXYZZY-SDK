@@ -94,14 +94,14 @@ function Get-BackendConfig([string]$Api, [string]$Build) {
         'fyzzxyzzy_source_sc_gpu_pcm_scene_d3d12'
     }
     $kernels = Join-Path $buildPath 'kernels'
-    $args = @(
+    $shaderArguments = @(
         (Join-Path $kernels "fyzzxyzzy_native_sap_$manifestType.manifest"),
         (Join-Path $kernels "fyzzxyzzy_native_pcm_$manifestType.manifest"),
         (Join-Path $kernels "physx_source_dy_distance_pgs_native.$suffix"),
         (Join-Path $kernels "physx_source_dy_convex_native.$suffix")
     )
     $aggregate = Join-Path $kernels "fyzzxyzzy_native_aggregate_$manifestType.manifest"
-    foreach ($file in @($args) + @($aggregate)) {
+    foreach ($file in @($shaderArguments) + @($aggregate)) {
         if (-not (Test-Path -LiteralPath $file -PathType Leaf)) {
             throw "Missing compiled shader artifact: $file"
         }
@@ -110,7 +110,7 @@ function Get-BackendConfig([string]$Api, [string]$Build) {
         Api = $Api
         Build = $buildPath
         Executable = Get-Executable $buildPath $exeName
-        Arguments = $args
+        Arguments = $shaderArguments
         Aggregate = $aggregate
     }
 }
