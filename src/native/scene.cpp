@@ -4,6 +4,7 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 thomthehound
 // SPDX-License-Identifier: Apache-2.0
 #include "native/scene.h"
+#include "hardware_profile.h"
 
 #include <algorithm>
 #include <atomic>
@@ -2101,6 +2102,7 @@ void Scene::reconcile_integrated_deactivations() {
     }
 }
 void Scene::after_integration_cached_bounds() {
+    FYZZ_PROFILE_SCOPE("sc.cached_bounds");
     // ScPipeline::afterIntegration::updateScBodyAndShapeSim refreshes
     // shape bounds from integrated poses. Consume the SAME task-owned
     // accurate island ranges that Dy integrated, without a scene-wide
@@ -2307,6 +2309,7 @@ void Scene::set_gpu_dy_enabled(bool enabled) {
 // contact-edge publication used by the native CPU branch, but it never
 // calls BpBroadPhaseSap or reads that implementation's endpoint registry.
 void Scene::update_gpu_pairs(bool force_update) {
+    FYZZ_PROFILE_SCOPE("sap.update_fetch");
     // Full input rebuilds are required for Sc admission/shape edits.
     // afterIntegration patches the changed source body entries directly
     // using its existing task-owned island ranges. Constraint/Gu dirty
@@ -2579,6 +2582,7 @@ void Scene::update_gpu_pairs(bool force_update) {
 }
 
 void Scene::update_pairs() {
+    FYZZ_PROFILE_SCOPE("sap.cpu_pairs");
     // The BP hashed manager is the overlap authority; the sorted Sc
     // manager/edge stream is a separate consumer. Rejected transactions
     // reconstruct the BP lookup from the previously published Sc stream.
@@ -3039,6 +3043,7 @@ void Scene::unlink_contact_edge(EdgeIndex id, bool accurate) {
     }
 }
 void Scene::retire_destroyed_contact_edges() {
+    FYZZ_PROFILE_SCOPE("sc.retire_edges");
     // Source PostThirdPassTask frees mDestroyedEdges *after* speculative
     // and accurate lost-edge passes have joined. A removed handle cannot
     // be reused by an overlap born earlier in that same publication.
@@ -3245,6 +3250,7 @@ void Scene::remove_constraint_edge(EdgeIndex id) {
     dirty_=true;
 }
 void Scene::publish_pairs() {
+    FYZZ_PROFILE_SCOPE("sc.publish_pairs");
     // Graph node heads must grow on actor admission even with no BP delta.
     speculative_node_first_.resize(actors_.size(),invalid_instance);
     accurate_node_first_.resize(actors_.size(),invalid_instance);
@@ -4027,6 +4033,7 @@ bool Scene::cached_friction_patch_valid(
 }
 
 void Scene::update_contacts() {
+    FYZZ_PROFILE_SCOPE("gu.contacts_pcm");
     // Gu narrowphase consumes the sum of both PxShapeCore contact offsets.
     next_manifolds_.clear();
     next_contact_points_.clear();
@@ -6187,6 +6194,7 @@ void Scene::queue_node_activation(BodyId id) {
     accurate.push_back(id);
 }
 void Scene::activate_published_islands() noexcept {
+    FYZZ_PROFILE_SCOPE("sc.activate_islands");
     // Quiet publications without source wake/connection events never
     // visit graph islands or allocate per-node activation records.
     if(!authored_activation_pending_ && found_contacts_.empty() &&
@@ -6437,6 +6445,7 @@ bool Scene::repair_lost_island_graphs_concurrently() {
     return speculative_split || accurate_split;
 }
 bool Scene::process_third_pass_island_task(bool accurate) {
+    FYZZ_PROFILE_SCOPE("sc.third_pass");
     // The single source ThirdPassTask for this IslandSim owns its
     // route repair, active-node reconciliation, and sleep decision in
     // that order. Neither task waits for the OTHER graph's result.
@@ -6924,6 +6933,7 @@ void Scene::synchronize_active_island_nodes_for_graph(
     }
 }
 void Scene::prepare_active_accurate_island_batches() {
+    FYZZ_PROFILE_SCOPE("sc.accurate_batches");
     // wakeIslands and third-pass retirement already reconciled the
     // authoritative graph lists before Dy consumes these batches.
     // Dy::DynamicsContext::iterateIslandsNodes consumes source
@@ -6979,6 +6989,7 @@ Scene::SolverBodyRow& Scene::prepared_solver_row(BodyId id) {
 }
 
 void Scene::prepare_solver_bodies() {
+    FYZZ_PROFILE_SCOPE("dy.prepare_bodies");
     // DyDynamics::preIntegrationParallel -> Dy::copyToSolverBodyData.
     // Retain allocation capacity, but hold rows only for admitted bodies.
     // Retired actors and free-flight dynamics do not consume GPU-bound rows.
@@ -7151,6 +7162,7 @@ void Scene::prepare_solver_bodies() {
 }
 
 void Scene::partition_constraints() {
+    FYZZ_PROFILE_SCOPE("dy.partition");
     // DyConstraintPartition.cpp rigid-body classification and source
     // static-contact reservation across both 1D and contact descriptors.
     // Contact patches remain indivisible; no new solver or island owner.
@@ -7554,6 +7566,7 @@ void Scene::partition_constraints() {
 }
 
 void Scene::prepare_constraints(float seconds) {
+    FYZZ_PROFILE_SCOPE("dy.prepare_constraints");
     // DyContactPrepShared.h::constructContactConstraint, rigid-body
     // noncompliant branch. Every Gu contact is a distinct constraint row.
     // Contiguous source Gu contact runs are correlated into the same
@@ -8622,6 +8635,7 @@ void Scene::prepare_constraints(float seconds) {
     friction_cache_epoch_=next_cache_epoch;
 }
 void Scene::publish_cpu_gu_touch_history() {
+    FYZZ_PROFILE_SCOPE("gu.touch_history");
     // CPU Gu touch transitions update the shared EdgeIndex history even
     // when the already prepared Sc task groups need no device admission.
     if(gpu_broadphase_ && gpu_broadphase_->has_gpu_dy_distance() &&
@@ -8648,6 +8662,7 @@ void Scene::publish_cpu_gu_touch_history() {
     }
 }
 void Scene::solve_gpu_distance_constraints(float seconds) {
+    FYZZ_PROFILE_SCOPE("dy.gpu_enqueue_join");
     // Source Dy owns task, body and 1D row order; the device receives
     // transient packed views of those exact prepared source inputs.
     if(ordered_constraints_.empty() && solver_active_ids_.empty() &&
@@ -9138,6 +9153,7 @@ void Scene::solve_gpu_distance_constraints(float seconds) {
 }
 
 void Scene::solve_constraint_task(std::size_t task_index) {
+    FYZZ_PROFILE_SCOPE("dy.cpu_solve");
     // DySolverConstraintsShared.h::solveDynamicContacts /
     // solveStaticContacts and DySolverConstraints.cpp friction patch solve,
     // with the PhysX default of four position
@@ -9434,6 +9450,7 @@ void Scene::solve_constraint_task(std::size_t task_index) {
     }
     }
 void Scene::publish_contact_events() {
+    FYZZ_PROFILE_SCOPE("sc.contact_events");
     if(!contact_notifications_)return;
     // ScNPhaseCore::processPersistentContactEvents reports touching
     // interactions only while at least one rigid body is active.
@@ -9682,6 +9699,7 @@ void Scene::write_back_contacts(std::size_t first,std::size_t last) {
     }
 }
 void Scene::update_threshold_stream(float seconds) {
+    FYZZ_PROFILE_SCOPE("sc.threshold_events");
     // DySolverConstraints.cpp::writeBackContact emits a threshold element
     // only for a supported rigid-body manager with a nonzero final
     // normal impulse and an enabled reportThreshold on either body.
@@ -10674,6 +10692,7 @@ void Scene::RigidStepJoin::publish_results() {
 }
 
 void Scene::prepare_unconstrained_velocities(float seconds) {
+    FYZZ_PROFILE_SCOPE("dy.preintegration");
     // Accurate IslandSim sleep arbitration has completed, permitting
     // Dy preIntegration on its awake island ranges. Speculative
     // processLostEdges remains independent of Actor motion state.
@@ -11000,6 +11019,7 @@ void Scene::integrate_solver_task(
 }
 void Scene::complete_solver_end_task(
     std::size_t task_index,float seconds,std::vector<BodyId>& ready_nodes) {
+    FYZZ_PROFILE_SCOPE("dy.integrate_sleep");
     // PxsSolverEndTask owns the contiguous source task chain through
     // writeback, final-velocity publication, integrateCore and
     // sleepCheck. Task boundaries already reflect accurate island
@@ -11016,6 +11036,7 @@ void Scene::complete_solver_end_task(
     integrate_solver_task(task_index,seconds,ready_nodes);
 }
 void Scene::step(float seconds) {
+    FYZZ_PROFILE_SCOPE("sc.frame");
     for(EdgeIndex edge:active_constraint_handles_)
         if(island_edges_[edge].constraint_id==invalid_edge)
             throw std::logic_error(
@@ -11029,6 +11050,7 @@ void Scene::step(float seconds) {
     // A failed frame must not consume impulses or publish partial
     // contacts, island nodes, body motion or result streams. Snapshot only
     // authoritative state; all per-step Dy work buffers remain reusable.
+    FYZZ_PROFILE_BEGIN_FRAME();
     step_checkpoint_.capture(*this);
     if(++rigid_integration_generation_==0)
         ++rigid_integration_generation_;
@@ -11303,8 +11325,20 @@ void Scene::step(float seconds) {
     // Solver and lost-edge producers have both completed before this
     // successful step returns its published body and contact results.
     activity_checkpoint_active_=false;
+    FYZZ_PROFILE_COUNTER("live_dynamic",live_dynamic_count_);
+    FYZZ_PROFILE_COUNTER("accurate_islands",accurate_island_count_);
+    FYZZ_PROFILE_COUNTER("solver_tasks",solver_tasks_.size());
+    FYZZ_PROFILE_COUNTER("solver_bodies",solver_rows_.size());
+    FYZZ_PROFILE_COUNTER("gu_managers",indexed_managers_.size());
+    FYZZ_PROFILE_COUNTER("contact_rows",prepared_contact_rows_);
+    FYZZ_PROFILE_COUNTER("friction_rows",prepared_friction_rows_);
+    FYZZ_PROFILE_COUNTER("constraint_descriptors",ordered_constraints_.size());
+    FYZZ_PROFILE_COUNTER("device_responding_islands",gpu_dy_responding_island_count_);
+    FYZZ_PROFILE_END_FRAME(frame_index_,gpu_dy_enabled_,true);
     } catch (...) {
-        step_checkpoint_.rollback(*this);
+        { FYZZ_PROFILE_SCOPE("sc.rollback");
+          step_checkpoint_.rollback(*this); }
+        FYZZ_PROFILE_END_FRAME(frame_index_,gpu_dy_enabled_,false);
         throw;
     }
 }
@@ -11383,6 +11417,7 @@ void Scene::advance_collision(bool force_update) {
 }
 void Scene::advance_collision_internal(
     bool force_update,bool checkpointed) {
+    FYZZ_PROFILE_SCOPE("sc.collision_pipeline");
     speculative_connectivity_prepared_=false;
     gpu_pcm_friction_history_masks_.clear();
     // Begin one complete source publication. The first pass can rebuild
