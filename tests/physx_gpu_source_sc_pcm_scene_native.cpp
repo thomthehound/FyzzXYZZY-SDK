@@ -3299,12 +3299,26 @@ void verify_host_primitive_pcm_solver(
         cpu.step(dt);
         gpu.step(dt);
         const auto& completed=producer->stream_submission_stats();
-        require(completed.fetch_batches==before_fetch.fetch_batches+1u &&
-                completed.fetch_spans==before_fetch.fetch_spans+1u &&
-                producer->dy_launch_stats().device_island_indirect_dispatches==0u &&
-                completed.fetch_bytes-before_fetch.fetch_bytes==
-                    producer->dy_distance_transfer_bytes().second,
-            "Primitive PCM introduced an extra GPU synchronization or lost admission metadata");
+        const auto indirect=
+            producer->dy_launch_stats().device_island_indirect_dispatches;
+        const auto fetch_batches=
+            completed.fetch_batches-before_fetch.fetch_batches;
+        const auto fetch_spans=
+            completed.fetch_spans-before_fetch.fetch_spans;
+        const auto fetch_bytes=
+            completed.fetch_bytes-before_fetch.fetch_bytes;
+        const auto numerical_bytes=producer->dy_distance_transfer_bytes().second;
+        const auto fetch_error=std::string{
+            "Primitive PCM numerical fetch diverged: frame="}+
+            std::to_string(frame)+
+            " batches="+std::to_string(fetch_batches)+
+            " spans="+std::to_string(fetch_spans)+
+            " indirect="+std::to_string(indirect)+
+            " fetched_bytes="+std::to_string(fetch_bytes)+
+            " numerical_bytes="+std::to_string(numerical_bytes);
+        require(fetch_batches==1u && fetch_spans==1u &&
+                indirect==0u && fetch_bytes==numerical_bytes,
+                fetch_error.c_str());
         require(producer->pcm_contact_readback_bytes()==0u &&
                 producer->pcm_host_contact_upload_bytes()==
                     2u*sizeof(physx_gpu::SourcePcmGpuContactStreamNative) &&
