@@ -4390,6 +4390,121 @@ void verify_gpu_high_degree_coloring(
     }
 }
 
+
+void qualify_hardware_scene(
+    fyzz::compute::Backend backend,const char* sap,const char* pcm,
+    const char* dy_path,std::uint32_t body_count) {
+    using namespace fyzz;
+    const auto compiled=[backend](const char* path) {
+        std::ifstream file(path,std::ios::binary);
+        require(bool(file),"Hardware scene GPU Dy shader is missing");
+        std::vector<char> bytes(std::istreambuf_iterator<char>{file},
+                                std::istreambuf_iterator<char>{});
+        require(!bytes.empty(),"Hardware scene GPU Dy shader is empty");
+        compute::ShaderBinary binary{};
+        binary.format=backend==compute::Backend::Vulkan
+            ?compute::ShaderFormat::Spirv:compute::ShaderFormat::Dxil;
+        binary.bytes.assign(bytes.begin(),bytes.end());
+        return binary;
+    };
+    const auto create=[&] {
+        return create_native_gpu_world(
+            backend,NativeGpuPipelineShaders{
+                .sap=load_native_gpu_sap_shaders(backend,sap),
+                .pcm=load_native_gpu_pcm_shaders(backend,pcm),
+                .dy=compiled(dy_path)},
+            {.execution=ExecutionMode::NativePortableGpu});
+    };
+    World cpu=create(),gpu=create();
+    cpu.set_gpu_dy_enabled(false);
+    gpu.set_gpu_dy_enabled(true);
+    const auto width=static_cast<std::uint32_t>(
+        std::ceil(std::sqrt(static_cast<double>(body_count))));
+    const float spacing=3.0f;
+    const float origin=0.5f*float(width-1u)*spacing;
+    const float platform_extent=float(width)*spacing*0.5f+1.f;
+    const Vec3 platform_half{platform_extent,0.5f,platform_extent};
+    const Vec3 platform_position{0.f,-0.5f,0.f};
+    cpu.add_static_box(platform_half,platform_position);
+    gpu.add_static_box(platform_half,platform_position);
+    std::vector<BodyId> cpu_bodies,gpu_bodies;
+    cpu_bodies.reserve(body_count);
+    gpu_bodies.reserve(body_count);
+    for(std::uint32_t i=0u;i<body_count;++i) {
+        const Vec3 position{
+            float(i%width)*spacing-origin,0.48f,
+            float(i/width)*spacing-origin};
+        cpu_bodies.push_back(cpu.add_dynamic_box(
+            {0.5f,0.5f,0.5f},position,1.f));
+        gpu_bodies.push_back(gpu.add_dynamic_box(
+            {0.5f,0.5f,0.5f},position,1.f));
+    }
+    constexpr float dt=1.f/120.f;
+    constexpr std::uint32_t warmup=4u;
+    const std::uint32_t measured=body_count>=10000u?16u:48u;
+    std::vector<double> cpu_ms,gpu_ms;
+    cpu_ms.reserve(measured);
+    gpu_ms.reserve(measured);
+    for(std::uint32_t frame=0u;frame<warmup+measured;++frame) {
+        const auto start=std::chrono::steady_clock::now();
+        cpu.step(dt);
+        const auto cpu_done=std::chrono::steady_clock::now();
+        gpu.step(dt);
+        const auto gpu_done=std::chrono::steady_clock::now();
+        if(frame>=warmup) {
+            cpu_ms.push_back(std::chrono::duration<double,std::milli>(
+                cpu_done-start).count());
+            gpu_ms.push_back(std::chrono::duration<double,std::milli>(
+                gpu_done-cpu_done).count());
+        }
+    }
+    float max_position_error=0.f,max_velocity_error=0.f;
+    for(std::uint32_t i=0u;i<body_count;++i) {
+        const auto a=cpu.body_state(cpu_bodies[i]);
+        const auto b=gpu.body_state(gpu_bodies[i]);
+        for(const auto values:std::array<std::array<float,2>,6>{{
+                {a.position.x,b.position.x},
+                {a.position.y,b.position.y},
+                {a.position.z,b.position.z},
+                {a.velocity.x,b.velocity.x},
+                {a.velocity.y,b.velocity.y},
+                {a.velocity.z,b.velocity.z}}}) {
+            require(std::isfinite(values[0]) && std::isfinite(values[1]),
+                    "Hardware scene published nonfinite rigid state");
+        }
+        max_position_error=std::max({max_position_error,
+            std::fabs(a.position.x-b.position.x),
+            std::fabs(a.position.y-b.position.y),
+            std::fabs(a.position.z-b.position.z)});
+        max_velocity_error=std::max({max_velocity_error,
+            std::fabs(a.velocity.x-b.velocity.x),
+            std::fabs(a.velocity.y-b.velocity.y),
+            std::fabs(a.velocity.z-b.velocity.z)});
+        require(a.position.y>0.3f && b.position.y>0.3f,
+                "Hardware scene lost physical platform contact");
+    }
+    require(max_position_error<0.05f && max_velocity_error<0.05f,
+            "Hardware scene CPU/GPU Dy trajectories diverged");
+    const auto percentile=[](std::vector<double>& values,double fraction) {
+        std::sort(values.begin(),values.end());
+        const double rank=(values.size()-1u)*fraction;
+        const auto lo=static_cast<std::size_t>(std::floor(rank));
+        const auto hi=static_cast<std::size_t>(std::ceil(rank));
+        return values[lo]+(rank-double(lo))*(values[hi]-values[lo]);
+    };
+    std::cout<<"FYZZXYZZY_METRIC suite=hardware_scene"
+             <<" bodies="<<body_count
+             <<" samples="<<measured
+             <<" cpu_step_p50_ms="<<percentile(cpu_ms,0.50)
+             <<" gpu_step_p50_ms="<<percentile(gpu_ms,0.50)
+             <<" cpu_step_p95_ms="<<percentile(cpu_ms,0.95)
+             <<" gpu_step_p95_ms="<<percentile(gpu_ms,0.95)
+             <<" cpu_step_p99_ms="<<percentile(cpu_ms,0.99)
+             <<" gpu_step_p99_ms="<<percentile(gpu_ms,0.99)
+             <<" max_position_abs_error="<<max_position_error
+             <<" max_velocity_abs_error="<<max_velocity_error<<'\n';
+}
+
 int main(int argc,char** argv) {
     try {
         require(argc>=4 && argc<=7,
@@ -4417,7 +4532,9 @@ int main(int argc,char** argv) {
                 scenario=="star_island_10k" ||
                 scenario=="free_integration" ||
                 scenario=="device_admission" ||
-                scenario=="indirect_api",
+                scenario=="indirect_api" ||
+                scenario=="hardware_scene_1k" ||
+                scenario=="hardware_scene_10k",
                 "Unknown GPU scene regression scenario");
 #ifdef FYZZXYZZY_TEST_D3D12
         constexpr auto backend=fyzz::compute::Backend::D3D12;
@@ -4563,6 +4680,11 @@ int main(int argc,char** argv) {
                 [&]{verify_gpu_wide_island_solver(
                     backend,argv[1],argv[2],argv[3],large ? 10240u : 768u);});
         }
+        if(scenario=="hardware_scene_1k" || scenario=="hardware_scene_10k")
+            fyzz::tests::measure_gpu_case("hardware_scene",scenario,
+                [&]{qualify_hardware_scene(
+                    backend,argv[1],argv[2],argv[3],
+                    scenario=="hardware_scene_1k"?1000u:10000u);});
         std::cout<<"Native Sc GPU PCM scene "<<scenario<<" PASS\n";
         return 0;
     }catch(const std::exception& error) {
