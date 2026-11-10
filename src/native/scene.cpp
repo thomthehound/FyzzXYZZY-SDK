@@ -8896,11 +8896,14 @@ void Scene::solve_gpu_distance_constraints(float seconds) {
     // resident Gu EdgeIndex graph. Reuse the already prepared source
     // tables; no CPU contact or 1D descriptor is reconstructed here.
     // Free-flight islands do not need contact/constraint task admission.
-    // Split CPU task groups only when multiple responding islands share one.
+    // CPU-generated primitive PCM cannot benefit from replaying its
+    // already published contact graph on the GPU.
     const bool device_island_admission=
         gpu_dy_responding_island_count_>gpu_dy_tasks_.size() &&
         gpu_broadphase_->has_gpu_pcm_box() && pcm_box_box_enabled_ &&
-        !gpu_pcm_pairs_.empty() && !gpu_dy_tasks_.empty() && !solver_active_ids_.empty() &&
+        std::any_of(gpu_pcm_pairs_.begin(),gpu_pcm_pairs_.end(),
+            [](const GpuPcmBoxPair& pair) {return !pair.host_generated;}) &&
+        !gpu_dy_tasks_.empty() && !solver_active_ids_.empty() &&
         std::all_of(gpu_dy_tasks_.begin(),gpu_dy_tasks_.end(),
             [](const GpuDyDistanceTask& task) {
                 return task.descriptor_end-task.descriptor_begin<
