@@ -433,6 +433,17 @@ jobs:
             Sort-Object FullName -Descending | Select-Object -First 1)
           if (-not $dxc) { throw 'Windows SDK DXC is required for source GPU conformance' }
           "FYZZXYZZY_DXC=$($dxc[0].FullName)" >> $env:GITHUB_ENV
+      - name: Validate hardware qualification script syntax
+        shell: pwsh
+        run: |
+          $tokens = $null
+          $parseErrors = $null
+          [System.Management.Automation.Language.Parser]::ParseFile(
+            (Resolve-Path 'tools/hardware/qualify.ps1').Path,
+            [ref]$tokens, [ref]$parseErrors) | Out-Null
+          if ($parseErrors.Count -ne 0) {
+            throw ($parseErrors | Out-String)
+          }
       - name: Configure without external source or network
         shell: pwsh
         run: cmake -S . -B build-native -A x64 -DBUILD_TESTING=ON -DFYZZXYZZY_ENABLE_PHYSX_SOURCE=OFF -DFYZZXYZZY_BUILD_D3D12=ON -DFYZZXYZZY_BUILD_SOURCE_GPU_TESTS=ON -DFETCHCONTENT_FULLY_DISCONNECTED=ON "-DFYZZXYZZY_DXC=$env:FYZZXYZZY_DXC"
