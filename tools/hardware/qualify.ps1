@@ -109,7 +109,7 @@ function Get-BackendConfig([string]$Api, [string]$Build) {
     return [pscustomobject]@{
         Api = $Api
         Build = $buildPath
-        Executable = Get-Executable $buildPath $exeName
+        Executable = (Get-Executable $buildPath $exeName)
         Arguments = $shaderArguments
         Aggregate = $aggregate
     }
@@ -173,6 +173,7 @@ function Invoke-Scenario($Config, [string]$Case, [string]$Phase, [int]$Index) {
     $lines | Set-Content -LiteralPath $logPath -Encoding utf8
     $adapterLines = @($lines | Where-Object { $_.StartsWith('FYZZXYZZY_ADAPTER ') })
     $pass = @($lines | Where-Object { $_ -eq "Native Sc GPU PCM scene $Case PASS" })
+    $selectedAdapter = if ($adapterLines.Count -gt 0) { $adapterLines[0] } else { $null }
     $record = [pscustomobject][ordered]@{
         backend = $Config.Api
         case = $Case
@@ -180,7 +181,7 @@ function Invoke-Scenario($Config, [string]$Case, [string]$Phase, [int]$Index) {
         run = $Index
         exit_code = $status
         process_wall_ms = $clock.Elapsed.TotalMilliseconds
-        adapter = if ($adapterLines.Count -gt 0) { $adapterLines[0] } else { $null }
+        adapter = $selectedAdapter
         metrics = @(Get-ScenarioMetrics $lines)
         log = $logName
     }
@@ -232,9 +233,9 @@ foreach ($config in $configs) {
             backend = $config.Api
             case = $case
             samples = $times.Count
-            process_wall_p50_ms = Percentile $times 0.50
-            process_wall_p95_ms = Percentile $times 0.95
-            process_wall_p99_ms = Percentile $times 0.99
+            process_wall_p50_ms = (Percentile $times 0.50)
+            process_wall_p95_ms = (Percentile $times 0.95)
+            process_wall_p99_ms = (Percentile $times 0.99)
         }
     }
 }
