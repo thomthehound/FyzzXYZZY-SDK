@@ -4,6 +4,7 @@
 #pragma once
 
 #include "physx_gpu/cuda_device_address_map.h"
+#include "hardware_profile.h"
 
 #include <chrono>
 #include <cstddef>
@@ -59,6 +60,7 @@ public:
         : context_(context), addresses_(addresses) {}
 
     void queue_uploads(const std::vector<SourceSapUpload>& uploads) {
+        FYZZ_PROFILE_SCOPE("source.upload_enqueue");
         resolved_uploads_.clear();
         resolved_uploads_.reserve(uploads.size());
         for (const auto& upload : uploads) {
@@ -80,6 +82,8 @@ public:
         ++stats_.upload_batches;
         stats_.upload_spans += resolved_uploads_.size();
         for (const auto& span : resolved_uploads_) stats_.upload_bytes += span.bytes;
+        for (const auto& span : resolved_uploads_)
+            FYZZ_PROFILE_COUNTER("source.upload_bytes",span.bytes);
     }
 
     // Original PxgCudaBuffer::allocateCopyOldDataAsync copies RAW mPtr
@@ -137,6 +141,7 @@ public:
     // been submitted. The Context owns readback staging until finish_fetch,
     // so independent source CPU work can overlap both compute and DMA.
     void begin_fetch(std::span<const compute::DownloadSpan> outputs) {
+        FYZZ_PROFILE_SCOPE("source.download_enqueue");
         if(pending_fetch_)
             throw std::logic_error("Source GPU readback already pending");
         if(outputs.empty())
@@ -154,12 +159,14 @@ public:
         ++stats_.readback_submissions;
         pending_fetch_bytes_=bytes;
         pending_fetch_spans_=outputs.size();
+        FYZZ_PROFILE_COUNTER("source.download_bytes",bytes);
     }
 
     // The submitted readback fence covers all earlier source commands
     // on this Context queue. Retire the prior submission tokens only
     // after the independent witness DMA has been published to Sc.
     void finish_fetch() {
+        FYZZ_PROFILE_SCOPE("source.download_join");
         if(!pending_fetch_)
             throw std::logic_error("Source GPU readback was not armed");
         const auto start=std::chrono::steady_clock::now();
@@ -254,6 +261,7 @@ public:
     }
 
     void wait_at_fetch() {
+        FYZZ_PROFILE_SCOPE("source.queue_wait");
         flush_gpu_commands();
         if(tokens_.empty())return;
         // One fence on the last ordered submission completes every earlier
@@ -265,8 +273,10 @@ public:
 
 private:
     compute::SubmissionId flush_gpu_commands() {
+        FYZZ_PROFILE_SCOPE("source.command_submit");
         if (pending_.empty()) return tokens_.empty() ? 0 : tokens_.back();
         tokens_.reserve(tokens_.size() + 1u);
+        FYZZ_PROFILE_COUNTER("source.batch_ops",pending_.size());
         const auto token = context_.submit_batch(pending_);
         pending_.clear();
         tokens_.push_back(token);
