@@ -287,6 +287,12 @@ struct GpuDyIslandEdge {
     std::uint32_t source_index=0,kind=0;
 };
 static_assert(sizeof(GpuDyIslandEdge)==20u);
+// Physical touch from CPU-owned Gu contacts enters the same resident
+// EdgeIndex journal as device PCM. Bits 0 and 1 are current/prior touch.
+struct GpuGuTouchRecord {
+    std::uint32_t edge_index=0u,touch_bits=0u;
+};
+static_assert(sizeof(GpuGuTouchRecord)==8u);
 struct GpuDyIslandSources {
     std::uint32_t contact_managers=0u;
     std::uint32_t joint_rows=0u;
@@ -422,7 +428,8 @@ public:
     // spans remain alive until that join. No second contact owner exists.
     virtual void enqueue_gpu_pcm_box_contacts(
         std::span<const GpuPcmBoxPair>,
-        std::span<GpuPcmBoxResult>) {
+        std::span<GpuPcmBoxResult>,
+        std::uint32_t edge_capacity=0u) {
         throw std::logic_error("Source GPU PCM stages are not installed");
     }
     virtual void finish_gpu_pcm_box_contacts() {
@@ -431,6 +438,10 @@ public:
     // A mixed frame submits bounded CPU Gu into the resident source
     // contact stream as soon as those witnesses are available. Sc's
     // subsequent GPU witness join must not wait for this later upload.
+    virtual void enqueue_cpu_gu_touch_history(
+        std::span<const GpuGuTouchRecord>) {
+        throw std::logic_error("Device Gu touch history is unavailable");
+    }
     virtual void enqueue_host_pcm_contacts(
         std::span<const GpuPcmBoxPair>,
         std::span<const GpuPcmBoxResult>) {
@@ -442,7 +453,8 @@ public:
     virtual bool supports_host_pcm_contacts() const noexcept { return false; }
     virtual void upload_host_pcm_contacts(
         std::span<const GpuPcmBoxPair>,
-        std::span<const GpuPcmBoxResult>) {
+        std::span<const GpuPcmBoxResult>,
+        std::uint32_t edge_capacity=0u) {
         throw std::logic_error("Source GPU host PCM stream unavailable");
     }
     virtual bool has_gpu_dy_distance() const noexcept { return false; }
