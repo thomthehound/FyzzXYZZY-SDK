@@ -8911,6 +8911,41 @@ void Scene::solve_gpu_distance_constraints(float seconds) {
                        task.body_end-task.body_begin<
                            gpu_dy_wide_task_threshold;
             });
+    // CPU Gu touch transitions update the shared EdgeIndex history even
+    // when the already prepared Sc task groups need no device admission.
+    if(gpu_broadphase_->has_gpu_pcm_box() && pcm_box_box_enabled_ &&
+       !gpu_pcm_pairs_.empty()) {
+        constexpr std::uint32_t invalid=0xffffffffu;
+        // The source PCM pair set omits ordinary CPU Gu (for example,
+        // a plane with PCM disabled). Publish those physical transitions
+        // to the same device EdgeIndex cache before graph admission.
+        // This journal restores its old words if the frame rolls back.
+        gpu_dy_gu_touches_.clear();
+        gpu_dy_gu_touches_.reserve(
+            manifolds_.size()+lost_contacts_.size());
+        for(const auto& manifold:manifolds_) {
+            if(manifold.pcm_result_index!=invalid)continue;
+            const bool found=std::binary_search(
+                found_contacts_.begin(),found_contacts_.end(),manifold.pair);
+            gpu_dy_gu_touches_.push_back({
+                manifold.edge_handle,found?1u:3u});
+        }
+        for(const Pair pair:lost_contacts_) {
+            const EdgeIndex edge=contact_edge_index(pair);
+            if(edge==invalid_edge)continue;
+            const auto it=std::lower_bound(
+                gpu_pcm_pairs_.begin(),gpu_pcm_pairs_.end(),pair,
+                [this](const GpuPcmBoxPair& record,Pair key) {
+                    return island_edges_[record.edge].shapes<key;
+                });
+            if(it!=gpu_pcm_pairs_.end() &&
+               island_edges_[it->edge].shapes==pair)continue;
+            gpu_dy_gu_touches_.push_back({edge,2u});
+        }
+        if(!gpu_dy_gu_touches_.empty())
+            gpu_broadphase_->enqueue_cpu_gu_touch_history(
+                gpu_dy_gu_touches_);
+    }
     if(device_island_admission) {
         constexpr std::uint32_t active_node=1u<<16u;
         constexpr std::uint32_t nonresponding_node=1u<<17u;
@@ -8995,35 +9030,6 @@ void Scene::solve_gpu_distance_constraints(float seconds) {
             last.descriptor_end,last.descriptor_end,
             last.partition_end,last.partition_end,
             last.body_end,last.body_end,0u,0u,0u});
-        // The source PCM pair set omits ordinary CPU Gu (for example,
-        // a plane with PCM disabled). Publish those physical transitions
-        // to the same device EdgeIndex cache before graph admission.
-        // This journal restores its old words if the frame rolls back.
-        gpu_dy_gu_touches_.clear();
-        gpu_dy_gu_touches_.reserve(
-            manifolds_.size()+lost_contacts_.size());
-        for(const auto& manifold:manifolds_) {
-            if(manifold.pcm_result_index!=invalid)continue;
-            const bool found=std::binary_search(
-                found_contacts_.begin(),found_contacts_.end(),manifold.pair);
-            gpu_dy_gu_touches_.push_back({
-                manifold.edge_handle,found?1u:3u});
-        }
-        for(const Pair pair:lost_contacts_) {
-            const EdgeIndex edge=contact_edge_index(pair);
-            if(edge==invalid_edge)continue;
-            const auto it=std::lower_bound(
-                gpu_pcm_pairs_.begin(),gpu_pcm_pairs_.end(),pair,
-                [this](const GpuPcmBoxPair& record,Pair key) {
-                    return island_edges_[record.edge].shapes<key;
-                });
-            if(it!=gpu_pcm_pairs_.end() &&
-               island_edges_[it->edge].shapes==pair)continue;
-            gpu_dy_gu_touches_.push_back({edge,2u});
-        }
-        if(!gpu_dy_gu_touches_.empty())
-            gpu_broadphase_->enqueue_cpu_gu_touch_history(
-                gpu_dy_gu_touches_);
         gpu_broadphase_->enqueue_gpu_dy_island_admission(
             gpu_dy_island_edges_,gpu_dy_island_node_flags_,
             GpuDyIslandSources{
