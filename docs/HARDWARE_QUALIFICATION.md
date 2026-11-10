@@ -81,10 +81,13 @@ Results are written beneath `build-hardware-evidence/<UTC timestamp>/`:
 - `runs.jsonl`: backend, scenario, phase, process-wall duration, selected
   adapter, per-frame `FYZZXYZZY_METRIC` fields and corresponding log.
 - `trace.jsonl`: frame-correlated CPU phase spans, source queue waits,
-  upload/download counts, scene graph workload counts, and per-command GPU
-  timestamp segments. Each record identifies its scenario, run and trace ID.
+  upload/download counts, scene graph workload counts, named GPU command
+  segments, and logical buffer creation/retirement. Every record identifies
+  its scenario and run; frame-owned records carry a trace ID.
 - `summary.json`: sampled whole-process p50/p95/p99 for each profiled case,
   plus pooled CPU/GPU whole-scene frame percentiles for 1K/10K workloads.
+- `stages.json`: sampled per-stage CPU-scope and GPU-command-segment
+  p50/p95/p99, grouped by API, workload and explicitly selected Dy executor.
 - Individual logs: full correctness diagnostics and native scene metrics.
 
 The hardware-scene fixture creates two equivalent production Worlds
@@ -104,7 +107,10 @@ upload/download bytes, dispatch counts and saved preparation. The script's
 p50/p95/p99 are **whole-process** timings that include startup and pipeline
 setup. Separately, the profiling variant captures GPU command timestamp
 segments within the actual Vulkan/D3D12 submission, and resolves them only
-at the existing completion fence. Those segments include queue-local
+at the existing completion fence. Traces are buffered during simulation
+and written when each process exits, so log output does not inflate measured
+frame time. Any trace-capacity overflow fails qualification rather than
+silently producing incomplete data. Timestamp segments include queue-local
 ordering/barrier costs; they are not isolated ALU kernel time. GPU clocks
 are not calibrated to the host clock, so do not reconstruct precise CPU/GPU
 overlap from these timestamps alone.
@@ -116,11 +122,13 @@ correctness scenarios, including the coupled numerical paths and switching.
 The remaining hardware gate requires calibrated CPU/GPU overlap attribution,
 full allocation/residency high-water measurements, descriptor/pipeline
 churn accounting, 100K whole-scene throughput, and workload contact/constraint
-counts beyond the rigid-body totals. The profiling build supplies CPU stage
-spans, important host joins and per-command GPU segments but does not yet
+counts beyond the rigid-body totals. Logical buffer events do not account
+for the buddy allocator's physical residency, committed heap sizes or
+fence-delayed resource release. The profiling build supplies CPU stage spans,
+important host joins and per-command GPU segments but does not yet
 expose a calibrated heterogeneous critical-path timeline. Timestamp queries
-and log emission themselves alter execution cost; compare normal Release
-frame times separately from instrumented runs. Compare GPU and CPU Dy on equivalent configurations
+alter execution cost; compare normal Release frame times separately from
+instrumented runs. Compare GPU and CPU Dy on equivalent configurations
 and solver quality before setting a crossover policy. In particular,
 measure the PCM-to-Sc witness join against its actual CPU consumer rather
 than assuming its removal improves the frame.
