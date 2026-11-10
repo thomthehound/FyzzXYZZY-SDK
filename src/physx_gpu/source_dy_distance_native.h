@@ -1871,7 +1871,8 @@ public:
         }
         last_transfer_bytes_={uploaded_bytes,
             output_bytes+(pending.device_admission
-                ?16u+tasks.size_bytes()+body_ordinals.size_bytes():0u)};
+                ?16u+pending.tasks.size_bytes()+
+                    pending.body_ordinals.size_bytes():0u)};
         last_reused_pcm_contact_rows_=reused_pcm_rows;
         last_omitted_pcm_upload_bytes_=
             reused_pcm_rows*sizeof(native::GpuDyContactPoint);
