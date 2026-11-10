@@ -22,6 +22,14 @@ option(FYZZXYZZY_STRICT_RIGID_FRICTION_CONFORMANCE
 option(FYZZXYZZY_BUILD_SOURCE_GPU_TESTS
   "Test independent source GPU AABB encoding and DMA (requires DXC)" OFF)
 
+# Profiling is an explicit build variant; normal Release targets contain
+# no scene tracepoints, per-submit timestamp queries, or trace buffers.
+option(FYZZXYZZY_PROFILE_GPU
+  "Instrument native CPU/GPU execution for physical performance qualification" OFF)
+if(FYZZXYZZY_PROFILE_GPU)
+  add_compile_definitions(FYZZXYZZY_PROFILE_GPU=1)
+endif()
+
 if(FYZZXYZZY_ENABLE_PHYSX_SOURCE)
 # CPU PhysX-derived execution remains available; upstream CUDA is disabled.
 set(PX_GENERATE_GPU_PROJECTS OFF CACHE BOOL "Disable upstream CUDA" FORCE)
