@@ -341,6 +341,7 @@ struct Context::Impl {
             info = selected.info;
             VkPhysicalDeviceProperties properties{};
             vkGetPhysicalDeviceProperties(physical, &properties);
+#if defined(FYZZXYZZY_PROFILE_GPU)
             const char* require_hardware =
                 std::getenv("FYZZXYZZY_VULKAN_REQUIRE_HARDWARE");
             if (require_hardware && std::strcmp(require_hardware, "1") == 0 &&
@@ -348,6 +349,7 @@ struct Context::Impl {
                 properties.deviceType != VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU)
                 throw std::runtime_error(
                     "Vulkan hardware verification requires a physical GPU");
+#endif
             limits = properties.limits;
             std::uint32_t family_count = 0;
             vkGetPhysicalDeviceQueueFamilyProperties(physical, &family_count, nullptr);
