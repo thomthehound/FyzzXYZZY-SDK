@@ -940,6 +940,7 @@ void verify_device_sc_dy_task_admission(
     require(tasks[0].error==0u && poses[0].valid==1u &&
             producer->dy_launch_stats().device_island_indirect_dispatches==1u &&
             producer->dy_launch_stats().source_descriptor_upload_bytes==0u &&
+            producer->dy_upload_span_count()==2u &&
             std::fabs(poses[0].position[0]-
                       (2.f+0.5f*seconds))<0.002f,
         "Dy did not indirectly execute the resident Sc task");
