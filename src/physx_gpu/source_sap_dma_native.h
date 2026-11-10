@@ -82,8 +82,10 @@ public:
         ++stats_.upload_batches;
         stats_.upload_spans += resolved_uploads_.size();
         for (const auto& span : resolved_uploads_) stats_.upload_bytes += span.bytes;
+#if defined(FYZZXYZZY_PROFILE_GPU)
         for (const auto& span : resolved_uploads_)
             FYZZ_PROFILE_COUNTER("source.upload_bytes",span.bytes);
+#endif
     }
 
     // Original PxgCudaBuffer::allocateCopyOldDataAsync copies RAW mPtr
