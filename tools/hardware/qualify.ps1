@@ -64,6 +64,28 @@ function Get-ScenarioMetrics([string[]]$Lines) {
     return $metrics
 }
 
+
+function Convert-TraceFields([string]$Line) {
+    $fields = [ordered]@{}
+    foreach ($token in ($Line -split '\s+' | Select-Object -Skip 1)) {
+        $pair = $token.Split('=', 2)
+        if ($pair.Count -ne 2) { continue }
+        [long]$integer = 0
+        [double]$fractional = 0
+        if ([long]::TryParse($pair[1], [ref]$integer)) {
+            $fields[$pair[0]] = $integer
+        } elseif ([double]::TryParse(
+            $pair[1], [Globalization.NumberStyles]::Float,
+            [Globalization.CultureInfo]::InvariantCulture,
+            [ref]$fractional)) {
+            $fields[$pair[0]] = $fractional
+        } else {
+            $fields[$pair[0]] = $pair[1]
+        }
+    }
+    return $fields
+}
+
 function Get-Executable([string]$Build, [string]$Name) {
     foreach ($candidate in @(
         (Join-Path $Build "Release/$Name.exe"),
@@ -190,6 +212,28 @@ function Invoke-Scenario($Config, [string]$Case, [string]$Phase, [int]$Index) {
     $records.Add($record)
     $record | ConvertTo-Json -Depth 10 -Compress |
         Add-Content -LiteralPath $evidence -Encoding utf8
+    $traceRecords = [System.Collections.Generic.List[string]]::new()
+    foreach ($line in $lines) {
+        if (-not $line.StartsWith('FYZZXYZZY_TRACE ')) { continue }
+        $item = [ordered]@{
+            backend = $Config.Api
+            case = $Case
+            phase = $Phase
+            run = $Index
+            log = $logName
+            event = (Convert-TraceFields $line)
+        }
+        $traceRecords.Add(($item | ConvertTo-Json -Depth 8 -Compress))
+    }
+    if ($traceRecords.Count -gt 0) {
+        Add-Content -LiteralPath $traces -Value $traceRecords.ToArray() -Encoding utf8
+    }
+    if ($Case.StartsWith('hardware_scene_') -and
+        -not (@($lines | Where-Object {
+            $_.StartsWith('FYZZXYZZY_TRACE kind=gpu ')
+        }).Count -gt 0)) {
+        throw "Hardware scene produced no GPU timestamps: $logPath"
+    }
     if ($status -ne 0 -or $adapterLines.Count -ne 1 -or $pass.Count -ne 1) {
         throw "Qualification failed: $($Config.Api) $Case ($Phase) -- $logPath"
     }
