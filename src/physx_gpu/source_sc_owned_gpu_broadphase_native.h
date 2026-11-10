@@ -447,15 +447,22 @@ public:
     }
     void enqueue_gpu_pcm_box_contacts(
             std::span<const native::GpuPcmBoxPair> requests,
-            std::span<native::GpuPcmBoxResult> results) override {
+            std::span<native::GpuPcmBoxResult> results,
+            std::uint32_t edge_capacity=0u) override {
         if(!pcm_)
             throw std::logic_error("Source Sc GPU PCM shaders not installed");
-        pcm_->enqueue(requests,results,aabb_->capacity());
+        pcm_->enqueue(requests,results,aabb_->capacity(),edge_capacity);
     }
     void finish_gpu_pcm_box_contacts() override {
         if(!pcm_)
             throw std::logic_error("Source Sc GPU PCM shaders not installed");
         pcm_->finish();
+    }
+    void enqueue_cpu_gu_touch_history(
+            std::span<const native::GpuGuTouchRecord> touches) override {
+        if(!pcm_)
+            throw std::logic_error("Source Gu history requires PCM ownership");
+        pcm_->enqueue_cpu_gu_touches(touches);
     }
     void enqueue_host_pcm_contacts(
             std::span<const native::GpuPcmBoxPair> requests,
@@ -469,10 +476,11 @@ public:
     }
     void upload_host_pcm_contacts(
             std::span<const native::GpuPcmBoxPair> requests,
-            std::span<const native::GpuPcmBoxResult> results) override {
+            std::span<const native::GpuPcmBoxResult> results,
+            std::uint32_t edge_capacity=0u) override {
         if(!pcm_ || !dy_distance_)
             throw std::logic_error("Source Sc/Dy primitive PCM is unavailable");
-        pcm_->upload_host_contacts(requests,results);
+        pcm_->upload_host_contacts(requests,results,edge_capacity);
     }
     void authorize_device_integrated_pose(BodyId id) override {
         producer_->authorize_device_integrated_pose(id);
