@@ -1082,8 +1082,15 @@ if(FYZZXYZZY_BUILD_D3D12)
       INCLUDES "${CMAKE_CURRENT_SOURCE_DIR}/src" "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_port"
       DEFINITIONS FYZZXYZZY_TEST_D3D12=1
       LIBRARIES FyzzXYZZY::NativeGpuWorldD3D12
-      DEPENDS fyzzxyzzy_native_gpu_sap_shaders_d3d12 fyzzxyzzy_native_gpu_pcm_shaders_d3d12 fyzzxyzzy_source_dy_distance_shader_d3d12 fyzzxyzzy_source_dy_convex_shader_d3d12
+      DEPENDS fyzzxyzzy_native_gpu_sap_shaders_d3d12 fyzzxyzzy_native_gpu_aggregate_shaders_d3d12 fyzzxyzzy_native_gpu_pcm_shaders_d3d12 fyzzxyzzy_source_dy_distance_shader_d3d12 fyzzxyzzy_source_dy_convex_shader_d3d12
       ARGS ${_sc_pcm_scene_args} scene)
+    add_test(NAME fyzzxyzzy_source_sc_gpu_pcm_scene_aggregate_coupled_d3d12
+      COMMAND fyzzxyzzy_source_sc_gpu_pcm_scene_d3d12
+        ${_sc_pcm_scene_args} aggregate_coupled
+        "${CMAKE_CURRENT_BINARY_DIR}/kernels/fyzzxyzzy_native_aggregate_dxil.manifest")
+    set_tests_properties(
+      fyzzxyzzy_source_sc_gpu_pcm_scene_aggregate_coupled_d3d12
+      PROPERTIES TIMEOUT 180 LABELS "d3d12-extended")
     # Exercise Sc's actual GPU task prefix and indirect launch ABI
     # without constructing unrelated simulation pipelines on WARP.
     set(FYZZXYZZY_SOURCE_SC_INDIRECT_PROBE_DXIL

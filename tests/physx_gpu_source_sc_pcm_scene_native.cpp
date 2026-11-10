@@ -2475,6 +2475,92 @@ void verify_cpu_gu_gpu_dy_solver(
 // An already-admitted native scene can change numerical executor while
 // retaining its independent SAP, PCM and contact-edge publication.
 
+
+void verify_integrated_aggregate_gpu_pipeline(
+    fyzz::compute::Backend backend,const char* sap,const char* pcm,
+    const char* dy_path,const char* convex_path,const char* aggregate) {
+    using namespace fyzz;
+    const auto compiled=[backend](const char* path) {
+        std::ifstream file(path,std::ios::binary);
+        require(bool(file),"Integrated GPU scene shader is missing");
+        std::vector<char> bytes(std::istreambuf_iterator<char>{file},
+                                std::istreambuf_iterator<char>{});
+        require(!bytes.empty(),"Integrated GPU scene shader is empty");
+        compute::ShaderBinary binary{};
+        binary.format=backend==compute::Backend::Vulkan
+            ?compute::ShaderFormat::Spirv:compute::ShaderFormat::Dxil;
+        binary.bytes.assign(bytes.begin(),bytes.end());
+        return binary;
+    };
+    World gpu=create_native_gpu_world(
+        backend,NativeGpuPipelineShaders{
+            .sap=load_native_gpu_sap_shaders(backend,sap),
+            .aggregates=load_native_gpu_aggregate_shaders(backend,aggregate),
+            .pcm=load_native_gpu_pcm_shaders(backend,pcm),
+            .dy=compiled(dy_path),.convex_dy=compiled(convex_path)},
+        {.execution=ExecutionMode::NativePortableGpu,
+         .contact_notifications=true});
+    World cpu({.execution=ExecutionMode::NativeCpu,
+               .contact_notifications=true});
+    const auto group=gpu.create_aggregate(3u,false);
+    const auto a=gpu.add_dynamic_box_to_aggregate(
+        group,{0.5f,0.5f,0.5f},{0.f,0.83f,0.f},1.f);
+    const auto ca=cpu.add_dynamic_box(
+        {0.5f,0.5f,0.5f},{0.f,0.83f,0.f},1.f);
+    const auto support=gpu.add_static_box(
+        {0.5f,0.5f,0.5f},{0.f,0.f,0.f});
+    const auto csupport=cpu.add_static_box(
+        {0.5f,0.5f,0.5f},{0.f,0.f,0.f});
+    const auto b=gpu.add_dynamic_box_to_aggregate(
+        group,{0.5f,0.5f,0.5f},{12.f,4.f,0.f},1.f);
+    const auto cb=cpu.add_dynamic_box(
+        {0.5f,0.5f,0.5f},{12.f,4.f,0.f},1.f);
+    const auto contains=[](std::span<const ContactEvent> events,
+                           BodyId x,BodyId y,ContactEventKind kind) {
+        return std::any_of(events.begin(),events.end(),
+            [&](const ContactEvent& e) {
+                return e.kind==kind &&
+                    ((e.body0==x && e.body1==y) ||
+                     (e.body0==y && e.body1==x));
+            });
+    };
+    bool found=false,lost=false,found_again=false;
+    for(unsigned frame=0u;frame<6u;++frame) {
+        if(frame==2u) {
+            gpu.set_body_position(support,{20.f,0.f,0.f});
+            cpu.set_body_position(csupport,{20.f,0.f,0.f});
+        }
+        if(frame==4u) {
+            const float height=cpu.body_state(ca).position.y-0.83f;
+            gpu.set_body_position(support,{0.f,height,0.f});
+            cpu.set_body_position(csupport,{0.f,height,0.f});
+        }
+        gpu.set_gpu_dy_enabled(frame!=3u);
+        cpu.step(1.f/120.f);
+        gpu.step(1.f/120.f);
+        found|=contains(gpu.contact_events(),a,support,
+                        ContactEventKind::Found) && frame<2u;
+        lost|=contains(gpu.contact_events(),a,support,
+                       ContactEventKind::Lost) && frame>=2u;
+        found_again|=contains(gpu.contact_events(),a,support,
+                              ContactEventKind::Found) && frame>=4u;
+        require(gpu.contact_events().size()==cpu.contact_events().size(),
+                "Integrated GPU aggregate changed Sc contact publication");
+        test::compound_compare_state(
+            gpu.body_state(a),cpu.body_state(ca),0.035f,
+            "Integrated aggregate PCM/Dy responding body diverged");
+        test::compound_compare_state(
+            gpu.body_state(b),cpu.body_state(cb),0.035f,
+            "Integrated aggregate free-body motion diverged");
+    }
+    require(found && lost && found_again,
+            "Integrated aggregate PCM/Dy lost contact lifecycle transitions");
+    gpu.remove_actor_from_aggregate(group,b);
+    gpu.destroy_aggregate(group);
+    gpu.step(1.f/120.f);
+    require(gpu.body_state(a).position.y<3.f,
+            "Integrated aggregate release invalidated live body state");
+}
 void verify_dy_execution_switch(
     fyzz::compute::Backend backend,const char* sap,
     const char* pcm,const char* dy_shader) {
@@ -4222,14 +4308,15 @@ void verify_gpu_high_degree_coloring(
 
 int main(int argc,char** argv) {
     try {
-        require(argc>=4 && argc<=6,
+        require(argc>=4 && argc<=7,
                 "Expected SAP/PCM manifests, source Dy and convex Dy shaders, optional scenario");
         const bool has_convex_shader=argc>=5 &&
             (std::string_view(argv[4]).ends_with(".spv") ||
              std::string_view(argv[4]).ends_with(".dxil"));
-        const std::string_view scenario=argc==6?argv[5]:
+        const std::string_view scenario=argc>=6?argv[5]:
             (argc==5 && !has_convex_shader?argv[4]:"all");
         require(scenario=="all" || scenario=="scene" ||
+                scenario=="aggregate_coupled" ||
                 scenario=="sparse_contacts" || scenario=="coupled_stack" ||
                 scenario=="coupled_solver" || scenario=="single_island" ||
                 scenario=="legacy_gu_solver" ||
@@ -4326,6 +4413,13 @@ int main(int argc,char** argv) {
             fyzz::tests::measure_gpu_case("sc_pcm","legacy_gu_solver",
                 [&]{verify_cpu_gu_gpu_dy_solver(
                     backend,argv[1],argv[2],argv[3]);});
+        if(scenario=="aggregate_coupled") {
+            require(argc==7 && has_convex_shader,
+                "Integrated aggregate scene needs the aggregate manifest");
+            fyzz::tests::measure_gpu_case("sc_pcm","aggregate_coupled",
+                [&]{verify_integrated_aggregate_gpu_pipeline(
+                    backend,argv[1],argv[2],argv[3],argv[4],argv[6]);});
+        }
         if(scenario=="all" || scenario=="dy_switch")
             fyzz::tests::measure_gpu_case("sc_pcm","dy_switch",
                 [&]{verify_dy_execution_switch(
