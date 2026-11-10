@@ -1686,95 +1686,94 @@ public:
         // descriptor ordinals need not match the CPU's public Gu index
         // permutation. Source-manager identity owns contact/patch output.
         const publish_descriptor=[&](const native::GpuDyDistanceDescriptor& desc) {
-                // Joint impulses remain local to the GPU PGS row.
-                // No Sc task consumes a host copy after solve.
-                if((desc.row_count&255u)!=0u)return;
-                if(desc.index>=manifolds.size())
-                    throw std::logic_error("Source Dy manager writeback index invalid");
-                const auto& manager=manifolds[desc.index];
-                if(!manager.patch_count)return;
-                if(manager.order_offset>contact_forces.size() ||
-                   manager.contact_count>
-                       contact_forces.size()-manager.order_offset ||
-                   manager.patch_offset>patches.size() ||
-                   manager.patch_count>patches.size()-manager.patch_offset)
-                    throw std::logic_error("Source Dy contact writeback range invalid");
-                // The source contact order is implicit for PCM patches:
-                // their Gu points already occupy the resident solver
-                // arena consecutively. CPU Gu patches retain their
-                // explicit correlation order, packed without PCM holes.
-                std::size_t written=0u;
-                for(std::size_t patch_index=manager.patch_offset;
-                    patch_index<manager.patch_offset+manager.patch_count;
-                    ++patch_index) {
-                    const auto& patch=patches[patch_index];
-                    constexpr std::uint32_t direct=0x80000000u;
-                    const bool resident=(patch.order_offset&direct)!=0u;
-                    const std::size_t begin=patch.order_offset&~direct;
-                    const std::size_t limit=resident
-                        ?contact_forces.size():contact_order.size();
-                    if(begin>limit || patch.contact_count>limit-begin ||
-                       written>manager.contact_count ||
-                       patch.contact_count>manager.contact_count-written)
-                        throw std::logic_error(
-                            "Source Dy contact patch order is invalid");
-                    for(std::size_t k=0u;k<patch.contact_count;++k) {
-                        const auto index=resident
-                            ?begin+k:contact_order[begin+k];
-                        if(index<manager.order_offset ||
-                           index>=manager.order_offset+manager.contact_count)
-                            throw std::logic_error(
-                                "Source Dy contact writeback index invalid");
-                        std::memcpy(&contact_forces[index],
-                            host_.data()+result_offsets[2]+index*4u,4u);
-                    }
-                    written+=patch.contact_count;
-                }
-                if(written!=manager.contact_count)
+            // Joint impulses remain local to the GPU PGS row.
+            // No Sc task consumes a host copy after solve.
+            if((desc.row_count&255u)!=0u)return;
+            if(desc.index>=manifolds.size())
+                throw std::logic_error("Source Dy manager writeback index invalid");
+            const auto& manager=manifolds[desc.index];
+            if(!manager.patch_count)return;
+            if(manager.order_offset>contact_forces.size() ||
+               manager.contact_count>
+                   contact_forces.size()-manager.order_offset ||
+               manager.patch_offset>patches.size() ||
+               manager.patch_count>patches.size()-manager.patch_offset)
+                throw std::logic_error("Source Dy contact writeback range invalid");
+            // The source contact order is implicit for PCM patches:
+            // their Gu points already occupy the resident solver
+            // arena consecutively. CPU Gu patches retain their
+            // explicit correlation order, packed without PCM holes.
+            std::size_t written=0u;
+            for(std::size_t patch_index=manager.patch_offset;
+                patch_index<manager.patch_offset+manager.patch_count;
+                ++patch_index) {
+                const auto& patch=patches[patch_index];
+                constexpr std::uint32_t direct=0x80000000u;
+                const bool resident=(patch.order_offset&direct)!=0u;
+                const std::size_t begin=patch.order_offset&~direct;
+                const std::size_t limit=resident
+                    ?contact_forces.size():contact_order.size();
+                if(begin>limit || patch.contact_count>limit-begin ||
+                   written>manager.contact_count ||
+                   patch.contact_count>manager.contact_count-written)
                     throw std::logic_error(
-                        "Source Dy contact writeback omitted Gu rows");
-                for(std::size_t j=manager.patch_offset;
-                    j<manager.patch_offset+manager.patch_count;++j) {
-                    auto& patch=patches[j];
-                    const bool pcm_growth=(patch.broken&0x80000000u)!=0u;
-                    // The GPU selects new PCM anchors before source PGS.
-                    // One original four-byte patch report conveys its
-                    // resulting count and changed Gu indices, without
-                    // transferring a second device anchor array.
-                    std::uint32_t report=0u;
-                    if(pcm_growth || patch.anchor_count)
-                        std::memcpy(&report,
-                            host_.data()+result_offsets[4]+j*4u,4u);
-                    const auto count=pcm_growth?(report>>1u)&3u:
-                        patch.anchor_count;
-                    if(count>2u || patch.row_offset>friction_count ||
-                       count*2u>friction_count-patch.row_offset)
+                        "Source Dy contact patch order is invalid");
+                for(std::size_t k=0u;k<patch.contact_count;++k) {
+                    const auto index=resident
+                        ?begin+k:contact_order[begin+k];
+                    if(index<manager.order_offset ||
+                       index>=manager.order_offset+manager.contact_count)
                         throw std::logic_error(
-                            "Source Dy friction writeback range invalid");
-                    if(compact_friction) {
-                        if(patch.row_offset&1u)
-                            throw std::logic_error(
-                                "Source Dy friction anchor range is misaligned");
-                        for(std::size_t k=patch.row_offset/2u;
-                            k<patch.row_offset/2u+count;++k)
-                            std::memcpy(&anchor_impulses[k],
-                                host_.data()+result_offsets[3]+k*12u,12u);
-                    }else {
-                        for(std::size_t k=patch.row_offset;
-                            k<patch.row_offset+count*2u;++k) {
-                            const auto* result=
-                                host_.data()+result_offsets[3]+k*16u;
-                            std::memcpy(&friction[k].tangent,result,12u);
-                            std::memcpy(&friction[k].applied_force,result+12u,4u);
-                        }
-                    }
-                    if(pcm_growth) {
-                        patch.anchor_count=count;
-                        patch.reserved=report;
-                        patch.broken=report&1u;
-                    }else if(count)patch.broken=report;
+                            "Source Dy contact writeback index invalid");
+                    std::memcpy(&contact_forces[index],
+                        host_.data()+result_offsets[2]+index*4u,4u);
                 }
-
+                written+=patch.contact_count;
+            }
+            if(written!=manager.contact_count)
+                throw std::logic_error(
+                    "Source Dy contact writeback omitted Gu rows");
+            for(std::size_t j=manager.patch_offset;
+                j<manager.patch_offset+manager.patch_count;++j) {
+                auto& patch=patches[j];
+                const bool pcm_growth=(patch.broken&0x80000000u)!=0u;
+                // The GPU selects new PCM anchors before source PGS.
+                // One original four-byte patch report conveys its
+                // resulting count and changed Gu indices, without
+                // transferring a second device anchor array.
+                std::uint32_t report=0u;
+                if(pcm_growth || patch.anchor_count)
+                    std::memcpy(&report,
+                        host_.data()+result_offsets[4]+j*4u,4u);
+                const auto count=pcm_growth?(report>>1u)&3u:
+                    patch.anchor_count;
+                if(count>2u || patch.row_offset>friction_count ||
+                   count*2u>friction_count-patch.row_offset)
+                    throw std::logic_error(
+                        "Source Dy friction writeback range invalid");
+                if(compact_friction) {
+                    if(patch.row_offset&1u)
+                        throw std::logic_error(
+                            "Source Dy friction anchor range is misaligned");
+                    for(std::size_t k=patch.row_offset/2u;
+                        k<patch.row_offset/2u+count;++k)
+                        std::memcpy(&anchor_impulses[k],
+                            host_.data()+result_offsets[3]+k*12u,12u);
+                }else {
+                    for(std::size_t k=patch.row_offset;
+                        k<patch.row_offset+count*2u;++k) {
+                        const auto* result=
+                            host_.data()+result_offsets[3]+k*16u;
+                        std::memcpy(&friction[k].tangent,result,12u);
+                        std::memcpy(&friction[k].applied_force,result+12u,4u);
+                    }
+                }
+                if(pcm_growth) {
+                    patch.anchor_count=count;
+                    patch.reserved=report;
+                    patch.broken=report&1u;
+                }else if(count)patch.broken=report;
+            }
         };
         for(const auto& task:tasks) {
             for(std::size_t i=task.body_begin;i<task.body_end;++i) {
@@ -1790,7 +1789,6 @@ public:
                     std::memcpy(&bodies[index],
                         host_.data()+result_offsets[0]+index*48u,48u);
             }
-
         }
         if(pending.device_admission) {
             for(const auto& desc:descriptors)
