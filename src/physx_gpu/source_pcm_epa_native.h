@@ -59,6 +59,11 @@ public:
     ~SourcePcmEpaNativeStage() {
         if(pipeline_)context_.destroy_compute_pipeline(pipeline_);
     }
+#if defined(FYZZXYZZY_PROFILE_GPU)
+    void set_profile_label(const char* label) const noexcept {
+        context_.set_pipeline_profile_label(pipeline_,label);
+    }
+#endif
 
     void append(std::vector<compute::BatchCommand>& commands,
                 const CudaDeviceAddressMap& addresses,
