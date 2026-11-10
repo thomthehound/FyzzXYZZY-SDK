@@ -337,6 +337,7 @@ public:
                                         *pcm_->device_island_indirect_args()}}
                                 :std::nullopt);
         ++dy_distance_dispatch_count_;
+#if defined(FYZZXYZZY_PROFILE_GPU)
         const auto& schedule=dy_distance_->last_schedule();
         FYZZ_PROFILE_COUNTER("dy.dispatches",schedule.dispatches);
         FYZZ_PROFILE_COUNTER("dy.indirect_dispatches",schedule.device_island_indirect_dispatches);
@@ -354,6 +355,7 @@ public:
         FYZZ_PROFILE_COUNTER("dy.resident_poses_reused",schedule.reused_actor_local_poses);
         FYZZ_PROFILE_COUNTER("dy.resident_velocities_reused",schedule.resident_velocity_reuses);
         FYZZ_PROFILE_COUNTER("dy.sleep_readback_bytes",schedule.sleep_readback_bytes);
+#endif
     }
     void finish_gpu_dy_distance() override {
         FYZZ_PROFILE_SCOPE("dy.device_result_join");
