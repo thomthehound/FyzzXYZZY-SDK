@@ -152,7 +152,10 @@ public:
                 take_pcm_shader(*pcm_shaders,NativeGpuPcmStage::EpaContact),
                 take_pcm_shader(*pcm_shaders,NativeGpuPcmStage::FaceContacts),
                 take_pcm_shader(*pcm_shaders,NativeGpuPcmStage::ContactJournal),
-                take_pcm_shader(*pcm_shaders,NativeGpuPcmStage::DeviceIslands));
+                dy_shader
+                    ?std::optional<compute::ShaderBinary>{
+                        take_pcm_shader(*pcm_shaders,NativeGpuPcmStage::DeviceIslands)}
+                    :std::nullopt);
         if(dy_shader)
             dy_distance_=std::make_unique<SourceDyDistanceNativeStage>(
                 context_,addresses_,stream_,allocators_.deviceAlloc,

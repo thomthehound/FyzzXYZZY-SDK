@@ -48,7 +48,7 @@ public:
         compute::ShaderBinary epa_args_reset,compute::ShaderBinary epa,
         compute::ShaderBinary face_contacts,
         compute::ShaderBinary contact_journal,
-        compute::ShaderBinary device_islands)
+        std::optional<compute::ShaderBinary> device_islands)
         : context_(context),addresses_(addresses),stream_(stream),sc_(sc),
           transforms_(transforms),geometry_(geometry),
           convex_vertices_(convex_vertices),
@@ -68,7 +68,6 @@ public:
           epa_stage_(context,std::move(epa)),
           face_stage_(context,std::move(face_contacts),true),
           journal_stage_(context,std::move(contact_journal)),
-          island_stage_(context,std::move(device_islands)),
           pairs_(allocator,physx::PxsHeapStats::eNARROWPHASE),
           results_(allocator,physx::PxsHeapStats::eNARROWPHASE),
           candidates_(allocator,physx::PxsHeapStats::eNARROWPHASE),
@@ -86,6 +85,10 @@ public:
         if(staged_gjk_)
             primitive_gjk_stage_.emplace(
                 context_,std::move(gjk_primitive),false,true,false,true);
+        // Device task admission and its indirect launch resource are
+        // installed only alongside a numerical Dy consumer.
+        if(!device_islands)return;
+        island_stage_.emplace(context_,std::move(*device_islands));
         // D3D12 indirect arguments require their own physical resource.
         // Separate source buddy-heap allocations can share one root UAV.
         indirect_buffer_=context_.create_buffer(
@@ -586,7 +589,7 @@ public:
         for(const auto& record:touches)
             if(record.edge_index>=capacity || (record.touch_bits&~3u)!=0u)
                 throw std::out_of_range("CPU Gu touch exceeds resident EdgeIndex history");
-        gu_touch_count_=static_cast<std::uint32_t>(touches.size());
+        const auto count=static_cast<std::uint32_t>(touches.size());
         const auto bytes=touches.size_bytes();
         gu_touch_records_.allocate(bytes,PX_FL);
         gu_touch_journal_.allocate(bytes,PX_FL);
@@ -597,7 +600,8 @@ public:
         journal_stage_.append(stream_,addresses_,
             SourceScContactHistoryNativeStage::Phase::PublishGuTouch,
             gu_touch_records_.getDevicePtr(),edges_.getDevicePtr(),
-            gu_touch_journal_.getDevicePtr(),gu_touch_count_,capacity);
+            gu_touch_journal_.getDevicePtr(),count,capacity);
+        gu_touch_count_=count;
     }
 
     // Sc supplies only stable, typed endpoints and authored iteration
@@ -608,9 +612,9 @@ public:
             std::span<const SourceScDeviceIslandEdge> edges,
             std::span<const std::uint32_t> node_flags,
             SourceScDeviceIslandSources sources) {
-        if(island_work_ready_ || !device_contact_ready())
+        if(!island_stage_ || island_work_ready_ || !device_contact_ready())
             throw std::logic_error(
-                "Device island admission requires one complete queued Gu epoch");
+                "Device island admission requires a numerical Dy stage and queued Gu epoch");
         if(edges.size()>std::numeric_limits<std::uint32_t>::max() ||
            node_flags.size()>std::numeric_limits<std::uint32_t>::max())
             throw std::overflow_error("Device Sc island input exceeds 32-bit view");
@@ -654,7 +658,7 @@ public:
                 island_nodes_.getDevicePtr(),node_flags.data(),
                 node_flags.size_bytes()});
         if(!uploads.empty())stream_.queue_uploads(uploads);
-        island_stage_.append(stream_,addresses_,
+        island_stage_->append(stream_,addresses_,
             edge_count?island_edges_.getDevicePtr():0u,
             device_edge_history_address(),
             node_count?island_nodes_.getDevicePtr():0u,
@@ -845,7 +849,7 @@ private:
     SourcePcmEpaNativeStage gjk_stage_,gjk_reduce_stage_,gjk_publish_stage_,epa_stage_,face_stage_;
     std::optional<SourcePcmEpaNativeStage> primitive_gjk_stage_;
     SourceScContactHistoryNativeStage journal_stage_;
-    SourceScDeviceIslandsNativeStage island_stage_;
+    std::optional<SourceScDeviceIslandsNativeStage> island_stage_;
     physx::PxgCudaBuffer pairs_,results_,candidates_,edges_,work_,dense_contacts_,journal_;
     physx::PxgCudaBuffer gu_touch_records_,gu_touch_journal_;
     physx::PxgCudaBuffer island_edges_,island_nodes_,island_work_;

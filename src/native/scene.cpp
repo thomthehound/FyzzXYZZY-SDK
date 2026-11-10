@@ -4053,7 +4053,7 @@ void Scene::update_contacts() {
     gpu_dy_gu_touches_.clear();
     const bool source_gpu_pcm =
         gpu_broadphase_ && gpu_broadphase_->has_gpu_pcm_box() &&
-        pcm_box_box_enabled_;
+        (pcm_box_box_enabled_ || pcm_plane_box_enabled_);
     // Sc's source EdgeIndex and Gu cache already distinguish an untouched
     // speculative pair from a touching manifold. Once both rigid bodies
     // are inactive, neither case needs another PCM refresh: retain the
@@ -4094,7 +4094,8 @@ void Scene::update_contacts() {
             // Finite cooked convex pairs enter Gu GJK/EPA on the GPU.
             // The infinite plane has no GPU broadphase volume. Its
             // paired box already has a resident Sc ElementSim transform.
-            if(plane && !pcm_plane_box_enabled_)continue;
+            if((plane && !pcm_plane_box_enabled_) ||
+               (!plane && !pcm_box_box_enabled_))continue;
             const EdgeIndex edge=active_edge_handles_[i];
             if(dormant_pcm(pair,edge))continue;
             if(plane) {
@@ -4388,7 +4389,8 @@ void Scene::update_contacts() {
         }
         if(pcm_box || (source_gpu_pcm &&
                        (pcm_plane ||
-                        (pcm_sphere && (!plane_pair || pcm_plane_box_enabled_))))) {
+                        (pcm_sphere && (plane_pair
+                            ?pcm_plane_box_enabled_:pcm_box_box_enabled_))))) {
             if(source_gpu_pcm && dormant_pcm(pair,edge)) {
                 // An already-touching manager retains its original Gu
                 // witnesses. A previously resolved non-touching pair
@@ -4527,8 +4529,9 @@ void Scene::update_contacts() {
                 manifold.count=old->count;
             }
         }
-        if(pcm_sphere && (!source_gpu_pcm ||
-                          (plane_pair && !gpu_pcm_plane))) {
+        if(pcm_sphere &&
+           (!source_gpu_pcm || (plane_pair && !gpu_pcm_plane) ||
+            (!plane_pair && !pcm_box_box_enabled_))) {
             const bool use_pcm=plane_pair
                 ? pcm_plane_box_enabled_:pcm_box_box_enabled_;
             std::array<ContactPoint,1> output{};
@@ -8622,7 +8625,8 @@ void Scene::publish_cpu_gu_touch_history() {
     // CPU Gu touch transitions update the shared EdgeIndex history even
     // when the already prepared Sc task groups need no device admission.
     if(gpu_broadphase_ && gpu_broadphase_->has_gpu_dy_distance() &&
-       gpu_broadphase_->has_gpu_pcm_box() && pcm_box_box_enabled_ &&
+       gpu_broadphase_->has_gpu_pcm_box() &&
+       (pcm_box_box_enabled_ || pcm_plane_box_enabled_) &&
        !gpu_pcm_pairs_.empty()) {
         constexpr std::uint32_t invalid=0xffffffffu;
         // Sc publishes live Gu touch bits while building the contact
