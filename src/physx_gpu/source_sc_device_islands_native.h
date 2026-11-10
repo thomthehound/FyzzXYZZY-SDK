@@ -182,6 +182,9 @@ public:
         pipeline.storage_buffer_views.assign(
             4u,compute::StorageBufferViewKind::RawReadWrite);
         pipeline.push_constant_bytes=112u;
+#if defined(FYZZXYZZY_PROFILE_GPU)
+        pipeline.profile_name="sc.device_islands";
+#endif
         pipeline_=context_.create_compute_pipeline(pipeline);
     }
     SourceScDeviceIslandsNativeStage(
