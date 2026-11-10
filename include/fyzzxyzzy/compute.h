@@ -125,9 +125,6 @@ struct ComputePipelineDesc {
     // requires that physical width, not a logical-warp emulation.
     // D3D12 shaders must also encode the same [WaveSize] in their DXIL.
     std::uint32_t required_subgroup_size = 0;
-#if defined(FYZZXYZZY_PROFILE_GPU)
-    std::string profile_name;
-#endif
 };
 
 // Source-derived *access intent*, not a request to change shader bindings.
@@ -277,6 +274,9 @@ public:
                                     std::size_t bytes);
 
     PipelineId create_compute_pipeline(const ComputePipelineDesc& description);
+#if defined(FYZZXYZZY_PROFILE_GPU)
+    void set_pipeline_profile_label(PipelineId id,const char* label) const noexcept;
+#endif
     void destroy_compute_pipeline(PipelineId id);
     void dispatch(PipelineId pipeline, DispatchSize groups,
                   const std::vector<BufferBinding>& buffers,
