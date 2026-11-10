@@ -450,7 +450,7 @@ void verify(fyzz::compute::Backend backend,const char* sap,
     }};
     require(producer->device_pcm_touch_capacity()==0u,
         "Fresh source scene unexpectedly owns contact history");
-    producer->enqueue_device_island_admission(joint_edge,joint_flags,
+    producer->enqueue_gpu_dy_island_admission(joint_edge,joint_flags,
         physx_gpu::SourceScDeviceIslandSources{0u,0u,1u});
     const auto joint_task=physx_gpu::SourceScDeviceIslandFixture::read(*producer);
     require(joint_task.errors==0u &&
@@ -537,7 +537,7 @@ void verify(fyzz::compute::Backend backend,const char* sap,
     const std::array<std::uint32_t,1> source_nodes{{
         4u|(4u<<8u)|physx_gpu::source_sc_device_island_active_bit
     }};
-    producer->enqueue_device_island_admission(source_edges,source_nodes,
+    producer->enqueue_gpu_dy_island_admission(source_edges,source_nodes,
         physx_gpu::SourceScDeviceIslandSources{1u,0u,0u});
     const auto graph=physx_gpu::SourceScDeviceIslandFixture::read(*producer);
     require(graph.errors==0u &&
@@ -766,7 +766,7 @@ void verify(fyzz::compute::Backend backend,const char* sap,
     const std::array<std::uint32_t,2> mixed_nodes{{
         source_nodes[0],source_nodes[0]
     }};
-    producer->enqueue_device_island_admission(mixed_edges,mixed_nodes,
+    producer->enqueue_gpu_dy_island_admission(mixed_edges,mixed_nodes,
         physx_gpu::SourceScDeviceIslandSources{2u,0u,0u});
     const auto mixed_graph=physx_gpu::SourceScDeviceIslandFixture::read(*producer);
     require(mixed_graph.errors==0u &&
@@ -805,7 +805,7 @@ void verify(fyzz::compute::Backend backend,const char* sap,
     abandoned_mixed[1]=primitive;
     producer->enqueue_gpu_pcm_box_contacts(mixed,abandoned_mixed);
     producer->enqueue_host_pcm_contacts(mixed,abandoned_mixed);
-    producer->enqueue_device_island_admission(mixed_edges,mixed_nodes,
+    producer->enqueue_gpu_dy_island_admission(mixed_edges,mixed_nodes,
         physx_gpu::SourceScDeviceIslandSources{2u,0u,0u});
     producer->invalidate_after_rollback();
     require(producer->device_pcm_contact_count()==0u &&
@@ -821,7 +821,7 @@ void verify(fyzz::compute::Backend backend,const char* sap,
     restored[1]=primitive;
     producer->enqueue_gpu_pcm_box_contacts(mixed,restored);
     producer->enqueue_host_pcm_contacts(mixed,restored);
-    producer->enqueue_device_island_admission(mixed_edges,mixed_nodes,
+    producer->enqueue_gpu_dy_island_admission(mixed_edges,mixed_nodes,
         physx_gpu::SourceScDeviceIslandSources{2u,0u,0u});
     const auto recovered_graph=physx_gpu::SourceScDeviceIslandFixture::read(*producer);
     require(recovered_graph.errors==0u &&
@@ -861,6 +861,7 @@ void verify_device_sc_dy_indirect_api(
         std::nullopt,load_native_gpu_pcm_shaders(backend,pcm),
         std::move(shader));
     auto* producer=owner.get();
+    native::GpuBroadphaseProducer& scene_producer=*producer;
     scene.set_gpu_broadphase(std::move(owner));
     const std::array<BodyId,2> actors{{
         scene.add_dynamic_box({0.5f,0.5f,0.5f},{2.f,1.f,0.f},1.f),
@@ -874,8 +875,8 @@ void verify_device_sc_dy_indirect_api(
         physx_gpu::source_sc_device_island_nonresponding_bit,
         5u|(2u<<8u)|physx_gpu::source_sc_device_island_active_bit
     }};
-    producer->enqueue_device_island_admission(
-        std::span<const physx_gpu::SourceScDeviceIslandEdge>{},nodes,
+    scene_producer.enqueue_gpu_dy_island_admission(
+        std::span<const native::GpuDyIslandEdge>{},nodes,
         physx_gpu::SourceScDeviceIslandSources{});
     std::array<native::GpuDyDistanceBody,3> bodies{};
     bodies[0].inverse_mass=bodies[2].inverse_mass=1.f;
@@ -936,7 +937,7 @@ void verify_device_sc_dy_indirect_api(
         nodes[2]&~physx_gpu::source_sc_device_island_active_bit
     }};
     producer->enqueue_gpu_pcm_box_contacts(no_pairs,no_witness);
-    producer->enqueue_device_island_admission(
+    producer->enqueue_gpu_dy_island_admission(
         std::span<const physx_gpu::SourceScDeviceIslandEdge>{},
         partly_active,physx_gpu::SourceScDeviceIslandSources{});
     tasks[0].error=0x4000u;
@@ -1047,7 +1048,7 @@ void verify_device_sc_dy_task_admission(
     const std::array<physx_gpu::SourceScDeviceIslandEdge,1> touching{{
         {edge,0u,0xffffffffu,0u,0u}
     }};
-    producer->enqueue_device_island_admission(
+    producer->enqueue_gpu_dy_island_admission(
         touching,single_node,physx_gpu::SourceScDeviceIslandSources{2u,0u,0u});
     dispatch();
     require(producer->has_queued_gpu_dy_distance() &&
@@ -1104,7 +1105,7 @@ void verify_device_sc_dy_task_admission(
         }};
         witness={};
         producer->enqueue_gpu_pcm_box_contacts(requests,witness);
-        producer->enqueue_device_island_admission(
+        producer->enqueue_gpu_dy_island_admission(
             touching,active_nodes,
             physx_gpu::SourceScDeviceIslandSources{2u,0u,0u});
         producer->enqueue_gpu_dy_distance(
@@ -1137,7 +1138,7 @@ void verify_device_sc_dy_task_admission(
         single_node[0],4u|(1u<<8u)
     }};
     producer->enqueue_gpu_pcm_box_contacts(requests,witness);
-    producer->enqueue_device_island_admission(
+    producer->enqueue_gpu_dy_island_admission(
         bridge,two_nodes,physx_gpu::SourceScDeviceIslandSources{2u,0u,0u});
     dispatch();
     producer->finish_gpu_pcm_box_contacts();
