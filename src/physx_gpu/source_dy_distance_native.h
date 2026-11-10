@@ -166,6 +166,9 @@ public:
         pipeline.storage_buffer_views.assign(
             6u,compute::StorageBufferViewKind::RawReadWrite);
         pipeline.push_constant_bytes=128u;
+#if defined(FYZZXYZZY_PROFILE_GPU)
+        pipeline.profile_name="dy.distance_pgs";
+#endif
         pipeline_=context_.create_compute_pipeline(pipeline);
         if(convex_shader) {
             try {
