@@ -11050,7 +11050,13 @@ void Scene::step(float seconds) {
     // contacts, island nodes, body motion or result streams. Snapshot only
     // authoritative state; all per-step Dy work buffers remain reusable.
     FYZZ_PROFILE_BEGIN_FRAME();
-    step_checkpoint_.capture(*this);
+    try {
+        FYZZ_PROFILE_SCOPE("sc.checkpoint_capture");
+        step_checkpoint_.capture(*this);
+    } catch (...) {
+        FYZZ_PROFILE_END_FRAME(frame_index_,gpu_dy_active(),false);
+        throw;
+    }
     if(++rigid_integration_generation_==0)
         ++rigid_integration_generation_;
     RigidStepJoin join;
@@ -11333,11 +11339,11 @@ void Scene::step(float seconds) {
     FYZZ_PROFILE_COUNTER("friction_rows",prepared_friction_rows_);
     FYZZ_PROFILE_COUNTER("constraint_descriptors",ordered_constraints_.size());
     FYZZ_PROFILE_COUNTER("device_responding_islands",gpu_dy_responding_island_count_);
-    FYZZ_PROFILE_END_FRAME(frame_index_,gpu_dy_enabled_,true);
+    FYZZ_PROFILE_END_FRAME(frame_index_,gpu_dy_active(),true);
     } catch (...) {
         { FYZZ_PROFILE_SCOPE("sc.rollback");
           step_checkpoint_.rollback(*this); }
-        FYZZ_PROFILE_END_FRAME(frame_index_,gpu_dy_enabled_,false);
+        FYZZ_PROFILE_END_FRAME(frame_index_,gpu_dy_active(),false);
         throw;
     }
 }
