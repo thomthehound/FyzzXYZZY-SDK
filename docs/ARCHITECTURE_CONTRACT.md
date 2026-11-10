@@ -194,9 +194,15 @@ host-upload extent; raw descriptors, colors and partition-state scratch are
 also omitted from the source packet. The remaining input prefix and
 numerical source-table suffix share one staging submission. Its compact-task
 numerical launch consumes the device indirect triple rather than a CPU
-workgroup count. The queued Dy shader
-checks device admission errors and actual task/body/descriptor extents
-against its numerical input before initialization. Large tiled tasks retain
+workgroup count. The host provides bounded numerical allocations, not an
+exact prediction of runnable roots or response counts. The queued Dy shader
+rejects admission errors and any task/body/descriptor count exceeding its
+own buffer capacity before initializing numerical state. Unused capacity
+does not launch numerical work or publish body integration. Dy appends
+the actual compact task records and body ordinals to its existing result
+transfer and reconciles writeback from those GPU-authored ranges.
+Rejected epochs retain their original task-error reporting before rollback.
+Large tiled tasks retain
 their explicit partition launch dependencies until the device-owned wide
 scheduler is complete.
 
