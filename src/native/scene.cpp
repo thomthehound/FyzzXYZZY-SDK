@@ -8892,7 +8892,7 @@ void Scene::solve_gpu_distance_constraints(float seconds) {
     // CPU tasks already expose one workgroup per active accurate island
     // unless Sc has batched several islands into one numerical task.
     const bool device_island_admission=
-        active_accurate_island_batches_.size()>gpu_dy_tasks_.size() &&
+        active_accurate_island_batches_.size()>solver_tasks_.size() &&
         gpu_broadphase_->has_gpu_pcm_box() && pcm_box_box_enabled_ &&
         !gpu_pcm_pairs_.empty() && !gpu_dy_tasks_.empty() && !solver_active_ids_.empty() &&
         std::all_of(gpu_dy_tasks_.begin(),gpu_dy_tasks_.end(),
