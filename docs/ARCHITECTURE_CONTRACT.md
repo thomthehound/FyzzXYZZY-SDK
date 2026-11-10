@@ -232,7 +232,13 @@ Only authored joints connect independently of the contact history.
 Host-only Gu epochs journal only the prior/current touch words from the
 existing resident 84-byte contact records; mixed epochs retain
 the full GPU manifold journal but snapshot only touch words for CPU-owned
-managers. A rejected transaction restores the original device touch epoch
+managers. Ordinary CPU Gu contacts excluded from the PCM candidate
+list publish eight-byte EdgeIndex/current-and-prior-touch records on the same
+ordered source queue. These transitions snapshot the old two-word device
+history and restore it ahead of the PCM journal on rollback. The PCM owner
+reserves the complete Sc EdgeIndex high-watermark, so an ordinary CPU Gu
+contact cannot silently fall outside the resident history allocation.
+A rejected transaction restores the original device touch epoch
 before another producer can update that EdgeIndex. In mixed frames, CPU Gu
 uploads enter the ordered source queue immediately after their witnesses are
 ready, independently of the preceding GPU PCM witness readback. Sc's host
