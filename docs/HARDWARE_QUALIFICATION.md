@@ -51,8 +51,19 @@ pwsh -NoProfile -File tools/hardware/qualify.ps1 `
   -OutputDirectory build-hardware-evidence -Samples 7 -WarmupRuns 2 -Scale
 ```
 
-Use `-Backend Vulkan` or `-Backend D3D12` for isolated diagnosis. Omit
-`-Scale` for the core suite only. Each backend executes correctness cases
+Use `-Backend Vulkan` or `-Backend D3D12` for isolated diagnosis. A
+single production-fixture scenario can be rerun without executing the full
+suite:
+
+```powershell
+pwsh -NoProfile -File tools/hardware/qualify.ps1 -Backend Vulkan -Scenario wide_islands_diagnose
+```
+
+The diagnostic compares ordinary CPU execution, GPU SAP/PCM with CPU Dy, and
+GPU SAP/PCM with GPU Dy for the same wide connected-island scene. A targeted
+run preserves its raw log and trace records without sampling summaries.
+
+Omit `-Scale` for the core suite only. Each backend executes correctness cases
 once, then separate warm-up and sampled repetitions of selected execution
 patterns. A failure stops execution immediately and retains the failure log.
 
