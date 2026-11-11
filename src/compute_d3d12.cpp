@@ -181,6 +181,7 @@ std::vector<Candidate> discover_adapters() {
                             trial->Unmap(0, &written);
                             info.supports_gpu_writable_host_visible = true;
                             info.has_device_local_host_visible_memory = true;
+                            info.supports_shared_frame_input = true;
                         }
                     }
                 }
