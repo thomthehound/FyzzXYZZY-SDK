@@ -3,7 +3,8 @@
 #pragma once
 
 #if defined(FYZZXYZZY_PROFILE_GPU)
-#include <array>
+#include <memory>
+#include <vector>
 #include <atomic>
 #include <chrono>
 #include <cstddef>
@@ -53,22 +54,51 @@ struct PipelineEvent {
     std::uint64_t context=0u,pipeline=0u;
 };
 
-// Records are buffered until fixture completion. No trace I/O can extend
-// a measured simulation step or postpone the next GPU submission.
+// Segmented streams preserve all records without relocating existing events.
+// Trace output is deferred until after the workload completes.
+template<class T,std::size_t SegmentSize=4096u>
+class EventStream {
+public:
+    bool append(const T& event) noexcept {
+        if(count_==segments_.size()*SegmentSize) {
+            try {
+                auto segment=std::make_unique<T[]>(SegmentSize);
+                segments_.push_back(std::move(segment));
+            } catch(...) {
+                return false;
+            }
+        }
+        (*this)[count_++]=event;
+        return true;
+    }
+    T& operator[](std::size_t index) noexcept {
+        return segments_[index/SegmentSize][index%SegmentSize];
+    }
+    const T& operator[](std::size_t index) const noexcept {
+        return segments_[index/SegmentSize][index%SegmentSize];
+    }
+    std::size_t size() const noexcept {return count_;}
+    void clear() noexcept {
+        count_=0u;
+        segments_.clear();
+    }
+private:
+    std::vector<std::unique_ptr<T[]>> segments_;
+    std::size_t count_=0u;
+};
+
 struct Archive {
-    std::array<FrameEvent,512> frames{};
-    std::array<CpuEvent,16384> cpu{};
-    std::array<Counter,16384> counters{};
-    std::array<GpuEvent,32768> gpu{};
-    std::array<BufferEvent,16384> buffers{};
-    std::array<PipelineEvent,2048> pipelines{};
-    std::size_t frame_count=0u,cpu_count=0u,counter_count=0u;
-    std::size_t gpu_count=0u,buffer_count=0u,pipeline_count=0u;
+    EventStream<FrameEvent,512u> frames;
+    EventStream<CpuEvent> cpu;
+    EventStream<Counter> counters;
+    EventStream<GpuEvent> gpu;
+    EventStream<BufferEvent> buffers;
+    EventStream<PipelineEvent,256u> pipelines;
     std::size_t dropped=0u;
     ~Archive() noexcept {flush();}
 
     void flush() noexcept {
-        for(std::size_t i=0u;i<frame_count;++i) {
+        for(std::size_t i=0u;i<frames.size();++i) {
             const auto& v=frames[i];
             std::printf(
                 "FYZZXYZZY_TRACE kind=frame trace_id=%llu frame=%llu gpu_dy=%u success=%u start_ns=%llu end_ns=%llu\n",
@@ -78,7 +108,7 @@ struct Archive {
                 static_cast<unsigned long long>(v.begin),
                 static_cast<unsigned long long>(v.end));
         }
-        for(std::size_t i=0u;i<cpu_count;++i) {
+        for(std::size_t i=0u;i<cpu.size();++i) {
             const auto& v=cpu[i];
             std::printf(
                 "FYZZXYZZY_TRACE kind=cpu trace_id=%llu frame=%llu stage=%s start_ns=%llu end_ns=%llu duration_ns=%llu\n",
@@ -88,7 +118,7 @@ struct Archive {
                 static_cast<unsigned long long>(v.end),
                 static_cast<unsigned long long>(v.end-v.begin));
         }
-        for(std::size_t i=0u;i<counter_count;++i) {
+        for(std::size_t i=0u;i<counters.size();++i) {
             const auto& v=counters[i];
             std::printf(
                 "FYZZXYZZY_TRACE kind=counter trace_id=%llu frame=%llu name=%s value=%llu\n",
@@ -96,7 +126,7 @@ struct Archive {
                 static_cast<unsigned long long>(v.frame),v.label,
                 static_cast<unsigned long long>(v.value));
         }
-        for(std::size_t i=0u;i<gpu_count;++i) {
+        for(std::size_t i=0u;i<gpu.size();++i) {
             const auto& v=gpu[i];
             std::printf(
                 "FYZZXYZZY_TRACE kind=gpu backend=%s context=%llu trace_id=%llu submission=%llu op=%llu type=%s pipeline=%llu indirect=%u x=%u y=%u z=%u copy_bytes=%llu duration_ns=%.0f\n",
@@ -108,7 +138,7 @@ struct Archive {
                 unsigned(v.indirect),v.x,v.y,v.z,
                 static_cast<unsigned long long>(v.bytes),v.duration_ns);
         }
-        for(std::size_t i=0u;i<buffer_count;++i) {
+        for(std::size_t i=0u;i<buffers.size();++i) {
             const auto& v=buffers[i];
             if(v.action[0]=='c')
                 std::printf(
@@ -125,7 +155,7 @@ struct Archive {
                     static_cast<unsigned long long>(v.buffer),
                     static_cast<unsigned long long>(v.bytes));
         }
-        for(std::size_t i=0u;i<pipeline_count;++i) {
+        for(std::size_t i=0u;i<pipelines.size();++i) {
             const auto& v=pipelines[i];
             std::printf(
                 "FYZZXYZZY_TRACE kind=pipeline backend=%s context=%llu pipeline=%llu label=%s\n",
@@ -135,7 +165,12 @@ struct Archive {
         if(dropped)
             std::printf("FYZZXYZZY_TRACE kind=overflow dropped=%llu\n",
                 static_cast<unsigned long long>(dropped));
-        frame_count=cpu_count=counter_count=gpu_count=buffer_count=pipeline_count=0u;
+        frames.clear();
+        cpu.clear();
+        counters.clear();
+        gpu.clear();
+        buffers.clear();
+        pipelines.clear();
         dropped=0u;
     }
 };
@@ -176,56 +211,36 @@ struct Scope {
     ~Scope() noexcept {
         if(!begin || !current.active)return;
         const auto end=now_ns();
-        if(archive.cpu_count==archive.cpu.size()) {
+        if(!archive.cpu.append({label,current.trace_id,0u,begin,end}))
             ++archive.dropped;
-            return;
-        }
-        archive.cpu[archive.cpu_count++]={
-            label,current.trace_id,0u,begin,end};
     }
     Scope(const Scope&)=delete;
     Scope& operator=(const Scope&)=delete;
 };
 inline void counter(const char* label,std::uint64_t value) noexcept {
     if(!current.active)return;
-    if(archive.counter_count==archive.counters.size()) {
+    if(!archive.counters.append({label,current.trace_id,0u,value}))
         ++archive.dropped;
-        return;
-    }
-    archive.counters[archive.counter_count++]={
-        label,current.trace_id,0u,value};
 }
 inline void gpu_event(GpuEvent event) noexcept {
-    if(archive.gpu_count==archive.gpu.size()) {
-        ++archive.dropped;
-        return;
-    }
-    archive.gpu[archive.gpu_count++]=event;
+    if(!archive.gpu.append(event))++archive.dropped;
 }
 inline void buffer_event(BufferEvent event) noexcept {
-    if(archive.buffer_count==archive.buffers.size()) {
-        ++archive.dropped;
-        return;
-    }
-    archive.buffers[archive.buffer_count++]=event;
+    if(!archive.buffers.append(event))++archive.dropped;
 }
 inline void pipeline_event(PipelineEvent event) noexcept {
-    if(archive.pipeline_count==archive.pipelines.size()) {
-        ++archive.dropped;
-        return;
-    }
-    archive.pipelines[archive.pipeline_count++]=event;
+    if(!archive.pipelines.append(event))++archive.dropped;
 }
 inline void complete_thread_trace(std::uint64_t frame) noexcept {
     // Thread-local spans are correlated by the shared submission trace ID.
-    for(std::size_t i=archive.cpu_count;i>0u;--i) {
+    for(std::size_t i=archive.cpu.size();i>0u;--i) {
         auto& v=archive.cpu[i-1u];
         if(v.trace_id!=current.trace_id)break;
         v.frame=frame;
         v.begin-=current.begin;
         v.end-=current.begin;
     }
-    for(std::size_t i=archive.counter_count;i>0u;--i) {
+    for(std::size_t i=archive.counters.size();i>0u;--i) {
         auto& v=archive.counters[i-1u];
         if(v.trace_id!=current.trace_id)break;
         v.frame=frame;
@@ -240,11 +255,9 @@ inline void end_frame(std::uint64_t frame,bool gpu_dy,bool success) noexcept {
     if(!current.active)return;
     const auto end=now_ns();
     current.active=false;
-    if(archive.frame_count==archive.frames.size())
+    if(!archive.frames.append({
+        current.trace_id,frame,current.begin,end,gpu_dy,success}))
         ++archive.dropped;
-    else
-        archive.frames[archive.frame_count++]={
-            current.trace_id,frame,current.begin,end,gpu_dy,success};
     complete_thread_trace(frame);
 }
 inline void flush() noexcept {
