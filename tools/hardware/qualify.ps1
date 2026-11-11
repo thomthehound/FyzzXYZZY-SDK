@@ -12,7 +12,8 @@ param(
     [int]$Samples = 7,
     [ValidateRange(0, 10)]
     [int]$WarmupRuns = 2,
-    [switch]$Scale
+    [switch]$Scale,
+    [switch]$ValidateArtifactsOnly
 )
 
 Set-StrictMode -Version Latest
@@ -22,7 +23,7 @@ $PSNativeCommandUseErrorActionPreference = $false
 if (-not $IsWindows) {
     throw 'Physical-GPU qualification currently targets Windows PowerShell 7.'
 }
-if ($env:FYZZXYZZY_D3D12_FORCE_WARP -eq '1') {
+if (-not $ValidateArtifactsOnly -and $env:FYZZXYZZY_D3D12_FORCE_WARP -eq '1') {
     throw 'Physical-GPU qualification cannot run with FYZZXYZZY_D3D12_FORCE_WARP=1.'
 }
 
@@ -121,7 +122,7 @@ function Get-BackendConfig([string]$Api, [string]$Build) {
     $kernels = Join-Path $buildPath 'kernels'
     $shaderArguments = @(
         (Join-Path $kernels "fyzzxyzzy_native_sap_$manifestType.manifest"),
-        (Join-Path $kernels "fyzzxyzzy_native_pcm_$manifestType.manifest"),
+        (Join-Path $kernels "fyzzxyzzy_native_pcm_$suffix.manifest"),
         (Join-Path $kernels "physx_source_dy_distance_pgs_native.$suffix"),
         (Join-Path $kernels "physx_source_dy_convex_native.$suffix")
     )
@@ -129,6 +130,19 @@ function Get-BackendConfig([string]$Api, [string]$Build) {
     foreach ($file in @($shaderArguments) + @($aggregate)) {
         if (-not (Test-Path -LiteralPath $file -PathType Leaf)) {
             throw "Missing compiled shader artifact: $file"
+        }
+    }
+    foreach ($manifest in @($shaderArguments[0], $shaderArguments[1], $aggregate)) {
+        foreach ($line in (Get-Content -LiteralPath $manifest | Select-Object -Skip 1)) {
+            if ([string]::IsNullOrWhiteSpace($line)) { continue }
+            $fields = $line -split '\s+'
+            if ($fields.Count -ne 2) {
+                throw "Malformed shader manifest entry: $manifest -- $line"
+            }
+            $shader = Join-Path $kernels $fields[1]
+            if (-not (Test-Path -LiteralPath $shader -PathType Leaf)) {
+                throw "Missing manifest shader artifact: $shader"
+            }
         }
     }
     return [pscustomobject]@{
@@ -146,6 +160,12 @@ if ($Backend -in @('Both', 'Vulkan')) {
 }
 if ($Backend -in @('Both', 'D3D12')) {
     $configs += Get-BackendConfig 'D3D12' $D3D12Build
+}
+if ($ValidateArtifactsOnly) {
+    foreach ($config in $configs) {
+        Write-Host "Validated $($config.Api) qualification artifacts: $($config.Build)"
+    }
+    exit 0
 }
 
 $env:FYZZXYZZY_D3D12_REQUIRE_HARDWARE = '1'
