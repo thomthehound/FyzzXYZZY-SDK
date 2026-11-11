@@ -81,7 +81,7 @@ public:
         std::vector<compute::BatchCommand> commands;
         commands.reserve(resolved_uploads_.size());
         for(const auto& span:resolved_uploads_) {
-            if(span.offset%4u || span.bytes%4u)
+            if(span.destination_offset%4u || span.bytes%4u)
                 throw std::invalid_argument(
                     "PhysX source upload requires aligned buffer bytes");
             compute::UploadCommand command;
