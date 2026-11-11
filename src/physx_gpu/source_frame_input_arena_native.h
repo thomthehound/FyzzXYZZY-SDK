@@ -22,10 +22,7 @@ public:
         compute::Context& context,CudaDeviceAddressMap& addresses,
         SourceSapDmaNative& stream) noexcept
         : context_(context),addresses_(addresses),stream_(stream) {
-        const auto& info=context_.device_info();
-        direct_=info.unified_memory &&
-            info.has_device_local_host_visible_memory &&
-            info.supports_gpu_writable_host_visible;
+        direct_=context_.device_info().supports_shared_frame_input;
     }
 
     SourceFrameInputArenaNative(const SourceFrameInputArenaNative&)=delete;
