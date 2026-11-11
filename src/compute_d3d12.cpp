@@ -1532,7 +1532,7 @@ struct Context::Impl {
             if(!descriptor_table_written[table]) {
                 descriptor_table_written[table]=true;
                 const auto cpu_start=submission.heap->GetCPUDescriptorHandleForHeapStart();
-                    for (UINT slot = 0; slot < pipeline.bindings; ++slot) {
+                for (UINT slot = 0; slot < pipeline.bindings; ++slot) {
                     const auto& binding = cmd.buffers[slot];
                     auto& buffer = get_buffer(binding.buffer);
                     const auto kind = pipeline.view_kinds[slot];
