@@ -7,6 +7,7 @@ on:
   push:
     branches:
       - main
+      - feature/physical-gpu-qualification
     paths-ignore:
       - '**/*.md'
       - 'docs/**'
@@ -467,4 +468,9 @@ jobs:
           cmake -S . -B build-profile-d3d12 -A x64 -DBUILD_TESTING=ON -DFYZZXYZZY_ENABLE_PHYSX_SOURCE=OFF -DFYZZXYZZY_BUILD_D3D12=ON -DFYZZXYZZY_BUILD_SOURCE_GPU_TESTS=ON -DFYZZXYZZY_PROFILE_GPU=ON -DFETCHCONTENT_FULLY_DISCONNECTED=ON "-DFYZZXYZZY_DXC=$env:FYZZXYZZY_DXC"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           cmake --build build-profile-d3d12 --config Release --target fyzzxyzzy_source_sc_gpu_pcm_scene_d3d12 --parallel 4
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Validate qualified D3D12 shader artifact inventory
+        shell: pwsh
+        run: |
+          pwsh -NoProfile -File tools/hardware/qualify.ps1 -Backend D3D12 -ValidateArtifactsOnly
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
