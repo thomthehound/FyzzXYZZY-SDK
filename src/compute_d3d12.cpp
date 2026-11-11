@@ -1227,10 +1227,38 @@ struct Context::Impl {
         profile=profile || hardware_trace;
 #endif
         if (commands.empty()) throw std::invalid_argument("Empty D3D12 command batch");
+        // Each distinct pipeline/binding view needs one descriptor table
+        // for this submission. Repeated dispatches may change constants or
+        // execution dimensions without duplicating identical descriptors.
+        struct DescriptorTable {
+            PipelineId pipeline;
+            std::vector<BufferBinding> buffers;
+            UINT first_descriptor;
+        };
+        std::vector<DescriptorTable> descriptor_tables;
+        std::unordered_map<std::size_t,std::vector<std::size_t>> descriptor_lookup;
+        std::vector<std::size_t> dispatch_table_indices;
         std::size_t descriptor_count = 0;
         bool uses_indirect = false;
         std::size_t same_resource_copy_scratch_bytes = 0;
         std::vector<PipelineId> pipeline_sequence;
+        const auto mix_key=[](std::size_t& hash,std::size_t word) {
+            hash^=std::hash<std::size_t>{}(word)+0x9e3779b9u+
+                  (hash<<6u)+(hash>>2u);
+        };
+        const auto same_bindings=[](
+                const std::vector<BufferBinding>& a,
+                const std::vector<BufferBinding>& b) {
+            if(a.size()!=b.size())return false;
+            for(std::size_t i=0u;i<a.size();++i)
+                if(a[i].slot!=b[i].slot ||
+                   a[i].buffer!=b[i].buffer ||
+                   a[i].offset!=b[i].offset ||
+                   a[i].bytes!=b[i].bytes)
+                    return false;
+            // Access intent affects barriers, never descriptor contents.
+            return true;
+        };
         for (const BatchCommand& op : commands) {
             if (const auto* copy = std::get_if<CopyCommand>(&op)) {
                 const auto& source = get_buffer(copy->source);
@@ -1251,7 +1279,36 @@ struct Context::Impl {
                 const auto& dispatch = std::get<DispatchCommand>(op);
                 validate_dispatch(dispatch);
                 uses_indirect |= dispatch.indirect.has_value();
-                descriptor_count += get_pipeline(dispatch.pipeline).bindings;
+                const auto binding_count=get_pipeline(dispatch.pipeline).bindings;
+                std::size_t key=std::hash<PipelineId>{}(dispatch.pipeline);
+                for(const auto& binding:dispatch.buffers) {
+                    mix_key(key,binding.slot);
+                    mix_key(key,binding.buffer);
+                    mix_key(key,binding.offset);
+                    mix_key(key,binding.bytes);
+                }
+                auto& candidates=descriptor_lookup[key];
+                std::size_t table=descriptor_tables.size();
+                for(const auto candidate:candidates) {
+                    const auto& existing=descriptor_tables[candidate];
+                    if(existing.pipeline==dispatch.pipeline &&
+                       same_bindings(existing.buffers,dispatch.buffers)) {
+                        table=candidate;
+                        break;
+                    }
+                }
+                if(table==descriptor_tables.size()) {
+                    if(binding_count>
+                       std::numeric_limits<UINT>::max()-descriptor_count)
+                        throw std::out_of_range(
+                            "D3D12 descriptor heap capacity exceeded");
+                    descriptor_tables.push_back({
+                        dispatch.pipeline,dispatch.buffers,
+                        static_cast<UINT>(descriptor_count)});
+                    candidates.push_back(table);
+                    descriptor_count+=binding_count;
+                }
+                dispatch_table_indices.push_back(table);
                 pipeline_sequence.push_back(dispatch.pipeline);
             }
         }
@@ -1396,7 +1453,8 @@ struct Context::Impl {
                 access.pending_write = false;
             }
         };
-        UINT descriptor_index = 0;
+        std::vector<bool> descriptor_table_written(descriptor_tables.size(),false);
+        std::size_t dispatch_index=0u;
 #if defined(FYZZXYZZY_PROFILE_GPU)
         UINT hardware_query_index=1u;
 #endif
@@ -1457,9 +1515,13 @@ struct Context::Impl {
                 require_state(binding.buffer, desired);
             }
 
-            const auto cpu_start = submission.heap->GetCPUDescriptorHandleForHeapStart();
-            const auto gpu_start = submission.heap->GetGPUDescriptorHandleForHeapStart();
-            for (UINT slot = 0; slot < pipeline.bindings; ++slot) {
+            const auto table=dispatch_table_indices[dispatch_index++];
+            const auto descriptor_index=descriptor_tables[table].first_descriptor;
+            const auto gpu_start=submission.heap->GetGPUDescriptorHandleForHeapStart();
+            if(!descriptor_table_written[table]) {
+                descriptor_table_written[table]=true;
+                const auto cpu_start=submission.heap->GetCPUDescriptorHandleForHeapStart();
+                for (UINT slot = 0; slot < pipeline.bindings; ++slot) {
                 const auto& binding = cmd.buffers[slot];
                 auto& buffer = get_buffer(binding.buffer);
                 const auto kind = pipeline.view_kinds[slot];
@@ -1504,6 +1566,7 @@ struct Context::Impl {
                     device->CreateShaderResourceView(buffer.resource.Get(), &view, cpu);
                 }
                 cached = next;
+                }
             }
             submission.commands->SetComputeRootSignature(pipeline.signature.Get());
             submission.commands->SetPipelineState(pipeline.state.Get());
@@ -1543,7 +1606,6 @@ struct Context::Impl {
                 if (writable && cmd.buffers[slot].access != BufferAccess::Read)
                     resource_access[cmd.buffers[slot].buffer].pending_write = true;
             }
-            descriptor_index += pipeline.bindings;
         }
         for (const auto& entry : resource_access) {
             transition(submission.commands.Get(), get_buffer(entry.first).resource.Get(),
