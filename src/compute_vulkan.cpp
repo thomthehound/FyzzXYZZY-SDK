@@ -101,6 +101,8 @@ std::vector<DeviceCandidate> find_compute_devices(VkInstance instance) {
             info.vendor_id = properties.vendorID;
             info.device_id = properties.deviceID;
             info.api_version = properties.apiVersion;
+            info.unified_memory =
+                properties.deviceType == VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU;
             VkPhysicalDeviceMemoryProperties memory{};
             vkGetPhysicalDeviceMemoryProperties(physical, &memory);
             for (std::uint32_t m = 0; m < memory.memoryTypeCount; ++m) {
@@ -722,8 +724,11 @@ struct Context::Impl {
                         (flags & required) != required) {
                         continue;
                     }
-                    if (placement == MemoryPlacement::DeviceLocal && pass == 0 &&
-                        (flags & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) != 0) {
+                    if (pass == 0 &&
+                        ((placement == MemoryPlacement::DeviceLocal &&
+                          (flags & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) != 0) ||
+                         (placement == MemoryPlacement::HostVisible &&
+                          (flags & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT) == 0))) {
                         continue;
                     }
                     type_index = i;
