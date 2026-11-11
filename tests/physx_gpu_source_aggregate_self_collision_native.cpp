@@ -1,5 +1,6 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 thomthehound
 // SPDX-License-Identifier: Apache-2.0
+#include "source_command_view.h"
 #include "fyzzxyzzy/compute.h"
 #include "physx_gpu/source_aggregate_gpu_native.h"
 #include "physx_gpu/source_aggregate_projection_native.h"
@@ -17,6 +18,8 @@
 
 using namespace fyzz::compute;
 using namespace fyzz::physx_gpu;
+
+using fyzz::physx_gpu::test::SourceCommandView;
 
 namespace {
 void require(bool ok,const char* message) {
@@ -130,7 +133,7 @@ void verify(Context& context,ShaderBinary projection,ShaderBinary collision) {
     }catch(const std::invalid_argument&) {
         rejected=true;
     }
-    require(rejected && stream.commands().empty(),
+    require(rejected && SourceCommandView{stream.commands()}.empty(),
             "Aliased original self-collision histories were admitted");
     invalid=source;
     invalid.report_capacity=0u;
@@ -140,7 +143,7 @@ void verify(Context& context,ShaderBinary projection,ShaderBinary collision) {
     }catch(const std::invalid_argument&) {
         rejected=true;
     }
-    require(rejected && stream.commands().empty(),
+    require(rejected && SourceCommandView{stream.commands()}.empty(),
             "Zero-capacity original self-collision reports were admitted");
 
     std::array<std::uint32_t,kBounds*6u> previous{};

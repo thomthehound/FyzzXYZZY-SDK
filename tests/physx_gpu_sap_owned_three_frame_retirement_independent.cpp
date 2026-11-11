@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 thomthehound
 // SPDX-License-Identifier: Apache-2.0
 
+#include "source_command_view.h"
 #include "physx_port/gpubroadphase/PxgSapSourceMembersNative.h"
 #include "physx_port/gpubroadphase/PxgSapDmaUpFrameNative.h"
 #include "physx_port/lowlevelaabb/include/BpBroadPhaseUpdate.h"
@@ -47,6 +48,8 @@
 
 using namespace fyzz::compute;
 using namespace fyzz::physx_gpu;
+
+using fyzz::physx_gpu::test::SourceCommandView;
 
 namespace {
 static_assert(sizeof(physx::Bp::VolumeData)==16u);
@@ -257,7 +260,7 @@ void execute(Context& context, ShaderBinary translateShader,
                     admission.counts.projections == 6u &&
                     admission.counts.padded_projections == 8u &&
                     sap.force_update() &&
-                    stream.commands().empty(),
+                    SourceCommandView{stream.commands()}.empty(),
                     "Original SAP DMA-up did not admit the created frame");
 
             const auto& descriptor = sap.descriptor();
@@ -289,6 +292,7 @@ void execute(Context& context, ShaderBinary translateShader,
                     "Source buddy heap did not exercise D3D12 shared-root bindings");
 
             auto& commands = stream.commands();
+            const SourceCommandView gpu_commands{commands};
             append_source_sap_translate_aabbs_native(
                 commands, lowering, translation, true);
 
@@ -296,10 +300,10 @@ void execute(Context& context, ShaderBinary translateShader,
             // written by the preceding translateAABBsKernel, without an
             // intervening CPU download or an independent staging buffer.
             createdStage.append(commands, descriptor, addresses, {3u, 8u});
-            require(commands.size() == 2u &&
-                    std::get<DispatchCommand>(commands[0]).buffers.size() == 4u &&
-                    std::get<DispatchCommand>(commands[1]).groups.x == 32u &&
-                    std::get<DispatchCommand>(commands[1]).buffers.size() == 9u,
+            require(gpu_commands.size() == 2u &&
+                    std::get<DispatchCommand>(gpu_commands[0]).buffers.size() == 4u &&
+                    std::get<DispatchCommand>(gpu_commands[1]).groups.x == 32u &&
+                    std::get<DispatchCommand>(gpu_commands[1]).buffers.size() == 9u,
                     "Original SAP created-frame kernel dispatches changed");
 
             // The original GPU WOR path consumes these just-created
@@ -323,13 +327,13 @@ void execute(Context& context, ShaderBinary translateShader,
                 radixStage.append_wor(
                     commands,invalidRadix,addresses,0u,3u);
             } catch (const std::exception&) { rejected=true; }
-            require(rejected && commands.size()==2u,
+            require(rejected && gpu_commands.size()==2u,
                     "Invalid source radix tail partially appended GPU work");
             radixStage.append_wor(
                 commands,radixDescriptors,addresses,0u,3u);
-            require(commands.size()==18u &&
-                    std::get<DispatchCommand>(commands[2]).groups.x==32u &&
-                    std::get<DispatchCommand>(commands[2]).groups.y==3u,
+            require(gpu_commands.size()==18u &&
+                    std::get<DispatchCommand>(gpu_commands[2]).groups.x==32u &&
+                    std::get<DispatchCommand>(gpu_commands[2]).groups.y==3u,
                     "Original WOR eight-pass GPU radix dispatch was not appended");
 
             // After the source WOR sort, PhysX calculates current-frame
@@ -344,7 +348,7 @@ void execute(Context& context, ShaderBinary translateShader,
                 histogramsStage.append(commands,invalidHistograms,
                                        addresses,{8u,3u},false);
             } catch (const std::exception&) { rejected=true; }
-            require(rejected && commands.size()==18u,
+            require(rejected && gpu_commands.size()==18u,
                     "Invalid endpoint history appended partial GPU work");
             histogramsStage.append(commands,descriptor,addresses,
                                    {8u,3u},false);
@@ -358,15 +362,15 @@ void execute(Context& context, ShaderBinary translateShader,
                 indicesStage.append(commands,invalidIndices,addresses,
                                     {3u,8u},3u,false);
             } catch (const std::exception&) { rejected=true; }
-            require(rejected && commands.size()==20u,
+            require(rejected && gpu_commands.size()==20u,
                     "Invalid source SAP box history appended partial work");
             indicesStage.append(commands,descriptor,addresses,{3u,8u},3u,false);
-            require(commands.size()==21u &&
-                    std::get<DispatchCommand>(commands[18]).buffers.size()==48u &&
-                    std::get<DispatchCommand>(commands[19]).buffers.size()==48u &&
-                    std::get<DispatchCommand>(commands[20]).buffers.size()==6u &&
-                    std::get<DispatchCommand>(commands[19]).groups.x==32u &&
-                    std::get<DispatchCommand>(commands[19]).groups.y==3u,
+            require(gpu_commands.size()==21u &&
+                    std::get<DispatchCommand>(gpu_commands[18]).buffers.size()==48u &&
+                    std::get<DispatchCommand>(gpu_commands[19]).buffers.size()==48u &&
+                    std::get<DispatchCommand>(gpu_commands[20]).buffers.size()==6u &&
+                    std::get<DispatchCommand>(gpu_commands[19]).groups.x==32u &&
+                    std::get<DispatchCommand>(gpu_commands[19]).groups.y==3u,
                     "Original source SAP endpoint/index execution shape changed");
 
             // Run the original region, active-list and found-pair sequence
@@ -386,18 +390,18 @@ void execute(Context& context, ShaderBinary translateShader,
             try {
                 sourceRegions.append(commands,invalidRegion,addresses,regionLayout);
             } catch(const std::exception&) { rejectedChain=true; }
-            require(rejectedChain&&commands.size()==21u,
+            require(rejectedChain&&gpu_commands.size()==21u,
                     "Invalid source found-pair report appended partial GPU work");
             sourceRegions.append(commands,descriptor,addresses,regionLayout);
-            require(commands.size()==35u &&
-                    std::get<DispatchCommand>(commands[23]).buffers.size()==10u &&
-                    std::get<DispatchCommand>(commands[27]).buffers.size()==3u &&
-                    std::get<DispatchCommand>(commands[28]).buffers.size()==6u &&
-                    std::get<DispatchCommand>(commands[29]).groups.x==64u &&
-                    std::get<DispatchCommand>(commands[30]).buffers.size()==9u &&
-                    std::get<DispatchCommand>(commands[31]).buffers.size()==9u &&
-                    std::get<DispatchCommand>(commands[34]).groups.x==64u &&
-                    std::get<DispatchCommand>(commands[34]).buffers.size()==16u,
+            require(gpu_commands.size()==35u &&
+                    std::get<DispatchCommand>(gpu_commands[23]).buffers.size()==10u &&
+                    std::get<DispatchCommand>(gpu_commands[27]).buffers.size()==3u &&
+                    std::get<DispatchCommand>(gpu_commands[28]).buffers.size()==6u &&
+                    std::get<DispatchCommand>(gpu_commands[29]).groups.x==64u &&
+                    std::get<DispatchCommand>(gpu_commands[30]).buffers.size()==9u &&
+                    std::get<DispatchCommand>(gpu_commands[31]).buffers.size()==9u &&
+                    std::get<DispatchCommand>(gpu_commands[34]).groups.x==64u &&
+                    std::get<DispatchCommand>(gpu_commands[34]).buffers.size()==16u,
                     "Original source region/active/pair GPU dispatch order changed");
 
             // Original hostMappedAlloc destinations are the only allowed
@@ -427,15 +431,15 @@ void execute(Context& context, ShaderBinary translateShader,
                                    {gpuDescriptor,static_cast<std::uint32_t>(sourceVolumes.size()),
                                     sizeof(physx::Bp::VolumeData),8u});
             } catch(const std::exception&) { rejected=true; }
-            require(rejected && commands.size()==35u,
+            require(rejected && gpu_commands.size()==35u,
                     "Invalid original report destination appended partial work");
             reportStage.append(commands,descriptor,addresses,
                                {gpuDescriptor,static_cast<std::uint32_t>(sourceVolumes.size()),
                                 sizeof(physx::Bp::VolumeData),8u});
-            require(commands.size()==38u &&
-                    std::get<DispatchCommand>(commands[35]).buffers.size()==8u &&
-                    std::get<DispatchCommand>(commands[36]).buffers.size()==13u &&
-                    std::get<DispatchCommand>(commands[37]).buffers.size()==7u,
+            require(gpu_commands.size()==38u &&
+                    std::get<DispatchCommand>(gpu_commands[35]).buffers.size()==8u &&
+                    std::get<DispatchCommand>(gpu_commands[36]).buffers.size()==13u &&
+                    std::get<DispatchCommand>(gpu_commands[37]).buffers.size()==7u,
                     "Original PhysX source GPU report classification launches changed");
 
             // Original update() exchanges integer AABB owners AFTER
@@ -888,6 +892,7 @@ void execute(Context& context, ShaderBinary translateShader,
                     "Motion frame lost original changed-bit or fetched handle ownership");
 
             auto& pending=stream.commands();
+            const SourceCommandView gpu_pending{pending};
             append_source_sap_translate_aabbs_native(
                 pending,lowering,{
                     gpu_address(nextDesc.updateData_fpBounds),
@@ -919,7 +924,7 @@ void execute(Context& context, ShaderBinary translateShader,
             reportStage.append(pending,nextDesc,addresses,
                                {nextGpu,static_cast<std::uint32_t>(sourceVolumes.size()),
                                 sizeof(physx::Bp::VolumeData),8u});
-            require(pending.size()>24u,
+            require(gpu_pending.size()>24u,
                     "Source GPU moving frame lost WR/incremental/report stages");
             swap_sap_integer_bounds_after_pairs_native(
                 sap.new_integer_bounds(),sap.old_integer_bounds());
@@ -1017,6 +1022,7 @@ void execute(Context& context, ShaderBinary translateShader,
             const auto removalGpu=
                 retireDma.descriptor_gpu_buffers.broadphase.getDevicePtr();
             auto& removePending=stream.commands();
+            const SourceCommandView gpu_removePending{removePending};
             append_source_sap_translate_aabbs_native(
                 removePending,lowering,{
                     gpu_address(removalDesc.updateData_fpBounds),
