@@ -122,6 +122,7 @@ struct SourceDyLaunchStats {
     std::size_t device_world_motion_bodies=0u;
     std::size_t actor_local_upload_bytes=0u;
     std::size_t actor_local_upload_spans=0u;
+    std::size_t device_upload_batches=0u;
     std::size_t reused_actor_local_poses=0u;
     std::size_t resident_velocity_reuses=0u;
     std::size_t prepared_velocity_updated_bodies=0u;
@@ -1338,8 +1339,6 @@ public:
                             offsetof(native::GpuDyJointRow,applied_force),
                         &address,sizeof(address));
         }
-        if(!joint_source_uploads_.empty())
-            stream_.queue_uploads(joint_source_uploads_);
         // Only newly admitted or edited actor-local transforms are
         // uploaded. Neighboring BodyIds share one source DMA span.
         std::sort(pending_actor_locals_.begin(),pending_actor_locals_.end());
@@ -1366,24 +1365,32 @@ public:
                 count*sizeof(SourceDyActorLocalNative);
         }
         last_schedule_.actor_local_upload_spans=actor_local_uploads_.size();
-        if(!actor_local_uploads_.empty())
-            stream_.queue_uploads(actor_local_uploads_);
         std::memcpy(host_.data()+offsets[12],
                     integration_header.data(),sizeof(integration_header));
         const auto previous_spans=stream_.submission_stats().upload_spans;
+        const auto previous_batches=stream_.submission_stats().upload_batches;
+        auto& uploads=stream_.upload_scratch();
+        uploads.reserve(joint_source_uploads_.size()+
+                        actor_local_uploads_.size()+
+                        (device_admission?2u:1u));
+        uploads.insert(uploads.end(),joint_source_uploads_.begin(),
+                       joint_source_uploads_.end());
+        uploads.insert(uploads.end(),actor_local_uploads_.begin(),
+                       actor_local_uploads_.end());
         if(device_admission) {
-            auto& uploads=stream_.upload_scratch();
+            // The device-generated scratch window has no host input.
             uploads.push_back({
                 address+upload_begin,host_.data()+upload_begin,
                 device_skip_begin-upload_begin});
             uploads.push_back({
                 address+device_skip_end,host_.data()+device_skip_end,
                 input_end-device_skip_end});
-            // One staging submission carries two real source spans;
-            // no host packet fills the device-generated scratch gap.
-            stream_.queue_uploads(uploads);
-        }else stream_.queue_uploads({{
-            address+upload_begin,host_.data()+upload_begin,uploaded_bytes}});
+        }else uploads.push_back({
+            address+upload_begin,host_.data()+upload_begin,uploaded_bytes});
+        // These disjoint source spans share one ordered DMA submission.
+        stream_.queue_uploads(uploads);
+        last_schedule_.device_upload_batches=
+            stream_.submission_stats().upload_batches-previous_batches;
         // The Sc producer and Dy consumer use the same ordered source
         // stream. GPU-to-GPU copies replace the transient task/ordinal/
         // token inputs after the shared host upload; no Sc witness fetch
@@ -1419,7 +1426,8 @@ public:
                     descriptors.size()*sizeof(std::uint32_t));
         }
         last_upload_spans_=stream_.submission_stats().upload_spans-
-                           previous_spans;
+                           previous_spans-joint_source_uploads_.size()-
+                           actor_local_uploads_.size();
         for(std::size_t i=0;i<11u;++i)
             params[i<6u?i:i+6u]=narrow(
                 static_cast<std::size_t>(params[28])+offsets[i]);
