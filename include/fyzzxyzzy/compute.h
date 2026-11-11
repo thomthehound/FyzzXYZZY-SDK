@@ -182,6 +182,14 @@ struct DispatchIndirectArgs {
     std::size_t offset = 0; // Three GPU-written uint32 workgroup counts.
 };
 
+// Owned host snapshot for an ordered GPU upload inside a command batch.
+// The backend packs snapshots into fence-owned transfer staging.
+struct UploadCommand {
+    BufferId destination = 0;
+    std::size_t destination_offset = 0;
+    std::vector<std::uint8_t> bytes;
+};
+
 struct DispatchCommand {
     PipelineId pipeline = 0;
     DispatchSize groups;
@@ -191,7 +199,7 @@ struct DispatchCommand {
     std::optional<DispatchIndirectArgs> indirect;
 };
 
-using BatchCommand = std::variant<CopyCommand, DispatchCommand>;
+using BatchCommand = std::variant<CopyCommand, UploadCommand, DispatchCommand>;
 
 std::vector<DeviceInfo> enumerate_devices(Backend backend);
 
