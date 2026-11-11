@@ -84,8 +84,6 @@ public:
         desc.storage_buffer_binding_count=5u;
         desc.storage_buffer_views.assign(
             5u,compute::StorageBufferViewKind::RawReadWrite);
-        desc.storage_buffer_views[0]=compute::StorageBufferViewKind::RawRead;
-        desc.storage_buffer_views[4]=compute::StorageBufferViewKind::RawRead;
         desc.push_constant_bytes=24u;
         pipeline_=context_.create_compute_pipeline(desc);
 #if defined(FYZZXYZZY_PROFILE_GPU)
