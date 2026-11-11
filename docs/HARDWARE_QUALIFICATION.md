@@ -73,6 +73,18 @@ Omit `-Scale` for the core suite only. Each backend executes correctness cases
 once, then separate warm-up and sampled repetitions of selected execution
 patterns. A failure stops execution immediately and retains the failure log.
 
+Completed evidence can be summarized again without rerunning a scenario or
+rebuilding a shader:
+
+```powershell
+pwsh -NoProfile -File tools/hardware/qualify.ps1 `
+  -SummarizeEvidence 'build-hardware-evidence\YYYYMMDDTHHMMSSZ'
+```
+
+The report-only path reads `runs.jsonl` and `trace.jsonl` and writes
+`summary.json` and `stages.json` in that directory. The run logs, raw trace
+and provenance remain unchanged.
+
 The appliance enforces physical-device creation in both backends.
 `FYZZXYZZY_D3D12_REQUIRE_HARDWARE=1` rejects D3D12 software adapters.
 `FYZZXYZZY_VULKAN_REQUIRE_HARDWARE=1` rejects Vulkan CPU, virtual and
