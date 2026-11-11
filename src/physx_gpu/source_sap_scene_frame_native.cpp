@@ -5,6 +5,7 @@
 #include "physx_gpu/source_sc_scene_elements_native.h"
 #include "physx_port/gpubroadphase/PxgAabbSourceMembersNative.h"
 #include "physx_port/gpubroadphase/PxgSapSourceMembersNative.h"
+#include "hardware_profile.h"
 
 #include <cstdint>
 #include <optional>
@@ -41,6 +42,7 @@ SourceSapUpdateAdmission queue_source_sap_scene_frame_native(
     bool& force_update,
     const SourceSapUpdateNativeStages& stages,
     const CudaDeviceAddressMap& addresses) {
+    FYZZ_PROFILE_SCOPE("sap.owner_queue");
 
     if(members.aabb_owner)
         validate_source_sap_owned_aabb_aliases_native(
@@ -170,6 +172,7 @@ SourceSapSceneFrameNativeResult fetch_source_sap_scene_frame_native(
     SourceSapDmaNative& stream,
     const CudaDeviceAddressMap& addresses,
     compute::Context& context) {
+    FYZZ_PROFILE_SCOPE("sap.owner_fetch");
     const SourceSapVolumeActorLifetimeNative volume_lifetime{
         members.volume_to_actor,members.aabb_manager.volume_data};
     // The source queue and Context readback queue are ordered. Submit
@@ -196,7 +199,10 @@ SourceSapSceneFrameNativeResult fetch_source_sap_scene_frame_native(
             {source.buffer,source.offset,
              &descriptor_snapshot,sizeof(descriptor_snapshot)}
         }};
-        context.download_batch(readback);
+        {
+            FYZZ_PROFILE_SCOPE("sap.descriptor_download");
+            context.download_batch(readback);
+        }
     }
     // The synchronous Context readback completed all prior source work.
     // Retire its original upload/command tokens before touching direct
@@ -346,10 +352,13 @@ SourceSapSceneFrameNativeResult advance_source_sap_owned_scene_frame_native(
         }};
     // The source AABB manager remains the only producer of transform
     // records. Do not first pack and then compact its dirty record set.
-    const auto update=aabb.prepare(
-        inputs.live_boxes,inputs.live_handles,inputs.filter,
-        inputs.gpu_box_owners!=nullptr,republish_all,
-        inputs.sc_elements && !republish_all ? &cached_poses : nullptr);
+    const auto update=[&] {
+        FYZZ_PROFILE_SCOPE("sap.aabb_prepare");
+        return aabb.prepare(
+            inputs.live_boxes,inputs.live_handles,inputs.filter,
+            inputs.gpu_box_owners!=nullptr,republish_all,
+            inputs.sc_elements && !republish_all ? &cached_poses : nullptr);
+    }();
     if(inputs.sc_elements)aabb.lower_shape_attachment_links(inputs.sc_elements->handles());
     std::optional<SourceSapGpuBoxTransformsNative> gpu_boxes;
     if(inputs.gpu_box_owners) {
