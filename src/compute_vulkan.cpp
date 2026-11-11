@@ -1485,23 +1485,28 @@ struct Context::Impl {
                 total,MemoryPlacement::HostVisible,false);
             bool submitted=false;
             try {
-                const Buffer& staging=get(staging_id);
-                void* mapped=nullptr;
-                require(vkMapMemory(device,staging.memory,0,VK_WHOLE_SIZE,0,&mapped),
-                        "vkMapMemory ordered upload batch");
                 std::vector<BatchCommand> expanded;
                 expanded.reserve(operations.size());
                 std::size_t offset=0;
                 for(const auto& op:operations) {
                     if(const auto* upload=std::get_if<UploadCommand>(&op)) {
-                        std::memcpy(static_cast<std::uint8_t*>(mapped)+offset,
-                                    upload->bytes.data(),upload->bytes.size());
                         expanded.emplace_back(CopyCommand{
                             staging_id,offset,upload->destination,
                             upload->destination_offset,upload->bytes.size()});
                         offset+=upload->bytes.size();
                     }else expanded.push_back(op);
                 }
+                const Buffer& staging=get(staging_id);
+                void* mapped=nullptr;
+                require(vkMapMemory(device,staging.memory,0,VK_WHOLE_SIZE,0,&mapped),
+                        "vkMapMemory ordered upload batch");
+                offset=0;
+                for(const auto& op:operations)
+                    if(const auto* upload=std::get_if<UploadCommand>(&op)) {
+                        std::memcpy(static_cast<std::uint8_t*>(mapped)+offset,
+                                    upload->bytes.data(),upload->bytes.size());
+                        offset+=upload->bytes.size();
+                    }
                 vkUnmapMemory(device,staging.memory);
                 const auto id=submit_batch(expanded,explicit_profile,false);
                 submitted=true;
