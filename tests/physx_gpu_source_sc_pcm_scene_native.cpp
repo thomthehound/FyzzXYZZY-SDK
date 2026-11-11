@@ -4001,7 +4001,7 @@ void verify_gpu_free_integration(
 
 void verify_gpu_wide_island_solver(
     fyzz::compute::Backend backend,const char* sap,const char* pcm,
-    const char* dy_shader,unsigned connected_bodies) {
+    const char* dy_shader,unsigned connected_bodies,bool diagnose=false) {
     using namespace fyzz;
     std::ifstream input(dy_shader,std::ios::binary);
     require(bool(input),"Compiled source Dy shader unavailable");
@@ -4011,6 +4011,8 @@ void verify_gpu_wide_island_solver(
     shader.format=backend==compute::Backend::Vulkan
         ? compute::ShaderFormat::Spirv : compute::ShaderFormat::Dxil;
     shader.bytes.assign(binary.begin(),binary.end());
+    std::optional<compute::ShaderBinary> diagnostic_shader;
+    if(diagnose)diagnostic_shader=shader;
 
     native::Scene cpu,gpu;
     cpu.set_enhanced_determinism(true);
@@ -4021,6 +4023,18 @@ void verify_gpu_wide_island_solver(
         load_native_gpu_pcm_shaders(backend,pcm),std::move(shader));
     auto* producer=owner.get();
     gpu.set_gpu_broadphase(std::move(owner));
+    std::unique_ptr<native::Scene> pcm_cpu_dy;
+    if(diagnose) {
+        pcm_cpu_dy=std::make_unique<native::Scene>();
+        pcm_cpu_dy->set_enhanced_determinism(true);
+        pcm_cpu_dy->set_gpu_broadphase(
+            std::make_unique<physx_gpu::SourceScOwnedGpuBroadphaseNative>(
+                backend,load_native_gpu_sap_shaders(backend,sap),
+                connected_bodies>768u ? 32768u : 4096u,128u,
+                std::nullopt,load_native_gpu_pcm_shaders(backend,pcm),
+                std::move(*diagnostic_shader)));
+        pcm_cpu_dy->set_gpu_dy_enabled(false);
+    }
 
     struct Assembly {
         std::vector<BodyId> bodies;
@@ -4068,13 +4082,18 @@ void verify_gpu_wide_island_solver(
     };
     const auto expected=assemble(cpu);
     const auto actual=assemble(gpu);
+    std::optional<Assembly> diagnostic;
+    if(pcm_cpu_dy)diagnostic=assemble(*pcm_cpu_dy);
     for(unsigned frame=0;frame<4u;++frame) {
         if(frame==2u) {
             cpu.retire_constraint(expected.split_joint);
             gpu.retire_constraint(actual.split_joint);
+            if(pcm_cpu_dy)
+                pcm_cpu_dy->retire_constraint(diagnostic->split_joint);
         }
         constexpr float dt=1.0f/120.0f;
         cpu.step(dt);
+        if(pcm_cpu_dy)pcm_cpu_dy->step(dt);
         gpu.step(dt);
         const auto schedule=producer->dy_launch_stats();
         require(schedule.device_colored_tasks>=1u &&
@@ -4112,6 +4131,60 @@ void verify_gpu_wide_island_solver(
                 producer->dy_pcm_device_contact_rows()>=actual.bodies.size() &&
                 producer->dy_cpu_gu_geometry_bytes()==0u,
                 "Wide island lost GPU contact preparation or body integration");
+        if(pcm_cpu_dy) {
+            const auto max_axis_error=[](Vec3 a,Vec3 b) {
+                return std::max({std::abs(double(a.x)-b.x),
+                                 std::abs(double(a.y)-b.y),
+                                 std::abs(double(a.z)-b.z)});
+            };
+            const auto max_force_error=[](auto lhs,auto rhs) {
+                if(lhs.size()!=rhs.size())return -1.0;
+                double difference=0.0;
+                for(std::size_t k=0;k<lhs.size();++k)
+                    difference=std::max(difference,
+                        std::abs(double(lhs[k])-double(rhs[k])));
+                return difference;
+            };
+            double contact_linear=0.0,contact_angular=0.0;
+            double dy_linear=0.0,dy_angular=0.0;
+            double contact_position=0.0,dy_position=0.0;
+            for(std::size_t i=0;i<actual.bodies.size();++i) {
+                const auto reference=cpu.body_state(expected.bodies[i]);
+                const auto contact=pcm_cpu_dy->body_state(diagnostic->bodies[i]);
+                const auto solved=gpu.body_state(actual.bodies[i]);
+                contact_position=std::max(contact_position,
+                    max_axis_error(reference.position,contact.position));
+                contact_linear=std::max(contact_linear,
+                    max_axis_error(reference.velocity,contact.velocity));
+                contact_angular=std::max(contact_angular,
+                    max_axis_error(reference.angular_velocity,
+                                   contact.angular_velocity));
+                dy_position=std::max(dy_position,
+                    max_axis_error(contact.position,solved.position));
+                dy_linear=std::max(dy_linear,
+                    max_axis_error(contact.velocity,solved.velocity));
+                dy_angular=std::max(dy_angular,
+                    max_axis_error(contact.angular_velocity,
+                                   solved.angular_velocity));
+            }
+            std::cout<<"FYZZXYZZY_METRIC suite=sc_pcm"
+                     <<" case=wide_islands_diagnose frame="<<frame
+                     <<" cpu_vs_pcm_position="<<contact_position
+                     <<" cpu_vs_pcm_linear="<<contact_linear
+                     <<" cpu_vs_pcm_angular="<<contact_angular
+                     <<" pcm_vs_gpu_position="<<dy_position
+                     <<" pcm_vs_gpu_linear="<<dy_linear
+                     <<" pcm_vs_gpu_angular="<<dy_angular
+                     <<" cpu_vs_pcm_normal_force="<<max_force_error(
+                         cpu.solved_normal_impulses(),
+                         pcm_cpu_dy->solved_normal_impulses())
+                     <<" pcm_vs_gpu_normal_force="<<max_force_error(
+                         pcm_cpu_dy->solved_normal_impulses(),
+                         gpu.solved_normal_impulses())
+                     <<" cpu_contacts="<<cpu.contacts().size()
+                     <<" pcm_contacts="<<pcm_cpu_dy->contacts().size()
+                     <<" gpu_contacts="<<gpu.contacts().size()<<'\n';
+        }
         for(std::size_t i=0;i<actual.bodies.size();++i) {
             const auto actual_state=gpu.body_state(actual.bodies[i]);
             const auto expected_state=cpu.body_state(expected.bodies[i]);
@@ -4547,7 +4620,8 @@ int main(int argc,char** argv) {
                 scenario=="device_admission" ||
                 scenario=="indirect_api" ||
                 scenario=="hardware_scene_1k" ||
-                scenario=="hardware_scene_10k",
+                scenario=="hardware_scene_10k" ||
+                scenario=="wide_islands_diagnose",
                 "Unknown GPU scene regression scenario");
 #ifdef FYZZXYZZY_TEST_D3D12
         constexpr auto backend=fyzz::compute::Backend::D3D12;
@@ -4687,11 +4761,15 @@ int main(int argc,char** argv) {
             fyzz::tests::measure_gpu_case("sc_pcm","star_island_10k",
                 [&]{verify_gpu_high_degree_coloring(
                     backend,argv[1],argv[2],argv[3],10000u);});
-        if(scenario=="all" || scenario=="wide_islands" || scenario=="wide_islands_10k") {
+        if(scenario=="all" || scenario=="wide_islands" ||
+           scenario=="wide_islands_10k" || scenario=="wide_islands_diagnose") {
             const bool large=scenario=="wide_islands_10k";
-            fyzz::tests::measure_gpu_case("sc_pcm",large ? "wide_islands_10k" : "wide_islands",
+            const bool diagnose=scenario=="wide_islands_diagnose";
+            fyzz::tests::measure_gpu_case("sc_pcm",large ? "wide_islands_10k" :
+                diagnose ? "wide_islands_diagnose" : "wide_islands",
                 [&]{verify_gpu_wide_island_solver(
-                    backend,argv[1],argv[2],argv[3],large ? 10240u : 768u);});
+                    backend,argv[1],argv[2],argv[3],
+                    large ? 10240u : 768u,diagnose);});
         }
         if(scenario=="hardware_scene_1k" || scenario=="hardware_scene_10k")
             fyzz::tests::measure_gpu_case("hardware_scene",scenario,
