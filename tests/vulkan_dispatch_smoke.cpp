@@ -255,6 +255,41 @@ int main(int argc, char** argv) {
         if (!context.submission_complete(first_in_flight))
             throw std::runtime_error("Earlier same-queue submission not completed");
         context.wait_submission(first_in_flight);
+
+        // Uploads, dependent kernels and copies share one queue fence.
+        // Changing the source array after snapshot construction cannot
+        // affect either GPU upload's owned bytes.
+        std::array<std::uint32_t,array_size> later_input{};
+        for(std::uint32_t i=0;i<array_size;++i)
+            later_input[i]=i*19u+5u;
+        auto owned_bytes=[](const auto& values) {
+            std::vector<std::uint8_t> bytes(sizeof(values));
+            std::memcpy(bytes.data(),values.data(),sizeof(values));
+            return bytes;
+        };
+        context.upload(dst,0,initial.data(),sizeof(initial));
+        const std::vector<BatchCommand> ordered_uploads{
+            UploadCommand{src,0,owned_bytes(input)},
+            DispatchCommand{pipeline,groups,bindings,push_bytes(first_pass)},
+            CopyCommand{dst,0,mirror,0,sizeof(output)},
+            UploadCommand{src,0,owned_bytes(later_input)},
+            DispatchCommand{pipeline,groups,bindings,push_bytes(second_pass)}
+        };
+        const auto ordered_id=context.submit_batch(ordered_uploads);
+        context.wait_submission(ordered_id);
+        std::array<std::uint32_t,array_size> earlier_result{};
+        context.download(mirror,0,earlier_result.data(),sizeof(earlier_result));
+        context.download(dst,0,output.data(),sizeof(output));
+        for(std::uint32_t i=0;i<array_size;++i) {
+            const auto first_expected=i<size
+                ?input[i]*first_pass.multiplier+first_pass.addend:sentinel;
+            const auto second_expected=i<size
+                ?later_input[i]*second_pass.multiplier+second_pass.addend:sentinel;
+            if(earlier_result[i]!=first_expected ||
+               output[i]!=second_expected)
+                throw std::runtime_error(
+                    "Ordered host uploads did not preserve GPU copy/dispatch dependencies");
+        }
         context.destroy_buffer(independent_copy);
         context.destroy_buffer(independent_output);
         context.destroy_buffer(independent_input);
