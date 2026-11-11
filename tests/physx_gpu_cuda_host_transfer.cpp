@@ -156,6 +156,31 @@ void exercise_reused_source_submission_scratch(Context& context) {
                 "Overlapping Vulkan/D3D12 source upload lost final writer");
     }
 
+    // One source queue preserves upload -> device copy -> upload
+    // ordering, including a disjoint self-copy within a physical root.
+    std::array<std::uint32_t,8> source_words{},replacement_words{};
+    for(std::uint32_t i=0u;i<8u;++i) {
+        source_words[i]=i+501u;
+        replacement_words[i]=i+601u;
+    }
+    stream.queue_uploads({{base,source_words.data(),sizeof(source_words)}});
+    stream.queue_device_copy(base+32u,base,sizeof(source_words));
+    stream.queue_uploads({{base,replacement_words.data(),
+                           sizeof(replacement_words)}});
+    source_words.fill(0u);
+    replacement_words.fill(0u);
+    stream.wait_at_fetch();
+    context.download(gpu,32u,observed.data(),sizeof(observed));
+    for(std::uint32_t i=0u;i<observed.size();++i)
+        if(observed[i]!=i+501u)
+            throw std::runtime_error(
+                "Source GPU batch copied overwritten upload bytes");
+    context.download(gpu,0u,observed.data(),sizeof(observed));
+    for(std::uint32_t i=0u;i<observed.size();++i)
+        if(observed[i]!=i+601u)
+            throw std::runtime_error(
+                "Source GPU batch lost the later upload writer");
+
     auto& staged=stream.update_scratch();
     staged.emplace_back(CopyCommand{gpu,0u,gpu,192u,32u});
     const auto staged_capacity=staged.capacity();
