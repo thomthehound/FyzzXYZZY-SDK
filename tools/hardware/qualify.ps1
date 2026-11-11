@@ -267,6 +267,19 @@ function Invoke-Scenario($Config, [string]$Case, [string]$Phase, [int]$Index) {
         throw "Hardware scene produced no GPU timestamps: $logPath"
     }
     if ($status -ne 0 -or $adapterLines.Count -ne 1 -or $pass.Count -ne 1) {
+        $diagnostics = @($lines | Where-Object {
+            $_.StartsWith('Native Sc GPU PCM scene regression FAILED:') -or
+            ($_.StartsWith('FYZZXYZZY_METRIC ') -and
+             $_.Contains('phase=state_mismatch'))
+        })
+        if ($diagnostics.Count -eq 0) {
+            $diagnostics = @($lines | Where-Object {
+                -not $_.StartsWith('FYZZXYZZY_TRACE ')
+            } | Select-Object -Last 12)
+        }
+        foreach ($diagnostic in $diagnostics) {
+            Write-Host $diagnostic
+        }
         throw "Qualification failed: $($Config.Api) $Case ($Phase) -- $logPath"
     }
     Write-Host ('{0,-6} {1,-20} {2,-10} process_wall_ms={3,9:N2}' -f
