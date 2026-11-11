@@ -7,6 +7,7 @@
 #include "physx_port/gpubroadphase/PxgSapBroadphaseDescriptorNative.h"
 #include "physx_gpu/source_sap_dma_native.h"
 #include "physx_gpu/source_sc_box_transform_bounds_native.h"
+#include "physx_gpu/source_frame_input_arena_native.h"
 #include "physx_gpu/source_aggregate_gpu_native.h"
 #include "physx_port/lowlevelaabb/include/BpBroadPhaseUpdate.h"
 #include "physx_port/lowlevelaabb/include/BpVolumeData.h"
@@ -35,6 +36,7 @@ struct SourceSapGpuBoxTransformOwnersNative {
     physx::PxgCudaBuffer& cached_geometry;
     physx::PxgCudaBuffer& convex_vertices;
     std::uint32_t convex_vertex_count=0u;
+    SourceFrameInputArenaNative* frame_input=nullptr;
 };
 
 struct SourceSapGpuBoxTransformsNative {
@@ -46,6 +48,12 @@ struct SourceSapGpuBoxTransformsNative {
     physx::PxgCudaBuffer& convex_vertices;
     std::uint32_t convex_vertex_count;
     std::span<const SourceScBoxTransformInputNative> changed;
+    SourceFrameInputArenaNative* frame_input=nullptr;
+
+    CudaDeviceAddressMap::Address input_address() const noexcept {
+        return frame_input && frame_input->direct()
+            ?frame_input->address():input_device.getDevicePtr();
+    }
 };
 
 struct SourceSapAabbManagerPreUpdateNative {
@@ -191,20 +199,24 @@ inline void pre_update_source_sap_aabb_manager_native(
         append_bitmap(uploads,manager.changed,changed_bytes);
     }
     if(shape_bytes) {
-        boxes->input_device.allocate(shape_bytes,PX_FL);
-        // Unchanged Sc elements remain authoritative GPU geometry even
-        // when another element expands the original AABB manager capacity.
+        // Unchanged Sc elements retain their resident geometry.
         boxes->cached_transforms.allocateCopyOldDataAsync(
             cache_bytes,stream,PX_FL);
         boxes->cached_geometry.allocateCopyOldDataAsync(
             geometry_bytes,stream,PX_FL);
-        uploads.push_back({boxes->input_device.getDevicePtr(),
-                           boxes->changed.data(),shape_bytes});
+        if(boxes->frame_input && boxes->frame_input->direct()) {
+            boxes->frame_input->write(boxes->changed.data(),shape_bytes);
+            FYZZ_PROFILE_COUNTER("sc.mapped_frame_input_bytes",shape_bytes);
+        }else {
+            boxes->input_device.allocate(shape_bytes,PX_FL);
+            uploads.push_back({boxes->input_device.getDevicePtr(),
+                               boxes->changed.data(),shape_bytes});
+        }
     }
     stream.queue_uploads(uploads);
     if(shape_bytes && manager.has_aggregates) {
         boxes->stage.append(stream,boxes->addresses,
-            boxes->input_device.getDevicePtr(),
+            boxes->input_address(),
             manager.sap.bounds.getDevicePtr(),
             boxes->cached_transforms.getDevicePtr(),
             boxes->cached_geometry.getDevicePtr(),
