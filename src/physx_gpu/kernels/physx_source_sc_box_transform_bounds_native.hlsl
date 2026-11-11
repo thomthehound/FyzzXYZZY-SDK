@@ -10,7 +10,7 @@
 #ifdef __spirv__
 [[vk::binding(0,0)]]
 #endif
-ByteAddressBuffer shapes : register(t0,space0);
+RWByteAddressBuffer shapes : register(u0,space0);
 #ifdef __spirv__
 [[vk::binding(1,0)]]
 #endif
@@ -26,7 +26,7 @@ RWByteAddressBuffer geometry : register(u3,space0);
 #ifdef __spirv__
 [[vk::binding(4,0)]]
 #endif
-ByteAddressBuffer hullVertices : register(t1,space0);
+RWByteAddressBuffer hullVertices : register(u4,space0);
 
 struct Parameters {
     uint shapeCount;
