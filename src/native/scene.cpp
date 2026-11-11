@@ -2361,8 +2361,11 @@ void Scene::update_gpu_pairs(bool force_update) {
             convex_face_indices_);
         uploaded_convex_vertex_count_=convex_vertices_.size();
     }
-    const auto reports=gpu_broadphase_->advance(
-        gpu_broadphase_boxes_,force_update,dirty_);
+    const auto reports=[&] {
+        FYZZ_PROFILE_SCOPE("sap.source_advance");
+        return gpu_broadphase_->advance(
+            gpu_broadphase_boxes_,force_update,dirty_);
+    }();
     if(reports.overflow)
         throw std::overflow_error(
             "Source GPU SAP found/lost report capacity overflow");
