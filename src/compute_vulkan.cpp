@@ -1454,6 +1454,63 @@ struct Context::Impl {
         if (operations.empty()) {
             throw std::invalid_argument("Compute batch must contain an operation");
         }
+        // Upload snapshots are converted into ordinary ordered device
+        // copies using one fence-owned transfer resource. The existing
+        // RAW/WAW dependency recorder then handles upload-to-dispatch
+        // visibility without a separate queue submission.
+        const bool has_upload=std::any_of(operations.begin(),operations.end(),
+            [](const BatchCommand& op) {
+                return std::holds_alternative<UploadCommand>(op);
+            });
+        if(has_upload) {
+            if(independent_uploads)
+                throw std::invalid_argument(
+                    "Independent Vulkan transfer batch cannot contain owned uploads");
+            std::size_t total=0;
+            for(const auto& op:operations)
+                if(const auto* upload=std::get_if<UploadCommand>(&op)) {
+                    const auto& destination=get(upload->destination);
+                    validate_range(destination.bytes,
+                                   upload->destination_offset,upload->bytes.size());
+                    if(upload->bytes.empty() || upload->destination_offset%4u ||
+                       upload->bytes.size()%4u ||
+                       upload->bytes.size()>
+                           std::numeric_limits<std::size_t>::max()-total)
+                        throw std::invalid_argument("Invalid Vulkan ordered upload");
+                    total+=upload->bytes.size();
+                }
+            retired_buffers.reserve(retired_buffers.size()+1u);
+            const BufferId staging_id=create_buffer(
+                total,MemoryPlacement::HostVisible,false);
+            bool submitted=false;
+            try {
+                const Buffer& staging=get(staging_id);
+                void* mapped=nullptr;
+                require(vkMapMemory(device,staging.memory,0,VK_WHOLE_SIZE,0,&mapped),
+                        "vkMapMemory ordered upload batch");
+                std::vector<BatchCommand> expanded;
+                expanded.reserve(operations.size());
+                std::size_t offset=0;
+                for(const auto& op:operations) {
+                    if(const auto* upload=std::get_if<UploadCommand>(&op)) {
+                        std::memcpy(static_cast<std::uint8_t*>(mapped)+offset,
+                                    upload->bytes.data(),upload->bytes.size());
+                        expanded.emplace_back(CopyCommand{
+                            staging_id,offset,upload->destination,
+                            upload->destination_offset,upload->bytes.size()});
+                        offset+=upload->bytes.size();
+                    }else expanded.push_back(op);
+                }
+                vkUnmapMemory(device,staging.memory);
+                const auto id=submit_batch(expanded,profile,false);
+                submitted=true;
+                retire_buffer(staging_id);
+                return id;
+            } catch(...) {
+                if(!submitted)destroy_buffer(staging_id);
+                throw;
+            }
+        }
         if(independent_uploads)
             for(const auto& operation:operations)
                 if(!std::holds_alternative<CopyCommand>(operation))
