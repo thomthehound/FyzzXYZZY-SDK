@@ -7,6 +7,7 @@ on:
   push:
     branches:
       - main
+      - feature/physical-gpu-qualification
     paths-ignore:
       - '**/*.md'
       - 'docs/**'
@@ -415,7 +416,8 @@ jobs:
         shell: bash
         run: |
           cmake -S . -B build-profile-vulkan -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON -DFYZZXYZZY_ENABLE_PHYSX_SOURCE=OFF -DFYZZXYZZY_BUILD_VULKAN=ON -DFYZZXYZZY_BUILD_SOURCE_GPU_TESTS=ON -DFYZZXYZZY_PROFILE_GPU=ON -DFETCHCONTENT_FULLY_DISCONNECTED=ON
-          cmake --build build-profile-vulkan --target fyzzxyzzy_source_sc_gpu_pcm_scene --parallel 4
+          cmake --build build-profile-vulkan --target fyzzxyzzy_source_sc_gpu_pcm_scene fyzzxyzzy_hardware_profile_stream --parallel 4
+          ctest --test-dir build-profile-vulkan -R '^fyzzxyzzy_hardware_profile_stream$' --output-on-failure
 
   native-no-physx-windows:
     name: Independent SDK / D3D12 without PhysX
@@ -466,7 +468,9 @@ jobs:
         run: |
           cmake -S . -B build-profile-d3d12 -A x64 -DBUILD_TESTING=ON -DFYZZXYZZY_ENABLE_PHYSX_SOURCE=OFF -DFYZZXYZZY_BUILD_D3D12=ON -DFYZZXYZZY_BUILD_SOURCE_GPU_TESTS=ON -DFYZZXYZZY_PROFILE_GPU=ON -DFETCHCONTENT_FULLY_DISCONNECTED=ON "-DFYZZXYZZY_DXC=$env:FYZZXYZZY_DXC"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          cmake --build build-profile-d3d12 --config Release --target fyzzxyzzy_source_sc_gpu_pcm_scene_d3d12 --parallel 4
+          cmake --build build-profile-d3d12 --config Release --target fyzzxyzzy_source_sc_gpu_pcm_scene_d3d12 fyzzxyzzy_hardware_profile_stream --parallel 4
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          ctest --test-dir build-profile-d3d12 -C Release -R '^fyzzxyzzy_hardware_profile_stream$' --output-on-failure
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Validate qualified D3D12 shader artifact inventory
         shell: pwsh
