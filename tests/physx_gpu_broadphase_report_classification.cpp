@@ -472,12 +472,14 @@ void run_original_source_report_fetch(
     if(nativeStage) {
         const SourceSapReportNativeLayout nativeLayout{
             descriptor,kVolumes,static_cast<std::uint32_t>(kVolumeStride),8u};
+        const auto pending_before_rejection=source.commands().size();
         auto malformed=gpu;
         malformed.lostPairReportMap=reinterpret_cast<Pair*>(0x100u);
         bool rejected=false;
         try{nativeStage->append(source.commands(),malformed,addresses,nativeLayout);}
         catch(const std::exception&){rejected=true;}
-        if(!rejected || !source.commands().empty())
+        if(!rejected ||
+           source.commands().size()!=pending_before_rejection)
             throw std::runtime_error("Invalid original report GPU pointer partially appended stages");
         nativeStage->append(source.commands(),gpu,addresses,nativeLayout);
     } else {
@@ -488,7 +490,12 @@ void run_original_source_report_fetch(
                     static_cast<std::uint32_t>(addresses.resolve(
                         copyDesc,sizeof(lowered.copy)).offset));
     }
-    if(source.commands().size()!=3u)
+    const auto report_dispatches=std::count_if(
+        source.commands().begin(),source.commands().end(),
+        [](const fyzz::compute::BatchCommand& command) {
+            return std::holds_alternative<fyzz::compute::DispatchCommand>(command);
+        });
+    if(report_dispatches!=3u)
         throw std::runtime_error("Source GPU reports did not append exactly three kernels");
     BroadPhaseCompletionGate gate(context);
     gate.arm_source_stream(source);
