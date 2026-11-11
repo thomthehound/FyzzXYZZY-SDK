@@ -1436,9 +1436,7 @@ void sourceDySolvePackedTask(uint taskId) {
     }
     const uint scratch=schedule.w;
     const uint4 views=arena.Load4(scratch);
-    const uint raw=scratch+views.x;
     const uint colors=scratch+views.y;
-    const uint cursors=scratch+views.z;
     const uint bodyState=scratch+views.w;
     const uint sourceTable=bodyState+p.bodyCount*12u;
     uint4 desc;
@@ -1457,26 +1455,10 @@ void sourceDySolvePackedTask(uint taskId) {
         publishTaskError(taskId,arena.Load(errorAddress));
         return;
     }
-    arena.Store4(raw+ranges.x*16u,desc);
-    uint unused;
-    if(da) {
-        const uint state=bodyState+desc.y*12u;
-        arena.InterlockedExchange(state,0u,unused);
-        arena.InterlockedExchange(state+4u,0u,unused);
-        arena.InterlockedExchange(state+8u,0xffffffffu,unused);
-    }
-    if(db) {
-        const uint state=bodyState+desc.z*12u;
-        arena.InterlockedExchange(state,0u,unused);
-        arena.InterlockedExchange(state+4u,0u,unused);
-        arena.InterlockedExchange(state+8u,0xffffffffu,unused);
-    }
+    // The singleton's ranges already define its only partition.
+    // No conflict-color state is needed for its exclusive solver row.
     desc.w&=255u;
     arena.Store4(p.descriptorBias+ranges.x*16u,desc);
-    arena.Store(p.partitionBias+ranges.z*4u,ranges.y);
-    arena.Store(colors+ranges.x*4u,0u);
-    arena.Store(cursors+ranges.z*4u,ranges.y);
-    arena.Store(task+12u,ranges.z+1u);
 
     // Four scalar visits preserve the source contact/joint row
     // assignment of the existing four lanes per descriptor.
