@@ -258,7 +258,7 @@ void verify_direct_frame_input(Context& context,const char* shader) {
     using namespace fyzz::physx_gpu;
     CudaDeviceAddressMap addresses;
     SourceSapDmaNative stream(context,addresses);
-    SourceFrameInputArenaNative input(context,addresses,stream);
+    SourceFrameInputArenaNative input(context,addresses);
     if(!input.direct())return;
 
     constexpr std::uint32_t count=8u;
