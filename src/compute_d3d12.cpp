@@ -1242,6 +1242,7 @@ struct Context::Impl {
         std::size_t descriptor_count = 0;
         bool uses_indirect = false;
         std::size_t same_resource_copy_scratch_bytes = 0;
+        std::size_t upload_total_bytes = 0;
         std::vector<PipelineId> pipeline_sequence;
         const auto mix_key=[](std::size_t& hash,std::size_t word) {
             hash^=std::hash<std::size_t>{}(word)+0x9e3779b9u+
@@ -1276,6 +1277,16 @@ struct Context::Impl {
                 if (copy->source == copy->destination)
                     same_resource_copy_scratch_bytes =
                         std::max(same_resource_copy_scratch_bytes, copy->bytes);
+            } else if(const auto* upload=std::get_if<UploadCommand>(&op)) {
+                const auto& target=get_buffer(upload->destination);
+                validate_range(target.bytes,upload->destination_offset,
+                               upload->bytes.size());
+                if(upload->bytes.empty() || upload->destination_offset%4u ||
+                   upload->bytes.size()%4u ||
+                   upload->bytes.size()>
+                       std::numeric_limits<std::size_t>::max()-upload_total_bytes)
+                    throw std::invalid_argument("Invalid D3D12 ordered upload");
+                upload_total_bytes+=upload->bytes.size();
             } else {
                 const auto& dispatch = std::get<DispatchCommand>(op);
                 validate_dispatch(dispatch);
@@ -1337,6 +1348,24 @@ struct Context::Impl {
                   "CreateCommandSignature");
         }
         Submission submission = new_commands(&pipeline_sequence, descriptor_count);
+        if(upload_total_bytes) {
+            auto staging=allocate_resource(
+                device.Get(),upload_total_bytes,D3D12_HEAP_TYPE_UPLOAD,
+                D3D12_RESOURCE_FLAG_NONE,D3D12_RESOURCE_STATE_GENERIC_READ);
+            void* mapped=nullptr;
+            const D3D12_RANGE read{0,0};
+            check(staging->Map(0,&read,&mapped),"Map ordered upload batch");
+            std::size_t offset=0;
+            for(const auto& op:commands)
+                if(const auto* upload=std::get_if<UploadCommand>(&op)) {
+                    std::memcpy(static_cast<std::uint8_t*>(mapped)+offset,
+                                upload->bytes.data(),upload->bytes.size());
+                    offset+=upload->bytes.size();
+                }
+            const D3D12_RANGE written{0,upload_total_bytes};
+            staging->Unmap(0,&written);
+            submission.owned_upload=std::move(staging);
+        }
 #if defined(FYZZXYZZY_PROFILE_GPU)
         if(hardware_trace &&
            submission.query_capacity<=commands.size()) {
@@ -1466,6 +1495,7 @@ struct Context::Impl {
         };
         std::vector<bool> descriptor_table_written(descriptor_tables.size(),false);
         std::size_t dispatch_index=0u;
+        std::size_t ordered_upload_offset=0u;
 #if defined(FYZZXYZZY_PROFILE_GPU)
         UINT hardware_query_index=1u;
 #endif
@@ -1503,6 +1533,22 @@ struct Context::Impl {
                         copy->source_offset, copy->bytes);
                 }
                 resource_access[copy->destination].pending_write = true;
+#if defined(FYZZXYZZY_PROFILE_GPU)
+                if(hardware_trace)
+                    submission.commands->EndQuery(submission.query_heap.Get(),
+                        D3D12_QUERY_TYPE_TIMESTAMP,hardware_query_index++);
+#endif
+                continue;
+            }
+            if(const auto* upload=std::get_if<UploadCommand>(&op)) {
+                auto& dst=get_buffer(upload->destination);
+                require_state(upload->destination,D3D12_RESOURCE_STATE_COPY_DEST);
+                submission.commands->CopyBufferRegion(
+                    dst.resource.Get(),upload->destination_offset,
+                    submission.owned_upload.Get(),ordered_upload_offset,
+                    upload->bytes.size());
+                ordered_upload_offset+=upload->bytes.size();
+                resource_access[upload->destination].pending_write=true;
 #if defined(FYZZXYZZY_PROFILE_GPU)
                 if(hardware_trace)
                     submission.commands->EndQuery(submission.query_heap.Get(),
@@ -1650,6 +1696,9 @@ struct Context::Impl {
                 if(const auto* copy=std::get_if<CopyCommand>(&operation))
                     submission.profile_ops.push_back(
                         {0u,copy->bytes,0u,0u,0u,false});
+                else if(const auto* upload=std::get_if<UploadCommand>(&operation))
+                    submission.profile_ops.push_back(
+                        {0u,upload->bytes.size(),0u,0u,0u,false});
                 else {
                     const auto& dispatch=std::get<DispatchCommand>(operation);
                     submission.profile_ops.push_back({
