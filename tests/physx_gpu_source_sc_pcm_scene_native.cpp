@@ -826,6 +826,7 @@ void verify(fyzz::compute::Backend backend,const char* sap,
     producer->enqueue_host_pcm_contacts(mixed,mixed_results);
     const auto after_early_gu=producer->stream_submission_stats();
     require(after_early_gu.upload_batches==after_mixed.upload_batches+1u &&
+            after_early_gu.command_batches==after_mixed.command_batches &&
             after_early_gu.fetch_batches==after_mixed.fetch_batches &&
             producer->pcm_host_contact_upload_bytes()==
                 sizeof(physx_gpu::SourcePcmGpuContactStreamNative) &&
@@ -865,10 +866,10 @@ void verify(fyzz::compute::Backend backend,const char* sap,
         "Late CPU Gu upload or general PCM readback lost source ordinals");
     const auto after_join=producer->stream_submission_stats();
     require(after_join.upload_batches==after_mixed.upload_batches+2u &&
-            after_join.command_batches==after_mixed.command_batches+2u &&
+            after_join.command_batches==after_mixed.command_batches+1u &&
             after_join.fetch_batches==after_mixed.fetch_batches+1u &&
             after_join.deferred_submissions_after_fetch==
-                after_mixed.deferred_submissions_after_fetch+4u,
+                after_mixed.deferred_submissions_after_fetch+1u,
         "Mixed PCM joined later GPU work or duplicated witness transfers");
     // The early host upload remains ordered after the GPU witness DMA.
     // Collision-only commit must retire it even without a Dy solve.
