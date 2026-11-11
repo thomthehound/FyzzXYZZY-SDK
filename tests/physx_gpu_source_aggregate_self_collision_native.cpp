@@ -206,7 +206,7 @@ void verify(Context& context,ShaderBinary projection,ShaderBinary collision) {
         source.previous_member_indices=old.members;
         source.previous_start_masks=old.masks;
         collisionStage.append(stream,addresses,source);
-        require(stream.commands().size()==2u,
+        require(SourceCommandView{stream.commands()}.size()==2u,
                 "Original aggregate projection/self-collision split source dispatch");
         stream.wait_at_fetch();
 
