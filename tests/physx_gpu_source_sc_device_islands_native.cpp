@@ -789,7 +789,7 @@ void verify(Context& context,const char* filename) {
     no_errors(packed);
     check_task_mapping(packed);
     require(header(packed).runnable_components==packed_nodes &&
-            header(packed).non_singleton_tasks==0u &&
+            header(packed).has_non_singleton_task==0u &&
             header(packed).dispatch_x==3u,
             "Device Sc failed to pack independent singleton tasks");
     packed_edges.push_back({
@@ -799,7 +799,7 @@ void verify(Context& context,const char* filename) {
     no_errors(mixed);
     check_task_mapping(mixed);
     require(header(mixed).runnable_components==packed_nodes &&
-            header(mixed).non_singleton_tasks!=0u &&
+            header(mixed).has_non_singleton_task!=0u &&
             header(mixed).dispatch_x==packed_nodes,
             "Device Sc incorrectly packed a dependent task");
 
