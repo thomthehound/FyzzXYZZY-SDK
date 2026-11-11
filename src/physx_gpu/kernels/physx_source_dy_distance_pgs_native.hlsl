@@ -357,6 +357,61 @@ groupshared uint dyNextWave,dySerial;
 groupshared uint dySingletonPartitions;
 groupshared uint dyHubA,dyHubB,dyHubMask;
 
+// The resident source token has one authoritative decoding rule for
+// colored and scalar tasks.
+bool sourceDyExpandDescriptor(uint token,uint sourceCount,uint sourceTable,
+                              uint errorAddress,out uint4 desc) {
+    const uint kind=token>>30u;
+    const uint index=token&0x3fffffffu;
+    if(kind==3u) {
+        if(index>=p.manifoldCount) {
+            arena.InterlockedOr(errorAddress,1048576u);
+            return false;
+        }
+        const uint manager=p.manifoldBias+index*20u;
+        if(arena.Load(manager+4u)==0u) {
+            desc=uint4(index,arena.Load(manager),
+                       arena.Load(manager+8u),arena.Load(manager+16u));
+        }else {
+            const uint prepIndex=arena.Load(manager+16u);
+            if(prepIndex>=p.prepCount) {
+                arena.InterlockedOr(errorAddress,1048576u);
+                return false;
+            }
+            const uint prep=p.prepBias+prepIndex*64u;
+            const uint refA=arena.Load(prep);
+            const uint refB=arena.Load(prep+4u);
+            const bool dynamicA=(refA&1u)!=0u;
+            const bool dynamicB=(refB&1u)!=0u;
+            const uint ordinalA=dynamicA?(refA>>1u):
+                arena.Load(p.prepBias+refA+76u);
+            const uint ordinalB=dynamicB?(refB>>1u):
+                arena.Load(p.prepBias+refB+76u);
+            desc=uint4(index,ordinalA,ordinalB,
+                       (dynamicA?0x100u:0u)|
+                       (dynamicB?0x200u:0u));
+        }
+    }else if(kind==2u) {
+        if(index>=p.rowCount) {
+            arena.InterlockedOr(errorAddress,1048576u);
+            return false;
+        }
+        const uint row=p.distanceBias+index*64u;
+        desc=uint4(index,arena.Load(row),
+                   arena.Load(row+4u),arena.Load(row+8u));
+    }else if(kind==0u) {
+        if(token>=sourceCount) {
+            arena.InterlockedOr(errorAddress,1048576u);
+            return false;
+        }
+        desc=arena.Load4(sourceTable+4u+token*16u);
+    }else {
+        arena.InterlockedOr(errorAddress,1048576u);
+        return false;
+    }
+    return true;
+}
+
 void sourceDyPartitionTask(uint taskId,uint scratch,uint errorAddress,
                            uint lane) {
     const uint4 views=arena.Load4(scratch);
@@ -385,71 +440,18 @@ void sourceDyPartitionTask(uint taskId,uint scratch,uint errorAddress,
     // The native Sc path transfers only encounter-order manager/joint
     // identities. Expand source descriptors from the existing resident
     // contact prep and joint-row records before partition coloring.
-    const bool sourceDescriptors=views.x==24u || views.x==40u;
+    const bool sourceDescriptors=views.x==24u || views.x==44u;
     const uint sourceTable=bodyState+p.bodyCount*12u;
     const uint sourceCount=sourceDescriptors?arena.Load(sourceTable):0u;
     for(uint i=first+lane;i<last;i+=128u) {
         uint4 desc;
         if(sourceDescriptors) {
-            const uint token=arena.Load(colors+i*4u);
-            const uint kind=token>>30u;
-            const uint index=token&0x3fffffffu;
-            if(kind==3u) {
-                if(index>=p.manifoldCount) {
-                    arena.InterlockedOr(errorAddress,1048576u);
-                    continue;
-                }
-                const uint manager=p.manifoldBias+index*20u;
-                if(arena.Load(manager+4u)==0u) {
-                    // Zero-response managers have no contact prep.
-                    // Their otherwise unused manifold slots retain
-                    // the source ordinals and endpoint classification.
-                    desc=uint4(index,arena.Load(manager),
-                               arena.Load(manager+8u),
-                               arena.Load(manager+16u));
-                } else {
-                    const uint prepIndex=arena.Load(manager+16u);
-                    if(prepIndex>=p.prepCount) {
-                        arena.InterlockedOr(errorAddress,1048576u);
-                        continue;
-                    }
-                    const uint prep=p.prepBias+prepIndex*64u;
-                    const uint refA=arena.Load(prep);
-                    const uint refB=arena.Load(prep+4u);
-                    const bool dynamicA=(refA&1u)!=0u;
-                    const bool dynamicB=(refB&1u)!=0u;
-                    // Static and kinematic participants do not join
-                    // dynamic roots; kinematics retain PGS velocity.
-                    const uint ordinalA=dynamicA?(refA>>1u):
-                        arena.Load(p.prepBias+refA+76u);
-                    const uint ordinalB=dynamicB?(refB>>1u):
-                        arena.Load(p.prepBias+refB+76u);
-                    desc=uint4(index,ordinalA,ordinalB,
-                               (dynamicA?0x100u:0u)|
-                               (dynamicB?0x200u:0u));
-                }
-            } else if(kind==2u) {
-                if(index>=p.rowCount) {
-                    arena.InterlockedOr(errorAddress,1048576u);
-                    continue;
-                }
-                // Device-authored 1D Jacobians replace these source
-                // ordinals before any PGS read of their row geometry.
-                const uint row=p.distanceBias+index*64u;
-                desc=uint4(index,arena.Load(row),
-                           arena.Load(row+4u),arena.Load(row+8u));
-            } else if(kind==0u) {
-                if(token>=sourceCount) {
-                    arena.InterlockedOr(errorAddress,1048576u);
-                    continue;
-                }
-                desc=arena.Load4(sourceTable+4u+token*16u);
-            } else {
-                arena.InterlockedOr(errorAddress,1048576u);
+            if(!sourceDyExpandDescriptor(
+                   arena.Load(colors+i*4u),sourceCount,sourceTable,
+                   errorAddress,desc))
                 continue;
-            }
             arena.Store4(raw+i*16u,desc);
-        } else desc=arena.Load4(raw+i*16u);
+        }else desc=arena.Load4(raw+i*16u);
         const bool da=(desc.w&0x100u)!=0u;
         const bool db=(desc.w&0x200u)!=0u;
         if((desc.w&~0x3ffu)!=0u || (!da && !db) ||
@@ -1414,6 +1416,91 @@ void publishTaskError(uint task,uint error) {
     arena.Store(p.writebackBias+p.resultTaskOffset+task*4u,error);
 }
 
+// A packed lane owns one independent body/constraint pair. Source Sc
+// selects this dispatch only when every admitted task has this shape.
+void sourceDySolvePackedTask(uint taskId) {
+    const uint task=p.taskBias+taskId*36u;
+    const uint4 ranges=arena.Load4(task);
+    const uint2 bodies=arena.Load2(task+16u);
+    const uint2 iters=arena.Load2(task+24u);
+    const uint errorAddress=task+32u;
+    const uint4 schedule=arena.Load4(p.integrationBias+16u);
+    if(ranges.y!=ranges.x+1u || ranges.w!=ranges.z+1u ||
+       bodies.y!=bodies.x+1u ||
+       ranges.y>schedule.y || ranges.w>p.partitionCount ||
+       bodies.y>schedule.x ||
+       !iters.x || iters.x>255u || iters.y>255u) {
+        arena.InterlockedOr(errorAddress,1048576u);
+        publishTaskError(taskId,arena.Load(errorAddress));
+        return;
+    }
+    const uint scratch=schedule.w;
+    const uint4 views=arena.Load4(scratch);
+    const uint raw=scratch+views.x;
+    const uint colors=scratch+views.y;
+    const uint cursors=scratch+views.z;
+    const uint bodyState=scratch+views.w;
+    const uint sourceTable=bodyState+p.bodyCount*12u;
+    uint4 desc;
+    if(!sourceDyExpandDescriptor(arena.Load(colors+ranges.x*4u),
+                                 arena.Load(sourceTable),sourceTable,
+                                 errorAddress,desc)) {
+        publishTaskError(taskId,arena.Load(errorAddress));
+        return;
+    }
+    const bool da=(desc.w&0x100u)!=0u;
+    const bool db=(desc.w&0x200u)!=0u;
+    if((desc.w&~0x3ffu)!=0u || (!da && !db) ||
+       (da && desc.y>=p.bodyCount) ||
+       (db && desc.z>=p.bodyCount)) {
+        arena.InterlockedOr(errorAddress,1048576u);
+        publishTaskError(taskId,arena.Load(errorAddress));
+        return;
+    }
+    arena.Store4(raw+ranges.x*16u,desc);
+    uint unused;
+    if(da) {
+        const uint state=bodyState+desc.y*12u;
+        arena.InterlockedExchange(state,0u,unused);
+        arena.InterlockedExchange(state+4u,0u,unused);
+        arena.InterlockedExchange(state+8u,0xffffffffu,unused);
+    }
+    if(db) {
+        const uint state=bodyState+desc.z*12u;
+        arena.InterlockedExchange(state,0u,unused);
+        arena.InterlockedExchange(state+4u,0u,unused);
+        arena.InterlockedExchange(state+8u,0xffffffffu,unused);
+    }
+    desc.w&=255u;
+    arena.Store4(p.descriptorBias+ranges.x*16u,desc);
+    arena.Store(p.partitionBias+ranges.z*4u,ranges.y);
+    arena.Store(colors+ranges.x*4u,0u);
+    arena.Store(cursors+ranges.z*4u,ranges.y);
+    arena.Store(task+12u,ranges.z+1u);
+
+    // Four scalar visits preserve the source contact/joint row
+    // assignment of the existing four lanes per descriptor.
+    [unroll]
+    for(uint lane=0u;lane<4u;++lane)
+        prepareNormals(ranges.x,ranges.y,lane,errorAddress);
+    [unroll]
+    for(uint lane=0u;lane<4u;++lane)
+        prepareFriction(ranges.x,ranges.y,lane,errorAddress);
+
+    const uint total=iters.x+max(iters.y,1u);
+    for(uint iteration=0u;iteration<total;++iteration) {
+        solvePartition(ranges.x,ranges.y,0u,iters,iteration,errorAddress);
+        if(iteration+1u==iters.x)
+            saveMotion(bodies.x,errorAddress);
+    }
+    const uint ordinal=arena.Load(p.ordinalBias+bodies.x*4u);
+    if(ordinal>=p.bodyCount)
+        arena.InterlockedOr(errorAddress,8u);
+    else
+        integrateBody(ordinal);
+    publishTaskError(taskId,arena.Load(errorAddress));
+}
+
 [numthreads(128,1,1)]
 void main(uint3 group:SV_GroupID,uint3 lane:SV_GroupThreadID) {
     const uint phase=p.launchControl&15u;
@@ -1428,7 +1515,7 @@ void main(uint3 group:SV_GroupID,uint3 lane:SV_GroupThreadID) {
     // The task error report still runs, including compact-only scenes.
     if(devicePartitions) {
         const uint4 schedule=arena.Load4(p.integrationBias+16u);
-        if(schedule.w!=0u && arena.Load(schedule.w)==40u) {
+        if(schedule.w!=0u && arena.Load(schedule.w)==44u) {
             const uint4 header=arena.Load4(schedule.w+24u);
             if(header.x!=0u || header.y>schedule.z ||
                header.z>schedule.x || header.w>schedule.y) {
@@ -1441,6 +1528,18 @@ void main(uint3 group:SV_GroupID,uint3 lane:SV_GroupThreadID) {
             }
             admittedTasks=header.y;
         }
+    }
+    // The Sc prefix reduces the indirect launch only when every
+    // resident task is a singleton. One GPU lane then owns its
+    // complete PGS epoch without workgroup-wide barriers.
+    if(phase==fusedTask && devicePartitions && !precolored &&
+       admittedTasks>1u &&
+       arena.Load(p.integrationBias+28u)!=0u &&
+       arena.Load(arena.Load(p.integrationBias+28u))==44u &&
+       arena.Load(arena.Load(p.integrationBias+28u)+40u)<admittedTasks) {
+        const uint task=index*128u+lane.x;
+        if(task<admittedTasks)sourceDySolvePackedTask(task);
+        return;
     }
     if(phase==initializeBodiesTile) {
         // Joint participants include nonresponding kinematic solver

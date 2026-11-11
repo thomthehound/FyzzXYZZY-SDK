@@ -775,6 +775,34 @@ void verify(Context& context,const char* filename) {
     // The prefix crosses 128-block boundaries without nondeterministic
     // task scatter or a CPU island count. Almost all nodes are dormant;
     // sparse active roots exercise the first, last and middle blocks.
+    // Uniform singleton tasks share a lane-packed indirect launch.
+    // One additional edge must restore full workgroup-per-task dispatch.
+    constexpr std::uint32_t packed_nodes=257u;
+    std::vector<std::uint32_t> packed_flags(
+        packed_nodes,4u|source_sc_device_island_active_bit);
+    std::vector<SourceScDeviceIslandEdge> packed_edges;
+    packed_edges.reserve(packed_nodes+1u);
+    for(std::uint32_t node=0u;node<packed_nodes;++node)
+        packed_edges.push_back({
+            node,node,invalid,node,source_sc_device_island_joint_bit});
+    const auto packed=evaluate(packed_nodes,packed_edges,{},packed_flags);
+    no_errors(packed);
+    check_task_mapping(packed);
+    require(header(packed).runnable_components==packed_nodes &&
+            header(packed).non_singleton_tasks==0u &&
+            header(packed).dispatch_x==3u,
+            "Device Sc failed to pack independent singleton tasks");
+    packed_edges.push_back({
+        packed_nodes,0u,invalid,packed_nodes,
+        source_sc_device_island_joint_bit});
+    const auto mixed=evaluate(packed_nodes,packed_edges,{},packed_flags);
+    no_errors(mixed);
+    check_task_mapping(mixed);
+    require(header(mixed).runnable_components==packed_nodes &&
+            header(mixed).non_singleton_tasks!=0u &&
+            header(mixed).dispatch_x==packed_nodes,
+            "Device Sc incorrectly packed a dependent task");
+
     constexpr std::uint32_t prefix_nodes=32769u;
     std::vector<std::uint32_t> prefix_flags(prefix_nodes,4u|0x100u);
     for(const std::uint32_t root_id:{

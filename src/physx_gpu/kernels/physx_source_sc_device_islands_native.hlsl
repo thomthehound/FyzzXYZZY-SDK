@@ -240,6 +240,7 @@ void main(uint3 thread:SV_DispatchThreadID,
         if(index==0u) {
             work.Store4(p.workBias,uint4(0u,0u,0u,0u));
             work.Store4(p.workBias+16u,uint4(0u,1u,1u,p.edgeCount));
+            work.Store(p.workBias+32u,0u);
         }
         if(index<p.nodeCount) {
             work.Store(p.rootBias+index*4u,index);
@@ -328,6 +329,11 @@ void main(uint3 thread:SV_DispatchThreadID,
             ?work.Load(p.countBias+index*24u+4u):0u;
         bodyScan[lane.x]=active!=0u
             ?work.Load(p.countBias+index*24u):0u;
+        if(active!=0u &&
+           (responseScan[lane.x]!=1u || bodyScan[lane.x]!=1u)) {
+            uint previous;
+            work.InterlockedOr(p.workBias+32u,1u,previous);
+        }
         GroupMemoryBarrierWithGroupSync();
         for(uint stride=64u;stride!=0u;stride>>=1u) {
             if(lane.x<stride) {
@@ -376,7 +382,11 @@ void main(uint3 thread:SV_DispatchThreadID,
                 work.Store(p.workBias+4u,taskCarry);
                 work.Store(p.workBias+8u,bodyCarry);
                 work.Store(p.workBias+12u,responseCarry);
-                work.Store(p.workBias+16u,min(taskCarry,p.maxGroups));
+                work.Store(p.workBias+16u,min(
+                    work.Load(p.workBias+32u)==0u && taskCarry>1u
+                        ?(taskCarry>>7u)+uint((taskCarry&127u)!=0u)
+                        :taskCarry,
+                    p.maxGroups));
             }
             return;
         }
@@ -433,7 +443,11 @@ void main(uint3 thread:SV_DispatchThreadID,
             work.Store(p.workBias+4u,taskCarry);
             work.Store(p.workBias+8u,bodyCarry);
             work.Store(p.workBias+12u,responseCarry);
-            work.Store(p.workBias+16u,min(taskCarry,p.maxGroups));
+            work.Store(p.workBias+16u,min(
+                    work.Load(p.workBias+32u)==0u && taskCarry>1u
+                        ?(taskCarry>>7u)+uint((taskCarry&127u)!=0u)
+                        :taskCarry,
+                    p.maxGroups));
         }
         return;
     }

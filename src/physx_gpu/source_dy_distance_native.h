@@ -1112,7 +1112,7 @@ public:
         if(device_partitions) {
             const auto n=descriptors.size();
             const std::size_t header_bytes=source_descriptors
-                ?(device_admission?40u:24u):20u;
+                ?(device_admission?44u:24u):20u;
             const std::array<std::uint32_t,5> scratch_header{
                 narrow(header_bytes),narrow(header_bytes+n*16u),
                 narrow(header_bytes+n*20u),
@@ -1176,7 +1176,7 @@ public:
         // of those scratch arrays has a host source in a device-owned
         // island epoch. Skip their entire contiguous upload window.
         const auto device_skip_begin=device_admission
-            ?offsets[15]+40u:0u;
+            ?offsets[15]+44u:0u;
         const auto device_skip_end=device_admission
             ?device_skip_begin+descriptors.size()*24u+bodies.size()*12u:0u;
         if(device_admission &&
@@ -1413,14 +1413,14 @@ public:
                 throw std::out_of_range(
                     "Source Sc device admission capacity exceeds its typed stream");
             stream_.queue_device_copy(address+offsets[15]+24u,
-                                      view.work,16u);
+                                      view.work,20u);
             stream_.queue_device_copy(address+offsets[5],
                                       view.work+layout.tasks,tasks.size_bytes());
             if(!body_ordinals.empty())
                 stream_.queue_device_copy(address+offsets[4],
                     view.work+layout.body_order,body_ordinals.size_bytes());
             if(!descriptors.empty())
-                stream_.queue_device_copy(address+offsets[15]+40u+
+                stream_.queue_device_copy(address+offsets[15]+44u+
                     descriptors.size()*16u,
                     view.work+layout.response_tokens,
                     descriptors.size()*sizeof(std::uint32_t));

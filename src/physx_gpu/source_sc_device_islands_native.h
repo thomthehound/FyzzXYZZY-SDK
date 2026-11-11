@@ -75,9 +75,13 @@ struct SourceScDeviceIslandHeader {
     std::uint32_t dispatch_x=0,dispatch_y=1,dispatch_z=1;
     // Number of source admissions, including dormant and nonresponding edges.
     std::uint32_t source_edges=0u;
+    // Sc owns the decision to pack all one-body/one-constraint tasks.
+    std::uint32_t non_singleton_tasks=0u;
+    std::uint32_t reserved[3]{};
 };
-static_assert(sizeof(SourceScDeviceIslandHeader)==32u &&
-              offsetof(SourceScDeviceIslandHeader,dispatch_x)==16u);
+static_assert(sizeof(SourceScDeviceIslandHeader)==48u &&
+              offsetof(SourceScDeviceIslandHeader,dispatch_x)==16u &&
+              offsetof(SourceScDeviceIslandHeader,non_singleton_tasks)==32u);
 
 // One source-owned transient allocation holds union parents (finally
 // canonical island roots), per-root admission counts and source-ordered
