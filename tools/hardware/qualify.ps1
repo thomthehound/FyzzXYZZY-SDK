@@ -258,7 +258,7 @@ function Invoke-Scenario($Config, [string]$Case, [string]$Phase, [int]$Index) {
     if (@($lines | Where-Object {
         $_.StartsWith('FYZZXYZZY_TRACE kind=overflow ')
     }).Count -ne 0) {
-        throw "Profiling trace capacity exceeded: $logPath"
+        throw "Profiling could not retain the complete trace: $logPath"
     }
     if ($Case.StartsWith('hardware_scene_') -and
         -not (@($lines | Where-Object {
@@ -269,7 +269,7 @@ function Invoke-Scenario($Config, [string]$Case, [string]$Phase, [int]$Index) {
     if ($status -ne 0 -or $adapterLines.Count -ne 1 -or $pass.Count -ne 1) {
         throw "Qualification failed: $($Config.Api) $Case ($Phase) -- $logPath"
     }
-    Write-Host ('{0,-6} {1,-20} {2,-10} {3,9:N2} ms' -f
+    Write-Host ('{0,-6} {1,-20} {2,-10} process_wall_ms={3,9:N2}' -f
         $Config.Api, $Case, $Phase, $clock.Elapsed.TotalMilliseconds)
 }
 
