@@ -1243,7 +1243,6 @@ private:
         bool device_cache_supported=true;
         std::optional<AggregateId> aggregate;
         std::array<std::uint32_t,6> encoded_bounds{};
-        ShapeId gpu_broadphase_slot=invalid_shape;
         bool cached_bounds_current=false;
     };
     // DyRigidBodyToSolverBody.cpp::copyToSolverBodyData and
