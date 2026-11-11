@@ -478,6 +478,20 @@ void sourceDyPartitionTask(uint taskId,uint scratch,uint errorAddress,
     }
     AllMemoryBarrierWithGroupSync();
     if(arena.Load(errorAddress)!=0u)return;
+    if(count==1u) {
+        // A single constraint owns its entire partition and requires
+        // no conflict-mask coloring or cross-lane prefix scan.
+        if(lane==0u) {
+            uint4 desc=arena.Load4(raw+first*16u);
+            desc.w&=255u;
+            arena.Store4(p.descriptorBias+first*16u,desc);
+            arena.Store(p.partitionBias+partitionFirst*4u,last);
+            arena.Store(colors+first*4u,0u);
+            arena.Store(cursors+partitionFirst*4u,last);
+            arena.Store(task+12u,partitionFirst+1u);
+        }
+        return;
+    }
 
     // A hub's dynamic/dynamic color is its encounter rank. Recognize
     // the common endpoint in parallel; when every descriptor is dynamic,
@@ -1557,6 +1571,10 @@ void main(uint3 group:SV_GroupID,uint3 lane:SV_GroupThreadID) {
             AllMemoryBarrierWithGroupSync();
         }
 
+        const bool singleLaneTask=fused &&
+            descriptors.y-descriptors.x==1u &&
+            partitions.y-partitions.x==1u &&
+            bodies.y-bodies.x==1u;
         bool serialPartitions=false;
         if(fused && partitions.y-partitions.x>=32u) {
             // A narrow, deeply dependent island may have thousands of
@@ -1605,7 +1623,8 @@ void main(uint3 group:SV_GroupID,uint3 lane:SV_GroupThreadID) {
                                 end=arena.Load(p.partitionBias+partition*4u);
                             solvePartition(begin,end,lane.x,iters,
                                            iteration,endError);
-                            if(fused)AllMemoryBarrierWithGroupSync();
+                            if(fused && !singleLaneTask)
+                                AllMemoryBarrierWithGroupSync();
                             begin=end;
                         }
                     }
@@ -1613,7 +1632,8 @@ void main(uint3 group:SV_GroupID,uint3 lane:SV_GroupThreadID) {
                 if((fused || phase==motionTile) && iteration+1u==iters.x) {
                     for(uint i=bodies.x+lane.x;i<bodies.y;i+=128u)
                         saveMotion(i,endError);
-                    if(fused)AllMemoryBarrierWithGroupSync();
+                    if(fused && !singleLaneTask)
+                        AllMemoryBarrierWithGroupSync();
                 }
             }
             if(!fused)return;
