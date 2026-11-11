@@ -108,6 +108,12 @@ endif()
 if(BUILD_TESTING)
   add_executable(fyzzxyzzy_cpp23_contract tests/cpp23_contract.cpp)
   add_test(NAME fyzzxyzzy_cpp23_contract COMMAND fyzzxyzzy_cpp23_contract)
+  if(FYZZXYZZY_PROFILE_GPU)
+    add_executable(fyzzxyzzy_hardware_profile_stream
+      tests/hardware_profile_stream.cpp)
+    add_test(NAME fyzzxyzzy_hardware_profile_stream
+      COMMAND fyzzxyzzy_hardware_profile_stream)
+  endif()
 endif()
 
 if(FYZZXYZZY_ENABLE_PHYSX_SOURCE)
