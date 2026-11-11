@@ -90,7 +90,7 @@ public:
           encoding_(context_,take_shader(shaders,NativeGpuSapStage::TranslateAabbs)),
           box_transforms_(context_,take_shader(shaders,NativeGpuSapStage::BoxTransformBounds)),
           box_input_(allocators_.deviceAlloc,physx::PxsHeapStats::eBROADPHASE),
-          frame_input_(context_,addresses_,stream_),
+          frame_input_(context_,addresses_),
           box_cache_(allocators_.deviceAlloc,physx::PxsHeapStats::eBROADPHASE),
           box_geometry_(allocators_.deviceAlloc,physx::PxsHeapStats::eBROADPHASE),
           convex_vertices_(allocators_.deviceAlloc,physx::PxsHeapStats::eBROADPHASE),
