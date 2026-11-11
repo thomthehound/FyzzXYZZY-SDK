@@ -1324,12 +1324,13 @@ void Scene::publish_integrated_shape_bounds(BodyId,Actor& actor) {
         if(shape.simulation_shape_enabled)
             gpu_broadphase_->mark_shape_bounds_changed(id,shape.contact_offset);
         if(shape.simulation_shape_enabled && gpu_broadphase_snapshot_current_) {
-            auto it=std::lower_bound(gpu_broadphase_boxes_.begin(),gpu_broadphase_boxes_.end(),id,
-                [](const GpuBroadphaseBox& box,ShapeId key){return box.id<key;});
-            if(it==gpu_broadphase_boxes_.end() || it->id!=id)
+            const auto slot=shape.gpu_broadphase_slot;
+            if(slot>=gpu_broadphase_boxes_.size() ||
+               gpu_broadphase_boxes_[slot].id!=id)
                 throw std::logic_error("Integrated shape missing from GPU SAP input");
-            it->position=shape.position;
-            it->orientation=shape.orientation;
+            auto& box=gpu_broadphase_boxes_[slot];
+            box.position=shape.position;
+            box.orientation=shape.orientation;
         }
         shape.cached_bounds_current=true;
     }
@@ -2321,7 +2322,7 @@ void Scene::update_gpu_pairs(bool force_update) {
         gpu_broadphase_boxes_.clear();
         gpu_broadphase_boxes_.reserve(live_shape_ids_.size());
         for(BodyId id:live_shape_ids_) {
-            const Shape& actor=shapes_[id];
+            auto& actor=shapes_[id];
             if(!actor.simulation_shape_enabled)continue;
             // Infinite planes are Sc contact managers, not finite SAP.
             if(actor.geometry==Geometry::Plane)continue;
@@ -2341,6 +2342,8 @@ void Scene::update_gpu_pairs(bool force_update) {
                 convex_margin_extent=0.5f*std::min({
                     upper.x-lower.x,upper.y-lower.y,upper.z-lower.z});
             }
+            actor.gpu_broadphase_slot=static_cast<ShapeId>(
+                gpu_broadphase_boxes_.size());
             gpu_broadphase_boxes_.push_back({
                 id,actor.position,extents,basis,
                 actor.contact_offset,motion,actor.local_pose,actor.next_simulation_shape,
