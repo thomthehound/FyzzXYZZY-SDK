@@ -688,7 +688,8 @@ struct Context::Impl {
     BufferId create_buffer(std::size_t bytes, MemoryPlacement placement) {
         if (!bytes) throw std::invalid_argument("Compute buffer size must be positive");
         Buffer buffer;
-        if (placement == MemoryPlacement::HostVisible) {
+        if (placement == MemoryPlacement::HostVisible ||
+            placement == MemoryPlacement::SharedLocal) {
             // The PhysX actor-pair report output is GPU-writable AND
             // CPU-readable; UPLOAD (GENERIC_READ) and READBACK (COPY_DEST)
             // are not legal substitutes for a UAV destination.
