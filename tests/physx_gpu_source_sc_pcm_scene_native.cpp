@@ -4001,7 +4001,8 @@ void verify_gpu_free_integration(
 
 void verify_gpu_wide_island_solver(
     fyzz::compute::Backend backend,const char* sap,const char* pcm,
-    const char* dy_shader,unsigned connected_bodies,bool diagnose=false) {
+    const char* dy_shader,unsigned connected_bodies,bool diagnose=false,
+    bool disable_friction=false,bool disable_strong_friction=false) {
     using namespace fyzz;
     std::ifstream input(dy_shader,std::ios::binary);
     require(bool(input),"Compiled source Dy shader unavailable");
@@ -4040,7 +4041,8 @@ void verify_gpu_wide_island_solver(
         std::vector<BodyId> bodies;
         ConstraintId split_joint=0;
     };
-    const auto assemble=[connected_bodies](native::Scene& scene) {
+    const auto assemble=[connected_bodies,disable_friction,disable_strong_friction](
+        native::Scene& scene) {
         Assembly out;
         const auto chain=[&](unsigned count,float z,std::uint8_t pos,std::uint8_t vel) {
             RigidBodyDynamics dynamics;
@@ -4053,6 +4055,12 @@ void verify_gpu_wide_island_solver(
                 const auto body=scene.add_dynamic_box(
                     {0.4f,0.5f,0.4f},{x,0.48f,z},1.0f);
                 out.bodies.push_back(body);
+                if(disable_friction || disable_strong_friction) {
+                    Material material{};
+                    material.disable_friction=disable_friction;
+                    material.disable_strong_friction=disable_strong_friction;
+                    scene.set_material(body,material);
+                }
                 scene.set_dynamics(body,dynamics);
                 scene.set_velocity(body,{0.08f,0.0f,i%2u ? -0.06f : 0.06f});
                 if(i) {
@@ -4667,7 +4675,9 @@ int main(int argc,char** argv) {
                 scenario=="indirect_api" ||
                 scenario=="hardware_scene_1k" ||
                 scenario=="hardware_scene_10k" ||
-                scenario=="wide_islands_diagnose",
+                scenario=="wide_islands_diagnose" ||
+                scenario=="wide_islands_diagnose_no_friction" ||
+                scenario=="wide_islands_diagnose_no_strong_friction",
                 "Unknown GPU scene regression scenario");
 #ifdef FYZZXYZZY_TEST_D3D12
         constexpr auto backend=fyzz::compute::Backend::D3D12;
@@ -4808,14 +4818,21 @@ int main(int argc,char** argv) {
                 [&]{verify_gpu_high_degree_coloring(
                     backend,argv[1],argv[2],argv[3],10000u);});
         if(scenario=="all" || scenario=="wide_islands" ||
-           scenario=="wide_islands_10k" || scenario=="wide_islands_diagnose") {
+           scenario=="wide_islands_10k" ||
+           scenario=="wide_islands_diagnose" ||
+           scenario=="wide_islands_diagnose_no_friction" ||
+           scenario=="wide_islands_diagnose_no_strong_friction") {
             const bool large=scenario=="wide_islands_10k";
-            const bool diagnose=scenario=="wide_islands_diagnose";
-            fyzz::tests::measure_gpu_case("sc_pcm",large ? "wide_islands_10k" :
-                diagnose ? "wide_islands_diagnose" : "wide_islands",
+            const bool diagnose=scenario.starts_with("wide_islands_diagnose");
+            const bool no_friction=scenario=="wide_islands_diagnose_no_friction";
+            const bool no_strong_friction=
+                scenario=="wide_islands_diagnose_no_strong_friction";
+            fyzz::tests::measure_gpu_case("sc_pcm",scenario=="all" ?
+                "wide_islands" : scenario,
                 [&]{verify_gpu_wide_island_solver(
                     backend,argv[1],argv[2],argv[3],
-                    large ? 10240u : 768u,diagnose);});
+                    large ? 10240u : 768u,diagnose,
+                    no_friction,no_strong_friction);});
         }
         if(scenario=="hardware_scene_1k" || scenario=="hardware_scene_10k")
             fyzz::tests::measure_gpu_case("hardware_scene",scenario,
