@@ -84,8 +84,8 @@ void exercise_reused_source_submission_scratch(Context& context) {
         third[i]=i+201u;
     }
 
-    // Each source group must snapshot host bytes before its retained
-    // vector is cleared for the next group, with one submission per group.
+    // Each source group snapshots host bytes before its retained
+    // vector is cleared; all groups preserve one ordered command stream.
     auto& first_group=stream.upload_scratch();
     first_group.push_back({base,first.data(),sizeof(first)});
     first_group.push_back({base+64u,second.data(),sizeof(second)});
@@ -129,7 +129,7 @@ void exercise_reused_source_submission_scratch(Context& context) {
     later.fill(0u);
     if(stream.submission_stats().upload_batches!=before.upload_batches+1u)
         throw std::runtime_error(
-            "Overlapping source upload changed GPU submission count");
+            "Overlapping source upload changed logical enqueue group count");
     stream.wait_at_fetch();
     context.download(gpu,0u,observed.data(),sizeof(observed));
     for(std::uint32_t i=0u;i<observed.size();++i)
