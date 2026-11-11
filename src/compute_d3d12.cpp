@@ -28,6 +28,7 @@
 #include <array>
 #include <cstdlib>
 #include <cstring>
+#include <functional>
 #if defined(FYZZXYZZY_PROFILE_GPU)
 #include <cstdio>
 #endif
@@ -1314,6 +1315,16 @@ struct Context::Impl {
         }
         if (descriptor_count > std::numeric_limits<UINT>::max())
             throw std::out_of_range("D3D12 descriptor heap capacity exceeded");
+#if defined(FYZZXYZZY_PROFILE_GPU)
+        if(hardware_trace) {
+            FYZZ_PROFILE_COUNTER("d3d12.descriptor_tables",
+                                 descriptor_tables.size());
+            FYZZ_PROFILE_COUNTER("d3d12.descriptor_table_reuses",
+                                 dispatch_table_indices.size()-
+                                 descriptor_tables.size());
+            FYZZ_PROFILE_COUNTER("d3d12.descriptor_slots",descriptor_count);
+        }
+#endif
         if(uses_indirect && !dispatch_signature) {
             D3D12_INDIRECT_ARGUMENT_DESC argument{};
             argument.Type=D3D12_INDIRECT_ARGUMENT_TYPE_DISPATCH;
@@ -1521,51 +1532,51 @@ struct Context::Impl {
             if(!descriptor_table_written[table]) {
                 descriptor_table_written[table]=true;
                 const auto cpu_start=submission.heap->GetCPUDescriptorHandleForHeapStart();
-                for (UINT slot = 0; slot < pipeline.bindings; ++slot) {
-                const auto& binding = cmd.buffers[slot];
-                auto& buffer = get_buffer(binding.buffer);
-                const auto kind = pipeline.view_kinds[slot];
-                const bool read_only = kind == StorageBufferViewKind::RawRead ||
-                                       kind == StorageBufferViewKind::Structured32Read;
-                const bool raw = kind == StorageBufferViewKind::RawRead ||
-                                 kind == StorageBufferViewKind::RawReadWrite;
-                const auto physical_slot = descriptor_index +
-                    pipeline.descriptor_slots[slot];
-                DescriptorView& cached = submission.cached_views[physical_slot];
-                const DescriptorView next{
-                    binding.buffer, binding.offset, binding.bytes,
-                    buffer.resource.Get()};
-                if (cached.buffer == next.buffer &&
-                    cached.offset == next.offset &&
-                    cached.bytes == next.bytes &&
-                    cached.resource == next.resource)
-                    continue;
-                D3D12_CPU_DESCRIPTOR_HANDLE cpu{
-                    cpu_start.ptr + physical_slot * increment
-                };
-                if (!read_only) {
-                    D3D12_UNORDERED_ACCESS_VIEW_DESC view{};
-                    view.Format = raw ? DXGI_FORMAT_R32_TYPELESS : DXGI_FORMAT_UNKNOWN;
-                    view.ViewDimension = D3D12_UAV_DIMENSION_BUFFER;
-                    view.Buffer.FirstElement = binding.offset / 4;
-                    view.Buffer.NumElements = static_cast<UINT>(binding.bytes / 4);
-                    view.Buffer.StructureByteStride = raw ? 0u : 4u;
-                    view.Buffer.Flags = raw ? D3D12_BUFFER_UAV_FLAG_RAW :
-                                               D3D12_BUFFER_UAV_FLAG_NONE;
-                    device->CreateUnorderedAccessView(buffer.resource.Get(), nullptr, &view, cpu);
-                } else {
-                    D3D12_SHADER_RESOURCE_VIEW_DESC view{};
-                    view.Format = raw ? DXGI_FORMAT_R32_TYPELESS : DXGI_FORMAT_UNKNOWN;
-                    view.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
-                    view.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-                    view.Buffer.FirstElement = binding.offset / 4;
-                    view.Buffer.NumElements = static_cast<UINT>(binding.bytes / 4);
-                    view.Buffer.StructureByteStride = raw ? 0u : 4u;
-                    view.Buffer.Flags = raw ? D3D12_BUFFER_SRV_FLAG_RAW :
-                                              D3D12_BUFFER_SRV_FLAG_NONE;
-                    device->CreateShaderResourceView(buffer.resource.Get(), &view, cpu);
-                }
-                cached = next;
+                    for (UINT slot = 0; slot < pipeline.bindings; ++slot) {
+                    const auto& binding = cmd.buffers[slot];
+                    auto& buffer = get_buffer(binding.buffer);
+                    const auto kind = pipeline.view_kinds[slot];
+                    const bool read_only = kind == StorageBufferViewKind::RawRead ||
+                                           kind == StorageBufferViewKind::Structured32Read;
+                    const bool raw = kind == StorageBufferViewKind::RawRead ||
+                                     kind == StorageBufferViewKind::RawReadWrite;
+                    const auto physical_slot = descriptor_index +
+                        pipeline.descriptor_slots[slot];
+                    DescriptorView& cached = submission.cached_views[physical_slot];
+                    const DescriptorView next{
+                        binding.buffer, binding.offset, binding.bytes,
+                        buffer.resource.Get()};
+                    if (cached.buffer == next.buffer &&
+                        cached.offset == next.offset &&
+                        cached.bytes == next.bytes &&
+                        cached.resource == next.resource)
+                        continue;
+                    D3D12_CPU_DESCRIPTOR_HANDLE cpu{
+                        cpu_start.ptr + physical_slot * increment
+                    };
+                    if (!read_only) {
+                        D3D12_UNORDERED_ACCESS_VIEW_DESC view{};
+                        view.Format = raw ? DXGI_FORMAT_R32_TYPELESS : DXGI_FORMAT_UNKNOWN;
+                        view.ViewDimension = D3D12_UAV_DIMENSION_BUFFER;
+                        view.Buffer.FirstElement = binding.offset / 4;
+                        view.Buffer.NumElements = static_cast<UINT>(binding.bytes / 4);
+                        view.Buffer.StructureByteStride = raw ? 0u : 4u;
+                        view.Buffer.Flags = raw ? D3D12_BUFFER_UAV_FLAG_RAW :
+                                                   D3D12_BUFFER_UAV_FLAG_NONE;
+                        device->CreateUnorderedAccessView(buffer.resource.Get(), nullptr, &view, cpu);
+                    } else {
+                        D3D12_SHADER_RESOURCE_VIEW_DESC view{};
+                        view.Format = raw ? DXGI_FORMAT_R32_TYPELESS : DXGI_FORMAT_UNKNOWN;
+                        view.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
+                        view.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+                        view.Buffer.FirstElement = binding.offset / 4;
+                        view.Buffer.NumElements = static_cast<UINT>(binding.bytes / 4);
+                        view.Buffer.StructureByteStride = raw ? 0u : 4u;
+                        view.Buffer.Flags = raw ? D3D12_BUFFER_SRV_FLAG_RAW :
+                                                  D3D12_BUFFER_SRV_FLAG_NONE;
+                        device->CreateShaderResourceView(buffer.resource.Get(), &view, cpu);
+                    }
+                    cached = next;
                 }
             }
             submission.commands->SetComputeRootSignature(pipeline.signature.Get());
