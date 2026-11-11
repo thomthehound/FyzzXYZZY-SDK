@@ -47,7 +47,7 @@ public:
                 ? capacity_*2u : limit;
             const auto next_capacity=std::max(bytes,growth);
             const auto next=context_.create_buffer(
-                next_capacity,compute::MemoryPlacement::HostVisible);
+                next_capacity,compute::MemoryPlacement::SharedLocal);
             CudaDeviceAddressMap::Address next_address=0;
             try {
                 next_address=addresses_.register_allocation(next,next_capacity);
