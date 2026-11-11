@@ -11,9 +11,6 @@ on:
       - '**/*.md'
       - 'docs/**'
   pull_request:
-    branches:
-      - main
-      - integration/n2-native-sc-gpu-report-admission
     paths-ignore:
       - '**/*.md'
       - 'docs/**'
