@@ -4185,6 +4185,39 @@ void verify_gpu_wide_island_solver(
                 }
                 return result;
             };
+            struct ContactDifference {
+                double position=0.0,normal=0.0,separation=0.0;
+                std::size_t topology_mismatches=0u;
+            };
+            const auto contact_difference=[&](auto lhs,auto rhs) {
+                ContactDifference result{};
+                if(lhs.size()!=rhs.size()) {
+                    result.topology_mismatches=std::max(lhs.size(),rhs.size());
+                    return result;
+                }
+                for(std::size_t k=0u;k<lhs.size();++k) {
+                    const auto& a=lhs[k];
+                    const auto& b=rhs[k];
+                    if(a.pair!=b.pair || a.count!=b.count) {
+                        ++result.topology_mismatches;
+                        continue;
+                    }
+                    for(std::size_t j=0u;j<a.count;++j) {
+                        result.position=std::max(result.position,
+                            max_axis_error(a.points[j].position,b.points[j].position));
+                        result.normal=std::max(result.normal,
+                            max_axis_error(a.points[j].normal,b.points[j].normal));
+                        result.separation=std::max(result.separation,
+                            std::abs(double(a.points[j].separation)-
+                                     double(b.points[j].separation)));
+                    }
+                }
+                return result;
+            };
+            const auto contact_geometry=contact_difference(
+                cpu.contacts(),pcm_cpu_dy->contacts());
+            const auto solver_geometry=contact_difference(
+                pcm_cpu_dy->contacts(),gpu.contacts());
             const auto contact_friction=friction_difference(
                 cpu.solved_friction_patches(),
                 pcm_cpu_dy->solved_friction_patches());
@@ -4227,6 +4260,14 @@ void verify_gpu_wide_island_solver(
                      <<" pcm_vs_gpu_normal_force="<<max_force_error(
                          pcm_cpu_dy->solved_normal_impulses(),
                          gpu.solved_normal_impulses())
+                     <<" cpu_vs_pcm_contact_position="<<contact_geometry.position
+                     <<" pcm_vs_gpu_contact_position="<<solver_geometry.position
+                     <<" cpu_vs_pcm_contact_normal="<<contact_geometry.normal
+                     <<" pcm_vs_gpu_contact_normal="<<solver_geometry.normal
+                     <<" cpu_vs_pcm_contact_separation="<<contact_geometry.separation
+                     <<" pcm_vs_gpu_contact_separation="<<solver_geometry.separation
+                     <<" cpu_vs_pcm_contact_topology_mismatch="<<contact_geometry.topology_mismatches
+                     <<" pcm_vs_gpu_contact_topology_mismatch="<<solver_geometry.topology_mismatches
                      <<" cpu_vs_pcm_friction_impulse="<<contact_friction.impulse
                      <<" pcm_vs_gpu_friction_impulse="<<solver_friction.impulse
                      <<" cpu_vs_pcm_anchor_position="<<contact_friction.anchor_position
