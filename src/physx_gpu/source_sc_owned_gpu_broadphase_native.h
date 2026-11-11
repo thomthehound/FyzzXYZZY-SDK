@@ -176,7 +176,6 @@ public:
         dy_distance_.reset();
         pcm_.reset();
         producer_.reset();
-        frame_input_.close();
         box_input_.deallocate();
         box_cache_.deallocate();
         box_geometry_.deallocate();
