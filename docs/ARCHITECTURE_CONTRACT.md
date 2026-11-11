@@ -145,6 +145,21 @@ launch must expose useful parallelism or computation. Measure transfer,
 submission and waiting costs before moving these dependencies. Neither
 processor duplicates numerical operations for implicit verification.
 
+**Ordered source submissions.** CPU-authored device inputs are snapshotted
+when queued. Uploads, device copies and dependent shader dispatches retain
+their source order in one native batch; a new host upload does not itself
+submit or wait on the GPU queue. Vulkan and D3D12 pack the owned upload
+bytes into fence-owned transfer staging. Physical heap-root retirement
+submits outstanding source commands before releasing the root; rollback
+discards only commands that never entered the queue.
+
+**Host report admission.** Source SAP schedules its descriptor readback
+asynchronously and prepares bitmap retirement while the transfer is in
+flight. Sc publishes found/lost pairs and rotates source endpoint history
+only after the descriptor fence and source-lifetime validation complete.
+GPU PCM witness joins remain mandatory where CPU Gu correlation needs
+those witnesses; no unchanged-topology assumption may bypass them.
+
 **No false connectivity shortcut.** Broadphase overlap can feed speculative
 waking and admission; it cannot stand in for accurate contact connectivity.
 Mixed rigid, articulated and nonrigid interactions must use typed responding
