@@ -24,6 +24,8 @@ enum class Backend { Vulkan, D3D12 };
 // request for CPU-mappable, GPU-writeable storage: unsupported adapters
 // reject it, never silently allocate a DEFAULT heap and label it mapped.
 // DeviceLocal retains normal GPU-preferred storage with staging transfers.
+// SharedLocal requires a GPU-local, CPU-mappable resource with explicit host
+// visibility; it never selects nonlocal host memory.
 enum class MemoryPlacement { Auto, HostVisible, DeviceLocal, SharedLocal };
 
 // Only this explicit exception permits a higher-level source allocator to
