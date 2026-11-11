@@ -60,8 +60,13 @@ pwsh -NoProfile -File tools/hardware/qualify.ps1 -Backend Vulkan -Scenario wide_
 ```
 
 The diagnostic compares ordinary CPU execution, GPU SAP/PCM with CPU Dy, and
-GPU SAP/PCM with GPU Dy for the same wide connected-island scene. A targeted
-run preserves its raw log and trace records without sampling summaries.
+GPU SAP/PCM with GPU Dy for the same wide connected-island scene. To isolate
+friction rows from retained strong-friction anchors, repeat it with
+`-Scenario wide_islands_diagnose_no_friction` and
+`-Scenario wide_islands_diagnose_no_strong_friction`. Each diagnostic
+records body-state, normal-impulse, friction-impulse, and anchor differences.
+A targeted run preserves its raw log and trace records without sampling
+summaries.
 
 Omit `-Scale` for the core suite only. Each backend executes correctness cases
 once, then separate warm-up and sampled repetitions of selected execution
