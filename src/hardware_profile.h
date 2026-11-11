@@ -4,6 +4,7 @@
 
 #if defined(FYZZXYZZY_PROFILE_GPU)
 #include <memory>
+#include <utility>
 #include <vector>
 #include <atomic>
 #include <chrono>
