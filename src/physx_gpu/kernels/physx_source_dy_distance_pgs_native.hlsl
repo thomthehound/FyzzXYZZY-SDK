@@ -849,7 +849,7 @@ bool sourceDyPrepareJointGeometry(uint4 desc,uint endError) {
         float3 axis=0.0f,angA=0.0f,angB=0.0f;
         float error=0.0f;
         if(kind==0u) {
-            const float3 offset=(cA+rA)-(cB+rB);
+            precise float3 offset=((cA+rA)-cB)-rB;
             const float distance=sqrt(sourceDyDot3(offset,offset));
             if(!isfinite(distance)) {
                 arena.InterlockedOr(endError,8192u);
