@@ -14,7 +14,8 @@ param(
     [int]$WarmupRuns = 2,
     [string]$Scenario,
     [switch]$Scale,
-    [switch]$ValidateArtifactsOnly
+    [switch]$ValidateArtifactsOnly,
+    [string]$SummarizeEvidence
 )
 
 Set-StrictMode -Version Latest
@@ -24,7 +25,8 @@ $PSNativeCommandUseErrorActionPreference = $false
 if (-not $IsWindows) {
     throw 'Physical-GPU qualification currently targets Windows PowerShell 7.'
 }
-if (-not $ValidateArtifactsOnly -and $env:FYZZXYZZY_D3D12_FORCE_WARP -eq '1') {
+if (-not $ValidateArtifactsOnly -and -not $SummarizeEvidence -and
+    $env:FYZZXYZZY_D3D12_FORCE_WARP -eq '1') {
     throw 'Physical-GPU qualification cannot run with FYZZXYZZY_D3D12_FORCE_WARP=1.'
 }
 
@@ -155,6 +157,37 @@ function Get-BackendConfig([string]$Api, [string]$Build) {
     }
 }
 
+if ($SummarizeEvidence) {
+    if ($ValidateArtifactsOnly -or $Scenario -or $Scale) {
+        throw 'Evidence summarization cannot run with validation, scenario, or scale flags.'
+    }
+    $out = Resolve-RepositoryPath $SummarizeEvidence
+    $evidence = Join-Path $out 'runs.jsonl'
+    $traces = Join-Path $out 'trace.jsonl'
+    foreach ($file in @($evidence, $traces)) {
+        if (-not (Test-Path -LiteralPath $file -PathType Leaf)) {
+            throw "Missing qualification evidence: $file"
+        }
+    }
+    $records = [System.Collections.Generic.List[object]]::new()
+    foreach ($line in [System.IO.File]::ReadLines($evidence)) {
+        if ([string]::IsNullOrWhiteSpace($line)) { continue }
+        $record = ConvertFrom-Json -InputObject $line
+        if ($record.exit_code -ne 0) {
+            throw "Cannot summarize failed qualification: $($record.log)"
+        }
+        $records.Add($record)
+    }
+    if ($records.Count -eq 0) { throw 'Qualification evidence has no runs.' }
+    $configs = @($records | Group-Object backend | ForEach-Object {
+        [pscustomobject]@{ Api = $_.Name }
+    })
+    $profiles = @($records | Where-Object { $_.phase -eq 'sample' } |
+        Select-Object -ExpandProperty case -Unique)
+    if ($profiles.Count -eq 0) {
+        throw 'Qualification evidence has no profiling samples.'
+    }
+} else {
 $configs = @()
 if ($Backend -in @('Both', 'Vulkan')) {
     $configs += Get-BackendConfig 'Vulkan' $VulkanBuild
@@ -325,6 +358,7 @@ foreach ($config in $configs) {
         }
     }
 }
+}
 
 $summary = @()
 foreach ($config in $configs) {
@@ -416,15 +450,16 @@ foreach ($line in [System.IO.File]::ReadLines($traces)) {
         }
     }
     $key = "$($record.backend)|$($record.case)|$($frame.mode)|$($event.kind)|$stage"
-    if (-not $stages.ContainsKey($key)) {
-        $stages[$key] = [System.Collections.Generic.List[double]]::new()
+    [System.Collections.Generic.List[double]]$bucket = $null
+    if (-not $stages.TryGetValue($key, [ref]$bucket)) {
+        $bucket = [System.Collections.Generic.List[double]]::new()
+        $stages.Add($key, $bucket)
     }
-    $stages[$key].Add(([double]$event.duration_ns / 1000000.0))
+    $bucket.Add(([double]$event.duration_ns / 1000000.0))
 }
-$stageSummary = foreach ($key in ($stages.Keys | Sort-Object)) {
-    $parts = $key -split '\|', 5
-    $samples = $stages[$key]
-    $values = [double[]]$samples.ToArray()
+$stageSummary = foreach ($item in ($stages.GetEnumerator() | Sort-Object Key)) {
+    $parts = $item.Key -split '\|', 5
+    $values = $item.Value.ToArray()
     [pscustomobject][ordered]@{
         backend = $parts[0]
         case = $parts[1]
@@ -440,5 +475,9 @@ $stageSummary = foreach ($key in ($stages.Keys | Sort-Object)) {
 }
 $stageSummary | ConvertTo-Json -Depth 6 |
     Set-Content -LiteralPath (Join-Path $out 'stages.json') -Encoding utf8
-Write-Host "Hardware qualification passed. Evidence: $out"
+if ($SummarizeEvidence) {
+    Write-Host "Qualification evidence summarized: $out"
+} else {
+    Write-Host "Hardware qualification passed. Evidence: $out"
+}
 Write-Host 'Process timings include device creation and shader setup; in-scene step metrics are in runs.jsonl.'
