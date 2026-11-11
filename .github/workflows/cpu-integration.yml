@@ -7,6 +7,7 @@ on:
   push:
     branches:
       - main
+      - feature/physical-gpu-qualification
     paths-ignore:
       - '**/*.md'
       - 'docs/**'
@@ -443,6 +444,50 @@ jobs:
             [ref]$tokens, [ref]$parseErrors) | Out-Null
           if ($parseErrors.Count -ne 0) {
             throw ($parseErrors | Out-String)
+          }
+      - name: Regenerate qualification summary from existing evidence
+        shell: pwsh
+        run: |
+          $evidence = Join-Path $env:RUNNER_TEMP 'qualify-report-regression'
+          New-Item -ItemType Directory -Path $evidence -Force | Out-Null
+          $record = [ordered]@{
+            backend = 'Vulkan'
+            case = 'hardware_scene_1k'
+            phase = 'sample'
+            run = 0
+            log = 'sample.log'
+            exit_code = 0
+            process_wall_ms = 16.0
+            metrics = @(
+              @{ suite = 'hardware_step'; gpu_dy = 0.0; step_ms = 1.25 },
+              @{ suite = 'hardware_step'; gpu_dy = 1.0; step_ms = 1.5 }
+            )
+          }
+          $record | ConvertTo-Json -Compress -Depth 8 |
+            Set-Content -LiteralPath (Join-Path $evidence 'runs.jsonl')
+          @(
+            @{ kind = 'pipeline'; context = 1; pipeline = 7; label = 'dy.distance_pgs' },
+            @{ kind = 'frame'; trace_id = 1; frame = 7; gpu_dy = 1; success = 1 },
+            @{ kind = 'gpu'; context = 1; pipeline = 7; trace_id = 1; type = 'compute'; duration_ns = 150000 },
+            @{ kind = 'cpu'; trace_id = 1; stage = 'dy.prep'; duration_ns = 100000 }
+          ) | ForEach-Object {
+            @{
+              backend = 'Vulkan'
+              case = 'hardware_scene_1k'
+              phase = 'sample'
+              log = 'sample.log'
+              event = $_
+            } | ConvertTo-Json -Compress -Depth 8
+          } | Set-Content -LiteralPath (Join-Path $evidence 'trace.jsonl')
+          pwsh -NoProfile -File tools/hardware/qualify.ps1 -SummarizeEvidence $evidence
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $summary = @(Get-Content -LiteralPath (Join-Path $evidence 'summary.json') -Raw | ConvertFrom-Json)
+          $stages = @(Get-Content -LiteralPath (Join-Path $evidence 'stages.json') -Raw | ConvertFrom-Json)
+          if ($summary.Count -ne 1 -or $summary[0].gpu_frame_p50_ms -ne 1.5 -or
+              $stages.Count -ne 2 -or
+              @($stages | Where-Object { $_.stage -eq 'dy.distance_pgs' -and
+                $_.segment_p50_ms -eq 0.15 }).Count -ne 1) {
+            throw 'Qualification evidence reporting regression'
           }
       - name: Configure without external source or network
         shell: pwsh
