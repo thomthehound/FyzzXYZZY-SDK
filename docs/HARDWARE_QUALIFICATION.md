@@ -114,8 +114,9 @@ setup. Separately, the profiling variant captures GPU command timestamp
 segments within the actual Vulkan/D3D12 submission, and resolves them only
 at the existing completion fence. Traces are buffered during simulation
 and written when each process exits, so log output does not inflate measured
-frame time. Any trace-capacity overflow fails qualification rather than
-silently producing incomplete data. Timestamp segments include queue-local
+frame time. Segmented trace storage grows to fit the measured workload;
+allocation failure is reported and fails qualification rather than silently
+producing incomplete data. Timestamp segments include queue-local
 ordering/barrier costs; they are not isolated ALU kernel time. GPU clocks
 are not calibrated to the host clock, so do not reconstruct precise CPU/GPU
 overlap from these timestamps alone.
