@@ -12,6 +12,7 @@ param(
     [int]$Samples = 7,
     [ValidateRange(0, 10)]
     [int]$WarmupRuns = 2,
+    [string]$Scenario,
     [switch]$Scale,
     [switch]$ValidateArtifactsOnly
 )
@@ -192,6 +193,7 @@ $metadata = [ordered]@{
     samples = $Samples
     warmup_runs = $WarmupRuns
     scale = [bool]$Scale
+    scenario = $Scenario
     instrumentation = 'FYZZXYZZY_PROFILE_GPU'
     builds = @($configs | ForEach-Object { [ordered]@{
         backend = $_.Api
@@ -284,6 +286,14 @@ function Invoke-Scenario($Config, [string]$Case, [string]$Phase, [int]$Index) {
     }
     Write-Host ('{0,-6} {1,-20} {2,-10} process_wall_ms={3,9:N2}' -f
         $Config.Api, $Case, $Phase, $clock.Elapsed.TotalMilliseconds)
+}
+
+if ($Scenario) {
+    foreach ($config in $configs) {
+        Invoke-Scenario $config $Scenario 'correctness' 0
+    }
+    Write-Host "Targeted qualification passed. Evidence: $out"
+    exit 0
 }
 
 $correctness = @(
