@@ -63,6 +63,9 @@ struct DeviceInfo {
     // non-UMA systems (e.g. CPU-accessible discrete GPU memory). Do not
     // infer unified CPU/GPU architecture from this memory-type property.
     bool has_device_local_host_visible_memory = false;
+    // A GPU-storage resource can use CPU-accessible local memory for compact
+    // frame input without a separate transfer allocation or copy.
+    bool supports_shared_frame_input = false;
     // These describe architecture-level UMA/cache guarantees where actually
     // exposed (D3D12 architecture query), not Vulkan HOST_COHERENT.
     bool unified_memory = false;
