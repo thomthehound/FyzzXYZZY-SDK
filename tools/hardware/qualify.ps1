@@ -273,7 +273,7 @@ function Invoke-Scenario($Config, [string]$Case, [string]$Phase, [int]$Index) {
             $_.StartsWith('Native Sc GPU PCM scene regression FAILED:') -or
             ($_.StartsWith('FYZZXYZZY_METRIC ') -and
              ($_.Contains('phase=state_mismatch') -or
-              $Case -eq 'wide_islands_diagnose'))
+              $Case.StartsWith('wide_islands_diagnose')))
         })
         if ($diagnostics.Count -eq 0) {
             $diagnostics = @($lines | Where-Object {
