@@ -205,6 +205,11 @@ inline void pre_update_source_sap_aabb_manager_native(
         boxes->cached_geometry.allocateCopyOldDataAsync(
             geometry_bytes,stream,PX_FL);
         if(boxes->frame_input && boxes->frame_input->direct()) {
+            // A resizing frame input cannot retire recorded readers
+            // until their command list has been submitted.
+            if(boxes->frame_input->capacity() &&
+               shape_bytes>boxes->frame_input->capacity())
+                stream.submit();
             boxes->frame_input->write(boxes->changed.data(),shape_bytes);
             FYZZ_PROFILE_COUNTER("sc.mapped_frame_input_bytes",shape_bytes);
         }else {
