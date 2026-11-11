@@ -373,12 +373,15 @@ void exercise_native_physx_heap_roots(Context& context) {
     // wait; the native Context retains in-flight storage until completion.
     CudaDeviceAddressMap unrelatedAddresses;
     SourceSapDmaNative unrelatedStream(context,unrelatedAddresses);
+    const auto staged_before_rejection=source.commands().size();
+    if(staged_before_rejection!=3u)
+        throw std::runtime_error("Source upload and copies lost enqueue order");
     rejected=false;
     try {roots.release_root(oldRoot,&unrelatedStream);}
     catch(const std::invalid_argument&) {rejected=true;}
     if(!rejected || roots.live_roots()!=3u ||
        addresses.resolve(oldRaw,1u).offset!=256u ||
-       source.commands().size()!=2u)
+       source.commands().size()!=staged_before_rejection)
         throw std::runtime_error(
             "Foreign scene stream retired original PhysX GPU allocation");
 
