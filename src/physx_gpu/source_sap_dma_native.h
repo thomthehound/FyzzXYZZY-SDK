@@ -9,6 +9,8 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
+#include <iterator>
 #include <limits>
 #include <span>
 #include <stdexcept>
@@ -31,14 +33,14 @@ struct SourceSapUpload {
 // descriptor, stream lifetime and task/scene ownership. This class neither
 // creates a scheduler nor introduces cross-stream/event semantics.
 //
-// Source HtoD calls in one adjacent group submit as one native upload batch;
-// GPU copies and shader launches form ordered native command batches. A host
-// upload following GPU commands forces their submission first, NOT a wait.
+// Source HtoD bytes are snapshotted at enqueue and share the same ordered
+// native batch as GPU copies and shader launches. The backend owns staging
+// until the batch fence completes; no upload-only queue submission is needed.
 // All submission tokens are reaped only at the source fetch boundary.
 class SourceSapDmaNative final {
 public:
     struct SubmissionStats {
-        std::size_t upload_batches = 0;
+        std::size_t upload_batches = 0; // Source enqueue groups, not queue submissions.
         std::size_t command_batches = 0;
         std::size_t upload_spans = 0;
         std::size_t upload_bytes = 0;
@@ -73,12 +75,26 @@ public:
                                          upload.data, upload.bytes});
         }
         if (resolved_uploads_.empty()) return;
-        tokens_.reserve(tokens_.size() + (pending_.empty() ? 1u : 2u));
-        flush_gpu_commands();
-        // The Context snapshots host bytes and owns the GPU staging resource
-        // until the corresponding completion token is reaped.
-        const auto token = context_.submit_upload_batch(resolved_uploads_);
-        tokens_.push_back(token);
+        // Snapshot source memory now, then retain upload/dispatch order in
+        // one native command batch. A later shader may consume these bytes
+        // without forcing an intermediate queue submission.
+        std::vector<compute::BatchCommand> commands;
+        commands.reserve(resolved_uploads_.size());
+        for(const auto& span:resolved_uploads_) {
+            if(span.offset%4u || span.bytes%4u)
+                throw std::invalid_argument(
+                    "PhysX source upload requires aligned buffer bytes");
+            compute::UploadCommand command;
+            command.destination=span.destination;
+            command.destination_offset=span.destination_offset;
+            command.bytes.resize(span.bytes);
+            std::memcpy(command.bytes.data(),span.data,span.bytes);
+            commands.emplace_back(std::move(command));
+        }
+        pending_.reserve(pending_.size()+commands.size());
+        pending_.insert(pending_.end(),
+            std::make_move_iterator(commands.begin()),
+            std::make_move_iterator(commands.end()));
         ++stats_.upload_batches;
         stats_.upload_spans += resolved_uploads_.size();
 #if defined(FYZZXYZZY_PROFILE_GPU)
