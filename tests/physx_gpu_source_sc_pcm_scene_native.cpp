@@ -4594,7 +4594,9 @@ void qualify_hardware_scene(
     constexpr std::uint32_t warmup=4u;
     const std::uint32_t measured=body_count>=10000u?16u:48u;
     const auto run=[&](bool gpu_dy,std::vector<double>& step_ms) {
+        const auto setup_begin=std::chrono::steady_clock::now();
         World world=create();
+        const auto create_end=std::chrono::steady_clock::now();
         world.set_gpu_dy_enabled(gpu_dy);
         world.add_static_box(
             {platform_extent,0.5f,platform_extent},{0.f,-0.5f,0.f});
@@ -4607,6 +4609,14 @@ void qualify_hardware_scene(
             ids.push_back(world.add_dynamic_box(
                 {0.5f,0.5f,0.5f},position,1.f));
         }
+        const auto setup_end=std::chrono::steady_clock::now();
+        std::cout<<"FYZZXYZZY_METRIC suite=hardware_setup"
+                 <<" bodies="<<body_count
+                 <<" gpu_dy="<<gpu_dy
+                 <<" create_ms="<<std::chrono::duration<double,std::milli>(
+                    create_end-setup_begin).count()
+                 <<" assemble_ms="<<std::chrono::duration<double,std::milli>(
+                    setup_end-create_end).count()<<'\n';
         step_ms.reserve(measured);
         for(std::uint32_t frame=0u;frame<warmup+measured;++frame) {
             const auto start=std::chrono::steady_clock::now();
