@@ -3,7 +3,6 @@
 #pragma once
 
 #include "physx_gpu/cuda_device_address_map.h"
-#include "physx_gpu/source_sap_dma_native.h"
 
 #include <algorithm>
 #include <cstddef>
@@ -18,9 +17,8 @@ namespace fyzz::physx_gpu {
 class SourceFrameInputArenaNative final {
 public:
     SourceFrameInputArenaNative(
-        compute::Context& context,CudaDeviceAddressMap& addresses,
-        SourceSapDmaNative& stream) noexcept
-        : context_(context),addresses_(addresses),stream_(stream) {
+        compute::Context& context,CudaDeviceAddressMap& addresses) noexcept
+        : context_(context),addresses_(addresses) {
         direct_=context_.device_info().supports_shared_frame_input;
     }
 
@@ -51,9 +49,8 @@ public:
             try {
                 next_address=addresses_.register_allocation(next,next_capacity);
                 write_bytes(next,data,bytes);
-                // Previously recorded readers retain the old resource
-                // until their source submission reaches its GPU fence.
-                if(buffer_)stream_.submit();
+                // The frame owner submits recorded consumers before
+                // growth. Retired storage stays live through its queue fence.
                 if(buffer_) {
                     context_.retire_buffer(buffer_);
                     addresses_.unregister_allocation(address_);
@@ -91,7 +88,6 @@ private:
 
     compute::Context& context_;
     CudaDeviceAddressMap& addresses_;
-    SourceSapDmaNative& stream_;
     bool direct_=false;
     compute::BufferId buffer_=0;
     CudaDeviceAddressMap::Address address_=0;
