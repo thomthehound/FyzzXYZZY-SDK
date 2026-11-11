@@ -293,8 +293,8 @@ void verify_direct_frame_input(Context& context,const char* shader) {
         stream.wait_at_fetch();
         Bounds result{};
         context.download(bounds_buffer,0u,&result,sizeof(result));
-        require(std::abs(result.minimum.x+1.f)<1.0e-5f &&
-                std::abs(result.maximum.x-1.f)<1.0e-5f,
+        require(std::abs(result.minimum[0]+1.f)<1.0e-5f &&
+                std::abs(result.maximum[0]-1.f)<1.0e-5f,
                 "Mapped frame input failed first GPU transform");
 
         const auto grown=input.write(shapes.data(),sizeof(shapes));
@@ -306,8 +306,8 @@ void verify_direct_frame_input(Context& context,const char* shader) {
         std::array<Bounds,count> results{};
         context.download(bounds_buffer,0u,results.data(),sizeof(results));
         for(std::uint32_t i=0u;i<count;++i)
-            require(std::abs(results[i].minimum.x-(float(i*3u)-1.f))<1.0e-5f &&
-                    std::abs(results[i].maximum.x-(float(i*3u)+1.f))<1.0e-5f,
+            require(std::abs(results[i].minimum[0]-(float(i*3u)-1.f))<1.0e-5f &&
+                    std::abs(results[i].maximum[0]-(float(i*3u)+1.f))<1.0e-5f,
                     "Mapped frame input lost source order during growth");
 
         shapes[0].position[0]=42.f;
@@ -317,8 +317,8 @@ void verify_direct_frame_input(Context& context,const char* shader) {
                      0u,count,count);
         stream.wait_at_fetch();
         context.download(bounds_buffer,0u,&result,sizeof(result));
-        require(std::abs(result.minimum.x-41.f)<1.0e-5f &&
-                std::abs(result.maximum.x-43.f)<1.0e-5f &&
+        require(std::abs(result.minimum[0]-41.f)<1.0e-5f &&
+                std::abs(result.maximum[0]-43.f)<1.0e-5f &&
                 stream.submission_stats().upload_bytes==0u,
                 "Mapped frame input did not update without GPU transfer");
     }
