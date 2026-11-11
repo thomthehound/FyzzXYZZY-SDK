@@ -1446,6 +1446,7 @@ struct Context::Impl {
     SubmissionId submit_batch(const std::vector<BatchCommand>& operations,
                               bool profile = false,
                               bool independent_uploads = false) {
+        const bool explicit_profile=profile;
 #if defined(FYZZXYZZY_PROFILE_GPU)
         const bool hardware_trace=!profile && timestamp_valid_bits>0u &&
             limits.timestampPeriod>0.0f;
@@ -1502,7 +1503,7 @@ struct Context::Impl {
                     }else expanded.push_back(op);
                 }
                 vkUnmapMemory(device,staging.memory);
-                const auto id=submit_batch(expanded,profile,false);
+                const auto id=submit_batch(expanded,explicit_profile,false);
                 submitted=true;
                 retire_buffer(staging_id);
                 return id;
