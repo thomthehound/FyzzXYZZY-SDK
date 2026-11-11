@@ -64,7 +64,8 @@ GPU SAP/PCM with GPU Dy for the same wide connected-island scene. To isolate
 friction rows from retained strong-friction anchors, repeat it with
 `-Scenario wide_islands_diagnose_no_friction` and
 `-Scenario wide_islands_diagnose_no_strong_friction`. Each diagnostic
-records body-state, normal-impulse, friction-impulse, and anchor differences.
+records body-state, contact-geometry, normal-impulse, friction-impulse,
+and anchor differences.
 A targeted run preserves its raw log and trace records without sampling
 summaries.
 
