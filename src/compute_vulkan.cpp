@@ -117,6 +117,14 @@ std::vector<DeviceCandidate> find_compute_devices(VkInstance instance) {
                              (VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT |
                               VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT))
                     info.has_device_local_host_visible_memory = true;
+                if(info.unified_memory &&
+                   (flags & (VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT |
+                             VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+                             VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)) ==
+                            (VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT |
+                             VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+                             VK_MEMORY_PROPERTY_HOST_COHERENT_BIT))
+                    info.supports_shared_frame_input = true;
             }
             // Coarse memory-heap capability only: actual VkBuffer
             // memoryTypeBits are validated by make_buffer at allocation.
