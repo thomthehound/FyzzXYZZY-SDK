@@ -324,16 +324,16 @@ struct Context::Impl {
     // completion and must never fail from host allocation pressure.
     std::array<CachedBatch, kMaxCachedBatches> cached_batches{};
     std::size_t cached_batch_count = 0;
-    // Readback staging is reused after each completed GPU fetch;
-    // only one borrowed host publication remains outstanding.
+    // Every in-flight readback owns its destination until publication.
+    // A completed buffer is retained for reuse by the next submission.
     BufferId readback_staging_ = 0;
     std::size_t readback_staging_bytes_ = 0;
     struct PendingReadback {
-        SubmissionId submission=0;
+        BufferId staging=0;
         std::size_t bytes=0;
         std::vector<DownloadSpan> outputs;
     };
-    PendingReadback pending_readback_{};
+    std::unordered_map<SubmissionId,PendingReadback> pending_readbacks_;
     BufferId next_buffer = 1;
     PipelineId next_pipeline = 1;
     SubmissionId next_submission = 1;
@@ -1072,8 +1072,6 @@ struct Context::Impl {
             std::vector<BatchCommand>* producer = nullptr) {
         if(downloads.empty())
             throw std::invalid_argument("Empty Vulkan GPU readback batch");
-        if(pending_readback_.submission)
-            throw std::logic_error("Vulkan GPU readback already in flight");
         std::size_t bytes=0;
         for(const auto& item:downloads) {
             const auto& source=get(item.source);
@@ -1084,55 +1082,54 @@ struct Context::Impl {
                 throw std::invalid_argument("Invalid Vulkan GPU readback span");
             bytes+=item.bytes;
         }
-        // Retain allocation capacity across all source readback epochs.
-        // The destination addresses remain borrowed until completion.
-        pending_readback_.outputs.assign(downloads.begin(),downloads.end());
-        if(bytes>readback_staging_bytes_) {
-            if(readback_staging_)retire_buffer(readback_staging_);
-            readback_staging_=0;
-            readback_staging_bytes_=0;
-            readback_staging_=create_buffer(
-                bytes,MemoryPlacement::HostVisible,false);
-            readback_staging_bytes_=bytes;
-        }
+        std::vector<DownloadSpan> outputs(downloads.begin(),downloads.end());
+        const auto spare_capacity=readback_staging_bytes_;
+        const bool reuse=readback_staging_ && spare_capacity>=bytes;
+        const BufferId staging=reuse?std::exchange(readback_staging_,0u)
+            :create_buffer(bytes,MemoryPlacement::HostVisible,false);
+        if(reuse)readback_staging_bytes_=0u;
         std::vector<BatchCommand> local;
         auto& batch=producer?*producer:local;
         const auto original=batch.size();
-        batch.reserve(original+downloads.size());
         std::size_t offset=0;
-        SubmissionId id=0;
+        SubmissionId id=0u;
         try {
+            batch.reserve(original+downloads.size());
             for(const auto& item:downloads) {
                 batch.emplace_back(CopyCommand{
-                    item.source,item.source_offset,readback_staging_,offset,
-                    item.bytes});
+                    item.source,item.source_offset,staging,offset,item.bytes});
                 offset+=item.bytes;
             }
             id=submit_batch(batch);
             batch.erase(batch.begin()+original,batch.end());
-            pending_readback_.submission=id;
+            pending_readbacks_.emplace(id,PendingReadback{
+                staging,bytes,std::move(outputs)});
         } catch(...) {
             batch.erase(batch.begin()+original,batch.end());
+            if(reuse && !id) {
+                readback_staging_=staging;
+                readback_staging_bytes_=spare_capacity;
+            }else
+                retire_buffer(staging);
             throw;
         }
-        pending_readback_.bytes=bytes;
         return id;
     }
 
     void finish_download_batch(SubmissionId id,bool publish) {
-        if(!pending_readback_.submission || pending_readback_.submission!=id)
+        const auto it=pending_readbacks_.find(id);
+        if(it==pending_readbacks_.end())
             throw std::logic_error("Unknown Vulkan GPU readback batch");
-        // The source stream may already have reaped this submission when
-        // joining a newer ordered batch. The staging still belongs here.
         if(submissions.find(id)!=submissions.end())
             wait_submission(id);
+        const auto& pending=it->second;
         if(publish) {
-            const auto& buffer=get(readback_staging_);
+            const auto& buffer=get(pending.staging);
             void* mapped=nullptr;
             require(vkMapMemory(device,buffer.memory,0,VK_WHOLE_SIZE,0,&mapped),
                     "vkMapMemory asynchronous GPU readback");
             std::size_t offset=0;
-            for(const auto& item:pending_readback_.outputs) {
+            for(const auto& item:pending.outputs) {
                 std::memcpy(item.data,
                     static_cast<const std::uint8_t*>(mapped)+offset,
                     item.bytes);
@@ -1140,9 +1137,15 @@ struct Context::Impl {
             }
             vkUnmapMemory(device,buffer.memory);
         }
-        pending_readback_.submission=0;
-        pending_readback_.bytes=0;
-        pending_readback_.outputs.clear();
+        const BufferId staging=pending.staging;
+        const std::size_t capacity=pending.bytes;
+        pending_readbacks_.erase(it);
+        if(capacity>readback_staging_bytes_) {
+            if(readback_staging_)retire_buffer(readback_staging_);
+            readback_staging_=staging;
+            readback_staging_bytes_=capacity;
+        }else
+            retire_buffer(staging);
     }
 
     void download_batch(std::span<const DownloadSpan> downloads) {

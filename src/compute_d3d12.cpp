@@ -344,16 +344,15 @@ struct Context::Impl {
     // The largest completed source relocation scratch can serve later
     // submissions. In-flight command lists retain their own allocation.
     ComPtr<ID3D12Resource> completed_copy_scratch;
-    // The source report fetch waits for completion before its next use.
-    // One completed READBACK heap serves subsequent batches.
+    // Each in-flight result owns its READBACK resource until publication.
+    // Only completed staging is available for reuse.
     ComPtr<ID3D12Resource> completed_readback;
     struct PendingReadback {
-        SubmissionId submission=0;
         std::size_t bytes=0;
         ComPtr<ID3D12Resource> staging;
         std::vector<DownloadSpan> outputs;
     };
-    PendingReadback pending_readback_{};
+    std::unordered_map<SubmissionId,PendingReadback> pending_readbacks_;
     static constexpr std::size_t kMaxRecycled = 8;
     BufferId next_buffer = 1;
     PipelineId next_pipeline = 1;
@@ -944,11 +943,7 @@ struct Context::Impl {
             const std::vector<BatchCommand>& producer = {}) {
         if(downloads.empty())
             throw std::invalid_argument("Empty D3D12 GPU readback batch");
-        if(pending_readback_.submission)
-            throw std::logic_error("D3D12 GPU readback already in flight");
         std::size_t bytes=0;
-        // The source destination-span allocation is reused across frames.
-        pending_readback_.outputs.assign(downloads.begin(),downloads.end());
         for(const auto& item:downloads) {
             const auto& source=get_buffer(item.source);
             validate_range(source.bytes,item.source_offset,item.bytes);
@@ -958,6 +953,7 @@ struct Context::Impl {
                 throw std::invalid_argument("Invalid D3D12 GPU readback span");
             bytes+=item.bytes;
         }
+        std::vector<DownloadSpan> outputs(downloads.begin(),downloads.end());
         auto staging=std::move(completed_readback);
         if(!staging || staging->GetDesc().Width<bytes)
             staging=allocate_resource(device.Get(),bytes,
@@ -965,18 +961,24 @@ struct Context::Impl {
                 D3D12_RESOURCE_STATE_COPY_DEST);
         const ReadbackTail tail{staging.Get(),downloads};
         const SubmissionId id=submit_batch(producer,false,&tail);
-        pending_readback_.submission=id;
-        pending_readback_.bytes=bytes;
-        pending_readback_.staging=std::move(staging);
+        try {
+            pending_readbacks_.emplace(id,PendingReadback{
+                bytes,std::move(staging),std::move(outputs)});
+        }catch(...) {
+            // The submitted copy may still reference its staging.
+            wait_submission(id);
+            throw;
+        }
         return id;
     }
 
     void finish_download_batch(SubmissionId id,bool publish) {
-        if(!pending_readback_.submission || pending_readback_.submission!=id)
+        const auto it=pending_readbacks_.find(id);
+        if(it==pending_readbacks_.end())
             throw std::logic_error("Unknown D3D12 GPU readback batch");
         if(submissions.find(id)!=submissions.end())
             wait_submission(id);
-        auto& pending=pending_readback_;
+        auto& pending=it->second;
         if(publish) {
             void* mapped=nullptr;
             D3D12_RANGE read{0,pending.bytes};
@@ -985,18 +987,18 @@ struct Context::Impl {
             std::size_t offset=0;
             for(const auto& item:pending.outputs) {
                 std::memcpy(item.data,
-                    static_cast<const std::uint8_t*>(mapped)+offset,item.bytes);
+                    static_cast<const std::uint8_t*>(mapped)+offset,
+                    item.bytes);
                 offset+=item.bytes;
             }
             D3D12_RANGE written{0,0};
             pending.staging->Unmap(0,&written);
         }
+        auto staging=std::move(pending.staging);
+        pending_readbacks_.erase(it);
         if(!completed_readback ||
-           completed_readback->GetDesc().Width<pending.staging->GetDesc().Width)
-            completed_readback=std::move(pending.staging);
-        pending_readback_.submission=0;
-        pending_readback_.bytes=0;
-        pending_readback_.outputs.clear();
+           completed_readback->GetDesc().Width<staging->GetDesc().Width)
+            completed_readback=std::move(staging);
     }
 
     void download_batch(std::span<const DownloadSpan> downloads) {
