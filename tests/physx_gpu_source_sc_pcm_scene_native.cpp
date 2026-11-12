@@ -1406,9 +1406,9 @@ void verify_queued_pcm_dy(fyzz::compute::Backend backend,const char* sap,
     require(duplicate_rejected && producer->has_queued_gpu_dy_distance(),
         "Dy reused active numerical output before its owning fetch");
     producer->finish_gpu_dy_distance();
-    const auto joined=producer->stream_submission_stats();
-    require(joined.command_batches==queued.command_batches &&
-            joined.fused_readbacks==queued.fused_readbacks &&
+    const auto joined_stats=producer->stream_submission_stats();
+    require(joined_stats.command_batches==queued.command_batches &&
+            joined_stats.fused_readbacks==queued.fused_readbacks &&
             !producer->has_queued_gpu_dy_distance() &&
             witness[0].packed_counts==0u &&
             poses[0].valid==1u &&
