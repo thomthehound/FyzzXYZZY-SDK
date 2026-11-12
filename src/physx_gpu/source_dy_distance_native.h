@@ -1619,11 +1619,14 @@ public:
         const std::array<compute::DownloadSpan,4u> downloads{{
             {mapped.buffer,mapped.offset,host_.data(),output_bytes},
             {device_meta_buffer,device_meta_offset,
-             host_.data()+device_header_offset,16u},
+             device_admission?host_.data()+device_header_offset:nullptr,
+             device_admission?16u:0u},
             {device_meta_buffer,device_task_source,
-             host_.data()+device_task_offset,tasks.size_bytes()},
+             device_admission?host_.data()+device_task_offset:nullptr,
+             device_admission?tasks.size_bytes():0u},
             {device_meta_buffer,device_ordinal_source,
-             host_.data()+device_ordinal_offset,body_ordinals.size_bytes()}
+             device_admission?host_.data()+device_ordinal_offset:nullptr,
+             device_admission?body_ordinals.size_bytes():0u}
         }};
         const std::size_t download_count=!device_admission?1u:
             body_ordinals.empty()?3u:4u;

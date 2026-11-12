@@ -331,6 +331,9 @@ public:
             throw std::logic_error("PhysX source GPU commands not submitted");
         // The readback is itself the newest ordered queue submission.
         // Do not announce Sc completion while its witness DMA is pending.
+        if(pending_numerical_fetch_ &&
+           !context_.submission_complete(pending_numerical_fetch_))
+            return false;
         if(pending_fetch_)
             return context_.submission_complete(pending_fetch_);
         return tokens_.empty() || context_.submission_complete(tokens_.back());
