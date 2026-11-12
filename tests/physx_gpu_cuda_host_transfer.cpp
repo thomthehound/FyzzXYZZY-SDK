@@ -985,6 +985,32 @@ void exercise_source_single_volume_bitmap_lifecycle_native(Context& context) {
            sceneScratch.selected_handles[0]!=2u)
             throw std::runtime_error(
                 "Sparse source SAP recomputed an unchanged Sc volume");
+        const auto original_bounds=bounds[2u];
+        auto malformed=sorted_boxes;
+        malformed[0].half_extents.x=-1.f;
+        bool bad_geometry=false;
+        try {
+            (void)prepare_source_sap_single_volume_scene_native(
+                manager,{created,retired,updated},malformed,sorted_handles,
+                sourceActorIds,sceneBounds,filter,true,sceneScratch,
+                nullptr,nullptr,true);
+        }catch(const std::invalid_argument&){bad_geometry=true;}
+        if(!bad_geometry ||
+           bounds[2u].minimum.x!=original_bounds.minimum.x ||
+           bounds[2u].maximum.x!=original_bounds.maximum.x)
+            throw std::runtime_error(
+                "Rejected sparse source SAP changed the original AABB bounds");
+        const std::array<physx::Bp::ShapeHandle,2u> mismatched{36u,2u};
+        bool bad_handle=false;
+        try {
+            (void)prepare_source_sap_single_volume_scene_native(
+                manager,{created,retired,updated},sorted_boxes,mismatched,
+                sourceActorIds,sceneBounds,filter,true,sceneScratch,
+                nullptr,nullptr,true);
+        }catch(const std::invalid_argument&){bad_handle=true;}
+        if(!bad_handle)
+            throw std::runtime_error(
+                "Sparse source SAP accepted a mismatched Sc handle");
         changed.clear();
         persistent=false;gpu=false;
         if(remove_source_sap_single_volume_actor_native(manager,identity,2u))
