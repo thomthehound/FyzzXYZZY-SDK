@@ -602,6 +602,7 @@ public:
     }
     void invalidate_after_rollback() noexcept override {
         stream_.discard_unsubmitted_commands();
+        stream_.abandon_numerical_fetch();
         producer_->invalidate_after_rollback();
         if(pcm_)pcm_->invalidate_after_rollback();
         if(dy_distance_) {

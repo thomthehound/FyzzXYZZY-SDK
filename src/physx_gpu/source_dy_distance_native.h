@@ -1591,10 +1591,8 @@ public:
             device_task_source=device_tasks.offset;
             device_ordinal_source=device_ordinals.offset;
         }
-        // Numerical dispatch is ordered after PCM and host Gu uploads,
-        // but does not consume the outstanding Sc witness readback.
-        // Result publication joins only when Sc explicitly needs Dy.
-        stream_.submit();
+        // The final readback shares the numerical dispatch submission.
+        // Neither its staging nor Sc's preceding witness DMA is joined.
         pending_solve_.emplace(PendingSolve{
             .bodies=bodies,.tasks=tasks,.contact_forces=contact_forces,
             .friction=friction,.anchor_impulses=anchor_impulses,
@@ -1623,6 +1621,19 @@ public:
             .compact_friction=compact_friction,
             .device_unconstrained_preparation=device_unconstrained_preparation,
             .device_world_motion=device_world_motion});
+        const std::array<compute::DownloadSpan,4u> downloads{{
+            {mapped.buffer,mapped.offset,host_.data(),output_bytes},
+            {device_meta_buffer,device_meta_offset,
+             host_.data()+device_header_offset,16u},
+            {device_meta_buffer,device_task_source,
+             host_.data()+device_task_offset,tasks.size_bytes()},
+            {device_meta_buffer,device_ordinal_source,
+             host_.data()+device_ordinal_offset,body_ordinals.size_bytes()}
+        }};
+        const std::size_t download_count=!device_admission?1u:
+            body_ordinals.empty()?3u:4u;
+        stream_.begin_numerical_fetch(
+            std::span(downloads.data(),download_count));
     }
     bool has_queued_solve() const noexcept {
         return pending_solve_.has_value();
@@ -1661,21 +1672,7 @@ public:
         const auto device_unconstrained_preparation=
             pending.device_unconstrained_preparation;
         const auto device_world_motion=pending.device_world_motion;
-        const std::array<compute::DownloadSpan,4> downloads{{
-            {pending.output_buffer,pending.output_offset,
-             host_.data(),output_bytes},
-            {pending.device_meta_buffer,pending.device_meta_source,
-             host_.data()+pending.device_header_offset,16u},
-            {pending.device_meta_buffer,pending.device_task_source,
-             host_.data()+pending.device_task_offset,tasks.size_bytes()},
-            {pending.device_meta_buffer,pending.device_ordinal_source,
-             host_.data()+pending.device_ordinal_offset,
-             body_ordinals.size_bytes()}
-        }};
-        const std::size_t download_count=!pending.device_admission?1u:
-            body_ordinals.empty()?3u:4u;
-        stream_.fetch_numerical_result(
-            std::span(downloads.data(),download_count));
+        stream_.finish_numerical_fetch();
         admitted_body_ordinals_.clear();
         bool invalid_device_admission=false;
         if(pending.device_admission) {

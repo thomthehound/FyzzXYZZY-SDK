@@ -260,15 +260,12 @@ public:
         finish_fetch();
     }
 
-    // Dy can publish numerical results without consuming Sc's earlier
-    // PCM witness readback. Its queue fence covers all device producers;
-    // the PCM staging and borrowed host output remain independently owned.
-    void fetch_numerical_result(
-            std::span<const compute::DownloadSpan> outputs) {
-        if(!pending_fetch_) {
-            fetch(outputs);
-            return;
-        }
+    // Numerical readback follows its device producers but remains
+    // independently owned from Sc's earlier witness publication.
+    void begin_numerical_fetch(std::span<const compute::DownloadSpan> outputs) {
+        FYZZ_PROFILE_SCOPE("source.numerical_download_enqueue");
+        if(pending_numerical_fetch_)
+            throw std::logic_error("Source numerical readback already pending");
         if(outputs.empty())
             throw std::invalid_argument("Source numerical readback is empty");
         std::size_t bytes=0u;
@@ -278,7 +275,6 @@ public:
                     "Source numerical readback size overflow");
             bytes+=output.bytes;
         }
-        const auto start=std::chrono::steady_clock::now();
         compute::SubmissionId ticket=0u;
         if(pending_.empty()) {
             ticket=context_.submit_download_batch(outputs);
@@ -290,21 +286,41 @@ public:
             ++stats_.command_batches;
             ++stats_.fused_readbacks;
         }
-        const std::array<compute::SubmissionId,1u> ticket_wait{ticket};
-        try {
-            context_.wait_submissions(ticket_wait);
-            context_.finish_download_batch(ticket,true);
-        }catch(...) {
-            try {context_.finish_download_batch(ticket,false);}catch(...) {}
-            throw;
-        }
+        pending_numerical_fetch_=ticket;
+        pending_numerical_bytes_=bytes;
+        pending_numerical_spans_=outputs.size();
+        FYZZ_PROFILE_COUNTER("source.download_bytes",bytes);
+    }
+
+    void finish_numerical_fetch() {
+        FYZZ_PROFILE_SCOPE("source.numerical_download_join");
+        if(!pending_numerical_fetch_)
+            throw std::logic_error("Source numerical readback was not armed");
+        const auto start=std::chrono::steady_clock::now();
+        const std::array<compute::SubmissionId,1u> ticket{
+            pending_numerical_fetch_};
+        context_.wait_submissions(ticket);
+        context_.finish_download_batch(pending_numerical_fetch_,true);
+        pending_numerical_fetch_=0u;
         const auto elapsed=std::chrono::steady_clock::now()-start;
         ++stats_.fetch_batches;
-        stats_.fetch_spans+=outputs.size();
-        stats_.fetch_bytes+=bytes;
+        stats_.fetch_spans+=pending_numerical_spans_;
+        stats_.fetch_bytes+=pending_numerical_bytes_;
         stats_.fetch_wall_ns+=static_cast<std::uint64_t>(
             std::chrono::duration_cast<std::chrono::nanoseconds>(
                 elapsed).count());
+        pending_numerical_bytes_=0u;
+        pending_numerical_spans_=0u;
+    }
+
+    void abandon_numerical_fetch() noexcept {
+        if(!pending_numerical_fetch_)return;
+        try {
+            context_.finish_download_batch(pending_numerical_fetch_,false);
+        }catch(...) {}
+        pending_numerical_fetch_=0u;
+        pending_numerical_bytes_=0u;
+        pending_numerical_spans_=0u;
     }
 
     // Readiness of the most recent source-ordered GPU submission. The caller
@@ -329,6 +345,7 @@ public:
     // resources and drop only commands that never entered the native queue.
     // This is not a recovery path: the source scene is being destroyed.
     bool finish_shutdown() noexcept {
+        abandon_numerical_fetch();
         abandon_fetch();
         try {
             wait_at_fetch();
@@ -371,6 +388,8 @@ private:
     std::vector<compute::UploadSpan> resolved_uploads_;
     std::vector<compute::SubmissionId> tokens_,fetch_wait_tokens_;
     compute::SubmissionId pending_fetch_=0;
+    compute::SubmissionId pending_numerical_fetch_=0;
+    std::size_t pending_numerical_bytes_=0u,pending_numerical_spans_=0u;
     std::size_t pending_fetch_token_count_=0;
     std::size_t pending_fetch_bytes_=0,pending_fetch_spans_=0;
     SubmissionStats stats_;
