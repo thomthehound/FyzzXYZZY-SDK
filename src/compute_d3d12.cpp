@@ -935,15 +935,19 @@ struct Context::Impl {
         staging->Unmap(0, &written);
     }
 
+    struct ReadbackTail {
+        ID3D12Resource* staging;
+        std::span<const DownloadSpan> sources;
+    };
+
     SubmissionId submit_download_batch(
-            std::span<const DownloadSpan> downloads) {
+            std::span<const DownloadSpan> downloads,
+            const std::vector<BatchCommand>& producer = {}) {
         if(downloads.empty())
             throw std::invalid_argument("Empty D3D12 GPU readback batch");
         if(pending_readback_.submission)
             throw std::logic_error("D3D12 GPU readback already in flight");
         std::size_t bytes=0;
-        readback_sources.clear();
-        readback_sources.reserve(downloads.size());
         // The source destination-span allocation is reused across frames.
         pending_readback_.outputs.assign(downloads.begin(),downloads.end());
         for(const auto& item:downloads) {
@@ -954,33 +958,14 @@ struct Context::Impl {
                item.bytes>std::numeric_limits<std::size_t>::max()-bytes)
                 throw std::invalid_argument("Invalid D3D12 GPU readback span");
             bytes+=item.bytes;
-            if(std::find(readback_sources.begin(),readback_sources.end(),
-                         item.source)==readback_sources.end())
-                readback_sources.push_back(item.source);
         }
         auto staging=std::move(completed_readback);
         if(!staging || staging->GetDesc().Width<bytes)
             staging=allocate_resource(device.Get(),bytes,
                 D3D12_HEAP_TYPE_READBACK,D3D12_RESOURCE_FLAG_NONE,
                 D3D12_RESOURCE_STATE_COPY_DEST);
-        Submission cmd=new_commands();
-        for(const auto id:readback_sources)
-            transition(cmd.commands.Get(),get_buffer(id).resource.Get(),
-                D3D12_RESOURCE_STATE_COMMON,D3D12_RESOURCE_STATE_COPY_SOURCE);
-        std::size_t offset=0;
-        for(const auto& item:downloads) {
-            cmd.commands->CopyBufferRegion(staging.Get(),offset,
-                get_buffer(item.source).resource.Get(),item.source_offset,
-                item.bytes);
-            offset+=item.bytes;
-        }
-        for(const auto id:readback_sources)
-            transition(cmd.commands.Get(),get_buffer(id).resource.Get(),
-                D3D12_RESOURCE_STATE_COPY_SOURCE,D3D12_RESOURCE_STATE_COMMON);
-        // Keep the READBACK heap alive even if queue signalling fails
-        // after command execution has already begun.
-        cmd.owned_readback=staging;
-        const SubmissionId id=enqueue(std::move(cmd));
+        const ReadbackTail tail{staging.Get(),downloads};
+        const SubmissionId id=submit_batch(producer,false,&tail);
         pending_readback_.submission=id;
         pending_readback_.bytes=bytes;
         pending_readback_.staging=std::move(staging);
@@ -1224,12 +1209,14 @@ struct Context::Impl {
     }
 
     SubmissionId submit_batch(const std::vector<BatchCommand>& commands,
-                              bool profile = false) {
+                              bool profile = false,
+                              const ReadbackTail* readback_tail = nullptr) {
 #if defined(FYZZXYZZY_PROFILE_GPU)
         const bool hardware_trace=!profile && trace_frequency!=0u;
         profile=profile || hardware_trace;
 #endif
-        if (commands.empty()) throw std::invalid_argument("Empty D3D12 command batch");
+        if (commands.empty() && !readback_tail)
+            throw std::invalid_argument("Empty D3D12 command batch");
         // Each distinct pipeline/binding view needs one descriptor table
         // for this submission. Repeated dispatches may change constants or
         // execution dimensions without duplicating identical descriptors.
@@ -1350,6 +1337,7 @@ struct Context::Impl {
                   "CreateCommandSignature");
         }
         Submission submission = new_commands(&pipeline_sequence, descriptor_count);
+        if(readback_tail)submission.owned_readback=readback_tail->staging;
         if(upload_total_bytes) {
             auto staging=allocate_resource(
                 device.Get(),upload_total_bytes,D3D12_HEAP_TYPE_UPLOAD,
@@ -1666,6 +1654,17 @@ struct Context::Impl {
                     resource_access[cmd.buffers[slot].buffer].pending_write = true;
             }
         }
+        if(readback_tail) {
+            std::size_t offset=0u;
+            for(const auto& item:readback_tail->sources) {
+                require_state(item.source,D3D12_RESOURCE_STATE_COPY_SOURCE);
+                submission.commands->CopyBufferRegion(
+                    readback_tail->staging,offset,
+                    get_buffer(item.source).resource.Get(),item.source_offset,
+                    item.bytes);
+                offset+=item.bytes;
+            }
+        }
         for (const auto& entry : resource_access) {
             transition(submission.commands.Get(), get_buffer(entry.first).resource.Get(),
                        entry.second.state, D3D12_RESOURCE_STATE_COMMON);
@@ -1803,6 +1802,11 @@ void Context::download(BufferId id, std::size_t offset, void* data, std::size_t 
 SubmissionId Context::submit_download_batch(
         std::span<const DownloadSpan> downloads) {
     return impl_->submit_download_batch(downloads);
+}
+SubmissionId Context::submit_batch_with_readback(
+        const std::vector<BatchCommand>& commands,
+        std::span<const DownloadSpan> downloads) {
+    return impl_->submit_download_batch(downloads,commands);
 }
 void Context::finish_download_batch(SubmissionId id,bool publish) {
     impl_->finish_download_batch(id,publish);

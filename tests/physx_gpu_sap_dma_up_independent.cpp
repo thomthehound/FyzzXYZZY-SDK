@@ -177,7 +177,16 @@ void exercise(Context& context) {
             stream.queue_uploads({{
                 probe_address,first_values.data(),sizeof(first_values)
             }});
+            const auto fused_before=
+                stream.submission_stats().fused_readbacks;
+            const auto separate_before=
+                stream.submission_stats().readback_submissions;
             stream.begin_fetch(probe_readback);
+            require(stream.submission_stats().fused_readbacks==
+                        fused_before+1u &&
+                    stream.submission_stats().readback_submissions==
+                        separate_before,
+                    "Source upload/readback required separate native submissions");
             stream.queue_uploads({{
                 probe_address,next_values.data(),sizeof(next_values)
             }});

@@ -175,16 +175,15 @@ SourceSapSceneFrameNativeResult fetch_source_sap_scene_frame_native(
     FYZZ_PROFILE_SCOPE("sap.owner_fetch");
     const SourceSapVolumeActorLifetimeNative volume_lifetime{
         members.volume_to_actor,members.aabb_manager.volume_data};
-    // The source queue and Context readback queue are ordered. Submit
-    // the complete SAP/aggregate producer first; its descriptor readback
-    // is also the GPU completion fence. Reaping source submission tokens
-    // afterward cannot introduce a second device wait.
-    stream.submit();
+    // SAP descriptor readback joins the producer's ordered native
+    // command batch. Aggregate fetch retains its own source-snapshot
+    // publication and must complete after the aggregate producers.
     std::optional<PxgAabbSourceMembersNative::AggregateFetchSnapshot>
         aggregate_snapshot;
     physx::PxgBroadPhaseDesc descriptor_snapshot{};
     bool descriptor_fetch_pending=false;
     if(members.aabb_manager.has_aggregates && !members.abort_mode) {
+        stream.submit();
         // The aggregate snapshot already contains the original SAP
         // descriptor and the three aggregate report counters.
         aggregate_snapshot=members.aabb_owner->download_aggregate_fetch_snapshot(

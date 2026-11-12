@@ -1068,7 +1068,8 @@ struct Context::Impl {
     }
 
     SubmissionId submit_download_batch(
-            std::span<const DownloadSpan> downloads) {
+            std::span<const DownloadSpan> downloads,
+            const std::vector<BatchCommand>& producer = {}) {
         if(downloads.empty())
             throw std::invalid_argument("Empty Vulkan GPU readback batch");
         if(pending_readback_.submission)
@@ -1095,7 +1096,8 @@ struct Context::Impl {
             readback_staging_bytes_=bytes;
         }
         std::vector<BatchCommand> copies;
-        copies.reserve(downloads.size());
+        copies.reserve(producer.size()+downloads.size());
+        copies.insert(copies.end(),producer.begin(),producer.end());
         std::size_t offset=0;
         for(const auto& item:downloads) {
             copies.emplace_back(CopyCommand{
@@ -2146,6 +2148,11 @@ void Context::download(BufferId id, std::size_t offset, void* data, std::size_t 
 SubmissionId Context::submit_download_batch(
         std::span<const DownloadSpan> downloads) {
     return impl_->submit_download_batch(downloads);
+}
+SubmissionId Context::submit_batch_with_readback(
+        const std::vector<BatchCommand>& commands,
+        std::span<const DownloadSpan> downloads) {
+    return impl_->submit_download_batch(downloads,commands);
 }
 void Context::finish_download_batch(SubmissionId id,bool publish) {
     impl_->finish_download_batch(id,publish);

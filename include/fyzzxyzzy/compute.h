@@ -271,6 +271,12 @@ public:
     // bytes from a rejected scene transaction. One outstanding readback
     // batch per Context retains the existing reusable staging allocation.
     SubmissionId submit_download_batch(std::span<const DownloadSpan> downloads);
+    // Append a readback tail to the producer's native command submission.
+    // The returned token owns GPU completion; borrowed CPU outputs are
+    // published by finish_download_batch after that same fence retires.
+    SubmissionId submit_batch_with_readback(
+        const std::vector<BatchCommand>& commands,
+        std::span<const DownloadSpan> downloads);
     void finish_download_batch(SubmissionId id, bool publish = true);
     // Synchronous wrapper for callers with an immediate host dependency.
     void download_batch(std::span<const DownloadSpan> downloads) const;

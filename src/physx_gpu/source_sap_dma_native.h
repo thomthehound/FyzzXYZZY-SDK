@@ -46,6 +46,7 @@ public:
         std::size_t upload_bytes = 0;
         std::size_t fetch_batches = 0;
         std::size_t readback_submissions = 0;
+        std::size_t fused_readbacks = 0;
         std::size_t fetch_spans = 0;
         std::size_t fetch_bytes = 0;
         // Host wall time includes ordered GPU completion and readback.
@@ -174,11 +175,18 @@ public:
                 throw std::overflow_error("Source GPU fetch size overflow");
             bytes+=output.bytes;
         }
-        submit();
         const auto prior_token_count=tokens_.size();
-        pending_fetch_=context_.submit_download_batch(outputs);
+        if(pending_.empty()) {
+            pending_fetch_=context_.submit_download_batch(outputs);
+            ++stats_.readback_submissions;
+        }else {
+            FYZZ_PROFILE_COUNTER("source.batch_ops",pending_.size());
+            pending_fetch_=context_.submit_batch_with_readback(pending_,outputs);
+            pending_.clear();
+            ++stats_.command_batches;
+            ++stats_.fused_readbacks;
+        }
         pending_fetch_token_count_=prior_token_count;
-        ++stats_.readback_submissions;
         pending_fetch_bytes_=bytes;
         pending_fetch_spans_=outputs.size();
         FYZZ_PROFILE_COUNTER("source.download_bytes",bytes);
