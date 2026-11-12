@@ -342,6 +342,7 @@ public:
         const auto& schedule=dy_distance_->last_schedule();
         FYZZ_PROFILE_COUNTER("dy.dispatches",schedule.dispatches);
         FYZZ_PROFILE_COUNTER("dy.indirect_dispatches",schedule.device_island_indirect_dispatches);
+        FYZZ_PROFILE_COUNTER("dy.host_lane_packed_tasks",schedule.host_lane_packed_tasks);
         FYZZ_PROFILE_COUNTER("dy.wide_tasks",schedule.wide_tasks);
         FYZZ_PROFILE_COUNTER("dy.partition_groups",schedule.max_partition_groups);
         FYZZ_PROFILE_COUNTER("dy.tile_bytes",schedule.tile_bytes);

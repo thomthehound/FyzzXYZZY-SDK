@@ -4674,11 +4674,11 @@ void verify_host_lane_packed_islands(
     native::Scene cpu,gpu;
     auto owner=std::make_unique<physx_gpu::SourceScOwnedGpuBroadphaseNative>(
         backend,load_native_gpu_sap_shaders(backend,sap),
-        128u,128u,std::nullopt,
+        512u,512u,std::nullopt,
         load_native_gpu_pcm_shaders(backend,pcm),std::move(shader));
     auto* producer=owner.get();
     gpu.set_gpu_broadphase(std::move(owner));
-    std::array<BodyId,2> cpu_bodies{},gpu_bodies{};
+    std::array<BodyId,129> cpu_bodies{},gpu_bodies{};
     for(std::size_t i=0;i<cpu_bodies.size();++i) {
         const Vec3 floor{static_cast<float>(i)*8.f,0.f,0.f};
         const Vec3 position{floor.x,0.86f,0.f};
@@ -4687,7 +4687,7 @@ void verify_host_lane_packed_islands(
         cpu_bodies[i]=cpu.add_dynamic_box({0.5f,0.5f,0.5f},position,1.f);
         gpu_bodies[i]=gpu.add_dynamic_box({0.5f,0.5f,0.5f},position,1.f);
     }
-    for(unsigned frame=0;frame<4u;++frame) {
+    for(unsigned frame=0;frame<3u;++frame) {
         cpu.step(1.f/120.f);
         gpu.step(1.f/120.f);
         const auto schedule=producer->dy_launch_stats();
