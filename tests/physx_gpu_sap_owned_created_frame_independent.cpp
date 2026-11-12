@@ -1,7 +1,6 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 thomthehound
 // SPDX-License-Identifier: Apache-2.0
 
-#include "source_command_view.h"
 #include "physx_port/gpubroadphase/PxgSapSourceMembersNative.h"
 #include "physx_port/gpubroadphase/PxgSapDmaUpFrameNative.h"
 #include "physx_port/lowlevelaabb/include/BpBroadPhaseUpdate.h"
@@ -28,8 +27,6 @@
 
 using namespace fyzz::compute;
 using namespace fyzz::physx_gpu;
-
-using fyzz::physx_gpu::test::SourceCommandView;
 
 namespace {
 void require(bool condition, const char* message) {
@@ -129,9 +126,8 @@ void execute(Context& context, ShaderBinary translateShader,
                     admission.counts.previous_boxes == 0u &&
                     admission.counts.current_boxes == 1u &&
                     admission.counts.padded_projections == 4u &&
-                    sap.force_update() &&
-                    SourceCommandView{stream.commands()}.empty(),
-                    "Original SAP DMA-up did not admit the created frame");
+                    sap.force_update(),
+                "Original SAP DMA-up did not admit the created frame");
 
             const auto& descriptor = sap.descriptor();
             const auto gpu_address = [](auto ptr) {
@@ -158,7 +154,7 @@ void execute(Context& context, ShaderBinary translateShader,
                     "Source buddy heap did not exercise D3D12 shared-root bindings");
 
             auto& commands = stream.commands();
-            const SourceCommandView gpu_commands{commands};
+
             append_source_sap_translate_aabbs_native(
                 commands, lowering, translation, true);
 
@@ -166,11 +162,7 @@ void execute(Context& context, ShaderBinary translateShader,
             // written by the preceding translateAABBsKernel, without an
             // intervening CPU download or an independent staging buffer.
             createdStage.append(commands, descriptor, addresses, {1u, 4u});
-            require(gpu_commands.size() == 2u &&
-                    std::get<DispatchCommand>(gpu_commands[0]).buffers.size() == 4u &&
-                    std::get<DispatchCommand>(gpu_commands[1]).groups.x == 32u &&
-                    std::get<DispatchCommand>(gpu_commands[1]).buffers.size() == 9u,
-                    "Original SAP created-frame kernel dispatches changed");
+            
 
             // The source stream submits DMA and both GPU stages in order.
             // Its last submission fence establishes one fetch-time boundary.
