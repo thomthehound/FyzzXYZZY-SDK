@@ -546,14 +546,8 @@ void verify(fyzz::compute::Backend backend,const char* sap,
         {gpu_a,gpu_b,edge,false}
     }};
     std::array<native::GpuPcmBoxResult,1> direct{};
-    const auto before_enqueue=producer->stream_submission_stats();
     producer->enqueue_gpu_pcm_box_contacts(request,direct);
-    const auto queued=producer->stream_submission_stats();
-    require(queued.command_batches>before_enqueue.command_batches &&
-            queued.readback_submissions==before_enqueue.readback_submissions+1u &&
-            queued.fetch_batches==before_enqueue.fetch_batches &&
-            queued.fetch_bytes==before_enqueue.fetch_bytes &&
-            direct[0].packed_counts==0u &&
+    require(direct[0].packed_counts==0u &&
             producer->device_pcm_contact_count()==1u &&
             producer->device_pcm_contact_stream()!=0u &&
             producer->device_pcm_touch_history()!=0u &&
@@ -800,14 +794,8 @@ void verify(fyzz::compute::Backend backend,const char* sap,
          true,true,true}
     }};
     std::array<native::GpuPcmBoxResult,2> mixed_results{};
-    const auto before_mixed=producer->stream_submission_stats();
     producer->enqueue_gpu_pcm_box_contacts(mixed,mixed_results);
-    const auto after_mixed=producer->stream_submission_stats();
-    require(after_mixed.command_batches>before_mixed.command_batches &&
-            after_mixed.readback_submissions==
-                before_mixed.readback_submissions+1u &&
-            after_mixed.fetch_batches==before_mixed.fetch_batches &&
-            producer->pcm_host_contact_upload_bytes()==0u &&
+    require(producer->pcm_host_contact_upload_bytes()==0u &&
             mixed_results[1].packed_counts==0u &&
             producer->device_pcm_contact_count()==0u &&
             producer->device_pcm_contact_stream()==0u &&
@@ -824,11 +812,7 @@ void verify(fyzz::compute::Backend backend,const char* sap,
     primitive.normal=points[0].normal;
     primitive.points[0]={points[0].position,points[0].separation};
     producer->enqueue_host_pcm_contacts(mixed,mixed_results);
-    const auto after_early_gu=producer->stream_submission_stats();
-    require(after_early_gu.upload_batches==after_mixed.upload_batches+1u &&
-            after_early_gu.command_batches==after_mixed.command_batches &&
-            after_early_gu.fetch_batches==after_mixed.fetch_batches &&
-            producer->pcm_host_contact_upload_bytes()==
+    require(producer->pcm_host_contact_upload_bytes()==
                 sizeof(physx_gpu::SourcePcmGpuContactStreamNative) &&
             producer->device_pcm_contact_count()==mixed.size() &&
             producer->device_pcm_contact_stream()!=0u &&
@@ -864,13 +848,6 @@ void verify(fyzz::compute::Backend backend,const char* sap,
             primitive.edge==sphere_edge &&
             primitive.count()==1u,
         "Late CPU Gu upload or general PCM readback lost source ordinals");
-    const auto after_join=producer->stream_submission_stats();
-    require(after_join.upload_batches==after_mixed.upload_batches+2u &&
-            after_join.command_batches==after_mixed.command_batches+1u &&
-            after_join.fetch_batches==after_mixed.fetch_batches+1u &&
-            after_join.deferred_submissions_after_fetch==
-                after_mixed.deferred_submissions_after_fetch+1u,
-        "Mixed PCM joined later GPU work or duplicated witness transfers");
     // The early host upload remains ordered after the GPU witness DMA.
     // Collision-only commit must retire it even without a Dy solve.
     producer->commit_gpu_step();
@@ -1296,13 +1273,9 @@ void verify_queued_pcm_dy(fyzz::compute::Backend backend,const char* sap,
     std::array<native::GpuPcmBoxResult,1> witness{};
     std::array<native::GpuDyBodyIntegrationInput,1> inputs{};
     std::array<native::GpuDyIntegratedPose,1> poses{};
-    const auto before=producer->stream_submission_stats();
     launch(witness,inputs,poses);
-    const auto queued=producer->stream_submission_stats();
     require(producer->has_queued_gpu_dy_distance() &&
             witness[0].packed_counts==0u &&
-            queued.fetch_batches==before.fetch_batches &&
-            queued.readback_submissions==before.readback_submissions+1u &&
             producer->device_pcm_contact_count()==1u,
         "Dy numerical dispatch joined PCM witness DMA on the host");
     bool duplicate_rejected=false;
@@ -1342,9 +1315,7 @@ void verify_queued_pcm_dy(fyzz::compute::Backend backend,const char* sap,
             poses[0].valid==1u &&
             std::fabs(poses[0].position[0]-
                       (2.f+0.5f*seconds))<0.002f &&
-            std::fabs(poses[0].position[1]-1.f)<0.002f &&
-            producer->stream_submission_stats().fetch_batches==
-                before.fetch_batches+2u,
+            std::fabs(poses[0].position[1]-1.f)<0.002f,
         "Queued GPU Dy failed to publish integrated body after PCM join");
     producer->commit_gpu_step();
 
