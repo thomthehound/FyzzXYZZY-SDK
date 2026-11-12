@@ -9,6 +9,7 @@
 #include "physx_port/lowlevelaabb/include/BpBroadPhaseUpdate.h"
 
 #include <algorithm>
+#include <array>
 #include <bit>
 #include <limits>
 #include <optional>
@@ -38,13 +39,20 @@ void validate_pre_broadphase_native(
 
 namespace {
 
-// The source AABB manager supplies the changed bitmap, while the original
-// Bp update supplies newly admitted and explicitly updated handles.
-// Restrict the transfer to a single contiguous interval: one smaller HtoD
-// replaces one full HtoD, without extra queue records or a shadow dirty list.
-std::optional<std::pair<physx::PxU32,physx::PxU32>>
-contiguous_dirty_bounds(const physx::Bp::BroadPhaseUpdateData& update,
-                        std::span<const physx::PxU32> changed) {
+// The source AABB manager supplies the changed bitmap and the original
+// Bp update supplies created/updated handles. Bound sparse copies to 32
+// runs so scattered changes avoid full transfers without an unbounded
+// command list. More fragmented updates use the original full transfer.
+struct SourceSapDirtyRanges {
+    std::array<std::pair<physx::PxU32,physx::PxU32>,32u> spans{};
+    std::size_t count=0u;
+};
+
+// Enumerate original changed bits and Bp created/updated handles in
+// ascending order. Independent sparse ranges share the source upload batch.
+std::optional<SourceSapDirtyRanges>
+bounded_dirty_bounds(const physx::Bp::BroadPhaseUpdateData& update,
+                     std::span<const physx::PxU32> changed) {
     const auto capacity=update.getCapacity();
     const auto* created=update.getCreatedHandles();
     const auto* updated=update.getUpdatedHandles();
@@ -53,54 +61,45 @@ contiguous_dirty_bounds(const physx::Bp::BroadPhaseUpdateData& update,
     if((created_count && !created) || (updated_count && !updated))
         throw std::invalid_argument("Source GPU AABB delta handle array missing");
 
-    physx::PxU32 first=capacity,last=0u;
-    std::uint64_t count=0u;
-    const auto include=[&](physx::PxU32 handle) {
-        first=std::min(first,handle);
-        last=std::max(last,handle+1u);
-    };
-    // Scan the existing source bitmap in machine words, not every
-    // possible volume. Missing high words mean zero in PinnableBitMap.
-    const auto words=std::min<std::size_t>(
-        changed.size(),(std::uint64_t(capacity)+31u)/32u);
-    for(std::size_t w=0;w<words;++w) {
-        auto bits=changed[w];
-        if(w+1u==((std::uint64_t(capacity)+31u)/32u) &&
-           (capacity&31u)!=0u)
-            bits&=(1u<<(capacity&31u))-1u;
-        if(!bits)continue;
-        include(static_cast<physx::PxU32>(w*32u+std::countr_zero(bits)));
-        include(static_cast<physx::PxU32>(
-            w*32u+31u-std::countl_zero(bits)));
-        count+=std::popcount(bits);
-    }
-
-    // Merge the source's ascending created/updated handle lists. The
-    // changed bitmap may already contain those handles, so count each
-    // physical AABB exactly once without allocating a second dirty map.
+    SourceSapDirtyRanges runs{};
+    bool overflow=false;
     physx::PxU32 ci=0u,ui=0u;
-    while(ci<created_count || ui<updated_count) {
-        const auto next_created=ci<created_count
-            ? created[ci] : std::numeric_limits<physx::PxU32>::max();
-        const auto next_updated=ui<updated_count
-            ? updated[ui] : std::numeric_limits<physx::PxU32>::max();
-        const auto handle=std::min(next_created,next_updated);
-        if(handle>=capacity)
-            throw std::out_of_range(
-                "Source GPU AABB delta handle outside capacity");
-        while(ci<created_count && created[ci]==handle)++ci;
-        while(ui<updated_count && updated[ui]==handle)++ui;
-        include(handle);
-        const bool already_changed=(handle>>5u)<changed.size() &&
-            (changed[handle>>5u] & (1u<<(handle&31u)))!=0u;
-        if(!already_changed)++count;
+    const auto word_count=(std::uint64_t(capacity)+31u)/32u;
+    for(std::size_t word=0;word<word_count;++word) {
+        physx::PxU32 bits=word<changed.size()?changed[word]:0u;
+        if(word+1u==word_count && (capacity&31u))
+            bits&=(1u<<(capacity&31u))-1u;
+        const auto collect=[&](const physx::Bp::ShapeHandle* handles,
+                               physx::PxU32 count,physx::PxU32& cursor) {
+            while(cursor<count && (std::uint64_t(handles[cursor])>>5u)==word) {
+                const auto handle=handles[cursor];
+                if(handle>=capacity || (cursor && handles[cursor-1u]>=handle))
+                    throw std::invalid_argument(
+                        "Source GPU AABB delta handles are not ordered");
+                bits|=1u<<(handle&31u);
+                ++cursor;
+            }
+        };
+        collect(created,created_count,ci);
+        collect(updated,updated_count,ui);
+        while(bits) {
+            const auto handle=static_cast<physx::PxU32>(
+                word*32u+std::countr_zero(bits));
+            if(!overflow) {
+                if(runs.count && runs.spans[runs.count-1u].second==handle)
+                    ++runs.spans[runs.count-1u].second;
+                else if(runs.count<runs.spans.size())
+                    runs.spans[runs.count++]={handle,handle+1u};
+                else overflow=true;
+            }
+            bits&=bits-1u;
+        }
     }
-
-    if(first==capacity)return std::pair{capacity,physx::PxU32{0u}};
-    // No holes: the source can publish one smaller contiguous span
-    // without overwriting quiet, possibly GPU-generated aggregate bounds.
-    if(std::uint64_t(last)-first!=count)return std::nullopt;
-    return std::pair{first,last};
+    if(ci!=created_count || ui!=updated_count)
+        throw std::out_of_range(
+            "Source GPU AABB delta handle outside capacity or unsorted");
+    if(overflow)return std::nullopt;
+    return runs;
 }
 
 } // namespace
@@ -145,8 +144,8 @@ void append_pre_broadphase_native_uploads(
         !device_generated_bounds;
     // Determine the interval before modifying any source heap allocation.
     // The same original Sc changed handles own bounds and Bp metadata.
-    const auto dirty_interval=(sparse_bounds || sparse_metadata)
-        ? contiguous_dirty_bounds(update,changed_handles)
+    const auto dirty_ranges=(sparse_bounds || sparse_metadata)
+        ? bounded_dirty_bounds(update,changed_handles)
         : std::nullopt;
 
     // Retain the original allocation conditions and free-first buffer
@@ -163,33 +162,34 @@ void append_pre_broadphase_native_uploads(
     // The enclosing AABB-manager pre-update owns their submission.
     uploads.reserve(uploads.size()+4u);
     if(update.getStateChanged() && !device_generated_bounds) {
-        if(!sparse_bounds || !dirty_interval) {
+        if(!sparse_bounds || !dirty_ranges) {
             uploads.push_back({buffers.bounds.getDevicePtr(),
                                update.getAABBs(),bounds_bytes});
-        }else if(dirty_interval->first!=capacity) {
-            const auto first=dirty_interval->first;
-            const auto size=dirty_interval->second-first;
+        }else for(std::size_t i=0u;i<dirty_ranges->count;++i) {
+            const auto [first,last]=dirty_ranges->spans[i];
             uploads.push_back({
                 buffers.bounds.getDevicePtr()+
                     std::uint64_t(first)*sizeof(physx::PxBounds3),
                 update.getAABBs()+first,
-                std::size_t(size)*sizeof(physx::PxBounds3)});
+                std::size_t(last-first)*sizeof(physx::PxBounds3)});
         }
     }
-    if(sparse_metadata && dirty_interval) {
-        if(dirty_interval->first!=capacity) {
-            const auto first=dirty_interval->first;
-            const auto count=dirty_interval->second-first;
+    if(sparse_metadata && dirty_ranges) {
+        for(std::size_t i=0u;i<dirty_ranges->count;++i) {
+            const auto [first,last]=dirty_ranges->spans[i];
             uploads.push_back({
                 buffers.contact_distances.getDevicePtr()+
                     std::uint64_t(first)*sizeof(physx::PxReal),
                 update.getContactDistance()+first,
-                std::size_t(count)*sizeof(physx::PxReal)});
+                std::size_t(last-first)*sizeof(physx::PxReal)});
+        }
+        for(std::size_t i=0u;i<dirty_ranges->count;++i) {
+            const auto [first,last]=dirty_ranges->spans[i];
             uploads.push_back({
                 buffers.groups.getDevicePtr()+
                     std::uint64_t(first)*sizeof(physx::PxU32),
                 update.getGroups()+first,
-                std::size_t(count)*sizeof(physx::PxU32)});
+                std::size_t(last-first)*sizeof(physx::PxU32)});
         }
     }else {
         uploads.push_back({buffers.contact_distances.getDevicePtr(),

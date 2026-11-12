@@ -944,26 +944,27 @@ void exercise_source_single_volume_bitmap_lifecycle_native(Context& context) {
             throw std::runtime_error(
                 "Native GPU AABB bitmap differs from original source admission");
 
-        // An unchanged physical allocation cannot narrow two separated
-        // created handles into a contiguous interval. Replaying this
-        // source admission must still transfer the entire bounds array.
+        // A resident allocation can upload separated source handles as
+        // independent ranges in one ordered batch, without transferring
+        // unchanged bounds, distances or filtering groups.
         const auto before_fragmented=stream.submission_stats();
         pre_update_source_sap_aabb_manager_native(
             frame,manager_view(),stream);
-        const auto expected_full_bytes=
+        const auto expected_sparse_fragment_bytes=
             std::size_t(added.getWordCount()+removed.getWordCount()+
                         aggregated.getWordCount()+changed.getWordCount())*
                 sizeof(physx::PxU32)+
             volumes.size()*sizeof(physx::Bp::VolumeData)+
-            bounds.size()*sizeof(physx::PxBounds3)+
-            offsets.size()*sizeof(physx::PxReal)+
-            groups.size()*sizeof(physx::Bp::FilterGroup::Enum);
+            2u*(sizeof(physx::PxBounds3)+sizeof(physx::PxReal)+
+                sizeof(physx::Bp::FilterGroup::Enum));
         if(stream.submission_stats().upload_batches!=
                before_fragmented.upload_batches+1u ||
            stream.submission_stats().upload_bytes!=
-               before_fragmented.upload_bytes+expected_full_bytes)
+               before_fragmented.upload_bytes+expected_sparse_fragment_bytes ||
+           stream.submission_stats().upload_spans!=
+               before_fragmented.upload_spans+11u)
             throw std::runtime_error(
-                "Separated source created handles incorrectly narrowed GPU bounds");
+                "Separated source created handles reuploaded unchanged SAP metadata");
         stream.wait_at_fetch();
 
         // Source processFoundPairs/processLostPairs retire these host bits
