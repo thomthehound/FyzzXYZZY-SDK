@@ -2416,5 +2416,6 @@ namespace fyzz {
 std::unique_ptr<WorldBackend> create_native_gpu_broadphase_backend(
     std::unique_ptr<native::GpuBroadphaseProducer> source_producer,
     bool contact_notifications, bool enhanced_determinism,
-    bool pcm_plane_box, bool pcm_box_box);
+    bool pcm_plane_box, bool pcm_box_box,
+    bool device_island_admission=false);
 } // namespace fyzz

@@ -180,7 +180,8 @@ World create_native_gpu_world(
             std::move(stages.aggregates),std::move(stages.pcm),
             std::move(stages.dy),std::move(stages.convex_dy)),
         options.contact_notifications,options.enhanced_determinism,
-        options.pcm_plane_box,options.pcm_box_box));
+        options.pcm_plane_box,options.pcm_box_box,
+        options.gpu_device_island_admission));
 }
 
 World create_native_gpu_world(

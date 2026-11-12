@@ -1927,6 +1927,49 @@ void verify_coupled_rigid_stack(
             "GPU coupled rigid stack never admitted dynamic-dynamic contacts");
 }
 
+void verify_world_device_island_admission(
+    fyzz::compute::Backend backend,const char* sap,
+    const char* pcm,const char* dy_shader) {
+    using namespace fyzz;
+    std::ifstream input(dy_shader,std::ios::binary);
+    require(bool(input),"Compiled GPU World Dy shader unavailable");
+    compute::ShaderBinary shader{};
+    shader.format=backend==compute::Backend::Vulkan
+        ?compute::ShaderFormat::Spirv:compute::ShaderFormat::Dxil;
+    shader.bytes.assign(std::istreambuf_iterator<char>{input},
+                        std::istreambuf_iterator<char>{});
+    WorldOptions options{ExecutionMode::NativePortableGpu};
+    options.gpu_device_island_admission=true;
+    auto gpu=create_native_gpu_world(
+        backend,load_native_gpu_sap_shaders(backend,sap),
+        load_native_gpu_pcm_shaders(backend,pcm),std::move(shader),options);
+    World cpu(WorldOptions{ExecutionMode::NativeCpu});
+    const auto ca=cpu.add_dynamic_box(
+        {0.5f,0.5f,0.5f},{0.f,0.83f,0.f},1.f);
+    const auto ga=gpu.add_dynamic_box(
+        {0.5f,0.5f,0.5f},{0.f,0.83f,0.f},1.f);
+    cpu.add_static_box({0.5f,0.5f,0.5f},{0.f,0.f,0.f});
+    gpu.add_static_box({0.5f,0.5f,0.5f},{0.f,0.f,0.f});
+    const auto cb=cpu.add_dynamic_box(
+        {0.5f,0.5f,0.5f},{0.f,1.66f,0.f},1.f);
+    const auto gb=gpu.add_dynamic_box(
+        {0.5f,0.5f,0.5f},{0.f,1.66f,0.f},1.f);
+    cpu.add_center_distance_constraint(ca,cb,0.83f);
+    gpu.add_center_distance_constraint(ga,gb,0.83f);
+    for(unsigned step=0;step<4u;++step) {
+        cpu.step(1.f/120.f);
+        gpu.step(1.f/120.f);
+        for(const auto [reference,actual]:
+            {std::pair{ca,ga},std::pair{cb,gb}}) {
+            const auto a=cpu.body_state(reference);
+            const auto b=gpu.body_state(actual);
+            require(std::fabs(a.position.y-b.position.y)<0.03f &&
+                    std::fabs(a.velocity.y-b.velocity.y)<0.03f,
+                "Native GPU World lost resident Sc/Dy contact response");
+        }
+    }
+}
+
 void verify_gpu_single_island_hybrid_solver(
     fyzz::compute::Backend backend,const char* sap,
     const char* pcm,const char* dy_shader,bool resident_admission=false) {
@@ -4981,8 +5024,12 @@ int main(int argc,char** argv) {
                     backend,argv[1],argv[2],argv[3]);});
         if(scenario=="device_admission_scene")
             fyzz::tests::measure_gpu_case("sc_pcm","device_admission_scene",
-                [&]{verify_gpu_single_island_hybrid_solver(
-                    backend,argv[1],argv[2],argv[3],true);});
+                [&]{
+                    verify_gpu_single_island_hybrid_solver(
+                        backend,argv[1],argv[2],argv[3],true);
+                    verify_world_device_island_admission(
+                        backend,argv[1],argv[2],argv[3]);
+                });
         if(scenario=="all" || scenario=="scene")
             fyzz::tests::measure_gpu_case("sc_pcm","scene",
                 [&]{

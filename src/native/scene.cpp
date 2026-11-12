@@ -11600,13 +11600,16 @@ public:
                             bool pcm_plane_box,
                             bool pcm_box_box,
                             std::unique_ptr<native::GpuBroadphaseProducer>
-                                source_producer = {}) {
+                                source_producer = {},
+                            bool device_island_admission=false) {
         scene_.set_contact_notifications(contact_notifications);
         scene_.set_enhanced_determinism(enhanced_determinism);
         scene_.set_pcm_plane_box(pcm_plane_box);
         scene_.set_pcm_box_box(pcm_box_box);
         if(source_producer)
             scene_.set_gpu_broadphase(std::move(source_producer));
+        if(device_island_admission)
+            scene_.set_gpu_dy_device_admission_enabled(true);
     }
     std::span<const ContactEvent> contact_events() const override {
         return scene_.contact_events();
@@ -11770,12 +11773,13 @@ std::unique_ptr<WorldBackend> create_native_cpu_backend(
 std::unique_ptr<WorldBackend> create_native_gpu_broadphase_backend(
     std::unique_ptr<native::GpuBroadphaseProducer> source_producer,
     bool notify, bool enhanced_determinism,
-    bool pcm_plane_box, bool pcm_box_box) {
+    bool pcm_plane_box, bool pcm_box_box,
+    bool device_island_admission) {
     if(!source_producer)
         throw std::invalid_argument(
             "Native GPU scene requires the original PhysX GPU broadphase owner");
     return std::make_unique<NativeCpuWorld>(
         notify,enhanced_determinism,pcm_plane_box,pcm_box_box,
-        std::move(source_producer));
+        std::move(source_producer),device_island_admission);
 }
 } // namespace fyzz
