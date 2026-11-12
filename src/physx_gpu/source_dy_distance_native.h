@@ -1630,11 +1630,8 @@ public:
     void finish() {
         if(!pending_solve_)
             throw std::logic_error("No queued source Dy numerical epoch");
-        // The same Context owns PCM witness staging. A premature host
-        // join must not discard Dy's already submitted numerical result.
-        if(stream_.has_pending_fetch())
-            throw std::logic_error(
-                "Source Dy result join precedes pending PCM witness DMA");
+        // Sc owns the PCM witness publication. Numerical results can
+        // finish after their device dependency without observing it.
         auto pending=std::move(*pending_solve_);
         pending_solve_.reset();
         const auto bodies=pending.bodies;
@@ -1677,7 +1674,8 @@ public:
         }};
         const std::size_t download_count=!pending.device_admission?1u:
             body_ordinals.empty()?3u:4u;
-        stream_.fetch(std::span(downloads.data(),download_count));
+        stream_.fetch_numerical_result(
+            std::span(downloads.data(),download_count));
         admitted_body_ordinals_.clear();
         bool invalid_device_admission=false;
         if(pending.device_admission) {

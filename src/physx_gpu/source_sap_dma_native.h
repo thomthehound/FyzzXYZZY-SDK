@@ -6,6 +6,7 @@
 #include "physx_gpu/cuda_device_address_map.h"
 #include "hardware_profile.h"
 
+#include <array>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
@@ -257,6 +258,53 @@ public:
         }
         begin_fetch(outputs);
         finish_fetch();
+    }
+
+    // Dy can publish numerical results without consuming Sc's earlier
+    // PCM witness readback. Its queue fence covers all device producers;
+    // the PCM staging and borrowed host output remain independently owned.
+    void fetch_numerical_result(
+            std::span<const compute::DownloadSpan> outputs) {
+        if(!pending_fetch_) {
+            fetch(outputs);
+            return;
+        }
+        if(outputs.empty())
+            throw std::invalid_argument("Source numerical readback is empty");
+        std::size_t bytes=0u;
+        for(const auto& output:outputs) {
+            if(output.bytes>std::numeric_limits<std::size_t>::max()-bytes)
+                throw std::overflow_error(
+                    "Source numerical readback size overflow");
+            bytes+=output.bytes;
+        }
+        const auto start=std::chrono::steady_clock::now();
+        compute::SubmissionId ticket=0u;
+        if(pending_.empty()) {
+            ticket=context_.submit_download_batch(outputs);
+            ++stats_.readback_submissions;
+        }else {
+            FYZZ_PROFILE_COUNTER("source.batch_ops",pending_.size());
+            ticket=context_.submit_batch_with_readback(pending_,outputs);
+            pending_.clear();
+            ++stats_.command_batches;
+            ++stats_.fused_readbacks;
+        }
+        const std::array<compute::SubmissionId,1u> ticket_wait{ticket};
+        try {
+            context_.wait_submissions(ticket_wait);
+            context_.finish_download_batch(ticket,true);
+        }catch(...) {
+            try {context_.finish_download_batch(ticket,false);}catch(...) {}
+            throw;
+        }
+        const auto elapsed=std::chrono::steady_clock::now()-start;
+        ++stats_.fetch_batches;
+        stats_.fetch_spans+=outputs.size();
+        stats_.fetch_bytes+=bytes;
+        stats_.fetch_wall_ns+=static_cast<std::uint64_t>(
+            std::chrono::duration_cast<std::chrono::nanoseconds>(
+                elapsed).count());
     }
 
     // Readiness of the most recent source-ordered GPU submission. The caller

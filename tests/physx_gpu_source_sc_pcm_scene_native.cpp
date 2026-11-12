@@ -1223,8 +1223,10 @@ void verify_device_sc_dy_task_admission(
     require(producer->has_queued_gpu_dy_distance() &&
             witness[0].packed_counts==0u,
         "Device Sc/Dy consumed the PCM witness before numerical dispatch");
-    producer->finish_gpu_pcm_box_contacts();
     producer->finish_gpu_dy_distance();
+    require(witness[0].packed_counts==0u,
+        "Resident Sc numerical task observed unpublished PCM witnesses");
+    producer->finish_gpu_pcm_box_contacts();
     require(tasks[0].error==0u && poses[0].valid==1u &&
             producer->dy_launch_stats().device_island_indirect_dispatches==1u &&
             producer->dy_launch_stats().source_descriptor_upload_bytes==0u &&
@@ -1281,8 +1283,10 @@ void verify_device_sc_dy_task_admission(
             bodies,{},descriptors,{},body_order,active_tasks,
             {},{},{},{},{},managers,{},{},
             active_inputs,active_poses,true,{},true,true,true,active_sleep);
-        producer->finish_gpu_pcm_box_contacts();
         producer->finish_gpu_dy_distance();
+        require(witness[0].packed_counts==0u,
+            "Multiple resident tasks joined PCM witnesses before Sc");
+        producer->finish_gpu_pcm_box_contacts();
         require(active_tasks[0].error==0u && active_tasks[1].error==0u &&
                 active_poses[0].valid==1u && active_poses[1].valid==1u &&
                 producer->dy_launch_stats().device_island_indirect_dispatches==1u &&
@@ -1397,16 +1401,13 @@ void verify_queued_pcm_dy(fyzz::compute::Backend backend,const char* sap,
     }
     require(duplicate_rejected && producer->has_queued_gpu_dy_distance(),
         "Dy reused active numerical output before its owning fetch");
-    bool premature_join_rejected=false;
-    try {
-        producer->finish_gpu_dy_distance();
-    } catch(const std::logic_error&) {
-        premature_join_rejected=true;
-    }
-    require(premature_join_rejected &&
-            producer->has_queued_gpu_dy_distance() &&
-            witness[0].packed_counts==0u,
-        "Premature host Dy join discarded its queued numerical result");
+    producer->finish_gpu_dy_distance();
+    require(!producer->has_queued_gpu_dy_distance() &&
+            witness[0].packed_counts==0u &&
+            poses[0].valid==1u &&
+            std::fabs(poses[0].position[0]-
+                      (2.f+0.5f*seconds))<0.002f,
+        "Source Dy waited for Sc PCM witness publication");
     bool premature_commit_rejected=false;
     try {
         producer->commit_gpu_step();
@@ -1414,18 +1415,13 @@ void verify_queued_pcm_dy(fyzz::compute::Backend backend,const char* sap,
         premature_commit_rejected=true;
     }
     require(premature_commit_rejected &&
-            producer->has_queued_gpu_dy_distance(),
-        "Source Sc committed before GPU Dy published numerical results");
+            witness[0].packed_counts==0u,
+        "Source Sc committed numerical results before PCM publication");
     producer->finish_gpu_pcm_box_contacts();
-    require(witness[0].status()==0u && witness[0].count()>0u,
-        "Queued PCM witness was invalid after early Dy dispatch");
-    producer->finish_gpu_dy_distance();
-    require(!producer->has_queued_gpu_dy_distance() &&
+    require(witness[0].status()==0u && witness[0].count()>0u &&
             poses[0].valid==1u &&
-            std::fabs(poses[0].position[0]-
-                      (2.f+0.5f*seconds))<0.002f &&
             std::fabs(poses[0].position[1]-1.f)<0.002f,
-        "Queued GPU Dy failed to publish integrated body after PCM join");
+        "Source Sc PCM publication invalidated previously joined Dy output");
     producer->commit_gpu_step();
 
     // Reject a numerical epoch before either source result is fetched.
