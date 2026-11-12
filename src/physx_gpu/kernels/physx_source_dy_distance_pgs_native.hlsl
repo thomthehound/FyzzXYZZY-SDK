@@ -1515,6 +1515,16 @@ void main(uint3 group:SV_GroupID,uint3 lane:SV_GroupThreadID) {
     // resident task is a singleton. One GPU lane then owns its
     // complete PGS epoch without workgroup-wide barriers.
     if(phase==fusedTask && devicePartitions && !precolored &&
+       admittedTasks==0xffffffffu) {
+        const uint4 schedule=arena.Load4(p.integrationBias+16u);
+        if(schedule.w!=0u && arena.Load(schedule.w)==24u &&
+           (arena.Load(schedule.w+20u)&4u)!=0u) {
+            const uint task=index*128u+lane.x;
+            if(task<schedule.z)sourceDySolvePackedTask(task);
+            return;
+        }
+    }
+    if(phase==fusedTask && devicePartitions && !precolored &&
        admittedTasks>1u &&
        arena.Load(p.integrationBias+28u)!=0u &&
        arena.Load(arena.Load(p.integrationBias+28u))==44u &&

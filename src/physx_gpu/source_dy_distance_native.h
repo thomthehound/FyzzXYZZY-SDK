@@ -104,6 +104,7 @@ struct SourceDyLaunchStats {
     std::size_t max_partition_groups=0u;
     std::size_t dispatches=0u;
     std::size_t device_island_indirect_dispatches=0u;
+    std::size_t host_lane_packed_tasks=0u;
     std::size_t device_admitted_tasks=0u;
     std::size_t device_admitted_bodies=0u;
     std::size_t device_admitted_descriptors=0u;
@@ -906,6 +907,15 @@ public:
         // 1D geometry carries the same ordinals in its first row.
         const bool source_descriptors=device_partitions &&
             device_initial_bodies && device_world_motion;
+        const bool host_lane_packed=source_descriptors && !device_admission &&
+            tasks.size()>1u && wide_tasks_.empty() &&
+            std::all_of(tasks.begin(),tasks.end(),[](const auto& task) {
+                return task.descriptor_end==task.descriptor_begin+1u &&
+                       task.partition_end==task.partition_begin+1u &&
+                       task.body_end==task.body_begin+1u;
+            });
+        last_schedule_.host_lane_packed_tasks=
+            host_lane_packed?tasks.size():0u;
         if(device_admission &&
            (!source_descriptors || !device_admission->work ||
             !device_admission->task_dispatch.buffer || tasks.empty()))
@@ -1121,7 +1131,8 @@ public:
             std::memcpy(host_.data()+offsets[15],scratch_header.data(),
                         sizeof(scratch_header));
             if(source_descriptors) {
-                const std::uint32_t mode=device_admission?2u:1u;
+                const std::uint32_t mode=device_admission?2u:
+                    (host_lane_packed?5u:1u);
                 std::memcpy(host_.data()+offsets[15]+20u,
                             &mode,sizeof(mode));
                 if(n && !device_admission)
@@ -1503,7 +1514,9 @@ public:
         if(device_partitions && !wide_tasks_.empty())
             launch(Launch::Color,{0u,tasks.size()+
                 (device_initial_bodies ? (bodies.size()+127u)/128u : 0u)});
-        launch(Launch::Fused,fused_tiles_);
+        launch(Launch::Fused,host_lane_packed
+            ?TileRange{0u,(tasks.size()+127u)/128u}
+            :fused_tiles_);
         if(!wide_tasks_.empty()) {
             // The existing arena write dependencies order each dispatch
             // across workgroups. A relative partition from every wide

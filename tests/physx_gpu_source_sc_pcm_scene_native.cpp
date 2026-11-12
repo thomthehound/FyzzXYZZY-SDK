@@ -4658,6 +4658,57 @@ void qualify_hardware_scene(
              <<" max_velocity_abs_error="<<max_velocity_error<<'\n';
 }
 
+void verify_host_lane_packed_islands(
+    fyzz::compute::Backend backend,const char* sap,
+    const char* pcm,const char* dy_shader) {
+    using namespace fyzz;
+    std::ifstream stream(dy_shader,std::ios::binary);
+    require(bool(stream),"GPU Dy shader bundle missing");
+    std::vector<char> bytes(
+        std::istreambuf_iterator<char>{stream},
+        std::istreambuf_iterator<char>{});
+    compute::ShaderBinary shader{};
+    shader.format=backend==compute::Backend::Vulkan
+        ?compute::ShaderFormat::Spirv:compute::ShaderFormat::Dxil;
+    shader.bytes.assign(bytes.begin(),bytes.end());
+    native::Scene cpu,gpu;
+    cpu.set_enhanced_determinism(true);
+    gpu.set_enhanced_determinism(true);
+    auto owner=std::make_unique<physx_gpu::SourceScOwnedGpuBroadphaseNative>(
+        backend,load_native_gpu_sap_shaders(backend,sap),
+        128u,128u,std::nullopt,
+        load_native_gpu_pcm_shaders(backend,pcm),std::move(shader));
+    auto* producer=owner.get();
+    gpu.set_gpu_broadphase(std::move(owner));
+    std::array<BodyId,2> cpu_bodies{},gpu_bodies{};
+    for(std::size_t i=0;i<cpu_bodies.size();++i) {
+        const Vec3 floor{static_cast<float>(i)*8.f,0.f,0.f};
+        const Vec3 position{floor.x,0.86f,0.f};
+        cpu.add_static_box({0.6f,0.5f,0.6f},floor);
+        gpu.add_static_box({0.6f,0.5f,0.6f},floor);
+        cpu_bodies[i]=cpu.add_dynamic_box({0.5f,0.5f,0.5f},position,1.f);
+        gpu_bodies[i]=gpu.add_dynamic_box({0.5f,0.5f,0.5f},position,1.f);
+    }
+    for(unsigned frame=0;frame<4u;++frame) {
+        cpu.step(1.f/120.f);
+        gpu.step(1.f/120.f);
+        const auto schedule=producer->dy_launch_stats();
+        require(schedule.host_lane_packed_tasks==cpu_bodies.size() &&
+                schedule.device_island_indirect_dispatches==0u &&
+                schedule.wide_tasks==0u,
+            "Independent CPU-admitted islands did not use packed GPU lanes");
+        require(cpu.contacts().size()==cpu_bodies.size() &&
+                cpu.contacts().size()==gpu.contacts().size() &&
+                cpu.solved_normal_impulses().size()==
+                    gpu.solved_normal_impulses().size(),
+            "Packed CPU-admitted islands changed Sc contact publication");
+        for(std::size_t i=0;i<cpu_bodies.size();++i)
+            test::compound_compare_state(
+                gpu.body_state(gpu_bodies[i]),cpu.body_state(cpu_bodies[i]),
+                0.03f,"Packed GPU singleton diverged from CPU rigid contact");
+    }
+}
+
 int main(int argc,char** argv) {
     try {
         require(argc>=4 && argc<=7,
@@ -4678,7 +4729,7 @@ int main(int argc,char** argv) {
                 scenario=="legacy_gu_solver" ||
                 scenario=="mixed_solver" || scenario=="dy_switch" ||
                 scenario=="plane_only_pcm" ||
-                scenario=="distance_solver" ||
+                scenario=="distance_solver" || scenario=="host_packed" ||
                 scenario=="compound_shapes" || scenario=="compound_solver" ||
                 scenario=="sphere_solver" || scenario=="convex_plane" ||
                 scenario=="convex_finite" || scenario=="wide_islands" ||
@@ -4809,6 +4860,10 @@ int main(int argc,char** argv) {
         if(scenario=="all" || scenario=="distance_solver")
             fyzz::tests::measure_gpu_case("sc_pcm","distance_solver",
                 [&]{verify_gpu_distance_solver(
+                    backend,argv[1],argv[2],argv[3]);});
+        if(scenario=="all" || scenario=="host_packed")
+            fyzz::tests::measure_gpu_case("sc_pcm","host_packed",
+                [&]{verify_host_lane_packed_islands(
                     backend,argv[1],argv[2],argv[3]);});
         if(scenario=="all" || scenario=="free_integration")
             fyzz::tests::measure_gpu_case("sc_pcm","free_integration",
