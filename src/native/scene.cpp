@@ -8739,6 +8739,19 @@ void Scene::prepare_gpu_dy_device_islands() {
     if(gpu_dy_tasks_.size()>gpu_broadphase_->gpu_dy_direct_task_limit())
         throw std::out_of_range(
             "Resident Sc island admission exceeds device task capacity");
+    std::size_t prior_descriptors=0u,prior_bodies=0u;
+    for(const auto& task:solver_tasks_) {
+        if(task.constraint_end<prior_descriptors ||
+           task.solver_body_end<prior_bodies)
+            throw std::logic_error(
+                "Source Sc island task ranges are not ordered");
+        if(task.constraint_end-prior_descriptors>=gpu_dy_wide_task_threshold &&
+           task.solver_body_end-prior_bodies>=gpu_dy_wide_task_threshold)
+            throw std::logic_error(
+                "Resident Sc compact task admission cannot execute a wide island");
+        prior_descriptors=task.constraint_end;
+        prior_bodies=task.solver_body_end;
+    }
     if(gpu_dy_tasks_.size()<gpu_dy_responding_island_count_)
         throw std::logic_error(
             "Resident Sc task capacity cannot represent accurate islands");
@@ -8978,21 +8991,29 @@ void Scene::solve_gpu_distance_constraints(float seconds) {
         throw std::logic_error(
             "Source GPU 1D row preparation did not cover source rows");
     gpu_dy_body_ordinals_.resize(solver_active_ids_.size());
-    for(std::size_t i=0;i<solver_active_ids_.size();++i)
-        gpu_dy_body_ordinals_[i]=narrow(
-            actors_[solver_active_ids_[i]].solver_row_index);
     gpu_dy_tasks_.clear();
-    for(const auto& task:solver_tasks_) {
-        const auto prev=gpu_dy_tasks_.empty()?GpuDyDistanceTask{}:gpu_dy_tasks_.back();
-        if(task.constraint_end==prev.descriptor_end &&
-           task.partition_end==prev.partition_end &&
-           task.solver_body_end==prev.body_end)
-            continue;
-        gpu_dy_tasks_.push_back({
-            prev.descriptor_end,narrow(task.constraint_end),
-            prev.partition_end,narrow(task.partition_end),
-            prev.body_end,narrow(task.solver_body_end),
-            task.position_iterations,task.velocity_iterations,0u});
+    if(gpu_dy_device_admission_enabled_ && !solver_tasks_.empty()) {
+        // The device owns actual task ranges and responding-body order.
+        // These spans provide capacity only; no host task/ordinal
+        // records are constructed or uploaded for numerical execution.
+        gpu_dy_tasks_.resize(solver_tasks_.size());
+    }else {
+        for(std::size_t i=0;i<solver_active_ids_.size();++i)
+            gpu_dy_body_ordinals_[i]=narrow(
+                actors_[solver_active_ids_[i]].solver_row_index);
+        for(const auto& task:solver_tasks_) {
+            const auto prev=gpu_dy_tasks_.empty()
+                ?GpuDyDistanceTask{}:gpu_dy_tasks_.back();
+            if(task.constraint_end==prev.descriptor_end &&
+               task.partition_end==prev.partition_end &&
+               task.solver_body_end==prev.body_end)
+                continue;
+            gpu_dy_tasks_.push_back({
+                prev.descriptor_end,narrow(task.constraint_end),
+                prev.partition_end,narrow(task.partition_end),
+                prev.body_end,narrow(task.solver_body_end),
+                task.position_iterations,task.velocity_iterations,0u});
+        }
     }
     // Sc owns Gu point identity and correlated patch normals. The GPU
     // constructs every writable Dy contact row; only CPU-origin Gu
