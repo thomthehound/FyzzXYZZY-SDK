@@ -4713,10 +4713,20 @@ void verify_host_lane_packed_islands(
         cpu.step(1.f/120.f);
         gpu.step(1.f/120.f);
         const auto schedule=producer->dy_launch_stats();
-        require(schedule.host_lane_packed_tasks==cpu_bodies.size()+2u &&
-                schedule.device_island_indirect_dispatches==0u &&
-                schedule.wide_tasks==0u,
-            "Independent CPU-admitted islands did not use packed GPU lanes");
+        if(schedule.host_lane_packed_tasks!=cpu_bodies.size()+2u ||
+           schedule.device_island_indirect_dispatches!=0u ||
+           schedule.wide_tasks!=0u)
+            throw std::runtime_error(
+                "Independent Sc islands lost packed execution: frame="+
+                std::to_string(frame)+
+                " packed="+std::to_string(schedule.host_lane_packed_tasks)+
+                " tasks="+std::to_string(schedule.device_colored_tasks)+
+                " indirect="+
+                    std::to_string(schedule.device_island_indirect_dispatches)+
+                " wide="+std::to_string(schedule.wide_tasks)+
+                " contacts="+std::to_string(gpu.contacts().size())+
+                " largest_island="+
+                    std::to_string(gpu.largest_accurate_island_size()));
         require(cpu.contacts().size()==cpu_bodies.size()+1u &&
                 cpu.contacts().size()==gpu.contacts().size() &&
                 cpu.solved_normal_impulses().size()==
