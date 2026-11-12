@@ -140,6 +140,9 @@ void verify(Context& context,const char* filename) {
         stage.append(stream,addresses,edge_addr,touch_addr,node_addr,output_addr,
                      node_count,static_cast<std::uint32_t>(edges.size()),
                      static_cast<std::uint32_t>(touches.size()),sources);
+        if(node_count<=32u && edges.size()<=32u)
+            require(stream.commands().size()==1u,
+                "Small Sc device graph dispatched more than once");
         stream.wait_at_fetch();
         std::vector<std::byte> bytes(layout.bytes);
         context.download(output_buffer,0u,bytes.data(),bytes.size());

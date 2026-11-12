@@ -287,6 +287,16 @@ public:
         args[27]=layout.block_tiles
             ?offset(layout.block_tiles,args[3]):args[8];
         dispatch.push_constants.resize(sizeof(args));
+        // One workgroup avoids seven queue barriers for small islands.
+        if(node_count<=32u && edge_count<=32u) {
+            args[12]=32u;
+            args[13]=0u;
+            dispatch.groups={1u,1u,1u};
+            std::memcpy(dispatch.push_constants.data(),
+                        args.data(),sizeof(args));
+            stream.commands().emplace_back(std::move(dispatch));
+            return;
+        }
         std::vector<compute::BatchCommand> commands;
         const auto launch=[&](std::uint32_t phase,std::uint32_t count) {
             args[12]=phase;

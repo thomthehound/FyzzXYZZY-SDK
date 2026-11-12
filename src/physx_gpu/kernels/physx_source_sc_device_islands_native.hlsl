@@ -232,10 +232,131 @@ void inclusiveTaskScan(uint lane) {
     }
 }
 
+// Small graphs complete accurate admission in one ordered dispatch.
+void admitCompact() {
+    work.Store4(p.workBias,uint4(0u,0u,0u,0u));
+    work.Store4(p.workBias+16u,uint4(0u,1u,1u,p.edgeCount));
+    work.Store4(p.workBias+32u,uint4(0u,0u,0u,0u));
+    for(uint node=0u;node<p.nodeCount;++node) {
+        work.Store(p.rootBias+node*4u,node);
+        const uint count=p.countBias+node*24u;
+        work.Store4(count,uint4(0u,0u,0u,0u));
+        work.Store2(count+16u,uint2(0u,invalid));
+    }
+    for(uint i=0u;i<p.edgeCount;++i) {
+        const uint input=p.edgeBias+i*20u;
+        const uint4 edge=scEdges.Load4(input);
+        const uint kind=scEdges.Load(input+16u);
+        if(!validNode(edge.y) || !validNode(edge.z) ||
+           !edgeConnected(edge.x,kind) || !validSource(edge.w,kind))
+            continue;
+        if(respondingNode(edge.y) && respondingNode(edge.z))
+            connectNodes(edge.y,edge.z);
+    }
+    for(uint node=0u;node<p.nodeCount;++node) {
+        const uint root=findRoot(node);
+        if(root==invalid)continue;
+        work.Store(p.rootBias+node*4u,root);
+        const uint flags=nodeFlags.Load(p.nodeBias+node*4u);
+        const uint position=flags&255u;
+        if((flags&0xfffc0000u)!=0u ||
+           ((flags&nonrespondingNode)==0u && position==0u))
+            reject(16u);
+        const uint count=p.countBias+root*24u;
+        if((flags&nonrespondingNode)==0u) {
+            work.Store(count,work.Load(count)+1u);
+            work.Store(count+12u,max(work.Load(count+12u),position));
+            work.Store(count+16u,max(work.Load(count+16u),
+                                      (flags>>8u)&255u));
+        }
+        if((flags&0x10000u)!=0u)
+            work.Store(count+8u,work.Load(count+8u)+1u);
+    }
+    for(uint i=0u;i<p.edgeCount;++i) {
+        const uint input=p.edgeBias+i*20u;
+        const uint4 edge=scEdges.Load4(input);
+        const uint kind=scEdges.Load(input+16u);
+        uint owner=invalid;
+        if(validNode(edge.y) && validNode(edge.z) &&
+           edgeConnected(edge.x,kind) && validSource(edge.w,kind)) {
+            const uint node=respondingNode(edge.y)?edge.y:
+                respondingNode(edge.z)?edge.z:invalid;
+            if(node!=invalid) {
+                owner=findRoot(node);
+                if(owner!=invalid) {
+                    const uint count=p.countBias+owner*24u;
+                    if((kind&noResponse)==0u)
+                        work.Store(count+4u,work.Load(count+4u)+1u);
+                    if((kind&jointEdge)==0u &&
+                       (edgeHistory.Load(p.touchBias+edge.x*240u+76u)&1u)==0u)
+                        work.Store(count+8u,work.Load(count+8u)+1u);
+                }
+            }
+        }
+        const uint address=p.admissionBias+i*24u;
+        work.Store4(address,uint4(edge.w,edge.x,edge.y,edge.z));
+        work.Store2(address+16u,uint2(owner,kind));
+    }
+    if(work.Load(p.workBias)!=0u)return;
+
+    uint taskCount=0u,bodyCount=0u,responseCount=0u;
+    uint nonSingleton=0u;
+    for(uint root=0u;root<p.nodeCount;++root) {
+        if(!runnableRoot(root))continue;
+        const uint count=p.countBias+root*24u;
+        const uint bodies=work.Load(count);
+        const uint edges=work.Load(count+4u);
+        nonSingleton|=(bodies!=1u || edges!=1u)?1u:0u;
+        work.Store(count+20u,taskCount);
+        const uint task=p.taskBias+taskCount*36u;
+        work.Store4(task,uint4(responseCount,responseCount+edges,
+                               responseCount,responseCount+edges));
+        work.Store4(task+16u,uint4(bodyCount,bodyCount+bodies,
+                                   work.Load(count+12u),work.Load(count+16u)));
+        work.Store(task+32u,0u);
+        uint writtenBodies=0u,writtenEdges=0u;
+        for(uint node=0u;node<p.nodeCount;++node) {
+            if(!respondingNode(node) ||
+               work.Load(p.rootBias+node*4u)!=root)continue;
+            work.Store(p.bodyOrderBias+(bodyCount+writtenBodies)*4u,node);
+            ++writtenBodies;
+        }
+        for(uint type=0u;type<2u;++type)
+            for(uint edge=0u;edge<p.edgeCount;++edge) {
+                const uint address=p.admissionBias+edge*24u;
+                const uint kind=work.Load(address+20u);
+                if(((kind&jointEdge)!=0u)!=(type==0u) ||
+                   responseRoot(edge)!=root)continue;
+                const uint ordinal=responseCount+writtenEdges;
+                work.Store(p.responseOrderBias+ordinal*4u,edge);
+                work.Store(p.tokenBias+ordinal*4u,responseToken(edge));
+                ++writtenEdges;
+            }
+        if(writtenBodies!=bodies || writtenEdges!=edges) {
+            reject(128u);
+            return;
+        }
+        bodyCount+=bodies;
+        responseCount+=edges;
+        ++taskCount;
+    }
+    work.Store(p.workBias+4u,taskCount);
+    work.Store(p.workBias+8u,bodyCount);
+    work.Store(p.workBias+12u,responseCount);
+    work.Store(p.workBias+32u,nonSingleton);
+    const uint dispatch=nonSingleton!=0u?taskCount:
+        ((taskCount+127u)/128u);
+    work.Store(p.workBias+16u,min(dispatch,p.maxGroups));
+}
+
 [numthreads(128,1,1)]
 void main(uint3 thread:SV_DispatchThreadID,
           uint3 group:SV_GroupID,uint3 lane:SV_GroupThreadID) {
     const uint index=p.first+thread.x;
+    if(p.phase==32u) {
+        if(index==0u)admitCompact();
+        return;
+    }
     if(p.phase==0u) {
         if(index==0u) {
             work.Store4(p.workBias,uint4(0u,0u,0u,0u));
