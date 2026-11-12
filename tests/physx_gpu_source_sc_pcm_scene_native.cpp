@@ -1424,6 +1424,30 @@ void verify_queued_pcm_dy(fyzz::compute::Backend backend,const char* sap,
         "Source Sc PCM publication invalidated previously joined Dy output");
     producer->commit_gpu_step();
 
+    // A completed numerical readback cannot commit the earlier PCM
+    // witness transaction. Rollback must discard the still-borrowed
+    // source output and invalidate the numerical resident cache.
+    std::array<native::GpuPcmBoxResult,1> numerical_first{};
+    launch(numerical_first,inputs,poses);
+    producer->finish_gpu_dy_distance();
+    require(poses[0].valid==1u && numerical_first[0].packed_counts==0u,
+        "Numerical readback published an unjoined PCM witness");
+    producer->invalidate_after_rollback();
+    require(numerical_first[0].packed_counts==0u &&
+            producer->device_pcm_contact_count()==0u &&
+            !producer->has_queued_gpu_dy_distance(),
+        "Rollback after Dy completion retained rejected PCM publication");
+    std::array<native::GpuPcmBoxResult,1> numerical_retry{};
+    launch(numerical_retry,inputs,poses);
+    producer->finish_gpu_dy_distance();
+    require(poses[0].valid==1u && numerical_retry[0].packed_counts==0u,
+        "Rolled-back Dy cache contaminated a new numerical epoch");
+    producer->finish_gpu_pcm_box_contacts();
+    require(numerical_retry[0].status()==0u &&
+            numerical_retry[0].count()>0u,
+        "Rolled-back numerical completion corrupted PCM journal recovery");
+    producer->commit_gpu_step();
+
     // Reject a numerical epoch before either source result is fetched.
     // Neither borrowed output may survive the common rollback boundary.
     std::array<native::GpuPcmBoxResult,1> rejected{};
