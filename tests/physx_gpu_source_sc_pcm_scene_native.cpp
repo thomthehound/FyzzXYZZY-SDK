@@ -380,6 +380,33 @@ void verify_rigid_shader_requirements(
 }
 // Independent GPU broadphase volumes share one Sc rigid actor identity.
 // Same-actor shape overlap is filtered; each cross-actor shape pair is kept.
+void verify_sc_only_dirty_sap_skip(
+    fyzz::compute::Backend backend,const char* sap) {
+    using namespace fyzz;
+    native::Scene scene;
+    auto owner=std::make_unique<physx_gpu::SourceScOwnedGpuBroadphaseNative>(
+        backend,load_native_gpu_sap_shaders(backend,sap),128u,128u);
+    auto* producer=owner.get();
+    scene.set_gpu_broadphase(std::move(owner));
+    const auto a=scene.add_dynamic_box(
+        {0.5f,0.5f,0.5f},{0.f,0.f,0.f},1.f);
+    const auto b=scene.add_dynamic_box(
+        {0.5f,0.5f,0.5f},{4.f,0.f,0.f},1.f);
+    scene.advance_collision();
+    scene.advance_collision();
+    const auto before=producer->source_sap_fetch_count();
+    scene.create_center_distance_constraint(a,b,4.f);
+    scene.advance_collision();
+    require(producer->source_sap_fetch_count()==before &&
+            scene.largest_accurate_island_size()>=2u,
+        "Sc joint topology unnecessarily advanced unchanged GPU SAP bounds");
+    scene.set_position(b,{0.7f,0.f,0.f});
+    scene.advance_collision();
+    require(producer->source_sap_fetch_count()==before+1u &&
+            !scene.pairs().empty(),
+        "Real Sc geometry edit failed to resume source GPU SAP");
+}
+
 void verify_compound_shape_gpu_pairs(
     fyzz::compute::Backend backend,const char* sap) {
     using namespace fyzz;
@@ -4838,7 +4865,10 @@ int main(int argc,char** argv) {
         verify_rigid_shader_requirements(backend,argv[3]);
         if(scenario=="all" || scenario=="compound_shapes")
             fyzz::tests::measure_gpu_case("sc_pcm","compound_shapes",
-                [&]{verify_compound_shape_gpu_pairs(backend,argv[1]);});
+                [&]{
+                    verify_compound_shape_gpu_pairs(backend,argv[1]);
+                    verify_sc_only_dirty_sap_skip(backend,argv[1]);
+                });
         if(scenario=="all" || scenario=="compound_solver")
             fyzz::tests::measure_gpu_case("sc_pcm","compound_solver",
                 [&]{verify_compound_actor_gpu_solver(backend,argv[1],argv[2],argv[3]);});
