@@ -84,8 +84,8 @@ void exercise_reused_source_submission_scratch(Context& context) {
         third[i]=i+201u;
     }
 
-    // Each source group must snapshot host bytes before its retained
-    // vector is cleared for the next group, with one submission per group.
+    // Each source group snapshots host bytes before its retained
+    // vector is cleared; all groups preserve one ordered command stream.
     auto& first_group=stream.upload_scratch();
     first_group.push_back({base,first.data(),sizeof(first)});
     first_group.push_back({base+64u,second.data(),sizeof(second)});
@@ -129,7 +129,7 @@ void exercise_reused_source_submission_scratch(Context& context) {
     later.fill(0u);
     if(stream.submission_stats().upload_batches!=before.upload_batches+1u)
         throw std::runtime_error(
-            "Overlapping source upload changed GPU submission count");
+            "Overlapping source upload changed logical enqueue group count");
     stream.wait_at_fetch();
     context.download(gpu,0u,observed.data(),sizeof(observed));
     for(std::uint32_t i=0u;i<observed.size();++i)
@@ -155,6 +155,31 @@ void exercise_reused_source_submission_scratch(Context& context) {
             throw std::runtime_error(
                 "Overlapping Vulkan/D3D12 source upload lost final writer");
     }
+
+    // One source queue preserves upload -> device copy -> upload
+    // ordering, including a disjoint self-copy within a physical root.
+    std::array<std::uint32_t,8> source_words{},replacement_words{};
+    for(std::uint32_t i=0u;i<8u;++i) {
+        source_words[i]=i+501u;
+        replacement_words[i]=i+601u;
+    }
+    stream.queue_uploads({{base,source_words.data(),sizeof(source_words)}});
+    stream.queue_device_copy(base+32u,base,sizeof(source_words));
+    stream.queue_uploads({{base,replacement_words.data(),
+                           sizeof(replacement_words)}});
+    source_words.fill(0u);
+    replacement_words.fill(0u);
+    stream.wait_at_fetch();
+    context.download(gpu,32u,observed.data(),sizeof(observed));
+    for(std::uint32_t i=0u;i<observed.size();++i)
+        if(observed[i]!=i+501u)
+            throw std::runtime_error(
+                "Source GPU batch copied overwritten upload bytes");
+    context.download(gpu,0u,observed.data(),sizeof(observed));
+    for(std::uint32_t i=0u;i<observed.size();++i)
+        if(observed[i]!=i+601u)
+            throw std::runtime_error(
+                "Source GPU batch lost the later upload writer");
 
     auto& staged=stream.update_scratch();
     staged.emplace_back(CopyCommand{gpu,0u,gpu,192u,32u});
@@ -348,12 +373,15 @@ void exercise_native_physx_heap_roots(Context& context) {
     // wait; the native Context retains in-flight storage until completion.
     CudaDeviceAddressMap unrelatedAddresses;
     SourceSapDmaNative unrelatedStream(context,unrelatedAddresses);
+    const auto staged_before_rejection=source.commands().size();
+    if(staged_before_rejection!=3u)
+        throw std::runtime_error("Source upload and copies lost enqueue order");
     rejected=false;
     try {roots.release_root(oldRoot,&unrelatedStream);}
     catch(const std::invalid_argument&) {rejected=true;}
     if(!rejected || roots.live_roots()!=3u ||
        addresses.resolve(oldRaw,1u).offset!=256u ||
-       source.commands().size()!=2u)
+       source.commands().size()!=staged_before_rejection)
         throw std::runtime_error(
             "Foreign scene stream retired original PhysX GPU allocation");
 

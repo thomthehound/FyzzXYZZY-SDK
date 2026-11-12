@@ -4,10 +4,13 @@
 #pragma once
 
 #include "physx_gpu/cuda_device_address_map.h"
+#include "hardware_profile.h"
 
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
+#include <iterator>
 #include <limits>
 #include <span>
 #include <stdexcept>
@@ -30,14 +33,14 @@ struct SourceSapUpload {
 // descriptor, stream lifetime and task/scene ownership. This class neither
 // creates a scheduler nor introduces cross-stream/event semantics.
 //
-// Source HtoD calls in one adjacent group submit as one native upload batch;
-// GPU copies and shader launches form ordered native command batches. A host
-// upload following GPU commands forces their submission first, NOT a wait.
+// Source HtoD bytes are snapshotted at enqueue and share the same ordered
+// native batch as GPU copies and shader launches. The backend owns staging
+// until the batch fence completes; no upload-only queue submission is needed.
 // All submission tokens are reaped only at the source fetch boundary.
 class SourceSapDmaNative final {
 public:
     struct SubmissionStats {
-        std::size_t upload_batches = 0;
+        std::size_t upload_batches = 0; // Source enqueue groups, not queue submissions.
         std::size_t command_batches = 0;
         std::size_t upload_spans = 0;
         std::size_t upload_bytes = 0;
@@ -59,6 +62,7 @@ public:
         : context_(context), addresses_(addresses) {}
 
     void queue_uploads(const std::vector<SourceSapUpload>& uploads) {
+        FYZZ_PROFILE_SCOPE("source.upload_enqueue");
         resolved_uploads_.clear();
         resolved_uploads_.reserve(uploads.size());
         for (const auto& upload : uploads) {
@@ -71,15 +75,37 @@ public:
                                          upload.data, upload.bytes});
         }
         if (resolved_uploads_.empty()) return;
-        tokens_.reserve(tokens_.size() + (pending_.empty() ? 1u : 2u));
-        flush_gpu_commands();
-        // The Context snapshots host bytes and owns the GPU staging resource
-        // until the corresponding completion token is reaped.
-        const auto token = context_.submit_upload_batch(resolved_uploads_);
-        tokens_.push_back(token);
+        // Snapshot source memory now, then retain upload/dispatch order in
+        // one native command batch. A later shader may consume these bytes
+        // without forcing an intermediate queue submission.
+        std::vector<compute::BatchCommand> commands;
+        commands.reserve(resolved_uploads_.size());
+        for(const auto& span:resolved_uploads_) {
+            if(span.destination_offset%4u || span.bytes%4u)
+                throw std::invalid_argument(
+                    "PhysX source upload requires aligned buffer bytes");
+            compute::UploadCommand command;
+            command.destination=span.destination;
+            command.destination_offset=span.destination_offset;
+            command.bytes.resize(span.bytes);
+            std::memcpy(command.bytes.data(),span.data,span.bytes);
+            commands.emplace_back(std::move(command));
+        }
+        pending_.reserve(pending_.size()+commands.size());
+        pending_.insert(pending_.end(),
+            std::make_move_iterator(commands.begin()),
+            std::make_move_iterator(commands.end()));
         ++stats_.upload_batches;
         stats_.upload_spans += resolved_uploads_.size();
+#if defined(FYZZXYZZY_PROFILE_GPU)
+        const auto previous_bytes=stats_.upload_bytes;
+#endif
         for (const auto& span : resolved_uploads_) stats_.upload_bytes += span.bytes;
+#if defined(FYZZXYZZY_PROFILE_GPU)
+        FYZZ_PROFILE_COUNTER("source.upload_spans",resolved_uploads_.size());
+        FYZZ_PROFILE_COUNTER("source.upload_bytes",
+            stats_.upload_bytes-previous_bytes);
+#endif
     }
 
     // Original PxgCudaBuffer::allocateCopyOldDataAsync copies RAW mPtr
@@ -137,6 +163,7 @@ public:
     // been submitted. The Context owns readback staging until finish_fetch,
     // so independent source CPU work can overlap both compute and DMA.
     void begin_fetch(std::span<const compute::DownloadSpan> outputs) {
+        FYZZ_PROFILE_SCOPE("source.download_enqueue");
         if(pending_fetch_)
             throw std::logic_error("Source GPU readback already pending");
         if(outputs.empty())
@@ -154,29 +181,31 @@ public:
         ++stats_.readback_submissions;
         pending_fetch_bytes_=bytes;
         pending_fetch_spans_=outputs.size();
+        FYZZ_PROFILE_COUNTER("source.download_bytes",bytes);
     }
 
-    // The submitted readback fence covers all earlier source commands
-    // on this Context queue. Retire the prior submission tokens only
-    // after the independent witness DMA has been published to Sc.
+    // The readback completion covers every preceding source command on
+    // the ordered Context queue. Reap those tokens and the readback with
+    // one fence wait; later device continuations remain outstanding.
     void finish_fetch() {
+        FYZZ_PROFILE_SCOPE("source.download_join");
         if(!pending_fetch_)
             throw std::logic_error("Source GPU readback was not armed");
         const auto start=std::chrono::steady_clock::now();
+        const auto preceding=pending_fetch_token_count_;
+        fetch_wait_tokens_.clear();
+        fetch_wait_tokens_.reserve(preceding+1u);
+        fetch_wait_tokens_.insert(fetch_wait_tokens_.end(),
+            tokens_.begin(),tokens_.begin()+preceding);
+        fetch_wait_tokens_.push_back(pending_fetch_);
+        context_.wait_submissions(fetch_wait_tokens_);
+        // Earlier command resources are retired now, even if publishing
+        // the downloaded bytes subsequently fails.
+        tokens_.erase(tokens_.begin(),tokens_.begin()+preceding);
+        pending_fetch_token_count_=0;
         context_.finish_download_batch(pending_fetch_,true);
         pending_fetch_=0;
-        stats_.deferred_submissions_after_fetch+=
-            tokens_.size()-pending_fetch_token_count_;
-        // Later Sc uploads and device-continuation dispatches may already
-        // be queued after this DMA. Their ordered tokens are not host
-        // dependencies of the downloaded Gu witnesses.
-        if(pending_fetch_token_count_) {
-            context_.wait_submissions(std::span<const compute::SubmissionId>(
-                tokens_.data(),pending_fetch_token_count_));
-            tokens_.erase(tokens_.begin(),
-                tokens_.begin()+pending_fetch_token_count_);
-        }
-        pending_fetch_token_count_=0;
+        stats_.deferred_submissions_after_fetch+=tokens_.size();
         const auto elapsed=std::chrono::steady_clock::now()-start;
         ++stats_.fetch_batches;
         stats_.fetch_spans+=pending_fetch_spans_;
@@ -254,6 +283,7 @@ public:
     }
 
     void wait_at_fetch() {
+        FYZZ_PROFILE_SCOPE("source.queue_wait");
         flush_gpu_commands();
         if(tokens_.empty())return;
         // One fence on the last ordered submission completes every earlier
@@ -265,8 +295,10 @@ public:
 
 private:
     compute::SubmissionId flush_gpu_commands() {
+        FYZZ_PROFILE_SCOPE("source.command_submit");
         if (pending_.empty()) return tokens_.empty() ? 0 : tokens_.back();
         tokens_.reserve(tokens_.size() + 1u);
+        FYZZ_PROFILE_COUNTER("source.batch_ops",pending_.size());
         const auto token = context_.submit_batch(pending_);
         pending_.clear();
         tokens_.push_back(token);
@@ -280,7 +312,7 @@ private:
     std::vector<compute::BatchCommand> update_scratch_;
     std::vector<SourceSapUpload> upload_scratch_;
     std::vector<compute::UploadSpan> resolved_uploads_;
-    std::vector<compute::SubmissionId> tokens_;
+    std::vector<compute::SubmissionId> tokens_,fetch_wait_tokens_;
     compute::SubmissionId pending_fetch_=0;
     std::size_t pending_fetch_token_count_=0;
     std::size_t pending_fetch_bytes_=0,pending_fetch_spans_=0;

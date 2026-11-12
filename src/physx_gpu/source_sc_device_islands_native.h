@@ -75,9 +75,13 @@ struct SourceScDeviceIslandHeader {
     std::uint32_t dispatch_x=0,dispatch_y=1,dispatch_z=1;
     // Number of source admissions, including dormant and nonresponding edges.
     std::uint32_t source_edges=0u;
+    // Sc owns the decision to pack all one-body/one-constraint tasks.
+    std::uint32_t has_non_singleton_task=0u;
+    std::uint32_t reserved[3]{};
 };
-static_assert(sizeof(SourceScDeviceIslandHeader)==32u &&
-              offsetof(SourceScDeviceIslandHeader,dispatch_x)==16u);
+static_assert(sizeof(SourceScDeviceIslandHeader)==48u &&
+              offsetof(SourceScDeviceIslandHeader,dispatch_x)==16u &&
+              offsetof(SourceScDeviceIslandHeader,has_non_singleton_task)==32u);
 
 // One source-owned transient allocation holds union parents (finally
 // canonical island roots), per-root admission counts and source-ordered
@@ -183,6 +187,9 @@ public:
             4u,compute::StorageBufferViewKind::RawReadWrite);
         pipeline.push_constant_bytes=112u;
         pipeline_=context_.create_compute_pipeline(pipeline);
+#if defined(FYZZXYZZY_PROFILE_GPU)
+        context_.set_pipeline_profile_label(pipeline_,"sc.device_islands");
+#endif
     }
     SourceScDeviceIslandsNativeStage(
         const SourceScDeviceIslandsNativeStage&)=delete;

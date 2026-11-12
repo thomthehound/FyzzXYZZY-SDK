@@ -104,6 +104,7 @@ struct SourceDyLaunchStats {
     std::size_t max_partition_groups=0u;
     std::size_t dispatches=0u;
     std::size_t device_island_indirect_dispatches=0u;
+    std::size_t host_lane_packed_tasks=0u;
     std::size_t device_admitted_tasks=0u;
     std::size_t device_admitted_bodies=0u;
     std::size_t device_admitted_descriptors=0u;
@@ -122,6 +123,7 @@ struct SourceDyLaunchStats {
     std::size_t device_world_motion_bodies=0u;
     std::size_t actor_local_upload_bytes=0u;
     std::size_t actor_local_upload_spans=0u;
+    std::size_t device_upload_batches=0u;
     std::size_t reused_actor_local_poses=0u;
     std::size_t resident_velocity_reuses=0u;
     std::size_t prepared_velocity_updated_bodies=0u;
@@ -167,6 +169,9 @@ public:
             6u,compute::StorageBufferViewKind::RawReadWrite);
         pipeline.push_constant_bytes=128u;
         pipeline_=context_.create_compute_pipeline(pipeline);
+#if defined(FYZZXYZZY_PROFILE_GPU)
+        context_.set_pipeline_profile_label(pipeline_,"dy.distance_pgs");
+#endif
         if(convex_shader) {
             try {
                 pipeline.shader=std::move(*convex_shader);
@@ -174,6 +179,9 @@ public:
                 pipeline.storage_buffer_views.assign(
                     7u,compute::StorageBufferViewKind::RawReadWrite);
                 convex_pipeline_=context_.create_compute_pipeline(pipeline);
+#if defined(FYZZXYZZY_PROFILE_GPU)
+                context_.set_pipeline_profile_label(convex_pipeline_,"dy.convex");
+#endif
             }catch(...) {
                 context_.destroy_compute_pipeline(pipeline_);
                 pipeline_=0u;
@@ -899,6 +907,16 @@ public:
         // 1D geometry carries the same ordinals in its first row.
         const bool source_descriptors=device_partitions &&
             device_initial_bodies && device_world_motion;
+        const auto lane_task=[](const native::GpuDyDistanceTask& task) {
+            return task.descriptor_end==task.descriptor_begin+1u &&
+                   task.partition_end==task.partition_begin+1u &&
+                   task.body_end>task.body_begin &&
+                   task.body_end-task.body_begin<=2u;
+        };
+        const bool host_lane_packing=source_descriptors && !device_admission &&
+            tasks.size()>1u && wide_tasks_.empty();
+        last_schedule_.host_lane_packed_tasks=host_lane_packing
+            ?std::count_if(tasks.begin(),tasks.end(),lane_task):0u;
         if(device_admission &&
            (!source_descriptors || !device_admission->work ||
             !device_admission->task_dispatch.buffer || tasks.empty()))
@@ -1105,7 +1123,7 @@ public:
         if(device_partitions) {
             const auto n=descriptors.size();
             const std::size_t header_bytes=source_descriptors
-                ?(device_admission?40u:24u):20u;
+                ?(device_admission?44u:24u):20u;
             const std::array<std::uint32_t,5> scratch_header{
                 narrow(header_bytes),narrow(header_bytes+n*16u),
                 narrow(header_bytes+n*20u),
@@ -1169,7 +1187,7 @@ public:
         // of those scratch arrays has a host source in a device-owned
         // island epoch. Skip their entire contiguous upload window.
         const auto device_skip_begin=device_admission
-            ?offsets[15]+40u:0u;
+            ?offsets[15]+44u:0u;
         const auto device_skip_end=device_admission
             ?device_skip_begin+descriptors.size()*24u+bodies.size()*12u:0u;
         if(device_admission &&
@@ -1332,8 +1350,6 @@ public:
                             offsetof(native::GpuDyJointRow,applied_force),
                         &address,sizeof(address));
         }
-        if(!joint_source_uploads_.empty())
-            stream_.queue_uploads(joint_source_uploads_);
         // Only newly admitted or edited actor-local transforms are
         // uploaded. Neighboring BodyIds share one source DMA span.
         std::sort(pending_actor_locals_.begin(),pending_actor_locals_.end());
@@ -1360,24 +1376,32 @@ public:
                 count*sizeof(SourceDyActorLocalNative);
         }
         last_schedule_.actor_local_upload_spans=actor_local_uploads_.size();
-        if(!actor_local_uploads_.empty())
-            stream_.queue_uploads(actor_local_uploads_);
         std::memcpy(host_.data()+offsets[12],
                     integration_header.data(),sizeof(integration_header));
         const auto previous_spans=stream_.submission_stats().upload_spans;
+        const auto previous_batches=stream_.submission_stats().upload_batches;
+        auto& uploads=stream_.upload_scratch();
+        uploads.reserve(joint_source_uploads_.size()+
+                        actor_local_uploads_.size()+
+                        (device_admission?2u:1u));
+        uploads.insert(uploads.end(),joint_source_uploads_.begin(),
+                       joint_source_uploads_.end());
+        uploads.insert(uploads.end(),actor_local_uploads_.begin(),
+                       actor_local_uploads_.end());
         if(device_admission) {
-            auto& uploads=stream_.upload_scratch();
+            // The device-generated scratch window has no host input.
             uploads.push_back({
                 address+upload_begin,host_.data()+upload_begin,
                 device_skip_begin-upload_begin});
             uploads.push_back({
                 address+device_skip_end,host_.data()+device_skip_end,
                 input_end-device_skip_end});
-            // One staging submission carries two real source spans;
-            // no host packet fills the device-generated scratch gap.
-            stream_.queue_uploads(uploads);
-        }else stream_.queue_uploads({{
-            address+upload_begin,host_.data()+upload_begin,uploaded_bytes}});
+        }else uploads.push_back({
+            address+upload_begin,host_.data()+upload_begin,uploaded_bytes});
+        // These disjoint source spans share one ordered DMA submission.
+        stream_.queue_uploads(uploads);
+        last_schedule_.device_upload_batches=
+            stream_.submission_stats().upload_batches-previous_batches;
         // The Sc producer and Dy consumer use the same ordered source
         // stream. GPU-to-GPU copies replace the transient task/ordinal/
         // token inputs after the shared host upload; no Sc witness fetch
@@ -1400,20 +1424,21 @@ public:
                 throw std::out_of_range(
                     "Source Sc device admission capacity exceeds its typed stream");
             stream_.queue_device_copy(address+offsets[15]+24u,
-                                      view.work,16u);
+                                      view.work,20u);
             stream_.queue_device_copy(address+offsets[5],
                                       view.work+layout.tasks,tasks.size_bytes());
             if(!body_ordinals.empty())
                 stream_.queue_device_copy(address+offsets[4],
                     view.work+layout.body_order,body_ordinals.size_bytes());
             if(!descriptors.empty())
-                stream_.queue_device_copy(address+offsets[15]+40u+
+                stream_.queue_device_copy(address+offsets[15]+44u+
                     descriptors.size()*16u,
                     view.work+layout.response_tokens,
                     descriptors.size()*sizeof(std::uint32_t));
         }
         last_upload_spans_=stream_.submission_stats().upload_spans-
-                           previous_spans;
+                           previous_spans-joint_source_uploads_.size()-
+                           actor_local_uploads_.size();
         for(std::size_t i=0;i<11u;++i)
             params[i<6u?i:i+6u]=narrow(
                 static_cast<std::size_t>(params[28])+offsets[i]);
@@ -1472,6 +1497,27 @@ public:
                 group+=count;
             }
         };
+        const auto launch_packed=[&](std::size_t first,std::size_t count) {
+            dispatch.buffers[2].access=compute::BufferAccess::ReadWrite;
+            dispatch.buffers[3].access=compute::BufferAccess::Write;
+            dispatch.buffers[5].access=compute::BufferAccess::ReadWrite;
+            dispatch.indirect.reset();
+            const auto maximum=std::min<std::size_t>(
+                std::size_t(max_groups)*128u,0x00ffffffu);
+            for(std::size_t offset=0u;offset<count;) {
+                const auto task_count=std::min(maximum,count-offset);
+                params[8]=narrow(first+offset);
+                params[10]=(narrow(task_count)<<4u)|
+                    static_cast<std::uint32_t>(Launch::Fused)|
+                    0x10000000u|0x80000000u|
+                    (compact_friction?0x20000000u:0u);
+                dispatch.groups={narrow((task_count+127u)/128u),1u,1u};
+                std::memcpy(dispatch.push_constants.data(),params.data(),sizeof(params));
+                stream_.commands().emplace_back(dispatch);
+                ++last_schedule_.dispatches;
+                offset+=task_count;
+            }
+        };
         // The coloring dispatch reserves additional workgroups for
         // parallel body initialization, without another submission.
         // Small single-task scenes initialize within their fused group.
@@ -1489,7 +1535,17 @@ public:
         if(device_partitions && !wide_tasks_.empty())
             launch(Launch::Color,{0u,tasks.size()+
                 (device_initial_bodies ? (bodies.size()+127u)/128u : 0u)});
-        launch(Launch::Fused,fused_tiles_);
+        if(last_schedule_.host_lane_packed_tasks) {
+            for(std::size_t first=0u;first<tasks.size();) {
+                const bool packed=lane_task(tasks[first]);
+                std::size_t end=first+1u;
+                while(end<tasks.size() && lane_task(tasks[end])==packed)
+                    ++end;
+                if(packed)launch_packed(first,end-first);
+                else launch(Launch::Fused,{first,end-first});
+                first=end;
+            }
+        }else launch(Launch::Fused,fused_tiles_);
         if(!wide_tasks_.empty()) {
             // The existing arena write dependencies order each dispatch
             // across workgroups. A relative partition from every wide

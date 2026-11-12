@@ -49,12 +49,21 @@ public:
         desc.push_constant_bytes=face_geometry_?72u:
             (step_parameters_?60u:56u);
         pipeline_=context_.create_compute_pipeline(desc);
+#if defined(FYZZXYZZY_PROFILE_GPU)
+        context_.set_pipeline_profile_label(pipeline_,face_geometry_?"pcm.face_contacts":
+            (direct_gjk_?"pcm.gjk":"pcm.epa"));
+#endif
     }
     SourcePcmEpaNativeStage(const SourcePcmEpaNativeStage&)=delete;
     SourcePcmEpaNativeStage& operator=(const SourcePcmEpaNativeStage&)=delete;
     ~SourcePcmEpaNativeStage() {
         if(pipeline_)context_.destroy_compute_pipeline(pipeline_);
     }
+#if defined(FYZZXYZZY_PROFILE_GPU)
+    void set_profile_label(const char* label) const noexcept {
+        context_.set_pipeline_profile_label(pipeline_,label);
+    }
+#endif
 
     void append(std::vector<compute::BatchCommand>& commands,
                 const CudaDeviceAddressMap& addresses,

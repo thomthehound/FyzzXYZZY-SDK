@@ -54,6 +54,9 @@ SourceSapRemovedNativeStage::SourceSapRemovedNativeStage(
         8u,compute::StorageBufferViewKind::RawReadWrite);
     desc.push_constant_bytes=12u*sizeof(std::uint32_t);
     mark_pipeline_=context_.create_compute_pipeline(desc);
+#if defined(FYZZXYZZY_PROFILE_GPU)
+    context_.set_pipeline_profile_label(mark_pipeline_,"sap.removed_mark");
+#endif
     try {
         desc.shader=std::move(projection_shader);
         desc.storage_buffer_binding_count=7u;
@@ -61,6 +64,9 @@ SourceSapRemovedNativeStage::SourceSapRemovedNativeStage(
             7u,compute::StorageBufferViewKind::RawReadWrite);
         desc.push_constant_bytes=8u*sizeof(std::uint32_t);
         projection_pipeline_=context_.create_compute_pipeline(desc);
+#if defined(FYZZXYZZY_PROFILE_GPU)
+        context_.set_pipeline_profile_label(projection_pipeline_,"sap.removed_projection");
+#endif
     } catch(...) {
         context_.destroy_compute_pipeline(mark_pipeline_);
         mark_pipeline_=0;

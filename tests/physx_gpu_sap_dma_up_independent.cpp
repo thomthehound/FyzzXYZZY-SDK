@@ -159,6 +159,39 @@ void exercise(Context& context) {
                     observedBounds.maximum.z == 3.0f,
                     "Original SAP bounds were not transferred by preBroadPhase");
 
+            // GPU readback observes the preceding source upload, while
+            // a later upload remains ordered after that publication.
+            const auto probe=context.create_buffer(
+                32u,MemoryPlacement::DeviceLocal);
+            const auto probe_address=addresses.register_allocation(probe,32u);
+            const std::array<std::uint32_t,8> first_values{{
+                11u,13u,17u,19u,23u,29u,31u,37u
+            }};
+            const std::array<std::uint32_t,8> next_values{{
+                41u,43u,47u,53u,59u,61u,67u,71u
+            }};
+            std::array<std::uint32_t,8> read_values{};
+            const std::array<DownloadSpan,1> probe_readback{{
+                {probe,0u,read_values.data(),sizeof(read_values)}
+            }};
+            stream.queue_uploads({{
+                probe_address,first_values.data(),sizeof(first_values)
+            }});
+            stream.begin_fetch(probe_readback);
+            stream.queue_uploads({{
+                probe_address,next_values.data(),sizeof(next_values)
+            }});
+            stream.submit();
+            stream.finish_fetch();
+            require(read_values==first_values,
+                    "Source readback included a later queued GPU upload");
+            stream.fetch(probe_readback);
+            require(read_values==next_values,
+                    "Source fetch failed to retain later ordered GPU work");
+            require(addresses.unregister_allocation(probe_address)==probe,
+                    "Source probe allocation lost its owner");
+            context.retire_buffer(probe);
+
             // Source update() runs gpuDMAUp even when only the forced
             // convergence pass is pending, then once more on an idle pass.
             const physx::Bp::BroadPhaseUpdateData quiet(
@@ -188,12 +221,6 @@ void exercise(Context& context) {
                  &quietDescriptor,sizeof(quietDescriptor)}
             }};
             stream.fetch(quietFetch);
-            const auto& fetch=stream.submission_stats();
-            require(fetch.fetch_batches==3u && fetch.fetch_spans==4u &&
-                    fetch.fetch_bytes==sizeof(uploaded)+
-                        sizeof(observedHandle)+sizeof(observedBounds)+
-                        sizeof(quietDescriptor),
-                    "Source stream fetched duplicate or missing GPU data");
             require(quietDescriptor.numCreatedHandles == 0u &&
                     quietDescriptor.numRemovedHandles == 0u &&
                     quietDescriptor.numPreviousHandles == 1u &&

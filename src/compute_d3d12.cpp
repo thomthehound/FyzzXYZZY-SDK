@@ -7,6 +7,9 @@
 // setup; this layer never interprets CUDA virtual addresses.
 
 #include "fyzzxyzzy/compute.h"
+#if defined(FYZZXYZZY_PROFILE_GPU)
+#include "hardware_profile.h"
+#endif
 
 #ifndef _WIN32
 #error D3D12 compute is Windows-only
@@ -25,6 +28,10 @@
 #include <array>
 #include <cstdlib>
 #include <cstring>
+#include <functional>
+#if defined(FYZZXYZZY_PROFILE_GPU)
+#include <cstdio>
+#endif
 #include <iostream>
 #include <limits>
 #include <stdexcept>
@@ -174,6 +181,7 @@ std::vector<Candidate> discover_adapters() {
                             trial->Unmap(0, &written);
                             info.supports_gpu_writable_host_visible = true;
                             info.has_device_local_host_visible_memory = true;
+                            info.supports_shared_frame_input = true;
                         }
                     }
                 }
@@ -274,6 +282,14 @@ struct Context::Impl {
         std::size_t bytes = 0;
         ID3D12Resource* resource = nullptr;
     };
+#if defined(FYZZXYZZY_PROFILE_GPU)
+    struct ProfileOp {
+        PipelineId pipeline=0;
+        std::size_t bytes=0u;
+        std::uint32_t x=0u,y=0u,z=0u;
+        bool indirect=false;
+    };
+#endif
     struct Submission {
         // A descriptor heap belongs to its completed command submission.
         // These identities describe the live entries in that exact heap.
@@ -295,8 +311,16 @@ struct Context::Impl {
         // optional future performance optimization.
         std::vector<ComPtr<ID3D12Resource>> owned_copy_scratch;
         std::uint64_t fence_value = 0;
+#if defined(FYZZXYZZY_PROFILE_GPU)
+        std::vector<ProfileOp> profile_ops;
+        std::uint64_t profile_trace_id=0u;
+        std::uint32_t query_capacity=0u;
+#endif
     };
 
+#if defined(FYZZXYZZY_PROFILE_GPU)
+    std::uint64_t profile_context_id=hardware_profile::allocate_context_id();
+#endif
     ComPtr<ID3D12Device> device;
     ComPtr<ID3D12InfoQueue> debug_messages;
     ComPtr<ID3D12CommandQueue> queue;
@@ -336,6 +360,9 @@ struct Context::Impl {
     PipelineId next_pipeline = 1;
     SubmissionId next_submission = 1;
     std::uint64_t next_fence = 1;
+#if defined(FYZZXYZZY_PROFILE_GPU)
+    std::uint64_t trace_frequency = 0;
+#endif
     // ExecuteCommandLists can succeed even if queue->Signal fails. This
     // fence value must never be used as a completion target.
     std::uint64_t first_unsignaled_fence = 0;
@@ -379,6 +406,10 @@ struct Context::Impl {
         D3D12_COMMAND_QUEUE_DESC q{};
         q.Type = D3D12_COMMAND_LIST_TYPE_COMPUTE;
         check(device->CreateCommandQueue(&q, IID_PPV_ARGS(&queue)), "CreateCommandQueue");
+#if defined(FYZZXYZZY_PROFILE_GPU)
+        if(FAILED(queue->GetTimestampFrequency(&trace_frequency)))
+            trace_frequency=0u;
+#endif
         check(device->CreateFence(0, D3D12_FENCE_FLAG_NONE,
                                   IID_PPV_ARGS(&fence)), "CreateFence");
         completion_event = CreateEventW(nullptr, FALSE, FALSE, nullptr);
@@ -434,6 +465,10 @@ struct Context::Impl {
             check(submission.commands->Reset(submission.allocator.Get(), nullptr),
                   "ResetCommandList");
             submission.fence_value = 0;
+#if defined(FYZZXYZZY_PROFILE_GPU)
+            submission.profile_ops.clear();
+            submission.profile_trace_id=0u;
+#endif
             return submission;
         }
         Submission submission;
@@ -572,11 +607,40 @@ struct Context::Impl {
         }
     }
 
+#if defined(FYZZXYZZY_PROFILE_GPU)
+    void report_gpu_profile(SubmissionId id,Submission& submission) {
+        if(submission.profile_ops.empty() || !trace_frequency)return;
+        const auto count=submission.profile_ops.size()+1u;
+        void* mapped=nullptr;
+        const D3D12_RANGE read{0,count*sizeof(std::uint64_t)};
+        check(submission.query_readback->Map(0,&read,&mapped),
+              "Map hardware GPU timestamp query");
+        std::vector<std::uint64_t> ticks(count);
+        std::memcpy(ticks.data(),mapped,read.End);
+        const D3D12_RANGE written{0,0};
+        submission.query_readback->Unmap(0,&written);
+        for(std::size_t i=0u;i<submission.profile_ops.size();++i) {
+            const auto& operation=submission.profile_ops[i];
+            if(ticks[i+1u]<ticks[i])
+                throw std::runtime_error("D3D12 hardware timestamp counter regressed");
+            const auto elapsed=ticks[i+1u]-ticks[i];
+            hardware_profile::gpu_event({
+                "d3d12",operation.pipeline?"dispatch":"copy",
+                profile_context_id,submission.profile_trace_id,
+                id,i,operation.pipeline,operation.bytes,
+                operation.x,operation.y,operation.z,operation.indirect,
+                static_cast<double>(elapsed)*1.0e9/static_cast<double>(trace_frequency)});
+        }
+    }
+#endif
     void wait_submission(SubmissionId id) {
         auto it = submissions.find(id);
         if (it == submissions.end()) throw std::invalid_argument("Unknown D3D12 submission");
         const auto completed = it->second.fence_value;
         wait_value(completed);
+#if defined(FYZZXYZZY_PROFILE_GPU)
+        report_gpu_profile(id,it->second);
+#endif
         recycle_completed(std::move(it->second));
         submissions.erase(it);
         release_retired_through(completed);
@@ -598,6 +662,9 @@ struct Context::Impl {
         wait_value(last_fence);
         for(const auto id:ordered) {
             auto it=submissions.find(id);
+#if defined(FYZZXYZZY_PROFILE_GPU)
+            report_gpu_profile(id,it->second);
+#endif
             recycle_completed(std::move(it->second));
             submissions.erase(it);
         }
@@ -608,8 +675,12 @@ struct Context::Impl {
         if (submissions.empty()) return;
         const auto completed = next_fence - 1;
         wait_value(completed);
-        for (auto& entry : submissions)
+        for (auto& entry : submissions) {
+#if defined(FYZZXYZZY_PROFILE_GPU)
+            report_gpu_profile(entry.first,entry.second);
+#endif
             recycle_completed(std::move(entry.second));
+        }
         submissions.clear();
         release_retired_through(completed);
     }
@@ -617,7 +688,8 @@ struct Context::Impl {
     BufferId create_buffer(std::size_t bytes, MemoryPlacement placement) {
         if (!bytes) throw std::invalid_argument("Compute buffer size must be positive");
         Buffer buffer;
-        if (placement == MemoryPlacement::HostVisible) {
+        if (placement == MemoryPlacement::HostVisible ||
+            placement == MemoryPlacement::SharedLocal) {
             // The PhysX actor-pair report output is GPU-writable AND
             // CPU-readable; UPLOAD (GENERIC_READ) and READBACK (COPY_DEST)
             // are not legal substitutes for a UAV destination.
@@ -1153,11 +1225,44 @@ struct Context::Impl {
 
     SubmissionId submit_batch(const std::vector<BatchCommand>& commands,
                               bool profile = false) {
+#if defined(FYZZXYZZY_PROFILE_GPU)
+        const bool hardware_trace=!profile && trace_frequency!=0u;
+        profile=profile || hardware_trace;
+#endif
         if (commands.empty()) throw std::invalid_argument("Empty D3D12 command batch");
+        // Each distinct pipeline/binding view needs one descriptor table
+        // for this submission. Repeated dispatches may change constants or
+        // execution dimensions without duplicating identical descriptors.
+        struct DescriptorTable {
+            PipelineId pipeline;
+            std::vector<BufferBinding> buffers;
+            UINT first_descriptor;
+        };
+        std::vector<DescriptorTable> descriptor_tables;
+        std::unordered_map<std::size_t,std::vector<std::size_t>> descriptor_lookup;
+        std::vector<std::size_t> dispatch_table_indices;
         std::size_t descriptor_count = 0;
         bool uses_indirect = false;
         std::size_t same_resource_copy_scratch_bytes = 0;
+        std::size_t upload_total_bytes = 0;
         std::vector<PipelineId> pipeline_sequence;
+        const auto mix_key=[](std::size_t& hash,std::size_t word) {
+            hash^=std::hash<std::size_t>{}(word)+0x9e3779b9u+
+                  (hash<<6u)+(hash>>2u);
+        };
+        const auto same_bindings=[](
+                const std::vector<BufferBinding>& a,
+                const std::vector<BufferBinding>& b) {
+            if(a.size()!=b.size())return false;
+            for(std::size_t i=0u;i<a.size();++i)
+                if(a[i].slot!=b[i].slot ||
+                   a[i].buffer!=b[i].buffer ||
+                   a[i].offset!=b[i].offset ||
+                   a[i].bytes!=b[i].bytes)
+                    return false;
+            // Access intent affects barriers, never descriptor contents.
+            return true;
+        };
         for (const BatchCommand& op : commands) {
             if (const auto* copy = std::get_if<CopyCommand>(&op)) {
                 const auto& source = get_buffer(copy->source);
@@ -1174,16 +1279,65 @@ struct Context::Impl {
                 if (copy->source == copy->destination)
                     same_resource_copy_scratch_bytes =
                         std::max(same_resource_copy_scratch_bytes, copy->bytes);
+            } else if(const auto* upload=std::get_if<UploadCommand>(&op)) {
+                const auto& target=get_buffer(upload->destination);
+                validate_range(target.bytes,upload->destination_offset,
+                               upload->bytes.size());
+                if(upload->bytes.empty() || upload->destination_offset%4u ||
+                   upload->bytes.size()%4u ||
+                   upload->bytes.size()>
+                       std::numeric_limits<std::size_t>::max()-upload_total_bytes)
+                    throw std::invalid_argument("Invalid D3D12 ordered upload");
+                upload_total_bytes+=upload->bytes.size();
             } else {
                 const auto& dispatch = std::get<DispatchCommand>(op);
                 validate_dispatch(dispatch);
                 uses_indirect |= dispatch.indirect.has_value();
-                descriptor_count += get_pipeline(dispatch.pipeline).bindings;
+                const auto binding_count=get_pipeline(dispatch.pipeline).bindings;
+                std::size_t key=std::hash<PipelineId>{}(dispatch.pipeline);
+                for(const auto& binding:dispatch.buffers) {
+                    mix_key(key,binding.slot);
+                    mix_key(key,binding.buffer);
+                    mix_key(key,binding.offset);
+                    mix_key(key,binding.bytes);
+                }
+                auto& candidates=descriptor_lookup[key];
+                std::size_t table=descriptor_tables.size();
+                for(const auto candidate:candidates) {
+                    const auto& existing=descriptor_tables[candidate];
+                    if(existing.pipeline==dispatch.pipeline &&
+                       same_bindings(existing.buffers,dispatch.buffers)) {
+                        table=candidate;
+                        break;
+                    }
+                }
+                if(table==descriptor_tables.size()) {
+                    if(binding_count>
+                       std::numeric_limits<UINT>::max()-descriptor_count)
+                        throw std::out_of_range(
+                            "D3D12 descriptor heap capacity exceeded");
+                    descriptor_tables.push_back({
+                        dispatch.pipeline,dispatch.buffers,
+                        static_cast<UINT>(descriptor_count)});
+                    candidates.push_back(table);
+                    descriptor_count+=binding_count;
+                }
+                dispatch_table_indices.push_back(table);
                 pipeline_sequence.push_back(dispatch.pipeline);
             }
         }
         if (descriptor_count > std::numeric_limits<UINT>::max())
             throw std::out_of_range("D3D12 descriptor heap capacity exceeded");
+#if defined(FYZZXYZZY_PROFILE_GPU)
+        if(hardware_trace) {
+            FYZZ_PROFILE_COUNTER("d3d12.descriptor_tables",
+                                 descriptor_tables.size());
+            FYZZ_PROFILE_COUNTER("d3d12.descriptor_table_reuses",
+                                 dispatch_table_indices.size()-
+                                 descriptor_tables.size());
+            FYZZ_PROFILE_COUNTER("d3d12.descriptor_slots",descriptor_count);
+        }
+#endif
         if(uses_indirect && !dispatch_signature) {
             D3D12_INDIRECT_ARGUMENT_DESC argument{};
             argument.Type=D3D12_INDIRECT_ARGUMENT_TYPE_DISPATCH;
@@ -1196,6 +1350,32 @@ struct Context::Impl {
                   "CreateCommandSignature");
         }
         Submission submission = new_commands(&pipeline_sequence, descriptor_count);
+        if(upload_total_bytes) {
+            auto staging=allocate_resource(
+                device.Get(),upload_total_bytes,D3D12_HEAP_TYPE_UPLOAD,
+                D3D12_RESOURCE_FLAG_NONE,D3D12_RESOURCE_STATE_GENERIC_READ);
+            void* mapped=nullptr;
+            const D3D12_RANGE read{0,0};
+            check(staging->Map(0,&read,&mapped),"Map ordered upload batch");
+            std::size_t offset=0;
+            for(const auto& op:commands)
+                if(const auto* upload=std::get_if<UploadCommand>(&op)) {
+                    std::memcpy(static_cast<std::uint8_t*>(mapped)+offset,
+                                upload->bytes.data(),upload->bytes.size());
+                    offset+=upload->bytes.size();
+                }
+            const D3D12_RANGE written{0,upload_total_bytes};
+            staging->Unmap(0,&written);
+            submission.owned_upload=std::move(staging);
+        }
+#if defined(FYZZXYZZY_PROFILE_GPU)
+        if(hardware_trace &&
+           submission.query_capacity<=commands.size()) {
+            submission.query_heap.Reset();
+            submission.query_readback.Reset();
+            submission.query_capacity=0u;
+        }
+#endif
         // Legacy D3D12 requires staging nonoverlapping copies within one
         // buffer. All such copies in this command batch can share one
         // device-local scratch allocation, with ordered state transitions
@@ -1218,12 +1398,29 @@ struct Context::Impl {
             D3D12_QUERY_HEAP_DESC desc{};
             desc.Type = D3D12_QUERY_HEAP_TYPE_TIMESTAMP;
             desc.Count = 2;
-            if (!submission.query_heap)
+#if defined(FYZZXYZZY_PROFILE_GPU)
+            if(hardware_trace) {
+                if(commands.size()>=std::numeric_limits<UINT>::max())
+                    throw std::out_of_range("Hardware trace query count exceeds 32-bit range");
+                desc.Count=static_cast<UINT>(commands.size()+1u);
+            }
+#endif
+            if (!submission.query_heap) {
                 check(device->CreateQueryHeap(&desc, IID_PPV_ARGS(&submission.query_heap)),
                       "CreateQueryHeap(timestamp)");
+#if defined(FYZZXYZZY_PROFILE_GPU)
+                submission.query_capacity=desc.Count;
+#endif
+            }
             if (!submission.query_readback)
                 submission.query_readback = allocate_resource(
-                    device.Get(), 2 * sizeof(std::uint64_t),
+                    device.Get(),
+#if defined(FYZZXYZZY_PROFILE_GPU)
+                    static_cast<std::size_t>(hardware_trace?desc.Count:2u) *
+#else
+                    2u *
+#endif
+                    sizeof(std::uint64_t),
                     D3D12_HEAP_TYPE_READBACK, D3D12_RESOURCE_FLAG_NONE,
                     D3D12_RESOURCE_STATE_COPY_DEST);
             submission.commands->EndQuery(submission.query_heap.Get(),
@@ -1298,7 +1495,12 @@ struct Context::Impl {
                 access.pending_write = false;
             }
         };
-        UINT descriptor_index = 0;
+        std::vector<bool> descriptor_table_written(descriptor_tables.size(),false);
+        std::size_t dispatch_index=0u;
+        std::size_t ordered_upload_offset=0u;
+#if defined(FYZZXYZZY_PROFILE_GPU)
+        UINT hardware_query_index=1u;
+#endif
         for (const BatchCommand& op : commands) {
             if (const auto* copy = std::get_if<CopyCommand>(&op)) {
                 auto& src = get_buffer(copy->source);
@@ -1333,6 +1535,27 @@ struct Context::Impl {
                         copy->source_offset, copy->bytes);
                 }
                 resource_access[copy->destination].pending_write = true;
+#if defined(FYZZXYZZY_PROFILE_GPU)
+                if(hardware_trace)
+                    submission.commands->EndQuery(submission.query_heap.Get(),
+                        D3D12_QUERY_TYPE_TIMESTAMP,hardware_query_index++);
+#endif
+                continue;
+            }
+            if(const auto* upload=std::get_if<UploadCommand>(&op)) {
+                auto& dst=get_buffer(upload->destination);
+                require_state(upload->destination,D3D12_RESOURCE_STATE_COPY_DEST);
+                submission.commands->CopyBufferRegion(
+                    dst.resource.Get(),upload->destination_offset,
+                    submission.owned_upload.Get(),ordered_upload_offset,
+                    upload->bytes.size());
+                ordered_upload_offset+=upload->bytes.size();
+                resource_access[upload->destination].pending_write=true;
+#if defined(FYZZXYZZY_PROFILE_GPU)
+                if(hardware_trace)
+                    submission.commands->EndQuery(submission.query_heap.Get(),
+                        D3D12_QUERY_TYPE_TIMESTAMP,hardware_query_index++);
+#endif
                 continue;
             }
             const auto& cmd = std::get<DispatchCommand>(op);
@@ -1351,53 +1574,58 @@ struct Context::Impl {
                 require_state(binding.buffer, desired);
             }
 
-            const auto cpu_start = submission.heap->GetCPUDescriptorHandleForHeapStart();
-            const auto gpu_start = submission.heap->GetGPUDescriptorHandleForHeapStart();
-            for (UINT slot = 0; slot < pipeline.bindings; ++slot) {
-                const auto& binding = cmd.buffers[slot];
-                auto& buffer = get_buffer(binding.buffer);
-                const auto kind = pipeline.view_kinds[slot];
-                const bool read_only = kind == StorageBufferViewKind::RawRead ||
-                                       kind == StorageBufferViewKind::Structured32Read;
-                const bool raw = kind == StorageBufferViewKind::RawRead ||
-                                 kind == StorageBufferViewKind::RawReadWrite;
-                const auto physical_slot = descriptor_index +
-                    pipeline.descriptor_slots[slot];
-                DescriptorView& cached = submission.cached_views[physical_slot];
-                const DescriptorView next{
-                    binding.buffer, binding.offset, binding.bytes,
-                    buffer.resource.Get()};
-                if (cached.buffer == next.buffer &&
-                    cached.offset == next.offset &&
-                    cached.bytes == next.bytes &&
-                    cached.resource == next.resource)
-                    continue;
-                D3D12_CPU_DESCRIPTOR_HANDLE cpu{
-                    cpu_start.ptr + physical_slot * increment
-                };
-                if (!read_only) {
-                    D3D12_UNORDERED_ACCESS_VIEW_DESC view{};
-                    view.Format = raw ? DXGI_FORMAT_R32_TYPELESS : DXGI_FORMAT_UNKNOWN;
-                    view.ViewDimension = D3D12_UAV_DIMENSION_BUFFER;
-                    view.Buffer.FirstElement = binding.offset / 4;
-                    view.Buffer.NumElements = static_cast<UINT>(binding.bytes / 4);
-                    view.Buffer.StructureByteStride = raw ? 0u : 4u;
-                    view.Buffer.Flags = raw ? D3D12_BUFFER_UAV_FLAG_RAW :
-                                               D3D12_BUFFER_UAV_FLAG_NONE;
-                    device->CreateUnorderedAccessView(buffer.resource.Get(), nullptr, &view, cpu);
-                } else {
-                    D3D12_SHADER_RESOURCE_VIEW_DESC view{};
-                    view.Format = raw ? DXGI_FORMAT_R32_TYPELESS : DXGI_FORMAT_UNKNOWN;
-                    view.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
-                    view.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-                    view.Buffer.FirstElement = binding.offset / 4;
-                    view.Buffer.NumElements = static_cast<UINT>(binding.bytes / 4);
-                    view.Buffer.StructureByteStride = raw ? 0u : 4u;
-                    view.Buffer.Flags = raw ? D3D12_BUFFER_SRV_FLAG_RAW :
-                                              D3D12_BUFFER_SRV_FLAG_NONE;
-                    device->CreateShaderResourceView(buffer.resource.Get(), &view, cpu);
+            const auto table=dispatch_table_indices[dispatch_index++];
+            const auto descriptor_index=descriptor_tables[table].first_descriptor;
+            const auto gpu_start=submission.heap->GetGPUDescriptorHandleForHeapStart();
+            if(!descriptor_table_written[table]) {
+                descriptor_table_written[table]=true;
+                const auto cpu_start=submission.heap->GetCPUDescriptorHandleForHeapStart();
+                for (UINT slot = 0; slot < pipeline.bindings; ++slot) {
+                    const auto& binding = cmd.buffers[slot];
+                    auto& buffer = get_buffer(binding.buffer);
+                    const auto kind = pipeline.view_kinds[slot];
+                    const bool read_only = kind == StorageBufferViewKind::RawRead ||
+                                           kind == StorageBufferViewKind::Structured32Read;
+                    const bool raw = kind == StorageBufferViewKind::RawRead ||
+                                     kind == StorageBufferViewKind::RawReadWrite;
+                    const auto physical_slot = descriptor_index +
+                        pipeline.descriptor_slots[slot];
+                    DescriptorView& cached = submission.cached_views[physical_slot];
+                    const DescriptorView next{
+                        binding.buffer, binding.offset, binding.bytes,
+                        buffer.resource.Get()};
+                    if (cached.buffer == next.buffer &&
+                        cached.offset == next.offset &&
+                        cached.bytes == next.bytes &&
+                        cached.resource == next.resource)
+                        continue;
+                    D3D12_CPU_DESCRIPTOR_HANDLE cpu{
+                        cpu_start.ptr + physical_slot * increment
+                    };
+                    if (!read_only) {
+                        D3D12_UNORDERED_ACCESS_VIEW_DESC view{};
+                        view.Format = raw ? DXGI_FORMAT_R32_TYPELESS : DXGI_FORMAT_UNKNOWN;
+                        view.ViewDimension = D3D12_UAV_DIMENSION_BUFFER;
+                        view.Buffer.FirstElement = binding.offset / 4;
+                        view.Buffer.NumElements = static_cast<UINT>(binding.bytes / 4);
+                        view.Buffer.StructureByteStride = raw ? 0u : 4u;
+                        view.Buffer.Flags = raw ? D3D12_BUFFER_UAV_FLAG_RAW :
+                                                   D3D12_BUFFER_UAV_FLAG_NONE;
+                        device->CreateUnorderedAccessView(buffer.resource.Get(), nullptr, &view, cpu);
+                    } else {
+                        D3D12_SHADER_RESOURCE_VIEW_DESC view{};
+                        view.Format = raw ? DXGI_FORMAT_R32_TYPELESS : DXGI_FORMAT_UNKNOWN;
+                        view.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
+                        view.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+                        view.Buffer.FirstElement = binding.offset / 4;
+                        view.Buffer.NumElements = static_cast<UINT>(binding.bytes / 4);
+                        view.Buffer.StructureByteStride = raw ? 0u : 4u;
+                        view.Buffer.Flags = raw ? D3D12_BUFFER_SRV_FLAG_RAW :
+                                                  D3D12_BUFFER_SRV_FLAG_NONE;
+                        device->CreateShaderResourceView(buffer.resource.Get(), &view, cpu);
+                    }
+                    cached = next;
                 }
-                cached = next;
             }
             submission.commands->SetComputeRootSignature(pipeline.signature.Get());
             submission.commands->SetPipelineState(pipeline.state.Get());
@@ -1425,6 +1653,11 @@ struct Context::Impl {
             }else
                 submission.commands->Dispatch(
                     cmd.groups.x,cmd.groups.y,cmd.groups.z);
+#if defined(FYZZXYZZY_PROFILE_GPU)
+            if(hardware_trace)
+                submission.commands->EndQuery(submission.query_heap.Get(),
+                    D3D12_QUERY_TYPE_TIMESTAMP,hardware_query_index++);
+#endif
             for (std::size_t slot = 0; slot < cmd.buffers.size(); ++slot) {
                 const auto kind = pipeline.view_kinds[slot];
                 const bool writable = kind == StorageBufferViewKind::RawReadWrite ||
@@ -1432,7 +1665,6 @@ struct Context::Impl {
                 if (writable && cmd.buffers[slot].access != BufferAccess::Read)
                     resource_access[cmd.buffers[slot].buffer].pending_write = true;
             }
-            descriptor_index += pipeline.bindings;
         }
         for (const auto& entry : resource_access) {
             transition(submission.commands.Get(), get_buffer(entry.first).resource.Get(),
@@ -1444,12 +1676,40 @@ struct Context::Impl {
                        D3D12_RESOURCE_STATE_COPY_SOURCE,
                        D3D12_RESOURCE_STATE_COPY_DEST);
         if (profile) {
+#if defined(FYZZXYZZY_PROFILE_GPU)
+            if(!hardware_trace)
+#endif
             submission.commands->EndQuery(submission.query_heap.Get(),
                                            D3D12_QUERY_TYPE_TIMESTAMP, 1);
             submission.commands->ResolveQueryData(
                 submission.query_heap.Get(), D3D12_QUERY_TYPE_TIMESTAMP,
-                0, 2, submission.query_readback.Get(), 0);
+#if defined(FYZZXYZZY_PROFILE_GPU)
+                0,hardware_trace?static_cast<UINT>(commands.size()+1u):2u,
+#else
+                0, 2,
+#endif
+                submission.query_readback.Get(), 0);
         }
+#if defined(FYZZXYZZY_PROFILE_GPU)
+        if(hardware_trace) {
+            submission.profile_trace_id=hardware_profile::current_trace_id();
+            submission.profile_ops.reserve(commands.size());
+            for(const auto& operation:commands) {
+                if(const auto* copy=std::get_if<CopyCommand>(&operation))
+                    submission.profile_ops.push_back(
+                        {0u,copy->bytes,0u,0u,0u,false});
+                else if(const auto* upload=std::get_if<UploadCommand>(&operation))
+                    submission.profile_ops.push_back(
+                        {0u,upload->bytes.size(),0u,0u,0u,false});
+                else {
+                    const auto& dispatch=std::get<DispatchCommand>(operation);
+                    submission.profile_ops.push_back({
+                        dispatch.pipeline,0u,dispatch.groups.x,dispatch.groups.y,
+                        dispatch.groups.z,dispatch.indirect.has_value()});
+                }
+            }
+        }
+#endif
         return enqueue(std::move(submission));
     }
 
@@ -1487,10 +1747,36 @@ Context::Context(Context&&) noexcept = default;
 Context& Context::operator=(Context&&) noexcept = default;
 const DeviceInfo& Context::device_info() const { return impl_->info; }
 BufferId Context::create_buffer(std::size_t bytes, MemoryPlacement placement) {
-    return impl_->create_buffer(bytes, placement);
+    const auto id=impl_->create_buffer(bytes, placement);
+#if defined(FYZZXYZZY_PROFILE_GPU)
+    hardware_profile::buffer_event({
+        "d3d12","create",impl_->profile_context_id,
+        hardware_profile::current_trace_id(),id,bytes,unsigned(placement)});
+#endif
+    return id;
 }
-void Context::destroy_buffer(BufferId id) { impl_->destroy_buffer(id); }
-void Context::retire_buffer(BufferId id) { impl_->retire_buffer(id); }
+void Context::destroy_buffer(BufferId id) {
+#if defined(FYZZXYZZY_PROFILE_GPU)
+    const auto bytes=impl_->get_buffer(id).bytes;
+#endif
+    impl_->destroy_buffer(id);
+#if defined(FYZZXYZZY_PROFILE_GPU)
+    hardware_profile::buffer_event({
+        "d3d12","destroy",impl_->profile_context_id,
+        hardware_profile::current_trace_id(),id,bytes,0u});
+#endif
+}
+void Context::retire_buffer(BufferId id) {
+#if defined(FYZZXYZZY_PROFILE_GPU)
+    const auto bytes=impl_->get_buffer(id).bytes;
+#endif
+    impl_->retire_buffer(id);
+#if defined(FYZZXYZZY_PROFILE_GPU)
+    hardware_profile::buffer_event({
+        "d3d12","retire",impl_->profile_context_id,
+        hardware_profile::current_trace_id(),id,bytes,0u});
+#endif
+}
 bool Context::buffer_is_host_visible(BufferId id) const {
     return impl_->get_buffer(id).host_visible;
 }
@@ -1536,6 +1822,12 @@ SubmissionId Context::submit_copy_buffer(BufferId source, std::size_t so, Buffer
 PipelineId Context::create_compute_pipeline(const ComputePipelineDesc& desc) {
     return impl_->create_pipeline(desc);
 }
+#if defined(FYZZXYZZY_PROFILE_GPU)
+void Context::set_pipeline_profile_label(PipelineId id,const char* label) const noexcept {
+    hardware_profile::pipeline_event({
+        "d3d12",label,impl_->profile_context_id,id});
+}
+#endif
 void Context::destroy_compute_pipeline(PipelineId id) { impl_->destroy_pipeline(id); }
 void Context::dispatch(PipelineId pipeline, DispatchSize groups,
                        const std::vector<BufferBinding>& buffers,

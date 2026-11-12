@@ -2150,8 +2150,6 @@ private:
     std::vector<GpuDyJointRow> gpu_dy_rows_;
     std::vector<GpuDyJointInput> gpu_dy_joint_inputs_;
     std::vector<std::uint32_t> gpu_dy_body_ordinals_;
-    std::vector<std::uint32_t> gpu_dy_island_node_flags_;
-    std::vector<GpuDyIslandEdge> gpu_dy_island_edges_;
     std::vector<GpuGuTouchRecord> gpu_dy_gu_touches_;
     std::vector<GpuDyDistanceTask> gpu_dy_tasks_;
     std::vector<float> gpu_dy_contact_forces_;
@@ -2375,6 +2373,9 @@ private:
         float seconds=0.0f;
         RigidStepJoin* solver_join=nullptr;
         std::size_t solver_first=invalid_instance, solver_end=0;
+#if defined(FYZZXYZZY_PROFILE_GPU)
+        std::uint64_t trace_id=0u,trace_origin=0u,trace_frame=0u;
+#endif
         std::exception_ptr error;
         std::jthread worker;
         ~ThirdPassWorkerState() noexcept;

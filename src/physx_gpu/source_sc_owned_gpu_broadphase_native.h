@@ -4,6 +4,7 @@
 
 #include "physx_gpu/source_sc_gpu_broadphase_producer_native.h"
 #include "physx_gpu/source_sap_aggregate_owned_stages_native.h"
+#include "hardware_profile.h"
 #include "fyzzxyzzy/native_gpu_world.h"
 #include "physx_foundation_lifetime.h"
 #include "physx_gpu/source_physx_root_callback.h"
@@ -89,12 +90,13 @@ public:
           encoding_(context_,take_shader(shaders,NativeGpuSapStage::TranslateAabbs)),
           box_transforms_(context_,take_shader(shaders,NativeGpuSapStage::BoxTransformBounds)),
           box_input_(allocators_.deviceAlloc,physx::PxsHeapStats::eBROADPHASE),
+          frame_input_(context_,addresses_),
           box_cache_(allocators_.deviceAlloc,physx::PxsHeapStats::eBROADPHASE),
           box_geometry_(allocators_.deviceAlloc,physx::PxsHeapStats::eBROADPHASE),
           convex_vertices_(allocators_.deviceAlloc,physx::PxsHeapStats::eBROADPHASE),
           convex_surface_(allocators_.deviceAlloc,physx::PxsHeapStats::eNARROWPHASE),
           box_owners_{box_transforms_,box_input_,box_cache_,box_geometry_,
-                      convex_vertices_},
+                      convex_vertices_,0u,&frame_input_},
           lowering_(addresses_,encoding_),
           created_(context_,take_shader(shaders,NativeGpuSapStage::CreatedPairs)),
           radix_(context_,take_shader(shaders,NativeGpuSapStage::RadixInitialize),take_shader(shaders,NativeGpuSapStage::RadixCount),
@@ -286,6 +288,7 @@ public:
         bool device_unconstrained_preparation=false,
         std::span<native::GpuDySleepState> sleep_states={},
         std::span<const native::GpuDyJointInput> joint_inputs={}) override {
+        FYZZ_PROFILE_SCOPE("dy.device_enqueue");
         if(!dy_distance_)
             throw std::logic_error("Source GPU Dy shader not installed");
         if(dy_distance_->has_queued_solve())
@@ -335,8 +338,30 @@ public:
                                         *pcm_->device_island_indirect_args()}}
                                 :std::nullopt);
         ++dy_distance_dispatch_count_;
+#if defined(FYZZXYZZY_PROFILE_GPU)
+        const auto& schedule=dy_distance_->last_schedule();
+        FYZZ_PROFILE_COUNTER("dy.dispatches",schedule.dispatches);
+        FYZZ_PROFILE_COUNTER("dy.indirect_dispatches",schedule.device_island_indirect_dispatches);
+        FYZZ_PROFILE_COUNTER("dy.host_lane_packed_tasks",schedule.host_lane_packed_tasks);
+        FYZZ_PROFILE_COUNTER("dy.wide_tasks",schedule.wide_tasks);
+        FYZZ_PROFILE_COUNTER("dy.partition_groups",schedule.max_partition_groups);
+        FYZZ_PROFILE_COUNTER("dy.tile_bytes",schedule.tile_bytes);
+        FYZZ_PROFILE_COUNTER("dy.device_colored_descriptors",schedule.device_colored_descriptors);
+        FYZZ_PROFILE_COUNTER("dy.host_degree_scanned",schedule.host_degree_scanned_descriptors);
+        FYZZ_PROFILE_COUNTER("dy.device_admitted_tasks",schedule.device_admitted_tasks);
+        FYZZ_PROFILE_COUNTER("dy.device_admitted_descriptors",schedule.device_admitted_descriptors);
+        FYZZ_PROFILE_COUNTER("dy.device_generated_bytes",schedule.device_generated_bytes);
+        FYZZ_PROFILE_COUNTER("dy.source_descriptor_upload_bytes",schedule.source_descriptor_upload_bytes);
+        FYZZ_PROFILE_COUNTER("dy.body_upload_bytes",schedule.device_body_upload_bytes);
+        FYZZ_PROFILE_COUNTER("dy.actor_local_upload_bytes",schedule.actor_local_upload_bytes);
+        FYZZ_PROFILE_COUNTER("dy.upload_batches",schedule.device_upload_batches);
+        FYZZ_PROFILE_COUNTER("dy.resident_poses_reused",schedule.reused_actor_local_poses);
+        FYZZ_PROFILE_COUNTER("dy.resident_velocities_reused",schedule.resident_velocity_reuses);
+        FYZZ_PROFILE_COUNTER("dy.sleep_readback_bytes",schedule.sleep_readback_bytes);
+#endif
     }
     void finish_gpu_dy_distance() override {
+        FYZZ_PROFILE_SCOPE("dy.device_result_join");
         if(!dy_distance_ || !dy_distance_->has_queued_solve())
             throw std::logic_error("Source GPU Dy has no queued numerical epoch");
         dy_distance_->finish();
@@ -546,6 +571,24 @@ public:
             throw std::logic_error(
                 "Source Sc frame cannot commit before Dy numerical writeback");
         if(pcm_)pcm_->commit_step();
+#if defined(FYZZXYZZY_PROFILE_GPU)
+        const auto heap=manager_->getDeviceHeapStats();
+        FYZZ_PROFILE_COUNTER("heap.device_reserved_bytes",manager_->getDeviceMemorySize());
+        FYZZ_PROFILE_COUNTER("heap.broadphase_live_bytes",
+            heap.stats[physx::PxsHeapStats::eBROADPHASE]);
+        FYZZ_PROFILE_COUNTER("heap.narrowphase_live_bytes",
+            heap.stats[physx::PxsHeapStats::eNARROWPHASE]);
+        FYZZ_PROFILE_COUNTER("heap.solver_live_bytes",
+            heap.stats[physx::PxsHeapStats::eSOLVER]);
+        FYZZ_PROFILE_COUNTER("pcm.pair_upload_bytes",
+            pcm_?pcm_->last_pair_upload_bytes():0u);
+        FYZZ_PROFILE_COUNTER("pcm.witness_readback_bytes",
+            pcm_?pcm_->last_contact_download_bytes():0u);
+        FYZZ_PROFILE_COUNTER("pcm.host_contact_upload_bytes",
+            pcm_?pcm_->last_host_contact_upload_bytes():0u);
+        FYZZ_PROFILE_COUNTER("pcm.edge_history_copy_bytes",
+            pcm_?pcm_->last_edge_history_copy_bytes():0u);
+#endif
     }
     bool needs_gpu_contact_rebuild() const noexcept override {
         return pcm_ && pcm_->needs_contact_rebuild();
@@ -586,7 +629,9 @@ private:
 
     AabbEncodingStage encoding_;
     SourceScBoxTransformBoundsNativeStage box_transforms_;
-    physx::PxgCudaBuffer box_input_,box_cache_,box_geometry_,convex_vertices_;
+    physx::PxgCudaBuffer box_input_;
+    SourceFrameInputArenaNative frame_input_;
+    physx::PxgCudaBuffer box_cache_,box_geometry_,convex_vertices_;
     physx::PxgCudaBuffer convex_surface_;
     std::vector<std::uint32_t> convex_surface_words_;
     std::uint32_t convex_surface_bytes_=0u;

@@ -11,9 +11,6 @@ on:
       - '**/*.md'
       - 'docs/**'
   pull_request:
-    branches:
-      - main
-      - integration/n2-native-sc-gpu-report-admission
     paths-ignore:
       - '**/*.md'
       - 'docs/**'
@@ -357,7 +354,7 @@ jobs:
   native-no-physx-linux:
     name: Independent SDK / Vulkan without PhysX
     runs-on: ubuntu-26.04
-    timeout-minutes: 12
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v7
       - name: Record Ubuntu release for package-cache isolation
@@ -411,11 +408,17 @@ jobs:
           test -f build-native/libfyzzxyzzy_core.a
           test -f build-native/libfyzzxyzzy_compute.a
           test -f build-native/libfyzzxyzzy_source_gpu_primitives.a
+      - name: Compile instrumented Vulkan scene with the production execution graph
+        shell: bash
+        run: |
+          cmake -S . -B build-profile-vulkan -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON -DFYZZXYZZY_ENABLE_PHYSX_SOURCE=OFF -DFYZZXYZZY_BUILD_VULKAN=ON -DFYZZXYZZY_BUILD_SOURCE_GPU_TESTS=ON -DFYZZXYZZY_PROFILE_GPU=ON -DFETCHCONTENT_FULLY_DISCONNECTED=ON
+          cmake --build build-profile-vulkan --target fyzzxyzzy_source_sc_gpu_pcm_scene fyzzxyzzy_hardware_profile_stream --parallel 4
+          ctest --test-dir build-profile-vulkan -R '^fyzzxyzzy_hardware_profile_stream$' --output-on-failure
 
   native-no-physx-windows:
     name: Independent SDK / D3D12 without PhysX
     runs-on: windows-latest
-    timeout-minutes: 20
+    timeout-minutes: 35
     steps:
       - uses: actions/checkout@v7
       - name: Locate Windows SDK DXC for reference-free source GPU conformance
@@ -427,6 +430,61 @@ jobs:
             Sort-Object FullName -Descending | Select-Object -First 1)
           if (-not $dxc) { throw 'Windows SDK DXC is required for source GPU conformance' }
           "FYZZXYZZY_DXC=$($dxc[0].FullName)" >> $env:GITHUB_ENV
+      - name: Validate hardware qualification script syntax
+        shell: pwsh
+        run: |
+          $tokens = $null
+          $parseErrors = $null
+          [System.Management.Automation.Language.Parser]::ParseFile(
+            (Resolve-Path 'tools/hardware/qualify.ps1').Path,
+            [ref]$tokens, [ref]$parseErrors) | Out-Null
+          if ($parseErrors.Count -ne 0) {
+            throw ($parseErrors | Out-String)
+          }
+      - name: Regenerate qualification summary from existing evidence
+        shell: pwsh
+        run: |
+          $evidence = Join-Path $env:RUNNER_TEMP 'qualify-report-regression'
+          New-Item -ItemType Directory -Path $evidence -Force | Out-Null
+          $record = [ordered]@{
+            backend = 'Vulkan'
+            case = 'hardware_scene_1k'
+            phase = 'sample'
+            run = 0
+            log = 'sample.log'
+            exit_code = 0
+            process_wall_ms = 16.0
+            metrics = @(
+              @{ suite = 'hardware_step'; gpu_dy = 0.0; step_ms = 1.25 },
+              @{ suite = 'hardware_step'; gpu_dy = 1.0; step_ms = 1.5 }
+            )
+          }
+          $record | ConvertTo-Json -Compress -Depth 8 |
+            Set-Content -LiteralPath (Join-Path $evidence 'runs.jsonl')
+          @(
+            @{ kind = 'pipeline'; context = 1; pipeline = 7; label = 'dy.distance_pgs' },
+            @{ kind = 'frame'; trace_id = 1; frame = 7; gpu_dy = 1; success = 1 },
+            @{ kind = 'gpu'; context = 1; pipeline = 7; trace_id = 1; type = 'compute'; duration_ns = 150000 },
+            @{ kind = 'cpu'; trace_id = 1; stage = 'dy.prep'; duration_ns = 100000 }
+          ) | ForEach-Object {
+            @{
+              backend = 'Vulkan'
+              case = 'hardware_scene_1k'
+              phase = 'sample'
+              log = 'sample.log'
+              event = $_
+            } | ConvertTo-Json -Compress -Depth 8
+          } | Set-Content -LiteralPath (Join-Path $evidence 'trace.jsonl')
+          pwsh -NoProfile -File tools/hardware/qualify.ps1 -SummarizeEvidence $evidence
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $summary = @(Get-Content -LiteralPath (Join-Path $evidence 'summary.json') -Raw | ConvertFrom-Json)
+          $stages = @(Get-Content -LiteralPath (Join-Path $evidence 'stages.json') -Raw | ConvertFrom-Json)
+          if ($summary.Count -ne 1 -or $summary[0].gpu_frame_p50_ms -ne 1.5 -or
+              $stages.Count -ne 2 -or
+              @($stages | Where-Object { $_.stage -eq 'dy.distance_pgs' -and
+                $_.segment_p50_ms -eq 0.15 }).Count -ne 1) {
+            throw 'Qualification evidence reporting regression'
+          }
       - name: Configure without external source or network
         shell: pwsh
         run: cmake -S . -B build-native -A x64 -DBUILD_TESTING=ON -DFYZZXYZZY_ENABLE_PHYSX_SOURCE=OFF -DFYZZXYZZY_BUILD_D3D12=ON -DFYZZXYZZY_BUILD_SOURCE_GPU_TESTS=ON -DFETCHCONTENT_FULLY_DISCONNECTED=ON "-DFYZZXYZZY_DXC=$env:FYZZXYZZY_DXC"
@@ -445,3 +503,17 @@ jobs:
           $measurements | Tee-Object -FilePath $env:GITHUB_STEP_SUMMARY -Append
           if (Test-Path 'build-native/_deps/fyzzxyzzy_physx-src') { throw 'Native-only build unexpectedly fetched source dependencies' }
           if (-not (Test-Path 'build-native/Release/fyzzxyzzy_source_gpu_primitives_d3d12.lib')) { throw 'Independent source GPU primitive library missing' }
+      - name: Compile instrumented D3D12 scene with the production execution graph
+        shell: pwsh
+        run: |
+          cmake -S . -B build-profile-d3d12 -A x64 -DBUILD_TESTING=ON -DFYZZXYZZY_ENABLE_PHYSX_SOURCE=OFF -DFYZZXYZZY_BUILD_D3D12=ON -DFYZZXYZZY_BUILD_SOURCE_GPU_TESTS=ON -DFYZZXYZZY_PROFILE_GPU=ON -DFETCHCONTENT_FULLY_DISCONNECTED=ON "-DFYZZXYZZY_DXC=$env:FYZZXYZZY_DXC"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cmake --build build-profile-d3d12 --config Release --target fyzzxyzzy_source_sc_gpu_pcm_scene_d3d12 fyzzxyzzy_hardware_profile_stream --parallel 4
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          ctest --test-dir build-profile-d3d12 -C Release -R '^fyzzxyzzy_hardware_profile_stream$' --output-on-failure
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Validate qualified D3D12 shader artifact inventory
+        shell: pwsh
+        run: |
+          pwsh -NoProfile -File tools/hardware/qualify.ps1 -Backend D3D12 -ValidateArtifactsOnly
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

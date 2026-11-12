@@ -41,9 +41,9 @@ prepare_source_sap_aabb_report_retirement_native(
     const CudaDeviceAddressMap& addresses,
     SourceSapAabbReportBitmapNative added,
     SourceSapAabbReportBitmapNative removed) {
-    if(!stream.gpu_complete())
+    if(!stream.has_pending_fetch() && !stream.gpu_complete())
         throw std::logic_error(
-            "Source AABB pair publication must complete before bitmap retirement");
+            "Source AABB bitmap retirement requires a submitted report producer");
     const auto checked_words=[](const SourceSapAabbReportBitmapNative& map){
         if(map.device_bytes%sizeof(std::uint32_t) ||
            map.device_bytes/sizeof(std::uint32_t)>

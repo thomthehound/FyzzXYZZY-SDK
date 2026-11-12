@@ -47,6 +47,9 @@ SourceSapBoxIndicesNativeStage::SourceSapBoxIndicesNativeStage(
         6u,compute::StorageBufferViewKind::RawReadWrite);
     desc.push_constant_bytes=sizeof(Parameters);
     pipeline_=context_.create_compute_pipeline(desc);
+#if defined(FYZZXYZZY_PROFILE_GPU)
+    context_.set_pipeline_profile_label(pipeline_,"sap.indices");
+#endif
 }
 SourceSapBoxIndicesNativeStage::~SourceSapBoxIndicesNativeStage(){
     if(pipeline_)context_.destroy_compute_pipeline(pipeline_);

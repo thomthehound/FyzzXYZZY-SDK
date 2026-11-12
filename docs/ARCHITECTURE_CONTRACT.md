@@ -114,6 +114,9 @@ temporary hybrid boundary; record its cost and the consumer that requires it.
 
 ### Binding scene execution graph
 
+The memory placement, topology reconciliation and publication contract is
+specified in [Scene-owned compute frame](SCENE_COMPUTE_FRAME.md).
+
 The scene owns **one simulation transaction** and one dependency graph across
 CPU and device work. A function call is not a completion edge. Every stage
 declares its producer, consumers, residency, possible host observation and
@@ -144,6 +147,21 @@ minimizes whole-frame cost. A host join must have a real consumer; a GPU
 launch must expose useful parallelism or computation. Measure transfer,
 submission and waiting costs before moving these dependencies. Neither
 processor duplicates numerical operations for implicit verification.
+
+**Ordered source submissions.** CPU-authored device inputs are snapshotted
+when queued. Uploads, device copies and dependent shader dispatches retain
+their source order in one native batch; a new host upload does not itself
+submit or wait on the GPU queue. Vulkan and D3D12 pack the owned upload
+bytes into fence-owned transfer staging. Physical heap-root retirement
+submits outstanding source commands before releasing the root; rollback
+discards only commands that never entered the queue.
+
+**Host report admission.** Source SAP schedules its descriptor readback
+asynchronously and prepares bitmap retirement while the transfer is in
+flight. Sc publishes found/lost pairs and rotates source endpoint history
+only after the descriptor fence and source-lifetime validation complete.
+GPU PCM witness joins remain mandatory where CPU Gu correlation needs
+those witnesses; no unchanged-topology assumption may bypass them.
 
 **No false connectivity shortcut.** Broadphase overlap can feed speculative
 waking and admission; it cannot stand in for accurate contact connectivity.
@@ -199,7 +217,13 @@ host-upload extent; raw descriptors, colors and partition-state scratch are
 also omitted from the source packet. The remaining input prefix and
 numerical source-table suffix share one staging submission. Its compact-task
 numerical launch consumes the device indirect triple rather than a CPU
-workgroup count. The host provides bounded numerical allocations, not an
+workgroup count. Sc supplies separate numerical task boundaries for independent active
+islands. One-constraint tasks with one or two responding bodies execute
+as GPU lanes; each lane owns its PGS sequence and body integration, with
+up to 128 tasks per workgroup. Other compact tasks execute through the
+ordinary fused workgroup path. Both use the same command stream and
+numerical storage; one dependent island does not disable packing for
+unrelated islands. Large tiled tasks retain their partition dependencies. The host provides bounded numerical allocations, not an
 exact prediction of runnable roots or response counts. The queued Dy shader
 rejects admission errors and any task/body/descriptor count exceeding its
 own buffer capacity before initializing numerical state. Unused capacity
@@ -212,10 +236,11 @@ Large tiled tasks retain
 their explicit partition launch dependencies until the device-owned wide
 scheduler is complete.
 
-For compact PCM-owned production frames, Scene ordinarily reuses its
-already prepared numerical task boundaries. When Sc has batched multiple
-responding islands into fewer tasks, transient device accurate admission
-can expose additional independent task/body/response ranges. Wide tiled
+For compact PCM-owned production frames, Scene consumes the accurate
+island boundaries it has already prepared. It does not reconstruct those
+islands in a second device graph. Explicit device-authored numerical
+admission remains available at the producer interface, where a resident
+source graph rather than CPU Sc must provide the task stream. Wide tiled
 tasks retain their existing numerical partition scheduler. The Gu witness
 join and Sc friction/constraint preparation precede both execution choices
 when those operations consume contact geometry. Zero authored velocity
