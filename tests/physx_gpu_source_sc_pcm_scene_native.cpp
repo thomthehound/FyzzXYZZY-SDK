@@ -62,6 +62,7 @@ struct SourceScDeviceIslandFixture {
         // An ordered direct download observes this task result without
         // touching the pending PCM witness DMA or its source tokens.
         // Production Dy consumes the buffer without a host observation.
+        owner.stream_.wait_at_fetch();
         const auto layout=owner.pcm_->device_island_layout();
         const auto resolved=owner.addresses_.resolve(
             owner.pcm_->device_island_work_address(),layout.bytes);
