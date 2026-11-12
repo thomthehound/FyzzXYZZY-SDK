@@ -183,11 +183,10 @@ SourceSapSceneFrameNativeResult fetch_source_sap_scene_frame_native(
     physx::PxgBroadPhaseDesc descriptor_snapshot{};
     bool descriptor_fetch_pending=false;
     if(members.aabb_manager.has_aggregates && !members.abort_mode) {
-        stream.submit();
-        // The aggregate snapshot already contains the original SAP
-        // descriptor and the three aggregate report counters.
+        // The aggregate snapshot contains the original SAP descriptor
+        // and three report counters, fetched in its producer submission.
         aggregate_snapshot=members.aabb_owner->download_aggregate_fetch_snapshot(
-            context,addresses);
+            stream,addresses);
     } else {
         const auto source=addresses.resolve(
             members.dma.descriptor_gpu_buffers.broadphase.getDevicePtr(),

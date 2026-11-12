@@ -737,7 +737,7 @@ public:
                 sizeof(AggregateFetchSnapshot::pair_overflow));
     }
     AggregateFetchSnapshot download_aggregate_fetch_snapshot(
-        compute::Context& context,
+        SourceSapDmaNative& stream,
         const CudaDeviceAddressMap& addresses) const {
         AggregateFetchSnapshot snapshot{};
         const auto source=addresses.resolve(
@@ -746,7 +746,8 @@ public:
         const std::array<compute::DownloadSpan,1> readback{{
             {source.buffer,source.offset,&snapshot,sizeof(snapshot)}
         }};
-        context.download_batch(readback);
+        stream.begin_fetch(readback);
+        stream.finish_fetch();
         return snapshot;
     }
     struct AggregateReports {
