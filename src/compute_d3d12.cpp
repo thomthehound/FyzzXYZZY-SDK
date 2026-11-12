@@ -951,9 +951,10 @@ struct Context::Impl {
                 D3D12_HEAP_TYPE_READBACK,D3D12_RESOURCE_FLAG_NONE,
                 D3D12_RESOURCE_STATE_COPY_DEST);
         auto result=std::move(completed_readbacks_[selected]);
-        completed_readbacks_[selected]=
-            std::move(completed_readbacks_[--readback_cached_]);
-        completed_readbacks_[readback_cached_].Reset();
+        const auto last=--readback_cached_;
+        if(selected!=last)
+            completed_readbacks_[selected]=std::move(completed_readbacks_[last]);
+        completed_readbacks_[last].Reset();
         return result;
     }
     void recycle_readback(ComPtr<ID3D12Resource> staging) {

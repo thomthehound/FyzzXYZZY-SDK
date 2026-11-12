@@ -1080,8 +1080,9 @@ struct Context::Impl {
         if(selected==readback_cached_)
             return {create_buffer(bytes,MemoryPlacement::HostVisible,false),bytes};
         const auto result=readback_cache_[selected];
-        readback_cache_[selected]=readback_cache_[--readback_cached_];
-        readback_cache_[readback_cached_]={};
+        const auto last=--readback_cached_;
+        if(selected!=last)readback_cache_[selected]=readback_cache_[last];
+        readback_cache_[last]={};
         return result;
     }
     void recycle_readback(ReadbackStaging staging) {
