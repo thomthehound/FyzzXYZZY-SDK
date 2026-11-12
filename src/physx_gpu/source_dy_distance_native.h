@@ -1601,12 +1601,7 @@ public:
             .descriptors=descriptors,.body_ordinals=body_ordinals,
             .manifolds=manifolds,.contact_order=contact_order,
             .contact_prep=contact_prep,.result_offsets=result_offsets,
-            .output_buffer=mapped.buffer,.output_offset=mapped.offset,
             .output_bytes=output_bytes,
-            .device_meta_buffer=device_meta_buffer,
-            .device_meta_source=device_meta_offset,
-            .device_task_source=device_task_source,
-            .device_ordinal_source=device_ordinal_source,
             .device_admission=device_admission.has_value(),
             .device_header_offset=device_header_offset,
             .device_task_offset=device_task_offset,
@@ -2011,11 +2006,7 @@ private:
         std::span<const std::uint32_t> contact_order{};
         std::span<const native::GpuDyContactPrepPair> contact_prep{};
         std::array<std::size_t,6> result_offsets{};
-        compute::BufferId output_buffer=0u;
-        std::size_t output_offset=0u,output_bytes=0u;
-        compute::BufferId device_meta_buffer=0u;
-        std::size_t device_meta_source=0u,device_task_source=0u,
-                    device_ordinal_source=0u;
+        std::size_t output_bytes=0u;
         bool device_admission=false;
         std::size_t device_header_offset=0u,device_task_offset=0u,
                     device_ordinal_offset=0u;

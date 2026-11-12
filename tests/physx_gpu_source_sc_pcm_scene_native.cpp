@@ -1386,11 +1386,15 @@ void verify_queued_pcm_dy(fyzz::compute::Backend backend,const char* sap,
     std::array<native::GpuPcmBoxResult,1> witness{};
     std::array<native::GpuDyBodyIntegrationInput,1> inputs{};
     std::array<native::GpuDyIntegratedPose,1> poses{};
+    const auto before_enqueue=producer->stream_submission_stats();
     launch(witness,inputs,poses);
+    const auto queued=producer->stream_submission_stats();
     require(producer->has_queued_gpu_dy_distance() &&
             witness[0].packed_counts==0u &&
-            producer->device_pcm_contact_count()==1u,
-        "Dy numerical dispatch joined PCM witness DMA on the host");
+            producer->device_pcm_contact_count()==1u &&
+            queued.fused_readbacks==before_enqueue.fused_readbacks+2u &&
+            queued.command_batches==before_enqueue.command_batches+2u,
+        "PCM and Dy did not each fuse their result DMA into the producer batch");
     bool duplicate_rejected=false;
     try {
         producer->enqueue_gpu_dy_distance(
@@ -1402,7 +1406,10 @@ void verify_queued_pcm_dy(fyzz::compute::Backend backend,const char* sap,
     require(duplicate_rejected && producer->has_queued_gpu_dy_distance(),
         "Dy reused active numerical output before its owning fetch");
     producer->finish_gpu_dy_distance();
-    require(!producer->has_queued_gpu_dy_distance() &&
+    const auto joined=producer->stream_submission_stats();
+    require(joined.command_batches==queued.command_batches &&
+            joined.fused_readbacks==queued.fused_readbacks &&
+            !producer->has_queued_gpu_dy_distance() &&
             witness[0].packed_counts==0u &&
             poses[0].valid==1u &&
             std::fabs(poses[0].position[0]-
