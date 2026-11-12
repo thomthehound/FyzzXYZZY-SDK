@@ -72,6 +72,60 @@ struct SourceBufferState {
     }
 };
 
+void exercise_independent_readback_ownership(Context& context) {
+    std::array<std::uint32_t,64u> source{};
+    for(std::uint32_t i=0u;i<source.size();++i)
+        source[i]=i*23u+17u;
+    const auto gpu=context.create_buffer(
+        sizeof(source),MemoryPlacement::DeviceLocal);
+    context.upload(gpu,0u,source.data(),sizeof(source));
+    constexpr std::uint32_t sentinel=0xcafef00du;
+    std::array<std::uint32_t,3u> first{};
+    std::array<std::uint32_t,11u> second{};
+    first.fill(sentinel);
+    second.fill(sentinel);
+    const std::array<DownloadSpan,1u> first_span{{
+        {gpu,0u,first.data(),sizeof(first)}
+    }};
+    const std::array<DownloadSpan,1u> second_span{{
+        {gpu,20u*sizeof(std::uint32_t),
+         second.data(),sizeof(second)}
+    }};
+    const auto first_ticket=context.submit_download_batch(first_span);
+    const auto second_ticket=context.submit_download_batch(second_span);
+    if(first[0]!=sentinel || second[0]!=sentinel)
+        throw std::runtime_error(
+            "Compute readback published before explicit host completion");
+    context.finish_download_batch(second_ticket,true);
+    for(std::size_t i=0;i<second.size();++i)
+        if(second[i]!=source[20u+i])
+            throw std::runtime_error(
+                "Second readback lost its independently sized staging");
+    if(first[0]!=sentinel || first[2]!=sentinel)
+        throw std::runtime_error(
+            "Later GPU readback published earlier borrowed host bytes");
+    context.finish_download_batch(first_ticket,true);
+    for(std::size_t i=0;i<first.size();++i)
+        if(first[i]!=source[i])
+            throw std::runtime_error(
+                "Earlier readback lost its staging after later completion");
+
+    first.fill(sentinel);
+    second.fill(sentinel);
+    const auto accepted=context.submit_download_batch(second_span);
+    const auto abandoned=context.submit_download_batch(first_span);
+    context.finish_download_batch(abandoned,false);
+    if(first[0]!=sentinel || first[2]!=sentinel)
+        throw std::runtime_error(
+            "Abandoned readback modified its borrowed output");
+    context.finish_download_batch(accepted,true);
+    for(std::size_t i=0;i<second.size();++i)
+        if(second[i]!=source[20u+i])
+            throw std::runtime_error(
+                "Abandoned readback consumed the earlier active owner");
+    context.destroy_buffer(gpu);
+}
+
 void exercise_reused_source_submission_scratch(Context& context) {
     constexpr std::size_t bytes=256u;
     const auto gpu=context.create_buffer(bytes,MemoryPlacement::DeviceLocal);
@@ -3464,6 +3518,7 @@ int main() {
         if (pointers.live_allocations() != 0u)
             throw std::runtime_error("GPU transfer mapping leak");
         exercise_source_raw_buffer_growth(context);
+        exercise_independent_readback_ownership(context);
         exercise_reused_source_submission_scratch(context);
         exercise_native_physx_heap_roots(context);
         exercise_native_heap_raii_teardown(context);
