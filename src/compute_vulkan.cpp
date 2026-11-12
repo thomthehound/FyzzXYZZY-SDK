@@ -1100,6 +1100,7 @@ struct Context::Impl {
         const auto original=batch.size();
         batch.reserve(original+downloads.size());
         std::size_t offset=0;
+        SubmissionId id=0;
         try {
             for(const auto& item:downloads) {
                 batch.emplace_back(CopyCommand{
@@ -1107,7 +1108,7 @@ struct Context::Impl {
                     item.bytes});
                 offset+=item.bytes;
             }
-            const SubmissionId id=submit_batch(batch);
+            id=submit_batch(batch);
             batch.erase(batch.begin()+original,batch.end());
             pending_readback_.submission=id;
         } catch(...) {
