@@ -1416,8 +1416,7 @@ void publishTaskError(uint task,uint error) {
     arena.Store(p.writebackBias+p.resultTaskOffset+task*4u,error);
 }
 
-// A packed lane owns one independent body/constraint pair. Source Sc
-// selects this dispatch only when every admitted task has this shape.
+// Each lane owns one independent constraint and up to two integrated bodies.
 void sourceDySolvePackedTask(uint taskId) {
     const uint task=p.taskBias+taskId*36u;
     const uint4 ranges=arena.Load4(task);
@@ -1426,7 +1425,7 @@ void sourceDySolvePackedTask(uint taskId) {
     const uint errorAddress=task+32u;
     const uint4 schedule=arena.Load4(p.integrationBias+16u);
     if(ranges.y!=ranges.x+1u || ranges.w!=ranges.z+1u ||
-       bodies.y!=bodies.x+1u ||
+       bodies.y<=bodies.x || bodies.y-bodies.x>2u ||
        ranges.y>schedule.y || ranges.w>p.partitionCount ||
        bodies.y>schedule.x ||
        !iters.x || iters.x>255u || iters.y>255u) {
@@ -1473,13 +1472,16 @@ void sourceDySolvePackedTask(uint taskId) {
     for(uint iteration=0u;iteration<total;++iteration) {
         solvePartition(ranges.x,ranges.y,0u,iters,iteration,errorAddress);
         if(iteration+1u==iters.x)
-            saveMotion(bodies.x,errorAddress);
+            for(uint body=bodies.x;body<bodies.y;++body)
+                saveMotion(body,errorAddress);
     }
-    const uint ordinal=arena.Load(p.ordinalBias+bodies.x*4u);
-    if(ordinal>=p.bodyCount)
-        arena.InterlockedOr(errorAddress,8u);
-    else
-        integrateBody(ordinal);
+    for(uint body=bodies.x;body<bodies.y;++body) {
+        const uint ordinal=arena.Load(p.ordinalBias+body*4u);
+        if(ordinal>=p.bodyCount)
+            arena.InterlockedOr(errorAddress,8u);
+        else
+            integrateBody(ordinal);
+    }
     publishTaskError(taskId,arena.Load(errorAddress));
 }
 

@@ -4687,15 +4687,25 @@ void verify_host_lane_packed_islands(
         cpu_bodies[i]=cpu.add_dynamic_box({0.5f,0.5f,0.5f},position,1.f);
         gpu_bodies[i]=gpu.add_dynamic_box({0.5f,0.5f,0.5f},position,1.f);
     }
+    const Vec3 first{-16.f,1.0f,0.f};
+    const Vec3 second{-16.f,1.82f,0.f};
+    const BodyId pair_cpu_a=cpu.add_dynamic_box(
+        {0.5f,0.5f,0.5f},first,1.f);
+    const BodyId pair_cpu_b=cpu.add_dynamic_box(
+        {0.5f,0.5f,0.5f},second,1.f);
+    const BodyId pair_gpu_a=gpu.add_dynamic_box(
+        {0.5f,0.5f,0.5f},first,1.f);
+    const BodyId pair_gpu_b=gpu.add_dynamic_box(
+        {0.5f,0.5f,0.5f},second,1.f);
     for(unsigned frame=0;frame<3u;++frame) {
         cpu.step(1.f/120.f);
         gpu.step(1.f/120.f);
         const auto schedule=producer->dy_launch_stats();
-        require(schedule.host_lane_packed_tasks==cpu_bodies.size() &&
+        require(schedule.host_lane_packed_tasks==cpu_bodies.size()+1u &&
                 schedule.device_island_indirect_dispatches==0u &&
                 schedule.wide_tasks==0u,
             "Independent CPU-admitted islands did not use packed GPU lanes");
-        require(cpu.contacts().size()==cpu_bodies.size() &&
+        require(cpu.contacts().size()==cpu_bodies.size()+1u &&
                 cpu.contacts().size()==gpu.contacts().size() &&
                 cpu.solved_normal_impulses().size()==
                     gpu.solved_normal_impulses().size(),
@@ -4704,6 +4714,12 @@ void verify_host_lane_packed_islands(
             test::compound_compare_state(
                 gpu.body_state(gpu_bodies[i]),cpu.body_state(cpu_bodies[i]),
                 0.03f,"Packed GPU singleton diverged from CPU rigid contact");
+        test::compound_compare_state(
+            gpu.body_state(pair_gpu_a),cpu.body_state(pair_cpu_a),
+            0.03f,"Packed GPU two-body contact changed the first response");
+        test::compound_compare_state(
+            gpu.body_state(pair_gpu_b),cpu.body_state(pair_cpu_b),
+            0.03f,"Packed GPU two-body contact changed the second response");
     }
 }
 

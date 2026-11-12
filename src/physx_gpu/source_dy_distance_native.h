@@ -912,7 +912,8 @@ public:
             std::all_of(tasks.begin(),tasks.end(),[](const auto& task) {
                 return task.descriptor_end==task.descriptor_begin+1u &&
                        task.partition_end==task.partition_begin+1u &&
-                       task.body_end==task.body_begin+1u;
+                       task.body_end>task.body_begin &&
+                       task.body_end-task.body_begin<=2u;
             });
         last_schedule_.host_lane_packed_tasks=
             host_lane_packed?tasks.size():0u;

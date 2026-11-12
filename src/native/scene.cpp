@@ -7249,7 +7249,7 @@ void Scene::partition_constraints() {
                        solver_preparation_generation_)
                     ++bodies;
             }
-            if(bodies!=1u)return false;
+            if(bodies==0u || bodies>2u)return false;
             ++responding;
         }
         return responding>1u;
