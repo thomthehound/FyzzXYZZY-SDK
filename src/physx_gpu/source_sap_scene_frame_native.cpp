@@ -8,6 +8,7 @@
 #include "hardware_profile.h"
 
 #include <cstdint>
+#include <functional>
 #include <optional>
 #include <stdexcept>
 #include <utility>
@@ -171,7 +172,8 @@ SourceSapSceneFrameNativeResult fetch_source_sap_scene_frame_native(
     const SourceSapUpdateAdmission& admission,
     SourceSapDmaNative& stream,
     const CudaDeviceAddressMap& addresses,
-    compute::Context& context) {
+    compute::Context& context,
+    const std::function<void()>& independent_sc_work = {}) {
     FYZZ_PROFILE_SCOPE("sap.owner_fetch");
     const SourceSapVolumeActorLifetimeNative volume_lifetime{
         members.volume_to_actor,members.aabb_manager.volume_data};
@@ -182,33 +184,32 @@ SourceSapSceneFrameNativeResult fetch_source_sap_scene_frame_native(
         aggregate_snapshot;
     physx::PxgBroadPhaseDesc descriptor_snapshot{};
     bool descriptor_fetch_pending=false;
+    compute::DownloadSpan readback{};
     if(members.aabb_manager.has_aggregates && !members.abort_mode) {
-        // The aggregate snapshot contains the original SAP descriptor
-        // and three report counters, fetched in its producer submission.
-        aggregate_snapshot=members.aabb_owner->download_aggregate_fetch_snapshot(
-            stream,addresses);
+        aggregate_snapshot.emplace();
+        readback=members.aabb_owner->aggregate_fetch_snapshot_readback(
+            addresses,*aggregate_snapshot);
     } else {
         const auto source=addresses.resolve(
             members.dma.descriptor_gpu_buffers.broadphase.getDevicePtr(),
             sizeof(descriptor_snapshot));
-        // Source GPU completion and descriptor readback use the same
-        // ordered fence. CPU bitmap retirement preflight runs while
-        // that transfer is in flight.
-        const std::array<compute::DownloadSpan,1> readback{{
-            {source.buffer,source.offset,
-             &descriptor_snapshot,sizeof(descriptor_snapshot)}
-        }};
-        {
-            FYZZ_PROFILE_SCOPE("sap.descriptor_fetch_enqueue");
-            stream.begin_fetch(readback);
-        }
-        descriptor_fetch_pending=true;
+        readback={source.buffer,source.offset,
+                  &descriptor_snapshot,sizeof(descriptor_snapshot)};
     }
+    {
+        FYZZ_PROFILE_SCOPE("sap.descriptor_fetch_enqueue");
+        stream.begin_fetch({&readback,1u});
+    }
+    descriptor_fetch_pending=true;
     // Stage the existing source bitmap retirement before joining the
     // descriptor readback. The prepared commands enter the source stream
     // only after validated Sc report publication.
     auto bitmap_retirement=[&] {
         try {
+            if(independent_sc_work) {
+                FYZZ_PROFILE_SCOPE("sap.overlap_sc_prepare");
+                independent_sc_work();
+            }
             if(!descriptor_fetch_pending)stream.wait_at_fetch();
             const auto added_bitmap=members.aabb_owner
                 ? members.aabb_owner->added_report_bitmap()
@@ -413,7 +414,7 @@ SourceSapSceneFrameNativeResult advance_source_sap_owned_scene_frame_native(
     const auto admission=queue_source_sap_scene_frame_native(
         members,stream,sap.force_update(),stages,addresses);
     auto result=fetch_source_sap_scene_frame_native(
-        members,admission,stream,addresses,context);
+        members,admission,stream,addresses,context,inputs.independent_sc_work);
     result.device_cached_box_count=cached_poses.reused_records;
     return result;
 }

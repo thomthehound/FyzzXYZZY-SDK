@@ -71,13 +71,21 @@ public:
 
     native::GpuBroadphaseReports advance(
         std::span<const native::GpuBroadphaseBox> live_boxes,
-        bool force_update, bool /*geometry_dirty*/) override {
+        bool force_update, bool geometry_dirty) override {
+        return advance_overlapping(live_boxes,force_update,geometry_dirty,{});
+    }
+
+    native::GpuBroadphaseReports advance_overlapping(
+        std::span<const native::GpuBroadphaseBox> live_boxes,
+        bool force_update, bool /*geometry_dirty*/,
+        const std::function<void()>& independent_sc_work) override {
         // Sc ElementSim owns geometry changes and source AABB dirty bits.
         // Scene contact or constraint bookkeeping does not dirty bounds.
         if(source_sc_elements_ && last_frame_ && !invalidated_ &&
            !handles_dirty_ && !pending_bounds_ &&
            !force_update && !sap_.force_update() &&
            !aabb_.aggregate_gpu_work_pending()) {
+            if(independent_sc_work)independent_sc_work();
             found_.clear();
             lost_.clear();
             last_frame_=SourceSapSceneFrameNativeResult{};
@@ -130,7 +138,8 @@ public:
                 aabb_,sap_,
                 {live_boxes,handles_,filter_,source_frame,found_,lost_,
                  bitmap_fill_,mapped_reports_,false,aggregate_stages_,
-                 gpu_box_owners_,source_sc_elements_.get()},
+                 gpu_box_owners_,source_sc_elements_.get(),
+                 independent_sc_work},
                 stream_,stages_,addresses_,context_);
         } catch(...) {
             // The source GPU submission and fetch may already have advanced.

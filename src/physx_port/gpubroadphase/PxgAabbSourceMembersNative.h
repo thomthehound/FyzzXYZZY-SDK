@@ -736,19 +736,13 @@ public:
                 aggregate_pair_overflow_device_.getDevicePtr(),
                 sizeof(AggregateFetchSnapshot::pair_overflow));
     }
-    AggregateFetchSnapshot download_aggregate_fetch_snapshot(
-        SourceSapDmaNative& stream,
-        const CudaDeviceAddressMap& addresses) const {
-        AggregateFetchSnapshot snapshot{};
+    compute::DownloadSpan aggregate_fetch_snapshot_readback(
+        const CudaDeviceAddressMap& addresses,
+        AggregateFetchSnapshot& snapshot) const {
         const auto source=addresses.resolve(
             aggregate_fetch_snapshot_device_.getDevicePtr(),
             sizeof(snapshot));
-        const std::array<compute::DownloadSpan,1> readback{{
-            {source.buffer,source.offset,&snapshot,sizeof(snapshot)}
-        }};
-        stream.begin_fetch(readback);
-        stream.finish_fetch();
-        return snapshot;
+        return {source.buffer,source.offset,&snapshot,sizeof(snapshot)};
     }
     struct AggregateReports {
         std::span<const physx::PxgBroadPhasePair> found,lost;

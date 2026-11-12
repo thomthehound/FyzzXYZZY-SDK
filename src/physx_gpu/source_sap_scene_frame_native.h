@@ -10,6 +10,7 @@
 #include "physx_gpu/source_sap_aabb_report_retire_native.h"
 #include "physx_port/gpubroadphase/PxgAabbManagerPreUpdateNative.h"
 
+#include <functional>
 #include <span>
 #include <stdexcept>
 #include <vector>
@@ -120,6 +121,7 @@ struct SourceSapOwnedSceneFrameNativeInputs {
     const SourceSapAggregateStagesNative* aggregate_stages=nullptr;
     const SourceSapGpuBoxTransformOwnersNative* gpu_box_owners=nullptr;
     const SourceScSceneElementsNative* sc_elements=nullptr;
+    std::function<void()> independent_sc_work;
 };
 
 SourceSapSceneFrameNativeResult advance_source_sap_owned_scene_frame_native(

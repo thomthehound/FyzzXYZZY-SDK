@@ -417,6 +417,16 @@ public:
     virtual GpuBroadphaseReports advance(
         std::span<const GpuBroadphaseBox> live_boxes,
         bool force_update,bool geometry_dirty)=0;
+    // Run Sc work that cannot observe SAP results while native GPU
+    // report production is in flight. All report identity publication
+    // still occurs after the producer's original fetch boundary.
+    virtual GpuBroadphaseReports advance_overlapping(
+        std::span<const GpuBroadphaseBox> live_boxes,
+        bool force_update,bool geometry_dirty,
+        const std::function<void()>& independent_sc_work) {
+        if(independent_sc_work)independent_sc_work();
+        return advance(live_boxes,force_update,geometry_dirty);
+    }
     // ScShapeSim's authored transform/contact-distance changes and
     // ScPipeline::afterIntegration mark the original PxgAABBManager
     // changed-handle bitmap. No CPU geometry diff or parallel dirty list.
@@ -2278,6 +2288,7 @@ private:
     std::vector<Pair> sap_created_pairs_,sap_deleted_pairs_;
     std::vector<Pair> previous_pairs_;
     std::vector<Pair> pending_pairs_;
+    std::vector<Pair> gpu_plane_pair_candidates_;
     // Sc's ordered contact-manager stream borrows these GPU per-frame
     // records; edge identity and rollback ownership remain with Sc.
     std::vector<GpuPcmBoxPair> gpu_pcm_pairs_;

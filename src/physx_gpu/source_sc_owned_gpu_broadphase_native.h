@@ -253,9 +253,16 @@ public:
     native::GpuBroadphaseReports advance(
         std::span<const native::GpuBroadphaseBox> live,
         bool force_update,bool geometry_dirty) override {
+        return advance_overlapping(live,force_update,geometry_dirty,{});
+    }
+    native::GpuBroadphaseReports advance_overlapping(
+        std::span<const native::GpuBroadphaseBox> live,
+        bool force_update,bool geometry_dirty,
+        const std::function<void()>& independent_sc_work) override {
         if(aborted_)
             throw std::runtime_error("Original GPU SAP heap aborted");
-        return producer_->advance(live,force_update,geometry_dirty);
+        return producer_->advance_overlapping(
+            live,force_update,geometry_dirty,independent_sc_work);
     }
     bool has_gpu_pcm_box() const noexcept override { return bool(pcm_); }
     bool has_gpu_dy_distance() const noexcept override {

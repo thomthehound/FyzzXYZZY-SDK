@@ -430,7 +430,15 @@ void verify_compound_shape_gpu_pairs(
                            native::Pair expected) {
         return std::find(pairs.begin(),pairs.end(),expected)!=pairs.end();
     };
-    const auto created=gpu.advance(shapes,false,true);
+    const auto before_fused=gpu.stream_submission_stats();
+    bool overlapped=false;
+    const auto created=gpu.advance_overlapping(shapes,false,true,[&] {
+        const auto now=gpu.stream_submission_stats();
+        overlapped=now.fused_readbacks==before_fused.fused_readbacks+1u &&
+                   now.fetch_batches==before_fused.fetch_batches;
+    });
+    require(overlapped,
+        "Source Sc CPU preparation did not overlap in-flight SAP readback");
     require(!created.overflow && created.found.size()==2u &&
             contains(created.found,{0u,2u}) &&
             contains(created.found,{1u,2u}) &&

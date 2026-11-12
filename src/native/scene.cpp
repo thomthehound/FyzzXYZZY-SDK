@@ -2358,10 +2358,42 @@ void Scene::update_gpu_pairs(bool force_update) {
             convex_face_indices_);
         uploaded_convex_vertex_count_=convex_vertices_.size();
     }
+    bool plane_candidates_ready=false;
+    const auto prepare_plane_candidates=[&] {
+        if(plane_candidates_ready)return;
+        FYZZ_PROFILE_SCOPE("sc.plane_pair_prepare");
+        gpu_plane_pair_candidates_.clear();
+        if(active_plane_count_) {
+            for(const ShapeId plane:live_shape_ids_) {
+                const auto& a=shapes_[plane];
+                if(!a.alive || !a.simulation_shape_enabled ||
+                   a.geometry!=Geometry::Plane)continue;
+                for(const ShapeId shape:live_shape_ids_) {
+                    const auto& b=shapes_[shape];
+                    if(b.alive && b.simulation_shape_enabled &&
+                       b.motion==Motion::Dynamic)
+                        gpu_plane_pair_candidates_.push_back(
+                            ordered_pair(plane,shape));
+                }
+            }
+            std::sort(gpu_plane_pair_candidates_.begin(),
+                      gpu_plane_pair_candidates_.end());
+            gpu_plane_pair_candidates_.erase(
+                std::unique(gpu_plane_pair_candidates_.begin(),
+                            gpu_plane_pair_candidates_.end()),
+                gpu_plane_pair_candidates_.end());
+        }
+        plane_candidates_ready=true;
+    };
+    const bool preflight_planes=active_plane_count_ &&
+        (plane_pair_membership_dirty_ || gpu_pair_refilter_dirty_ ||
+         sap_pair_registry_dirty_);
     const auto reports=[&] {
         FYZZ_PROFILE_SCOPE("sap.source_advance");
-        return gpu_broadphase_->advance(
-            gpu_broadphase_boxes_,force_update,dirty_);
+        return gpu_broadphase_->advance_overlapping(
+            gpu_broadphase_boxes_,force_update,dirty_,[&] {
+                if(preflight_planes)prepare_plane_candidates();
+            });
     }();
     if(reports.overflow)
         throw std::overflow_error(
@@ -2419,17 +2451,10 @@ void Scene::update_gpu_pairs(bool force_update) {
     const auto append_plane_managers=[&](
         bool finite_delta,bool rebuild_planes) {
         if(active_plane_count_ && rebuild_planes) {
-            for(const BodyId plane:live_shape_ids_) {
-                const auto& actor=shapes_[plane];
-                if(!actor.alive || !actor.simulation_shape_enabled ||
-                   actor.geometry!=Geometry::Plane)continue;
-                for(const BodyId body:live_shape_ids_) {
-                    const auto& dynamic=shapes_[body];
-                    if(dynamic.alive && dynamic.simulation_shape_enabled &&
-                       dynamic.motion==Motion::Dynamic)
-                        pending_pairs_.push_back(ordered_pair(plane,body));
-                }
-            }
+            prepare_plane_candidates();
+            pending_pairs_.insert(
+                pending_pairs_.end(),gpu_plane_pair_candidates_.begin(),
+                gpu_plane_pair_candidates_.end());
             std::sort(pending_pairs_.begin(),pending_pairs_.end());
             pending_pairs_.erase(
                 std::unique(pending_pairs_.begin(),pending_pairs_.end()),
