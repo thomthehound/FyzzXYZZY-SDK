@@ -8992,11 +8992,12 @@ void Scene::solve_gpu_distance_constraints(float seconds) {
             "Source GPU 1D row preparation did not cover source rows");
     gpu_dy_body_ordinals_.resize(solver_active_ids_.size());
     gpu_dy_tasks_.clear();
-    if(gpu_dy_device_admission_enabled_ && !solver_tasks_.empty()) {
-        // The device owns actual task ranges and responding-body order.
-        // These spans provide capacity only; no host task/ordinal
-        // records are constructed or uploaded for numerical execution.
-        gpu_dy_tasks_.resize(solver_tasks_.size());
+    if(gpu_dy_device_admission_enabled_) {
+        // One responding accurate island can admit one numerical task.
+        // Free-flight Sc task groups are not resident solver islands;
+        // counting them would exceed the device node/task allocation.
+        // These spans provide capacity only, not host-authored work.
+        gpu_dy_tasks_.resize(gpu_dy_responding_island_count_);
     }else {
         for(std::size_t i=0;i<solver_active_ids_.size();++i)
             gpu_dy_body_ordinals_[i]=narrow(
