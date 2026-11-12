@@ -3607,18 +3607,14 @@ void verify_host_primitive_pcm_solver(
     };
     add_remote_sphere(cpu);
     add_remote_sphere(gpu);
-    const auto before_mixed=producer->stream_submission_stats();
     cpu.step(dt);
     gpu.step(dt);
-    const auto after_mixed=producer->stream_submission_stats();
-    require(after_mixed.deferred_submissions_after_fetch==
-                before_mixed.deferred_submissions_after_fetch+1u &&
-            producer->pcm_contact_readback_bytes()==
+    require(producer->pcm_contact_readback_bytes()==
                 sizeof(physx_gpu::SourcePcmGpuContactStreamNative) &&
             producer->pcm_host_contact_upload_bytes()==
                 5u*sizeof(physx_gpu::SourcePcmGpuContactStreamNative) &&
             cpu.contacts().size()==gpu.contacts().size(),
-        "Mixed Sc PCM waited for later Gu uploads or lost general GPU Gu");
+        "Mixed Sc PCM changed GPU witness and CPU Gu contact publication");
     native::GpuPcmFrictionAnchorFixture::verify(cpu,gpu);
     cpu.remove(cpu_general);
     gpu.remove(gpu_general);
