@@ -4672,8 +4672,6 @@ void verify_host_lane_packed_islands(
         ?compute::ShaderFormat::Spirv:compute::ShaderFormat::Dxil;
     shader.bytes.assign(bytes.begin(),bytes.end());
     native::Scene cpu,gpu;
-    cpu.set_enhanced_determinism(true);
-    gpu.set_enhanced_determinism(true);
     auto owner=std::make_unique<physx_gpu::SourceScOwnedGpuBroadphaseNative>(
         backend,load_native_gpu_sap_shaders(backend,sap),
         128u,128u,std::nullopt,

@@ -7224,6 +7224,36 @@ void Scene::partition_constraints() {
     gpu_dy_free_ids_.clear();
     gpu_dy_responding_island_count_=0u;
     const bool gpu_integration=gpu_dy_active();
+    // Sc already knows the exact active-island topology. For isolated
+    // one-body constraints, it can supply compact GPU tasks without
+    // asking the device to reconstruct those same components.
+    const bool gpu_scalar_islands=[&] {
+        if(!gpu_integration)return false;
+        std::size_t responding=0u;
+        for(const auto batch:active_accurate_island_batches_) {
+            const auto begin=accurate_island_offsets_[batch];
+            const auto end=accurate_island_offsets_[batch+1u];
+            const auto handle=accurate_islands_.node_island[
+                accurate_island_nodes_[begin]];
+            const auto& island=accurate_islands_.islands[handle];
+            const auto constraints=std::size_t(island.contact_count)+
+                                   island.constraint_count;
+            if(!constraints)continue;
+            if(constraints!=1u)return false;
+            std::size_t bodies=0u;
+            for(auto index=begin;index<end;++index) {
+                const BodyId id=accurate_island_nodes_[index];
+                const auto& actor=actors_[id];
+                if(actor.solver_row_generation==solver_preparation_generation_ &&
+                   prepared_solver_row(id).prepared_generation==
+                       solver_preparation_generation_)
+                    ++bodies;
+            }
+            if(bodies!=1u)return false;
+            ++responding;
+        }
+        return responding>1u;
+    }();
     std::size_t joint_task_begin=0;
     const auto sort_constraints=[&] {
         // DyDynamicsBase::ConstraintLess compares Dy::Constraint::index
@@ -7317,6 +7347,8 @@ void Scene::partition_constraints() {
         // regular path retains source 128-body/min-one-contact batching.
         // Non-contact islands must also form their own task chains.
         if(enhanced_determinism_ ||
+           (gpu_scalar_islands &&
+            prepared_solver_bodies!=prepared_before_island) ||
            (task_body_count>=source_solver_batch_size &&
             task_constraint_count>=1)) {
             sort_constraints();

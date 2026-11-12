@@ -333,7 +333,7 @@ if ($Scenario) {
 $correctness = @(
     'scene', 'device_admission', 'indirect_api',
     'coupled_solver', 'mixed_solver', 'legacy_gu_solver', 'dy_switch',
-    'plane_only_pcm', 'single_island', 'distance_solver', 'free_integration',
+    'host_packed', 'plane_only_pcm', 'single_island', 'distance_solver', 'free_integration',
     'sparse_contacts', 'compound_solver', 'sphere_solver',
     'convex_plane', 'convex_finite', 'aggregate_coupled',
     'wide_islands', 'zero_response_wide', 'dual_hub', 'star_island',
