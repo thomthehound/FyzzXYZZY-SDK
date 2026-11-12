@@ -3094,7 +3094,8 @@ void verify_mixed_gu_pcm_gpu_dy_solver(
 // production PGS solve, not merely compute a disconnected fixture result.
 void verify_gpu_distance_solver(
     fyzz::compute::Backend backend,const char* sap,
-    const char* pcm,const char* dy_shader) {
+    const char* pcm,const char* dy_shader,
+    bool device_admission=false) {
     using namespace fyzz;
     std::ifstream input(dy_shader,std::ios::binary);
     require(bool(input),"Compiled source Dy shader unavailable");
@@ -3118,6 +3119,7 @@ void verify_gpu_distance_solver(
     require(producer->has_gpu_dy_distance(),
             "Explicit source Dy distance stage was not installed");
     gpu.set_gpu_broadphase(std::move(owner));
+    gpu.set_gpu_dy_device_admission_enabled(device_admission);
     constexpr float dt=1.f/120.f;
     std::array<BodyId,4> ids_cpu{},ids_gpu{};
     for(std::size_t i=0;i<ids_cpu.size();++i) {
@@ -3256,6 +3258,11 @@ void verify_gpu_distance_solver(
             5u*(52u+sizeof(native::GpuDyIntegratedPose))+
             3u*sizeof(std::uint32_t);
         const auto& admission=producer->dy_launch_stats();
+        if(device_admission)
+            require(admission.device_island_indirect_dispatches==1u &&
+                    admission.device_admitted_tasks==3u &&
+                    admission.source_descriptor_upload_bytes==0u,
+                "Joint-only Scene did not launch resident Sc task admission");
         const std::size_t scheduling_output=admission.device_island_indirect_dispatches
             ?16u+admission.device_colored_tasks*sizeof(native::GpuDyDistanceTask)+
                  admission.device_world_motion_bodies*sizeof(std::uint32_t)
@@ -4900,6 +4907,7 @@ int main(int argc,char** argv) {
                 scenario=="device_admission" ||
                 scenario=="device_admission_scene" ||
                 scenario=="device_admission_mixed_scene" ||
+                scenario=="device_admission_joint_scene" ||
                 scenario=="indirect_api" ||
                 scenario=="hardware_scene_1k" ||
                 scenario=="hardware_scene_10k" ||
@@ -5039,6 +5047,10 @@ int main(int argc,char** argv) {
             fyzz::tests::measure_gpu_case("sc_pcm","distance_solver",
                 [&]{verify_gpu_distance_solver(
                     backend,argv[1],argv[2],argv[3]);});
+        if(scenario=="device_admission_joint_scene")
+            fyzz::tests::measure_gpu_case("sc_pcm","device_admission_joint_scene",
+                [&]{verify_gpu_distance_solver(
+                    backend,argv[1],argv[2],argv[3],true);});
         if(scenario=="all" || scenario=="host_packed")
             fyzz::tests::measure_gpu_case("sc_pcm","host_packed",
                 [&]{verify_host_lane_packed_islands(
