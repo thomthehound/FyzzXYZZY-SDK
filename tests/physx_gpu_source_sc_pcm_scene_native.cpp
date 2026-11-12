@@ -2790,7 +2790,8 @@ void verify_dy_execution_switch(
 // diagnostic selection preserves CPU-origin Gu upload coverage.
 void verify_mixed_gu_pcm_gpu_dy_solver(
     fyzz::compute::Backend backend,const char* sap,
-    const char* pcm,const char* dy_shader) {
+    const char* pcm,const char* dy_shader,
+    bool device_admission=false) {
     using namespace fyzz;
     std::ifstream input(dy_shader,std::ios::binary);
     require(bool(input),"Compiled mixed Gu/PCM Dy shader missing");
@@ -2815,6 +2816,7 @@ void verify_mixed_gu_pcm_gpu_dy_solver(
                 load_native_gpu_pcm_shaders(backend,pcm),std::move(shader));
         auto* producer=owner.get();
         gpu.set_gpu_broadphase(std::move(owner));
+        gpu.set_gpu_dy_device_admission_enabled(device_admission);
         std::array<BodyId,2> moving_cpu{},moving_gpu{};
         BodyId floor_cpu{},floor_gpu{},pcm_static_cpu{},pcm_static_gpu{};
         const auto add_plane_contact=[&] {
@@ -2853,9 +2855,14 @@ void verify_mixed_gu_pcm_gpu_dy_solver(
                     producer->dy_pcm_device_contact_rows()>0u &&
                     producer->dy_cpu_gu_geometry_bytes()>=
                         sizeof(native::GpuDyGuContactInput) &&
-                    producer->dy_upload_span_count()==1u &&
-                    producer->dy_launch_stats().device_island_indirect_dispatches==0u,
-                "Mixed source Gu and PCM rows did not enter device-authored Dy tasks");
+                    producer->dy_upload_span_count()==
+                        (device_admission?2u:1u) &&
+                    producer->dy_launch_stats().device_island_indirect_dispatches==
+                        (device_admission?1u:0u) &&
+                    (!device_admission ||
+                     (producer->dy_launch_stats().device_admitted_tasks==2u &&
+                      producer->dy_launch_stats().source_descriptor_upload_bytes==0u)),
+                "Mixed source Gu and PCM rows did not enter selected Dy tasks");
             native::GpuPcmFrictionAnchorFixture::verify_device_contact_order(
                 gpu,true,true);
             const auto expected_cpu_anchors=
@@ -4892,6 +4899,7 @@ int main(int argc,char** argv) {
                 scenario=="free_integration" ||
                 scenario=="device_admission" ||
                 scenario=="device_admission_scene" ||
+                scenario=="device_admission_mixed_scene" ||
                 scenario=="indirect_api" ||
                 scenario=="hardware_scene_1k" ||
                 scenario=="hardware_scene_10k" ||
@@ -5023,6 +5031,10 @@ int main(int argc,char** argv) {
             fyzz::tests::measure_gpu_case("sc_pcm","mixed_solver",
                 [&]{verify_mixed_gu_pcm_gpu_dy_solver(
                     backend,argv[1],argv[2],argv[3]);});
+        if(scenario=="device_admission_mixed_scene")
+            fyzz::tests::measure_gpu_case("sc_pcm","device_admission_mixed_scene",
+                [&]{verify_mixed_gu_pcm_gpu_dy_solver(
+                    backend,argv[1],argv[2],argv[3],true);});
         if(scenario=="all" || scenario=="distance_solver")
             fyzz::tests::measure_gpu_case("sc_pcm","distance_solver",
                 [&]{verify_gpu_distance_solver(
