@@ -3553,7 +3553,7 @@ void verify_host_primitive_pcm_solver(
                  <<" readback_spans="<<fetch_spans
                  <<" total_readback_bytes="<<fetch_bytes
                  <<" dy_readback_bytes="<<numerical_bytes
-                 <<" indirect_dispatches="<<indirect<<'\\n';
+                 <<" indirect_dispatches="<<indirect<<'\n';
         require(producer->pcm_contact_readback_bytes()==0u &&
                 producer->pcm_host_contact_upload_bytes()==
                     2u*sizeof(physx_gpu::SourcePcmGpuContactStreamNative) &&
