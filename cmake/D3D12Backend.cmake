@@ -16,6 +16,12 @@ if(FYZZXYZZY_BUILD_D3D12)
   if(MSVC)
     target_compile_options(fyzzxyzzy_compute_d3d12 PRIVATE /W4)
   endif()
+  if(BUILD_TESTING)
+    fyzzxyzzy_add_gpu_test(fyzzxyzzy_compute_readback_ownership_d3d12
+      SOURCES tests/compute_readback_ownership.cpp
+      DEFINITIONS FYZZXYZZY_TEST_D3D12=1
+      LIBRARIES FyzzXYZZY::ComputeD3D12)
+  endif()
 
   fyzzxyzzy_add_native_gpu_libraries(
     fyzzxyzzy_source_gpu_primitives_d3d12

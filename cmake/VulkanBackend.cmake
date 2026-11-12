@@ -42,6 +42,11 @@ if(FYZZXYZZY_BUILD_VULKAN)
   )
   target_link_libraries(fyzzxyzzy_compute PRIVATE Vulkan::Vulkan)
   set_target_properties(fyzzxyzzy_compute PROPERTIES POSITION_INDEPENDENT_CODE ON)
+  if(BUILD_TESTING)
+    fyzzxyzzy_add_gpu_test(fyzzxyzzy_compute_readback_ownership_vulkan
+      SOURCES tests/compute_readback_ownership.cpp
+      LIBRARIES FyzzXYZZY::Compute)
+  endif()
 
   # These independent physics demonstrations are not translations of PhysX
   # GPU algorithms or orchestration. Do not link them into the SDK by default.
