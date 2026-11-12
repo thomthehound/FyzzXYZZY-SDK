@@ -81,12 +81,13 @@ commit/undo boundary. A failed epoch cannot expose speculative contacts,
 motion, or events through the public Scene.
 
 The current production path joins SAP found/lost reports for Sc admission
-and GPU PCM witnesses for CPU correlation. For frames whose responding
-islands each have one constraint and at most two bodies, Sc provides the
-numerical task ranges directly and Dy executes independent tasks in packed
-GPU lanes. Other compact workloads may use transient device island
-admission to split coarse task groups. This admission never authorizes
-persistent contact identities. Device numerical work remains queue-ordered
+and GPU PCM witnesses for CPU correlation. Sc's GPU path retains the prepared accurate-island task boundaries.
+Independent one-constraint islands with one or two responding bodies
+execute as packed GPU lanes; dependent compact islands execute as
+ordinary fused workgroups within the same ordered stream. The device
+does not reconstruct Scene's authoritative connected components. Explicit
+producer-side device admission is separate from this Scene path and
+cannot authorize persistent contact identities. Device numerical work remains queue-ordered
 until its actual Sc publication consumer requires completion.
 
 When topology requires CPU reconciliation, the device produces a compact

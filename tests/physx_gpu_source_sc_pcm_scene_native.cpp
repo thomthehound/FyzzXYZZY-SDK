@@ -4709,11 +4709,14 @@ void verify_host_lane_packed_islands(
         {0.5f,0.5f,0.5f},joint_second,1.f);
     cpu.create_center_distance_constraint(joint_cpu_a,joint_cpu_b,1.f);
     gpu.create_center_distance_constraint(joint_gpu_a,joint_gpu_b,1.f);
+    bool saw_dependent_task=false;
     for(unsigned frame=0;frame<3u;++frame) {
         cpu.step(1.f/120.f);
         gpu.step(1.f/120.f);
         const auto schedule=producer->dy_launch_stats();
-        if(schedule.host_lane_packed_tasks<cpu_bodies.size() ||
+        const auto expected=frame==0u
+            ?cpu_bodies.size()+2u:cpu_bodies.size();
+        if(schedule.host_lane_packed_tasks<expected ||
            schedule.device_island_indirect_dispatches!=0u ||
            schedule.wide_tasks!=0u)
             throw std::runtime_error(
@@ -4727,6 +4730,8 @@ void verify_host_lane_packed_islands(
                 " contacts="+std::to_string(gpu.contacts().size())+
                 " largest_island="+
                     std::to_string(gpu.largest_accurate_island_size()));
+        saw_dependent_task|=schedule.host_lane_packed_tasks<
+            schedule.device_colored_tasks;
         require(cpu.contacts().size()>=cpu_bodies.size() &&
                 cpu.contacts().size()==gpu.contacts().size() &&
                 cpu.solved_normal_impulses().size()==
@@ -4749,6 +4754,8 @@ void verify_host_lane_packed_islands(
             gpu.body_state(joint_gpu_b),cpu.body_state(joint_cpu_b),
             0.03f,"Packed GPU two-body joint changed the second response");
     }
+    require(saw_dependent_task,
+            "Mixed Sc contact/joint island did not exercise general GPU Dy");
 }
 
 int main(int argc,char** argv) {

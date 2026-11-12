@@ -217,13 +217,13 @@ host-upload extent; raw descriptors, colors and partition-state scratch are
 also omitted from the source packet. The remaining input prefix and
 numerical source-table suffix share one staging submission. Its compact-task
 numerical launch consumes the device indirect triple rather than a CPU
-workgroup count. Sc selects a lane-packed launch when every runnable task
-has one constraint and one or two responding bodies: each lane owns the
-task's full PGS sequence and integrates its admitted bodies. Up to 128
-independent tasks share a workgroup. Batches
-containing dependent or larger tasks retain workgroup-per-task execution.
-The dispatch choice remains resident and does not add a CPU decision or a
-numerical submission. The host provides bounded numerical allocations, not an
+workgroup count. Sc supplies separate numerical task boundaries for independent active
+islands. One-constraint tasks with one or two responding bodies execute
+as GPU lanes; each lane owns its PGS sequence and body integration, with
+up to 128 tasks per workgroup. Other compact tasks execute through the
+ordinary fused workgroup path. Both use the same command stream and
+numerical storage; one dependent island does not disable packing for
+unrelated islands. Large tiled tasks retain their partition dependencies. The host provides bounded numerical allocations, not an
 exact prediction of runnable roots or response counts. The queued Dy shader
 rejects admission errors and any task/body/descriptor count exceeding its
 own buffer capacity before initializing numerical state. Unused capacity
@@ -236,10 +236,11 @@ Large tiled tasks retain
 their explicit partition launch dependencies until the device-owned wide
 scheduler is complete.
 
-For compact PCM-owned production frames, Scene ordinarily reuses its
-already prepared numerical task boundaries. When Sc has batched multiple
-responding islands into fewer tasks, transient device accurate admission
-can expose additional independent task/body/response ranges. Wide tiled
+For compact PCM-owned production frames, Scene consumes the accurate
+island boundaries it has already prepared. It does not reconstruct those
+islands in a second device graph. Explicit device-authored numerical
+admission remains available at the producer interface, where a resident
+source graph rather than CPU Sc must provide the task stream. Wide tiled
 tasks retain their existing numerical partition scheduler. The Gu witness
 join and Sc friction/constraint preparation precede both execution choices
 when those operations consume contact geometry. Zero authored velocity
