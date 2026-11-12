@@ -380,6 +380,46 @@ void verify_rigid_shader_requirements(
 }
 // Independent GPU broadphase volumes share one Sc rigid actor identity.
 // Same-actor shape overlap is filtered; each cross-actor shape pair is kept.
+void verify_sap_overlap_rejection_rebuild(
+    fyzz::compute::Backend backend,const char* sap) {
+    using namespace fyzz;
+    using Motion=native::GpuBroadphaseBox::Motion;
+    physx_gpu::SourceScOwnedGpuBroadphaseNative gpu(
+        backend,load_native_gpu_sap_shaders(backend,sap),128u,128u);
+    gpu.admit_shape_element(0u,0u,Motion::Dynamic,0.02f);
+    gpu.admit_shape_element(1u,1u,Motion::Static,0.02f);
+    std::array<native::GpuBroadphaseBox,2> shapes{};
+    for(std::uint32_t i=0u;i<shapes.size();++i) {
+        shapes[i].id=i;
+        shapes[i].half_extents={0.5f,0.5f,0.5f};
+        shapes[i].contact_offset=0.02f;
+        shapes[i].motion=i?Motion::Static:Motion::Dynamic;
+    }
+    shapes[1].position={0.5f,0.f,0.f};
+    struct Reject {};
+    bool rejected=false;
+    const auto before=gpu.stream_submission_stats();
+    try {
+        gpu.advance_overlapping(shapes,false,true,[&] {
+            const auto& current=gpu.stream_submission_stats();
+            require(current.fused_readbacks==before.fused_readbacks+1u &&
+                    current.fetch_batches==before.fetch_batches,
+                "Sc preflight did not run before SAP GPU result publication");
+            throw Reject{};
+        });
+    }catch(const Reject&) { rejected=true; }
+    require(rejected && gpu.source_sap_fetch_count()==0u,
+        "Rejected Sc preparation consumed a source SAP frame");
+    const auto recovered=gpu.advance(shapes,false,true);
+    require(recovered.full_rebuild && !recovered.overflow &&
+            recovered.found.size()==1u &&
+            recovered.found[0]==native::Pair{0u,1u} &&
+            recovered.lost.empty() &&
+            gpu.source_sap_fetch_count()==1u,
+        "Source SAP failed to reconstruct original report identities after a rejected CPU overlap");
+    gpu.post_reports_cleanup();
+}
+
 void verify_sc_only_dirty_sap_skip(
     fyzz::compute::Backend backend,const char* sap) {
     using namespace fyzz;
@@ -4875,6 +4915,7 @@ int main(int argc,char** argv) {
             fyzz::tests::measure_gpu_case("sc_pcm","compound_shapes",
                 [&]{
                     verify_compound_shape_gpu_pairs(backend,argv[1]);
+                    verify_sap_overlap_rejection_rebuild(backend,argv[1]);
                     verify_sc_only_dirty_sap_skip(backend,argv[1]);
                 });
         if(scenario=="all" || scenario=="compound_solver")
