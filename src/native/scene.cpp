@@ -2454,10 +2454,24 @@ void Scene::update_gpu_pairs(
         bool finite_delta,bool rebuild_planes) {
         if(active_plane_count_ && rebuild_planes) {
             prepare_plane_candidates();
-            pending_pairs_.insert(
-                pending_pairs_.end(),gpu_plane_pair_candidates_.begin(),
-                gpu_plane_pair_candidates_.end());
-            std::sort(pending_pairs_.begin(),pending_pairs_.end());
+            // The GPU plane candidates were sorted during SAP execution.
+            // Merge them into the Sc finite-pair stream in linear time.
+            if(gpu_pair_refilter_dirty_)
+                std::sort(pending_pairs_.begin(),pending_pairs_.end());
+            const auto finite_count=pending_pairs_.size();
+            const auto plane_count=gpu_plane_pair_candidates_.size();
+            pending_pairs_.resize(finite_count+plane_count);
+            std::size_t finite=finite_count,plane=plane_count;
+            std::size_t output=pending_pairs_.size();
+            while(finite && plane) {
+                if(gpu_plane_pair_candidates_[plane-1u]<
+                   pending_pairs_[finite-1u])
+                    pending_pairs_[--output]=pending_pairs_[--finite];
+                else
+                    pending_pairs_[--output]=gpu_plane_pair_candidates_[--plane];
+            }
+            while(plane)
+                pending_pairs_[--output]=gpu_plane_pair_candidates_[--plane];
             pending_pairs_.erase(
                 std::unique(pending_pairs_.begin(),pending_pairs_.end()),
                 pending_pairs_.end());
