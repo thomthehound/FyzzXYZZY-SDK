@@ -95,8 +95,9 @@ backend-selected adapter, numerical device limits and UMA classification.
 ## Workload and evidence
 
 The correctness run covers production-World 1K independently contacting bodies,
-integrated Scene contact and device admission, the indirect API, coupled
-PCM/Gu/1D rigid solving, CPU/GPU Dy switching,
+integrated Scene contact and device admission, the indirect API,
+packed independent contact and joint islands, coupled PCM/Gu/1D rigid
+solving, CPU/GPU Dy switching,
 plane-only PCM, solver recovery, free integration, finite and convex
 geometry, aggregate coupling, mixed producers, wide islands and
 nonresponding constraints. With `-Scale`, it adds a production-World 10K contacting-body

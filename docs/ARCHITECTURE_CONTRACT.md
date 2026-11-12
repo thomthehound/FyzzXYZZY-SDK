@@ -218,8 +218,9 @@ also omitted from the source packet. The remaining input prefix and
 numerical source-table suffix share one staging submission. Its compact-task
 numerical launch consumes the device indirect triple rather than a CPU
 workgroup count. Sc selects a lane-packed launch when every runnable task
-has one responding body and one constraint: each lane owns its full PGS
-sequence and up to 128 independent tasks share a workgroup. Batches
+has one constraint and one or two responding bodies: each lane owns the
+task's full PGS sequence and integrates its admitted bodies. Up to 128
+independent tasks share a workgroup. Batches
 containing dependent or larger tasks retain workgroup-per-task execution.
 The dispatch choice remains resident and does not add a CPU decision or a
 numerical submission. The host provides bounded numerical allocations, not an

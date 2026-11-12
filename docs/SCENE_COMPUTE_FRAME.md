@@ -23,19 +23,21 @@ GPU dynamics.
 | Phase | CPU authority | Device work | Host observation |
 | --- | --- | --- | --- |
 | Admit | Validate authored edits and sparse identities | Consume compact input changes | None |
-| Broadphase | Preserve stable shape/actor and filter ownership | Bounds, overlap history, found/lost delta counters | Only when identity admission changes |
-| Contact | Resolve new manager identities as required | PCM witnesses, persistent touch history, compact event flags | Only for CPU consumers and exceptional contact admission |
+| Broadphase | Preserve stable shape/actor and filter ownership | Bounds, overlap history, found/lost delta counters | Current: fetch SAP reports before Sc admission; target: reconcile only identity changes |
+| Contact | Resolve new manager identities as required | PCM witnesses, persistent touch history, compact event flags | Current: join witnesses for Sc correlation; target: observe only records with CPU consumers |
 | Island and constraint preparation | Author stable joints, body/manager identities and iteration policy | Build accurate numerical components, partitions and rows | None for already admitted topology |
 | Dynamics | Own timestep, requested outputs and commit policy | PGS, integration, sleep and force/impulse reductions | Final publication |
 | Publish | Validate the completed transaction; update public CPU views | Write compact completion status and requested results | One ordinary completion fence |
 
 A GPU-generated topology delta cannot become an unadmitted contact manager.
-An indirect device gate suppresses numerical continuation requiring new
-identities; Sc reconciles the compact found/lost stream, then resumes the
-same transaction. Stable-topology frames record the full GPU numerical
-continuation without that host stop. Contact touch changes still determine
-accurate connectivity from the actual GPU contact history, not speculative
-broadphase overlap.
+Sc currently fetches SAP reports and joins GPU contact witnesses when CPU
+correlation needs them. Those host consumers remain mandatory until their
+work is replaced by an equivalent same-transaction continuation. The
+required stable-topology path permits device-dependent numerical work to
+proceed without a host stop; a device gate must suppress work that needs
+new contact-manager identities until Sc reconciles the delta. Contact touch
+changes determine accurate connectivity from physical GPU contact history,
+not speculative broadphase overlap.
 
 Host callbacks, mixed CPU Gu interactions, externally requested body state,
 and failure recovery may require additional explicit boundaries. Their
@@ -78,10 +80,14 @@ resources. Persistent histories use a single owner and an explicit
 commit/undo boundary. A failed epoch cannot expose speculative contacts,
 motion, or events through the public Scene.
 
-The ordinary stable-topology path completes SAP, PCM, island generation,
-Dy and numerical writeback in device order before the Scene observes its
-required results. GPU-generated indirect arguments supply bounded work
-counts; they never authorize new persistent identities.
+The current production path joins SAP found/lost reports for Sc admission
+and GPU PCM witnesses for CPU correlation. For frames whose responding
+islands each have one constraint and at most two bodies, Sc provides the
+numerical task ranges directly and Dy executes independent tasks in packed
+GPU lanes. Other compact workloads may use transient device island
+admission to split coarse task groups. This admission never authorizes
+persistent contact identities. Device numerical work remains queue-ordered
+until its actual Sc publication consumer requires completion.
 
 When topology requires CPU reconciliation, the device produces a compact
 reason and delta stream, and suppresses dependent work. Sc validates and
