@@ -114,6 +114,9 @@ temporary hybrid boundary; record its cost and the consumer that requires it.
 
 ### Binding scene execution graph
 
+The memory placement, topology reconciliation and publication contract is
+specified in [Scene-owned compute frame](SCENE_COMPUTE_FRAME.md).
+
 The scene owns **one simulation transaction** and one dependency graph across
 CPU and device work. A function call is not a completion edge. Every stage
 declares its producer, consumers, residency, possible host observation and

@@ -207,7 +207,7 @@ SourceSapUpdateAdmission advance_source_sap_frame_native(
                 members.broadphase_descriptor.updateData_fpBounds));
         gpu_box_transforms->stage.append(
             stream,gpu_box_transforms->addresses,
-            gpu_box_transforms->input_device.getDevicePtr(),gpu_bounds,
+            gpu_box_transforms->input_address(),gpu_bounds,
             gpu_box_transforms->cached_transforms.getDevicePtr(),
             gpu_box_transforms->cached_geometry.getDevicePtr(),
             gpu_box_transforms->convex_vertices.getDevicePtr(),

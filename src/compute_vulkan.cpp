@@ -101,6 +101,8 @@ std::vector<DeviceCandidate> find_compute_devices(VkInstance instance) {
             info.vendor_id = properties.vendorID;
             info.device_id = properties.deviceID;
             info.api_version = properties.apiVersion;
+            info.unified_memory =
+                properties.deviceType == VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU;
             VkPhysicalDeviceMemoryProperties memory{};
             vkGetPhysicalDeviceMemoryProperties(physical, &memory);
             for (std::uint32_t m = 0; m < memory.memoryTypeCount; ++m) {
@@ -115,6 +117,14 @@ std::vector<DeviceCandidate> find_compute_devices(VkInstance instance) {
                              (VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT |
                               VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT))
                     info.has_device_local_host_visible_memory = true;
+                if(info.unified_memory &&
+                   (flags & (VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT |
+                             VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+                             VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)) ==
+                            (VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT |
+                             VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+                             VK_MEMORY_PROPERTY_HOST_COHERENT_BIT))
+                    info.supports_shared_frame_input = true;
             }
             // Coarse memory-heap capability only: actual VkBuffer
             // memoryTypeBits are validated by make_buffer at allocation.
@@ -709,9 +719,15 @@ struct Context::Impl {
             vkGetBufferMemoryRequirements(device, resource.buffer, &requirements);
             VkPhysicalDeviceMemoryProperties properties{};
             vkGetPhysicalDeviceMemoryProperties(physical, &properties);
-            const VkMemoryPropertyFlags required = placement == MemoryPlacement::HostVisible
-                ? (VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)
-                : VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
+            const VkMemoryPropertyFlags required =
+                placement == MemoryPlacement::SharedLocal
+                    ? (VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT |
+                       VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+                       VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)
+                    : placement == MemoryPlacement::HostVisible
+                        ? (VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+                           VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)
+                        : VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
 
             std::uint32_t type_index = properties.memoryTypeCount;
             // Prefer non-mappable device-local memory when available.
@@ -722,7 +738,8 @@ struct Context::Impl {
                         (flags & required) != required) {
                         continue;
                     }
-                    if (placement == MemoryPlacement::DeviceLocal && pass == 0 &&
+                    if (placement == MemoryPlacement::DeviceLocal &&
+                        pass == 0 &&
                         (flags & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) != 0) {
                         continue;
                     }
@@ -814,12 +831,14 @@ struct Context::Impl {
     }
 
     bool buffer_is_host_visible(BufferId id) const {
-        return get(id).placement == MemoryPlacement::HostVisible;
+        return get(id).placement == MemoryPlacement::HostVisible ||
+            get(id).placement == MemoryPlacement::SharedLocal;
     }
 
     void* map_buffer(BufferId id, HostMapAccess /*access*/) {
         auto& buffer = get(id);
-        if (buffer.placement != MemoryPlacement::HostVisible)
+        if (buffer.placement != MemoryPlacement::HostVisible &&
+            buffer.placement != MemoryPlacement::SharedLocal)
             throw std::invalid_argument("Vulkan buffer is not host-visible");
         if (buffer.cpu_mapped)
             throw std::logic_error("Vulkan buffer already CPU mapped");

@@ -90,12 +90,13 @@ public:
           encoding_(context_,take_shader(shaders,NativeGpuSapStage::TranslateAabbs)),
           box_transforms_(context_,take_shader(shaders,NativeGpuSapStage::BoxTransformBounds)),
           box_input_(allocators_.deviceAlloc,physx::PxsHeapStats::eBROADPHASE),
+          frame_input_(context_,addresses_),
           box_cache_(allocators_.deviceAlloc,physx::PxsHeapStats::eBROADPHASE),
           box_geometry_(allocators_.deviceAlloc,physx::PxsHeapStats::eBROADPHASE),
           convex_vertices_(allocators_.deviceAlloc,physx::PxsHeapStats::eBROADPHASE),
           convex_surface_(allocators_.deviceAlloc,physx::PxsHeapStats::eNARROWPHASE),
           box_owners_{box_transforms_,box_input_,box_cache_,box_geometry_,
-                      convex_vertices_},
+                      convex_vertices_,0u,&frame_input_},
           lowering_(addresses_,encoding_),
           created_(context_,take_shader(shaders,NativeGpuSapStage::CreatedPairs)),
           radix_(context_,take_shader(shaders,NativeGpuSapStage::RadixInitialize),take_shader(shaders,NativeGpuSapStage::RadixCount),
@@ -627,7 +628,9 @@ private:
 
     AabbEncodingStage encoding_;
     SourceScBoxTransformBoundsNativeStage box_transforms_;
-    physx::PxgCudaBuffer box_input_,box_cache_,box_geometry_,convex_vertices_;
+    physx::PxgCudaBuffer box_input_;
+    SourceFrameInputArenaNative frame_input_;
+    physx::PxgCudaBuffer box_cache_,box_geometry_,convex_vertices_;
     physx::PxgCudaBuffer convex_surface_;
     std::vector<std::uint32_t> convex_surface_words_;
     std::uint32_t convex_surface_bytes_=0u;
