@@ -142,6 +142,9 @@ public:
     void commit_step() {
         if(result_pending_)
             throw std::logic_error("Source PCM epoch committed before Sc publication");
+        if(island_work_ready_ && !stream_.commands().empty())
+            throw std::logic_error(
+                "Source Sc island admission committed before numerical submission");
         if(!pcm_transaction_pending_) {
             island_work_ready_=false;
             return;

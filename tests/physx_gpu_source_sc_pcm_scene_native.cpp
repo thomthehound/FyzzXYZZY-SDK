@@ -563,6 +563,14 @@ void verify(fyzz::compute::Backend backend,const char* sap,
         "Fresh source scene unexpectedly owns contact history");
     producer->enqueue_gpu_dy_island_admission(joint_edge,joint_flags,
         physx_gpu::SourceScDeviceIslandSources{0u,0u,1u});
+    bool rejected_unsubmitted_island=false;
+    try {
+        producer->commit_gpu_step();
+    }catch(const std::logic_error&) {
+        rejected_unsubmitted_island=true;
+    }
+    require(rejected_unsubmitted_island,
+        "Unsubmitted device Sc island work committed without a Dy consumer");
     const auto joint_task=physx_gpu::SourceScDeviceIslandFixture::read(*producer);
     require(joint_task.errors==0u &&
             joint_task.runnable_components==1u &&
