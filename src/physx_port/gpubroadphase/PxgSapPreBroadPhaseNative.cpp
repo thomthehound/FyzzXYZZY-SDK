@@ -37,33 +37,29 @@ void validate_pre_broadphase_native(
 
 }
 
-namespace {
-
 // The source AABB manager supplies the changed bitmap and the original
 // Bp update supplies created/updated handles. Bound sparse copies to 32
 // runs so scattered changes avoid full transfers without an unbounded
 // command list. More fragmented updates use the original full transfer.
-struct SourceSapDirtyRanges {
-    std::array<std::pair<physx::PxU32,physx::PxU32>,32u> spans{};
-    std::size_t count=0u;
-};
-
-// Enumerate original changed bits and Bp created/updated handles in
-// ascending order. Independent sparse ranges share the source upload batch.
-std::optional<SourceSapDirtyRanges>
-bounded_dirty_bounds(const physx::Bp::BroadPhaseUpdateData& update,
-                     std::span<const physx::PxU32> changed) {
+// Enumerate changed source handles in ascending order.
+std::optional<SourceSapDirtyRangesNative>
+source_sap_dirty_ranges_native(const physx::Bp::BroadPhaseUpdateData& update,
+                               std::span<const physx::PxU32> changed,
+                               bool include_removed) {
     const auto capacity=update.getCapacity();
     const auto* created=update.getCreatedHandles();
     const auto* updated=update.getUpdatedHandles();
+    const auto* removed=update.getRemovedHandles();
     const auto created_count=update.getNumCreatedHandles();
     const auto updated_count=update.getNumUpdatedHandles();
-    if((created_count && !created) || (updated_count && !updated))
+    const auto removed_count=include_removed?update.getNumRemovedHandles():0u;
+    if((created_count && !created) || (updated_count && !updated) ||
+       (removed_count && !removed))
         throw std::invalid_argument("Source GPU AABB delta handle array missing");
 
-    SourceSapDirtyRanges runs{};
+    SourceSapDirtyRangesNative runs{};
     bool overflow=false;
-    physx::PxU32 ci=0u,ui=0u;
+    physx::PxU32 ci=0u,ui=0u,ri=0u;
     const auto word_count=(std::uint64_t(capacity)+31u)/32u;
     for(std::size_t word=0;word<word_count;++word) {
         physx::PxU32 bits=word<changed.size()?changed[word]:0u;
@@ -82,6 +78,7 @@ bounded_dirty_bounds(const physx::Bp::BroadPhaseUpdateData& update,
         };
         collect(created,created_count,ci);
         collect(updated,updated_count,ui);
+        if(include_removed)collect(removed,removed_count,ri);
         while(bits) {
             const auto handle=static_cast<physx::PxU32>(
                 word*32u+std::countr_zero(bits));
@@ -95,14 +92,12 @@ bounded_dirty_bounds(const physx::Bp::BroadPhaseUpdateData& update,
             bits&=bits-1u;
         }
     }
-    if(ci!=created_count || ui!=updated_count)
+    if(ci!=created_count || ui!=updated_count || ri!=removed_count)
         throw std::out_of_range(
             "Source GPU AABB delta handle outside capacity or unsorted");
     if(overflow)return std::nullopt;
     return runs;
 }
-
-} // namespace
 
 void append_pre_broadphase_native_uploads(
     const physx::Bp::BroadPhaseUpdateData& update,
@@ -138,15 +133,17 @@ void append_pre_broadphase_native_uploads(
     // metadata outside the top-level changed-handle bitmap. Keep their
     // complete source transfer; standalone live edits can use a delta.
     const bool sparse_metadata=source_owned_changes && metadata_resident &&
-        !aggregate_metadata_changes &&
-        update.getNumRemovedHandles()==0u;
+        !aggregate_metadata_changes;
     const bool sparse_bounds=source_owned_changes && bounds_resident &&
         !device_generated_bounds;
     // Determine the interval before modifying any source heap allocation.
     // The same original Sc changed handles own bounds and Bp metadata.
     const auto dirty_ranges=(sparse_bounds || sparse_metadata)
-        ? bounded_dirty_bounds(update,changed_handles)
+        ? source_sap_dirty_ranges_native(update,changed_handles)
         : std::nullopt;
+    const auto metadata_ranges=sparse_metadata && update.getNumRemovedHandles()
+        ?source_sap_dirty_ranges_native(update,changed_handles,true)
+        :dirty_ranges;
 
     // Retain the original allocation conditions and free-first buffer
     // growth semantics. Inactive bounds keep their previous GPU contents;
@@ -174,17 +171,17 @@ void append_pre_broadphase_native_uploads(
                 std::size_t(last-first)*sizeof(physx::PxBounds3)});
         }
     }
-    if(sparse_metadata && dirty_ranges) {
-        for(std::size_t i=0u;i<dirty_ranges->count;++i) {
-            const auto [first,last]=dirty_ranges->spans[i];
+    if(sparse_metadata && metadata_ranges) {
+        for(std::size_t i=0u;i<metadata_ranges->count;++i) {
+            const auto [first,last]=metadata_ranges->spans[i];
             uploads.push_back({
                 buffers.contact_distances.getDevicePtr()+
                     std::uint64_t(first)*sizeof(physx::PxReal),
                 update.getContactDistance()+first,
                 std::size_t(last-first)*sizeof(physx::PxReal)});
         }
-        for(std::size_t i=0u;i<dirty_ranges->count;++i) {
-            const auto [first,last]=dirty_ranges->spans[i];
+        for(std::size_t i=0u;i<metadata_ranges->count;++i) {
+            const auto [first,last]=metadata_ranges->spans[i];
             uploads.push_back({
                 buffers.groups.getDevicePtr()+
                     std::uint64_t(first)*sizeof(physx::PxU32),

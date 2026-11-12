@@ -148,6 +148,16 @@ inline void pre_update_source_sap_aabb_manager_native(
         capacity<=manager.sap.boxes_capacity &&
         manager.volume_data_device.getDevicePtr()!=0u &&
         manager.volume_data_device.getSize()>=volume_bytes;
+    const bool sparse_retired_identity=state_changed &&
+        !manager.has_aggregates &&
+        !update.getNumCreatedHandles() &&
+        update.getNumRemovedHandles()!=0u &&
+        capacity<=manager.sap.boxes_capacity &&
+        manager.volume_data_device.getDevicePtr()!=0u &&
+        manager.volume_data_device.getSize()>=volume_bytes;
+    const auto retired_ranges=sparse_retired_identity
+        ?source_sap_dirty_ranges_native(update,manager.changed.words,true)
+        :std::nullopt;
     if(boxes && boxes->changed.size()>capacity)
         throw std::out_of_range("GPU box transform count exceeds source AABB capacity");
     const auto shape_bytes=boxes
@@ -183,9 +193,20 @@ inline void pre_update_source_sap_aabb_manager_native(
         manager.aggregated.device.allocate(aggregate_bytes,PX_FL);
         manager.volume_data_device.allocate(volume_bytes,PX_FL);
         append_bitmap(uploads,manager.aggregated,aggregate_bytes);
-        if(volume_bytes && !resident_volume_identity)
-            uploads.push_back({manager.volume_data_device.getDevicePtr(),
-                               manager.volume_data.data(),volume_bytes});
+        if(volume_bytes && !resident_volume_identity) {
+            if(sparse_retired_identity && retired_ranges) {
+                for(std::size_t i=0;i<retired_ranges->count;++i) {
+                    const auto [first,last]=retired_ranges->spans[i];
+                    uploads.push_back({
+                        manager.volume_data_device.getDevicePtr()+
+                            std::uint64_t(first)*sizeof(physx::Bp::VolumeData),
+                        manager.volume_data.data()+first,
+                        std::size_t(last-first)*sizeof(physx::Bp::VolumeData)});
+                }
+            }else uploads.push_back({
+                manager.volume_data_device.getDevicePtr(),
+                manager.volume_data.data(),volume_bytes});
+        }
 
         // preBroadPhase follows the manager's original bitmap/volume
         // records without a kernel, copy or fence between them.

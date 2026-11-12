@@ -1081,9 +1081,8 @@ void exercise_source_single_volume_bitmap_lifecycle_native(Context& context) {
             std::size_t(added.getWordCount()+removed.getWordCount()+
                         aggregated.getWordCount()+changed.getWordCount())*
                 sizeof(physx::PxU32)+
-            std::size_t(next.getCapacity())*
-                (sizeof(physx::Bp::VolumeData)+sizeof(physx::PxReal)+
-                 sizeof(physx::Bp::FilterGroup::Enum))+
+            2u*(sizeof(physx::Bp::VolumeData)+sizeof(physx::PxReal)+
+                sizeof(physx::Bp::FilterGroup::Enum))+
             sizeof(physx::PxBounds3);
         if(stream.submission_stats().upload_batches!=
                before_sparse.upload_batches+1u ||
@@ -1101,6 +1100,31 @@ void exercise_source_single_volume_bitmap_lifecycle_native(Context& context) {
            std::fabs(copied_bounds[36u].minimum.x-2.f)>1.e-6f)
             throw std::runtime_error(
                 "Sparse GPU bounds update corrupted a quiet source volume");
+        const auto gpu_volume=addresses.resolve(
+            volumeGpu.getDevicePtr(),volumes.size()*sizeof(physx::Bp::VolumeData));
+        std::array<physx::Bp::VolumeData,40u> copied_volumes{};
+        context.download(gpu_volume.buffer,gpu_volume.offset,
+                         copied_volumes.data(),sizeof(copied_volumes));
+        if(copied_volumes[36u].getUserData()!=nullptr ||
+           copied_volumes[2u].getUserData()!=&actorB)
+            throw std::runtime_error(
+                "Sparse source retirement did not update device VolumeData");
+        const auto gpu_distances=addresses.resolve(
+            distancesGpu.getDevicePtr(),offsets.size()*sizeof(physx::PxReal));
+        std::array<physx::PxReal,40u> copied_distances{};
+        context.download(gpu_distances.buffer,gpu_distances.offset,
+                         copied_distances.data(),sizeof(copied_distances));
+        const auto gpu_groups=addresses.resolve(
+            groupsGpu.getDevicePtr(),groups.size()*sizeof(physx::Bp::FilterGroup::Enum));
+        std::array<physx::Bp::FilterGroup::Enum,40u> copied_groups{};
+        context.download(gpu_groups.buffer,gpu_groups.offset,
+                         copied_groups.data(),sizeof(copied_groups));
+        if(copied_groups[36u]!=physx::Bp::FilterGroup::eINVALID ||
+           copied_distances[36u]!=0.0f ||
+           std::fabs(copied_distances[2u]-0.125f)>1.e-6f ||
+           copied_groups[2u]!=physx::Bp::getFilterGroup_Dynamics(99u,false))
+            throw std::runtime_error(
+                "Sparse source retirement left stale device AABB metadata");
         const auto removedGpuWords=addresses.resolve(
             removedGpu.getDevicePtr(),removed.getWordCount()*sizeof(physx::PxU32));
         observed={};
