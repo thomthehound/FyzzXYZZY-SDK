@@ -4869,7 +4869,7 @@ int main(int argc,char** argv) {
             require(std::string_view(argv[6])=="gpu-first",
                     "Unknown hardware scenario execution-order selector");
         require(scenario=="all" || scenario=="scene" ||
-                scenario=="aggregate_coupled" ||
+                scenario=="sap_overlap" || scenario=="aggregate_coupled" ||
                 scenario=="sparse_contacts" || scenario=="coupled_stack" ||
                 scenario=="coupled_solver" || scenario=="single_island" ||
                 scenario=="legacy_gu_solver" ||
@@ -4913,8 +4913,10 @@ int main(int argc,char** argv) {
         verify_rigid_shader_requirements(backend,argv[3]);
         if(scenario=="all" || scenario=="compound_shapes")
             fyzz::tests::measure_gpu_case("sc_pcm","compound_shapes",
+                [&]{verify_compound_shape_gpu_pairs(backend,argv[1]);});
+        if(scenario=="all" || scenario=="sap_overlap")
+            fyzz::tests::measure_gpu_case("sc_pcm","sap_overlap",
                 [&]{
-                    verify_compound_shape_gpu_pairs(backend,argv[1]);
                     verify_sap_overlap_rejection_rebuild(backend,argv[1]);
                     verify_sc_only_dirty_sap_skip(backend,argv[1]);
                 });

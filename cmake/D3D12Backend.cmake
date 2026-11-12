@@ -1084,6 +1084,11 @@ if(FYZZXYZZY_BUILD_D3D12)
       LIBRARIES FyzzXYZZY::NativeGpuWorldD3D12
       DEPENDS fyzzxyzzy_native_gpu_sap_shaders_d3d12 fyzzxyzzy_native_gpu_aggregate_shaders_d3d12 fyzzxyzzy_native_gpu_pcm_shaders_d3d12 fyzzxyzzy_source_dy_distance_shader_d3d12 fyzzxyzzy_source_dy_convex_shader_d3d12
       ARGS ${_sc_pcm_scene_args} scene)
+    add_test(NAME fyzzxyzzy_source_sc_gpu_pcm_scene_sap_overlap_d3d12
+      COMMAND fyzzxyzzy_source_sc_gpu_pcm_scene_d3d12
+        ${_sc_pcm_scene_args} sap_overlap)
+    set_tests_properties(fyzzxyzzy_source_sc_gpu_pcm_scene_sap_overlap_d3d12
+      PROPERTIES TIMEOUT 60)
     add_test(NAME fyzzxyzzy_source_sc_gpu_pcm_scene_aggregate_coupled_d3d12
       COMMAND fyzzxyzzy_source_sc_gpu_pcm_scene_d3d12
         ${_sc_pcm_scene_args} aggregate_coupled
