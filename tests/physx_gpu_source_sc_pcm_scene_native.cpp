@@ -972,6 +972,27 @@ void verify(fyzz::compute::Backend backend,const char* sap,
                 sizeof(physx_gpu::SourcePcmGpuContactStreamNative),
         "Rejected late primitive upload contaminated the next PCM epoch");
     producer->commit_gpu_step();
+    // A collision-only epoch has no Dy submission to publish CPU Gu
+    // touch history. Commit must finish the existing source transaction.
+    const auto collision_only_edge=std::max(edge,sphere_edge)+1u;
+    const std::array<native::GpuGuTouchRecord,1> collision_only_touch{{
+        {collision_only_edge,1u}
+    }};
+    std::array<native::GpuPcmBoxResult,1> collision_only_result{};
+    producer->enqueue_gpu_pcm_box_contacts(
+        request,collision_only_result,collision_only_edge+1u);
+    producer->enqueue_cpu_gu_touch_history(collision_only_touch);
+    producer->finish_gpu_pcm_box_contacts();
+    const auto before_commit_batches=
+        producer->stream_submission_stats().command_batches;
+    producer->commit_gpu_step();
+    const auto after_commit_batches=
+        producer->stream_submission_stats().command_batches;
+    const auto committed_touch=physx_gpu::SourceScDeviceIslandFixture::touch(
+        *producer,collision_only_edge);
+    require(after_commit_batches==before_commit_batches+1u &&
+            committed_touch[0]==1u && committed_touch[1]==0u,
+        "Collision-only Gu touch did not finish its source transaction");
 }
 
 // A PCM readback may remain pending while independent Dy integration

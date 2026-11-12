@@ -152,7 +152,7 @@ public:
         // A collision-only publication has no Dy device consumer to
         // retire the primitive upload. Complete it at the existing Sc
         // transaction commit, after independent island publication.
-        if(host_upload_pending_) {
+        if(host_upload_pending_ || gu_touch_count_!=0u) {
             stream_.wait_at_fetch();
             host_upload_pending_=false;
         }
