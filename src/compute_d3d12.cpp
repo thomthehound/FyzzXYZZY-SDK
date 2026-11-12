@@ -344,9 +344,9 @@ struct Context::Impl {
     // The largest completed source relocation scratch can serve later
     // submissions. In-flight command lists retain their own allocation.
     ComPtr<ID3D12Resource> completed_copy_scratch;
-    // Each in-flight result owns its READBACK resource until publication.
-    // Only completed staging is available for reuse.
-    ComPtr<ID3D12Resource> completed_readback;
+    static constexpr std::size_t kReadbackCacheSize=4u;
+    std::array<ComPtr<ID3D12Resource>,kReadbackCacheSize> completed_readbacks_{};
+    std::size_t readback_cached_=0u;
     struct PendingReadback {
         std::size_t bytes=0;
         ComPtr<ID3D12Resource> staging;
@@ -938,6 +938,38 @@ struct Context::Impl {
         std::span<const DownloadSpan> sources;
     };
 
+    ComPtr<ID3D12Resource> acquire_readback(std::size_t bytes) {
+        std::size_t selected=readback_cached_;
+        for(std::size_t i=0u;i<readback_cached_;++i)
+            if(completed_readbacks_[i]->GetDesc().Width>=bytes &&
+               (selected==readback_cached_ ||
+                completed_readbacks_[i]->GetDesc().Width<
+                    completed_readbacks_[selected]->GetDesc().Width))
+                selected=i;
+        if(selected==readback_cached_)
+            return allocate_resource(device.Get(),bytes,
+                D3D12_HEAP_TYPE_READBACK,D3D12_RESOURCE_FLAG_NONE,
+                D3D12_RESOURCE_STATE_COPY_DEST);
+        auto result=std::move(completed_readbacks_[selected]);
+        completed_readbacks_[selected]=
+            std::move(completed_readbacks_[--readback_cached_]);
+        completed_readbacks_[readback_cached_].Reset();
+        return result;
+    }
+    void recycle_readback(ComPtr<ID3D12Resource> staging) {
+        if(readback_cached_<completed_readbacks_.size()) {
+            completed_readbacks_[readback_cached_++]=std::move(staging);
+            return;
+        }
+        std::size_t smallest=0u;
+        for(std::size_t i=1u;i<readback_cached_;++i)
+            if(completed_readbacks_[i]->GetDesc().Width<
+               completed_readbacks_[smallest]->GetDesc().Width)
+                smallest=i;
+        if(staging->GetDesc().Width>
+           completed_readbacks_[smallest]->GetDesc().Width)
+            completed_readbacks_[smallest]=std::move(staging);
+    }
     SubmissionId submit_download_batch(
             std::span<const DownloadSpan> downloads,
             const std::vector<BatchCommand>& producer = {}) {
@@ -954,11 +986,7 @@ struct Context::Impl {
             bytes+=item.bytes;
         }
         std::vector<DownloadSpan> outputs(downloads.begin(),downloads.end());
-        auto staging=std::move(completed_readback);
-        if(!staging || staging->GetDesc().Width<bytes)
-            staging=allocate_resource(device.Get(),bytes,
-                D3D12_HEAP_TYPE_READBACK,D3D12_RESOURCE_FLAG_NONE,
-                D3D12_RESOURCE_STATE_COPY_DEST);
+        auto staging=acquire_readback(bytes);
         const ReadbackTail tail{staging.Get(),downloads};
         const SubmissionId id=submit_batch(producer,false,&tail);
         try {
@@ -996,9 +1024,7 @@ struct Context::Impl {
         }
         auto staging=std::move(pending.staging);
         pending_readbacks_.erase(it);
-        if(!completed_readback ||
-           completed_readback->GetDesc().Width<staging->GetDesc().Width)
-            completed_readback=std::move(staging);
+        recycle_readback(std::move(staging));
     }
 
     void download_batch(std::span<const DownloadSpan> downloads) {

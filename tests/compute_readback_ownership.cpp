@@ -66,6 +66,22 @@ int main() {
             if(second[i]!=input[20u+i])
                 throw std::runtime_error(
                     "Abandoning one readback lost an independent result");
+        for(std::uint32_t round=0u;round<6u;++round) {
+            first.fill(sentinel);
+            second.fill(sentinel);
+            const auto earlier=context.submit_download_batch(small);
+            const auto later=context.submit_download_batch(large);
+            context.finish_download_batch(later,true);
+            context.finish_download_batch(earlier,true);
+            for(std::size_t i=0u;i<first.size();++i)
+                if(first[i]!=input[i])
+                    throw std::runtime_error(
+                        "Reused small readback staging lost source data");
+            for(std::size_t i=0u;i<second.size();++i)
+                if(second[i]!=input[20u+i])
+                    throw std::runtime_error(
+                        "Reused large readback staging lost source data");
+        }
         context.destroy_buffer(gpu);
         std::cout<<"Compute independent readback ownership PASS\n";
         return 0;

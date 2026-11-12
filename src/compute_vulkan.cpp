@@ -324,10 +324,13 @@ struct Context::Impl {
     // completion and must never fail from host allocation pressure.
     std::array<CachedBatch, kMaxCachedBatches> cached_batches{};
     std::size_t cached_batch_count = 0;
-    // Every in-flight readback owns its destination until publication.
-    // A completed buffer is retained for reuse by the next submission.
-    BufferId readback_staging_ = 0;
-    std::size_t readback_staging_bytes_ = 0;
+    struct ReadbackStaging {
+        BufferId buffer=0u;
+        std::size_t capacity=0u;
+    };
+    static constexpr std::size_t kReadbackCacheSize=4u;
+    std::array<ReadbackStaging,kReadbackCacheSize> readback_cache_{};
+    std::size_t readback_cached_=0u;
     struct PendingReadback {
         BufferId staging=0;
         std::size_t bytes=0;
@@ -1067,6 +1070,35 @@ struct Context::Impl {
         release_buffer(staging);
     }
 
+    ReadbackStaging acquire_readback(std::size_t bytes) {
+        std::size_t selected=readback_cached_;
+        for(std::size_t i=0u;i<readback_cached_;++i)
+            if(readback_cache_[i].capacity>=bytes &&
+               (selected==readback_cached_ ||
+                readback_cache_[i].capacity<readback_cache_[selected].capacity))
+                selected=i;
+        if(selected==readback_cached_)
+            return {create_buffer(bytes,MemoryPlacement::HostVisible,false),bytes};
+        const auto result=readback_cache_[selected];
+        readback_cache_[selected]=readback_cache_[--readback_cached_];
+        readback_cache_[readback_cached_]={};
+        return result;
+    }
+    void recycle_readback(ReadbackStaging staging) {
+        if(readback_cached_<readback_cache_.size()) {
+            readback_cache_[readback_cached_++]=staging;
+            return;
+        }
+        std::size_t smallest=0u;
+        for(std::size_t i=1u;i<readback_cached_;++i)
+            if(readback_cache_[i].capacity<readback_cache_[smallest].capacity)
+                smallest=i;
+        if(staging.capacity>readback_cache_[smallest].capacity) {
+            retire_buffer(readback_cache_[smallest].buffer);
+            readback_cache_[smallest]=staging;
+        }else
+            retire_buffer(staging.buffer);
+    }
     SubmissionId submit_download_batch(
             std::span<const DownloadSpan> downloads,
             std::vector<BatchCommand>* producer = nullptr) {
@@ -1083,11 +1115,7 @@ struct Context::Impl {
             bytes+=item.bytes;
         }
         std::vector<DownloadSpan> outputs(downloads.begin(),downloads.end());
-        const auto spare_capacity=readback_staging_bytes_;
-        const bool reuse=readback_staging_ && spare_capacity>=bytes;
-        const BufferId staging=reuse?std::exchange(readback_staging_,0u)
-            :create_buffer(bytes,MemoryPlacement::HostVisible,false);
-        if(reuse)readback_staging_bytes_=0u;
+        const auto staging=acquire_readback(bytes);
         std::vector<BatchCommand> local;
         auto& batch=producer?*producer:local;
         const auto original=batch.size();
@@ -1097,20 +1125,17 @@ struct Context::Impl {
             batch.reserve(original+downloads.size());
             for(const auto& item:downloads) {
                 batch.emplace_back(CopyCommand{
-                    item.source,item.source_offset,staging,offset,item.bytes});
+                    item.source,item.source_offset,staging.buffer,offset,item.bytes});
                 offset+=item.bytes;
             }
             id=submit_batch(batch);
             batch.erase(batch.begin()+original,batch.end());
             pending_readbacks_.emplace(id,PendingReadback{
-                staging,bytes,std::move(outputs)});
+                staging.buffer,staging.capacity,std::move(outputs)});
         } catch(...) {
             batch.erase(batch.begin()+original,batch.end());
-            if(reuse && !id) {
-                readback_staging_=staging;
-                readback_staging_bytes_=spare_capacity;
-            }else
-                retire_buffer(staging);
+            if(id)retire_buffer(staging.buffer);
+            else recycle_readback(staging);
             throw;
         }
         return id;
@@ -1137,15 +1162,9 @@ struct Context::Impl {
             }
             vkUnmapMemory(device,buffer.memory);
         }
-        const BufferId staging=pending.staging;
-        const std::size_t capacity=pending.bytes;
+        const ReadbackStaging staging{pending.staging,pending.bytes};
         pending_readbacks_.erase(it);
-        if(capacity>readback_staging_bytes_) {
-            if(readback_staging_)retire_buffer(readback_staging_);
-            readback_staging_=staging;
-            readback_staging_bytes_=capacity;
-        }else
-            retire_buffer(staging);
+        recycle_readback(staging);
     }
 
     void download_batch(std::span<const DownloadSpan> downloads) {
