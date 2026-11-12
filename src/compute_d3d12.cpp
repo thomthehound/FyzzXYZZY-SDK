@@ -1803,7 +1803,7 @@ SubmissionId Context::submit_download_batch(
     return impl_->submit_download_batch(downloads);
 }
 SubmissionId Context::submit_batch_with_readback(
-        const std::vector<BatchCommand>& commands,
+        std::vector<BatchCommand>& commands,
         std::span<const DownloadSpan> downloads) {
     return impl_->submit_download_batch(downloads,commands);
 }

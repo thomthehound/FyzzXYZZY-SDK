@@ -1069,7 +1069,7 @@ struct Context::Impl {
 
     SubmissionId submit_download_batch(
             std::span<const DownloadSpan> downloads,
-            const std::vector<BatchCommand>& producer = {}) {
+            std::vector<BatchCommand>* producer = nullptr) {
         if(downloads.empty())
             throw std::invalid_argument("Empty Vulkan GPU readback batch");
         if(pending_readback_.submission)
@@ -1095,18 +1095,25 @@ struct Context::Impl {
                 bytes,MemoryPlacement::HostVisible,false);
             readback_staging_bytes_=bytes;
         }
-        std::vector<BatchCommand> copies;
-        copies.reserve(producer.size()+downloads.size());
-        copies.insert(copies.end(),producer.begin(),producer.end());
+        std::vector<BatchCommand> local;
+        auto& batch=producer?*producer:local;
+        const auto original=batch.size();
+        batch.reserve(original+downloads.size());
         std::size_t offset=0;
-        for(const auto& item:downloads) {
-            copies.emplace_back(CopyCommand{
-                item.source,item.source_offset,readback_staging_,offset,
-                item.bytes});
-            offset+=item.bytes;
+        try {
+            for(const auto& item:downloads) {
+                batch.emplace_back(CopyCommand{
+                    item.source,item.source_offset,readback_staging_,offset,
+                    item.bytes});
+                offset+=item.bytes;
+            }
+            const SubmissionId id=submit_batch(batch);
+            batch.erase(batch.begin()+original,batch.end());
+            pending_readback_.submission=id;
+        } catch(...) {
+            batch.erase(batch.begin()+original,batch.end());
+            throw;
         }
-        const SubmissionId id=submit_batch(copies);
-        pending_readback_.submission=id;
         pending_readback_.bytes=bytes;
         return id;
     }
@@ -2150,9 +2157,9 @@ SubmissionId Context::submit_download_batch(
     return impl_->submit_download_batch(downloads);
 }
 SubmissionId Context::submit_batch_with_readback(
-        const std::vector<BatchCommand>& commands,
+        std::vector<BatchCommand>& commands,
         std::span<const DownloadSpan> downloads) {
-    return impl_->submit_download_batch(downloads,commands);
+    return impl_->submit_download_batch(downloads,&commands);
 }
 void Context::finish_download_batch(SubmissionId id,bool publish) {
     impl_->finish_download_batch(id,publish);
