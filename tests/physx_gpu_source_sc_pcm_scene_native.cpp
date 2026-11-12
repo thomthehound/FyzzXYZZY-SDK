@@ -1005,6 +1005,8 @@ void verify_device_sc_dy_indirect_api(
     const std::array<native::GpuPcmBoxPair,0> no_pairs{};
     std::array<native::GpuPcmBoxResult,0> no_witness{};
     producer->enqueue_gpu_pcm_box_contacts(no_pairs,no_witness);
+    const auto batches_before_admission=
+        producer->stream_submission_stats().command_batches;
     const std::array<std::uint32_t,3> nodes{{
         4u|(1u<<8u)|physx_gpu::source_sc_device_island_active_bit,
         physx_gpu::source_sc_device_island_nonresponding_bit,
@@ -1013,6 +1015,9 @@ void verify_device_sc_dy_indirect_api(
     scene_producer.enqueue_gpu_dy_island_admission(
         std::span<const native::GpuDyIslandEdge>{},nodes,
         physx_gpu::SourceScDeviceIslandSources{});
+    require(producer->stream_submission_stats().command_batches==
+                batches_before_admission,
+        "Sc island admission submitted before its numerical consumer");
     std::array<native::GpuDyDistanceBody,3> bodies{};
     bodies[0].inverse_mass=bodies[2].inverse_mass=1.f;
     const std::array<std::uint32_t,2> ordinals{{0u,2u}};
@@ -1047,7 +1052,9 @@ void verify_device_sc_dy_indirect_api(
         bodies,{},{},{},ordinals,tasks,
         {},{},{},{},{},{},{},{},
         inputs,poses,true,{},true,true,true,sleep);
-    require(producer->has_queued_gpu_dy_distance() &&
+    require(producer->stream_submission_stats().command_batches==
+                batches_before_admission+1u &&
+            producer->has_queued_gpu_dy_distance() &&
             producer->dy_launch_stats().device_island_indirect_dispatches==1u &&
             producer->dy_launch_stats().device_generated_bytes==
                 sizeof(tasks)+sizeof(ordinals) &&
