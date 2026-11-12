@@ -2440,6 +2440,34 @@ void verify_cpu_gu_gpu_dy_solver(
 // retaining its independent SAP, PCM and contact-edge publication.
 
 
+void verify_aggregate_snapshot_in_producer_submission(
+    fyzz::compute::Backend backend,const char* sap,const char* aggregate) {
+    using namespace fyzz;
+    native::Scene gpu;
+    auto owner=std::make_unique<physx_gpu::SourceScOwnedGpuBroadphaseNative>(
+        backend,load_native_gpu_sap_shaders(backend,sap),128u,128u,
+        load_native_gpu_aggregate_shaders(backend,aggregate));
+    auto* producer=owner.get();
+    gpu.set_gpu_broadphase(std::move(owner));
+    const auto group=gpu.create_aggregate(2u,false);
+    const auto actor=gpu.add_dynamic_box(
+        {0.5f,0.5f,0.5f},{0.f,0.83f,0.f},1.f,group);
+    const auto support=gpu.add_static_box(
+        {0.5f,0.5f,0.5f},{0.f,0.f,0.f});
+    const auto before=producer->stream_submission_stats();
+    gpu.advance_collision(true);
+    const auto after=producer->stream_submission_stats();
+    require(after.fused_readbacks==before.fused_readbacks+1u &&
+            after.readback_submissions==before.readback_submissions,
+            "Aggregate SAP snapshot used a second GPU readback submission");
+    require(std::any_of(gpu.contacts().begin(),gpu.contacts().end(),
+                        [actor,support](const auto& contact) {
+                            return contact.pair==native::Pair{
+                                std::min(actor,support),std::max(actor,support)};
+                        }),
+            "Fused aggregate SAP snapshot lost Sc contact membership");
+}
+
 void verify_integrated_aggregate_gpu_pipeline(
     fyzz::compute::Backend backend,const char* sap,const char* pcm,
     const char* dy_path,const char* convex_path,const char* aggregate) {
@@ -4880,8 +4908,12 @@ int main(int argc,char** argv) {
             require(argc==7 && has_convex_shader,
                 "Integrated aggregate scene needs the aggregate manifest");
             fyzz::tests::measure_gpu_case("sc_pcm","aggregate_coupled",
-                [&]{verify_integrated_aggregate_gpu_pipeline(
-                    backend,argv[1],argv[2],argv[3],argv[4],argv[6]);});
+                [&]{
+                    verify_aggregate_snapshot_in_producer_submission(
+                        backend,argv[1],argv[6]);
+                    verify_integrated_aggregate_gpu_pipeline(
+                        backend,argv[1],argv[2],argv[3],argv[4],argv[6]);
+                });
         }
         if(scenario=="all" || scenario=="plane_only_pcm")
             fyzz::tests::measure_gpu_case("sc_pcm","plane_only_pcm",
