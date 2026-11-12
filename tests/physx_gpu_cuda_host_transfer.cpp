@@ -34,6 +34,7 @@
 #include <iostream>
 #include <limits>
 #include <stdexcept>
+#include <string>
 #include <type_traits>
 #include <utility>
 #include <vector>
@@ -964,7 +965,17 @@ void exercise_source_single_volume_bitmap_lifecycle_native(Context& context) {
            stream.submission_stats().upload_spans!=
                before_fragmented.upload_spans+11u)
             throw std::runtime_error(
-                "Separated source created handles reuploaded unchanged SAP metadata");
+                "Sparse SAP upload expected bytes=" +
+                std::to_string(expected_sparse_fragment_bytes) +
+                " spans=11 batches=1, observed bytes=" +
+                std::to_string(stream.submission_stats().upload_bytes -
+                               before_fragmented.upload_bytes) +
+                " spans=" +
+                std::to_string(stream.submission_stats().upload_spans -
+                               before_fragmented.upload_spans) +
+                " batches=" +
+                std::to_string(stream.submission_stats().upload_batches -
+                               before_fragmented.upload_batches));
         stream.wait_at_fetch();
 
         // Source processFoundPairs/processLostPairs retire these host bits
