@@ -162,8 +162,10 @@ frames without creating a second scene or discarding contact history.
 - **Placement:** choose CPU or GPU stages from whole-frame cost, including CPU
   preparation, kernel time, dispatch, synchronization, transfer traffic and
   publication. Sparse structural work and bounded analytic Gu contacts may
-  remain on the CPU. Broadphase, batched contact work and numerical Dy use GPU
-  acceleration where their total cost justifies it. Executor changes invalidate
+  remain on the CPU. Incremental CPU SAP and dense GPU SAP are competing
+  execution choices, not universal policies. GPU bounds/contact residency
+  changes their crossover. Batched contact work and numerical Dy use GPU
+  acceleration where total cost justifies it. Executor changes invalidate
   affected device pose caches without rebuilding unrelated shape state.
 - **Dependencies:** keep GPU-produced records resident when their consumers
   can use them directly. A PCM witness fetch is permitted when Sc genuinely
@@ -203,12 +205,15 @@ must compile and pass their available functional gates. A complete SDK feature
 inventory and physical-GPU performance acceptance are separate milestones.
 
 **Hardware qualification:** profile quiet and changing mixed-primitive scenes
-at 1K, 10K and 100K active bodies where supported, wide connected networks,
-many independent islands and authored topology churn. Record numerical quality,
-CPU and GPU critical paths, peak allocations, dispatches, transferred bytes and
-waits. Measure CPU/GPU solver crossovers and switching costs before installing
-an automatic selection policy. WARP and software Vulkan validate functional
-behavior, not native GPU throughput.
+at 1K, 10K and 100K active bodies where supported, varying the fraction of
+moving shapes and found/lost pair density separately. Include wide connected
+networks, independent islands and authored topology churn. Record numerical
+quality, CPU and GPU critical paths, peak allocations, dispatches, transferred
+bytes and waits. Build and qualify an equivalent CPU SAP -> GPU PCM -> GPU Dy
+production configuration before selecting a broadphase crossover; the current
+GPU World does not provide that placement. Measure CPU/GPU solver crossovers
+and switching costs before installing any automatic selection policy. WARP and
+software Vulkan validate functional behavior, not native GPU throughput.
 
 ### Geometry — primitives, convex, meshes and queries
 

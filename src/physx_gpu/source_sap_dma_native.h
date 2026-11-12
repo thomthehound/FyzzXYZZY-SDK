@@ -76,26 +76,27 @@ public:
                                          upload.data, upload.bytes});
         }
         if (resolved_uploads_.empty()) return;
-        // Snapshot source memory now, then retain upload/dispatch order in
-        // one native command batch. A later shader may consume these bytes
-        // without forcing an intermediate queue submission.
-        std::vector<compute::BatchCommand> commands;
-        commands.reserve(resolved_uploads_.size());
-        for(const auto& span:resolved_uploads_) {
+        // Validate the whole group before appending owned snapshots to the
+        // ordered source command stream. No intermediate command vector.
+        for(const auto& span:resolved_uploads_)
             if(span.destination_offset%4u || span.bytes%4u)
                 throw std::invalid_argument(
                     "PhysX source upload requires aligned buffer bytes");
-            compute::UploadCommand command;
-            command.destination=span.destination;
-            command.destination_offset=span.destination_offset;
-            command.bytes.resize(span.bytes);
-            std::memcpy(command.bytes.data(),span.data,span.bytes);
-            commands.emplace_back(std::move(command));
+        const auto original_size=pending_.size();
+        pending_.reserve(original_size+resolved_uploads_.size());
+        try {
+            for(const auto& span:resolved_uploads_) {
+                compute::UploadCommand command;
+                command.destination=span.destination;
+                command.destination_offset=span.destination_offset;
+                command.bytes.resize(span.bytes);
+                std::memcpy(command.bytes.data(),span.data,span.bytes);
+                pending_.emplace_back(std::move(command));
+            }
+        } catch(...) {
+            pending_.erase(pending_.begin()+original_size,pending_.end());
+            throw;
         }
-        pending_.reserve(pending_.size()+commands.size());
-        pending_.insert(pending_.end(),
-            std::make_move_iterator(commands.begin()),
-            std::make_move_iterator(commands.end()));
         ++stats_.upload_batches;
         stats_.upload_spans += resolved_uploads_.size();
 #if defined(FYZZXYZZY_PROFILE_GPU)

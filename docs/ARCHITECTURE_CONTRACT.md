@@ -112,6 +112,51 @@ A placement change without a demonstrated critical-path benefit is not
 progress toward the GPU-performance gate. Correctness may justify a
 temporary hybrid boundary; record its cost and the consumer that requires it.
 
+### Stage placement and dataflow qualification
+
+An accelerator is a consumer of packed, parallel work, not a replacement
+for Sc command processing or a second runtime authority. Each source stage
+specifies its input residency, produced data, CPU consumers, device consumers,
+queue dependencies, persistent state, and retirement boundary. Placement is
+chosen for the complete producer-to-consumer chain, not isolated kernel time.
+
+- **Broadphase:** incremental CPU SAP is a candidate for sparse endpoint
+  crossings and low pair churn; GPU SAP is a candidate for large dynamic
+  sets and GPU-resident bounds/contact consumers. Neither is required for
+  every scene. Keep the existing single authoritative BP pair history in
+  each configuration. Selection is explicit until workload crossover and
+  state-transition costs justify runtime switching.
+- **Narrowphase:** CPU analytic/contact-modification work may contribute
+  bounded records to the device stream. Dense GPU PCM must feed GPU
+  numerical preparation without a routine full witness round trip.
+  Stable contact-manager identity does not require CPU observation of
+  every contact point. New identities, callbacks, and CPU friction
+  consumers have explicit reconciliation edges.
+- **Topology and solver:** CPU Sc owns persistent manager and island
+  identity. Device-connected components and response worklists are
+  transient numerical products only when they expose more parallelism
+  than CPU-prepared task spans. Never build both task sets merely to choose
+  between them after the work is done.
+- **Storage:** compact CPU-authored inputs may use direct coherent UMA
+  allocations when supported; hot numerical arrays use GPU-preferred
+  storage. Shared addressing does not eliminate cache-coherence costs,
+  producer/consumer barriers or fences. Discrete GPU paths stage only
+  the necessary deltas and outputs.
+- **Scheduling:** batch dependent dispatches on the existing ordered queue;
+  submit once per useful command segment, not once per translated source
+  kernel. CPU work independent of a pending GPU segment may overlap it.
+  Do not insert a host wait to relay device-produced records between
+  device consumers. A host join names its actual CPU consumer.
+
+Compare placements on the same production Scene with matching geometry,
+contact density, moving fraction and numerical quality. Capture quiet,
+sparse-motion, dense-motion and high-churn frames at 1K, 10K and 100K
+bodies where supported. Record full-frame p50/p95, CPU enqueue/prepare/join,
+actual GPU work and queue idle time, submissions, barriers, uploads,
+readbacks, peak residency and device/host state reconstruction. An isolated
+CPU or GPU SAP microbenchmark cannot establish a frame-level winner; a
+configuration lacking an equivalent production path remains unqualified.
+
 ### Binding scene execution graph
 
 The memory placement, topology reconciliation and publication contract is
@@ -126,7 +171,7 @@ another simulation scheduler.
 | Stage | Authority and work placement | Required successor |
 | --- | --- | --- |
 | Admit | CPU validates authored changes, sparse handles, filters and topology edits; device mirrors only the inputs needed for execution | Sparse changes and device uploads become visible before their consumers |
-| Broadphase | GPU processes dense bounds, persistent overlap history and reports; CPU admits or retires stable contact-manager identities from required report deltas | Manager admission precedes new contact work |
+| Broadphase | CPU or GPU executes the selected overlap algorithm; Sc owns the stable shape and contact-manager identities | Manager admission precedes newly identified contact work |
 | Narrowphase | Each manager has one numerical Gu producer, CPU or GPU. GPU-owned witnesses and contact history remain resident where they have GPU consumers | The actual Gu touch, not speculative overlap, determines accurate connectivity; Sc may join witnesses needed for CPU correlation |
 | Frame topology | CPU Sc owns persistent identity, active island routing and public graph. Transient GPU admission splits compact numerical groups where it exposes useful independent tasks | Sc task ranges or device-admitted ranges supply Dy without a second persistent graph |
 | Dynamics | CPU or GPU Dy consumes the prepared rigid contact, joint and body streams. Execution can change between completed frames in the same Scene | Each selected numerical stage completes before authoritative Sc writeback and publication |

@@ -103,6 +103,7 @@ void exercise_reused_source_submission_scratch(Context& context) {
     third.fill(0u);
 
     const auto before=stream.submission_stats();
+    const auto pending_before=stream.commands().size();
     auto& invalid_group=stream.upload_scratch();
     invalid_group.push_back({base+160u,third.data(),sizeof(third)});
     invalid_group.push_back({base+bytes,third.data(),sizeof(third)});
@@ -110,7 +111,8 @@ void exercise_reused_source_submission_scratch(Context& context) {
     try {stream.queue_uploads(invalid_group);}
     catch(const std::out_of_range&){rejected=true;}
     if(!rejected || stream.submission_stats().upload_batches!=
-            before.upload_batches)
+            before.upload_batches ||
+       stream.commands().size()!=pending_before)
         throw std::runtime_error(
             "Invalid reused source upload group partially submitted");
 

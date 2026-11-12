@@ -4,8 +4,9 @@
 
 The native Scene owns one simulation transaction. CPU code owns persistent
 actor/shape identity, authored changes, filtering, stable contact-manager
-handles, application callbacks, and commit/rollback. The GPU executes dense
-numerical work for that transaction. It does not own a second scene,
+handles, application callbacks, and commit/rollback. The CPU and GPU execute
+stages according to input residency, parallelism, and end-to-end cost.
+The device does not own a second scene,
 contact-manager registry, island lifetime, or command scheduler.
 
 The Scene builds an ordered dependency graph. The compute backend records
@@ -23,26 +24,44 @@ GPU dynamics.
 | Phase | CPU authority | Device work | Host observation |
 | --- | --- | --- | --- |
 | Admit | Validate authored edits and sparse identities | Consume compact input changes | None |
-| Broadphase | Preserve stable shape/actor and filter ownership | Bounds, overlap history, found/lost delta counters | Current: fetch SAP reports before Sc admission; target: reconcile only identity changes |
-| Contact | Resolve new manager identities as required | PCM witnesses, persistent touch history, compact event flags | Current: join witnesses for Sc correlation; target: observe only records with CPU consumers |
-| Island and constraint preparation | Author stable joints, body/manager identities and iteration policy | Build accurate numerical components, partitions and rows | None for already admitted topology |
+| Broadphase | Own actor/shape/filter identities and explicit CPU SAP when selected | GPU SAP tracks bounds and overlap history when selected | Current GPU SAP fetches report deltas before Sc admission; target: only topology changes require Sc reconciliation |
+| Contact | Resolve new managers, mixed Gu contacts, callbacks and CPU correlation consumers | PCM witnesses, touch history, numerical contact stream | Current: CPU correlation joins GPU witnesses; target: device consumers use resident records directly |
+| Island and constraint preparation | Own stable graph and admit required task/identity changes | Build transient numerical components, partitions and rows where useful | CPU-prepared tasks or device admission, not both without a consumer |
 | Dynamics | Own timestep, requested outputs and commit policy | PGS, integration, sleep and force/impulse reductions | Final publication |
-| Publish | Validate the completed transaction; update public CPU views | Write compact completion status and requested results | One ordinary completion fence |
+| Publish | Validate the completed transaction; update required public CPU views | Write status, deltas and requested results | One completion join on the uninterrupted path; earlier joins only for actual CPU dependencies |
 
 A GPU-generated topology delta cannot become an unadmitted contact manager.
 Sc currently fetches SAP reports and joins GPU contact witnesses when CPU
-correlation needs them. Those host consumers remain mandatory until their
-work is replaced by an equivalent same-transaction continuation. The
-required stable-topology path permits device-dependent numerical work to
-proceed without a host stop; a device gate must suppress work that needs
-new contact-manager identities until Sc reconciles the delta. Contact touch
-changes determine accurate connectivity from physical GPU contact history,
-not speculative broadphase overlap.
+correlation needs them. The production Scene has not yet removed that general
+PCM-to-Sc join. Stable admitted identities permit device-dependent numerical
+work to continue without a host stop once the required source inputs are
+ready. A device gate must reject or suppress work needing new identities
+until Sc reconciles the delta in the same transaction. Contact touch, not
+speculative broadphase overlap, determines accurate connectivity.
 
 Host callbacks, mixed CPU Gu interactions, externally requested body state,
 and failure recovery may require additional explicit boundaries. Their
 consumers and synchronization edges are part of the frame contract, not
 unconditional waits added by individual kernels.
+
+## Work placement and synchronization
+
+CPU SAP is a candidate for sparse endpoint crossings when bounds are already
+available to the CPU; GPU SAP is a candidate for dynamic, resident workloads.
+A standalone SAP benchmark is insufficient: account for downloading bounds,
+re-uploading pairs, Sc reconciliation and the location of downstream PCM.
+The current native GPU World selects GPU SAP at construction; CPU SAP feeding
+GPU PCM/Dy is not yet an equivalent production configuration and must not be
+represented as measured. Avoid automatic placement changes without physical
+crossover evidence and a proven single-owner history transition.
+
+For each stage, establish input and output residency and the first real CPU
+consumer before adding a synchronization edge. Queue dependency order is
+sufficient between GPU producers and GPU consumers. Fence only for CPU
+observation, resource reuse, rollback or public publication. CPU work may
+prepare independent authored records during an outstanding GPU submission.
+Avoid dispatches solely for orchestration or copying records that could be
+consumed from an existing device allocation.
 
 ## Memory and access
 
@@ -81,14 +100,15 @@ commit/undo boundary. A failed epoch cannot expose speculative contacts,
 motion, or events through the public Scene.
 
 The current production path joins SAP found/lost reports for Sc admission
-and GPU PCM witnesses for CPU correlation. Sc's GPU path retains the prepared accurate-island task boundaries.
-Independent one-constraint islands with one or two responding bodies
-execute as packed GPU lanes; dependent compact islands execute as
-ordinary fused workgroups within the same ordered stream. The device
-does not reconstruct Scene's authoritative connected components. Explicit
-producer-side device admission is separate from this Scene path and
-cannot authorize persistent contact identities. Device numerical work remains queue-ordered
-until its actual Sc publication consumer requires completion.
+and GPU PCM witnesses for CPU correlation. GPU Dy can enqueue its solve
+before the host result join and consume resident numerical task records when
+transient device admission is justified. Sc otherwise reuses CPU-prepared
+accurate-island task boundaries. Independent one-constraint islands with one
+or two responding bodies execute in packed GPU lanes; dependent compact
+islands use fused workgroups. Device-generated roots are numerical task IDs,
+not replacements for Sc's persistent island identities. The Scene still
+prepares solver inputs and performs CPU-required result publication; a
+continuous stable-topology PCM-to-Dy path remains open.
 
 When topology requires CPU reconciliation, the device produces a compact
 reason and delta stream, and suppresses dependent work. Sc validates and
@@ -107,7 +127,8 @@ A scheduling or memory-placement change is accepted only with:
    stream scheduler, or unconditional bulk device-to-host witness transfer.
 3. Hardware telemetry for whole-frame p50/p95, CPU enqueue/join,
    actual queue submissions, upload/readback bytes, GPU stage times,
-   memory placement and committed arena capacity.
+   memory placement and committed arena capacity. Broadphase placement
+   comparisons vary motion fraction and pair churn separately from body count.
 4. Vulkan and D3D12 physical correctness and performance qualification;
    WARP and software Vulkan are functional checks, not performance evidence.
 5. Explicit retirement of any redundant source-stream/transfer plumbing
