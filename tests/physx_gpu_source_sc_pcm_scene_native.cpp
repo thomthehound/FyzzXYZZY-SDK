@@ -185,15 +185,6 @@ struct GpuPcmFrictionAnchorFixture {
     static std::uint32_t contact_manager_edge(const Scene& scene,Pair shapes) {
         return scene.contact_edge_index(shapes);
     }
-    static std::string island_source_edges(const Scene& scene) {
-        std::string result;
-        for(const auto& edge:scene.gpu_dy_island_edges_) {
-            result+=" ["+std::to_string(edge.edge_index)+":"+
-                std::to_string(edge.source_index)+":"+
-                std::to_string(edge.kind)+"]";
-        }
-        return result;
-    }
     static bool source_bp_contains(const Scene& scene,Pair shapes) {
         return scene.sap_pairs_.find(shapes)!=Scene::SapPairManager::invalid;
     }
@@ -2811,8 +2802,6 @@ void verify_mixed_gu_pcm_gpu_dy_solver(
                         " body_count="+std::to_string(admission.device_admitted_bodies)+
                         " response_count="+std::to_string(admission.device_admitted_descriptors)+
                         " source_count="+std::to_string(admission.device_colored_descriptors)+
-                        " input_edges="+native::GpuPcmFrictionAnchorFixture::
-                            island_source_edges(gpu)+
                         " resident_contacts="+physx_gpu::SourceScDeviceIslandFixture::
                             contact_records(*producer)+
                         [&]{
