@@ -1397,7 +1397,8 @@ private:
     void prepare_unconstrained_velocities(float seconds);
     void publish_kinematic_targets();
     void update_pairs();
-    void update_gpu_pairs(bool force_update);
+    void update_gpu_pairs(bool force_update,
+                          const std::function<void()>& independent_sc_work);
     void publish_pairs();
     void update_contacts();
     // Original contact-manager addEdge/setEdgeConnected/removeConnection

@@ -2308,7 +2308,8 @@ void Scene::set_gpu_dy_enabled(bool enabled) {
 // Source GPU fetch -> Sc pair stream. This is the same pending pair and
 // contact-edge publication used by the native CPU branch, but it never
 // calls BpBroadPhaseSap or reads that implementation's endpoint registry.
-void Scene::update_gpu_pairs(bool force_update) {
+void Scene::update_gpu_pairs(
+    bool force_update,const std::function<void()>& independent_sc_work) {
     FYZZ_PROFILE_SCOPE("sap.update_fetch");
     // Full input rebuilds are required for Sc admission/shape edits.
     // afterIntegration patches the changed source body entries directly
@@ -2392,6 +2393,7 @@ void Scene::update_gpu_pairs(bool force_update) {
         FYZZ_PROFILE_SCOPE("sap.source_advance");
         return gpu_broadphase_->advance_overlapping(
             gpu_broadphase_boxes_,force_update,dirty_,[&] {
+                independent_sc_work();
                 if(preflight_planes)prepare_plane_candidates();
             });
     }();
@@ -11360,25 +11362,19 @@ void Scene::advance_collision(bool force_update) {
 void Scene::advance_collision_internal(
     bool force_update,bool checkpointed) {
     FYZZ_PROFILE_SCOPE("sc.collision_pipeline");
-    speculative_connectivity_prepared_=false;
-    gpu_pcm_friction_history_masks_.clear();
-    // Begin one complete source publication. The first pass can rebuild
-    // island membership before third-pass lost-edge repair, so preserve
-    // any resulting sleep candidates across both passes of this frame.
-    speculative_split_sleep_candidates_.clear();
-    // Previous mActivatedEdges flags are consumed at this wake boundary.
-    clear_activated_edges(checkpointed);
-    // This also serves geometry-only queries. Never publish last frame's
-    // solved force-buffer values against an unsolved contact stream.
-    normal_impulse_writeback_.clear();
-    friction_impulse_writeback_.clear();
-    // A collision-only advance is NOT equivalent to a completed
-    // simulate/fetch. The next successful Scene::step can publish this
-    // generation again, after its dependent solver stages finish.
-    solved_result_frame_=0;
-    // This clears only the exposed reports; prior exceeded-force state
-    // must survive collision queries until the next simulation step.
-    threshold_changes_.clear();
+    // Sc retirement and event clearing do not consume SAP reports or
+    // change source AABB inputs. On GPU frames, execute this work after
+    // the SAP producer submits but before its host-facing fetch joins.
+    const auto prepare_sc_publication=[&] {
+        speculative_connectivity_prepared_=false;
+        gpu_pcm_friction_history_masks_.clear();
+        speculative_split_sleep_candidates_.clear();
+        clear_activated_edges(checkpointed);
+        normal_impulse_writeback_.clear();
+        friction_impulse_writeback_.clear();
+        solved_result_frame_=0;
+        threshold_changes_.clear();
+    };
     // ScPipeline.cpp CPU ordering:
     // BP first pass -> BP update -> post-BP pair publication ->
     // Gu narrowphase -> physical touch publication.
@@ -11387,7 +11383,10 @@ void Scene::advance_collision_internal(
     // when selected. CPU SAP must not even prepare its endpoint state.
     // SAP executes its required final bounds/history convergence after
     // motion, then skips unchanged quiet frames.
-    if(gpu_broadphase_)update_gpu_pairs(force_update);
+    if(gpu_broadphase_)
+        update_gpu_pairs(force_update,prepare_sc_publication);
+    else
+        prepare_sc_publication();
     if (dirty_ || force_update ||
         (gpu_broadphase_ &&
          (broadphase_pair_membership_changed_ ||
