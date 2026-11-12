@@ -709,6 +709,10 @@ public:
     // Select numerical Dy execution between completed frames. Sc, SAP,
     // PCM, contact history and published body state retain one owner.
     void set_gpu_dy_enabled(bool enabled);
+    // Select the resident Sc island/response ordering for compact GPU
+    // task graphs. GPU-generated touch controls connectivity; Sc retains
+    // persistent identities and result publication.
+    void set_gpu_dy_device_admission_enabled(bool enabled);
     Scene(Scene&&) = default;
     Scene& operator=(Scene&&) = default;
     // Configured only at World construction, before scene admission.
@@ -1468,6 +1472,7 @@ private:
     void erase_friction_history(std::uint32_t id,bool body_scope);
     void wake_shape_partners(ShapeId id);
     void publish_cpu_gu_touch_history();
+    void prepare_gpu_dy_device_islands();
     void solve_gpu_distance_constraints(float seconds);
     void solve_constraint_task(std::size_t task_index);
     void integrate_solver_task(std::size_t task_index,float seconds,
@@ -2163,6 +2168,8 @@ private:
     std::vector<std::uint32_t> gpu_dy_body_ordinals_;
     std::vector<GpuGuTouchRecord> gpu_dy_gu_touches_;
     std::vector<GpuDyDistanceTask> gpu_dy_tasks_;
+    std::vector<GpuDyIslandEdge> gpu_dy_island_edges_;
+    std::vector<std::uint32_t> gpu_dy_island_node_flags_;
     std::vector<float> gpu_dy_contact_forces_;
     std::vector<GpuDyGuContactInput> gpu_dy_gu_inputs_;
     std::vector<GpuDyFrictionAnchorImpulse> gpu_dy_friction_impulses_;
@@ -2269,6 +2276,7 @@ private:
     // cached shape views are reused, never a duplicate SAP/pair registry.
     std::unique_ptr<GpuBroadphaseProducer> gpu_broadphase_;
     bool gpu_dy_enabled_=true;
+    bool gpu_dy_device_admission_enabled_=false;
     bool gpu_dy_active() const noexcept {
         return gpu_dy_enabled_ && gpu_broadphase_ &&
             gpu_broadphase_->has_gpu_dy_distance();

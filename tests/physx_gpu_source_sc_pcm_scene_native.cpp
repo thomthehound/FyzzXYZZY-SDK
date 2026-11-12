@@ -1929,7 +1929,7 @@ void verify_coupled_rigid_stack(
 
 void verify_gpu_single_island_hybrid_solver(
     fyzz::compute::Backend backend,const char* sap,
-    const char* pcm,const char* dy_shader) {
+    const char* pcm,const char* dy_shader,bool resident_admission=false) {
     using namespace fyzz;
     std::ifstream file(dy_shader,std::ios::binary);
     require(bool(file),"Source Dy shader bundle missing");
@@ -1947,6 +1947,7 @@ void verify_gpu_single_island_hybrid_solver(
         load_native_gpu_pcm_shaders(backend,pcm),std::move(shader));
     auto* producer=owner.get();
     gpu.set_gpu_broadphase(std::move(owner));
+    gpu.set_gpu_dy_device_admission_enabled(resident_admission);
     cpu.add_static_box({0.5f,0.5f,0.5f},{0.f,0.f,0.f});
     gpu.add_static_box({0.5f,0.5f,0.5f},{0.f,0.f,0.f});
     std::array<BodyId,2> a{},b{};
@@ -1984,8 +1985,12 @@ void verify_gpu_single_island_hybrid_solver(
                 producer->dy_gpu_integrated_body_count()==2u+free_count &&
                 schedule.device_colored_tasks>0u &&
                 schedule.device_colored_descriptors>0u &&
-                schedule.device_island_indirect_dispatches==0u,
-            "Single accurate island redundantly rebuilt its numerical schedule");
+                schedule.device_island_indirect_dispatches==
+                    (resident_admission?1u:0u) &&
+                (!resident_admission ||
+                 (schedule.device_admitted_tasks==1u &&
+                  schedule.source_descriptor_upload_bytes==0u)),
+            "Single accurate island did not use its selected numerical schedule");
         for(std::size_t i=0;i<a.size();++i)
             test::compound_compare_state(
                 gpu.body_state(b[i]),cpu.body_state(a[i]),0.03f,
@@ -4886,6 +4891,7 @@ int main(int argc,char** argv) {
                 scenario=="star_island_10k" ||
                 scenario=="free_integration" ||
                 scenario=="device_admission" ||
+                scenario=="device_admission_scene" ||
                 scenario=="indirect_api" ||
                 scenario=="hardware_scene_1k" ||
                 scenario=="hardware_scene_10k" ||
@@ -4957,6 +4963,10 @@ int main(int argc,char** argv) {
             fyzz::tests::measure_gpu_case("sc_pcm","device_admission",
                 [&]{verify_device_sc_dy_task_admission(
                     backend,argv[1],argv[2],argv[3]);});
+        if(scenario=="device_admission_scene")
+            fyzz::tests::measure_gpu_case("sc_pcm","device_admission_scene",
+                [&]{verify_gpu_single_island_hybrid_solver(
+                    backend,argv[1],argv[2],argv[3],true);});
         if(scenario=="all" || scenario=="scene")
             fyzz::tests::measure_gpu_case("sc_pcm","scene",
                 [&]{
