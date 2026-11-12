@@ -5,6 +5,8 @@
 #include "physx_gpu/source_sap_scene_bounds.h"
 #include "physx_port/gpubroadphase/PxgAabbManagerVolumeLifecycleNative.h"
 
+#include <algorithm>
+#include <bit>
 #include <span>
 #include <stdexcept>
 
@@ -27,7 +29,8 @@ prepare_source_sap_single_volume_scene_native(
     bool bounds_changed,
     SourceSapSceneBoundsScratch& scratch,
     std::vector<SourceScBoxTransformInputNative>* gpu_records = nullptr,
-    SourceSapDeviceCachedPoseNative* cached_poses = nullptr) {
+    SourceSapDeviceCachedPoseNative* cached_poses = nullptr,
+    bool validated_sc_snapshot = false) {
     // Source volume state and preBroadPhase must reference the exact
     // same original AABB-manager host arrays (not independently cloned
     // bounds, distance or group storage).
@@ -46,7 +49,7 @@ prepare_source_sap_single_volume_scene_native(
     if(live_boxes.size()!=live_handles.size())
         throw std::invalid_argument(
             "Source Sc volumes and live geometry counts disagree");
-    for(std::size_t i=0;i<live_handles.size();++i) {
+    if(!validated_sc_snapshot)for(std::size_t i=0;i<live_handles.size();++i) {
         const auto handle=live_handles[i];
         if(handle>=source_volume_actors.size() ||
            source_volume_actors[handle]!=live_boxes[i].id)
@@ -84,6 +87,61 @@ prepare_source_sap_single_volume_scene_native(
         {}, // PxgAABBManager::updateBPSecondPass always passes zero updated handles.
         {handles.removed.begin(),handles.removed.size()},
         {manager.changed.getWords(),manager.changed.getWordCount()}};
+    if(validated_sc_snapshot) {
+        // Sc has already validated and retained the sorted shape/handle roster.
+        // Source created/changed bits select its actual dirty geometry without
+        // scanning every unchanged actor for another SAP frame.
+        auto& indices=scratch.dirty_indices;
+        indices.clear();
+        const auto select=[&](physx::Bp::ShapeHandle handle,bool required) {
+            if(handle>=source_volume_actors.size() || handle>=arrays.bounds.size())
+                throw std::out_of_range("Source SAP dirty volume exceeds Sc allocation");
+            const auto actor=source_volume_actors[handle];
+            const auto found=std::lower_bound(
+                live_boxes.begin(),live_boxes.end(),actor,
+                [](const native::GpuBroadphaseBox& box,BodyId id) {
+                    return box.id<id;
+                });
+            if(found==live_boxes.end() || found->id!=actor) {
+                if(required || manager.groups[handle]!=physx::Bp::FilterGroup::eINVALID)
+                    throw std::invalid_argument(
+                        "Source SAP dirty volume is missing from Sc geometry");
+                return;
+            }
+            const auto index=static_cast<std::size_t>(found-live_boxes.begin());
+            if(live_handles[index]!=handle)
+                throw std::invalid_argument(
+                    "Source SAP dirty volume has mismatched Sc handle");
+            indices.push_back(index);
+        };
+        for(const auto handle:changes.created)select(handle,true);
+        for(const auto handle:changes.updated)select(handle,true);
+        for(std::size_t word=0;word<changes.changed_bitmap_words.size();++word) {
+            auto bits=changes.changed_bitmap_words[word];
+            while(bits) {
+                const auto bit=static_cast<std::size_t>(std::countr_zero(bits));
+                select(static_cast<physx::Bp::ShapeHandle>(word*32u+bit),false);
+                bits&=bits-1u;
+            }
+        }
+        std::sort(indices.begin(),indices.end());
+        indices.erase(std::unique(indices.begin(),indices.end()),indices.end());
+        scratch.selected_boxes.clear();
+        scratch.selected_handles.clear();
+        scratch.selected_boxes.reserve(indices.size());
+        scratch.selected_handles.reserve(indices.size());
+        for(const auto index:indices) {
+            scratch.selected_boxes.push_back(live_boxes[index]);
+            scratch.selected_handles.push_back(live_handles[index]);
+        }
+        // Geometry validation remains all-or-nothing over the changed set.
+        // Removed handles are checked against that set by the same source
+        // update constructor; they cannot reenter the numerical stream.
+        return prepare_source_sap_scene_update(
+            scratch.selected_boxes,scratch.selected_handles,arrays,changes,
+            filter,manager.persistent_state_changed || bounds_changed,
+            manager.gpu_state_changed,scratch,true,gpu_records,cached_poses);
+    }
     return prepare_source_sap_scene_update(
         live_boxes,live_handles,arrays,changes,filter,
         manager.persistent_state_changed || bounds_changed,

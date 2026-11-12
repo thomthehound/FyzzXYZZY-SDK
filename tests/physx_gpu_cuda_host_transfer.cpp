@@ -970,6 +970,23 @@ void exercise_source_single_volume_bitmap_lifecycle_native(Context& context) {
         // after successful fetch; the next frame reuses the same allocations.
         clear_source_sap_single_volume_report_bitmaps_native(manager);
         persistent=false;gpu=false;
+        // The Sc-owned snapshot is sorted by shape ID. Only changed
+        // source handles enter the bounded preparation path.
+        mark_source_sap_single_volume_changed_native(manager,2u,0.02f);
+        const std::array<Box,2u> sorted_boxes{live_boxes[1],live_boxes[0]};
+        const std::array<physx::Bp::ShapeHandle,2u> sorted_handles{2u,36u};
+        (void)prepare_source_sap_single_volume_scene_native(
+            manager,{created,retired,updated},sorted_boxes,sorted_handles,
+            sourceActorIds,sceneBounds,filter,true,sceneScratch,
+            nullptr,nullptr,true);
+        if(sceneScratch.selected_boxes.size()!=1u ||
+           sceneScratch.selected_handles.size()!=1u ||
+           sceneScratch.selected_boxes[0].id!=2u ||
+           sceneScratch.selected_handles[0]!=2u)
+            throw std::runtime_error(
+                "Sparse source SAP recomputed an unchanged Sc volume");
+        changed.clear();
+        persistent=false;gpu=false;
         if(remove_source_sap_single_volume_actor_native(manager,identity,2u))
             throw std::runtime_error("Previously admitted volume was cancelled");
         add_source_sap_single_volume_actor_native(

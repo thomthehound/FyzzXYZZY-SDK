@@ -35,6 +35,8 @@ struct SourceSapSceneBoundsScratch {
     std::vector<std::uint32_t> visit_epochs;
     std::vector<physx::PxBounds3> prepared_bounds;
     std::vector<std::size_t> dirty_indices;
+    std::vector<native::GpuBroadphaseBox> selected_boxes;
+    std::vector<physx::Bp::ShapeHandle> selected_handles;
     std::uint32_t epoch=0;
 };
 

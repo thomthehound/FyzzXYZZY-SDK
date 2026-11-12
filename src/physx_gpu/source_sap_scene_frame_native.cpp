@@ -364,7 +364,8 @@ SourceSapSceneFrameNativeResult advance_source_sap_owned_scene_frame_native(
         return aabb.prepare(
             inputs.live_boxes,inputs.live_handles,inputs.filter,
             inputs.gpu_box_owners!=nullptr,republish_all,
-            inputs.sc_elements && !republish_all ? &cached_poses : nullptr);
+            inputs.sc_elements && !republish_all ? &cached_poses : nullptr,
+            inputs.sc_elements && !republish_all);
     }();
     if(inputs.sc_elements)aabb.lower_shape_attachment_links(inputs.sc_elements->handles());
     std::optional<SourceSapGpuBoxTransformsNative> gpu_boxes;
