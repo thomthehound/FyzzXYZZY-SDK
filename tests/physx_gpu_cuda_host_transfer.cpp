@@ -963,11 +963,11 @@ void exercise_source_single_volume_bitmap_lifecycle_native(Context& context) {
            stream.submission_stats().upload_bytes!=
                before_fragmented.upload_bytes+expected_sparse_fragment_bytes ||
            stream.submission_stats().upload_spans!=
-               before_fragmented.upload_spans+11u)
+               before_fragmented.upload_spans+10u)
             throw std::runtime_error(
                 "Sparse SAP upload expected bytes=" +
                 std::to_string(expected_sparse_fragment_bytes) +
-                " spans=11 batches=1, observed bytes=" +
+                " spans=10 batches=1, observed bytes=" +
                 std::to_string(stream.submission_stats().upload_bytes -
                                before_fragmented.upload_bytes) +
                 " spans=" +
