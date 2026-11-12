@@ -1513,18 +1513,13 @@ void main(uint3 group:SV_GroupID,uint3 lane:SV_GroupThreadID) {
             admittedTasks=header.y;
         }
     }
-    // The Sc prefix reduces the indirect launch only when every
-    // resident task is a singleton. One GPU lane then owns its
-    // complete PGS epoch without workgroup-wide barriers.
+    // Sc partitions independent compact tasks into packed lane ranges.
     if(phase==fusedTask && devicePartitions && !precolored &&
-       admittedTasks==0xffffffffu) {
-        const uint4 schedule=arena.Load4(p.integrationBias+16u);
-        if(schedule.w!=0u && arena.Load(schedule.w)==24u &&
-           (arena.Load(schedule.w+20u)&4u)!=0u) {
-            const uint task=index*128u+lane.x;
-            if(task<schedule.z)sourceDySolvePackedTask(task);
-            return;
-        }
+       (p.launchControl&0x10000000u)!=0u) {
+        const uint within=group.x*128u+lane.x;
+        const uint count=(p.launchControl&0x0ffffff0u)>>4u;
+        if(within<count)sourceDySolvePackedTask(p.launchBegin+within);
+        return;
     }
     if(phase==fusedTask && devicePartitions && !precolored &&
        admittedTasks>1u &&

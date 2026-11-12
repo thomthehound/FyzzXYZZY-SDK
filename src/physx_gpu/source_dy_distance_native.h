@@ -907,16 +907,16 @@ public:
         // 1D geometry carries the same ordinals in its first row.
         const bool source_descriptors=device_partitions &&
             device_initial_bodies && device_world_motion;
-        const bool host_lane_packed=source_descriptors && !device_admission &&
-            tasks.size()>1u && wide_tasks_.empty() &&
-            std::all_of(tasks.begin(),tasks.end(),[](const auto& task) {
-                return task.descriptor_end==task.descriptor_begin+1u &&
-                       task.partition_end==task.partition_begin+1u &&
-                       task.body_end>task.body_begin &&
-                       task.body_end-task.body_begin<=2u;
-            });
-        last_schedule_.host_lane_packed_tasks=
-            host_lane_packed?tasks.size():0u;
+        const auto lane_task=[](const native::GpuDyDistanceTask& task) {
+            return task.descriptor_end==task.descriptor_begin+1u &&
+                   task.partition_end==task.partition_begin+1u &&
+                   task.body_end>task.body_begin &&
+                   task.body_end-task.body_begin<=2u;
+        };
+        const bool host_lane_packing=source_descriptors && !device_admission &&
+            tasks.size()>1u && wide_tasks_.empty();
+        last_schedule_.host_lane_packed_tasks=host_lane_packing
+            ?std::count_if(tasks.begin(),tasks.end(),lane_task):0u;
         if(device_admission &&
            (!source_descriptors || !device_admission->work ||
             !device_admission->task_dispatch.buffer || tasks.empty()))
@@ -1132,8 +1132,7 @@ public:
             std::memcpy(host_.data()+offsets[15],scratch_header.data(),
                         sizeof(scratch_header));
             if(source_descriptors) {
-                const std::uint32_t mode=device_admission?2u:
-                    (host_lane_packed?5u:1u);
+                const std::uint32_t mode=device_admission?2u:1u;
                 std::memcpy(host_.data()+offsets[15]+20u,
                             &mode,sizeof(mode));
                 if(n && !device_admission)
@@ -1498,6 +1497,27 @@ public:
                 group+=count;
             }
         };
+        const auto launch_packed=[&](std::size_t first,std::size_t count) {
+            dispatch.buffers[2].access=compute::BufferAccess::ReadWrite;
+            dispatch.buffers[3].access=compute::BufferAccess::Write;
+            dispatch.buffers[5].access=compute::BufferAccess::ReadWrite;
+            dispatch.indirect.reset();
+            const auto maximum=std::min<std::size_t>(
+                std::size_t(max_groups)*128u,0x00ffffffu);
+            for(std::size_t offset=0u;offset<count;) {
+                const auto task_count=std::min(maximum,count-offset);
+                params[8]=narrow(first+offset);
+                params[10]=(narrow(task_count)<<4u)|
+                    static_cast<std::uint32_t>(Launch::Fused)|
+                    0x10000000u|0x80000000u|
+                    (compact_friction?0x20000000u:0u);
+                dispatch.groups={narrow((task_count+127u)/128u),1u,1u};
+                std::memcpy(dispatch.push_constants.data(),params.data(),sizeof(params));
+                stream_.commands().emplace_back(dispatch);
+                ++last_schedule_.dispatches;
+                offset+=task_count;
+            }
+        };
         // The coloring dispatch reserves additional workgroups for
         // parallel body initialization, without another submission.
         // Small single-task scenes initialize within their fused group.
@@ -1515,9 +1535,17 @@ public:
         if(device_partitions && !wide_tasks_.empty())
             launch(Launch::Color,{0u,tasks.size()+
                 (device_initial_bodies ? (bodies.size()+127u)/128u : 0u)});
-        launch(Launch::Fused,host_lane_packed
-            ?TileRange{0u,(tasks.size()+127u)/128u}
-            :fused_tiles_);
+        if(last_schedule_.host_lane_packed_tasks) {
+            for(std::size_t first=0u;first<tasks.size();) {
+                const bool packed=lane_task(tasks[first]);
+                std::size_t end=first+1u;
+                while(end<tasks.size() && lane_task(tasks[end])==packed)
+                    ++end;
+                if(packed)launch_packed(first,end-first);
+                else launch(Launch::Fused,{first,end-first});
+                first=end;
+            }
+        }else launch(Launch::Fused,fused_tiles_);
         if(!wide_tasks_.empty()) {
             // The existing arena write dependencies order each dispatch
             // across workgroups. A relative partition from every wide
