@@ -71,11 +71,11 @@ public:
 
     native::GpuBroadphaseReports advance(
         std::span<const native::GpuBroadphaseBox> live_boxes,
-        bool force_update, bool geometry_dirty) override {
-        // Only the owned Sc ElementSim can prove that no source AABB
-        // change has been authored since the last completed fetch.
+        bool force_update, bool /*geometry_dirty*/) override {
+        // Sc ElementSim owns geometry changes and source AABB dirty bits.
+        // Scene contact or constraint bookkeeping does not dirty bounds.
         if(source_sc_elements_ && last_frame_ && !invalidated_ &&
-           !handles_dirty_ && !pending_bounds_ && !geometry_dirty &&
+           !handles_dirty_ && !pending_bounds_ &&
            !force_update && !sap_.force_update() &&
            !aabb_.aggregate_gpu_work_pending()) {
             found_.clear();

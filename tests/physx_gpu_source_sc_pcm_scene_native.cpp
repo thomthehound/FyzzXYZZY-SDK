@@ -419,6 +419,11 @@ void verify_compound_shape_gpu_pairs(
             gpu.source_sap_fetch_count()==initial_fetches+1u &&
             !gpu.last_frame().update.execute_gpu_stages,
         "Unchanged source AABB submitted or fetched another SAP frame");
+    // Source geometry is unchanged even when Sc has unrelated work.
+    const auto contact_only=gpu.advance(shapes,false,true);
+    require(contact_only.found.empty() && contact_only.lost.empty() &&
+            gpu.source_sap_fetch_count()==initial_fetches+1u,
+        "Sc-only dirty state submitted a redundant source GPU SAP frame");
     // ScBodySim changes one rigid actor's motion and refilters every attached
     // ElementSim, even when the shapes overlap each other.
     gpu.set_actor_motion(0u,Motion::Kinematic);
