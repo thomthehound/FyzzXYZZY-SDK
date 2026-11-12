@@ -324,8 +324,8 @@ struct Context::Impl {
     // completion and must never fail from host allocation pressure.
     std::array<CachedBatch, kMaxCachedBatches> cached_batches{};
     std::size_t cached_batch_count = 0;
-    // The synchronous source fetch reuses one completed transfer-only
-    // host-visible readback arena; it never overlaps another GPU fetch.
+    // Readback staging is reused after each completed GPU fetch;
+    // only one borrowed host publication remains outstanding.
     BufferId readback_staging_ = 0;
     std::size_t readback_staging_bytes_ = 0;
     struct PendingReadback {

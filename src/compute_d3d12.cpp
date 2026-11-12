@@ -354,7 +354,6 @@ struct Context::Impl {
         std::vector<DownloadSpan> outputs;
     };
     PendingReadback pending_readback_{};
-    std::vector<BufferId> readback_sources;
     static constexpr std::size_t kMaxRecycled = 8;
     BufferId next_buffer = 1;
     PipelineId next_pipeline = 1;

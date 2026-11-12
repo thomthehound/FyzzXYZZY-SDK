@@ -160,9 +160,9 @@ public:
     // Submit existing source-ordered device commands without a host wait.
     compute::SubmissionId submit() { return flush_gpu_commands(); }
 
-    // Arm the host transfer as soon as its final producer dispatch has
-    // been submitted. The Context owns readback staging until finish_fetch,
-    // so independent source CPU work can overlap both compute and DMA.
+    // Append the readback to pending producer commands when possible.
+    // Context owns the staging and fence until Sc publishes the results;
+    // later GPU continuations can remain queued independently.
     void begin_fetch(std::span<const compute::DownloadSpan> outputs) {
         FYZZ_PROFILE_SCOPE("source.download_enqueue");
         if(pending_fetch_)
