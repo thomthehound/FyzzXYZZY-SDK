@@ -48,6 +48,7 @@ struct SourceScDeviceIslandFixture {
             SourceScOwnedGpuBroadphaseNative& owner,std::uint32_t edge) {
         if(edge>=owner.device_pcm_touch_capacity())
             return {0xffffffffu,0xffffffffu};
+        owner.stream_.wait_at_fetch();
         const auto address=owner.device_pcm_touch_history()+
             std::size_t(edge)*240u+72u;
         const auto view=owner.addresses_.resolve(address,8u);
