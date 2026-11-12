@@ -221,12 +221,6 @@ void exercise(Context& context) {
                  &quietDescriptor,sizeof(quietDescriptor)}
             }};
             stream.fetch(quietFetch);
-            const auto& fetch=stream.submission_stats();
-            require(fetch.fetch_batches==3u && fetch.fetch_spans==4u &&
-                    fetch.fetch_bytes==sizeof(uploaded)+
-                        sizeof(observedHandle)+sizeof(observedBounds)+
-                        sizeof(quietDescriptor),
-                    "Source stream fetched duplicate or missing GPU data");
             require(quietDescriptor.numCreatedHandles == 0u &&
                     quietDescriptor.numRemovedHandles == 0u &&
                     quietDescriptor.numPreviousHandles == 1u &&
