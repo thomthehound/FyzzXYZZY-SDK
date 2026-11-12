@@ -104,14 +104,20 @@ and GPU PCM witnesses for CPU correlation. The Scene explicitly selects
 compact device admission via set_gpu_dy_device_admission_enabled(): Sc passes
 stable contact and joint identities, the GPU reads resident physical touch,
 and Dy consumes generated task/body ranges without host task/ordinal uploads.
+When the Scene selects device admission, the island work and Dy solve enter
+one ordered GPU submission without an intermediate host wait. Island graphs
+with at most 32 nodes and 32 edges build their task records in one dispatch;
+larger graphs use parallel union, prefix and response ordering.
 Wide islands use their separate device-partition execution path; the compact
 admission selection rejects them. Sc otherwise reuses CPU-prepared
 accurate-island task boundaries. Independent one-constraint islands with one
 or two responding bodies execute in packed GPU lanes; dependent compact
 islands use fused workgroups. Device-generated roots are numerical task IDs,
 not replacements for Sc's persistent island identities. The Scene still
-prepares solver inputs and performs CPU-required result publication; a
-continuous stable-topology PCM-to-Dy path remains open.
+prepares solver inputs, joins GPU PCM witnesses for CPU friction correlation,
+and reads back Dy scheduling and numerical results for publication.
+A continuous PCM-to-Dy numerical path without a host witness dependency
+remains open; compact admission alone does not remove that synchronization.
 
 When topology requires CPU reconciliation, the device produces a compact
 reason and delta stream, and suppresses dependent work. Sc validates and

@@ -297,6 +297,27 @@ void verify(Context& context,const char* filename) {
                     std::to_string(errors));
     };
 
+    // The compact one-dispatch path and the larger parallel path must
+    // preserve exactly the same canonical joint-chain task layout.
+    for(const std::uint32_t nodes:{32u,33u}) {
+        std::vector<SourceScDeviceIslandEdge> chain_edges;
+        for(std::uint32_t i=1u;i<nodes;++i)
+            chain_edges.push_back({
+                100u+i,i,i-1u,i-1u,source_sc_device_island_joint_bit});
+        const std::vector<std::uint32_t> flags(
+            nodes,4u|source_sc_device_island_active_bit);
+        const auto result=evaluate(nodes,chain_edges,{},flags);
+        no_errors(result);
+        check_task_mapping(result);
+        require(header(result).runnable_components==1u &&
+                header(result).responding_nodes==nodes &&
+                header(result).admitted_edges==nodes-1u &&
+                header(result).dispatch_x==1u &&
+                task_nodes(result,0u)==nodes &&
+                task_edges(result,0u)==nodes-1u,
+            "Compact and parallel Sc island admission disagree at graph limit");
+    }
+
     std::vector<SourceScDeviceIslandEdge> edges{
         {0u,0u,1u,10u,0u}, // Contact: found
         {31u,1u,2u,11u,source_sc_device_island_joint_bit|
