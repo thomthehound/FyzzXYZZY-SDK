@@ -424,10 +424,11 @@ public:
     void enqueue_gpu_dy_island_admission(
             std::span<const native::GpuDyIslandEdge> edges,
             std::span<const std::uint32_t> node_flags,
-            native::GpuDyIslandSources sources) override {
+            native::GpuDyIslandSources sources,
+            bool defer_to_dy=false) override {
         if(!pcm_)
             throw std::logic_error("Source Sc GPU island admission unavailable");
-        pcm_->enqueue_device_islands(edges,node_flags,sources);
+        pcm_->enqueue_device_islands(edges,node_flags,sources,defer_to_dy);
     }
     CudaDeviceAddressMap::Address device_island_work_address() const noexcept {
         return pcm_?pcm_->device_island_work_address():0u;

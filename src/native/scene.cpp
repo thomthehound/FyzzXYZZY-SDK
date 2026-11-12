@@ -8869,7 +8869,7 @@ void Scene::prepare_gpu_dy_device_islands() {
     gpu_broadphase_->enqueue_gpu_dy_island_admission(
         gpu_dy_island_edges_,gpu_dy_island_node_flags_,
         {narrow(manifolds_.size()),narrow(gpu_dy_rows_.size()),
-         narrow(full_descriptor_cursor)});
+         narrow(full_descriptor_cursor)},true);
 }
 
 void Scene::solve_gpu_distance_constraints(float seconds) {

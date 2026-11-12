@@ -473,7 +473,8 @@ public:
     }
     virtual void enqueue_gpu_dy_island_admission(
         std::span<const GpuDyIslandEdge>,
-        std::span<const std::uint32_t>,GpuDyIslandSources) {
+        std::span<const std::uint32_t>,GpuDyIslandSources,
+        bool /*defer_to_dy*/=false) {
         throw std::logic_error("Device Sc accurate-island admission is unavailable");
     }
     virtual void enqueue_gpu_dy_distance(

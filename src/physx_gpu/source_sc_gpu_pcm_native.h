@@ -617,7 +617,8 @@ public:
     void enqueue_device_islands(
             std::span<const SourceScDeviceIslandEdge> edges,
             std::span<const std::uint32_t> node_flags,
-            SourceScDeviceIslandSources sources) {
+            SourceScDeviceIslandSources sources,
+            bool defer_to_dy=false) {
         if(island_work_ready_ || !device_contact_ready())
             throw std::logic_error(
                 "Device island admission requires one complete queued Gu epoch");
@@ -677,7 +678,9 @@ public:
             island_work_.getDevicePtr()+
                 offsetof(SourceScDeviceIslandHeader,dispatch_x),
             sizeof(compute::DispatchSize));
-        stream_.submit();
+        // Production Dy appends its numerical inputs and solve directly
+        // behind this transaction, so both stages share one submission.
+        if(!defer_to_dy)stream_.submit();
         island_work_ready_=true;
     }
     CudaDeviceAddressMap::Address device_island_work_address() const noexcept {
