@@ -184,28 +184,28 @@ public:
         FYZZ_PROFILE_COUNTER("source.download_bytes",bytes);
     }
 
-    // The submitted readback fence covers all earlier source commands
-    // on this Context queue. Retire the prior submission tokens only
-    // after the independent witness DMA has been published to Sc.
+    // The readback completion covers every preceding source command on
+    // the ordered Context queue. Reap those tokens and the readback with
+    // one fence wait; later device continuations remain outstanding.
     void finish_fetch() {
         FYZZ_PROFILE_SCOPE("source.download_join");
         if(!pending_fetch_)
             throw std::logic_error("Source GPU readback was not armed");
         const auto start=std::chrono::steady_clock::now();
+        const auto preceding=pending_fetch_token_count_;
+        fetch_wait_tokens_.clear();
+        fetch_wait_tokens_.reserve(preceding+1u);
+        fetch_wait_tokens_.insert(fetch_wait_tokens_.end(),
+            tokens_.begin(),tokens_.begin()+preceding);
+        fetch_wait_tokens_.push_back(pending_fetch_);
+        context_.wait_submissions(fetch_wait_tokens_);
+        // Earlier command resources are retired now, even if publishing
+        // the downloaded bytes subsequently fails.
+        tokens_.erase(tokens_.begin(),tokens_.begin()+preceding);
+        pending_fetch_token_count_=0;
         context_.finish_download_batch(pending_fetch_,true);
         pending_fetch_=0;
-        stats_.deferred_submissions_after_fetch+=
-            tokens_.size()-pending_fetch_token_count_;
-        // Later Sc uploads and device-continuation dispatches may already
-        // be queued after this DMA. Their ordered tokens are not host
-        // dependencies of the downloaded Gu witnesses.
-        if(pending_fetch_token_count_) {
-            context_.wait_submissions(std::span<const compute::SubmissionId>(
-                tokens_.data(),pending_fetch_token_count_));
-            tokens_.erase(tokens_.begin(),
-                tokens_.begin()+pending_fetch_token_count_);
-        }
-        pending_fetch_token_count_=0;
+        stats_.deferred_submissions_after_fetch+=tokens_.size();
         const auto elapsed=std::chrono::steady_clock::now()-start;
         ++stats_.fetch_batches;
         stats_.fetch_spans+=pending_fetch_spans_;
@@ -312,7 +312,7 @@ private:
     std::vector<compute::BatchCommand> update_scratch_;
     std::vector<SourceSapUpload> upload_scratch_;
     std::vector<compute::UploadSpan> resolved_uploads_;
-    std::vector<compute::SubmissionId> tokens_;
+    std::vector<compute::SubmissionId> tokens_,fetch_wait_tokens_;
     compute::SubmissionId pending_fetch_=0;
     std::size_t pending_fetch_token_count_=0;
     std::size_t pending_fetch_bytes_=0,pending_fetch_spans_=0;
