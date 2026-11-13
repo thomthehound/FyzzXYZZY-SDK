@@ -8452,7 +8452,15 @@ void Scene::prepare_constraints(float seconds) {
         if(order_end-order_begin!=(resident_order?0u:manifold.count))
             throw std::logic_error(
                 "Source correlation omitted a Gu contact descriptor");
-        for(std::size_t j=0;j<manifold.count;++j) {
+        // The device reconstructs every PCM normal row from the resident
+        // contact stream. Sc needs only the run extent; walking the same
+        // witnesses here would duplicate numerical preparation on the CPU.
+        if(resident_order) {
+            if(manifold.count>
+               std::numeric_limits<std::size_t>::max()-prepared_contact_rows_)
+                throw std::overflow_error("Source PCM numerical row count overflow");
+            prepared_contact_rows_+=manifold.count;
+        } else for(std::size_t j=0;j<manifold.count;++j) {
             const ContactPoint& contact=manifold.points[j];
             const std::size_t patch_id=contact_patch_ids[j];
             const Vec3 normal=header_normals[
