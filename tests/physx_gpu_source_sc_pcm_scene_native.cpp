@@ -1541,9 +1541,13 @@ void verify_device_sc_dy_task_admission(
     }catch(const std::overflow_error&) {
         numerical_rejected=true;
     }
-    require(numerical_rejected && (joint_tasks[0].error&2u)!=0u &&
-            poses[0].valid==0u,
-        "GPU Dy integrated a body after a numerical solve failure");
+    if(!numerical_rejected || (joint_tasks[0].error&2u)==0u ||
+       poses[0].valid!=0u)
+        throw std::runtime_error(
+            "GPU Dy numerical joint rejection failed: rejected=" +
+            std::to_string(numerical_rejected) +
+            " task_error=" + std::to_string(joint_tasks[0].error) +
+            " integrated=" + std::to_string(poses[0].valid));
     producer->invalidate_after_rollback();
 }
 
