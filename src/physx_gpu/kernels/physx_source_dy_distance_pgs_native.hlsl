@@ -102,10 +102,14 @@ void solveJoint(uint4 desc,uint errorAddress,bool biased) {
             sourceDyDot3(axis,va-vb)+sourceDyDot3(ja,aa)-
             sourceDyDot3(jb,ab);
         const float previous=loadScalar(offset+60u);
+        const uint coefficient=arena.Load(offset+(biased?48u:52u));
+        if((coefficient&0x7f800000u)==0x7f800000u) {
+            arena.InterlockedOr(errorAddress,2u);
+            return;
+        }
         precise float velocityTerm=normalDelta*loadScalar(offset+56u);
         precise float force=previous+velocityTerm;
-        precise float candidate=force+
-            loadScalar(offset+(biased?48u:52u));
+        precise float candidate=force+asfloat(coefficient);
         if(!isfinite(candidate) || !isfinite(normalDelta) ||
            !isfinite(previous)) {
             arena.InterlockedOr(errorAddress,2u);
