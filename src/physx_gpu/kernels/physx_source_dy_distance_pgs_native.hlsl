@@ -1660,6 +1660,9 @@ void main(uint3 group:SV_GroupID,uint3 lane:SV_GroupThreadID) {
                 return;
             }
         }
+        // Tiled stages cannot consume a task rejected by an earlier
+        // preparation or coloring phase.
+        if(!fused && arena.Load(endError)!=0u)return;
         // Each phase has one shader call site. Fused groups use workgroup
         // dependencies, while tiled launches use the command stream's
         // device-wide dependencies between the same phases.
