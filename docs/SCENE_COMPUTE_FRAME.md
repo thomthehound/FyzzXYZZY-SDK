@@ -109,10 +109,14 @@ commit/undo boundary. A failed epoch cannot expose speculative contacts,
 motion, or events through the public Scene.
 
 The current production path joins SAP found/lost reports for Sc admission
-and GPU PCM witnesses for CPU correlation. Once joined, GPU PCM numerical
-admission uses one Sc friction patch per manager and advances contact ranges
-without walking device-owned contact points; CPU Gu retains its general
-multi-patch correlation. The Scene permits compact
+and compact GPU PCM headers for CPU touch and friction correlation. The
+producer publishes contiguous headers alongside its resident contact stream
+without another dispatch. Sc consumes those headers before Dy admission,
+while full world-point readback joins the existing Dy completion transfer.
+Collision-only publication and frames with no numerical Dy task fetch full
+points at their actual public consumer. GPU PCM numerical admission uses one
+Sc friction patch per manager and advances contact ranges without walking
+device-owned contact points; CPU Gu retains its general multi-patch correlation. The Scene permits compact
 device admission via set_gpu_dy_device_admission_enabled() only when
 CPU task batching conceals independent responding islands, GPU PCM supplies
 contacts, and every numerical task fits compact execution. Otherwise Dy
@@ -129,9 +133,12 @@ accurate-island task boundaries. Independent one-constraint islands with one
 or two responding bodies execute in packed GPU lanes; dependent compact
 islands use fused workgroups. Device-generated roots are numerical task IDs,
 not replacements for Sc's persistent island identities. The Scene still
-prepares solver inputs, joins GPU PCM witnesses for CPU friction correlation,
+prepares solver inputs, joins GPU PCM headers for CPU friction correlation,
 and reads back Dy scheduling and numerical results for publication.
-A continuous PCM-to-Dy numerical path without a host witness dependency
+The early PCM readback transfers 20 bytes per GPU pair rather than 84;
+deferred full-point readback adds 84 bytes per pair to Dy's existing
+completion batch, with no separate point-fetch fence on responding frames.
+A continuous PCM-to-Dy numerical path without a host header dependency
 remains open; compact admission alone does not remove that synchronization.
 
 When topology requires CPU reconciliation, the device produces a compact
