@@ -1475,6 +1475,10 @@ void sourceDySolvePackedTask(uint taskId) {
     [unroll]
     for(uint lane=0u;lane<4u;++lane)
         prepareNormals(ranges.x,ranges.y,lane,errorAddress);
+    if(arena.Load(errorAddress)!=0u) {
+        publishTaskError(taskId,arena.Load(errorAddress));
+        return;
+    }
     [unroll]
     for(uint lane=0u;lane<4u;++lane)
         prepareFriction(ranges.x,ranges.y,lane,errorAddress);
@@ -1674,6 +1678,11 @@ void main(uint3 group:SV_GroupID,uint3 lane:SV_GroupThreadID) {
             prepareNormals(descriptors.x,descriptors.y,lane.x,endError);
             if(!fused)return;
             AllMemoryBarrierWithGroupSync();
+            if(arena.Load(endError)!=0u) {
+                if(lane.x==0u)
+                    publishTaskError(taskId,arena.Load(endError));
+                return;
+            }
         }
         if(fused || phase==frictionTile) {
             prepareFriction(descriptors.x,descriptors.y,lane.x,endError);
