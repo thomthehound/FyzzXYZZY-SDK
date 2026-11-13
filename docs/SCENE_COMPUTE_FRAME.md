@@ -100,12 +100,15 @@ commit/undo boundary. A failed epoch cannot expose speculative contacts,
 motion, or events through the public Scene.
 
 The current production path joins SAP found/lost reports for Sc admission
-and GPU PCM witnesses for CPU correlation. The Scene explicitly selects
-compact device admission via set_gpu_dy_device_admission_enabled(): Sc passes
-stable contact and joint identities, the GPU reads resident physical touch,
-and Dy consumes generated task/body ranges without host task/ordinal uploads.
-When the Scene selects device admission, the island work and Dy solve enter
-one ordered GPU submission without an intermediate host wait. Island graphs
+and GPU PCM witnesses for CPU correlation. The Scene permits compact
+device admission via set_gpu_dy_device_admission_enabled() only when
+CPU task batching conceals independent responding islands, GPU PCM supplies
+contacts, and every numerical task fits compact execution. Otherwise Dy
+uses Sc's existing task boundaries without an additional device graph scan.
+Selected admission passes stable contact and joint identities, reads resident
+physical touch, and supplies generated task/body ranges without host
+task/ordinal uploads. The island work and Dy solve enter one ordered GPU
+submission without an intermediate host wait. Island graphs
 with at most 32 nodes and 32 edges build their task records in one dispatch;
 larger graphs use parallel union, prefix and response ordering.
 Wide islands use their separate device-partition execution path; the compact
