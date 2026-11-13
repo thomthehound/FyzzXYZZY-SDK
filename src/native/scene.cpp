@@ -10272,8 +10272,6 @@ void Scene::StepCheckpoint::capture(Scene& scene, bool capture_solver_state) {
         saved.active_kinematic_nodes.assign(
             live.active_kinematic_nodes.begin(),
             live.active_kinematic_nodes.end());
-        saved.active_node_index.assign(live.active_node_index.begin(),
-                                        live.active_node_index.end());
         saved.active_islands.assign(live.active_islands.begin(),
                                      live.active_islands.end());
         saved.activating_nodes.assign(live.activating_nodes.begin(),
@@ -10587,6 +10585,13 @@ void Scene::StepCheckpoint::rollback(Scene& scene) noexcept {
     if(includes_solver_state)
         scene.partition_ends_.swap(partition_ends);
     const auto graph_mask=graph_ownership_mask.load(std::memory_order_acquire);
+    const auto restore_active_node_indices=[](
+            IslandGraph& live,const IslandGraph& previous) noexcept {
+        for(const BodyId id:live.active_nodes)
+            live.active_node_index[id]=invalid_instance;
+        for(std::size_t i=0;i<previous.active_nodes.size();++i)
+            live.active_node_index[previous.active_nodes[i]]=i;
+    };
     if(graph_mask&1u) {
         scene.speculative_islands_.islands.swap(speculative_islands.islands);
         scene.speculative_islands_.node_island.swap(speculative_islands.node_island);
@@ -10601,9 +10606,8 @@ void Scene::StepCheckpoint::rollback(Scene& scene) noexcept {
         scene.speculative_islands_.active_island_visit_stamp=
             speculative_islands.active_island_visit_stamp;
     }
+    restore_active_node_indices(scene.speculative_islands_,speculative_islands);
     scene.speculative_islands_.active_nodes.swap(speculative_islands.active_nodes);
-    scene.speculative_islands_.active_node_index.swap(
-        speculative_islands.active_node_index);
     // The structural island snapshot restores mActiveIndex itself.
     // A quiet step has no such snapshot: clear its current live slots,
     // then restore the previous ordered active list and reverse slots.
@@ -10650,9 +10654,8 @@ void Scene::StepCheckpoint::rollback(Scene& scene) noexcept {
         scene.accurate_islands_.active_island_visit_stamp=
             accurate_islands.active_island_visit_stamp;
     }
+    restore_active_node_indices(scene.accurate_islands_,accurate_islands);
     scene.accurate_islands_.active_nodes.swap(accurate_islands.active_nodes);
-    scene.accurate_islands_.active_node_index.swap(
-        accurate_islands.active_node_index);
     if(!(graph_mask&2u))
         for(auto handle:scene.accurate_islands_.active_islands)
             if(handle<scene.accurate_islands_.islands.size())
