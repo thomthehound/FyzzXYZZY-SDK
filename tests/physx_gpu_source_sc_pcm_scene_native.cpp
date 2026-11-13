@@ -1498,6 +1498,54 @@ void verify_device_sc_dy_task_admission(
             " source_count=" + std::to_string(witness[0].count()) +
             " prepared_count=" + std::to_string(short_count));
     producer->invalidate_after_rollback();
+
+    // Invalid joint numerics can arise after valid source preparation.
+    // They must not integrate a body before the rejected task is reported.
+    const std::array<native::GpuPcmBoxPair,0> no_pcm_pairs{};
+    std::array<native::GpuPcmBoxResult,0> no_pcm_results{};
+    producer->enqueue_gpu_pcm_box_contacts(no_pcm_pairs,no_pcm_results);
+    std::array<native::GpuDyJointRow,1> bad_joint{};
+    bad_joint[0].axis[0]=1.f;
+    bad_joint[0].inverse_mass_a=1.f;
+    bad_joint[0].velocity_multiplier=1.f;
+    bad_joint[0].constant=std::numeric_limits<float>::quiet_NaN();
+    const std::array<native::GpuDyDistanceDescriptor,1> joint_desc{{
+        {0u,0u,0xffffffffu,0x101u}
+    }};
+    const std::array<std::uint32_t,1> joint_partitions{{1u}};
+    std::array<native::GpuDyDistanceTask,1> joint_tasks{{
+        {0u,1u,0u,1u,0u,1u,4u,1u,0u}
+    }};
+    body={};
+    body[0].inverse_mass=1.f;
+    inputs={};
+    poses={};
+    inputs[0].active=1u;
+    inputs[0].source_actor=moving;
+    inputs[0].source_element=0xffffffffu;
+    inputs[0].source_inverse_mass=1.f;
+    inputs[0].position[1]=1.f;
+    inputs[0].orientation[3]=1.f;
+    inputs[0].actor_position[1]=1.f;
+    inputs[0].actor_orientation[3]=1.f;
+    inputs[0].mass_local_orientation[3]=1.f;
+    inputs[0].max_linear_speed_squared=100.f;
+    inputs[0].max_angular_speed_squared=100.f;
+    inputs[0].wake_counter=0.4f;
+    inputs[0].seconds=seconds;
+    producer->enqueue_gpu_dy_distance(
+        body,bad_joint,joint_desc,joint_partitions,ordinals,joint_tasks,
+        {},{},{},{},{},{},{},{},inputs,poses);
+    bool numerical_rejected=false;
+    try {
+        producer->finish_gpu_dy_distance();
+    }catch(const std::overflow_error&) {
+        numerical_rejected=true;
+    }
+    require(numerical_rejected && (joint_tasks[0].error&2u)!=0u &&
+            poses[0].valid==0u,
+        "GPU Dy integrated a body after a numerical solve failure");
+    producer->invalidate_after_rollback();
 }
 
 void verify_queued_pcm_dy(fyzz::compute::Backend backend,const char* sap,
