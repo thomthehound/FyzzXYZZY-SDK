@@ -247,7 +247,8 @@ public:
     void enqueue(std::span<const native::GpuPcmBoxPair> requests,
                   std::span<native::GpuPcmBoxResult> output,
                   std::uint32_t shape_capacity,
-                  std::uint32_t minimum_edge_capacity=0u) {
+                  std::uint32_t minimum_edge_capacity=0u,
+                  bool defer_points=false) {
         if(requests.size()!=output.size())
             throw std::invalid_argument("Source Sc GPU PCM result count mismatch");
         if(pcm_transaction_pending_)
@@ -263,6 +264,9 @@ public:
         host_upload_pending_=false;
         island_work_ready_=false;
         pending_host_inputs_=false;
+        deferred_points_pending_=false;
+        deferred_points_in_numerical_=false;
+        deferred_point_downloads_.clear();
         last_edge_history_copy_bytes_=0u;
         last_continuation_commands_=0u;
         last_face_pair_scan_count_=0u;
@@ -395,7 +399,8 @@ public:
             work_.allocate(source_allocation_bytes(
                 std::size_t(pair_count)+1u,4u),PX_FL);
             dense_contacts_.allocate(source_allocation_bytes(
-                pair_count,sizeof(SourcePcmGpuContactStreamNative)),PX_FL);
+                pair_count,sizeof(SourcePcmGpuContactStreamNative)+
+                    (defer_points?20u:0u)),PX_FL);
         }
         // Sc's reset intent travels with the source pair. The GPU
         // candidate owner initializes its own EdgeIndex record before
@@ -438,7 +443,8 @@ public:
             candidates_.getDevicePtr(),edges_.getDevicePtr(),
             indirect_address_,dense_contacts_.getDevicePtr(),
             convex_vertices_.getDevicePtr(),convex_vertex_count_,
-            pair_count,shape_capacity,candidate_capacity,edge_capacity);
+            pair_count,shape_capacity,candidate_capacity,edge_capacity,
+            defer_points);
         const auto before_continuation=stream_.commands().size();
         if(needs_continuation) {
             const auto append_gjk=[&](const SourcePcmEpaNativeStage& stage,
@@ -451,7 +457,8 @@ public:
                     dense_contacts_.getDevicePtr(),
                     convex_vertices_.getDevicePtr(),convex_vertex_count_,
                     pair_count,shape_capacity,candidate_capacity,edge_capacity,
-                    0u,0u,0u,0u,pass);
+                    0u,0u,0u,0u,pass,
+                    defer_points?pair_count:0u);
             };
             if(staged_gjk_) {
                 // Direct Vulkan GJK scans source pair status in one pass;
@@ -482,7 +489,8 @@ public:
                 convex_vertices_.getDevicePtr(),convex_vertex_count_,
                 pair_count,shape_capacity,candidate_capacity,edge_capacity,
                 convex_surface_.getDevicePtr(),convex_surface_bytes_,
-                convex_faces_base_,convex_indices_base_);
+                convex_faces_base_,convex_indices_base_,0u,
+                defer_points?pair_count:0u);
             // Sc has already classified which finite pairs contain
             // convex geometry. Shift source pair/result/contact views
             // to that interval without a separate index upload, GPU
@@ -503,7 +511,8 @@ public:
                     convex_vertices_.getDevicePtr(),convex_vertex_count_,
                     span,shape_capacity,candidate_capacity,edge_capacity,
                     convex_surface_.getDevicePtr(),convex_surface_bytes_,
-                    convex_faces_base_,convex_indices_base_);
+                    convex_faces_base_,convex_indices_base_,0u,
+                    defer_points?pair_count:0u,first_face_pair);
             }
         }
         last_continuation_commands_=
@@ -514,6 +523,8 @@ public:
         // unchanged 84-byte PCM stream used by Dy. All readback spans
         // share one GPU completion boundary.
         gpu_downloads_.clear();
+        deferred_point_downloads_.clear();
+        if(defer_points)header_records_.resize(pair_count);
         for(std::size_t i=0u;i<pair_count;) {
             if(requests[i].host_generated) {
                 ++i;
@@ -525,13 +536,25 @@ public:
             const auto bytes=(i-first)*stride;
             const auto mapped=addresses_.resolve(
                 dense_contacts_.getDevicePtr()+first*stride,bytes);
-            gpu_downloads_.push_back({
+            if(defer_points) {
+                const auto metadata_bytes=(i-first)*sizeof(PcmHeader);
+                const auto headers=addresses_.resolve(
+                    dense_contacts_.getDevicePtr()+
+                        std::size_t(pair_count)*stride+
+                        first*sizeof(PcmHeader),metadata_bytes);
+                gpu_downloads_.push_back({
+                    headers.buffer,headers.offset,
+                    header_records_.data()+first,metadata_bytes});
+                deferred_point_downloads_.push_back({
+                    mapped.buffer,mapped.offset,output.data()+first,bytes});
+            }else gpu_downloads_.push_back({
                 mapped.buffer,mapped.offset,output.data()+first,bytes});
         }
         pcm_transaction_pending_=true;
         result_pending_=true;
         pending_requests_=requests;
         pending_output_=output;
+        deferred_points_pending_=defer_points && !gpu_downloads_.empty();
         journal_pair_count_=pair_count;
         journal_edge_capacity_=edge_capacity;
         journal_host_only_=false;
@@ -714,6 +737,11 @@ public:
         // witness DMA; only the earlier GPU result is a host dependency.
         if(!gpu_downloads_.empty())stream_.finish_fetch();
         else stream_.wait_at_fetch();
+        if(deferred_points_pending_)
+            for(std::uint32_t i=0u;i<journal_pair_count_;++i)
+                if(!requests[i].host_generated)
+                    std::memcpy(&output[i],&header_records_[i],
+                                sizeof(PcmHeader));
         for(const auto& span:gpu_downloads_)
             last_contact_download_bytes_+=span.bytes;
         for(std::uint32_t i=0u;i<journal_pair_count_;++i) {
@@ -875,7 +903,14 @@ private:
     compute::BufferId indirect_buffer_=0u;
     CudaDeviceAddressMap::Address indirect_address_=0u;
     std::vector<SourcePcmBoxPairNative> pair_host_;
-    std::vector<compute::DownloadSpan> gpu_downloads_;
+    struct PcmHeader {
+        std::uint32_t edge=0u,packed_counts=0u;
+        float normal[3]{};
+    };
+    static_assert(sizeof(PcmHeader)==20u);
+    std::vector<PcmHeader> header_records_;
+    std::vector<compute::DownloadSpan> gpu_downloads_,deferred_point_downloads_;
+    bool deferred_points_pending_=false,deferred_points_in_numerical_=false;
     bool reset_manifolds_=false;
     bool rebuild_required_=false;
     bool pcm_transaction_pending_=false,restore_pending_=false;
