@@ -148,6 +148,18 @@ completion batch without another point-fetch fence on responding frames.
 A continuous PCM-to-Dy numerical path without a host header dependency
 remains open; compact admission alone does not remove that synchronization.
 
+Retiring this join requires one Sc-authored, source-ordered table of stable
+candidate identities and typed responding endpoints. GPU PCM must derive
+actual touch, compact contact/constraint ranges, and runnable task extents
+from resident results before Dy consumes them. Numerical admission must not
+require Sc to reconstruct its current contact rows or friction patches from
+the header transfer. Sc reconciles the completed physical-touch transitions,
+retained friction history, public events, and persistent island identities
+under the same transaction. Mixed CPU Gu and host callbacks retain their
+explicit producer and observation dependencies; zero-contact candidates
+never acquire numerical response rows. A rejected epoch cannot publish
+speculative motion or advance an EdgeIndex history.
+
 When topology requires CPU reconciliation, the device produces a compact
 reason and delta stream, and suppresses dependent work. Sc validates and
 admits the delta before recording the remaining commands. Restarting or
