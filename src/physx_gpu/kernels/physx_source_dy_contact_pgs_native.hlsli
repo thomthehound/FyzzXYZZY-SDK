@@ -286,7 +286,7 @@ void prepareContactRow(uint index,uint pairIndex,uint contactBegin,
            local>=4u ||
            pcmContacts.Load(source)!=arena.Load(pair+52u) ||
            ((packed>>3u)&7u)!=0u ||
-           local>=((packed>>10u)&7u)) {
+           contactCount!=((packed>>10u)&7u)) {
             arena.InterlockedOr(errorAddress,65536u);
             return;
         }
