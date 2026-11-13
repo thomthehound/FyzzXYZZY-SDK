@@ -17,7 +17,8 @@ uint sourceScTouchTransition(uint edge,uint emitted,uint status,
 
 // Publish Gu world contacts from the lane that finalizes the Sc EdgeIndex.
 void publishScContacts(uint i,uint first,uint second,uint edge,uint result,
-                       uint outputBias,uint transformBias,uint geometryBias,
+                       uint outputBias,uint headerBias,
+                       uint transformBias,uint geometryBias,
                        uint edgeBias,uint shapeCapacity,uint edgeCapacity) {
     uint resultEdge=results.Load(result+12u);
     uint status=results.Load(result+8u);
@@ -29,8 +30,13 @@ void publishScContacts(uint i,uint first,uint second,uint edge,uint result,
     uint selectedBits=min(selected,7u)<<6u;
     uint regenBit=(regenerated!=0u ? 1u : 0u)<<9u;
     if(edge>=edgeCapacity || second>=shapeCapacity) {
-        streamContacts.Store2(dst,uint2(resultEdge,
-            7u | (1u<<3u) | selectedBits | regenBit));
+        uint invalidCounts=7u | (1u<<3u) | selectedBits | regenBit;
+        streamContacts.Store2(dst,uint2(resultEdge,invalidCounts));
+        if(headerBias!=0xffffffffu) {
+            uint header=headerBias+i*20u;
+            streamContacts.Store2(header,uint2(resultEdge,invalidCounts));
+            streamContacts.Store3(header+8u,uint3(0u,0u,0u));
+        }
         return;
     }
     uint src=edgeBias+edge*240u;
@@ -89,4 +95,9 @@ void publishScContacts(uint i,uint first,uint second,uint edge,uint result,
         (transition<<13u);
     streamContacts.Store2(dst,uint2(resultEdge,packed));
     streamContacts.Store3(dst+8u,asuint(normal));
+    if(headerBias!=0xffffffffu) {
+        uint header=headerBias+i*20u;
+        streamContacts.Store2(header,uint2(resultEdge,packed));
+        streamContacts.Store3(header+8u,asuint(normal));
+    }
 }
