@@ -49,6 +49,10 @@ void publishScContacts(uint i,uint first,uint second,uint edge,uint result,
     }
     uint src=edgeBias+edge*240u;
     uint count=edgeCaches.Load(src+12u);
+    if(status==0u && (resultEdge!=edge || count>4u ||
+       selected>4u || selected>count ||
+       (regenerated!=0u && selected!=count)))
+        status=4u;
     uint emitted=0u;
     float3 normal=float3(0.f,0.f,0.f);
     if(status==0u && count>0u && count<=4u) {
