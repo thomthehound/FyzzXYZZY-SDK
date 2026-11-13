@@ -45,8 +45,8 @@ public:
         desc.storage_buffer_views.assign(
             desc.storage_buffer_binding_count,
             compute::StorageBufferViewKind::RawReadWrite);
-        desc.push_constant_bytes=face_geometry_?72u:
-            (step_parameters_?60u:56u);
+        desc.push_constant_bytes=face_geometry_?76u:
+            (step_parameters_?64u:60u);
         pipeline_=context_.create_compute_pipeline(desc);
 #if defined(FYZZXYZZY_PROFILE_GPU)
         context_.set_pipeline_profile_label(pipeline_,face_geometry_?"pcm.face_contacts":
@@ -84,8 +84,15 @@ public:
                 std::uint32_t convex_surface_bytes=0u,
                 std::uint32_t convex_faces_base=0u,
                 std::uint32_t convex_indices_base=0u,
-                std::uint32_t gjk_pass=0u) const {
+                std::uint32_t gjk_pass=0u,
+                std::uint32_t compact_header_pair_count=0u,
+                std::uint32_t first_pair=0u) const {
         if(!pair_count)return;
+        if(compact_header_pair_count &&
+           (first_pair>compact_header_pair_count ||
+            pair_count>compact_header_pair_count-first_pair))
+            throw std::invalid_argument(
+                "Source PCM header window exceeds global pair stream");
         const auto group_count=face_geometry_
             ?(std::uint64_t(pair_count)+63u)/64u
             :direct_gjk_?(std::uint64_t(pair_count)+31u)/32u
@@ -94,11 +101,11 @@ public:
            group_count>context_.device_info().max_workgroup_count[0])
             throw std::out_of_range(
                 "Source GPU PCM dispatch exceeds device capacity");
-        std::array<std::uint32_t,18> params{
+        std::array<std::uint32_t,19> params{
             pair_count,0u,0u,0u,0u,0u,0u,0u,
             shape_capacity,candidate_capacity,edge_capacity,0u,
             0u,convex_vertex_count,0u,convex_faces_base,
-            convex_indices_base,convex_surface_bytes};
+            convex_indices_base,convex_surface_bytes,0xffffffffu};
         if(step_parameters_)params[14]=gjk_pass;
         const auto view=[&](CudaDeviceAddressMap::Address address,
                             std::size_t bytes,std::uint32_t slot,
@@ -129,7 +136,11 @@ public:
             view(work,source_allocation_bytes(
                      std::size_t(pair_count)+compact_staged_gjk_,4u),
                  6u,compute::BufferAccess::Read),
-            view(output,source_allocation_bytes(pair_count,84u),
+            view(output,source_allocation_bytes(1u,
+                     compact_header_pair_count
+                         ? (std::size_t(compact_header_pair_count)-first_pair)*84u+
+                           std::size_t(compact_header_pair_count)*20u
+                         : std::size_t(pair_count)*84u),
                  7u,compute::BufferAccess::Write),
             view(convex_vertex_count?convex_vertices:transforms,
                  convex_vertex_count
@@ -159,8 +170,19 @@ public:
             dispatch.indirect=compute::DispatchIndirectArgs{
                 arguments.buffer,arguments.offset};
         }
-        const auto params_bytes=face_geometry_?sizeof(params):
-            (step_parameters_?15u:14u)*sizeof(std::uint32_t);
+        const auto header_index=face_geometry_?18u:
+            (step_parameters_?15u:14u);
+        if(compact_header_pair_count) {
+            const auto offset=std::uint64_t(params[11])+
+                (std::uint64_t(compact_header_pair_count)-first_pair)*84u+
+                std::uint64_t(first_pair)*20u;
+            if(offset>std::numeric_limits<std::uint32_t>::max())
+                throw std::overflow_error(
+                    "Source PCM compact header offset overflow");
+            params[header_index]=static_cast<std::uint32_t>(offset);
+        }else params[header_index]=0xffffffffu;
+        const auto params_bytes=face_geometry_?19u*sizeof(std::uint32_t):
+            (step_parameters_?16u:15u)*sizeof(std::uint32_t);
         dispatch.push_constants.resize(params_bytes);
         std::memcpy(dispatch.push_constants.data(),params.data(),params_bytes);
         commands.emplace_back(std::move(dispatch));
@@ -185,13 +207,16 @@ public:
                 std::uint32_t convex_surface_bytes=0u,
                 std::uint32_t convex_faces_base=0u,
                 std::uint32_t convex_indices_base=0u,
-                std::uint32_t gjk_pass=0u) const {
+                std::uint32_t gjk_pass=0u,
+                std::uint32_t compact_header_pair_count=0u,
+                std::uint32_t first_pair=0u) const {
         append(stream.commands(),addresses,transforms,geometry,pairs,
                results,candidates,edge_cache,work,dispatch_args,output,
                convex_vertices,convex_vertex_count,
                pair_count,shape_capacity,candidate_capacity,edge_capacity,
                convex_surface,convex_surface_bytes,
-               convex_faces_base,convex_indices_base,gjk_pass);
+               convex_faces_base,convex_indices_base,gjk_pass,
+               compact_header_pair_count,first_pair);
     }
 private:
     compute::Context& context_;
