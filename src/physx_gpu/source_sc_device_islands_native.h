@@ -13,7 +13,6 @@
 #include <cstring>
 #include <limits>
 #include <stdexcept>
-#include <vector>
 
 namespace fyzz::physx_gpu {
 
@@ -297,7 +296,7 @@ public:
             stream.commands().emplace_back(std::move(dispatch));
             return;
         }
-        std::vector<compute::BatchCommand> commands;
+        auto& ordered=stream.commands();
         const auto launch=[&](std::uint32_t phase,std::uint32_t count) {
             args[12]=phase;
             for(std::uint32_t first=0u;first<count;) {
@@ -307,7 +306,7 @@ public:
                 dispatch.groups={static_cast<std::uint32_t>(groups),1u,1u};
                 std::memcpy(dispatch.push_constants.data(),
                             args.data(),sizeof(args));
-                commands.emplace_back(dispatch);
+                ordered.emplace_back(dispatch);
                 first+=static_cast<std::uint32_t>(std::min<std::uint64_t>(
                     count-first,groups*128u));
             }
@@ -336,8 +335,6 @@ public:
                 launch(9u+pass*3u,1u);
                 launch(10u+pass*3u,combined);
             }
-        auto& ordered=stream.commands();
-        ordered.insert(ordered.end(),commands.begin(),commands.end());
     }
 
 private:
