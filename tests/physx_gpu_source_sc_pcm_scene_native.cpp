@@ -1405,12 +1405,13 @@ void verify_device_sc_dy_task_admission(
     }catch(const std::overflow_error&) {
         count_rejected=true;
     }
-    require(count_rejected && (contact_tasks[0].error&65536u)!=0u,
-        "Dy accepted a truncated resident PCM numerical contact run: rejected=" +
-        std::to_string(count_rejected) +
-        " task_error=" + std::to_string(contact_tasks[0].error) +
-        " source_count=" + std::to_string(witness[0].count()) +
-        " prepared_count=" + std::to_string(short_count));
+    if(!count_rejected || (contact_tasks[0].error&65536u)==0u)
+        throw std::runtime_error(
+            "Dy accepted a truncated resident PCM numerical contact run: rejected=" +
+            std::to_string(count_rejected) +
+            " task_error=" + std::to_string(contact_tasks[0].error) +
+            " source_count=" + std::to_string(witness[0].count()) +
+            " prepared_count=" + std::to_string(short_count));
     producer->invalidate_after_rollback();
 }
 
