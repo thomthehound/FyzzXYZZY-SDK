@@ -7,9 +7,15 @@
 // EPA and convex face continuations can publish repeatedly in one frame.
 uint sourceScTouchTransition(uint edge,uint emitted,uint status,
                              uint edgeBias,uint edgeCapacity) {
-    if(status!=0u || edge>=edgeCapacity)return 0u;
+    if(edge>=edgeCapacity)return 0u;
     uint state=edgeBias+edge*240u;
     uint prior=edgeCaches.Load(state+76u)&1u;
+    // The high bit marks a failed GPU contact producer for device
+    // numerical admission. Successful publication clears that mark.
+    if(status!=0u) {
+        edgeCaches.Store(state+72u,0x80000000u);
+        return 0u;
+    }
     uint current=emitted!=0u?1u:0u;
     edgeCaches.Store(state+72u,current);
     return current!=0u?(prior!=0u?2u:1u):(prior!=0u?3u:0u);
@@ -30,6 +36,8 @@ void publishScContacts(uint i,uint first,uint second,uint edge,uint result,
     uint selectedBits=min(selected,7u)<<6u;
     uint regenBit=(regenerated!=0u ? 1u : 0u)<<9u;
     if(edge>=edgeCapacity || second>=shapeCapacity) {
+        if(edge<edgeCapacity)
+            sourceScTouchTransition(edge,0u,1u,edgeBias,edgeCapacity);
         uint invalidCounts=7u | (1u<<3u) | selectedBits | regenBit;
         streamContacts.Store2(dst,uint2(resultEdge,invalidCounts));
         if(headerBias!=0xffffffffu) {
