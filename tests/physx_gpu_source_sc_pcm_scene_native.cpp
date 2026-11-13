@@ -1341,6 +1341,73 @@ void verify_device_sc_dy_task_admission(
             (tasks[0].error&0x01000000u)!=0u,
         "Dy accepted device Sc island counts inconsistent with its numerical tables");
     producer->invalidate_after_rollback();
+
+    // A numerical manifold cannot shorten a resident PCM contact run.
+    // The source PCM pair is valid; only Dy's declared Gu row extent
+    // understates the number of generated contacts.
+    witness={};
+    producer->enqueue_gpu_pcm_box_contacts(requests,witness);
+    producer->finish_gpu_pcm_box_contacts();
+    require(witness[0].status()==0u && witness[0].count()>1u,
+        "PCM count regression requires a multi-contact source manifold");
+    const auto short_count=witness[0].count()-1u;
+    std::vector<float> forces(short_count);
+    std::array<native::GpuDyContactPatch,1> contact_patches{{
+        {0u,short_count,0u,0u,0.f,0.f,0x80000000u,0u}
+    }};
+    std::array<native::GpuDyContactManifold,1> contact_managers{{
+        {0u,1u,0u,short_count,0u}
+    }};
+    std::array<native::GpuDyContactPrepPair,1> contact_prep{};
+    contact_prep[0].pcm_pair_index=0u;
+    contact_prep[0].pcm_edge=edge;
+    contact_prep[0].body0.solver_ordinal=0u;
+    contact_prep[0].body0.inverse_mass=1.f;
+    contact_prep[0].body0.orientation[3]=1.f;
+    contact_prep[0].body1.orientation[3]=1.f;
+    contact_prep[0].inv_dt=1.f/seconds;
+    contact_prep[0].rigid_contact_bias=0.8f;
+    contact_prep[0].seconds=seconds;
+    contact_prep[0].max_contact_impulse=
+        std::numeric_limits<float>::max();
+    const std::array<native::GpuDyDistanceDescriptor,1> contact_desc{{
+        {0u,0u,0xffffffffu,0x100u}
+    }};
+    std::array<native::GpuDyDistanceTask,1> contact_tasks{{
+        {0u,1u,0u,1u,0u,1u,4u,1u,0u}
+    }};
+    body={};
+    body[0].inverse_mass=1.f;
+    inputs={};
+    poses={};
+    sleep={};
+    auto& input=inputs[0];
+    input.active=1u;
+    input.source_actor=moving;
+    input.source_element=0xffffffffu;
+    input.source_inverse_mass=1.f;
+    input.position[1]=1.f;
+    input.orientation[3]=1.f;
+    input.actor_position[1]=1.f;
+    input.actor_orientation[3]=1.f;
+    input.mass_local_orientation[3]=1.f;
+    input.max_linear_speed_squared=100.f;
+    input.max_angular_speed_squared=100.f;
+    input.wake_counter=0.4f;
+    input.seconds=seconds;
+    producer->enqueue_gpu_dy_distance(
+        body,{},contact_desc,{},ordinals,contact_tasks,
+        forces,{},{},{},contact_patches,contact_managers,{},
+        contact_prep,inputs,poses,true,{},true,true,true,sleep);
+    bool count_rejected=false;
+    try {
+        producer->finish_gpu_dy_distance();
+    }catch(const std::overflow_error&) {
+        count_rejected=true;
+    }
+    require(count_rejected && (contact_tasks[0].error&65536u)!=0u,
+        "Dy accepted a truncated resident PCM numerical contact run");
+    producer->invalidate_after_rollback();
 }
 
 void verify_queued_pcm_dy(fyzz::compute::Backend backend,const char* sap,
