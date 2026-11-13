@@ -86,7 +86,12 @@ bool edgeConnected(uint edge,uint kind) {
         reject(1u);
         return false;
     }
-    return (edgeHistory.Load(p.touchBias+edge*240u+72u)&1u)!=0u;
+    const uint touch=edgeHistory.Load(p.touchBias+edge*240u+72u);
+    if((touch&0x80000000u)!=0u) {
+        reject(256u);
+        return false;
+    }
+    return (touch&1u)!=0u;
 }
 
 // Every successful union links a current root to a strictly smaller
