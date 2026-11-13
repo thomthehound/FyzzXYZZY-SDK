@@ -111,9 +111,13 @@ motion, or events through the public Scene.
 The current production path joins SAP found/lost reports for Sc admission
 and compact GPU PCM headers for CPU touch and friction correlation. The
 producer publishes contiguous headers alongside its resident contact stream
-without another dispatch. Sc consumes those headers before Dy admission,
-while full world-point readback for physically touching pairs joins the
-existing Dy completion transfer. Zero-contact pairs transfer their header
+without another dispatch. The same producer validates source identity,
+contact counts, resident transforms, normals, and world witnesses before
+publishing physical touch. Failed PCM publication marks the journaled
+EdgeIndex touch word; device island admission rejects that epoch without
+waiting for Sc to read its headers. Sc consumes valid headers before Dy
+admission, while full world-point readback for physically touching pairs
+joins the existing Dy completion transfer. Zero-contact pairs transfer their header
 without a second witness download. Collision-only publication and frames
 with no numerical Dy task fetch required points at their public consumer. GPU PCM numerical admission uses one
 Sc friction patch per manager and advances contact ranges without walking
