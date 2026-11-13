@@ -327,6 +327,9 @@ public:
                 input.active=1u|dy_flags;
             }
         }
+        const auto deferred_points=pcm_
+            ?pcm_->deferred_point_downloads():
+             std::span<const compute::DownloadSpan>{};
         dy_distance_->enqueue(bodies,rows,descriptors,partitions,ordinals,tasks,
                             contact_forces,cpu_gu,friction,anchors,patches,manifolds,contact_order,
                             contact_prep,integration,integrated_poses,
@@ -347,7 +350,10 @@ public:
                                         pcm_->device_island_work_address(),
                                         pcm_->device_island_layout(),
                                         *pcm_->device_island_indirect_args()}}
-                                :std::nullopt);
+                                :std::nullopt,
+                            deferred_points);
+        if(!deferred_points.empty())
+            pcm_->mark_deferred_points_in_numerical();
         ++dy_distance_dispatch_count_;
 #if defined(FYZZXYZZY_PROFILE_GPU)
         const auto& schedule=dy_distance_->last_schedule();
@@ -376,6 +382,7 @@ public:
         if(!dy_distance_ || !dy_distance_->has_queued_solve())
             throw std::logic_error("Source GPU Dy has no queued numerical epoch");
         dy_distance_->finish();
+        if(pcm_)pcm_->finish_deferred_points(true);
     }
     bool has_queued_gpu_dy_distance() const noexcept {
         return dy_distance_ && dy_distance_->has_queued_solve();
@@ -487,15 +494,20 @@ public:
     void enqueue_gpu_pcm_box_contacts(
             std::span<const native::GpuPcmBoxPair> requests,
             std::span<native::GpuPcmBoxResult> results,
-            std::uint32_t edge_capacity=0u) override {
+            std::uint32_t edge_capacity=0u,
+            bool defer_points=false) override {
         if(!pcm_)
             throw std::logic_error("Source Sc GPU PCM shaders not installed");
-        pcm_->enqueue(requests,results,aabb_->capacity(),edge_capacity);
+        pcm_->enqueue(requests,results,aabb_->capacity(),edge_capacity,
+                      defer_points);
     }
     void finish_gpu_pcm_box_contacts() override {
         if(!pcm_)
             throw std::logic_error("Source Sc GPU PCM shaders not installed");
         pcm_->finish();
+    }
+    void finish_deferred_gpu_pcm_points() override {
+        if(pcm_)pcm_->finish_deferred_points();
     }
     void enqueue_cpu_gu_touch_history(
             std::span<const native::GpuGuTouchRecord> touches) override {
