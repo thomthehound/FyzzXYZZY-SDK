@@ -1483,7 +1483,7 @@ void verify_queued_pcm_dy(fyzz::compute::Backend backend,const char* sap,
         const auto continuation=producer->pcm_continuation_commands();
         const bool software=physx_gpu::SourceScDeviceIslandFixture::
             software_adapter(*producer);
-        require(software?continuation>32u:continuation==3u,
+        require(software?continuation>32u:continuation==4u,
             "D3D12 PCM GJK did not select its adapter's numerical dispatch");
     }
     const auto queued=producer->stream_submission_stats();
