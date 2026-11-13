@@ -27,6 +27,9 @@ struct SourceScDeviceIslandFixture {
     static bool pcm_ready(const SourceScOwnedGpuBroadphaseNative& owner) {
         return owner.pcm_ && owner.pcm_->device_contact_ready();
     }
+    static bool software_adapter(const SourceScOwnedGpuBroadphaseNative& owner) {
+        return owner.context_.device_info().software_adapter;
+    }
     static std::string contact_records(SourceScOwnedGpuBroadphaseNative& owner) {
         const auto count=owner.device_pcm_contact_count();
         const auto source=owner.device_pcm_contact_stream();
@@ -1476,6 +1479,13 @@ void verify_queued_pcm_dy(fyzz::compute::Backend backend,const char* sap,
     std::array<native::GpuDyIntegratedPose,1> poses{};
     const auto before_enqueue=producer->stream_submission_stats();
     launch(witness,inputs,poses);
+    if(backend==compute::Backend::D3D12) {
+        const auto continuation=producer->pcm_continuation_commands();
+        const bool software=physx_gpu::SourceScDeviceIslandFixture::
+            software_adapter(*producer);
+        require(software?continuation>32u:continuation==3u,
+            "D3D12 PCM GJK did not select its adapter's numerical dispatch");
+    }
     const auto queued=producer->stream_submission_stats();
     require(producer->has_queued_gpu_dy_distance() &&
             witness[0].packed_counts==0u &&
