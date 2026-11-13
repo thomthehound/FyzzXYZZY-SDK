@@ -73,6 +73,9 @@ not a blanket requirement that all GPU data be host mapped.
   GPU-local, CPU-mappable arena, unmap before GPU consumption, and bind
   that same allocation. On other devices, explicitly stage into GPU-local
   memory without maintaining a duplicate persistent CPU/GPU registry.
+  Dy's contact packer shares a single inline body input per immovable
+  actor across the frame's managers; responding bodies use resident solver
+  inputs instead of repeating their state in contact descriptors.
 - **Device numerical state:** broadphase scratch, PCM witnesses, contact
   history, island worklists, constraint rows, and solver motion remain in
   GPU-preferred storage. Dependent passes exchange device addresses or
