@@ -109,7 +109,10 @@ commit/undo boundary. A failed epoch cannot expose speculative contacts,
 motion, or events through the public Scene.
 
 The current production path joins SAP found/lost reports for Sc admission
-and GPU PCM witnesses for CPU correlation. The Scene permits compact
+and GPU PCM witnesses for CPU correlation. Once joined, GPU PCM numerical
+admission uses one Sc friction patch per manager and advances contact ranges
+without walking device-owned contact points; CPU Gu retains its general
+multi-patch correlation. The Scene permits compact
 device admission via set_gpu_dy_device_admission_enabled() only when
 CPU task batching conceals independent responding islands, GPU PCM supplies
 contacts, and every numerical task fits compact execution. Otherwise Dy
