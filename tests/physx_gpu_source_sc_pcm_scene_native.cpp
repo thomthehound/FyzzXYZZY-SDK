@@ -3918,12 +3918,16 @@ void verify_host_primitive_pcm_solver(
     add_remote_sphere(gpu);
     cpu.step(dt);
     gpu.step(dt);
-    require(producer->pcm_contact_readback_bytes()==
+    require(producer->pcm_header_join_bytes()==5u*sizeof(std::uint32_t) &&
+            producer->pcm_deferred_point_bytes()==
                 sizeof(physx_gpu::SourcePcmGpuContactStreamNative) &&
+            producer->pcm_contact_readback_bytes()==
+                sizeof(physx_gpu::SourcePcmGpuContactStreamNative)+
+                    5u*sizeof(std::uint32_t) &&
             producer->pcm_host_contact_upload_bytes()==
                 5u*sizeof(physx_gpu::SourcePcmGpuContactStreamNative) &&
             cpu.contacts().size()==gpu.contacts().size(),
-        "Mixed Sc PCM changed GPU witness and CPU Gu contact publication");
+        "Mixed Sc PCM did not defer point readback to GPU Dy completion");
     native::GpuPcmFrictionAnchorFixture::verify(cpu,gpu);
     cpu.remove(cpu_general);
     gpu.remove(gpu_general);
