@@ -288,7 +288,8 @@ public:
                bool device_unconstrained_preparation=false,
                std::span<native::GpuDySleepState> sleep_states={},
                std::span<const native::GpuDyJointInput> joint_inputs={},
-               std::optional<SourceScDeviceIslandDyView> device_admission=std::nullopt) {
+               std::optional<SourceScDeviceIslandDyView> device_admission=std::nullopt,
+               std::span<const compute::DownloadSpan> extra_downloads={}) {
         if(pending_solve_)
             throw std::logic_error("Source Dy numerical epoch already queued");
         if(device_admission &&
@@ -1658,8 +1659,18 @@ public:
         }};
         const std::size_t download_count=!device_admission?1u:
             body_ordinals.empty()?3u:4u;
-        stream_.begin_numerical_fetch(
-            std::span(downloads.data(),download_count));
+        if(extra_downloads.empty())
+            stream_.begin_numerical_fetch(
+                std::span(downloads.data(),download_count));
+        else {
+            std::vector<compute::DownloadSpan> joined;
+            joined.reserve(download_count+extra_downloads.size());
+            joined.insert(joined.end(),downloads.begin(),
+                          downloads.begin()+download_count);
+            joined.insert(joined.end(),extra_downloads.begin(),
+                          extra_downloads.end());
+            stream_.begin_numerical_fetch(joined);
+        }
     }
     bool has_queued_solve() const noexcept {
         return pending_solve_.has_value();
