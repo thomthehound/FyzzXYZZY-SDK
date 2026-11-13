@@ -1474,7 +1474,7 @@ private:
     void erase_friction_history(std::uint32_t id,bool body_scope);
     void wake_shape_partners(ShapeId id);
     void publish_cpu_gu_touch_history();
-    void prepare_gpu_dy_device_islands();
+    void prepare_gpu_dy_device_islands(bool selected);
     void solve_gpu_distance_constraints(float seconds);
     void solve_constraint_task(std::size_t task_index);
     void integrate_solver_task(std::size_t task_index,float seconds,
