@@ -1605,7 +1605,8 @@ void verify_queued_pcm_dy(fyzz::compute::Backend backend,const char* sap,
         "Deferred PCM witness join fetched full numerical geometry");
     producer->finish_deferred_gpu_pcm_points();
     require(producer->pcm_deferred_point_bytes()==
-                sizeof(physx_gpu::SourcePcmGpuContactStreamNative) &&
+                sizeof(physx_gpu::SourcePcmGpuContactStreamNative)-
+                    5u*sizeof(std::uint32_t) &&
             deferred[0].count()>0u &&
             std::isfinite(deferred[0].points[0].separation) &&
             std::fabs(deferred[0].points[0].position.x)>0.01f,
@@ -3982,10 +3983,10 @@ void verify_host_primitive_pcm_solver(
     gpu.step(dt);
     require(producer->pcm_header_join_bytes()==5u*sizeof(std::uint32_t) &&
             producer->pcm_deferred_point_bytes()==
-                sizeof(physx_gpu::SourcePcmGpuContactStreamNative) &&
-            producer->pcm_contact_readback_bytes()==
-                sizeof(physx_gpu::SourcePcmGpuContactStreamNative)+
+                sizeof(physx_gpu::SourcePcmGpuContactStreamNative)-
                     5u*sizeof(std::uint32_t) &&
+            producer->pcm_contact_readback_bytes()==
+                sizeof(physx_gpu::SourcePcmGpuContactStreamNative) &&
             producer->pcm_host_contact_upload_bytes()==
                 5u*sizeof(physx_gpu::SourcePcmGpuContactStreamNative) &&
             cpu.contacts().size()==gpu.contacts().size(),
