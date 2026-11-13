@@ -552,8 +552,6 @@ public:
                 gpu_downloads_.push_back({
                     headers.buffer,headers.offset,
                     header_records_.data()+first,metadata_bytes});
-                deferred_point_downloads_.push_back({
-                    mapped.buffer,mapped.offset,output.data()+first,bytes});
             }else gpu_downloads_.push_back({
                 mapped.buffer,mapped.offset,output.data()+first,bytes});
         }
@@ -795,6 +793,27 @@ public:
                   != (stored.count()>0u)))
                 throw std::logic_error(
                     "Source GPU PCM publication disagrees with original Sc manager");
+        }
+        if(deferred_points_pending_) {
+            // Sc has admitted the contact counts. Only physically touching
+            // GPU managers own world points that need late public transfer.
+            // Contiguous touching runs stay one DMA span each.
+            for(std::size_t i=0u;i<journal_pair_count_;) {
+                if(requests[i].host_generated || output[i].count()==0u) {
+                    ++i;
+                    continue;
+                }
+                const auto first=i;
+                do {++i;}while(i<journal_pair_count_ &&
+                    !requests[i].host_generated && output[i].count()!=0u);
+                const auto bytes=(i-first)*sizeof(native::GpuPcmBoxResult);
+                const auto mapped=addresses_.resolve(
+                    dense_contacts_.getDevicePtr()+
+                        first*sizeof(native::GpuPcmBoxResult),bytes);
+                deferred_point_downloads_.push_back({
+                    mapped.buffer,mapped.offset,output.data()+first,bytes});
+            }
+            deferred_points_pending_=!deferred_point_downloads_.empty();
         }
         // CPU Gu was submitted before this host witness join. No later
         // device continuation can extend the readback dependency.
