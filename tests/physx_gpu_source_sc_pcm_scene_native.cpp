@@ -184,6 +184,22 @@ struct GpuPcmFrictionAnchorFixture {
             }
         }
     }
+    static void verify_active_reverse_indices(const Scene& scene) {
+        const auto verify=[](const auto& graph) {
+            for(std::size_t i=0;i<graph.active_nodes.size();++i)
+                if(graph.active_node_index[graph.active_nodes[i]]!=i)
+                    throw std::runtime_error("Source active island reverse index lost node order");
+            for(std::size_t id=0;id<graph.active_node_index.size();++id) {
+                const auto index=graph.active_node_index[id];
+                if(index!=Scene::invalid_instance &&
+                   (index>=graph.active_nodes.size() ||
+                    graph.active_nodes[index]!=id))
+                    throw std::runtime_error("Source active island reverse index retained an inactive node");
+            }
+        };
+        verify(scene.speculative_islands_);
+        verify(scene.accurate_islands_);
+    }
     static std::uint32_t contact_manager_edge(const Scene& scene,Pair shapes) {
         return scene.contact_edge_index(shapes);
     }
@@ -2885,12 +2901,14 @@ void verify_dy_execution_switch(
             producer->dy_distance_dispatch_count()==gpu_dispatches &&
             gpu.body_state(b[2]).position.x==published.position.x,
         "Rejected CPU Dy frame corrupted GPU contact or numerical lifetime");
+    native::GpuPcmFrictionAnchorFixture::verify_active_reverse_indices(gpu);
     gpu.clear_spatial_velocity_mod(
         b[2],ForceMode::VelocityChange,true);
     gpu.set_angular_velocity(b[2],published.angular_velocity);
     gpu.set_gpu_dy_enabled(true);
     cpu.step(1.f/120.f);
     gpu.step(1.f/120.f);
+    native::GpuPcmFrictionAnchorFixture::verify_active_reverse_indices(gpu);
     require(producer->dy_distance_dispatch_count()==gpu_dispatches+1u &&
             cpu.contacts().size()==gpu.contacts().size() &&
             cpu.contact_events().size()==gpu.contact_events().size(),
