@@ -112,9 +112,10 @@ The current production path joins SAP found/lost reports for Sc admission
 and compact GPU PCM headers for CPU touch and friction correlation. The
 producer publishes contiguous headers alongside its resident contact stream
 without another dispatch. Sc consumes those headers before Dy admission,
-while full world-point readback joins the existing Dy completion transfer.
-Collision-only publication and frames with no numerical Dy task fetch full
-points at their actual public consumer. GPU PCM numerical admission uses one
+while full world-point readback for physically touching pairs joins the
+existing Dy completion transfer. Zero-contact pairs transfer their header
+without a second witness download. Collision-only publication and frames
+with no numerical Dy task fetch required points at their public consumer. GPU PCM numerical admission uses one
 Sc friction patch per manager and advances contact ranges without walking
 device-owned contact points; CPU Gu retains its general multi-patch correlation. The Scene permits compact
 device admission via set_gpu_dy_device_admission_enabled() only when
@@ -136,8 +137,9 @@ not replacements for Sc's persistent island identities. The Scene still
 prepares solver inputs, joins GPU PCM headers for CPU friction correlation,
 and reads back Dy scheduling and numerical results for publication.
 The early PCM readback transfers 20 bytes per GPU pair rather than 84;
-deferred full-point readback adds 84 bytes per pair to Dy's existing
-completion batch, with no separate point-fetch fence on responding frames.
+deferred full-point readback adds 84 bytes per touching pair to Dy's
+existing completion batch, with no separate point-fetch fence on responding
+frames.
 A continuous PCM-to-Dy numerical path without a host header dependency
 remains open; compact admission alone does not remove that synchronization.
 
