@@ -61,7 +61,8 @@ public:
           sparse_stage_(context,compact,3u,epa_args_reset),
           epa_pending_stage_(context,std::move(compact),4u,
                              std::move(epa_args_reset)),
-          staged_gjk_(gjk.format==compute::ShaderFormat::Dxil),
+          staged_gjk_(gjk.format==compute::ShaderFormat::Dxil &&
+                      context.device_info().software_adapter),
           gjk_stage_(context,std::move(gjk),false,true,false,staged_gjk_),
           gjk_reduce_stage_(context,std::move(gjk_reduce),false,true,false,staged_gjk_),
           gjk_publish_stage_(context,std::move(gjk_publish),false,true,false,staged_gjk_),
