@@ -56,7 +56,8 @@ struct Parameters {
     uint hullCount;
 #ifdef FYZZXYZZY_GJK_STAGED_ADVANCE
     uint gjkPass;
-#endif    uint headerBias;
+#endif
+    uint headerBias;
 };
 #ifdef __spirv__
 [[vk::push_constant]] Parameters p;
