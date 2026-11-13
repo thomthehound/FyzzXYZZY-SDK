@@ -443,12 +443,13 @@ public:
     virtual void enqueue_gpu_pcm_box_contacts(
         std::span<const GpuPcmBoxPair>,
         std::span<GpuPcmBoxResult>,
-        std::uint32_t=0u) {
+        std::uint32_t=0u,bool=false) {
         throw std::logic_error("Source GPU PCM stages are not installed");
     }
     virtual void finish_gpu_pcm_box_contacts() {
         throw std::logic_error("Source GPU PCM publication is unavailable");
     }
+    virtual void finish_deferred_gpu_pcm_points() {}
     // A mixed frame submits bounded CPU Gu into the resident source
     // contact stream as soon as those witnesses are available. Sc's
     // subsequent GPU witness join must not wait for this later upload.
