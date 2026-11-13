@@ -379,6 +379,17 @@ bool sourceDyExpandDescriptor(uint token,uint sourceCount,uint sourceTable,
                 return false;
             }
             const uint prep=p.prepBias+prepIndex*64u;
+            const uint pcmIndex=arena.Load(prep+48u);
+            if(pcmIndex!=invalidBody) {
+                const uint source=p.pcmBias+pcmIndex*84u;
+                const uint packed=pcmContacts.Load(source+4u);
+                if(pcmContacts.Load(source)!=arena.Load(prep+52u) ||
+                   ((packed>>3u)&7u)!=0u ||
+                   ((packed>>10u)&7u)!=arena.Load(manager+12u)) {
+                    arena.InterlockedOr(errorAddress,65536u);
+                    return false;
+                }
+            }
             const uint refA=arena.Load(prep);
             const uint refB=arena.Load(prep+4u);
             const bool dynamicA=(refA&1u)!=0u;
