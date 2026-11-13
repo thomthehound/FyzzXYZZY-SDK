@@ -28,8 +28,7 @@ public:
         : context_(context),face_geometry_(face_geometry),
           direct_gjk_(direct_gjk),
           compact_staged_gjk_(compact_staged_gjk),
-          step_parameters_(staged_push_constants || (direct_gjk &&
-              shader.format==compute::ShaderFormat::Dxil)) {
+          step_parameters_(staged_push_constants || compact_staged_gjk_) {
         if(compact_staged_gjk_ && (!direct_gjk_ || !step_parameters_))
             throw std::invalid_argument(
                 "Compacted staged GJK requires the explicit source pass");
