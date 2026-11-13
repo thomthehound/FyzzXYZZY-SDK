@@ -8144,6 +8144,8 @@ void Scene::prepare_constraints(float seconds) {
                 std::numeric_limits<std::uint32_t>::max();
         std::array<std::size_t,255> contact_patch_ids{};
         std::array<Vec3,max_source_patches> header_normals{};
+        std::array<std::size_t,max_source_patches> used_heads{};
+        std::size_t kept=0u;
         if(resident_pcm) {
             if(manifold.count==0u)
                 throw std::logic_error("Resident PCM has no contact run");
@@ -8370,8 +8372,7 @@ void Scene::prepare_constraints(float seconds) {
         // Compact the same cache arena and remap Gu point/linked-list
         // indices together without allocating a second patch registry.
         std::array<std::size_t,max_source_patches> remap{};
-        std::array<std::size_t,max_source_patches> used_heads{};
-        std::size_t kept=0;
+
         for(std::size_t j=0;j<manifold.friction_patch_count;++j) {
             const std::size_t src=manifold.friction_patch_offset+j;
             if(next_friction_patches_[src].contact_count==0)continue;
