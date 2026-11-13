@@ -106,6 +106,11 @@ void solveJoint(uint4 desc,uint errorAddress,bool biased) {
         precise float force=previous+velocityTerm;
         precise float candidate=force+
             loadScalar(offset+(biased?48u:52u));
+        if(!isfinite(candidate) || !isfinite(normalDelta) ||
+           !isfinite(previous)) {
+            arena.InterlockedOr(errorAddress,2u);
+            return;
+        }
         precise float next=clamp(candidate,-maxImpulse,maxImpulse);
         precise float impulse=next-previous;
         va+=axis*(impulse*massA);
