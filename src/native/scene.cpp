@@ -4062,6 +4062,7 @@ std::uint8_t Scene::publish_gpu_pcm_box_box(
 void Scene::materialize_gpu_pcm_points() {
     if(!gpu_pcm_points_deferred_)return;
     FYZZ_PROFILE_SCOPE("sc.pcm_point_materialize");
+    gpu_broadphase_->finish_deferred_gpu_pcm_points();
     for(const auto& manifold:manifolds_) {
         const auto index=manifold.pcm_result_index;
         if(index==std::numeric_limits<std::uint32_t>::max())continue;
@@ -4276,7 +4277,8 @@ void Scene::update_contacts(bool defer_device_points) {
         gpu_broadphase_->enqueue_gpu_pcm_box_contacts(
             gpu_pcm_pairs_,gpu_pcm_results_,
             gpu_broadphase_->has_gpu_dy_distance()
-                ?static_cast<std::uint32_t>(island_edges_.size()):0u);
+                ?static_cast<std::uint32_t>(island_edges_.size()):0u,
+            defer_device_points);
     // The speculative IslandSim consumes SAP membership, never Gu
     // witness geometry. Admit its first/second-pass topology on the CPU
     // while the same scene stream executes general GPU PCM. Accurate
@@ -9343,9 +9345,6 @@ void Scene::solve_gpu_distance_constraints(float seconds) {
         gpu_dy_integration_inputs_,gpu_dy_integrated_poses_,true,
         gpu_dy_friction_impulses_,true,true,true,gpu_dy_sleep_states_,
         gpu_dy_joint_inputs_);
-    // The device already owns the numerical witnesses. Complete Sc's
-    // public point arena while the ordered Dy solve executes.
-    materialize_gpu_pcm_points();
     // Sc's Gu-indexed force buffer and retired-manager bookkeeping are
     // independent of the submitted numerical solve. Prepare them while
     // the ordered GPU Dy task graph executes, before its result join.
@@ -9362,6 +9361,7 @@ void Scene::solve_gpu_distance_constraints(float seconds) {
     for(const BodyId id:solver_active_ids_)consume_preintegration(id);
     for(const BodyId id:gpu_dy_free_ids_)consume_preintegration(id);
     gpu_broadphase_->finish_gpu_dy_distance();
+    materialize_gpu_pcm_points();
     gpu_dy_pose_ready_=true;
     // Dy keeps transient PGS deltas on device. Sc receives world-space
     // final and position-phase velocities needed by its task continuations.
