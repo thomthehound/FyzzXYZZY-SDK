@@ -128,6 +128,9 @@ public:
         pending_host_inputs_=false;
         pending_requests_={};
         pending_output_={};
+        deferred_points_pending_=false;
+        deferred_points_in_numerical_=false;
+        deferred_point_downloads_.clear();
         published_pair_count_=0u;
         rebuild_required_=true;
         if(pcm_transaction_pending_) {
@@ -146,7 +149,7 @@ public:
     }
 
     void commit_step() {
-        if(result_pending_)
+        if(result_pending_ || deferred_points_pending_)
             throw std::logic_error("Source PCM epoch committed before Sc publication");
         if(island_work_ready_ && !stream_.commands().empty())
             throw std::logic_error(
@@ -726,6 +729,28 @@ public:
         return compute::DispatchIndirectArgs{indirect_buffer_,0u};
     }
 
+    std::span<const compute::DownloadSpan> deferred_point_downloads() const noexcept {
+        return deferred_points_pending_ ?
+            std::span<const compute::DownloadSpan>(deferred_point_downloads_) :
+            std::span<const compute::DownloadSpan>{};
+    }
+    void mark_deferred_points_in_numerical() {
+        if(!deferred_points_pending_ || deferred_points_in_numerical_)
+            throw std::logic_error("Source PCM point fetch has no pending numerical consumer");
+        deferred_points_in_numerical_=true;
+    }
+    void finish_deferred_points(bool numerical_complete=false) {
+        if(!deferred_points_pending_)return;
+        if(deferred_points_in_numerical_) {
+            if(!numerical_complete)
+                throw std::logic_error("Source PCM point publication precedes Dy completion");
+        }else stream_.fetch(deferred_point_downloads_);
+        for(const auto& span:deferred_point_downloads_)
+            last_contact_download_bytes_+=span.bytes;
+        deferred_point_downloads_.clear();
+        deferred_points_in_numerical_=false;
+        deferred_points_pending_=false;
+    }
     void finish() {
         if(!result_pending_)
             throw std::logic_error("Source PCM join has no queued epoch");
