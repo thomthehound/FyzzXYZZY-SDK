@@ -20,7 +20,6 @@
 #include <span>
 #include <stdexcept>
 #include <utility>
-#include <unordered_map>
 #include <vector>
 
 namespace fyzz::physx_gpu {
@@ -528,7 +527,11 @@ public:
         const std::size_t static_begin=prep_bytes+cpu_gu.size_bytes();
         packed_.resize(contact_prep.size());
         inline_bodies_.clear();
-        inline_body_by_actor_.clear();
+        if(++inline_body_epoch_==0u) {
+            std::fill(inline_body_slots_.begin(),inline_body_slots_.end(),
+                      InlineBodySlot{});
+            inline_body_epoch_=1u;
+        }
         assigned_.assign(contact_prep.size(),0u);
         const auto ref_body=[&](const native::GpuDyContactPrepBody& body,
                                 std::uint32_t ordinal,
@@ -554,16 +557,16 @@ public:
             if(body.inverse_mass>0.f)
                 throw std::logic_error(
                     "Responding source Dy contact body has no solver ordinal");
-            if(actor!=invalid) {
-                const auto previous=inline_body_by_actor_.find(actor);
-                if(previous!=inline_body_by_actor_.end()) {
-                    const auto& saved=inline_bodies_[previous->second];
+            if(actor!=invalid && actor<inline_body_slots_.size()) {
+                const auto& slot=inline_body_slots_[actor];
+                if(slot.epoch==inline_body_epoch_) {
+                    const auto& saved=inline_bodies_[slot.index];
                     auto expected=body;
                     expected.solver_ordinal=ordinal;
                     if(std::memcmp(&saved,&expected,sizeof(expected))!=0)
                         throw std::logic_error(
                             "Source Dy immovable actor has inconsistent contact inputs");
-                    return narrow(static_begin+previous->second*
+                    return narrow(static_begin+slot.index*
                         sizeof(native::GpuDyContactPrepBody));
                 }
             }
@@ -575,9 +578,13 @@ public:
                 sizeof(native::GpuDyContactPrepBody);
             inline_bodies_.push_back(body);
             inline_bodies_.back().solver_ordinal=ordinal;
-            if(actor!=invalid)
-                inline_body_by_actor_.emplace(actor,
-                    static_cast<std::uint32_t>(inline_bodies_.size()-1u));
+            if(actor!=invalid) {
+                if(actor>=inline_body_slots_.size())
+                    inline_body_slots_.resize(std::size_t(actor)+1u);
+                inline_body_slots_[actor]={
+                    inline_body_epoch_,
+                    static_cast<std::uint32_t>(inline_bodies_.size()-1u)};
+            }
             return narrow(offset); // An aligned offset; low bit clear.
         };
         for(const auto& desc:descriptors) {
@@ -2477,8 +2484,12 @@ private:
     std::vector<std::uint32_t> joint_source_dirty_;
     std::vector<SourceSapUpload> joint_source_uploads_;
     std::size_t joint_source_capacity_=0u;
+    struct InlineBodySlot {
+        std::uint32_t epoch=0u,index=0u;
+    };
     std::vector<native::GpuDyContactPrepBody> inline_bodies_;
-    std::unordered_map<BodyId,std::uint32_t> inline_body_by_actor_;
+    std::vector<InlineBodySlot> inline_body_slots_;
+    std::uint32_t inline_body_epoch_=0u;
     std::vector<native::GpuDyFrictionAnchorInput> compact_anchors_;
     std::vector<std::size_t> patch_anchor_starts_;
     std::vector<std::uint8_t> assigned_;
