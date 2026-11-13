@@ -9,6 +9,7 @@
 #include <array>
 #include <cstdint>
 #include <cstring>
+#include <limits>
 #include <stdexcept>
 #include <utility>
 
@@ -99,7 +100,7 @@ public:
         desc.storage_buffer_binding_count=9u;
         desc.storage_buffer_views.assign(
             9u,compute::StorageBufferViewKind::RawReadWrite);
-        desc.push_constant_bytes=56u;
+        desc.push_constant_bytes=60u;
         pipeline_=context_.create_compute_pipeline(desc);
 #if defined(FYZZXYZZY_PROFILE_GPU)
         context_.set_pipeline_profile_label(pipeline_,"pcm.candidates");
@@ -127,17 +128,18 @@ public:
                 std::uint32_t pair_count,
                 std::uint32_t shape_capacity,
                 std::uint32_t candidate_capacity,
-                std::uint32_t edge_capacity) const {
+                std::uint32_t edge_capacity,
+                bool compact_header=false) const {
         if(!pair_count)return;
         if(!shape_capacity || !candidate_capacity || !edge_capacity)
             throw std::invalid_argument("Source PCM GPU requires shapes and candidate capacity");
         const auto groups=(std::uint64_t(pair_count)+127u)/128u;
         if(groups>context_.device_info().max_workgroup_count[0])
             throw std::out_of_range("Source PCM GPU dispatch exceeds device limit");
-        std::array<std::uint32_t,14> params{
+        std::array<std::uint32_t,15> params{
             pair_count,0u,0u,0u,0u,0u,0u,
             shape_capacity,candidate_capacity,edge_capacity,0u,0u,0u,
-            vertex_count};
+            vertex_count,0xffffffffu};
         const auto view=[&](CudaDeviceAddressMap::Address address,
                             std::size_t bytes,std::uint32_t slot,
                             compute::BufferAccess access) {
@@ -164,7 +166,8 @@ public:
             view(edge_cache,source_allocation_bytes(edge_capacity,240u),
                  5u,compute::BufferAccess::ReadWrite),
             view(dispatch_args,12u,6u,compute::BufferAccess::ReadWrite),
-            view(output,source_allocation_bytes(pair_count,84u),
+            view(output,source_allocation_bytes(
+                     pair_count,compact_header?104u:84u),
                  7u,compute::BufferAccess::Write),
             view(vertex_count?convex_vertices:transforms,
                  vertex_count?source_allocation_bytes(vertex_count,12u):
@@ -174,6 +177,12 @@ public:
             if(i!=6u && dispatch.buffers[i].buffer==dispatch.buffers[6].buffer)
                 throw std::invalid_argument(
                     "Source PCM indirect arguments alias Sc data");
+        if(compact_header) {
+            const auto offset=std::uint64_t(params[11])+pair_count*84ull;
+            if(offset>std::numeric_limits<std::uint32_t>::max())
+                throw std::overflow_error("Source PCM compact header offset overflow");
+            params[14]=static_cast<std::uint32_t>(offset);
+        }
         dispatch.push_constants.resize(sizeof(params));
         std::memcpy(dispatch.push_constants.data(),params.data(),sizeof(params));
         commands.emplace_back(std::move(dispatch));
@@ -193,11 +202,12 @@ public:
                 std::uint32_t pair_count,
                 std::uint32_t shape_capacity,
                 std::uint32_t candidate_capacity,
-                std::uint32_t edge_capacity) const {
+                std::uint32_t edge_capacity,
+                bool compact_header=false) const {
         append(stream.commands(),addresses,transforms,geometry,pairs,
                results,candidates,edge_cache,dispatch_args,output,
                convex_vertices,vertex_count,pair_count,shape_capacity,
-               candidate_capacity,edge_capacity);
+               candidate_capacity,edge_capacity,compact_header);
     }
 
 private:
