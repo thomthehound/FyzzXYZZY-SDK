@@ -23,6 +23,7 @@
 #include <optional>
 #include <span>
 #include <stdexcept>
+#include <string>
 #include <vector>
 
 namespace fyzz::physx_gpu {
@@ -793,7 +794,17 @@ public:
                  stored.touch_transition()==native::GpuPcmTouchTransition::Persists)
                   != (stored.count()>0u)))
                 throw std::logic_error(
-                    "Source GPU PCM publication disagrees with original Sc manager");
+                    "Source GPU PCM publication disagrees with original Sc manager"
+                    " pair=" + std::to_string(i) +
+                    " edge=" + std::to_string(stored.edge) +
+                    " expected=" + std::to_string(request.edge) +
+                    " status=" + std::to_string(stored.status()) +
+                    " count=" + std::to_string(stored.count()) +
+                    " cached=" + std::to_string(stored.cached_count()) +
+                    " selected=" + std::to_string(selected_count) +
+                    " regenerated=" + std::to_string(regenerated) +
+                    " transition=" + std::to_string(
+                        static_cast<std::uint32_t>(stored.touch_transition())));
         }
         if(deferred_points_pending_) {
             // Sc has admitted the contact counts. Only physically touching
