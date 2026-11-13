@@ -735,6 +735,17 @@ void verify(fyzz::compute::Backend backend,const char* sap,
             header.touch_transition==
                 static_cast<std::uint32_t>(direct[0].touch_transition()),
         "Source Sc result does not share the 84-byte GPU contact ABI");
+    // A quiet refresh must reuse Sc's original device pair descriptor:
+    // the GPU still runs PCM, but no pair-list HtoD submission is needed.
+    std::array<native::GpuPcmBoxResult,1> repeated{};
+    producer->enqueue_gpu_pcm_box_contacts(request,repeated);
+    producer->finish_gpu_pcm_box_contacts();
+    producer->commit_gpu_step();
+    require(producer->pcm_pair_upload_bytes()==0u &&
+            repeated[0].status()==0u && repeated[0].edge==edge &&
+            repeated[0].count()>0u &&
+            repeated[0].touch_transition()==native::GpuPcmTouchTransition::Persists,
+            "Stable Sc PCM manager unexpectedly re-uploaded source pair input");
     // A corrupted resident transform must invalidate the actual GPU PCM
     // producer, even if the pair's cached contact would otherwise vanish.
     const float original_x=physx_gpu::SourceScDeviceIslandFixture::
@@ -765,17 +776,6 @@ void verify(fyzz::compute::Backend backend,const char* sap,
     producer->invalidate_after_rollback();
     physx_gpu::SourceScDeviceIslandFixture::write_resident_position_x(
         *producer,gpu_b,original_x);
-    // A quiet refresh must reuse Sc's original device pair descriptor:
-    // the GPU still runs PCM, but no pair-list HtoD submission is needed.
-    std::array<native::GpuPcmBoxResult,1> repeated{};
-    producer->enqueue_gpu_pcm_box_contacts(request,repeated);
-    producer->finish_gpu_pcm_box_contacts();
-    producer->commit_gpu_step();
-    require(producer->pcm_pair_upload_bytes()==0u &&
-            repeated[0].status()==0u && repeated[0].edge==edge &&
-            repeated[0].count()>0u &&
-            repeated[0].touch_transition()==native::GpuPcmTouchTransition::Persists,
-            "Stable Sc PCM manager unexpectedly re-uploaded source pair input");
     // Explicitly invalidate a live Sc EdgeIndex. A newly admitted or
     // rejected source frame uses the identical candidate-owned reset.
     const std::array<native::GpuPcmBoxPair,1> reset_request{{
