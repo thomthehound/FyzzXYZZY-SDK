@@ -418,6 +418,12 @@ public:
     std::size_t pcm_contact_readback_bytes() const noexcept {
         return pcm_ ? pcm_->last_contact_download_bytes() : 0u;
     }
+    std::size_t pcm_header_join_bytes() const noexcept {
+        return pcm_ ? pcm_->last_header_join_bytes() : 0u;
+    }
+    std::size_t pcm_deferred_point_bytes() const noexcept {
+        return pcm_ ? pcm_->last_deferred_point_download_bytes() : 0u;
+    }
     // The device dependency is ready as soon as the source contact
     // producer and all host Gu spans are queued, not when Sc joins DMA.
     CudaDeviceAddressMap::Address device_pcm_contact_stream() const noexcept {
@@ -607,6 +613,10 @@ public:
             pcm_?pcm_->last_pair_upload_bytes():0u);
         FYZZ_PROFILE_COUNTER("pcm.witness_readback_bytes",
             pcm_?pcm_->last_contact_download_bytes():0u);
+        FYZZ_PROFILE_COUNTER("pcm.header_join_bytes",
+            pcm_?pcm_->last_header_join_bytes():0u);
+        FYZZ_PROFILE_COUNTER("pcm.deferred_point_bytes",
+            pcm_?pcm_->last_deferred_point_download_bytes():0u);
         FYZZ_PROFILE_COUNTER("pcm.host_contact_upload_bytes",
             pcm_?pcm_->last_host_contact_upload_bytes():0u);
         FYZZ_PROFILE_COUNTER("pcm.edge_history_copy_bytes",
