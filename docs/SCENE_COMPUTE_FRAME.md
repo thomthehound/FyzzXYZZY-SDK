@@ -136,10 +136,11 @@ islands use fused workgroups. Device-generated roots are numerical task IDs,
 not replacements for Sc's persistent island identities. The Scene still
 prepares solver inputs, joins GPU PCM headers for CPU friction correlation,
 and reads back Dy scheduling and numerical results for publication.
-The early PCM readback transfers 20 bytes per GPU pair rather than 84;
-deferred full-point readback adds 84 bytes per touching pair to Dy's
-existing completion batch, with no separate point-fetch fence on responding
-frames.
+The early PCM readback transfers 20 bytes per GPU pair rather than 84.
+Deferred witness readback transfers only touching runs: 64 bytes for the
+first pair in each contiguous run and 84 bytes for each subsequent pair,
+omitting the already-observed leading header. These spans join Dy's existing
+completion batch without another point-fetch fence on responding frames.
 A continuous PCM-to-Dy numerical path without a host header dependency
 remains open; compact admission alone does not remove that synchronization.
 
