@@ -241,6 +241,8 @@ public:
         stream_.submit();
         last_pair_upload_bytes_=0u;
         last_contact_download_bytes_=0u;
+        last_header_join_bytes_=0u;
+        last_deferred_point_download_bytes_=0u;
         last_host_contact_upload_bytes_=results.size_bytes();
         last_continuation_commands_=0u;
         last_face_pair_scan_count_=0u;
