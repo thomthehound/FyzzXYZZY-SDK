@@ -392,11 +392,15 @@ struct GpuDyContactPrepPair {
     float max_contact_impulse=0.0f;
     // Dense CPU Gu geometry offset for non-PCM managers only.
     std::uint32_t cpu_gu_offset=0xffffffffu;
+    // Only the host packer reads these identities. Repeated immovable
+    // participants share one inline Dy body in a numerical frame.
+    BodyId source_body0=0xffffffffu,source_body1=0xffffffffu;
 };
-static_assert(sizeof(GpuDyContactPrepPair)==248u &&
+static_assert(sizeof(GpuDyContactPrepPair)==256u &&
               offsetof(GpuDyContactPrepPair,rest_distance)==192u &&
               offsetof(GpuDyContactPrepPair,max_contact_impulse)==240u &&
-              offsetof(GpuDyContactPrepPair,cpu_gu_offset)==244u);
+              offsetof(GpuDyContactPrepPair,cpu_gu_offset)==244u &&
+              offsetof(GpuDyContactPrepPair,source_body0)==248u);
 
 struct GpuConvexFaceSpan {
     std::uint32_t first_face=0;
