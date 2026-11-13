@@ -1592,6 +1592,25 @@ void verify_queued_pcm_dy(fyzz::compute::Backend backend,const char* sap,
             poses[0].valid==1u,
         "Rejected joined-PCM GPU Dy epoch corrupted its subsequent retry");
     producer->commit_gpu_step();
+
+    // Without a numerical consumer the same compact Sc header fetch
+    // must provide the full public Gu witnesses at the later boundary.
+    std::array<native::GpuPcmBoxResult,1> deferred{};
+    producer->enqueue_gpu_pcm_box_contacts(request,deferred,0u,true);
+    producer->finish_gpu_pcm_box_contacts();
+    require(deferred[0].edge==edge && deferred[0].status()==0u &&
+            deferred[0].count()>0u &&
+            producer->pcm_header_join_bytes()==5u*sizeof(std::uint32_t) &&
+            producer->pcm_contact_readback_bytes()==5u*sizeof(std::uint32_t),
+        "Deferred PCM witness join fetched full numerical geometry");
+    producer->finish_deferred_gpu_pcm_points();
+    require(producer->pcm_deferred_point_bytes()==
+                sizeof(physx_gpu::SourcePcmGpuContactStreamNative) &&
+            deferred[0].count()>0u &&
+            std::isfinite(deferred[0].points[0].separation) &&
+            std::fabs(deferred[0].points[0].position.x)>0.01f,
+        "Deferred PCM witness publication did not restore world points");
+    producer->commit_gpu_step();
 }
 
 // Sparse live Sc managers keep their original edge handles. GPU readback
