@@ -8356,6 +8356,8 @@ void Scene::prepare_constraints(float seconds) {
                 out.inverse_mass=body.inverse_mass;
             };
             native::GpuDyContactPrepPair prep{};
+            prep.source_body0=id0;
+            prep.source_body1=id1;
             pack_body(prep.body0,a);
             pack_body(prep.body1,b);
             // The prepared contact endpoints already own their solver
