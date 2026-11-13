@@ -16,6 +16,7 @@
 #include <array>
 #include <bit>
 #include <cmath>
+#include <cstddef>
 #include <cstdint>
 #include <cstring>
 #include <limits>
@@ -806,12 +807,18 @@ public:
                 const auto first=i;
                 do {++i;}while(i<journal_pair_count_ &&
                     !requests[i].host_generated && output[i].count()!=0u);
-                const auto bytes=(i-first)*sizeof(native::GpuPcmBoxResult);
+                constexpr auto header_bytes=
+                    offsetof(native::GpuPcmBoxResult,points);
+                const auto bytes=(i-first)*sizeof(native::GpuPcmBoxResult)-
+                    header_bytes;
                 const auto mapped=addresses_.resolve(
                     dense_contacts_.getDevicePtr()+
-                        first*sizeof(native::GpuPcmBoxResult),bytes);
+                        first*sizeof(native::GpuPcmBoxResult)+header_bytes,
+                    bytes);
                 deferred_point_downloads_.push_back({
-                    mapped.buffer,mapped.offset,output.data()+first,bytes});
+                    mapped.buffer,mapped.offset,
+                    reinterpret_cast<std::uint8_t*>(output.data()+first)+
+                        header_bytes,bytes});
             }
             deferred_points_pending_=!deferred_point_downloads_.empty();
         }
