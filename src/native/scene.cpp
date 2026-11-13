@@ -4030,7 +4030,7 @@ std::uint8_t Scene::generate_pcm_plane_box(
 }
 std::uint8_t Scene::publish_gpu_pcm_box_box(
     const GpuPcmBoxResult& gpu,PcmManifoldCache& cache,
-    std::span<ContactPoint> output) {
+    std::span<ContactPoint> output,bool defer_points) {
     if(gpu.status()!=0u || gpu.count()>4u)
         throw std::logic_error("Source GPU PCM returned an invalid Sc manifold");
     // The original EdgeIndex cache retains B-local witnesses on device.
@@ -4044,6 +4044,11 @@ std::uint8_t Scene::publish_gpu_pcm_box_box(
         throw std::overflow_error("Source GPU PCM normal is invalid");
     if(gpu.count()>output.size())
         throw std::logic_error("Source GPU PCM contact arena exhausted");
+    if(defer_points) {
+        for(std::uint8_t i=0;i<gpu.count();++i)
+            output[i]={{},gpu.normal,0.f};
+        return static_cast<std::uint8_t>(gpu.count());
+    }
     for(std::uint8_t i=0;i<gpu.count();++i) {
         const auto& p=gpu.points[i];
         const ContactPoint contact{p.position,gpu.normal,p.separation};
@@ -4053,6 +4058,32 @@ std::uint8_t Scene::publish_gpu_pcm_box_box(
     }
     return static_cast<std::uint8_t>(gpu.count());
 }
+void Scene::materialize_gpu_pcm_points() {
+    if(!gpu_pcm_points_deferred_)return;
+    for(const auto& manifold:manifolds_) {
+        const auto index=manifold.pcm_result_index;
+        if(index==std::numeric_limits<std::uint32_t>::max())continue;
+        if(index>=gpu_pcm_pairs_.size() ||
+           index>=gpu_pcm_results_.size())
+            throw std::logic_error("Deferred PCM manager lost its result");
+        if(gpu_pcm_pairs_[index].host_generated)continue;
+        const auto& result=gpu_pcm_results_[index];
+        if(result.edge!=manifold.edge_handle ||
+           result.status()!=0u || result.count()!=manifold.count ||
+           manifold.contact_offset>contact_points_.size() ||
+           manifold.count>contact_points_.size()-manifold.contact_offset)
+            throw std::logic_error("Deferred PCM witness range is invalid");
+        for(std::size_t j=0u;j<manifold.count;++j) {
+            const auto& p=result.points[j];
+            if(!finite(p.position) || !std::isfinite(p.separation))
+                throw std::overflow_error("Deferred PCM witness is not finite");
+            contact_points_[manifold.contact_offset+j]={
+                p.position,result.normal,p.separation};
+        }
+    }
+    gpu_pcm_points_deferred_=false;
+}
+
 bool Scene::cached_friction_patch_valid(
     const FrictionPatch& old,const Actor& actor0,
     const Actor& actor1) const {
@@ -4084,8 +4115,9 @@ bool Scene::cached_friction_patch_valid(
     return true;
 }
 
-void Scene::update_contacts() {
+void Scene::update_contacts(bool defer_device_points) {
     FYZZ_PROFILE_SCOPE("gu.contacts_pcm");
+    gpu_pcm_points_deferred_=false;
     // Gu narrowphase consumes the sum of both PxShapeCore contact offsets.
     next_manifolds_.clear();
     next_contact_points_.clear();
@@ -4495,8 +4527,11 @@ void Scene::update_contacts() {
                     if(result.count())
                         contacts={next_contact_points_.data()+offset,
                                   result.count()};
+                    const bool deferred=defer_device_points &&
+                        !gpu_pcm_pairs_[manifold.pcm_result_index].host_generated;
                     manifold.count=publish_gpu_pcm_box_box(
-                        result,island_edges_[edge].pcm_cache,contacts);
+                        result,island_edges_[edge].pcm_cache,contacts,deferred);
+                    gpu_pcm_points_deferred_|=deferred && manifold.count!=0u;
                     island_edges_[edge].pcm_cache.device_history=
                         !gpu_pcm_pairs_[manifold.pcm_result_index].host_generated;
                 }else {
@@ -8878,6 +8913,7 @@ void Scene::solve_gpu_distance_constraints(float seconds) {
     // transient packed views of those exact prepared source inputs.
     if(ordered_constraints_.empty() && solver_active_ids_.empty() &&
        gpu_dy_free_ids_.empty()) {
+        materialize_gpu_pcm_points();
         begin_contact_writeback();
         return;
     }
@@ -9190,6 +9226,9 @@ void Scene::solve_gpu_distance_constraints(float seconds) {
         gpu_dy_integration_inputs_,gpu_dy_integrated_poses_,true,
         gpu_dy_friction_impulses_,true,true,true,gpu_dy_sleep_states_,
         gpu_dy_joint_inputs_);
+    // The device already owns the numerical witnesses. Complete Sc's
+    // public point arena while the ordered Dy solve executes.
+    materialize_gpu_pcm_points();
     // Sc's Gu-indexed force buffer and retired-manager bookkeeping are
     // independent of the submitted numerical solve. Prepare them while
     // the ordered GPU Dy task graph executes, before its result join.
@@ -11181,7 +11220,7 @@ void Scene::step(float seconds) {
         accurate_islands_.active_nodes.size();
     speculative_islands_.initial_active_node_count=
         speculative_islands_.active_nodes.size();
-    advance_collision_internal(false,true);
+    advance_collision_internal(false,true,true);
     // The source first/second-pass wakeIslands handoffs precede
     // third-pass processLostEdges, preserving old-island wake reach.
     activate_published_islands();
@@ -11452,6 +11491,7 @@ void Scene::step(float seconds) {
     } catch (...) {
         { FYZZ_PROFILE_SCOPE("sc.rollback");
           step_checkpoint_.rollback(*this); }
+        gpu_pcm_points_deferred_=false;
         FYZZ_PROFILE_END_FRAME(frame_index_,gpu_dy_active(),false);
         throw;
     }
@@ -11530,7 +11570,7 @@ void Scene::advance_collision(bool force_update) {
         synchronize_active_island_nodes();
 }
 void Scene::advance_collision_internal(
-    bool force_update,bool checkpointed) {
+    bool force_update,bool checkpointed,bool defer_device_points) {
     FYZZ_PROFILE_SCOPE("sc.collision_pipeline");
     // Sc retirement and event clearing do not consume SAP reports or
     // change source AABB inputs. On GPU frames, execute this work after
@@ -11566,7 +11606,7 @@ void Scene::advance_collision_internal(
             update_pairs();
         }
         publish_pairs();
-        update_contacts();
+        update_contacts(defer_device_points && gpu_dy_active());
     } else {
         // A quiet query/step still publishes empty per-frame event
         // streams. Rotate only their reusable buffers so a later

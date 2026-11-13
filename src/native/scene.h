@@ -1390,7 +1390,8 @@ private:
     void refresh_shape_links(BodyId body);
     static Transform validated_pose(Transform pose);
     // Shared Gu collision progression, independent of Dy solver execution.
-    void advance_collision_internal(bool force_update,bool checkpointed);
+    void advance_collision_internal(bool force_update,bool checkpointed,
+                                    bool defer_device_points=false);
     void update_shape_bounds(Shape& shape);
     void publish_integrated_shape_bounds(BodyId id,Actor& actor);
     void update_bounds();
@@ -1404,7 +1405,8 @@ private:
     void update_gpu_pairs(bool force_update,
                           const std::function<void()>& independent_sc_work);
     void publish_pairs();
-    void update_contacts();
+    void update_contacts(bool defer_device_points=false);
+    void materialize_gpu_pcm_points();
     // Original contact-manager addEdge/setEdgeConnected/removeConnection
     // lifecycle, within the existing single scene-owned island pipeline.
     std::uint32_t allocate_contact_edge(Pair bodies,Pair shapes={});
@@ -1547,7 +1549,7 @@ private:
         PcmManifoldCache& cache,std::span<ContactPoint> output);
     static std::uint8_t publish_gpu_pcm_box_box(
         const GpuPcmBoxResult& gpu,PcmManifoldCache& cache,
-        std::span<ContactPoint> output);
+        std::span<ContactPoint> output,bool defer_points=false);
     enum class IslandEdgeType : std::uint8_t {
         ContactManager, Constraint
     };
@@ -2302,6 +2304,7 @@ private:
     // records; edge identity and rollback ownership remain with Sc.
     std::vector<GpuPcmBoxPair> gpu_pcm_pairs_;
     std::vector<GpuPcmBoxResult> gpu_pcm_results_;
+    bool gpu_pcm_points_deferred_=false;
     // Source friction cache geometry is independent of current PCM Gu.
     // Each bit is a previous friction patch validated while GPU Gu runs.
     std::vector<std::uint32_t> gpu_pcm_friction_history_masks_;

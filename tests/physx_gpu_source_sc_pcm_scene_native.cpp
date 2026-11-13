@@ -2087,6 +2087,14 @@ void verify_gpu_single_island_hybrid_solver(
         gpu.step(1.f/120.f);
         const auto schedule=producer->dy_launch_stats();
         saw_pcm_contact|=producer->dy_pcm_device_contact_rows()>0u;
+        for(const auto& contact:gpu.contacts())
+            for(const auto& point:contact.points)
+                require(std::isfinite(point.position.x) &&
+                        std::isfinite(point.position.y) &&
+                        std::isfinite(point.position.z) &&
+                        std::isfinite(point.separation) &&
+                        point.position.y>0.1f,
+                    "GPU Dy returned unpublished PCM world witnesses");
         require(gpu.largest_accurate_island_size()==2u &&
                 cpu.contacts().size()==gpu.contacts().size() &&
                 gpu.active_accurate_island_count()>1u &&
