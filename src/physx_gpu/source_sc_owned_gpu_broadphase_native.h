@@ -146,7 +146,11 @@ public:
                 convex_surface_faces_base_,convex_surface_indices_base_,
                 take_pcm_shader(*pcm_shaders,NativeGpuPcmStage::Candidates),
                 take_pcm_shader(*pcm_shaders,NativeGpuPcmStage::EpaCompact),
-                take_pcm_shader(*pcm_shaders,NativeGpuPcmStage::GjkContact),
+                take_pcm_shader(*pcm_shaders,
+                    backend==compute::Backend::D3D12 &&
+                    !context_.device_info().software_adapter
+                        ?NativeGpuPcmStage::GjkFused
+                        :NativeGpuPcmStage::GjkContact),
                 take_pcm_shader(*pcm_shaders,NativeGpuPcmStage::GjkPrimitive),
                 take_pcm_shader(*pcm_shaders,NativeGpuPcmStage::GjkReduce),
                 take_pcm_shader(*pcm_shaders,NativeGpuPcmStage::GjkPublish),
