@@ -2184,11 +2184,8 @@ void verify_gpu_single_island_hybrid_solver(
                 producer->dy_gpu_integrated_body_count()==2u+free_count &&
                 schedule.device_colored_tasks>0u &&
                 schedule.device_colored_descriptors>0u &&
-                schedule.device_island_indirect_dispatches==
-                    (resident_admission?1u:0u) &&
-                (!resident_admission ||
-                 (schedule.device_admitted_tasks==1u &&
-                  schedule.source_descriptor_upload_bytes==0u)),
+                schedule.device_island_indirect_dispatches==0u &&
+                schedule.device_admitted_tasks==0u,
             "Single accurate island did not use its selected numerical schedule");
         for(std::size_t i=0;i<a.size();++i)
             test::compound_compare_state(
@@ -3056,13 +3053,9 @@ void verify_mixed_gu_pcm_gpu_dy_solver(
                     producer->dy_pcm_device_contact_rows()>0u &&
                     producer->dy_cpu_gu_geometry_bytes()>=
                         sizeof(native::GpuDyGuContactInput) &&
-                    producer->dy_upload_span_count()==
-                        (device_admission?2u:1u) &&
-                    producer->dy_launch_stats().device_island_indirect_dispatches==
-                        (device_admission?1u:0u) &&
-                    (!device_admission ||
-                     (producer->dy_launch_stats().device_admitted_tasks==2u &&
-                      producer->dy_launch_stats().source_descriptor_upload_bytes==0u)),
+                    producer->dy_upload_span_count()==1u &&
+                    producer->dy_launch_stats().device_island_indirect_dispatches==0u &&
+                    producer->dy_launch_stats().device_admitted_tasks==0u,
                 "Mixed source Gu and PCM rows did not enter selected Dy tasks");
             native::GpuPcmFrictionAnchorFixture::verify_device_contact_order(
                 gpu,true,true);
@@ -3459,11 +3452,9 @@ void verify_gpu_distance_solver(
             5u*(52u+sizeof(native::GpuDyIntegratedPose))+
             3u*sizeof(std::uint32_t);
         const auto& admission=producer->dy_launch_stats();
-        if(device_admission)
-            require(admission.device_island_indirect_dispatches==1u &&
-                    admission.device_admitted_tasks==3u &&
-                    admission.source_descriptor_upload_bytes==0u,
-                "Joint-only Scene did not launch resident Sc task admission");
+        require(admission.device_island_indirect_dispatches==0u &&
+                admission.device_admitted_tasks==0u,
+            "Joint-only Scene duplicated CPU-authorized task admission");
         const std::size_t scheduling_output=admission.device_island_indirect_dispatches
             ?16u+admission.device_colored_tasks*sizeof(native::GpuDyDistanceTask)+
                  admission.device_world_motion_bodies*sizeof(std::uint32_t)
