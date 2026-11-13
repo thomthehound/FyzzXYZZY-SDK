@@ -517,6 +517,13 @@ if(FYZZXYZZY_BUILD_D3D12)
     add_custom_target(fyzzxyzzy_source_pcm_epa_work_shader_d3d12
       DEPENDS "${FYZZXYZZY_SOURCE_PCM_EPA_WORK_DXIL_COMPACT}"
         "${FYZZXYZZY_SOURCE_PCM_EPA_ARGS_RESET_DXIL}")
+    set(FYZZXYZZY_SOURCE_PCM_GJK_FUSED_DXIL
+      "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_source_pcm_gjk_fused_native.dxil")
+    fyzzxyzzy_compile_hlsl("${FYZZXYZZY_SOURCE_PCM_GJK_FUSED_DXIL}"
+      "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_pcm_box_gjk_native.hlsl" cs_6_0 main
+      DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_pcm_box_math_native.hlsli"
+        "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_pcm_box_gjk_native.hlsli"
+        "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_pcm_sc_contact_publish_native.hlsli")
     set(FYZZXYZZY_SOURCE_PCM_GJK_DXIL
       "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_source_pcm_box_gjk_native.dxil")
     fyzzxyzzy_compile_hlsl("${FYZZXYZZY_SOURCE_PCM_GJK_DXIL}"
@@ -1064,10 +1071,11 @@ if(FYZZXYZZY_BUILD_D3D12)
       "${FYZZXYZZY_SOURCE_PCM_EPA_ARGS_RESET_DXIL}"
       "${FYZZXYZZY_SOURCE_PCM_GJK_PRIMITIVE_DXIL}"
       "${FYZZXYZZY_SOURCE_SC_CONTACT_JOURNAL_DXIL}"
-       "${FYZZXYZZY_SOURCE_SC_DEVICE_ISLAND_DXIL}")
-    set(_pcm_stages Candidates EpaCompact GjkContact EpaContact FaceContacts GjkReduce GjkPublish EpaArgsReset GjkPrimitive ContactJournal DeviceIslands)
+       "${FYZZXYZZY_SOURCE_SC_DEVICE_ISLAND_DXIL}"
+      "${FYZZXYZZY_SOURCE_PCM_GJK_FUSED_DXIL}")
+    set(_pcm_stages Candidates EpaCompact GjkContact EpaContact FaceContacts GjkReduce GjkPublish EpaArgsReset GjkPrimitive ContactJournal DeviceIslands GjkFused)
     set(_pcm_manifest "FYZZXYZZY_SOURCE_PCM_1 DXIL\n")
-    foreach(_idx RANGE 0 10)
+    foreach(_idx RANGE 0 11)
       list(GET _pcm_stages ${_idx} _stage)
       list(GET _pcm_binaries ${_idx} _binary)
       get_filename_component(_name "${_binary}" NAME)
