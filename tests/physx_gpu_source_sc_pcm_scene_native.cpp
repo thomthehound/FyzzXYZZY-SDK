@@ -3830,6 +3830,15 @@ void verify_host_primitive_pcm_solver(
         const auto before_fetch=producer->stream_submission_stats();
         cpu.step(dt);
         gpu.step(dt);
+        if(frame==0u) {
+            constexpr std::int64_t expected_saving=
+                2*std::int64_t(sizeof(native::GpuDyContactPrepPair))-
+                2*std::int64_t(sizeof(
+                    physx_gpu::SourceDyPackedContactPrepNative))-
+                std::int64_t(sizeof(native::GpuDyContactPrepBody));
+            require(producer->dy_contact_prep_upload_saving()==expected_saving,
+                "Two plane contact managers uploaded the same static body twice");
+        }
         const auto& completed=producer->stream_submission_stats();
         const auto indirect=
             producer->dy_launch_stats().device_island_indirect_dispatches;
