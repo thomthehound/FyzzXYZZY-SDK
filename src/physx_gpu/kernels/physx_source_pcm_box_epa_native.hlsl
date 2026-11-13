@@ -53,7 +53,8 @@ struct Parameters {
     uint edgeCapacity;
     uint outputBias;
     uint hullBias;
-    uint hullCount;    uint headerBias;
+    uint hullCount;
+    uint headerBias;
 };
 #ifdef __spirv__
 [[vk::push_constant]] Parameters p;
