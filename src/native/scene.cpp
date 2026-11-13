@@ -8775,8 +8775,8 @@ void Scene::publish_cpu_gu_touch_history() {
                 gpu_dy_gu_touches_);
     }
 }
-void Scene::prepare_gpu_dy_device_islands() {
-    if(!gpu_dy_device_admission_enabled_ || gpu_dy_tasks_.empty())return;
+void Scene::prepare_gpu_dy_device_islands(bool selected) {
+    if(!selected)return;
     if(gpu_dy_tasks_.size()>gpu_broadphase_->gpu_dy_direct_task_limit())
         throw std::out_of_range(
             "Resident Sc island admission exceeds device task capacity");
@@ -9034,7 +9034,33 @@ void Scene::solve_gpu_distance_constraints(float seconds) {
             "Source GPU 1D row preparation did not cover source rows");
     gpu_dy_body_ordinals_.resize(solver_active_ids_.size());
     gpu_dy_tasks_.clear();
-    if(gpu_dy_device_admission_enabled_) {
+    // Device admission earns its graph traversal only when CPU task
+    // batching hides independent responding islands. Wide islands use
+    // their separate numerical partitioning path.
+    std::size_t responding_tasks=0u;
+    std::size_t previous_bodies=0u,previous_descriptors=0u;
+    bool compact_tasks=true;
+    for(const auto& task:solver_tasks_) {
+        if(task.solver_body_end<previous_bodies ||
+           task.constraint_end<previous_descriptors)
+            throw std::logic_error("Source Dy task range regressed");
+        if(task.solver_body_end>previous_bodies)++responding_tasks;
+        if(task.solver_body_end-previous_bodies>=gpu_dy_wide_task_threshold &&
+           task.constraint_end-previous_descriptors>=gpu_dy_wide_task_threshold)
+            compact_tasks=false;
+        previous_bodies=task.solver_body_end;
+        previous_descriptors=task.constraint_end;
+    }
+    const bool has_gpu_pcm=std::any_of(
+        gpu_pcm_pairs_.begin(),gpu_pcm_pairs_.end(),
+        [](const GpuPcmBoxPair& pair){return !pair.host_generated;});
+    const bool device_admission=gpu_dy_device_admission_enabled_ &&
+        has_gpu_pcm && compact_tasks &&
+        gpu_dy_responding_island_count_>responding_tasks &&
+        gpu_dy_responding_island_count_<=
+            gpu_broadphase_->gpu_dy_direct_task_limit();
+    FYZZ_PROFILE_COUNTER("dy.device_island_selected",device_admission?1u:0u);
+    if(device_admission) {
         // One responding accurate island can admit one numerical task.
         // Free-flight Sc task groups are not resident solver islands;
         // counting them would exceed the device node/task allocation.
@@ -9221,7 +9247,7 @@ void Scene::solve_gpu_distance_constraints(float seconds) {
             "GPU Dy explicit Gu contact order was not fully consumed");
     // Sc owns persistent island identities. Device admission consumes
     // physical EdgeIndex touch history and authors only numerical ranges.
-    prepare_gpu_dy_device_islands();
+    prepare_gpu_dy_device_islands(device_admission);
     gpu_broadphase_->enqueue_gpu_dy_distance(
         gpu_dy_bodies_,gpu_dy_rows_,ordered_constraints_,
         {},gpu_dy_body_ordinals_,gpu_dy_tasks_,
