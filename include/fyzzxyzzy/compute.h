@@ -44,6 +44,9 @@ struct DeviceInfo {
     std::string name;
     std::uint32_t vendor_id = 0;
     std::uint32_t device_id = 0;
+    // Software adapters execute compute through the API but do not
+    // determine the native hardware dispatch strategy.
+    bool software_adapter = false;
     std::uint32_t api_version = 0;
     std::uint64_t max_storage_buffer_range = 0;
     // Device-creation-time descriptor binding alignment. Vulkan obtains its
