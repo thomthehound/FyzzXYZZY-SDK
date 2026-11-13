@@ -85,20 +85,31 @@ void publishScContacts(uint i,uint first,uint second,uint edge,uint result,
                 status=4u;
             }else {
                 normal=rotateSource(qb,localNormal*(1.f/sqrt(sq)));
+                if(!all(isfinite(normal)) || !all(isfinite(pb)) ||
+                   !all(isfinite(qb)) || !isfinite(distance))
+                    status=4u;
                 [unroll]
-                for(uint j=0u;j<4u;++j) {
+                for(uint j=0u;j<4u && status==0u;++j) {
                     if(j>=count)break;
                     uint contact=src+80u+j*40u;
                     float depth=asfloat(edgeCaches.Load(contact+36u));
                     if(regenerated==0u && depth>distance)continue;
                     float3 b=asfloat(edgeCaches.Load3(contact+12u));
                     float3 world=rotateSource(qb,b)+pb;
+                    if(!all(isfinite(world)) || !isfinite(depth)) {
+                        status=4u;
+                        break;
+                    }
                     streamContacts.Store4(dst+20u+emitted*16u,
                         asuint(float4(world,depth)));
                     ++emitted;
                 }
             }
         }
+    }
+    if(status!=0u) {
+        emitted=0u;
+        normal=float3(0.f,0.f,0.f);
     }
     uint transition=sourceScTouchTransition(
         edge,emitted,status,edgeBias,edgeCapacity);
