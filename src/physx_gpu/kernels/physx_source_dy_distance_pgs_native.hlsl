@@ -1490,6 +1490,10 @@ void sourceDySolvePackedTask(uint taskId) {
             for(uint body=bodies.x;body<bodies.y;++body)
                 saveMotion(body,errorAddress);
     }
+    if(arena.Load(errorAddress)!=0u) {
+        publishTaskError(taskId,arena.Load(errorAddress));
+        return;
+    }
     for(uint body=bodies.x;body<bodies.y;++body) {
         const uint ordinal=arena.Load(p.ordinalBias+body*4u);
         if(ordinal>=p.bodyCount)
@@ -1750,6 +1754,14 @@ void main(uint3 group:SV_GroupID,uint3 lane:SV_GroupThreadID) {
                 }
             }
             if(!fused)return;
+        }
+    }
+    if(fused) {
+        AllMemoryBarrierWithGroupSync();
+        if(arena.Load(endError)!=0u) {
+            if(lane.x==0u)
+                publishTaskError(taskId,arena.Load(endError));
+            return;
         }
     }
     if(fused || phase==integrationTile || freeBody) {
