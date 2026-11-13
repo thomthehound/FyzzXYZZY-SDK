@@ -263,6 +263,8 @@ public:
         published_pair_count_=0u;
         last_pair_upload_bytes_=0u;
         last_contact_download_bytes_=0u;
+        last_header_join_bytes_=0u;
+        last_deferred_point_download_bytes_=0u;
         last_host_contact_upload_bytes_=0u;
         host_upload_pending_=false;
         island_work_ready_=false;
@@ -745,8 +747,10 @@ public:
             if(!numerical_complete)
                 throw std::logic_error("Source PCM point publication precedes Dy completion");
         }else stream_.fetch(deferred_point_downloads_);
-        for(const auto& span:deferred_point_downloads_)
+        for(const auto& span:deferred_point_downloads_) {
             last_contact_download_bytes_+=span.bytes;
+            last_deferred_point_download_bytes_+=span.bytes;
+        }
         deferred_point_downloads_.clear();
         deferred_points_in_numerical_=false;
         deferred_points_pending_=false;
@@ -767,8 +771,11 @@ public:
                 if(!requests[i].host_generated)
                     std::memcpy(&output[i],&header_records_[i],
                                 sizeof(PcmHeader));
-        for(const auto& span:gpu_downloads_)
+        for(const auto& span:gpu_downloads_) {
             last_contact_download_bytes_+=span.bytes;
+            if(deferred_points_pending_)
+                last_header_join_bytes_+=span.bytes;
+        }
         for(std::uint32_t i=0u;i<journal_pair_count_;++i) {
             const auto& stored=output[i];
             const auto& request=requests[i];
@@ -832,6 +839,12 @@ public:
     }
     std::size_t last_contact_download_bytes() const noexcept {
         return last_contact_download_bytes_;
+    }
+    std::size_t last_header_join_bytes() const noexcept {
+        return last_header_join_bytes_;
+    }
+    std::size_t last_deferred_point_download_bytes() const noexcept {
+        return last_deferred_point_download_bytes_;
     }
     std::size_t last_host_contact_upload_bytes() const noexcept {
         return last_host_contact_upload_bytes_;
@@ -953,6 +966,8 @@ private:
     std::uint32_t published_pair_count_=0u;
     std::size_t last_pair_upload_bytes_=0u;
     std::size_t last_contact_download_bytes_=0u;
+    std::size_t last_header_join_bytes_=0u;
+    std::size_t last_deferred_point_download_bytes_=0u;
     std::size_t last_host_contact_upload_bytes_=0u;
     std::size_t last_edge_history_copy_bytes_=0u;
     std::size_t last_continuation_commands_=0u;
