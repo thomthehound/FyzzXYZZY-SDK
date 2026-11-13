@@ -98,6 +98,8 @@ std::vector<Candidate> discover_adapters() {
         info.name = adapter_name(description);
         info.vendor_id = description.VendorId;
         info.device_id = description.DeviceId;
+        info.software_adapter =
+            (description.Flags & DXGI_ADAPTER_FLAG_SOFTWARE) != 0;
         info.api_version = D3D_FEATURE_LEVEL_12_0;
         info.max_storage_buffer_range = static_cast<std::uint64_t>(
             std::numeric_limits<std::uint32_t>::max()) * 4ull;
