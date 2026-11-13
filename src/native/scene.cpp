@@ -8138,6 +8138,79 @@ void Scene::prepare_constraints(float seconds) {
         // Construct those original two passes before preparing normal
         // rows; simply grouping individual normals loses linked-list
         // order and fails to prioritize valid previous-frame anchors.
+        constexpr std::size_t max_source_patches=32;
+        const bool resident_pcm=gpu_normal_prep &&
+            manifold.pcm_result_index!=
+                std::numeric_limits<std::uint32_t>::max();
+        std::array<std::size_t,255> contact_patch_ids{};
+        std::array<Vec3,max_source_patches> header_normals{};
+        if(resident_pcm) {
+            if(manifold.count==0u)
+                throw std::logic_error("Resident PCM has no contact run");
+            const Vec3 normal=manifold.points.front().normal;
+            const FrictionPatch* retained=nullptr;
+            if(!disable_strong_friction && edge<friction_by_edge_.size()) {
+                const auto& history=friction_by_edge_[edge];
+                if(history.epoch==friction_cache_epoch_ &&
+                   history.count && history.pair==manifold.pair &&
+                   history.offset<=friction_patches_.size() &&
+                   history.count<=friction_patches_.size()-history.offset) {
+                    if(history.count>max_source_patches)
+                        throw std::logic_error(
+                            "Source PCM friction history exceeds patch limit");
+                    for(std::size_t previous=history.offset;
+                        previous<history.offset+history.count;++previous) {
+                        const auto& old=friction_patches_[previous];
+                        const bool checked_before_gu=
+                            manifold.pcm_result_index<
+                                gpu_pcm_friction_history_masks_.size();
+                        const bool valid=checked_before_gu
+                            ?(gpu_pcm_friction_history_masks_[
+                                manifold.pcm_result_index] &
+                                (1u<<(previous-history.offset)))!=0u
+                            :cached_friction_patch_valid(old,actor0,actor1);
+                        if(!valid)continue;
+                        const Vec3 old_normal=rotate(
+                            mass_orientation(actor0),old.body0_normal);
+                        if(dot(old_normal,normal)>=same_normal &&
+                           old.restitution==restitution &&
+                           old.damping==damping &&
+                           old.acceleration_spring==acceleration_spring &&
+                           old.static_friction==static_friction &&
+                           old.dynamic_friction==dynamic_friction) {
+                            retained=&old;
+                            break;
+                        }
+                    }
+                }
+            }
+            FrictionPatch patch=retained?*retained:FrictionPatch{};
+            if(retained)
+                patch.normal=rotate(
+                    mass_orientation(actor0),retained->body0_normal);
+            else {
+                patch.pair=manifold.pair;
+                patch.normal=normal;
+                patch.static_friction=static_friction;
+                patch.dynamic_friction=dynamic_friction;
+                patch.restitution=restitution;
+                patch.damping=damping;
+                patch.acceleration_spring=acceleration_spring;
+                patch.disable_friction=disable_friction;
+                patch.disable_strong_friction=disable_strong_friction;
+                patch.body0_normal=local_normal(actor0,normal);
+                patch.body1_normal=local_normal(actor1,normal);
+            }
+            patch.contact_count=static_cast<std::uint16_t>(manifold.count);
+            patch.contact_ids.fill(0xffff);
+            patch.bounds_min={};
+            patch.bounds_max={};
+            next_friction_patches_.push_back(patch);
+            manifold.friction_patch_count=1u;
+            next_friction_by_edge_[edge]={
+                manifold.pair,manifold.friction_patch_offset,1u,
+                next_cache_epoch};
+        } else {
         contact_patch_scratch_.clear();
         // GuPCMContactBoxBox publishes one common world normal for all
         // selected witnesses of a source box pair. Its contiguous run
@@ -8194,10 +8267,8 @@ void Scene::prepare_constraints(float seconds) {
                 }
             }
         }
-        constexpr std::size_t max_source_patches=32;
         std::array<std::size_t,max_source_patches> contact_heads{};
         contact_heads.fill(invalid_instance);
-        std::array<std::size_t,255> contact_patch_ids{};
         // DyContactPrepShared::getFrictionPatches admits prior anchors
         // FIRST, only with a valid relative normal, separation and
         // strong-friction state. Fresh contact patches correlate against
@@ -8326,7 +8397,6 @@ void Scene::prepare_constraints(float seconds) {
         // friction tangents in the header. It is distinct from a cached
         // FrictionPatch::body0Normal/body1Normal, which belong to the
         // older strong-friction anchor correlation lifecycle.
-        std::array<Vec3,max_source_patches> header_normals{};
         for(std::size_t j=0;j<kept;++j) {
             const auto head=used_heads[j];
             if(head==invalid_instance)
@@ -8334,6 +8404,7 @@ void Scene::prepare_constraints(float seconds) {
                     "Source correlated friction patch has no contact head");
             header_normals[j]=
                 manifold.points[contact_patch_scratch_[head].start].normal;
+        }
         }
         if(gpu_normal_prep) {
             if(gpu_dy_contact_prep_pairs_.size()>=
@@ -8426,9 +8497,7 @@ void Scene::prepare_constraints(float seconds) {
         // CPU PGS retains the complete correlated contact order.
         // Device Dy needs explicit indices only for non-PCM Gu:
         // PCM's source-ordered contact run is already resident.
-        const bool resident_order=gpu_normal_prep &&
-            manifold.pcm_result_index!=
-                std::numeric_limits<std::uint32_t>::max();
+        const bool resident_order=resident_pcm;
         const auto order_begin=gpu_normal_prep
             ?gpu_dy_contact_order_.size():solver_contact_order_.size();
         if(!resident_order)
