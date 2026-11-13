@@ -60,6 +60,17 @@ struct SourceScDeviceIslandFixture {
                                 state.data(),sizeof(state));
         return state;
     }
+    static void inject_failed_touch(
+            SourceScOwnedGpuBroadphaseNative& owner,std::uint32_t edge) {
+        if(edge>=owner.device_pcm_touch_capacity())
+            throw std::runtime_error("Invalid Sc test contact EdgeIndex");
+        constexpr std::uint32_t failed_touch=0x80000001u;
+        const auto address=owner.device_pcm_touch_history()+
+            std::size_t(edge)*240u+72u;
+        auto& uploads=owner.stream_.upload_scratch();
+        uploads.push_back({address,&failed_touch,sizeof(failed_touch)});
+        owner.stream_.queue_uploads(uploads);
+    }
     static SourceScDeviceIslandHeader read(SourceScOwnedGpuBroadphaseNative& owner) {
         if(!owner.pcm_ || !owner.pcm_->device_island_work_address())
             throw std::runtime_error("Device Sc task work was not queued");
@@ -1254,6 +1265,24 @@ void verify_device_sc_dy_task_admission(
                       (2.f+0.5f*seconds))<0.002f,
         "Dy did not indirectly execute the resident Sc task");
     producer->commit_gpu_step();
+
+    // A failed PCM producer cannot launch a numerical island even when
+    // its previous physical touch bit remains set. The device rejects
+    // this epoch before Sc observes the witness and restores the journal.
+    witness={};
+    producer->enqueue_gpu_pcm_box_contacts(requests,witness);
+    physx_gpu::SourceScDeviceIslandFixture::inject_failed_touch(
+        *producer,edge);
+    producer->enqueue_gpu_dy_island_admission(
+        touching,single_node,
+        physx_gpu::SourceScDeviceIslandSources{2u,0u,0u});
+    const auto failed=physx_gpu::SourceScDeviceIslandFixture::read(*producer);
+    require((failed.errors&256u)!=0u &&
+            failed.runnable_components==0u && failed.dispatch_x==0u &&
+            witness[0].packed_counts==0u,
+        "Failed GPU PCM touch was admitted before Sc result validation");
+    producer->finish_gpu_pcm_box_contacts();
+    producer->invalidate_after_rollback();
 
     // The indirect launch also has to execute every independent
     // source task, not merely the first workgroup from a host hint.
