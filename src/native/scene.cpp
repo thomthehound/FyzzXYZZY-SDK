@@ -4045,8 +4045,9 @@ std::uint8_t Scene::publish_gpu_pcm_box_box(
     if(gpu.count()>output.size())
         throw std::logic_error("Source GPU PCM contact arena exhausted");
     if(defer_points) {
-        for(std::uint8_t i=0;i<gpu.count();++i)
-            output[i]={{},gpu.normal,0.f};
+        // The single PCM patch needs only its common normal until Dy
+        // has been submitted; the retained result owns all witnesses.
+        output[0]={{},gpu.normal,0.f};
         return static_cast<std::uint8_t>(gpu.count());
     }
     for(std::uint8_t i=0;i<gpu.count();++i) {
@@ -9599,6 +9600,9 @@ void Scene::solve_constraint_task(std::size_t task_index) {
     }
 void Scene::publish_contact_events() {
     FYZZ_PROFILE_SCOPE("sc.contact_events");
+    if(gpu_pcm_points_deferred_)
+        throw std::logic_error(
+            "Sc contact publication precedes GPU witness materialization");
     if(!contact_notifications_)return;
     // ScNPhaseCore::processPersistentContactEvents reports touching
     // interactions only while at least one rigid body is active.
