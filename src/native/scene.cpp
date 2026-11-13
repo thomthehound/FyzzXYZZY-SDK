@@ -4061,6 +4061,7 @@ std::uint8_t Scene::publish_gpu_pcm_box_box(
 }
 void Scene::materialize_gpu_pcm_points() {
     if(!gpu_pcm_points_deferred_)return;
+    FYZZ_PROFILE_SCOPE("sc.pcm_point_materialize");
     for(const auto& manifold:manifolds_) {
         const auto index=manifold.pcm_result_index;
         if(index==std::numeric_limits<std::uint32_t>::max())continue;
@@ -4261,6 +4262,9 @@ void Scene::update_contacts(bool defer_device_points) {
     }
     const bool gpu_results_pending=
         source_gpu_pcm && host_pair_count<gpu_pcm_pairs_.size();
+    FYZZ_PROFILE_COUNTER("pcm_gpu_witness_pairs",
+        gpu_pcm_pairs_.size()-host_pair_count);
+    FYZZ_PROFILE_COUNTER("pcm_host_witness_pairs",host_pair_count);
     if(source_gpu_pcm && gpu_broadphase_->has_gpu_dy_distance() &&
        island_edges_.size()>std::numeric_limits<std::uint32_t>::max())
         throw std::overflow_error("Sc EdgeIndex watermark exceeds GPU history capacity");
@@ -4504,6 +4508,7 @@ void Scene::update_contacts(bool defer_device_points) {
                     // Only a GPU-owned numerical witness requires the join.
                     if(!gpu_results_joined &&
                        !gpu_pcm_pairs_[gpu_pcm_index].host_generated) {
+                        FYZZ_PROFILE_SCOPE("sc.pcm_witness_join");
                         gpu_broadphase_->finish_gpu_pcm_box_contacts();
                         gpu_results_joined=true;
                     }
