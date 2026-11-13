@@ -55,10 +55,15 @@ void publishScContacts(uint i,uint first,uint second,uint edge,uint result,
         status=4u;
     uint emitted=0u;
     float3 normal=float3(0.f,0.f,0.f);
-    if(status==0u && count>0u && count<=4u) {
+    float4 qb=float4(0.f,0.f,0.f,1.f);
+    float3 pb=float3(0.f,0.f,0.f);
+    if(status==0u) {
         uint tb=transformBias+second*32u;
-        float4 qb=asfloat(transforms.Load4(tb));
-        float3 pb=asfloat(transforms.Load3(tb+16u));
+        qb=asfloat(transforms.Load4(tb));
+        pb=asfloat(transforms.Load3(tb+16u));
+        if(!all(isfinite(qb)) || !all(isfinite(pb)))status=4u;
+    }
+    if(status==0u && count>0u && count<=4u) {
         float distance=0.f;
         if(first<shapeCapacity) {
             uint ga=geometryBias+first*64u;
@@ -85,8 +90,7 @@ void publishScContacts(uint i,uint first,uint second,uint edge,uint result,
                 status=4u;
             }else {
                 normal=rotateSource(qb,localNormal*(1.f/sqrt(sq)));
-                if(!all(isfinite(normal)) || !all(isfinite(pb)) ||
-                   !all(isfinite(qb)) || !isfinite(distance))
+                if(!all(isfinite(normal)) || !isfinite(distance))
                     status=4u;
                 [unroll]
                 for(uint j=0u;j<4u && status==0u;++j) {
