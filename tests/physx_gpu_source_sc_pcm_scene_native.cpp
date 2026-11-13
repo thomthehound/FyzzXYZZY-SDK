@@ -3811,6 +3811,49 @@ void verify_sphere_gpu_solver(
         "GPU embedded sphere did not preserve source PCM exit-face witness");
 }
 
+void verify_zero_touch_gpu_pcm_transfer(
+    fyzz::compute::Backend backend,const char* sap,
+    const char* pcm,const char* dy_shader) {
+    using namespace fyzz;
+    std::ifstream input(dy_shader,std::ios::binary);
+    require(bool(input),"Zero-touch source Dy shader unavailable");
+    compute::ShaderBinary shader{};
+    shader.format=backend==compute::Backend::Vulkan
+        ?compute::ShaderFormat::Spirv:compute::ShaderFormat::Dxil;
+    shader.bytes.assign(std::istreambuf_iterator<char>{input},
+                        std::istreambuf_iterator<char>{});
+    native::Scene cpu,gpu;
+    auto owner=std::make_unique<
+        physx_gpu::SourceScOwnedGpuBroadphaseNative>(
+            backend,load_native_gpu_sap_shaders(backend,sap),
+            128u,128u,std::nullopt,
+            load_native_gpu_pcm_shaders(backend,pcm),std::move(shader));
+    auto* producer=owner.get();
+    gpu.set_gpu_broadphase(std::move(owner));
+    const auto add=[](native::Scene& scene) {
+        const Vec3 center{1.5f,0.7f,0.f};
+        scene.add_static_box({1.f,0.1f,0.1f},{0.f,0.f,0.f});
+        const auto moving=scene.add_dynamic_box(
+            {1.f,0.1f,0.1f},center,1.f);
+        scene.set_pose(moving,center,
+            Quat{0.f,0.f,-0.382683432f,0.923879533f});
+        RigidBodyDynamics dynamics{};
+        dynamics.gravity_enabled=false;
+        scene.set_dynamics(moving,dynamics);
+    };
+    add(cpu);
+    add(gpu);
+    cpu.step(1.f/120.f);
+    gpu.step(1.f/120.f);
+    require(cpu.pairs().size()==1u && gpu.pairs().size()==1u &&
+            cpu.contacts().empty() && gpu.contacts().empty() &&
+            producer->pcm_header_join_bytes()==5u*sizeof(std::uint32_t) &&
+            producer->pcm_deferred_point_bytes()==0u &&
+            producer->pcm_contact_readback_bytes()==
+                5u*sizeof(std::uint32_t),
+        "Zero-touch GPU PCM fetched world witnesses without a contact");
+}
+
 void verify_host_primitive_pcm_solver(
     fyzz::compute::Backend backend,const char* sap,
     const char* pcm,const char* dy_shader) {
@@ -5196,6 +5239,8 @@ int main(int argc,char** argv) {
                     verify_sphere_gpu_solver(
                         backend,argv[1],argv[2],argv[3]);
                     verify_host_primitive_pcm_solver(
+                        backend,argv[1],argv[2],argv[3]);
+                    verify_zero_touch_gpu_pcm_transfer(
                         backend,argv[1],argv[2],argv[3]);
                 });
         if(scenario=="all" || scenario=="convex_plane")
