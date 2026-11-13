@@ -93,6 +93,12 @@ resource. Device-local hot arrays remain the preferred numerical path.
 
 ## Transaction and continuation
 
+Finite-pair GJK uses the dense one-dispatch continuation on native Vulkan
+and D3D12 hardware. D3D12 software adapters run the staged continuation
+for API correctness; their dispatch count and wall time are not the hardware
+execution plan. Both paths produce the same Sc EdgeIndex contact stream.
+
+
 The Scene assigns one epoch to authored input, device work, and public
 publication. The GPU writes transient results into epoch-owned work
 resources. Persistent histories use a single owner and an explicit
