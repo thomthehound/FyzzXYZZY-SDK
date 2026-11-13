@@ -261,6 +261,7 @@ public:
         last_edge_history_copy_bytes_=0u;
         last_continuation_commands_=0u;
         last_face_pair_scan_count_=0u;
+        FYZZ_PROFILE_COUNTER("pcm.gjk_staged",staged_gjk_?1u:0u);
         if(requests.empty()) {
             rebuild_required_=false;
             return;
