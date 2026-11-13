@@ -8151,6 +8151,7 @@ void Scene::prepare_constraints(float seconds) {
                 throw std::logic_error("Resident PCM has no contact run");
             const Vec3 normal=manifold.points.front().normal;
             const FrictionPatch* retained=nullptr;
+            std::size_t admitted_history=0u;
             if(!disable_strong_friction && edge<friction_by_edge_.size()) {
                 const auto& history=friction_by_edge_[edge];
                 if(history.epoch==friction_cache_epoch_ &&
@@ -8172,6 +8173,7 @@ void Scene::prepare_constraints(float seconds) {
                                 (1u<<(previous-history.offset)))!=0u
                             :cached_friction_patch_valid(old,actor0,actor1);
                         if(!valid)continue;
+                        ++admitted_history;
                         const Vec3 old_normal=rotate(
                             mass_orientation(actor0),old.body0_normal);
                         if(dot(old_normal,normal)>=same_normal &&
@@ -8186,6 +8188,9 @@ void Scene::prepare_constraints(float seconds) {
                     }
                 }
             }
+            if(!retained && admitted_history==max_source_patches)
+                throw std::overflow_error(
+                    "Native source friction correlation exceeds 32 patches");
             FrictionPatch patch=retained?*retained:FrictionPatch{};
             if(retained)
                 patch.normal=rotate(
