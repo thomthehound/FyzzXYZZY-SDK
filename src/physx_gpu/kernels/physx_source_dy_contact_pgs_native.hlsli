@@ -135,9 +135,13 @@ void solveContact(uint4 descriptor,uint errorAddress,bool biased,
             float oldForce=contactScalar(co+56u);
             float error=biased?contactScalar(co+48u):
                                 contactScalar(co+52u);
-            precise float candidate=max(
-                -normalVelocity*contactScalar(co+40u)+error,
-                -oldForce);
+            precise float proposed=
+                -normalVelocity*contactScalar(co+40u)+error;
+            if(!isfinite(proposed) || !isfinite(oldForce)) {
+                arena.InterlockedOr(errorAddress,1024u);
+                return;
+            }
+            precise float candidate=max(proposed,-oldForce);
             precise float nextForce=min(contactScalar(co+60u),
                 contactScalar(co+44u)*oldForce+candidate);
             if(!isfinite(nextForce)) {
@@ -169,6 +173,11 @@ void solveContact(uint4 descriptor,uint errorAddress,bool biased,
             precise float candidate=oldForce+
                 (frictionScalar(fo+48u)-bias-tangentDelta)*
                 frictionScalar(fo+40u);
+            if(!isfinite(candidate) || !isfinite(maxStatic) ||
+               !isfinite(maxDynamic)) {
+                arena.InterlockedOr(errorAddress,2048u);
+                return;
+            }
             bool saturated=abs(candidate)>maxStatic;
             // Source signed FMin/FMax also handles negative compliant bounds.
             precise float nextForce=saturated
