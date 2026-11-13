@@ -62,7 +62,8 @@ struct Parameters {
     uint surfaceBias;
     uint surfaceFacesBase;
     uint surfaceIndicesBase;
-    uint surfaceBytes;    uint headerBias;
+    uint surfaceBytes;
+    uint headerBias;
 };
 #ifdef __spirv__
 [[vk::push_constant]] Parameters p;
