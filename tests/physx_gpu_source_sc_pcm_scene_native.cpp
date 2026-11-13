@@ -1512,7 +1512,6 @@ void verify_device_sc_dy_task_admission(
     const std::array<native::GpuDyDistanceDescriptor,1> joint_desc{{
         {0u,0u,0xffffffffu,0x101u}
     }};
-    const std::array<std::uint32_t,1> joint_partitions{{1u}};
     std::array<native::GpuDyDistanceTask,1> joint_tasks{{
         {0u,1u,0u,1u,0u,1u,4u,1u,0u}
     }};
@@ -1534,8 +1533,8 @@ void verify_device_sc_dy_task_admission(
     inputs[0].wake_counter=0.4f;
     inputs[0].seconds=seconds;
     producer->enqueue_gpu_dy_distance(
-        body,bad_joint,joint_desc,joint_partitions,ordinals,joint_tasks,
-        {},{},{},{},{},{},{},{},inputs,poses);
+        body,bad_joint,joint_desc,{},ordinals,joint_tasks,
+        {},{},{},{},{},{},{},{},inputs,poses,true);
     bool numerical_rejected=false;
     try {
         producer->finish_gpu_dy_distance();
