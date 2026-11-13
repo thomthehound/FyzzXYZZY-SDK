@@ -9,6 +9,7 @@
 #include <cstddef>
 #include <filesystem>
 #include <optional>
+#include <utility>
 
 namespace fyzz {
 
@@ -74,8 +75,20 @@ NativeGpuAggregateShaders load_native_gpu_aggregate_shaders(
 enum class NativeGpuPcmStage : std::size_t {
     Candidates,EpaCompact,GjkContact,EpaContact,FaceContacts,GjkReduce,GjkPublish,EpaArgsReset,GjkPrimitive,ContactJournal,DeviceIslands,GjkFused,Count
 };
-using NativeGpuPcmShaders = std::array<
-    compute::ShaderBinary,static_cast<std::size_t>(NativeGpuPcmStage::Count)>;
+struct NativeGpuPcmShaders {
+    using Storage = std::array<
+        compute::ShaderBinary,static_cast<std::size_t>(NativeGpuPcmStage::Count)>;
+    Storage stages{};
+    NativeGpuPcmShaders() = default;
+    explicit NativeGpuPcmShaders(Storage binaries)
+        : stages(std::move(binaries)) {}
+    compute::ShaderBinary& operator[](std::size_t index) noexcept {
+        return stages[index];
+    }
+    const compute::ShaderBinary& operator[](std::size_t index) const noexcept {
+        return stages[index];
+    }
+};
 NativeGpuPcmShaders load_native_gpu_pcm_shaders(
     compute::Backend backend,const std::filesystem::path& manifest);
 
