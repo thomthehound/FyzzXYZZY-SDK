@@ -56,7 +56,7 @@ struct Parameters {
     uint hullCount;
 #ifdef FYZZXYZZY_GJK_STAGED_ADVANCE
     uint gjkPass;
-#endif
+#endif    uint headerBias;
 };
 #ifdef __spirv__
 [[vk::push_constant]] Parameters p;
@@ -219,7 +219,7 @@ void main(uint3 thread : SV_DispatchThreadID) {
         const uint pending=p.edgeCacheBias+edge*240u;
         if(simplexCount==0u || simplexCount>4u) {
             results.Store(result+8u,5u);
-            publishScContacts(i,a,b,edge,result,p.outputBias,
+            publishScContacts(i,a,b,edge,result,p.outputBias,p.headerBias,
                 p.transformBias,p.geometryBias,p.edgeCacheBias,
                 p.shapeCapacity,p.edgeCapacity);
             return;
@@ -246,7 +246,7 @@ void main(uint3 thread : SV_DispatchThreadID) {
         edgeCaches.Store(cache+12u,0u);
         edgeCaches.Store(cache+64u,0u);
         edgeCaches.Store(cache+68u,0u);
-        publishScContacts(i,a,b,edge,result,p.outputBias,
+        publishScContacts(i,a,b,edge,result,p.outputBias,p.headerBias,
         p.transformBias,p.geometryBias,p.edgeCacheBias,
         p.shapeCapacity,p.edgeCapacity);
         return;
@@ -275,7 +275,7 @@ void main(uint3 thread : SV_DispatchThreadID) {
     }
     edgeCaches.Store(cache+68u,0u);
     results.Store(result+8u,0u);
-    publishScContacts(i,a,b,edge,result,p.outputBias,
+    publishScContacts(i,a,b,edge,result,p.outputBias,p.headerBias,
         p.transformBias,p.geometryBias,p.edgeCacheBias,
         p.shapeCapacity,p.edgeCapacity);
 }
