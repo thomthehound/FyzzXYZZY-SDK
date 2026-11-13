@@ -88,6 +88,10 @@ struct NativeGpuPcmShaders {
     const compute::ShaderBinary& operator[](std::size_t index) const noexcept {
         return stages[index];
     }
+    auto begin() noexcept { return stages.begin(); }
+    auto end() noexcept { return stages.end(); }
+    auto begin() const noexcept { return stages.begin(); }
+    auto end() const noexcept { return stages.end(); }
 };
 NativeGpuPcmShaders load_native_gpu_pcm_shaders(
     compute::Backend backend,const std::filesystem::path& manifest);
