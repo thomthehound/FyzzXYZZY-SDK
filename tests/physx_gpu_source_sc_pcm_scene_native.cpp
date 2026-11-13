@@ -60,6 +60,27 @@ struct SourceScDeviceIslandFixture {
                                 state.data(),sizeof(state));
         return state;
     }
+    static float resident_position_x(
+            SourceScOwnedGpuBroadphaseNative& owner,ShapeId shape) {
+        owner.stream_.wait_at_fetch();
+        const auto handle=owner.producer_->source_element_handle(shape);
+        const auto address=owner.box_cache_.getDevicePtr()+
+            std::size_t(handle)*32u+16u;
+        const auto view=owner.addresses_.resolve(address,sizeof(float));
+        float position=0.f;
+        owner.context_.download(view.buffer,view.offset,
+                                &position,sizeof(position));
+        return position;
+    }
+    static void write_resident_position_x(
+            SourceScOwnedGpuBroadphaseNative& owner,ShapeId shape,float value) {
+        const auto handle=owner.producer_->source_element_handle(shape);
+        const auto address=owner.box_cache_.getDevicePtr()+
+            std::size_t(handle)*32u+16u;
+        auto& uploads=owner.stream_.upload_scratch();
+        uploads.push_back({address,&value,sizeof(value)});
+        owner.stream_.queue_uploads(uploads);
+    }
     static void inject_failed_touch(
             SourceScOwnedGpuBroadphaseNative& owner,std::uint32_t edge) {
         if(edge>=owner.device_pcm_touch_capacity())
@@ -714,6 +735,36 @@ void verify(fyzz::compute::Backend backend,const char* sap,
             header.touch_transition==
                 static_cast<std::uint32_t>(direct[0].touch_transition()),
         "Source Sc result does not share the 84-byte GPU contact ABI");
+    // A corrupted resident transform must invalidate the actual GPU PCM
+    // producer, even if the pair's cached contact would otherwise vanish.
+    const float original_x=physx_gpu::SourceScDeviceIslandFixture::
+        resident_position_x(*producer,gpu_b);
+    require(std::isfinite(original_x),
+        "Source PCM fixture has no finite resident box transform");
+    physx_gpu::SourceScDeviceIslandFixture::write_resident_position_x(
+        *producer,gpu_b,std::numeric_limits<float>::quiet_NaN());
+    std::array<native::GpuPcmBoxResult,1> invalid_transform{};
+    producer->enqueue_gpu_pcm_box_contacts(request,invalid_transform);
+    producer->enqueue_gpu_dy_island_admission(source_edges,source_nodes,
+        physx_gpu::SourceScDeviceIslandSources{1u,0u,0u});
+    const auto invalid_graph=physx_gpu::SourceScDeviceIslandFixture::read(
+        *producer);
+    require((invalid_graph.errors&256u)!=0u &&
+            invalid_graph.runnable_components==0u &&
+            invalid_graph.dispatch_x==0u &&
+            invalid_transform[0].packed_counts==0u,
+        "Invalid resident PCM transform reached numerical task admission");
+    bool invalid_publication_rejected=false;
+    try {
+        producer->finish_gpu_pcm_box_contacts();
+    } catch(const std::logic_error&) {
+        invalid_publication_rejected=true;
+    }
+    require(invalid_publication_rejected,
+        "Invalid resident PCM transform passed host publication");
+    producer->invalidate_after_rollback();
+    physx_gpu::SourceScDeviceIslandFixture::write_resident_position_x(
+        *producer,gpu_b,original_x);
     // A quiet refresh must reuse Sc's original device pair descriptor:
     // the GPU still runs PCM, but no pair-list HtoD submission is needed.
     std::array<native::GpuPcmBoxResult,1> repeated{};
