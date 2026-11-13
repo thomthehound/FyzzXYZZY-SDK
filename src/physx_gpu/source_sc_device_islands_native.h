@@ -297,6 +297,8 @@ public:
             return;
         }
         auto& ordered=stream.commands();
+        const auto original_command_count=ordered.size();
+        try {
         const auto launch=[&](std::uint32_t phase,std::uint32_t count) {
             args[12]=phase;
             for(std::uint32_t first=0u;first<count;) {
@@ -335,6 +337,10 @@ public:
                 launch(9u+pass*3u,1u);
                 launch(10u+pass*3u,combined);
             }
+        } catch (...) {
+            ordered.erase(ordered.begin()+original_command_count,ordered.end());
+            throw;
+        }
     }
 
 private:
