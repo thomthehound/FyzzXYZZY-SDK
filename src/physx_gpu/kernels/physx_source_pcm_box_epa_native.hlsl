@@ -53,7 +53,7 @@ struct Parameters {
     uint edgeCapacity;
     uint outputBias;
     uint hullBias;
-    uint hullCount;
+    uint hullCount;    uint headerBias;
 };
 #ifdef __spirv__
 [[vk::push_constant]] Parameters p;
@@ -137,7 +137,7 @@ void main(uint3 group : SV_GroupID, uint3 lane : SV_GroupThreadID) {
     if(simplexCount==0u || simplexCount>4u) {
         if(lane.x==0u) {
             results.Store(result+8u,5u);
-            publishScContacts(i,a,b,edge,result,p.outputBias,
+            publishScContacts(i,a,b,edge,result,p.outputBias,p.headerBias,
                 p.transformBias,p.geometryBias,p.edgeCacheBias,
                 p.shapeCapacity,p.edgeCapacity);
         }
@@ -164,7 +164,7 @@ void main(uint3 group : SV_GroupID, uint3 lane : SV_GroupThreadID) {
         results.Store(result+20u,0u);
         results.Store(result+24u,0u);
         results.Store(result+8u,5u);
-        publishScContacts(i,a,b,edge,result,p.outputBias,
+        publishScContacts(i,a,b,edge,result,p.outputBias,p.headerBias,
             p.transformBias,p.geometryBias,p.edgeCacheBias,
             p.shapeCapacity,p.edgeCapacity);
         return;
@@ -176,7 +176,7 @@ void main(uint3 group : SV_GroupID, uint3 lane : SV_GroupThreadID) {
         edgeCaches.Store(cache+12u,0u);
         edgeCaches.Store(cache+64u,0u);
         edgeCaches.Store(cache+68u,0u);
-        publishScContacts(i,a,b,edge,result,p.outputBias,
+        publishScContacts(i,a,b,edge,result,p.outputBias,p.headerBias,
         p.transformBias,p.geometryBias,p.edgeCacheBias,
         p.shapeCapacity,p.edgeCapacity);
         return;
@@ -205,7 +205,7 @@ void main(uint3 group : SV_GroupID, uint3 lane : SV_GroupThreadID) {
     }
     edgeCaches.Store(cache+68u,0u);
     results.Store(result+8u,0u);
-    publishScContacts(i,a,b,edge,result,p.outputBias,
+    publishScContacts(i,a,b,edge,result,p.outputBias,p.headerBias,
         p.transformBias,p.geometryBias,p.edgeCacheBias,
         p.shapeCapacity,p.edgeCapacity);
 #endif
