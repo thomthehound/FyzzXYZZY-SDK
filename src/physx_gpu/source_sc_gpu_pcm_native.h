@@ -64,8 +64,6 @@ public:
           staged_gjk_(gjk.format==compute::ShaderFormat::Dxil &&
                       context.device_info().software_adapter),
           gjk_stage_(context,std::move(gjk),false,true,false,staged_gjk_),
-          gjk_reduce_stage_(context,std::move(gjk_reduce),false,true,false,staged_gjk_),
-          gjk_publish_stage_(context,std::move(gjk_publish),false,true,false,staged_gjk_),
           epa_stage_(context,std::move(epa)),
           face_stage_(context,std::move(face_contacts),true),
           journal_stage_(context,std::move(contact_journal)),
@@ -84,13 +82,20 @@ public:
           island_work_(allocator,physx::PxsHeapStats::eNARROWPHASE) {
         if(!stream_.bound_to(context_,addresses_))
             throw std::invalid_argument("Source Sc GPU PCM has another device stream");
-        if(staged_gjk_)
+        if(staged_gjk_) {
             primitive_gjk_stage_.emplace(
                 context_,std::move(gjk_primitive),false,true,false,true);
+            gjk_reduce_stage_.emplace(
+                context_,std::move(gjk_reduce),false,true,false,true);
+            gjk_publish_stage_.emplace(
+                context_,std::move(gjk_publish),false,true,false,true);
+        }
 #if defined(FYZZXYZZY_PROFILE_GPU)
         gjk_stage_.set_profile_label("pcm.gjk_initial");
-        gjk_reduce_stage_.set_profile_label("pcm.gjk_reduce");
-        gjk_publish_stage_.set_profile_label("pcm.gjk_publish");
+        if(gjk_reduce_stage_)
+            gjk_reduce_stage_->set_profile_label("pcm.gjk_reduce");
+        if(gjk_publish_stage_)
+            gjk_publish_stage_->set_profile_label("pcm.gjk_publish");
         if(primitive_gjk_stage_)
             primitive_gjk_stage_->set_profile_label("pcm.gjk_primitive");
 #endif
@@ -460,10 +465,10 @@ public:
                     ?*primitive_gjk_stage_:gjk_stage_;
                 for(std::uint32_t pass=0u;pass<32u;++pass) {
                     append_gjk(advance,pass);
-                    append_gjk(gjk_reduce_stage_,pass);
+                    append_gjk(*gjk_reduce_stage_,pass);
                 }
                 append_gjk(advance,32u);
-                append_gjk(gjk_publish_stage_,32u);
+                append_gjk(*gjk_publish_stage_,32u);
             }else append_gjk(gjk_stage_,0u);
             epa_pending_stage_.append(stream_,addresses_,
                 results_.getDevicePtr(),work_.getDevicePtr(),
@@ -858,8 +863,9 @@ private:
     SourcePcmBoxCandidatesNativeStage candidates_stage_;
     SourcePcmSparseEpaNativeStage sparse_stage_,epa_pending_stage_;
     bool staged_gjk_=false;
-    SourcePcmEpaNativeStage gjk_stage_,gjk_reduce_stage_,gjk_publish_stage_,epa_stage_,face_stage_;
-    std::optional<SourcePcmEpaNativeStage> primitive_gjk_stage_;
+    SourcePcmEpaNativeStage gjk_stage_,epa_stage_,face_stage_;
+    std::optional<SourcePcmEpaNativeStage>
+        primitive_gjk_stage_,gjk_reduce_stage_,gjk_publish_stage_;
     SourceScContactHistoryNativeStage journal_stage_;
     SourceScDeviceIslandsNativeStage island_stage_;
     physx::PxgCudaBuffer pairs_,results_,candidates_,edges_,work_,dense_contacts_,journal_;
