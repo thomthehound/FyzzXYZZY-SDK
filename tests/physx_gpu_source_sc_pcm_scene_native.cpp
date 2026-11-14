@@ -2635,6 +2635,15 @@ void verify_gpu_single_island_hybrid_solver(
     // free-flight actors exercise CPU task grouping without GPU graph work.
     cpu.create_center_distance_constraint(a[0],a[1],0.83f);
     gpu.create_center_distance_constraint(b[0],b[1],0.83f);
+    BodyId separate_cpu=0u,separate_gpu=0u;
+    if(resident_admission) {
+        cpu.add_static_box({0.5f,0.5f,0.5f},{5.f,0.f,0.f});
+        gpu.add_static_box({0.5f,0.5f,0.5f},{5.f,0.f,0.f});
+        separate_cpu=cpu.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{5.f,0.83f,0.f},1.f);
+        separate_gpu=gpu.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{5.f,0.83f,0.f},1.f);
+    }
     constexpr unsigned free_count=8u;
     std::array<BodyId,free_count> free_cpu{},free_gpu{};
     RigidBodyDynamics free_dynamics{};
@@ -2665,16 +2674,25 @@ void verify_gpu_single_island_hybrid_solver(
         require(gpu.largest_accurate_island_size()==2u &&
                 cpu.contacts().size()==gpu.contacts().size() &&
                 gpu.active_accurate_island_count()>1u &&
-                producer->dy_gpu_integrated_body_count()==2u+free_count &&
+                producer->dy_gpu_integrated_body_count()==
+                    2u+free_count+(resident_admission?1u:0u) &&
                 schedule.device_colored_tasks>0u &&
                 schedule.device_colored_descriptors>0u &&
-                schedule.device_island_indirect_dispatches==0u &&
-                schedule.device_admitted_tasks==0u,
-            "Single accurate island did not use its selected numerical schedule");
+                schedule.device_island_indirect_dispatches==
+                    (resident_admission?1u:0u) &&
+                (resident_admission
+                    ?schedule.device_admitted_tasks>=2u &&
+                     schedule.device_admitted_descriptors>=2u
+                    :schedule.device_admitted_tasks==0u),
+            "Accurate islands did not use the selected numerical task admission");
         for(std::size_t i=0;i<a.size();++i)
             test::compound_compare_state(
                 gpu.body_state(b[i]),cpu.body_state(a[i]),0.03f,
                 "Single-island hybrid GPU Dy diverged from CPU PGS");
+        if(resident_admission)
+            test::compound_compare_state(
+                gpu.body_state(separate_gpu),cpu.body_state(separate_cpu),
+                0.03f,"Device-admitted independent contact island diverged");
         for(unsigned i=0u;i<free_count;++i)
             test::compound_compare_state(
                 gpu.body_state(free_gpu[i]),cpu.body_state(free_cpu[i]),
