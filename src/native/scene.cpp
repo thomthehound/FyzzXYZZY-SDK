@@ -9376,6 +9376,19 @@ void Scene::solve_gpu_distance_constraints(float seconds) {
     for(const BodyId id:solver_active_ids_)consume_preintegration(id);
     for(const BodyId id:gpu_dy_free_ids_)consume_preintegration(id);
     gpu_broadphase_->finish_gpu_dy_distance();
+    if(device_admission) {
+        gpu_dy_admitted_manager_flags_.assign(manifolds_.size(),0u);
+        for(const auto token:gpu_broadphase_->gpu_dy_admitted_response_tokens()) {
+            const auto kind=token>>30u;
+            if(kind==0u || kind==2u)continue;
+            if(kind!=3u)
+                throw std::logic_error("Sc device admission returned an unknown response type");
+            const auto manager=token&0x3fffffffu;
+            if(manager>=gpu_dy_admitted_manager_flags_.size())
+                throw std::logic_error("Sc device admission returned an unknown contact manager");
+            gpu_dy_admitted_manager_flags_[manager]=1u;
+        }
+    }
     materialize_gpu_pcm_points();
     gpu_dy_pose_ready_=true;
     // Dy keeps transient PGS deltas on device. Sc receives world-space
@@ -9396,6 +9409,8 @@ void Scene::solve_gpu_distance_constraints(float seconds) {
             {world.x-p.x,world.y-p.y,world.z-p.z});
     };
     for(const auto manager_index:indexed_managers_) {
+        if(!gpu_dy_admitted_manager_flags_.empty() &&
+           !gpu_dy_admitted_manager_flags_[manager_index])continue;
         const auto& m=manifolds_[manager_index];
         if(m.pcm_result_index==std::numeric_limits<std::uint32_t>::max())
             continue;
@@ -9439,8 +9454,18 @@ void Scene::solve_gpu_distance_constraints(float seconds) {
             patch.anchor_count=static_cast<std::uint8_t>(count);
         }
     }
-    for(std::size_t i=0;i<friction_patches_.size();++i)
-        friction_patches_[i].broken=gpu_dy_patches_[i].broken!=0u;
+    if(gpu_dy_admitted_manager_flags_.empty()) {
+        for(std::size_t i=0;i<friction_patches_.size();++i)
+            friction_patches_[i].broken=gpu_dy_patches_[i].broken!=0u;
+    }else {
+        for(const auto manager_index:indexed_managers_) {
+            if(!gpu_dy_admitted_manager_flags_[manager_index])continue;
+            const auto& m=manifolds_[manager_index];
+            for(std::size_t i=m.friction_patch_offset;
+                i<m.friction_patch_offset+m.friction_patch_count;++i)
+                friction_patches_[i].broken=gpu_dy_patches_[i].broken!=0u;
+        }
+    }
 }
 
 void Scene::solve_constraint_task(std::size_t task_index) {
@@ -9856,6 +9881,7 @@ void Scene::publish_contact_events() {
     contact_events_.swap(next_contact_events_);
 }
 void Scene::begin_contact_writeback() {
+    gpu_dy_admitted_manager_flags_.clear();
     // DySolverConstraints.cpp::writeBackContact copies final forceBuffer
     // impulses after the last velocity/writeback solve. Gu contact order,
     // not the reordered Dy partition list, owns output offsets. Here the
@@ -9897,6 +9923,8 @@ void Scene::write_back_contacts(std::size_t first,std::size_t last) {
         throw std::logic_error("Native Dy task owns an invalid Gu manager range");
     for(std::size_t manager=first;manager<last;++manager) {
         const std::size_t manifold_index=indexed_managers_[manager];
+        if(!gpu_dy_admitted_manager_flags_.empty() &&
+           !gpu_dy_admitted_manager_flags_[manifold_index])continue;
         const auto& manifold=manifolds_[manifold_index];
         if(manifold.prepared_friction_epoch!=friction_cache_epoch_ ||
            manifold.contact_offset>contact_points_.size() ||
