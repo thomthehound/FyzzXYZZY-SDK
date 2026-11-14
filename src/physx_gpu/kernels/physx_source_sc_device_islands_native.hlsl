@@ -606,26 +606,46 @@ void main(uint3 thread:SV_DispatchThreadID,
         return;
     }
     if(p.phase==7u) {
-        if(index>=p.combinedCount)return;
         if(p.combinedCount>256u) {
-            work.Store(p.responseBiasA+index*4u,index);
+            if(index<p.combinedCount)
+                work.Store(p.responseBiasA+index*4u,index);
             return;
         }
-        const uint key=itemKey(index);
-        if(key==invalid)return;
-        // Rank across bodies, joints and contacts in the same root.
-        // Equal-key items retain original source encounter order.
-        uint ordinal=0u;
-        for(uint i=0u;i<p.combinedCount;++i) {
-            const uint other=itemKey(i);
-            if(other/3u==key/3u &&
-               (other<key || (other==key && i<index)))
-                ++ordinal;
+        // One workgroup sorts all body and response identities.
+        // The lower nine bits preserve source order among equal keys.
+        const uint first=lane.x;
+        const uint second=first+128u;
+        const uint firstKey=first<p.combinedCount?itemKey(first):invalid;
+        const uint secondKey=second<p.combinedCount?itemKey(second):invalid;
+        radixBuckets[first]=firstKey==invalid
+            ?invalid:(firstKey<<9u)|first;
+        radixBuckets[second]=secondKey==invalid
+            ?invalid:(secondKey<<9u)|second;
+        GroupMemoryBarrierWithGroupSync();
+        [loop]
+        for(uint width=2u;width<=256u;width<<=1u) {
+            [loop]
+            for(uint stride=width>>1u;stride!=0u;stride>>=1u) {
+                const uint a=radixBuckets[first];
+                const uint b=radixBuckets[second];
+                const uint otherA=radixBuckets[first^stride];
+                const uint otherB=radixBuckets[second^stride];
+                const bool upA=((first&width)==0u)==
+                    ((first&stride)==0u);
+                const bool upB=((second&width)==0u)==
+                    ((second&stride)==0u);
+                const uint nextA=upA?min(a,otherA):max(a,otherA);
+                const uint nextB=upB?min(b,otherB):max(b,otherB);
+                GroupMemoryBarrierWithGroupSync();
+                radixBuckets[first]=nextA;
+                radixBuckets[second]=nextB;
+                GroupMemoryBarrierWithGroupSync();
+            }
         }
-        const uint taskId=work.Load(p.countBias+(key/3u)*24u+20u);
-        const uint task=p.taskBias+taskId*36u;
-        const uint begin=work.Load(task)+work.Load(task+16u);
-        scatterItem(begin+ordinal,index);
+        const uint sortedA=radixBuckets[first];
+        const uint sortedB=radixBuckets[second];
+        if(sortedA!=invalid)scatterItem(first,sortedA&511u);
+        if(sortedB!=invalid)scatterItem(second,sortedB&511u);
         return;
     }
     if(p.phase<8u)return;
