@@ -9923,9 +9923,21 @@ void Scene::write_back_contacts(std::size_t first,std::size_t last) {
         throw std::logic_error("Native Dy task owns an invalid Gu manager range");
     for(std::size_t manager=first;manager<last;++manager) {
         const std::size_t manifold_index=indexed_managers_[manager];
-        if(!gpu_dy_admitted_manager_flags_.empty() &&
-           !gpu_dy_admitted_manager_flags_[manifold_index])continue;
         const auto& manifold=manifolds_[manifold_index];
+        if(!gpu_dy_admitted_manager_flags_.empty() &&
+           !gpu_dy_admitted_manager_flags_[manifold_index]) {
+            if(manifold.friction_patch_offset>friction_impulse_writeback_.size() ||
+               manifold.friction_patch_count>
+                   friction_impulse_writeback_.size()-manifold.friction_patch_offset)
+                throw std::logic_error(
+                    "Excluded GPU contact manager owns an invalid friction report");
+            for(std::size_t i=manifold.friction_patch_offset;
+                i<manifold.friction_patch_offset+manifold.friction_patch_count;++i) {
+                friction_impulse_writeback_[i]={};
+                friction_impulse_writeback_[i].pair=manifold.pair;
+            }
+            continue;
+        }
         if(manifold.prepared_friction_epoch!=friction_cache_epoch_ ||
            manifold.contact_offset>contact_points_.size() ||
            manifold.count>contact_points_.size()-manifold.contact_offset)
