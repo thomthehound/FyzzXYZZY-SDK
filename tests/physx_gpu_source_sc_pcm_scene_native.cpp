@@ -3150,21 +3150,21 @@ void verify_pcm_friction_normal_revalidation(
         std::move(shader));
     auto* producer=owner.get();
     gpu.set_gpu_broadphase(std::move(owner));
-    const native::Vec3 half{0.5f,0.5f,0.5f};
-    const native::Vec3 fixed{0.f,1.f,0.f};
+    const Vec3 half{0.5f,0.5f,0.5f};
+    const Vec3 fixed{0.f,1.f,0.f};
     const auto cs=cpu.add_static_box(half,fixed);
     const auto gs=gpu.add_static_box(half,fixed);
     const auto cb=cpu.add_dynamic_box(half,{0.f,1.8f,0.f},1.f);
     const auto gb=gpu.add_dynamic_box(half,{0.f,1.8f,0.f},1.f);
-    const std::array<native::Vec3,3> positions{{
+    const std::array<Vec3,3> positions{{
         {0.f,1.8f,0.f},{0.8f,1.f,0.f},{0.f,1.8f,0.f}
     }};
-    const std::array<native::Quat,3> rotations{{
+    const std::array<Quat,3> rotations{{
         {0.f,0.f,0.f,1.f},
         {0.f,0.f,std::sin(0.1f),std::cos(0.1f)},
         {0.f,0.f,0.f,1.f}
     }};
-    native::Vec3 previous_normal{};
+    Vec3 previous_normal{};
     for(std::size_t i=0u;i<positions.size();++i) {
         if(i!=0u) {
             cpu.set_pose(cb,positions[i],rotations[i]);
