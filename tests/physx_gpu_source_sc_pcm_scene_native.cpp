@@ -1210,7 +1210,7 @@ void verify_device_sc_dy_indirect_api(
 
     // Device Sc orders independent responding tasks across the compact
     // shared-sort and radix-sort boundary with the same source tokens.
-    for(const std::uint32_t count:{64u,120u,129u}) {
+    for(const std::uint32_t count:{1u,8u,31u,32u,33u,64u,120u,129u}) {
         std::vector<std::uint32_t> independent_nodes(
             count,4u|(1u<<8u)|
                 physx_gpu::source_sc_device_island_active_bit);
@@ -1231,6 +1231,34 @@ void verify_device_sc_dy_indirect_api(
                 sorted.admitted_edges==count &&
                 sorted.dispatch_x==(count+127u)/128u,
             "Device Sc response ordering lost an independent island");
+        producer->invalidate_after_rollback();
+    }
+
+    // Compact accurate admission must merge a full 32-node component
+    // without an additional dispatch or reordered source responses.
+    {
+        constexpr std::uint32_t count=32u;
+        std::vector<std::uint32_t> linked_nodes(
+            count,4u|(1u<<8u)|
+                physx_gpu::source_sc_device_island_active_bit);
+        std::vector<physx_gpu::SourceScDeviceIslandEdge> linked_edges;
+        linked_edges.reserve(count);
+        for(std::uint32_t i=0u;i<count;++i)
+            linked_edges.push_back({
+                i,i,i+1u<count?i+1u:0xffffffffu,i,
+                physx_gpu::source_sc_device_island_joint_bit});
+        producer->enqueue_gpu_pcm_box_contacts(no_pairs,no_witness);
+        producer->enqueue_gpu_dy_island_admission(
+            linked_edges,linked_nodes,
+            physx_gpu::SourceScDeviceIslandSources{0u,0u,count});
+        const auto joined=physx_gpu::SourceScDeviceIslandFixture::read(*producer);
+        require(joined.errors==0u &&
+                joined.runnable_components==1u &&
+                joined.responding_nodes==count &&
+                joined.admitted_edges==count &&
+                joined.dispatch_x==1u &&
+                joined.has_non_singleton_task==1u,
+            "Compact GPU union failed to admit one connected numerical island");
         producer->invalidate_after_rollback();
     }
 }
