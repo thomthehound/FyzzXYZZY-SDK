@@ -937,6 +937,14 @@ if(FYZZXYZZY_BUILD_VULKAN)
         "${CMAKE_CURRENT_BINARY_DIR}/kernels/fyzzxyzzy_native_pcm_spv.manifest"
         "${FYZZXYZZY_SOURCE_DY_DISTANCE_SPV}"
         "${FYZZXYZZY_SOURCE_DY_CONVEX_SPV}" single_island)
+    add_test(NAME fyzzxyzzy_source_sc_gpu_pcm_scene_friction_normal
+      COMMAND fyzzxyzzy_source_sc_gpu_pcm_scene
+        "${CMAKE_CURRENT_BINARY_DIR}/kernels/fyzzxyzzy_native_sap_spirv.manifest"
+        "${CMAKE_CURRENT_BINARY_DIR}/kernels/fyzzxyzzy_native_pcm_spv.manifest"
+        "${FYZZXYZZY_SOURCE_DY_DISTANCE_SPV}"
+        "${FYZZXYZZY_SOURCE_DY_CONVEX_SPV}" friction_normal)
+    set_tests_properties(fyzzxyzzy_source_sc_gpu_pcm_scene_friction_normal
+      PROPERTIES TIMEOUT 180)
     add_test(NAME fyzzxyzzy_source_sc_gpu_pcm_scene_device_admission
       COMMAND fyzzxyzzy_source_sc_gpu_pcm_scene
         "${CMAKE_CURRENT_BINARY_DIR}/kernels/fyzzxyzzy_native_sap_spirv.manifest"
