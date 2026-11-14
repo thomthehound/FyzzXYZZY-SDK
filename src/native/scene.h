@@ -2180,6 +2180,7 @@ private:
     std::vector<GpuDyDistanceTask> gpu_dy_tasks_;
     std::vector<GpuDyIslandEdge> gpu_dy_island_edges_;
     std::vector<std::uint32_t> gpu_dy_island_node_flags_;
+    std::vector<std::uint8_t> gpu_dy_admitted_manager_flags_;
     std::vector<float> gpu_dy_contact_forces_;
     std::vector<GpuDyGuContactInput> gpu_dy_gu_inputs_;
     std::vector<GpuDyFrictionAnchorImpulse> gpu_dy_friction_impulses_;
