@@ -238,47 +238,56 @@ void inclusiveTaskScan(uint lane) {
 }
 
 // Small graphs complete accurate admission in one ordered dispatch.
-void admitCompact() {
-    work.Store4(p.workBias,uint4(0u,0u,0u,0u));
-    work.Store4(p.workBias+16u,uint4(0u,1u,1u,p.edgeCount));
-    work.Store4(p.workBias+32u,uint4(0u,0u,0u,0u));
-    for(uint node=0u;node<p.nodeCount;++node) {
-        work.Store(p.rootBias+node*4u,node);
-        const uint count=p.countBias+node*24u;
+void admitCompact(uint lane) {
+    if(lane==0u) {
+        work.Store4(p.workBias,uint4(0u,0u,0u,0u));
+        work.Store4(p.workBias+16u,uint4(0u,1u,1u,p.edgeCount));
+        work.Store4(p.workBias+32u,uint4(0u,0u,0u,0u));
+    }
+    if(lane<p.nodeCount) {
+        work.Store(p.rootBias+lane*4u,lane);
+        const uint count=p.countBias+lane*24u;
         work.Store4(count,uint4(0u,0u,0u,0u));
         work.Store2(count+16u,uint2(0u,invalid));
     }
-    for(uint i=0u;i<p.edgeCount;++i) {
-        const uint input=p.edgeBias+i*20u;
+    AllMemoryBarrierWithGroupSync();
+
+    if(lane<p.edgeCount) {
+        const uint input=p.edgeBias+lane*20u;
         const uint4 edge=scEdges.Load4(input);
         const uint kind=scEdges.Load(input+16u);
-        if(!validNode(edge.y) || !validNode(edge.z) ||
-           !edgeConnected(edge.x,kind) || !validSource(edge.w,kind))
-            continue;
-        if(respondingNode(edge.y) && respondingNode(edge.z))
+        if(validNode(edge.y) && validNode(edge.z) &&
+           edgeConnected(edge.x,kind) && validSource(edge.w,kind) &&
+           respondingNode(edge.y) && respondingNode(edge.z))
             connectNodes(edge.y,edge.z);
     }
-    for(uint node=0u;node<p.nodeCount;++node) {
-        const uint root=findRoot(node);
-        if(root==invalid)continue;
-        work.Store(p.rootBias+node*4u,root);
-        const uint flags=nodeFlags.Load(p.nodeBias+node*4u);
-        const uint position=flags&255u;
-        if((flags&0xfffc0000u)!=0u ||
-           ((flags&nonrespondingNode)==0u && position==0u))
-            reject(16u);
-        const uint count=p.countBias+root*24u;
-        if((flags&nonrespondingNode)==0u) {
-            work.Store(count,work.Load(count)+1u);
-            work.Store(count+12u,max(work.Load(count+12u),position));
-            work.Store(count+16u,max(work.Load(count+16u),
-                                      (flags>>8u)&255u));
+    AllMemoryBarrierWithGroupSync();
+
+    if(lane<p.nodeCount) {
+        const uint root=findRoot(lane);
+        if(root!=invalid) {
+            work.Store(p.rootBias+lane*4u,root);
+            const uint flags=nodeFlags.Load(p.nodeBias+lane*4u);
+            const uint position=flags&255u;
+            const bool responds=(flags&nonrespondingNode)==0u;
+            if((flags&0xfffc0000u)!=0u ||
+               (responds && position==0u))
+                reject(16u);
+            const uint count=p.countBias+root*24u;
+            uint previous;
+            if(responds) {
+                work.InterlockedAdd(count,1u,previous);
+                work.InterlockedMax(count+12u,position,previous);
+                work.InterlockedMax(count+16u,(flags>>8u)&255u,previous);
+            }
+            if((flags&0x10000u)!=0u)
+                work.InterlockedAdd(count+8u,1u,previous);
         }
-        if((flags&0x10000u)!=0u)
-            work.Store(count+8u,work.Load(count+8u)+1u);
     }
-    for(uint i=0u;i<p.edgeCount;++i) {
-        const uint input=p.edgeBias+i*20u;
+    AllMemoryBarrierWithGroupSync();
+
+    if(lane<p.edgeCount) {
+        const uint input=p.edgeBias+lane*20u;
         const uint4 edge=scEdges.Load4(input);
         const uint kind=scEdges.Load(input+16u);
         uint owner=invalid;
@@ -290,76 +299,104 @@ void admitCompact() {
                 owner=findRoot(node);
                 if(owner!=invalid) {
                     const uint count=p.countBias+owner*24u;
+                    uint previous;
                     if((kind&noResponse)==0u)
-                        work.Store(count+4u,work.Load(count+4u)+1u);
+                        work.InterlockedAdd(count+4u,1u,previous);
                     if((kind&jointEdge)==0u &&
                        (edgeHistory.Load(p.touchBias+edge.x*240u+76u)&1u)==0u)
-                        work.Store(count+8u,work.Load(count+8u)+1u);
+                        work.InterlockedAdd(count+8u,1u,previous);
                 }
             }
         }
-        const uint address=p.admissionBias+i*24u;
+        const uint address=p.admissionBias+lane*24u;
         work.Store4(address,uint4(edge.w,edge.x,edge.y,edge.z));
         work.Store2(address+16u,uint2(owner,kind));
     }
+    AllMemoryBarrierWithGroupSync();
+
+    if(lane==0u && work.Load(p.workBias)==0u) {
+        uint taskCount=0u,bodyCount=0u,responseCount=0u;
+        uint nonSingleton=0u;
+        for(uint root=0u;root<p.nodeCount;++root) {
+            if(!runnableRoot(root))continue;
+            const uint count=p.countBias+root*24u;
+            const uint bodies=work.Load(count);
+            const uint edges=work.Load(count+4u);
+            nonSingleton|=(bodies!=1u || edges!=1u)?1u:0u;
+            work.Store(count+20u,taskCount);
+            const uint task=p.taskBias+taskCount*36u;
+            work.Store4(task,uint4(responseCount,responseCount+edges,
+                                   responseCount,responseCount+edges));
+            work.Store4(task+16u,uint4(bodyCount,bodyCount+bodies,
+                                       work.Load(count+12u),
+                                       work.Load(count+16u)));
+            work.Store(task+32u,0u);
+            bodyCount+=bodies;
+            responseCount+=edges;
+            ++taskCount;
+        }
+        work.Store(p.workBias+4u,taskCount);
+        work.Store(p.workBias+8u,bodyCount);
+        work.Store(p.workBias+12u,responseCount);
+        work.Store(p.workBias+32u,nonSingleton);
+        const uint dispatch=nonSingleton!=0u?taskCount:
+            ((taskCount+127u)/128u);
+        work.Store(p.workBias+16u,min(dispatch,p.maxGroups));
+    }
+    AllMemoryBarrierWithGroupSync();
     if(work.Load(p.workBias)!=0u)return;
 
-    uint taskCount=0u,bodyCount=0u,responseCount=0u;
-    uint nonSingleton=0u;
-    for(uint root=0u;root<p.nodeCount;++root) {
-        if(!runnableRoot(root))continue;
-        const uint count=p.countBias+root*24u;
-        const uint bodies=work.Load(count);
-        const uint edges=work.Load(count+4u);
-        nonSingleton|=(bodies!=1u || edges!=1u)?1u:0u;
-        work.Store(count+20u,taskCount);
-        const uint task=p.taskBias+taskCount*36u;
-        work.Store4(task,uint4(responseCount,responseCount+edges,
-                               responseCount,responseCount+edges));
-        work.Store4(task+16u,uint4(bodyCount,bodyCount+bodies,
-                                   work.Load(count+12u),work.Load(count+16u)));
-        work.Store(task+32u,0u);
-        uint writtenBodies=0u,writtenEdges=0u;
-        for(uint node=0u;node<p.nodeCount;++node) {
-            if(!respondingNode(node) ||
-               work.Load(p.rootBias+node*4u)!=root)continue;
-            work.Store(p.bodyOrderBias+(bodyCount+writtenBodies)*4u,node);
-            ++writtenBodies;
-        }
-        for(uint type=0u;type<2u;++type)
-            for(uint edge=0u;edge<p.edgeCount;++edge) {
-                const uint address=p.admissionBias+edge*24u;
-                const uint kind=work.Load(address+20u);
-                if(((kind&jointEdge)!=0u)!=(type==0u) ||
-                   responseRoot(edge)!=root)continue;
-                const uint ordinal=responseCount+writtenEdges;
-                work.Store(p.responseOrderBias+ordinal*4u,edge);
-                work.Store(p.tokenBias+ordinal*4u,responseToken(edge));
-                ++writtenEdges;
+    if(lane<p.nodeCount && respondingNode(lane)) {
+        const uint root=work.Load(p.rootBias+lane*4u);
+        if(root<p.nodeCount) {
+            const uint ordinal=work.Load(p.countBias+root*24u+20u);
+            if(ordinal!=invalid) {
+                const uint task=p.taskBias+ordinal*36u;
+                const uint begin=work.Load(task+16u);
+                const uint end=work.Load(task+20u);
+                uint rank=0u;
+                for(uint node=0u;node<lane;++node)
+                    if(respondingNode(node) &&
+                       work.Load(p.rootBias+node*4u)==root)
+                        ++rank;
+                if(begin+rank>=end)reject(128u);
+                else work.Store(p.bodyOrderBias+(begin+rank)*4u,lane);
             }
-        if(writtenBodies!=bodies || writtenEdges!=edges) {
-            reject(128u);
-            return;
         }
-        bodyCount+=bodies;
-        responseCount+=edges;
-        ++taskCount;
     }
-    work.Store(p.workBias+4u,taskCount);
-    work.Store(p.workBias+8u,bodyCount);
-    work.Store(p.workBias+12u,responseCount);
-    work.Store(p.workBias+32u,nonSingleton);
-    const uint dispatch=nonSingleton!=0u?taskCount:
-        ((taskCount+127u)/128u);
-    work.Store(p.workBias+16u,min(dispatch,p.maxGroups));
+    if(lane<p.edgeCount) {
+        const uint root=responseRoot(lane);
+        if(root<p.nodeCount) {
+            const uint ordinal=work.Load(p.countBias+root*24u+20u);
+            const uint task=p.taskBias+ordinal*36u;
+            const uint begin=work.Load(task);
+            const uint end=work.Load(task+4u);
+            const bool joint=(work.Load(
+                p.admissionBias+lane*24u+20u)&jointEdge)!=0u;
+            uint rank=0u;
+            for(uint edge=0u;edge<p.edgeCount;++edge) {
+                if(responseRoot(edge)!=root)continue;
+                const bool otherJoint=(work.Load(
+                    p.admissionBias+edge*24u+20u)&jointEdge)!=0u;
+                if(joint?(otherJoint && edge<lane):
+                   (otherJoint || edge<lane))
+                    ++rank;
+            }
+            if(begin+rank>=end)reject(128u);
+            else {
+                const uint position=begin+rank;
+                work.Store(p.responseOrderBias+position*4u,lane);
+                work.Store(p.tokenBias+position*4u,responseToken(lane));
+            }
+        }
+    }
 }
-
 [numthreads(128,1,1)]
 void main(uint3 thread:SV_DispatchThreadID,
           uint3 group:SV_GroupID,uint3 lane:SV_GroupThreadID) {
     const uint index=p.first+thread.x;
     if(p.phase==32u) {
-        if(index==0u)admitCompact();
+        if(group.x==0u)admitCompact(lane.x);
         return;
     }
     if(p.phase==0u) {
