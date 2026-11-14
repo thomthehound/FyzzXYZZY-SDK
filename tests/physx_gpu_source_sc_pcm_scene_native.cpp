@@ -3184,8 +3184,22 @@ void verify_pcm_friction_normal_revalidation(
                     normal.z*previous_normal.z<0.5f,
                 "PCM friction fixture did not change the contact normal");
         previous_normal=normal;
-        require(gpu.solved_friction_patches()[0].anchor_count>0u,
+        const auto& friction=gpu.solved_friction_patches()[0];
+        require(friction.anchor_count>0u,
             "GPU PCM did not regenerate its friction anchors");
+        if(i!=0u)
+            for(std::size_t anchor=0u;anchor<friction.anchor_count;++anchor) {
+                const auto& world=friction.anchor_positions[anchor];
+                float best=std::numeric_limits<float>::max();
+                for(const auto& point:gpu.contacts()[0].points) {
+                    const float dx=world.x-point.position.x;
+                    const float dy=world.y-point.position.y;
+                    const float dz=world.z-point.position.z;
+                    best=std::min(best,dx*dx+dy*dy+dz*dz);
+                }
+                require(best<0.04f,
+                    "GPU PCM kept an anchor from an incompatible contact normal");
+            }
         test::compound_compare_state(gpu.body_state(gb),cpu.body_state(cb),
             0.05f,"GPU PCM friction normal change diverged from CPU solve");
         require(gpu.contact_edge_index({gs,gb})!=0xffffffffu &&
