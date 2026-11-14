@@ -2038,6 +2038,10 @@ public:
         return last_integrated_body_count_;
     }
     SourceDyLaunchStats last_schedule() const noexcept { return last_schedule_; }
+    std::span<const std::uint32_t> admitted_response_tokens() const noexcept {
+        return {admitted_response_tokens_.data(),
+                last_schedule_.device_admitted_descriptors};
+    }
     std::pair<std::size_t,std::size_t> last_transfer_bytes() const noexcept {
         return last_transfer_bytes_;
     }
