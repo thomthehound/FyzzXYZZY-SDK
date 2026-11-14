@@ -1545,7 +1545,30 @@ void verify_device_sc_dy_task_admission(
             " integrated=" + std::to_string(poses[0].valid) +
             " position_x=" + std::to_string(poses[0].position[0]));
     producer->commit_gpu_step();
+
+    // Joint geometry and impulse coefficients must refresh each epoch.
+    bad_joint[0].constant=-0.5f;
+    bad_joint[0].unbiased_constant=-0.5f;
+    body={};
+    body[0].inverse_mass=1.f;
+    poses={};
+    producer->enqueue_gpu_pcm_box_contacts(no_pcm_pairs,no_pcm_results);
+    producer->enqueue_gpu_dy_distance(
+        body,bad_joint,joint_desc,{},ordinals,joint_tasks,
+        {},{},{},{},{},{},{},{},inputs,poses,true);
+    producer->finish_gpu_dy_distance();
+    if(joint_tasks[0].error!=0u || poses[0].valid!=1u ||
+       !(poses[0].position[0]<-0.002f))
+        throw std::runtime_error(
+            "GPU Dy reused a stale joint coefficient: error=" +
+            std::to_string(joint_tasks[0].error) +
+            " integrated=" + std::to_string(poses[0].valid) +
+            " position_x=" + std::to_string(poses[0].position[0]));
+    producer->commit_gpu_step();
+
     bad_joint[0].constant=std::numeric_limits<float>::quiet_NaN();
+    body={};
+    body[0].inverse_mass=1.f;
     joint_tasks[0].error=0u;
     poses={};
     producer->enqueue_gpu_pcm_box_contacts(no_pcm_pairs,no_pcm_results);
@@ -1567,6 +1590,7 @@ void verify_device_sc_dy_task_admission(
             std::to_string(numerical_rejected) +
             " task_error=" + std::to_string(joint_tasks[0].error) +
             " integrated=" + std::to_string(poses[0].valid) +
+            " position_x=" + std::to_string(poses[0].position[0]) +
             " reason=" + rejection_reason);
     producer->invalidate_after_rollback();
 }
