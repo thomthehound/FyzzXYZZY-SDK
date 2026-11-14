@@ -1207,6 +1207,32 @@ void verify_device_sc_dy_indirect_api(
             poses[2].valid==0u,
         "Dy used the host task capacity instead of the device admission");
     producer->commit_gpu_step();
+
+    // Device Sc orders independent responding tasks across the compact
+    // shared-sort and radix-sort boundary with the same source tokens.
+    for(const std::uint32_t count:{64u,120u,129u}) {
+        std::vector<std::uint32_t> independent_nodes(
+            count,4u|(1u<<8u)|
+                physx_gpu::source_sc_device_island_active_bit);
+        std::vector<physx_gpu::SourceScDeviceIslandEdge> joint_edges;
+        joint_edges.reserve(count);
+        for(std::uint32_t i=0u;i<count;++i)
+            joint_edges.push_back({
+                i,i,0xffffffffu,i,
+                physx_gpu::source_sc_device_island_joint_bit});
+        producer->enqueue_gpu_pcm_box_contacts(no_pairs,no_witness);
+        producer->enqueue_gpu_dy_island_admission(
+            joint_edges,independent_nodes,
+            physx_gpu::SourceScDeviceIslandSources{0u,0u,count});
+        const auto sorted=physx_gpu::SourceScDeviceIslandFixture::read(*producer);
+        require(sorted.errors==0u &&
+                sorted.runnable_components==count &&
+                sorted.responding_nodes==count &&
+                sorted.admitted_edges==count &&
+                sorted.dispatch_x==(count+127u)/128u,
+            "Device Sc response ordering lost an independent island");
+        producer->invalidate_after_rollback();
+    }
 }
 
 // Dy consumes the physical task and body-ordinal stream produced by
