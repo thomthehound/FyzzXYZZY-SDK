@@ -1499,6 +1499,40 @@ void verify_device_sc_dy_task_admission(
             " prepared_count=" + std::to_string(short_count));
     producer->invalidate_after_rollback();
 
+    // Sc reserves an upper bound without joining the resident Gu
+    // header. Dy compacts the actual PCM extent before preparing rows.
+    constexpr std::uint32_t contact_capacity=5u;
+    std::vector<float> capacity_forces(contact_capacity,0.f);
+    std::array<native::GpuDyContactPatch,1> capacity_patches{{
+        {0u,contact_capacity,0u,0u,0.f,0.f,0x80000000u,0u}
+    }};
+    std::array<native::GpuDyContactManifold,1> capacity_managers{{
+        {0u,1u,0u,contact_capacity,0u}
+    }};
+    body={};
+    body[0].inverse_mass=1.f;
+    contact_tasks={{{0u,1u,0u,1u,0u,1u,4u,1u,0u}}};
+    poses={};
+    sleep={};
+    witness={};
+    producer->enqueue_gpu_pcm_box_contacts(requests,witness);
+    producer->enqueue_gpu_dy_distance(
+        body,{},contact_desc,{},ordinals,contact_tasks,
+        capacity_forces,{},{},{},capacity_patches,capacity_managers,{},
+        contact_prep,inputs,poses,true,{},true,true,true,sleep);
+    require(witness[0].packed_counts==0u,
+        "PCM capacity admission joined the GPU contact header");
+    producer->finish_gpu_dy_distance();
+    require(witness[0].packed_counts==0u &&
+            contact_tasks[0].error==0u && poses[0].valid==1u,
+        "Device PCM active contact extent failed before Sc publication");
+    producer->finish_gpu_pcm_box_contacts();
+    require(witness[0].status()==0u && witness[0].count()>0u &&
+            witness[0].count()<contact_capacity &&
+            capacity_forces[contact_capacity-1u]==0.f,
+        "GPU PCM contact capacity did not preserve active source extent");
+    producer->commit_gpu_step();
+
     // Invalid joint numerics can arise after valid source preparation.
     // They must not integrate a body before the rejected task is reported.
     const std::array<native::GpuPcmBoxPair,0> no_pcm_pairs{};
