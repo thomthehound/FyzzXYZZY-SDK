@@ -1603,6 +1603,9 @@ public:
         compute::BufferId device_meta_buffer=0u;
         std::size_t device_meta_offset=0u,device_task_source=0u,
                     device_ordinal_source=0u;
+        compute::BufferId device_response_buffer=0u;
+        std::size_t device_response_source=0u;
+        admitted_response_tokens_.clear();
         if(device_admission) {
             const auto metadata=addresses_.resolve(
                 address+offsets[15]+24u,16u);
@@ -1619,6 +1622,15 @@ public:
             device_meta_offset=metadata.offset;
             device_task_source=device_tasks.offset;
             device_ordinal_source=device_ordinals.offset;
+            if(!descriptors.empty()) {
+                const auto& view=*device_admission;
+                const auto responses=addresses_.resolve(
+                    view.work+view.layout.response_tokens,
+                    descriptors.size_bytes());
+                device_response_buffer=responses.buffer;
+                device_response_source=responses.offset;
+                admitted_response_tokens_.resize(descriptors.size());
+            }
         }
         // The final readback shares the numerical dispatch submission.
         // Neither its staging nor Sc's preceding witness DMA is joined.
@@ -1645,7 +1657,7 @@ public:
             .compact_friction=compact_friction,
             .device_unconstrained_preparation=device_unconstrained_preparation,
             .device_world_motion=device_world_motion});
-        const std::array<compute::DownloadSpan,4u> downloads{{
+        std::array<compute::DownloadSpan,5u> downloads{{
             {mapped.buffer,mapped.offset,host_.data(),output_bytes},
             {device_meta_buffer,device_meta_offset,
              device_admission?host_.data()+device_header_offset:nullptr,
@@ -1655,10 +1667,16 @@ public:
              device_admission?tasks.size_bytes():0u},
             {device_meta_buffer,device_ordinal_source,
              device_admission?host_.data()+device_ordinal_offset:nullptr,
-             device_admission?body_ordinals.size_bytes():0u}
+             device_admission?body_ordinals.size_bytes():0u},
+            {}
         }};
-        const std::size_t download_count=!device_admission?1u:
+        std::size_t download_count=!device_admission?1u:
             body_ordinals.empty()?3u:4u;
+        if(!admitted_response_tokens_.empty())
+            downloads[download_count++]={
+                device_response_buffer,device_response_source,
+                admitted_response_tokens_.data(),
+                admitted_response_tokens_.size()*sizeof(std::uint32_t)};
         if(extra_downloads.empty())
             stream_.begin_numerical_fetch(
                 std::span(downloads.data(),download_count));
@@ -1886,8 +1904,23 @@ public:
             }
         }
         if(pending.device_admission) {
-            for(const auto& desc:descriptors)
-                publish_descriptor(desc);
+            // Device Sc returns the ordered source tokens of admitted
+            // numerical responses. Unconnected PCM candidates have no
+            // solver output and must not publish stale host capacities.
+            for(std::size_t i=0u;
+                i<last_schedule_.device_admitted_descriptors;++i) {
+                const std::uint32_t token=admitted_response_tokens_[i];
+                const auto type=token>>30u;
+                if(type==0u || type==2u)continue;
+                if(type!=3u)
+                    throw std::logic_error(
+                        "Resident Sc returned an invalid response token");
+                const auto index=token&0x3fffffffu;
+                if(index>=manifolds.size())
+                    throw std::logic_error(
+                        "Resident Sc contact token exceeds its manager table");
+                publish_descriptor({index,0u,0u,0u});
+            }
         }else for(const auto& task:tasks)
             for(std::size_t i=task.descriptor_begin;
                 i<task.descriptor_end;++i)
@@ -1972,7 +2005,8 @@ public:
         last_transfer_bytes_={uploaded_bytes,
             output_bytes+(pending.device_admission
                 ?16u+pending.tasks.size_bytes()+
-                    pending.body_ordinals.size_bytes():0u)};
+                    pending.body_ordinals.size_bytes()+
+                    pending.descriptors.size_bytes()/4u:0u)};
         last_reused_pcm_contact_rows_=reused_pcm_rows;
         last_omitted_pcm_upload_bytes_=
             reused_pcm_rows*sizeof(native::GpuDyContactPoint);
@@ -2479,6 +2513,7 @@ private:
     std::uint64_t max_view_=0u;
     std::vector<std::uint8_t> host_;
     std::vector<std::uint32_t> admitted_body_ordinals_;
+    std::vector<std::uint32_t> admitted_response_tokens_;
     std::vector<SourceDyPackedContactPrepNative> packed_;
     std::vector<std::uint32_t> source_descriptor_tokens_;
     std::vector<native::GpuDyDistanceDescriptor> source_descriptor_full_;
