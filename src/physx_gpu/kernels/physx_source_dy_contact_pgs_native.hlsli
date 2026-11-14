@@ -545,6 +545,34 @@ void growPcmFrictionAnchors(uint patchIndex,uint pairIndex,
     precise float diagonal=(extent.x*extent.x+extent.y*extent.y)+
         extent.z*extent.z;
     uint count=patch.z;
+    bool normalChanged=false;
+    if((patch.w&0x20000000u)!=0u) {
+        float3 position0;
+        float4 orientation0;
+        if(!prepBodyPose(body0,position0,orientation0)) {
+            arena.InterlockedOr(errorAddress,524288u);
+            return;
+        }
+        const uint encoded=arena.Load(po+28u);
+        float2 oct=float2(int(encoded<<16u)>>16u,int(encoded)>>16u)*
+            (1.0f/32767.0f);
+        float3 localNormal=float3(oct,1.0f-abs(oct.x)-abs(oct.y));
+        if(localNormal.z<0.0f) {
+            const float2 xy=localNormal.xy;
+            localNormal.xy=float2(
+                (1.0f-abs(xy.y))*(xy.x>=0.0f?1.0f:-1.0f),
+                (1.0f-abs(xy.x))*(xy.y>=0.0f?1.0f:-1.0f));
+        }
+        const float3 previous=sourceRigidRotate(
+            orientation0,normalize(localNormal));
+        const float3 current=asfloat(pcmContacts.Load3(stream+8u));
+        if(!all(isfinite(previous)) || !all(isfinite(current))) {
+            arena.InterlockedOr(errorAddress,262144u);
+            return;
+        }
+        normalChanged=sourceDyDot3(previous,current)<0.999f;
+        if(normalChanged)count=0u;
+    }
     if(count>0u) {
         if((patch.w&0x40000000u)!=0u) {
             uint backward=arena.Load(pair+60u);
@@ -649,7 +677,8 @@ void growPcmFrictionAnchors(uint patchIndex,uint pairIndex,
     arena.Store(po+8u,count);
     uint report=(count<<1u) |
         ((changed[0]?(selected[0]+1u):0u)<<3u) |
-        ((changed[1]?(selected[1]+1u):0u)<<6u);
+        ((changed[1]?(selected[1]+1u):0u)<<6u) |
+        (normalChanged?0x200u:0u);
     arena.Store(p.writebackBias+p.resultPatchOffset+
                 patchIndex*4u,report);
 }
