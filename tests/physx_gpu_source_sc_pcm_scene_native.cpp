@@ -3188,8 +3188,8 @@ void verify_pcm_friction_normal_revalidation(
             "GPU PCM did not regenerate its friction anchors");
         test::compound_compare_state(gpu.body_state(gb),cpu.body_state(cb),
             0.05f,"GPU PCM friction normal change diverged from CPU solve");
-        require(gpu.contact_edge_index({gb,gs})!=0xffffffffu &&
-                cpu.contact_edge_index({cb,cs})!=0xffffffffu,
+        require(gpu.contact_edge_index({gs,gb})!=0xffffffffu &&
+                cpu.contact_edge_index({cs,cb})!=0xffffffffu,
             "PCM friction normal change retired the live Sc edge");
     }
 }
