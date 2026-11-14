@@ -328,7 +328,7 @@ public:
         // A single root/type sort generates both body and response spans.
         const auto combined=static_cast<std::uint32_t>(
             std::uint64_t(node_count)+edge_count);
-        launch(7u,combined);
+        launch(7u,combined<=256u?128u:combined);
         if(combined>256u)
             for(std::uint32_t pass=0u;
                 pass<SourceScDeviceIslandLayout::radix_passes(node_count);
