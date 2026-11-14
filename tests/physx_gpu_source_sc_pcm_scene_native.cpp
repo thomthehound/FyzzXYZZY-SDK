@@ -1681,6 +1681,96 @@ void verify_device_sc_dy_task_admission(
     }
     producer->commit_gpu_step();
 
+    // A touching manager and a non-touching candidate share one resident
+    // task epoch. Only the touching source response owns host writeback.
+    const std::array<native::GpuPcmBoxPair,2> mixed_requests{{
+        requests[0],empty_request[0]
+    }};
+    std::array<native::GpuPcmBoxResult,2> mixed_witness{};
+    std::array<native::GpuDyDistanceBody,2> mixed_bodies{};
+    for(auto& item:mixed_bodies)item.inverse_mass=1.f;
+    const std::array<native::GpuDyDistanceDescriptor,2> mixed_desc{{
+        {0u,0u,0xffffffffu,0x100u},
+        {1u,1u,0xffffffffu,0x100u}
+    }};
+    const std::array<std::uint32_t,2> mixed_ordinals{{0u,1u}};
+    std::array<native::GpuDyDistanceTask,2> mixed_tasks{{
+        {0u,1u,0u,1u,0u,1u,4u,1u,0u},
+        {1u,2u,1u,2u,1u,2u,4u,1u,0u}
+    }};
+    std::array<native::GpuDyContactManifold,2> mixed_managers{{
+        {0u,1u,0u,contact_capacity,0u},
+        {1u,1u,contact_capacity,contact_capacity,1u}
+    }};
+    std::array<native::GpuDyContactPatch,2> mixed_patches{{
+        {0u,contact_capacity,0u,0x80000000u,0.f,0.f,
+         0x80000000u,0u},
+        {0u,contact_capacity,1u,0x80000000u,0.5f,0.5f,
+         0x80000000u|contact_capacity,0u}
+    }};
+    std::array<native::GpuDyContactPrepPair,2> mixed_prep{{
+        contact_prep[0],contact_prep[0]
+    }};
+    mixed_prep[0].pcm_edge=edge;
+    mixed_prep[1].pcm_pair_index=1u;
+    mixed_prep[1].pcm_edge=empty_edge;
+    mixed_prep[1].body0.solver_ordinal=1u;
+    std::array<native::GpuDyBodyIntegrationInput,2> mixed_inputs{{
+        inputs[0],inputs[0]
+    }};
+    mixed_inputs[0].source_actor=moving;
+    mixed_inputs[0].position[0]=0.f;
+    mixed_inputs[0].actor_position[0]=0.f;
+    mixed_inputs[1].source_actor=independent;
+    mixed_inputs[1].position[0]=8.f;
+    mixed_inputs[1].actor_position[0]=8.f;
+    std::array<native::GpuDyIntegratedPose,2> mixed_poses{};
+    std::array<native::GpuDySleepState,2> mixed_sleep{};
+    std::vector<float> mixed_forces(2u*contact_capacity,-17.f);
+    const std::array<physx_gpu::SourceScDeviceIslandEdge,2> mixed_edges{{
+        {edge,0u,0xffffffffu,0u,0u},
+        {empty_edge,1u,0xffffffffu,1u,0u}
+    }};
+    const std::array<std::uint32_t,2> mixed_nodes{{
+        no_touch_node[0],no_touch_node[0]
+    }};
+    producer->enqueue_gpu_pcm_box_contacts(mixed_requests,mixed_witness);
+    producer->enqueue_gpu_dy_island_admission(
+        mixed_edges,mixed_nodes,
+        physx_gpu::SourceScDeviceIslandSources{2u,0u,0u});
+    producer->enqueue_gpu_dy_distance(
+        mixed_bodies,{},mixed_desc,{},mixed_ordinals,mixed_tasks,
+        mixed_forces,{},{},cached_anchors,mixed_patches,mixed_managers,{},
+        mixed_prep,mixed_inputs,mixed_poses,true,cached_impulses,
+        true,true,true,mixed_sleep);
+    producer->finish_gpu_dy_distance();
+    const auto mixed_schedule=producer->dy_launch_stats();
+    const auto admitted=producer->gpu_dy_admitted_response_tokens();
+    const bool published_touch=std::any_of(
+        mixed_forces.begin(),mixed_forces.begin()+contact_capacity,
+        [](float impulse){return impulse!=-17.f;});
+    const bool retained_untouched=std::all_of(
+        mixed_forces.begin()+contact_capacity,mixed_forces.end(),
+        [](float impulse){return impulse==-17.f;});
+    require(mixed_witness[0].packed_counts==0u &&
+            mixed_witness[1].packed_counts==0u &&
+            mixed_schedule.device_admitted_tasks==2u &&
+            mixed_schedule.device_admitted_bodies==2u &&
+            mixed_schedule.device_admitted_descriptors==1u &&
+            admitted.size()==1u && admitted[0]==0xc0000000u &&
+            mixed_tasks[0].error==0u && mixed_tasks[1].error==0u &&
+            mixed_poses[0].valid==1u && mixed_poses[1].valid==1u &&
+            published_touch && retained_untouched &&
+            mixed_patches[1].anchor_count==1u,
+        "GPU Sc mixed PCM epoch published unadmitted numerical output");
+    producer->finish_gpu_pcm_box_contacts();
+    require(mixed_witness[0].status()==0u &&
+            mixed_witness[0].count()>0u &&
+            mixed_witness[1].status()==0u &&
+            mixed_witness[1].count()==0u,
+        "GPU Sc mixed PCM epoch lost source touch classification");
+    producer->commit_gpu_step();
+
     // Invalid joint numerics can arise after valid source preparation.
     // They must not integrate a body before the rejected task is reported.
     const std::array<native::GpuPcmBoxPair,0> no_pcm_pairs{};
