@@ -1508,7 +1508,8 @@ void verify_device_sc_dy_task_admission(
     bad_joint[0].axis[0]=1.f;
     bad_joint[0].inverse_mass_a=1.f;
     bad_joint[0].velocity_multiplier=1.f;
-    bad_joint[0].constant=0.0f;
+    bad_joint[0].constant=0.5f;
+    bad_joint[0].unbiased_constant=0.5f;
     const std::array<native::GpuDyDistanceDescriptor,1> joint_desc{{
         {0u,0u,0xffffffffu,0x101u}
     }};
@@ -1536,8 +1537,13 @@ void verify_device_sc_dy_task_admission(
         body,bad_joint,joint_desc,{},ordinals,joint_tasks,
         {},{},{},{},{},{},{},{},inputs,poses,true);
     producer->finish_gpu_dy_distance();
-    require(joint_tasks[0].error==0u && poses[0].valid==1u,
-        "A valid single-row joint did not reach GPU Dy integration");
+    if(joint_tasks[0].error!=0u || poses[0].valid!=1u ||
+       !(poses[0].position[0]>0.002f))
+        throw std::runtime_error(
+            "Valid GPU Dy joint did not produce numerical response: error=" +
+            std::to_string(joint_tasks[0].error) +
+            " integrated=" + std::to_string(poses[0].valid) +
+            " position_x=" + std::to_string(poses[0].position[0]));
     producer->commit_gpu_step();
     bad_joint[0].constant=std::numeric_limits<float>::quiet_NaN();
     joint_tasks[0].error=0u;
