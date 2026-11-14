@@ -9213,6 +9213,23 @@ void Scene::solve_gpu_distance_constraints(float seconds) {
     gpu_dy_manifolds_.assign(manifolds_.size(),{});
     std::size_t explicit_order_cursor=0u;
     constexpr std::uint32_t device_contact_order=0x80000000u;
+    const auto encode_normal=[](Vec3 n) -> std::uint32_t {
+        const float length=std::abs(n.x)+std::abs(n.y)+std::abs(n.z);
+        if(!(length>0.f) || !finite(n))
+            throw std::overflow_error("Source PCM cached normal is invalid");
+        float x=n.x/length,y=n.y/length;
+        if(n.z<0.f) {
+            const float ox=x,oy=y;
+            x=(1.f-std::abs(oy))*(ox>=0.f?1.f:-1.f);
+            y=(1.f-std::abs(ox))*(oy>=0.f?1.f:-1.f);
+        }
+        const auto quantize=[](float value) {
+            return static_cast<std::uint32_t>(
+                static_cast<std::uint16_t>(std::lround(
+                    std::clamp(value,-1.f,1.f)*32767.f)));
+        };
+        return quantize(x)|(quantize(y)<<16u);
+    };
     for(const auto manager_index:indexed_managers_) {
         const auto& m=manifolds_[manager_index];
         if(m.prepared_friction_epoch!=friction_cache_epoch_)
@@ -9277,12 +9294,14 @@ void Scene::solve_gpu_distance_constraints(float seconds) {
                         "CPU Gu contact correlation order is incomplete");
                 explicit_order_cursor+=patch.contact_count;
             }
+            const bool cached_normal=pcm_growth && patch.anchor_count>0u;
             gpu_dy_patches_[i]={
                 narrow(patch.row_offset),patch.contact_count,
                 patch.anchor_count,(patch.broken?1u:0u)|
-                    (pcm_growth?0x80000000u:0u),
+                    (pcm_growth?0x80000000u:0u)|
+                    (cached_normal?0x20000000u:0u),
                 patch.static_friction,patch.dynamic_friction,
-                order_offset,0u};
+                order_offset,cached_normal?encode_normal(patch.body0_normal):0u};
             cursor+=patch.contact_count;
         }
         if(cursor!=m.solver_offset+m.count)
@@ -9386,9 +9405,20 @@ void Scene::solve_gpu_distance_constraints(float seconds) {
         for(std::size_t i=m.friction_patch_offset;
             i<m.friction_patch_offset+m.friction_patch_count;++i) {
             auto& patch=friction_patches_[i];
-            if(patch.disable_friction)continue;
             const auto& returned=gpu_dy_patches_[i];
             const auto count=returned.anchor_count;
+            if(patch.anchor_count==0u ||
+               (returned.reserved&0x200u)!=0u) {
+                const Vec3 normal=m.points.front().normal;
+                const auto local_normal=[&](const Actor& actor) {
+                    const Quat q=mass_orientation(actor);
+                    return rotate(Quat{-q.x,-q.y,-q.z,q.w},normal);
+                };
+                patch.normal=normal;
+                patch.body0_normal=local_normal(a);
+                patch.body1_normal=local_normal(b);
+            }
+            if(patch.disable_friction)continue;
             if(count>2u)throw std::logic_error(
                 "Source GPU PCM returned more than two friction anchors");
             const std::uint32_t report=returned.reserved;
