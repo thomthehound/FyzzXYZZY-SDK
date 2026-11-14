@@ -384,6 +384,12 @@ public:
         dy_distance_->finish();
         if(pcm_)pcm_->finish_deferred_points(true);
     }
+    std::span<const std::uint32_t>
+    gpu_dy_admitted_response_tokens() const override {
+        if(!dy_distance_)
+            throw std::logic_error("Source GPU Dy shader is not installed");
+        return dy_distance_->admitted_response_tokens();
+    }
     bool has_queued_gpu_dy_distance() const noexcept {
         return dy_distance_ && dy_distance_->has_queued_solve();
     }
