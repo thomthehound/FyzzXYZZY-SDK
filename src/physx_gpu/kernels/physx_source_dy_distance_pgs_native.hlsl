@@ -392,11 +392,34 @@ bool sourceDyExpandDescriptor(uint token,uint sourceCount,uint sourceTable,
             if(pcmIndex!=invalidBody) {
                 const uint source=p.pcmBias+pcmIndex*84u;
                 const uint packed=pcmContacts.Load(source+4u);
+                const uint emitted=(packed>>10u)&7u;
+                const uint capacity=arena.Load(manager+12u);
+                const uint begin=arena.Load(manager+8u);
                 if(pcmContacts.Load(source)!=arena.Load(prep+52u) ||
-                   ((packed>>3u)&7u)!=0u ||
-                   ((packed>>10u)&7u)!=arena.Load(manager+12u)) {
+                   ((packed>>3u)&7u)!=0u || emitted>capacity ||
+                   emitted>4u || begin>p.contactCount ||
+                   capacity>p.contactCount-begin) {
                     arena.InterlockedOr(errorAddress,65536u);
                     return false;
+                }
+                if(emitted!=capacity) {
+                    const uint patchIndex=arena.Load(manager);
+                    if(arena.Load(manager+4u)!=1u ||
+                       patchIndex>=p.patchCount) {
+                        arena.InterlockedOr(errorAddress,65536u);
+                        return false;
+                    }
+                    const uint patch=p.patchBias+patchIndex*32u;
+                    if(arena.Load(patch+4u)!=capacity ||
+                       arena.Load(patch+24u)!=(0x80000000u|begin)) {
+                        arena.InterlockedOr(errorAddress,65536u);
+                        return false;
+                    }
+                    arena.Store(manager+12u,emitted);
+                    arena.Store(patch+4u,emitted);
+                    for(uint i=emitted;i<capacity;++i)
+                        arena.Store(p.writebackBias+p.resultContactOffset+
+                                    (begin+i)*4u,0u);
                 }
             }
             const uint refA=arena.Load(prep);
