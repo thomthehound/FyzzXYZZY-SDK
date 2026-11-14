@@ -509,6 +509,9 @@ public:
     virtual void finish_gpu_dy_distance() {
         throw std::logic_error("Source GPU Dy result is not available");
     }
+    virtual std::span<const std::uint32_t> gpu_dy_admitted_response_tokens() const {
+        throw std::logic_error("Source GPU Dy response admission is unavailable");
+    }
     // Sc's afterIntegration authorizes the source ElementSim device pose.
     virtual void authorize_device_integrated_pose(BodyId) {
         throw std::logic_error("Source GPU owner has no device pose cache");
