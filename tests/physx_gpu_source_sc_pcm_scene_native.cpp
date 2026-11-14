@@ -1616,6 +1616,47 @@ void verify_device_sc_dy_task_admission(
         "Separated broadphase candidate unexpectedly produced PCM contacts");
     producer->commit_gpu_step();
 
+    // Accurate device island admission must exclude a non-touching
+    // broadphase candidate, without publishing its reserved host
+    // contact/patch outputs as an executed solver response.
+    const std::array<physx_gpu::SourceScDeviceIslandEdge,1> no_touch_edge{{
+        {empty_edge,0u,0xffffffffu,0u,0u}
+    }};
+    const std::array<std::uint32_t,1> no_touch_node{{
+        4u|(1u<<8u)|physx_gpu::source_sc_device_island_active_bit
+    }};
+    std::fill(capacity_forces.begin(),capacity_forces.end(),-17.f);
+    empty_patches[0]={0u,contact_capacity,1u,0x80000000u,
+                      0.5f,0.5f,0x80000000u,0u};
+    body={};
+    body[0].inverse_mass=1.f;
+    contact_tasks={{{0u,1u,0u,1u,0u,1u,4u,1u,0u}}};
+    poses={};
+    sleep={};
+    witness={};
+    producer->enqueue_gpu_pcm_box_contacts(empty_request,witness);
+    producer->enqueue_gpu_dy_island_admission(
+        no_touch_edge,no_touch_node,
+        physx_gpu::SourceScDeviceIslandSources{1u,0u,0u});
+    producer->enqueue_gpu_dy_distance(
+        body,{},contact_desc,{},ordinals,contact_tasks,
+        capacity_forces,{},{},cached_anchors,empty_patches,
+        capacity_managers,{},contact_prep,inputs,poses,true,
+        cached_impulses,true,true,true,sleep);
+    producer->finish_gpu_dy_distance();
+    require(witness[0].packed_counts==0u &&
+            producer->dy_launch_stats().device_admitted_tasks==0u &&
+            producer->dy_launch_stats().device_admitted_descriptors==0u &&
+            contact_tasks[0].error==0u && poses[0].valid==0u &&
+            empty_patches[0].anchor_count==1u &&
+            std::all_of(capacity_forces.begin(),capacity_forces.end(),
+                        [](float impulse){return impulse==-17.f;}),
+        "Sc admitted or wrote back a non-touching PCM numerical task");
+    producer->finish_gpu_pcm_box_contacts();
+    require(witness[0].status()==0u && witness[0].count()==0u,
+        "Device Sc skipped an actual physical PCM contact");
+    producer->commit_gpu_step();
+
     // Invalid joint numerics can arise after valid source preparation.
     // They must not integrate a body before the rejected task is reported.
     const std::array<native::GpuPcmBoxPair,0> no_pcm_pairs{};
