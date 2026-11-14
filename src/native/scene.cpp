@@ -8151,7 +8151,6 @@ void Scene::prepare_constraints(float seconds) {
         if(resident_pcm) {
             if(manifold.count==0u)
                 throw std::logic_error("Resident PCM has no contact run");
-            const Vec3 normal=manifold.points.front().normal;
             const FrictionPatch* retained=nullptr;
             std::size_t admitted_history=0u;
             if(!disable_strong_friction && edge<friction_by_edge_.size()) {
@@ -8176,14 +8175,14 @@ void Scene::prepare_constraints(float seconds) {
                             :cached_friction_patch_valid(old,actor0,actor1);
                         if(!valid)continue;
                         ++admitted_history;
-                        const Vec3 old_normal=rotate(
-                            mass_orientation(actor0),old.body0_normal);
-                        if(dot(old_normal,normal)>=same_normal &&
-                           old.restitution==restitution &&
+                        if(old.restitution==restitution &&
                            old.damping==damping &&
                            old.acceleration_spring==acceleration_spring &&
                            old.static_friction==static_friction &&
-                           old.dynamic_friction==dynamic_friction) {
+                           old.dynamic_friction==dynamic_friction &&
+                           (history.count==1u ||
+                            dot(rotate(mass_orientation(actor0),old.body0_normal),
+                                manifold.points.front().normal)>=same_normal)) {
                             retained=&old;
                             break;
                         }
@@ -8199,7 +8198,6 @@ void Scene::prepare_constraints(float seconds) {
                     mass_orientation(actor0),retained->body0_normal);
             else {
                 patch.pair=manifold.pair;
-                patch.normal=normal;
                 patch.static_friction=static_friction;
                 patch.dynamic_friction=dynamic_friction;
                 patch.restitution=restitution;
@@ -8207,8 +8205,6 @@ void Scene::prepare_constraints(float seconds) {
                 patch.acceleration_spring=acceleration_spring;
                 patch.disable_friction=disable_friction;
                 patch.disable_strong_friction=disable_strong_friction;
-                patch.body0_normal=local_normal(actor0,normal);
-                patch.body1_normal=local_normal(actor1,normal);
             }
             patch.contact_count=static_cast<std::uint16_t>(manifold.count);
             patch.contact_ids.fill(0xffff);
