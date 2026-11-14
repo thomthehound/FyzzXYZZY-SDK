@@ -3634,9 +3634,14 @@ void verify_mixed_gu_pcm_gpu_dy_solver(
                     producer->dy_pcm_device_contact_rows()>0u &&
                     producer->dy_cpu_gu_geometry_bytes()>=
                         sizeof(native::GpuDyGuContactInput) &&
-                    producer->dy_upload_span_count()==1u &&
-                    producer->dy_launch_stats().device_island_indirect_dispatches==0u &&
-                    producer->dy_launch_stats().device_admitted_tasks==0u,
+                    producer->dy_upload_span_count()==
+                        (device_admission?2u:1u) &&
+                    producer->dy_launch_stats().device_island_indirect_dispatches==
+                        (device_admission?1u:0u) &&
+                    (device_admission
+                        ?producer->dy_launch_stats().device_admitted_tasks>=2u &&
+                         producer->dy_launch_stats().device_admitted_descriptors>=2u
+                        :producer->dy_launch_stats().device_admitted_tasks==0u),
                 "Mixed source Gu and PCM rows did not enter selected Dy tasks");
             native::GpuPcmFrictionAnchorFixture::verify_device_contact_order(
                 gpu,true,true);
