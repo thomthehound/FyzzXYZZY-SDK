@@ -3132,6 +3132,68 @@ void verify_plane_pcm_without_finite_pcm(
                 "Plane-only GPU PCM and finite Gu motion diverged");
     }
 }
+void verify_pcm_friction_normal_revalidation(
+    fyzz::compute::Backend backend,const char* sap,
+    const char* pcm,const char* dy_shader) {
+    using namespace fyzz;
+    std::ifstream file(dy_shader,std::ios::binary);
+    require(bool(file),"PCM friction Dy shader missing");
+    compute::ShaderBinary shader{};
+    shader.format=backend==compute::Backend::Vulkan
+        ?compute::ShaderFormat::Spirv:compute::ShaderFormat::Dxil;
+    shader.bytes.assign(std::istreambuf_iterator<char>{file},
+                        std::istreambuf_iterator<char>{});
+    native::Scene cpu,gpu;
+    auto owner=std::make_unique<physx_gpu::SourceScOwnedGpuBroadphaseNative>(
+        backend,load_native_gpu_sap_shaders(backend,sap),
+        128u,128u,std::nullopt,load_native_gpu_pcm_shaders(backend,pcm),
+        std::move(shader));
+    auto* producer=owner.get();
+    gpu.set_gpu_broadphase(std::move(owner));
+    const native::Vec3 half{0.5f,0.5f,0.5f};
+    const native::Vec3 fixed{0.f,1.f,0.f};
+    const auto cs=cpu.add_static_box(half,fixed);
+    const auto gs=gpu.add_static_box(half,fixed);
+    const auto cb=cpu.add_dynamic_box(half,{0.f,1.8f,0.f},1.f);
+    const auto gb=gpu.add_dynamic_box(half,{0.f,1.8f,0.f},1.f);
+    const std::array<native::Vec3,3> positions{{
+        {0.f,1.8f,0.f},{0.8f,1.f,0.f},{0.f,1.8f,0.f}
+    }};
+    const std::array<native::Quat,3> rotations{{
+        {0.f,0.f,0.f,1.f},
+        {0.f,0.f,std::sin(0.1f),std::cos(0.1f)},
+        {0.f,0.f,0.f,1.f}
+    }};
+    native::Vec3 previous_normal{};
+    for(std::size_t i=0u;i<positions.size();++i) {
+        if(i!=0u) {
+            cpu.set_pose(cb,positions[i],rotations[i]);
+            gpu.set_pose(gb,positions[i],rotations[i]);
+        }
+        cpu.step(1.f/120.f);
+        gpu.step(1.f/120.f);
+        require(cpu.contacts().size()==1u && gpu.contacts().size()==1u &&
+                !gpu.solved_friction_patches().empty() &&
+                producer->pcm_host_contact_upload_bytes()==0u &&
+                gpu.contacts()[0].count!=0u,
+            "Device PCM friction test lost its active contact manager");
+        const auto normal=gpu.contacts()[0].points.front().normal;
+        if(i!=0u)
+            require(normal.x*previous_normal.x+
+                    normal.y*previous_normal.y+
+                    normal.z*previous_normal.z<0.5f,
+                "PCM friction fixture did not change the contact normal");
+        previous_normal=normal;
+        require(gpu.solved_friction_patches()[0].anchor_count>0u,
+            "GPU PCM did not regenerate its friction anchors");
+        test::compound_compare_state(gpu.body_state(gb),cpu.body_state(cb),
+            0.05f,"GPU PCM friction normal change diverged from CPU solve");
+        require(gpu.contact_edge_index({gb,gs})!=0xffffffffu &&
+                cpu.contact_edge_index({cb,cs})!=0xffffffffu,
+            "PCM friction normal change retired the live Sc edge");
+    }
+}
+
 void verify_dy_execution_switch(
     fyzz::compute::Backend backend,const char* sap,
     const char* pcm,const char* dy_shader) {
@@ -5405,6 +5467,7 @@ int main(int argc,char** argv) {
                 scenario=="star_island_10k" ||
                 scenario=="free_integration" ||
                 scenario=="device_admission" ||
+                scenario=="friction_normal" ||
                 scenario=="device_admission_scene" ||
                 scenario=="device_admission_mixed_scene" ||
                 scenario=="device_admission_joint_scene" ||
@@ -5480,6 +5543,10 @@ int main(int argc,char** argv) {
         if(scenario=="device_admission")
             fyzz::tests::measure_gpu_case("sc_pcm","device_admission",
                 [&]{verify_device_sc_dy_task_admission(
+                    backend,argv[1],argv[2],argv[3]);});
+        if(scenario=="all" || scenario=="friction_normal")
+            fyzz::tests::measure_gpu_case("sc_pcm","friction_normal",
+                [&]{verify_pcm_friction_normal_revalidation(
                     backend,argv[1],argv[2],argv[3]);});
         if(scenario=="device_admission_scene")
             fyzz::tests::measure_gpu_case("sc_pcm","device_admission_scene",
