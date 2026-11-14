@@ -1508,7 +1508,7 @@ void verify_device_sc_dy_task_admission(
     bad_joint[0].axis[0]=1.f;
     bad_joint[0].inverse_mass_a=1.f;
     bad_joint[0].velocity_multiplier=1.f;
-    bad_joint[0].constant=std::numeric_limits<float>::quiet_NaN();
+    bad_joint[0].constant=0.0f;
     const std::array<native::GpuDyDistanceDescriptor,1> joint_desc{{
         {0u,0u,0xffffffffu,0x101u}
     }};
@@ -1535,11 +1535,24 @@ void verify_device_sc_dy_task_admission(
     producer->enqueue_gpu_dy_distance(
         body,bad_joint,joint_desc,{},ordinals,joint_tasks,
         {},{},{},{},{},{},{},{},inputs,poses,true);
+    producer->finish_gpu_dy_distance();
+    require(joint_tasks[0].error==0u && poses[0].valid==1u,
+        "A valid single-row joint did not reach GPU Dy integration");
+    producer->commit_gpu_step();
+    bad_joint[0].constant=std::numeric_limits<float>::quiet_NaN();
+    joint_tasks[0].error=0u;
+    poses={};
+    producer->enqueue_gpu_pcm_box_contacts(no_pcm_pairs,no_pcm_results);
+    producer->enqueue_gpu_dy_distance(
+        body,bad_joint,joint_desc,{},ordinals,joint_tasks,
+        {},{},{},{},{},{},{},{},inputs,poses,true);
     bool numerical_rejected=false;
+    std::string rejection_reason;
     try {
         producer->finish_gpu_dy_distance();
-    }catch(const std::overflow_error&) {
+    }catch(const std::overflow_error& error) {
         numerical_rejected=true;
+        rejection_reason=error.what();
     }
     if(!numerical_rejected || (joint_tasks[0].error&2u)==0u ||
        poses[0].valid!=0u)
@@ -1547,7 +1560,8 @@ void verify_device_sc_dy_task_admission(
             "GPU Dy numerical joint rejection failed: rejected=" +
             std::to_string(numerical_rejected) +
             " task_error=" + std::to_string(joint_tasks[0].error) +
-            " integrated=" + std::to_string(poses[0].valid));
+            " integrated=" + std::to_string(poses[0].valid) +
+            " reason=" + rejection_reason);
     producer->invalidate_after_rollback();
 }
 
