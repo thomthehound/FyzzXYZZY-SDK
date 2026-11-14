@@ -1533,6 +1533,38 @@ void verify_device_sc_dy_task_admission(
         "GPU PCM contact capacity did not preserve active source extent");
     producer->commit_gpu_step();
 
+    // A valid cached anchor with an incompatible local normal must be
+    // replaced using the current resident Gu contact geometry.
+    std::array<native::GpuDyFrictionAnchorInput,2> cached_anchors{};
+    std::array<native::GpuDyFrictionAnchorImpulse,2> cached_impulses{};
+    std::array<native::GpuDyContactPatch,1> cached_patches{{
+        {0u,contact_capacity,1u,0xa0000000u,0.5f,0.5f,
+         0x80000000u,0u}
+    }};
+    // Octahedral (0,0) encodes local +Z, orthogonal to this pair's
+    // actual X-facing PCM contact normal.
+    body={};
+    body[0].inverse_mass=1.f;
+    contact_tasks={{{0u,1u,0u,1u,0u,1u,4u,1u,0u}}};
+    poses={};
+    sleep={};
+    witness={};
+    producer->enqueue_gpu_pcm_box_contacts(requests,witness);
+    producer->enqueue_gpu_dy_distance(
+        body,{},contact_desc,{},ordinals,contact_tasks,
+        capacity_forces,{},{},cached_anchors,cached_patches,
+        capacity_managers,{},contact_prep,inputs,poses,true,
+        cached_impulses,true,true,true,sleep);
+    producer->finish_gpu_dy_distance();
+    require(contact_tasks[0].error==0u && poses[0].valid==1u &&
+            (cached_patches[0].reserved&0x200u)!=0u &&
+            cached_patches[0].anchor_count>0u,
+        "GPU PCM friction retained a cached normal from another face");
+    producer->finish_gpu_pcm_box_contacts();
+    require(witness[0].status()==0u && witness[0].count()>0u,
+        "GPU PCM normal revalidation lost its source manifold");
+    producer->commit_gpu_step();
+
     // Invalid joint numerics can arise after valid source preparation.
     // They must not integrate a body before the rejected task is reported.
     const std::array<native::GpuPcmBoxPair,0> no_pcm_pairs{};
