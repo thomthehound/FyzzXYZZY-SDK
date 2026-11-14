@@ -1616,9 +1616,9 @@ void verify_device_sc_dy_task_admission(
         "Separated broadphase candidate unexpectedly produced PCM contacts");
     producer->commit_gpu_step();
 
-    // Accurate device island admission must exclude a non-touching
-    // broadphase candidate, without publishing its reserved host
-    // contact/patch outputs as an executed solver response.
+    // Device admission retains the awake body's unconstrained
+    // integration while excluding the non-touching contact response.
+    // Unused host contact and friction outputs remain unpublished.
     const std::array<physx_gpu::SourceScDeviceIslandEdge,1> no_touch_edge{{
         {empty_edge,0u,0xffffffffu,0u,0u}
     }};
@@ -1650,9 +1650,11 @@ void verify_device_sc_dy_task_admission(
         capacity_forces.begin(),capacity_forces.end(),
         [](float impulse){return impulse==-17.f;});
     producer->finish_gpu_pcm_box_contacts();
-    if(!witness_unjoined || schedule.device_admitted_tasks!=0u ||
+    if(!witness_unjoined || schedule.device_admitted_tasks!=1u ||
+       schedule.device_admitted_bodies!=1u ||
        schedule.device_admitted_descriptors!=0u ||
-       contact_tasks[0].error!=0u || poses[0].valid!=0u ||
+       contact_tasks[0].error!=0u || poses[0].valid!=1u ||
+       std::fabs(poses[0].position[0]-8.f)>0.005f ||
        empty_patches[0].anchor_count!=1u || !forces_unchanged ||
        witness[0].status()!=0u || witness[0].count()!=0u) {
         const auto graph=physx_gpu::SourceScDeviceIslandFixture::read(*producer);
@@ -1661,9 +1663,11 @@ void verify_device_sc_dy_task_admission(
         throw std::runtime_error(
             "Non-touching Sc response admission failed: tasks=" +
             std::to_string(schedule.device_admitted_tasks) +
+            " bodies=" + std::to_string(schedule.device_admitted_bodies) +
             " descriptors=" + std::to_string(schedule.device_admitted_descriptors) +
             " task_error=" + std::to_string(contact_tasks[0].error) +
             " pose_valid=" + std::to_string(poses[0].valid) +
+            " position_x=" + std::to_string(poses[0].position[0]) +
             " anchors=" + std::to_string(empty_patches[0].anchor_count) +
             " forces_unchanged=" + std::to_string(forces_unchanged) +
             " witness_unjoined=" + std::to_string(witness_unjoined) +
