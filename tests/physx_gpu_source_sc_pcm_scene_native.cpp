@@ -3583,8 +3583,8 @@ void verify_mixed_gu_pcm_gpu_dy_solver(
             ? compute::ShaderFormat::Spirv:compute::ShaderFormat::Dxil;
         shader.bytes.assign(binary.begin(),binary.end());
         native::Scene cpu,gpu;
-        cpu.set_enhanced_determinism(true);
-        gpu.set_enhanced_determinism(true);
+        cpu.set_enhanced_determinism(!device_admission);
+        gpu.set_enhanced_determinism(!device_admission);
         // Retain a real CPU Gu producer for the mixed-input regression.
         cpu.set_pcm_plane_box(false);
         gpu.set_pcm_plane_box(false);
