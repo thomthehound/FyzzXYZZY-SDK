@@ -7316,8 +7316,12 @@ void Scene::partition_constraints() {
     gpu_dy_free_ids_.clear();
     gpu_dy_responding_island_count_=0u;
     const bool gpu_integration=gpu_dy_active();
-    // GPU task boundaries follow Sc's existing accurate islands.
-    // CPU groups retain their source batching policy.
+    const bool device_sc_grouping=gpu_integration &&
+        gpu_dy_device_admission_enabled_ &&
+        std::any_of(gpu_pcm_pairs_.begin(),gpu_pcm_pairs_.end(),
+            [](const GpuPcmBoxPair& pair){return !pair.host_generated;});
+    // Device Sc expands compact grouped source ranges into distinct
+    // accurate-island numerical tasks using its resident touch graph.
     std::size_t joint_task_begin=0;
     const auto sort_constraints=[&] {
         // DyDynamicsBase::ConstraintLess compares Dy::Constraint::index
@@ -7406,10 +7410,11 @@ void Scene::partition_constraints() {
         }
         if(prepared_solver_bodies!=prepared_before_island)
             ++gpu_dy_responding_island_count_;
-        // GPU tasks retain independent accurate-island boundaries;
-        // CPU tasks retain the source 128-body batching.
+        // Device Sc admits individual compact islands from the grouped
+        // source range. Other GPU tasks retain CPU's island boundaries.
         if(enhanced_determinism_ ||
-           (gpu_integration && island.contact_count+island.constraint_count>0u) ||
+           (gpu_integration && !device_sc_grouping &&
+            island.contact_count+island.constraint_count>0u) ||
            (task_body_count>=source_solver_batch_size &&
             task_constraint_count>=1)) {
             sort_constraints();
