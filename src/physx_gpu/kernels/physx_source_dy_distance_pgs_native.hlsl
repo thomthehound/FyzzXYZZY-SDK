@@ -480,6 +480,31 @@ void sourceDyPartitionTask(uint taskId,uint scratch,uint errorAddress,
             arena.InterlockedOr(errorAddress,1048576u);
             continue;
         }
+        const uint rowCount=desc.w&255u;
+        if(rowCount!=0u) {
+            if(desc.x>=p.rowCount || rowCount>p.rowCount-desc.x) {
+                arena.InterlockedOr(errorAddress,1u);
+                continue;
+            }
+            bool invalidCoefficient=false;
+            for(uint row=0u;row<rowCount;++row) {
+                const uint address=p.distanceBias+(desc.x+row)*64u;
+                // Device-authored rows acquire their coefficients during
+                // numerical preparation. Their solver validates the result.
+                if(arena.Load(address+44u)==2u)continue;
+                const uint biased=arena.Load(address+48u);
+                const uint unbiased=arena.Load(address+52u);
+                if((biased&0x7f800000u)==0x7f800000u ||
+                   (unbiased&0x7f800000u)==0x7f800000u) {
+                    invalidCoefficient=true;
+                    break;
+                }
+            }
+            if(invalidCoefficient) {
+                arena.InterlockedOr(errorAddress,2u);
+                continue;
+            }
+        }
         // Constraint endpoints are authoritative even when a solver
         // task omits a body from its integration writeback ordinal list.
         uint unused;
