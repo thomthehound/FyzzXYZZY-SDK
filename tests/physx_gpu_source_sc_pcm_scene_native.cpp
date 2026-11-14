@@ -1644,17 +1644,37 @@ void verify_device_sc_dy_task_admission(
         capacity_managers,{},contact_prep,inputs,poses,true,
         cached_impulses,true,true,true,sleep);
     producer->finish_gpu_dy_distance();
-    require(witness[0].packed_counts==0u &&
-            producer->dy_launch_stats().device_admitted_tasks==0u &&
-            producer->dy_launch_stats().device_admitted_descriptors==0u &&
-            contact_tasks[0].error==0u && poses[0].valid==0u &&
-            empty_patches[0].anchor_count==1u &&
-            std::all_of(capacity_forces.begin(),capacity_forces.end(),
-                        [](float impulse){return impulse==-17.f;}),
-        "Sc admitted or wrote back a non-touching PCM numerical task");
+    const bool witness_unjoined=witness[0].packed_counts==0u;
+    const auto schedule=producer->dy_launch_stats();
+    const bool forces_unchanged=std::all_of(
+        capacity_forces.begin(),capacity_forces.end(),
+        [](float impulse){return impulse==-17.f;});
     producer->finish_gpu_pcm_box_contacts();
-    require(witness[0].status()==0u && witness[0].count()==0u,
-        "Device Sc skipped an actual physical PCM contact");
+    if(!witness_unjoined || schedule.device_admitted_tasks!=0u ||
+       schedule.device_admitted_descriptors!=0u ||
+       contact_tasks[0].error!=0u || poses[0].valid!=0u ||
+       empty_patches[0].anchor_count!=1u || !forces_unchanged ||
+       witness[0].status()!=0u || witness[0].count()!=0u) {
+        const auto graph=physx_gpu::SourceScDeviceIslandFixture::read(*producer);
+        const auto touch=physx_gpu::SourceScDeviceIslandFixture::touch(
+            *producer,empty_edge);
+        throw std::runtime_error(
+            "Non-touching Sc response admission failed: tasks=" +
+            std::to_string(schedule.device_admitted_tasks) +
+            " descriptors=" + std::to_string(schedule.device_admitted_descriptors) +
+            " task_error=" + std::to_string(contact_tasks[0].error) +
+            " pose_valid=" + std::to_string(poses[0].valid) +
+            " anchors=" + std::to_string(empty_patches[0].anchor_count) +
+            " forces_unchanged=" + std::to_string(forces_unchanged) +
+            " witness_unjoined=" + std::to_string(witness_unjoined) +
+            " witness_status=" + std::to_string(witness[0].status()) +
+            " witness_count=" + std::to_string(witness[0].count()) +
+            " graph_errors=" + std::to_string(graph.errors) +
+            " graph_tasks=" + std::to_string(graph.runnable_components) +
+            " graph_descriptors=" + std::to_string(graph.admitted_edges) +
+            " touch=" + std::to_string(touch[0]) + "/" +
+            std::to_string(touch[1]));
+    }
     producer->commit_gpu_step();
 
     // Invalid joint numerics can arise after valid source preparation.
