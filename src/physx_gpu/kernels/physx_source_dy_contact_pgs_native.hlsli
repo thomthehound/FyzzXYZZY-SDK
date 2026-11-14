@@ -521,6 +521,15 @@ void growPcmFrictionAnchors(uint patchIndex,uint pairIndex,
     // and Dy tangent preparation. Only a rejected-frame recovery reads
     // the compact host anchor input through PCM's spare Gu offset slot.
     uint history=p.writebackBias+arena.Load(pair+52u)*64u;
+    // A reserved contact manager can resolve to no physical touch.
+    // Discard its previous anchors before any friction-row preparation.
+    if(patch.y==0u) {
+        arena.Store(history,0u);
+        arena.Store(po+8u,0u);
+        arena.Store(p.writebackBias+p.resultPatchOffset+
+                    patchIndex*4u,0u);
+        return;
+    }
     // The source PCM manager has one contiguous correlated contact run.
     // Reuse this resident geometry for both source patch extent and
     // anchor selection, rather than uploading the host-computed diagonal.
