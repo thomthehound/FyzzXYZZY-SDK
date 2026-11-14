@@ -1626,7 +1626,7 @@ public:
                 const auto& view=*device_admission;
                 const auto responses=addresses_.resolve(
                     view.work+view.layout.response_tokens,
-                    descriptors.size_bytes());
+                    descriptors.size()*sizeof(std::uint32_t));
                 device_response_buffer=responses.buffer;
                 device_response_source=responses.offset;
                 admitted_response_tokens_.resize(descriptors.size());
@@ -2006,7 +2006,7 @@ public:
             output_bytes+(pending.device_admission
                 ?16u+pending.tasks.size_bytes()+
                     pending.body_ordinals.size_bytes()+
-                    pending.descriptors.size_bytes()/4u:0u)};
+                    pending.descriptors.size()*sizeof(std::uint32_t):0u)};
         last_reused_pcm_contact_rows_=reused_pcm_rows;
         last_omitted_pcm_upload_bytes_=
             reused_pcm_rows*sizeof(native::GpuDyContactPoint);
