@@ -24,7 +24,9 @@ enum class Backend { Vulkan, D3D12 };
 // request for CPU-mappable, GPU-writeable storage: unsupported adapters
 // reject it, never silently allocate a DEFAULT heap and label it mapped.
 // DeviceLocal retains normal GPU-preferred storage with staging transfers.
-enum class MemoryPlacement { Auto, HostVisible, DeviceLocal };
+// SharedLocal requires a GPU-local, CPU-mappable resource with explicit host
+// visibility; it never selects nonlocal host memory.
+enum class MemoryPlacement { Auto, HostVisible, DeviceLocal, SharedLocal };
 
 // Only this explicit exception permits a higher-level source allocator to
 // fall back from direct mapped storage to staging. Allocation exhaustion,
@@ -42,6 +44,9 @@ struct DeviceInfo {
     std::string name;
     std::uint32_t vendor_id = 0;
     std::uint32_t device_id = 0;
+    // Software adapters execute compute through the API but do not
+    // determine the native hardware dispatch strategy.
+    bool software_adapter = false;
     std::uint32_t api_version = 0;
     std::uint64_t max_storage_buffer_range = 0;
     // Device-creation-time descriptor binding alignment. Vulkan obtains its
@@ -63,6 +68,9 @@ struct DeviceInfo {
     // non-UMA systems (e.g. CPU-accessible discrete GPU memory). Do not
     // infer unified CPU/GPU architecture from this memory-type property.
     bool has_device_local_host_visible_memory = false;
+    // A GPU-storage resource supports explicit SharedLocal placement for
+    // compact CPU-authored inputs with no device transfer copy.
+    bool supports_shared_frame_input = false;
     // These describe architecture-level UMA/cache guarantees where actually
     // exposed (D3D12 architecture query), not Vulkan HOST_COHERENT.
     bool unified_memory = false;
@@ -182,6 +190,14 @@ struct DispatchIndirectArgs {
     std::size_t offset = 0; // Three GPU-written uint32 workgroup counts.
 };
 
+// Owned host snapshot for an ordered GPU upload inside a command batch.
+// The backend packs snapshots into fence-owned transfer staging.
+struct UploadCommand {
+    BufferId destination = 0;
+    std::size_t destination_offset = 0;
+    std::vector<std::uint8_t> bytes;
+};
+
 struct DispatchCommand {
     PipelineId pipeline = 0;
     DispatchSize groups;
@@ -191,7 +207,7 @@ struct DispatchCommand {
     std::optional<DispatchIndirectArgs> indirect;
 };
 
-using BatchCommand = std::variant<CopyCommand, DispatchCommand>;
+using BatchCommand = std::variant<CopyCommand, UploadCommand, DispatchCommand>;
 
 std::vector<DeviceInfo> enumerate_devices(Backend backend);
 
@@ -207,9 +223,10 @@ public:
 
     const DeviceInfo& device_info() const;
 
-    // Auto retains the pre-existing backend default. An explicit
-    // HostVisible request must produce CPU-mappable GPU-writable memory,
-    // or fail at creation rather than silently allocating device-only memory.
+    // Auto retains the pre-existing backend default. HostVisible requires
+    // GPU-writable CPU mapping. SharedLocal additionally requires physical
+    // GPU-local memory, so compact shared inputs cannot silently use slower
+    // CPU-only storage.
     BufferId create_buffer(std::size_t bytes,
                            MemoryPlacement placement = MemoryPlacement::Auto);
     void destroy_buffer(BufferId id);
@@ -257,6 +274,13 @@ public:
     // bytes from a rejected scene transaction. One outstanding readback
     // batch per Context retains the existing reusable staging allocation.
     SubmissionId submit_download_batch(std::span<const DownloadSpan> downloads);
+    // Append a readback tail to the producer's native submission.
+    // The backend borrows the command vector as recording scratch and
+    // restores its original contents before returning. The returned
+    // token owns completion until finish_download_batch publishes results.
+    SubmissionId submit_batch_with_readback(
+        std::vector<BatchCommand>& commands,
+        std::span<const DownloadSpan> downloads);
     void finish_download_batch(SubmissionId id, bool publish = true);
     // Synchronous wrapper for callers with an immediate host dependency.
     void download_batch(std::span<const DownloadSpan> downloads) const;
@@ -274,6 +298,9 @@ public:
                                     std::size_t bytes);
 
     PipelineId create_compute_pipeline(const ComputePipelineDesc& description);
+#if defined(FYZZXYZZY_PROFILE_GPU)
+    void set_pipeline_profile_label(PipelineId id,const char* label) const noexcept;
+#endif
     void destroy_compute_pipeline(PipelineId id);
     void dispatch(PipelineId pipeline, DispatchSize groups,
                   const std::vector<BufferBinding>& buffers,

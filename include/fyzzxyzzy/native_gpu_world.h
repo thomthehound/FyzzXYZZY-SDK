@@ -8,6 +8,8 @@
 #include <array>
 #include <cstddef>
 #include <filesystem>
+#include <optional>
+#include <utility>
 
 namespace fyzz {
 
@@ -71,10 +73,26 @@ NativeGpuAggregateShaders load_native_gpu_aggregate_shaders(
 // GuPCMContactBoxBox and sparse GuGJK/GuEPA run in the source Sc
 // contact-manager stream. These are separate from the SAP shader bundle.
 enum class NativeGpuPcmStage : std::size_t {
-    Candidates,EpaCompact,GjkContact,EpaContact,FaceContacts,GjkReduce,GjkPublish,EpaArgsReset,GjkPrimitive,ContactJournal,Count
+    Candidates,EpaCompact,GjkContact,EpaContact,FaceContacts,GjkReduce,GjkPublish,EpaArgsReset,GjkPrimitive,ContactJournal,DeviceIslands,GjkFused,Count
 };
-using NativeGpuPcmShaders = std::array<
-    compute::ShaderBinary,static_cast<std::size_t>(NativeGpuPcmStage::Count)>;
+struct NativeGpuPcmShaders {
+    using Storage = std::array<
+        compute::ShaderBinary,static_cast<std::size_t>(NativeGpuPcmStage::Count)>;
+    Storage stages{};
+    NativeGpuPcmShaders() = default;
+    explicit NativeGpuPcmShaders(Storage binaries)
+        : stages(std::move(binaries)) {}
+    compute::ShaderBinary& operator[](std::size_t index) noexcept {
+        return stages[index];
+    }
+    const compute::ShaderBinary& operator[](std::size_t index) const noexcept {
+        return stages[index];
+    }
+    auto begin() noexcept { return stages.begin(); }
+    auto end() noexcept { return stages.end(); }
+    auto begin() const noexcept { return stages.begin(); }
+    auto end() const noexcept { return stages.end(); }
+};
 NativeGpuPcmShaders load_native_gpu_pcm_shaders(
     compute::Backend backend,const std::filesystem::path& manifest);
 
@@ -83,6 +101,19 @@ NativeGpuPcmShaders load_native_gpu_pcm_shaders(
 // and binaries can be deployed together, with paths relative to the manifest.
 NativeGpuSapShaders load_native_gpu_sap_shaders(
     compute::Backend backend,const std::filesystem::path& manifest);
+
+// Compiled pipeline stages share one GPU Context, source heap and queue.
+struct NativeGpuPipelineShaders {
+    NativeGpuSapShaders sap{};
+    std::optional<NativeGpuAggregateShaders> aggregates;
+    std::optional<NativeGpuPcmShaders> pcm;
+    std::optional<compute::ShaderBinary> dy;
+    std::optional<compute::ShaderBinary> convex_dy;
+};
+
+World create_native_gpu_world(
+    compute::Backend backend,NativeGpuPipelineShaders stages,
+    WorldOptions options={ExecutionMode::NativePortableGpu});
 
 // Construct a World with one native Context, original PhysX GPU buddy heap,
 // AABB/SAP owners, stream and source Sc/PCM/Dy scene. No reference PhysX

@@ -5,8 +5,10 @@
 #include "physx_gpu/source_sc_scene_elements_native.h"
 #include "physx_port/gpubroadphase/PxgAabbSourceMembersNative.h"
 #include "physx_port/gpubroadphase/PxgSapSourceMembersNative.h"
+#include "hardware_profile.h"
 
 #include <cstdint>
+#include <functional>
 #include <optional>
 #include <stdexcept>
 #include <utility>
@@ -41,6 +43,7 @@ SourceSapUpdateAdmission queue_source_sap_scene_frame_native(
     bool& force_update,
     const SourceSapUpdateNativeStages& stages,
     const CudaDeviceAddressMap& addresses) {
+    FYZZ_PROFILE_SCOPE("sap.owner_queue");
 
     if(members.aabb_owner)
         validate_source_sap_owned_aabb_aliases_native(
@@ -169,62 +172,72 @@ SourceSapSceneFrameNativeResult fetch_source_sap_scene_frame_native(
     const SourceSapUpdateAdmission& admission,
     SourceSapDmaNative& stream,
     const CudaDeviceAddressMap& addresses,
-    compute::Context& context) {
+    compute::Context& context,
+    const std::function<void()>& independent_sc_work = {}) {
+    FYZZ_PROFILE_SCOPE("sap.owner_fetch");
     const SourceSapVolumeActorLifetimeNative volume_lifetime{
         members.volume_to_actor,members.aabb_manager.volume_data};
-    // The source queue and Context readback queue are ordered. Submit
-    // the complete SAP/aggregate producer first; its descriptor readback
-    // is also the GPU completion fence. Reaping source submission tokens
-    // afterward cannot introduce a second device wait.
-    stream.submit();
+    // SAP descriptor readback joins the producer's ordered native
+    // command batch. Aggregate fetch retains its own source-snapshot
+    // publication and must complete after the aggregate producers.
     std::optional<PxgAabbSourceMembersNative::AggregateFetchSnapshot>
         aggregate_snapshot;
     physx::PxgBroadPhaseDesc descriptor_snapshot{};
+    bool descriptor_fetch_pending=false;
+    compute::DownloadSpan readback{};
     if(members.aabb_manager.has_aggregates && !members.abort_mode) {
-        // The aggregate snapshot already contains the original SAP
-        // descriptor and the three aggregate report counters.
-        aggregate_snapshot=members.aabb_owner->download_aggregate_fetch_snapshot(
-            context,addresses);
+        aggregate_snapshot.emplace();
+        readback=members.aabb_owner->aggregate_fetch_snapshot_readback(
+            addresses,*aggregate_snapshot);
     } else {
         const auto source=addresses.resolve(
             members.dma.descriptor_gpu_buffers.broadphase.getDevicePtr(),
             sizeof(descriptor_snapshot));
-        // A source GPU allocation may itself be host-visible on Vulkan.
-        // download_batch always submits an ordered copy and completion
-        // fence; download() can map that allocation without waiting.
-        const std::array<compute::DownloadSpan,1> readback{{
-            {source.buffer,source.offset,
-             &descriptor_snapshot,sizeof(descriptor_snapshot)}
-        }};
-        context.download_batch(readback);
+        readback={source.buffer,source.offset,
+                  &descriptor_snapshot,sizeof(descriptor_snapshot)};
     }
-    // The synchronous Context readback completed all prior source work.
-    // Retire its original upload/command tokens before touching direct
-    // mapped report arrays or preparing source bitmap retirement.
-    stream.wait_at_fetch();
+    {
+        FYZZ_PROFILE_SCOPE("sap.descriptor_fetch_enqueue");
+        stream.begin_fetch({&readback,1u});
+    }
+    descriptor_fetch_pending=true;
+    // Stage the existing source bitmap retirement before joining the
+    // descriptor readback. The prepared commands enter the source stream
+    // only after validated Sc report publication.
+    auto bitmap_retirement=[&] {
+        try {
+            if(independent_sc_work) {
+                FYZZ_PROFILE_SCOPE("sap.overlap_sc_prepare");
+                independent_sc_work();
+            }
+            if(!descriptor_fetch_pending)stream.wait_at_fetch();
+            const auto added_bitmap=members.aabb_owner
+                ? members.aabb_owner->added_report_bitmap()
+                : members.added_bitmap;
+            const auto removed_bitmap=members.aabb_owner
+                ? members.aabb_owner->removed_report_bitmap()
+                : members.removed_bitmap;
+            auto prepared=prepare_source_sap_aabb_report_retirement_native(
+                stream,members.bitmap_fill,addresses,
+                added_bitmap,removed_bitmap);
+            auto& pending=stream.commands();
+            pending.reserve(pending.size()+prepared.commands.size());
+            if(descriptor_fetch_pending) {
+                FYZZ_PROFILE_SCOPE("sap.descriptor_fetch_join");
+                stream.finish_fetch();
+            }
+            return prepared;
+        } catch(...) {
+            if(descriptor_fetch_pending && stream.has_pending_fetch())
+                stream.abandon_fetch();
+            throw;
+        }
+    }();
     std::array<SourceSapMappedReportSpan,2> aggregate_payloads{};
     if(aggregate_snapshot) {
         aggregate_payloads=members.aabb_owner->validated_aggregate_report_spans(
             aggregate_snapshot->counts,aggregate_snapshot->pair_overflow);
     }
-
-    // Complete both source bitmap D32 view validations before reporting
-    // success to Sc. Reserve the following GPU command queue now so
-    // post-fetch retirement cannot allocate after history publication.
-    // Original PxgCudaBuffer allocations may be resized by this very
-    // frame's preBpUpdate_GPU. Fetch report bitmap pointers from the
-    // persistent owner NOW, never from a view cached before GPU DMA.
-    const auto added_bitmap=members.aabb_owner
-        ? members.aabb_owner->added_report_bitmap()
-        : members.added_bitmap;
-    const auto removed_bitmap=members.aabb_owner
-        ? members.aabb_owner->removed_report_bitmap()
-        : members.removed_bitmap;
-    auto bitmap_retirement=prepare_source_sap_aabb_report_retirement_native(
-        stream,members.bitmap_fill,addresses,
-        added_bitmap,removed_bitmap);
-    auto& pending=stream.commands();
-    pending.reserve(pending.size()+bitmap_retirement.commands.size());
 
     // Fetch publishes the ORIGINAL CPU destination arrays and rotates
     // all seven PxgCudaBufferN<6> endpoint histories exactly once.
@@ -346,10 +359,14 @@ SourceSapSceneFrameNativeResult advance_source_sap_owned_scene_frame_native(
         }};
     // The source AABB manager remains the only producer of transform
     // records. Do not first pack and then compact its dirty record set.
-    const auto update=aabb.prepare(
-        inputs.live_boxes,inputs.live_handles,inputs.filter,
-        inputs.gpu_box_owners!=nullptr,republish_all,
-        inputs.sc_elements && !republish_all ? &cached_poses : nullptr);
+    const auto update=[&] {
+        FYZZ_PROFILE_SCOPE("sap.aabb_prepare");
+        return aabb.prepare(
+            inputs.live_boxes,inputs.live_handles,inputs.filter,
+            inputs.gpu_box_owners!=nullptr,republish_all,
+            inputs.sc_elements && !republish_all ? &cached_poses : nullptr,
+            inputs.sc_elements && !republish_all);
+    }();
     if(inputs.sc_elements)aabb.lower_shape_attachment_links(inputs.sc_elements->handles());
     std::optional<SourceSapGpuBoxTransformsNative> gpu_boxes;
     if(inputs.gpu_box_owners) {
@@ -357,7 +374,8 @@ SourceSapSceneFrameNativeResult advance_source_sap_owned_scene_frame_native(
         gpu_boxes.emplace(SourceSapGpuBoxTransformsNative{
             owner.stage,addresses,owner.input_device,owner.cached_transforms,
             owner.cached_geometry,owner.convex_vertices,
-            owner.convex_vertex_count,aabb.box_transform_records()});
+            owner.convex_vertex_count,aabb.box_transform_records(),
+            owner.frame_input});
     }
     const auto lifetime=aabb.actor_lifetime();
     // SourceSapSceneFrameNativeMembers borrows this view by reference;
@@ -397,7 +415,7 @@ SourceSapSceneFrameNativeResult advance_source_sap_owned_scene_frame_native(
     const auto admission=queue_source_sap_scene_frame_native(
         members,stream,sap.force_update(),stages,addresses);
     auto result=fetch_source_sap_scene_frame_native(
-        members,admission,stream,addresses,context);
+        members,admission,stream,addresses,context,inputs.independent_sc_work);
     result.device_cached_box_count=cached_poses.reused_records;
     return result;
 }

@@ -112,7 +112,55 @@ A placement change without a demonstrated critical-path benefit is not
 progress toward the GPU-performance gate. Correctness may justify a
 temporary hybrid boundary; record its cost and the consumer that requires it.
 
+### Stage placement and dataflow qualification
+
+An accelerator is a consumer of packed, parallel work, not a replacement
+for Sc command processing or a second runtime authority. Each source stage
+specifies its input residency, produced data, CPU consumers, device consumers,
+queue dependencies, persistent state, and retirement boundary. Placement is
+chosen for the complete producer-to-consumer chain, not isolated kernel time.
+
+- **Broadphase:** incremental CPU SAP is a candidate for sparse endpoint
+  crossings and low pair churn; GPU SAP is a candidate for large dynamic
+  sets and GPU-resident bounds/contact consumers. Neither is required for
+  every scene. Keep the existing single authoritative BP pair history in
+  each configuration. Selection is explicit until workload crossover and
+  state-transition costs justify runtime switching.
+- **Narrowphase:** CPU analytic/contact-modification work may contribute
+  bounded records to the device stream. Dense GPU PCM must feed GPU
+  numerical preparation without a routine full witness round trip.
+  Stable contact-manager identity does not require CPU observation of
+  every contact point. New identities, callbacks, and CPU friction
+  consumers have explicit reconciliation edges.
+- **Topology and solver:** CPU Sc owns persistent manager and island
+  identity. Device-connected components and response worklists are
+  transient numerical products only when they expose more parallelism
+  than CPU-prepared task spans. Never build both task sets merely to choose
+  between them after the work is done.
+- **Storage:** compact CPU-authored inputs may use direct coherent UMA
+  allocations when supported; hot numerical arrays use GPU-preferred
+  storage. Shared addressing does not eliminate cache-coherence costs,
+  producer/consumer barriers or fences. Discrete GPU paths stage only
+  the necessary deltas and outputs.
+- **Scheduling:** batch dependent dispatches on the existing ordered queue;
+  submit once per useful command segment, not once per translated source
+  kernel. CPU work independent of a pending GPU segment may overlap it.
+  Do not insert a host wait to relay device-produced records between
+  device consumers. A host join names its actual CPU consumer.
+
+Compare placements on the same production Scene with matching geometry,
+contact density, moving fraction and numerical quality. Capture quiet,
+sparse-motion, dense-motion and high-churn frames at 1K, 10K and 100K
+bodies where supported. Record full-frame p50/p95, CPU enqueue/prepare/join,
+actual GPU work and queue idle time, submissions, barriers, uploads,
+readbacks, peak residency and device/host state reconstruction. An isolated
+CPU or GPU SAP microbenchmark cannot establish a frame-level winner; a
+configuration lacking an equivalent production path remains unqualified.
+
 ### Binding scene execution graph
+
+The memory placement, topology reconciliation and publication contract is
+specified in [Scene-owned compute frame](SCENE_COMPUTE_FRAME.md).
 
 The scene owns **one simulation transaction** and one dependency graph across
 CPU and device work. A function call is not a completion edge. Every stage
@@ -123,28 +171,42 @@ another simulation scheduler.
 | Stage | Authority and work placement | Required successor |
 | --- | --- | --- |
 | Admit | CPU validates authored changes, sparse handles, filters and topology edits; device mirrors only the inputs needed for execution | Sparse changes and device uploads become visible before their consumers |
-| Broadphase | GPU processes dense bounds, persistent overlap history and reports; CPU admits or retires stable contact-manager identities from required report deltas | Manager admission precedes new contact work |
-| Narrowphase | Each manager has exactly one numerical Gu producer, CPU or GPU. GPU-owned witnesses and persistent device contact history remain resident | Device touch state drives device constraint admission without full witness readback |
-| Frame topology | CPU owns stable scene handles, callbacks and persistent public graph. GPU owns same-frame accurate contact connectivity, affected island routing and numerical task admission when those depend on GPU touch | Actual touch, not speculative overlap, determines active constraint connectivity |
-| Dynamics | GPU consumes resident contact, friction, joint and body streams for preparation, partitioning, solving, integration and sleep decisions; sparse CPU-only work enters through explicit dependencies | Device-dependent stages run in ordered submissions without a default host fence between them |
+| Broadphase | CPU or GPU executes the selected overlap algorithm; Sc owns the stable shape and contact-manager identities | Manager admission precedes newly identified contact work |
+| Narrowphase | Each manager has one numerical Gu producer, CPU or GPU. GPU-owned witnesses and contact history remain resident where they have GPU consumers | The actual Gu touch, not speculative overlap, determines accurate connectivity; Sc may join witnesses needed for CPU correlation |
+| Frame topology | CPU Sc owns persistent identity, active island routing and public graph. Transient GPU admission splits compact numerical groups where it exposes useful independent tasks | Sc task ranges or device-admitted ranges supply Dy without a second persistent graph |
+| Dynamics | CPU or GPU Dy consumes the prepared rigid contact, joint and body streams. Execution can change between completed frames in the same Scene | Each selected numerical stage completes before authoritative Sc writeback and publication |
 | Publish | One scene completion boundary validates compact topology/event deltas and requested results, reconciles public CPU views and commits all persistent histories | Failed transactions retire or restore submitted device work before state reuse |
 
 **Ownership is distinct from observation.** The CPU can own an EdgeIndex and
 its published lifecycle without owning the numerical witnesses occupying its
-device slot. The GPU can own the current frame's accurate contact graph while
-the CPU maintains stable identifiers and a reconciled public graph. Neither
+device slot. The GPU can construct a transient numerical contact graph while
+the CPU maintains stable identifiers and authoritative active islands. Neither
 may independently invent touch transitions. Cached contact/friction history
 has one owner per epoch, with explicit invalidation when its producer changes.
 
-**Normal-frame dependencies must remain on-device** from general GPU
-contact generation through contact/friction correlation, accurate task
-admission, constraint preparation and solving. Sc may consume compact
-transitions or topology changes at the final publication boundary.
-Callbacks, CPU-only geometry and sparse topology edits may require earlier
-host joins, but must identify the actual consuming task and affect only the
-necessary workload; they are not permission for a global per-frame witness
-download. A numerical operation is never duplicated on both processors as
-an implicit verification or scheduling strategy.
+**Preserve useful producer-to-consumer locality.** GPU contact generation
+can feed device correlation and numerical solve directly when supported and
+less expensive. CPU Sc friction correlation or accurate-island work may
+consume GPU witnesses at an explicit earlier join when that division
+minimizes whole-frame cost. A host join must have a real consumer; a GPU
+launch must expose useful parallelism or computation. Measure transfer,
+submission and waiting costs before moving these dependencies. Neither
+processor duplicates numerical operations for implicit verification.
+
+**Ordered source submissions.** CPU-authored device inputs are snapshotted
+when queued. Uploads, device copies and dependent shader dispatches retain
+their source order in one native batch; a new host upload does not itself
+submit or wait on the GPU queue. Vulkan and D3D12 pack the owned upload
+bytes into fence-owned transfer staging. Physical heap-root retirement
+submits outstanding source commands before releasing the root; rollback
+discards only commands that never entered the queue.
+
+**Host report admission.** Source SAP schedules its descriptor readback
+asynchronously and prepares bitmap retirement while the transfer is in
+flight. Sc publishes found/lost pairs and rotates source endpoint history
+only after the descriptor fence and source-lifetime validation complete.
+GPU PCM witness joins remain mandatory where CPU Gu correlation needs
+those witnesses; no unchanged-topology assumption may bypass them.
 
 **No false connectivity shortcut.** Broadphase overlap can feed speculative
 waking and admission; it cannot stand in for accurate contact connectivity.
@@ -153,35 +215,160 @@ nodes, ordered constraints and explicit cross-system dependencies within
 this same graph. A new feature must not require a second independent frame
 loop, contact registry, island manager or solver-state truth.
 
-CPU Gu and GPU PCM publish physical-touch transitions into the same device
-EdgeIndex history. Host-only Gu epochs journal only the prior/current touch
-words from the existing resident 84-byte contact records; mixed epochs retain
-the full GPU manifold journal but snapshot only touch words for CPU-owned
-managers. A rejected transaction restores the original device touch epoch
-before another producer can update that EdgeIndex. This does not move public
-Sc graph reconciliation or current Dy task construction to the device.
+**Connectivity and solver response are separate facts.** An accurate
+contact or authored joint can connect responding nodes without producing
+constraint rows. Device island admission preserves that connectivity while
+excluding response-disabled edges from numerical task counts. An active seed
+can admit its entire connected component; its position/velocity iteration
+limits are the maxima of all admitted component nodes, not merely the seed.
+Device component roots are transient execution IDs, while EdgeIndex and
+source-ordered constraint identity remain stable. Runnable component tasks
+are compacted by a device-resident prefix in canonical root order rather
+than racing to claim atomic task ordinals. The same prefix reserves exclusive body and response-descriptor spans
+for runnable components, without another host count or a per-component
+allocation. A single stable device root/type sort fills responding-body spans in
+source-node order and response spans in original Sc encounter order.
+Small streams use one direct GPU phase; larger streams share global
+radix passes across both input types. Within each canonical island the
+device orders responding bodies first, then source-sorted 1D constraints,
+then contact managers. The authored joint input preserves descending
+constraint identity within its type; the device does not invent a
+second joint ordering. The compact root prefix now emits the exact 36-byte native GPU Dy task ABI directly: descriptor and partition capacity ranges, body ranges, iteration maxima, and the error word. Root identity remains in the per-root task-index map, avoiding a second task stream or conversion dispatch. The same scatter writes typed
+contact and joint source tokens without another body-sort pipeline,
+dispatch or upload. Direct joint-row tokens are permitted only when
+the source ordinal addresses device-authored 1D geometry; other joints
+refer to the full Dy descriptor table. Numerical table ordinals are
+not interchangeable with graph-edge ordinals. Device admission receives
+the explicit capacities of the contact-manager, device-joint-row and full
+descriptor tables; an out-of-range numerical token on a touching contact or live joint
+invalidates the resident task launch before Dy may consume it. A
+non-touching broadphase overlap requires no numerical source record.
+Dormant and response-disabled edges do not occupy
+numerical descriptor slots. Independent components can
+execute concurrently, but their task identity is stable across runs;
+constraints sharing a responding body retain the required solver ordering.
+Nonresponding static and kinematic endpoint nodes may participate in
+source-edge admission but never enter the responding-body prefix or
+connect otherwise independent dynamic components through a shared
+nonresponding endpoint. Their zero iteration words are valid, and Dy
+initializes only the actual emitted solver-body ordinals rather than
+assuming a dense responding prefix.
+The generated indirect launch triple is copied into the source queue's
+existing physical indirect resource after island compaction; it requires no
+additional host upload, allocation or synchronization boundary. Native Dy
+copies the task, body-ordinal and response-token streams between resident
+source allocations. Task and body-ordinal destinations are outside the Dy
+host-upload extent; raw descriptors, colors and partition-state scratch are
+also omitted from the source packet. The remaining input prefix and
+numerical source-table suffix share one staging submission. Its compact-task
+numerical launch consumes the device indirect triple rather than a CPU
+workgroup count. Sc supplies separate numerical task boundaries for independent active
+islands. One-constraint tasks with one or two responding bodies execute
+as GPU lanes; each lane owns its PGS sequence and body integration, with
+up to 128 tasks per workgroup. Other compact tasks execute through the
+ordinary fused workgroup path. Both use the same command stream and
+numerical storage; one dependent island does not disable packing for
+unrelated islands. Large tiled tasks retain their partition dependencies. The host provides bounded numerical allocations, not an
+exact prediction of runnable roots or response counts. The queued Dy shader
+rejects admission errors and any task/body/descriptor count exceeding its
+own buffer capacity before initializing numerical state. Unused capacity
+does not launch numerical work or publish body integration. Dy fetches
+the actual compact task records and body ordinals as additional spans in
+its existing result batch, without extra GPU mirror copies or an additional
+host synchronization. Writeback uses those GPU-authored ranges.
+Rejected epochs retain their original task-error reporting before rollback.
+Large tiled tasks retain
+their explicit partition launch dependencies until the device-owned wide
+scheduler is complete.
 
-**Current migration boundary:** general GPU PCM still downloads its 84-byte
-contact records before CPU Sc friction correlation and accurate-island
-scheduling. The ordered PCM enqueue/join starts general GPU PCM before
-independent CPU primitive witness generation and speculative IslandSim
-first/second-pass topology admission. Both numerical producers and SAP-owned
-speculative graph admission can run before Sc observes GPU contact witnesses.
-The packed witness DMA is submitted immediately after the final PCM
-kernel and remains Context-owned until Sc reaches its actual-touch join.
-Both API backends publish the borrowed Gu arena only on completion;
-a rejected transaction discards its DMA without exposing stale contacts.
-Only actual-touch accurate topology waits for Gu. Lost-edge route repair,
-wake/sleep decisions and Dy task admission retain their source dependencies.
-This overlap does not remove the final same-frame Sc synchronization
-dependency. The next integration gate is GPU-consumed touch and friction/task
-admission with correct same-frame connectivity, followed by compact public
-reconciliation. Only then can normal GPU PCM -> Dy be considered free of an
-intermediate host witness fence. Test rollback between enqueue and join,
-mixed producer ownership, topology splits/merges, anchor persistence, sleep
-transitions and both API backends. Physical-device traces must show the
-actual critical path, transfer counts and queue idle intervals before
-claiming a performance improvement.
+For compact PCM-owned production frames, Scene consumes the accurate
+island boundaries it has already prepared. It does not reconstruct those
+islands in a second device graph. Explicit device-authored numerical
+admission remains available at the producer interface, where a resident
+source graph rather than CPU Sc must provide the task stream. Wide tiled
+tasks retain their existing numerical partition scheduler. The Gu witness
+join and Sc friction/constraint preparation precede both execution choices
+when those operations consume contact geometry. Zero authored velocity
+iterations retain Dy's mandatory final solve/writeback iteration.
+
+CPU Gu and GPU PCM publish physical-touch transitions into the same device
+EdgeIndex history. Accurate device connectivity and new-touch wake admission
+read that resident history for both Gu producers. Sc-authored edge metadata
+cannot override a missing physical touch or invent a new-touch transition.
+Only authored joints connect independently of the contact history.
+Host-only Gu epochs journal only the prior/current touch words from the
+existing resident 84-byte contact records; mixed epochs retain
+the full GPU manifold journal but snapshot only touch words for CPU-owned
+managers. Ordinary CPU Gu contacts excluded from the PCM candidate
+list publish eight-byte EdgeIndex/current-and-prior-touch records on the same
+ordered source queue. These transitions snapshot the old two-word device
+history and restore it ahead of the PCM journal on rollback. The PCM owner
+reserves the complete Sc EdgeIndex high-watermark, so an ordinary CPU Gu
+contact cannot silently fall outside the resident history allocation.
+A rejected transaction restores the original device touch epoch
+before another producer can update that EdgeIndex. In mixed frames, CPU Gu
+uploads enter the ordered source queue immediately after their witnesses are
+ready, independently of the preceding GPU PCM witness readback. Sc's host
+join retires only producer tokens preceding that readback; later uploaded
+CPU Gu and device touch publication stay in flight for GPU consumers.
+For compact GPU tasks, Scene now emits contact-manager identities without
+resolving their numerical solver-row endpoints on the CPU. Native Dy
+reconstructs responding contacts from its resident contact-preparation
+table. Only zero-response managers, which have no contact-preparation
+record, resolve their endpoint ordinals during the final source-manifold
+publication. Wide tasks still supply full endpoints for their host launch
+bounds; the production coupled-scene regression verifies that compact
+contact descriptors never carry redundant CPU-resolved endpoints.
+
+Dy's GPU-owned compact tasks now bypass host endpoint-degree
+classification entirely. The host planner scans source descriptors only for
+tasks with at least 512 body ordinals and 512 response descriptors, where
+wide GPU tiling can change the launch schedule. Smaller tasks retain their
+existing device-colored fused path without dense degree-array clearing or
+redundant host numerical inspection.
+
+Native GPU Dy no longer allocates CPU numerical contact-Jacobian rows
+during Sc friction correlation. Sc maintains the source Gu row ordinal
+and packs CPU Gu's 28-byte contact input directly while the exact correlated
+header normal is in scope; PCM contact geometry stays resident. Device
+normal impulses return directly into the original Gu-indexed Sc writeback
+without first copying through a CPU solver-row mirror. GPU Dy's friction path also packs source-ordered 24-byte body-local
+anchors directly during Sc correlation, retaining exact tangent-row
+offsets without allocating CPU tangent-row placeholders. Device Dy
+constructs both tangents per anchor and returns compact world impulses.
+CPU PGS retains its full contact and friction rows unchanged.
+
+The source Dy numerical stage submits its existing solver command graph
+independently of the CPU result fetch. Its queued execution consumes the
+device-ready PCM/CPU Gu stream after the input producers, and the normal
+single Dy readback, task-error checks and Sc writeback occur at the result
+join. A pending Dy epoch cannot be overwritten or published on rollback.
+The shared Context retains one outstanding readback batch, so the PCM
+witness DMA must be retired before Dy requests its final result transfer.
+Native Scene now enqueues GPU Dy numerical work before initializing
+its Gu-indexed result buffers and consuming source force modifications.
+The existing Dy completion join still validates numerical results before
+Sc publishes contact impulses, integrated poses and sleep state. CPU
+accurate-island/friction/Dy descriptor construction still happens after
+the PCM witness join; this scheduling overlap does not retire that
+earlier CPU admission dependency.
+
+**Current hybrid execution boundary:** general GPU PCM publishes its
+contact witnesses for CPU Sc correlation and accurate-island routing before
+Dy's numerical execution. Independent CPU Gu work overlaps the queued GPU
+PCM generation and witness transfer. GPU and CPU Dy share the authoritative
+Sc scene, contact history and completion contract; changing executor only
+invalidates affected device pose caches. A transient device admission pass
+is selected only when it exposes numerical parallelism absent from the
+existing CPU task groups. The witness join is a measurable cost, not an
+unconditional migration requirement.
+
+Qualify CPU and GPU critical paths and scene-consumer synchronization before
+moving this boundary. Verify failure recovery across queued witness fetch,
+mixed contact producers, topology splits/merges, anchor persistence,
+sleep transitions, and executor changes on both APIs. A performance
+improvement requires physical-device evidence of the critical path and
+queue occupancy, not a device-residency count.
 
 ## 3. Source-faithful production integration
 

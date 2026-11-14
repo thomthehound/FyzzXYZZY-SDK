@@ -169,15 +169,23 @@ int main() {
            deferred[2]!=sentinel)
             throw std::runtime_error(
                 "Asynchronous readback published before source fetch");
-        bool rejected_overlap=false;
-        try {
-            context.submit_download_batch(deferred_spans);
-        } catch(const std::logic_error&) {
-            rejected_overlap=true;
-        }
-        if(!rejected_overlap)
+        std::array<std::uint32_t,4> later{
+            sentinel,sentinel,sentinel,sentinel};
+        const std::array<DownloadSpan,1> later_spans{{
+            {local_src,3*sizeof(std::uint32_t),
+             later.data(),sizeof(later)}
+        }};
+        const auto later_transfer=context.submit_download_batch(later_spans);
+        if(later[0]!=sentinel || deferred[0]!=sentinel)
             throw std::runtime_error(
-                "Compute admitted overlapping asynchronous readback owners");
+                "Overlapping GPU readbacks published before their owners");
+        // Dy can complete before the earlier Sc witness publication.
+        context.finish_download_batch(later_transfer);
+        if(later[0]!=source[3] || later[1]!=patch_values[0] ||
+           later[2]!=patch_values[1] || later[3]!=patch_values[2] ||
+           deferred[0]!=sentinel || deferred[1]!=sentinel)
+            throw std::runtime_error(
+                "Later GPU readback corrupted the earlier borrowed result");
         context.finish_download_batch(transfer);
         if(deferred[0]!=source[0] ||
            deferred[1]!=patch_values[0] ||

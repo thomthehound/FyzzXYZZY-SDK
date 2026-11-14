@@ -34,6 +34,7 @@
 #include <iostream>
 #include <limits>
 #include <stdexcept>
+#include <string>
 #include <type_traits>
 #include <utility>
 #include <vector>
@@ -71,6 +72,60 @@ struct SourceBufferState {
     }
 };
 
+void exercise_independent_readback_ownership(Context& context) {
+    std::array<std::uint32_t,64u> source{};
+    for(std::uint32_t i=0u;i<source.size();++i)
+        source[i]=i*23u+17u;
+    const auto gpu=context.create_buffer(
+        sizeof(source),MemoryPlacement::DeviceLocal);
+    context.upload(gpu,0u,source.data(),sizeof(source));
+    constexpr std::uint32_t sentinel=0xcafef00du;
+    std::array<std::uint32_t,3u> first{};
+    std::array<std::uint32_t,11u> second{};
+    first.fill(sentinel);
+    second.fill(sentinel);
+    const std::array<DownloadSpan,1u> first_span{{
+        {gpu,0u,first.data(),sizeof(first)}
+    }};
+    const std::array<DownloadSpan,1u> second_span{{
+        {gpu,20u*sizeof(std::uint32_t),
+         second.data(),sizeof(second)}
+    }};
+    const auto first_ticket=context.submit_download_batch(first_span);
+    const auto second_ticket=context.submit_download_batch(second_span);
+    if(first[0]!=sentinel || second[0]!=sentinel)
+        throw std::runtime_error(
+            "Compute readback published before explicit host completion");
+    context.finish_download_batch(second_ticket,true);
+    for(std::size_t i=0;i<second.size();++i)
+        if(second[i]!=source[20u+i])
+            throw std::runtime_error(
+                "Second readback lost its independently sized staging");
+    if(first[0]!=sentinel || first[2]!=sentinel)
+        throw std::runtime_error(
+            "Later GPU readback published earlier borrowed host bytes");
+    context.finish_download_batch(first_ticket,true);
+    for(std::size_t i=0;i<first.size();++i)
+        if(first[i]!=source[i])
+            throw std::runtime_error(
+                "Earlier readback lost its staging after later completion");
+
+    first.fill(sentinel);
+    second.fill(sentinel);
+    const auto accepted=context.submit_download_batch(second_span);
+    const auto abandoned=context.submit_download_batch(first_span);
+    context.finish_download_batch(abandoned,false);
+    if(first[0]!=sentinel || first[2]!=sentinel)
+        throw std::runtime_error(
+            "Abandoned readback modified its borrowed output");
+    context.finish_download_batch(accepted,true);
+    for(std::size_t i=0;i<second.size();++i)
+        if(second[i]!=source[20u+i])
+            throw std::runtime_error(
+                "Abandoned readback consumed the earlier active owner");
+    context.destroy_buffer(gpu);
+}
+
 void exercise_reused_source_submission_scratch(Context& context) {
     constexpr std::size_t bytes=256u;
     const auto gpu=context.create_buffer(bytes,MemoryPlacement::DeviceLocal);
@@ -84,8 +139,8 @@ void exercise_reused_source_submission_scratch(Context& context) {
         third[i]=i+201u;
     }
 
-    // Each source group must snapshot host bytes before its retained
-    // vector is cleared for the next group, with one submission per group.
+    // Each source group snapshots host bytes before its retained
+    // vector is cleared; all groups preserve one ordered command stream.
     auto& first_group=stream.upload_scratch();
     first_group.push_back({base,first.data(),sizeof(first)});
     first_group.push_back({base+64u,second.data(),sizeof(second)});
@@ -103,6 +158,7 @@ void exercise_reused_source_submission_scratch(Context& context) {
     third.fill(0u);
 
     const auto before=stream.submission_stats();
+    const auto pending_before=stream.commands().size();
     auto& invalid_group=stream.upload_scratch();
     invalid_group.push_back({base+160u,third.data(),sizeof(third)});
     invalid_group.push_back({base+bytes,third.data(),sizeof(third)});
@@ -110,7 +166,8 @@ void exercise_reused_source_submission_scratch(Context& context) {
     try {stream.queue_uploads(invalid_group);}
     catch(const std::out_of_range&){rejected=true;}
     if(!rejected || stream.submission_stats().upload_batches!=
-            before.upload_batches)
+            before.upload_batches ||
+       stream.commands().size()!=pending_before)
         throw std::runtime_error(
             "Invalid reused source upload group partially submitted");
 
@@ -129,7 +186,7 @@ void exercise_reused_source_submission_scratch(Context& context) {
     later.fill(0u);
     if(stream.submission_stats().upload_batches!=before.upload_batches+1u)
         throw std::runtime_error(
-            "Overlapping source upload changed GPU submission count");
+            "Overlapping source upload changed logical enqueue group count");
     stream.wait_at_fetch();
     context.download(gpu,0u,observed.data(),sizeof(observed));
     for(std::uint32_t i=0u;i<observed.size();++i)
@@ -155,6 +212,31 @@ void exercise_reused_source_submission_scratch(Context& context) {
             throw std::runtime_error(
                 "Overlapping Vulkan/D3D12 source upload lost final writer");
     }
+
+    // One source queue preserves upload -> device copy -> upload
+    // ordering, including a disjoint self-copy within a physical root.
+    std::array<std::uint32_t,8> source_words{},replacement_words{};
+    for(std::uint32_t i=0u;i<8u;++i) {
+        source_words[i]=i+501u;
+        replacement_words[i]=i+601u;
+    }
+    stream.queue_uploads({{base,source_words.data(),sizeof(source_words)}});
+    stream.queue_device_copy(base+32u,base,sizeof(source_words));
+    stream.queue_uploads({{base,replacement_words.data(),
+                           sizeof(replacement_words)}});
+    source_words.fill(0u);
+    replacement_words.fill(0u);
+    stream.wait_at_fetch();
+    context.download(gpu,32u,observed.data(),sizeof(observed));
+    for(std::uint32_t i=0u;i<observed.size();++i)
+        if(observed[i]!=i+501u)
+            throw std::runtime_error(
+                "Source GPU batch copied overwritten upload bytes");
+    context.download(gpu,0u,observed.data(),sizeof(observed));
+    for(std::uint32_t i=0u;i<observed.size();++i)
+        if(observed[i]!=i+601u)
+            throw std::runtime_error(
+                "Source GPU batch lost the later upload writer");
 
     auto& staged=stream.update_scratch();
     staged.emplace_back(CopyCommand{gpu,0u,gpu,192u,32u});
@@ -348,12 +430,15 @@ void exercise_native_physx_heap_roots(Context& context) {
     // wait; the native Context retains in-flight storage until completion.
     CudaDeviceAddressMap unrelatedAddresses;
     SourceSapDmaNative unrelatedStream(context,unrelatedAddresses);
+    const auto staged_before_rejection=source.commands().size();
+    if(staged_before_rejection!=3u)
+        throw std::runtime_error("Source upload and copies lost enqueue order");
     rejected=false;
     try {roots.release_root(oldRoot,&unrelatedStream);}
     catch(const std::invalid_argument&) {rejected=true;}
     if(!rejected || roots.live_roots()!=3u ||
        addresses.resolve(oldRaw,1u).offset!=256u ||
-       source.commands().size()!=2u)
+       source.commands().size()!=staged_before_rejection)
         throw std::runtime_error(
             "Foreign scene stream retired original PhysX GPU allocation");
 
@@ -914,31 +999,85 @@ void exercise_source_single_volume_bitmap_lifecycle_native(Context& context) {
             throw std::runtime_error(
                 "Native GPU AABB bitmap differs from original source admission");
 
-        // An unchanged physical allocation cannot narrow two separated
-        // created handles into a contiguous interval. Replaying this
-        // source admission must still transfer the entire bounds array.
+        // A resident allocation can upload separated source handles as
+        // independent ranges in one ordered batch, without transferring
+        // unchanged bounds, distances or filtering groups.
         const auto before_fragmented=stream.submission_stats();
         pre_update_source_sap_aabb_manager_native(
             frame,manager_view(),stream);
-        const auto expected_full_bytes=
+        const auto expected_sparse_fragment_bytes=
             std::size_t(added.getWordCount()+removed.getWordCount()+
                         aggregated.getWordCount()+changed.getWordCount())*
                 sizeof(physx::PxU32)+
             volumes.size()*sizeof(physx::Bp::VolumeData)+
-            bounds.size()*sizeof(physx::PxBounds3)+
-            offsets.size()*sizeof(physx::PxReal)+
-            groups.size()*sizeof(physx::Bp::FilterGroup::Enum);
+            2u*(sizeof(physx::PxBounds3)+sizeof(physx::PxReal)+
+                sizeof(physx::Bp::FilterGroup::Enum));
         if(stream.submission_stats().upload_batches!=
                before_fragmented.upload_batches+1u ||
            stream.submission_stats().upload_bytes!=
-               before_fragmented.upload_bytes+expected_full_bytes)
+               before_fragmented.upload_bytes+expected_sparse_fragment_bytes ||
+           stream.submission_stats().upload_spans!=
+               before_fragmented.upload_spans+10u)
             throw std::runtime_error(
-                "Separated source created handles incorrectly narrowed GPU bounds");
+                "Sparse SAP upload expected bytes=" +
+                std::to_string(expected_sparse_fragment_bytes) +
+                " spans=10 batches=1, observed bytes=" +
+                std::to_string(stream.submission_stats().upload_bytes -
+                               before_fragmented.upload_bytes) +
+                " spans=" +
+                std::to_string(stream.submission_stats().upload_spans -
+                               before_fragmented.upload_spans) +
+                " batches=" +
+                std::to_string(stream.submission_stats().upload_batches -
+                               before_fragmented.upload_batches));
         stream.wait_at_fetch();
 
         // Source processFoundPairs/processLostPairs retire these host bits
         // after successful fetch; the next frame reuses the same allocations.
         clear_source_sap_single_volume_report_bitmaps_native(manager);
+        persistent=false;gpu=false;
+        // The Sc-owned snapshot is sorted by shape ID. Only changed
+        // source handles enter the bounded preparation path.
+        mark_source_sap_single_volume_changed_native(manager,2u,0.02f);
+        const std::array<Box,2u> sorted_boxes{live_boxes[1],live_boxes[0]};
+        const std::array<physx::Bp::ShapeHandle,2u> sorted_handles{2u,36u};
+        (void)prepare_source_sap_single_volume_scene_native(
+            manager,{created,retired,updated},sorted_boxes,sorted_handles,
+            sourceActorIds,sceneBounds,filter,true,sceneScratch,
+            nullptr,nullptr,true);
+        if(sceneScratch.selected_boxes.size()!=1u ||
+           sceneScratch.selected_handles.size()!=1u ||
+           sceneScratch.selected_boxes[0].id!=2u ||
+           sceneScratch.selected_handles[0]!=2u)
+            throw std::runtime_error(
+                "Sparse source SAP recomputed an unchanged Sc volume");
+        const auto original_bounds=bounds[2u];
+        auto malformed=sorted_boxes;
+        malformed[0].half_extents.x=-1.f;
+        bool bad_geometry=false;
+        try {
+            (void)prepare_source_sap_single_volume_scene_native(
+                manager,{created,retired,updated},malformed,sorted_handles,
+                sourceActorIds,sceneBounds,filter,true,sceneScratch,
+                nullptr,nullptr,true);
+        }catch(const std::invalid_argument&){bad_geometry=true;}
+        if(!bad_geometry ||
+           bounds[2u].minimum.x!=original_bounds.minimum.x ||
+           bounds[2u].maximum.x!=original_bounds.maximum.x)
+            throw std::runtime_error(
+                "Rejected sparse source SAP changed the original AABB bounds");
+        const std::array<physx::Bp::ShapeHandle,2u> mismatched{36u,2u};
+        bool bad_handle=false;
+        try {
+            (void)prepare_source_sap_single_volume_scene_native(
+                manager,{created,retired,updated},sorted_boxes,mismatched,
+                sourceActorIds,sceneBounds,filter,true,sceneScratch,
+                nullptr,nullptr,true);
+        }catch(const std::invalid_argument&){bad_handle=true;}
+        if(!bad_handle)
+            throw std::runtime_error(
+                "Sparse source SAP accepted a mismatched Sc handle");
+        changed.clear();
         persistent=false;gpu=false;
         if(remove_source_sap_single_volume_actor_native(manager,identity,2u))
             throw std::runtime_error("Previously admitted volume was cancelled");
@@ -996,9 +1135,8 @@ void exercise_source_single_volume_bitmap_lifecycle_native(Context& context) {
             std::size_t(added.getWordCount()+removed.getWordCount()+
                         aggregated.getWordCount()+changed.getWordCount())*
                 sizeof(physx::PxU32)+
-            std::size_t(next.getCapacity())*
-                (sizeof(physx::Bp::VolumeData)+sizeof(physx::PxReal)+
-                 sizeof(physx::Bp::FilterGroup::Enum))+
+            2u*(sizeof(physx::Bp::VolumeData)+sizeof(physx::PxReal)+
+                sizeof(physx::Bp::FilterGroup::Enum))+
             sizeof(physx::PxBounds3);
         if(stream.submission_stats().upload_batches!=
                before_sparse.upload_batches+1u ||
@@ -1016,6 +1154,31 @@ void exercise_source_single_volume_bitmap_lifecycle_native(Context& context) {
            std::fabs(copied_bounds[36u].minimum.x-2.f)>1.e-6f)
             throw std::runtime_error(
                 "Sparse GPU bounds update corrupted a quiet source volume");
+        const auto gpu_volume=addresses.resolve(
+            volumeGpu.getDevicePtr(),volumes.size()*sizeof(physx::Bp::VolumeData));
+        std::array<physx::Bp::VolumeData,40u> copied_volumes{};
+        context.download(gpu_volume.buffer,gpu_volume.offset,
+                         copied_volumes.data(),sizeof(copied_volumes));
+        if(copied_volumes[36u].getUserData()!=nullptr ||
+           copied_volumes[2u].getUserData()!=&actorB)
+            throw std::runtime_error(
+                "Sparse source retirement did not update device VolumeData");
+        const auto gpu_distances=addresses.resolve(
+            distancesGpu.getDevicePtr(),offsets.size()*sizeof(physx::PxReal));
+        std::array<physx::PxReal,40u> copied_distances{};
+        context.download(gpu_distances.buffer,gpu_distances.offset,
+                         copied_distances.data(),sizeof(copied_distances));
+        const auto gpu_groups=addresses.resolve(
+            groupsGpu.getDevicePtr(),groups.size()*sizeof(physx::Bp::FilterGroup::Enum));
+        std::array<physx::Bp::FilterGroup::Enum,40u> copied_groups{};
+        context.download(gpu_groups.buffer,gpu_groups.offset,
+                         copied_groups.data(),sizeof(copied_groups));
+        if(copied_groups[36u]!=physx::Bp::FilterGroup::eINVALID ||
+           copied_distances[36u]!=0.0f ||
+           std::fabs(copied_distances[2u]-0.125f)>1.e-6f ||
+           copied_groups[2u]!=physx::Bp::getFilterGroup_Dynamics(99u,false))
+            throw std::runtime_error(
+                "Sparse source retirement left stale device AABB metadata");
         const auto removedGpuWords=addresses.resolve(
             removedGpu.getDevicePtr(),removed.getWordCount()*sizeof(physx::PxU32));
         observed={};
@@ -3355,6 +3518,7 @@ int main() {
         if (pointers.live_allocations() != 0u)
             throw std::runtime_error("GPU transfer mapping leak");
         exercise_source_raw_buffer_growth(context);
+        exercise_independent_readback_ownership(context);
         exercise_reused_source_submission_scratch(context);
         exercise_native_physx_heap_roots(context);
         exercise_native_heap_raii_teardown(context);

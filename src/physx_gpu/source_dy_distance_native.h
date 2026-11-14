@@ -5,6 +5,7 @@
 #include "native/scene.h"
 #include "physx_gpu/source_native_view.h"
 #include "physx_gpu/source_sap_dma_native.h"
+#include "physx_gpu/source_sc_device_islands_native.h"
 #include "physx_port/gpucommon/PxgCudaBuffer.h"
 
 #include <algorithm>
@@ -97,11 +98,19 @@ static_assert(sizeof(SourceDyActorLocalNative)==144u &&
 struct SourceDyLaunchStats {
     std::size_t device_colored_tasks=0u;
     std::size_t device_colored_descriptors=0u;
+    // Only wide-task candidates require a host degree analysis.
+    std::size_t host_degree_scanned_descriptors=0u;
     std::size_t wide_tasks=0u;
     std::size_t max_partition_groups=0u;
     std::size_t dispatches=0u;
+    std::size_t device_island_indirect_dispatches=0u;
+    std::size_t host_lane_packed_tasks=0u;
+    std::size_t device_admitted_tasks=0u;
+    std::size_t device_admitted_bodies=0u;
+    std::size_t device_admitted_descriptors=0u;
     std::size_t tile_bytes=0u;
-    // Shader-written descriptor and partition bytes omitted from HtoD.
+    // Device-written descriptors, partition ranges, tasks, and ordinals
+    // omitted from the host numerical input packet.
     std::size_t device_generated_bytes=0u;
     std::size_t device_source_descriptors=0u;
     std::size_t source_descriptor_upload_bytes=0u;
@@ -114,6 +123,7 @@ struct SourceDyLaunchStats {
     std::size_t device_world_motion_bodies=0u;
     std::size_t actor_local_upload_bytes=0u;
     std::size_t actor_local_upload_spans=0u;
+    std::size_t device_upload_batches=0u;
     std::size_t reused_actor_local_poses=0u;
     std::size_t resident_velocity_reuses=0u;
     std::size_t prepared_velocity_updated_bodies=0u;
@@ -159,6 +169,9 @@ public:
             6u,compute::StorageBufferViewKind::RawReadWrite);
         pipeline.push_constant_bytes=128u;
         pipeline_=context_.create_compute_pipeline(pipeline);
+#if defined(FYZZXYZZY_PROFILE_GPU)
+        context_.set_pipeline_profile_label(pipeline_,"dy.distance_pgs");
+#endif
         if(convex_shader) {
             try {
                 pipeline.shader=std::move(*convex_shader);
@@ -166,6 +179,9 @@ public:
                 pipeline.storage_buffer_views.assign(
                     7u,compute::StorageBufferViewKind::RawReadWrite);
                 convex_pipeline_=context_.create_compute_pipeline(pipeline);
+#if defined(FYZZXYZZY_PROFILE_GPU)
+                context_.set_pipeline_profile_label(convex_pipeline_,"dy.convex");
+#endif
             }catch(...) {
                 context_.destroy_compute_pipeline(pipeline_);
                 pipeline_=0u;
@@ -189,6 +205,7 @@ public:
         }
     }
     void invalidate_after_rollback() noexcept {
+        pending_solve_.reset();
         std::fill(actor_local_valid_.begin(),actor_local_valid_.end(),0u);
         std::fill(actor_velocity_valid_.begin(),actor_velocity_valid_.end(),0u);
         std::fill(actor_pose_valid_.begin(),actor_pose_valid_.end(),0u);
@@ -230,6 +247,56 @@ public:
                bool device_unconstrained_preparation=false,
                std::span<native::GpuDySleepState> sleep_states={},
                std::span<const native::GpuDyJointInput> joint_inputs={}) {
+        enqueue(bodies,rows,descriptors,partition_ends,body_ordinals,
+                tasks,contact_forces,cpu_gu,friction,anchors,patches,
+                manifolds,contact_order,contact_prep,integration,
+                integrated_poses,pcm_contacts,pcm_pair_count,shape_cache,
+                shape_bounds,shape_geometry,shape_capacity,convex_vertices,
+                convex_vertex_count,device_partitions,anchor_impulses,
+                device_initial_bodies,device_world_motion,
+                device_unconstrained_preparation,sleep_states,joint_inputs);
+        finish();
+    }
+    void enqueue(std::span<native::GpuDyDistanceBody> bodies,
+               std::span<native::GpuDyJointRow> rows,
+               std::span<const native::GpuDyDistanceDescriptor> descriptors,
+               std::span<const std::uint32_t> partition_ends,
+               std::span<const std::uint32_t> body_ordinals,
+               std::span<native::GpuDyDistanceTask> tasks,
+               std::span<float> contact_forces,
+               std::span<const native::GpuDyGuContactInput> cpu_gu,
+               std::span<native::GpuDyFrictionWriteback> friction,
+               std::span<const native::GpuDyFrictionAnchorInput> anchors,
+               std::span<native::GpuDyContactPatch> patches,
+               std::span<const native::GpuDyContactManifold> manifolds,
+               std::span<const std::uint32_t> contact_order,
+               std::span<const native::GpuDyContactPrepPair> contact_prep,
+               std::span<native::GpuDyBodyIntegrationInput> integration,
+               std::span<native::GpuDyIntegratedPose> integrated_poses,
+               CudaDeviceAddressMap::Address pcm_contacts,
+               std::uint32_t pcm_pair_count,
+               CudaDeviceAddressMap::Address shape_cache,
+               CudaDeviceAddressMap::Address shape_bounds,
+               CudaDeviceAddressMap::Address shape_geometry,
+               std::uint32_t shape_capacity,
+               CudaDeviceAddressMap::Address convex_vertices,
+               std::uint32_t convex_vertex_count,
+               bool device_partitions=false,
+               std::span<native::GpuDyFrictionAnchorImpulse> anchor_impulses={},
+               bool device_initial_bodies=false,
+               bool device_world_motion=false,
+               bool device_unconstrained_preparation=false,
+               std::span<native::GpuDySleepState> sleep_states={},
+               std::span<const native::GpuDyJointInput> joint_inputs={},
+               std::optional<SourceScDeviceIslandDyView> device_admission=std::nullopt,
+               std::span<const compute::DownloadSpan> extra_downloads={}) {
+        if(pending_solve_)
+            throw std::logic_error("Source Dy numerical epoch already queued");
+        if(device_admission &&
+           tasks.size()>context_.device_info().max_workgroup_count[0])
+            throw std::out_of_range(
+                "Device Sc compact tasks exceed indirect GPU Dy launch capacity");
+
         if(integration.size()<bodies.size() ||
            integrated_poses.size()!=integration.size() ||
            (tasks.empty() && integration.size()==bodies.size()))
@@ -255,15 +322,18 @@ public:
                    bodies[i].inverse_mass!=0.0f)
                     throw std::logic_error(
                         "Native Dy inactive solver row has nonzero inverse mass");
-        const auto partition_count=device_partitions
-            ? (tasks.empty()?0u:tasks.back().partition_end)
-            : partition_ends.size();
+        const auto partition_count=device_admission
+            ? descriptors.size()
+            : device_partitions
+                ? (tasks.empty()?0u:tasks.back().partition_end)
+                : partition_ends.size();
         if(partition_count>std::numeric_limits<std::uint32_t>::max()/4u)
             throw std::overflow_error("Source Dy partition arena exceeds 32-bit offsets");
         if(device_partitions) {
             build_device_launch_plan(tasks,descriptors,narrow(partition_count),
                                      narrow(body_ordinals.size()),
-                                     narrow(bodies.size()));
+                                     narrow(bodies.size()),
+                                     device_admission.has_value());
         } else {
             build_launch_plan(tasks,partition_ends,narrow(descriptors.size()),
                               narrow(body_ordinals.size()));
@@ -458,9 +528,20 @@ public:
         const std::size_t static_begin=prep_bytes+cpu_gu.size_bytes();
         packed_.resize(contact_prep.size());
         inline_bodies_.clear();
+        if(++inline_body_epoch_==0u) {
+            std::fill(inline_body_slots_.begin(),inline_body_slots_.end(),
+                      InlineBodySlot{});
+            inline_body_epoch_=1u;
+        }
         assigned_.assign(contact_prep.size(),0u);
         const auto ref_body=[&](const native::GpuDyContactPrepBody& body,
-                                std::uint32_t ordinal) -> std::uint32_t {
+                                std::uint32_t ordinal,
+                                BodyId actor) -> std::uint32_t {
+            if(ordinal!=invalid && body.solver_ordinal!=invalid &&
+               ordinal!=body.solver_ordinal)
+                throw std::logic_error(
+                    "Source Dy descriptor disagrees with prepared contact body");
+            if(ordinal==invalid)ordinal=body.solver_ordinal;
             // An awake zero-inverse-mass dynamic still has source motion.
             // GPU preintegration owns it, unlike static/kinematic inline
             // participants whose velocities Sc prepares independently.
@@ -477,6 +558,19 @@ public:
             if(body.inverse_mass>0.f)
                 throw std::logic_error(
                     "Responding source Dy contact body has no solver ordinal");
+            if(actor!=invalid && actor<inline_body_slots_.size()) {
+                const auto& slot=inline_body_slots_[actor];
+                if(slot.epoch==inline_body_epoch_) {
+                    const auto& saved=inline_bodies_[slot.index];
+                    auto expected=body;
+                    expected.solver_ordinal=ordinal;
+                    if(std::memcmp(&saved,&expected,sizeof(expected))!=0)
+                        throw std::logic_error(
+                            "Source Dy immovable actor has inconsistent contact inputs");
+                    return narrow(static_begin+slot.index*
+                        sizeof(native::GpuDyContactPrepBody));
+                }
+            }
             if(inline_bodies_.size()>=(
                 std::numeric_limits<std::uint32_t>::max()-static_begin)/
                     sizeof(native::GpuDyContactPrepBody))
@@ -485,6 +579,13 @@ public:
                 sizeof(native::GpuDyContactPrepBody);
             inline_bodies_.push_back(body);
             inline_bodies_.back().solver_ordinal=ordinal;
+            if(actor!=invalid) {
+                if(actor>=inline_body_slots_.size())
+                    inline_body_slots_.resize(std::size_t(actor)+1u);
+                inline_body_slots_[actor]={
+                    inline_body_epoch_,
+                    static_cast<std::uint32_t>(inline_bodies_.size()-1u)};
+            }
             return narrow(offset); // An aligned offset; low bit clear.
         };
         for(const auto& desc:descriptors) {
@@ -498,8 +599,10 @@ public:
                 throw std::logic_error("Source Dy contact prep is not unique");
             const auto& source=contact_prep[manager.prep_index];
             auto& target=packed_[manager.prep_index];
-            target.body0_source=ref_body(source.body0,desc.row0);
-            target.body1_source=ref_body(source.body1,desc.row1);
+            target.body0_source=ref_body(
+                source.body0,desc.row0,source.source_body0);
+            target.body1_source=ref_body(
+                source.body1,desc.row1,source.source_body1);
             std::memcpy(target.constants.data(),
                 reinterpret_cast<const std::uint8_t*>(&source)+192u,
                 target.constants.size());
@@ -833,34 +936,54 @@ public:
         // 1D geometry carries the same ordinals in its first row.
         const bool source_descriptors=device_partitions &&
             device_initial_bodies && device_world_motion;
+        const auto lane_task=[](const native::GpuDyDistanceTask& task) {
+            return task.descriptor_end==task.descriptor_begin+1u &&
+                   task.partition_end==task.partition_begin+1u &&
+                   task.body_end>task.body_begin &&
+                   task.body_end-task.body_begin<=2u;
+        };
+        const bool host_lane_packing=source_descriptors && !device_admission &&
+            tasks.size()>1u && wide_tasks_.empty();
+        last_schedule_.host_lane_packed_tasks=host_lane_packing
+            ?std::count_if(tasks.begin(),tasks.end(),lane_task):0u;
+        if(device_admission &&
+           (!source_descriptors || !device_admission->work ||
+            !device_admission->task_dispatch.buffer || tasks.empty()))
+            throw std::invalid_argument(
+                "Source Dy device island admission requires resident numerical task launch");
         source_descriptor_tokens_.clear();
         source_descriptor_full_.clear();
         if(source_descriptors) {
-            source_descriptor_tokens_.reserve(descriptors.size());
+            if(!device_admission)
+                source_descriptor_tokens_.reserve(descriptors.size());
             for(const auto& desc:descriptors) {
                 if(desc.index>=0x40000000u)
                     throw std::overflow_error(
                         "Sc source descriptor index exceeds device token range");
-                // Kinematic ordinals live in the packed inline contact
-                // body. Every native contact uses the manager token.
+                // Resident Sc admission supplies these source tokens.
+                // The CPU still authors full 1D descriptors that are
+                // not constructed from the device joint-row table.
                 if((desc.row_count&255u)==0u) {
-                    source_descriptor_tokens_.push_back(
-                        0xc0000000u|desc.index);
+                    if(!device_admission)
+                        source_descriptor_tokens_.push_back(
+                            0xc0000000u|desc.index);
                 }else if(rows[desc.index].reserved==2u) {
-                    source_descriptor_tokens_.push_back(
-                        0x80000000u|desc.index);
+                    if(!device_admission)
+                        source_descriptor_tokens_.push_back(
+                            0x80000000u|desc.index);
                 }else {
                     if(source_descriptor_full_.size()>=0x40000000u)
                         throw std::overflow_error(
                             "Dy source descriptor table exceeds device token range");
-                    source_descriptor_tokens_.push_back(
-                        static_cast<std::uint32_t>(source_descriptor_full_.size()));
+                    if(!device_admission)
+                        source_descriptor_tokens_.push_back(
+                            static_cast<std::uint32_t>(source_descriptor_full_.size()));
                     source_descriptor_full_.push_back(desc);
                 }
             }
         }
         const std::uint64_t scratch_bytes=device_partitions
-            ?(source_descriptors?28ull:20ull)+
+            ?(source_descriptors?(device_admission?44ull:28ull):20ull)+
                 std::uint64_t(descriptors.size())*24ull+
                 std::uint64_t(bodies.size())*12ull+
                 std::uint64_t(source_descriptor_full_.size())*16ull
@@ -937,6 +1060,22 @@ public:
             throw std::overflow_error(
                 "Source GPU free-body velocity writeback exceeds 32-bit view");
         output_bytes+=free_velocity_bytes+free_sleep_bytes;
+        // Actual compact tasks and body ordinals are separate spans of
+        // the same ordered Dy result fetch, not GPU copies to a mirror
+        // region. Their destinations follow numerical output in host
+        // staging; the device arena retains only its real output extent.
+        const std::size_t device_header_offset=output_bytes;
+        const std::size_t device_task_offset=output_bytes+
+            (device_admission?16u:0u);
+        const std::size_t device_ordinal_offset=device_task_offset+
+            (device_admission?tasks.size_bytes():0u);
+        const std::size_t host_result_bytes=device_ordinal_offset+
+            (device_admission?body_ordinals.size_bytes():0u);
+        if(device_admission &&
+           (host_result_bytes<device_ordinal_offset ||
+            host_result_bytes>std::numeric_limits<std::uint32_t>::max()))
+            throw std::overflow_error(
+                "Resident Sc Dy scheduling result exceeds address space");
         last_schedule_.free_velocity_readback_bytes=free_velocity_bytes;
         last_schedule_.sleep_readback_bytes=
             device_unconstrained_preparation
@@ -947,8 +1086,14 @@ public:
         // and writes both sorted descriptors and partition ends itself.
         // Place those output-only ranges after the contact/friction rows;
         // compact anchors must remain adjacent to contact rows.
-        const std::array<std::size_t,count> order=device_initial_bodies
+        // Resident Sc tasks and body ordinals are GPU copy destinations,
+        // not CPU packet inputs. Keep them beyond the host upload cutoff,
+        // alongside Dy's other device-written numerical ranges.
+        const std::array<std::size_t,count> order=device_admission
             ? std::array<std::size_t,count>{
+                1u,8u,9u,10u,11u,12u,14u,15u,13u,6u,7u,0u,2u,3u,4u,5u}
+            : device_initial_bodies
+                ? std::array<std::size_t,count>{
                 1u,5u,8u,4u,9u,10u,11u,12u,14u,15u,13u,6u,7u,0u,2u,3u}
             : device_partitions
                 ? std::array<std::size_t,count>{
@@ -956,7 +1101,8 @@ public:
                 : std::array<std::size_t,count>{
                     0u,1u,5u,8u,2u,3u,4u,9u,10u,11u,12u,14u,15u,13u,6u,7u};
         last_schedule_.device_generated_bytes=device_partitions
-            ? bytes[2]+bytes[3]:0u;
+            ? bytes[2]+bytes[3]+
+                (device_admission?bytes[4]+bytes[5]:0u):0u;
         std::array<std::size_t,count> offsets{};
         // The original Dy heap retains an EdgeIndex-keyed Sc anchor
         // prefix. Solver output follows it and remains the sole readback;
@@ -983,12 +1129,13 @@ public:
         // The contact shader addresses anchors backward from contactBias.
         // Keep the compact anchor region immediately before contact rows.
         const auto input_end=offsets[6];
-        host_.resize(input_end);
+        host_.resize(std::max(input_end,host_result_bytes));
         for(std::size_t i=0;i<count;++i)
             if(i!=6u && i!=7u && i!=11u && i!=12u &&
                i!=13u && i!=15u && bytes[i] &&
                (!device_initial_bodies || i!=0u) &&
-               (!device_partitions || (i!=2u && i!=3u)))
+               (!device_partitions || (i!=2u && i!=3u)) &&
+               (!device_admission || (i!=4u && i!=5u)))
                 std::memcpy(host_.data()+offsets[i],sources[i],bytes[i]);
         if(prep_bytes)
             std::memcpy(host_.data()+offsets[11],packed_.data(),prep_bytes);
@@ -1004,7 +1151,8 @@ public:
                             sizeof(native::GpuDyContactPrepBody));
         if(device_partitions) {
             const auto n=descriptors.size();
-            const std::size_t header_bytes=source_descriptors?24u:20u;
+            const std::size_t header_bytes=source_descriptors
+                ?(device_admission?44u:24u):20u;
             const std::array<std::uint32_t,5> scratch_header{
                 narrow(header_bytes),narrow(header_bytes+n*16u),
                 narrow(header_bytes+n*20u),
@@ -1013,10 +1161,10 @@ public:
             std::memcpy(host_.data()+offsets[15],scratch_header.data(),
                         sizeof(scratch_header));
             if(source_descriptors) {
-                const std::uint32_t mode=1u;
+                const std::uint32_t mode=device_admission?2u:1u;
                 std::memcpy(host_.data()+offsets[15]+20u,
                             &mode,sizeof(mode));
-                if(n)
+                if(n && !device_admission)
                     std::memcpy(host_.data()+offsets[15]+scratch_header[1],
                                 source_descriptor_tokens_.data(),
                                 n*sizeof(std::uint32_t));
@@ -1063,7 +1211,22 @@ public:
         friction_history_capacity_=next_history_capacity_;
         joint_source_capacity_=next_joint_capacity;
         const auto address=arena_.getDevicePtr();
-        const std::size_t uploaded_bytes=input_end-upload_begin;
+        // Sc supplies the descriptor tokens and Dy computes the raw
+        // descriptors, colors, cursors, and body partition state. None
+        // of those scratch arrays has a host source in a device-owned
+        // island epoch. Skip their entire contiguous upload window.
+        const auto device_skip_begin=device_admission
+            ?offsets[15]+44u:0u;
+        const auto device_skip_end=device_admission
+            ?device_skip_begin+descriptors.size()*24u+bodies.size()*12u:0u;
+        if(device_admission &&
+           (device_skip_begin<upload_begin ||
+            device_skip_end<device_skip_begin ||
+            device_skip_end>input_end))
+            throw std::out_of_range(
+                "Source Sc numerical scratch upload window is invalid");
+        const std::size_t uploaded_bytes=input_end-upload_begin-
+            (device_admission?device_skip_end-device_skip_begin:0u);
         // Adjacent Sc constraint slot edits share one DMA into the
         // resident Dy allocation, not the transient solver-row upload.
         joint_source_uploads_.clear();
@@ -1216,8 +1379,6 @@ public:
                             offsetof(native::GpuDyJointRow,applied_force),
                         &address,sizeof(address));
         }
-        if(!joint_source_uploads_.empty())
-            stream_.queue_uploads(joint_source_uploads_);
         // Only newly admitted or edited actor-local transforms are
         // uploaded. Neighboring BodyIds share one source DMA span.
         std::sort(pending_actor_locals_.begin(),pending_actor_locals_.end());
@@ -1244,15 +1405,69 @@ public:
                 count*sizeof(SourceDyActorLocalNative);
         }
         last_schedule_.actor_local_upload_spans=actor_local_uploads_.size();
-        if(!actor_local_uploads_.empty())
-            stream_.queue_uploads(actor_local_uploads_);
         std::memcpy(host_.data()+offsets[12],
                     integration_header.data(),sizeof(integration_header));
         const auto previous_spans=stream_.submission_stats().upload_spans;
-        stream_.queue_uploads({{
-            address+upload_begin,host_.data()+upload_begin,uploaded_bytes}});
+        const auto previous_batches=stream_.submission_stats().upload_batches;
+        auto& uploads=stream_.upload_scratch();
+        uploads.reserve(joint_source_uploads_.size()+
+                        actor_local_uploads_.size()+
+                        (device_admission?2u:1u));
+        uploads.insert(uploads.end(),joint_source_uploads_.begin(),
+                       joint_source_uploads_.end());
+        uploads.insert(uploads.end(),actor_local_uploads_.begin(),
+                       actor_local_uploads_.end());
+        if(device_admission) {
+            // The device-generated scratch window has no host input.
+            uploads.push_back({
+                address+upload_begin,host_.data()+upload_begin,
+                device_skip_begin-upload_begin});
+            uploads.push_back({
+                address+device_skip_end,host_.data()+device_skip_end,
+                input_end-device_skip_end});
+        }else uploads.push_back({
+            address+upload_begin,host_.data()+upload_begin,uploaded_bytes});
+        // These disjoint source spans share one ordered DMA submission.
+        stream_.queue_uploads(uploads);
+        last_schedule_.device_upload_batches=
+            stream_.submission_stats().upload_batches-previous_batches;
+        // The Sc producer and Dy consumer use the same ordered source
+        // stream. GPU-to-GPU copies replace the transient task/ordinal/
+        // token inputs after the shared host upload; no Sc witness fetch
+        // or host graph readback occurs between their submissions.
+        if(device_admission) {
+            const auto& view=*device_admission;
+            const auto& layout=view.layout;
+            const auto in_range=[&](std::size_t offset,std::size_t bytes) {
+                return offset<=layout.bytes && bytes<=layout.bytes-offset;
+            };
+            if(!in_range(0u,16u) ||
+               layout.tasks>layout.block_offsets ||
+               layout.body_order>layout.response_tokens ||
+               layout.response_tokens>layout.bytes ||
+               tasks.size_bytes()>layout.block_offsets-layout.tasks ||
+               body_ordinals.size_bytes()>
+                   layout.response_tokens-layout.body_order ||
+               descriptors.size()> (layout.bytes-layout.response_tokens)/
+                   sizeof(std::uint32_t))
+                throw std::out_of_range(
+                    "Source Sc device admission capacity exceeds its typed stream");
+            stream_.queue_device_copy(address+offsets[15]+24u,
+                                      view.work,20u);
+            stream_.queue_device_copy(address+offsets[5],
+                                      view.work+layout.tasks,tasks.size_bytes());
+            if(!body_ordinals.empty())
+                stream_.queue_device_copy(address+offsets[4],
+                    view.work+layout.body_order,body_ordinals.size_bytes());
+            if(!descriptors.empty())
+                stream_.queue_device_copy(address+offsets[15]+44u+
+                    descriptors.size()*16u,
+                    view.work+layout.response_tokens,
+                    descriptors.size()*sizeof(std::uint32_t));
+        }
         last_upload_spans_=stream_.submission_stats().upload_spans-
-                           previous_spans;
+                           previous_spans-joint_source_uploads_.size()-
+                           actor_local_uploads_.size();
         for(std::size_t i=0;i<11u;++i)
             params[i<6u?i:i+6u]=narrow(
                 static_cast<std::size_t>(params[28])+offsets[i]);
@@ -1280,6 +1495,27 @@ public:
                 (device_partitions?0x80000000u:0u)|
                 (device_partitions && !wide_tasks_.empty() &&
                  phase!=Launch::Color ?0x40000000u:0u);
+            // Compact tasks have no cross-workgroup dependencies. Their
+            // workgroup count is published by the Sc device prefix, so
+            // dispatch directly from that result instead of recopying a
+            // host task count into the launch command.
+            if(device_admission && phase==Launch::Fused &&
+               wide_tasks_.empty()) {
+                if(range.begin!=0u || range.count!=tasks.size() ||
+                   range.count>max_groups)
+                    throw std::out_of_range(
+                        "Source device Sc task launch exceeds compact dispatch bounds");
+                params[8]=0u;
+                dispatch.groups={1u,1u,1u};
+                dispatch.indirect=device_admission->task_dispatch;
+                std::memcpy(dispatch.push_constants.data(),params.data(),sizeof(params));
+                stream_.commands().emplace_back(dispatch);
+                dispatch.indirect.reset();
+                ++last_schedule_.dispatches;
+                ++last_schedule_.device_island_indirect_dispatches;
+                return;
+            }
+            dispatch.indirect.reset();
             for(std::size_t group=0;group<range.count;) {
                 const auto count=std::min<std::size_t>(max_groups,range.count-group);
                 params[8]=narrow(range.begin+group);
@@ -1288,6 +1524,27 @@ public:
                 stream_.commands().emplace_back(dispatch);
                 ++last_schedule_.dispatches;
                 group+=count;
+            }
+        };
+        const auto launch_packed=[&](std::size_t first,std::size_t count) {
+            dispatch.buffers[2].access=compute::BufferAccess::ReadWrite;
+            dispatch.buffers[3].access=compute::BufferAccess::Write;
+            dispatch.buffers[5].access=compute::BufferAccess::ReadWrite;
+            dispatch.indirect.reset();
+            const auto maximum=std::min<std::size_t>(
+                std::size_t(max_groups)*128u,0x00ffffffu);
+            for(std::size_t offset=0u;offset<count;) {
+                const auto task_count=std::min(maximum,count-offset);
+                params[8]=narrow(first+offset);
+                params[10]=(narrow(task_count)<<4u)|
+                    static_cast<std::uint32_t>(Launch::Fused)|
+                    0x10000000u|0x80000000u|
+                    (compact_friction?0x20000000u:0u);
+                dispatch.groups={narrow((task_count+127u)/128u),1u,1u};
+                std::memcpy(dispatch.push_constants.data(),params.data(),sizeof(params));
+                stream_.commands().emplace_back(dispatch);
+                ++last_schedule_.dispatches;
+                offset+=task_count;
             }
         };
         // The coloring dispatch reserves additional workgroups for
@@ -1307,7 +1564,17 @@ public:
         if(device_partitions && !wide_tasks_.empty())
             launch(Launch::Color,{0u,tasks.size()+
                 (device_initial_bodies ? (bodies.size()+127u)/128u : 0u)});
-        launch(Launch::Fused,fused_tiles_);
+        if(last_schedule_.host_lane_packed_tasks) {
+            for(std::size_t first=0u;first<tasks.size();) {
+                const bool packed=lane_task(tasks[first]);
+                std::size_t end=first+1u;
+                while(end<tasks.size() && lane_task(tasks[end])==packed)
+                    ++end;
+                if(packed)launch_packed(first,end-first);
+                else launch(Launch::Fused,{first,end-first});
+                first=end;
+            }
+        }else launch(Launch::Fused,fused_tiles_);
         if(!wide_tasks_.empty()) {
             // The existing arena write dependencies order each dispatch
             // across workgroups. A relative partition from every wide
@@ -1323,16 +1590,155 @@ public:
             }
             launch(Launch::Integrate,body_tiles_);
             launch(Launch::PublishErrors,{0u,(tasks.size()+127u)/128u});
+        }else if(device_admission) {
+            // Even compact tasks must report a failed resident Sc epoch,
+            // including an indirect launch with a mismatched task count.
+            launch(Launch::PublishErrors,{0u,(tasks.size()+127u)/128u});
         }
         // The integration extent fits in launchControl's upper bits
         // because the packed arena is limited to 32-bit byte offsets.
         launch(Launch::FreeBodies,{0u,(free_bodies+127u)/128u},
                narrow(integration.size()));
         const auto mapped=addresses_.resolve(address+history_bytes,output_bytes);
-        const std::array<compute::DownloadSpan,1> downloads{{
-            {mapped.buffer,mapped.offset,host_.data(),output_bytes}
+        compute::BufferId device_meta_buffer=0u;
+        std::size_t device_meta_offset=0u,device_task_source=0u,
+                    device_ordinal_source=0u;
+        if(device_admission) {
+            const auto metadata=addresses_.resolve(
+                address+offsets[15]+24u,16u);
+            const auto device_tasks=addresses_.resolve(
+                address+offsets[5],tasks.size_bytes());
+            const auto device_ordinals=addresses_.resolve(
+                address+offsets[4],
+                std::max<std::size_t>(4u,body_ordinals.size_bytes()));
+            if(metadata.buffer!=device_tasks.buffer ||
+               metadata.buffer!=device_ordinals.buffer)
+                throw std::logic_error(
+                    "Device Dy scheduling spans crossed the numerical allocation");
+            device_meta_buffer=metadata.buffer;
+            device_meta_offset=metadata.offset;
+            device_task_source=device_tasks.offset;
+            device_ordinal_source=device_ordinals.offset;
+        }
+        // The final readback shares the numerical dispatch submission.
+        // Neither its staging nor Sc's preceding witness DMA is joined.
+        pending_solve_.emplace(PendingSolve{
+            .bodies=bodies,.tasks=tasks,.contact_forces=contact_forces,
+            .friction=friction,.anchor_impulses=anchor_impulses,
+            .patches=patches,.integration=integration,
+            .integrated_poses=integrated_poses,.sleep_states=sleep_states,
+            .descriptors=descriptors,.body_ordinals=body_ordinals,
+            .manifolds=manifolds,.contact_order=contact_order,
+            .contact_prep=contact_prep,.result_offsets=result_offsets,
+            .output_bytes=output_bytes,
+            .device_admission=device_admission.has_value(),
+            .device_header_offset=device_header_offset,
+            .device_task_offset=device_task_offset,
+            .device_ordinal_offset=device_ordinal_offset,
+            .free_velocity_offset=free_velocity_offset,
+            .friction_count=friction_count,
+            .uploaded_bytes=uploaded_bytes,
+            .cpu_gu_bytes=cpu_gu.size_bytes(),
+            .reused_pcm_rows=reused_pcm_rows,
+            .compact_anchor_bytes=compact_anchor_bytes,
+            .prep_bytes=prep_bytes,.inline_body_bytes=inline_body_bytes,
+            .compact_friction=compact_friction,
+            .device_unconstrained_preparation=device_unconstrained_preparation,
+            .device_world_motion=device_world_motion});
+        const std::array<compute::DownloadSpan,4u> downloads{{
+            {mapped.buffer,mapped.offset,host_.data(),output_bytes},
+            {device_meta_buffer,device_meta_offset,
+             device_admission?host_.data()+device_header_offset:nullptr,
+             device_admission?16u:0u},
+            {device_meta_buffer,device_task_source,
+             device_admission?host_.data()+device_task_offset:nullptr,
+             device_admission?tasks.size_bytes():0u},
+            {device_meta_buffer,device_ordinal_source,
+             device_admission?host_.data()+device_ordinal_offset:nullptr,
+             device_admission?body_ordinals.size_bytes():0u}
         }};
-        stream_.fetch(downloads);
+        const std::size_t download_count=!device_admission?1u:
+            body_ordinals.empty()?3u:4u;
+        if(extra_downloads.empty())
+            stream_.begin_numerical_fetch(
+                std::span(downloads.data(),download_count));
+        else {
+            std::vector<compute::DownloadSpan> joined;
+            joined.reserve(download_count+extra_downloads.size());
+            joined.insert(joined.end(),downloads.begin(),
+                          downloads.begin()+download_count);
+            joined.insert(joined.end(),extra_downloads.begin(),
+                          extra_downloads.end());
+            stream_.begin_numerical_fetch(joined);
+        }
+    }
+    bool has_queued_solve() const noexcept {
+        return pending_solve_.has_value();
+    }
+    void finish() {
+        if(!pending_solve_)
+            throw std::logic_error("No queued source Dy numerical epoch");
+        // Sc owns the PCM witness publication. Numerical results can
+        // finish after their device dependency without observing it.
+        auto pending=std::move(*pending_solve_);
+        pending_solve_.reset();
+        const auto bodies=pending.bodies;
+        auto tasks=pending.tasks;
+        const auto contact_forces=pending.contact_forces;
+        const auto friction=pending.friction;
+        const auto anchor_impulses=pending.anchor_impulses;
+        const auto patches=pending.patches;
+        const auto integration=pending.integration;
+        const auto integrated_poses=pending.integrated_poses;
+        const auto sleep_states=pending.sleep_states;
+        const auto descriptors=pending.descriptors;
+        std::span<const std::uint32_t> body_ordinals=pending.body_ordinals;
+        const auto manifolds=pending.manifolds;
+        const auto contact_order=pending.contact_order;
+        const auto contact_prep=pending.contact_prep;
+        const auto result_offsets=pending.result_offsets;
+        const auto output_bytes=pending.output_bytes;
+        const auto free_velocity_offset=pending.free_velocity_offset;
+        const auto friction_count=pending.friction_count;
+        const auto uploaded_bytes=pending.uploaded_bytes;
+        const auto reused_pcm_rows=pending.reused_pcm_rows;
+        const auto compact_anchor_bytes=pending.compact_anchor_bytes;
+        const auto prep_bytes=pending.prep_bytes;
+        const auto inline_body_bytes=pending.inline_body_bytes;
+        const auto compact_friction=pending.compact_friction;
+        const auto device_unconstrained_preparation=
+            pending.device_unconstrained_preparation;
+        const auto device_world_motion=pending.device_world_motion;
+        stream_.finish_numerical_fetch();
+        admitted_body_ordinals_.clear();
+        bool invalid_device_admission=false;
+        if(pending.device_admission) {
+            std::array<std::uint32_t,4> admitted{};
+            std::memcpy(admitted.data(),
+                host_.data()+pending.device_header_offset,sizeof(admitted));
+            invalid_device_admission=
+                admitted[0]!=0u || admitted[1]>tasks.size() ||
+                admitted[2]>body_ordinals.size() ||
+                admitted[3]>descriptors.size();
+            if(!invalid_device_admission) {
+                last_schedule_.device_admitted_tasks=admitted[1];
+                last_schedule_.device_admitted_bodies=admitted[2];
+                last_schedule_.device_admitted_descriptors=admitted[3];
+                if(admitted[1])
+                    std::memcpy(tasks.data(),
+                        host_.data()+pending.device_task_offset,
+                        admitted[1]*sizeof(native::GpuDyDistanceTask));
+                for(std::size_t i=admitted[1];i<tasks.size();++i)
+                    tasks[i].error=0u;
+                tasks=tasks.first(admitted[1]);
+                admitted_body_ordinals_.resize(admitted[2]);
+                if(admitted[2])
+                    std::memcpy(admitted_body_ordinals_.data(),
+                        host_.data()+pending.device_ordinal_offset,
+                        admitted[2]*sizeof(std::uint32_t));
+                body_ordinals=admitted_body_ordinals_;
+            }
+        }
         for(const auto id:pending_actor_locals_)
             actor_local_valid_[id]=1u;
         for(std::size_t i=0;i<tasks.size();++i)
@@ -1343,6 +1749,9 @@ public:
                 throw std::overflow_error(
                     "Source Dy GPU solver task "+std::to_string(i)+
                     " rejected flags "+std::to_string(tasks[i].error));
+        if(invalid_device_admission)
+            throw std::overflow_error(
+                "Resident Sc Dy scheduling result exceeds declared capacities");
         const auto fetch_pose=[&](std::size_t index) {
             auto& pose=integrated_poses[index];
             std::memcpy(&pose,host_.data()+result_offsets[5]+
@@ -1368,9 +1777,99 @@ public:
                 std::memcpy(&sleep_states[index],output+24u,
                             sizeof(native::GpuDySleepState));
             }
-        // The source task graph identifies every GPU-written slot. Rows
-        // excluded from its descriptor/ordinal ranges retain their original
-        // CPU values rather than requiring device-side output seeding.
+        // The GPU task stream defines body writeback ownership; its
+        // descriptor ordinals need not match the CPU's public Gu index
+        // permutation. Source-manager identity owns contact/patch output.
+        const auto publish_descriptor=[&](const native::GpuDyDistanceDescriptor& desc) {
+            // Joint impulses remain local to the GPU PGS row.
+            // No Sc task consumes a host copy after solve.
+            if((desc.row_count&255u)!=0u)return;
+            if(desc.index>=manifolds.size())
+                throw std::logic_error("Source Dy manager writeback index invalid");
+            const auto& manager=manifolds[desc.index];
+            if(!manager.patch_count)return;
+            if(manager.order_offset>contact_forces.size() ||
+               manager.contact_count>
+                   contact_forces.size()-manager.order_offset ||
+               manager.patch_offset>patches.size() ||
+               manager.patch_count>patches.size()-manager.patch_offset)
+                throw std::logic_error("Source Dy contact writeback range invalid");
+            // The source contact order is implicit for PCM patches:
+            // their Gu points already occupy the resident solver
+            // arena consecutively. CPU Gu patches retain their
+            // explicit correlation order, packed without PCM holes.
+            std::size_t written=0u;
+            for(std::size_t patch_index=manager.patch_offset;
+                patch_index<manager.patch_offset+manager.patch_count;
+                ++patch_index) {
+                const auto& patch=patches[patch_index];
+                constexpr std::uint32_t direct=0x80000000u;
+                const bool resident=(patch.order_offset&direct)!=0u;
+                const std::size_t begin=patch.order_offset&~direct;
+                const std::size_t limit=resident
+                    ?contact_forces.size():contact_order.size();
+                if(begin>limit || patch.contact_count>limit-begin ||
+                   written>manager.contact_count ||
+                   patch.contact_count>manager.contact_count-written)
+                    throw std::logic_error(
+                        "Source Dy contact patch order is invalid");
+                for(std::size_t k=0u;k<patch.contact_count;++k) {
+                    const auto index=resident
+                        ?begin+k:contact_order[begin+k];
+                    if(index<manager.order_offset ||
+                       index>=manager.order_offset+manager.contact_count)
+                        throw std::logic_error(
+                            "Source Dy contact writeback index invalid");
+                    std::memcpy(&contact_forces[index],
+                        host_.data()+result_offsets[2]+index*4u,4u);
+                }
+                written+=patch.contact_count;
+            }
+            if(written!=manager.contact_count)
+                throw std::logic_error(
+                    "Source Dy contact writeback omitted Gu rows");
+            for(std::size_t j=manager.patch_offset;
+                j<manager.patch_offset+manager.patch_count;++j) {
+                auto& patch=patches[j];
+                const bool pcm_growth=(patch.broken&0x80000000u)!=0u;
+                // The GPU selects new PCM anchors before source PGS.
+                // One original four-byte patch report conveys its
+                // resulting count and changed Gu indices, without
+                // transferring a second device anchor array.
+                std::uint32_t report=0u;
+                if(pcm_growth || patch.anchor_count)
+                    std::memcpy(&report,
+                        host_.data()+result_offsets[4]+j*4u,4u);
+                const auto count=pcm_growth?(report>>1u)&3u:
+                    patch.anchor_count;
+                if(count>2u || patch.row_offset>friction_count ||
+                   count*2u>friction_count-patch.row_offset)
+                    throw std::logic_error(
+                        "Source Dy friction writeback range invalid");
+                if(compact_friction) {
+                    if(patch.row_offset&1u)
+                        throw std::logic_error(
+                            "Source Dy friction anchor range is misaligned");
+                    for(std::size_t k=patch.row_offset/2u;
+                        k<patch.row_offset/2u+count;++k)
+                        std::memcpy(&anchor_impulses[k],
+                            host_.data()+result_offsets[3]+k*12u,12u);
+                }else {
+                    for(std::size_t k=patch.row_offset;
+                        k<patch.row_offset+count*2u;++k) {
+                        const auto* result=
+                            host_.data()+result_offsets[3]+k*16u;
+                        std::memcpy(&friction[k].tangent,result,12u);
+                        std::memcpy(&friction[k].applied_force,result+12u,4u);
+                    }
+                }
+                if(pcm_growth) {
+                    patch.anchor_count=count;
+                    patch.reserved=report;
+                    patch.broken=report&1u;
+                }else if(count)patch.broken=report;
+            }
+        };
         for(const auto& task:tasks) {
             for(std::size_t i=task.body_begin;i<task.body_end;++i) {
                 const auto index=body_ordinals[i];
@@ -1385,99 +1884,14 @@ public:
                     std::memcpy(&bodies[index],
                         host_.data()+result_offsets[0]+index*48u,48u);
             }
-            for(std::size_t i=task.descriptor_begin;
-                i<task.descriptor_end;++i) {
-                const auto& desc=descriptors[i];
-                // Joint impulses remain local to the GPU PGS row.
-                // No Sc task consumes a host copy after solve.
-                if((desc.row_count&255u)!=0u)continue;
-                if(desc.index>=manifolds.size())
-                    throw std::logic_error("Source Dy manager writeback index invalid");
-                const auto& manager=manifolds[desc.index];
-                if(!manager.patch_count)continue;
-                if(manager.order_offset>contact_forces.size() ||
-                   manager.contact_count>
-                       contact_forces.size()-manager.order_offset ||
-                   manager.patch_offset>patches.size() ||
-                   manager.patch_count>patches.size()-manager.patch_offset)
-                    throw std::logic_error("Source Dy contact writeback range invalid");
-                // The source contact order is implicit for PCM patches:
-                // their Gu points already occupy the resident solver
-                // arena consecutively. CPU Gu patches retain their
-                // explicit correlation order, packed without PCM holes.
-                std::size_t written=0u;
-                for(std::size_t patch_index=manager.patch_offset;
-                    patch_index<manager.patch_offset+manager.patch_count;
-                    ++patch_index) {
-                    const auto& patch=patches[patch_index];
-                    constexpr std::uint32_t direct=0x80000000u;
-                    const bool resident=(patch.order_offset&direct)!=0u;
-                    const std::size_t begin=patch.order_offset&~direct;
-                    const std::size_t limit=resident
-                        ?contact_forces.size():contact_order.size();
-                    if(begin>limit || patch.contact_count>limit-begin ||
-                       written>manager.contact_count ||
-                       patch.contact_count>manager.contact_count-written)
-                        throw std::logic_error(
-                            "Source Dy contact patch order is invalid");
-                    for(std::size_t k=0u;k<patch.contact_count;++k) {
-                        const auto index=resident
-                            ?begin+k:contact_order[begin+k];
-                        if(index<manager.order_offset ||
-                           index>=manager.order_offset+manager.contact_count)
-                            throw std::logic_error(
-                                "Source Dy contact writeback index invalid");
-                        std::memcpy(&contact_forces[index],
-                            host_.data()+result_offsets[2]+index*4u,4u);
-                    }
-                    written+=patch.contact_count;
-                }
-                if(written!=manager.contact_count)
-                    throw std::logic_error(
-                        "Source Dy contact writeback omitted Gu rows");
-                for(std::size_t j=manager.patch_offset;
-                    j<manager.patch_offset+manager.patch_count;++j) {
-                    auto& patch=patches[j];
-                    const bool pcm_growth=(patch.broken&0x80000000u)!=0u;
-                    // The GPU selects new PCM anchors before source PGS.
-                    // One original four-byte patch report conveys its
-                    // resulting count and changed Gu indices, without
-                    // transferring a second device anchor array.
-                    std::uint32_t report=0u;
-                    if(pcm_growth || patch.anchor_count)
-                        std::memcpy(&report,
-                            host_.data()+result_offsets[4]+j*4u,4u);
-                    const auto count=pcm_growth?(report>>1u)&3u:
-                        patch.anchor_count;
-                    if(count>2u || patch.row_offset>friction_count ||
-                       count*2u>friction_count-patch.row_offset)
-                        throw std::logic_error(
-                            "Source Dy friction writeback range invalid");
-                    if(compact_friction) {
-                        if(patch.row_offset&1u)
-                            throw std::logic_error(
-                                "Source Dy friction anchor range is misaligned");
-                        for(std::size_t k=patch.row_offset/2u;
-                            k<patch.row_offset/2u+count;++k)
-                            std::memcpy(&anchor_impulses[k],
-                                host_.data()+result_offsets[3]+k*12u,12u);
-                    }else {
-                        for(std::size_t k=patch.row_offset;
-                            k<patch.row_offset+count*2u;++k) {
-                            const auto* result=
-                                host_.data()+result_offsets[3]+k*16u;
-                            std::memcpy(&friction[k].tangent,result,12u);
-                            std::memcpy(&friction[k].applied_force,result+12u,4u);
-                        }
-                    }
-                    if(pcm_growth) {
-                        patch.anchor_count=count;
-                        patch.reserved=report;
-                        patch.broken=report&1u;
-                    }else if(count)patch.broken=report;
-                }
-            }
         }
+        if(pending.device_admission) {
+            for(const auto& desc:descriptors)
+                publish_descriptor(desc);
+        }else for(const auto& task:tasks)
+            for(std::size_t i=task.descriptor_begin;
+                i<task.descriptor_end;++i)
+                publish_descriptor(descriptors[i]);
         // Sc's final world velocities are the device pool's next-frame
         // baseline. Update the host comparison mirror from the same
         // fetched result, never by replaying PGS on the CPU.
@@ -1555,11 +1969,14 @@ public:
             for(std::size_t index=bodies.size();index<integration.size();++index)
                 if(integration[index].active&1u)mirror_pose(index);
         }
-        last_transfer_bytes_={uploaded_bytes,output_bytes};
+        last_transfer_bytes_={uploaded_bytes,
+            output_bytes+(pending.device_admission
+                ?16u+pending.tasks.size_bytes()+
+                    pending.body_ordinals.size_bytes():0u)};
         last_reused_pcm_contact_rows_=reused_pcm_rows;
         last_omitted_pcm_upload_bytes_=
             reused_pcm_rows*sizeof(native::GpuDyContactPoint);
-        last_cpu_gu_geometry_bytes_=cpu_gu.size_bytes();
+        last_cpu_gu_geometry_bytes_=pending.cpu_gu_bytes;
         last_friction_anchor_upload_bytes_=compact_anchor_bytes;
         for(const auto& manager:manifolds) {
             if(!manager.patch_count || manager.prep_index>=contact_prep.size())
@@ -1615,6 +2032,35 @@ public:
         return last_contact_prep_upload_saving_;
     }
 private:
+    struct PendingSolve {
+        std::span<native::GpuDyDistanceBody> bodies{};
+        std::span<native::GpuDyDistanceTask> tasks{};
+        std::span<float> contact_forces{};
+        std::span<native::GpuDyFrictionWriteback> friction{};
+        std::span<native::GpuDyFrictionAnchorImpulse> anchor_impulses{};
+        std::span<native::GpuDyContactPatch> patches{};
+        std::span<native::GpuDyBodyIntegrationInput> integration{};
+        std::span<native::GpuDyIntegratedPose> integrated_poses{};
+        std::span<native::GpuDySleepState> sleep_states{};
+        std::span<const native::GpuDyDistanceDescriptor> descriptors{};
+        std::span<const std::uint32_t> body_ordinals{};
+        std::span<const native::GpuDyContactManifold> manifolds{};
+        std::span<const std::uint32_t> contact_order{};
+        std::span<const native::GpuDyContactPrepPair> contact_prep{};
+        std::array<std::size_t,6> result_offsets{};
+        std::size_t output_bytes=0u;
+        bool device_admission=false;
+        std::size_t device_header_offset=0u,device_task_offset=0u,
+                    device_ordinal_offset=0u;
+        std::size_t free_velocity_offset=0u,friction_count=0u;
+        std::size_t uploaded_bytes=0u,cpu_gu_bytes=0u,reused_pcm_rows=0u;
+        std::size_t compact_anchor_bytes=0u,prep_bytes=0u;
+        std::size_t inline_body_bytes=0u;
+        bool compact_friction=false;
+        bool device_unconstrained_preparation=false;
+        bool device_world_motion=false;
+    };
+    std::optional<PendingSolve> pending_solve_{};
     enum class Launch : std::uint32_t {
         Fused, Normals, Friction, Partition, Motion, Integrate, PublishErrors,
         FreeBodies, Color, InitializeBodies
@@ -1632,10 +2078,11 @@ private:
         std::span<const native::GpuDyDistanceTask> tasks,
         std::span<const native::GpuDyDistanceDescriptor> descriptors,
         std::uint32_t partition_count,
-        std::uint32_t ordinals,std::uint32_t bodies) {
+        std::uint32_t ordinals,std::uint32_t bodies,
+        bool resident_admission) {
         constexpr std::uint32_t threads=128u;
         constexpr std::uint32_t prep_managers=threads/4u;
-        constexpr std::uint32_t wide_min=4u*threads;
+        constexpr std::uint32_t wide_min=native::gpu_dy_wide_task_threshold;
         wide_tasks_.clear();
         tiles_.clear();
         partition_tiles_.clear();
@@ -1645,10 +2092,41 @@ private:
         last_schedule_.device_colored_tasks=tasks.size();
         last_schedule_.device_colored_descriptors=descriptors.size();
         last_schedule_.max_partition_groups=tasks.empty()?0u:1u;
-        degree_dynamic_.assign(bodies,0u);
-        degree_static_.assign(bodies,0u);
-        color_bounds_.assign(tasks.size(),0u);
-        partition_endpoint_counts_.assign(tasks.size(),0u);
+        if(resident_admission) {
+            // The host supplies numerical capacities, not runnable task
+            // ranges. GPU Sc writes the compact tasks and their actual
+            // count before device Dy dispatch, so unused slots cannot
+            // enter the host's sequential task-range validation or
+            // endpoint-degree analysis.
+            degree_dynamic_.clear();
+            degree_static_.clear();
+            color_bounds_.clear();
+            partition_endpoint_counts_.clear();
+            fused_tiles_={0u,tasks.size()};
+            prep_tiles_={};
+            body_tiles_={};
+            return;
+        }
+        const bool has_wide_candidate=std::any_of(
+            tasks.begin(),tasks.end(),[&](const auto& task) {
+                return task.descriptor_end>=task.descriptor_begin &&
+                    task.body_end>=task.body_begin &&
+                    task.descriptor_end-task.descriptor_begin>=wide_min &&
+                    task.body_end-task.body_begin>=wide_min;
+            });
+        if(has_wide_candidate) {
+            degree_dynamic_.assign(bodies,0u);
+            degree_static_.assign(bodies,0u);
+            color_bounds_.assign(tasks.size(),0u);
+            partition_endpoint_counts_.assign(tasks.size(),0u);
+        }else {
+            // Compact tasks are already GPU-colored. Do not zero or
+            // rescan dense host endpoint-degree arrays for their launch.
+            degree_dynamic_.clear();
+            degree_static_.clear();
+            color_bounds_.clear();
+            partition_endpoint_counts_.clear();
+        }
         fused_tiles_={0u,tasks.size()};
         prep_tiles_={};
         body_tiles_={};
@@ -1670,6 +2148,18 @@ private:
                task.velocity_iterations>255u)
                 throw std::invalid_argument(
                     "Source device Dy task ranges are inconsistent");
+            const auto count=task.descriptor_end-task.descriptor_begin;
+            const auto writable=task.body_end-task.body_begin;
+            // A task below either wide threshold always uses the
+            // device-colored fused path; its host endpoint analysis
+            // cannot change launch selection or partition semantics.
+            if(count<wide_min || writable<wide_min) {
+                descriptor_end=task.descriptor_end;
+                partition_end=task.partition_end;
+                body_end=task.body_end;
+                continue;
+            }
+            last_schedule_.host_degree_scanned_descriptors+=count;
             std::size_t dynamic_edges=0u,static_edges=0u;
             for(std::uint32_t i=task.descriptor_begin;
                 i<task.descriptor_end;++i) {
@@ -1744,7 +2234,6 @@ private:
             }
             partition_endpoint_counts_[task_id]=
                 static_cast<std::uint32_t>(partition_endpoints);
-            const auto count=task.descriptor_end-task.descriptor_begin;
             bound=std::min<std::size_t>(count,bound);
             color_bounds_[task_id]=static_cast<std::uint32_t>(bound);
             descriptor_end=task.descriptor_end;
@@ -1760,7 +2249,6 @@ private:
             const std::size_t parallel_width=dynamic_edges
                 ?(dynamic_edges-1u)/max_dynamic_conflicts+1u
                 :static_edges?(static_edges-1u)/max_static_degree+1u:0u;
-            const auto writable=std::size_t(task.body_end-task.body_begin);
             const auto groups=(partition_endpoints+threads-1u)/threads;
             // Color count multiplied by conservative workgroups must not
             // exceed one tile per source descriptor. In particular, a
@@ -1864,7 +2352,7 @@ private:
         constexpr std::uint32_t prep_managers=threads/4u;
         // Tile only when one partition can supply four full groups.
         // Smaller tasks keep their partition dependencies in one group.
-        constexpr std::uint32_t wide_min=4u*threads;
+        constexpr std::uint32_t wide_min=native::gpu_dy_wide_task_threshold;
         wide_tasks_.clear();
         tiles_.clear();
         partition_tiles_.clear();
@@ -1990,6 +2478,7 @@ private:
     std::size_t alignment_=0u;
     std::uint64_t max_view_=0u;
     std::vector<std::uint8_t> host_;
+    std::vector<std::uint32_t> admitted_body_ordinals_;
     std::vector<SourceDyPackedContactPrepNative> packed_;
     std::vector<std::uint32_t> source_descriptor_tokens_;
     std::vector<native::GpuDyDistanceDescriptor> source_descriptor_full_;
@@ -2006,7 +2495,12 @@ private:
     std::vector<std::uint32_t> joint_source_dirty_;
     std::vector<SourceSapUpload> joint_source_uploads_;
     std::size_t joint_source_capacity_=0u;
+    struct InlineBodySlot {
+        std::uint32_t epoch=0u,index=0u;
+    };
     std::vector<native::GpuDyContactPrepBody> inline_bodies_;
+    std::vector<InlineBodySlot> inline_body_slots_;
+    std::uint32_t inline_body_epoch_=0u;
     std::vector<native::GpuDyFrictionAnchorInput> compact_anchors_;
     std::vector<std::size_t> patch_anchor_starts_;
     std::vector<std::uint8_t> assigned_;

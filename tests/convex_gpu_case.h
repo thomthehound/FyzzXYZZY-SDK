@@ -152,8 +152,13 @@ inline void verify_convex_finite_gpu_solver(
                 " gpu_found="+std::to_string(gpu.found_pairs().size())+
                 " gpu_readback="+
                 std::to_string(producer->pcm_contact_readback_bytes()));
-        if(producer->pcm_contact_readback_bytes()!=
-              9u*sizeof(physx_gpu::SourcePcmGpuContactStreamNative) ||
+        constexpr auto pcm_stride=
+            sizeof(physx_gpu::SourcePcmGpuContactStreamNative);
+        constexpr auto header_stride=5u*sizeof(std::uint32_t);
+        if(producer->pcm_header_join_bytes()!=9u*header_stride ||
+           producer->pcm_deferred_point_bytes()!=9u*pcm_stride-header_stride ||
+           producer->pcm_contact_readback_bytes()!=
+               9u*(pcm_stride+header_stride)-header_stride ||
            producer->dy_cpu_gu_geometry_bytes()!=0u ||
            producer->dy_pcm_device_contact_rows()<9u)
             throw std::runtime_error(
@@ -439,8 +444,15 @@ inline void verify_convex_plane_gpu_solver(
                 "Cooked hull contact managers lost tetrahedron, wedge, polygon or compound witnesses");
             check(producer->dy_cpu_gu_geometry_bytes()==0u &&
                   producer->dy_pcm_device_contact_rows()==17u &&
+                  producer->pcm_header_join_bytes()==
+                      5u*5u*sizeof(std::uint32_t) &&
+                  producer->pcm_deferred_point_bytes()==
+                      5u*sizeof(physx_gpu::SourcePcmGpuContactStreamNative)-
+                          5u*sizeof(std::uint32_t) &&
                   producer->pcm_contact_readback_bytes()==
-                      5u*sizeof(physx_gpu::SourcePcmGpuContactStreamNative),
+                      5u*(sizeof(physx_gpu::SourcePcmGpuContactStreamNative)+
+                          5u*sizeof(std::uint32_t))-
+                          5u*sizeof(std::uint32_t),
                 "Convex plane bypassed device PCM and Dy contact geometry");
         }
         for(std::size_t j=0u;j<cpu.contacts().size();++j) {

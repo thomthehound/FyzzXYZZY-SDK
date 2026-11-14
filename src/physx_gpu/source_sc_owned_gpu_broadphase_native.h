@@ -4,6 +4,7 @@
 
 #include "physx_gpu/source_sc_gpu_broadphase_producer_native.h"
 #include "physx_gpu/source_sap_aggregate_owned_stages_native.h"
+#include "hardware_profile.h"
 #include "fyzzxyzzy/native_gpu_world.h"
 #include "physx_foundation_lifetime.h"
 #include "physx_gpu/source_physx_root_callback.h"
@@ -89,12 +90,13 @@ public:
           encoding_(context_,take_shader(shaders,NativeGpuSapStage::TranslateAabbs)),
           box_transforms_(context_,take_shader(shaders,NativeGpuSapStage::BoxTransformBounds)),
           box_input_(allocators_.deviceAlloc,physx::PxsHeapStats::eBROADPHASE),
+          frame_input_(context_,addresses_),
           box_cache_(allocators_.deviceAlloc,physx::PxsHeapStats::eBROADPHASE),
           box_geometry_(allocators_.deviceAlloc,physx::PxsHeapStats::eBROADPHASE),
           convex_vertices_(allocators_.deviceAlloc,physx::PxsHeapStats::eBROADPHASE),
           convex_surface_(allocators_.deviceAlloc,physx::PxsHeapStats::eNARROWPHASE),
           box_owners_{box_transforms_,box_input_,box_cache_,box_geometry_,
-                      convex_vertices_},
+                      convex_vertices_,0u,&frame_input_},
           lowering_(addresses_,encoding_),
           created_(context_,take_shader(shaders,NativeGpuSapStage::CreatedPairs)),
           radix_(context_,take_shader(shaders,NativeGpuSapStage::RadixInitialize),take_shader(shaders,NativeGpuSapStage::RadixCount),
@@ -144,14 +146,19 @@ public:
                 convex_surface_faces_base_,convex_surface_indices_base_,
                 take_pcm_shader(*pcm_shaders,NativeGpuPcmStage::Candidates),
                 take_pcm_shader(*pcm_shaders,NativeGpuPcmStage::EpaCompact),
-                take_pcm_shader(*pcm_shaders,NativeGpuPcmStage::GjkContact),
+                take_pcm_shader(*pcm_shaders,
+                    backend==compute::Backend::D3D12 &&
+                    !context_.device_info().software_adapter
+                        ?NativeGpuPcmStage::GjkFused
+                        :NativeGpuPcmStage::GjkContact),
                 take_pcm_shader(*pcm_shaders,NativeGpuPcmStage::GjkPrimitive),
                 take_pcm_shader(*pcm_shaders,NativeGpuPcmStage::GjkReduce),
                 take_pcm_shader(*pcm_shaders,NativeGpuPcmStage::GjkPublish),
                 take_pcm_shader(*pcm_shaders,NativeGpuPcmStage::EpaArgsReset),
                 take_pcm_shader(*pcm_shaders,NativeGpuPcmStage::EpaContact),
                 take_pcm_shader(*pcm_shaders,NativeGpuPcmStage::FaceContacts),
-                take_pcm_shader(*pcm_shaders,NativeGpuPcmStage::ContactJournal));
+                take_pcm_shader(*pcm_shaders,NativeGpuPcmStage::ContactJournal),
+                take_pcm_shader(*pcm_shaders,NativeGpuPcmStage::DeviceIslands));
         if(dy_shader)
             dy_distance_=std::make_unique<SourceDyDistanceNativeStage>(
                 context_,addresses_,stream_,allocators_.deviceAlloc,
@@ -250,15 +257,25 @@ public:
     native::GpuBroadphaseReports advance(
         std::span<const native::GpuBroadphaseBox> live,
         bool force_update,bool geometry_dirty) override {
+        return advance_overlapping(live,force_update,geometry_dirty,{});
+    }
+    native::GpuBroadphaseReports advance_overlapping(
+        std::span<const native::GpuBroadphaseBox> live,
+        bool force_update,bool geometry_dirty,
+        const std::function<void()>& independent_sc_work) override {
         if(aborted_)
             throw std::runtime_error("Original GPU SAP heap aborted");
-        return producer_->advance(live,force_update,geometry_dirty);
+        return producer_->advance_overlapping(
+            live,force_update,geometry_dirty,independent_sc_work);
     }
     bool has_gpu_pcm_box() const noexcept override { return bool(pcm_); }
     bool has_gpu_dy_distance() const noexcept override {
         return bool(dy_distance_);
     }
-    void solve_gpu_dy_distance(
+    std::uint32_t gpu_dy_direct_task_limit() const noexcept override {
+        return dy_distance_ ? context_.device_info().max_workgroup_count[0] : 0u;
+    }
+    void enqueue_gpu_dy_distance(
         std::span<native::GpuDyDistanceBody> bodies,
         std::span<native::GpuDyJointRow> rows,
         std::span<const native::GpuDyDistanceDescriptor> descriptors,
@@ -282,8 +299,14 @@ public:
         bool device_unconstrained_preparation=false,
         std::span<native::GpuDySleepState> sleep_states={},
         std::span<const native::GpuDyJointInput> joint_inputs={}) override {
+        FYZZ_PROFILE_SCOPE("dy.device_enqueue");
         if(!dy_distance_)
             throw std::logic_error("Source GPU Dy shader not installed");
+        if(dy_distance_->has_queued_solve())
+            throw std::logic_error("Source GPU Dy numerical epoch already queued");
+        if(pcm_ && !pcm_->device_contact_ready())
+            throw std::logic_error(
+                "Source Dy cannot consume an incomplete PCM contact epoch");
         // Resolve the first attached shape into the ElementSim cache.
         // Body integration also covers shapes without a device target.
         for(auto& input:integration) {
@@ -304,11 +327,14 @@ public:
                 input.active=1u|dy_flags;
             }
         }
-        dy_distance_->solve(bodies,rows,descriptors,partitions,ordinals,tasks,
+        const auto deferred_points=pcm_
+            ?pcm_->deferred_point_downloads():
+             std::span<const compute::DownloadSpan>{};
+        dy_distance_->enqueue(bodies,rows,descriptors,partitions,ordinals,tasks,
                             contact_forces,cpu_gu,friction,anchors,patches,manifolds,contact_order,
                             contact_prep,integration,integrated_poses,
-                            pcm_?pcm_->contact_stream_address():0u,
-                            pcm_?pcm_->contact_stream_pair_count():0u,
+                            pcm_?pcm_->device_contact_stream_address():0u,
+                            pcm_?pcm_->device_contact_pair_count():0u,
                             box_cache_.getDevicePtr(),
                             sap_->pre_broadphase_buffers().bounds.getDevicePtr(),
                             box_geometry_.getDevicePtr(),aabb_->capacity(),
@@ -317,8 +343,49 @@ public:
                             anchor_impulses,device_initial_bodies,
                             device_world_motion,
                             device_unconstrained_preparation,sleep_states,
-                            joint_inputs);
+                            joint_inputs,
+                            pcm_ && pcm_->device_island_work_address()
+                                ?std::optional<SourceScDeviceIslandDyView>{
+                                    SourceScDeviceIslandDyView{
+                                        pcm_->device_island_work_address(),
+                                        pcm_->device_island_layout(),
+                                        *pcm_->device_island_indirect_args()}}
+                                :std::nullopt,
+                            deferred_points);
+        if(!deferred_points.empty())
+            pcm_->mark_deferred_points_in_numerical();
         ++dy_distance_dispatch_count_;
+#if defined(FYZZXYZZY_PROFILE_GPU)
+        const auto& schedule=dy_distance_->last_schedule();
+        FYZZ_PROFILE_COUNTER("dy.dispatches",schedule.dispatches);
+        FYZZ_PROFILE_COUNTER("dy.indirect_dispatches",schedule.device_island_indirect_dispatches);
+        FYZZ_PROFILE_COUNTER("dy.host_lane_packed_tasks",schedule.host_lane_packed_tasks);
+        FYZZ_PROFILE_COUNTER("dy.wide_tasks",schedule.wide_tasks);
+        FYZZ_PROFILE_COUNTER("dy.partition_groups",schedule.max_partition_groups);
+        FYZZ_PROFILE_COUNTER("dy.tile_bytes",schedule.tile_bytes);
+        FYZZ_PROFILE_COUNTER("dy.device_colored_descriptors",schedule.device_colored_descriptors);
+        FYZZ_PROFILE_COUNTER("dy.host_degree_scanned",schedule.host_degree_scanned_descriptors);
+        FYZZ_PROFILE_COUNTER("dy.device_admitted_tasks",schedule.device_admitted_tasks);
+        FYZZ_PROFILE_COUNTER("dy.device_admitted_descriptors",schedule.device_admitted_descriptors);
+        FYZZ_PROFILE_COUNTER("dy.device_generated_bytes",schedule.device_generated_bytes);
+        FYZZ_PROFILE_COUNTER("dy.source_descriptor_upload_bytes",schedule.source_descriptor_upload_bytes);
+        FYZZ_PROFILE_COUNTER("dy.body_upload_bytes",schedule.device_body_upload_bytes);
+        FYZZ_PROFILE_COUNTER("dy.actor_local_upload_bytes",schedule.actor_local_upload_bytes);
+        FYZZ_PROFILE_COUNTER("dy.upload_batches",schedule.device_upload_batches);
+        FYZZ_PROFILE_COUNTER("dy.resident_poses_reused",schedule.reused_actor_local_poses);
+        FYZZ_PROFILE_COUNTER("dy.resident_velocities_reused",schedule.resident_velocity_reuses);
+        FYZZ_PROFILE_COUNTER("dy.sleep_readback_bytes",schedule.sleep_readback_bytes);
+#endif
+    }
+    void finish_gpu_dy_distance() override {
+        FYZZ_PROFILE_SCOPE("dy.device_result_join");
+        if(!dy_distance_ || !dy_distance_->has_queued_solve())
+            throw std::logic_error("Source GPU Dy has no queued numerical epoch");
+        dy_distance_->finish();
+        if(pcm_)pcm_->finish_deferred_points(true);
+    }
+    bool has_queued_gpu_dy_distance() const noexcept {
+        return dy_distance_ && dy_distance_->has_queued_solve();
     }
     std::size_t dy_resident_pose_count() const noexcept {
         return dy_distance_ ? dy_distance_->last_resident_pose_count() : 0u;
@@ -350,6 +417,44 @@ public:
     }
     std::size_t pcm_contact_readback_bytes() const noexcept {
         return pcm_ ? pcm_->last_contact_download_bytes() : 0u;
+    }
+    std::size_t pcm_header_join_bytes() const noexcept {
+        return pcm_ ? pcm_->last_header_join_bytes() : 0u;
+    }
+    std::size_t pcm_deferred_point_bytes() const noexcept {
+        return pcm_ ? pcm_->last_deferred_point_download_bytes() : 0u;
+    }
+    // The device dependency is ready as soon as the source contact
+    // producer and all host Gu spans are queued, not when Sc joins DMA.
+    CudaDeviceAddressMap::Address device_pcm_contact_stream() const noexcept {
+        return pcm_ ? pcm_->device_contact_stream_address() : 0u;
+    }
+    std::uint32_t device_pcm_contact_count() const noexcept {
+        return pcm_ ? pcm_->device_contact_pair_count() : 0u;
+    }
+    CudaDeviceAddressMap::Address device_pcm_touch_history() const noexcept {
+        return pcm_ ? pcm_->device_edge_history_address() : 0u;
+    }
+    std::uint32_t device_pcm_touch_capacity() const noexcept {
+        return pcm_ ? pcm_->device_edge_history_capacity() : 0u;
+    }
+    void enqueue_gpu_dy_island_admission(
+            std::span<const native::GpuDyIslandEdge> edges,
+            std::span<const std::uint32_t> node_flags,
+            native::GpuDyIslandSources sources) override {
+        if(!pcm_)
+            throw std::logic_error("Source Sc GPU island admission unavailable");
+        pcm_->enqueue_device_islands(edges,node_flags,sources);
+    }
+    CudaDeviceAddressMap::Address device_island_work_address() const noexcept {
+        return pcm_?pcm_->device_island_work_address():0u;
+    }
+    SourceScDeviceIslandLayout device_island_layout() const noexcept {
+        return pcm_?pcm_->device_island_layout():SourceScDeviceIslandLayout{};
+    }
+    std::optional<compute::DispatchIndirectArgs>
+    device_island_indirect_args() const noexcept {
+        return pcm_?pcm_->device_island_indirect_args():std::nullopt;
     }
     std::size_t pcm_host_contact_upload_bytes() const noexcept {
         return pcm_ ? pcm_->last_host_contact_upload_bytes() : 0u;
@@ -394,25 +499,45 @@ public:
     }
     void enqueue_gpu_pcm_box_contacts(
             std::span<const native::GpuPcmBoxPair> requests,
-            std::span<native::GpuPcmBoxResult> results) override {
+            std::span<native::GpuPcmBoxResult> results,
+            std::uint32_t edge_capacity=0u,
+            bool defer_points=false) override {
         if(!pcm_)
             throw std::logic_error("Source Sc GPU PCM shaders not installed");
-        pcm_->enqueue(requests,results,aabb_->capacity());
+        pcm_->enqueue(requests,results,aabb_->capacity(),edge_capacity,
+                      defer_points);
     }
     void finish_gpu_pcm_box_contacts() override {
         if(!pcm_)
             throw std::logic_error("Source Sc GPU PCM shaders not installed");
         pcm_->finish();
     }
+    void finish_deferred_gpu_pcm_points() override {
+        if(pcm_)pcm_->finish_deferred_points();
+    }
+    void enqueue_cpu_gu_touch_history(
+            std::span<const native::GpuGuTouchRecord> touches) override {
+        if(!pcm_)
+            throw std::logic_error("Source Gu history requires PCM ownership");
+        pcm_->enqueue_cpu_gu_touches(touches);
+    }
+    void enqueue_host_pcm_contacts(
+            std::span<const native::GpuPcmBoxPair> requests,
+            std::span<const native::GpuPcmBoxResult> results) override {
+        if(!pcm_)
+            throw std::logic_error("Source Sc GPU PCM is unavailable");
+        pcm_->enqueue_host_contacts(requests,results);
+    }
     bool supports_host_pcm_contacts() const noexcept override {
         return pcm_ && dy_distance_;
     }
     void upload_host_pcm_contacts(
             std::span<const native::GpuPcmBoxPair> requests,
-            std::span<const native::GpuPcmBoxResult> results) override {
+            std::span<const native::GpuPcmBoxResult> results,
+            std::uint32_t edge_capacity=0u) override {
         if(!pcm_ || !dy_distance_)
             throw std::logic_error("Source Sc/Dy primitive PCM is unavailable");
-        pcm_->upload_host_contacts(requests,results);
+        pcm_->upload_host_contacts(requests,results,edge_capacity);
     }
     void authorize_device_integrated_pose(BodyId id) override {
         producer_->authorize_device_integrated_pose(id);
@@ -471,22 +596,57 @@ public:
     }
     void post_reports_cleanup() override { producer_->post_reports_cleanup(); }
     void commit_gpu_step() override {
+        if(dy_distance_ && dy_distance_->has_queued_solve())
+            throw std::logic_error(
+                "Source Sc frame cannot commit before Dy numerical writeback");
         if(pcm_)pcm_->commit_step();
+#if defined(FYZZXYZZY_PROFILE_GPU)
+        const auto heap=manager_->getDeviceHeapStats();
+        FYZZ_PROFILE_COUNTER("heap.device_reserved_bytes",manager_->getDeviceMemorySize());
+        FYZZ_PROFILE_COUNTER("heap.broadphase_live_bytes",
+            heap.stats[physx::PxsHeapStats::eBROADPHASE]);
+        FYZZ_PROFILE_COUNTER("heap.narrowphase_live_bytes",
+            heap.stats[physx::PxsHeapStats::eNARROWPHASE]);
+        FYZZ_PROFILE_COUNTER("heap.solver_live_bytes",
+            heap.stats[physx::PxsHeapStats::eSOLVER]);
+        FYZZ_PROFILE_COUNTER("pcm.pair_upload_bytes",
+            pcm_?pcm_->last_pair_upload_bytes():0u);
+        FYZZ_PROFILE_COUNTER("pcm.witness_readback_bytes",
+            pcm_?pcm_->last_contact_download_bytes():0u);
+        FYZZ_PROFILE_COUNTER("pcm.header_join_bytes",
+            pcm_?pcm_->last_header_join_bytes():0u);
+        FYZZ_PROFILE_COUNTER("pcm.deferred_point_bytes",
+            pcm_?pcm_->last_deferred_point_download_bytes():0u);
+        FYZZ_PROFILE_COUNTER("pcm.host_contact_upload_bytes",
+            pcm_?pcm_->last_host_contact_upload_bytes():0u);
+        FYZZ_PROFILE_COUNTER("pcm.edge_history_copy_bytes",
+            pcm_?pcm_->last_edge_history_copy_bytes():0u);
+#endif
     }
     bool needs_gpu_contact_rebuild() const noexcept override {
         return pcm_ && pcm_->needs_contact_rebuild();
     }
     void invalidate_after_rollback() noexcept override {
         stream_.discard_unsubmitted_commands();
+        stream_.abandon_numerical_fetch();
         producer_->invalidate_after_rollback();
         if(pcm_)pcm_->invalidate_after_rollback();
-        if(dy_distance_)dy_distance_->invalidate_after_rollback();
+        if(dy_distance_) {
+            // The GPU may still own a Dy output transfer even if its
+            // result join threw after consuming the pending task token.
+            // Retire that transfer and its ordered solver commands before
+            // the next scene transaction can reuse their allocations.
+            stream_.abandon_fetch();
+            try { stream_.wait_at_fetch(); } catch (...) {}
+            dy_distance_->invalidate_after_rollback();
+        }
     }
     const SourceSapSceneFrameNativeResult& last_frame() const {
         return producer_->last_frame();
     }
 
 private:
+    friend struct SourceScDeviceIslandFixture;
     // Shared with the reference PhysX runtime; released after GPU owners.
     std::shared_ptr<physx_runtime::Foundation> foundation_;
     compute::Context context_;
@@ -503,7 +663,9 @@ private:
 
     AabbEncodingStage encoding_;
     SourceScBoxTransformBoundsNativeStage box_transforms_;
-    physx::PxgCudaBuffer box_input_,box_cache_,box_geometry_,convex_vertices_;
+    physx::PxgCudaBuffer box_input_;
+    SourceFrameInputArenaNative frame_input_;
+    physx::PxgCudaBuffer box_cache_,box_geometry_,convex_vertices_;
     physx::PxgCudaBuffer convex_surface_;
     std::vector<std::uint32_t> convex_surface_words_;
     std::uint32_t convex_surface_bytes_=0u;

@@ -736,18 +736,13 @@ public:
                 aggregate_pair_overflow_device_.getDevicePtr(),
                 sizeof(AggregateFetchSnapshot::pair_overflow));
     }
-    AggregateFetchSnapshot download_aggregate_fetch_snapshot(
-        compute::Context& context,
-        const CudaDeviceAddressMap& addresses) const {
-        AggregateFetchSnapshot snapshot{};
+    compute::DownloadSpan aggregate_fetch_snapshot_readback(
+        const CudaDeviceAddressMap& addresses,
+        AggregateFetchSnapshot& snapshot) const {
         const auto source=addresses.resolve(
             aggregate_fetch_snapshot_device_.getDevicePtr(),
             sizeof(snapshot));
-        const std::array<compute::DownloadSpan,1> readback{{
-            {source.buffer,source.offset,&snapshot,sizeof(snapshot)}
-        }};
-        context.download_batch(readback);
-        return snapshot;
+        return {source.buffer,source.offset,&snapshot,sizeof(snapshot)};
     }
     struct AggregateReports {
         std::span<const physx::PxgBroadPhasePair> found,lost;
@@ -976,7 +971,8 @@ public:
         const physx::Bp::BpFilter& filter,
         bool gpu_bounds = false,
         bool republish_all_gpu_bounds = false,
-        SourceSapDeviceCachedPoseNative* cached_poses = nullptr) {
+        SourceSapDeviceCachedPoseNative* cached_poses = nullptr,
+        bool validated_sc_snapshot = false) {
         box_transform_records_.clear();
         // Source allocation growth requires every Sc volume to be
         // republished, regardless of previously authorized device poses.
@@ -1070,7 +1066,7 @@ public:
         auto update=prepare_source_sap_single_volume_scene_native(
             single_volumes(),{created_,retired_,updated_},live,handles,
             volume_to_actor_,scene_bounds(),filter,bounds_.hasChanged(),
-            bounds_scratch_,records,cached_poses);
+            bounds_scratch_,records,cached_poses,validated_sc_snapshot);
         validate_source_sap_volume_actor_lifetime_native(
             actor_lifetime(),update);
         republish_all();

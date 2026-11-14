@@ -279,6 +279,28 @@ struct GpuDyDistanceTask {
     std::uint32_t error=0u;
 };
 static_assert(sizeof(GpuDyDistanceTask)==36u);
+// Transient Sc edge identities and typed Dy numerical table bounds.
+// These are borrowed per-step views, not persistent public island IDs.
+struct GpuDyIslandEdge {
+    std::uint32_t edge_index=0;
+    std::uint32_t node_a=0xffffffffu,node_b=0xffffffffu;
+    std::uint32_t source_index=0,kind=0;
+};
+static_assert(sizeof(GpuDyIslandEdge)==20u);
+// Physical touch from CPU-owned Gu contacts enters the same resident
+// EdgeIndex journal as device PCM. Bits 0 and 1 are current/prior touch.
+struct GpuGuTouchRecord {
+    std::uint32_t edge_index=0u,touch_bits=0u;
+};
+static_assert(sizeof(GpuGuTouchRecord)==8u);
+struct GpuDyIslandSources {
+    std::uint32_t contact_managers=0u;
+    std::uint32_t joint_rows=0u;
+    std::uint32_t full_descriptors=0u;
+};
+// Both Sc endpoint admission and Dy wide-task scheduling use this gate.
+// Compact tasks never require host endpoint-degree analysis.
+inline constexpr std::uint32_t gpu_dy_wide_task_threshold=4u*128u;
 
 // DyContactPrep normal and friction rows use source PxReal arithmetic
 // with separate Gu-indexed contact-force writeback.
@@ -348,7 +370,8 @@ struct GpuDyContactPrepBody {
     float position[3]{},linear_velocity[3]{},angular_velocity[3]{};
     float sqrt_inverse_inertia[9]{};
     float inverse_mass=0.0f;
-    // Inline nonintegrated bodies retain their source solver ordinal.
+    // Solver-row identity is shared with compact contact descriptors.
+    // Static participants retain the invalid ordinal.
     std::uint32_t solver_ordinal=0xffffffffu;
     float orientation[4]{};
 };
@@ -369,11 +392,15 @@ struct GpuDyContactPrepPair {
     float max_contact_impulse=0.0f;
     // Dense CPU Gu geometry offset for non-PCM managers only.
     std::uint32_t cpu_gu_offset=0xffffffffu;
+    // Only the host packer reads these identities. Repeated immovable
+    // participants share one inline Dy body in a numerical frame.
+    BodyId source_body0=0xffffffffu,source_body1=0xffffffffu;
 };
-static_assert(sizeof(GpuDyContactPrepPair)==248u &&
+static_assert(sizeof(GpuDyContactPrepPair)==256u &&
               offsetof(GpuDyContactPrepPair,rest_distance)==192u &&
               offsetof(GpuDyContactPrepPair,max_contact_impulse)==240u &&
-              offsetof(GpuDyContactPrepPair,cpu_gu_offset)==244u);
+              offsetof(GpuDyContactPrepPair,cpu_gu_offset)==244u &&
+              offsetof(GpuDyContactPrepPair,source_body0)==248u);
 
 struct GpuConvexFaceSpan {
     std::uint32_t first_face=0;
@@ -394,6 +421,16 @@ public:
     virtual GpuBroadphaseReports advance(
         std::span<const GpuBroadphaseBox> live_boxes,
         bool force_update,bool geometry_dirty)=0;
+    // Run Sc work that cannot observe SAP results while native GPU
+    // report production is in flight. All report identity publication
+    // still occurs after the producer's original fetch boundary.
+    virtual GpuBroadphaseReports advance_overlapping(
+        std::span<const GpuBroadphaseBox> live_boxes,
+        bool force_update,bool geometry_dirty,
+        const std::function<void()>& independent_sc_work) {
+        if(independent_sc_work)independent_sc_work();
+        return advance(live_boxes,force_update,geometry_dirty);
+    }
     // ScShapeSim's authored transform/contact-distance changes and
     // ScPipeline::afterIntegration mark the original PxgAABBManager
     // changed-handle bitmap. No CPU geometry diff or parallel dirty list.
@@ -405,11 +442,25 @@ public:
     // spans remain alive until that join. No second contact owner exists.
     virtual void enqueue_gpu_pcm_box_contacts(
         std::span<const GpuPcmBoxPair>,
-        std::span<GpuPcmBoxResult>) {
+        std::span<GpuPcmBoxResult>,
+        std::uint32_t=0u,bool=false) {
         throw std::logic_error("Source GPU PCM stages are not installed");
     }
     virtual void finish_gpu_pcm_box_contacts() {
         throw std::logic_error("Source GPU PCM publication is unavailable");
+    }
+    virtual void finish_deferred_gpu_pcm_points() {}
+    // A mixed frame submits bounded CPU Gu into the resident source
+    // contact stream as soon as those witnesses are available. Sc's
+    // subsequent GPU witness join must not wait for this later upload.
+    virtual void enqueue_cpu_gu_touch_history(
+        std::span<const GpuGuTouchRecord>) {
+        throw std::logic_error("Device Gu touch history is unavailable");
+    }
+    virtual void enqueue_host_pcm_contacts(
+        std::span<const GpuPcmBoxPair>,
+        std::span<const GpuPcmBoxResult>) {
+        throw std::logic_error("Source GPU PCM host input is unavailable");
     }
     // Sc can generate bounded primitive Gu witnesses once, then upload
     // their existing source-ordered records for device Dy preparation.
@@ -417,11 +468,20 @@ public:
     virtual bool supports_host_pcm_contacts() const noexcept { return false; }
     virtual void upload_host_pcm_contacts(
         std::span<const GpuPcmBoxPair>,
-        std::span<const GpuPcmBoxResult>) {
+        std::span<const GpuPcmBoxResult>,
+        std::uint32_t=0u) {
         throw std::logic_error("Source GPU host PCM stream unavailable");
     }
     virtual bool has_gpu_dy_distance() const noexcept { return false; }
-    virtual void solve_gpu_dy_distance(
+    virtual std::uint32_t gpu_dy_direct_task_limit() const noexcept {
+        return 0u;
+    }
+    virtual void enqueue_gpu_dy_island_admission(
+        std::span<const GpuDyIslandEdge>,
+        std::span<const std::uint32_t>,GpuDyIslandSources) {
+        throw std::logic_error("Device Sc accurate-island admission is unavailable");
+    }
+    virtual void enqueue_gpu_dy_distance(
         std::span<GpuDyDistanceBody>,
         std::span<GpuDyJointRow>,
         std::span<const GpuDyDistanceDescriptor>,
@@ -445,6 +505,9 @@ public:
         std::span<GpuDySleepState> /*sleep_states*/={},
         std::span<const GpuDyJointInput> /*joint_inputs*/={}) {
         throw std::logic_error("Source GPU Dy shader is not installed");
+    }
+    virtual void finish_gpu_dy_distance() {
+        throw std::logic_error("Source GPU Dy result is not available");
     }
     // Sc's afterIntegration authorizes the source ElementSim device pose.
     virtual void authorize_device_integrated_pose(BodyId) {
@@ -648,6 +711,13 @@ public:
     // The production GPU SAP/AABB owner is attached before any actor is
     // admitted. A selected GPU scene never silently runs native CPU SAP.
     void set_gpu_broadphase(std::unique_ptr<GpuBroadphaseProducer> producer);
+    // Select numerical Dy execution between completed frames. Sc, SAP,
+    // PCM, contact history and published body state retain one owner.
+    void set_gpu_dy_enabled(bool enabled);
+    // Select the resident Sc island/response ordering for compact GPU
+    // task graphs. GPU-generated touch controls connectivity; Sc retains
+    // persistent identities and result publication.
+    void set_gpu_dy_device_admission_enabled(bool enabled);
     Scene(Scene&&) = default;
     Scene& operator=(Scene&&) = default;
     // Configured only at World construction, before scene admission.
@@ -1325,7 +1395,8 @@ private:
     void refresh_shape_links(BodyId body);
     static Transform validated_pose(Transform pose);
     // Shared Gu collision progression, independent of Dy solver execution.
-    void advance_collision_internal(bool force_update,bool checkpointed);
+    void advance_collision_internal(bool force_update,bool checkpointed,
+                                    bool defer_device_points=false);
     void update_shape_bounds(Shape& shape);
     void publish_integrated_shape_bounds(BodyId id,Actor& actor);
     void update_bounds();
@@ -1336,9 +1407,11 @@ private:
     void prepare_unconstrained_velocities(float seconds);
     void publish_kinematic_targets();
     void update_pairs();
-    void update_gpu_pairs(bool force_update);
+    void update_gpu_pairs(bool force_update,
+                          const std::function<void()>& independent_sc_work);
     void publish_pairs();
-    void update_contacts();
+    void update_contacts(bool defer_device_points=false);
+    void materialize_gpu_pcm_points();
     // Original contact-manager addEdge/setEdgeConnected/removeConnection
     // lifecycle, within the existing single scene-owned island pipeline.
     std::uint32_t allocate_contact_edge(Pair bodies,Pair shapes={});
@@ -1405,6 +1478,8 @@ private:
     void erase_body_friction_history(BodyId id);
     void erase_friction_history(std::uint32_t id,bool body_scope);
     void wake_shape_partners(ShapeId id);
+    void publish_cpu_gu_touch_history();
+    void prepare_gpu_dy_device_islands(bool selected);
     void solve_gpu_distance_constraints(float seconds);
     void solve_constraint_task(std::size_t task_index);
     void integrate_solver_task(std::size_t task_index,float seconds,
@@ -1479,7 +1554,7 @@ private:
         PcmManifoldCache& cache,std::span<ContactPoint> output);
     static std::uint8_t publish_gpu_pcm_box_box(
         const GpuPcmBoxResult& gpu,PcmManifoldCache& cache,
-        std::span<ContactPoint> output);
+        std::span<ContactPoint> output,bool defer_points=false);
     enum class IslandEdgeType : std::uint8_t {
         ContactManager, Constraint
     };
@@ -1769,6 +1844,8 @@ private:
     // Reusable flat Dy normal-constraint stream; patch ownership and all
     // point offsets remain with this scene, not with allocating manifolds.
     std::vector<SolverContactPoint> solver_contact_points_;
+    // GPU Dy keeps source Gu ordinals but no CPU numerical normal rows.
+    std::size_t prepared_contact_rows_=0u;
     // DyFrictionCorrelation::ContactPatchData is constructed from
     // CONTIGUOUS runs of compatible Gu contacts before friction patch
     // correlation; one reused scratch arena, not per-manager objects.
@@ -2040,6 +2117,7 @@ private:
         void publish_results();
     };
     std::vector<SolverTask> solver_tasks_;
+    std::size_t gpu_dy_responding_island_count_=0u;
     // Frame-local PxsSolverEndTask completions are keyed by the actual
     // task descriptor; stamps avoid allocating/clearing a new registry.
     std::vector<std::uint32_t> solver_task_completion_stamps_;
@@ -2076,6 +2154,8 @@ private:
     std::vector<FrictionManagerSpan> next_friction_by_edge_;
     std::uint64_t friction_cache_epoch_=0;
     std::vector<SolverContactFriction> solver_friction_rows_;
+    // GPU Dy retains source tangent offsets without CPU numerical rows.
+    std::size_t prepared_friction_rows_=0u;
     // DyDynamics::mWorldSolverBody / mWorldSolverBodyData: one zero-mass
     // solver body shared by all static collision participants.
     SolverBodyRow world_solver_row_{};
@@ -2093,7 +2173,10 @@ private:
     std::vector<GpuDyJointRow> gpu_dy_rows_;
     std::vector<GpuDyJointInput> gpu_dy_joint_inputs_;
     std::vector<std::uint32_t> gpu_dy_body_ordinals_;
+    std::vector<GpuGuTouchRecord> gpu_dy_gu_touches_;
     std::vector<GpuDyDistanceTask> gpu_dy_tasks_;
+    std::vector<GpuDyIslandEdge> gpu_dy_island_edges_;
+    std::vector<std::uint32_t> gpu_dy_island_node_flags_;
     std::vector<float> gpu_dy_contact_forces_;
     std::vector<GpuDyGuContactInput> gpu_dy_gu_inputs_;
     std::vector<GpuDyFrictionAnchorImpulse> gpu_dy_friction_impulses_;
@@ -2199,6 +2282,12 @@ private:
     // The GPU owner is the only broadphase producer in GPU mode; these
     // cached shape views are reused, never a duplicate SAP/pair registry.
     std::unique_ptr<GpuBroadphaseProducer> gpu_broadphase_;
+    bool gpu_dy_enabled_=true;
+    bool gpu_dy_device_admission_enabled_=false;
+    bool gpu_dy_active() const noexcept {
+        return gpu_dy_enabled_ && gpu_broadphase_ &&
+            gpu_broadphase_->has_gpu_dy_distance();
+    }
     std::vector<GpuBroadphaseBox> gpu_broadphase_boxes_;
     // This is a reusable Sc-to-BP input view, not an actor-state owner.
     // A rejected transaction revokes its validity before the next fetch.
@@ -2215,10 +2304,12 @@ private:
     std::vector<Pair> sap_created_pairs_,sap_deleted_pairs_;
     std::vector<Pair> previous_pairs_;
     std::vector<Pair> pending_pairs_;
+    std::vector<Pair> gpu_plane_pair_candidates_;
     // Sc's ordered contact-manager stream borrows these GPU per-frame
     // records; edge identity and rollback ownership remain with Sc.
     std::vector<GpuPcmBoxPair> gpu_pcm_pairs_;
     std::vector<GpuPcmBoxResult> gpu_pcm_results_;
+    bool gpu_pcm_points_deferred_=false;
     // Source friction cache geometry is independent of current PCM Gu.
     // Each bit is a previous friction patch validated while GPU Gu runs.
     std::vector<std::uint32_t> gpu_pcm_friction_history_masks_;
@@ -2310,6 +2401,9 @@ private:
         float seconds=0.0f;
         RigidStepJoin* solver_join=nullptr;
         std::size_t solver_first=invalid_instance, solver_end=0;
+#if defined(FYZZXYZZY_PROFILE_GPU)
+        std::uint64_t trace_id=0u,trace_origin=0u,trace_frame=0u;
+#endif
         std::exception_ptr error;
         std::jthread worker;
         ~ThirdPassWorkerState() noexcept;
@@ -2330,5 +2424,6 @@ namespace fyzz {
 std::unique_ptr<WorldBackend> create_native_gpu_broadphase_backend(
     std::unique_ptr<native::GpuBroadphaseProducer> source_producer,
     bool contact_notifications, bool enhanced_determinism,
-    bool pcm_plane_box, bool pcm_box_box);
+    bool pcm_plane_box, bool pcm_box_box,
+    bool device_island_admission=false);
 } // namespace fyzz

@@ -17,6 +17,19 @@ void planeCacheStore(uint edgeBase,uint slot,float3 localA,
     edgeCaches.Store(dst+36u,asuint(separation));
 }
 
+// The plane generator publishes final Sc contacts directly, including
+// its compact classification header for the host admission boundary.
+void planePublishHeader(uint index,uint edge,uint counts,float3 normal) {
+    const uint dst=p.outputBias+index*84u;
+    streamContacts.Store2(dst,uint2(edge,counts));
+    streamContacts.Store3(dst+8u,asuint(normal));
+    if(p.headerBias!=0xffffffffu) {
+        const uint header=p.headerBias+index*20u;
+        streamContacts.Store2(header,uint2(edge,counts));
+        streamContacts.Store3(header+8u,asuint(normal));
+    }
+}
+
 // Source PCM plane/box and plane/sphere share the Sc contact manager and
 // resident Gu stream. The infinite plane has no AABB ElementSim volume.
 void sourcePcmPlanePair(uint index,uint boxElement,uint edge,uint result,
@@ -26,7 +39,7 @@ void sourcePcmPlanePair(uint index,uint boxElement,uint edge,uint result,
        !isfinite(planeHeight) || !isfinite(contactDistance) ||
        contactDistance<0.f) {
         publishPair(result,0u,0u,1u,edge,0u,0u,0u,0u);
-        streamContacts.Store2(dst,uint2(edge,8u));
+        planePublishHeader(index,edge,8u,float3(0.f,0.f,0.f));
         return;
     }
     const uint boxGeo=p.geometryBias+boxElement*64u;
@@ -40,13 +53,13 @@ void sourcePcmPlanePair(uint index,uint boxElement,uint edge,uint result,
         const float3 center=asfloat(transforms.Load3(boxPose+16u));
         if(!isfinite(radius) || radius<=0.f || !all(isfinite(center))) {
             publishPair(result,0u,0u,1u,edge,0u,0u,0u,0u);
-            streamContacts.Store2(dst,uint2(edge,8u));
+            planePublishHeader(index,edge,8u,float3(0.f,0.f,0.f));
             return;
         }
         const float separation=center.y-planeHeight-radius;
         if(!isfinite(separation)) {
             publishPair(result,0u,0u,1u,edge,0u,0u,0u,0u);
-            streamContacts.Store2(dst,uint2(edge,8u));
+            planePublishHeader(index,edge,8u,float3(0.f,0.f,0.f));
             return;
         }
         const bool touching=contactDistance>=separation;
@@ -64,14 +77,14 @@ void sourcePcmPlanePair(uint index,uint boxElement,uint edge,uint result,
         publishPair(result,count,count,0u,edge,0u,count,0u,1u);
         const uint transition=sourceScTouchTransition(
             edge,count,0u,p.edgeCacheBias,p.edgeCapacity);
-        streamContacts.Store2(dst,uint2(edge,count|(count<<6u)|
-            (1u<<9u)|(count<<10u)|(transition<<13u)));
-        streamContacts.Store3(dst+8u,asuint(float3(0.f,1.f,0.f)));
+        planePublishHeader(index,edge,count|(count<<6u)|
+            (1u<<9u)|(count<<10u)|(transition<<13u),
+            float3(0.f,1.f,0.f));
         return;
     }
     if(kind!=0u && kind!=2u) {
         publishPair(result,0u,0u,1u,edge,0u,0u,0u,0u);
-        streamContacts.Store2(dst,uint2(edge,8u));
+        planePublishHeader(index,edge,8u,float3(0.f,0.f,0.f));
         return;
     }
     const float3 extent=asfloat(geometry.Load3(boxGeo));
@@ -80,7 +93,7 @@ void sourcePcmPlanePair(uint index,uint boxElement,uint edge,uint result,
     if(!all(isfinite(extent)) || !all(extent>0.f) ||
        !all(isfinite(center)) || !all(isfinite(rotation))) {
         publishPair(result,0u,0u,1u,edge,0u,0u,0u,0u);
-        streamContacts.Store2(dst,uint2(edge,8u));
+        planePublishHeader(index,edge,8u,float3(0.f,0.f,0.f));
         return;
     }
 
@@ -94,7 +107,7 @@ void sourcePcmPlanePair(uint index,uint boxElement,uint edge,uint result,
     bool initialized=edgeCaches.Load(cache+64u)!=0u;
     if(count>4u) {
         publishPair(result,0u,0u,1u,edge,0u,0u,0u,0u);
-        streamContacts.Store2(dst,uint2(edge,8u));
+        planePublishHeader(index,edge,8u,float3(0.f,0.f,0.f));
         return;
     }
 
@@ -141,7 +154,7 @@ void sourcePcmPlanePair(uint index,uint boxElement,uint edge,uint result,
             if(vertexCount<4u || start>p.hullCount ||
                vertexCount>p.hullCount-start) {
                 publishPair(result,0u,0u,1u,edge,0u,0u,0u,0u);
-                streamContacts.Store2(dst,uint2(edge,8u));
+                planePublishHeader(index,edge,8u,float3(0.f,0.f,0.f));
                 return;
             }
             float deepest=3.402823466e38f;
@@ -379,11 +392,8 @@ void sourcePcmPlanePair(uint index,uint boxElement,uint edge,uint result,
                 count,0u,regenerate?1u:0u);
     const uint transition=sourceScTouchTransition(
         edge,emitted,0u,p.edgeCacheBias,p.edgeCapacity);
-    streamContacts.Store2(dst,uint2(edge,
+    // Device Dy consumes the already-oriented Sc normal.
+    planePublishHeader(index,edge,
         count | (count<<6u) | ((regenerate?1u:0u)<<9u) |
-        (emitted<<10u) | (transition<<13u)));
-    // Device Dy consumes the same already-oriented Sc normal as the
-    // completed host manifold. The source plane-first Gu reversal is
-    // performed here, before any GPU contact-row preparation.
-    streamContacts.Store3(dst+8u,asuint(float3(0.f,1.f,0.f)));
+        (emitted<<10u) | (transition<<13u),float3(0.f,1.f,0.f));
 }
