@@ -1237,9 +1237,19 @@ void verify_device_sc_dy_task_admission(
         {0.5f,0.5f,0.5f},{0.8f,1.f,0.f});
     const auto independent=scene.add_dynamic_box(
         {0.5f,0.5f,0.5f},{8.f,1.f,0.f},1.f);
+    // The broadphase AABBs overlap at their corners, but the
+    // diagonally separated oriented boxes have no physical contact.
+    const auto separated=scene.add_static_box(
+        {0.5f,0.5f,0.5f},{9.08f,2.08f,0.f});
+    scene.set_pose(separated,{9.08f,2.08f,0.f},
+        {0.f,0.f,0.382683432f,0.923879533f});
     scene.advance_collision(true);
     const auto edge=scene.contact_edge_index({moving,fixed});
     require(edge!=0xffffffffu,"Device Sc/Dy test lost its Sc manager");
+    const auto empty_edge=scene.contact_edge_index({independent,separated});
+    require(empty_edge!=0xffffffffu &&
+            !scene.contact_edge_connected({independent,separated}),
+        "Device PCM zero-contact case requires a non-touching overlap");
     constexpr float seconds=1.f/120.f;
     const std::array<native::GpuPcmBoxPair,1> requests{{
         {moving,fixed,edge,false}
@@ -1563,6 +1573,47 @@ void verify_device_sc_dy_task_admission(
     producer->finish_gpu_pcm_box_contacts();
     require(witness[0].status()==0u && witness[0].count()>0u,
         "GPU PCM normal revalidation lost its source manifold");
+    producer->commit_gpu_step();
+
+    // A candidate PCM manager can have zero current-frame contacts.
+    // Its reserved numerical rows and old friction anchors must not
+    // become a solver response or force a host witness join.
+    const std::array<native::GpuPcmBoxPair,1> empty_request{{
+        {independent,separated,empty_edge,false}
+    }};
+    std::array<native::GpuDyContactPatch,1> empty_patches{{
+        {0u,contact_capacity,1u,0x80000000u,0.5f,0.5f,
+         0x80000000u,0u}
+    }};
+    contact_prep[0].pcm_edge=empty_edge;
+    inputs[0].source_actor=independent;
+    inputs[0].position[0]=8.f;
+    inputs[0].actor_position[0]=8.f;
+    std::fill(capacity_forces.begin(),capacity_forces.end(),0.f);
+    body={};
+    body[0].inverse_mass=1.f;
+    contact_tasks={{{0u,1u,0u,1u,0u,1u,4u,1u,0u}}};
+    poses={};
+    sleep={};
+    witness={};
+    producer->enqueue_gpu_pcm_box_contacts(empty_request,witness);
+    producer->enqueue_gpu_dy_distance(
+        body,{},contact_desc,{},ordinals,contact_tasks,
+        capacity_forces,{},{},cached_anchors,empty_patches,
+        capacity_managers,{},contact_prep,inputs,poses,true,
+        cached_impulses,true,true,true,sleep);
+    require(witness[0].packed_counts==0u,
+        "Empty PCM capacity admission read the host witness early");
+    producer->finish_gpu_dy_distance();
+    require(witness[0].packed_counts==0u &&
+            contact_tasks[0].error==0u && poses[0].valid==1u &&
+            empty_patches[0].anchor_count==0u &&
+            std::all_of(capacity_forces.begin(),capacity_forces.end(),
+                        [](float impulse){return impulse==0.f;}),
+        "Empty resident PCM contact run applied stale numerical response");
+    producer->finish_gpu_pcm_box_contacts();
+    require(witness[0].status()==0u && witness[0].count()==0u,
+        "Separated broadphase candidate unexpectedly produced PCM contacts");
     producer->commit_gpu_step();
 
     // Invalid joint numerics can arise after valid source preparation.
