@@ -1285,6 +1285,7 @@ public:
         std::array<std::uint32_t,32> params{};
         for(std::size_t i=0;i<11u;++i)
             params[i<6u?6u+i:17u+i-6u]=narrow(elements[i]);
+        params[21]=device_admission?1u:0u;
         params[30]=narrow(elements[11]);
         for(std::size_t i=0;i<5u;++i)
             params[22u+i]=narrow(history_bytes+result_offsets[i]);
@@ -1534,8 +1535,6 @@ public:
             params[10]=(iteration<<4u)|static_cast<std::uint32_t>(phase)|
                 (compact_friction?0x20000000u:0u)|
                 (device_partitions?0x80000000u:0u)|
-                (device_admission && phase!=Launch::FreeBodies
-                    ?0x08000000u:0u)|
                 (device_partitions && !wide_tasks_.empty() &&
                  phase!=Launch::Color ?0x40000000u:0u);
             // Compact tasks have no cross-workgroup dependencies. Their

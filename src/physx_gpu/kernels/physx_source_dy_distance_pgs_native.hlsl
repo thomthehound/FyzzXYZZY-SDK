@@ -52,7 +52,7 @@ struct Parameters {
     uint bodyCount, rowCount, launchBegin, partitionCount;
     uint launchControl, integrationBias;
     uint contactBias,frictionBias,patchBias,manifoldBias,orderBias;
-    uint contactCount,frictionCount,patchCount,manifoldCount,orderCount;
+    uint contactCount,frictionCount,patchCount,manifoldCount,sourceViewMode;
     uint resultBodyOffset,resultTaskOffset,resultContactOffset;
     uint resultFrictionOffset,resultPatchOffset,reservedOutput;
     uint writebackBias;
@@ -82,11 +82,11 @@ float loadScalar(uint byteOffset) {
 }
 uint sourceDyBodyOrdinal(uint index) {
     const uint address=p.ordinalBias+index*4u;
-    return (p.launchControl&0x08000000u)!=0u
+    return p.sourceViewMode!=0u
         ?scIslandBodyOrder.Load(address):arena.Load(address);
 }
 uint sourceDyResponseToken(uint scratch,uint colors,uint index) {
-    if((p.launchControl&0x08000000u)!=0u) {
+    if(p.sourceViewMode!=0u) {
         const uint offset=arena.Load(scratch+20u);
         return scIslandBodyOrder.Load(p.ordinalBias+offset+index*4u);
     }
