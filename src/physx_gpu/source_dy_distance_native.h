@@ -588,24 +588,39 @@ public:
             }
             return narrow(offset); // An aligned offset; low bit clear.
         };
-        for(const auto& desc:descriptors) {
-            if((desc.row_count&255u)!=0u)continue;
-            if(desc.index>=manifolds.size())
-                throw std::logic_error("Source contact descriptor has no manager");
-            const auto& manager=manifolds[desc.index];
-            if(!manager.patch_count)continue;
+        const pack_manager=[&](const native::GpuDyContactManifold& manager,
+                                std::uint32_t row0,std::uint32_t row1) {
             if(manager.prep_index>=contact_prep.size() ||
                assigned_[manager.prep_index]++)
                 throw std::logic_error("Source Dy contact prep is not unique");
             const auto& source=contact_prep[manager.prep_index];
             auto& target=packed_[manager.prep_index];
-            target.body0_source=ref_body(
-                source.body0,desc.row0,source.source_body0);
-            target.body1_source=ref_body(
-                source.body1,desc.row1,source.source_body1);
+            target.body0_source=ref_body(source.body0,row0,source.source_body0);
+            target.body1_source=ref_body(source.body1,row1,source.source_body1);
             std::memcpy(target.constants.data(),
                 reinterpret_cast<const std::uint8_t*>(&source)+192u,
                 target.constants.size());
+        };
+        if(device_admission) {
+            // Device tokens use pre-PCM candidate ordinals; prepared
+            // endpoints already carry their authoritative solver ordinals.
+            for(const auto& manager:manifolds) {
+                if(!manager.patch_count)continue;
+                if(manager.prep_index>=contact_prep.size())
+                    throw std::logic_error("Device contact source has no preparation");
+                const auto& source=contact_prep[manager.prep_index];
+                pack_manager(manager,source.body0.solver_ordinal,
+                             source.body1.solver_ordinal);
+            }
+        }else {
+            for(const auto& desc:descriptors) {
+                if((desc.row_count&255u)!=0u)continue;
+                if(desc.index>=manifolds.size())
+                    throw std::logic_error("Source contact descriptor has no manager");
+                const auto& manager=manifolds[desc.index];
+                if(manager.patch_count)
+                    pack_manager(manager,desc.row0,desc.row1);
+            }
         }
         // Only CPU Gu friction patches and invalidated GPU PCM history
         // require host anchor input. Compact those source-owned anchors
