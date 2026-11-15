@@ -3907,6 +3907,47 @@ void verify_mixed_gu_pcm_gpu_dy_solver(
                     "Mixed source Gu/PCM GPU Dy motion diverged from CPU");
             }
         }
+        if(!plane_first) {
+            // Reject after mixed PCM and Gu have prepared their shared
+            // contact arena, then retry from the committed Sc epoch.
+            gpu.set_gpu_dy_enabled(false);
+            const auto before=gpu.body_state(empty_gpu);
+            const auto previous_frame=gpu.frame_index();
+            const auto previous_contacts=gpu.contacts().size();
+            const auto previous_dispatches=producer->dy_distance_dispatch_count();
+            const float extreme=std::numeric_limits<float>::max()*0.75f;
+            gpu.set_angular_velocity(empty_gpu,{extreme,0.f,0.f});
+            gpu.add_spatial_velocity_mod(
+                empty_gpu,{extreme,0.f,0.f},ForceMode::VelocityChange,true);
+            bool rejected=false;
+            try {gpu.step(dt);}
+            catch(const std::overflow_error&) {rejected=true;}
+            require(rejected && gpu.frame_index()==previous_frame &&
+                    gpu.contacts().size()==previous_contacts &&
+                    producer->dy_distance_dispatch_count()==previous_dispatches &&
+                    gpu.body_state(empty_gpu).position.x==before.position.x,
+                "Mixed PCM/Gu rejected frame published incomplete contact state");
+            native::GpuPcmFrictionAnchorFixture::verify_active_reverse_indices(gpu);
+            gpu.clear_spatial_velocity_mod(
+                empty_gpu,ForceMode::VelocityChange,true);
+            gpu.set_angular_velocity(empty_gpu,before.angular_velocity);
+            gpu.set_gpu_dy_enabled(true);
+            cpu.step(dt);
+            gpu.step(dt);
+            require(producer->dy_distance_dispatch_count()==
+                        previous_dispatches+1u &&
+                    cpu.contacts().size()==gpu.contacts().size() &&
+                    cpu.pairs().size()==gpu.pairs().size(),
+                "Mixed PCM/Gu rollback lost a subsequent numerical epoch");
+            for(std::size_t i=0u;i<moving_cpu.size();++i)
+                test::compound_compare_state(
+                    gpu.body_state(moving_gpu[i]),
+                    cpu.body_state(moving_cpu[i]),0.04f,
+                    "Mixed PCM/Gu retry diverged after rejected publication");
+            test::compound_compare_state(
+                gpu.body_state(empty_gpu),cpu.body_state(empty_cpu),0.04f,
+                "Mixed PCM/Gu rollback retained rejected free-body motion");
+        }
         // The plane has no finite GPU handle. Its simulation-flag and
         // actor retirement must still retire the same Sc contact edge
         // without changing the independent GPU PCM box manager.
