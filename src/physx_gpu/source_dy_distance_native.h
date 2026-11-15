@@ -165,9 +165,9 @@ public:
         max_view_=info.max_storage_buffer_range;
         compute::ComputePipelineDesc pipeline{};
         pipeline.shader=std::move(shader);
-        pipeline.storage_buffer_binding_count=8u;
+        pipeline.storage_buffer_binding_count=7u;
         pipeline.storage_buffer_views.assign(
-            8u,compute::StorageBufferViewKind::RawReadWrite);
+            7u,compute::StorageBufferViewKind::RawReadWrite);
         pipeline.push_constant_bytes=128u;
         pipeline_=context_.create_compute_pipeline(pipeline);
 #if defined(FYZZXYZZY_PROFILE_GPU)
@@ -176,9 +176,9 @@ public:
         if(convex_shader) {
             try {
                 pipeline.shader=std::move(*convex_shader);
-                pipeline.storage_buffer_binding_count=9u;
+                pipeline.storage_buffer_binding_count=8u;
                 pipeline.storage_buffer_views.assign(
-                    9u,compute::StorageBufferViewKind::RawReadWrite);
+                    8u,compute::StorageBufferViewKind::RawReadWrite);
                 convex_pipeline_=context_.create_compute_pipeline(pipeline);
 #if defined(FYZZXYZZY_PROFILE_GPU)
                 context_.set_pipeline_profile_label(convex_pipeline_,"dy.convex");
@@ -1373,33 +1373,24 @@ public:
                 source_allocation_bytes(convex_vertex_count,12u),
                 alignment_,6u,compute::BufferAccess::Read,
                 params[27],max_view_));
-        // Dy reads Sc's source-ordered body ordinals directly. Its
-        // per-task descriptor colors and mutable task errors remain in
-        // the numerical arena.
+        // All Sc admission views share one device allocation. Dy writes
+        // only transient task fields; Sc owns the input identities.
         std::uint32_t resident_ordinal_bias=0u;
-        const auto ordinal_address=device_admission
-            ?device_admission->work+
-                device_admission->layout.body_order:address;
-        const auto ordinal_bytes=device_admission
-            ?device_admission->layout.response_tokens-
-                device_admission->layout.body_order+
-                descriptors.size()*sizeof(std::uint32_t):total;
-        dispatch.buffers.push_back(source_native_view(
-            addresses_,ordinal_address,ordinal_bytes,alignment_,
-            convex_vertex_count?7u:6u,compute::BufferAccess::Read,
-            resident_ordinal_bias,max_view_));
         std::uint32_t resident_task_bias=0u;
         dispatch.buffers.push_back(source_native_view(
             addresses_,device_admission
                 ?device_admission->work:address,
             device_admission?device_admission->layout.bytes:total,
-            alignment_,convex_vertex_count?8u:7u,
+            alignment_,convex_vertex_count?7u:6u,
             compute::BufferAccess::ReadWrite,
             resident_task_bias,max_view_));
-        if(device_admission)
+        if(device_admission) {
+            const auto base=std::size_t(resident_task_bias);
+            resident_ordinal_bias=narrow(
+                base+device_admission->layout.body_order);
             resident_task_bias=narrow(
-                std::size_t(resident_task_bias)+
-                    device_admission->layout.tasks);
+                base+device_admission->layout.tasks);
+        }
         for(auto& record:packed_integration_) {
             if(record.actor_local_offset!=invalid) {
                 const auto offset=std::size_t(actor_local_bias)+

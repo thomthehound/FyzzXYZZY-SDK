@@ -38,23 +38,12 @@ RWByteAddressBuffer scHullVertices : register(u6,space0);
 #ifdef __spirv__
 [[vk::binding(7,0)]]
 #endif
-RWByteAddressBuffer scIslandBodyOrder : register(u7,space0);
+RWByteAddressBuffer scIslandWork : register(u7,space0);
 #else
 #ifdef __spirv__
 [[vk::binding(6,0)]]
 #endif
-RWByteAddressBuffer scIslandBodyOrder : register(u6,space0);
-#endif
-#ifdef FYZZXYZZY_CONVEX
-#ifdef __spirv__
-[[vk::binding(8,0)]]
-#endif
-RWByteAddressBuffer scIslandTasks : register(u8,space0);
-#else
-#ifdef __spirv__
-[[vk::binding(7,0)]]
-#endif
-RWByteAddressBuffer scIslandTasks : register(u7,space0);
+RWByteAddressBuffer scIslandWork : register(u6,space0);
 #endif
 
 struct Parameters {
@@ -94,35 +83,35 @@ float loadScalar(uint byteOffset) {
 uint sourceDyBodyOrdinal(uint index) {
     const uint address=p.ordinalBias+index*4u;
     return (p.launchControl&0x08000000u)!=0u
-        ?scIslandBodyOrder.Load(address):arena.Load(address);
+        ?scIslandWork.Load(address):arena.Load(address);
 }
 uint sourceDyResponseToken(uint scratch,uint colors,uint index) {
     if((p.launchControl&0x08000000u)!=0u) {
         const uint offset=arena.Load(scratch+20u);
-        return scIslandBodyOrder.Load(p.ordinalBias+offset+index*4u);
+        return scIslandWork.Load(p.ordinalBias+offset+index*4u);
     }
     return arena.Load(colors+index*4u);
 }
 uint sourceDyTaskLoad(uint address) {
     return (p.launchControl&0x08000000u)!=0u
-        ?scIslandTasks.Load(address):arena.Load(address);
+        ?scIslandWork.Load(address):arena.Load(address);
 }
 uint2 sourceDyTaskLoad2(uint address) {
     return (p.launchControl&0x08000000u)!=0u
-        ?scIslandTasks.Load2(address):arena.Load2(address);
+        ?scIslandWork.Load2(address):arena.Load2(address);
 }
 uint4 sourceDyTaskLoad4(uint address) {
     return (p.launchControl&0x08000000u)!=0u
-        ?scIslandTasks.Load4(address):arena.Load4(address);
+        ?scIslandWork.Load4(address):arena.Load4(address);
 }
 void sourceDyTaskStore(uint address,uint value) {
     if((p.launchControl&0x08000000u)!=0u)
-        scIslandTasks.Store(address,value);
+        scIslandWork.Store(address,value);
     else arena.Store(address,value);
 }
 void sourceDyTaskErrorOr(uint address,uint value) {
     if((p.launchControl&0x08000000u)!=0u)
-        scIslandTasks.InterlockedOr(address,value);
+        scIslandWork.InterlockedOr(address,value);
     else arena.InterlockedOr(address,value);
 }
 void solveJoint(uint4 desc,uint errorAddress,bool biased) {
@@ -1639,7 +1628,7 @@ void main(uint3 group:SV_GroupID,uint3 lane:SV_GroupThreadID) {
         if(schedule.w!=0u && arena.Load(schedule.w)==28u) {
             const uint taskOffset=arena.Load(schedule.w+24u);
             const uint sourceHeader=p.taskBias-taskOffset;
-            const uint4 header=scIslandTasks.Load4(sourceHeader);
+            const uint4 header=scIslandWork.Load4(sourceHeader);
             if(header.x!=0u || header.y>schedule.z ||
                header.z>schedule.x || header.w>schedule.y) {
                 if(phase==publishErrors) {
@@ -1650,7 +1639,7 @@ void main(uint3 group:SV_GroupID,uint3 lane:SV_GroupThreadID) {
                 return;
             }
             admittedTasks=header.y;
-            admittedDispatch=scIslandTasks.Load(sourceHeader+16u);
+            admittedDispatch=scIslandWork.Load(sourceHeader+16u);
         }
     }
     // Sc partitions independent compact tasks into packed lane ranges.

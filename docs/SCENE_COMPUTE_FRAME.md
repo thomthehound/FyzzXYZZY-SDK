@@ -133,8 +133,9 @@ ordinals, including zero-touch candidates, rather than Gu manifold positions.
 CPU-prepared task publication retains its original Gu-indexed ordering. The island work and Dy solve enter one ordered GPU
 submission without an intermediate host wait. Dy reads Sc's resident
 body-ordinal and source response-token streams directly. Dy updates the transient Sc task records directly and reads the
-admission header in place. No GPU-to-GPU copy occurs between Sc
-numerical admission and Dy; descriptor coloring stays in Dy's scratch. Island graphs
+admission header in place. One Sc work-buffer binding serves the admission header, tasks,
+body ordinals and response tokens without a device copy; descriptor
+coloring stays in Dy's numerical scratch. Island graphs
 with at most 32 nodes and 32 edges build their task records in one dispatch;
 larger graphs use parallel union, prefix and response ordering.
 Wide islands use their separate device-partition execution path; the compact
