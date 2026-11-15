@@ -3478,8 +3478,25 @@ void verify_plane_pcm_without_finite_pcm(
     cpu.advance_collision(true);
     gpu.advance_collision(true);
     require(physx_gpu::SourceScDeviceIslandFixture::touch(
-                *source,box_edge)==std::array<std::uint32_t,2>{0u,0u},
-        "Retired Gu contact history did not converge after publication");
+                *source,box_edge)==std::array<std::uint32_t,2>{0u,1u},
+        "Retired Gu EdgeIndex unexpectedly advanced without a contact producer");
+    // Reusing the retired handle must admit a fresh Found touch. The
+    // generation's first observation replaces both history words;
+    // the previous generation's Lost state cannot leak into the new one.
+    cpu.set_position(c[1],{5.4f,2.f,0.f});
+    gpu.set_position(g[1],{5.4f,2.f,0.f});
+    cpu.advance_collision();
+    gpu.advance_collision();
+    require(native::GpuPcmFrictionAnchorFixture::
+                contact_manager_edge(gpu,{box_support,g[1]})==box_edge &&
+            physx_gpu::SourceScDeviceIslandFixture::touch(
+                *source,box_edge)==std::array<std::uint32_t,2>{1u,0u},
+        "Recycled Gu EdgeIndex retained the retired manager's prior touch");
+    cpu.advance_collision(true);
+    gpu.advance_collision(true);
+    require(physx_gpu::SourceScDeviceIslandFixture::touch(
+                *source,box_edge)==std::array<std::uint32_t,2>{1u,1u},
+        "Recycled Gu EdgeIndex did not preserve its new touching generation");
 }
 void verify_pcm_friction_normal_revalidation(
     fyzz::compute::Backend backend,const char* sap,
