@@ -8851,8 +8851,19 @@ void Scene::publish_cpu_gu_touch_history() {
         // Sc publishes live Gu touch bits while building the contact
         // manifold. Only retired touches still require edge lookup here.
         for(const Pair pair:lost_contacts_) {
-            const EdgeIndex edge=contact_edge_index(pair);
-            if(edge==invalid_edge)continue;
+            EdgeIndex edge=contact_edge_index(pair);
+            if(edge==invalid_edge) {
+                // BP-retired managers remain in the previous Gu arena
+                // until the Sc transaction completes.
+                const auto prior=std::lower_bound(
+                    next_manifolds_.begin(),next_manifolds_.end(),pair,
+                    [](const ContactManifold& manifold,Pair key) {
+                        return manifold.pair<key;
+                    });
+                if(prior==next_manifolds_.end() || !(prior->pair==pair))
+                    continue;
+                edge=prior->edge_handle;
+            }
             const auto it=std::lower_bound(
                 gpu_pcm_pairs_.begin(),gpu_pcm_pairs_.end(),pair,
                 [this](const GpuPcmBoxPair& record,Pair key) {
