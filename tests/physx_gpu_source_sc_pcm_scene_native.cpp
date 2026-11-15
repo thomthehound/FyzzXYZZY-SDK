@@ -3466,6 +3466,20 @@ void verify_plane_pcm_without_finite_pcm(
                 cpu.body_state(c[i]),0.035f,
                 "Plane-only GPU PCM and finite Gu motion diverged");
     }
+    // Retire a physically touching finite Gu manager through BP while
+    // the independent plane PCM producer remains live in this epoch.
+    cpu.set_position(c[1],{8.f,2.f,0.f});
+    gpu.set_position(g[1],{8.f,2.f,0.f});
+    cpu.advance_collision();
+    gpu.advance_collision();
+    require(physx_gpu::SourceScDeviceIslandFixture::touch(
+                *source,box_edge)==std::array<std::uint32_t,2>{0u,1u},
+        "BP-retired Gu manager retained physical touch on the device");
+    cpu.advance_collision(true);
+    gpu.advance_collision(true);
+    require(physx_gpu::SourceScDeviceIslandFixture::touch(
+                *source,box_edge)==std::array<std::uint32_t,2>{0u,0u},
+        "Retired Gu contact history did not converge after publication");
 }
 void verify_pcm_friction_normal_revalidation(
     fyzz::compute::Backend backend,const char* sap,
