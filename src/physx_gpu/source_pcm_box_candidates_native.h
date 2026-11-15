@@ -167,7 +167,7 @@ public:
                  5u,compute::BufferAccess::ReadWrite),
             view(dispatch_args,12u,6u,compute::BufferAccess::ReadWrite),
             view(output,source_allocation_bytes(
-                     pair_count,compact_header?104u:84u),
+                     pair_count,compact_header?92u:84u),
                  7u,compute::BufferAccess::Write),
             view(vertex_count?convex_vertices:transforms,
                  vertex_count?source_allocation_bytes(vertex_count,12u):

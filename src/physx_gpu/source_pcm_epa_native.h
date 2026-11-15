@@ -140,7 +140,7 @@ public:
             view(output,source_allocation_bytes(1u,
                      compact_header_pair_count
                          ? (std::size_t(compact_header_pair_count)-first_pair)*84u+
-                           std::size_t(compact_header_pair_count)*20u
+                           std::size_t(compact_header_pair_count)*8u
                          : std::size_t(pair_count)*84u),
                  7u,compute::BufferAccess::Write),
             view(convex_vertex_count?convex_vertices:transforms,
@@ -176,7 +176,7 @@ public:
         if(compact_header_pair_count) {
             const auto offset=std::uint64_t(params[11])+
                 (std::uint64_t(compact_header_pair_count)-first_pair)*84u+
-                std::uint64_t(first_pair)*20u;
+                std::uint64_t(first_pair)*8u;
             if(offset>std::numeric_limits<std::uint32_t>::max())
                 throw std::overflow_error(
                     "Source PCM compact header offset overflow");

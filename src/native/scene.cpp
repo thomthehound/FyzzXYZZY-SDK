@@ -4037,19 +4037,19 @@ std::uint8_t Scene::publish_gpu_pcm_box_box(
     // This frame's device stream already contains Gu world contacts.
     cache.initialized=true;
     if(!gpu.count())return 0u;
+    if(gpu.count()>output.size())
+        throw std::logic_error("Source GPU PCM contact arena exhausted");
+    if(defer_points) {
+        // Numerical PCM owns the normal until Dy completes. Sc uses
+        // physical-touch counts to admit its stable manager.
+        output[0]={};
+        return static_cast<std::uint8_t>(gpu.count());
+    }
     const float sq=gpu.normal.x*gpu.normal.x+
                    gpu.normal.y*gpu.normal.y+
                    gpu.normal.z*gpu.normal.z;
     if(!(sq>0.f) || !std::isfinite(sq) || !finite(gpu.normal))
         throw std::overflow_error("Source GPU PCM normal is invalid");
-    if(gpu.count()>output.size())
-        throw std::logic_error("Source GPU PCM contact arena exhausted");
-    if(defer_points) {
-        // The single PCM patch needs only its common normal until Dy
-        // has been submitted; the retained result owns all witnesses.
-        output[0]={{},gpu.normal,0.f};
-        return static_cast<std::uint8_t>(gpu.count());
-    }
     for(std::uint8_t i=0;i<gpu.count();++i) {
         const auto& p=gpu.points[i];
         const ContactPoint contact{p.position,gpu.normal,p.separation};
@@ -4261,6 +4261,20 @@ void Scene::update_contacts(bool defer_device_points,float inverse_step) {
                 ++host_pair_count;
             }
     }
+    // Multiple retained friction patches require the current Gu normal
+    // for Sc patch selection. Single-patch PCM checks the resident
+    // normal during Dy anchor correlation.
+    if(defer_device_points)
+        for(const auto& request:gpu_pcm_pairs_) {
+            if(request.host_generated ||
+               request.edge>=friction_by_edge_.size())continue;
+            const auto& history=friction_by_edge_[request.edge];
+            if(history.epoch==friction_cache_epoch_ &&
+               history.count>1u) {
+                defer_device_points=false;
+                break;
+            }
+        }
     const bool gpu_results_pending=
         source_gpu_pcm && host_pair_count<gpu_pcm_pairs_.size();
     // Legacy Gu after the first GPU witness can run while PCM executes.

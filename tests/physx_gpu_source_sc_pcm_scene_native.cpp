@@ -2103,16 +2103,25 @@ void verify_queued_pcm_dy(fyzz::compute::Backend backend,const char* sap,
     producer->finish_gpu_pcm_box_contacts();
     require(deferred[0].edge==edge && deferred[0].status()==0u &&
             deferred[0].count()>0u &&
-            producer->pcm_header_join_bytes()==5u*sizeof(std::uint32_t) &&
-            producer->pcm_contact_readback_bytes()==5u*sizeof(std::uint32_t),
+            deferred[0].normal.x==0.f &&
+            deferred[0].normal.y==0.f &&
+            deferred[0].normal.z==0.f &&
+            producer->pcm_header_join_bytes()==2u*sizeof(std::uint32_t) &&
+            producer->pcm_contact_readback_bytes()==2u*sizeof(std::uint32_t),
         "Deferred PCM witness join fetched full numerical geometry");
     producer->finish_deferred_gpu_pcm_points();
     require(producer->pcm_deferred_point_bytes()==
                 sizeof(physx_gpu::SourcePcmGpuContactStreamNative)-
-                    5u*sizeof(std::uint32_t) &&
+                    2u*sizeof(std::uint32_t) &&
             deferred[0].count()>0u &&
             std::isfinite(deferred[0].points[0].separation) &&
-            std::fabs(deferred[0].points[0].position.x)>0.01f,
+            std::fabs(deferred[0].points[0].position.x)>0.01f &&
+            std::isfinite(deferred[0].normal.x) &&
+            std::isfinite(deferred[0].normal.y) &&
+            std::isfinite(deferred[0].normal.z) &&
+            (std::fabs(deferred[0].normal.x)+
+             std::fabs(deferred[0].normal.y)+
+             std::fabs(deferred[0].normal.z))>0.5f,
         "Deferred PCM witness publication did not restore world points");
     producer->commit_gpu_step();
 }
@@ -4601,10 +4610,10 @@ void verify_zero_touch_gpu_pcm_transfer(
     gpu.step(1.f/120.f);
     require(cpu.pairs().size()==1u && gpu.pairs().size()==1u &&
             cpu.contacts().empty() && gpu.contacts().empty() &&
-            producer->pcm_header_join_bytes()==5u*sizeof(std::uint32_t) &&
+            producer->pcm_header_join_bytes()==2u*sizeof(std::uint32_t) &&
             producer->pcm_deferred_point_bytes()==0u &&
             producer->pcm_contact_readback_bytes()==
-                5u*sizeof(std::uint32_t),
+                2u*sizeof(std::uint32_t),
         "Zero-touch GPU PCM fetched world witnesses without a contact");
 }
 
@@ -4734,10 +4743,10 @@ void verify_host_primitive_pcm_solver(
     add_remote_sphere(gpu);
     cpu.step(dt);
     gpu.step(dt);
-    require(producer->pcm_header_join_bytes()==5u*sizeof(std::uint32_t) &&
+    require(producer->pcm_header_join_bytes()==2u*sizeof(std::uint32_t) &&
             producer->pcm_deferred_point_bytes()==
                 sizeof(physx_gpu::SourcePcmGpuContactStreamNative)-
-                    5u*sizeof(std::uint32_t) &&
+                    2u*sizeof(std::uint32_t) &&
             producer->pcm_contact_readback_bytes()==
                 sizeof(physx_gpu::SourcePcmGpuContactStreamNative) &&
             producer->pcm_host_contact_upload_bytes()==

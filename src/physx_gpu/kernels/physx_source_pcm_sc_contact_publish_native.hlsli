@@ -30,8 +30,8 @@ void publishScContacts(uint i,uint first,uint second,uint edge,uint result,
     uint status=results.Load(result+8u);
     uint selected=results.Load(result+20u);
     uint regenerated=results.Load(result+28u);
-    // Source Sc receives the full 96-byte host record after fetch.
-    // Dy consumes this 84-byte device stream without expanding it.
+    // Sc observes identity and touch first; numerical consumers read
+    // normals and world witnesses from the resident 84-byte stream.
     uint dst=outputBias+i*84u;
     uint selectedBits=min(selected,7u)<<6u;
     uint regenBit=(regenerated!=0u ? 1u : 0u)<<9u;
@@ -41,9 +41,8 @@ void publishScContacts(uint i,uint first,uint second,uint edge,uint result,
         uint invalidCounts=7u | (1u<<3u) | selectedBits | regenBit;
         streamContacts.Store2(dst,uint2(resultEdge,invalidCounts));
         if(headerBias!=0xffffffffu) {
-            uint header=headerBias+i*20u;
+            uint header=headerBias+i*8u;
             streamContacts.Store2(header,uint2(resultEdge,invalidCounts));
-            streamContacts.Store3(header+8u,uint3(0u,0u,0u));
         }
         return;
     }
@@ -123,8 +122,7 @@ void publishScContacts(uint i,uint first,uint second,uint edge,uint result,
     streamContacts.Store2(dst,uint2(resultEdge,packed));
     streamContacts.Store3(dst+8u,asuint(normal));
     if(headerBias!=0xffffffffu) {
-        uint header=headerBias+i*20u;
+        uint header=headerBias+i*8u;
         streamContacts.Store2(header,uint2(resultEdge,packed));
-        streamContacts.Store3(header+8u,asuint(normal));
     }
 }

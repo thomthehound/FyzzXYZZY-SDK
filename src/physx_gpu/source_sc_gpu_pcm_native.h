@@ -409,7 +409,7 @@ public:
                 std::size_t(pair_count)+1u,4u),PX_FL);
             dense_contacts_.allocate(source_allocation_bytes(
                 pair_count,sizeof(SourcePcmGpuContactStreamNative)+
-                    (defer_points?20u:0u)),PX_FL);
+                    (defer_points?8u:0u)),PX_FL);
         }
         // Sc's reset intent travels with the source pair. The GPU
         // candidate owner initializes its own EdgeIndex record before
@@ -770,9 +770,11 @@ public:
         else stream_.wait_at_fetch();
         if(deferred_points_pending_)
             for(std::uint32_t i=0u;i<journal_pair_count_;++i)
-                if(!requests[i].host_generated)
+                if(!requests[i].host_generated) {
                     std::memcpy(&output[i],&header_records_[i],
                                 sizeof(PcmHeader));
+                    output[i].normal={};
+                }
         for(const auto& span:gpu_downloads_) {
             last_contact_download_bytes_+=span.bytes;
             if(deferred_points_pending_)
@@ -818,18 +820,18 @@ public:
                 const auto first=i;
                 do {++i;}while(i<journal_pair_count_ &&
                     !requests[i].host_generated && output[i].count()!=0u);
-                constexpr auto header_bytes=
-                    offsetof(native::GpuPcmBoxResult,points);
+                constexpr auto touch_bytes=
+                    offsetof(native::GpuPcmBoxResult,normal);
                 const auto bytes=(i-first)*sizeof(native::GpuPcmBoxResult)-
-                    header_bytes;
+                    touch_bytes;
                 const auto mapped=addresses_.resolve(
                     dense_contacts_.getDevicePtr()+
-                        first*sizeof(native::GpuPcmBoxResult)+header_bytes,
+                        first*sizeof(native::GpuPcmBoxResult)+touch_bytes,
                     bytes);
                 deferred_point_downloads_.push_back({
                     mapped.buffer,mapped.offset,
                     reinterpret_cast<std::uint8_t*>(output.data()+first)+
-                        header_bytes,bytes});
+                        touch_bytes,bytes});
             }
             deferred_points_pending_=!deferred_point_downloads_.empty();
         }
@@ -982,9 +984,8 @@ private:
     std::vector<SourcePcmBoxPairNative> pair_host_;
     struct PcmHeader {
         std::uint32_t edge=0u,packed_counts=0u;
-        float normal[3]{};
     };
-    static_assert(sizeof(PcmHeader)==20u);
+    static_assert(sizeof(PcmHeader)==8u);
     std::vector<PcmHeader> header_records_;
     std::vector<compute::DownloadSpan> gpu_downloads_,deferred_point_downloads_;
     bool deferred_points_pending_=false,deferred_points_in_numerical_=false;

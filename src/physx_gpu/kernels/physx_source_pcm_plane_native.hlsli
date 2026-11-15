@@ -24,9 +24,8 @@ void planePublishHeader(uint index,uint edge,uint counts,float3 normal) {
     streamContacts.Store2(dst,uint2(edge,counts));
     streamContacts.Store3(dst+8u,asuint(normal));
     if(p.headerBias!=0xffffffffu) {
-        const uint header=p.headerBias+index*20u;
+        const uint header=p.headerBias+index*8u;
         streamContacts.Store2(header,uint2(edge,counts));
-        streamContacts.Store3(header+8u,asuint(normal));
     }
 }
 
