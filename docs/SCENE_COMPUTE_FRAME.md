@@ -146,7 +146,9 @@ In mixed scenes where a CPU Gu manager follows GPU PCM in source pair
 order, Sc reserves bounded PCM witness slots in its existing contact arena,
 generates the remaining independent CPU Gu contacts before the PCM join,
 and compacts the arena back to source order. All-PCM scenes retain their
-single-pass publication path.
+single-pass publication path. In mixed late-Gu frames, Sc queues the
+CPU-generated physical-touch and loss journal before joining PCM's host
+witness, without waiting on that later device continuation.
 The GPU Dy path fetches 8 bytes of edge/touch metadata per GPU pair
 before numerical admission. Resident PCM keeps normals and world contacts;
 the first touching pair in each deferred span transfers 76 bytes after

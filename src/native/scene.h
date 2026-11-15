@@ -1483,7 +1483,9 @@ private:
     void erase_body_friction_history(BodyId id);
     void erase_friction_history(std::uint32_t id,bool body_scope);
     void wake_shape_partners(ShapeId id);
-    void publish_cpu_gu_touch_history();
+    void publish_cpu_gu_touch_history(
+        std::span<const Pair> lost_pairs,
+        std::span<const ContactManifold> previous_manifolds);
     void prepare_gpu_dy_device_islands(bool selected);
     void solve_gpu_distance_constraints(float seconds);
     void solve_constraint_task(std::size_t task_index);

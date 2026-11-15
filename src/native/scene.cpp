@@ -4902,7 +4902,15 @@ void Scene::update_contacts(bool defer_device_points,float inverse_step) {
         }
         if(previously_touching)++old_cursor;
     }
+    // The old Gu arena also identifies physically lost, BP-retired
+    // contacts before any GPU PCM result becomes visible to Sc.
+    while(old_cursor<manifolds_.size())
+        next_lost_contacts_.push_back(manifolds_[old_cursor++].pair);
     if(overlap_legacy_gu) {
+        // CPU Gu already generated its live/lost touches while PCM ran.
+        // Publish their journal after the PCM readback submission, but
+        // before Sc waits for that earlier readback to complete.
+        publish_cpu_gu_touch_history(next_lost_contacts_,manifolds_);
         FYZZ_PROFILE_SCOPE("sc.pcm_witness_join");
         gpu_broadphase_->finish_gpu_pcm_box_contacts();
         gpu_results_joined=true;
@@ -4969,10 +4977,6 @@ void Scene::update_contacts(bool defer_device_points,float inverse_step) {
     if(source_gpu_pcm && gpu_pcm_index!=gpu_pcm_results_.size())
         throw std::logic_error(
             "Source GPU PCM stream left an active Sc contact manager unconsumed");
-    // Broadphase-retired pairs and zero-contact pairs still lose their
-    // accurate Sc touch, independently of speculative SAP membership.
-    while(old_cursor<manifolds_.size())
-        next_lost_contacts_.push_back(manifolds_[old_cursor++].pair);
     // Assign all pointers only after the arena has stopped growing.
     // Both old and new contact arenas swap together with their manifolds.
     for (auto& manifold : next_manifolds_)
@@ -5007,10 +5011,10 @@ void Scene::update_contacts(bool defer_device_points,float inverse_step) {
     found_contacts_.swap(next_found_contacts_);
     lost_contacts_.swap(next_lost_contacts_);
     ++contact_epoch_;
-    // CPU Gu touch transitions are complete at contact publication.
-    // Queue their resident history before the independent island and
-    // constraint preparation; collision-only frames use the same path.
-    publish_cpu_gu_touch_history();
+    // CPU Gu history was already queued for mixed late-Gu frames.
+    // Other frames publish after Sc completes its contact arena swap.
+    if(!overlap_legacy_gu)
+        publish_cpu_gu_touch_history(lost_contacts_,next_manifolds_);
 }
 // IG::SimpleIslandManager::firstPassIslandGen/secondPassIslandGen:
 // speculative edges come from the scene's published SAP candidates,
@@ -8974,7 +8978,9 @@ void Scene::prepare_constraints(float seconds) {
     friction_by_edge_.swap(next_friction_by_edge_);
     friction_cache_epoch_=next_cache_epoch;
 }
-void Scene::publish_cpu_gu_touch_history() {
+void Scene::publish_cpu_gu_touch_history(
+    std::span<const Pair> lost_pairs,
+    std::span<const ContactManifold> previous_manifolds) {
     FYZZ_PROFILE_SCOPE("gu.touch_history");
     // CPU Gu touch transitions update the shared EdgeIndex history even
     // when the already prepared Sc task groups need no device admission.
@@ -8984,17 +8990,17 @@ void Scene::publish_cpu_gu_touch_history() {
        !gpu_pcm_pairs_.empty()) {
         // Sc publishes live Gu touch bits while building the contact
         // manifold. Only retired touches still require edge lookup here.
-        for(const Pair pair:lost_contacts_) {
+        for(const Pair pair:lost_pairs) {
             EdgeIndex edge=contact_edge_index(pair);
             if(edge==invalid_edge) {
                 // BP-retired managers remain in the previous Gu arena
                 // until the Sc transaction completes.
                 const auto prior=std::lower_bound(
-                    next_manifolds_.begin(),next_manifolds_.end(),pair,
+                    previous_manifolds.begin(),previous_manifolds.end(),pair,
                     [](const ContactManifold& manifold,Pair key) {
                         return manifold.pair<key;
                     });
-                if(prior==next_manifolds_.end() || !(prior->pair==pair))
+                if(prior==previous_manifolds.end() || !(prior->pair==pair))
                     continue;
                 edge=prior->edge_handle;
             }

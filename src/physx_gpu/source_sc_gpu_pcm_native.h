@@ -246,6 +246,7 @@ public:
         last_header_join_bytes_=0u;
         last_deferred_point_download_bytes_=0u;
         last_host_contact_upload_bytes_=results.size_bytes();
+        last_early_gu_touch_bytes_=0u;
         last_continuation_commands_=0u;
         last_face_pair_scan_count_=0u;
         rebuild_required_=false;
@@ -270,6 +271,7 @@ public:
         last_header_join_bytes_=0u;
         last_deferred_point_download_bytes_=0u;
         last_host_contact_upload_bytes_=0u;
+        last_early_gu_touch_bytes_=0u;
         host_upload_pending_=false;
         island_work_ready_=false;
         pending_host_inputs_=false;
@@ -648,6 +650,7 @@ public:
             gu_touch_records_.getDevicePtr(),edges_.getDevicePtr(),
             gu_touch_journal_.getDevicePtr(),count,capacity);
         gu_touch_count_=count;
+        if(result_pending_)last_early_gu_touch_bytes_=bytes;
     }
 
     // Sc supplies only stable, typed endpoints and authored iteration
@@ -890,6 +893,9 @@ public:
     std::size_t last_host_contact_upload_bytes() const noexcept {
         return last_host_contact_upload_bytes_;
     }
+    std::size_t last_early_gu_touch_bytes() const noexcept {
+        return last_early_gu_touch_bytes_;
+    }
     std::size_t last_edge_history_copy_bytes() const noexcept {
         return last_edge_history_copy_bytes_;
     }
@@ -1009,6 +1015,7 @@ private:
     std::size_t last_header_join_bytes_=0u;
     std::size_t last_deferred_point_download_bytes_=0u;
     std::size_t last_host_contact_upload_bytes_=0u;
+    std::size_t last_early_gu_touch_bytes_=0u;
     std::size_t last_edge_history_copy_bytes_=0u;
     std::size_t last_continuation_commands_=0u;
     std::size_t last_face_pair_scan_count_=0u;

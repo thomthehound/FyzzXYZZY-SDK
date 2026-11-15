@@ -427,6 +427,9 @@ public:
     std::size_t pcm_header_join_bytes() const noexcept {
         return pcm_ ? pcm_->last_header_join_bytes() : 0u;
     }
+    std::size_t pcm_early_gu_touch_bytes() const noexcept {
+        return pcm_ ? pcm_->last_early_gu_touch_bytes() : 0u;
+    }
     std::size_t pcm_deferred_point_bytes() const noexcept {
         return pcm_ ? pcm_->last_deferred_point_download_bytes() : 0u;
     }

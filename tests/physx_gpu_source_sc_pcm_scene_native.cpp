@@ -3846,6 +3846,10 @@ void verify_mixed_gu_pcm_gpu_dy_solver(
         for(std::uint32_t frame=0;frame<4u;++frame) {
             cpu.step(dt);
             gpu.step(dt);
+            if(frame==0u)
+                require((producer->pcm_early_gu_touch_bytes()>=
+                            sizeof(native::GpuGuTouchRecord))==!plane_first,
+                    "Late CPU Gu touch journal waited for Sc PCM witness");
             if(frame>0u)
                 require(producer->last_frame().device_cached_box_count>0u,
                     "Mixed Gu/PCM Dy body still uploaded its solved Sc pose");
