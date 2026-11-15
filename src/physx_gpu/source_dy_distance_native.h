@@ -1534,7 +1534,8 @@ public:
             params[10]=(iteration<<4u)|static_cast<std::uint32_t>(phase)|
                 (compact_friction?0x20000000u:0u)|
                 (device_partitions?0x80000000u:0u)|
-                (device_admission?0x08000000u:0u)|
+                (device_admission && phase!=Launch::FreeBodies
+                    ?0x08000000u:0u)|
                 (device_partitions && !wide_tasks_.empty() &&
                  phase!=Launch::Color ?0x40000000u:0u);
             // Compact tasks have no cross-workgroup dependencies. Their
