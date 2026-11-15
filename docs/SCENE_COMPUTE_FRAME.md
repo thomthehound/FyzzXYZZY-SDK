@@ -142,6 +142,11 @@ before Sc joins its witness stream; these changes remain covered by the
 frame's motion journal. Solver-body admission still follows accurate island
 reconciliation. The Scene joins GPU PCM headers for CPU friction correlation
 and reads back Dy scheduling and numerical results for publication.
+In mixed scenes where a CPU Gu manager follows GPU PCM in source pair
+order, Sc reserves bounded PCM witness slots in its existing contact arena,
+generates the remaining independent CPU Gu contacts before the PCM join,
+and compacts the arena back to source order. All-PCM scenes retain their
+single-pass publication path.
 The early PCM readback transfers 20 bytes per GPU pair rather than 84.
 Deferred witness readback transfers only touching runs: 64 bytes for the
 first pair in each contiguous run and 84 bytes for each subsequent pair,
