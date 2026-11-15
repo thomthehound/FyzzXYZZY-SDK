@@ -137,8 +137,10 @@ admission selection rejects them. Sc otherwise reuses CPU-prepared
 accurate-island task boundaries. Independent one-constraint islands with one
 or two responding bodies execute in packed GPU lanes; dependent compact
 islands use fused workgroups. Device-generated roots are numerical task IDs,
-not replacements for Sc's persistent island identities. The Scene still
-prepares solver inputs, joins GPU PCM headers for CPU friction correlation,
+not replacements for Sc's persistent island identities. The Scene prepares kinematic target velocities after PCM submission,
+before Sc joins its witness stream; these changes remain covered by the
+frame's motion journal. Solver-body admission still follows accurate island
+reconciliation. The Scene joins GPU PCM headers for CPU friction correlation
 and reads back Dy scheduling and numerical results for publication.
 The early PCM readback transfers 20 bytes per GPU pair rather than 84.
 Deferred witness readback transfers only touching runs: 64 bytes for the
