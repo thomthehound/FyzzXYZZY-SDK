@@ -588,7 +588,7 @@ public:
             }
             return narrow(offset); // An aligned offset; low bit clear.
         };
-        const pack_manager=[&](const native::GpuDyContactManifold& manager,
+        const auto pack_manager=[&](const native::GpuDyContactManifold& manager,
                                 std::uint32_t row0,std::uint32_t row1) {
             if(manager.prep_index>=contact_prep.size() ||
                assigned_[manager.prep_index]++)
