@@ -45,6 +45,17 @@ RWByteAddressBuffer scIslandBodyOrder : register(u7,space0);
 #endif
 RWByteAddressBuffer scIslandBodyOrder : register(u6,space0);
 #endif
+#ifdef FYZZXYZZY_CONVEX
+#ifdef __spirv__
+[[vk::binding(8,0)]]
+#endif
+RWByteAddressBuffer scIslandTasks : register(u8,space0);
+#else
+#ifdef __spirv__
+[[vk::binding(7,0)]]
+#endif
+RWByteAddressBuffer scIslandTasks : register(u7,space0);
+#endif
 
 struct Parameters {
     uint bodyBias, distanceBias, descriptorBias, partitionBias;
@@ -92,11 +103,33 @@ uint sourceDyResponseToken(uint scratch,uint colors,uint index) {
     }
     return arena.Load(colors+index*4u);
 }
+uint sourceDyTaskLoad(uint address) {
+    return (p.launchControl&0x08000000u)!=0u
+        ?scIslandTasks.Load(address):arena.Load(address);
+}
+uint2 sourceDyTaskLoad2(uint address) {
+    return (p.launchControl&0x08000000u)!=0u
+        ?scIslandTasks.Load2(address):arena.Load2(address);
+}
+uint4 sourceDyTaskLoad4(uint address) {
+    return (p.launchControl&0x08000000u)!=0u
+        ?scIslandTasks.Load4(address):arena.Load4(address);
+}
+void sourceDyTaskStore(uint address,uint value) {
+    if((p.launchControl&0x08000000u)!=0u)
+        scIslandTasks.Store(address,value);
+    else arena.Store(address,value);
+}
+void sourceDyTaskErrorOr(uint address,uint value) {
+    if((p.launchControl&0x08000000u)!=0u)
+        scIslandTasks.InterlockedOr(address,value);
+    else arena.InterlockedOr(address,value);
+}
 void solveJoint(uint4 desc,uint errorAddress,bool biased) {
     if(desc.x>=p.rowCount || desc.w>p.rowCount-desc.x ||
        (desc.y!=invalidBody && desc.y>=p.bodyCount) ||
        (desc.z!=invalidBody && desc.z>=p.bodyCount)) {
-        arena.InterlockedOr(errorAddress,1u);
+        sourceDyTaskErrorOr(errorAddress,1u);
         return;
     }
     const uint ao=p.bodyBias+desc.y*52u;
@@ -125,7 +158,7 @@ void solveJoint(uint4 desc,uint errorAddress,bool biased) {
         const float previous=loadScalar(offset+60u);
         const uint coefficient=arena.Load(offset+(biased?48u:52u));
         if((coefficient&0x7f800000u)==0x7f800000u) {
-            arena.InterlockedOr(errorAddress,2u);
+            sourceDyTaskErrorOr(errorAddress,2u);
             return;
         }
         precise float velocityTerm=normalDelta*loadScalar(offset+56u);
@@ -133,7 +166,7 @@ void solveJoint(uint4 desc,uint errorAddress,bool biased) {
         precise float candidate=force+asfloat(coefficient);
         if(!isfinite(candidate) || !isfinite(normalDelta) ||
            !isfinite(previous)) {
-            arena.InterlockedOr(errorAddress,2u);
+            sourceDyTaskErrorOr(errorAddress,2u);
             return;
         }
         precise float next=clamp(candidate,-maxImpulse,maxImpulse);
@@ -144,7 +177,7 @@ void solveJoint(uint4 desc,uint errorAddress,bool biased) {
         ab-=jb*impulse;
         if(!isfinite(next) || !all(isfinite(va)) || !all(isfinite(vb)) ||
            !all(isfinite(aa)) || !all(isfinite(ab))) {
-            arena.InterlockedOr(errorAddress,2u);
+            sourceDyTaskErrorOr(errorAddress,2u);
             return;
         }
         arena.Store(offset+60u,asuint(next));
@@ -395,7 +428,7 @@ bool sourceDyExpandDescriptor(uint token,uint sourceCount,uint sourceTable,
     const uint index=token&0x3fffffffu;
     if(kind==3u) {
         if(index>=p.manifoldCount) {
-            arena.InterlockedOr(errorAddress,1048576u);
+            sourceDyTaskErrorOr(errorAddress,1048576u);
             return false;
         }
         const uint manager=p.manifoldBias+index*20u;
@@ -405,7 +438,7 @@ bool sourceDyExpandDescriptor(uint token,uint sourceCount,uint sourceTable,
         }else {
             const uint prepIndex=arena.Load(manager+16u);
             if(prepIndex>=p.prepCount) {
-                arena.InterlockedOr(errorAddress,1048576u);
+                sourceDyTaskErrorOr(errorAddress,1048576u);
                 return false;
             }
             const uint prep=p.prepBias+prepIndex*64u;
@@ -420,20 +453,20 @@ bool sourceDyExpandDescriptor(uint token,uint sourceCount,uint sourceTable,
                    ((packed>>3u)&7u)!=0u || emitted>capacity ||
                    emitted>4u || begin>p.contactCount ||
                    capacity>p.contactCount-begin) {
-                    arena.InterlockedOr(errorAddress,65536u);
+                    sourceDyTaskErrorOr(errorAddress,65536u);
                     return false;
                 }
                 if(emitted!=capacity) {
                     const uint patchIndex=arena.Load(manager);
                     if(arena.Load(manager+4u)!=1u ||
                        patchIndex>=p.patchCount) {
-                        arena.InterlockedOr(errorAddress,65536u);
+                        sourceDyTaskErrorOr(errorAddress,65536u);
                         return false;
                     }
                     const uint patch=p.patchBias+patchIndex*32u;
                     if(arena.Load(patch+4u)!=capacity ||
                        arena.Load(patch+24u)!=(0x80000000u|begin)) {
-                        arena.InterlockedOr(errorAddress,65536u);
+                        sourceDyTaskErrorOr(errorAddress,65536u);
                         return false;
                     }
                     arena.Store(manager+12u,emitted);
@@ -457,7 +490,7 @@ bool sourceDyExpandDescriptor(uint token,uint sourceCount,uint sourceTable,
         }
     }else if(kind==2u) {
         if(index>=p.rowCount) {
-            arena.InterlockedOr(errorAddress,1048576u);
+            sourceDyTaskErrorOr(errorAddress,1048576u);
             return false;
         }
         const uint row=p.distanceBias+index*64u;
@@ -465,12 +498,12 @@ bool sourceDyExpandDescriptor(uint token,uint sourceCount,uint sourceTable,
                    arena.Load(row+4u),arena.Load(row+8u));
     }else if(kind==0u) {
         if(token>=sourceCount) {
-            arena.InterlockedOr(errorAddress,1048576u);
+            sourceDyTaskErrorOr(errorAddress,1048576u);
             return false;
         }
         desc=arena.Load4(sourceTable+4u+token*16u);
     }else {
-        arena.InterlockedOr(errorAddress,1048576u);
+        sourceDyTaskErrorOr(errorAddress,1048576u);
         return false;
     }
     return true;
@@ -484,7 +517,7 @@ void sourceDyPartitionTask(uint taskId,uint scratch,uint errorAddress,
     const uint cursors=scratch+views.z;
     const uint bodyState=scratch+views.w;
     const uint task=p.taskBias+taskId*36u;
-    const uint4 ranges=arena.Load4(task);
+    const uint4 ranges=sourceDyTaskLoad4(task);
     const uint first=ranges.x,last=ranges.y;
     const uint partitionFirst=ranges.z,partitionCapacity=ranges.w;
     if(lane==0u &&
@@ -492,9 +525,9 @@ void sourceDyPartitionTask(uint taskId,uint scratch,uint errorAddress,
         partitionCapacity<partitionFirst ||
         partitionCapacity-partitionFirst!=last-first ||
         partitionCapacity>p.partitionCount))
-        arena.InterlockedOr(errorAddress,1048576u);
+        sourceDyTaskErrorOr(errorAddress,1048576u);
     AllMemoryBarrierWithGroupSync();
-    if(arena.Load(errorAddress)!=0u)return;
+    if(sourceDyTaskLoad(errorAddress)!=0u)return;
     const uint count=last-first;
     if(lane==0u) {
         dyNeeded=0u;dyAssigned=0u;dyWave=0u;dyHighest=0u;
@@ -522,13 +555,13 @@ void sourceDyPartitionTask(uint taskId,uint scratch,uint errorAddress,
         if((desc.w&~0x3ffu)!=0u || (!da && !db) ||
            (da && desc.y>=p.bodyCount) ||
            (db && desc.z>=p.bodyCount)) {
-            arena.InterlockedOr(errorAddress,1048576u);
+            sourceDyTaskErrorOr(errorAddress,1048576u);
             continue;
         }
         const uint rowCount=desc.w&255u;
         if(rowCount!=0u) {
             if(desc.x>=p.rowCount || rowCount>p.rowCount-desc.x) {
-                arena.InterlockedOr(errorAddress,1u);
+                sourceDyTaskErrorOr(errorAddress,1u);
                 continue;
             }
             bool invalidCoefficient=false;
@@ -546,7 +579,7 @@ void sourceDyPartitionTask(uint taskId,uint scratch,uint errorAddress,
                 }
             }
             if(invalidCoefficient) {
-                arena.InterlockedOr(errorAddress,2u);
+                sourceDyTaskErrorOr(errorAddress,2u);
                 continue;
             }
         }
@@ -569,7 +602,7 @@ void sourceDyPartitionTask(uint taskId,uint scratch,uint errorAddress,
         if(da && db)InterlockedAdd(dyNeeded,1u);
     }
     AllMemoryBarrierWithGroupSync();
-    if(arena.Load(errorAddress)!=0u)return;
+    if(sourceDyTaskLoad(errorAddress)!=0u)return;
     if(count==1u) {
         // A single constraint owns its entire partition and requires
         // no conflict-mask coloring or cross-lane prefix scan.
@@ -580,7 +613,7 @@ void sourceDyPartitionTask(uint taskId,uint scratch,uint errorAddress,
             arena.Store(p.partitionBias+partitionFirst*4u,last);
             arena.Store(colors+first*4u,0u);
             arena.Store(cursors+partitionFirst*4u,last);
-            arena.Store(task+12u,partitionFirst+1u);
+            sourceDyTaskStore(task+12u,partitionFirst+1u);
         }
         return;
     }
@@ -712,7 +745,7 @@ void sourceDyPartitionTask(uint taskId,uint scratch,uint errorAddress,
             const uint bit=firstbitlow(available);
             const uint value=dyWave+bit;
             if(value>=count) {
-                arena.InterlockedOr(errorAddress,1048576u);
+                sourceDyTaskErrorOr(errorAddress,1048576u);
                 continue;
             }
             const uint mask=1u<<bit;
@@ -739,10 +772,10 @@ void sourceDyPartitionTask(uint taskId,uint scratch,uint errorAddress,
                     dySerial=1u;
             }
             if(dyWave>=count && dyAssigned<dyNeeded)
-                arena.InterlockedOr(errorAddress,1048576u);
+                sourceDyTaskErrorOr(errorAddress,1048576u);
         }
         AllMemoryBarrierWithGroupSync();
-        if(arena.Load(errorAddress)!=0u)return;
+        if(sourceDyTaskLoad(errorAddress)!=0u)return;
         if(dySerial!=0u)break;
     }
     if(dySerial!=0u) {
@@ -759,7 +792,7 @@ void sourceDyPartitionTask(uint taskId,uint scratch,uint errorAddress,
                     const uint bit=firstbitlow(available);
                     const uint value=dyWave+bit;
                     if(value>=count) {
-                        arena.InterlockedOr(errorAddress,1048576u);
+                        sourceDyTaskErrorOr(errorAddress,1048576u);
                         break;
                     }
                     const uint mask=1u<<bit;
@@ -771,11 +804,11 @@ void sourceDyPartitionTask(uint taskId,uint scratch,uint errorAddress,
                     dyHighest=max(dyHighest,value+1u);
                     ++dyAssigned;
                 }
-                if(arena.Load(errorAddress)!=0u)break;
+                if(sourceDyTaskLoad(errorAddress)!=0u)break;
                 if(dyAssigned==dyNeeded)break;
                 dyWave+=32u;
                 if(dyWave>=count) {
-                    arena.InterlockedOr(errorAddress,1048576u);
+                    sourceDyTaskErrorOr(errorAddress,1048576u);
                     break;
                 }
                 for(uint i=first;i<last;++i) {
@@ -788,7 +821,7 @@ void sourceDyPartitionTask(uint taskId,uint scratch,uint errorAddress,
             }
         }
         AllMemoryBarrierWithGroupSync();
-        if(arena.Load(errorAddress)!=0u)return;
+        if(sourceDyTaskLoad(errorAddress)!=0u)return;
     }
     for(uint i=first+lane;i<last;i+=128u) {
         const uint4 desc=arena.Load4(raw+i*16u);
@@ -810,7 +843,7 @@ void sourceDyPartitionTask(uint taskId,uint scratch,uint errorAddress,
                 (((desc.w&0x100u)!=0u)?desc.y:desc.z)*12u;
             const uint value=arena.Load(state+4u)+arena.Load(state+8u);
             if(value>=count) {
-                arena.InterlockedOr(errorAddress,1048576u);
+                sourceDyTaskErrorOr(errorAddress,1048576u);
                 break;
             }
             arena.Store(state+8u,arena.Load(state+8u)+1u);
@@ -820,7 +853,7 @@ void sourceDyPartitionTask(uint taskId,uint scratch,uint errorAddress,
         dyHighest=highest;
     }
     AllMemoryBarrierWithGroupSync();
-    if(arena.Load(errorAddress)!=0u)return;
+    if(sourceDyTaskLoad(errorAddress)!=0u)return;
     for(uint i=partitionFirst+lane;i<partitionCapacity;i+=128u)
         arena.Store(cursors+i*4u,0u);
     AllMemoryBarrierWithGroupSync();
@@ -840,12 +873,12 @@ void sourceDyPartitionTask(uint taskId,uint scratch,uint errorAddress,
             arena.Store(p.partitionBias+i*4u,end);
         }
         if(end!=last)
-            arena.InterlockedOr(errorAddress,1048576u);
+            sourceDyTaskErrorOr(errorAddress,1048576u);
         else
-            arena.Store(task+12u,partitionFirst+dyHighest);
+            sourceDyTaskStore(task+12u,partitionFirst+dyHighest);
     }
     AllMemoryBarrierWithGroupSync();
-    if(arena.Load(errorAddress)!=0u)return;
+    if(sourceDyTaskLoad(errorAddress)!=0u)return;
     // Within a color every descriptor owns distinct writable bodies.
     // Atomic scatter does not change solver dependencies or Gu indices.
     for(uint i=first+lane;i<last;i+=128u) {
@@ -895,13 +928,13 @@ bool sourceDyPrepareJointGeometry(uint4 desc,uint endError) {
     const uint source=arena.Load(first+60u);
     if(arena.Load(source+144u)!=arena.Load(first+48u) ||
        arena.Load(source+148u)!=arena.Load(first+52u)) {
-        arena.InterlockedOr(endError,8192u);
+        sourceDyTaskErrorOr(endError,8192u);
         return false;
     }
     const uint kind=arena.Load(source+140u);
     const uint count=kind==0u?1u:kind==2u?3u:kind==1u?6u:5u;
     if(kind>4u || desc.w!=count) {
-        arena.InterlockedOr(endError,8192u);
+        sourceDyTaskErrorOr(endError,8192u);
         return false;
     }
     const float3 localA=asfloat(arena.Load3(source));
@@ -914,7 +947,7 @@ bool sourceDyPrepareJointGeometry(uint4 desc,uint endError) {
     float4 qA,qB;
     if(!sourceDyJointActorFrame(desc.y,source+56u,source+112u,pA,qA,cA) ||
        !sourceDyJointActorFrame(desc.z,source+84u,source+124u,pB,qB,cB)) {
-        arena.InterlockedOr(endError,8192u);
+        sourceDyTaskErrorOr(endError,8192u);
         return false;
     }
      const float3 wA=pA+sourceRigidRotate(qA,localA);
@@ -944,7 +977,7 @@ bool sourceDyPrepareJointGeometry(uint4 desc,uint endError) {
     const uint dtInput=mass0>0.0f?inputA:inputB;
     const float dt=asfloat(arena.Load(dtInput+40u));
     if(!(dt>0.0f) || !isfinite(dt)) {
-        arena.InterlockedOr(endError,8192u);
+        sourceDyTaskErrorOr(endError,8192u);
         return false;
     }
     const float invDt=1.0f/dt;
@@ -958,7 +991,7 @@ bool sourceDyPrepareJointGeometry(uint4 desc,uint endError) {
             precise float3 offset=((cA+rA)-cB)-rB;
             const float distance=sqrt(sourceDyDot3(offset,offset));
             if(!isfinite(distance)) {
-                arena.InterlockedOr(endError,8192u);
+                sourceDyTaskErrorOr(endError,8192u);
                 return false;
             }
             axis=distance<1.192092896e-07f
@@ -1002,7 +1035,7 @@ bool sourceDyPrepareJointGeometry(uint4 desc,uint endError) {
         const float response=(mass0+mass1)*sourceDyDot3(axis,axis)+
             sourceDyDot3(ja,ja)+sourceDyDot3(jb,jb);
         if(!(response>0.0f) || !isfinite(response)) {
-            arena.InterlockedOr(endError,8192u);
+            sourceDyTaskErrorOr(endError,8192u);
             return false;
         }
         invResponse[i]=1.0f/response;
@@ -1017,7 +1050,7 @@ bool sourceDyPrepareJointGeometry(uint4 desc,uint endError) {
         if(!all(isfinite(axis)) || !all(isfinite(ja)) ||
            !all(isfinite(jb)) || !isfinite(constant) ||
            !isfinite(unbiased)) {
-            arena.InterlockedOr(endError,8192u);
+            sourceDyTaskErrorOr(endError,8192u);
             return false;
         }
         const uint row=first+i*64u;
@@ -1041,7 +1074,7 @@ void prepareJointRows(uint4 desc,uint lane,uint endError) {
     if(desc.x>=p.rowCount || desc.w>p.rowCount-desc.x ||
        (desc.y!=invalidBody && desc.y>=p.bodyCount) ||
        (desc.z!=invalidBody && desc.z>=p.bodyCount)) {
-        arena.InterlockedOr(endError,4096u);
+        sourceDyTaskErrorOr(endError,4096u);
         return;
     }
     const uint massRow=p.distanceBias+desc.x*64u;
@@ -1087,7 +1120,7 @@ void prepareJointRows(uint4 desc,uint lane,uint endError) {
         const float unbiased=multiplier*speed;
         if(!isfinite(constant) || !isfinite(unbiased) ||
            !all(isfinite(ja)) || !all(isfinite(jb))) {
-            arena.InterlockedOr(endError,8192u);
+            sourceDyTaskErrorOr(endError,8192u);
             continue;
         }
         arena.Store3(row+12u,asuint(ja));
@@ -1106,7 +1139,7 @@ void prepareNormals(uint begin,uint end,uint lane,uint endError) {
             continue;
         }
         if(desc.x>=p.manifoldCount) {
-            arena.InterlockedOr(endError,4096u);
+            sourceDyTaskErrorOr(endError,4096u);
             continue;
         }
         uint mo=p.manifoldBias+desc.x*20u;
@@ -1118,7 +1151,7 @@ void prepareNormals(uint begin,uint end,uint lane,uint endError) {
            manager.y>p.patchCount-manager.x ||
            manager.z>p.contactCount ||
            manager.w>p.contactCount-manager.z) {
-            arena.InterlockedOr(endError,4096u);
+            sourceDyTaskErrorOr(endError,4096u);
             continue;
         }
         uint covered=0u;
@@ -1129,7 +1162,7 @@ void prepareNormals(uint begin,uint end,uint lane,uint endError) {
             const uint order=arena.Load(po+24u);
             if(covered>manager.w || count>manager.w-covered ||
                !sourceDyContactOrderValid(order,count)) {
-                arena.InterlockedOr(endError,4096u);
+                sourceDyTaskErrorOr(endError,4096u);
                 break;
             }
             for(uint c=lane&3u;c<count;c+=4u) {
@@ -1139,7 +1172,7 @@ void prepareNormals(uint begin,uint end,uint lane,uint endError) {
             covered+=count;
         }
         if(covered!=manager.w)
-            arena.InterlockedOr(endError,4096u);
+            sourceDyTaskErrorOr(endError,4096u);
     }
 }
 
@@ -1163,7 +1196,7 @@ void prepareFriction(uint begin,uint end,uint lane,uint endError) {
             uint4 patch=arena.Load4(p.patchBias+patchIndex*32u);
             if(patch.x>p.frictionCount || patch.z>2u ||
                patch.z*2u>p.frictionCount-patch.x) {
-                arena.InterlockedOr(endError,16384u);
+                sourceDyTaskErrorOr(endError,16384u);
                 continue;
             }
             prepareFrictionPatch(patchIndex,pairIndex,endError);
@@ -1189,7 +1222,7 @@ void solvePartition(uint begin,uint end,uint lane,uint2 iters,
 void saveMotion(uint index,uint endError) {
     const uint ordinal=sourceDyBodyOrdinal(index);
     if(ordinal>=p.bodyCount) {
-        arena.InterlockedOr(endError,8u);
+        sourceDyTaskErrorOr(endError,8u);
         return;
     }
     const uint base=p.bodyBias+ordinal*52u;
@@ -1509,9 +1542,9 @@ void publishTaskError(uint task,uint error) {
 // Each lane owns one independent constraint and up to two integrated bodies.
 void sourceDySolvePackedTask(uint taskId) {
     const uint task=p.taskBias+taskId*36u;
-    const uint4 ranges=arena.Load4(task);
-    const uint2 bodies=arena.Load2(task+16u);
-    const uint2 iters=arena.Load2(task+24u);
+    const uint4 ranges=sourceDyTaskLoad4(task);
+    const uint2 bodies=sourceDyTaskLoad2(task+16u);
+    const uint2 iters=sourceDyTaskLoad2(task+24u);
     const uint errorAddress=task+32u;
     const uint4 schedule=arena.Load4(p.integrationBias+16u);
     if(ranges.y!=ranges.x+1u || ranges.w!=ranges.z+1u ||
@@ -1519,8 +1552,8 @@ void sourceDySolvePackedTask(uint taskId) {
        ranges.y>schedule.y || ranges.w>p.partitionCount ||
        bodies.y>schedule.x ||
        !iters.x || iters.x>255u || iters.y>255u) {
-        arena.InterlockedOr(errorAddress,1048576u);
-        publishTaskError(taskId,arena.Load(errorAddress));
+        sourceDyTaskErrorOr(errorAddress,1048576u);
+        publishTaskError(taskId,sourceDyTaskLoad(errorAddress));
         return;
     }
     const uint scratch=schedule.w;
@@ -1533,7 +1566,7 @@ void sourceDySolvePackedTask(uint taskId) {
             sourceDyResponseToken(scratch,colors,ranges.x),
             arena.Load(sourceTable),sourceTable,
                                  errorAddress,desc)) {
-        publishTaskError(taskId,arena.Load(errorAddress));
+        publishTaskError(taskId,sourceDyTaskLoad(errorAddress));
         return;
     }
     const bool da=(desc.w&0x100u)!=0u;
@@ -1541,8 +1574,8 @@ void sourceDySolvePackedTask(uint taskId) {
     if((desc.w&~0x3ffu)!=0u || (!da && !db) ||
        (da && desc.y>=p.bodyCount) ||
        (db && desc.z>=p.bodyCount)) {
-        arena.InterlockedOr(errorAddress,1048576u);
-        publishTaskError(taskId,arena.Load(errorAddress));
+        sourceDyTaskErrorOr(errorAddress,1048576u);
+        publishTaskError(taskId,sourceDyTaskLoad(errorAddress));
         return;
     }
     // The singleton's ranges already define its only partition.
@@ -1555,15 +1588,15 @@ void sourceDySolvePackedTask(uint taskId) {
     [unroll]
     for(uint lane=0u;lane<4u;++lane)
         prepareNormals(ranges.x,ranges.y,lane,errorAddress);
-    if(arena.Load(errorAddress)!=0u) {
-        publishTaskError(taskId,arena.Load(errorAddress));
+    if(sourceDyTaskLoad(errorAddress)!=0u) {
+        publishTaskError(taskId,sourceDyTaskLoad(errorAddress));
         return;
     }
     [unroll]
     for(uint lane=0u;lane<4u;++lane)
         prepareFriction(ranges.x,ranges.y,lane,errorAddress);
-    if(arena.Load(errorAddress)!=0u) {
-        publishTaskError(taskId,arena.Load(errorAddress));
+    if(sourceDyTaskLoad(errorAddress)!=0u) {
+        publishTaskError(taskId,sourceDyTaskLoad(errorAddress));
         return;
     }
 
@@ -1574,18 +1607,18 @@ void sourceDySolvePackedTask(uint taskId) {
             for(uint body=bodies.x;body<bodies.y;++body)
                 saveMotion(body,errorAddress);
     }
-    if(arena.Load(errorAddress)!=0u) {
-        publishTaskError(taskId,arena.Load(errorAddress));
+    if(sourceDyTaskLoad(errorAddress)!=0u) {
+        publishTaskError(taskId,sourceDyTaskLoad(errorAddress));
         return;
     }
     for(uint body=bodies.x;body<bodies.y;++body) {
         const uint ordinal=sourceDyBodyOrdinal(body);
         if(ordinal>=p.bodyCount)
-            arena.InterlockedOr(errorAddress,8u);
+            sourceDyTaskErrorOr(errorAddress,8u);
         else
             integrateBody(ordinal);
     }
-    publishTaskError(taskId,arena.Load(errorAddress));
+    publishTaskError(taskId,sourceDyTaskLoad(errorAddress));
 }
 
 [numthreads(128,1,1)]
@@ -1690,7 +1723,7 @@ void main(uint3 group:SV_GroupID,uint3 lane:SV_GroupThreadID) {
             const uint task=index*128u+lane.x;
             if(task<schedule.z)
                 publishTaskError(task,task<admittedTasks
-                    ?arena.Load(p.taskBias+task*36u+32u):0u);
+                    ?sourceDyTaskLoad(p.taskBias+task*36u+32u):0u);
             return;
         }
         if(index>=admittedTasks)return;
@@ -1711,19 +1744,19 @@ void main(uint3 group:SV_GroupID,uint3 lane:SV_GroupThreadID) {
                                 (fused && !precolored))) {
             sourceDyPartitionTask(taskId,schedule.w,endError,lane.x);
             AllMemoryBarrierWithGroupSync();
-            if(arena.Load(endError)!=0u) {
+            if(sourceDyTaskLoad(endError)!=0u) {
                 if(lane.x==0u)
-                    publishTaskError(taskId,arena.Load(endError));
+                    publishTaskError(taskId,sourceDyTaskLoad(endError));
                 return;
             }
             if(phase==colorTile)return;
         }
-        const uint2 iters=arena.Load2(t+24u);
+        const uint2 iters=sourceDyTaskLoad2(t+24u);
         uint2 descriptors=tile.yz;
         bodies=tile.yz;
         uint2 partitions=uint2(0u,1u);
         if(devicePartitions && phase==partitionTile) {
-            const uint4 ranges=arena.Load4(t);
+            const uint4 ranges=sourceDyTaskLoad4(t);
             if(tile.w>=ranges.w-ranges.z)return;
             const uint partition=ranges.z+tile.w;
             const uint start=tile.w==0u?ranges.x:
@@ -1734,15 +1767,15 @@ void main(uint3 group:SV_GroupID,uint3 lane:SV_GroupThreadID) {
             if(descriptors.x>=descriptors.y)return;
         }
         if(fused) {
-            const uint4 ranges=arena.Load4(t);
+            const uint4 ranges=sourceDyTaskLoad4(t);
             descriptors=ranges.xy;
             partitions=ranges.zw;
-            bodies=arena.Load2(t+16u);
+            bodies=sourceDyTaskLoad2(t+16u);
             if(descriptors.x>descriptors.y || descriptors.y>schedule.y ||
                partitions.x>partitions.y || partitions.y>p.partitionCount ||
                bodies.x>bodies.y || bodies.y>schedule.x) {
                 if(lane.x==0u) {
-                    arena.InterlockedOr(endError,4u);
+                    sourceDyTaskErrorOr(endError,4u);
                     publishTaskError(tile.x,4u);
                 }
                 return;
@@ -1750,7 +1783,7 @@ void main(uint3 group:SV_GroupID,uint3 lane:SV_GroupThreadID) {
         }
         // Tiled stages cannot consume a task rejected by an earlier
         // preparation or coloring phase.
-        if(!fused && arena.Load(endError)!=0u)return;
+        if(!fused && sourceDyTaskLoad(endError)!=0u)return;
         // Each phase has one shader call site. Fused groups use workgroup
         // dependencies, while tiled launches use the command stream's
         // device-wide dependencies between the same phases.
@@ -1758,9 +1791,9 @@ void main(uint3 group:SV_GroupID,uint3 lane:SV_GroupThreadID) {
             prepareNormals(descriptors.x,descriptors.y,lane.x,endError);
             if(!fused)return;
             AllMemoryBarrierWithGroupSync();
-            if(arena.Load(endError)!=0u) {
+            if(sourceDyTaskLoad(endError)!=0u) {
                 if(lane.x==0u)
-                    publishTaskError(taskId,arena.Load(endError));
+                    publishTaskError(taskId,sourceDyTaskLoad(endError));
                 return;
             }
         }
@@ -1771,9 +1804,9 @@ void main(uint3 group:SV_GroupID,uint3 lane:SV_GroupThreadID) {
         }
         // Preparation failures belong to this task, not its solver or
         // integration output. Tiled phases observe the preceding dispatch.
-        if(arena.Load(endError)!=0u) {
+        if(sourceDyTaskLoad(endError)!=0u) {
             if(fused && lane.x==0u)
-                publishTaskError(taskId,arena.Load(endError));
+                publishTaskError(taskId,sourceDyTaskLoad(endError));
             return;
         }
 
@@ -1847,9 +1880,9 @@ void main(uint3 group:SV_GroupID,uint3 lane:SV_GroupThreadID) {
     }
     if(fused) {
         AllMemoryBarrierWithGroupSync();
-        if(arena.Load(endError)!=0u) {
+        if(sourceDyTaskLoad(endError)!=0u) {
             if(lane.x==0u)
-                publishTaskError(taskId,arena.Load(endError));
+                publishTaskError(taskId,sourceDyTaskLoad(endError));
             return;
         }
     }
@@ -1860,7 +1893,7 @@ void main(uint3 group:SV_GroupID,uint3 lane:SV_GroupThreadID) {
             if(!freeBody) {
                 ordinal=sourceDyBodyOrdinal(i);
                 if(ordinal>=p.bodyCount) {
-                    arena.InterlockedOr(endError,8u);
+                    sourceDyTaskErrorOr(endError,8u);
                     continue;
                 }
             }
@@ -1869,6 +1902,6 @@ void main(uint3 group:SV_GroupID,uint3 lane:SV_GroupThreadID) {
     }
     if(fused) {
         AllMemoryBarrierWithGroupSync();
-        if(lane.x==0u)publishTaskError(taskId,arena.Load(endError));
+        if(lane.x==0u)publishTaskError(taskId,sourceDyTaskLoad(endError));
     }
 }
