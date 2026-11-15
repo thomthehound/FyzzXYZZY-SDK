@@ -4873,6 +4873,10 @@ void Scene::update_contacts(bool defer_device_points) {
     found_contacts_.swap(next_found_contacts_);
     lost_contacts_.swap(next_lost_contacts_);
     ++contact_epoch_;
+    // CPU Gu touch transitions are complete at contact publication.
+    // Queue their resident history before the independent island and
+    // constraint preparation; collision-only frames use the same path.
+    publish_cpu_gu_touch_history();
 }
 // IG::SimpleIslandManager::firstPassIslandGen/secondPassIslandGen:
 // speculative edges come from the scene's published SAP candidates,
@@ -11504,7 +11508,6 @@ void Scene::step(float seconds) {
     join.dispatch_solver_tasks(
         solver_task_completion_stamps_,solver_task_completion_generation_);
     prepare_constraints(seconds);
-    publish_cpu_gu_touch_history();
     const bool gpu_dy_distance=gpu_dy_active();
     gpu_dy_pose_ready_=false;
     if(gpu_dy_distance)solve_gpu_distance_constraints(seconds);
