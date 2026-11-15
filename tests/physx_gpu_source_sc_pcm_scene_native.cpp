@@ -30,6 +30,10 @@ struct SourceScDeviceIslandFixture {
     static bool software_adapter(const SourceScOwnedGpuBroadphaseNative& owner) {
         return owner.context_.device_info().software_adapter;
     }
+    static std::size_t source_submissions(
+            const SourceScOwnedGpuBroadphaseNative& owner) {
+        return owner.stream_.submitted_token_count();
+    }
     static std::string contact_records(SourceScOwnedGpuBroadphaseNative& owner) {
         const auto count=owner.device_pcm_contact_count();
         const auto source=owner.device_pcm_contact_stream();
@@ -2123,6 +2127,32 @@ void verify_queued_pcm_dy(fyzz::compute::Backend backend,const char* sap,
              std::fabs(deferred[0].normal.y)+
              std::fabs(deferred[0].normal.z))>0.5f,
         "Deferred PCM witness publication did not restore world points");
+    producer->commit_gpu_step();
+
+    // A host Gu PCM upload submits its source history before numerical Dy.
+    // The Dy result fence retires that earlier submission with its own
+    // readback; Sc commit must not join an already completed source token.
+    const std::array<native::GpuPcmBoxPair,1> host_request{{
+        {moving,fixed,edge,false,1u,false,0.f,0.f,true,true,true}
+    }};
+    std::array<native::GpuPcmBoxResult,1> host_results{};
+    host_results[0].edge=edge;
+    host_results[0].set_primitive(1u,true);
+    host_results[0].normal={-1.f,0.f,0.f};
+    host_results[0].points[0]={{0.4f,1.f,0.f},-0.1f};
+    producer->upload_host_pcm_contacts(host_request,host_results);
+    require(physx_gpu::SourceScDeviceIslandFixture::
+                source_submissions(*producer)>0u,
+        "Host PCM upload did not submit its source history");
+    poses={};
+    producer->enqueue_gpu_dy_distance(
+        {},{},{},{},{},{},{},{},{},{},{},{},{},{},
+        inputs,poses);
+    producer->finish_gpu_dy_distance();
+    require(poses[0].valid==1u &&
+            physx_gpu::SourceScDeviceIslandFixture::
+                source_submissions(*producer)==0u,
+        "Completed Dy result fence retained an earlier source submission");
     producer->commit_gpu_step();
 }
 

@@ -6,6 +6,7 @@
 #include "physx_gpu/cuda_device_address_map.h"
 #include "hardware_profile.h"
 
+#include <algorithm>
 #include <array>
 #include <chrono>
 #include <cstddef>
@@ -58,6 +59,7 @@ public:
     };
     const SubmissionStats& submission_stats() const noexcept { return stats_; }
     bool has_pending_fetch() const noexcept { return pending_fetch_!=0u; }
+    std::size_t submitted_token_count() const noexcept { return tokens_.size(); }
 
     SourceSapDmaNative(compute::Context& context,
                        const CudaDeviceAddressMap& addresses) noexcept
@@ -211,8 +213,7 @@ public:
         context_.wait_submissions(fetch_wait_tokens_);
         // Earlier command resources are retired now, even if publishing
         // the downloaded bytes subsequently fails.
-        tokens_.erase(tokens_.begin(),tokens_.begin()+preceding);
-        pending_fetch_token_count_=0;
+        retire_source_tokens(preceding);
         context_.finish_download_batch(pending_fetch_,true);
         pending_fetch_=0;
         stats_.deferred_submissions_after_fetch+=tokens_.size();
@@ -287,6 +288,7 @@ public:
             ++stats_.fused_readbacks;
         }
         pending_numerical_fetch_=ticket;
+        pending_numerical_token_count_=tokens_.size();
         pending_numerical_bytes_=bytes;
         pending_numerical_spans_=outputs.size();
         FYZZ_PROFILE_COUNTER("source.download_bytes",bytes);
@@ -297,9 +299,16 @@ public:
         if(!pending_numerical_fetch_)
             throw std::logic_error("Source numerical readback was not armed");
         const auto start=std::chrono::steady_clock::now();
-        const std::array<compute::SubmissionId,1u> ticket{
-            pending_numerical_fetch_};
-        context_.wait_submissions(ticket);
+        // The numerical fence completes every earlier source submission
+        // on the ordered queue. Retire those tokens in the same join.
+        const auto preceding=pending_numerical_token_count_;
+        fetch_wait_tokens_.clear();
+        fetch_wait_tokens_.reserve(preceding+1u);
+        fetch_wait_tokens_.insert(fetch_wait_tokens_.end(),
+            tokens_.begin(),tokens_.begin()+preceding);
+        fetch_wait_tokens_.push_back(pending_numerical_fetch_);
+        context_.wait_submissions(fetch_wait_tokens_);
+        retire_source_tokens(preceding);
         context_.finish_download_batch(pending_numerical_fetch_,true);
         pending_numerical_fetch_=0u;
         const auto elapsed=std::chrono::steady_clock::now()-start;
@@ -319,6 +328,7 @@ public:
             context_.finish_download_batch(pending_numerical_fetch_,false);
         }catch(...) {}
         pending_numerical_fetch_=0u;
+        pending_numerical_token_count_=0u;
         pending_numerical_bytes_=0u;
         pending_numerical_spans_=0u;
     }
@@ -367,10 +377,20 @@ public:
         // GPU upload, copy and kernel. Retire their staging and descriptors
         // together without issuing an OS fence wait for each older token.
         context_.wait_submissions(tokens_);
-        tokens_.clear();
+        retire_source_tokens(tokens_.size());
     }
 
 private:
+    void retire_source_tokens(std::size_t count) {
+        if(count>tokens_.size())
+            throw std::logic_error("Source stream retired an unsubmitted token");
+        tokens_.erase(tokens_.begin(),tokens_.begin()+count);
+        pending_fetch_token_count_-=
+            std::min(pending_fetch_token_count_,count);
+        pending_numerical_token_count_-=
+            std::min(pending_numerical_token_count_,count);
+    }
+
     compute::SubmissionId flush_gpu_commands() {
         FYZZ_PROFILE_SCOPE("source.command_submit");
         if (pending_.empty()) return tokens_.empty() ? 0 : tokens_.back();
@@ -393,6 +413,7 @@ private:
     compute::SubmissionId pending_fetch_=0;
     compute::SubmissionId pending_numerical_fetch_=0;
     std::size_t pending_numerical_bytes_=0u,pending_numerical_spans_=0u;
+    std::size_t pending_numerical_token_count_=0u;
     std::size_t pending_fetch_token_count_=0;
     std::size_t pending_fetch_bytes_=0,pending_fetch_spans_=0;
     SubmissionStats stats_;
