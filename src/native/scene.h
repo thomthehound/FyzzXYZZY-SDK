@@ -607,6 +607,8 @@ struct ContactManifold {
     std::uint8_t count = 0;
     // GuContactBoxBox collision-axis cache (mPairData), retained by pair.
     std::uint8_t collision_axis = 0;
+    // Ordinal of this edge in Sc's pre-PCM candidate stream.
+    std::uint32_t candidate_ordinal=std::numeric_limits<std::uint32_t>::max();
     // Transient source Dy contact constraints are held in the scene's
     // contiguous row arena, indexed by this manager's offset and count.
     std::size_t solver_offset = 0;

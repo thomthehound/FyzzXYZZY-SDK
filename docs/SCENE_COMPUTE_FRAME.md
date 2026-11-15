@@ -128,7 +128,9 @@ contacts, and every numerical task fits compact execution. Otherwise Dy
 uses Sc's existing task boundaries without an additional device graph scan.
 Selected admission passes stable contact and joint identities, reads resident
 physical touch, and supplies generated task/body ranges without host
-task/ordinal uploads. The island work and Dy solve enter one ordered GPU
+task/ordinal uploads. Device contact tokens address Sc's pre-PCM candidate
+ordinals, including zero-touch candidates, rather than Gu manifold positions.
+CPU-prepared task publication retains its original Gu-indexed ordering. The island work and Dy solve enter one ordered GPU
 submission without an intermediate host wait. Island graphs
 with at most 32 nodes and 32 edges build their task records in one dispatch;
 larger graphs use parallel union, prefix and response ordering.

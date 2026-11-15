@@ -3796,6 +3796,27 @@ void verify_mixed_gu_pcm_gpu_dy_solver(
         gpu.set_gpu_dy_device_admission_enabled(device_admission);
         std::array<BodyId,2> moving_cpu{},moving_gpu{};
         BodyId floor_cpu{},floor_gpu{},pcm_static_cpu{},pcm_static_gpu{};
+        // A speculative GPU PCM pair with no physical touch reserves
+        // no published Gu rows, even when mixed legacy Gu generation
+        // runs after a different GPU pair in source order.
+        const Vec3 empty_center{60.f,1.f,0.f};
+        const Vec3 empty_fixed{61.08f,2.08f,0.f};
+        const Quat empty_rotation{
+            0.f,0.f,0.382683432f,0.923879533f};
+        const auto empty_cpu=cpu.add_dynamic_box(
+            {0.5f,0.5f,0.5f},empty_center,1.f);
+        const auto empty_gpu=gpu.add_dynamic_box(
+            {0.5f,0.5f,0.5f},empty_center,1.f);
+        const auto fixed_empty_cpu=cpu.add_static_box(
+            {0.5f,0.5f,0.5f},empty_fixed);
+        const auto fixed_empty_gpu=gpu.add_static_box(
+            {0.5f,0.5f,0.5f},empty_fixed);
+        cpu.set_pose(fixed_empty_cpu,empty_fixed,empty_rotation);
+        gpu.set_pose(fixed_empty_gpu,empty_fixed,empty_rotation);
+        RigidBodyDynamics free_dynamics{};
+        free_dynamics.gravity_enabled=false;
+        cpu.set_dynamics(empty_cpu,free_dynamics);
+        gpu.set_dynamics(empty_gpu,free_dynamics);
         const auto add_plane_contact=[&] {
             floor_cpu=cpu.add_static_floor(0.f);
             floor_gpu=gpu.add_static_floor(0.f);
@@ -3821,31 +3842,22 @@ void verify_mixed_gu_pcm_gpu_dy_solver(
             add_pcm_contact();
             add_plane_contact();
         }
-        // A speculative GPU PCM pair with no physical touch reserves
-        // no published Gu rows, even when mixed legacy Gu generation
-        // runs after a different GPU pair in source order.
-        const Vec3 empty_center{60.f,1.f,0.f};
-        const Vec3 empty_fixed{61.08f,2.08f,0.f};
-        const Quat empty_rotation{
-            0.f,0.f,0.382683432f,0.923879533f};
-        const auto empty_cpu=cpu.add_dynamic_box(
-            {0.5f,0.5f,0.5f},empty_center,1.f);
-        const auto empty_gpu=gpu.add_dynamic_box(
-            {0.5f,0.5f,0.5f},empty_center,1.f);
-        const auto fixed_empty_cpu=cpu.add_static_box(
-            {0.5f,0.5f,0.5f},empty_fixed);
-        const auto fixed_empty_gpu=gpu.add_static_box(
-            {0.5f,0.5f,0.5f},empty_fixed);
-        cpu.set_pose(fixed_empty_cpu,empty_fixed,empty_rotation);
-        gpu.set_pose(fixed_empty_gpu,empty_fixed,empty_rotation);
-        RigidBodyDynamics free_dynamics{};
-        free_dynamics.gravity_enabled=false;
-        cpu.set_dynamics(empty_cpu,free_dynamics);
-        gpu.set_dynamics(empty_gpu,free_dynamics);
         constexpr float dt=1.f/120.f;
         for(std::uint32_t frame=0;frame<4u;++frame) {
             cpu.step(dt);
             gpu.step(dt);
+            if(device_admission && frame==0u) {
+                bool shifted=false;
+                for(std::size_t i=0u;i<gpu.contacts().size();++i) {
+                    const auto& manager=gpu.contacts()[i];
+                    shifted |= manager.candidate_ordinal!=i;
+                    require(manager.candidate_ordinal<gpu.pairs().size() &&
+                            gpu.pairs()[manager.candidate_ordinal]==manager.pair,
+                        "Resident contact source lost its pre-PCM pair ordinal");
+                }
+                require(shifted,
+                    "Device admission did not exercise sparse contact candidates");
+            }
             if(frame==0u)
                 require((producer->pcm_early_gu_touch_bytes()>=
                             sizeof(native::GpuGuTouchRecord))==!plane_first,

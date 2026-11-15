@@ -4454,6 +4454,7 @@ void Scene::update_contacts(bool defer_device_points,float inverse_step) {
     std::size_t old_cache_cursor=0;
     std::size_t pair_index = 0;
     for (const Pair pair : previous_pairs_) {
+        const auto candidate_ordinal=pair_index;
         const EdgeIndex edge=active_edge_handles_[pair_index++];
         // The sorted source contact-manager stream retains its collision
         // axis across successive physical-touch frames.
@@ -4471,6 +4472,9 @@ void Scene::update_contacts(bool defer_device_points,float inverse_step) {
         ContactManifold manifold{};
         manifold.pair = pair;
         manifold.edge_handle=edge;
+        if(candidate_ordinal<std::numeric_limits<std::uint32_t>::max())
+            manifold.candidate_ordinal=
+                static_cast<std::uint32_t>(candidate_ordinal);
         manifold.contact_offset = next_contact_points_.size();
         std::optional<GpuPcmTouchTransition> device_touch;
         bool deferred_gpu_manifold=false;
@@ -9136,9 +9140,14 @@ void Scene::prepare_gpu_dy_device_islands(bool selected) {
                     ++descriptor_cursor;
                 }
             }
+            if(m.candidate_ordinal>=previous_pairs_.size() ||
+               !(previous_pairs_[m.candidate_ordinal]==m.pair) ||
+               active_edge_handles_[m.candidate_ordinal]!=m.edge_handle)
+                throw std::logic_error(
+                    "Device Sc contact source lost its admitted candidate");
             gpu_dy_island_edges_.push_back({
                 m.edge_handle,node(shapes_[pair.a].body),
-                node(shapes_[pair.b].body),narrow(index),kind});
+                node(shapes_[pair.b].body),m.candidate_ordinal,kind});
         }
         if(descriptor_cursor!=task.constraint_end)
             throw std::logic_error(
@@ -9152,7 +9161,7 @@ void Scene::prepare_gpu_dy_device_islands(bool selected) {
             "Source Sc device admission did not cover its numerical tables");
     gpu_broadphase_->enqueue_gpu_dy_island_admission(
         gpu_dy_island_edges_,gpu_dy_island_node_flags_,
-        {narrow(manifolds_.size()),narrow(gpu_dy_rows_.size()),
+        {narrow(gpu_dy_manifolds_.size()),narrow(gpu_dy_rows_.size()),
          narrow(full_descriptor_cursor)});
 }
 
@@ -9370,7 +9379,10 @@ void Scene::solve_gpu_distance_constraints(float seconds) {
             "GPU Dy must consume only source-correlated friction anchors");
     gpu_dy_friction_impulses_.resize(gpu_dy_friction_anchors_.size());
     gpu_dy_patches_.resize(friction_patches_.size());
-    gpu_dy_manifolds_.assign(manifolds_.size(),{});
+    // Device admission addresses the pre-PCM candidate stream, including
+    // empty contacts; Sc's host task path still uses manifold indices.
+    gpu_dy_manifolds_.assign(
+        device_admission?previous_pairs_.size():manifolds_.size(),{});
     std::size_t explicit_order_cursor=0u;
     constexpr std::uint32_t device_contact_order=0x80000000u;
     const auto encode_normal=[](Vec3 n) -> std::uint32_t {
@@ -9407,7 +9419,15 @@ void Scene::solve_gpu_distance_constraints(float seconds) {
         if(manager_index>=gpu_dy_contact_prep_indices_.size() ||
            gpu_dy_contact_prep_indices_[manager_index]==0xffffffffu)
             throw std::logic_error("Source GPU contact pair was not prepared");
-        gpu_dy_manifolds_[manager_index]={
+        const auto source=device_admission
+            ?m.candidate_ordinal:narrow(manager_index);
+        if(source>=gpu_dy_manifolds_.size() ||
+           (device_admission &&
+            (!(previous_pairs_[source]==m.pair) ||
+             active_edge_handles_[source]!=m.edge_handle)))
+            throw std::logic_error(
+                "GPU Dy contact source differs from Sc candidate identity");
+        gpu_dy_manifolds_[source]={
             narrow(m.friction_patch_offset),m.friction_patch_count,
             narrow(m.solver_offset),m.count,
             gpu_dy_contact_prep_indices_[manager_index]};
@@ -9472,16 +9492,20 @@ void Scene::solve_gpu_distance_constraints(float seconds) {
     // the otherwise unused manifold slots for device task admission.
     for(const auto& desc:ordered_constraints_) {
         if((desc.row_count&255u)!=0u)continue;
-        if(desc.index>=gpu_dy_manifolds_.size())
+        if(desc.index>=manifolds_.size())
             throw std::logic_error("GPU Dy zero-response manager index invalid");
-        auto& manager=gpu_dy_manifolds_[desc.index];
+        const auto& manifold=manifolds_[desc.index];
+        const auto source=device_admission
+            ?manifold.candidate_ordinal:desc.index;
+        if(source>=gpu_dy_manifolds_.size())
+            throw std::logic_error("GPU Dy zero-response source is not admitted");
+        auto& manager=gpu_dy_manifolds_[source];
         if(manager.patch_count!=0u)continue;
         auto row0=desc.row0,row1=desc.row1;
         if(row0==invalid_solver_row && row1==invalid_solver_row) {
             // Compact numerical contacts carry only their manager
             // token. Recover endpoints solely for zero-response
             // managers, which have no device contact-prep record.
-            const auto& manifold=manifolds_[desc.index];
             const auto pair=manifold.pair;
             const bool reversed=island_edges_[
                 manifold.edge_handle].gu_order_reversed;
