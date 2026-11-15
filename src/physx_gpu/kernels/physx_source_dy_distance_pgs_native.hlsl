@@ -537,7 +537,7 @@ void sourceDyPartitionTask(uint taskId,uint scratch,uint errorAddress,
     // The native Sc path transfers only encounter-order manager/joint
     // identities. Expand source descriptors from the existing resident
     // contact prep and joint-row records before partition coloring.
-    const bool sourceDescriptors=views.x==24u || views.x==44u;
+    const bool sourceDescriptors=views.x==24u || views.x==28u;
     const uint sourceTable=bodyState+p.bodyCount*12u;
     const uint sourceCount=sourceDescriptors?arena.Load(sourceTable):0u;
     for(uint i=first+lane;i<last;i+=128u) {
@@ -1629,14 +1629,17 @@ void main(uint3 group:SV_GroupID,uint3 lane:SV_GroupThreadID) {
     const uint iter=(p.launchControl&0x1fffffffu)>>4u;
     const uint index=p.launchBegin+group.x;
     uint admittedTasks=0xffffffffu;
+    uint admittedDispatch=0u;
     // A submitted Sc island graph can differ from CPU-predicted counts
     // because contact activation is owned by resident Gu history. Reject
     // the entire numerical epoch before initializing any solver body.
     // The task error report still runs, including compact-only scenes.
     if(devicePartitions) {
         const uint4 schedule=arena.Load4(p.integrationBias+16u);
-        if(schedule.w!=0u && arena.Load(schedule.w)==44u) {
-            const uint4 header=arena.Load4(schedule.w+24u);
+        if(schedule.w!=0u && arena.Load(schedule.w)==28u) {
+            const uint taskOffset=arena.Load(schedule.w+24u);
+            const uint sourceHeader=p.taskBias-taskOffset;
+            const uint4 header=scIslandTasks.Load4(sourceHeader);
             if(header.x!=0u || header.y>schedule.z ||
                header.z>schedule.x || header.w>schedule.y) {
                 if(phase==publishErrors) {
@@ -1647,6 +1650,7 @@ void main(uint3 group:SV_GroupID,uint3 lane:SV_GroupThreadID) {
                 return;
             }
             admittedTasks=header.y;
+            admittedDispatch=scIslandTasks.Load(sourceHeader+16u);
         }
     }
     // Sc partitions independent compact tasks into packed lane ranges.
@@ -1658,10 +1662,8 @@ void main(uint3 group:SV_GroupID,uint3 lane:SV_GroupThreadID) {
         return;
     }
     if(phase==fusedTask && devicePartitions && !precolored &&
-       admittedTasks>1u &&
-       arena.Load(p.integrationBias+28u)!=0u &&
-       arena.Load(arena.Load(p.integrationBias+28u))==44u &&
-       arena.Load(arena.Load(p.integrationBias+28u)+40u)<admittedTasks) {
+       admittedTasks!=0xffffffffu &&
+       admittedTasks>1u && admittedDispatch<admittedTasks) {
         const uint task=index*128u+lane.x;
         if(task<admittedTasks)sourceDySolvePackedTask(task);
         return;

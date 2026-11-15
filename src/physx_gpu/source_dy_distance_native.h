@@ -1013,7 +1013,7 @@ public:
             }
         }
         const std::uint64_t scratch_bytes=device_partitions
-            ?(source_descriptors?(device_admission?44ull:28ull):20ull)+
+            ?(source_descriptors?28ull:20ull)+
                 std::uint64_t(descriptors.size())*24ull+
                 std::uint64_t(bodies.size())*12ull+
                 std::uint64_t(source_descriptor_full_.size())*16ull
@@ -1185,7 +1185,7 @@ public:
         if(device_partitions) {
             const auto n=descriptors.size();
             const std::size_t header_bytes=source_descriptors
-                ?(device_admission?44u:24u):20u;
+                ?(device_admission?28u:24u):20u;
             const std::array<std::uint32_t,5> scratch_header{
                 narrow(header_bytes),narrow(header_bytes+n*16u),
                 narrow(header_bytes+n*20u),
@@ -1201,6 +1201,12 @@ public:
                             device_admission->layout.body_order):0u;
                 std::memcpy(host_.data()+offsets[15]+20u,
                             &token_offset,sizeof(token_offset));
+                if(device_admission) {
+                    const auto task_offset=narrow(
+                        device_admission->layout.tasks);
+                    std::memcpy(host_.data()+offsets[15]+24u,
+                                &task_offset,sizeof(task_offset));
+                }
                 if(n && !device_admission)
                     std::memcpy(host_.data()+offsets[15]+scratch_header[1],
                                 source_descriptor_tokens_.data(),
@@ -1253,7 +1259,7 @@ public:
         // of those scratch arrays has a host source in a device-owned
         // island epoch. Skip their entire contiguous upload window.
         const auto device_skip_begin=device_admission
-            ?offsets[15]+44u:0u;
+            ?offsets[15]+28u:0u;
         const auto device_skip_end=device_admission
             ?device_skip_begin+descriptors.size()*24u+bodies.size()*12u:0u;
         if(device_admission &&
@@ -1385,11 +1391,15 @@ public:
         std::uint32_t resident_task_bias=0u;
         dispatch.buffers.push_back(source_native_view(
             addresses_,device_admission
-                ?device_admission->work+device_admission->layout.tasks:address,
-            device_admission?tasks.size_bytes():total,
+                ?device_admission->work:address,
+            device_admission?device_admission->layout.bytes:total,
             alignment_,convex_vertex_count?8u:7u,
             compute::BufferAccess::ReadWrite,
             resident_task_bias,max_view_));
+        if(device_admission)
+            resident_task_bias=narrow(
+                std::size_t(resident_task_bias)+
+                    device_admission->layout.tasks);
         for(auto& record:packed_integration_) {
             if(record.actor_local_offset!=invalid) {
                 const auto offset=std::size_t(actor_local_bias)+
@@ -1491,9 +1501,9 @@ public:
         stream_.queue_uploads(uploads);
         last_schedule_.device_upload_batches=
             stream_.submission_stats().upload_batches-previous_batches;
-        // Sc and Dy use one ordered source stream. Only the compact
-        // scheduling header is copied; task, ordinal and response-token
-        // inputs remain in Sc's transient device allocation.
+        // Sc and Dy use one ordered source stream. The admission header,
+        // task, ordinal and response-token inputs remain in the same
+        // transient Sc device allocation.
         if(device_admission) {
             const auto& view=*device_admission;
             const auto& layout=view.layout;
@@ -1511,9 +1521,6 @@ public:
                    sizeof(std::uint32_t))
                 throw std::out_of_range(
                     "Source Sc device admission capacity exceeds its typed stream");
-            stream_.queue_device_copy(address+offsets[15]+24u,
-                                      view.work,20u);
-            last_schedule_.device_source_copy_bytes=20u;
         }
         last_upload_spans_=stream_.submission_stats().upload_spans-
                            previous_spans-joint_source_uploads_.size()-
@@ -1665,7 +1672,7 @@ public:
         admitted_response_tokens_.clear();
         if(device_admission) {
             const auto metadata=addresses_.resolve(
-                address+offsets[15]+24u,16u);
+                device_admission->work,16u);
             const auto device_tasks=addresses_.resolve(
                 device_admission->work+
                     device_admission->layout.tasks,tasks.size_bytes());

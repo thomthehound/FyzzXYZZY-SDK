@@ -368,6 +368,7 @@ public:
         FYZZ_PROFILE_COUNTER("dy.device_admitted_tasks",schedule.device_admitted_tasks);
         FYZZ_PROFILE_COUNTER("dy.device_admitted_descriptors",schedule.device_admitted_descriptors);
         FYZZ_PROFILE_COUNTER("dy.device_generated_bytes",schedule.device_generated_bytes);
+        FYZZ_PROFILE_COUNTER("dy.source_copy_bytes",schedule.device_source_copy_bytes);
         FYZZ_PROFILE_COUNTER("dy.source_descriptor_upload_bytes",schedule.source_descriptor_upload_bytes);
         FYZZ_PROFILE_COUNTER("dy.body_upload_bytes",schedule.device_body_upload_bytes);
         FYZZ_PROFILE_COUNTER("dy.actor_local_upload_bytes",schedule.actor_local_upload_bytes);
