@@ -3750,6 +3750,27 @@ void verify_mixed_gu_pcm_gpu_dy_solver(
             add_pcm_contact();
             add_plane_contact();
         }
+        // A speculative GPU PCM pair with no physical touch reserves
+        // no published Gu rows, even when mixed legacy Gu generation
+        // runs after a different GPU pair in source order.
+        const Vec3 empty_center{60.f,1.f,0.f};
+        const Vec3 empty_fixed{61.08f,2.08f,0.f};
+        const Quat empty_rotation{
+            0.f,0.f,0.382683432f,0.923879533f};
+        const auto empty_cpu=cpu.add_dynamic_box(
+            {0.5f,0.5f,0.5f},empty_center,1.f);
+        const auto empty_gpu=gpu.add_dynamic_box(
+            {0.5f,0.5f,0.5f},empty_center,1.f);
+        const auto fixed_empty_cpu=cpu.add_static_box(
+            {0.5f,0.5f,0.5f},empty_fixed);
+        const auto fixed_empty_gpu=gpu.add_static_box(
+            {0.5f,0.5f,0.5f},empty_fixed);
+        cpu.set_pose(fixed_empty_cpu,empty_fixed,empty_rotation);
+        gpu.set_pose(fixed_empty_gpu,empty_fixed,empty_rotation);
+        RigidBodyDynamics free_dynamics{};
+        free_dynamics.gravity_enabled=false;
+        cpu.set_dynamics(empty_cpu,free_dynamics);
+        gpu.set_dynamics(empty_gpu,free_dynamics);
         constexpr float dt=1.f/120.f;
         for(std::uint32_t frame=0;frame<4u;++frame) {
             cpu.step(dt);
@@ -3803,8 +3824,24 @@ void verify_mixed_gu_pcm_gpu_dy_solver(
                 saw_pcm |= m.pcm_result_index!=
                     std::numeric_limits<std::uint32_t>::max() && m.count>0u;
             }
-            require(saw_plane && saw_pcm,
-                "Mixed Dy task did not retain both source contact producers");
+            require(saw_plane && saw_pcm &&
+                    gpu.pairs().size()==cpu.pairs().size() &&
+                    gpu.contact_edge_index({empty_gpu,fixed_empty_gpu})!=
+                        0xffffffffu &&
+                    !gpu.contact_edge_connected({empty_gpu,fixed_empty_gpu}) &&
+                    !cpu.contact_edge_connected({empty_cpu,fixed_empty_cpu}),
+                "Mixed Gu/PCM lost its separated speculative candidate");
+            std::size_t contact_end=0u;
+            for(const auto& manager:gpu.contacts()) {
+                require(manager.contact_offset==contact_end,
+                    "Mixed Gu/PCM publication left reserved witness gaps");
+                contact_end+=manager.count;
+            }
+            require(std::is_sorted(gpu.found_contacts().begin(),
+                                   gpu.found_contacts().end()) &&
+                    std::is_sorted(gpu.lost_contacts().begin(),
+                                   gpu.lost_contacts().end()),
+                "Mixed Gu/PCM physical touch events lost source pair order");
             // Both producers publish to the same persistent device Gu
             // history. CPU-only plane contacts must not disappear from
             // the GPU accurate graph just because they lack a PCM slot.
