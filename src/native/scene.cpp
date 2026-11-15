@@ -4536,9 +4536,8 @@ void Scene::update_contacts(bool defer_device_points,float inverse_step) {
                             "Source GPU PCM result lost Sc EdgeIndex order");
                     if(overlap_legacy_gu &&
                        !gpu_pcm_pairs_[gpu_pcm_index].host_generated) {
-                        // Gu uses the same arena in pair order. The
-                        // four-point reservation is compacted once after
-                        // all independent legacy generators have run.
+                        // Reserve the geometry's maximum PCM run
+                        // in source order until independent Gu finishes.
                         const auto reservation=
                             gpu_pcm_pairs_[gpu_pcm_index].candidate_capacity==1u
                                 ?1u:4u;
