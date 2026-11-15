@@ -3638,6 +3638,18 @@ void verify_dy_execution_switch(
     }
     // A rejected CPU Dy frame must roll back the same GPU SAP/PCM
     // transaction before numerical execution returns to the device.
+    // The kinematic target velocity is prepared while PCM runs; rejecting
+    // this epoch must restore its previous velocity and retain the target.
+    const auto ck=cpu.add_dynamic_box(
+        {0.25f,0.25f,0.25f},{40.f,5.f,0.f},1.f);
+    const auto gk=gpu.add_dynamic_box(
+        {0.25f,0.25f,0.25f},{40.f,5.f,0.f},1.f);
+    cpu.set_kinematic(ck,true);
+    gpu.set_kinematic(gk,true);
+    const Quat identity{0.f,0.f,0.f,1.f};
+    cpu.set_kinematic_target(ck,{41.f,5.f,0.f},identity);
+    gpu.set_kinematic_target(gk,{41.f,5.f,0.f},identity);
+    const auto prior_kinematic=gpu.body_state(gk);
     gpu.set_gpu_dy_enabled(false);
     const auto published=gpu.body_state(b[2]);
     const auto frame=gpu.frame_index();
@@ -3654,7 +3666,9 @@ void verify_dy_execution_switch(
             gpu.solved_result_frame()==solved &&
             gpu.contacts().size()==prior_contacts &&
             producer->dy_distance_dispatch_count()==gpu_dispatches &&
-            gpu.body_state(b[2]).position.x==published.position.x,
+            gpu.body_state(b[2]).position.x==published.position.x &&
+            gpu.body_state(gk).position.x==prior_kinematic.position.x &&
+            gpu.body_state(gk).velocity.x==prior_kinematic.velocity.x,
         "Rejected CPU Dy frame corrupted GPU contact or numerical lifetime");
     native::GpuPcmFrictionAnchorFixture::verify_active_reverse_indices(gpu);
     gpu.clear_spatial_velocity_mod(
@@ -3668,6 +3682,9 @@ void verify_dy_execution_switch(
             cpu.contacts().size()==gpu.contacts().size() &&
             cpu.contact_events().size()==gpu.contact_events().size(),
         "CPU Dy rollback prevented subsequent GPU PCM/Dy execution");
+    test::compound_compare_state(
+        gpu.body_state(gk),cpu.body_state(ck),0.03f,
+        "Kinematic velocity preintegration did not survive retry");
     for(std::size_t i=0u;i<a.size();++i)
         test::compound_compare_state(
             gpu.body_state(b[i]),cpu.body_state(a[i]),0.03f,
