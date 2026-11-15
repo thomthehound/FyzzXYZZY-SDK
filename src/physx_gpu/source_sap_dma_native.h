@@ -313,7 +313,8 @@ public:
         // on the ordered queue. Retire those tokens in the same join.
         const auto preceding=pending_numerical_token_count_;
         const bool retire_witness=pending_numerical_prior_fetch_!=0u &&
-            pending_fetch_==pending_numerical_prior_fetch_;
+            pending_fetch_==pending_numerical_prior_fetch_ &&
+            !pending_fetch_reaped_;
         fetch_wait_tokens_.clear();
         fetch_wait_tokens_.reserve(preceding+1u+(retire_witness?1u:0u));
         fetch_wait_tokens_.insert(fetch_wait_tokens_.end(),

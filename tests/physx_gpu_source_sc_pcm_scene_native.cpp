@@ -2034,6 +2034,18 @@ void verify_queued_pcm_dy(fyzz::compute::Backend backend,const char* sap,
             std::fabs(poses[0].position[0]-
                       (2.f+0.5f*seconds))<0.002f,
         "Source Dy waited for Sc PCM witness publication");
+    // Repeated numerical results share the still-unpublished PCM stream.
+    // Only the first completion retires its original witness submission.
+    poses={};
+    producer->enqueue_gpu_dy_distance(
+        {},{},{},{},{},{},{},{},{},{},{},{},{},{},
+        inputs,poses);
+    producer->finish_gpu_dy_distance();
+    require(poses[0].valid==1u &&
+            witness[0].packed_counts==0u &&
+            physx_gpu::SourceScDeviceIslandFixture::
+                pcm_fence_retired(*producer),
+        "Repeated Dy completion retired the PCM witness twice");
     bool premature_commit_rejected=false;
     try {
         producer->commit_gpu_step();
