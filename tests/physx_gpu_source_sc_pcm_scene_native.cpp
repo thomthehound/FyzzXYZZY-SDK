@@ -3418,9 +3418,11 @@ void verify_plane_pcm_without_finite_pcm(
     cpu.add_static_floor(0.f);
     gpu.add_static_floor(0.f);
     cpu.add_static_box({0.5f,0.5f,0.5f},{5.f,2.f,0.f});
-    gpu.add_static_box({0.5f,0.5f,0.5f},{5.f,2.f,0.f});
+    const auto box_support=gpu.add_static_box(
+        {0.5f,0.5f,0.5f},{5.f,2.f,0.f});
     cpu.add_static_sphere(0.5f,{10.f,2.f,0.f});
-    gpu.add_static_sphere(0.5f,{10.f,2.f,0.f});
+    const auto sphere_support=gpu.add_static_sphere(
+        0.5f,{10.f,2.f,0.f});
     const std::array<BodyId,3> c{
         cpu.add_dynamic_box({0.5f,0.5f,0.5f},{0.f,0.43f,0.f},1.f),
         cpu.add_dynamic_box({0.5f,0.5f,0.5f},{5.4f,2.f,0.f},1.f),
@@ -3429,6 +3431,29 @@ void verify_plane_pcm_without_finite_pcm(
         gpu.add_dynamic_box({0.5f,0.5f,0.5f},{0.f,0.43f,0.f},1.f),
         gpu.add_dynamic_box({0.5f,0.5f,0.5f},{5.4f,2.f,0.f},1.f),
         gpu.add_dynamic_sphere(0.5f,{10.75f,2.f,0.f},1.f)};
+    // Collision-only publication must advance CPU Gu physical touch
+    // on the same resident EdgeIndex journal used by GPU PCM and Dy.
+    // No solver step has run at this point.
+    cpu.advance_collision(true);
+    gpu.advance_collision(true);
+    const auto box_edge=native::GpuPcmFrictionAnchorFixture::
+        contact_manager_edge(gpu,{box_support,g[1]});
+    const auto sphere_edge=native::GpuPcmFrictionAnchorFixture::
+        contact_manager_edge(gpu,{sphere_support,g[2]});
+    require(box_edge!=std::numeric_limits<std::uint32_t>::max() &&
+            sphere_edge!=std::numeric_limits<std::uint32_t>::max() &&
+            physx_gpu::SourceScDeviceIslandFixture::touch(
+                *source,box_edge)==std::array<std::uint32_t,2>{1u,0u} &&
+            physx_gpu::SourceScDeviceIslandFixture::touch(
+                *source,sphere_edge)==std::array<std::uint32_t,2>{1u,0u},
+        "Collision-only Scene did not publish finite Gu touch to device history");
+    cpu.advance_collision(true);
+    gpu.advance_collision(true);
+    require(physx_gpu::SourceScDeviceIslandFixture::touch(
+                *source,box_edge)==std::array<std::uint32_t,2>{1u,1u} &&
+            physx_gpu::SourceScDeviceIslandFixture::touch(
+                *source,sphere_edge)==std::array<std::uint32_t,2>{1u,1u},
+        "Collision-only Scene did not preserve finite Gu touch history");
     for(unsigned frame=0u;frame<3u;++frame) {
         cpu.step(1.f/120.f);
         gpu.step(1.f/120.f);
