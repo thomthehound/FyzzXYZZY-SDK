@@ -4076,6 +4076,10 @@ void Scene::materialize_gpu_pcm_points() {
            manifold.contact_offset>contact_points_.size() ||
            manifold.count>contact_points_.size()-manifold.contact_offset)
             throw std::logic_error("Deferred PCM witness range is invalid");
+        const auto n=result.normal;
+        const float normal_squared=n.x*n.x+n.y*n.y+n.z*n.z;
+        if(!(normal_squared>0.f) || !std::isfinite(normal_squared) || !finite(n))
+            throw std::overflow_error("Deferred GPU PCM normal is invalid");
         for(std::size_t j=0u;j<manifold.count;++j) {
             const auto& p=result.points[j];
             if(!finite(p.position) || !std::isfinite(p.separation))
