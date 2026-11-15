@@ -1399,7 +1399,8 @@ private:
     static Transform validated_pose(Transform pose);
     // Shared Gu collision progression, independent of Dy solver execution.
     void advance_collision_internal(bool force_update,bool checkpointed,
-                                    bool defer_device_points=false);
+                                    bool defer_device_points=false,
+                                    float step_seconds=0.0f);
     void update_shape_bounds(Shape& shape);
     void publish_integrated_shape_bounds(BodyId id,Actor& actor);
     void update_bounds();
@@ -1413,7 +1414,8 @@ private:
     void update_gpu_pairs(bool force_update,
                           const std::function<void()>& independent_sc_work);
     void publish_pairs();
-    void update_contacts(bool defer_device_points=false);
+    void update_contacts(bool defer_device_points=false,
+                         float inverse_step=0.0f);
     void materialize_gpu_pcm_points();
     // Original contact-manager addEdge/setEdgeConnected/removeConnection
     // lifecycle, within the existing single scene-owned island pipeline.
