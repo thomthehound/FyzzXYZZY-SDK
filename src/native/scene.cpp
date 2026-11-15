@@ -4267,7 +4267,8 @@ void Scene::update_contacts(bool defer_device_points,float inverse_step) {
     // Reserve those PCM runs in the original Gu arena and publish them
     // after the independent CPU generators have completed.
     const bool overlap_legacy_gu=[&] {
-        if(!gpu_results_pending)return false;
+        if(!gpu_results_pending ||
+           gpu_pcm_pairs_.size()==previous_pairs_.size())return false;
         bool device_seen=false;
         std::size_t candidate=0u;
         for(std::size_t i=0u;i<previous_pairs_.size();++i) {
@@ -4538,48 +4539,51 @@ void Scene::update_contacts(bool defer_device_points,float inverse_step) {
                         // Gu uses the same arena in pair order. The
                         // four-point reservation is compacted once after
                         // all independent legacy generators have run.
+                        const auto reservation=
+                            gpu_pcm_pairs_[gpu_pcm_index].candidate_capacity==1u
+                                ?1u:4u;
                         manifold.pcm_result_index=
                             static_cast<std::uint32_t>(gpu_pcm_index++);
-                        manifold.count=4u;
+                        manifold.count=static_cast<std::uint8_t>(reservation);
                         next_contact_points_.resize(
-                            next_contact_points_.size()+4u);
+                            next_contact_points_.size()+reservation);
                         deferred_gpu_manifold=true;
                     } else {
-                    // Only a GPU-owned witness requires the host join.
-                    if(!gpu_results_joined &&
-                       !gpu_pcm_pairs_[gpu_pcm_index].host_generated) {
-                        FYZZ_PROFILE_SCOPE("sc.pcm_witness_join");
-                        gpu_broadphase_->finish_gpu_pcm_box_contacts();
-                        gpu_results_joined=true;
-                    }
-                    if(gpu_pcm_results_[gpu_pcm_index].edge!=edge)
-                        throw std::logic_error(
-                            "Source GPU PCM result lost Sc EdgeIndex order");
-                    const auto& result=gpu_pcm_results_[gpu_pcm_index];
-                    if(result.status()!=0u || result.count()>4u)
-                        throw std::logic_error(
-                            "Source GPU PCM returned an invalid Sc manifold");
-                    // The source Gu arena is the only published contact
-                    // storage. Decode device witnesses into that arena,
-                    // not into a temporary four-contact buffer first.
-                    const auto offset=next_contact_points_.size();
-                    next_contact_points_.resize(offset+result.count());
-                    manifold.pcm_result_index=
-                        static_cast<std::uint32_t>(gpu_pcm_index++);
-                    device_touch=result.touch_transition();
-                    // Empty Gu results have no backing point array.
-                    // Never do pointer arithmetic on a null arena data().
-                    std::span<ContactPoint> contacts{};
-                    if(result.count())
-                        contacts={next_contact_points_.data()+offset,
-                                  result.count()};
-                    const bool deferred=defer_device_points &&
-                        !gpu_pcm_pairs_[manifold.pcm_result_index].host_generated;
-                    manifold.count=publish_gpu_pcm_box_box(
-                        result,island_edges_[edge].pcm_cache,contacts,deferred);
-                    gpu_pcm_points_deferred_|=deferred && manifold.count!=0u;
-                    island_edges_[edge].pcm_cache.device_history=
-                        !gpu_pcm_pairs_[manifold.pcm_result_index].host_generated;
+                        // Only a GPU-owned witness requires the host join.
+                        if(!gpu_results_joined &&
+                           !gpu_pcm_pairs_[gpu_pcm_index].host_generated) {
+                            FYZZ_PROFILE_SCOPE("sc.pcm_witness_join");
+                            gpu_broadphase_->finish_gpu_pcm_box_contacts();
+                            gpu_results_joined=true;
+                        }
+                        if(gpu_pcm_results_[gpu_pcm_index].edge!=edge)
+                            throw std::logic_error(
+                                "Source GPU PCM result lost Sc EdgeIndex order");
+                        const auto& result=gpu_pcm_results_[gpu_pcm_index];
+                        if(result.status()!=0u || result.count()>4u)
+                            throw std::logic_error(
+                                "Source GPU PCM returned an invalid Sc manifold");
+                        // The source Gu arena is the only published contact
+                        // storage. Decode device witnesses into that arena,
+                        // not into a temporary four-contact buffer first.
+                        const auto offset=next_contact_points_.size();
+                        next_contact_points_.resize(offset+result.count());
+                        manifold.pcm_result_index=
+                            static_cast<std::uint32_t>(gpu_pcm_index++);
+                        device_touch=result.touch_transition();
+                        // Empty Gu results have no backing point array.
+                        // Never do pointer arithmetic on a null arena data().
+                        std::span<ContactPoint> contacts{};
+                        if(result.count())
+                            contacts={next_contact_points_.data()+offset,
+                                      result.count()};
+                        const bool deferred=defer_device_points &&
+                            !gpu_pcm_pairs_[manifold.pcm_result_index].host_generated;
+                        manifold.count=publish_gpu_pcm_box_box(
+                            result,island_edges_[edge].pcm_cache,contacts,deferred);
+                        gpu_pcm_points_deferred_|=deferred && manifold.count!=0u;
+                        island_edges_[edge].pcm_cache.device_history=
+                            !gpu_pcm_pairs_[manifold.pcm_result_index].host_generated;
                     }
                 }else {
                     manifold.count=convex_pair
@@ -4837,40 +4841,40 @@ void Scene::update_contacts(bool defer_device_points,float inverse_step) {
         if(deferred_gpu_manifold) {
             next_manifolds_.push_back(manifold);
         } else {
-        // Sc's sorted Gu contact-manager traversal already compares
-        // this frame against the preceding physical-touch state. Emit
-        // each transition here, without a second manifold merge pass.
-        if(device_touch) {
-            const auto transition=*device_touch;
-            // Source Sc's prior publication is an independent guard
-            // against a stale or recycled GPU EdgeIndex history.
-            const bool expected_found=manifold.count>0u && !previously_touching;
-            const bool expected_persists=manifold.count>0u && previously_touching;
-            const bool expected_lost=manifold.count==0u && previously_touching;
-            if((transition==GpuPcmTouchTransition::Found)!=expected_found ||
-               (transition==GpuPcmTouchTransition::Persists)!=expected_persists ||
-               (transition==GpuPcmTouchTransition::Lost)!=expected_lost)
-                throw std::logic_error(
-                    "Source GPU Sc touch transition disagrees with edge lifetime");
-            if(transition==GpuPcmTouchTransition::Found)
+            // Sc's sorted Gu contact-manager traversal already compares
+            // this frame against the preceding physical-touch state. Emit
+            // each transition here, without a second manifold merge pass.
+            if(device_touch) {
+                const auto transition=*device_touch;
+                // Source Sc's prior publication is an independent guard
+                // against a stale or recycled GPU EdgeIndex history.
+                const bool expected_found=manifold.count>0u && !previously_touching;
+                const bool expected_persists=manifold.count>0u && previously_touching;
+                const bool expected_lost=manifold.count==0u && previously_touching;
+                if((transition==GpuPcmTouchTransition::Found)!=expected_found ||
+                   (transition==GpuPcmTouchTransition::Persists)!=expected_persists ||
+                   (transition==GpuPcmTouchTransition::Lost)!=expected_lost)
+                    throw std::logic_error(
+                        "Source GPU Sc touch transition disagrees with edge lifetime");
+                if(transition==GpuPcmTouchTransition::Found)
+                    next_found_contacts_.push_back(pair);
+                else if(transition==GpuPcmTouchTransition::Lost)
+                    next_lost_contacts_.push_back(pair);
+            } else if(manifold.count>0u && !previously_touching) {
                 next_found_contacts_.push_back(pair);
-            else if(transition==GpuPcmTouchTransition::Lost)
+            } else if(manifold.count==0u && previously_touching) {
                 next_lost_contacts_.push_back(pair);
-        } else if(manifold.count>0u && !previously_touching) {
-            next_found_contacts_.push_back(pair);
-        } else if(manifold.count==0u && previously_touching) {
-            next_lost_contacts_.push_back(pair);
-        }
-        if(manifold.count>0u) {
-            if(source_device_gu_history &&
-               manifold.pcm_result_index==
-                   std::numeric_limits<std::uint32_t>::max())
-                gpu_dy_gu_touches_.push_back({
-                    edge,previously_touching?3u:1u});
-            next_manifold_by_edge_[edge]={
-                next_manifolds_.size(),new_lookup_generation};
-            next_manifolds_.push_back(manifold);
-        }
+            }
+            if(manifold.count>0u) {
+                if(source_device_gu_history &&
+                   manifold.pcm_result_index==
+                       std::numeric_limits<std::uint32_t>::max())
+                    gpu_dy_gu_touches_.push_back({
+                        edge,previously_touching?3u:1u});
+                next_manifold_by_edge_[edge]={
+                    next_manifolds_.size(),new_lookup_generation};
+                next_manifolds_.push_back(manifold);
+            }
         }
         if(previously_touching)++old_cursor;
     }
@@ -4886,7 +4890,7 @@ void Scene::update_contacts(bool defer_device_points,float inverse_step) {
             const auto& request=gpu_pcm_pairs_[index];
             const auto& result=gpu_pcm_results_[index];
             if(result.edge!=manifold.edge_handle ||
-               result.status()!=0u || result.count()>4u)
+               result.status()!=0u || result.count()>manifold.count)
                 throw std::logic_error(
                     "Deferred GPU PCM result lost Sc manager identity");
             const bool deferred=defer_device_points;
