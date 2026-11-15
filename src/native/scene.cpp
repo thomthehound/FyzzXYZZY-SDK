@@ -4118,7 +4118,7 @@ bool Scene::cached_friction_patch_valid(
     return true;
 }
 
-void Scene::update_contacts(bool defer_device_points) {
+void Scene::update_contacts(bool defer_device_points,float inverse_step) {
     FYZZ_PROFILE_SCOPE("gu.contacts_pcm");
     gpu_pcm_points_deferred_=false;
     // Gu narrowphase consumes the sum of both PxShapeCore contact offsets.
@@ -4279,6 +4279,11 @@ void Scene::update_contacts(bool defer_device_points) {
             gpu_broadphase_->has_gpu_dy_distance()
                 ?static_cast<std::uint32_t>(island_edges_.size()):0u,
             defer_device_points);
+    // Kinematic targets depend on the authored pose and timestep, not
+    // physical touch. Prepare Dy velocities while queued PCM runs,
+    // before any host observation of its witness stream.
+    if(inverse_step>0.0f)
+        calculate_kinematic_velocities(inverse_step);
     // The speculative IslandSim consumes SAP membership, never Gu
     // witness geometry. Admit its first/second-pass topology on the CPU
     // while the same scene stream executes general GPU PCM. Accurate
@@ -11054,7 +11059,6 @@ void Scene::prepare_unconstrained_velocities(float seconds) {
     // Dy preIntegration on its awake island ranges. Speculative
     // processLostEdges remains independent of Actor motion state.
     constexpr float gravity = -9.81f;
-    calculate_kinematic_velocities(1.0f/seconds);
     // Dy::DynamicsContext takes the accurate *active* island ranges,
     // not every actor or every dormant island in the full graph.
     prepare_active_accurate_island_batches();
@@ -11429,7 +11433,7 @@ void Scene::step(float seconds) {
         accurate_islands_.active_nodes.size();
     speculative_islands_.initial_active_node_count=
         speculative_islands_.active_nodes.size();
-    advance_collision_internal(false,true,true);
+    advance_collision_internal(false,true,true,seconds);
     // The source first/second-pass wakeIslands handoffs precede
     // third-pass processLostEdges, preserving old-island wake reach.
     activate_published_islands();
@@ -11778,7 +11782,8 @@ void Scene::advance_collision(bool force_update) {
         synchronize_active_island_nodes();
 }
 void Scene::advance_collision_internal(
-    bool force_update,bool checkpointed,bool defer_device_points) {
+    bool force_update,bool checkpointed,bool defer_device_points,
+    float step_seconds) {
     FYZZ_PROFILE_SCOPE("sc.collision_pipeline");
     // Sc retirement and event clearing do not consume SAP reports or
     // change source AABB inputs. On GPU frames, execute this work after
@@ -11814,7 +11819,8 @@ void Scene::advance_collision_internal(
             update_pairs();
         }
         publish_pairs();
-        update_contacts(defer_device_points && gpu_dy_active());
+        update_contacts(defer_device_points && gpu_dy_active(),
+            step_seconds>0.0f?1.0f/step_seconds:0.0f);
     } else {
         // A quiet query/step still publishes empty per-frame event
         // streams. Rotate only their reusable buffers so a later
@@ -11830,6 +11836,8 @@ void Scene::advance_collision_internal(
         found_contacts_.swap(next_found_contacts_);
         lost_contacts_.swap(next_lost_contacts_);
         ++quiet_event_epoch_;
+        if(step_seconds>0.0f)
+            calculate_kinematic_velocities(1.0f/step_seconds);
     }
     // Source first speculative and second accurate pass: edge insertion
     // and active body admission, but no lost-edge island splitting yet.
