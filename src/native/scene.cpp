@@ -9567,9 +9567,25 @@ void Scene::solve_gpu_distance_constraints(float seconds) {
             if(kind==0u || kind==2u)continue;
             if(kind!=3u)
                 throw std::logic_error("Sc device admission returned an unknown response type");
-            const auto manager=token&0x3fffffffu;
-            if(manager>=gpu_dy_admitted_manager_flags_.size())
-                throw std::logic_error("Sc device admission returned an unknown contact manager");
+            const auto candidate=token&0x3fffffffu;
+            if(candidate>=previous_pairs_.size() ||
+               candidate>=active_edge_handles_.size())
+                throw std::logic_error(
+                    "Sc device admission returned an unknown contact candidate");
+            const auto edge=active_edge_handles_[candidate];
+            if(edge>=manifold_by_edge_.size() ||
+               manifold_by_edge_[edge].generation!=
+                   manifold_lookup_generation_ ||
+               manifold_by_edge_[edge].index>=manifolds_.size())
+                throw std::logic_error(
+                    "Sc device admission returned a contact without a Gu manager");
+            const auto manager=manifold_by_edge_[edge].index;
+            const auto& manifold=manifolds_[manager];
+            if(manifold.edge_handle!=edge ||
+               manifold.candidate_ordinal!=candidate ||
+               !(manifold.pair==previous_pairs_[candidate]))
+                throw std::logic_error(
+                    "Sc device admission contact identity differs from Gu");
             gpu_dy_admitted_manager_flags_[manager]=1u;
         }
     }

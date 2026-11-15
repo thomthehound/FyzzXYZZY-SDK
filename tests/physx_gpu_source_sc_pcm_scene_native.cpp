@@ -231,6 +231,36 @@ struct GpuPcmFrictionAnchorFixture {
             }
         }
     }
+    static void verify_device_admitted_contact_sources(const Scene& scene) {
+        const auto& actual=scene.gpu_dy_admitted_manager_flags_;
+        if(actual.size()!=scene.manifolds_.size())
+            throw std::runtime_error(
+                "Resident Sc contact admission did not publish Gu manager flags");
+        std::vector<std::uint8_t> expected(actual.size(),0u);
+        for(const auto token:
+            scene.gpu_broadphase_->gpu_dy_admitted_response_tokens()) {
+            if((token>>30u)!=3u)continue;
+            const auto candidate=token&0x3fffffffu;
+            if(candidate>=scene.previous_pairs_.size())
+                throw std::runtime_error(
+                    "Resident Sc contact response has no candidate");
+            const auto pair=scene.previous_pairs_[candidate];
+            const auto it=std::lower_bound(scene.manifolds_.begin(),
+                scene.manifolds_.end(),pair,
+                [](const ContactManifold& manager,Pair key) {
+                    return manager.pair<key;
+                });
+            if(it==scene.manifolds_.end() ||
+               !(it->pair==pair) || it->candidate_ordinal!=candidate)
+                throw std::runtime_error(
+                    "Resident Sc response source lost its Gu manager");
+            expected[static_cast<std::size_t>(
+                it-scene.manifolds_.begin())]=1u;
+        }
+        if(actual!=expected)
+            throw std::runtime_error(
+                "Resident Sc response tokens were not mapped to Gu indices");
+    }
     static void verify_active_reverse_indices(const Scene& scene) {
         const auto verify=[](const auto& graph) {
             for(std::size_t i=0;i<graph.active_nodes.size();++i)
@@ -3861,6 +3891,9 @@ void verify_mixed_gu_pcm_gpu_dy_solver(
         for(std::uint32_t frame=0;frame<4u;++frame) {
             cpu.step(dt);
             gpu.step(dt);
+            if(device_admission)
+                native::GpuPcmFrictionAnchorFixture::
+                    verify_device_admitted_contact_sources(gpu);
             if(device_admission && !plane_first && frame==0u) {
                 bool shifted=false;
                 for(std::size_t i=0u;i<gpu.contacts().size();++i) {
