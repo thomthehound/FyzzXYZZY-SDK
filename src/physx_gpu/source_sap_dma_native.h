@@ -59,6 +59,9 @@ public:
     };
     const SubmissionStats& submission_stats() const noexcept { return stats_; }
     bool has_pending_fetch() const noexcept { return pending_fetch_!=0u; }
+    bool fetch_fence_retired() const noexcept {
+        return pending_fetch_!=0u && pending_fetch_reaped_;
+    }
     std::size_t submitted_token_count() const noexcept { return tokens_.size(); }
 
     SourceSapDmaNative(compute::Context& context,
@@ -191,6 +194,7 @@ public:
             ++stats_.fused_readbacks;
         }
         pending_fetch_token_count_=prior_token_count;
+        pending_fetch_reaped_=false;
         pending_fetch_bytes_=bytes;
         pending_fetch_spans_=outputs.size();
         FYZZ_PROFILE_COUNTER("source.download_bytes",bytes);
@@ -205,17 +209,21 @@ public:
             throw std::logic_error("Source GPU readback was not armed");
         const auto start=std::chrono::steady_clock::now();
         const auto preceding=pending_fetch_token_count_;
-        fetch_wait_tokens_.clear();
-        fetch_wait_tokens_.reserve(preceding+1u);
-        fetch_wait_tokens_.insert(fetch_wait_tokens_.end(),
-            tokens_.begin(),tokens_.begin()+preceding);
-        fetch_wait_tokens_.push_back(pending_fetch_);
-        context_.wait_submissions(fetch_wait_tokens_);
-        // Earlier command resources are retired now, even if publishing
-        // the downloaded bytes subsequently fails.
-        retire_source_tokens(preceding);
+        if(!pending_fetch_reaped_) {
+            fetch_wait_tokens_.clear();
+            fetch_wait_tokens_.reserve(preceding+1u);
+            fetch_wait_tokens_.insert(fetch_wait_tokens_.end(),
+                tokens_.begin(),tokens_.begin()+preceding);
+            fetch_wait_tokens_.push_back(pending_fetch_);
+            context_.wait_submissions(fetch_wait_tokens_);
+            retire_source_tokens(preceding);
+        }else if(preceding!=0u)
+            throw std::logic_error(
+                "Numerical fence retained preceding PCM source tokens");
+        // Retiring the GPU ticket does not publish Sc's borrowed witnesses.
         context_.finish_download_batch(pending_fetch_,true);
-        pending_fetch_=0;
+        pending_fetch_=0u;
+        pending_fetch_reaped_=false;
         stats_.deferred_submissions_after_fetch+=tokens_.size();
         const auto elapsed=std::chrono::steady_clock::now()-start;
         ++stats_.fetch_batches;
@@ -237,6 +245,7 @@ public:
             // retains any unretired submission until final teardown.
         }
         pending_fetch_=0;
+        pending_fetch_reaped_=false;
         pending_fetch_token_count_=0;
         pending_fetch_spans_=0;
         pending_fetch_bytes_=0;
@@ -289,6 +298,7 @@ public:
         }
         pending_numerical_fetch_=ticket;
         pending_numerical_token_count_=tokens_.size();
+        pending_numerical_prior_fetch_=pending_fetch_;
         pending_numerical_bytes_=bytes;
         pending_numerical_spans_=outputs.size();
         FYZZ_PROFILE_COUNTER("source.download_bytes",bytes);
@@ -302,15 +312,25 @@ public:
         // The numerical fence completes every earlier source submission
         // on the ordered queue. Retire those tokens in the same join.
         const auto preceding=pending_numerical_token_count_;
+        const bool retire_witness=pending_numerical_prior_fetch_!=0u &&
+            pending_fetch_==pending_numerical_prior_fetch_;
         fetch_wait_tokens_.clear();
-        fetch_wait_tokens_.reserve(preceding+1u);
+        fetch_wait_tokens_.reserve(preceding+1u+(retire_witness?1u:0u));
         fetch_wait_tokens_.insert(fetch_wait_tokens_.end(),
             tokens_.begin(),tokens_.begin()+preceding);
+        if(retire_witness) {
+            const auto where=std::lower_bound(
+                fetch_wait_tokens_.begin(),fetch_wait_tokens_.end(),
+                pending_fetch_);
+            fetch_wait_tokens_.insert(where,pending_fetch_);
+        }
         fetch_wait_tokens_.push_back(pending_numerical_fetch_);
         context_.wait_submissions(fetch_wait_tokens_);
         retire_source_tokens(preceding);
+        if(retire_witness)pending_fetch_reaped_=true;
         context_.finish_download_batch(pending_numerical_fetch_,true);
         pending_numerical_fetch_=0u;
+        pending_numerical_prior_fetch_=0u;
         const auto elapsed=std::chrono::steady_clock::now()-start;
         ++stats_.fetch_batches;
         stats_.fetch_spans+=pending_numerical_spans_;
@@ -328,6 +348,7 @@ public:
             context_.finish_download_batch(pending_numerical_fetch_,false);
         }catch(...) {}
         pending_numerical_fetch_=0u;
+        pending_numerical_prior_fetch_=0u;
         pending_numerical_token_count_=0u;
         pending_numerical_bytes_=0u;
         pending_numerical_spans_=0u;
@@ -344,7 +365,7 @@ public:
         if(pending_numerical_fetch_ &&
            !context_.submission_complete(pending_numerical_fetch_))
             return false;
-        if(pending_fetch_)
+        if(pending_fetch_ && !pending_fetch_reaped_)
             return context_.submission_complete(pending_fetch_);
         return tokens_.empty() || context_.submission_complete(tokens_.back());
     }
@@ -412,6 +433,8 @@ private:
     std::vector<compute::SubmissionId> tokens_,fetch_wait_tokens_;
     compute::SubmissionId pending_fetch_=0;
     compute::SubmissionId pending_numerical_fetch_=0;
+    compute::SubmissionId pending_numerical_prior_fetch_=0u;
+    bool pending_fetch_reaped_=false;
     std::size_t pending_numerical_bytes_=0u,pending_numerical_spans_=0u;
     std::size_t pending_numerical_token_count_=0u;
     std::size_t pending_fetch_token_count_=0;

@@ -151,8 +151,11 @@ The GPU Dy path fetches 8 bytes of edge/touch metadata per GPU pair
 before numerical admission. Resident PCM keeps normals and world contacts;
 the first touching pair in each deferred span transfers 76 bytes after
 Dy completion, with 84 bytes per additional pair. A manager with multiple
-historical friction patches requires full early witnesses for Sc selection. These spans join Dy's existing
-completion batch without another point-fetch fence on responding frames.
+historical friction patches requires full early witnesses for Sc selection.
+These spans join Dy's existing completion batch without another point-fetch
+fence on responding frames. A completed Dy numerical fence retires preceding
+source uploads and PCM readback submissions on the shared queue; PCM witness
+bytes remain unpublished until Sc joins or discards that readback.
 A continuous PCM-to-Dy numerical path without a host header dependency
 remains open; compact admission alone does not remove that synchronization.
 
