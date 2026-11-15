@@ -85,6 +85,13 @@ uint sourceDyBodyOrdinal(uint index) {
     return (p.launchControl&0x08000000u)!=0u
         ?scIslandBodyOrder.Load(address):arena.Load(address);
 }
+uint sourceDyResponseToken(uint scratch,uint colors,uint index) {
+    if((p.launchControl&0x08000000u)!=0u) {
+        const uint offset=arena.Load(scratch+20u);
+        return scIslandBodyOrder.Load(p.ordinalBias+offset+index*4u);
+    }
+    return arena.Load(colors+index*4u);
+}
 void solveJoint(uint4 desc,uint errorAddress,bool biased) {
     if(desc.x>=p.rowCount || desc.w>p.rowCount-desc.x ||
        (desc.y!=invalidBody && desc.y>=p.bodyCount) ||
@@ -504,7 +511,8 @@ void sourceDyPartitionTask(uint taskId,uint scratch,uint errorAddress,
         uint4 desc;
         if(sourceDescriptors) {
             if(!sourceDyExpandDescriptor(
-                   arena.Load(colors+i*4u),sourceCount,sourceTable,
+                   sourceDyResponseToken(scratch,colors,i),
+                   sourceCount,sourceTable,
                    errorAddress,desc))
                 continue;
             arena.Store4(raw+i*16u,desc);
@@ -1521,8 +1529,9 @@ void sourceDySolvePackedTask(uint taskId) {
     const uint bodyState=scratch+views.w;
     const uint sourceTable=bodyState+p.bodyCount*12u;
     uint4 desc;
-    if(!sourceDyExpandDescriptor(arena.Load(colors+ranges.x*4u),
-                                 arena.Load(sourceTable),sourceTable,
+    if(!sourceDyExpandDescriptor(
+            sourceDyResponseToken(scratch,colors,ranges.x),
+            arena.Load(sourceTable),sourceTable,
                                  errorAddress,desc)) {
         publishTaskError(taskId,arena.Load(errorAddress));
         return;

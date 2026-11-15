@@ -966,6 +966,18 @@ public:
             !device_admission->task_dispatch.buffer || tasks.empty()))
             throw std::invalid_argument(
                 "Source Dy device island admission requires resident numerical task launch");
+        if(device_admission) {
+            const auto& layout=device_admission->layout;
+            if(layout.body_order>layout.response_tokens ||
+               layout.response_tokens>layout.bytes ||
+               body_ordinals.size_bytes()>
+                   layout.response_tokens-layout.body_order ||
+               descriptors.size()>
+                   (layout.bytes-layout.response_tokens)/
+                       sizeof(std::uint32_t))
+                throw std::out_of_range(
+                    "Source Sc resident body and response views exceed capacity");
+        }
         source_descriptor_tokens_.clear();
         source_descriptor_full_.clear();
         if(source_descriptors) {
@@ -1178,9 +1190,13 @@ public:
             std::memcpy(host_.data()+offsets[15],scratch_header.data(),
                         sizeof(scratch_header));
             if(source_descriptors) {
-                const std::uint32_t mode=device_admission?2u:1u;
+                // Sc's response tokens follow its body ordinals in the
+                // same allocation; Dy writes only its own color scratch.
+                const auto token_offset=device_admission
+                    ?narrow(device_admission->layout.response_tokens-
+                            device_admission->layout.body_order):0u;
                 std::memcpy(host_.data()+offsets[15]+20u,
-                            &mode,sizeof(mode));
+                            &token_offset,sizeof(token_offset));
                 if(n && !device_admission)
                     std::memcpy(host_.data()+offsets[15]+scratch_header[1],
                                 source_descriptor_tokens_.data(),
@@ -1355,7 +1371,9 @@ public:
             ?device_admission->work+
                 device_admission->layout.body_order:address;
         const auto ordinal_bytes=device_admission
-            ?std::max<std::size_t>(4u,body_ordinals.size_bytes()):total;
+            ?device_admission->layout.response_tokens-
+                device_admission->layout.body_order+
+                descriptors.size()*sizeof(std::uint32_t):total;
         dispatch.buffers.push_back(source_native_view(
             addresses_,ordinal_address,ordinal_bytes,alignment_,
             convex_vertex_count?7u:6u,compute::BufferAccess::Read,
@@ -1462,9 +1480,9 @@ public:
         last_schedule_.device_upload_batches=
             stream_.submission_stats().upload_batches-previous_batches;
         // The Sc producer and Dy consumer use the same ordered source
-        // stream. Mutable task and descriptor-token inputs are copied
-        // after the shared upload; body ordinals stay in Sc's source
-        // view. No host graph readback occurs between submissions.
+        // stream. Only mutable task records and the scheduling header
+        // are copied; Sc owns both resident ordinal and response-token
+        // inputs. No host graph readback occurs between submissions.
         if(device_admission) {
             const auto& view=*device_admission;
             const auto& layout=view.layout;
@@ -1486,11 +1504,6 @@ public:
                                       view.work,20u);
             stream_.queue_device_copy(address+offsets[5],
                                       view.work+layout.tasks,tasks.size_bytes());
-            if(!descriptors.empty())
-                stream_.queue_device_copy(address+offsets[15]+44u+
-                    descriptors.size()*16u,
-                    view.work+layout.response_tokens,
-                    descriptors.size()*sizeof(std::uint32_t));
         }
         last_upload_spans_=stream_.submission_stats().upload_spans-
                            previous_spans-joint_source_uploads_.size()-

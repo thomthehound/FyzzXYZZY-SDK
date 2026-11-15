@@ -132,8 +132,9 @@ task/ordinal uploads. Device contact tokens address Sc's pre-PCM candidate
 ordinals, including zero-touch candidates, rather than Gu manifold positions.
 CPU-prepared task publication retains its original Gu-indexed ordering. The island work and Dy solve enter one ordered GPU
 submission without an intermediate host wait. Dy reads Sc's resident
-body-ordinal stream directly; only mutable task records and descriptor
-colors are copied into its numerical arena. Island graphs
+body-ordinal and source response-token streams directly. Only the mutable
+task records and scheduling header are copied into its numerical arena;
+descriptor coloring stays within Dy's own scratch. Island graphs
 with at most 32 nodes and 32 edges build their task records in one dispatch;
 larger graphs use parallel union, prefix and response ordering.
 Wide islands use their separate device-partition execution path; the compact
