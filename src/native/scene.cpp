@@ -4166,6 +4166,7 @@ void Scene::update_contacts(bool defer_device_points,float inverse_step) {
         return (dynamic_a || dynamic_b) &&
             (!dynamic_a || actors_[a.body].sleeping) && (!dynamic_b || actors_[b.body].sleeping);
     };
+    bool pcm_has_multi_patch_history=false;
     if(source_gpu_pcm) {
         gpu_pcm_pairs_.reserve(previous_pairs_.size());
         std::size_t prior_touch_cursor=0u;
@@ -4192,6 +4193,12 @@ void Scene::update_contacts(bool defer_device_points,float inverse_step) {
                (!plane && !pcm_box_box_enabled_))continue;
             const EdgeIndex edge=active_edge_handles_[i];
             if(dormant_pcm(pair,edge))continue;
+            if(defer_device_points && edge<friction_by_edge_.size()) {
+                const auto& history=friction_by_edge_[edge];
+                pcm_has_multi_patch_history |=
+                    history.epoch==friction_cache_epoch_ &&
+                    history.count>1u;
+            }
             if(plane) {
                 const Shape& floor=a.geometry==Geometry::Plane?a:b;
                 const Shape& box=a.geometry==Geometry::Plane?b:a;
@@ -4264,7 +4271,7 @@ void Scene::update_contacts(bool defer_device_points,float inverse_step) {
     // Multiple retained friction patches require the current Gu normal
     // for Sc patch selection. Single-patch PCM checks the resident
     // normal during Dy anchor correlation.
-    if(defer_device_points)
+    if(defer_device_points && pcm_has_multi_patch_history)
         for(const auto& request:gpu_pcm_pairs_) {
             if(request.host_generated ||
                request.edge>=friction_by_edge_.size())continue;

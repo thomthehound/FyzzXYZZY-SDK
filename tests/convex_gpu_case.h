@@ -154,7 +154,7 @@ inline void verify_convex_finite_gpu_solver(
                 std::to_string(producer->pcm_contact_readback_bytes()));
         constexpr auto pcm_stride=
             sizeof(physx_gpu::SourcePcmGpuContactStreamNative);
-        constexpr auto header_stride=5u*sizeof(std::uint32_t);
+        constexpr auto header_stride=2u*sizeof(std::uint32_t);
         if(producer->pcm_header_join_bytes()!=9u*header_stride ||
            producer->pcm_deferred_point_bytes()!=9u*pcm_stride-header_stride ||
            producer->pcm_contact_readback_bytes()!=
@@ -445,14 +445,14 @@ inline void verify_convex_plane_gpu_solver(
             check(producer->dy_cpu_gu_geometry_bytes()==0u &&
                   producer->dy_pcm_device_contact_rows()==17u &&
                   producer->pcm_header_join_bytes()==
-                      5u*5u*sizeof(std::uint32_t) &&
+                      5u*2u*sizeof(std::uint32_t) &&
                   producer->pcm_deferred_point_bytes()==
                       5u*sizeof(physx_gpu::SourcePcmGpuContactStreamNative)-
-                          5u*sizeof(std::uint32_t) &&
+                          2u*sizeof(std::uint32_t) &&
                   producer->pcm_contact_readback_bytes()==
                       5u*(sizeof(physx_gpu::SourcePcmGpuContactStreamNative)+
-                          5u*sizeof(std::uint32_t))-
-                          5u*sizeof(std::uint32_t),
+                          2u*sizeof(std::uint32_t))-
+                          2u*sizeof(std::uint32_t),
                 "Convex plane bypassed device PCM and Dy contact geometry");
         }
         for(std::size_t j=0u;j<cpu.contacts().size();++j) {
