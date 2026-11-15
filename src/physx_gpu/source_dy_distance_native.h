@@ -164,9 +164,9 @@ public:
         max_view_=info.max_storage_buffer_range;
         compute::ComputePipelineDesc pipeline{};
         pipeline.shader=std::move(shader);
-        pipeline.storage_buffer_binding_count=6u;
+        pipeline.storage_buffer_binding_count=7u;
         pipeline.storage_buffer_views.assign(
-            6u,compute::StorageBufferViewKind::RawReadWrite);
+            7u,compute::StorageBufferViewKind::RawReadWrite);
         pipeline.push_constant_bytes=128u;
         pipeline_=context_.create_compute_pipeline(pipeline);
 #if defined(FYZZXYZZY_PROFILE_GPU)
@@ -175,9 +175,9 @@ public:
         if(convex_shader) {
             try {
                 pipeline.shader=std::move(*convex_shader);
-                pipeline.storage_buffer_binding_count=7u;
+                pipeline.storage_buffer_binding_count=8u;
                 pipeline.storage_buffer_views.assign(
-                    7u,compute::StorageBufferViewKind::RawReadWrite);
+                    8u,compute::StorageBufferViewKind::RawReadWrite);
                 convex_pipeline_=context_.create_compute_pipeline(pipeline);
 #if defined(FYZZXYZZY_PROFILE_GPU)
                 context_.set_pipeline_profile_label(convex_pipeline_,"dy.convex");
@@ -1021,7 +1021,8 @@ public:
         // table. Solver-body ordinals precede the free-body suffix.
         const std::array<std::size_t,count> bytes{
             bodies.size_bytes(),rows.size_bytes(),descriptors.size_bytes(),
-            partition_count*sizeof(std::uint32_t),body_ordinals.size_bytes(),
+            partition_count*sizeof(std::uint32_t),
+            device_admission?0u:body_ordinals.size_bytes(),
             tasks.size_bytes(),contact_bytes,friction_bytes,
             patches.size_bytes(),manifolds.size_bytes(),contact_order.size_bytes(),
             compact_prep_bytes,
@@ -1117,7 +1118,8 @@ public:
                     0u,1u,5u,8u,2u,3u,4u,9u,10u,11u,12u,14u,15u,13u,6u,7u};
         last_schedule_.device_generated_bytes=device_partitions
             ? bytes[2]+bytes[3]+
-                (device_admission?bytes[4]+bytes[5]:0u):0u;
+                (device_admission
+                    ?body_ordinals.size_bytes()+bytes[5]:0u):0u;
         std::array<std::size_t,count> offsets{};
         // The original Dy heap retains an EdgeIndex-keyed Sc anchor
         // prefix. Solver output follows it and remains the sole readback;
@@ -1345,6 +1347,19 @@ public:
                 source_allocation_bytes(convex_vertex_count,12u),
                 alignment_,6u,compute::BufferAccess::Read,
                 params[27],max_view_));
+        // Dy reads Sc's source-ordered body ordinals directly. Its
+        // per-task descriptor colors and mutable task errors remain in
+        // the numerical arena.
+        std::uint32_t resident_ordinal_bias=0u;
+        const auto ordinal_address=device_admission
+            ?device_admission->work+
+                device_admission->layout.body_order:address;
+        const auto ordinal_bytes=device_admission
+            ?std::max<std::size_t>(4u,body_ordinals.size_bytes()):total;
+        dispatch.buffers.push_back(source_native_view(
+            addresses_,ordinal_address,ordinal_bytes,alignment_,
+            convex_vertex_count?7u:6u,compute::BufferAccess::Read,
+            resident_ordinal_bias,max_view_));
         for(auto& record:packed_integration_) {
             if(record.actor_local_offset!=invalid) {
                 const auto offset=std::size_t(actor_local_bias)+
@@ -1447,9 +1462,9 @@ public:
         last_schedule_.device_upload_batches=
             stream_.submission_stats().upload_batches-previous_batches;
         // The Sc producer and Dy consumer use the same ordered source
-        // stream. GPU-to-GPU copies replace the transient task/ordinal/
-        // token inputs after the shared host upload; no Sc witness fetch
-        // or host graph readback occurs between their submissions.
+        // stream. Mutable task and descriptor-token inputs are copied
+        // after the shared upload; body ordinals stay in Sc's source
+        // view. No host graph readback occurs between submissions.
         if(device_admission) {
             const auto& view=*device_admission;
             const auto& layout=view.layout;
@@ -1471,9 +1486,6 @@ public:
                                       view.work,20u);
             stream_.queue_device_copy(address+offsets[5],
                                       view.work+layout.tasks,tasks.size_bytes());
-            if(!body_ordinals.empty())
-                stream_.queue_device_copy(address+offsets[4],
-                    view.work+layout.body_order,body_ordinals.size_bytes());
             if(!descriptors.empty())
                 stream_.queue_device_copy(address+offsets[15]+44u+
                     descriptors.size()*16u,
@@ -1486,6 +1498,7 @@ public:
         for(std::size_t i=0;i<11u;++i)
             params[i<6u?i:i+6u]=narrow(
                 static_cast<std::size_t>(params[28])+offsets[i]);
+        if(device_admission)params[4]=resident_ordinal_bias;
         params[29]=narrow(
             static_cast<std::size_t>(params[28])+offsets[11]);
         params[11]=narrow(
@@ -1508,6 +1521,7 @@ public:
             params[10]=(iteration<<4u)|static_cast<std::uint32_t>(phase)|
                 (compact_friction?0x20000000u:0u)|
                 (device_partitions?0x80000000u:0u)|
+                (device_admission?0x08000000u:0u)|
                 (device_partitions && !wide_tasks_.empty() &&
                  phase!=Launch::Color ?0x40000000u:0u);
             // Compact tasks have no cross-workgroup dependencies. Their
@@ -1615,7 +1629,7 @@ public:
         launch(Launch::FreeBodies,{0u,(free_bodies+127u)/128u},
                narrow(integration.size()));
         const auto mapped=addresses_.resolve(address+history_bytes,output_bytes);
-        compute::BufferId device_meta_buffer=0u;
+        compute::BufferId device_meta_buffer=0u,device_ordinal_buffer=0u;
         std::size_t device_meta_offset=0u,device_task_source=0u,
                     device_ordinal_source=0u;
         compute::BufferId device_response_buffer=0u;
@@ -1627,13 +1641,14 @@ public:
             const auto device_tasks=addresses_.resolve(
                 address+offsets[5],tasks.size_bytes());
             const auto device_ordinals=addresses_.resolve(
-                address+offsets[4],
+                device_admission->work+
+                    device_admission->layout.body_order,
                 std::max<std::size_t>(4u,body_ordinals.size_bytes()));
-            if(metadata.buffer!=device_tasks.buffer ||
-               metadata.buffer!=device_ordinals.buffer)
+            if(metadata.buffer!=device_tasks.buffer)
                 throw std::logic_error(
-                    "Device Dy scheduling spans crossed the numerical allocation");
+                    "Device Dy task metadata crossed the numerical allocation");
             device_meta_buffer=metadata.buffer;
+            device_ordinal_buffer=device_ordinals.buffer;
             device_meta_offset=metadata.offset;
             device_task_source=device_tasks.offset;
             device_ordinal_source=device_ordinals.offset;
@@ -1680,7 +1695,7 @@ public:
             {device_meta_buffer,device_task_source,
              device_admission?host_.data()+device_task_offset:nullptr,
              device_admission?tasks.size_bytes():0u},
-            {device_meta_buffer,device_ordinal_source,
+            {device_ordinal_buffer,device_ordinal_source,
              device_admission?host_.data()+device_ordinal_offset:nullptr,
              device_admission?body_ordinals.size_bytes():0u},
             {}

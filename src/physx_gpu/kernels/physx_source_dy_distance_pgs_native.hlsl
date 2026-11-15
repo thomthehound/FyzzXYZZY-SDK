@@ -35,6 +35,15 @@ RWByteAddressBuffer scActorLocals : register(u5,space0);
 [[vk::binding(6,0)]]
 #endif
 RWByteAddressBuffer scHullVertices : register(u6,space0);
+#ifdef __spirv__
+[[vk::binding(7,0)]]
+#endif
+RWByteAddressBuffer scIslandBodyOrder : register(u7,space0);
+#else
+#ifdef __spirv__
+[[vk::binding(6,0)]]
+#endif
+RWByteAddressBuffer scIslandBodyOrder : register(u6,space0);
 #endif
 
 struct Parameters {
@@ -70,6 +79,11 @@ float sourceDyDot3(float3 a,float3 b) {
 
 float loadScalar(uint byteOffset) {
     return asfloat(arena.Load(byteOffset));
+}
+uint sourceDyBodyOrdinal(uint index) {
+    const uint address=p.ordinalBias+index*4u;
+    return (p.launchControl&0x08000000u)!=0u
+        ?scIslandBodyOrder.Load(address):arena.Load(address);
 }
 void solveJoint(uint4 desc,uint errorAddress,bool biased) {
     if(desc.x>=p.rowCount || desc.w>p.rowCount-desc.x ||
@@ -1165,7 +1179,7 @@ void solvePartition(uint begin,uint end,uint lane,uint2 iters,
 }
 
 void saveMotion(uint index,uint endError) {
-    const uint ordinal=arena.Load(p.ordinalBias+index*4u);
+    const uint ordinal=sourceDyBodyOrdinal(index);
     if(ordinal>=p.bodyCount) {
         arena.InterlockedOr(endError,8u);
         return;
@@ -1556,7 +1570,7 @@ void sourceDySolvePackedTask(uint taskId) {
         return;
     }
     for(uint body=bodies.x;body<bodies.y;++body) {
-        const uint ordinal=arena.Load(p.ordinalBias+body*4u);
+        const uint ordinal=sourceDyBodyOrdinal(body);
         if(ordinal>=p.bodyCount)
             arena.InterlockedOr(errorAddress,8u);
         else
@@ -1570,7 +1584,7 @@ void main(uint3 group:SV_GroupID,uint3 lane:SV_GroupThreadID) {
     const uint phase=p.launchControl&15u;
     const bool devicePartitions=(p.launchControl&0x80000000u)!=0u;
     const bool precolored=(p.launchControl&0x40000000u)!=0u;
-    const uint iter=(p.launchControl&0x1fffffffu)>>4u;
+    const uint iter=(p.launchControl&0x07ffffffu)>>4u;
     const uint index=p.launchBegin+group.x;
     uint admittedTasks=0xffffffffu;
     // A submitted Sc island graph can differ from CPU-predicted counts
@@ -1835,7 +1849,7 @@ void main(uint3 group:SV_GroupID,uint3 lane:SV_GroupThreadID) {
             uint ordinal=i;
             [branch]
             if(!freeBody) {
-                ordinal=arena.Load(p.ordinalBias+i*4u);
+                ordinal=sourceDyBodyOrdinal(i);
                 if(ordinal>=p.bodyCount) {
                     arena.InterlockedOr(endError,8u);
                     continue;
