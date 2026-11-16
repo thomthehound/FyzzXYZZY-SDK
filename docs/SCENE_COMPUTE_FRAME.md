@@ -136,7 +136,7 @@ body-ordinal and source response-token streams directly. Dy updates the transien
 admission header in place. One Sc work-buffer binding serves the admission header, tasks,
 body ordinals and response tokens without a device copy; descriptor
 coloring stays in Dy's numerical scratch. Island graphs
-with at most 32 nodes and 32 edges build their task records in one dispatch;
+with at most 128 nodes and 128 edges build their task records in one dispatch;
 larger graphs use parallel union, prefix and response ordering.
 Wide islands use their separate device-partition execution path; the compact
 admission selection rejects them. Sc otherwise reuses CPU-prepared
@@ -146,7 +146,10 @@ islands use fused workgroups. Device-generated roots are numerical task IDs,
 not replacements for Sc's persistent island identities. The Scene prepares kinematic target velocities after PCM submission,
 before Sc joins its witness stream; these changes remain covered by the
 frame's motion journal. Solver-body admission still follows accurate island
-reconciliation. The Scene joins GPU PCM headers for CPU friction correlation
+reconciliation. The Scene emits typed contact-manager and joint identities while partitioning
+the source Dy task stream; device island admission consumes these records
+without revisiting the CPU task and manifold lists at numerical enqueue.
+The Scene joins GPU PCM headers for CPU friction correlation
 and reads back Dy scheduling and numerical results for publication.
 In mixed scenes where a CPU Gu manager follows GPU PCM in source pair
 order, Sc reserves bounded PCM witness slots in its existing contact arena,
