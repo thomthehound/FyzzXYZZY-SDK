@@ -325,6 +325,7 @@ struct GpuPcmFrictionAnchorFixture {
                     "Device Sc numerical body lost its responding ordinal");
         }
         std::size_t ordinal=0u,joint=0u,manager=0u,joint_row=0u;
+        std::size_t descriptor=0u;
         for(const auto& task:scene.solver_tasks_) {
             for(;joint<task.joint_end;++joint) {
                 const auto id=scene.indexed_joints_[joint];
@@ -334,9 +335,13 @@ struct GpuPcmFrictionAnchorFixture {
                 const std::size_t rows=source.kind==Scene::JointKind::Distance
                     ?1u:source.kind==Scene::JointKind::Spherical
                         ?3u:source.kind==Scene::JointKind::Fixed?6u:5u;
-                if(entry.edge_index!=id || (entry.kind&1u)==0u ||
-                   ((entry.kind&2u)==0u &&
-                    ((entry.kind&16u)==0u || entry.source_index!=joint_row)))
+                const bool admitted=descriptor<task.constraint_end &&
+                    (scene.ordered_constraints_[descriptor].row_count&255u)!=0u &&
+                    scene.ordered_constraints_[descriptor].index==joint_row;
+                if(admitted)++descriptor;
+                if(entry.edge_index!=id ||
+                   entry.kind!=(admitted?17u:3u) ||
+                   (admitted && entry.source_index!=joint_row))
                     throw std::runtime_error(
                         "Source Dy partition reordered typed joint identities");
                 joint_row+=rows;
@@ -345,14 +350,22 @@ struct GpuPcmFrictionAnchorFixture {
                 const auto index=scene.indexed_managers_[manager];
                 const auto& m=scene.manifolds_[index];
                 const auto& entry=edges[ordinal++];
+                const bool admitted=descriptor<task.constraint_end &&
+                    (scene.ordered_constraints_[descriptor].row_count&255u)==0u &&
+                    scene.ordered_constraints_[descriptor].index==index;
+                if(admitted)++descriptor;
                 if(entry.edge_index!=m.edge_handle ||
                    entry.source_index!=m.candidate_ordinal ||
-                   entry.kind!=(m.friction_patch_count?0u:2u))
+                   entry.kind!=(admitted && m.friction_patch_count?0u:2u))
                     throw std::runtime_error(
                         "Source Dy partition changed contact response ownership");
             }
+            if(descriptor!=task.constraint_end)
+                throw std::runtime_error(
+                    "Device Sc source identity order differs from Dy task order");
         }
         if(ordinal!=edges.size() ||
+           descriptor!=scene.ordered_constraints_.size() ||
            joint_row!=scene.gpu_dy_rows_.size())
             throw std::runtime_error(
                 "Device Sc numerical source table has unconsumed records");
