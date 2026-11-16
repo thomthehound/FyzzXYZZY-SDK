@@ -119,9 +119,9 @@ struct GpuPcmBoxPair {
     bool candidate_complete=false;
     bool host_generated=false;
     GpuDyPairMaterial numerical{};
-    // Only managers that need the current normal for CPU friction
-    // correlation fetch their full Gu record at the header join.
-    bool eager_host_witness=false;
+    // Retained multi-patch correlation needs the current normal before Dy;
+    // point geometry remains resident until numerical completion.
+    bool early_host_normal=false;
 };
 enum class GpuPcmTouchTransition : std::uint32_t {
     None=0,Found=1,Persists=2,Lost=3
