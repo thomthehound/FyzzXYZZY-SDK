@@ -43,6 +43,7 @@ static const uint jointEdge=1u;
 static const uint noResponse=2u;
 static const uint deviceJoint=16u;
 static const uint nonrespondingNode=0x20000u;
+static const uint requireContactTask=0x40000u;
 static const uint permittedKinds=jointEdge|noResponse|deviceJoint;
 
 void reject(uint bits) {
@@ -223,7 +224,9 @@ bool runnableRoot(uint index) {
     if(index>=p.nodeCount || work.Load(p.workBias)!=0u ||
        work.Load(p.rootBias+index*4u)!=index)return false;
     const uint count=p.countBias+index*24u;
-    return work.Load(count)!=0u && work.Load(count+8u)!=0u;
+    return work.Load(count)!=0u && work.Load(count+8u)!=0u &&
+        ((nodeFlags.Load(p.nodeBias+index*4u)&requireContactTask)==0u ||
+         work.Load(count+4u)!=0u);
 }
 void inclusiveTaskScan(uint lane) {
     [unroll]
@@ -272,7 +275,7 @@ void admitCompact(uint lane) {
             const uint flags=nodeFlags.Load(p.nodeBias+lane*4u);
             const uint position=flags&255u;
             const bool responds=(flags&nonrespondingNode)==0u;
-            if((flags&0xfffc0000u)!=0u ||
+            if((flags&0xfff80000u)!=0u ||
                (responds && position==0u))
                 reject(16u);
             const uint count=p.countBias+root*24u;
@@ -438,6 +441,21 @@ void main(uint3 thread:SV_DispatchThreadID,
         if(group.x==0u)admitCompact(lane.x);
         return;
     }
+    if(p.phase==33u) {
+        // The source body stream currently carries stable ActorIDs.
+        // The replacement node resource maps them to final Dy rows.
+        const uint count=work.Load(p.workBias+8u);
+        if(index<count) {
+            const uint actor=work.Load(p.bodyOrderBias+index*4u);
+            const uint row=actor<p.nodeCount
+                ?nodeFlags.Load(p.nodeBias+actor*4u):invalid;
+            if(row==invalid || row>=p.nodeCount) {
+                reject(512u);
+                work.Store(p.workBias+16u,0u);
+            } else work.Store(p.bodyOrderBias+index*4u,row);
+        }
+        return;
+    }
     if(p.phase==0u) {
         if(index==0u) {
             work.Store4(p.workBias,uint4(0u,0u,0u,0u));
@@ -475,7 +493,7 @@ void main(uint3 thread:SV_DispatchThreadID,
                 const uint position=flags&255u;
                 const uint velocity=(flags>>8u)&255u;
                 const bool responds=(flags&nonrespondingNode)==0u;
-                if((flags&0xfffc0000u)!=0u ||
+                if((flags&0xfff80000u)!=0u ||
                    (responds && !position))reject(16u);
                 const uint count=p.countBias+root*24u;
                 uint previous;
