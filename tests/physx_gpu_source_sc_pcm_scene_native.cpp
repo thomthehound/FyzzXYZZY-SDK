@@ -408,7 +408,8 @@ struct GpuPcmFrictionAnchorFixture {
         return std::any_of(masks.begin(),masks.end(),
             [](std::uint32_t bits) {return bits!=0u;});
     }
-    static void seed_multiple_friction_patches(Scene& scene,Pair shapes) {
+    static void seed_multiple_friction_patches(Scene& scene,Pair shapes,
+                                               bool broken=false) {
         const auto edge=scene.contact_edge_index(shapes);
         if(edge==Scene::invalid_edge ||
            edge>=scene.friction_by_edge_.size())
@@ -426,6 +427,10 @@ struct GpuPcmFrictionAnchorFixture {
             throw std::runtime_error(
                 "Multi-patch PCM fixture has no reusable friction state");
         scene.friction_patches_.push_back(patch);
+        if(broken) {
+            scene.friction_patches_[span.offset].broken=true;
+            scene.friction_patches_.back().broken=true;
+        }
         scene.friction_by_edge_[edge].count=2u;
     }
     static void verify_compact_gpu_contact_admission(const Scene& scene) {
@@ -4946,6 +4951,18 @@ void verify_scene_normal_only_multi_patch(
     require(std::fabs(expected.position.y-actual.position.y)<0.03f &&
             std::fabs(expected.velocity.y-actual.velocity.y)<0.03f,
         "Normal-only retained PCM friction changed rigid-body response");
+
+    // Broken historical anchors cannot participate in strong-friction
+    // correlation and must not force any early normal transfer.
+    native::GpuPcmFrictionAnchorFixture::seed_multiple_friction_patches(
+        gpu,{b[0],b[1]},true);
+    gpu.step(seconds);
+    require(gpu.contacts().size()==1u &&
+            producer->pcm_header_join_bytes()==metadata &&
+            producer->pcm_deferred_point_bytes()==full-metadata &&
+            producer->pcm_contact_readback_bytes()==full &&
+            std::isfinite(gpu.contacts()[0].points[0].separation),
+        "Retired Sc friction history forced an early GPU normal readback");
 }
 
 void verify_zero_touch_gpu_pcm_transfer(
