@@ -457,12 +457,13 @@ public:
         pcm_->enqueue_device_islands(edges,node_flags,sources,early);
     }
     void remap_gpu_dy_island_bodies(
-            std::span<const std::uint32_t> node_to_solver_row,
-            std::uint32_t solver_row_capacity) override {
+            std::span<const std::uint32_t> source_to_solver_row,
+            std::uint32_t solver_row_capacity,
+            std::uint32_t joint_row_capacity) override {
         if(!pcm_)
-            throw std::logic_error("Source Sc actor-row remap unavailable");
+            throw std::logic_error("Source Sc numerical remap unavailable");
         pcm_->remap_device_island_bodies(
-            node_to_solver_row,solver_row_capacity);
+            source_to_solver_row,solver_row_capacity,joint_row_capacity);
     }
     void discard_gpu_dy_island_admission() override {
         if(!pcm_)

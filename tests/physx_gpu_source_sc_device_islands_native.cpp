@@ -65,7 +65,9 @@ void verify(Context& context,const char* filename) {
                             std::vector<std::uint32_t> prior_touches={},
                             std::optional<SourceScDeviceIslandSources> limits=std::nullopt,
                             std::vector<std::uint32_t> remap={},
-                            std::optional<std::uint32_t> remap_capacity=std::nullopt) {
+                            std::optional<std::uint32_t> remap_capacity=std::nullopt,
+                            std::vector<std::uint32_t> joint_remap={},
+                            std::uint32_t joint_row_capacity=0u) {
         constexpr std::size_t record_bytes=240u;
         // Joint-only scenes have no physical-touch arena. Active seeds
         // and authored iteration limits remain separate from connectivity.
@@ -90,7 +92,8 @@ void verify(Context& context,const char* filename) {
         const auto touch_buffer=context.create_buffer(
             touch_bytes,MemoryPlacement::DeviceLocal);
         const auto node_bytes=std::max<std::size_t>(
-            sizeof(std::uint32_t),node_flags.size()*sizeof(node_flags[0]));
+            sizeof(std::uint32_t),
+            (node_flags.size()+joint_remap.size())*sizeof(node_flags[0]));
         const auto node_buffer=context.create_buffer(
             node_bytes,MemoryPlacement::DeviceLocal);
         const auto output_buffer=context.create_buffer(
@@ -159,12 +162,18 @@ void verify(Context& context,const char* filename) {
         if(!remap.empty()) {
             require(remap.size()==node_count,
                     "Early Sc remap did not cover the stable actor slots");
+            require(joint_remap.empty() || joint_row_capacity,
+                    "Joint source remap requires final Dy row capacity");
+            remap.insert(remap.end(),joint_remap.begin(),joint_remap.end());
             stream.queue_uploads(std::vector<SourceSapUpload>{
                 {node_addr,remap.data(),remap.size()*sizeof(remap[0])}});
             stage.append_body_remap(stream,addresses,node_addr,output_addr,
                                     node_count,static_cast<std::uint32_t>(
                                         edges.size()),
-                                    remap_capacity.value_or(node_count));
+                                    remap_capacity.value_or(node_count),
+                                    joint_row_capacity,
+                                    static_cast<std::uint32_t>(
+                                        joint_remap.size()));
         }
         stream.wait_at_fetch();
         std::vector<std::byte> bytes(layout.bytes);
@@ -428,6 +437,23 @@ void verify(Context& context,const char* filename) {
             load<std::uint32_t>(sparse_remap.second,
                 sparse_remap.first.body_order+4u)==12u,
         "Early Sc remap incorrectly bounded Dy rows by compact node count");
+    const std::vector<SourceScDeviceIslandEdge> early_joint_contacts{
+        {2u,1u,invalid,0u,17u},
+        {1u,3u,invalid,0u,0u}};
+    const std::vector<std::uint32_t> joint_rows{17u};
+    auto mapped_joints=evaluate(4u,early_joint_contacts,{0u,1u,0u},
+        candidate_nodes,{},std::nullopt,dense_rows,4u,joint_rows,24u);
+    no_errors(mapped_joints);
+    require(header(mapped_joints).admitted_edges==2u &&
+            load<std::uint32_t>(mapped_joints.second,
+                mapped_joints.first.response_tokens)==0x80000011u &&
+            load<std::uint32_t>(mapped_joints.second,
+                mapped_joints.first.response_tokens+4u)==0xc0000000u,
+        "Early Sc joint token did not resolve to its final Dy row");
+    auto rejected_joint=evaluate(4u,early_joint_contacts,{0u,1u,0u},
+        candidate_nodes,{},std::nullopt,dense_rows,4u,{24u},24u);
+    require((header(rejected_joint).errors&512u)!=0u,
+        "Early Sc accepted an out-of-bounds prepared joint row");
     auto invalid_rows=evaluate(4u,early_contacts,{1u,1u},
         candidate_nodes,{},std::nullopt,
         std::vector<std::uint32_t>(4u,invalid));

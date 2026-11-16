@@ -314,21 +314,30 @@ struct GpuPcmFrictionAnchorFixture {
         return scene.gpu_dy_early_islands_;
     }
     static void verify_pre_witness_device_admission(const Scene& scene) {
+        const auto joints=scene.gpu_dy_early_joint_edges_.size();
         if(!scene.gpu_dy_early_islands_ ||
-           scene.gpu_dy_island_edges_.size()!=scene.previous_pairs_.size() ||
+           scene.gpu_dy_island_edges_.size()!=scene.previous_pairs_.size()+joints ||
            scene.gpu_dy_early_actor_ids_.size()<2u ||
            scene.gpu_dy_island_node_flags_.size()!=
-               scene.gpu_dy_early_actor_ids_.size() ||
+               scene.gpu_dy_early_actor_ids_.size()+joints ||
            !std::is_sorted(scene.gpu_dy_early_actor_ids_.begin(),
                            scene.gpu_dy_early_actor_ids_.end()))
             throw std::runtime_error(
                 "Sc did not queue compact actor and contact identities before Gu");
         for(std::size_t i=0u;i<scene.gpu_dy_island_edges_.size();++i) {
             const auto& edge=scene.gpu_dy_island_edges_[i];
-            if(edge.edge_index!=scene.active_edge_handles_[i] ||
-               edge.source_index!=i || edge.kind!=0u)
-                throw std::runtime_error(
-                    "Early device Sc graph lost its source contact identity");
+            if(i<joints) {
+                if(edge.edge_index!=scene.gpu_dy_early_joint_edges_[i] ||
+                   edge.source_index!=i || edge.kind!=17u)
+                    throw std::runtime_error(
+                        "Early device Sc graph lost its typed joint identity");
+            } else {
+                const auto candidate=i-joints;
+                if(edge.edge_index!=scene.active_edge_handles_[candidate] ||
+                   edge.source_index!=candidate || edge.kind!=0u)
+                    throw std::runtime_error(
+                        "Early device Sc graph lost its contact identity");
+            }
             for(const auto node:{edge.node_a,edge.node_b})
                 if(node!=0xffffffffu &&
                    node>=scene.gpu_dy_early_actor_ids_.size())
@@ -3189,7 +3198,8 @@ void verify_gpu_single_island_hybrid_solver(
 }
 void verify_early_pcm_island_pipeline(
     fyzz::compute::Backend backend,const char* sap,
-    const char* pcm,const char* dy_shader,bool mixed_host=false) {
+    const char* pcm,const char* dy_shader,
+    bool mixed_host=false,bool with_joints=false) {
     using namespace fyzz;
     std::ifstream input(dy_shader,std::ios::binary);
     require(bool(input),"Source Dy shader bundle unavailable");
@@ -3213,16 +3223,21 @@ void verify_early_pcm_island_pipeline(
         cpu.create_body(pose,false);
         gpu.create_body(pose,false);
     }
-    std::array<BodyId,2> a{},b{};
+    std::array<BodyId,2> a{},b{},fixed_cpu{},fixed_gpu{};
     for(std::uint32_t i=0u;i<a.size();++i) {
         const float x=5.f*i;
-        cpu.add_static_box({0.5f,0.5f,0.5f},{x,0.f,0.f});
-        gpu.add_static_box({0.5f,0.5f,0.5f},{x,0.f,0.f});
+        fixed_cpu[i]=cpu.add_static_box({0.5f,0.5f,0.5f},{x,0.f,0.f});
+        fixed_gpu[i]=gpu.add_static_box({0.5f,0.5f,0.5f},{x,0.f,0.f});
         a[i]=cpu.add_dynamic_box(
             {0.5f,0.5f,0.5f},{x,0.83f,0.f},1.f);
         b[i]=gpu.add_dynamic_box(
             {0.5f,0.5f,0.5f},{x,0.83f,0.f},1.f);
     }
+    if(with_joints)
+        for(std::size_t i=0u;i<a.size();++i) {
+            cpu.create_center_distance_constraint(fixed_cpu[i],a[i],0.83f);
+            gpu.create_center_distance_constraint(fixed_gpu[i],b[i],0.83f);
+        }
     // A speculative candidate that separates in Gu must not acquire a
     // GPU numerical task or consume a dense solver-row identity.
     const auto add_non_touching=[](native::Scene& scene) {
@@ -3261,7 +3276,8 @@ void verify_early_pcm_island_pipeline(
                 cpu.contacts().size()==responding &&
                 schedule.device_island_indirect_dispatches==1u &&
                 schedule.device_admitted_tasks==responding &&
-                schedule.device_admitted_descriptors==responding &&
+                schedule.device_admitted_descriptors==
+                    responding+(with_joints?2u:0u) &&
                 (!mixed_host || device->pcm_host_contact_upload_bytes()>=
                     sizeof(native::GpuPcmBoxResult)),
             "Pre-witness mixed PCM topology did not reach production device Dy");
@@ -6711,6 +6727,10 @@ int main(int argc,char** argv) {
                         backend,argv[1],argv[2],argv[3]);
                     verify_early_pcm_island_pipeline(
                         backend,argv[1],argv[2],argv[3],true);
+                    verify_early_pcm_island_pipeline(
+                        backend,argv[1],argv[2],argv[3],false,true);
+                    verify_early_pcm_island_pipeline(
+                        backend,argv[1],argv[2],argv[3],true,true);
                 });
         if(scenario=="all" || scenario=="scene")
             fyzz::tests::measure_gpu_case("sc_pcm","scene",

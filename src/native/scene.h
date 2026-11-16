@@ -497,7 +497,7 @@ public:
         throw std::logic_error("Device Sc accurate-island admission is unavailable");
     }
     virtual void remap_gpu_dy_island_bodies(
-        std::span<const std::uint32_t>,std::uint32_t) {
+        std::span<const std::uint32_t>,std::uint32_t,std::uint32_t) {
         throw std::logic_error("Device Sc actor-row remapping is unavailable");
     }
     virtual void discard_gpu_dy_island_admission() {
@@ -2212,6 +2212,7 @@ private:
     std::vector<GpuDyIslandEdge> gpu_dy_island_edges_;
     std::vector<std::uint32_t> gpu_dy_island_node_flags_;
     std::vector<BodyId> gpu_dy_early_actor_ids_;
+    std::vector<EdgeIndex> gpu_dy_early_joint_edges_;
     bool gpu_dy_early_islands_=false;
     std::vector<std::uint8_t> gpu_dy_admitted_manager_flags_;
     std::vector<float> gpu_dy_contact_forces_;

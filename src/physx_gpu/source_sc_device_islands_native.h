@@ -355,14 +355,18 @@ public:
                            CudaDeviceAddressMap::Address output,
                            std::uint32_t node_count,
                            std::uint32_t edge_count,
-                           std::uint32_t solver_row_capacity) const {
+                           std::uint32_t solver_row_capacity,
+                           std::uint32_t joint_row_capacity=0u,
+                           std::uint32_t joint_source_count=0u) const {
         const auto layout=SourceScDeviceIslandLayout::for_counts(
             node_count,edge_count);
         if(!mapping || !output || !node_count || !solver_row_capacity ||
+           (joint_source_count && !joint_row_capacity) ||
            layout.bytes>max_view_)
-            throw std::invalid_argument("Missing Sc body remap resource");
+            throw std::invalid_argument("Missing Sc numerical remap resource");
         std::array<std::uint32_t,28> args{};
-        const auto bytes=source_allocation_bytes(node_count,4u);
+        const auto bytes=source_allocation_bytes(
+            std::uint64_t(node_count)+joint_source_count,4u);
         compute::DispatchCommand dispatch{};
         dispatch.pipeline=pipeline_;
         dispatch.buffers={
@@ -384,9 +388,13 @@ public:
         args[9]=node_count;
         args[12]=33u;
         args[19]=solver_row_capacity;
+        args[20]=offset(layout.response_tokens,args[3]);
         args[22]=offset(layout.body_order,args[3]);
+        args[25]=joint_row_capacity;
+        args[26]=joint_source_count;
         dispatch.groups={
-            static_cast<std::uint32_t>((std::uint64_t(node_count)+127u)/128u),
+            static_cast<std::uint32_t>(
+                (std::uint64_t(std::max(node_count,edge_count))+127u)/128u),
             1u,1u};
         dispatch.push_constants.resize(sizeof(args));
         std::memcpy(dispatch.push_constants.data(),args.data(),sizeof(args));

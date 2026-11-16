@@ -442,8 +442,7 @@ void main(uint3 thread:SV_DispatchThreadID,
         return;
     }
     if(p.phase==33u) {
-        // The source body stream carries compact Sc node ordinals.
-        // The replacement node resource maps them to bounded Dy rows.
+        // Compact source ordinals map to the final Dy body and joint rows.
         const uint count=work.Load(p.workBias+8u);
         if(index<count) {
             const uint actor=work.Load(p.bodyOrderBias+index*4u);
@@ -453,6 +452,21 @@ void main(uint3 thread:SV_DispatchThreadID,
                 reject(512u);
                 work.Store(p.workBias+16u,0u);
             } else work.Store(p.bodyOrderBias+index*4u,row);
+        }
+        const uint responses=work.Load(p.workBias+12u);
+        if(index<responses) {
+            const uint address=p.tokenBias+index*4u;
+            const uint token=work.Load(address);
+            if((token&0xc0000000u)==0x80000000u) {
+                const uint ordinal=token&0x3fffffffu;
+                const uint row=ordinal<p.fullDescriptorCount
+                    ?nodeFlags.Load(p.nodeBias+
+                        (p.nodeCount+ordinal)*4u):invalid;
+                if(row==invalid || row>=p.jointRowCount) {
+                    reject(512u);
+                    work.Store(p.workBias+16u,0u);
+                } else work.Store(address,0x80000000u|row);
+            }
         }
         return;
     }

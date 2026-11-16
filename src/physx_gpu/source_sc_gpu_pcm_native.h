@@ -717,13 +717,15 @@ public:
             node_count,edge_count);
         island_node_count_=node_count;
         island_edge_count_=edge_count;
+        island_joint_count_=early?sources.joint_rows:0u;
         island_work_.allocate(island_layout_.bytes,PX_FL);
         if(edge_count)
             island_edges_.allocate(source_allocation_bytes(
                 edge_count,sizeof(SourceScDeviceIslandEdge)),PX_FL);
         if(node_count)
             island_nodes_.allocate(source_allocation_bytes(
-                node_count,sizeof(std::uint32_t)),PX_FL);
+                std::uint64_t(node_count)+island_joint_count_,
+                sizeof(std::uint32_t)),PX_FL);
         auto& uploads=stream_.upload_scratch();
         if(edge_count)
             uploads.push_back({
@@ -754,22 +756,26 @@ public:
         if(early)stream_.submit();
     }
     void remap_device_island_bodies(
-            std::span<const std::uint32_t> node_to_solver_row,
-            std::uint32_t solver_row_capacity) {
+            std::span<const std::uint32_t> source_to_solver_row,
+            std::uint32_t solver_row_capacity,
+            std::uint32_t joint_row_capacity) {
         if(!island_work_ready_ ||
-           node_to_solver_row.size()!=island_node_count_ ||
-           !island_node_count_ || !solver_row_capacity)
+           source_to_solver_row.size()!=
+                std::uint64_t(island_node_count_)+island_joint_count_ ||
+           !island_node_count_ || !solver_row_capacity ||
+           (island_joint_count_ && !joint_row_capacity))
             throw std::logic_error(
-                "Source Sc body remap lacks an admitted actor graph");
+                "Source Sc numerical remap lacks prepared source rows");
         auto& uploads=stream_.upload_scratch();
         uploads.push_back({island_nodes_.getDevicePtr(),
-                           node_to_solver_row.data(),
-                           node_to_solver_row.size_bytes()});
+                           source_to_solver_row.data(),
+                           source_to_solver_row.size_bytes()});
         stream_.queue_uploads(uploads);
         island_stage_.append_body_remap(
             stream_,addresses_,island_nodes_.getDevicePtr(),
             island_work_.getDevicePtr(),
-            island_node_count_,island_edge_count_,solver_row_capacity);
+            island_node_count_,island_edge_count_,solver_row_capacity,
+            joint_row_capacity,island_joint_count_);
         stream_.queue_device_copy(
             indirect_address_,
             island_work_.getDevicePtr()+
@@ -1043,6 +1049,7 @@ private:
     physx::PxgCudaBuffer island_edges_,island_nodes_,island_work_;
     SourceScDeviceIslandLayout island_layout_{};
     std::uint32_t island_node_count_=0u,island_edge_count_=0u;
+    std::uint32_t island_joint_count_=0u;
     compute::BufferId indirect_buffer_=0u;
     CudaDeviceAddressMap::Address indirect_address_=0u;
     std::vector<SourcePcmBoxPairNative> pair_host_;

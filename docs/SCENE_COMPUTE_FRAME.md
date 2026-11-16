@@ -163,9 +163,11 @@ do not produce solver work. Mixed ordinary CPU Gu and GPU PCM contact
 graphs also admit before the GPU witness join, after CPU Gu publishes
 its EdgeIndex touch/loss journal. Sc defers GPU witness publication
 until all such Gu producers complete, regardless of their encounter order.
-Joint graphs continue to emit typed identities during the existing Dy
-partition pass; numerical admission consumes those records without
-revisiting the CPU task lists.
+Joint graphs admit stable Sc edge identities with the same early contact
+graph. Their provisional joint-source ordinals are resolved to prepared Dy
+joint rows in the ordered node/response remap, without rebuilding GPU
+connectivity or task ranges. CPU Sc still owns the committed island graph
+and the joint and contact publication lifetimes.
 The Scene joins GPU PCM headers for CPU friction correlation
 and reads back Dy scheduling and numerical results for publication.
 In mixed scenes where a CPU Gu manager follows GPU PCM in source pair
