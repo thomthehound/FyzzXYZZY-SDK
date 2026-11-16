@@ -144,6 +144,8 @@ groupshared uint taskScan[128],responseScan[128],bodyScan[128];
 groupshared uint taskCarry,responseCarry,bodyCarry;
 groupshared uint radixBuckets[256],radixOffsets[256],radixTotals[256];
 groupshared uint radixDigits[128],radixRanks[128];
+groupshared uint compactBodyRoots[128],compactEdgeRoots[128];
+groupshared uint compactEdgeKinds[128];
 
 uint responseRoot(uint edgeIndex) {
     if(work.Load(p.workBias)!=0u)return p.nodeCount;
@@ -346,8 +348,17 @@ void admitCompact(uint lane) {
     AllMemoryBarrierWithGroupSync();
     if(work.Load(p.workBias)!=0u)return;
 
-    if(lane<p.nodeCount && respondingNode(lane)) {
-        const uint root=work.Load(p.rootBias+lane*4u);
+    // All compact edges and nodes share one workgroup. Reuse their
+    // canonical roots when ordering the source body and response streams.
+    compactBodyRoots[lane]=lane<p.nodeCount && respondingNode(lane)
+        ?work.Load(p.rootBias+lane*4u):invalid;
+    compactEdgeRoots[lane]=lane<p.edgeCount?responseRoot(lane):invalid;
+    compactEdgeKinds[lane]=lane<p.edgeCount
+        ?work.Load(p.admissionBias+lane*24u+20u):0u;
+    GroupMemoryBarrierWithGroupSync();
+
+    if(lane<p.nodeCount && compactBodyRoots[lane]!=invalid) {
+        const uint root=compactBodyRoots[lane];
         if(root<p.nodeCount) {
             const uint ordinal=work.Load(p.countBias+root*24u+20u);
             if(ordinal!=invalid) {
@@ -356,28 +367,24 @@ void admitCompact(uint lane) {
                 const uint end=work.Load(task+20u);
                 uint rank=0u;
                 for(uint node=0u;node<lane;++node)
-                    if(respondingNode(node) &&
-                       work.Load(p.rootBias+node*4u)==root)
-                        ++rank;
+                    if(compactBodyRoots[node]==root)++rank;
                 if(begin+rank>=end)reject(128u);
                 else work.Store(p.bodyOrderBias+(begin+rank)*4u,lane);
             }
         }
     }
     if(lane<p.edgeCount) {
-        const uint root=responseRoot(lane);
+        const uint root=compactEdgeRoots[lane];
         if(root<p.nodeCount) {
             const uint ordinal=work.Load(p.countBias+root*24u+20u);
             const uint task=p.taskBias+ordinal*36u;
             const uint begin=work.Load(task);
             const uint end=work.Load(task+4u);
-            const bool joint=(work.Load(
-                p.admissionBias+lane*24u+20u)&jointEdge)!=0u;
+            const bool joint=(compactEdgeKinds[lane]&jointEdge)!=0u;
             uint rank=0u;
             for(uint edge=0u;edge<p.edgeCount;++edge) {
-                if(responseRoot(edge)!=root)continue;
-                const bool otherJoint=(work.Load(
-                    p.admissionBias+edge*24u+20u)&jointEdge)!=0u;
+                if(compactEdgeRoots[edge]!=root)continue;
+                const bool otherJoint=(compactEdgeKinds[edge]&jointEdge)!=0u;
                 if(joint?(otherJoint && edge<lane):
                    (otherJoint || edge<lane))
                     ++rank;
