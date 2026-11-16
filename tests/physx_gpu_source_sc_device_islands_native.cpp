@@ -389,7 +389,7 @@ void verify(Context& context,const char* filename) {
             const bool joint=(i&1u)!=0u;
             const bool no_response=!joint && i%16u==0u;
             excluded+=no_response?1u:0u;
-            const auto first=2u*(i%8u);
+            const auto first=2u*((i/2u)%8u);
             const std::uint32_t kind=joint
                 ?source_sc_device_island_joint_bit |
                     (i%4u==1u?source_sc_device_island_device_joint_bit:0u)
