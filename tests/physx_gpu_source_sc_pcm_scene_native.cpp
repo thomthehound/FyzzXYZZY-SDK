@@ -1691,8 +1691,8 @@ void verify_device_sc_dy_task_admission(
     producer->finish_gpu_pcm_box_contacts();
     producer->invalidate_after_rollback();
 
-    // Sc reserves an upper bound without joining the resident Gu
-    // header. Dy compacts the actual PCM extent before preparing rows.
+    // Sc admits the real physical contact on the same queue while Dy
+    // compacts its reserved PCM row capacity from resident Gu geometry.
     constexpr std::uint32_t contact_capacity=5u;
     std::vector<float> capacity_forces(contact_capacity,0.f);
     std::array<native::GpuDyContactPatch,1> capacity_patches{{
@@ -1708,16 +1708,20 @@ void verify_device_sc_dy_task_admission(
     sleep={};
     witness={};
     producer->enqueue_gpu_pcm_box_contacts(requests,witness);
+    producer->enqueue_gpu_dy_island_admission(
+        touching,single_node,
+        physx_gpu::SourceScDeviceIslandSources{1u,0u,0u});
     producer->enqueue_gpu_dy_distance(
         body,{},contact_desc,{},ordinals,contact_tasks,
         capacity_forces,{},{},{},capacity_patches,capacity_managers,{},
         contact_prep,inputs,poses,true,{},true,true,true,sleep);
     require(witness[0].packed_counts==0u,
-        "PCM capacity admission joined the GPU contact header");
+        "Sc contact capacity admission joined the GPU witness");
     producer->finish_gpu_dy_distance();
     require(witness[0].packed_counts==0u &&
-            contact_tasks[0].error==0u && poses[0].valid==1u,
-        "Device PCM active contact extent failed before Sc publication");
+            contact_tasks[0].error==0u && poses[0].valid==1u &&
+            producer->dy_launch_stats().device_island_indirect_dispatches==1u,
+        "Device Sc PCM contact extent failed before witness publication");
     producer->finish_gpu_pcm_box_contacts();
     require(witness[0].status()==0u && witness[0].count()>0u &&
             witness[0].count()<contact_capacity &&
