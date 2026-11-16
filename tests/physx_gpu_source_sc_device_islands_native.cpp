@@ -16,6 +16,7 @@
 #include <stdexcept>
 #include <span>
 #include <utility>
+#include <variant>
 #include <vector>
 
 namespace {
@@ -143,6 +144,13 @@ void verify(Context& context,const char* filename) {
         if(node_count<=32u && edges.size()<=32u)
             require(stream.commands().size()==1u,
                 "Small Sc device graph dispatched more than once");
+        if(!node_count && (!edges.empty() || !touches.empty())) {
+            const auto* dispatch=std::get_if<DispatchCommand>(
+                &stream.commands().back());
+            require(dispatch && dispatch->buffers.size()==4u &&
+                    dispatch->buffers[2].buffer!=output_buffer,
+                    "Nonresponding Sc node input aliases writable task output");
+        }
         stream.wait_at_fetch();
         std::vector<std::byte> bytes(layout.bytes);
         context.download(output_buffer,0u,bytes.data(),bytes.size());
@@ -786,6 +794,11 @@ void verify(Context& context,const char* filename) {
             admitted(no_dynamic,1u).source_index==92u &&
             admitted(no_dynamic,1u).island_root==invalid,
             "Nonresponding-only frame replayed stale Dy task admission");
+    auto touch_only=evaluate(0u,{}, {0u});
+    no_errors(touch_only);
+    require(header(touch_only).runnable_components==0u &&
+            header(touch_only).dispatch_x==0u,
+            "Contact-history-only frame admitted a spurious numerical task");
     auto empty_scene=evaluate(0u,{}, {});
     no_errors(empty_scene);
     require(header(empty_scene).runnable_components==0u &&
