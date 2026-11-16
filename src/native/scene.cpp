@@ -7768,11 +7768,14 @@ void Scene::partition_constraints() {
         prior_task_bodies=task.solver_body_end;
     }
     bool prepare_device_graph=device_sc_grouping &&
+        !gpu_dy_early_islands_ &&
         gpu_dy_responding_island_count_>responding_task_count &&
         gpu_dy_responding_island_count_<=
             gpu_broadphase_->gpu_dy_direct_task_limit();
-    gpu_dy_island_edges_.clear();
-    gpu_dy_island_node_flags_.clear();
+    if(!gpu_dy_early_islands_) {
+        gpu_dy_island_edges_.clear();
+        gpu_dy_island_node_flags_.clear();
+    }
     constexpr std::uint32_t invalid_device_node=0xffffffffu;
     constexpr std::uint32_t nonresponding_device_node=1u<<17u;
     if(prepare_device_graph) {
@@ -9223,6 +9226,30 @@ void Scene::publish_cpu_gu_touch_history(
     }
 }
 void Scene::prepare_gpu_dy_device_islands(bool selected) {
+    if(gpu_dy_early_islands_) {
+        if(!selected) {
+            gpu_broadphase_->discard_gpu_dy_island_admission();
+            return;
+        }
+        if(gpu_dy_island_node_flags_.size()!=actors_.size() ||
+           gpu_dy_tasks_.size()>gpu_broadphase_->gpu_dy_direct_task_limit())
+            throw std::logic_error(
+                "Early Sc accurate islands lost their actor capacity");
+        gpu_dy_island_node_flags_.assign(
+            actors_.size(),std::numeric_limits<std::uint32_t>::max());
+        for(const BodyId id:solver_active_ids_) {
+            const auto& actor=actors_[id];
+            if(actor.solver_row_generation!=solver_preparation_generation_ ||
+               actor.solver_row_index>=solver_rows_.size())
+                throw std::logic_error(
+                    "Early Sc admission has no final solver-row identity");
+            gpu_dy_island_node_flags_[id]=
+                static_cast<std::uint32_t>(actor.solver_row_index);
+        }
+        gpu_broadphase_->remap_gpu_dy_island_bodies(
+            gpu_dy_island_node_flags_);
+        return;
+    }
     if(!selected)return;
     if(gpu_dy_tasks_.size()>gpu_broadphase_->gpu_dy_direct_task_limit())
         throw std::out_of_range(
