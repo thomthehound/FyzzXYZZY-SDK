@@ -4247,7 +4247,6 @@ void Scene::update_contacts(bool defer_device_points,float inverse_step) {
         return (dynamic_a || dynamic_b) &&
             (!dynamic_a || actors_[a.body].sleeping) && (!dynamic_b || actors_[b.body].sleeping);
     };
-    bool pcm_has_multi_patch_history=false;
     if(source_gpu_pcm) {
         gpu_pcm_pairs_.reserve(previous_pairs_.size());
         std::size_t prior_touch_cursor=0u;
@@ -4274,12 +4273,6 @@ void Scene::update_contacts(bool defer_device_points,float inverse_step) {
                (!plane && !pcm_box_box_enabled_))continue;
             const EdgeIndex edge=active_edge_handles_[i];
             if(dormant_pcm(pair,edge))continue;
-            if(defer_device_points && edge<friction_by_edge_.size()) {
-                const auto& history=friction_by_edge_[edge];
-                pcm_has_multi_patch_history |=
-                    history.epoch==friction_cache_epoch_ &&
-                    history.count>1u;
-            }
             if(plane) {
                 const Shape& floor=a.geometry==Geometry::Plane?a:b;
                 const Shape& box=a.geometry==Geometry::Plane?b:a;
@@ -4350,18 +4343,16 @@ void Scene::update_contacts(bool defer_device_points,float inverse_step) {
             }
     }
     // Multiple retained friction patches require the current Gu normal
-    // for Sc patch selection. Single-patch PCM checks the resident
-    // normal during Dy anchor correlation.
-    if(defer_device_points && pcm_has_multi_patch_history)
-        for(const auto& request:gpu_pcm_pairs_) {
+    // for Sc patch selection. Fetch only those managers' full witnesses;
+    // other GPU contacts retain their late, numerical-consumer transfer.
+    if(defer_device_points)
+        for(auto& request:gpu_pcm_pairs_) {
             if(request.host_generated ||
                request.edge>=friction_by_edge_.size())continue;
             const auto& history=friction_by_edge_[request.edge];
-            if(history.epoch==friction_cache_epoch_ &&
-               history.count>1u) {
-                defer_device_points=false;
-                break;
-            }
+            request.eager_host_witness=
+                history.epoch==friction_cache_epoch_ &&
+                history.count>1u;
         }
     const bool gpu_results_pending=
         source_gpu_pcm && host_pair_count<gpu_pcm_pairs_.size();
@@ -4693,7 +4684,8 @@ void Scene::update_contacts(bool defer_device_points,float inverse_step) {
                             contacts={next_contact_points_.data()+offset,
                                       result.count()};
                         const bool deferred=defer_device_points &&
-                            !gpu_pcm_pairs_[manifold.pcm_result_index].host_generated;
+                            !gpu_pcm_pairs_[manifold.pcm_result_index].host_generated &&
+                            !gpu_pcm_pairs_[manifold.pcm_result_index].eager_host_witness;
                         manifold.count=publish_gpu_pcm_box_box(
                             result,island_edges_[edge].pcm_cache,contacts,deferred);
                         gpu_pcm_points_deferred_|=deferred && manifold.count!=0u;
@@ -5016,7 +5008,8 @@ void Scene::update_contacts(bool defer_device_points,float inverse_step) {
                result.status()!=0u || result.count()>manifold.count)
                 throw std::logic_error(
                     "Deferred GPU PCM result lost Sc manager identity");
-            const bool deferred=defer_device_points;
+            const bool deferred=defer_device_points &&
+                !request.eager_host_witness;
             std::span<ContactPoint> contacts{};
             if(result.count())
                 contacts={next_contact_points_.data()+manifold.contact_offset,
