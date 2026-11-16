@@ -767,6 +767,7 @@ public:
             island_work_.getDevicePtr(),
             island_node_count_,island_edge_count_);
     }
+    void discard_device_islands() noexcept {island_work_ready_=false;}
     CudaDeviceAddressMap::Address device_island_work_address() const noexcept {
         return island_work_ready_?island_work_.getDevicePtr():0u;
     }
