@@ -89,6 +89,16 @@ struct GpuBroadphaseReports {
     // delta against previous Sc contacts (which omit non-dynamic pairs).
     bool full_rebuild=false;
 };
+// Source-ordered numerical coefficients depend on authored inputs, not
+// on the current GPU PCM witness or physical touch.
+struct GpuDyPairMaterial {
+    float rest_distance=0.0f,pair_slop=0.0f;
+    float max_contact_impulse=0.0f,max_penetration_bias=0.0f;
+    float restitution=0.0f,damping=0.0f;
+    float static_friction=0.0f,dynamic_friction=0.0f;
+    bool acceleration_spring=false,disable_friction=false;
+    bool disable_strong_friction=false,prepared=false;
+};
 // Gu PCM contacts remain keyed by Sc's original contact-manager EdgeIndex.
 // These are borrowed per-frame views; GPU state belongs to the same Sc edge.
 struct GpuPcmBoxPair {
@@ -108,6 +118,7 @@ struct GpuPcmBoxPair {
     // general managers in the same batch remain GPU-owned.
     bool candidate_complete=false;
     bool host_generated=false;
+    GpuDyPairMaterial numerical{};
 };
 enum class GpuPcmTouchTransition : std::uint32_t {
     None=0,Found=1,Persists=2,Lost=3
@@ -1416,6 +1427,8 @@ private:
     void update_gpu_pairs(bool force_update,
                           const std::function<void()>& independent_sc_work);
     void publish_pairs();
+    GpuDyPairMaterial prepare_contact_material(ShapeId first,
+                                             ShapeId second) const;
     void update_contacts(bool defer_device_points=false,
                          float inverse_step=0.0f);
     void materialize_gpu_pcm_points();

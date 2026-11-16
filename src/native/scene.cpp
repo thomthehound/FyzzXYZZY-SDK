@@ -4122,6 +4122,91 @@ bool Scene::cached_friction_patch_valid(
     return true;
 }
 
+GpuDyPairMaterial Scene::prepare_contact_material(
+    ShapeId first,ShapeId second) const {
+    const auto& shape0=shapes_[first];
+    const auto& shape1=shapes_[second];
+    const auto& actor0=actors_[shape0.body];
+    const auto& actor1=actors_[shape1.body];
+    GpuDyPairMaterial result{};
+    result.rest_distance=shape0.rest_offset+shape1.rest_offset;
+    if(!std::isfinite(result.rest_distance) ||
+       !std::isfinite(result.rest_distance+0.04f))
+        throw std::overflow_error("Native Dy rest distance overflow");
+    result.pair_slop=std::max(
+        actor0.dynamics.contact_slop_coefficient,
+        actor1.dynamics.contact_slop_coefficient);
+    result.max_contact_impulse=std::min(
+        actor0.dynamics.max_contact_impulse,
+        actor1.dynamics.max_contact_impulse);
+    // A zero impulse cap admits no numerical contact or material rows.
+    if(result.max_contact_impulse==0.0f) {
+        result.prepared=true;
+        return result;
+    }
+    result.max_penetration_bias=-std::min(
+        actor0.dynamics.max_depenetration_velocity,
+        actor1.dynamics.max_depenetration_velocity);
+    const Material& m0=shape0.material;
+    const Material& m1=shape1.material;
+    const auto combine=[](float a,float b,MaterialCombineMode mode) {
+        switch(mode) {
+        case MaterialCombineMode::Average: return 0.5f*(a+b);
+        case MaterialCombineMode::Minimum: return std::min(a,b);
+        case MaterialCombineMode::Multiply: return a*b;
+        case MaterialCombineMode::Maximum: return std::max(a,b);
+        }
+        throw std::logic_error("Unrecognized source material combine mode");
+    };
+    const auto higher=[](MaterialCombineMode a,MaterialCombineMode b) {
+        return static_cast<unsigned>(a)>static_cast<unsigned>(b)?a:b;
+    };
+    const auto friction_mode=higher(m0.friction_combine,m1.friction_combine);
+    const bool c0=m0.restitution<0.0f;
+    const bool c1=m1.restitution<0.0f;
+    const bool both_compliant=c0 && c1;
+    const bool exactly_one_compliant=c0!=c1;
+    const bool acceleration_override=both_compliant &&
+        (m0.compliant_acceleration_spring!=m1.compliant_acceleration_spring);
+    result.acceleration_spring=m0.compliant_acceleration_spring ||
+        m1.compliant_acceleration_spring;
+    if(acceleration_override) {
+        result.restitution=m0.compliant_acceleration_spring
+            ?m0.restitution:m1.restitution;
+        result.damping=m0.compliant_acceleration_spring
+            ?m0.damping:m1.damping;
+    }else {
+        const auto restitution_mode=exactly_one_compliant
+            ?MaterialCombineMode::Minimum
+            :higher(m0.restitution_combine,m1.restitution_combine);
+        const auto damping_mode=exactly_one_compliant
+            ?MaterialCombineMode::Maximum
+            :higher(m0.damping_combine,m1.damping_combine);
+        const float sign=both_compliant &&
+            restitution_mode==MaterialCombineMode::Multiply?-1.0f:1.0f;
+        result.restitution=sign*combine(m0.restitution,m1.restitution,
+                                         restitution_mode);
+        result.damping=combine(m0.damping,m1.damping,damping_mode);
+    }
+    result.disable_friction=m0.disable_friction || m1.disable_friction;
+    result.disable_strong_friction=result.disable_friction ||
+        m0.disable_strong_friction || m1.disable_strong_friction;
+    result.dynamic_friction=result.disable_friction?0.0f:
+        std::max(0.0f,combine(m0.dynamic_friction,m1.dynamic_friction,
+                              friction_mode));
+    result.static_friction=result.disable_friction?0.0f:
+        std::max(result.dynamic_friction,
+                 combine(m0.static_friction,m1.static_friction,
+                         friction_mode));
+    if(!std::isfinite(result.restitution) ||
+       !std::isfinite(result.damping) ||
+       !std::isfinite(result.static_friction) ||
+       !std::isfinite(result.dynamic_friction))
+        throw std::overflow_error("Native Pxs material combination overflow");
+    result.prepared=true;
+    return result;
+}
+
 void Scene::update_contacts(bool defer_device_points,float inverse_step) {
     FYZZ_PROFILE_SCOPE("gu.contacts_pcm");
     gpu_pcm_points_deferred_=false;
@@ -4327,6 +4412,12 @@ void Scene::update_contacts(bool defer_device_points,float inverse_step) {
             gpu_broadphase_->has_gpu_dy_distance()
                 ?static_cast<std::uint32_t>(island_edges_.size()):0u,
             defer_device_points);
+    // Contact coefficients use the already admitted source pair
+    // identities. Prepare them while PCM runs, before Sc observes touch.
+    if(source_gpu_pcm && gpu_broadphase_->has_gpu_dy_distance())
+        for(auto& request:gpu_pcm_pairs_)
+            request.numerical=prepare_contact_material(
+                request.first,request.second);
     // Kinematic targets depend on the authored pose and timestep, not
     // physical touch. Prepare Dy velocities while queued PCM runs,
     // before any host observation of its witness stream.
@@ -7850,23 +7941,6 @@ void Scene::prepare_constraints(float seconds) {
     // from authoritative PxsBodyCore. The default -1e32f remains
     // represented through each actor's initial max depenetration value.
     constexpr float bounce_threshold = -2.0f;
-    // PxsMaterialCombiner.h::PxsCombineMaterials: the source takes the
-    // higher precedence combine mode (Average, Min, Multiply, Max) of
-    // both shapes and promotes static friction to at least dynamic.
-    // PhysX PxsMaterialCombiner also gives compliant spring/damping
-    // combinations precise priority before contact patch correlation.
-    const auto combine=[](float a,float b,MaterialCombineMode mode) {
-        switch(mode) {
-        case MaterialCombineMode::Average: return 0.5f*(a+b);
-        case MaterialCombineMode::Minimum: return std::min(a,b);
-        case MaterialCombineMode::Multiply: return a*b;
-        case MaterialCombineMode::Maximum: return std::max(a,b);
-        }
-        throw std::logic_error("Unrecognized source material combine mode");
-    };
-    const auto higher=[](MaterialCombineMode a,MaterialCombineMode b) {
-        return static_cast<unsigned>(a)>static_cast<unsigned>(b)?a:b;
-    };
     const float inv_dt = 1.0f / seconds;
     const auto dot = [](Vec3 u, Vec3 v) {
         return u.x*v.x + u.y*v.y + u.z*v.z;
@@ -8195,93 +8269,32 @@ void Scene::prepare_constraints(float seconds) {
         manifold.friction_patch_count = 0;
         const Actor& actor0 = actors_[id0];
         const Actor& actor1 = actors_[id1];
-        // ScShapeInteraction::initializeLowLevelContactManager stores
-        // max(body0.offsetSlop,body1.offsetSlop) in PxcNpWorkUnit.
-        const float pair_slop=std::max(
-            actor0.dynamics.contact_slop_coefficient,
-            actor1.dynamics.contact_slop_coefficient);
-        // DyContactPrepShared::constructContactConstraint subtracts
-        // contactDesc.restDistance from each Gu surface separation.
-        const float rest_distance=shape0.rest_offset+shape1.rest_offset;
-        if(!std::isfinite(rest_distance) ||
-           !std::isfinite(rest_distance+friction_offset_threshold))
-            throw std::overflow_error("Native Dy rest distance overflow");
-        // DyContactPrepShared::extractContacts applies the minimum
-        // body-level maxContactImpulse to each Gu point. With the
-        // admitted single-material shape, a zero cap suppresses ALL
-        // solver contacts in this manager but leaves Gu touch/edge
-        // publication authoritative. Preserve Gu force offsets as
-        // explicit zero slots, without inventing contact response.
-        const float pair_max_impulse=std::min(
-            actor0.dynamics.max_contact_impulse,
-            actor1.dynamics.max_contact_impulse);
-        if(pair_max_impulse==0.0f) {
-            // DyContactPrepShared::extractContacts omits these before
-            // filling ANY contact/patch solver descriptors. Subsequent
-            // live managers pack immediately after prior live rows.
-            continue;
-        }
-        // PxRigidBody::setMaxDepenetrationVelocity stores the NEGATIVE
-        // value in PxsBodyCore::penBiasClamp. DyContactPrep uses max of
-        // both signed clamps, i.e. the smaller positive depenetration cap.
-        const float max_penetration_bias=-std::min(
-            actor0.dynamics.max_depenetration_velocity,
-            actor1.dynamics.max_depenetration_velocity);
-        const Material& m0=shape0.material;
-        const Material& m1=shape1.material;
-        const auto friction_mode=higher(m0.friction_combine,
-                                        m1.friction_combine);
-        // PxsMaterialCombiner::PxsCombineMaterials: a compliant material
-        // wins over an ordinary one. An acceleration spring wins over
-        // a force spring when both materials are compliant.
-        const bool c0=m0.restitution<0.0f;
-        const bool c1=m1.restitution<0.0f;
-        const bool both_compliant=c0 && c1;
-        const bool exactly_one_compliant=c0 != c1;
-        const bool acceleration_override=both_compliant &&
-            (m0.compliant_acceleration_spring !=
-             m1.compliant_acceleration_spring);
-        const bool acceleration_spring=
-            m0.compliant_acceleration_spring ||
-            m1.compliant_acceleration_spring;
-        float restitution;
-        float damping;
-        if(acceleration_override) {
-            restitution=m0.compliant_acceleration_spring
-                ? m0.restitution : m1.restitution;
-            damping=m0.compliant_acceleration_spring
-                ? m0.damping : m1.damping;
-        } else {
-            const auto restitution_mode=exactly_one_compliant
-                ? MaterialCombineMode::Minimum
-                : higher(m0.restitution_combine,m1.restitution_combine);
-            const auto damping_mode=exactly_one_compliant
-                ? MaterialCombineMode::Maximum
-                : higher(m0.damping_combine,m1.damping_combine);
-            // Multiply two negative spring stiffnesses, then restore
-            // the negative sign of the combined compliant stiffness.
-            const float sign=both_compliant &&
-                restitution_mode==MaterialCombineMode::Multiply
-                ? -1.0f:1.0f;
-            restitution=sign*combine(m0.restitution,m1.restitution,
-                                     restitution_mode);
-            damping=combine(m0.damping,m1.damping,damping_mode);
-        }
-        const bool disable_friction=m0.disable_friction || m1.disable_friction;
-        const bool disable_strong_friction=disable_friction ||
-            m0.disable_strong_friction || m1.disable_strong_friction;
-        const float dynamic_friction=disable_friction ? 0.0f :
-            std::max(0.0f,combine(m0.dynamic_friction,m1.dynamic_friction,
-                                  friction_mode));
-        const float static_friction=disable_friction ? 0.0f :
-            std::max(dynamic_friction,
-                     combine(m0.static_friction,m1.static_friction,
-                             friction_mode));
-        if (!std::isfinite(restitution) ||
-            !std::isfinite(damping) ||
-            !std::isfinite(static_friction) ||
-            !std::isfinite(dynamic_friction))
-            throw std::overflow_error("Native Pxs material combination overflow");
+        const bool resident_pcm_material=gpu_normal_prep &&
+            manifold.pcm_result_index!=
+                std::numeric_limits<std::uint32_t>::max();
+        if(resident_pcm_material &&
+           (manifold.pcm_result_index>=gpu_pcm_pairs_.size() ||
+            gpu_pcm_pairs_[manifold.pcm_result_index].edge!=edge ||
+            !gpu_pcm_pairs_[manifold.pcm_result_index].numerical.prepared))
+            throw std::logic_error(
+                "Resident PCM numerical material lacks source pair identity");
+        const auto numerical=resident_pcm_material
+            ?gpu_pcm_pairs_[manifold.pcm_result_index].numerical
+            :prepare_contact_material(
+                reversed?manifold.pair.b:manifold.pair.a,
+                reversed?manifold.pair.a:manifold.pair.b);
+        const float pair_slop=numerical.pair_slop;
+        const float rest_distance=numerical.rest_distance;
+        const float pair_max_impulse=numerical.max_contact_impulse;
+        if(pair_max_impulse==0.0f)continue;
+        const float max_penetration_bias=numerical.max_penetration_bias;
+        const float restitution=numerical.restitution;
+        const float damping=numerical.damping;
+        const float static_friction=numerical.static_friction;
+        const float dynamic_friction=numerical.dynamic_friction;
+        const bool acceleration_spring=numerical.acceleration_spring;
+        const bool disable_friction=numerical.disable_friction;
+        const bool disable_strong_friction=numerical.disable_strong_friction;
 
         // Original DyContactPrep::createContactPatches preserves
         // CONTIGUOUS Gu runs of compatible normal/material contacts.
