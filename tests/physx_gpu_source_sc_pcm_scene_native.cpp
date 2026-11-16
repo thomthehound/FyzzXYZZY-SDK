@@ -2306,6 +2306,45 @@ void verify_queued_pcm_dy(fyzz::compute::Backend backend,const char* sap,
                 source_submissions(*producer)==0u,
         "Completed Dy result fence retained an earlier source submission");
     producer->commit_gpu_step();
+
+    // One friction-dependent manager fetches its full Gu witness at the
+    // original header join. Its independent neighbor remains deferred.
+    const auto near=scene.add_static_box(
+        {0.5f,0.5f,0.5f},{-0.8f,1.f,0.f});
+    scene.advance_collision(true);
+    const auto near_edge=scene.contact_edge_index({moving,near});
+    require(near_edge!=std::numeric_limits<std::uint32_t>::max() &&
+            near_edge!=edge,
+        "Selective PCM fixture did not admit independent Sc managers");
+    std::array<native::GpuPcmBoxPair,2> selective_requests{{
+        {moving,fixed,edge,false},
+        {moving,near,near_edge,false}
+    }};
+    selective_requests[0].eager_host_witness=true;
+    std::array<native::GpuPcmBoxResult,2> selective{};
+    producer->enqueue_gpu_pcm_box_contacts(selective_requests,selective,0u,true);
+    producer->finish_gpu_pcm_box_contacts();
+    constexpr auto full_bytes=sizeof(native::GpuPcmBoxResult);
+    constexpr auto header_bytes=2u*sizeof(std::uint32_t);
+    require(selective[0].edge==edge && selective[1].edge==near_edge &&
+            selective[0].status()==0u && selective[1].status()==0u &&
+            selective[0].count()>0u && selective[1].count()>0u &&
+            std::fabs(selective[0].normal.x)>0.5f &&
+            selective[1].normal.x==0.f &&
+            selective[1].normal.y==0.f &&
+            selective[1].normal.z==0.f &&
+            producer->pcm_header_join_bytes()==full_bytes+header_bytes &&
+            producer->pcm_contact_readback_bytes()==full_bytes+header_bytes,
+        "Selective PCM Sc join fetched deferred neighbor witnesses");
+    const auto eager_point=selective[0].points[0];
+    producer->finish_deferred_gpu_pcm_points();
+    require(producer->pcm_deferred_point_bytes()==full_bytes-header_bytes &&
+            selective[0].points[0].position.x==eager_point.position.x &&
+            selective[0].points[0].separation==eager_point.separation &&
+            std::fabs(selective[1].normal.x)>0.5f &&
+            std::isfinite(selective[1].points[0].separation),
+        "Selective PCM deferred transfer corrupted eager or late witnesses");
+    producer->commit_gpu_step();
 }
 
 // Sparse live Sc managers keep their original edge handles. GPU readback
