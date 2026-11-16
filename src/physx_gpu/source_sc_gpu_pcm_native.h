@@ -684,7 +684,7 @@ public:
     void enqueue_device_islands(
             std::span<const SourceScDeviceIslandEdge> edges,
             std::span<const std::uint32_t> node_flags,
-            SourceScDeviceIslandSources sources) {
+            SourceScDeviceIslandSources sources,bool early=false) {
         if(island_work_ready_ || !device_contact_ready())
             throw std::logic_error(
                 "Device island admission requires one complete queued Gu epoch");
@@ -746,9 +746,11 @@ public:
             island_work_.getDevicePtr()+
                 offsetof(SourceScDeviceIslandHeader,dispatch_x),
             sizeof(compute::DispatchSize));
-        // Dy appends its numerical inputs and solve to this same source
-        // queue. The caller owns submission and any inspection fence.
+        // Early admission starts before Sc's GPU witness join. Its
+        // submission remains ordered with PCM and later Dy remapping,
+        // without creating another CPU observation or host fence.
         island_work_ready_=true;
+        if(early)stream_.submit();
     }
     void remap_device_island_bodies(
             std::span<const std::uint32_t> actor_to_solver_row) {
