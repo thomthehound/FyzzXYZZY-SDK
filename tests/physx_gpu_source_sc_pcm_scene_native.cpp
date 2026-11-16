@@ -356,6 +356,32 @@ struct GpuPcmFrictionAnchorFixture {
                 throw std::runtime_error(
                     "Early device Sc compact node remap changed Dy row ownership");
         }
+        if(joints!=scene.indexed_joints_.size())
+            throw std::runtime_error(
+                "Early device Sc joint graph disagrees with Dy source membership");
+        std::size_t prepared_row=0u;
+        for(const auto edge:scene.indexed_joints_) {
+            const auto it=std::find(
+                scene.gpu_dy_early_joint_edges_.begin(),
+                scene.gpu_dy_early_joint_edges_.end(),edge);
+            if(it==scene.gpu_dy_early_joint_edges_.end())
+                throw std::runtime_error(
+                    "Early device Sc joint lost its prepared source identity");
+            const auto index=scene.gpu_dy_early_actor_ids_.size()+
+                static_cast<std::size_t>(
+                    it-scene.gpu_dy_early_joint_edges_.begin());
+            if(scene.gpu_dy_island_node_flags_[index]!=prepared_row)
+                throw std::runtime_error(
+                    "Early device Sc joint remap changed prepared Dy row order");
+            const auto& joint=scene.constraint_records_[
+                scene.island_edges_[edge].constraint_id];
+            prepared_row+=joint.kind==Scene::JointKind::Distance?1u:
+                joint.kind==Scene::JointKind::Spherical?3u:
+                joint.kind==Scene::JointKind::Fixed?6u:5u;
+        }
+        if(prepared_row!=scene.gpu_dy_rows_.size())
+            throw std::runtime_error(
+                "Early device Sc joint remap omitted prepared numerical rows");
     }
     static void verify_device_partition_source(const Scene& scene) {
         const auto& edges=scene.gpu_dy_island_edges_;
@@ -3147,9 +3173,15 @@ void verify_gpu_single_island_hybrid_solver(
         cpu.step(1.f/120.f);
         gpu.step(1.f/120.f);
         const auto schedule=producer->dy_launch_stats();
-        if(resident_admission)
-            native::GpuPcmFrictionAnchorFixture::
-                verify_device_partition_source(gpu);
+        if(resident_admission) {
+            if(native::GpuPcmFrictionAnchorFixture::
+                    has_early_device_admission(gpu))
+                native::GpuPcmFrictionAnchorFixture::
+                    verify_pre_witness_device_admission(gpu);
+            else
+                native::GpuPcmFrictionAnchorFixture::
+                    verify_device_partition_source(gpu);
+        }
         saw_pcm_contact|=producer->dy_pcm_device_contact_rows()>0u;
         for(const auto& contact:gpu.contacts())
             for(const auto& point:contact.points)
