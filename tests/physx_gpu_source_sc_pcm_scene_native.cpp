@@ -6575,18 +6575,17 @@ void qualify_hardware_scene(
             final_states.push_back(world.body_state(id));
         return final_states;
     };
-    std::vector<double> cpu_ms,gpu_ms;
-    std::vector<BodyState> cpu_states,gpu_states;
+    std::vector<double> cpu_ms,gpu_ms,admitted_ms;
+    std::vector<BodyState> cpu_states,gpu_states,admitted_states;
     if(gpu_first) {
+        admitted_states=run(true,admitted_ms,true);
         gpu_states=run(true,gpu_ms);
         cpu_states=run(false,cpu_ms);
     } else {
         cpu_states=run(false,cpu_ms);
         gpu_states=run(true,gpu_ms);
+        admitted_states=run(true,admitted_ms,true);
     }
-    // Compare the same scene with Sc-authored and device-admitted tasks.
-    std::vector<double> admitted_ms;
-    const auto admitted_states=run(true,admitted_ms,true);
     float max_position_error=0.f,max_velocity_error=0.f;
     float max_admitted_position_error=0.f,max_admitted_velocity_error=0.f;
     for(std::uint32_t i=0u;i<body_count;++i) {
