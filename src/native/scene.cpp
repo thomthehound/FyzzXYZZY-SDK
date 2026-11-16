@@ -4040,9 +4040,17 @@ std::uint8_t Scene::publish_gpu_pcm_box_box(
     if(gpu.count()>output.size())
         throw std::logic_error("Source GPU PCM contact arena exhausted");
     if(defer_points) {
-        // Numerical PCM owns the normal until Dy completes. Sc uses
-        // physical-touch counts to admit its stable manager.
+        // Sc may need the current normal for retained friction correlation,
+        // but Dy keeps all world-space witnesses resident until completion.
         output[0]={};
+        if(gpu.normal.x!=0.f || gpu.normal.y!=0.f || gpu.normal.z!=0.f) {
+            const float sq=gpu.normal.x*gpu.normal.x+
+                           gpu.normal.y*gpu.normal.y+
+                           gpu.normal.z*gpu.normal.z;
+            if(!(sq>0.f) || !std::isfinite(sq) || !finite(gpu.normal))
+                throw std::overflow_error("Source GPU PCM normal is invalid");
+            output[0].normal=gpu.normal;
+        }
         return static_cast<std::uint8_t>(gpu.count());
     }
     const float sq=gpu.normal.x*gpu.normal.x+
@@ -4342,15 +4350,14 @@ void Scene::update_contacts(bool defer_device_points,float inverse_step) {
                 ++host_pair_count;
             }
     }
-    // Multiple retained friction patches require the current Gu normal
-    // for Sc patch selection. Fetch only those managers' full witnesses;
-    // other GPU contacts retain their late, numerical-consumer transfer.
+    // Multiple retained friction patches require only the current Gu
+    // normal for Sc selection. All world points remain device-resident.
     if(defer_device_points)
         for(auto& request:gpu_pcm_pairs_) {
             if(request.host_generated ||
                request.edge>=friction_by_edge_.size())continue;
             const auto& history=friction_by_edge_[request.edge];
-            request.eager_host_witness=
+            request.early_host_normal=
                 history.epoch==friction_cache_epoch_ &&
                 history.count>1u;
         }
@@ -4684,8 +4691,7 @@ void Scene::update_contacts(bool defer_device_points,float inverse_step) {
                             contacts={next_contact_points_.data()+offset,
                                       result.count()};
                         const bool deferred=defer_device_points &&
-                            !gpu_pcm_pairs_[manifold.pcm_result_index].host_generated &&
-                            !gpu_pcm_pairs_[manifold.pcm_result_index].eager_host_witness;
+                            !gpu_pcm_pairs_[manifold.pcm_result_index].host_generated;
                         manifold.count=publish_gpu_pcm_box_box(
                             result,island_edges_[edge].pcm_cache,contacts,deferred);
                         gpu_pcm_points_deferred_|=deferred && manifold.count!=0u;
@@ -5008,8 +5014,7 @@ void Scene::update_contacts(bool defer_device_points,float inverse_step) {
                result.status()!=0u || result.count()>manifold.count)
                 throw std::logic_error(
                     "Deferred GPU PCM result lost Sc manager identity");
-            const bool deferred=defer_device_points &&
-                !request.eager_host_witness;
+            const bool deferred=defer_device_points;
             std::span<ContactPoint> contacts{};
             if(result.count())
                 contacts={next_contact_points_.data()+manifold.contact_offset,
