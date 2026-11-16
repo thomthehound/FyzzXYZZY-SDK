@@ -48,6 +48,7 @@ static_assert(sizeof(SourceScDeviceIslandAdmission)==24u);
 // through the accurate component without a CPU witness join.
 inline constexpr std::uint32_t source_sc_device_island_active_bit=1u<<16u;
 inline constexpr std::uint32_t source_sc_device_island_nonresponding_bit=1u<<17u;
+inline constexpr std::uint32_t source_sc_device_island_contact_task_bit=1u<<18u;
 inline constexpr std::uint32_t source_sc_device_island_iteration_mask=0xffffu;
 struct SourceScDeviceIslandCount {
     std::uint32_t responding_nodes=0,admitted_edges=0;
@@ -344,6 +345,50 @@ public:
             ordered.erase(ordered.begin()+original_command_count,ordered.end());
             throw;
         }
+    }
+
+    // Stable actor IDs become dense Dy solver-row indices only after
+    // accurate IslandSim publication. Remap the existing device body
+    // order in place, without fetching or rebuilding the island graph.
+    void append_body_remap(SourceSapDmaNative& stream,
+                           const CudaDeviceAddressMap& addresses,
+                           CudaDeviceAddressMap::Address mapping,
+                           CudaDeviceAddressMap::Address output,
+                           std::uint32_t node_count,
+                           std::uint32_t edge_count) const {
+        const auto layout=SourceScDeviceIslandLayout::for_counts(
+            node_count,edge_count);
+        if(!mapping || !output || !node_count || layout.bytes>max_view_)
+            throw std::invalid_argument("Missing Sc body remap resource");
+        std::array<std::uint32_t,28> args{};
+        const auto bytes=source_allocation_bytes(node_count,4u);
+        compute::DispatchCommand dispatch{};
+        dispatch.pipeline=pipeline_;
+        dispatch.buffers={
+            source_native_view(addresses,mapping,bytes,
+                alignment_,0u,compute::BufferAccess::Read,args[0],max_view_),
+            source_native_view(addresses,mapping,bytes,
+                alignment_,1u,compute::BufferAccess::Read,args[1],max_view_),
+            source_native_view(addresses,mapping,bytes,
+                alignment_,2u,compute::BufferAccess::Read,args[2],max_view_),
+            source_native_view(addresses,output,layout.bytes,
+                alignment_,3u,compute::BufferAccess::ReadWrite,
+                args[3],max_view_)};
+        const auto offset=[](std::size_t pos,std::uint32_t bias) {
+            const auto value=std::uint64_t(pos)+bias;
+            if(value>=std::numeric_limits<std::uint32_t>::max())
+                throw std::out_of_range("Sc body remap offset overflow");
+            return static_cast<std::uint32_t>(value);
+        };
+        args[9]=node_count;
+        args[12]=33u;
+        args[22]=offset(layout.body_order,args[3]);
+        dispatch.groups={
+            static_cast<std::uint32_t>((std::uint64_t(node_count)+127u)/128u),
+            1u,1u};
+        dispatch.push_constants.resize(sizeof(args));
+        std::memcpy(dispatch.push_constants.data(),args.data(),sizeof(args));
+        stream.commands().emplace_back(std::move(dispatch));
     }
 
 private:
