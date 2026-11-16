@@ -310,6 +310,25 @@ struct GpuPcmFrictionAnchorFixture {
                     "Resident PCM numerical preparation recombined contact inputs");
         }
     }
+    static void verify_pre_witness_device_admission(const Scene& scene) {
+        if(!scene.gpu_dy_early_islands_ ||
+           scene.gpu_dy_island_edges_.size()!=scene.previous_pairs_.size() ||
+           scene.gpu_dy_island_node_flags_.size()!=scene.actors_.size())
+            throw std::runtime_error(
+                "Sc did not queue stable actor and contact identities before Gu");
+        for(std::size_t i=0u;i<scene.gpu_dy_island_edges_.size();++i) {
+            const auto& edge=scene.gpu_dy_island_edges_[i];
+            if(edge.edge_index!=scene.active_edge_handles_[i] ||
+               edge.source_index!=i || edge.kind!=0u)
+                throw std::runtime_error(
+                    "Early device Sc graph lost its source contact identity");
+        }
+        for(const BodyId id:scene.solver_active_ids_)
+            if(scene.gpu_dy_island_node_flags_[id]!=
+               scene.actors_[id].solver_row_index)
+                throw std::runtime_error(
+                    "Early device Sc body order was not remapped to Dy rows");
+    }
     static void verify_device_partition_source(const Scene& scene) {
         const auto& edges=scene.gpu_dy_island_edges_;
         if(edges.size()!=
@@ -3149,6 +3168,57 @@ void verify_gpu_single_island_hybrid_solver(
     require(saw_pcm_contact,
         "Single-island hybrid solver never processed GPU PCM contacts");
 }
+void verify_early_pcm_island_pipeline(
+    fyzz::compute::Backend backend,const char* sap,
+    const char* pcm,const char* dy_shader) {
+    using namespace fyzz;
+    std::ifstream input(dy_shader,std::ios::binary);
+    require(bool(input),"Source Dy shader bundle unavailable");
+    compute::ShaderBinary shader{};
+    shader.format=backend==compute::Backend::Vulkan
+        ?compute::ShaderFormat::Spirv:compute::ShaderFormat::Dxil;
+    shader.bytes.assign(std::istreambuf_iterator<char>{input},
+                        std::istreambuf_iterator<char>{});
+    native::Scene cpu,gpu;
+    auto producer=std::make_unique<
+        physx_gpu::SourceScOwnedGpuBroadphaseNative>(
+            backend,load_native_gpu_sap_shaders(backend,sap),
+            128u,128u,std::nullopt,
+            load_native_gpu_pcm_shaders(backend,pcm),std::move(shader));
+    auto* device=producer.get();
+    gpu.set_gpu_broadphase(std::move(producer));
+    gpu.set_gpu_dy_device_admission_enabled(true);
+    std::array<BodyId,2> a{},b{};
+    for(std::uint32_t i=0u;i<a.size();++i) {
+        const float x=5.f*i;
+        cpu.add_static_box({0.5f,0.5f,0.5f},{x,0.f,0.f});
+        gpu.add_static_box({0.5f,0.5f,0.5f},{x,0.f,0.f});
+        a[i]=cpu.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{x,0.83f,0.f},1.f);
+        b[i]=gpu.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{x,0.83f,0.f},1.f);
+    }
+    // Static actors separate the stable ActorIDs from the dense Dy rows.
+    // Both contact islands still execute in one source task batch.
+    for(std::uint32_t frame=0u;frame<3u;++frame) {
+        cpu.step(1.f/120.f);
+        gpu.step(1.f/120.f);
+        native::GpuPcmFrictionAnchorFixture::
+            verify_pre_witness_device_admission(gpu);
+        const auto schedule=device->dy_launch_stats();
+        require(gpu.contacts().size()==2u &&
+                cpu.contacts().size()==2u &&
+                schedule.device_island_indirect_dispatches==1u &&
+                schedule.device_admitted_tasks==2u &&
+                schedule.device_admitted_descriptors==2u,
+            "Pre-witness Sc topology did not reach production device Dy");
+        for(std::size_t i=0u;i<a.size();++i)
+            test::compound_compare_state(
+                gpu.body_state(b[i]),cpu.body_state(a[i]),0.03f,
+                "Early device Sc actor remap changed rigid contact response");
+    }
+}
+
 // Source Gu PCM rows, friction patches, and 1D joints share the same
 // production Dy task partitions and device execution on both backends.
 void verify_gpu_coupled_solver(
@@ -6569,6 +6639,8 @@ int main(int argc,char** argv) {
                     verify_gpu_single_island_hybrid_solver(
                         backend,argv[1],argv[2],argv[3],true);
                     verify_world_device_island_admission(
+                        backend,argv[1],argv[2],argv[3]);
+                    verify_early_pcm_island_pipeline(
                         backend,argv[1],argv[2],argv[3]);
                 });
         if(scenario=="all" || scenario=="scene")
