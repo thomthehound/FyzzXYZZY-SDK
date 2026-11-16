@@ -152,7 +152,10 @@ island admission with stable EdgeIndices and source ordinals before the
 host GPU witness join. When bounded CPU primitive Gu
 produces some PCM records, admission is queued after those host records
 publish physical touch into the same device journal. Unrelated scene
-actors never enlarge the resident numerical graph.
+actors never enlarge the resident numerical graph. Early responding nodes
+are bounded by the device task capacity rather than the single-workgroup
+128-node threshold. Larger source graphs use parallel device admission,
+and the ordered body/joint remap dispatches in bounded workgroup ranges.
 The GPU resolves physical touch and runnable task topology on its own
 ordered queue. After accurate Sc publication, a compact node-to-solver-row upload
 remaps the device body order in place against the full Dy row capacity;

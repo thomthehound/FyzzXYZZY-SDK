@@ -995,6 +995,26 @@ void verify(Context& context,const char* filename) {
             header(packed).has_non_singleton_task==0u &&
             header(packed).dispatch_x==3u,
             "Device Sc failed to pack independent singleton tasks");
+    // Parallel numerical remap covers both typed response and body streams.
+    std::vector<std::uint32_t> body_rows(packed_nodes),joint_rows(packed_nodes);
+    for(std::uint32_t i=0u;i<packed_nodes;++i) {
+        body_rows[i]=i+100u;
+        joint_rows[i]=packed_nodes-1u-i;
+    }
+    const auto remapped=evaluate(
+        packed_nodes,packed_edges,{},packed_flags,{},std::nullopt,
+        body_rows,512u,joint_rows,packed_nodes);
+    no_errors(remapped);
+    require(header(remapped).runnable_components==packed_nodes &&
+            header(remapped).admitted_edges==packed_nodes,
+        "Parallel Sc remap changed independent numerical task admission");
+    for(std::uint32_t i=0u;i<packed_nodes;++i)
+        require(load<std::uint32_t>(remapped.second,
+                    remapped.first.body_order+i*4u)==body_rows[i] &&
+                load<std::uint32_t>(remapped.second,
+                    remapped.first.response_tokens+i*4u)==
+                    (0x80000000u|joint_rows[i]),
+            "Parallel Sc remap changed body or joint response identity");
     packed_edges.push_back({
         packed_nodes,0u,invalid,packed_nodes,
         source_sc_device_island_joint_bit});

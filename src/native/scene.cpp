@@ -4583,7 +4583,8 @@ void Scene::update_contacts(bool defer_device_points,float inverse_step) {
                             gpu_dy_early_actor_ids_.end()),
                 gpu_dy_early_actor_ids_.end());
             admitted=gpu_dy_early_actor_ids_.size()>=2u &&
-                     gpu_dy_early_actor_ids_.size()<=128u;
+                     gpu_dy_early_actor_ids_.size()<=
+                         gpu_broadphase_->gpu_dy_direct_task_limit();
         }
         if(admitted) {
             gpu_dy_island_node_flags_.resize(gpu_dy_early_actor_ids_.size());

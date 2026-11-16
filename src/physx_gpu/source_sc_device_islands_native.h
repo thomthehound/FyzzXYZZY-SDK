@@ -392,13 +392,22 @@ public:
         args[22]=offset(layout.body_order,args[3]);
         args[25]=joint_row_capacity;
         args[26]=joint_source_count;
-        dispatch.groups={
-            static_cast<std::uint32_t>(
-                (std::uint64_t(std::max(node_count,edge_count))+127u)/128u),
-            1u,1u};
+        const auto max_groups=context_.device_info().max_workgroup_count[0];
+        if(!max_groups)
+            throw std::logic_error("Device Sc remap has no compute groups");
         dispatch.push_constants.resize(sizeof(args));
-        std::memcpy(dispatch.push_constants.data(),args.data(),sizeof(args));
-        stream.commands().emplace_back(std::move(dispatch));
+        const auto total=std::max(node_count,edge_count);
+        for(std::uint64_t first=0u;first<total;) {
+            const auto groups=std::min<std::uint64_t>(
+                max_groups,(std::uint64_t(total)-first+127u)/128u);
+            args[13]=static_cast<std::uint32_t>(first);
+            dispatch.groups={static_cast<std::uint32_t>(groups),1u,1u};
+            std::memcpy(dispatch.push_constants.data(),
+                        args.data(),sizeof(args));
+            stream.commands().emplace_back(dispatch);
+            first+=std::min<std::uint64_t>(
+                std::uint64_t(total)-first,groups*128u);
+        }
     }
 
 private:
