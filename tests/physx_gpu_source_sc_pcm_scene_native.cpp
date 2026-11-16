@@ -310,6 +310,9 @@ struct GpuPcmFrictionAnchorFixture {
                     "Resident PCM numerical preparation recombined contact inputs");
         }
     }
+    static bool has_early_device_admission(const Scene& scene) {
+        return scene.gpu_dy_early_islands_;
+    }
     static void verify_pre_witness_device_admission(const Scene& scene) {
         if(!scene.gpu_dy_early_islands_ ||
            scene.gpu_dy_island_edges_.size()!=scene.previous_pairs_.size() ||
@@ -4304,8 +4307,17 @@ void verify_mixed_gu_pcm_gpu_dy_solver(
             native::GpuPcmFrictionAnchorFixture::
                 verify_early_pcm_numerical_materials(gpu);
             if(device_admission) {
-                native::GpuPcmFrictionAnchorFixture::
-                    verify_device_partition_source(gpu);
+                if(frame==0u)
+                    require(native::GpuPcmFrictionAnchorFixture::
+                            has_early_device_admission(gpu),
+                        "Mixed CPU Gu/PCM graph missed pre-witness admission");
+                if(native::GpuPcmFrictionAnchorFixture::
+                        has_early_device_admission(gpu))
+                    native::GpuPcmFrictionAnchorFixture::
+                        verify_pre_witness_device_admission(gpu);
+                else
+                    native::GpuPcmFrictionAnchorFixture::
+                        verify_device_partition_source(gpu);
                 native::GpuPcmFrictionAnchorFixture::
                     verify_device_admitted_contact_sources(gpu);
             }
@@ -4323,8 +4335,9 @@ void verify_mixed_gu_pcm_gpu_dy_solver(
             }
             if(frame==0u)
                 require((producer->pcm_early_gu_touch_bytes()>=
-                            sizeof(native::GpuGuTouchRecord))==!plane_first,
-                    "Late CPU Gu touch journal waited for Sc PCM witness");
+                            sizeof(native::GpuGuTouchRecord))==
+                            (device_admission || !plane_first),
+                    "CPU Gu touch journal waited for Sc PCM witness");
             if(frame>0u)
                 require(producer->last_frame().device_cached_box_count>0u,
                     "Mixed Gu/PCM Dy body still uploaded its solved Sc pose");

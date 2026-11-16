@@ -159,9 +159,13 @@ remaps the device body order in place against the full Dy row capacity;
 Dy consumes the same admitted tasks without a second graph dispatch or
 topology readback.
 Contact-only tasks require an admitted response, so empty PCM candidates
-do not produce solver work. Other scenes emit typed contact-manager and
-joint identities during the existing Dy partition pass; numerical
-admission consumes those records without revisiting the CPU task lists.
+do not produce solver work. Mixed ordinary CPU Gu and GPU PCM contact
+graphs also admit before the GPU witness join, after CPU Gu publishes
+its EdgeIndex touch/loss journal. Sc defers GPU witness publication
+until all such Gu producers complete, regardless of their encounter order.
+Joint graphs continue to emit typed identities during the existing Dy
+partition pass; numerical admission consumes those records without
+revisiting the CPU task lists.
 The Scene joins GPU PCM headers for CPU friction correlation
 and reads back Dy scheduling and numerical results for publication.
 In mixed scenes where a CPU Gu manager follows GPU PCM in source pair

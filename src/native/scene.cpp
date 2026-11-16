@@ -4355,7 +4355,7 @@ void Scene::update_contacts(bool defer_device_points,float inverse_step) {
     // Legacy Gu after the first GPU witness can run while PCM executes.
     // Reserve those PCM runs in the original Gu arena and publish them
     // after the independent CPU generators have completed.
-    const bool overlap_legacy_gu=[&] {
+    bool overlap_legacy_gu=[&] {
         if(!gpu_results_pending ||
            gpu_pcm_pairs_.size()==previous_pairs_.size())return false;
         bool device_seen=false;
@@ -4374,7 +4374,6 @@ void Scene::update_contacts(bool defer_device_points,float inverse_step) {
         }
         return false;
     }();
-    FYZZ_PROFILE_COUNTER("pcm.legacy_gu_overlap",overlap_legacy_gu?1u:0u);
     FYZZ_PROFILE_COUNTER("pcm_gpu_witness_pairs",
         gpu_pcm_pairs_.size()-host_pair_count);
     FYZZ_PROFILE_COUNTER("pcm_host_witness_pairs",host_pair_count);
@@ -4469,13 +4468,13 @@ void Scene::update_contacts(bool defer_device_points,float inverse_step) {
         early_pcm_materials?gpu_pcm_pairs_.size():0u);
 
     // Compact responding candidates independently of the scene actor count.
-    // Host PCM witnesses must enter the ordered source queue before admission.
+    // Each CPU Gu source must publish physical touch before admission.
     bool early_device_graph_awaits_host=false;
+    bool early_device_graph_awaits_gu=false;
     const bool early_device_graph=defer_device_points &&
         gpu_dy_device_admission_enabled_ && gpu_results_pending &&
         active_constraint_handles_.empty() &&
-        gpu_pcm_pairs_.size()==previous_pairs_.size() &&
-        gpu_pcm_pairs_.size()>1u &&
+        previous_pairs_.size()>1u &&
         gpu_broadphase_->gpu_dy_direct_task_limit()>=2u;
     if(early_device_graph) {
         constexpr std::uint32_t invalid=0xffffffffu;
@@ -4483,20 +4482,32 @@ void Scene::update_contacts(bool defer_device_points,float inverse_step) {
         constexpr std::uint32_t active=1u<<16u;
         gpu_dy_early_actor_ids_.clear();
         gpu_dy_island_edges_.clear();
-        gpu_dy_island_edges_.reserve(gpu_pcm_pairs_.size());
+        gpu_dy_island_edges_.reserve(previous_pairs_.size());
         bool admitted=true;
+        bool has_legacy_gu=false;
+        std::size_t pcm_ordinal=0u;
         const float seconds=inverse_step>0.f?1.f/inverse_step:0.f;
-        for(std::size_t i=0u;i<gpu_pcm_pairs_.size();++i) {
-            const auto& request=gpu_pcm_pairs_[i];
-            if(request.edge!=active_edge_handles_[i] ||
-               !(island_edges_[request.edge].shapes==previous_pairs_[i])) {
+        for(std::size_t i=0u;i<previous_pairs_.size();++i) {
+            const Pair pair=previous_pairs_[i];
+            const auto edge=active_edge_handles_[i];
+            if(edge>=island_edges_.size() ||
+               !(island_edges_[edge].shapes==pair)) {
                 admitted=false;
                 break;
             }
-            const Pair pair=previous_pairs_[i];
+            const bool pcm_source=pcm_ordinal<gpu_pcm_pairs_.size() &&
+                gpu_pcm_pairs_[pcm_ordinal].edge==edge;
+            if(!pcm_source && dormant_pcm(pair,edge)) {
+                admitted=false;
+                break;
+            }
+            if(!pcm_source)has_legacy_gu=true;
             const BodyId id0=shapes_[pair.a].body;
             const BodyId id1=shapes_[pair.b].body;
-            const bool responding=request.numerical.max_contact_impulse!=0.f;
+            const bool responding=pcm_source
+                ?gpu_pcm_pairs_[pcm_ordinal++].numerical.max_contact_impulse!=0.f
+                :std::min(actors_[id0].dynamics.max_contact_impulse,
+                          actors_[id1].dynamics.max_contact_impulse)!=0.f;
             std::uint32_t nodes[2]{invalid,invalid};
             for(std::size_t side=0u;side<2u;++side) {
                 const BodyId id=side?id1:id0;
@@ -4517,9 +4528,10 @@ void Scene::update_contacts(bool defer_device_points,float inverse_step) {
             }
             if(!admitted)break;
             gpu_dy_island_edges_.push_back({
-                request.edge,nodes[0],nodes[1],
+                edge,nodes[0],nodes[1],
                 static_cast<std::uint32_t>(i),responding?0u:2u});
         }
+        if(pcm_ordinal!=gpu_pcm_pairs_.size())admitted=false;
         if(admitted) {
             std::sort(gpu_dy_early_actor_ids_.begin(),
                       gpu_dy_early_actor_ids_.end());
@@ -4552,7 +4564,12 @@ void Scene::update_contacts(bool defer_device_points,float inverse_step) {
                 edge.node_a=ordinal(edge.node_a);
                 edge.node_b=ordinal(edge.node_b);
             }
-            if(host_pair_count)early_device_graph_awaits_host=true;
+            if(has_legacy_gu) {
+                early_device_graph_awaits_gu=true;
+                // All independent CPU Gu contacts finish before the PCM
+                // header join, irrespective of their Sc encounter order.
+                overlap_legacy_gu=true;
+            }else if(host_pair_count)early_device_graph_awaits_host=true;
             else {
                 gpu_broadphase_->enqueue_gpu_dy_island_admission(
                     gpu_dy_island_edges_,gpu_dy_island_node_flags_,
@@ -4566,6 +4583,7 @@ void Scene::update_contacts(bool defer_device_points,float inverse_step) {
             gpu_dy_island_node_flags_.clear();
         }
     }
+    FYZZ_PROFILE_COUNTER("pcm.legacy_gu_overlap",overlap_legacy_gu?1u:0u);
     // Kinematic targets depend on the authored pose and timestep, not
     // physical touch. Prepare Dy velocities while queued PCM runs,
     // before any host observation of its witness stream.
@@ -4660,7 +4678,7 @@ void Scene::update_contacts(bool defer_device_points,float inverse_step) {
         gpu_dy_early_islands_=true;
     }
     FYZZ_PROFILE_COUNTER("sc.device_island_early",
-                         gpu_dy_early_islands_?1u:0u);
+        (gpu_dy_early_islands_ || early_device_graph_awaits_gu)?1u:0u);
     bool gpu_results_joined=!gpu_results_pending;
     std::size_t gpu_pcm_index=0u;
     std::size_t old_cursor = 0;
@@ -5129,6 +5147,15 @@ void Scene::update_contacts(bool defer_device_points,float inverse_step) {
         // Publish their journal after the PCM readback submission, but
         // before Sc waits for that earlier readback to complete.
         publish_cpu_gu_touch_history(next_lost_contacts_,manifolds_);
+        if(early_device_graph_awaits_gu) {
+            // All CPU Gu physical transitions now precede this device
+            // admission, while the GPU witness DMA remains unjoined.
+            gpu_broadphase_->enqueue_gpu_dy_island_admission(
+                gpu_dy_island_edges_,gpu_dy_island_node_flags_,
+                {static_cast<std::uint32_t>(previous_pairs_.size()),0u,0u},
+                true);
+            gpu_dy_early_islands_=true;
+        }
         FYZZ_PROFILE_SCOPE("sc.pcm_witness_join");
         gpu_broadphase_->finish_gpu_pcm_box_contacts();
         gpu_results_joined=true;
