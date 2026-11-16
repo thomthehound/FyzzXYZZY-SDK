@@ -198,6 +198,33 @@ struct SourceScDeviceIslandFixture {
 
 namespace fyzz::native {
 struct GpuPcmFrictionAnchorFixture {
+    static void verify_early_normal_contract(Scene& scene) {
+        Scene::PcmManifoldCache cache{};
+        GpuPcmBoxResult result{};
+        result.set_primitive(2u,false);
+        result.normal={0.f,1.f,0.f};
+        std::array<ContactPoint,4> contacts{};
+        const auto count=scene.publish_gpu_pcm_box_box(
+            result,cache,contacts,true,true);
+        if(count!=2u || !cache.initialized ||
+           contacts[0].normal.y!=1.f ||
+           contacts[0].position.y!=0.f ||
+           contacts[0].separation!=0.f ||
+           contacts[1].position.y!=0.f)
+            throw std::runtime_error(
+                "Sc early PCM normal admission materialized world contacts");
+        result.normal={};
+        bool rejected=false;
+        try {
+            scene.publish_gpu_pcm_box_box(
+                result,cache,contacts,true,true);
+        }catch(const std::overflow_error&) {
+            rejected=true;
+        }
+        if(!rejected)
+            throw std::runtime_error(
+                "Sc admitted a missing early PCM friction normal");
+    }
     static void verify_early_speculative_admission(
         const Scene& reference,const Scene& gpu) {
         if(!gpu.speculative_connectivity_prepared_)
@@ -2064,6 +2091,7 @@ void verify_queued_pcm_dy(fyzz::compute::Backend backend,const char* sap,
     shader.bytes.assign(std::istreambuf_iterator<char>{input},
                         std::istreambuf_iterator<char>{});
     native::Scene scene;
+    native::GpuPcmFrictionAnchorFixture::verify_early_normal_contract(scene);
     auto owner=std::make_unique<physx_gpu::SourceScOwnedGpuBroadphaseNative>(
         backend,load_native_gpu_sap_shaders(backend,sap),128u,128u,
         std::nullopt,load_native_gpu_pcm_shaders(backend,pcm),
