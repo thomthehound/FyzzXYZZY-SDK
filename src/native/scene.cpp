@@ -4473,7 +4473,6 @@ void Scene::update_contacts(bool defer_device_points,float inverse_step) {
     bool early_device_graph_awaits_gu=false;
     const bool early_device_graph=defer_device_points &&
         gpu_dy_device_admission_enabled_ && gpu_results_pending &&
-        active_constraint_handles_.empty() &&
         previous_pairs_.size()>1u &&
         gpu_broadphase_->gpu_dy_direct_task_limit()>=2u;
     if(early_device_graph) {
