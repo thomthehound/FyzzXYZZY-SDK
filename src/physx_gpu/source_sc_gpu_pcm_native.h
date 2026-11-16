@@ -573,20 +573,14 @@ public:
                 constexpr auto normal_offset=
                     offsetof(native::GpuPcmBoxResult,normal);
                 const auto stride=sizeof(native::GpuPcmBoxResult);
-                const auto bytes=(i-first)*stride-normal_offset;
-                // The first entry starts at its normal; the intervening
-                // records remain contiguous in the resident Gu arena.
-                // Only the first 12 bytes are needed from each record,
-                // so scattered multi-patch managers retain short spans.
                 for(std::size_t j=first;j<i;++j) {
                     const auto mapped=addresses_.resolve(
                         dense_contacts_.getDevicePtr()+j*stride+
                             normal_offset,
-                        sizeof(native::GpuPcmBoxResult::normal));
+                        sizeof(output[j].normal));
                     gpu_downloads_.push_back({
                         mapped.buffer,mapped.offset,
-                        &output[j].normal,
-                        sizeof(native::GpuPcmBoxResult::normal)});
+                        &output[j].normal,sizeof(output[j].normal)});
                 }
             }
         pcm_transaction_pending_=true;
