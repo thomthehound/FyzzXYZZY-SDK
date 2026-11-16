@@ -4469,9 +4469,11 @@ void Scene::update_contacts(bool defer_device_points,float inverse_step) {
         early_pcm_materials?gpu_pcm_pairs_.size():0u);
 
     // Compact responding candidates independently of the scene actor count.
+    // Host PCM witnesses must enter the ordered source queue before admission.
+    bool early_device_graph_awaits_host=false;
     const bool early_device_graph=defer_device_points &&
         gpu_dy_device_admission_enabled_ && gpu_results_pending &&
-        host_pair_count==0u && active_constraint_handles_.empty() &&
+        active_constraint_handles_.empty() &&
         gpu_pcm_pairs_.size()==previous_pairs_.size() &&
         gpu_pcm_pairs_.size()>1u &&
         gpu_broadphase_->gpu_dy_direct_task_limit()>=2u;
@@ -4486,7 +4488,7 @@ void Scene::update_contacts(bool defer_device_points,float inverse_step) {
         const float seconds=inverse_step>0.f?1.f/inverse_step:0.f;
         for(std::size_t i=0u;i<gpu_pcm_pairs_.size();++i) {
             const auto& request=gpu_pcm_pairs_[i];
-            if(request.host_generated || request.edge!=active_edge_handles_[i] ||
+            if(request.edge!=active_edge_handles_[i] ||
                !(island_edges_[request.edge].shapes==previous_pairs_[i])) {
                 admitted=false;
                 break;
@@ -4550,19 +4552,20 @@ void Scene::update_contacts(bool defer_device_points,float inverse_step) {
                 edge.node_a=ordinal(edge.node_a);
                 edge.node_b=ordinal(edge.node_b);
             }
-            gpu_broadphase_->enqueue_gpu_dy_island_admission(
-                gpu_dy_island_edges_,gpu_dy_island_node_flags_,
-                {static_cast<std::uint32_t>(previous_pairs_.size()),0u,0u},
-                true);
-            gpu_dy_early_islands_=true;
+            if(host_pair_count)early_device_graph_awaits_host=true;
+            else {
+                gpu_broadphase_->enqueue_gpu_dy_island_admission(
+                    gpu_dy_island_edges_,gpu_dy_island_node_flags_,
+                    {static_cast<std::uint32_t>(previous_pairs_.size()),0u,0u},
+                    true);
+                gpu_dy_early_islands_=true;
+            }
         }else {
             gpu_dy_early_actor_ids_.clear();
             gpu_dy_island_edges_.clear();
             gpu_dy_island_node_flags_.clear();
         }
     }
-    FYZZ_PROFILE_COUNTER("sc.device_island_early",
-                         gpu_dy_early_islands_?1u:0u);
     // Kinematic targets depend on the authored pose and timestep, not
     // physical touch. Prepare Dy velocities while queued PCM runs,
     // before any host observation of its witness stream.
@@ -4647,6 +4650,17 @@ void Scene::update_contacts(bool defer_device_points,float inverse_step) {
                 gpu_broadphase_->has_gpu_dy_distance()
                     ?static_cast<std::uint32_t>(island_edges_.size()):0u);
     }
+    if(early_device_graph_awaits_host) {
+        // The producer has queued both GPU PCM touch and host Gu touch.
+        // The single resident history is complete before island admission.
+        gpu_broadphase_->enqueue_gpu_dy_island_admission(
+            gpu_dy_island_edges_,gpu_dy_island_node_flags_,
+            {static_cast<std::uint32_t>(previous_pairs_.size()),0u,0u},
+            true);
+        gpu_dy_early_islands_=true;
+    }
+    FYZZ_PROFILE_COUNTER("sc.device_island_early",
+                         gpu_dy_early_islands_?1u:0u);
     bool gpu_results_joined=!gpu_results_pending;
     std::size_t gpu_pcm_index=0u;
     std::size_t old_cursor = 0;

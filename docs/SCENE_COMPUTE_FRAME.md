@@ -146,11 +146,13 @@ islands use fused workgroups. Device-generated roots are numerical task IDs,
 not replacements for Sc's persistent island identities. The Scene prepares kinematic target velocities after PCM submission,
 before Sc joins its witness stream; these changes remain covered by the
 frame's motion journal. Solver-body admission still follows accurate island
-reconciliation. For closed GPU PCM contact graphs without 1D constraints or CPU Gu
+reconciliation. For closed PCM contact graphs without 1D constraints or legacy Gu
 producers, Sc compacts responding ActorIDs into frame-local node ordinals
 and submits accurate-island admission with stable EdgeIndices and candidate
-ordinals before the host witness join. Unrelated scene actors never enlarge
-the resident numerical graph.
+ordinals before the host GPU witness join. When bounded CPU primitive Gu
+produces some PCM records, admission is queued after those host records
+publish physical touch into the same device journal. Unrelated scene
+actors never enlarge the resident numerical graph.
 The GPU resolves physical touch and runnable task topology on its own
 ordered queue. After accurate Sc publication, a compact node-to-solver-row upload
 remaps the device body order in place against the full Dy row capacity;

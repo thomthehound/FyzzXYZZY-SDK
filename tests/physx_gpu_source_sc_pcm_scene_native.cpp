@@ -3186,7 +3186,7 @@ void verify_gpu_single_island_hybrid_solver(
 }
 void verify_early_pcm_island_pipeline(
     fyzz::compute::Backend backend,const char* sap,
-    const char* pcm,const char* dy_shader) {
+    const char* pcm,const char* dy_shader,bool mixed_host=false) {
     using namespace fyzz;
     std::ifstream input(dy_shader,std::ios::binary);
     require(bool(input),"Source Dy shader bundle unavailable");
@@ -3237,6 +3237,13 @@ void verify_early_pcm_island_pipeline(
     };
     add_non_touching(cpu);
     add_non_touching(gpu);
+    BodyId host_cpu=0u,host_gpu=0u;
+    if(mixed_host) {
+        cpu.add_static_sphere(0.5f,{15.f,0.f,0.f});
+        gpu.add_static_sphere(0.5f,{15.f,0.f,0.f});
+        host_cpu=cpu.add_dynamic_sphere(0.5f,{15.f,0.83f,0.f},1.f);
+        host_gpu=gpu.add_dynamic_sphere(0.5f,{15.f,0.83f,0.f},1.f);
+    }
     // Static actors separate stable ActorIDs from the dense Dy rows.
     // Only physically touching candidates acquire numerical task ranges.
     for(std::uint32_t frame=0u;frame<3u;++frame) {
@@ -3245,13 +3252,20 @@ void verify_early_pcm_island_pipeline(
         native::GpuPcmFrictionAnchorFixture::
             verify_pre_witness_device_admission(gpu);
         const auto schedule=device->dy_launch_stats();
-        require(gpu.pairs().size()==3u &&
-                gpu.contacts().size()==2u &&
-                cpu.contacts().size()==2u &&
+        const auto responding=mixed_host?3u:2u;
+        require(gpu.pairs().size()==responding+1u &&
+                gpu.contacts().size()==responding &&
+                cpu.contacts().size()==responding &&
                 schedule.device_island_indirect_dispatches==1u &&
-                schedule.device_admitted_tasks==2u &&
-                schedule.device_admitted_descriptors==2u,
-            "Pre-witness Sc topology did not reach production device Dy");
+                schedule.device_admitted_tasks==responding &&
+                schedule.device_admitted_descriptors==responding &&
+                (!mixed_host || device->pcm_host_contact_upload_bytes()>=
+                    sizeof(native::GpuPcmBoxResult)),
+            "Pre-witness mixed PCM topology did not reach production device Dy");
+        if(mixed_host)
+            test::compound_compare_state(
+                gpu.body_state(host_gpu),cpu.body_state(host_cpu),0.03f,
+                "Pre-witness CPU Gu sphere contact diverged from CPU PGS");
         for(std::size_t i=0u;i<a.size();++i)
             test::compound_compare_state(
                 gpu.body_state(b[i]),cpu.body_state(a[i]),0.03f,
@@ -6682,6 +6696,8 @@ int main(int argc,char** argv) {
                         backend,argv[1],argv[2],argv[3]);
                     verify_early_pcm_island_pipeline(
                         backend,argv[1],argv[2],argv[3]);
+                    verify_early_pcm_island_pipeline(
+                        backend,argv[1],argv[2],argv[3],true);
                 });
         if(scenario=="all" || scenario=="scene")
             fyzz::tests::measure_gpu_case("sc_pcm","scene",
