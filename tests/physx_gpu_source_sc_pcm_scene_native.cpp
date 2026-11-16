@@ -2307,8 +2307,8 @@ void verify_queued_pcm_dy(fyzz::compute::Backend backend,const char* sap,
         "Completed Dy result fence retained an earlier source submission");
     producer->commit_gpu_step();
 
-    // One friction-dependent manager fetches its full Gu witness at the
-    // original header join. Its independent neighbor remains deferred.
+    // A friction-dependent manager fetches its current normal without
+    // fetching point geometry. Its independent neighbor stays deferred.
     const auto near=scene.add_static_box(
         {0.5f,0.5f,0.5f},{-0.8f,1.f,0.f});
     scene.advance_collision(true);
@@ -2320,7 +2320,7 @@ void verify_queued_pcm_dy(fyzz::compute::Backend backend,const char* sap,
         {moving,fixed,edge,false},
         {moving,near,near_edge,false}
     }};
-    selective_requests[0].eager_host_witness=true;
+    selective_requests[0].early_host_normal=true;
     std::array<native::GpuPcmBoxResult,2> selective{};
     producer->enqueue_gpu_pcm_box_contacts(selective_requests,selective,0u,true);
     producer->finish_gpu_pcm_box_contacts();
@@ -2333,17 +2333,25 @@ void verify_queued_pcm_dy(fyzz::compute::Backend backend,const char* sap,
             selective[1].normal.x==0.f &&
             selective[1].normal.y==0.f &&
             selective[1].normal.z==0.f &&
-            producer->pcm_header_join_bytes()==full_bytes+header_bytes &&
-            producer->pcm_contact_readback_bytes()==full_bytes+header_bytes,
-        "Selective PCM Sc join fetched deferred neighbor witnesses");
-    const auto eager_point=selective[0].points[0];
+            selective[0].points[0].separation==0.f &&
+            selective[1].points[0].separation==0.f &&
+            producer->pcm_header_join_bytes()==
+                2u*header_bytes+sizeof(selective[0].normal) &&
+            producer->pcm_contact_readback_bytes()==
+                2u*header_bytes+sizeof(selective[0].normal),
+        "Selective PCM Sc join fetched unnecessary point geometry");
+    const auto early_normal=selective[0].normal;
     producer->finish_deferred_gpu_pcm_points();
-    require(producer->pcm_deferred_point_bytes()==full_bytes-header_bytes &&
-            selective[0].points[0].position.x==eager_point.position.x &&
-            selective[0].points[0].separation==eager_point.separation &&
+    require(producer->pcm_deferred_point_bytes()==
+                2u*full_bytes-2u*header_bytes-sizeof(early_normal) &&
+            selective[0].normal.x==early_normal.x &&
+            selective[0].normal.y==early_normal.y &&
+            selective[0].normal.z==early_normal.z &&
+            std::fabs(selective[0].points[0].position.x)>0.01f &&
+            std::isfinite(selective[0].points[0].separation) &&
             std::fabs(selective[1].normal.x)>0.5f &&
             std::isfinite(selective[1].points[0].separation),
-        "Selective PCM deferred transfer corrupted eager or late witnesses");
+        "Selective PCM deferred transfer corrupted normals or late points");
     producer->commit_gpu_step();
 }
 
