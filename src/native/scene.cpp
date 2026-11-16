@@ -4467,6 +4467,80 @@ void Scene::update_contacts(bool defer_device_points,float inverse_step) {
                     request.first,request.second);
     FYZZ_PROFILE_COUNTER("pcm.early_numerical_materials",
         early_pcm_materials?gpu_pcm_pairs_.size():0u);
+    // Closed device PCM graphs have stable ActorIDs, EdgeIndices and
+    // candidate ordinals before Gu publishes contact witnesses. Admit
+    // their accurate numerical topology on the resident touch stream;
+    // Dy remaps these actors to its final solver rows after Sc's join.
+    const bool early_device_graph=defer_device_points &&
+        gpu_dy_device_admission_enabled_ && gpu_results_pending &&
+        host_pair_count==0u && active_constraint_handles_.empty() &&
+        gpu_pcm_pairs_.size()==previous_pairs_.size() &&
+        gpu_pcm_pairs_.size()>1u && actors_.size()<=128u &&
+        gpu_broadphase_->gpu_dy_direct_task_limit()>=2u;
+    if(early_device_graph) {
+        constexpr std::uint32_t invalid=0xffffffffu;
+        constexpr std::uint32_t nonresponding=1u<<17u;
+        constexpr std::uint32_t require_contact=1u<<18u;
+        constexpr std::uint32_t active=1u<<16u;
+        gpu_dy_island_node_flags_.assign(
+            actors_.size(),nonresponding|require_contact);
+        gpu_dy_island_edges_.clear();
+        gpu_dy_island_edges_.reserve(gpu_pcm_pairs_.size());
+        bool admitted=true;
+        std::uint32_t candidate_bodies=0u;
+        const float seconds=inverse_step>0.f?1.f/inverse_step:0.f;
+        for(std::size_t i=0u;i<gpu_pcm_pairs_.size();++i) {
+            const auto& request=gpu_pcm_pairs_[i];
+            if(request.host_generated || request.edge!=active_edge_handles_[i] ||
+               !(island_edges_[request.edge].shapes==previous_pairs_[i])) {
+                admitted=false;
+                break;
+            }
+            const Pair pair=previous_pairs_[i];
+            const BodyId id0=shapes_[pair.a].body;
+            const BodyId id1=shapes_[pair.b].body;
+            const bool responding=request.numerical.max_contact_impulse!=0.f;
+            std::uint32_t nodes[2]{invalid,invalid};
+            for(std::size_t side=0u;side<2u;++side) {
+                const BodyId id=side? id1:id0;
+                const auto& actor=actors_[id];
+                if(actor.motion!=Motion::Dynamic)continue;
+                if(actor.sleeping || actor.ready_for_sleep ||
+                   actor.wake_counter<=2.f*seconds) {
+                    admitted=false;
+                    break;
+                }
+                if(!responding)continue;
+                if(actor.dynamics.position_iterations==0u) {
+                    admitted=false;
+                    break;
+                }
+                auto& flags=gpu_dy_island_node_flags_[id];
+                if((flags&nonresponding)!=0u) {
+                    ++candidate_bodies;
+                    flags=active|require_contact|
+                        actor.dynamics.position_iterations|
+                        (std::uint32_t(actor.dynamics.velocity_iterations)<<8u);
+                }
+                nodes[side]=id;
+            }
+            if(!admitted)break;
+            gpu_dy_island_edges_.push_back({
+                request.edge,nodes[0],nodes[1],
+                static_cast<std::uint32_t>(i),responding?0u:2u});
+        }
+        if(admitted && candidate_bodies>=2u) {
+            gpu_broadphase_->enqueue_gpu_dy_island_admission(
+                gpu_dy_island_edges_,gpu_dy_island_node_flags_,
+                {static_cast<std::uint32_t>(previous_pairs_.size()),0u,0u});
+            gpu_dy_early_islands_=true;
+        }else {
+            gpu_dy_island_edges_.clear();
+            gpu_dy_island_node_flags_.clear();
+        }
+    }
+    FYZZ_PROFILE_COUNTER("sc.device_island_early",
+                         gpu_dy_early_islands_?1u:0u);
     // Kinematic targets depend on the authored pose and timestep, not
     // physical touch. Prepare Dy velocities while queued PCM runs,
     // before any host observation of its witness stream.
@@ -11885,6 +11959,7 @@ void Scene::step(float seconds) {
         { FYZZ_PROFILE_SCOPE("sc.rollback");
           step_checkpoint_.rollback(*this); }
         gpu_pcm_points_deferred_=false;
+        gpu_dy_early_islands_=false;
         FYZZ_PROFILE_END_FRAME(frame_index_,gpu_dy_active(),false);
         throw;
     }
@@ -11970,6 +12045,7 @@ void Scene::advance_collision_internal(
     // change source AABB inputs. On GPU frames, execute this work after
     // the SAP producer submits but before its host-facing fetch joins.
     const auto prepare_sc_publication=[&] {
+        gpu_dy_early_islands_=false;
         speculative_connectivity_prepared_=false;
         gpu_pcm_friction_history_masks_.clear();
         speculative_split_sleep_candidates_.clear();
