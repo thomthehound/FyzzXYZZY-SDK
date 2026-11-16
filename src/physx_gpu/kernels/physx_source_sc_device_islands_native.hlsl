@@ -364,8 +364,12 @@ void admitCompact(uint lane) {
     compactEdgeStarts[lane]=invalid;
     GroupMemoryBarrierWithGroupSync();
 
+    // Uniform network width preserves the one-dispatch path without
+    // paying 128-slot sorting barriers for tiny rigid-body islands.
+    uint sortWidth=1u;
+    while(sortWidth<max(p.nodeCount,p.edgeCount))sortWidth<<=1u;
     [loop]
-    for(uint width=2u;width<=128u;width<<=1u) {
+    for(uint width=2u;width<=sortWidth;width<<=1u) {
         [loop]
         for(uint stride=width>>1u;stride!=0u;stride>>=1u) {
             const uint currentBody=compactBodyKeys[lane];
