@@ -374,6 +374,38 @@ void verify(Context& context,const char* filename) {
             "Device Sc typed response admission changed at workgroup limit");
     }
 
+    // Edge limits must preserve typed source order across several
+    // disconnected roots, including omitted contact responses.
+    for(const std::uint32_t edge_count:{128u,129u}) {
+        constexpr std::uint32_t nodes=16u;
+        std::vector<SourceScDeviceIslandEdge> mixed;
+        std::vector<std::uint32_t> touching(edge_count,1u);
+        std::vector<std::uint32_t> flags(nodes,0x104u);
+        for(std::uint32_t node=0u;node<nodes;node+=2u)
+            flags[node]|=source_sc_device_island_active_bit;
+        mixed.reserve(edge_count);
+        std::uint32_t excluded=0u;
+        for(std::uint32_t i=0u;i<edge_count;++i) {
+            const bool joint=(i&1u)!=0u;
+            const bool no_response=!joint && i%16u==0u;
+            excluded+=no_response?1u:0u;
+            const auto first=2u*(i%8u);
+            const std::uint32_t kind=joint
+                ?source_sc_device_island_joint_bit |
+                    (i%4u==1u?source_sc_device_island_device_joint_bit:0u)
+                :(no_response?source_sc_device_island_no_response_bit:0u);
+            mixed.push_back({
+                joint?500u+i:i,first,first+1u,i,kind});
+        }
+        const auto result=evaluate(nodes,mixed,touching,flags);
+        no_errors(result);
+        check_task_mapping(result);
+        require(header(result).runnable_components==8u &&
+                header(result).responding_nodes==nodes &&
+                header(result).admitted_edges==edge_count-excluded,
+            "Device Sc split-island response order changed at edge limit");
+    }
+
     std::vector<SourceScDeviceIslandEdge> edges{
         {0u,0u,1u,10u,0u}, // Contact: found
         {31u,1u,2u,11u,source_sc_device_island_joint_bit|
