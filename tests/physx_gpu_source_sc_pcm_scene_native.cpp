@@ -6395,8 +6395,6 @@ int main(int argc,char** argv) {
                         backend,argv[1],argv[2],argv[3]);
                     verify_zero_touch_gpu_pcm_transfer(
                         backend,argv[1],argv[2],argv[3]);
-                    verify_scene_normal_only_multi_patch(
-                        backend,argv[1],argv[2],argv[3]);
                 });
         if(scenario=="all" || scenario=="convex_plane")
             fyzz::tests::measure_gpu_case("sc_pcm","convex_plane",
@@ -6426,8 +6424,12 @@ int main(int argc,char** argv) {
                     backend,argv[1],argv[2],argv[3]);});
         if(scenario=="all" || scenario=="friction_normal")
             fyzz::tests::measure_gpu_case("sc_pcm","friction_normal",
-                [&]{verify_pcm_friction_normal_revalidation(
-                    backend,argv[1],argv[2],argv[3]);});
+                [&]{
+                    verify_pcm_friction_normal_revalidation(
+                        backend,argv[1],argv[2],argv[3]);
+                    verify_scene_normal_only_multi_patch(
+                        backend,argv[1],argv[2],argv[3]);
+                });
         if(scenario=="device_admission_scene")
             fyzz::tests::measure_gpu_case("sc_pcm","device_admission_scene",
                 [&]{
