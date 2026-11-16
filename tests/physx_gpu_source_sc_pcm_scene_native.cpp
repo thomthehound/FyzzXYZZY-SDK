@@ -421,16 +421,14 @@ struct GpuPcmFrictionAnchorFixture {
            span.offset+span.count!=scene.friction_patches_.size())
             throw std::runtime_error(
                 "Multi-patch PCM fixture lacks one current friction patch");
-        const auto patch=scene.friction_patches_[span.offset];
-        if(patch.contact_count==0u ||
+        auto patch=scene.friction_patches_[span.offset];
+        if(patch.contact_count==0u || patch.anchor_count==0u ||
            patch.disable_friction || patch.disable_strong_friction)
             throw std::runtime_error(
                 "Multi-patch PCM fixture has no reusable friction state");
+        patch.broken=broken;
+        scene.friction_patches_[span.offset].broken=broken;
         scene.friction_patches_.push_back(patch);
-        if(broken) {
-            scene.friction_patches_[span.offset].broken=true;
-            scene.friction_patches_.back().broken=true;
-        }
         scene.friction_by_edge_[edge].count=2u;
     }
     static void verify_compact_gpu_contact_admission(const Scene& scene) {
