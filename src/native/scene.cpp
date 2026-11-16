@@ -4350,26 +4350,6 @@ void Scene::update_contacts(bool defer_device_points,float inverse_step) {
                 ++host_pair_count;
             }
     }
-    // Sc needs an early normal only to choose among reusable friction
-    // patches. Invalid or retired history cannot create that dependency.
-    if(defer_device_points)
-        for(auto& request:gpu_pcm_pairs_) {
-            if(request.host_generated ||
-               request.edge>=friction_by_edge_.size())continue;
-            const auto& history=friction_by_edge_[request.edge];
-            if(history.epoch!=friction_cache_epoch_ ||
-               history.count<=1u ||
-               !(history.pair==island_edges_[request.edge].shapes) ||
-               history.offset>friction_patches_.size() ||
-               history.count>friction_patches_.size()-history.offset)
-                continue;
-            const auto first=friction_patches_.begin()+history.offset;
-            request.early_host_normal=std::any_of(
-                first,first+history.count,[](const FrictionPatch& patch) {
-                    return !patch.broken && !patch.disable_strong_friction &&
-                        patch.anchor_count!=0u;
-                });
-        }
     const bool gpu_results_pending=
         source_gpu_pcm && host_pair_count<gpu_pcm_pairs_.size();
     // Legacy Gu after the first GPU witness can run while PCM executes.
@@ -4401,42 +4381,10 @@ void Scene::update_contacts(bool defer_device_points,float inverse_step) {
     if(source_gpu_pcm && gpu_broadphase_->has_gpu_dy_distance() &&
        island_edges_.size()>std::numeric_limits<std::uint32_t>::max())
         throw std::overflow_error("Sc EdgeIndex watermark exceeds GPU history capacity");
-    // General GPU PCM starts before Sc produces any host primitive Gu.
-    // Both numerical producers occupy disjoint ordinals in the same
-    // contact allocation. The host spans enter the source queue before
-    // the GPU witness join, preserving the later device dependency.
-    if(gpu_results_pending || (source_gpu_pcm && gpu_pcm_pairs_.empty()))
-        gpu_broadphase_->enqueue_gpu_pcm_box_contacts(
-            gpu_pcm_pairs_,gpu_pcm_results_,
-            gpu_broadphase_->has_gpu_dy_distance()
-                ?static_cast<std::uint32_t>(island_edges_.size()):0u,
-            defer_device_points);
-    // Contact coefficients use the already admitted source pair
-    // identities. Prepare them while PCM runs, before Sc observes touch.
-    const bool early_pcm_materials=source_gpu_pcm &&
-        gpu_broadphase_->has_gpu_dy_distance();
-    if(early_pcm_materials)
-        for(auto& request:gpu_pcm_pairs_)
-            request.numerical=prepare_contact_material(
-                request.first,request.second);
-    FYZZ_PROFILE_COUNTER("pcm.early_numerical_materials",
-        early_pcm_materials?gpu_pcm_pairs_.size():0u);
-    // Kinematic targets depend on the authored pose and timestep, not
-    // physical touch. Prepare Dy velocities while queued PCM runs,
-    // before any host observation of its witness stream.
-    if(inverse_step>0.0f)
-        calculate_kinematic_velocities(inverse_step);
-    // The speculative IslandSim consumes SAP membership, never Gu
-    // witness geometry. Admit its first/second-pass topology on the CPU
-    // while the same scene stream executes general GPU PCM. Accurate
-    // IslandSim admission remains dependent on the real Gu touch result.
-    if(gpu_results_pending &&
-       (island_topology_dirty_ || !found_.empty() || !lost_.empty()))
-        update_island_connectivity(true);
-    // The previous source friction patch's relative normal and local
-    // anchor separation depend on authored poses, not this frame's Gu.
-    // Evaluate those unchanged-input tests while GPU PCM runs. After
-    // Gu joins, only the new contact-normal correlation remains.
+    // Relative cached normals and anchor separation depend on authored
+    // poses, not this frame's PCM witness. Validate the original friction
+    // history before queuing PCM so the same result selects early DMA
+    // normals and later correlation without rescanning retained anchors.
     if(gpu_results_pending && !friction_patches_.empty()) {
         gpu_pcm_friction_history_masks_.assign(gpu_pcm_pairs_.size(),0u);
         for(std::size_t i=0u;i<gpu_pcm_pairs_.size();++i) {
@@ -4468,8 +4416,41 @@ void Scene::update_contacts(bool defer_device_points,float inverse_step) {
                     friction_patches_[history.offset+j],actor0,actor1))
                     valid|=1u<<j;
             gpu_pcm_friction_history_masks_[i]=valid;
+            gpu_pcm_pairs_[i].early_host_normal=
+                defer_device_points && !gpu_pcm_pairs_[i].host_generated &&
+                history.count>1u && valid!=0u;
         }
     }
+    // Only selected normals cross early; the validated source history
+    // remains available to Sc when the PCM header joins later.
+    if(gpu_results_pending || (source_gpu_pcm && gpu_pcm_pairs_.empty()))
+        gpu_broadphase_->enqueue_gpu_pcm_box_contacts(
+            gpu_pcm_pairs_,gpu_pcm_results_,
+            gpu_broadphase_->has_gpu_dy_distance()
+                ?static_cast<std::uint32_t>(island_edges_.size()):0u,
+            defer_device_points);
+    // Contact coefficients use the already admitted source pair
+    // identities. Prepare them while PCM runs, before Sc observes touch.
+    const bool early_pcm_materials=source_gpu_pcm &&
+        gpu_broadphase_->has_gpu_dy_distance();
+    if(early_pcm_materials)
+        for(auto& request:gpu_pcm_pairs_)
+            request.numerical=prepare_contact_material(
+                request.first,request.second);
+    FYZZ_PROFILE_COUNTER("pcm.early_numerical_materials",
+        early_pcm_materials?gpu_pcm_pairs_.size():0u);
+    // Kinematic targets depend on the authored pose and timestep, not
+    // physical touch. Prepare Dy velocities while queued PCM runs,
+    // before any host observation of its witness stream.
+    if(inverse_step>0.0f)
+        calculate_kinematic_velocities(inverse_step);
+    // The speculative IslandSim consumes SAP membership, never Gu
+    // witness geometry. Admit its first/second-pass topology on the CPU
+    // while the same scene stream executes general GPU PCM. Accurate
+    // IslandSim admission remains dependent on the real Gu touch result.
+    if(gpu_results_pending &&
+       (island_topology_dirty_ || !found_.empty() || !lost_.empty()))
+        update_island_connectivity(true);
     if(host_pair_count) {
         // The same Sc cache owns primitive witnesses even when this
         // frame also schedules general device PCM contacts.
