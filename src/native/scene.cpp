@@ -4130,9 +4130,6 @@ GpuDyPairMaterial Scene::prepare_contact_material(
     const auto& actor1=actors_[shape1.body];
     GpuDyPairMaterial result{};
     result.rest_distance=shape0.rest_offset+shape1.rest_offset;
-    if(!std::isfinite(result.rest_distance) ||
-       !std::isfinite(result.rest_distance+0.04f))
-        throw std::overflow_error("Native Dy rest distance overflow");
     result.pair_slop=std::max(
         actor0.dynamics.contact_slop_coefficient,
         actor1.dynamics.contact_slop_coefficient);
@@ -4198,11 +4195,6 @@ GpuDyPairMaterial Scene::prepare_contact_material(
         std::max(result.dynamic_friction,
                  combine(m0.static_friction,m1.static_friction,
                          friction_mode));
-    if(!std::isfinite(result.restitution) ||
-       !std::isfinite(result.damping) ||
-       !std::isfinite(result.static_friction) ||
-       !std::isfinite(result.dynamic_friction))
-        throw std::overflow_error("Native Pxs material combination overflow");
     result.prepared=true;
     return result;
 }
@@ -8289,6 +8281,9 @@ void Scene::prepare_constraints(float seconds) {
                 reversed?manifold.pair.a:manifold.pair.b);
         const float pair_slop=numerical.pair_slop;
         const float rest_distance=numerical.rest_distance;
+        if(!std::isfinite(rest_distance) ||
+           !std::isfinite(rest_distance+friction_offset_threshold))
+            throw std::overflow_error("Native Dy rest distance overflow");
         const float pair_max_impulse=numerical.max_contact_impulse;
         if(pair_max_impulse==0.0f)continue;
         const float max_penetration_bias=numerical.max_penetration_bias;
@@ -8299,6 +8294,11 @@ void Scene::prepare_constraints(float seconds) {
         const bool acceleration_spring=numerical.acceleration_spring;
         const bool disable_friction=numerical.disable_friction;
         const bool disable_strong_friction=numerical.disable_strong_friction;
+        if(!std::isfinite(restitution) || !std::isfinite(damping) ||
+           !std::isfinite(static_friction) ||
+           !std::isfinite(dynamic_friction))
+            throw std::overflow_error(
+                "Native Pxs material combination overflow");
 
         // Original DyContactPrep::createContactPatches preserves
         // CONTIGUOUS Gu runs of compatible normal/material contacts.
