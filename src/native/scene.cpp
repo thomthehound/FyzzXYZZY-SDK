@@ -7684,7 +7684,7 @@ void Scene::partition_constraints() {
         if(task.solver_body_end>prior_task_bodies)++responding_task_count;
         prior_task_bodies=task.solver_body_end;
     }
-    const bool prepare_device_graph=device_sc_grouping &&
+    bool prepare_device_graph=device_sc_grouping &&
         gpu_dy_responding_island_count_>responding_task_count &&
         gpu_dy_responding_island_count_<=
             gpu_broadphase_->gpu_dy_direct_task_limit();
@@ -7856,6 +7856,16 @@ void Scene::partition_constraints() {
             const auto count=ordered_constraints_.size()-gpu_first;
             if(count>std::numeric_limits<std::size_t>::max()-partition_base)
                 throw std::overflow_error("Device Dy task partition capacity overflow");
+            if(prepare_device_graph &&
+               count>=gpu_dy_wide_task_threshold &&
+               task.solver_body_end-prepared_body_begin>=
+                   gpu_dy_wide_task_threshold) {
+                // Wide numerical tasks use device coloring directly,
+                // without compact source-island admission.
+                prepare_device_graph=false;
+                gpu_dy_island_edges_.clear();
+                gpu_dy_island_node_flags_.clear();
+            }
             partition_base+=count;
             task.partition_end=partition_base;
             task.constraint_end=ordered_constraints_.size();
