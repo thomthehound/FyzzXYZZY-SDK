@@ -141,7 +141,7 @@ void verify(Context& context,const char* filename) {
         stage.append(stream,addresses,edge_addr,touch_addr,node_addr,output_addr,
                      node_count,static_cast<std::uint32_t>(edges.size()),
                      static_cast<std::uint32_t>(touches.size()),sources);
-        if(node_count<=64u && edges.size()<=64u)
+        if(node_count<=128u && edges.size()<=128u)
             require(stream.commands().size()==1u,
                 "Small Sc device graph dispatched more than once");
         else
@@ -310,7 +310,7 @@ void verify(Context& context,const char* filename) {
 
     // The compact one-dispatch path and the larger parallel path must
     // preserve exactly the same canonical joint-chain task layout.
-    for(const std::uint32_t nodes:{32u,33u,64u,65u}) {
+    for(const std::uint32_t nodes:{32u,33u,64u,65u,128u,129u}) {
         std::vector<SourceScDeviceIslandEdge> chain_edges;
         for(std::uint32_t i=1u;i<nodes;++i)
             chain_edges.push_back({
@@ -330,7 +330,7 @@ void verify(Context& context,const char* filename) {
     }
     // An edge-heavy single component crosses the direct-admission
     // boundary without changing numerical source or response ordering.
-    for(const std::uint32_t edges_count:{64u,65u}) {
+    for(const std::uint32_t edges_count:{64u,65u,128u,129u}) {
         std::vector<SourceScDeviceIslandEdge> joint_edges;
         joint_edges.reserve(edges_count);
         for(std::uint32_t i=0u;i<edges_count;++i)
