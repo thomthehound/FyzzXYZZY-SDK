@@ -1658,6 +1658,39 @@ void verify_device_sc_dy_task_admission(
             " prepared_count=" + std::to_string(short_count));
     producer->invalidate_after_rollback();
 
+    // Contact-preparation failure must reach Sc's resident task error
+    // before the numerical epoch is committed. Host task scratch is not
+    // the producer of that error in device admission.
+    witness={};
+    body={};
+    body[0].inverse_mass=1.f;
+    contact_tasks={{{0u,1u,0u,1u,0u,1u,4u,1u,0u}}};
+    poses={};
+    sleep={};
+    producer->enqueue_gpu_pcm_box_contacts(requests,witness);
+    producer->enqueue_gpu_dy_island_admission(
+        touching,single_node,
+        physx_gpu::SourceScDeviceIslandSources{1u,0u,0u});
+    producer->enqueue_gpu_dy_distance(
+        body,{},contact_desc,{},ordinals,contact_tasks,
+        forces,{},{},{},contact_patches,contact_managers,{},
+        contact_prep,inputs,poses,true,{},true,true,true,sleep);
+    require(witness[0].packed_counts==0u,
+        "Sc contact preparation joined the PCM header before device admission");
+    bool device_contact_rejected=false;
+    try {
+        producer->finish_gpu_dy_distance();
+    }catch(const std::overflow_error&) {
+        device_contact_rejected=true;
+    }
+    require(device_contact_rejected &&
+            (contact_tasks[0].error&65536u)!=0u &&
+            poses[0].valid==0u &&
+            witness[0].packed_counts==0u,
+        "Resident Sc task missed a Dy contact-preparation rejection");
+    producer->finish_gpu_pcm_box_contacts();
+    producer->invalidate_after_rollback();
+
     // Sc reserves an upper bound without joining the resident Gu
     // header. Dy compacts the actual PCM extent before preparing rows.
     constexpr std::uint32_t contact_capacity=5u;
