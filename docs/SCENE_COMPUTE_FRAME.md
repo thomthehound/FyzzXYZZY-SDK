@@ -156,10 +156,11 @@ single-pass publication path. In mixed late-Gu frames, Sc queues the
 CPU-generated physical-touch and loss journal before joining PCM's host
 witness, without waiting on that later device continuation.
 The GPU Dy path fetches 8 bytes of edge/touch metadata for ordinary
-GPU pairs before numerical admission. Managers with multiple retained
+GPU pairs before numerical admission. Managers with multiple reusable
 friction patches also fetch their 12-byte contact normal in the same
-early batch, without fetching world-space points. Resident PCM supplies
-numerical normals and contacts directly to Dy. A deferred span transfers 76 bytes for its
+early batch, without fetching world-space points. Broken or retired
+history needs no normal transfer. Resident PCM supplies numerical normals
+and contacts directly to Dy. A deferred span transfers 76 bytes for its
 first touching pair, or 64 bytes when Sc already fetched that normal;
 subsequent pairs in the same span contribute 84 bytes each. Transfers
 join Dy's existing completion batch without another point-fetch fence
