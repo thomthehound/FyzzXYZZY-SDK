@@ -164,8 +164,10 @@ graphs also admit before the GPU witness join, after CPU Gu publishes
 its EdgeIndex touch/loss journal. The deferred submission retains the
 provisional joint-source capacity until Dy resolves final joint rows. Sc defers GPU witness publication
 until all such Gu producers complete, regardless of their encounter order.
-Joint graphs admit stable Sc edge identities with the same early contact
-graph. Their provisional joint-source ordinals are resolved to prepared Dy
+A single GPU PCM contact candidate can admit independent joint-only
+islands; admission depends on the combined contact/joint graph rather
+than a minimum count of speculative contact candidates. Joint graphs
+admit stable Sc edge identities with the same early contact graph. Their provisional joint-source ordinals are resolved to prepared Dy
 joint rows in the ordered node/response remap, without rebuilding GPU
 connectivity or task ranges. CPU Sc still owns the committed island graph
 and the joint and contact publication lifetimes.

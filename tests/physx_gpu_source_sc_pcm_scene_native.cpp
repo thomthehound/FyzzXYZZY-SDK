@@ -3228,6 +3228,74 @@ void verify_gpu_single_island_hybrid_solver(
     require(saw_pcm_contact,
         "Single-island hybrid solver never processed GPU PCM contacts");
 }
+// One PCM manager plus a disconnected joint-only island still admits
+// two independent numerical tasks before Sc joins the contact witness.
+void verify_single_pcm_joint_island_admission(
+    fyzz::compute::Backend backend,const char* sap,
+    const char* pcm,const char* dy_shader) {
+    using namespace fyzz;
+    std::ifstream input(dy_shader,std::ios::binary);
+    require(bool(input),"Compiled source Dy shader unavailable");
+    compute::ShaderBinary shader{};
+    shader.format=backend==compute::Backend::Vulkan
+        ?compute::ShaderFormat::Spirv:compute::ShaderFormat::Dxil;
+    shader.bytes.assign(std::istreambuf_iterator<char>{input},
+                        std::istreambuf_iterator<char>{});
+    native::Scene cpu,gpu;
+    auto owner=std::make_unique<
+        physx_gpu::SourceScOwnedGpuBroadphaseNative>(
+            backend,load_native_gpu_sap_shaders(backend,sap),
+            128u,128u,std::nullopt,
+            load_native_gpu_pcm_shaders(backend,pcm),std::move(shader));
+    auto* producer=owner.get();
+    gpu.set_gpu_broadphase(std::move(owner));
+    gpu.set_gpu_dy_device_admission_enabled(true);
+    cpu.add_static_box({0.5f,0.5f,0.5f},{0.f,0.f,0.f});
+    gpu.add_static_box({0.5f,0.5f,0.5f},{0.f,0.f,0.f});
+    const auto contact_cpu=cpu.add_dynamic_box(
+        {0.5f,0.5f,0.5f},{0.f,0.83f,0.f},1.f);
+    const auto contact_gpu=gpu.add_dynamic_box(
+        {0.5f,0.5f,0.5f},{0.f,0.83f,0.f},1.f);
+    std::array<BodyId,2> joints_cpu{},joints_gpu{};
+    for(std::uint32_t i=0u;i<2u;++i) {
+        const Vec3 center{10.f+float(i)*3.f,4.f,0.f};
+        joints_cpu[i]=cpu.add_dynamic_box(
+            {0.3f,0.3f,0.3f},center,1.f);
+        joints_gpu[i]=gpu.add_dynamic_box(
+            {0.3f,0.3f,0.3f},center,1.f);
+        RigidBodyDynamics dynamics{};
+        dynamics.gravity_enabled=false;
+        cpu.set_dynamics(joints_cpu[i],dynamics);
+        gpu.set_dynamics(joints_gpu[i],dynamics);
+    }
+    cpu.create_center_distance_constraint(
+        joints_cpu[0],joints_cpu[1],2.8f);
+    gpu.create_center_distance_constraint(
+        joints_gpu[0],joints_gpu[1],2.8f);
+    for(std::uint32_t frame=0u;frame<3u;++frame) {
+        cpu.step(1.f/120.f);
+        gpu.step(1.f/120.f);
+        native::GpuPcmFrictionAnchorFixture::
+            verify_pre_witness_device_admission(gpu);
+        const auto stats=producer->dy_launch_stats();
+        require(gpu.pairs().size()==1u && gpu.contacts().size()==1u &&
+                stats.device_island_indirect_dispatches==1u &&
+                stats.device_admitted_tasks==2u &&
+                stats.device_admitted_descriptors==2u &&
+                gpu.accurate_island_id(joints_gpu[0])==
+                    gpu.accurate_island_id(joints_gpu[1]) &&
+                gpu.accurate_island_id(contact_gpu)!=
+                    gpu.accurate_island_id(joints_gpu[0]),
+            "Single PCM/joint graph did not admit two independent device tasks");
+        test::compound_compare_state(
+            gpu.body_state(contact_gpu),cpu.body_state(contact_cpu),0.03f,
+            "Single PCM island diverged from CPU PGS");
+        for(std::size_t i=0u;i<joints_cpu.size();++i)
+            test::compound_compare_state(
+                gpu.body_state(joints_gpu[i]),cpu.body_state(joints_cpu[i]),
+                0.03f,"Joint-only island diverged from CPU PGS");
+    }
+}
 void verify_early_pcm_island_pipeline(
     fyzz::compute::Backend backend,const char* sap,
     const char* pcm,const char* dy_shader,
@@ -6779,6 +6847,8 @@ int main(int argc,char** argv) {
                         backend,argv[1],argv[2],argv[3],false,true);
                     verify_early_pcm_island_pipeline(
                         backend,argv[1],argv[2],argv[3],true,true);
+                    verify_single_pcm_joint_island_admission(
+                        backend,argv[1],argv[2],argv[3]);
                 });
         if(scenario=="all" || scenario=="scene")
             fyzz::tests::measure_gpu_case("sc_pcm","scene",
