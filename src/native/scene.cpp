@@ -4422,7 +4422,28 @@ void Scene::update_contacts(bool defer_device_points,float inverse_step) {
                     friction_patches_[history.offset+j],actor0,actor1))
                     valid|=1u<<j;
             gpu_pcm_friction_history_masks_[i]=valid;
-            if(before_submit)gpu_pcm_pairs_[i].early_host_normal=valid!=0u;
+            if(before_submit && valid!=0u) {
+                // Sc only compares the current normal against retained
+                // anchors whose material remains compatible.
+                auto& request=gpu_pcm_pairs_[i];
+                request.numerical=prepare_contact_material(
+                    request.first,request.second);
+                const auto& material=request.numerical;
+                if(material.max_contact_impulse==0.0f ||
+                   material.disable_strong_friction)continue;
+                for(std::size_t j=0u;j<history.count;++j) {
+                    if((valid&(1u<<j))==0u)continue;
+                    const auto& old=friction_patches_[history.offset+j];
+                    if(old.restitution==material.restitution &&
+                       old.damping==material.damping &&
+                       old.acceleration_spring==material.acceleration_spring &&
+                       old.static_friction==material.static_friction &&
+                       old.dynamic_friction==material.dynamic_friction) {
+                        request.early_host_normal=true;
+                        break;
+                    }
+                }
+            }
         }
     };
     validate_pcm_history(true);
@@ -4441,8 +4462,9 @@ void Scene::update_contacts(bool defer_device_points,float inverse_step) {
         gpu_broadphase_->has_gpu_dy_distance();
     if(early_pcm_materials)
         for(auto& request:gpu_pcm_pairs_)
-            request.numerical=prepare_contact_material(
-                request.first,request.second);
+            if(!request.numerical.prepared)
+                request.numerical=prepare_contact_material(
+                    request.first,request.second);
     FYZZ_PROFILE_COUNTER("pcm.early_numerical_materials",
         early_pcm_materials?gpu_pcm_pairs_.size():0u);
     // Kinematic targets depend on the authored pose and timestep, not
