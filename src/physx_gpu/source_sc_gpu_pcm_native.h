@@ -537,12 +537,14 @@ public:
         deferred_point_downloads_.clear();
         if(defer_points)header_records_.resize(pair_count);
         for(std::size_t i=0u;i<pair_count;) {
-            if(requests[i].host_generated) {
+            if(requests[i].host_generated ||
+               (defer_points && requests[i].eager_host_witness)) {
                 ++i;
                 continue;
             }
             const auto first=i;
-            while(i<pair_count && !requests[i].host_generated)++i;
+            while(i<pair_count && !requests[i].host_generated &&
+                  !(defer_points && requests[i].eager_host_witness))++i;
             const auto stride=sizeof(native::GpuPcmBoxResult);
             const auto bytes=(i-first)*stride;
             const auto mapped=addresses_.resolve(
@@ -791,11 +793,11 @@ public:
         else stream_.wait_at_fetch();
         if(deferred_points_pending_)
             for(std::uint32_t i=0u;i<journal_pair_count_;++i)
-                if(!requests[i].host_generated) {
+                if(!requests[i].host_generated &&
+                   !requests[i].eager_host_witness) {
                     std::memcpy(&output[i],&header_records_[i],
                                 sizeof(PcmHeader));
-                    if(!requests[i].eager_host_witness)
-                        output[i].normal={};
+                    output[i].normal={};
                 }
         for(const auto& span:gpu_downloads_) {
             last_contact_download_bytes_+=span.bytes;
