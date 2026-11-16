@@ -1579,7 +1579,8 @@ private:
         PcmManifoldCache& cache,std::span<ContactPoint> output);
     static std::uint8_t publish_gpu_pcm_box_box(
         const GpuPcmBoxResult& gpu,PcmManifoldCache& cache,
-        std::span<ContactPoint> output,bool defer_points=false);
+        std::span<ContactPoint> output,bool defer_points,
+        bool require_normal);
     enum class IslandEdgeType : std::uint8_t {
         ContactManager, Constraint
     };
