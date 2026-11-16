@@ -118,10 +118,10 @@ struct GpuPcmBoxPair {
     // general managers in the same batch remain GPU-owned.
     bool candidate_complete=false;
     bool host_generated=false;
+    GpuDyPairMaterial numerical{};
     // Only managers that need the current normal for CPU friction
     // correlation fetch their full Gu record at the header join.
     bool eager_host_witness=false;
-    GpuDyPairMaterial numerical{};
 };
 enum class GpuPcmTouchTransition : std::uint32_t {
     None=0,Found=1,Persists=2,Lost=3
