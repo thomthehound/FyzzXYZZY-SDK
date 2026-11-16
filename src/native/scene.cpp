@@ -4350,16 +4350,25 @@ void Scene::update_contacts(bool defer_device_points,float inverse_step) {
                 ++host_pair_count;
             }
     }
-    // Multiple retained friction patches require only the current Gu
-    // normal for Sc selection. All world points remain device-resident.
+    // Sc needs an early normal only to choose among reusable friction
+    // patches. Invalid or retired history cannot create that dependency.
     if(defer_device_points)
         for(auto& request:gpu_pcm_pairs_) {
             if(request.host_generated ||
                request.edge>=friction_by_edge_.size())continue;
             const auto& history=friction_by_edge_[request.edge];
-            request.early_host_normal=
-                history.epoch==friction_cache_epoch_ &&
-                history.count>1u;
+            if(history.epoch!=friction_cache_epoch_ ||
+               history.count<=1u ||
+               !(history.pair==island_edges_[request.edge].shapes) ||
+               history.offset>friction_patches_.size() ||
+               history.count>friction_patches_.size()-history.offset)
+                continue;
+            const auto first=friction_patches_.begin()+history.offset;
+            request.early_host_normal=std::any_of(
+                first,first+history.count,[](const FrictionPatch& patch) {
+                    return !patch.broken && !patch.disable_strong_friction &&
+                        patch.anchor_count!=0u;
+                });
         }
     const bool gpu_results_pending=
         source_gpu_pcm && host_pair_count<gpu_pcm_pairs_.size();
