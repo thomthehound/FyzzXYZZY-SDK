@@ -310,6 +310,53 @@ struct GpuPcmFrictionAnchorFixture {
                     "Resident PCM numerical preparation recombined contact inputs");
         }
     }
+    static void verify_device_partition_source(const Scene& scene) {
+        const auto& edges=scene.gpu_dy_island_edges_;
+        if(edges.size()!=
+               scene.indexed_joints_.size()+scene.indexed_managers_.size() ||
+           scene.gpu_dy_island_node_flags_.size()!=scene.solver_rows_.size())
+            throw std::runtime_error(
+                "Source Dy partition omitted device island identities");
+        for(const BodyId id:scene.solver_active_ids_) {
+            const auto index=scene.actors_[id].solver_row_index;
+            if(index>=scene.gpu_dy_island_node_flags_.size() ||
+               (scene.gpu_dy_island_node_flags_[index]&(1u<<16u))==0u)
+                throw std::runtime_error(
+                    "Device Sc numerical body lost its responding ordinal");
+        }
+        std::size_t ordinal=0u,joint=0u,manager=0u,joint_row=0u;
+        for(const auto& task:scene.solver_tasks_) {
+            for(;joint<task.joint_end;++joint) {
+                const auto id=scene.indexed_joints_[joint];
+                const auto& graph=scene.island_edges_[id];
+                const auto& source=scene.constraint_records_[graph.constraint_id];
+                const auto& entry=edges[ordinal++];
+                const std::size_t rows=source.kind==Scene::JointKind::Distance
+                    ?1u:source.kind==Scene::JointKind::Spherical
+                        ?3u:source.kind==Scene::JointKind::Fixed?6u:5u;
+                if(entry.edge_index!=id || (entry.kind&1u)==0u ||
+                   ((entry.kind&2u)==0u &&
+                    ((entry.kind&16u)==0u || entry.source_index!=joint_row)))
+                    throw std::runtime_error(
+                        "Source Dy partition reordered typed joint identities");
+                joint_row+=rows;
+            }
+            for(;manager<task.manager_end;++manager) {
+                const auto index=scene.indexed_managers_[manager];
+                const auto& m=scene.manifolds_[index];
+                const auto& entry=edges[ordinal++];
+                if(entry.edge_index!=m.edge_handle ||
+                   entry.source_index!=m.candidate_ordinal ||
+                   entry.kind!=(m.friction_patch_count?0u:2u))
+                    throw std::runtime_error(
+                        "Source Dy partition changed contact response ownership");
+            }
+        }
+        if(ordinal!=edges.size() ||
+           joint_row!=scene.gpu_dy_rows_.size())
+            throw std::runtime_error(
+                "Device Sc numerical source table has unconsumed records");
+    }
     static void verify_device_admitted_contact_sources(const Scene& scene) {
         const auto& actual=scene.gpu_dy_admitted_manager_flags_;
         if(actual.size()!=scene.manifolds_.size())
@@ -3005,6 +3052,9 @@ void verify_gpu_single_island_hybrid_solver(
         cpu.step(1.f/120.f);
         gpu.step(1.f/120.f);
         const auto schedule=producer->dy_launch_stats();
+        if(resident_admission)
+            native::GpuPcmFrictionAnchorFixture::
+                verify_device_partition_source(gpu);
         saw_pcm_contact|=producer->dy_pcm_device_contact_rows()>0u;
         for(const auto& contact:gpu.contacts())
             for(const auto& point:contact.points)
@@ -4081,9 +4131,12 @@ void verify_mixed_gu_pcm_gpu_dy_solver(
             gpu.step(dt);
             native::GpuPcmFrictionAnchorFixture::
                 verify_early_pcm_numerical_materials(gpu);
-            if(device_admission)
+            if(device_admission) {
+                native::GpuPcmFrictionAnchorFixture::
+                    verify_device_partition_source(gpu);
                 native::GpuPcmFrictionAnchorFixture::
                     verify_device_admitted_contact_sources(gpu);
+            }
             if(device_admission && !plane_first && frame==0u) {
                 bool shifted=false;
                 for(std::size_t i=0u;i<gpu.contacts().size();++i) {
