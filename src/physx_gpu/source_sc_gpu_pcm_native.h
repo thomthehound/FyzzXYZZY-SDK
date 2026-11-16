@@ -754,21 +754,22 @@ public:
         if(early)stream_.submit();
     }
     void remap_device_island_bodies(
-            std::span<const std::uint32_t> actor_to_solver_row) {
+            std::span<const std::uint32_t> node_to_solver_row,
+            std::uint32_t solver_row_capacity) {
         if(!island_work_ready_ ||
-           actor_to_solver_row.size()!=island_node_count_ ||
-           !island_node_count_)
+           node_to_solver_row.size()!=island_node_count_ ||
+           !island_node_count_ || !solver_row_capacity)
             throw std::logic_error(
                 "Source Sc body remap lacks an admitted actor graph");
         auto& uploads=stream_.upload_scratch();
         uploads.push_back({island_nodes_.getDevicePtr(),
-                           actor_to_solver_row.data(),
-                           actor_to_solver_row.size_bytes()});
+                           node_to_solver_row.data(),
+                           node_to_solver_row.size_bytes()});
         stream_.queue_uploads(uploads);
         island_stage_.append_body_remap(
             stream_,addresses_,island_nodes_.getDevicePtr(),
             island_work_.getDevicePtr(),
-            island_node_count_,island_edge_count_);
+            island_node_count_,island_edge_count_,solver_row_capacity);
         stream_.queue_device_copy(
             indirect_address_,
             island_work_.getDevicePtr()+

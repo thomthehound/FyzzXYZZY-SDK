@@ -347,18 +347,19 @@ public:
         }
     }
 
-    // Stable actor IDs become dense Dy solver-row indices only after
-    // accurate IslandSim publication. Remap the existing device body
-    // order in place, without fetching or rebuilding the island graph.
+    // Compact Sc node ordinals become Dy solver-row indices after
+    // accurate IslandSim publication, without rebuilding connectivity.
     void append_body_remap(SourceSapDmaNative& stream,
                            const CudaDeviceAddressMap& addresses,
                            CudaDeviceAddressMap::Address mapping,
                            CudaDeviceAddressMap::Address output,
                            std::uint32_t node_count,
-                           std::uint32_t edge_count) const {
+                           std::uint32_t edge_count,
+                           std::uint32_t solver_row_capacity) const {
         const auto layout=SourceScDeviceIslandLayout::for_counts(
             node_count,edge_count);
-        if(!mapping || !output || !node_count || layout.bytes>max_view_)
+        if(!mapping || !output || !node_count || !solver_row_capacity ||
+           layout.bytes>max_view_)
             throw std::invalid_argument("Missing Sc body remap resource");
         std::array<std::uint32_t,28> args{};
         const auto bytes=source_allocation_bytes(node_count,4u);
@@ -382,6 +383,7 @@ public:
         };
         args[9]=node_count;
         args[12]=33u;
+        args[19]=solver_row_capacity;
         args[22]=offset(layout.body_order,args[3]);
         dispatch.groups={
             static_cast<std::uint32_t>((std::uint64_t(node_count)+127u)/128u),

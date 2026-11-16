@@ -313,21 +313,37 @@ struct GpuPcmFrictionAnchorFixture {
     static void verify_pre_witness_device_admission(const Scene& scene) {
         if(!scene.gpu_dy_early_islands_ ||
            scene.gpu_dy_island_edges_.size()!=scene.previous_pairs_.size() ||
-           scene.gpu_dy_island_node_flags_.size()!=scene.actors_.size())
+           scene.gpu_dy_early_actor_ids_.size()<2u ||
+           scene.gpu_dy_island_node_flags_.size()!=
+               scene.gpu_dy_early_actor_ids_.size() ||
+           !std::is_sorted(scene.gpu_dy_early_actor_ids_.begin(),
+                           scene.gpu_dy_early_actor_ids_.end()))
             throw std::runtime_error(
-                "Sc did not queue stable actor and contact identities before Gu");
+                "Sc did not queue compact actor and contact identities before Gu");
         for(std::size_t i=0u;i<scene.gpu_dy_island_edges_.size();++i) {
             const auto& edge=scene.gpu_dy_island_edges_[i];
             if(edge.edge_index!=scene.active_edge_handles_[i] ||
                edge.source_index!=i || edge.kind!=0u)
                 throw std::runtime_error(
                     "Early device Sc graph lost its source contact identity");
+            for(const auto node:{edge.node_a,edge.node_b})
+                if(node!=0xffffffffu &&
+                   node>=scene.gpu_dy_early_actor_ids_.size())
+                    throw std::runtime_error(
+                        "Early device Sc contact references an absent compact node");
         }
-        for(const BodyId id:scene.solver_active_ids_)
-            if(scene.gpu_dy_island_node_flags_[id]!=
-               scene.actors_[id].solver_row_index)
+        for(std::size_t i=0u;i<scene.gpu_dy_early_actor_ids_.size();++i) {
+            const BodyId id=scene.gpu_dy_early_actor_ids_[i];
+            const auto it=std::find(
+                scene.solver_active_ids_.begin(),
+                scene.solver_active_ids_.end(),id);
+            const auto expected=it==scene.solver_active_ids_.end()
+                ?0xffffffffu:static_cast<std::uint32_t>(
+                    scene.actors_[id].solver_row_index);
+            if(scene.gpu_dy_island_node_flags_[i]!=expected)
                 throw std::runtime_error(
-                    "Early device Sc body order was not remapped to Dy rows");
+                    "Early device Sc compact node remap changed Dy row ownership");
+        }
     }
     static void verify_device_partition_source(const Scene& scene) {
         const auto& edges=scene.gpu_dy_island_edges_;
@@ -3188,6 +3204,12 @@ void verify_early_pcm_island_pipeline(
     auto* device=producer.get();
     gpu.set_gpu_broadphase(std::move(producer));
     gpu.set_gpu_dy_device_admission_enabled(true);
+    // Inert scene actors cannot inflate the numerical graph allocation.
+    for(std::uint32_t i=0u;i<140u;++i) {
+        const Transform pose{{1000.f+float(i),0.f,0.f},{}};
+        cpu.create_body(pose,false);
+        gpu.create_body(pose,false);
+    }
     std::array<BodyId,2> a{},b{};
     for(std::uint32_t i=0u;i<a.size();++i) {
         const float x=5.f*i;

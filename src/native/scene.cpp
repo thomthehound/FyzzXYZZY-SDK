@@ -4467,27 +4467,22 @@ void Scene::update_contacts(bool defer_device_points,float inverse_step) {
                     request.first,request.second);
     FYZZ_PROFILE_COUNTER("pcm.early_numerical_materials",
         early_pcm_materials?gpu_pcm_pairs_.size():0u);
-    // Closed device PCM graphs have stable ActorIDs, EdgeIndices and
-    // candidate ordinals before Gu publishes contact witnesses. Admit
-    // their accurate numerical topology on the resident touch stream;
-    // Dy remaps these actors to its final solver rows after Sc's join.
+
+    // Compact responding candidates independently of the scene actor count.
     const bool early_device_graph=defer_device_points &&
         gpu_dy_device_admission_enabled_ && gpu_results_pending &&
         host_pair_count==0u && active_constraint_handles_.empty() &&
         gpu_pcm_pairs_.size()==previous_pairs_.size() &&
-        gpu_pcm_pairs_.size()>1u && actors_.size()<=128u &&
+        gpu_pcm_pairs_.size()>1u &&
         gpu_broadphase_->gpu_dy_direct_task_limit()>=2u;
     if(early_device_graph) {
         constexpr std::uint32_t invalid=0xffffffffu;
-        constexpr std::uint32_t nonresponding=1u<<17u;
         constexpr std::uint32_t require_contact=1u<<18u;
         constexpr std::uint32_t active=1u<<16u;
-        gpu_dy_island_node_flags_.assign(
-            actors_.size(),nonresponding|require_contact);
+        gpu_dy_early_actor_ids_.clear();
         gpu_dy_island_edges_.clear();
         gpu_dy_island_edges_.reserve(gpu_pcm_pairs_.size());
         bool admitted=true;
-        std::uint32_t candidate_bodies=0u;
         const float seconds=inverse_step>0.f?1.f/inverse_step:0.f;
         for(std::size_t i=0u;i<gpu_pcm_pairs_.size();++i) {
             const auto& request=gpu_pcm_pairs_[i];
@@ -4502,7 +4497,7 @@ void Scene::update_contacts(bool defer_device_points,float inverse_step) {
             const bool responding=request.numerical.max_contact_impulse!=0.f;
             std::uint32_t nodes[2]{invalid,invalid};
             for(std::size_t side=0u;side<2u;++side) {
-                const BodyId id=side? id1:id0;
+                const BodyId id=side?id1:id0;
                 const auto& actor=actors_[id];
                 if(actor.motion!=Motion::Dynamic)continue;
                 if(actor.sleeping || actor.ready_for_sleep ||
@@ -4515,13 +4510,7 @@ void Scene::update_contacts(bool defer_device_points,float inverse_step) {
                     admitted=false;
                     break;
                 }
-                auto& flags=gpu_dy_island_node_flags_[id];
-                if((flags&nonresponding)!=0u) {
-                    ++candidate_bodies;
-                    flags=active|require_contact|
-                        actor.dynamics.position_iterations|
-                        (std::uint32_t(actor.dynamics.velocity_iterations)<<8u);
-                }
+                gpu_dy_early_actor_ids_.push_back(id);
                 nodes[side]=id;
             }
             if(!admitted)break;
@@ -4529,13 +4518,45 @@ void Scene::update_contacts(bool defer_device_points,float inverse_step) {
                 request.edge,nodes[0],nodes[1],
                 static_cast<std::uint32_t>(i),responding?0u:2u});
         }
-        if(admitted && candidate_bodies>=2u) {
+        if(admitted) {
+            std::sort(gpu_dy_early_actor_ids_.begin(),
+                      gpu_dy_early_actor_ids_.end());
+            gpu_dy_early_actor_ids_.erase(
+                std::unique(gpu_dy_early_actor_ids_.begin(),
+                            gpu_dy_early_actor_ids_.end()),
+                gpu_dy_early_actor_ids_.end());
+            admitted=gpu_dy_early_actor_ids_.size()>=2u &&
+                     gpu_dy_early_actor_ids_.size()<=128u;
+        }
+        if(admitted) {
+            gpu_dy_island_node_flags_.resize(gpu_dy_early_actor_ids_.size());
+            for(std::size_t i=0u;i<gpu_dy_early_actor_ids_.size();++i) {
+                const auto& dynamics=actors_[gpu_dy_early_actor_ids_[i]].dynamics;
+                gpu_dy_island_node_flags_[i]=active|require_contact|
+                    dynamics.position_iterations|
+                    (std::uint32_t(dynamics.velocity_iterations)<<8u);
+            }
+            const auto ordinal=[&](std::uint32_t actor) {
+                if(actor==invalid)return invalid;
+                const auto it=std::lower_bound(
+                    gpu_dy_early_actor_ids_.begin(),
+                    gpu_dy_early_actor_ids_.end(),actor);
+                if(it==gpu_dy_early_actor_ids_.end() || *it!=actor)
+                    throw std::logic_error("Early Sc node lacks source actor");
+                return static_cast<std::uint32_t>(
+                    it-gpu_dy_early_actor_ids_.begin());
+            };
+            for(auto& edge:gpu_dy_island_edges_) {
+                edge.node_a=ordinal(edge.node_a);
+                edge.node_b=ordinal(edge.node_b);
+            }
             gpu_broadphase_->enqueue_gpu_dy_island_admission(
                 gpu_dy_island_edges_,gpu_dy_island_node_flags_,
                 {static_cast<std::uint32_t>(previous_pairs_.size()),0u,0u},
                 true);
             gpu_dy_early_islands_=true;
         }else {
+            gpu_dy_early_actor_ids_.clear();
             gpu_dy_island_edges_.clear();
             gpu_dy_island_node_flags_.clear();
         }
@@ -9232,23 +9253,31 @@ void Scene::prepare_gpu_dy_device_islands(bool selected) {
             gpu_broadphase_->discard_gpu_dy_island_admission();
             return;
         }
-        if(gpu_dy_island_node_flags_.size()!=actors_.size() ||
+        if(gpu_dy_island_node_flags_.size()!=gpu_dy_early_actor_ids_.size() ||
            gpu_dy_tasks_.size()>gpu_broadphase_->gpu_dy_direct_task_limit())
             throw std::logic_error(
-                "Early Sc accurate islands lost their actor capacity");
+                "Early Sc accurate islands lost their node capacity");
+        constexpr auto invalid=std::numeric_limits<std::uint32_t>::max();
+        if(solver_rows_.size()>=invalid)
+            throw std::overflow_error("Early Sc solver-row capacity exceeds 32 bits");
         gpu_dy_island_node_flags_.assign(
-            actors_.size(),std::numeric_limits<std::uint32_t>::max());
+            gpu_dy_early_actor_ids_.size(),invalid);
         for(const BodyId id:solver_active_ids_) {
+            const auto it=std::lower_bound(
+                gpu_dy_early_actor_ids_.begin(),
+                gpu_dy_early_actor_ids_.end(),id);
+            if(it==gpu_dy_early_actor_ids_.end() || *it!=id)continue;
             const auto& actor=actors_[id];
             if(actor.solver_row_generation!=solver_preparation_generation_ ||
                actor.solver_row_index>=solver_rows_.size())
                 throw std::logic_error(
                     "Early Sc admission has no final solver-row identity");
-            gpu_dy_island_node_flags_[id]=
+            gpu_dy_island_node_flags_[it-gpu_dy_early_actor_ids_.begin()]=
                 static_cast<std::uint32_t>(actor.solver_row_index);
         }
         gpu_broadphase_->remap_gpu_dy_island_bodies(
-            gpu_dy_island_node_flags_);
+            gpu_dy_island_node_flags_,
+            static_cast<std::uint32_t>(solver_rows_.size()));
         return;
     }
     if(!selected)return;
@@ -12074,6 +12103,7 @@ void Scene::advance_collision_internal(
     // the SAP producer submits but before its host-facing fetch joins.
     const auto prepare_sc_publication=[&] {
         gpu_dy_early_islands_=false;
+        gpu_dy_early_actor_ids_.clear();
         speculative_connectivity_prepared_=false;
         gpu_pcm_friction_history_masks_.clear();
         speculative_split_sleep_candidates_.clear();

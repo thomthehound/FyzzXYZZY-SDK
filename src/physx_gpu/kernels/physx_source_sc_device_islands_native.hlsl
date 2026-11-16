@@ -27,7 +27,7 @@ struct Parameters {
     uint rootBias,countBias,admissionBias,taskBias;
     uint blockBias,nodeCount,edgeCount,edgeCapacity;
     uint phase,first,maxGroups,blockCount;
-    uint responseBiasA,responseBiasB,histBias,contactManagerCount;
+    uint responseBiasA,responseBiasB,histBias,primaryCapacity;
     uint tokenBias,radixPasses,bodyOrderBias,combinedCount;
     uint responseOrderBias,jointRowCount,fullDescriptorCount,blockTilesBias;
 };
@@ -61,7 +61,7 @@ bool validSource(uint source,uint kind) {
     // address any numerical table. All admitted numerical response
     // tokens must resolve within their typed Dy input table.
     if((kind&noResponse)!=0u)return true;
-    const uint limit=(kind&jointEdge)==0u?p.contactManagerCount:
+    const uint limit=(kind&jointEdge)==0u?p.primaryCapacity:
         (kind&deviceJoint)!=0u?p.jointRowCount:p.fullDescriptorCount;
     if(source>=limit || source>=0x40000000u) {
         reject(64u);
@@ -442,14 +442,14 @@ void main(uint3 thread:SV_DispatchThreadID,
         return;
     }
     if(p.phase==33u) {
-        // The source body stream currently carries stable ActorIDs.
-        // The replacement node resource maps them to final Dy rows.
+        // The source body stream carries compact Sc node ordinals.
+        // The replacement node resource maps them to bounded Dy rows.
         const uint count=work.Load(p.workBias+8u);
         if(index<count) {
             const uint actor=work.Load(p.bodyOrderBias+index*4u);
             const uint row=actor<p.nodeCount
                 ?nodeFlags.Load(p.nodeBias+actor*4u):invalid;
-            if(row==invalid || row>=p.nodeCount) {
+            if(row==invalid || row>=p.primaryCapacity) {
                 reject(512u);
                 work.Store(p.workBias+16u,0u);
             } else work.Store(p.bodyOrderBias+index*4u,row);

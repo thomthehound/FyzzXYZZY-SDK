@@ -147,12 +147,15 @@ not replacements for Sc's persistent island identities. The Scene prepares kinem
 before Sc joins its witness stream; these changes remain covered by the
 frame's motion journal. Solver-body admission still follows accurate island
 reconciliation. For closed GPU PCM contact graphs without 1D constraints or CPU Gu
-producers, Sc submits accurate-island admission directly from stable
-ActorIDs, EdgeIndices, and candidate ordinals before the host witness join.
+producers, Sc compacts responding ActorIDs into frame-local node ordinals
+and submits accurate-island admission with stable EdgeIndices and candidate
+ordinals before the host witness join. Unrelated scene actors never enlarge
+the resident numerical graph.
 The GPU resolves physical touch and runnable task topology on its own
-ordered queue. After accurate Sc publication, an actor-to-solver-row
-upload remaps the device body order in place; Dy consumes the same
-admitted tasks without a second graph dispatch or topology readback.
+ordered queue. After accurate Sc publication, a compact node-to-solver-row upload
+remaps the device body order in place against the full Dy row capacity;
+Dy consumes the same admitted tasks without a second graph dispatch or
+topology readback.
 Contact-only tasks require an admitted response, so empty PCM candidates
 do not produce solver work. Other scenes emit typed contact-manager and
 joint identities during the existing Dy partition pass; numerical

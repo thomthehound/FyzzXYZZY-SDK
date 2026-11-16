@@ -64,7 +64,8 @@ void verify(Context& context,const char* filename) {
                             std::vector<std::uint32_t> node_flags={},
                             std::vector<std::uint32_t> prior_touches={},
                             std::optional<SourceScDeviceIslandSources> limits=std::nullopt,
-                            std::vector<std::uint32_t> remap={}) {
+                            std::vector<std::uint32_t> remap={},
+                            std::optional<std::uint32_t> remap_capacity=std::nullopt) {
         constexpr std::size_t record_bytes=240u;
         // Joint-only scenes have no physical-touch arena. Active seeds
         // and authored iteration limits remain separate from connectivity.
@@ -162,7 +163,8 @@ void verify(Context& context,const char* filename) {
                 {node_addr,remap.data(),remap.size()*sizeof(remap[0])}});
             stage.append_body_remap(stream,addresses,node_addr,output_addr,
                                     node_count,static_cast<std::uint32_t>(
-                                        edges.size()));
+                                        edges.size()),
+                                    remap_capacity.value_or(node_count));
         }
         stream.wait_at_fetch();
         std::vector<std::byte> bytes(layout.bytes);
@@ -416,6 +418,16 @@ void verify(Context& context,const char* filename) {
             load<std::uint32_t>(admitted_early.second,
                 admitted_early.first.body_order+4u)==1u,
         "Pre-witness Sc actor IDs were not remapped to dense Dy solver rows");
+    const std::vector<std::uint32_t> sparse_rows{
+        invalid,7u,invalid,12u};
+    auto sparse_remap=evaluate(4u,early_contacts,{1u,1u},
+        candidate_nodes,{},std::nullopt,sparse_rows,16u);
+    no_errors(sparse_remap);
+    require(load<std::uint32_t>(sparse_remap.second,
+                sparse_remap.first.body_order)==7u &&
+            load<std::uint32_t>(sparse_remap.second,
+                sparse_remap.first.body_order+4u)==12u,
+        "Early Sc remap incorrectly bounded Dy rows by compact node count");
     auto invalid_rows=evaluate(4u,early_contacts,{1u,1u},
         candidate_nodes,{},std::nullopt,
         std::vector<std::uint32_t>(4u,invalid));
