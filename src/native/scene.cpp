@@ -7677,6 +7677,59 @@ void Scene::partition_constraints() {
             task_pos_iters,task_vel_iters,
             indexed_joints_.size(),gpu_dy_free_ids_.size()});
     }
+    // Emit selected device numerical identities during the same source
+    // task traversal that constructs Dy descriptors.
+    std::size_t responding_task_count=0u,prior_task_bodies=0u;
+    for(const auto& task:solver_tasks_) {
+        if(task.solver_body_end>prior_task_bodies)++responding_task_count;
+        prior_task_bodies=task.solver_body_end;
+    }
+    const bool prepare_device_graph=device_sc_grouping &&
+        gpu_dy_responding_island_count_>responding_task_count &&
+        gpu_dy_responding_island_count_<=
+            gpu_broadphase_->gpu_dy_direct_task_limit();
+    gpu_dy_island_edges_.clear();
+    gpu_dy_island_node_flags_.clear();
+    constexpr std::uint32_t invalid_device_node=0xffffffffu;
+    constexpr std::uint32_t nonresponding_device_node=1u<<17u;
+    if(prepare_device_graph) {
+        gpu_dy_island_node_flags_.assign(
+            solver_rows_.size(),nonresponding_device_node);
+        for(const BodyId id:solver_active_ids_) {
+            const auto& actor=actors_[id];
+            if(actor.motion!=Motion::Dynamic || actor.sleeping ||
+               actor.solver_row_generation!=solver_preparation_generation_ ||
+               actor.solver_row_index>=gpu_dy_island_node_flags_.size() ||
+               !actor.dynamics.position_iterations)
+                throw std::logic_error(
+                    "Resident Sc responding node lacks an accurate solver row");
+            const auto pos=actor.dynamics.position_iterations;
+            const auto vel=actor.dynamics.velocity_iterations;
+            if(pos>std::numeric_limits<std::uint8_t>::max() ||
+               vel>std::numeric_limits<std::uint8_t>::max())
+                throw std::out_of_range(
+                    "Resident Sc island iteration word exceeds device encoding");
+            auto& word=gpu_dy_island_node_flags_[actor.solver_row_index];
+            if(word!=nonresponding_device_node)
+                throw std::logic_error(
+                    "Resident Sc responding solver row assigned twice");
+            word=pos|(std::uint32_t(vel)<<8u)|(1u<<16u);
+        }
+        gpu_dy_island_edges_.reserve(
+            indexed_joints_.size()+indexed_managers_.size());
+    }
+    const auto device_node=[&](BodyId id) {
+        const auto& actor=actors_[id];
+        if(actor.motion!=Motion::Dynamic ||
+           actor.solver_row_generation!=solver_preparation_generation_ ||
+           actor.solver_row_index>=gpu_dy_island_node_flags_.size() ||
+           (gpu_dy_island_node_flags_[actor.solver_row_index]&
+                nonresponding_device_node))
+            return invalid_device_node;
+        if(actor.solver_row_index>=invalid_device_node)
+            throw std::overflow_error("Sc solver row exceeds device ordinal");
+        return static_cast<std::uint32_t>(actor.solver_row_index);
+    };
     // The admitted non-compound rigid PGS descriptor path in
     // DyDynamics.cpp::setupDescTask consumes this indexed-manager
     // sequence directly. The compound contact reducer's separate
@@ -7727,7 +7780,7 @@ void Scene::partition_constraints() {
                              std::uint32_t row_count) {
             if(!gpu_integration) {
                 constraint_descriptors_.push_back({index,a,b,row_count});
-                return;
+                return false;
             }
             const auto& actor_a=actors_[a];
             const auto& actor_b=actors_[b];
@@ -7736,7 +7789,7 @@ void Scene::partition_constraints() {
             if((dynamic_a && actor_a.sleeping) ||
                (dynamic_b && actor_b.sleeping) ||
                (!dynamic_a && !dynamic_b))
-                return;
+                return false;
             const auto flags=row_count |
                 (dynamic_a?0x100u:0u)|(dynamic_b?0x200u:0u);
             if(compact_gpu_task && row_count==0u) {
@@ -7749,6 +7802,7 @@ void Scene::partition_constraints() {
                 ordered_constraints_.push_back({
                     index,dense_row(a),dense_row(b),flags});
             }
+            return true;
         };
         for(std::size_t j=joint_begin;j<task.joint_end;++j) {
             const auto& edge=island_edges_[indexed_joints_[j]];
@@ -7758,7 +7812,19 @@ void Scene::partition_constraints() {
                  joint.kind==JointKind::Fixed?6u:5u);
             const auto a=joint.swapped?edge.pair.b:edge.pair.a;
             const auto b=joint.swapped?edge.pair.a:edge.pair.b;
-            admit(narrow_index(joint_row_begin),a,b,count);
+            const bool admitted=admit(
+                narrow_index(joint_row_begin),a,b,count);
+            if(prepare_device_graph) {
+                const auto source=admitted
+                    ?narrow_index(joint_row_begin):0u;
+                constexpr std::uint32_t joint_bit=1u;
+                constexpr std::uint32_t no_response=2u;
+                constexpr std::uint32_t device_joint=16u;
+                gpu_dy_island_edges_.push_back({
+                    indexed_joints_[j],device_node(edge.pair.a),
+                    device_node(edge.pair.b),source,
+                    joint_bit|(admitted?device_joint:no_response)});
+            }
             joint_row_begin+=count;
         }
         for(std::size_t j=manager_begin;j<manager_end;++j) {
@@ -7766,9 +7832,25 @@ void Scene::partition_constraints() {
             const auto& manifold=manifolds_[index];
             const bool reversed=island_edges_[
                 manifold.edge_handle].gu_order_reversed;
-            admit(narrow_index(index),
-                  shapes_[reversed?manifold.pair.b:manifold.pair.a].body,
-                  shapes_[reversed?manifold.pair.a:manifold.pair.b].body,0u);
+            const BodyId first=shapes_[
+                reversed?manifold.pair.b:manifold.pair.a].body;
+            const BodyId second=shapes_[
+                reversed?manifold.pair.a:manifold.pair.b].body;
+            const bool admitted=admit(narrow_index(index),first,second,0u);
+            if(prepare_device_graph) {
+                if(manifold.candidate_ordinal>=previous_pairs_.size() ||
+                   !(previous_pairs_[manifold.candidate_ordinal]==manifold.pair) ||
+                   active_edge_handles_[manifold.candidate_ordinal]!=
+                       manifold.edge_handle)
+                    throw std::logic_error(
+                        "Device Sc contact source lost its admitted candidate");
+                const bool responding=admitted &&
+                    std::min(actors_[first].dynamics.max_contact_impulse,
+                             actors_[second].dynamics.max_contact_impulse)!=0.0f;
+                gpu_dy_island_edges_.push_back({
+                    manifold.edge_handle,device_node(first),device_node(second),
+                    manifold.candidate_ordinal,responding?0u:2u});
+            }
         }
         if(gpu_integration) {
             const auto count=ordered_constraints_.size()-gpu_first;
@@ -9052,144 +9134,24 @@ void Scene::prepare_gpu_dy_device_islands(bool selected) {
     if(gpu_dy_tasks_.size()>gpu_broadphase_->gpu_dy_direct_task_limit())
         throw std::out_of_range(
             "Resident Sc island admission exceeds device task capacity");
-    std::size_t prior_descriptors=0u,prior_bodies=0u;
-    for(const auto& task:solver_tasks_) {
-        if(task.constraint_end<prior_descriptors ||
-           task.solver_body_end<prior_bodies)
-            throw std::logic_error(
-                "Source Sc island task ranges are not ordered");
-        if(task.constraint_end-prior_descriptors>=gpu_dy_wide_task_threshold &&
-           task.solver_body_end-prior_bodies>=gpu_dy_wide_task_threshold)
-            throw std::logic_error(
-                "Resident Sc compact task admission cannot execute a wide island");
-        prior_descriptors=task.constraint_end;
-        prior_bodies=task.solver_body_end;
-    }
-    if(gpu_dy_tasks_.size()<gpu_dy_responding_island_count_)
+    if(gpu_dy_tasks_.size()<gpu_dy_responding_island_count_ ||
+       gpu_dy_island_node_flags_.size()!=solver_rows_.size() ||
+       gpu_dy_island_edges_.size()!=
+           indexed_joints_.size()+indexed_managers_.size())
         throw std::logic_error(
-            "Resident Sc task capacity cannot represent accurate islands");
+            "Source Sc task partition omitted device numerical identities");
     const auto narrow=[](std::size_t n) {
         if(n>=std::numeric_limits<std::uint32_t>::max())
             throw std::overflow_error(
                 "Sc device island source index exceeds 32 bits");
         return static_cast<std::uint32_t>(n);
     };
-    const auto position_limit=std::numeric_limits<std::uint8_t>::max();
-    constexpr std::uint32_t invalid=0xffffffffu;
-    constexpr std::uint32_t active=1u<<16u;
-    constexpr std::uint32_t nonresponding=1u<<17u;
-    constexpr std::uint32_t joint_bit=1u;
-    constexpr std::uint32_t no_response=2u;
-    constexpr std::uint32_t device_joint=16u;
-    gpu_dy_island_node_flags_.assign(solver_rows_.size(),nonresponding);
-    for(const BodyId id:solver_active_ids_) {
-        const auto& actor=actors_[id];
-        if(actor.motion!=Motion::Dynamic || actor.sleeping ||
-           actor.solver_row_generation!=solver_preparation_generation_ ||
-           actor.solver_row_index>=gpu_dy_island_node_flags_.size() ||
-           !actor.dynamics.position_iterations)
-            throw std::logic_error(
-                "Resident Sc responding node lacks an accurate solver row");
-        const auto pos=actor.dynamics.position_iterations;
-        const auto vel=actor.dynamics.velocity_iterations;
-        if(pos>position_limit || vel>position_limit)
-            throw std::out_of_range(
-                "Resident Sc island iteration word exceeds device encoding");
-        auto& word=gpu_dy_island_node_flags_[actor.solver_row_index];
-        if(word!=nonresponding)
-            throw std::logic_error(
-                "Resident Sc responding solver row assigned twice");
-        word=pos|(std::uint32_t(vel)<<8u)|active;
-    }
-    const auto node=[&](BodyId id) {
-        const auto& actor=actors_[id];
-        if(actor.motion!=Motion::Dynamic ||
-           actor.solver_row_generation!=solver_preparation_generation_ ||
-           actor.solver_row_index>=gpu_dy_island_node_flags_.size() ||
-           (gpu_dy_island_node_flags_[actor.solver_row_index]&nonresponding))
-            return invalid;
-        return narrow(actor.solver_row_index);
-    };
-    gpu_dy_island_edges_.clear();
-    gpu_dy_island_edges_.reserve(
-        indexed_joints_.size()+indexed_managers_.size());
-    std::size_t joint_cursor=0u,manager_cursor=0u,descriptor_cursor=0u;
-    std::size_t row_cursor=0u,full_descriptor_cursor=0u;
-    for(const auto& task:solver_tasks_) {
-        if(task.joint_end>indexed_joints_.size() ||
-           task.manager_end>indexed_managers_.size() ||
-           task.constraint_end>ordered_constraints_.size())
-            throw std::logic_error(
-                "Source Sc task exceeds its admitted edge tables");
-        for(;joint_cursor<task.joint_end;++joint_cursor) {
-            const auto edge=indexed_joints_[joint_cursor];
-            const auto& graph=island_edges_[edge];
-            if(graph.type!=IslandEdgeType::Constraint ||
-               graph.constraint_id>=constraint_records_.size())
-                throw std::logic_error(
-                    "Source Sc device joint has no stable constraint");
-            const auto& joint=constraint_records_[graph.constraint_id];
-            const std::size_t rows=joint.kind==JointKind::Distance?1u:
-                joint.kind==JointKind::Spherical?3u:
-                joint.kind==JointKind::Fixed?6u:5u;
-            std::uint32_t source=0u,kind=joint_bit|no_response;
-            if(descriptor_cursor<task.constraint_end) {
-                const auto& desc=ordered_constraints_[descriptor_cursor];
-                if((desc.row_count&255u)!=0u && desc.index==row_cursor) {
-                    if(desc.index>=gpu_dy_rows_.size())
-                        throw std::logic_error(
-                            "Source Sc joint row exceeds Dy input table");
-                    const bool direct=gpu_dy_rows_[desc.index].reserved==2u;
-                    source=direct?narrow(desc.index):
-                        narrow(full_descriptor_cursor++);
-                    kind=joint_bit|(direct?device_joint:0u);
-                    ++descriptor_cursor;
-                }
-            }
-            gpu_dy_island_edges_.push_back({
-                edge,node(graph.pair.a),node(graph.pair.b),source,kind});
-            row_cursor+=rows;
-        }
-        for(;manager_cursor<task.manager_end;++manager_cursor) {
-            const auto index=indexed_managers_[manager_cursor];
-            if(index>=manifolds_.size())
-                throw std::logic_error(
-                    "Source Sc island manager exceeds Gu arena");
-            const auto& m=manifolds_[index];
-            const auto pair=m.pair;
-            std::uint32_t kind=no_response;
-            if(descriptor_cursor<task.constraint_end) {
-                const auto& desc=ordered_constraints_[descriptor_cursor];
-                if((desc.row_count&255u)==0u && desc.index==index) {
-                    if(m.friction_patch_count)kind=0u;
-                    ++descriptor_cursor;
-                }
-            }
-            if(m.candidate_ordinal>=previous_pairs_.size() ||
-               !(previous_pairs_[m.candidate_ordinal]==m.pair) ||
-               active_edge_handles_[m.candidate_ordinal]!=m.edge_handle)
-                throw std::logic_error(
-                    "Device Sc contact source lost its admitted candidate");
-            gpu_dy_island_edges_.push_back({
-                m.edge_handle,node(shapes_[pair.a].body),
-                node(shapes_[pair.b].body),m.candidate_ordinal,kind});
-        }
-        if(descriptor_cursor!=task.constraint_end)
-            throw std::logic_error(
-                "Source Sc device island descriptor order differs from Dy");
-    }
-    if(descriptor_cursor!=ordered_constraints_.size() ||
-       joint_cursor!=indexed_joints_.size() ||
-       manager_cursor!=indexed_managers_.size() ||
-       row_cursor!=gpu_dy_rows_.size())
-        throw std::logic_error(
-            "Source Sc device admission did not cover its numerical tables");
+    // Joint rows and contact candidates already carry their typed
+    // source indices in Dy task order; device touch selects response.
     gpu_broadphase_->enqueue_gpu_dy_island_admission(
         gpu_dy_island_edges_,gpu_dy_island_node_flags_,
-        {narrow(gpu_dy_manifolds_.size()),narrow(gpu_dy_rows_.size()),
-         narrow(full_descriptor_cursor)});
+        {narrow(gpu_dy_manifolds_.size()),narrow(gpu_dy_rows_.size()),0u});
 }
-
 void Scene::solve_gpu_distance_constraints(float seconds) {
     FYZZ_PROFILE_SCOPE("dy.gpu_enqueue_join");
     // Source Dy owns task, body and 1D row order; the device receives
