@@ -462,6 +462,11 @@ public:
             throw std::logic_error("Source Sc actor-row remap unavailable");
         pcm_->remap_device_island_bodies(actor_to_solver_row);
     }
+    void discard_gpu_dy_island_admission() override {
+        if(!pcm_)
+            throw std::logic_error("Source Sc island admission unavailable");
+        pcm_->discard_device_islands();
+    }
     CudaDeviceAddressMap::Address device_island_work_address() const noexcept {
         return pcm_?pcm_->device_island_work_address():0u;
     }
