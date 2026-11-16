@@ -144,6 +144,9 @@ void verify(Context& context,const char* filename) {
         if(node_count<=64u && edges.size()<=64u)
             require(stream.commands().size()==1u,
                 "Small Sc device graph dispatched more than once");
+        else
+            require(stream.commands().size()>1u,
+                "Large Sc device graph bypassed parallel admission");
         if(!node_count && (!edges.empty() || !touches.empty())) {
             const auto* dispatch=std::get_if<DispatchCommand>(
                 &stream.commands().back());
