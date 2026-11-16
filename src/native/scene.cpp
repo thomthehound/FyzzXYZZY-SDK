@@ -4030,7 +4030,7 @@ std::uint8_t Scene::generate_pcm_plane_box(
 }
 std::uint8_t Scene::publish_gpu_pcm_box_box(
     const GpuPcmBoxResult& gpu,PcmManifoldCache& cache,
-    std::span<ContactPoint> output,bool defer_points) {
+    std::span<ContactPoint> output,bool defer_points,bool require_normal) {
     if(gpu.status()!=0u || gpu.count()>4u)
         throw std::logic_error("Source GPU PCM returned an invalid Sc manifold");
     // The original EdgeIndex cache retains B-local witnesses on device.
@@ -4043,7 +4043,7 @@ std::uint8_t Scene::publish_gpu_pcm_box_box(
         // Sc may need the current normal for retained friction correlation,
         // but Dy keeps all world-space witnesses resident until completion.
         output[0]={};
-        if(gpu.normal.x!=0.f || gpu.normal.y!=0.f || gpu.normal.z!=0.f) {
+        if(require_normal) {
             const float sq=gpu.normal.x*gpu.normal.x+
                            gpu.normal.y*gpu.normal.y+
                            gpu.normal.z*gpu.normal.z;
@@ -4693,7 +4693,8 @@ void Scene::update_contacts(bool defer_device_points,float inverse_step) {
                         const bool deferred=defer_device_points &&
                             !gpu_pcm_pairs_[manifold.pcm_result_index].host_generated;
                         manifold.count=publish_gpu_pcm_box_box(
-                            result,island_edges_[edge].pcm_cache,contacts,deferred);
+                            result,island_edges_[edge].pcm_cache,contacts,deferred,
+                            gpu_pcm_pairs_[manifold.pcm_result_index].early_host_normal);
                         gpu_pcm_points_deferred_|=deferred && manifold.count!=0u;
                         island_edges_[edge].pcm_cache.device_history=
                             !gpu_pcm_pairs_[manifold.pcm_result_index].host_generated;
@@ -5021,7 +5022,7 @@ void Scene::update_contacts(bool defer_device_points,float inverse_step) {
                           result.count()};
             auto& cache=island_edges_[manifold.edge_handle].pcm_cache;
             manifold.count=publish_gpu_pcm_box_box(
-                result,cache,contacts,deferred);
+                result,cache,contacts,deferred,request.early_host_normal);
             cache.device_history=true;
             gpu_pcm_points_deferred_|=deferred && manifold.count!=0u;
             const bool found=manifold.count>0u &&
