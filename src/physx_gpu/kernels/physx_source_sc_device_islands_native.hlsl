@@ -144,8 +144,8 @@ groupshared uint taskScan[128],responseScan[128],bodyScan[128];
 groupshared uint taskCarry,responseCarry,bodyCarry;
 groupshared uint radixBuckets[256],radixOffsets[256],radixTotals[256];
 groupshared uint radixDigits[128],radixRanks[128];
-groupshared uint compactBodyRoots[128],compactEdgeRoots[128];
-groupshared uint compactEdgeKinds[128];
+groupshared uint compactBodyRoots[128];
+groupshared uint compactEdgeKeys[128],compactEdgeStarts[128];
 
 uint responseRoot(uint edgeIndex) {
     if(work.Load(p.workBias)!=0u)return p.nodeCount;
@@ -348,13 +348,18 @@ void admitCompact(uint lane) {
     AllMemoryBarrierWithGroupSync();
     if(work.Load(p.workBias)!=0u)return;
 
-    // All compact edges and nodes share one workgroup. Reuse their
-    // canonical roots when ordering the source body and response streams.
+    // The compact workgroup owns every source node and response edge.
+    // Sort responses by root, joint-first kind, then source edge ordinal.
+    // The 7-bit ordinal is unique because compact graphs have <=128 edges.
     compactBodyRoots[lane]=lane<p.nodeCount && respondingNode(lane)
         ?work.Load(p.rootBias+lane*4u):invalid;
-    compactEdgeRoots[lane]=lane<p.edgeCount?responseRoot(lane):invalid;
-    compactEdgeKinds[lane]=lane<p.edgeCount
+    const uint edgeRoot=lane<p.edgeCount?responseRoot(lane):invalid;
+    const uint edgeKind=lane<p.edgeCount
         ?work.Load(p.admissionBias+lane*24u+20u):0u;
+    compactEdgeKeys[lane]=edgeRoot<p.nodeCount
+        ?(edgeRoot<<8u)|((edgeKind&jointEdge)!=0u?0u:128u)|lane
+        :invalid;
+    compactEdgeStarts[lane]=invalid;
     GroupMemoryBarrierWithGroupSync();
 
     if(lane<p.nodeCount && compactBodyRoots[lane]!=invalid) {
@@ -373,28 +378,39 @@ void admitCompact(uint lane) {
             }
         }
     }
-    if(lane<p.edgeCount) {
-        const uint root=compactEdgeRoots[lane];
-        if(root<p.nodeCount) {
-            const uint ordinal=work.Load(p.countBias+root*24u+20u);
-            const uint task=p.taskBias+ordinal*36u;
-            const uint begin=work.Load(task);
-            const uint end=work.Load(task+4u);
-            const bool joint=(compactEdgeKinds[lane]&jointEdge)!=0u;
-            uint rank=0u;
-            for(uint edge=0u;edge<p.edgeCount;++edge) {
-                if(compactEdgeRoots[edge]!=root)continue;
-                const bool otherJoint=(compactEdgeKinds[edge]&jointEdge)!=0u;
-                if(joint?(otherJoint && edge<lane):
-                   (otherJoint || edge<lane))
-                    ++rank;
-            }
-            if(begin+rank>=end)reject(128u);
-            else {
-                const uint position=begin+rank;
-                work.Store(p.responseOrderBias+position*4u,lane);
-                work.Store(p.tokenBias+position*4u,responseToken(lane));
-            }
+    [loop]
+    for(uint width=2u;width<=128u;width<<=1u) {
+        [loop]
+        for(uint stride=width>>1u;stride!=0u;stride>>=1u) {
+            const uint current=compactEdgeKeys[lane];
+            const uint peer=compactEdgeKeys[lane^stride];
+            const bool ascending=((lane&width)==0u)==
+                ((lane&stride)==0u);
+            const uint next=ascending?min(current,peer):max(current,peer);
+            GroupMemoryBarrierWithGroupSync();
+            compactEdgeKeys[lane]=next;
+            GroupMemoryBarrierWithGroupSync();
+        }
+    }
+    const uint sorted=compactEdgeKeys[lane];
+    const uint root=sorted>>8u;
+    if(root<p.nodeCount) {
+        const uint previous=lane==0u?invalid:compactEdgeKeys[lane-1u];
+        if((previous>>8u)!=root)compactEdgeStarts[root]=lane;
+    }
+    GroupMemoryBarrierWithGroupSync();
+    if(root<p.nodeCount) {
+        const uint edge=sorted&127u;
+        const uint ordinal=work.Load(p.countBias+root*24u+20u);
+        const uint task=p.taskBias+ordinal*36u;
+        const uint begin=work.Load(task);
+        const uint end=work.Load(task+4u);
+        const uint rank=lane-compactEdgeStarts[root];
+        if(begin+rank>=end)reject(128u);
+        else {
+            const uint position=begin+rank;
+            work.Store(p.responseOrderBias+position*4u,edge);
+            work.Store(p.tokenBias+position*4u,responseToken(edge));
         }
     }
 }
