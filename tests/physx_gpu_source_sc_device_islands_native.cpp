@@ -141,7 +141,7 @@ void verify(Context& context,const char* filename) {
         stage.append(stream,addresses,edge_addr,touch_addr,node_addr,output_addr,
                      node_count,static_cast<std::uint32_t>(edges.size()),
                      static_cast<std::uint32_t>(touches.size()),sources);
-        if(node_count<=32u && edges.size()<=32u)
+        if(node_count<=64u && edges.size()<=64u)
             require(stream.commands().size()==1u,
                 "Small Sc device graph dispatched more than once");
         if(!node_count && (!edges.empty() || !touches.empty())) {
@@ -307,7 +307,7 @@ void verify(Context& context,const char* filename) {
 
     // The compact one-dispatch path and the larger parallel path must
     // preserve exactly the same canonical joint-chain task layout.
-    for(const std::uint32_t nodes:{32u,33u}) {
+    for(const std::uint32_t nodes:{32u,33u,64u,65u}) {
         std::vector<SourceScDeviceIslandEdge> chain_edges;
         for(std::uint32_t i=1u;i<nodes;++i)
             chain_edges.push_back({
@@ -324,6 +324,24 @@ void verify(Context& context,const char* filename) {
                 task_nodes(result,0u)==nodes &&
                 task_edges(result,0u)==nodes-1u,
             "Compact and parallel Sc island admission disagree at graph limit");
+    }
+    // An edge-heavy single component crosses the direct-admission
+    // boundary without changing numerical source or response ordering.
+    for(const std::uint32_t edges_count:{64u,65u}) {
+        std::vector<SourceScDeviceIslandEdge> joint_edges;
+        joint_edges.reserve(edges_count);
+        for(std::uint32_t i=0u;i<edges_count;++i)
+            joint_edges.push_back({
+                200u+i,0u,invalid,i,source_sc_device_island_joint_bit});
+        const auto result=evaluate(1u,joint_edges,{},
+            {4u|source_sc_device_island_active_bit});
+        no_errors(result);
+        check_task_mapping(result);
+        require(header(result).runnable_components==1u &&
+                header(result).responding_nodes==1u &&
+                header(result).admitted_edges==edges_count &&
+                task_edges(result,0u)==edges_count,
+            "Compact and parallel Sc edge admission differ at graph limit");
     }
 
     std::vector<SourceScDeviceIslandEdge> edges{
