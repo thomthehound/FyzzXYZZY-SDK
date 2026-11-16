@@ -231,6 +231,58 @@ struct GpuPcmFrictionAnchorFixture {
             }
         }
     }
+    static void verify_early_pcm_numerical_materials(const Scene& scene) {
+        if(scene.gpu_pcm_pairs_.empty())
+            throw std::runtime_error(
+                "Resident PCM numerical preparation lacks candidate pairs");
+        for(const auto& request:scene.gpu_pcm_pairs_) {
+            const auto& actual=request.numerical;
+            const auto expected=scene.prepare_contact_material(
+                request.first,request.second);
+            if(!actual.prepared ||
+               actual.rest_distance!=expected.rest_distance ||
+               actual.pair_slop!=expected.pair_slop ||
+               actual.max_contact_impulse!=expected.max_contact_impulse ||
+               actual.max_penetration_bias!=expected.max_penetration_bias ||
+               actual.restitution!=expected.restitution ||
+               actual.damping!=expected.damping ||
+               actual.static_friction!=expected.static_friction ||
+               actual.dynamic_friction!=expected.dynamic_friction ||
+               actual.acceleration_spring!=expected.acceleration_spring ||
+               actual.disable_friction!=expected.disable_friction ||
+               actual.disable_strong_friction!=expected.disable_strong_friction)
+                throw std::runtime_error(
+                    "Resident PCM candidate material differs from authored input");
+        }
+        for(const auto& manifold:scene.manifolds_) {
+            if(manifold.pcm_result_index==0xffffffffu ||
+               !manifold.friction_patch_count)continue;
+            const auto index=manifold.pcm_result_index;
+            if(index>=scene.gpu_pcm_pairs_.size() ||
+               scene.gpu_pcm_pairs_[index].edge!=manifold.edge_handle)
+                throw std::runtime_error(
+                    "Resident PCM numerical material lost its source EdgeIndex");
+            const auto& material=scene.gpu_pcm_pairs_[index].numerical;
+            const auto prep_index=scene.gpu_dy_contact_prep_indices_[
+                static_cast<std::size_t>(&manifold-scene.manifolds_.data())];
+            if(prep_index>=scene.gpu_dy_contact_prep_pairs_.size())
+                throw std::runtime_error(
+                    "Resident PCM material did not enter numerical contact prep");
+            const auto& prep=scene.gpu_dy_contact_prep_pairs_[prep_index];
+            if(prep.pcm_pair_index!=index ||
+               prep.pcm_edge!=manifold.edge_handle ||
+               prep.rest_distance!=material.rest_distance ||
+               prep.pair_slop!=material.pair_slop ||
+               prep.max_contact_impulse!=material.max_contact_impulse ||
+               prep.max_penetration_bias!=material.max_penetration_bias ||
+               prep.restitution!=material.restitution ||
+               prep.damping!=material.damping ||
+               prep.acceleration_spring!=
+                   static_cast<std::uint32_t>(material.acceleration_spring))
+                throw std::runtime_error(
+                    "Resident PCM numerical preparation recombined contact inputs");
+        }
+    }
     static void verify_device_admitted_contact_sources(const Scene& scene) {
         const auto& actual=scene.gpu_dy_admitted_manager_flags_;
         if(actual.size()!=scene.manifolds_.size())
@@ -3892,6 +3944,8 @@ void verify_mixed_gu_pcm_gpu_dy_solver(
         for(std::uint32_t frame=0;frame<4u;++frame) {
             cpu.step(dt);
             gpu.step(dt);
+            native::GpuPcmFrictionAnchorFixture::
+                verify_early_pcm_numerical_materials(gpu);
             if(device_admission)
                 native::GpuPcmFrictionAnchorFixture::
                     verify_device_admitted_contact_sources(gpu);

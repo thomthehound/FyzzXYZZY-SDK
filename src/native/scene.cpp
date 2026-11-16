@@ -4414,10 +4414,14 @@ void Scene::update_contacts(bool defer_device_points,float inverse_step) {
             defer_device_points);
     // Contact coefficients use the already admitted source pair
     // identities. Prepare them while PCM runs, before Sc observes touch.
-    if(source_gpu_pcm && gpu_broadphase_->has_gpu_dy_distance())
+    const bool early_pcm_materials=source_gpu_pcm &&
+        gpu_broadphase_->has_gpu_dy_distance();
+    if(early_pcm_materials)
         for(auto& request:gpu_pcm_pairs_)
             request.numerical=prepare_contact_material(
                 request.first,request.second);
+    FYZZ_PROFILE_COUNTER("pcm.early_numerical_materials",
+        early_pcm_materials?gpu_pcm_pairs_.size():0u);
     // Kinematic targets depend on the authored pose and timestep, not
     // physical touch. Prepare Dy velocities while queued PCM runs,
     // before any host observation of its witness stream.
