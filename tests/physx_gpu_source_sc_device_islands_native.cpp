@@ -63,7 +63,8 @@ void verify(Context& context,const char* filename) {
                             std::vector<std::uint32_t> touches,
                             std::vector<std::uint32_t> node_flags={},
                             std::vector<std::uint32_t> prior_touches={},
-                            std::optional<SourceScDeviceIslandSources> limits=std::nullopt) {
+                            std::optional<SourceScDeviceIslandSources> limits=std::nullopt,
+                            std::vector<std::uint32_t> remap={}) {
         constexpr std::size_t record_bytes=240u;
         // Joint-only scenes have no physical-touch arena. Active seeds
         // and authored iteration limits remain separate from connectivity.
@@ -153,6 +154,15 @@ void verify(Context& context,const char* filename) {
             require(dispatch && dispatch->buffers.size()==4u &&
                     dispatch->buffers[2].buffer!=output_buffer,
                     "Nonresponding Sc node input aliases writable task output");
+        }
+        if(!remap.empty()) {
+            require(remap.size()==node_count,
+                    "Early Sc remap did not cover the stable actor slots");
+            stream.queue_uploads(std::vector<SourceSapUpload>{
+                {node_addr,remap.data(),remap.size()*sizeof(remap[0])}});
+            stage.append_body_remap(stream,addresses,node_addr,output_addr,
+                                    node_count,static_cast<std::uint32_t>(
+                                        edges.size()));
         }
         stream.wait_at_fetch();
         std::vector<std::byte> bytes(layout.bytes);
@@ -373,6 +383,44 @@ void verify(Context& context,const char* filename) {
                 task_edges(result,0u)==edge_count-excluded,
             "Device Sc typed response admission changed at workgroup limit");
     }
+
+    // Pre-witness actor identities retain no numerical tasks for
+    // non-touching candidates, and remap only admitted bodies to Dy rows.
+    const std::vector<SourceScDeviceIslandEdge> early_contacts{
+        {0u,1u,invalid,0u,0u},
+        {1u,3u,invalid,1u,0u}};
+    const auto candidate_word=source_sc_device_island_active_bit|
+        source_sc_device_island_contact_task_bit|0x104u;
+    const std::vector<std::uint32_t> candidate_nodes{
+        source_sc_device_island_nonresponding_bit|
+            source_sc_device_island_contact_task_bit,
+        candidate_word,
+        source_sc_device_island_nonresponding_bit|
+            source_sc_device_island_contact_task_bit,
+        candidate_word};
+    const std::vector<std::uint32_t> dense_rows{
+        invalid,0u,invalid,1u};
+    auto missing=evaluate(4u,early_contacts,{0u,0u},candidate_nodes);
+    no_errors(missing);
+    require(header(missing).runnable_components==0u &&
+            header(missing).admitted_edges==0u,
+        "Early Sc admitted empty PCM candidates as numerical tasks");
+    auto admitted_early=evaluate(4u,early_contacts,{1u,1u},
+        candidate_nodes,{},std::nullopt,dense_rows);
+    no_errors(admitted_early);
+    require(header(admitted_early).runnable_components==2u &&
+            header(admitted_early).responding_nodes==2u &&
+            header(admitted_early).admitted_edges==2u &&
+            load<std::uint32_t>(admitted_early.second,
+                admitted_early.first.body_order)==0u &&
+            load<std::uint32_t>(admitted_early.second,
+                admitted_early.first.body_order+4u)==1u,
+        "Pre-witness Sc actor IDs were not remapped to dense Dy solver rows");
+    auto invalid_rows=evaluate(4u,early_contacts,{1u,1u},
+        candidate_nodes,{},std::nullopt,
+        std::vector<std::uint32_t>(4u,invalid));
+    require((header(invalid_rows).errors&512u)!=0u,
+        "Early Sc accepted a solver body without a final Dy row");
 
     // Edge limits must preserve typed source order across several
     // disconnected roots, including omitted contact responses.
