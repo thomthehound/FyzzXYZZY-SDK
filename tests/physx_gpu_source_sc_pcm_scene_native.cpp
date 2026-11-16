@@ -3299,7 +3299,8 @@ void verify_single_pcm_joint_island_admission(
 void verify_early_pcm_island_pipeline(
     fyzz::compute::Backend backend,const char* sap,
     const char* pcm,const char* dy_shader,
-    bool mixed_host=false,bool with_joints=false) {
+    bool mixed_host=false,bool with_joints=false,
+    bool enhanced_determinism=false) {
     using namespace fyzz;
     std::ifstream input(dy_shader,std::ios::binary);
     require(bool(input),"Source Dy shader bundle unavailable");
@@ -3317,6 +3318,8 @@ void verify_early_pcm_island_pipeline(
     auto* device=producer.get();
     gpu.set_gpu_broadphase(std::move(producer));
     gpu.set_gpu_dy_device_admission_enabled(true);
+    cpu.set_enhanced_determinism(enhanced_determinism);
+    gpu.set_enhanced_determinism(enhanced_determinism);
     // Inert scene actors cannot inflate the numerical graph allocation.
     for(std::uint32_t i=0u;i<140u;++i) {
         const Transform pose{{1000.f+float(i),0.f,0.f},{}};
@@ -3367,17 +3370,25 @@ void verify_early_pcm_island_pipeline(
     for(std::uint32_t frame=0u;frame<3u;++frame) {
         cpu.step(1.f/120.f);
         gpu.step(1.f/120.f);
-        native::GpuPcmFrictionAnchorFixture::
-            verify_pre_witness_device_admission(gpu);
+        if(enhanced_determinism)
+            require(!native::GpuPcmFrictionAnchorFixture::
+                        has_early_device_admission(gpu),
+                "Deterministic Sc task grouping submitted redundant GPU admission");
+        else
+            native::GpuPcmFrictionAnchorFixture::
+                verify_pre_witness_device_admission(gpu);
         const auto schedule=device->dy_launch_stats();
         const auto responding=mixed_host?3u:2u;
         require(gpu.pairs().size()==responding+1u &&
                 gpu.contacts().size()==responding &&
                 cpu.contacts().size()==responding &&
-                schedule.device_island_indirect_dispatches==1u &&
-                schedule.device_admitted_tasks==responding &&
+                schedule.device_island_indirect_dispatches==
+                    (enhanced_determinism?0u:1u) &&
+                schedule.device_admitted_tasks==
+                    (enhanced_determinism?0u:responding) &&
                 schedule.device_admitted_descriptors==
-                    responding+(with_joints?2u:0u) &&
+                    (enhanced_determinism?0u:
+                        responding+(with_joints?2u:0u)) &&
                 (!mixed_host || device->pcm_host_contact_upload_bytes()>=
                     sizeof(native::GpuPcmBoxResult)),
             "Pre-witness mixed PCM topology did not reach production device Dy");
@@ -6875,6 +6886,9 @@ int main(int argc,char** argv) {
                         backend,argv[1],argv[2],argv[3],true,true);
                     verify_single_pcm_joint_island_admission(
                         backend,argv[1],argv[2],argv[3]);
+                    verify_early_pcm_island_pipeline(
+                        backend,argv[1],argv[2],argv[3],
+                        false,false,true);
                 });
         if(scenario=="all" || scenario=="scene")
             fyzz::tests::measure_gpu_case("sc_pcm","scene",

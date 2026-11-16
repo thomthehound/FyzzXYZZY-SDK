@@ -4471,8 +4471,10 @@ void Scene::update_contacts(bool defer_device_points,float inverse_step) {
     // Each CPU Gu source must publish physical touch before admission.
     bool early_device_graph_awaits_host=false;
     bool early_device_graph_awaits_gu=false;
+    // Deterministic task grouping already preserves individual islands.
     const bool early_device_graph=defer_device_points &&
-        gpu_dy_device_admission_enabled_ && gpu_results_pending &&
+        gpu_dy_device_admission_enabled_ && !enhanced_determinism_ &&
+        gpu_results_pending &&
         (previous_pairs_.size()>1u || !active_constraint_handles_.empty()) &&
         gpu_broadphase_->gpu_dy_direct_task_limit()>=2u;
     if(early_device_graph) {
