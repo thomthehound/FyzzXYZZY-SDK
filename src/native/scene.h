@@ -499,6 +499,9 @@ public:
         std::span<const std::uint32_t>) {
         throw std::logic_error("Device Sc actor-row remapping is unavailable");
     }
+    virtual void discard_gpu_dy_island_admission() {
+        throw std::logic_error("Device Sc admission discard is unavailable");
+    }
     virtual void enqueue_gpu_dy_distance(
         std::span<GpuDyDistanceBody>,
         std::span<GpuDyJointRow>,
