@@ -709,12 +709,14 @@ public:
                 throw std::invalid_argument("Device Sc island edge is not admitted");
         }
         for(const auto word:node_flags)
-            if((word&0xfffc0000u)!=0u ||
+            if((word&0xfff80000u)!=0u ||
                ((word&source_sc_device_island_nonresponding_bit)==0u &&
                 (word&0xffu)==0u))
                 throw std::invalid_argument("Device Sc node iterations invalid");
         island_layout_=SourceScDeviceIslandLayout::for_counts(
             node_count,edge_count);
+        island_node_count_=node_count;
+        island_edge_count_=edge_count;
         island_work_.allocate(island_layout_.bytes,PX_FL);
         if(edge_count)
             island_edges_.allocate(source_allocation_bytes(
@@ -747,6 +749,23 @@ public:
         // Dy appends its numerical inputs and solve to this same source
         // queue. The caller owns submission and any inspection fence.
         island_work_ready_=true;
+    }
+    void remap_device_island_bodies(
+            std::span<const std::uint32_t> actor_to_solver_row) {
+        if(!island_work_ready_ ||
+           actor_to_solver_row.size()!=island_node_count_ ||
+           !island_node_count_)
+            throw std::logic_error(
+                "Source Sc body remap lacks an admitted actor graph");
+        auto& uploads=stream_.upload_scratch();
+        uploads.push_back({island_nodes_.getDevicePtr(),
+                           actor_to_solver_row.data(),
+                           actor_to_solver_row.size_bytes()});
+        stream_.queue_uploads(uploads);
+        island_stage_.append_body_remap(
+            stream_,addresses_,island_nodes_.getDevicePtr(),
+            island_work_.getDevicePtr(),
+            island_node_count_,island_edge_count_);
     }
     CudaDeviceAddressMap::Address device_island_work_address() const noexcept {
         return island_work_ready_?island_work_.getDevicePtr():0u;
@@ -1013,6 +1032,7 @@ private:
     physx::PxgCudaBuffer gu_touch_records_,gu_touch_journal_;
     physx::PxgCudaBuffer island_edges_,island_nodes_,island_work_;
     SourceScDeviceIslandLayout island_layout_{};
+    std::uint32_t island_node_count_=0u,island_edge_count_=0u;
     compute::BufferId indirect_buffer_=0u;
     CudaDeviceAddressMap::Address indirect_address_=0u;
     std::vector<SourcePcmBoxPairNative> pair_host_;
