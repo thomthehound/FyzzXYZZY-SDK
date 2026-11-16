@@ -510,6 +510,22 @@ struct GpuPcmFrictionAnchorFixture {
                 -patch.body1_normal.z};
         }
     }
+    static void invalidate_multiple_friction_materials(Scene& scene,Pair shapes) {
+        const auto edge=scene.contact_edge_index(shapes);
+        if(edge==Scene::invalid_edge ||
+           edge>=scene.friction_by_edge_.size())
+            throw std::runtime_error(
+                "Material-mismatch PCM fixture lost its contact manager");
+        const auto span=scene.friction_by_edge_[edge];
+        if(span.epoch!=scene.friction_cache_epoch_ || span.count!=2u)
+            throw std::runtime_error(
+                "Material-mismatch PCM fixture needs two retained patches");
+        for(std::size_t j=0u;j<span.count;++j) {
+            auto& patch=scene.friction_patches_[span.offset+j];
+            patch.broken=false;
+            patch.static_friction+=10.f;
+        }
+    }
     static void verify_compact_gpu_contact_admission(const Scene& scene) {
         std::size_t manager_begin=0u,joint_begin=0u;
         std::size_t body_begin=0u,descriptor_begin=0u,contact_count=0u;
@@ -5062,6 +5078,22 @@ void verify_scene_normal_only_multi_patch(
                 had_early_friction_history(gpu) &&
             std::isfinite(gpu.contacts()[0].points[0].separation),
         "Invalid cached friction normals forced an unnecessary early DMA");
+
+    // Valid prior anchors with incompatible material do not require
+    // the current Gu normal for Sc correlation.
+    native::GpuPcmFrictionAnchorFixture::seed_multiple_friction_patches(
+        gpu,{b[0],b[1]});
+    native::GpuPcmFrictionAnchorFixture::invalidate_multiple_friction_materials(
+        gpu,{b[0],b[1]});
+    gpu.step(seconds);
+    require(gpu.contacts().size()==1u &&
+            producer->pcm_header_join_bytes()==metadata &&
+            producer->pcm_deferred_point_bytes()==full-metadata &&
+            producer->pcm_contact_readback_bytes()==full &&
+            native::GpuPcmFrictionAnchorFixture::
+                had_early_friction_history(gpu) &&
+            std::isfinite(gpu.contacts()[0].points[0].separation),
+        "Incompatible retained PCM material forced an early normal transfer");
 }
 
 void verify_zero_touch_gpu_pcm_transfer(
