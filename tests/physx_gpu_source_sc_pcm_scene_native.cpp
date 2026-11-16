@@ -4887,6 +4887,67 @@ void verify_sphere_gpu_solver(
         "GPU embedded sphere did not preserve source PCM exit-face witness");
 }
 
+void verify_scene_normal_only_multi_patch(
+    fyzz::compute::Backend backend,const char* sap,
+    const char* pcm,const char* dy_shader) {
+    using namespace fyzz;
+    std::ifstream input(dy_shader,std::ios::binary);
+    require(bool(input),"Multi-patch GPU Dy shader unavailable");
+    compute::ShaderBinary shader{};
+    shader.format=backend==compute::Backend::Vulkan
+        ?compute::ShaderFormat::Spirv:compute::ShaderFormat::Dxil;
+    shader.bytes.assign(std::istreambuf_iterator<char>{input},
+                        std::istreambuf_iterator<char>{});
+    native::Scene cpu,gpu;
+    auto owner=std::make_unique<
+        physx_gpu::SourceScOwnedGpuBroadphaseNative>(
+            backend,load_native_gpu_sap_shaders(backend,sap),
+            128u,128u,std::nullopt,
+            load_native_gpu_pcm_shaders(backend,pcm),std::move(shader));
+    auto* producer=owner.get();
+    gpu.set_gpu_broadphase(std::move(owner));
+    const auto make=[](native::Scene& scene) {
+        const auto floor=scene.add_static_box(
+            {3.f,0.5f,3.f},{0.f,-0.5f,0.f});
+        const auto body=scene.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{0.f,0.48f,0.f},1.f);
+        return std::array<BodyId,2>{floor,body};
+    };
+    const auto a=make(cpu),b=make(gpu);
+    constexpr float seconds=1.f/120.f;
+    cpu.step(seconds);
+    gpu.step(seconds);
+    require(cpu.contacts().size()==1u && gpu.contacts().size()==1u &&
+            producer->dy_pcm_device_contact_rows()>0u,
+        "Multi-patch Sc fixture did not establish physical GPU PCM contact");
+    native::GpuPcmFrictionAnchorFixture::seed_multiple_friction_patches(
+        gpu,{b[0],b[1]});
+    cpu.step(seconds);
+    gpu.step(seconds);
+    constexpr auto metadata=2u*sizeof(std::uint32_t);
+    constexpr auto normal=sizeof(Vec3);
+    constexpr auto full=sizeof(native::GpuPcmBoxResult);
+    require(gpu.contacts().size()==1u &&
+            producer->pcm_header_join_bytes()==metadata+normal &&
+            producer->pcm_deferred_point_bytes()==full-metadata-normal &&
+            producer->pcm_contact_readback_bytes()==full &&
+            producer->dy_pcm_device_contact_rows()>0u &&
+            native::GpuPcmFrictionAnchorFixture::
+                had_early_friction_history(gpu),
+        "Production Sc multi-patch PCM fetched points before numerical Dy");
+    require(cpu.contacts().size()==gpu.contacts().size() &&
+            cpu.contacts()[0].count==gpu.contacts()[0].count &&
+            std::isfinite(gpu.contacts()[0].points[0].separation) &&
+            std::fabs(cpu.contacts()[0].points[0].normal.y-
+                      gpu.contacts()[0].points[0].normal.y)<0.02f,
+        "Normal-only Sc friction correlation changed published Gu contacts");
+    const auto expected=cpu.body_state(a[1]);
+    const auto actual=gpu.body_state(b[1]);
+    require(std::fabs(expected.position.y-actual.position.y)<0.03f &&
+            std::fabs(expected.velocity.y-actual.velocity.y)<0.03f,
+        "Normal-only retained PCM friction changed rigid-body response");
+}
+
 void verify_zero_touch_gpu_pcm_transfer(
     fyzz::compute::Backend backend,const char* sap,
     const char* pcm,const char* dy_shader) {
@@ -6318,6 +6379,8 @@ int main(int argc,char** argv) {
                     verify_host_primitive_pcm_solver(
                         backend,argv[1],argv[2],argv[3]);
                     verify_zero_touch_gpu_pcm_transfer(
+                        backend,argv[1],argv[2],argv[3]);
+                    verify_scene_normal_only_multi_patch(
                         backend,argv[1],argv[2],argv[3]);
                 });
         if(scenario=="all" || scenario=="convex_plane")
