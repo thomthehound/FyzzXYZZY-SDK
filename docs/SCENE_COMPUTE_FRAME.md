@@ -159,11 +159,11 @@ The GPU Dy path fetches 8 bytes of edge/touch metadata for ordinary
 GPU pairs before numerical admission. Managers with multiple retained
 friction patches also fetch their 12-byte contact normal in the same
 early batch, without fetching world-space points. Resident PCM supplies
-numerical normals and contacts directly to Dy. Deferred pairs transfer
-76 bytes after Dy completion, or 64 bytes when Sc already fetched their
-normal; contiguous runs share one transfer span. These transfers join
-Dy's existing completion batch without another point-fetch fence on
-responding frames. A completed Dy numerical fence retires preceding
+numerical normals and contacts directly to Dy. A deferred span transfers 76 bytes for its
+first touching pair, or 64 bytes when Sc already fetched that normal;
+subsequent pairs in the same span contribute 84 bytes each. Transfers
+join Dy's existing completion batch without another point-fetch fence
+on responding frames. A completed Dy numerical fence retires preceding
 source uploads and PCM readback submissions on the shared queue; PCM witness
 bytes remain unpublished until Sc joins or discards that readback.
 A continuous PCM-to-Dy numerical path without a host header dependency
