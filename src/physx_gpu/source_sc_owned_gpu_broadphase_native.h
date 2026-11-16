@@ -451,10 +451,10 @@ public:
     void enqueue_gpu_dy_island_admission(
             std::span<const native::GpuDyIslandEdge> edges,
             std::span<const std::uint32_t> node_flags,
-            native::GpuDyIslandSources sources) override {
+            native::GpuDyIslandSources sources,bool early=false) override {
         if(!pcm_)
             throw std::logic_error("Source Sc GPU island admission unavailable");
-        pcm_->enqueue_device_islands(edges,node_flags,sources);
+        pcm_->enqueue_device_islands(edges,node_flags,sources,early);
     }
     void remap_gpu_dy_island_bodies(
             std::span<const std::uint32_t> actor_to_solver_row) override {
