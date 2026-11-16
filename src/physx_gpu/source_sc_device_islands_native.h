@@ -290,7 +290,7 @@ public:
         dispatch.push_constants.resize(sizeof(args));
         // A bounded single-workgroup graph avoids the multi-dispatch
         // union, prefix and response-ordering schedule.
-        if(node_count<=64u && edge_count<=64u) {
+        if(node_count<=128u && edge_count<=128u) {
             args[12]=32u;
             args[13]=0u;
             dispatch.groups={1u,1u,1u};
