@@ -347,6 +347,29 @@ void verify(Context& context,const char* filename) {
             "Compact and parallel Sc edge admission differ at graph limit");
     }
 
+    // Near the workgroup limit, source contact and joint rows remain
+    // in their distinct typed ordinal spaces and joint-first Dy order.
+    for(const std::uint32_t edge_count:{128u,129u}) {
+        std::vector<SourceScDeviceIslandEdge> mixed;
+        mixed.reserve(edge_count);
+        std::vector<std::uint32_t> touching((edge_count+1u)/2u,1u);
+        for(std::uint32_t i=0u;i<edge_count;++i) {
+            const bool joint=(i&1u)!=0u;
+            const auto source=i/2u;
+            mixed.push_back({
+                joint?500u+i:source,0u,invalid,source,
+                joint?source_sc_device_island_joint_bit:0u});
+        }
+        const auto result=evaluate(1u,mixed,touching,
+            {4u|source_sc_device_island_active_bit});
+        no_errors(result);
+        check_task_mapping(result);
+        require(header(result).runnable_components==1u &&
+                header(result).admitted_edges==edge_count &&
+                task_edges(result,0u)==edge_count,
+            "Device Sc mixed contact/joint admission changed at workgroup limit");
+    }
+
     std::vector<SourceScDeviceIslandEdge> edges{
         {0u,0u,1u,10u,0u}, // Contact: found
         {31u,1u,2u,11u,source_sc_device_island_joint_bit|
