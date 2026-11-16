@@ -4532,7 +4532,8 @@ void Scene::update_contacts(bool defer_device_points,float inverse_step) {
         if(admitted && candidate_bodies>=2u) {
             gpu_broadphase_->enqueue_gpu_dy_island_admission(
                 gpu_dy_island_edges_,gpu_dy_island_node_flags_,
-                {static_cast<std::uint32_t>(previous_pairs_.size()),0u,0u});
+                {static_cast<std::uint32_t>(previous_pairs_.size()),0u,0u},
+                true);
             gpu_dy_early_islands_=true;
         }else {
             gpu_dy_island_edges_.clear();
