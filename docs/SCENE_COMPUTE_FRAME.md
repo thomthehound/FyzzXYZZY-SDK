@@ -156,6 +156,9 @@ actors never enlarge the resident numerical graph. Early responding nodes
 are bounded by the device task capacity rather than the single-workgroup
 128-node threshold. Larger source graphs use parallel device admission,
 and the ordered body/joint remap dispatches in bounded workgroup ranges.
+Hardware scene qualification now compares identical CPU, GPU Sc-authored
+and GPU device-admitted numerical workloads, including frame percentiles
+and CPU-referenced pose/velocity error.
 The GPU resolves physical touch and runnable task topology on its own
 ordered queue. After accurate Sc publication, a compact node-to-solver-row upload
 remaps the device body order in place against the full Dy row capacity;

@@ -6500,13 +6500,14 @@ void qualify_hardware_scene(
         binary.bytes.assign(bytes.begin(),bytes.end());
         return binary;
     };
-    const auto create=[&] {
+    const auto create=[&](bool device_admission) {
         return create_native_gpu_world(
             backend,NativeGpuPipelineShaders{
                 .sap=load_native_gpu_sap_shaders(backend,sap),
                 .pcm=load_native_gpu_pcm_shaders(backend,pcm),
                 .dy=compiled(dy_path)},
-            {.execution=ExecutionMode::NativePortableGpu});
+            {.execution=ExecutionMode::NativePortableGpu,
+             .gpu_device_island_admission=device_admission});
     };
     const auto width=static_cast<std::uint32_t>(
         std::ceil(std::sqrt(static_cast<double>(body_count))));
@@ -6516,9 +6517,10 @@ void qualify_hardware_scene(
     constexpr float dt=1.f/120.f;
     constexpr std::uint32_t warmup=4u;
     const std::uint32_t measured=body_count>=10000u?16u:48u;
-    const auto run=[&](bool gpu_dy,std::vector<double>& step_ms) {
+    const auto run=[&](bool gpu_dy,std::vector<double>& step_ms,
+                       bool device_admission=false) {
         const auto setup_begin=std::chrono::steady_clock::now();
-        World world=create();
+        World world=create(device_admission);
         const auto create_end=std::chrono::steady_clock::now();
         world.set_gpu_dy_enabled(gpu_dy);
         world.add_static_box(
@@ -6536,6 +6538,7 @@ void qualify_hardware_scene(
         std::cout<<"FYZZXYZZY_METRIC suite=hardware_setup"
                  <<" bodies="<<body_count
                  <<" gpu_dy="<<gpu_dy
+                 <<" device_admission="<<device_admission
                  <<" create_ms="<<std::chrono::duration<double,std::milli>(
                     create_end-setup_begin).count()
                  <<" assemble_ms="<<std::chrono::duration<double,std::milli>(
@@ -6552,6 +6555,7 @@ void qualify_hardware_scene(
             std::cout<<"FYZZXYZZY_METRIC suite=hardware_step"
                      <<" bodies="<<body_count
                      <<" gpu_dy="<<gpu_dy
+                     <<" device_admission="<<device_admission
                      <<" sample="<<sample
                      <<" step_ms="<<step_ms[sample]<<'\n';
         std::vector<BodyState> final_states;
@@ -6569,18 +6573,24 @@ void qualify_hardware_scene(
         cpu_states=run(false,cpu_ms);
         gpu_states=run(true,gpu_ms);
     }
+    // Compare the same scene with Sc-authored and device-admitted tasks.
+    std::vector<double> admitted_ms;
+    const auto admitted_states=run(true,admitted_ms,true);
     float max_position_error=0.f,max_velocity_error=0.f;
+    float max_admitted_position_error=0.f,max_admitted_velocity_error=0.f;
     for(std::uint32_t i=0u;i<body_count;++i) {
         const auto& a=cpu_states[i];
         const auto& b=gpu_states[i];
-        for(const auto values:std::array<std::array<float,2>,6>{{
-                {a.position.x,b.position.x},
-                {a.position.y,b.position.y},
-                {a.position.z,b.position.z},
-                {a.velocity.x,b.velocity.x},
-                {a.velocity.y,b.velocity.y},
-                {a.velocity.z,b.velocity.z}}})
-            require(std::isfinite(values[0]) && std::isfinite(values[1]),
+        const auto& c=admitted_states[i];
+        for(const auto values:std::array<std::array<float,3>,6>{{
+                {a.position.x,b.position.x,c.position.x},
+                {a.position.y,b.position.y,c.position.y},
+                {a.position.z,b.position.z,c.position.z},
+                {a.velocity.x,b.velocity.x,c.velocity.x},
+                {a.velocity.y,b.velocity.y,c.velocity.y},
+                {a.velocity.z,b.velocity.z,c.velocity.z}}})
+            require(std::isfinite(values[0]) && std::isfinite(values[1]) &&
+                    std::isfinite(values[2]),
                     "Hardware scene published nonfinite rigid state");
         max_position_error=std::max({max_position_error,
             std::fabs(a.position.x-b.position.x),
@@ -6590,11 +6600,22 @@ void qualify_hardware_scene(
             std::fabs(a.velocity.x-b.velocity.x),
             std::fabs(a.velocity.y-b.velocity.y),
             std::fabs(a.velocity.z-b.velocity.z)});
-        require(a.position.y>0.44f && b.position.y>0.44f,
+        max_admitted_position_error=std::max({max_admitted_position_error,
+            std::fabs(a.position.x-c.position.x),
+            std::fabs(a.position.y-c.position.y),
+            std::fabs(a.position.z-c.position.z)});
+        max_admitted_velocity_error=std::max({max_admitted_velocity_error,
+            std::fabs(a.velocity.x-c.velocity.x),
+            std::fabs(a.velocity.y-c.velocity.y),
+            std::fabs(a.velocity.z-c.velocity.z)});
+        require(a.position.y>0.44f && b.position.y>0.44f &&
+                c.position.y>0.44f,
                 "Hardware scene lost physical platform contact");
     }
-    require(max_position_error<0.05f && max_velocity_error<0.05f,
-            "Hardware scene CPU/GPU Dy trajectories diverged");
+    require(max_position_error<0.05f && max_velocity_error<0.05f &&
+            max_admitted_position_error<0.05f &&
+            max_admitted_velocity_error<0.05f,
+            "Hardware scene GPU numerical trajectories diverged from CPU");
     const auto percentile=[](std::vector<double>& values,double fraction) {
         std::sort(values.begin(),values.end());
         const double rank=(values.size()-1u)*fraction;
@@ -6610,10 +6631,15 @@ void qualify_hardware_scene(
              <<" gpu_step_p50_ms="<<percentile(gpu_ms,0.50)
              <<" cpu_step_p95_ms="<<percentile(cpu_ms,0.95)
              <<" gpu_step_p95_ms="<<percentile(gpu_ms,0.95)
+             <<" admitted_step_p50_ms="<<percentile(admitted_ms,0.50)
+             <<" admitted_step_p95_ms="<<percentile(admitted_ms,0.95)
+             <<" admitted_step_p99_ms="<<percentile(admitted_ms,0.99)
              <<" cpu_step_p99_ms="<<percentile(cpu_ms,0.99)
              <<" gpu_step_p99_ms="<<percentile(gpu_ms,0.99)
              <<" max_position_abs_error="<<max_position_error
-             <<" max_velocity_abs_error="<<max_velocity_error<<'\n';
+             <<" max_velocity_abs_error="<<max_velocity_error
+             <<" max_admitted_position_abs_error="<<max_admitted_position_error
+             <<" max_admitted_velocity_abs_error="<<max_admitted_velocity_error<<'\n';
 }
 
 void verify_host_lane_packed_islands(
