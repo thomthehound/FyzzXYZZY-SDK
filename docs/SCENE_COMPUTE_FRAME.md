@@ -146,10 +146,10 @@ islands use fused workgroups. Device-generated roots are numerical task IDs,
 not replacements for Sc's persistent island identities. The Scene prepares kinematic target velocities after PCM submission,
 before Sc joins its witness stream; these changes remain covered by the
 frame's motion journal. Solver-body admission still follows accurate island
-reconciliation. For closed PCM contact graphs without 1D constraints or legacy Gu
-producers, Sc compacts responding ActorIDs into frame-local node ordinals
-and submits accurate-island admission with stable EdgeIndices and candidate
-ordinals before the host GPU witness join. When bounded CPU primitive Gu
+reconciliation. For closed PCM contact and connected 1D joint graphs, Sc compacts
+responding ActorIDs into frame-local node ordinals and submits accurate
+island admission with stable EdgeIndices and source ordinals before the
+host GPU witness join. When bounded CPU primitive Gu
 produces some PCM records, admission is queued after those host records
 publish physical touch into the same device journal. Unrelated scene
 actors never enlarge the resident numerical graph.
@@ -159,9 +159,10 @@ remaps the device body order in place against the full Dy row capacity;
 Dy consumes the same admitted tasks without a second graph dispatch or
 topology readback.
 Contact-only tasks require an admitted response, so empty PCM candidates
-do not produce solver work. Mixed ordinary CPU Gu and GPU PCM contact
+do not produce solver work. Mixed ordinary CPU Gu and GPU PCM contact/joint
 graphs also admit before the GPU witness join, after CPU Gu publishes
-its EdgeIndex touch/loss journal. Sc defers GPU witness publication
+its EdgeIndex touch/loss journal. The deferred submission retains the
+provisional joint-source capacity until Dy resolves final joint rows. Sc defers GPU witness publication
 until all such Gu producers complete, regardless of their encounter order.
 Joint graphs admit stable Sc edge identities with the same early contact
 graph. Their provisional joint-source ordinals are resolved to prepared Dy

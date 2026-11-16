@@ -5198,7 +5198,8 @@ void Scene::update_contacts(bool defer_device_points,float inverse_step) {
             // admission, while the GPU witness DMA remains unjoined.
             gpu_broadphase_->enqueue_gpu_dy_island_admission(
                 gpu_dy_island_edges_,gpu_dy_island_node_flags_,
-                {static_cast<std::uint32_t>(previous_pairs_.size()),0u,0u},
+                {static_cast<std::uint32_t>(previous_pairs_.size()),
+                 static_cast<std::uint32_t>(gpu_dy_early_joint_edges_.size()),0u},
                 true);
             gpu_dy_early_islands_=true;
         }

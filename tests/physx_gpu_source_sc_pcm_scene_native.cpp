@@ -4259,7 +4259,7 @@ void verify_dy_execution_switch(
 void verify_mixed_gu_pcm_gpu_dy_solver(
     fyzz::compute::Backend backend,const char* sap,
     const char* pcm,const char* dy_shader,
-    bool device_admission=false) {
+    bool device_admission=false,bool with_joint=false) {
     using namespace fyzz;
     std::ifstream input(dy_shader,std::ios::binary);
     require(bool(input),"Compiled mixed Gu/PCM Dy shader missing");
@@ -4327,6 +4327,12 @@ void verify_mixed_gu_pcm_gpu_dy_solver(
             add_pcm_contact();
             add_plane_contact();
         }
+        if(with_joint) {
+            cpu.create_center_distance_constraint(
+                pcm_static_cpu,moving_cpu[1],0.84f);
+            gpu.create_center_distance_constraint(
+                pcm_static_gpu,moving_gpu[1],0.84f);
+        }
         // A speculative GPU PCM pair with no physical touch reserves
         // no published Gu rows, even when mixed legacy Gu generation
         // runs after a different GPU pair in source order.
@@ -4368,6 +4374,16 @@ void verify_mixed_gu_pcm_gpu_dy_solver(
                         verify_device_partition_source(gpu);
                 native::GpuPcmFrictionAnchorFixture::
                     verify_device_admitted_contact_sources(gpu);
+                if(with_joint) {
+                    const auto tokens=
+                        producer->gpu_dy_admitted_response_tokens();
+                    const auto count=std::count_if(
+                        tokens.begin(),tokens.end(),[](std::uint32_t token) {
+                            return (token>>30u)==2u;
+                        });
+                    require(count==1u,
+                        "Mixed CPU Gu/PCM admission lost the typed joint response");
+                }
             }
             if(device_admission && !plane_first && frame==0u) {
                 bool shifted=false;
@@ -6822,8 +6838,12 @@ int main(int argc,char** argv) {
                     backend,argv[1],argv[2],argv[3]);});
         if(scenario=="device_admission_mixed_scene")
             fyzz::tests::measure_gpu_case("sc_pcm","device_admission_mixed_scene",
-                [&]{verify_mixed_gu_pcm_gpu_dy_solver(
-                    backend,argv[1],argv[2],argv[3],true);});
+                [&]{
+                    verify_mixed_gu_pcm_gpu_dy_solver(
+                        backend,argv[1],argv[2],argv[3],true);
+                    verify_mixed_gu_pcm_gpu_dy_solver(
+                        backend,argv[1],argv[2],argv[3],true,true);
+                });
         if(scenario=="all" || scenario=="distance_solver")
             fyzz::tests::measure_gpu_case("sc_pcm","distance_solver",
                 [&]{verify_gpu_distance_solver(
