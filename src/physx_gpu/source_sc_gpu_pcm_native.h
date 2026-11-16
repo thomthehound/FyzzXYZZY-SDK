@@ -559,6 +559,24 @@ public:
             }else gpu_downloads_.push_back({
                 mapped.buffer,mapped.offset,output.data()+first,bytes});
         }
+        if(defer_points)
+            for(std::size_t i=0u;i<pair_count;) {
+                if(requests[i].host_generated ||
+                   !requests[i].eager_host_witness) {
+                    ++i;
+                    continue;
+                }
+                const auto first=i;
+                do {++i;}while(i<pair_count &&
+                    !requests[i].host_generated &&
+                    requests[i].eager_host_witness);
+                const auto stride=sizeof(native::GpuPcmBoxResult);
+                const auto bytes=(i-first)*stride;
+                const auto mapped=addresses_.resolve(
+                    dense_contacts_.getDevicePtr()+first*stride,bytes);
+                gpu_downloads_.push_back({
+                    mapped.buffer,mapped.offset,output.data()+first,bytes});
+            }
         pcm_transaction_pending_=true;
         result_pending_=true;
         pending_requests_=requests;
@@ -776,7 +794,8 @@ public:
                 if(!requests[i].host_generated) {
                     std::memcpy(&output[i],&header_records_[i],
                                 sizeof(PcmHeader));
-                    output[i].normal={};
+                    if(!requests[i].eager_host_witness)
+                        output[i].normal={};
                 }
         for(const auto& span:gpu_downloads_) {
             last_contact_download_bytes_+=span.bytes;
@@ -816,13 +835,15 @@ public:
             // GPU managers own world points that need late public transfer.
             // Contiguous touching runs stay one DMA span each.
             for(std::size_t i=0u;i<journal_pair_count_;) {
-                if(requests[i].host_generated || output[i].count()==0u) {
+                if(requests[i].host_generated ||
+                   requests[i].eager_host_witness || output[i].count()==0u) {
                     ++i;
                     continue;
                 }
                 const auto first=i;
                 do {++i;}while(i<journal_pair_count_ &&
-                    !requests[i].host_generated && output[i].count()!=0u);
+                    !requests[i].host_generated &&
+                    !requests[i].eager_host_witness && output[i].count()!=0u);
                 constexpr auto touch_bytes=
                     offsetof(native::GpuPcmBoxResult,normal);
                 const auto bytes=(i-first)*sizeof(native::GpuPcmBoxResult)-
