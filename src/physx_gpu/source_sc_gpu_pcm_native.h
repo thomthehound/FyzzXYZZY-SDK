@@ -739,13 +739,14 @@ public:
             node_count?island_nodes_.getDevicePtr():0u,
             island_work_.getDevicePtr(),
             node_count,edge_count,edge_capacity,sources);
-        // Reuse the PCM indirect resource once its earlier launches
-        // have completed on this ordered queue.
-        stream_.queue_device_copy(
-            indirect_address_,
-            island_work_.getDevicePtr()+
-                offsetof(SourceScDeviceIslandHeader,dispatch_x),
-            sizeof(compute::DispatchSize));
+        // Early admission does not publish numerical dispatch arguments
+        // until the actor rows have been remapped and validated.
+        if(!early)
+            stream_.queue_device_copy(
+                indirect_address_,
+                island_work_.getDevicePtr()+
+                    offsetof(SourceScDeviceIslandHeader,dispatch_x),
+                sizeof(compute::DispatchSize));
         // Early admission starts before Sc's GPU witness join. Its
         // submission remains ordered with PCM and later Dy remapping,
         // without creating another CPU observation or host fence.
@@ -768,6 +769,11 @@ public:
             stream_,addresses_,island_nodes_.getDevicePtr(),
             island_work_.getDevicePtr(),
             island_node_count_,island_edge_count_);
+        stream_.queue_device_copy(
+            indirect_address_,
+            island_work_.getDevicePtr()+
+                offsetof(SourceScDeviceIslandHeader,dispatch_x),
+            sizeof(compute::DispatchSize));
     }
     void discard_device_islands() noexcept {island_work_ready_=false;}
     CudaDeviceAddressMap::Address device_island_work_address() const noexcept {
