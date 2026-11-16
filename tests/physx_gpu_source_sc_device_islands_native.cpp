@@ -353,21 +353,25 @@ void verify(Context& context,const char* filename) {
         std::vector<SourceScDeviceIslandEdge> mixed;
         mixed.reserve(edge_count);
         std::vector<std::uint32_t> touching((edge_count+1u)/2u,1u);
+        std::uint32_t excluded=0u;
         for(std::uint32_t i=0u;i<edge_count;++i) {
             const bool joint=(i&1u)!=0u;
+            const bool no_response=!joint && i%8u==0u;
+            excluded+=no_response?1u:0u;
             const auto source=i/2u;
             mixed.push_back({
                 joint?500u+i:source,0u,invalid,source,
-                joint?source_sc_device_island_joint_bit:0u});
+                joint?source_sc_device_island_joint_bit:
+                    (no_response?source_sc_device_island_no_response_bit:0u)});
         }
         const auto result=evaluate(1u,mixed,touching,
             {4u|source_sc_device_island_active_bit});
         no_errors(result);
         check_task_mapping(result);
         require(header(result).runnable_components==1u &&
-                header(result).admitted_edges==edge_count &&
-                task_edges(result,0u)==edge_count,
-            "Device Sc mixed contact/joint admission changed at workgroup limit");
+                header(result).admitted_edges==edge_count-excluded &&
+                task_edges(result,0u)==edge_count-excluded,
+            "Device Sc typed response admission changed at workgroup limit");
     }
 
     std::vector<SourceScDeviceIslandEdge> edges{
