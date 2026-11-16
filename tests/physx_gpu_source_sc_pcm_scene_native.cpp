@@ -3198,15 +3198,33 @@ void verify_early_pcm_island_pipeline(
         b[i]=gpu.add_dynamic_box(
             {0.5f,0.5f,0.5f},{x,0.83f,0.f},1.f);
     }
-    // Static actors separate the stable ActorIDs from the dense Dy rows.
-    // Both contact islands still execute in one source task batch.
+    // A speculative candidate that separates in Gu must not acquire a
+    // GPU numerical task or consume a dense solver-row identity.
+    const auto add_non_touching=[](native::Scene& scene) {
+        const Vec3 center{10.f,1.f,0.f};
+        const Vec3 other{11.08f,2.08f,0.f};
+        const Quat tilt{0.f,0.f,0.382683432f,0.923879533f};
+        const auto moving=scene.add_dynamic_box(
+            {0.5f,0.5f,0.5f},center,1.f);
+        const auto fixed=scene.add_static_box(
+            {0.5f,0.5f,0.5f},other);
+        scene.set_pose(fixed,other,tilt);
+        RigidBodyDynamics dynamics{};
+        dynamics.gravity_enabled=false;
+        scene.set_dynamics(moving,dynamics);
+    };
+    add_non_touching(cpu);
+    add_non_touching(gpu);
+    // Static actors separate stable ActorIDs from the dense Dy rows.
+    // Only physically touching candidates acquire numerical task ranges.
     for(std::uint32_t frame=0u;frame<3u;++frame) {
         cpu.step(1.f/120.f);
         gpu.step(1.f/120.f);
         native::GpuPcmFrictionAnchorFixture::
             verify_pre_witness_device_admission(gpu);
         const auto schedule=device->dy_launch_stats();
-        require(gpu.contacts().size()==2u &&
+        require(gpu.pairs().size()==3u &&
+                gpu.contacts().size()==2u &&
                 cpu.contacts().size()==2u &&
                 schedule.device_island_indirect_dispatches==1u &&
                 schedule.device_admitted_tasks==2u &&
