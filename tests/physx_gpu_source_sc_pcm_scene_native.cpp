@@ -629,6 +629,18 @@ struct GpuPcmFrictionAnchorFixture {
                         "GPU Dy PCM capacity disagrees with published Gu contacts");
                 pcm_count+=manager.count;
                 numerical_end+=capacity;
+                const auto patchIndex=manager.friction_patch_offset;
+                if(patchIndex>=scene.gpu_dy_patches_.size())
+                    throw std::runtime_error(
+                        "Device PCM numerical patch has no result");
+                const auto& patch=scene.gpu_dy_patches_[patchIndex];
+                const auto extent=patch.reserved;
+                if(patch.contact_count!=manager.count ||
+                   (extent&physx_gpu::source_dy_pcm_extent_valid_bit)==0u ||
+                   ((extent>>physx_gpu::source_dy_pcm_extent_shift)&
+                      physx_gpu::source_dy_pcm_extent_count_mask)!=manager.count)
+                    throw std::runtime_error(
+                        "Dy used host contact counts instead of resident PCM extents");
             }
         }
         if(numerical_end!=scene.prepared_contact_rows_)
