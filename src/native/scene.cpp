@@ -4399,8 +4399,8 @@ void Scene::update_contacts(bool defer_device_points,float inverse_step) {
             }
         }
     };
-    // Authored coefficients are admitted before GPU contact work.
-    // A rejected material cannot start an incomplete PCM device epoch.
+    // Source numerical coefficients do not depend on PCM witnesses.
+    // Prepare them once before submission for Sc's contact and Dy consumers.
     const bool early_pcm_materials=source_gpu_pcm &&
         gpu_broadphase_->has_gpu_dy_distance();
     if(early_pcm_materials)
