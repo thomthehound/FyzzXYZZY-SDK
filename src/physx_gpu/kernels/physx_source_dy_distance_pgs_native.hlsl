@@ -476,7 +476,7 @@ bool sourceDyExpandDescriptor(uint token,uint extent,
                                     (begin+i)*4u,0u);
                 }
                 // Exact PCM extent shares the existing patch-result word.
-                if(singlePatch && (p.launchControl&0x08000000u)!=0u)
+                if(singlePatch)
                     arena.Store(p.writebackBias+p.resultPatchOffset+
                                 patchIndex*4u,
                                 sourceDyPcmExtentValid|(emitted<<sourceDyPcmExtentShift));
