@@ -2227,6 +2227,8 @@ private:
     std::vector<GpuDyContactManifold> gpu_dy_manifolds_;
     std::vector<std::uint32_t> gpu_dy_contact_order_;
     std::vector<GpuDyContactPrepPair> gpu_dy_contact_prep_pairs_;
+    // Pre-PCM candidate ordinals index prepared contact pairs; empty
+    // candidate slots never acquire a numerical preparation.
     std::vector<std::uint32_t> gpu_dy_contact_prep_indices_;
     // retired slots never participate in the SAP workload again. Keep
     // registration in insertion order; retirement erases only its live

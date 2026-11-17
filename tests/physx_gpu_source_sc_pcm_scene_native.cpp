@@ -318,7 +318,7 @@ struct GpuPcmFrictionAnchorFixture {
                     "Resident PCM numerical material lost its source EdgeIndex");
             const auto& material=scene.gpu_pcm_pairs_[index].numerical;
             const auto prep_index=scene.gpu_dy_contact_prep_indices_[
-                static_cast<std::size_t>(&manifold-scene.manifolds_.data())];
+                manifold.candidate_ordinal];
             if(prep_index>=scene.gpu_dy_contact_prep_pairs_.size())
                 throw std::runtime_error(
                     "Resident PCM material did not enter numerical contact prep");
@@ -736,6 +736,11 @@ struct GpuPcmFrictionAnchorFixture {
         }
     }
     static void verify_pcm_candidate_ownership(const Scene& scene) {
+        if(scene.gpu_dy_active() &&
+           scene.gpu_dy_contact_prep_indices_.size()!=
+               scene.previous_pairs_.size())
+            throw std::runtime_error(
+                "Dy contact preparation does not index original Sc candidates");
         std::uint32_t last=0u;
         bool first=true;
         for(const auto& request:scene.gpu_pcm_pairs_) {
@@ -751,6 +756,24 @@ struct GpuPcmFrictionAnchorFixture {
                     "Pre-witness PCM candidate lost its original Sc ordinal");
             first=false;
             last=source;
+        }
+        if(scene.gpu_dy_active()) {
+            for(std::size_t source=0u;source<scene.previous_pairs_.size();
+                ++source) {
+                const auto index=scene.gpu_dy_contact_prep_indices_[source];
+                const bool prepared=index!=0xffffffffu;
+                bool responding=false;
+                for(const auto& manager:scene.manifolds_)
+                    if(manager.candidate_ordinal==source &&
+                       manager.friction_patch_count!=0u) {
+                        responding=true;
+                        break;
+                    }
+                if(prepared!=responding ||
+                   (prepared && index>=scene.gpu_dy_contact_prep_pairs_.size()))
+                    throw std::runtime_error(
+                        "Dy populated a nonresponding candidate preparation");
+            }
         }
     }
     static bool had_early_friction_history(const Scene& scene) {

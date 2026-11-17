@@ -8097,7 +8097,7 @@ void Scene::prepare_constraints(float seconds) {
     const bool gpu_normal_prep=gpu_dy_active();
     gpu_dy_contact_prep_pairs_.clear();
     if(gpu_normal_prep)
-        gpu_dy_contact_prep_indices_.assign(manifolds_.size(),0xffffffffu);
+        gpu_dy_contact_prep_indices_.assign(previous_pairs_.size(),0xffffffffu);
     solver_kinematic_participant_=false;
     for(EdgeIndex edge_id:indexed_joints_) {
         const auto& edge=island_edges_[edge_id];
@@ -8811,7 +8811,14 @@ void Scene::prepare_constraints(float seconds) {
                 prep.cpu_gu_offset=static_cast<std::uint32_t>(
                     gpu_dy_gu_inputs_.size());
             }
-            gpu_dy_contact_prep_indices_[manager_index]=
+            const auto source=manifold.candidate_ordinal;
+            if(source>=gpu_dy_contact_prep_indices_.size() ||
+               !(previous_pairs_[source]==manifold.pair) ||
+               active_edge_handles_[source]!=edge ||
+               gpu_dy_contact_prep_indices_[source]!=0xffffffffu)
+                throw std::logic_error(
+                    "Source GPU contact prep lost its original Sc candidate");
+            gpu_dy_contact_prep_indices_[source]=
                 static_cast<std::uint32_t>(gpu_dy_contact_prep_pairs_.size());
             gpu_dy_contact_prep_pairs_.push_back(prep);
         }
@@ -9467,7 +9474,11 @@ void Scene::solve_gpu_distance_constraints(float seconds) {
         if(m.solver_offset>gpu_dy_contact_forces_.size() ||
            m.count>gpu_dy_contact_forces_.size()-m.solver_offset)
             throw std::logic_error("Source GPU contact preparation range invalid");
-        const auto prep_index=gpu_dy_contact_prep_indices_[manager_index];
+        const auto source=m.candidate_ordinal;
+        if(source>=gpu_dy_contact_prep_indices_.size())
+            throw std::logic_error(
+                "GPU Dy contact source exceeds original candidate table");
+        const auto prep_index=gpu_dy_contact_prep_indices_[source];
         if(prep_index>=gpu_dy_contact_prep_pairs_.size())
             throw std::logic_error("Source GPU Dy contact pair index invalid");
         const auto& prep=gpu_dy_contact_prep_pairs_[prep_index];
@@ -9536,12 +9547,12 @@ void Scene::solve_gpu_distance_constraints(float seconds) {
            m.solver_offset>prepared_contact_rows_ ||
            numerical_count>prepared_contact_rows_-m.solver_offset)
             throw std::logic_error("GPU Dy contact row window invalid");
-        if(manager_index>=gpu_dy_contact_prep_indices_.size() ||
-           gpu_dy_contact_prep_indices_[manager_index]==0xffffffffu)
-            throw std::logic_error("Source GPU contact pair was not prepared");
         const auto source=resident_pcm
             ?gpu_pcm_pairs_[m.pcm_result_index].candidate_ordinal
             :m.candidate_ordinal;
+        if(source>=gpu_dy_contact_prep_indices_.size() ||
+           gpu_dy_contact_prep_indices_[source]==0xffffffffu)
+            throw std::logic_error("Source GPU candidate has no contact preparation");
         if(source!=m.candidate_ordinal ||
            source>=gpu_dy_manifolds_.size() ||
            !(previous_pairs_[source]==m.pair) ||
@@ -9551,7 +9562,7 @@ void Scene::solve_gpu_distance_constraints(float seconds) {
         gpu_dy_manifolds_[source]={
             narrow(m.friction_patch_offset),m.friction_patch_count,
             narrow(m.solver_offset),narrow(numerical_count),
-            gpu_dy_contact_prep_indices_[manager_index]};
+            gpu_dy_contact_prep_indices_[source]};
         std::size_t cursor=m.solver_offset;
         for(std::size_t i=m.friction_patch_offset;
             i<m.friction_patch_offset+m.friction_patch_count;++i) {
