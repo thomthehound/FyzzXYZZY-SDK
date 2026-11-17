@@ -485,7 +485,10 @@ bool sourceDyExpandDescriptor(uint token,uint extent,
             } else if((p.launchControl&0x08000000u)!=0u) {
                 const uint first=arena.Load(manager);
                 const uint count=arena.Load(manager+4u);
-                if(first>p.patchCount || count>p.patchCount-first) {
+                const uint contacts=arena.Load(manager+12u);
+                if((extent&0x80000000u)==0u ||
+                   (extent&255u)!=contacts ||
+                   first>p.patchCount || count>p.patchCount-first) {
                     sourceDyTaskErrorOr(errorAddress,65536u);
                     return false;
                 }
