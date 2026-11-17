@@ -369,7 +369,7 @@ public:
            (joint_source_count && !joint_row_capacity) ||
            layout.bytes>max_view_)
             throw std::invalid_argument("Missing Sc numerical remap resource");
-        std::array<std::uint32_t,28> args{};
+        std::array<std::uint32_t,29> args{};
         const auto bytes=source_allocation_bytes(
             std::uint64_t(node_count)+joint_source_count,4u);
         compute::DispatchCommand dispatch{};
