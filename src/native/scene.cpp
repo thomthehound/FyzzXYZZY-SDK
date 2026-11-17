@@ -8908,8 +8908,17 @@ void Scene::prepare_constraints(float seconds) {
             native::GpuDyContactPrepPair prep{};
             prep.source_body0=id0;
             prep.source_body1=id1;
-            pack_body(prep.body0,a);
-            pack_body(prep.body1,b);
+            // Dynamic endpoints already have resident actor-local motion,
+            // inertia and pose. The source packer needs only their ordinal
+            // and mass; static and kinematic endpoints retain inline data.
+            const bool resident0=actor0.motion==Motion::Dynamic &&
+                !actor0.sleeping;
+            const bool resident1=actor1.motion==Motion::Dynamic &&
+                !actor1.sleeping;
+            if(resident0)prep.body0.inverse_mass=actor0.inverse_mass;
+            else pack_body(prep.body0,a);
+            if(resident1)prep.body1.inverse_mass=actor1.inverse_mass;
+            else pack_body(prep.body1,b);
             // The prepared contact endpoints already own their solver
             // rows. Compact Dy descriptors omit duplicate row indices.
             const auto pack_ordinal=[&](native::GpuDyContactPrepBody& out,
@@ -8935,8 +8944,8 @@ void Scene::prepare_constraints(float seconds) {
                 out.orientation[0]=q.x;out.orientation[1]=q.y;
                 out.orientation[2]=q.z;out.orientation[3]=q.w;
             };
-            pack_pose(prep.body0,actor0);
-            pack_pose(prep.body1,actor1);
+            if(!resident0)pack_pose(prep.body0,actor0);
+            if(!resident1)pack_pose(prep.body1,actor1);
             prep.rest_distance=rest_distance;
             prep.pair_slop=pair_slop;
             prep.restitution=restitution;

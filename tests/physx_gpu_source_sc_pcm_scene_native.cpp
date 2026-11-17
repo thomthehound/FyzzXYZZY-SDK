@@ -570,6 +570,29 @@ struct GpuPcmFrictionAnchorFixture {
            !scene.solver_friction_rows_.empty())
             throw std::runtime_error(
                 "GPU Dy duplicated CPU numerical contact rows or lost Gu order");
+        for(const auto& prep:scene.gpu_dy_contact_prep_pairs_) {
+            const auto verify=[&](const GpuDyContactPrepBody& endpoint,
+                                  BodyId id) {
+                const auto& actor=scene.actors_[id];
+                if(actor.motion!=Scene::Motion::Dynamic ||
+                   actor.sleeping)return;
+                const auto cleared=[](const auto& values) {
+                    return std::all_of(std::begin(values),std::end(values),
+                                       [](float value){return value==0.0f;});
+                };
+                if(endpoint.inverse_mass!=actor.inverse_mass ||
+                   endpoint.solver_ordinal>=scene.solver_rows_.size() ||
+                   !cleared(endpoint.position) ||
+                   !cleared(endpoint.linear_velocity) ||
+                   !cleared(endpoint.angular_velocity) ||
+                   !cleared(endpoint.sqrt_inverse_inertia) ||
+                   !cleared(endpoint.orientation))
+                    throw std::runtime_error(
+                        "GPU Dy contact preparation duplicated resident body motion");
+            };
+            verify(prep.body0,prep.source_body0);
+            verify(prep.body1,prep.source_body1);
+        }
     }
     static bool had_early_friction_history(const Scene& scene) {
         const auto& masks=scene.gpu_pcm_friction_history_masks_;

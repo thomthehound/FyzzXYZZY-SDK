@@ -193,7 +193,10 @@ GPU 1D constraints author their numerical rows and joint geometry in
 the device input stream. The CPU PGS JointRow arena is not reserved or
 populated on GPU frames. Native GPU world motion reads inverse mass from
 the actor-local integration input, not a second Sc-authored body array;
-the transient body span only provides the Dy result count.
+the transient body span only provides the Dy result count. Contact-manager
+inputs likewise carry only the dynamic endpoint ordinal and inverse mass;
+full inline motion and mass-frame data are prepared only for non-dynamic
+endpoints that do not own a resident Dy solver body.
 The GPU Dy path fetches 8 bytes of edge/touch metadata for ordinary
 GPU pairs before numerical admission. Managers with multiple
 geometrically valid, material-compatible retained friction patches fetch
