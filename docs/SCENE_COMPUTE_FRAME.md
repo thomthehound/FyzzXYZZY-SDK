@@ -175,8 +175,10 @@ candidates and joint-only islands share the same device graph; physical
 touch, not speculative overlap, determines runnable numerical responses.
 Sc stamps every PCM request with its original speculative candidate ordinal
 before Gu submission. Mixed CPU Gu scheduling, the early device response
-graph, and Dy's candidate-indexed manifold table consume that identity
-directly, including gaps where Gu publishes no contact manager. Joint graphs
+graph, and Dy's candidate-indexed manifold and contact-preparation tables
+consume that identity directly, including gaps where Gu publishes no contact
+manager. Only responding, prepared candidates own a contact-preparation entry;
+non-touching and zero-response candidate slots remain invalid. Joint graphs
 admit stable Sc edge identities with the same early contact graph. Their provisional joint-source ordinals are resolved to prepared Dy
 joint rows in the ordered node/response remap, without rebuilding GPU
 connectivity or task ranges. CPU Sc still owns the committed island graph
