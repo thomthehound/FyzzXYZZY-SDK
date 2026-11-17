@@ -4308,50 +4308,8 @@ void Scene::update_contacts(bool defer_device_points,float inverse_step) {
     }
     const bool source_device_gu_history=source_gpu_pcm &&
         gpu_broadphase_->has_gpu_dy_distance() && !gpu_pcm_pairs_.empty();
-    // Admit bounded CPU Gu classifications per manager, not only for
-    // primitive-only batches. Select at most four contiguous runs in
-    // source pair order to bound GPU upload and readback spans.
-    struct HostRun { std::size_t first=0u,end=0u; };
-    std::array<HostRun,4> host_runs{};
-    std::size_t host_run_count=0u;
-    std::size_t host_pair_count=0u;
-    if(source_gpu_pcm && gpu_broadphase_->supports_host_pcm_contacts()) {
-        const auto eligible=[this](const GpuPcmBoxPair& request) {
-            return request.candidate_complete &&
-                (request.candidate_capacity==1u ||
-                 (request.plane_pair &&
-                  request.candidate_capacity==16u &&
-                  shapes_[request.second].geometry==Geometry::Box));
-        };
-        for(std::size_t i=0u;i<gpu_pcm_pairs_.size();) {
-            if(!eligible(gpu_pcm_pairs_[i])) {
-                ++i;
-                continue;
-            }
-            const std::size_t first=i;
-            do { ++i; }while(i<gpu_pcm_pairs_.size() &&
-                           eligible(gpu_pcm_pairs_[i]));
-            if(host_run_count<host_runs.size())
-                host_runs[host_run_count++]={first,i};
-            else {
-                std::size_t shortest=0u;
-                for(std::size_t j=1u;j<host_run_count;++j)
-                    if(host_runs[j].end-host_runs[j].first<
-                       host_runs[shortest].end-host_runs[shortest].first)
-                        shortest=j;
-                if(i-first>host_runs[shortest].end-
-                           host_runs[shortest].first)
-                    host_runs[shortest]={first,i};
-            }
-        }
-        for(std::size_t j=0u;j<host_run_count;++j)
-            for(std::size_t i=host_runs[j].first;i<host_runs[j].end;++i) {
-                gpu_pcm_pairs_[i].host_generated=true;
-                ++host_pair_count;
-            }
-    }
     const bool gpu_results_pending=
-        source_gpu_pcm && host_pair_count<gpu_pcm_pairs_.size();
+        source_gpu_pcm && !gpu_pcm_pairs_.empty();
     // Legacy Gu after the first GPU witness can run while PCM executes.
     // Reserve those PCM runs in the original Gu arena and publish them
     // after the independent CPU generators have completed.
@@ -4374,9 +4332,7 @@ void Scene::update_contacts(bool defer_device_points,float inverse_step) {
         }
         return false;
     }();
-    FYZZ_PROFILE_COUNTER("pcm_gpu_witness_pairs",
-        gpu_pcm_pairs_.size()-host_pair_count);
-    FYZZ_PROFILE_COUNTER("pcm_host_witness_pairs",host_pair_count);
+    FYZZ_PROFILE_COUNTER("pcm_gpu_witness_pairs",gpu_pcm_pairs_.size());
     if(source_gpu_pcm && gpu_broadphase_->has_gpu_dy_distance() &&
        island_edges_.size()>std::numeric_limits<std::uint32_t>::max())
         throw std::overflow_error("Sc EdgeIndex watermark exceeds GPU history capacity");
@@ -4469,7 +4425,6 @@ void Scene::update_contacts(bool defer_device_points,float inverse_step) {
 
     // Compact responding candidates independently of the scene actor count.
     // Each CPU Gu source must publish physical touch before admission.
-    bool early_device_graph_awaits_host=false;
     bool early_device_graph_awaits_gu=false;
     // Deterministic task grouping already preserves individual islands.
     const bool early_device_graph=defer_device_points &&
@@ -4615,8 +4570,7 @@ void Scene::update_contacts(bool defer_device_points,float inverse_step) {
                 // All independent CPU Gu contacts finish before the PCM
                 // header join, irrespective of their Sc encounter order.
                 overlap_legacy_gu=true;
-            }else if(host_pair_count)early_device_graph_awaits_host=true;
-            else {
+            }else {
                 gpu_broadphase_->enqueue_gpu_dy_island_admission(
                     gpu_dy_island_edges_,gpu_dy_island_node_flags_,
                     {static_cast<std::uint32_t>(previous_pairs_.size()),
@@ -4644,88 +4598,6 @@ void Scene::update_contacts(bool defer_device_points,float inverse_step) {
     if(gpu_results_pending &&
        (island_topology_dirty_ || !found_.empty() || !lost_.empty()))
         update_island_connectivity(true);
-    if(host_pair_count) {
-        // The same Sc cache owns primitive witnesses even when this
-        // frame also schedules general device PCM contacts.
-        for(std::size_t i=0u;i<gpu_pcm_pairs_.size();++i) {
-            const auto& request=gpu_pcm_pairs_[i];
-            if(!request.host_generated)continue;
-            const Shape& first=shapes_[request.first];
-            const Shape& second=shapes_[request.second];
-            const Shape& sphere=first.geometry==Geometry::Sphere
-                ?first:second;
-            std::array<ContactPoint,4> points{};
-            std::uint8_t count=0u;
-            const float distance=first.contact_offset+second.contact_offset;
-            if(request.plane_pair &&
-               second.geometry==Geometry::Box) {
-                // Eight bounded corner tests and the original Sc
-                // persistent PCM cache determine the CPU contact run.
-                step_checkpoint_.save_edge(*this,request.edge);
-                auto& cache=island_edges_[request.edge].pcm_cache;
-                // The last GPU-only frame retained its witnesses in
-                // device Gu history, not this host cache. Regenerate
-                // host primitive witnesses from authoritative geometry.
-                if(cache.device_history)cache={};
-                count=generate_pcm_plane_box(
-                    first,second,distance,cache,points);
-                for(std::size_t j=0u;j<count;++j)
-                    points[j].normal={
-                        -points[j].normal.x,-points[j].normal.y,
-                        -points[j].normal.z};
-            }else if(request.plane_pair) {
-                // GPU plane contacts are already in Sc's final +Y
-                // orientation. The CPU-only Gu path reverses twice.
-                count=source_pcm_sphere_plane(
-                    sphere.position,sphere.radius,first.position.y,
-                    distance,points);
-            }else if(first.geometry==Geometry::Sphere &&
-                     second.geometry==Geometry::Sphere) {
-                count=source_pcm_sphere_sphere(
-                    first.position,first.radius,second.position,second.radius,
-                    distance,points);
-            }else {
-                const Shape& box=first.geometry==Geometry::Box?first:second;
-                count=source_pcm_sphere_box(
-                    sphere.position,sphere.radius,box.position,
-                    box.orientation,box.half_extents,distance,points);
-                if(count && first.geometry==Geometry::Box)
-                    points[0].normal={
-                        -points[0].normal.x,-points[0].normal.y,
-                        -points[0].normal.z};
-            }
-            auto& result=gpu_pcm_results_[i];
-            result={};
-            result.edge=request.edge;
-            result.set_primitive(count,request.previously_touching);
-            if(count) {
-                result.normal=points[0].normal;
-                for(std::size_t j=0u;j<count;++j)
-                    result.points[j]={
-                        points[j].position,points[j].separation};
-            }
-        }
-    }
-    if(source_gpu_pcm && host_pair_count) {
-        if(gpu_results_pending)
-            gpu_broadphase_->enqueue_host_pcm_contacts(
-                gpu_pcm_pairs_,gpu_pcm_results_);
-        else
-            gpu_broadphase_->upload_host_pcm_contacts(
-                gpu_pcm_pairs_,gpu_pcm_results_,
-                gpu_broadphase_->has_gpu_dy_distance()
-                    ?static_cast<std::uint32_t>(island_edges_.size()):0u);
-    }
-    if(early_device_graph_awaits_host) {
-        // The producer has queued both GPU PCM touch and host Gu touch.
-        // The single resident history is complete before island admission.
-        gpu_broadphase_->enqueue_gpu_dy_island_admission(
-            gpu_dy_island_edges_,gpu_dy_island_node_flags_,
-            {static_cast<std::uint32_t>(previous_pairs_.size()),
-             static_cast<std::uint32_t>(gpu_dy_early_joint_edges_.size()),0u},
-            true);
-        gpu_dy_early_islands_=true;
-    }
     FYZZ_PROFILE_COUNTER("sc.device_island_early",
         (gpu_dy_early_islands_ || early_device_graph_awaits_gu)?1u:0u);
     // Early-admitted Sc topology is independent of host PCM witnesses.
