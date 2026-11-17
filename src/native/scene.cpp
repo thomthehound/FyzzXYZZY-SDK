@@ -4400,9 +4400,8 @@ void Scene::update_contacts(bool defer_device_points,float inverse_step) {
         }
     };
     // Source numerical coefficients do not depend on PCM witnesses.
-    // Prepare them once before submission for Sc's contact and Dy consumers.
-    const bool early_pcm_materials=source_gpu_pcm &&
-        gpu_broadphase_->has_gpu_dy_distance();
+    // GPU Dy frames admit them once; CPU Dy uses its contact preparation.
+    const bool early_pcm_materials=source_gpu_pcm && gpu_dy_active();
     if(early_pcm_materials)
         for(auto& request:gpu_pcm_pairs_)
             request.numerical=prepare_contact_material(

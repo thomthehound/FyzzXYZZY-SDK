@@ -337,6 +337,12 @@ struct GpuPcmFrictionAnchorFixture {
                     "Resident PCM numerical preparation recombined contact inputs");
         }
     }
+    static void verify_cpu_dy_omits_device_materials(const Scene& scene) {
+        for(const auto& request:scene.gpu_pcm_pairs_)
+            if(request.numerical.prepared)
+                throw std::runtime_error(
+                    "CPU Dy prepared unused GPU PCM numerical materials");
+    }
     static bool has_early_device_admission(const Scene& scene) {
         return scene.gpu_dy_early_islands_;
     }
@@ -4513,6 +4519,12 @@ void verify_dy_execution_switch(
         cpu.step(1.f/120.f);
         gpu.step(1.f/120.f);
         gpu_dispatches+=schedule[frame]?1u:0u;
+        if(schedule[frame])
+            native::GpuPcmFrictionAnchorFixture::
+                verify_early_pcm_numerical_materials(gpu);
+        else
+            native::GpuPcmFrictionAnchorFixture::
+                verify_cpu_dy_omits_device_materials(gpu);
         require(producer->dy_distance_dispatch_count()==gpu_dispatches &&
                 (!schedule[frame] ||
                  producer->dy_pcm_device_contact_rows()>0u),
