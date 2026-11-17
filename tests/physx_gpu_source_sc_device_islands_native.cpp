@@ -177,7 +177,7 @@ void verify(Context& context,const char* filename) {
             if(joint_remap.empty() && edges.size()>node_count) {
                 const auto* last=std::get_if<DispatchCommand>(
                     &stream.commands().back());
-                require(last && last->groups[0]==
+                require(last && last->groups.x==
                         (std::uint64_t(node_count)+127u)/128u,
                     "Contact-only numerical remap dispatched unused response tokens");
             }
