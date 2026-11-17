@@ -3304,7 +3304,8 @@ void verify_world_device_island_admission(
     shader.bytes.assign(std::istreambuf_iterator<char>{input},
                         std::istreambuf_iterator<char>{});
     WorldOptions options{ExecutionMode::NativePortableGpu};
-    options.gpu_device_island_admission=true;
+    require(options.gpu_device_island_admission,
+        "Portable GPU worlds must enable source device admission");
     auto gpu=create_native_gpu_world(
         backend,load_native_gpu_sap_shaders(backend,sap),
         load_native_gpu_pcm_shaders(backend,pcm),std::move(shader),options);

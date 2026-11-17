@@ -67,9 +67,9 @@ struct WorldOptions {
     // diagnostic legacy-Gu comparisons; reference modes ignore these.
     bool pcm_plane_box = true;
     bool pcm_box_box = true;
-    // Explicit compact GPU island admission for hardware qualification.
-    // The existing Sc contact authority and rollback remain unchanged.
-    bool gpu_device_island_admission = false;
+    // NativePortableGpu admits responding Sc islands on the device.
+    // Sc retains contact publication and rollback ownership.
+    bool gpu_device_island_admission = true;
 };
 
 // Provider-neutral noncompliant contact material, matching PhysX
