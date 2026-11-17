@@ -44,7 +44,7 @@ void main(uint3 dispatch:SV_DispatchThreadID) {
         if(p.phase==6u) {
             const uint bits=pairInputs.Load(source+4u);
             checkpoint.Store2(journal,edgeCaches.Load2(cache));
-            edgeCaches.Store2(cache,uint2(bits&1u,(bits>>1u)&1u));
+            edgeCaches.Store2(cache,uint2(bits&0x2ff01u,(bits>>1u)&1u));
         }else edgeCaches.Store2(cache,checkpoint.Load2(journal));
         return;
     }
