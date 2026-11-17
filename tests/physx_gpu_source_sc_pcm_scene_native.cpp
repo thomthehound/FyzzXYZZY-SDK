@@ -4587,19 +4587,32 @@ void verify_plane_pcm_without_finite_pcm(
         contact_manager_edge(gpu,{box_support,g[1]});
     const auto sphere_edge=native::GpuPcmFrictionAnchorFixture::
         contact_manager_edge(gpu,{sphere_support,g[2]});
+    const auto expected_gu_touch=[&](std::uint32_t edge,
+                                     std::uint32_t prior) {
+        for(const auto& manager:gpu.contacts())
+            if(manager.edge_handle==edge) {
+                require(manager.count>0u && manager.count<=255u,
+                    "Finite Gu numerical contact extent is invalid");
+                return std::array<std::uint32_t,2>{
+                    0x20001u |
+                        (static_cast<std::uint32_t>(manager.count)<<8u),
+                    prior};
+            }
+        throw std::runtime_error("Finite Gu contact manager was not published");
+    };
     require(box_edge!=std::numeric_limits<std::uint32_t>::max() &&
             sphere_edge!=std::numeric_limits<std::uint32_t>::max() &&
             physx_gpu::SourceScDeviceIslandFixture::touch(
-                *source,box_edge)==std::array<std::uint32_t,2>{1u,0u} &&
+                *source,box_edge)==expected_gu_touch(box_edge,0u) &&
             physx_gpu::SourceScDeviceIslandFixture::touch(
-                *source,sphere_edge)==std::array<std::uint32_t,2>{1u,0u},
+                *source,sphere_edge)==expected_gu_touch(sphere_edge,0u),
         "Collision-only Scene did not publish finite Gu touch to device history");
     cpu.advance_collision(true);
     gpu.advance_collision(true);
     require(physx_gpu::SourceScDeviceIslandFixture::touch(
-                *source,box_edge)==std::array<std::uint32_t,2>{1u,1u} &&
+                *source,box_edge)==expected_gu_touch(box_edge,1u) &&
             physx_gpu::SourceScDeviceIslandFixture::touch(
-                *source,sphere_edge)==std::array<std::uint32_t,2>{1u,1u},
+                *source,sphere_edge)==expected_gu_touch(sphere_edge,1u),
         "Collision-only Scene did not preserve finite Gu touch history");
     for(unsigned frame=0u;frame<3u;++frame) {
         cpu.step(1.f/120.f);
@@ -4638,12 +4651,12 @@ void verify_plane_pcm_without_finite_pcm(
     require(native::GpuPcmFrictionAnchorFixture::
                 contact_manager_edge(gpu,{box_support,g[1]})==box_edge &&
             physx_gpu::SourceScDeviceIslandFixture::touch(
-                *source,box_edge)==std::array<std::uint32_t,2>{1u,0u},
+                *source,box_edge)==expected_gu_touch(box_edge,0u),
         "Recycled Gu EdgeIndex retained the retired manager's prior touch");
     cpu.advance_collision(true);
     gpu.advance_collision(true);
     require(physx_gpu::SourceScDeviceIslandFixture::touch(
-                *source,box_edge)==std::array<std::uint32_t,2>{1u,1u},
+                *source,box_edge)==expected_gu_touch(box_edge,1u),
         "Recycled Gu EdgeIndex did not preserve its new touching generation");
 }
 void verify_pcm_friction_normal_revalidation(
@@ -5076,8 +5089,11 @@ void verify_mixed_gu_pcm_gpu_dy_solver(
                     continue;
                 const auto touch=physx_gpu::SourceScDeviceIslandFixture::
                     touch(*producer,manager.edge_handle);
-                require(touch[0]==1u && touch[1]==(frame>0u?1u:0u),
-                    "CPU Gu touch was not journaled to the shared GPU EdgeIndex");
+                require(manager.count<=255u &&
+                        touch[0]==(0x20001u|
+                            (static_cast<std::uint32_t>(manager.count)<<8u)) &&
+                        touch[1]==(frame>0u?1u:0u),
+                    "CPU Gu contact extent was not journaled to the shared GPU EdgeIndex");
             }
             for(std::size_t i=0;i<cpu.solved_normal_impulses().size();++i) {
                 const auto expected=cpu.solved_normal_impulses()[i];
