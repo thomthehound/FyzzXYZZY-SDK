@@ -1147,6 +1147,27 @@ void prepareJointRows(uint4 desc,uint lane,uint endError) {
     }
 }
 
+// PCM determines active numerical rows even for Sc-packed Dy tasks.
+// The existing device-admitted descriptor path applies the same extent.
+void admitPcmContactExtents(uint begin,uint end,uint lane,uint endError) {
+    for(uint i=begin+lane;i<end;i+=128u) {
+        const uint4 desc=arena.Load4(p.descriptorBias+i*16u);
+        if(desc.w!=0u || desc.x>=p.manifoldCount)continue;
+        const uint manager=p.manifoldBias+desc.x*20u;
+        if(arena.Load(manager+4u)==0u)continue;
+        const uint prepIndex=arena.Load(manager+16u);
+        if(prepIndex>=p.prepCount) {
+            sourceDyTaskErrorOr(endError,65536u);
+            continue;
+        }
+        if(arena.Load(p.prepBias+prepIndex*64u+48u)==invalidBody)
+            continue;
+        uint4 resolved;
+        sourceDyExpandDescriptor(0xc0000000u|desc.x,0u,0u,0u,
+                                 endError,resolved);
+    }
+}
+
 void prepareNormals(uint begin,uint end,uint lane,uint endError) {
     for(uint i=begin+(lane>>2u);i<end;i+=32u) {
         uint4 desc=arena.Load4(p.descriptorBias+i*16u);
@@ -1807,6 +1828,14 @@ void main(uint3 group:SV_GroupID,uint3 lane:SV_GroupThreadID) {
         // dependencies, while tiled launches use the command stream's
         // device-wide dependencies between the same phases.
         if(fused || phase==normalTile) {
+            admitPcmContactExtents(
+                descriptors.x,descriptors.y,lane.x,endError);
+            AllMemoryBarrierWithGroupSync();
+            if(sourceDyTaskLoad(endError)!=0u) {
+                if(fused && lane.x==0u)
+                    publishTaskError(taskId,sourceDyTaskLoad(endError));
+                return;
+            }
             prepareNormals(descriptors.x,descriptors.y,lane.x,endError);
             if(!fused)return;
             AllMemoryBarrierWithGroupSync();
