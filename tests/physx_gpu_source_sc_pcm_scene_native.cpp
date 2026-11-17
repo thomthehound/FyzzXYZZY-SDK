@@ -340,6 +340,20 @@ struct GpuPcmFrictionAnchorFixture {
     static bool has_early_device_admission(const Scene& scene) {
         return scene.gpu_dy_early_islands_;
     }
+    static bool has_identity_device_body_order(const Scene& scene) {
+        if(!scene.gpu_dy_early_islands_ ||
+           !scene.gpu_dy_early_joint_edges_.empty() ||
+           scene.gpu_dy_early_actor_ids_.size()!=scene.solver_active_ids_.size())
+            return false;
+        for(std::size_t i=0u;i<scene.gpu_dy_early_actor_ids_.size();++i) {
+            const auto id=scene.gpu_dy_early_actor_ids_[i];
+            if(scene.actors_[id].solver_row_generation!=
+                   scene.solver_preparation_generation_ ||
+               scene.actors_[id].solver_row_index!=i)
+                return false;
+        }
+        return true;
+    }
     static void verify_pre_witness_device_admission(const Scene& scene) {
         const auto joints=scene.gpu_dy_early_joint_edges_.size();
         if(!scene.gpu_dy_early_islands_ ||
@@ -3490,7 +3504,7 @@ void verify_early_pcm_island_pipeline(
     fyzz::compute::Backend backend,const char* sap,
     const char* pcm,const char* dy_shader,
     bool mixed_host=false,bool with_joints=false,
-    bool enhanced_determinism=false) {
+    bool enhanced_determinism=false,bool identity_order=false) {
     using namespace fyzz;
     std::ifstream input(dy_shader,std::ios::binary);
     require(bool(input),"Source Dy shader bundle unavailable");
@@ -3546,8 +3560,10 @@ void verify_early_pcm_island_pipeline(
         dynamics.gravity_enabled=false;
         scene.set_dynamics(moving,dynamics);
     };
-    add_non_touching(cpu);
-    add_non_touching(gpu);
+    if(!identity_order) {
+        add_non_touching(cpu);
+        add_non_touching(gpu);
+    }
     BodyId host_cpu=0u,host_gpu=0u;
     if(mixed_host) {
         cpu.add_static_sphere(0.5f,{15.f,0.f,0.f});
@@ -3569,7 +3585,7 @@ void verify_early_pcm_island_pipeline(
                 verify_pre_witness_device_admission(gpu);
         const auto schedule=device->dy_launch_stats();
         const auto responding=mixed_host?3u:2u;
-        require(gpu.pairs().size()==responding+1u &&
+        require(gpu.pairs().size()==responding+(identity_order?0u:1u) &&
                 gpu.contacts().size()==responding &&
                 cpu.contacts().size()==responding &&
                 schedule.device_island_indirect_dispatches==
@@ -3582,6 +3598,11 @@ void verify_early_pcm_island_pipeline(
                 (!mixed_host || device->pcm_host_contact_upload_bytes()>=
                     sizeof(native::GpuPcmBoxResult)),
             "Pre-witness mixed PCM topology did not reach production device Dy");
+        if(identity_order)
+            require(native::GpuPcmFrictionAnchorFixture::
+                        has_identity_device_body_order(gpu) &&
+                    device->sc_island_remap_dispatch_count()==0u,
+                "Identity-ordered source Sc bodies still uploaded and dispatched a remap");
         const auto expected_found=frame==0u?responding:0u;
         require(gpu.found_contacts().size()==expected_found &&
                 gpu.lost_contacts().empty() &&
@@ -7134,6 +7155,9 @@ int main(int argc,char** argv) {
                         backend,argv[1],argv[2],argv[3],false,true);
                     verify_early_pcm_island_pipeline(
                         backend,argv[1],argv[2],argv[3],true,true);
+                    verify_early_pcm_island_pipeline(
+                        backend,argv[1],argv[2],argv[3],
+                        false,false,false,true);
                     verify_single_pcm_joint_island_admission(
                         backend,argv[1],argv[2],argv[3]);
                     verify_early_pcm_island_pipeline(
