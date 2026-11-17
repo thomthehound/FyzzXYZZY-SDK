@@ -1514,12 +1514,17 @@ public:
             if(!in_range(0u,16u) ||
                layout.tasks>layout.block_offsets ||
                layout.body_order>layout.response_tokens ||
-               layout.response_tokens>layout.bytes ||
+               layout.response_tokens>layout.response_extents ||
+               layout.response_extents>layout.bytes ||
                tasks.size_bytes()>layout.block_offsets-layout.tasks ||
                body_ordinals.size_bytes()>
                    layout.response_tokens-layout.body_order ||
-               descriptors.size()> (layout.bytes-layout.response_tokens)/
-                   sizeof(std::uint32_t))
+               descriptors.size()>
+                   (layout.response_extents-layout.response_tokens)/
+                       sizeof(std::uint32_t) ||
+               descriptors.size()>
+                   (layout.bytes-layout.response_extents)/
+                       sizeof(std::uint32_t))
                 throw std::out_of_range(
                     "Source Sc device admission capacity exceeds its typed stream");
         }
