@@ -174,6 +174,8 @@ World create_native_gpu_world(
         stages.convex_dy->bytes.empty()))
         throw std::invalid_argument(
             "Native GPU convex Dy requires compatible numerical Dy");
+    const bool numerical_admission=options.gpu_device_island_admission &&
+        stages.pcm.has_value() && stages.dy.has_value();
     return World(create_native_gpu_broadphase_backend(
         std::make_unique<physx_gpu::SourceScOwnedGpuBroadphaseNative>(
             backend,std::move(stages.sap),32768u,32768u,
@@ -181,7 +183,7 @@ World create_native_gpu_world(
             std::move(stages.dy),std::move(stages.convex_dy)),
         options.contact_notifications,options.enhanced_determinism,
         options.pcm_plane_box,options.pcm_box_box,
-        options.gpu_device_island_admission));
+        numerical_admission));
 }
 
 World create_native_gpu_world(
