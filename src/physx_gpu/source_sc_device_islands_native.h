@@ -92,7 +92,8 @@ struct SourceScDeviceIslandLayout {
     std::size_t counts=0u,admissions=0u,tasks=0u;
     std::size_t block_offsets=0u,block_tiles=0u;
     std::size_t response_primary=0u,response_scratch=0u;
-    std::size_t response_order=0u,body_order=0u,response_tokens=0u;
+    std::size_t response_order=0u,body_order=0u;
+    std::size_t response_tokens=0u,response_extents=0u;
     std::size_t radix_histogram=0u,bytes=0u;
     static std::uint32_t radix_passes(std::uint32_t nodes) noexcept {
         // Body, joint and contact identities share root-ordered
@@ -149,7 +150,10 @@ struct SourceScDeviceIslandLayout {
         result.response_tokens=static_cast<std::size_t>(
             align(std::uint64_t(result.body_order)+
                   std::uint64_t(node_count)*4u));
-        bytes=align(std::uint64_t(result.response_tokens)+
+        result.response_extents=static_cast<std::size_t>(
+            align(std::uint64_t(result.response_tokens)+
+                  std::uint64_t(edge_count)*4u));
+        bytes=align(std::uint64_t(result.response_extents)+
                     std::uint64_t(edge_count)*4u);
         if(bytes>std::numeric_limits<std::uint32_t>::max())
             throw std::out_of_range("Device Sc island work exceeds 32-bit view");
@@ -185,7 +189,7 @@ public:
         pipeline.storage_buffer_binding_count=4u;
         pipeline.storage_buffer_views.assign(
             4u,compute::StorageBufferViewKind::RawReadWrite);
-        pipeline.push_constant_bytes=112u;
+        pipeline.push_constant_bytes=116u;
         pipeline_=context_.create_compute_pipeline(pipeline);
 #if defined(FYZZXYZZY_PROFILE_GPU)
         context_.set_pipeline_profile_label(pipeline_,"sc.device_islands");
@@ -240,7 +244,7 @@ public:
         const auto touch_bytes=edge_capacity
             ?source_allocation_bytes(edge_capacity,240u):edge_bytes;
         const auto touch_address=edge_capacity?touch_history:edge_address;
-        std::array<std::uint32_t,28> args{};
+        std::array<std::uint32_t,29> args{};
         compute::DispatchCommand dispatch{};
         dispatch.pipeline=pipeline_;
         dispatch.buffers={
@@ -288,6 +292,7 @@ public:
         args[26]=sources.full_descriptors;
         args[27]=layout.block_tiles
             ?offset(layout.block_tiles,args[3]):args[8];
+        args[28]=offset(layout.response_extents,args[3]);
         dispatch.push_constants.resize(sizeof(args));
         // A bounded single-workgroup graph avoids the multi-dispatch
         // union, prefix and response-ordering schedule.
