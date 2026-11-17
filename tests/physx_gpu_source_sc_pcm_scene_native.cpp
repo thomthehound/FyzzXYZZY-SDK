@@ -4930,6 +4930,8 @@ void verify_mixed_gu_pcm_gpu_dy_solver(
             cpu.step(dt);
             gpu.step(dt);
             native::GpuPcmFrictionAnchorFixture::
+                verify_pcm_candidate_ownership(gpu);
+            native::GpuPcmFrictionAnchorFixture::
                 verify_early_pcm_numerical_materials(gpu);
             if(device_admission) {
                 if(frame==0u)
