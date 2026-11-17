@@ -1828,13 +1828,20 @@ void main(uint3 group:SV_GroupID,uint3 lane:SV_GroupThreadID) {
         // dependencies, while tiled launches use the command stream's
         // device-wide dependencies between the same phases.
         if(fused || phase==normalTile) {
-            admitPcmContactExtents(
-                descriptors.x,descriptors.y,lane.x,endError);
-            AllMemoryBarrierWithGroupSync();
-            if(sourceDyTaskLoad(endError)!=0u) {
-                if(fused && lane.x==0u)
-                    publishTaskError(taskId,sourceDyTaskLoad(endError));
-                return;
+            // Source response-token expansion already applies the PCM
+            // extent before coloring. Other Dy callers use this path.
+            const uint scratch=arena.Load(p.integrationBias+28u);
+            const uint recordBytes=devicePartitions && scratch!=0u
+                ?arena.Load(scratch):0u;
+            if(recordBytes!=24u && recordBytes!=32u) {
+                admitPcmContactExtents(
+                    descriptors.x,descriptors.y,lane.x,endError);
+                AllMemoryBarrierWithGroupSync();
+                if(sourceDyTaskLoad(endError)!=0u) {
+                    if(fused && lane.x==0u)
+                        publishTaskError(taskId,sourceDyTaskLoad(endError));
+                    return;
+                }
             }
             prepareNormals(descriptors.x,descriptors.y,lane.x,endError);
             if(!fused)return;
