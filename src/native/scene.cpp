@@ -4381,8 +4381,6 @@ void Scene::update_contacts(bool defer_device_points,float inverse_step) {
                 // Sc only compares the current normal against retained
                 // anchors whose material remains compatible.
                 auto& request=gpu_pcm_pairs_[i];
-                request.numerical=prepare_contact_material(
-                    request.first,request.second);
                 const auto& material=request.numerical;
                 if(material.max_contact_impulse==0.0f ||
                    material.disable_strong_friction)continue;
@@ -4401,6 +4399,14 @@ void Scene::update_contacts(bool defer_device_points,float inverse_step) {
             }
         }
     };
+    // Authored coefficients are admitted before GPU contact work.
+    // A rejected material cannot start an incomplete PCM device epoch.
+    const bool early_pcm_materials=source_gpu_pcm &&
+        gpu_broadphase_->has_gpu_dy_distance();
+    if(early_pcm_materials)
+        for(auto& request:gpu_pcm_pairs_)
+            request.numerical=prepare_contact_material(
+                request.first,request.second);
     validate_pcm_history(true);
     // Only selected normals cross early; the validated source history
     // remains available to Sc when the PCM header joins later.
@@ -4411,15 +4417,6 @@ void Scene::update_contacts(bool defer_device_points,float inverse_step) {
                 ?static_cast<std::uint32_t>(island_edges_.size()):0u,
             defer_device_points);
     validate_pcm_history(false);
-    // Contact coefficients use the already admitted source pair
-    // identities. Prepare them while PCM runs, before Sc observes touch.
-    const bool early_pcm_materials=source_gpu_pcm &&
-        gpu_broadphase_->has_gpu_dy_distance();
-    if(early_pcm_materials)
-        for(auto& request:gpu_pcm_pairs_)
-            if(!request.numerical.prepared)
-                request.numerical=prepare_contact_material(
-                    request.first,request.second);
     FYZZ_PROFILE_COUNTER("pcm.early_numerical_materials",
         early_pcm_materials?gpu_pcm_pairs_.size():0u);
 
