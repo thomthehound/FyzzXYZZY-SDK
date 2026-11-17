@@ -528,8 +528,10 @@ void growPcmFrictionAnchors(uint patchIndex,uint pairIndex,
     if(patch.y==0u) {
         arena.Store(history,0u);
         arena.Store(po+8u,0u);
-        arena.Store(p.writebackBias+p.resultPatchOffset+
-                    patchIndex*4u,0u);
+        const uint report=p.writebackBias+p.resultPatchOffset+
+            patchIndex*4u;
+        arena.Store(report,arena.Load(report)&
+            (sourceDyPcmExtentValid|(7u<<sourceDyPcmExtentShift)));
         return;
     }
     // The source PCM manager has one contiguous correlated contact run.
@@ -692,9 +694,8 @@ void growPcmFrictionAnchors(uint patchIndex,uint pairIndex,
         (normalChanged?0x200u:0u);
     const uint reportAddress=p.writebackBias+p.resultPatchOffset+
         patchIndex*4u;
-    if((p.launchControl&0x08000000u)!=0u)
-        report|=arena.Load(reportAddress)&
-            (sourceDyPcmExtentValid|(7u<<sourceDyPcmExtentShift));
+    report|=arena.Load(reportAddress)&
+        (sourceDyPcmExtentValid|(7u<<sourceDyPcmExtentShift));
     arena.Store(reportAddress,report);
 }
 
