@@ -174,6 +174,13 @@ void verify(Context& context,const char* filename) {
                                     joint_row_capacity,
                                     static_cast<std::uint32_t>(
                                         joint_remap.size()));
+            if(joint_remap.empty() && edges.size()>node_count) {
+                const auto* last=std::get_if<DispatchCommand>(
+                    &stream.commands().back());
+                require(last && last->groups[0]==
+                        (std::uint64_t(node_count)+127u)/128u,
+                    "Contact-only numerical remap dispatched unused response tokens");
+            }
         }
         stream.wait_at_fetch();
         std::vector<std::byte> bytes(layout.bytes);
@@ -491,6 +498,31 @@ void verify(Context& context,const char* filename) {
                 header(result).admitted_edges==edge_count-excluded,
             "Device Sc split-island response order changed at edge limit");
     }
+
+    // Dense all-contact components retain their device source tokens;
+    // only their compact ActorIDs require the final Dy body-row remap.
+    constexpr std::uint32_t contact_only_edges=129u;
+    std::vector<SourceScDeviceIslandEdge> contact_graph;
+    contact_graph.reserve(contact_only_edges);
+    for(std::uint32_t i=0u;i<contact_only_edges;++i)
+        contact_graph.push_back({i,0u,1u,i,0u});
+    const std::vector<std::uint32_t> contact_rows{9u,11u};
+    const auto contact_remap=evaluate(
+        2u,contact_graph,std::vector<std::uint32_t>(contact_only_edges,1u),
+        {0x10104u,0x104u},{},std::nullopt,contact_rows,16u);
+    no_errors(contact_remap);
+    require(header(contact_remap).runnable_components==1u &&
+            header(contact_remap).admitted_edges==contact_only_edges &&
+            load<std::uint32_t>(contact_remap.second,
+                contact_remap.first.body_order)==9u &&
+            load<std::uint32_t>(contact_remap.second,
+                contact_remap.first.body_order+4u)==11u,
+        "Dense contact-only admission lost its mapped body rows");
+    for(std::uint32_t i=0u;i<contact_only_edges;++i)
+        require(load<std::uint32_t>(contact_remap.second,
+                    contact_remap.first.response_tokens+i*4u)==
+                    (0xc0000000u|i),
+            "Contact-only remap altered a resident contact source token");
 
     std::vector<SourceScDeviceIslandEdge> edges{
         {0u,0u,1u,10u,0u}, // Contact: found

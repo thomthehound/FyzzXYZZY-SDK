@@ -204,6 +204,10 @@ join Dy's existing completion batch without another point-fetch fence
 on responding frames. A completed Dy numerical fence retires preceding
 source uploads and PCM readback submissions on the shared queue; PCM witness
 bytes remain unpublished until Sc joins or discards that readback.
+The late numerical remap dispatches contact-only graphs by body count;
+their contact and full-descriptor tokens already have final source
+identities and are not revisited. Device-joint graphs retain their typed
+row remap across the entire response stream.
 A continuous PCM-to-Dy numerical path without a host header dependency
 remains open; compact admission alone does not remove that synchronization.
 

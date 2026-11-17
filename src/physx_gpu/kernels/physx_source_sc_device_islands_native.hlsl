@@ -453,6 +453,7 @@ void main(uint3 thread:SV_DispatchThreadID,
                 work.Store(p.workBias+16u,0u);
             } else work.Store(p.bodyOrderBias+index*4u,row);
         }
+        if(p.fullDescriptorCount==0u)return;
         const uint responses=work.Load(p.workBias+12u);
         if(index<responses) {
             const uint address=p.tokenBias+index*4u;

@@ -396,7 +396,10 @@ public:
         if(!max_groups)
             throw std::logic_error("Device Sc remap has no compute groups");
         dispatch.push_constants.resize(sizeof(args));
-        const auto total=std::max(node_count,edge_count);
+        // Contact and full-descriptor tokens are already final. Only
+        // device-joint tokens can require a numerical source remap.
+        const auto total=joint_source_count
+            ?std::max(node_count,edge_count):node_count;
         for(std::uint64_t first=0u;first<total;) {
             const auto groups=std::min<std::uint64_t>(
                 max_groups,(std::uint64_t(total)-first+127u)/128u);
