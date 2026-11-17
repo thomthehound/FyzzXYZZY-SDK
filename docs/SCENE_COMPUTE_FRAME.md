@@ -179,11 +179,14 @@ connectivity or task ranges. CPU Sc still owns the committed island graph
 and the joint and contact publication lifetimes.
 The Scene joins GPU PCM headers for CPU friction correlation
 and reads back Dy scheduling and numerical results for publication.
-In mixed scenes where a CPU Gu manager follows GPU PCM in source pair
-order, Sc reserves bounded PCM witness slots in its existing contact arena,
-generates the remaining independent CPU Gu contacts before the PCM join,
-and compacts the arena back to source order. All-PCM scenes retain their
-single-pass publication path. In mixed late-Gu frames, Sc queues the
+When GPU Sc has already admitted an early numerical island graph, Sc
+reserves bounded PCM witness slots in its existing contact arena and
+continues CPU contact-manager preparation before joining PCM headers.
+Mixed CPU Gu frames also reserve these slots while the independent Gu
+producer completes. Both paths compact the exact GPU contact runs after
+the join, retaining Sc's source pair order and public event lifetimes.
+Other PCM frames retain their single-pass publication. Mixed late-Gu
+frames queue the
 CPU-generated physical-touch and loss journal before joining PCM's host
 witness, without waiting on that later device continuation.
 The GPU Dy path fetches 8 bytes of edge/touch metadata for ordinary

@@ -3392,6 +3392,12 @@ void verify_early_pcm_island_pipeline(
                 (!mixed_host || device->pcm_host_contact_upload_bytes()>=
                     sizeof(native::GpuPcmBoxResult)),
             "Pre-witness mixed PCM topology did not reach production device Dy");
+        const auto expected_found=frame==0u?responding:0u;
+        require(gpu.found_contacts().size()==expected_found &&
+                gpu.lost_contacts().empty() &&
+                cpu.found_contacts().size()==gpu.found_contacts().size() &&
+                cpu.lost_contacts().size()==gpu.lost_contacts().size(),
+            "Deferred Sc PCM witness publication changed contact event lifetime");
         if(mixed_host)
             test::compound_compare_state(
                 gpu.body_state(host_gpu),cpu.body_state(host_cpu),0.03f,

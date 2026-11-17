@@ -4728,6 +4728,12 @@ void Scene::update_contacts(bool defer_device_points,float inverse_step) {
     }
     FYZZ_PROFILE_COUNTER("sc.device_island_early",
         (gpu_dy_early_islands_ || early_device_graph_awaits_gu)?1u:0u);
+    // Early-admitted Sc topology is independent of host PCM witnesses.
+    // Reserve its source-order contact runs before joining GPU headers.
+    const bool defer_pcm_witness_join=
+        overlap_legacy_gu || gpu_dy_early_islands_;
+    FYZZ_PROFILE_COUNTER("pcm.witness_deferred",
+        defer_pcm_witness_join?1u:0u);
     bool gpu_results_joined=!gpu_results_pending;
     std::size_t gpu_pcm_index=0u;
     std::size_t old_cursor = 0;
@@ -4843,10 +4849,10 @@ void Scene::update_contacts(bool defer_device_points,float inverse_step) {
                     if(gpu_pcm_index>=gpu_pcm_results_.size())
                         throw std::logic_error(
                             "Source GPU PCM result lost Sc EdgeIndex order");
-                    if(overlap_legacy_gu &&
+                    if(defer_pcm_witness_join &&
                        !gpu_pcm_pairs_[gpu_pcm_index].host_generated) {
-                        // Reserve the geometry's maximum PCM run
-                        // in source order until independent Gu finishes.
+                        // Reserve the maximum GPU PCM run while independent
+                        // Sc work completes before the witness join.
                         const auto reservation=
                             gpu_pcm_pairs_[gpu_pcm_index].candidate_capacity==1u
                                 ?1u:4u;
@@ -5191,11 +5197,11 @@ void Scene::update_contacts(bool defer_device_points,float inverse_step) {
     // contacts before any GPU PCM result becomes visible to Sc.
     while(old_cursor<manifolds_.size())
         next_lost_contacts_.push_back(manifolds_[old_cursor++].pair);
-    if(overlap_legacy_gu) {
-        // CPU Gu already generated its live/lost touches while PCM ran.
-        // Publish their journal after the PCM readback submission, but
-        // before Sc waits for that earlier readback to complete.
-        publish_cpu_gu_touch_history(next_lost_contacts_,manifolds_);
+    if(defer_pcm_witness_join) {
+        // A mixed CPU Gu producer publishes touch before GPU admission.
+        // PCM-only frames retain their ordinary Sc touch publication.
+        if(overlap_legacy_gu)
+            publish_cpu_gu_touch_history(next_lost_contacts_,manifolds_);
         if(early_device_graph_awaits_gu) {
             // All CPU Gu physical transitions now precede this device
             // admission, while the GPU witness DMA remains unjoined.
@@ -5246,7 +5252,7 @@ void Scene::update_contacts(bool defer_device_points,float inverse_step) {
             else if(lost)next_lost_contacts_.push_back(manifold.pair);
         }
         // Keep Gu offsets and force writeback in source pair order.
-        // Compact only the mixed frames that reserved device witnesses.
+        // Compact the exact GPU PCM runs after their headers join.
         std::size_t point_end=0u,manager_end=0u;
         for(std::size_t i=0u;i<next_manifolds_.size();++i) {
             auto& manifold=next_manifolds_[i];
@@ -5306,7 +5312,7 @@ void Scene::update_contacts(bool defer_device_points,float inverse_step) {
     found_contacts_.swap(next_found_contacts_);
     lost_contacts_.swap(next_lost_contacts_);
     ++contact_epoch_;
-    // CPU Gu history was already queued for mixed late-Gu frames.
+    // Mixed CPU Gu history was already queued before the witness join.
     // Other frames publish after Sc completes its contact arena swap.
     if(!overlap_legacy_gu)
         publish_cpu_gu_touch_history(lost_contacts_,next_manifolds_);
