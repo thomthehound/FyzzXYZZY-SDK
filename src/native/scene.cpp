@@ -7840,7 +7840,15 @@ void Scene::partition_constraints() {
                 reversed?manifold.pair.b:manifold.pair.a].body;
             const BodyId second=shapes_[
                 reversed?manifold.pair.a:manifold.pair.b].body;
-            const bool admitted=admit(narrow_index(index),first,second,0u);
+            const auto source=gpu_integration
+                ?manifold.candidate_ordinal:narrow_index(index);
+            if(gpu_integration &&
+               (source>=previous_pairs_.size() ||
+                !(previous_pairs_[source]==manifold.pair) ||
+                active_edge_handles_[source]!=manifold.edge_handle))
+                throw std::logic_error(
+                    "GPU Dy contact descriptor lost Sc candidate identity");
+            const bool admitted=admit(source,first,second,0u);
             if(prepare_device_graph) {
                 if(manifold.candidate_ordinal>=previous_pairs_.size() ||
                    !(previous_pairs_[manifold.candidate_ordinal]==manifold.pair) ||
@@ -9462,10 +9470,9 @@ void Scene::solve_gpu_distance_constraints(float seconds) {
             "GPU Dy must consume only source-correlated friction anchors");
     gpu_dy_friction_impulses_.resize(gpu_dy_friction_anchors_.size());
     gpu_dy_patches_.resize(friction_patches_.size());
-    // Device admission addresses the pre-PCM candidate stream, including
-    // empty contacts; Sc's host task path still uses manifold indices.
-    gpu_dy_manifolds_.assign(
-        device_admission?previous_pairs_.size():manifolds_.size(),{});
+    // Every GPU task addresses the same pre-PCM candidate stream,
+    // including holes left by physically non-touching pairs.
+    gpu_dy_manifolds_.assign(previous_pairs_.size(),{});
     std::size_t explicit_order_cursor=0u;
     constexpr std::uint32_t device_contact_order=0x80000000u;
     const auto encode_normal=[](Vec3 n) -> std::uint32_t {
@@ -9508,12 +9515,10 @@ void Scene::solve_gpu_distance_constraints(float seconds) {
         if(manager_index>=gpu_dy_contact_prep_indices_.size() ||
            gpu_dy_contact_prep_indices_[manager_index]==0xffffffffu)
             throw std::logic_error("Source GPU contact pair was not prepared");
-        const auto source=device_admission
-            ?m.candidate_ordinal:narrow(manager_index);
+        const auto source=m.candidate_ordinal;
         if(source>=gpu_dy_manifolds_.size() ||
-           (device_admission &&
-            (!(previous_pairs_[source]==m.pair) ||
-             active_edge_handles_[source]!=m.edge_handle)))
+           !(previous_pairs_[source]==m.pair) ||
+           active_edge_handles_[source]!=m.edge_handle)
             throw std::logic_error(
                 "GPU Dy contact source differs from Sc candidate identity");
         gpu_dy_manifolds_[source]={
@@ -9583,13 +9588,22 @@ void Scene::solve_gpu_distance_constraints(float seconds) {
     // the otherwise unused manifold slots for device task admission.
     for(const auto& desc:ordered_constraints_) {
         if((desc.row_count&255u)!=0u)continue;
-        if(desc.index>=manifolds_.size())
-            throw std::logic_error("GPU Dy zero-response manager index invalid");
-        const auto& manifold=manifolds_[desc.index];
-        const auto source=device_admission
-            ?manifold.candidate_ordinal:desc.index;
-        if(source>=gpu_dy_manifolds_.size())
-            throw std::logic_error("GPU Dy zero-response source is not admitted");
+        const auto source=desc.index;
+        if(source>=gpu_dy_manifolds_.size() ||
+           source>=active_edge_handles_.size())
+            throw std::logic_error("GPU Dy zero-response candidate is not admitted");
+        const auto edge=active_edge_handles_[source];
+        if(edge>=manifold_by_edge_.size() ||
+           manifold_by_edge_[edge].generation!=manifold_lookup_generation_ ||
+           manifold_by_edge_[edge].index>=manifolds_.size())
+            throw std::logic_error(
+                "GPU Dy zero-response candidate has no Sc manager");
+        const auto& manifold=manifolds_[manifold_by_edge_[edge].index];
+        if(manifold.candidate_ordinal!=source ||
+           manifold.edge_handle!=edge ||
+           !(manifold.pair==previous_pairs_[source]))
+            throw std::logic_error(
+                "GPU Dy zero-response manager differs from Sc candidate");
         auto& manager=gpu_dy_manifolds_[source];
         if(manager.patch_count!=0u)continue;
         auto row0=desc.row0,row1=desc.row1;

@@ -360,6 +360,36 @@ struct GpuPcmFrictionAnchorFixture {
         }
         return true;
     }
+    static void verify_gpu_source_candidate_descriptors(
+        const Scene& scene) {
+        if(scene.gpu_dy_manifolds_.size()!=scene.previous_pairs_.size())
+            throw std::runtime_error(
+                "GPU Dy contact table does not cover source candidates");
+        for(const auto& descriptor:scene.ordered_constraints_) {
+            if((descriptor.row_count&255u)!=0u)continue;
+            const auto candidate=descriptor.index;
+            if(candidate>=scene.previous_pairs_.size() ||
+               candidate>=scene.active_edge_handles_.size())
+                throw std::runtime_error(
+                    "GPU Dy descriptor references a non-candidate manager");
+            const auto edge=scene.active_edge_handles_[candidate];
+            if(edge>=scene.manifold_by_edge_.size() ||
+               scene.manifold_by_edge_[edge].generation!=
+                   scene.manifold_lookup_generation_ ||
+               scene.manifold_by_edge_[edge].index>=scene.manifolds_.size())
+                throw std::runtime_error(
+                    "GPU Dy candidate has no published Sc contact identity");
+            const auto& manager=scene.manifolds_[
+                scene.manifold_by_edge_[edge].index];
+            if(manager.candidate_ordinal!=candidate ||
+               manager.edge_handle!=edge ||
+               !(manager.pair==scene.previous_pairs_[candidate]) ||
+               scene.gpu_dy_manifolds_[candidate].patch_count!=
+                   manager.friction_patch_count)
+                throw std::runtime_error(
+                    "GPU Dy candidate and Sc contact preparation disagree");
+        }
+    }
     static void verify_pre_witness_device_admission(const Scene& scene) {
         const auto joints=scene.gpu_dy_early_joint_edges_.size();
         if(!scene.gpu_dy_early_islands_ ||
@@ -3743,6 +3773,8 @@ void verify_early_pcm_island_pipeline(
             native::GpuPcmFrictionAnchorFixture::
                 verify_pre_witness_device_admission(gpu);
         const auto schedule=device->dy_launch_stats();
+        native::GpuPcmFrictionAnchorFixture::
+            verify_gpu_source_candidate_descriptors(gpu);
         const auto responding=with_sphere?3u:2u;
         require(gpu.pairs().size()==responding+(identity_order?0u:1u) &&
                 gpu.contacts().size()==responding &&
@@ -7142,6 +7174,8 @@ void verify_host_lane_packed_islands(
         cpu.step(1.f/120.f);
         gpu.step(1.f/120.f);
         const auto schedule=producer->dy_launch_stats();
+        native::GpuPcmFrictionAnchorFixture::
+            verify_gpu_source_candidate_descriptors(gpu);
         const auto expected=frame==0u
             ?cpu_bodies.size()+2u:cpu_bodies.size();
         const bool valid=device_admission
