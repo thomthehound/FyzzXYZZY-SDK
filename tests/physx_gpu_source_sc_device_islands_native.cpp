@@ -336,6 +336,47 @@ void verify(Context& context,const char* filename) {
                     std::to_string(errors));
     };
 
+    // Both dispatch schedules carry source-ordered PCM extents from
+    // physical-touch history without fetching contact witnesses.
+    for(const std::uint32_t nodes:{1u,257u}) {
+        std::vector<SourceScDeviceIslandEdge> edges;
+        std::vector<std::uint32_t> touches;
+        edges.reserve(nodes);
+        touches.reserve(nodes);
+        for(std::uint32_t i=0u;i<nodes;++i) {
+            edges.push_back({i,i,invalid,i,0u});
+            const auto emitted=1u+i%4u;
+            touches.push_back(0x10000u|(emitted<<8u)|1u);
+        }
+        const std::vector<std::uint32_t> flags(
+            nodes,4u|source_sc_device_island_active_bit);
+        const auto result=evaluate(nodes,edges,touches,flags);
+        no_errors(result);
+        check_task_mapping(result);
+        require(header(result).admitted_edges==nodes,
+                "Device Sc numerical extent omitted a live PCM source");
+        for(std::uint32_t i=0u;i<nodes;++i) {
+            const auto source=load<std::uint32_t>(
+                result.second,result.first.response_order+i*4u);
+            const auto extent=load<std::uint32_t>(
+                result.second,result.first.response_extents+i*4u);
+            require(source<nodes &&
+                    extent==(0x80000000u|(1u+source%4u)),
+                    "Device Sc numerical extent lost PCM source order");
+        }
+    }
+    {
+        const std::vector<SourceScDeviceIslandEdge> edge{{
+            0u,0u,invalid,0u,0u
+        }};
+        const auto invalid_extent=evaluate(
+            1u,edge,{0x10000u|(5u<<8u)|1u},
+            {4u|source_sc_device_island_active_bit});
+        require((header(invalid_extent).errors&256u)!=0u &&
+                header(invalid_extent).dispatch_x==0u,
+                "Sc admitted an invalid resident PCM contact extent");
+    }
+
     // The compact one-dispatch path and the larger parallel path must
     // preserve exactly the same canonical joint-chain task layout.
     for(const std::uint32_t nodes:{32u,33u,64u,65u,128u,129u}) {
