@@ -17,7 +17,7 @@ uint sourceScTouchTransition(uint edge,uint emitted,uint status,
         return 0u;
     }
     uint current=emitted!=0u?1u:0u;
-    edgeCaches.Store(state+72u,current);
+    edgeCaches.Store(state+72u,current|0x10000u|(emitted<<8u));
     return current!=0u?(prior!=0u?2u:1u):(prior!=0u?3u:0u);
 }
 
