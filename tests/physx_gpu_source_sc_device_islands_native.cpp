@@ -1001,8 +1001,11 @@ void verify(Context& context,const char* filename) {
         body_rows[i]=i+100u;
         packed_joint_rows[i]=packed_nodes-1u-i;
     }
+    auto device_joint_edges=packed_edges;
+    for(auto& edge:device_joint_edges)
+        edge.kind|=source_sc_device_island_device_joint_bit;
     const auto remapped=evaluate(
-        packed_nodes,packed_edges,{},packed_flags,{},std::nullopt,
+        packed_nodes,device_joint_edges,{},packed_flags,{},std::nullopt,
         body_rows,512u,packed_joint_rows,packed_nodes);
     no_errors(remapped);
     require(header(remapped).runnable_components==packed_nodes &&
