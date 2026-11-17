@@ -184,10 +184,14 @@ uint responseExtent(uint edgeIndex) {
         return 0u;
     }
     const uint touch=edgeHistory.Load(p.touchBias+edge*240u+72u);
-    // CPU Gu without a PCM source keeps its host-authored contact count.
-    if((touch&0x10000u)==0u)return 0u;
-    const uint emitted=(touch>>8u)&7u;
-    if(emitted>4u || ((touch&1u)!=0u)!=(emitted!=0u)) {
+    // Both producers publish exact response extents in one EdgeIndex
+    // journal; CPU Gu supports the full 255-contact source range.
+    const bool pcm=(touch&0x10000u)!=0u;
+    const bool gu=(touch&0x20000u)!=0u;
+    if(!pcm && !gu)return 0u;
+    const uint emitted=pcm?(touch>>8u)&7u:(touch>>8u)&255u;
+    if((pcm && gu) || (pcm && emitted>4u) ||
+       ((touch&1u)!=0u)!=(emitted!=0u)) {
         reject(256u);
         work.Store(p.workBias+16u,0u);
         return 0u;
