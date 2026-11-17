@@ -3524,6 +3524,11 @@ void verify_early_pcm_island_pipeline(
     gpu.set_gpu_dy_device_admission_enabled(true);
     cpu.set_enhanced_determinism(enhanced_determinism);
     gpu.set_enhanced_determinism(enhanced_determinism);
+    if(mixed_host) {
+        // The sphere pair remains CPU Gu while plane PCM stays device-owned.
+        cpu.set_pcm_box_box(false);
+        gpu.set_pcm_box_box(false);
+    }
     // Inert scene actors cannot inflate the numerical graph allocation.
     for(std::uint32_t i=0u;i<140u;++i) {
         const Transform pose{{1000.f+float(i),0.f,0.f},{}};
@@ -3595,8 +3600,8 @@ void verify_early_pcm_island_pipeline(
                 schedule.device_admitted_descriptors==
                     (enhanced_determinism?0u:
                         responding+(with_joints?2u:0u)) &&
-                (!mixed_host || device->pcm_host_contact_upload_bytes()>=
-                    sizeof(native::GpuPcmBoxResult)),
+                device->pcm_host_contact_upload_bytes()==0u &&
+                (!mixed_host || device->dy_cpu_gu_geometry_bytes()>0u),
             "Pre-witness mixed PCM topology did not reach production device Dy");
         if(identity_order)
             require(native::GpuPcmFrictionAnchorFixture::
@@ -4334,7 +4339,8 @@ void verify_plane_pcm_without_finite_pcm(
     for(unsigned frame=0u;frame<3u;++frame) {
         cpu.step(1.f/120.f);
         gpu.step(1.f/120.f);
-        require(source->pcm_host_contact_upload_bytes()>0u &&
+        require(source->pcm_host_contact_upload_bytes()==0u &&
+                source->pcm_header_join_bytes()>0u &&
                 cpu.contacts().size()==3u &&
                 cpu.contacts().size()==gpu.contacts().size(),
             "Plane-only PCM did not preserve finite legacy Gu contacts");
@@ -5436,9 +5442,10 @@ void verify_sphere_gpu_solver(
             // touch, but their GPU PCM records still execute this frame.
             constexpr std::size_t pcm_managers=5u;
             if(gpu.contacts().size()!=3u || cpu_bytes!=0u ||
-               pcm_rows!=3u || pcm_bytes!=0u ||
-               host_contact_bytes!=pcm_managers*sizeof(
-                   physx_gpu::SourcePcmGpuContactStreamNative)) {
+               pcm_rows!=3u || pcm_bytes==0u ||
+               producer->pcm_header_join_bytes()!=
+                   pcm_managers*2u*sizeof(std::uint32_t) ||
+               host_contact_bytes!=0u) {
                 throw std::runtime_error(
                     "Sphere GPU contact path: managers="+
                     std::to_string(gpu.contacts().size())+
@@ -5512,10 +5519,10 @@ void verify_sphere_gpu_solver(
     const auto solved_before=producer->dy_distance_dispatch_count();
     cpu.advance_collision(true);
     gpu.advance_collision(true);
-    require(producer->pcm_contact_readback_bytes()==0u &&
-            producer->pcm_host_contact_upload_bytes()>0u &&
+    require(producer->pcm_contact_readback_bytes()>0u &&
+            producer->pcm_host_contact_upload_bytes()==0u &&
             producer->dy_distance_dispatch_count()==solved_before,
-        "Collision-only primitive PCM unexpectedly fetched GPU contacts");
+        "Collision-only GPU PCM unexpectedly dispatched numerical work");
     const auto embedded=[](const native::Scene& scene) -> native::ContactPoint {
         for(const auto& manager:scene.contacts())
             for(const auto& point:manager.points)
@@ -5749,11 +5756,12 @@ void verify_host_primitive_pcm_solver(
                  <<" total_readback_bytes="<<fetch_bytes
                  <<" dy_readback_bytes="<<numerical_bytes
                  <<" indirect_dispatches="<<indirect<<'\n';
-        require(producer->pcm_contact_readback_bytes()==0u &&
-                producer->pcm_host_contact_upload_bytes()==
-                    2u*sizeof(physx_gpu::SourcePcmGpuContactStreamNative) &&
+        require(producer->pcm_header_join_bytes()==
+                    2u*2u*sizeof(std::uint32_t) &&
+                producer->pcm_host_contact_upload_bytes()==0u &&
+                producer->dy_cpu_gu_geometry_bytes()==0u &&
                 producer->dy_gpu_integrated_body_count()==2u,
-            "Primitive CPU Sc/GPU Dy path duplicated numerical PCM work");
+            "Device primitive PCM returned to host-origin numerical preparation");
         require(cpu.contacts().size()==gpu.contacts().size(),
             "Deferred primitive PCM changed the Sc touch graph");
         if(frame==2u)
@@ -5777,8 +5785,8 @@ void verify_host_primitive_pcm_solver(
         }
     }
 
-    // Switch CPU primitive -> mixed GPU Gu -> CPU primitive. Sc must
-    // regenerate the correct side's persistent EdgeIndex witness cache.
+    // Add a general box pair between primitive sources. All three retain
+    // source-ordered device PCM history across admission and retirement.
     const auto add_general=[](native::Scene& scene) {
         scene.add_static_box({0.5f,0.5f,0.5f},{50.f,5.f,0.f});
         const auto moving=scene.add_dynamic_box(
@@ -5790,8 +5798,7 @@ void verify_host_primitive_pcm_solver(
     };
     const auto cpu_general=add_general(cpu);
     const auto gpu_general=add_general(gpu);
-    // The second CPU primitive run lies AFTER the general box pair in
-    // Sc source order. Both host islands must retain their device slots.
+    // The remote sphere follows the general box pair in source order.
     const auto add_remote_sphere=[](native::Scene& scene) {
         scene.add_static_sphere(0.5f,{100.f,5.f,0.f});
         const auto moving=scene.add_dynamic_sphere(
@@ -5804,25 +5811,25 @@ void verify_host_primitive_pcm_solver(
     add_remote_sphere(gpu);
     cpu.step(dt);
     gpu.step(dt);
-    require(producer->pcm_header_join_bytes()==2u*sizeof(std::uint32_t) &&
-            producer->pcm_deferred_point_bytes()==
-                sizeof(physx_gpu::SourcePcmGpuContactStreamNative)-
-                    2u*sizeof(std::uint32_t) &&
-            producer->pcm_contact_readback_bytes()==
-                sizeof(physx_gpu::SourcePcmGpuContactStreamNative) &&
-            producer->pcm_host_contact_upload_bytes()==
-                5u*sizeof(physx_gpu::SourcePcmGpuContactStreamNative) &&
+    require(producer->pcm_header_join_bytes()>=
+                3u*2u*sizeof(std::uint32_t) &&
+            producer->pcm_deferred_point_bytes()>0u &&
+            producer->pcm_contact_readback_bytes()>=
+                producer->pcm_header_join_bytes()+
+                producer->pcm_deferred_point_bytes() &&
+            producer->pcm_host_contact_upload_bytes()==0u &&
+            producer->dy_cpu_gu_geometry_bytes()==0u &&
             cpu.contacts().size()==gpu.contacts().size(),
-        "Mixed Sc PCM did not defer point readback to GPU Dy completion");
+        "Device PCM did not retain primitive and general witness ownership");
     native::GpuPcmFrictionAnchorFixture::verify(cpu,gpu);
     cpu.remove(cpu_general);
     gpu.remove(gpu_general);
     cpu.step(dt);
     gpu.step(dt);
-    require(producer->pcm_contact_readback_bytes()==0u &&
-            producer->pcm_host_contact_upload_bytes()>0u &&
+    require(producer->pcm_header_join_bytes()>0u &&
+            producer->pcm_host_contact_upload_bytes()==0u &&
             cpu.contacts().size()==gpu.contacts().size(),
-        "Primitive frame failed to resume Sc CPU PCM ownership");
+        "Device PCM failed to retain primitive ownership after pair retirement");
     for(std::size_t i=0u;i<cpu.contacts().size();++i) {
         const auto& a=cpu.contacts()[i],&b=gpu.contacts()[i];
         require(a.pair==b.pair && a.count==b.count,
