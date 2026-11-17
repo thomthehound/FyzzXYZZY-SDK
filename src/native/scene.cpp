@@ -9009,14 +9009,16 @@ void Scene::prepare_constraints(float seconds) {
         if(order_end-order_begin!=(resident_order?0u:manifold.count))
             throw std::logic_error(
                 "Source correlation omitted a Gu contact descriptor");
-        // The device reconstructs every PCM normal row from the resident
-        // contact stream. Sc needs only the run extent; walking the same
-        // witnesses here would duplicate numerical preparation on the CPU.
+        // Device PCM owns the emitted count. Sc reserves numerical rows
+        // from source pair capacity without inspecting Gu witnesses.
         if(resident_order) {
-            if(manifold.count>
-               std::numeric_limits<std::size_t>::max()-prepared_contact_rows_)
-                throw std::overflow_error("Source PCM numerical row count overflow");
-            prepared_contact_rows_+=manifold.count;
+            const auto capacity=gpu_pcm_pairs_[
+                manifold.pcm_result_index].candidate_capacity==1u?1u:4u;
+            if(manifold.count>capacity ||
+               capacity>std::numeric_limits<std::size_t>::max()-
+                   prepared_contact_rows_)
+                throw std::overflow_error("Source PCM numerical capacity overflow");
+            prepared_contact_rows_+=capacity;
         } else for(std::size_t j=0;j<manifold.count;++j) {
             const ContactPoint& contact=manifold.points[j];
             const std::size_t patch_id=contact_patch_ids[j];
@@ -9689,8 +9691,14 @@ void Scene::solve_gpu_distance_constraints(float seconds) {
         // A dormant Gu manager retains geometry but has no prepared
         // normal rows; source CPU PGS skips its zero-patch descriptor.
         if(!m.friction_patch_count)continue;
-        if(m.solver_offset>prepared_contact_rows_ ||
-           m.count>prepared_contact_rows_-m.solver_offset)
+        const bool resident_pcm=m.pcm_result_index!=
+            std::numeric_limits<std::uint32_t>::max();
+        const std::size_t numerical_count=resident_pcm
+            ?(gpu_pcm_pairs_[m.pcm_result_index].candidate_capacity==1u
+                ?1u:4u):m.count;
+        if(m.count>numerical_count ||
+           m.solver_offset>prepared_contact_rows_ ||
+           numerical_count>prepared_contact_rows_-m.solver_offset)
             throw std::logic_error("GPU Dy contact row window invalid");
         if(manager_index>=gpu_dy_contact_prep_indices_.size() ||
            gpu_dy_contact_prep_indices_[manager_index]==0xffffffffu)
@@ -9705,7 +9713,7 @@ void Scene::solve_gpu_distance_constraints(float seconds) {
                 "GPU Dy contact source differs from Sc candidate identity");
         gpu_dy_manifolds_[source]={
             narrow(m.friction_patch_offset),m.friction_patch_count,
-            narrow(m.solver_offset),m.count,
+            narrow(m.solver_offset),narrow(numerical_count),
             gpu_dy_contact_prep_indices_[manager_index]};
         std::size_t cursor=m.solver_offset;
         for(std::size_t i=m.friction_patch_offset;
@@ -9717,8 +9725,7 @@ void Scene::solve_gpu_distance_constraints(float seconds) {
                    prepared_friction_rows_-patch.row_offset ||
                patch.contact_count>m.count-(cursor-m.solver_offset))
                 throw std::logic_error("GPU Dy friction patch rows invalid");
-            const bool pcm_growth=m.pcm_result_index!=
-                std::numeric_limits<std::uint32_t>::max() &&
+            const bool pcm_growth=resident_pcm &&
                 !patch.disable_friction;
             if(pcm_growth) {
                 if(patch.row_offset%2u || patch.row_offset/2u+2u>
@@ -9732,10 +9739,9 @@ void Scene::solve_gpu_distance_constraints(float seconds) {
                 }
             }
             std::uint32_t order_offset;
-            if(m.pcm_result_index!=
-               std::numeric_limits<std::uint32_t>::max()) {
+            if(resident_pcm) {
                 if(cursor>=device_contact_order ||
-                   patch.contact_count>device_contact_order-cursor)
+                   numerical_count>device_contact_order-cursor)
                     throw std::overflow_error(
                         "GPU PCM direct contact order exceeds address space");
                 // PCM retains source order in the resident contact arena.
@@ -9752,7 +9758,8 @@ void Scene::solve_gpu_distance_constraints(float seconds) {
             }
             const bool cached_normal=pcm_growth && patch.anchor_count>0u;
             gpu_dy_patches_[i]={
-                narrow(patch.row_offset),patch.contact_count,
+                narrow(patch.row_offset),
+                narrow(resident_pcm?numerical_count:patch.contact_count),
                 patch.anchor_count,(patch.broken?1u:0u)|
                     (pcm_growth?0x80000000u:0u)|
                     (cached_normal?0x20000000u:0u),
