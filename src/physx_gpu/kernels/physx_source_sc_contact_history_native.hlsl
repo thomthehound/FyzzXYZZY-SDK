@@ -59,8 +59,10 @@ void main(uint3 dispatch:SV_DispatchThreadID) {
         if(p.phase==4u)
             checkpoint.Store2(p.checkpointBias+word*8u,
                               edgeCaches.Load2(cache));
+        const uint emitted=(packed>>10u)&7u;
         edgeCaches.Store2(cache,uint2(
-            transition==1u || transition==2u?1u:0u,
+            (transition==1u || transition==2u?1u:0u)|
+                0x10000u|(emitted<<8u),
             transition==2u || transition==3u?1u:0u));
         return;
     }
