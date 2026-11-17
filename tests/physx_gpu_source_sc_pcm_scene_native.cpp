@@ -3407,6 +3407,25 @@ void verify_early_pcm_island_pipeline(
                 gpu.body_state(b[i]),cpu.body_state(a[i]),0.03f,
                 "Early device Sc actor remap changed rigid contact response");
     }
+    if(!with_joints) {
+        // A retired PCM contact must publish one lost transition after
+        // a frame whose source witness join was deferred.
+        cpu.set_pose(a[1],{5.f,3.f,0.f},{});
+        gpu.set_pose(b[1],{5.f,3.f,0.f},{});
+        cpu.step(1.f/120.f);
+        gpu.step(1.f/120.f);
+        require(gpu.lost_contacts().size()==1u &&
+                cpu.lost_contacts().size()==1u &&
+                gpu.found_contacts().empty() &&
+                cpu.found_contacts().empty() &&
+                gpu.contacts().size()==(mixed_host?2u:1u) &&
+                cpu.contacts().size()==gpu.contacts().size(),
+            "Deferred PCM witness publication retained a lost Sc contact");
+        for(std::size_t i=0u;i<a.size();++i)
+            test::compound_compare_state(
+                gpu.body_state(b[i]),cpu.body_state(a[i]),0.03f,
+                "Deferred PCM touch retirement changed rigid body state");
+    }
 }
 
 // Source Gu PCM rows, friction patches, and 1D joints share the same
