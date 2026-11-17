@@ -119,8 +119,8 @@ struct GpuPcmBoxPair {
     bool candidate_complete=false;
     bool host_generated=false;
     GpuDyPairMaterial numerical{};
-    // Retained multi-patch correlation needs the current normal before Dy;
-    // point geometry remains resident until numerical completion.
+    // Sc validates retained friction before GPU witness publication.
+    std::uint32_t friction_history_mask=0u,friction_eligible_mask=0u;
     bool early_host_normal=false;
 };
 enum class GpuPcmTouchTransition : std::uint32_t {
@@ -2350,9 +2350,6 @@ private:
     std::vector<GpuPcmBoxPair> gpu_pcm_pairs_;
     std::vector<GpuPcmBoxResult> gpu_pcm_results_;
     bool gpu_pcm_points_deferred_=false;
-    // Source friction cache geometry is independent of current PCM Gu.
-    // Each bit is a previous friction patch validated while GPU Gu runs.
-    std::vector<std::uint32_t> gpu_pcm_friction_history_masks_;
     // Publish swaps are reversible without copying the source-owned
     // contact/pair arenas. Rollback keeps externally held Gu spans valid.
     std::uint64_t pair_epoch_=0;

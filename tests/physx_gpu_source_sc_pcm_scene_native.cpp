@@ -736,12 +736,20 @@ struct GpuPcmFrictionAnchorFixture {
         }
     }
     static bool had_early_friction_history(const Scene& scene) {
-        const auto& masks=scene.gpu_pcm_friction_history_masks_;
-        if(!masks.empty() && masks.size()!=scene.gpu_pcm_pairs_.size())
-            throw std::runtime_error(
-                "Source early friction history lost the PCM manager stream");
-        return std::any_of(masks.begin(),masks.end(),
-            [](std::uint32_t bits) {return bits!=0u;});
+        return std::any_of(scene.gpu_pcm_pairs_.begin(),
+            scene.gpu_pcm_pairs_.end(),[](const auto& request) {
+                return request.friction_history_mask!=0u;
+            });
+    }
+    static bool had_compatible_friction_history(const Scene& scene) {
+        return std::any_of(scene.gpu_pcm_pairs_.begin(),
+            scene.gpu_pcm_pairs_.end(),[](const auto& request) {
+                if((request.friction_eligible_mask&
+                    ~request.friction_history_mask)!=0u)
+                    throw std::runtime_error(
+                        "Sc admitted a friction patch with invalid history");
+                return request.friction_eligible_mask!=0u;
+            });
     }
     static void seed_multiple_friction_patches(Scene& scene,Pair shapes,
                                                bool broken=false) {
@@ -5805,7 +5813,9 @@ void verify_scene_normal_only_multi_patch(
             producer->pcm_contact_readback_bytes()==full &&
             producer->dy_pcm_device_contact_rows()>0u &&
             native::GpuPcmFrictionAnchorFixture::
-                had_early_friction_history(gpu),
+                had_early_friction_history(gpu) &&
+            native::GpuPcmFrictionAnchorFixture::
+                had_compatible_friction_history(gpu),
         "Production Sc multi-patch PCM fetched points before numerical Dy");
     require(cpu.contacts().size()==gpu.contacts().size() &&
             cpu.contacts()[0].count==gpu.contacts()[0].count &&
@@ -5844,6 +5854,8 @@ void verify_scene_normal_only_multi_patch(
             producer->pcm_contact_readback_bytes()==full &&
             !native::GpuPcmFrictionAnchorFixture::
                 had_early_friction_history(gpu) &&
+            !native::GpuPcmFrictionAnchorFixture::
+                had_compatible_friction_history(gpu) &&
             std::isfinite(gpu.contacts()[0].points[0].separation),
         "Invalid cached friction normals forced an unnecessary early DMA");
 
@@ -5860,6 +5872,8 @@ void verify_scene_normal_only_multi_patch(
             producer->pcm_contact_readback_bytes()==full &&
             native::GpuPcmFrictionAnchorFixture::
                 had_early_friction_history(gpu) &&
+            !native::GpuPcmFrictionAnchorFixture::
+                had_compatible_friction_history(gpu) &&
             std::isfinite(gpu.contacts()[0].points[0].separation),
         "Incompatible retained PCM material forced an early normal transfer");
 }

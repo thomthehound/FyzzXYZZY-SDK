@@ -4232,7 +4232,6 @@ void Scene::update_contacts(bool defer_device_points,float inverse_step) {
     const auto new_lookup_generation=indexed_manifold_generation_;
     gpu_pcm_pairs_.clear();
     gpu_pcm_results_.clear();
-    gpu_pcm_friction_history_masks_.clear();
     gpu_dy_gu_touches_.clear();
     const bool source_gpu_pcm =
         gpu_broadphase_ && gpu_broadphase_->has_gpu_pcm_box() &&
@@ -4341,8 +4340,6 @@ void Scene::update_contacts(bool defer_device_points,float inverse_step) {
     // while PCM runs, using the same source correlation predicate.
     const bool has_pcm_friction_history=
         gpu_results_pending && !friction_patches_.empty();
-    if(has_pcm_friction_history)
-        gpu_pcm_friction_history_masks_.assign(gpu_pcm_pairs_.size(),0u);
     const auto validate_pcm_history=[&](bool before_submit) {
         if(!has_pcm_friction_history)return;
         for(std::size_t i=0u;i<gpu_pcm_pairs_.size();++i) {
@@ -4371,32 +4368,27 @@ void Scene::update_contacts(bool defer_device_points,float inverse_step) {
                 continue;
             const Actor& actor0=actors_[shape0.body];
             const Actor& actor1=actors_[shape1.body];
-            std::uint32_t valid=0u;
-            for(std::size_t j=0u;j<history.count;++j)
-                if(cached_friction_patch_valid(
-                    friction_patches_[history.offset+j],actor0,actor1))
-                    valid|=1u<<j;
-            gpu_pcm_friction_history_masks_[i]=valid;
-            if(before_submit && valid!=0u) {
-                // Sc only compares the current normal against retained
-                // anchors whose material remains compatible.
-                auto& request=gpu_pcm_pairs_[i];
-                const auto& material=request.numerical;
-                if(material.max_contact_impulse==0.0f ||
-                   material.disable_strong_friction)continue;
-                for(std::size_t j=0u;j<history.count;++j) {
-                    if((valid&(1u<<j))==0u)continue;
-                    const auto& old=friction_patches_[history.offset+j];
-                    if(old.restitution==material.restitution &&
-                       old.damping==material.damping &&
-                       old.acceleration_spring==material.acceleration_spring &&
-                       old.static_friction==material.static_friction &&
-                       old.dynamic_friction==material.dynamic_friction) {
-                        request.early_host_normal=true;
-                        break;
-                    }
-                }
+            auto& request=gpu_pcm_pairs_[i];
+            const auto& material=request.numerical;
+            std::uint32_t valid=0u,eligible=0u;
+            for(std::size_t j=0u;j<history.count;++j) {
+                const auto& old=friction_patches_[history.offset+j];
+                if(!cached_friction_patch_valid(old,actor0,actor1))continue;
+                valid|=1u<<j;
+                if(material.prepared &&
+                   material.max_contact_impulse!=0.0f &&
+                   !material.disable_strong_friction &&
+                   old.restitution==material.restitution &&
+                   old.damping==material.damping &&
+                   old.acceleration_spring==material.acceleration_spring &&
+                   old.static_friction==material.static_friction &&
+                   old.dynamic_friction==material.dynamic_friction)
+                    eligible|=1u<<j;
             }
+            request.friction_history_mask=valid;
+            request.friction_eligible_mask=eligible;
+            if(before_submit && eligible!=0u)
+                request.early_host_normal=true;
         }
     };
     // Source numerical coefficients do not depend on PCM witnesses.
@@ -8477,21 +8469,12 @@ void Scene::prepare_constraints(float seconds) {
                     for(std::size_t previous=history.offset;
                         previous<history.offset+history.count;++previous) {
                         const auto& old=friction_patches_[previous];
-                        const bool checked_before_gu=
-                            manifold.pcm_result_index<
-                                gpu_pcm_friction_history_masks_.size();
-                        const bool valid=checked_before_gu
-                            ?(gpu_pcm_friction_history_masks_[
-                                manifold.pcm_result_index] &
-                                (1u<<(previous-history.offset)))!=0u
-                            :cached_friction_patch_valid(old,actor0,actor1);
-                        if(!valid)continue;
+                        const auto& request=gpu_pcm_pairs_[
+                            manifold.pcm_result_index];
+                        const auto bit=1u<<(previous-history.offset);
+                        if((request.friction_history_mask&bit)==0u)continue;
                         ++admitted_history;
-                        if(old.restitution==restitution &&
-                           old.damping==damping &&
-                           old.acceleration_spring==acceleration_spring &&
-                           old.static_friction==static_friction &&
-                           old.dynamic_friction==dynamic_friction &&
+                        if((request.friction_eligible_mask&bit)!=0u &&
                            (history.count==1u ||
                             dot(rotate(mass_orientation(actor0),old.body0_normal),
                                 manifold.points.front().normal)>=same_normal)) {
@@ -8602,10 +8585,10 @@ void Scene::prepare_constraints(float seconds) {
                 previous<history.offset+history.count;++previous) {
                 const auto& old=friction_patches_[previous];
                 const bool checked_before_gu=
-                    manifold.pcm_result_index<
-                        gpu_pcm_friction_history_masks_.size();
+                    manifold.pcm_result_index<gpu_pcm_pairs_.size();
                 const bool valid=checked_before_gu
-                    ?(gpu_pcm_friction_history_masks_[manifold.pcm_result_index] &
+                    ?(gpu_pcm_pairs_[manifold.pcm_result_index].
+                       friction_history_mask &
                        (1u<<(previous-history.offset)))!=0u
                     :cached_friction_patch_valid(old,actor0,actor1);
                 if(!valid)continue;
@@ -12109,8 +12092,7 @@ void Scene::advance_collision_internal(
         gpu_dy_early_actor_ids_.clear();
         gpu_dy_early_joint_edges_.clear();
         speculative_connectivity_prepared_=false;
-        gpu_pcm_friction_history_masks_.clear();
-        speculative_split_sleep_candidates_.clear();
+            speculative_split_sleep_candidates_.clear();
         clear_activated_edges(checkpointed);
         normal_impulse_writeback_.clear();
         friction_impulse_writeback_.clear();
