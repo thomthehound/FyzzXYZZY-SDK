@@ -4280,6 +4280,7 @@ void Scene::update_contacts(bool defer_device_points,float inverse_step) {
                (!plane && !pcm_box_box_enabled_))continue;
             const EdgeIndex edge=active_edge_handles_[i];
             if(dormant_pcm(pair,edge))continue;
+            const auto request_count=gpu_pcm_pairs_.size();
             if(plane) {
                 const Shape& floor=a.geometry==Geometry::Plane?a:b;
                 const Shape& box=a.geometry==Geometry::Plane?b:a;
@@ -4301,6 +4302,13 @@ void Scene::update_contacts(bool defer_device_points,float inverse_step) {
                      !island_edges_[edge].pcm_cache.device_history),
                     convex?4u:(sphere?1u:16u),false,0.f,0.f,
                     previously_touching,sphere && !convex});
+            }
+            if(gpu_pcm_pairs_.size()!=request_count) {
+                if(i>=std::numeric_limits<std::uint32_t>::max())
+                    throw std::overflow_error(
+                        "PCM candidate source ordinal exceeds Dy index space");
+                gpu_pcm_pairs_.back().candidate_ordinal=
+                    static_cast<std::uint32_t>(i);
             }
         }
         gpu_pcm_results_.resize(gpu_pcm_pairs_.size());
@@ -4483,7 +4491,10 @@ void Scene::update_contacts(bool defer_device_points,float inverse_step) {
                 break;
             }
             const bool pcm_source=pcm_ordinal<gpu_pcm_pairs_.size() &&
-                gpu_pcm_pairs_[pcm_ordinal].edge==edge;
+                gpu_pcm_pairs_[pcm_ordinal].candidate_ordinal==i;
+            if(pcm_source && gpu_pcm_pairs_[pcm_ordinal].edge!=edge)
+                throw std::logic_error(
+                    "Early PCM source ordinal lost its persistent edge");
             if(!pcm_source && dormant_pcm(pair,edge)) {
                 admitted=false;
                 break;
@@ -9528,8 +9539,11 @@ void Scene::solve_gpu_distance_constraints(float seconds) {
         if(manager_index>=gpu_dy_contact_prep_indices_.size() ||
            gpu_dy_contact_prep_indices_[manager_index]==0xffffffffu)
             throw std::logic_error("Source GPU contact pair was not prepared");
-        const auto source=m.candidate_ordinal;
-        if(source>=gpu_dy_manifolds_.size() ||
+        const auto source=resident_pcm
+            ?gpu_pcm_pairs_[m.pcm_result_index].candidate_ordinal
+            :m.candidate_ordinal;
+        if(source!=m.candidate_ordinal ||
+           source>=gpu_dy_manifolds_.size() ||
            !(previous_pairs_[source]==m.pair) ||
            active_edge_handles_[source]!=m.edge_handle)
             throw std::logic_error(

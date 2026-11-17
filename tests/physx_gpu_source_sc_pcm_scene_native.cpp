@@ -735,6 +735,24 @@ struct GpuPcmFrictionAnchorFixture {
             verify(prep.body1,prep.source_body1);
         }
     }
+    static void verify_pcm_candidate_ownership(const Scene& scene) {
+        std::uint32_t last=0u;
+        bool first=true;
+        for(const auto& request:scene.gpu_pcm_pairs_) {
+            const auto source=request.candidate_ordinal;
+            if(source>=scene.previous_pairs_.size() ||
+               source>=scene.active_edge_handles_.size() ||
+               request.edge!=scene.active_edge_handles_[source] ||
+               request.edge>=scene.island_edges_.size() ||
+               !(scene.island_edges_[request.edge].shapes==
+                 scene.previous_pairs_[source]) ||
+               (!first && source<=last))
+                throw std::runtime_error(
+                    "Pre-witness PCM candidate lost its original Sc ordinal");
+            first=false;
+            last=source;
+        }
+    }
     static bool had_early_friction_history(const Scene& scene) {
         return std::any_of(scene.gpu_pcm_pairs_.begin(),
             scene.gpu_pcm_pairs_.end(),[](const auto& request) {
@@ -3797,6 +3815,8 @@ void verify_early_pcm_island_pipeline(
     for(std::uint32_t frame=0u;frame<3u;++frame) {
         cpu.step(1.f/120.f);
         gpu.step(1.f/120.f);
+        native::GpuPcmFrictionAnchorFixture::
+            verify_pcm_candidate_ownership(gpu);
         if(enhanced_determinism)
             require(!native::GpuPcmFrictionAnchorFixture::
                         has_early_device_admission(gpu),

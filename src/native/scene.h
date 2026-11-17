@@ -121,6 +121,8 @@ struct GpuPcmBoxPair {
     GpuDyPairMaterial numerical{};
     // Sc validates retained friction before GPU witness publication.
     std::uint32_t friction_history_mask=0u,friction_eligible_mask=0u;
+    // Stable source candidate identity precedes Gu contact publication.
+    std::uint32_t candidate_ordinal=0xffffffffu;
     bool early_host_normal=false;
 };
 enum class GpuPcmTouchTransition : std::uint32_t {
