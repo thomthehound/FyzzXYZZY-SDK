@@ -4413,6 +4413,7 @@ void verify_pcm_friction_normal_revalidation(
         std::move(shader));
     auto* producer=owner.get();
     gpu.set_gpu_broadphase(std::move(owner));
+    gpu.set_gpu_dy_device_admission_enabled(false);
     const Vec3 half{0.5f,0.5f,0.5f};
     const Vec3 fixed{0.f,1.f,0.f};
     const auto cs=cpu.add_static_box(half,fixed);
@@ -4438,8 +4439,12 @@ void verify_pcm_friction_normal_revalidation(
         require(cpu.contacts().size()==1u && gpu.contacts().size()==1u &&
                 !gpu.solved_friction_patches().empty() &&
                 producer->pcm_host_contact_upload_bytes()==0u &&
-                gpu.contacts()[0].count!=0u,
-            "Device PCM friction test lost its active contact manager");
+                producer->dy_launch_stats().device_island_indirect_dispatches==0u &&
+                gpu.contacts()[0].count!=0u &&
+                cpu.contacts()[0].count==gpu.contacts()[0].count &&
+                gpu.solved_normal_impulses().size()==
+                    cpu.solved_normal_impulses().size(),
+            "Host-scheduled GPU Dy lost device PCM numerical contact extent");
         const auto normal=gpu.contacts()[0].points.front().normal;
         if(i!=0u)
             require(normal.x*previous_normal.x+
