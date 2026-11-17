@@ -1722,6 +1722,7 @@ public:
             .contact_prep=contact_prep,.result_offsets=result_offsets,
             .output_bytes=output_bytes,
             .device_admission=device_admission.has_value(),
+            .source_descriptors=source_descriptors,
             .device_header_offset=device_header_offset,
             .device_task_offset=device_task_offset,
             .device_ordinal_offset=device_ordinal_offset,
@@ -1895,7 +1896,7 @@ public:
             // arena consecutively. CPU Gu patches retain their
             // explicit correlation order, packed without PCM holes.
             std::size_t exact_contacts=manager.contact_count;
-            const bool resident_extent=pending.device_admission &&
+            const bool resident_extent=pending.source_descriptors &&
                 manager.patch_count==1u &&
                 manager.prep_index<contact_prep.size() &&
                 contact_prep[manager.prep_index].pcm_pair_index!=0xffffffffu;
@@ -2188,6 +2189,7 @@ private:
         std::array<std::size_t,6> result_offsets{};
         std::size_t output_bytes=0u;
         bool device_admission=false;
+        bool source_descriptors=false;
         std::size_t device_header_offset=0u,device_task_offset=0u,
                     device_ordinal_offset=0u;
         std::size_t free_velocity_offset=0u,friction_count=0u;
