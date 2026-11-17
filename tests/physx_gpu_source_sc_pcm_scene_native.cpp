@@ -1973,7 +1973,7 @@ void verify_device_sc_dy_task_admission(
     // Sc admits the real physical contact on the same queue while Dy
     // compacts its reserved PCM row capacity from resident Gu geometry.
     constexpr std::uint32_t contact_capacity=5u;
-    std::vector<float> capacity_forces(contact_capacity,0.f);
+    std::vector<float> capacity_forces(contact_capacity,-17.f);
     std::array<native::GpuDyContactPatch,1> capacity_patches{{
         {0u,contact_capacity,0u,0u,0.f,0.f,0x80000000u,0u}
     }};
@@ -1999,13 +1999,16 @@ void verify_device_sc_dy_task_admission(
     producer->finish_gpu_dy_distance();
     require(witness[0].packed_counts==0u &&
             contact_tasks[0].error==0u && poses[0].valid==1u &&
+            capacity_patches[0].contact_count>0u &&
+            capacity_patches[0].contact_count<contact_capacity &&
+            capacity_forces[0]!=-17.f &&
+            capacity_forces[contact_capacity-1u]==-17.f &&
             producer->dy_launch_stats().device_island_indirect_dispatches==1u,
         "Device Sc PCM contact extent failed before witness publication");
     producer->finish_gpu_pcm_box_contacts();
     require(witness[0].status()==0u && witness[0].count()>0u &&
-            witness[0].count()<contact_capacity &&
-            capacity_forces[contact_capacity-1u]==0.f,
-        "GPU PCM contact capacity did not preserve active source extent");
+            witness[0].count()==capacity_patches[0].contact_count,
+        "GPU PCM numerical extent differs from the published witness");
     producer->commit_gpu_step();
 
     // A valid cached anchor with an incompatible local normal must be
@@ -2226,11 +2229,18 @@ void verify_device_sc_dy_task_admission(
             mixed_tasks[0].error==0u && mixed_tasks[1].error==0u &&
             mixed_poses[0].valid==1u && mixed_poses[1].valid==1u &&
             published_touch && retained_untouched &&
+            mixed_patches[0].contact_count>0u &&
+            mixed_patches[0].contact_count<contact_capacity &&
+            mixed_patches[1].contact_count==contact_capacity &&
+            std::all_of(
+                mixed_forces.begin()+mixed_patches[0].contact_count,
+                mixed_forces.begin()+contact_capacity,
+                [](float impulse){return impulse==-17.f;}) &&
             mixed_patches[1].anchor_count==1u,
         "GPU Sc mixed PCM epoch published unadmitted numerical output");
     producer->finish_gpu_pcm_box_contacts();
     require(mixed_witness[0].status()==0u &&
-            mixed_witness[0].count()>0u &&
+            mixed_witness[0].count()==mixed_patches[0].contact_count &&
             mixed_witness[1].status()==0u &&
             mixed_witness[1].count()==0u,
         "GPU Sc mixed PCM epoch lost source touch classification");
