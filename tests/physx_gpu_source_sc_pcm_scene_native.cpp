@@ -3515,7 +3515,7 @@ void verify_single_pcm_joint_island_admission(
 void verify_early_pcm_island_pipeline(
     fyzz::compute::Backend backend,const char* sap,
     const char* pcm,const char* dy_shader,
-    bool mixed_host=false,bool with_joints=false,
+    bool with_sphere=false,bool with_joints=false,
     bool enhanced_determinism=false,bool identity_order=false) {
     using namespace fyzz;
     std::ifstream input(dy_shader,std::ios::binary);
@@ -3536,11 +3536,6 @@ void verify_early_pcm_island_pipeline(
     gpu.set_gpu_dy_device_admission_enabled(true);
     cpu.set_enhanced_determinism(enhanced_determinism);
     gpu.set_enhanced_determinism(enhanced_determinism);
-    if(mixed_host) {
-        // The sphere pair remains CPU Gu while plane PCM stays device-owned.
-        cpu.set_pcm_box_box(false);
-        gpu.set_pcm_box_box(false);
-    }
     // Inert scene actors cannot inflate the numerical graph allocation.
     for(std::uint32_t i=0u;i<140u;++i) {
         const Transform pose{{1000.f+float(i),0.f,0.f},{}};
@@ -3582,7 +3577,7 @@ void verify_early_pcm_island_pipeline(
         add_non_touching(gpu);
     }
     BodyId host_cpu=0u,host_gpu=0u;
-    if(mixed_host) {
+    if(with_sphere) {
         cpu.add_static_sphere(0.5f,{15.f,0.f,0.f});
         gpu.add_static_sphere(0.5f,{15.f,0.f,0.f});
         host_cpu=cpu.add_dynamic_sphere(0.5f,{15.f,0.83f,0.f},1.f);
@@ -3601,7 +3596,7 @@ void verify_early_pcm_island_pipeline(
             native::GpuPcmFrictionAnchorFixture::
                 verify_pre_witness_device_admission(gpu);
         const auto schedule=device->dy_launch_stats();
-        const auto responding=mixed_host?3u:2u;
+        const auto responding=with_sphere?3u:2u;
         require(gpu.pairs().size()==responding+(identity_order?0u:1u) &&
                 gpu.contacts().size()==responding &&
                 cpu.contacts().size()==responding &&
@@ -3613,7 +3608,8 @@ void verify_early_pcm_island_pipeline(
                     (enhanced_determinism?0u:
                         responding+(with_joints?2u:0u)) &&
                 device->pcm_host_contact_upload_bytes()==0u &&
-                (!mixed_host || device->dy_cpu_gu_geometry_bytes()>0u),
+                device->dy_cpu_gu_geometry_bytes()==0u &&
+                (!with_sphere || device->dy_pcm_device_contact_rows()>=3u),
             "Pre-witness mixed PCM topology did not reach production device Dy");
         if(identity_order)
             require(native::GpuPcmFrictionAnchorFixture::
@@ -3626,10 +3622,10 @@ void verify_early_pcm_island_pipeline(
                 cpu.found_contacts().size()==gpu.found_contacts().size() &&
                 cpu.lost_contacts().size()==gpu.lost_contacts().size(),
             "Deferred Sc PCM witness publication changed contact event lifetime");
-        if(mixed_host)
+        if(with_sphere)
             test::compound_compare_state(
                 gpu.body_state(host_gpu),cpu.body_state(host_cpu),0.03f,
-                "Pre-witness CPU Gu sphere contact diverged from CPU PGS");
+                "Pre-witness GPU PCM sphere contact diverged from CPU PGS");
         for(std::size_t i=0u;i<a.size();++i)
             test::compound_compare_state(
                 gpu.body_state(b[i]),cpu.body_state(a[i]),0.03f,
@@ -3646,7 +3642,7 @@ void verify_early_pcm_island_pipeline(
                 cpu.lost_contacts().size()==1u &&
                 gpu.found_contacts().empty() &&
                 cpu.found_contacts().empty() &&
-                gpu.contacts().size()==(mixed_host?2u:1u) &&
+                gpu.contacts().size()==(with_sphere?2u:1u) &&
                 cpu.contacts().size()==gpu.contacts().size(),
             "Deferred PCM witness publication retained a lost Sc contact");
         for(std::size_t i=0u;i<a.size();++i)
@@ -4352,7 +4348,7 @@ void verify_plane_pcm_without_finite_pcm(
         cpu.step(1.f/120.f);
         gpu.step(1.f/120.f);
         require(source->pcm_host_contact_upload_bytes()==0u &&
-                source->pcm_header_join_bytes()>0u &&
+                source->dy_cpu_gu_geometry_bytes()>0u &&
                 cpu.contacts().size()==3u &&
                 cpu.contacts().size()==gpu.contacts().size(),
             "Plane-only PCM did not preserve finite legacy Gu contacts");
