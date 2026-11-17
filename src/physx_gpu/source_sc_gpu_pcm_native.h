@@ -772,18 +772,27 @@ public:
            (island_joint_count_ && !joint_row_capacity))
             throw std::logic_error(
                 "Source Sc numerical remap lacks prepared source rows");
-        auto& uploads=stream_.upload_scratch();
-        uploads.push_back({island_nodes_.getDevicePtr(),
-                           source_to_solver_row.data(),
-                           source_to_solver_row.size_bytes()});
-        stream_.queue_uploads(uploads);
-        const auto before_remap=stream_.commands().size();
-        island_stage_.append_body_remap(
-            stream_,addresses_,island_nodes_.getDevicePtr(),
-            island_work_.getDevicePtr(),
-            island_node_count_,island_edge_count_,solver_row_capacity,
-            joint_row_capacity,island_joint_count_);
-        last_remap_dispatches_=stream_.commands().size()-before_remap;
+        // Source-ordered compact body indices already address Dy rows
+        // when the final solver row sequence is identical. Contact
+        // tokens are final; only joint tokens require a separate remap.
+        bool identity=island_joint_count_==0u &&
+            source_to_solver_row.size()<=solver_row_capacity;
+        for(std::size_t i=0u;identity && i<source_to_solver_row.size();++i)
+            identity=source_to_solver_row[i]==i;
+        if(!identity) {
+            auto& uploads=stream_.upload_scratch();
+            uploads.push_back({island_nodes_.getDevicePtr(),
+                               source_to_solver_row.data(),
+                               source_to_solver_row.size_bytes()});
+            stream_.queue_uploads(uploads);
+            const auto before_remap=stream_.commands().size();
+            island_stage_.append_body_remap(
+                stream_,addresses_,island_nodes_.getDevicePtr(),
+                island_work_.getDevicePtr(),
+                island_node_count_,island_edge_count_,solver_row_capacity,
+                joint_row_capacity,island_joint_count_);
+            last_remap_dispatches_=stream_.commands().size()-before_remap;
+        }
         stream_.queue_device_copy(
             indirect_address_,
             island_work_.getDevicePtr()+
