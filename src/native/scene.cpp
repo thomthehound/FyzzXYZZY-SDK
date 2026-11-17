@@ -8144,12 +8144,31 @@ void Scene::prepare_constraints(float seconds) {
                 joint.kind==JointKind::Fixed?6u:5u;
             const float mass0=body0.motion==Motion::Dynamic?body0.inverse_mass:0.0f;
             const float mass1=body1.motion==Motion::Dynamic?body1.inverse_mass:0.0f;
+            const auto source_row=[&](BodyId id) {
+                const auto& actor=actors_[id];
+                if(!rigid_node(actor.motion))return invalid_solver_row;
+                if(actor.solver_row_generation!=solver_preparation_generation_ ||
+                   actor.solver_row_index>=solver_rows_.size() ||
+                   actor.solver_row_index>=invalid_solver_row)
+                    throw std::logic_error(
+                        "Device joint source lacks a prepared solver row");
+                return static_cast<std::uint32_t>(actor.solver_row_index);
+            };
+            const auto row0=source_row(id0),row1=source_row(id1);
+            const std::uint32_t flags=count|
+                (body0.motion==Motion::Dynamic?0x100u:0u)|
+                (body1.motion==Motion::Dynamic?0x200u:0u);
             for(std::uint32_t i=0u;i<count;++i) {
                 auto& gpu=gpu_dy_rows_.emplace_back();
                 gpu.inverse_mass_a=mass0;
                 gpu.inverse_mass_b=mass1;
                 gpu.reserved=2u;
                 if(i==0u) {
+                    // Device joint tokens read their typed descriptor
+                    // directly from the first row before Jacobian prep.
+                    gpu.axis[0]=std::bit_cast<float>(row0);
+                    gpu.axis[1]=std::bit_cast<float>(row1);
+                    gpu.axis[2]=std::bit_cast<float>(flags);
                     gpu.applied_force=std::bit_cast<float>(source_index);
                     // The device verifies both source slot and generation
                     // before replacing these transient admission words.

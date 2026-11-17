@@ -1439,30 +1439,38 @@ public:
             std::memcpy(host_.data()+offsets[12]+integration_header_bytes,
                         packed_integration_.data(),
                         packed_integration_.size()*sizeof(SourceDyPackedIntegrationNative));
-        // Device-authored joint rows carry their source endpoint ordinals
-        // until geometric preparation replaces the transient first-row
-        // axis. The retained constraint pointer remains at +60.
-        for(const auto& descriptor:descriptors) {
-            if((descriptor.row_count&255u)==0u)continue;
-            const auto& first=rows[descriptor.index];
-            if(first.reserved!=2u)continue;
-            if(source_descriptors) {
-                const std::array<std::uint32_t,3> source{
-                    descriptor.row0,descriptor.row1,descriptor.row_count};
-                std::memcpy(host_.data()+offsets[1]+
-                        std::size_t(descriptor.index)*
-                            sizeof(native::GpuDyJointRow),
-                            source.data(),sizeof(source));
-            }
-            const auto index=std::bit_cast<std::uint32_t>(first.applied_force);
-            const auto slot=joint_inputs[index].source_slot;
+        // Source joint inputs own the first-row pointer independent
+        // of Sc contact descriptor publication. Joint preparation
+        // replaces the transient endpoint words with Jacobian axes.
+        std::size_t joint_row_begin=0u;
+        for(std::size_t source=0u;source<joint_inputs.size();++source) {
+            const auto& input=joint_inputs[source];
+            const auto kind=input.kind;
+            const std::size_t count=kind==0u?1u:kind==2u?3u:
+                kind==1u?6u:5u;
+            if(kind>4u || joint_row_begin>=rows.size() ||
+               count>rows.size()-joint_row_begin)
+                throw std::logic_error(
+                    "Source Dy joint input exceeds prepared row storage");
+            const auto& first=rows[joint_row_begin];
+            const auto flags=std::bit_cast<std::uint32_t>(first.axis[2]);
+            if(first.reserved!=2u ||
+               std::bit_cast<std::uint32_t>(first.applied_force)!=source ||
+               (flags&255u)!=count ||
+               (flags&~0x3ffu)!=0u)
+                throw std::logic_error(
+                    "Source Dy joint input lacks its first-row descriptor");
             const auto address=narrow(std::size_t(params[28])+joint_base+
-                std::size_t(slot)*sizeof(native::GpuDyJointInput));
+                std::size_t(input.source_slot)*sizeof(native::GpuDyJointInput));
             std::memcpy(host_.data()+offsets[1]+
-                            std::size_t(descriptor.index)*sizeof(native::GpuDyJointRow)+
+                            joint_row_begin*sizeof(native::GpuDyJointRow)+
                             offsetof(native::GpuDyJointRow,applied_force),
                         &address,sizeof(address));
+            joint_row_begin+=count;
         }
+        if(!joint_inputs.empty() && joint_row_begin!=rows.size())
+            throw std::logic_error(
+                "Source Dy joint inputs omitted numerical rows");
         // Only newly admitted or edited actor-local transforms are
         // uploaded. Neighboring BodyIds share one source DMA span.
         std::sort(pending_actor_locals_.begin(),pending_actor_locals_.end());
