@@ -591,15 +591,35 @@ struct GpuPcmFrictionAnchorFixture {
     static void verify_device_contact_order(const Scene& scene,
                                             bool require_pcm,
                                             bool require_cpu) {
-        std::size_t pcm_count=0u,cpu_count=0u;
+        std::size_t pcm_count=0u,cpu_count=0u,numerical_end=0u;
         for(const auto index:scene.indexed_managers_) {
             const auto& manager=scene.manifolds_[index];
             if(!manager.friction_patch_count)continue;
+            if(manager.solver_offset!=numerical_end)
+                throw std::runtime_error(
+                    "GPU Dy source numerical row reservation lost manager order");
             if(manager.pcm_result_index==
-               std::numeric_limits<std::uint32_t>::max())
+               std::numeric_limits<std::uint32_t>::max()) {
                 cpu_count+=manager.count;
-            else pcm_count+=manager.count;
+                numerical_end+=manager.count;
+            }else {
+                if(manager.pcm_result_index>=scene.gpu_pcm_pairs_.size())
+                    throw std::runtime_error(
+                        "GPU Dy reserved rows for an unknown PCM source");
+                const auto& request=scene.gpu_pcm_pairs_[
+                    manager.pcm_result_index];
+                const auto capacity=request.candidate_capacity==1u?1u:4u;
+                if(manager.count>capacity ||
+                   manager.friction_patch_count!=1u)
+                    throw std::runtime_error(
+                        "GPU Dy PCM capacity disagrees with published Gu contacts");
+                pcm_count+=manager.count;
+                numerical_end+=capacity;
+            }
         }
+        if(numerical_end!=scene.prepared_contact_rows_)
+            throw std::runtime_error(
+                "GPU Dy numerical layout still depends on emitted PCM counts");
         if((require_pcm && !pcm_count) ||
            (require_cpu && !cpu_count) ||
            scene.gpu_dy_contact_order_.size()!=cpu_count ||
