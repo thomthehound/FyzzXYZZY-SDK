@@ -4326,15 +4326,12 @@ void Scene::update_contacts(bool defer_device_points,float inverse_step) {
         bool device_seen=false;
         std::size_t candidate=0u;
         for(std::size_t i=0u;i<previous_pairs_.size();++i) {
-            const Pair pair=previous_pairs_[i];
-            while(candidate<gpu_pcm_pairs_.size() &&
-                  island_edges_[gpu_pcm_pairs_[candidate].edge].shapes<pair)
-                ++candidate;
             if(candidate<gpu_pcm_pairs_.size() &&
-               island_edges_[gpu_pcm_pairs_[candidate].edge].shapes==pair)
+               gpu_pcm_pairs_[candidate].candidate_ordinal==i) {
                 device_seen|=!gpu_pcm_pairs_[candidate].host_generated;
-            else if(device_seen &&
-                    !dormant_pcm(pair,active_edge_handles_[i]))
+                ++candidate;
+            }else if(device_seen &&
+                     !dormant_pcm(previous_pairs_[i],active_edge_handles_[i]))
                 return true;
         }
         return false;
@@ -4712,9 +4709,12 @@ void Scene::update_contacts(bool defer_device_points,float inverse_step) {
             }else {
                 step_checkpoint_.save_edge(*this,edge);
                 if(source_gpu_pcm) {
-                    if(gpu_pcm_index>=gpu_pcm_results_.size())
+                    if(gpu_pcm_index>=gpu_pcm_results_.size() ||
+                       gpu_pcm_pairs_[gpu_pcm_index].candidate_ordinal!=
+                           candidate_ordinal ||
+                       gpu_pcm_pairs_[gpu_pcm_index].edge!=edge)
                         throw std::logic_error(
-                            "Source GPU PCM result lost Sc EdgeIndex order");
+                            "Source PCM admission differs from the Sc candidate");
                     const auto reservation=
                         gpu_pcm_pairs_[gpu_pcm_index].candidate_capacity==1u
                             ?1u:4u;
