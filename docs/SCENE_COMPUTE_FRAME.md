@@ -191,7 +191,9 @@ CPU-generated physical-touch and loss journal before joining PCM's host
 witness, without waiting on that later device continuation.
 GPU 1D constraints author their numerical rows and joint geometry in
 the device input stream. The CPU PGS JointRow arena is not reserved or
-populated on GPU frames.
+populated on GPU frames. Native GPU world motion reads inverse mass from
+the actor-local integration input, not a second Sc-authored body array;
+the transient body span only provides the Dy result count.
 The GPU Dy path fetches 8 bytes of edge/touch metadata for ordinary
 GPU pairs before numerical admission. Managers with multiple
 geometrically valid, material-compatible retained friction patches fetch

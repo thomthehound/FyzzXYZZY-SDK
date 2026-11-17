@@ -320,7 +320,7 @@ public:
         if(device_initial_bodies && device_world_motion)
             for(std::size_t i=0u;i<bodies.size();++i)
                 if(!(integration[i].active&1u) &&
-                   bodies[i].inverse_mass!=0.0f)
+                   integration[i].source_inverse_mass!=0.0f)
                     throw std::logic_error(
                         "Native Dy inactive solver row has nonzero inverse mass");
         const auto partition_count=device_admission
@@ -551,7 +551,11 @@ public:
                 (integration[ordinal].active&1u)!=0u;
             if(active_dynamic) {
                 if(ordinal>=bodies.size() || ordinal>=invalid/2u ||
-                   body.inverse_mass!=bodies[ordinal].inverse_mass)
+                   body.inverse_mass!=(device_world_motion
+                       ?integration[ordinal].source_inverse_mass
+                       :bodies[ordinal].inverse_mass) ||
+                   (device_world_motion && actor!=invalid &&
+                    integration[ordinal].source_actor!=actor))
                     throw std::logic_error(
                         "Active source Dy contact body has no matching solver row");
                 return (ordinal<<1u)|1u;
@@ -774,10 +778,6 @@ public:
                 std::memcpy(local.inverse_inertia_local,input.inverse_inertia_local,
                             sizeof(local.inverse_inertia_local));
                 local.dynamics_flags=input.dynamics_flags;
-                if(device_world_motion && ordinal<bodies.size() &&
-                   local.inverse_mass!=bodies[ordinal].inverse_mass)
-                    throw std::logic_error(
-                        "Sc actor-local inverse mass differs from Dy admission");
                 // Only the immutable mass-frame prefix participates in
                 // metadata invalidation; Dy owns the trailing velocities.
                 constexpr auto metadata_bytes=

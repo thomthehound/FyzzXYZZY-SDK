@@ -9453,14 +9453,10 @@ void Scene::solve_gpu_distance_constraints(float seconds) {
     const auto pack=[](float(&out)[3],Vec3 v) {
         out[0]=v.x;out[1]=v.y;out[2]=v.z;
     };
+    // The world-motion stage reads inverse mass from the actor-local
+    // input. This body span carries only result capacity, not a second
+    // host-authored mass stream.
     gpu_dy_bodies_.resize(solver_rows_.size());
-    for(std::size_t i=0;i<solver_rows_.size();++i) {
-        const auto& row=solver_rows_[i];
-        auto& body=gpu_dy_bodies_[i];
-        // Dy initializes fresh transient deltas from the stable per-actor
-        // inverse masses retained on the device.
-        body.inverse_mass=row.data.inverse_mass;
-    }
     const auto integration_count=solver_rows_.size()+gpu_dy_free_ids_.size();
     gpu_dy_integration_inputs_.assign(integration_count,{});
     gpu_dy_integrated_poses_.resize(integration_count);

@@ -383,6 +383,24 @@ struct GpuPcmFrictionAnchorFixture {
             throw std::runtime_error(
                 "Early device Sc joint remap omitted prepared numerical rows");
     }
+    static void verify_resident_mass_inputs(const Scene& scene) {
+        if(scene.gpu_dy_bodies_.size()!=scene.solver_rows_.size())
+            throw std::runtime_error(
+                "GPU world-motion results lack the admitted body count");
+        for(const auto& body:scene.gpu_dy_bodies_)
+            if(body.inverse_mass!=0.0f)
+                throw std::runtime_error(
+                    "GPU world-motion admission copied host inverse masses");
+        for(const BodyId id:scene.solver_active_ids_) {
+            const auto& actor=scene.actors_[id];
+            if(actor.solver_row_index>=scene.gpu_dy_integration_inputs_.size() ||
+               scene.gpu_dy_integration_inputs_[
+                   actor.solver_row_index].source_inverse_mass!=
+                       actor.inverse_mass)
+                throw std::runtime_error(
+                    "GPU resident actor input lost its authoritative inverse mass");
+        }
+    }
     static void verify_resident_joint_rows(const Scene& scene) {
         std::size_t expected_rows=0u;
         for(const auto edge:scene.indexed_joints_) {
@@ -4955,6 +4973,8 @@ void verify_gpu_distance_solver(
         gpu.step(dt);
         native::GpuPcmFrictionAnchorFixture::
             verify_resident_joint_rows(gpu);
+        native::GpuPcmFrictionAnchorFixture::
+            verify_resident_mass_inputs(gpu);
         require(gpu.accurate_island_id(ids_gpu[0])==
                     gpu.accurate_island_id(ids_gpu[1]) &&
                 gpu.accurate_island_id(ids_gpu[2])==
@@ -5069,6 +5089,8 @@ void verify_gpu_distance_solver(
         gpu.step(dt);
         native::GpuPcmFrictionAnchorFixture::
             verify_resident_joint_rows(gpu);
+        native::GpuPcmFrictionAnchorFixture::
+            verify_resident_mass_inputs(gpu);
         require(producer->dy_launch_stats().device_joint_input_rows>=4u &&
                 producer->dy_launch_stats().device_joint_geometry_count>=4u &&
                 producer->dy_launch_stats().device_joint_metadata_upload_bytes<=
@@ -5106,6 +5128,8 @@ void verify_gpu_distance_solver(
         gpu.step(dt);
         native::GpuPcmFrictionAnchorFixture::
             verify_resident_joint_rows(gpu);
+        native::GpuPcmFrictionAnchorFixture::
+            verify_resident_mass_inputs(gpu);
         require(gpu.accurate_island_id(ids_gpu[2])==
                     gpu.accurate_island_id(ids_gpu[3]),
             "Recycled joint did not reconnect the accurate island");
