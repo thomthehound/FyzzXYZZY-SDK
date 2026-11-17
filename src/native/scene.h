@@ -305,8 +305,8 @@ struct GpuDyIslandEdge {
     std::uint32_t source_index=0,kind=0;
 };
 static_assert(sizeof(GpuDyIslandEdge)==20u);
-// Physical touch from CPU-owned Gu contacts enters the same resident
-// EdgeIndex journal as device PCM. Bits 0 and 1 are current/prior touch.
+// CPU Gu uses the shared EdgeIndex journal. Bits 0–1 record touch,
+// bits 8–15 encode exact contact count, and bit 17 marks that extent.
 struct GpuGuTouchRecord {
     std::uint32_t edge_index=0u,touch_bits=0u;
 };
