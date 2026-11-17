@@ -508,6 +508,20 @@ struct GpuPcmFrictionAnchorFixture {
             throw std::runtime_error(
                 "Device Sc numerical source table has unconsumed records");
     }
+    static std::string describe_dy_force_ownership(const Scene& scene) {
+        std::string result=" forces=";
+        for(const auto force:scene.gpu_dy_contact_forces_)
+            result+=" "+std::to_string(force);
+        for(const auto& m:scene.manifolds_) {
+            result+=" [edge="+std::to_string(m.edge_handle)+
+                " gu="+std::to_string(m.contact_offset)+
+                " dy="+std::to_string(m.solver_offset)+
+                " count="+std::to_string(m.count)+
+                " candidate="+std::to_string(m.candidate_ordinal)+
+                " pcm="+std::to_string(m.pcm_result_index)+"]";
+        }
+        return result;
+    }
     static void verify_device_admitted_contact_sources(const Scene& scene) {
         const auto& actual=scene.gpu_dy_admitted_manager_flags_;
         if(actual.size()!=scene.manifolds_.size())
@@ -4758,6 +4772,17 @@ void verify_mixed_gu_pcm_gpu_dy_solver(
                         " source_count="+std::to_string(admission.device_colored_descriptors)+
                         " resident_contacts="+physx_gpu::SourceScDeviceIslandFixture::
                             contact_records(*producer)+
+                        native::GpuPcmFrictionAnchorFixture::
+                            describe_dy_force_ownership(gpu)+
+                        [&] {
+                            std::string values=" expected=";
+                            for(const auto force:cpu.solved_normal_impulses())
+                                values+=" "+std::to_string(force);
+                            values+=" actual=";
+                            for(const auto force:gpu.solved_normal_impulses())
+                                values+=" "+std::to_string(force);
+                            return values;
+                        }()+
                         [&]{
                             std::string state;
                             for(const auto& manager:gpu.contacts()) {
