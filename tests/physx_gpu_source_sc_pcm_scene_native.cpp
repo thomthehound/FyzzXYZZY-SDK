@@ -2217,48 +2217,48 @@ void verify_device_sc_dy_task_admission(
     // Device-authored PCM extents cannot be omitted or replaced by stale
     // counts. Both failures reject before numerical integration.
     for(const std::uint32_t bad_extent:{0x80000000u,0u}) {
-    witness={};
-    capacity_patches[0]={0u,contact_capacity,0u,0u,0.f,0.f,
-                         0x80000000u,0u};
-    std::fill(capacity_forces.begin(),capacity_forces.end(),-17.f);
-    body={};
-    body[0].inverse_mass=1.f;
-    contact_tasks={{{0u,1u,0u,1u,0u,1u,4u,1u,0u}}};
-    poses={};
-    sleep={};
-    producer->enqueue_gpu_pcm_box_contacts(requests,witness);
-    producer->enqueue_gpu_dy_island_admission(
-        touching,single_node,
-        physx_gpu::SourceScDeviceIslandSources{1u,0u,0u});
-    physx_gpu::SourceScDeviceIslandFixture::overwrite_extent(
-        *producer,0u,bad_extent);
-    const auto injected_extent=
-        physx_gpu::SourceScDeviceIslandFixture::extent(*producer,0u);
-    require(injected_extent==bad_extent,
-        "Sc extent injection did not reach its resident numerical source");
-    producer->enqueue_gpu_dy_distance(
-        body,{},contact_desc,{},ordinals,contact_tasks,
-        capacity_forces,{},{},{},capacity_patches,capacity_managers,{},
-        contact_prep,inputs,poses,true,{},true,true,true,sleep);
-    bool extent_rejected=false;
-    try {
-        producer->finish_gpu_dy_distance();
-    }catch(const std::overflow_error&) {
-        extent_rejected=true;
-    }
-    if(!(extent_rejected &&
-         (contact_tasks[0].error&65536u)!=0u &&
-         poses[0].valid==0u &&
-         witness[0].packed_counts==0u))
-        throw std::runtime_error(
-            "Dy accepted a contact count inconsistent with resident Sc admission"
-            " rejected="+std::to_string(extent_rejected)+
-            " flags="+std::to_string(contact_tasks[0].error)+
-            " pose="+std::to_string(poses[0].valid)+
-            " witness="+std::to_string(witness[0].packed_counts)+
-            " extent="+std::to_string(injected_extent));
-    producer->finish_gpu_pcm_box_contacts();
-    producer->invalidate_after_rollback();
+        witness={};
+        capacity_patches[0]={0u,contact_capacity,0u,0u,0.f,0.f,
+                             0x80000000u,0u};
+        std::fill(capacity_forces.begin(),capacity_forces.end(),-17.f);
+        body={};
+        body[0].inverse_mass=1.f;
+        contact_tasks={{{0u,1u,0u,1u,0u,1u,4u,1u,0u}}};
+        poses={};
+        sleep={};
+        producer->enqueue_gpu_pcm_box_contacts(requests,witness);
+        producer->enqueue_gpu_dy_island_admission(
+            touching,single_node,
+            physx_gpu::SourceScDeviceIslandSources{1u,0u,0u});
+        physx_gpu::SourceScDeviceIslandFixture::overwrite_extent(
+            *producer,0u,bad_extent);
+        const auto injected_extent=
+            physx_gpu::SourceScDeviceIslandFixture::extent(*producer,0u);
+        require(injected_extent==bad_extent,
+            "Sc extent injection did not reach its resident numerical source");
+        producer->enqueue_gpu_dy_distance(
+            body,{},contact_desc,{},ordinals,contact_tasks,
+            capacity_forces,{},{},{},capacity_patches,capacity_managers,{},
+            contact_prep,inputs,poses,true,{},true,true,true,sleep);
+        bool extent_rejected=false;
+        try {
+            producer->finish_gpu_dy_distance();
+        }catch(const std::overflow_error&) {
+            extent_rejected=true;
+        }
+        if(!(extent_rejected &&
+             (contact_tasks[0].error&65536u)!=0u &&
+             poses[0].valid==0u &&
+             witness[0].packed_counts==0u))
+            throw std::runtime_error(
+                "Dy accepted a contact count inconsistent with resident Sc admission"
+                " rejected="+std::to_string(extent_rejected)+
+                " flags="+std::to_string(contact_tasks[0].error)+
+                " pose="+std::to_string(poses[0].valid)+
+                " witness="+std::to_string(witness[0].packed_counts)+
+                " extent="+std::to_string(injected_extent));
+        producer->finish_gpu_pcm_box_contacts();
+        producer->invalidate_after_rollback();
     }
 
     // A valid cached anchor with an incompatible local normal must be
