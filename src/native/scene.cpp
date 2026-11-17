@@ -4426,8 +4426,7 @@ void Scene::update_contacts(bool defer_device_points,float inverse_step) {
     const bool early_device_graph=defer_device_points &&
         gpu_dy_device_admission_enabled_ && !enhanced_determinism_ &&
         gpu_results_pending &&
-        (previous_pairs_.size()>1u || !active_constraint_handles_.empty()) &&
-        gpu_broadphase_->gpu_dy_direct_task_limit()>=2u;
+        gpu_broadphase_->gpu_dy_direct_task_limit()!=0u;
     if(early_device_graph) {
         constexpr std::uint32_t invalid=0xffffffffu;
         constexpr std::uint32_t require_contact=1u<<18u;
@@ -4535,7 +4534,7 @@ void Scene::update_contacts(bool defer_device_points,float inverse_step) {
                 std::unique(gpu_dy_early_actor_ids_.begin(),
                             gpu_dy_early_actor_ids_.end()),
                 gpu_dy_early_actor_ids_.end());
-            admitted=gpu_dy_early_actor_ids_.size()>=2u &&
+            admitted=!gpu_dy_early_actor_ids_.empty() &&
                      gpu_dy_early_actor_ids_.size()<=
                          gpu_broadphase_->gpu_dy_direct_task_limit();
         }
@@ -9390,6 +9389,7 @@ void Scene::solve_gpu_distance_constraints(float seconds) {
         [](const GpuPcmBoxPair& pair){return !pair.host_generated;});
     const bool device_admission=gpu_dy_device_admission_enabled_ &&
         has_gpu_pcm && compact_tasks &&
+        gpu_dy_responding_island_count_!=0u &&
         (gpu_dy_early_islands_ ||
          gpu_dy_responding_island_count_>responding_tasks) &&
         gpu_dy_responding_island_count_<=

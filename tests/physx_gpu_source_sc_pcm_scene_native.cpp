@@ -364,7 +364,7 @@ struct GpuPcmFrictionAnchorFixture {
         const auto joints=scene.gpu_dy_early_joint_edges_.size();
         if(!scene.gpu_dy_early_islands_ ||
            scene.gpu_dy_island_edges_.size()!=scene.previous_pairs_.size()+joints ||
-           scene.gpu_dy_early_actor_ids_.size()<2u ||
+           scene.gpu_dy_early_actor_ids_.empty() ||
            scene.gpu_dy_island_node_flags_.size()!=
                scene.gpu_dy_early_actor_ids_.size()+joints ||
            !std::is_sorted(scene.gpu_dy_early_actor_ids_.begin(),
@@ -3502,6 +3502,93 @@ void verify_connected_pre_witness_island_admission(
                 gpu.body_state(gpu_ids[i]),cpu.body_state(cpu_ids[i]),
                 0.03f,"Connected resident GPU island diverged from CPU PGS");
     }
+}
+// A one-body contact can use the same pre-witness graph as multi-body
+// islands; a speculative pair without physical touch cannot create Dy work.
+void verify_single_body_pre_witness_contact(
+    fyzz::compute::Backend backend,const char* sap,
+    const char* pcm,const char* dy_shader) {
+    using namespace fyzz;
+    std::ifstream input(dy_shader,std::ios::binary);
+    require(bool(input),"Compiled source Dy shader unavailable");
+    compute::ShaderBinary shader{};
+    shader.format=backend==compute::Backend::Vulkan
+        ?compute::ShaderFormat::Spirv:compute::ShaderFormat::Dxil;
+    shader.bytes.assign(std::istreambuf_iterator<char>{input},
+                        std::istreambuf_iterator<char>{});
+    native::Scene cpu,gpu;
+    auto owner=std::make_unique<
+        physx_gpu::SourceScOwnedGpuBroadphaseNative>(
+        backend,load_native_gpu_sap_shaders(backend,sap),
+        128u,128u,std::nullopt,
+        load_native_gpu_pcm_shaders(backend,pcm),shader);
+    auto* producer=owner.get();
+    gpu.set_gpu_broadphase(std::move(owner));
+    gpu.set_gpu_dy_device_admission_enabled(true);
+    cpu.add_static_box({0.5f,0.5f,0.5f},{0.f,0.f,0.f});
+    gpu.add_static_box({0.5f,0.5f,0.5f},{0.f,0.f,0.f});
+    const auto cpu_body=cpu.add_dynamic_box(
+        {0.5f,0.5f,0.5f},{0.f,0.83f,0.f},1.f);
+    const auto gpu_body=gpu.add_dynamic_box(
+        {0.5f,0.5f,0.5f},{0.f,0.83f,0.f},1.f);
+    for(std::uint32_t frame=0u;frame<3u;++frame) {
+        cpu.step(1.f/120.f);
+        gpu.step(1.f/120.f);
+        native::GpuPcmFrictionAnchorFixture::
+            verify_pre_witness_device_admission(gpu);
+        const auto stats=producer->dy_launch_stats();
+        require(gpu.pairs().size()==1u &&
+                gpu.contacts().size()==1u &&
+                cpu.contacts().size()==1u &&
+                stats.device_island_indirect_dispatches==1u &&
+                stats.device_admitted_tasks==1u &&
+                stats.device_admitted_descriptors==1u &&
+                gpu.solved_normal_impulses().size()==
+                    cpu.solved_normal_impulses().size(),
+            "Single-body PCM contact did not retain device numerical admission");
+        test::compound_compare_state(
+            gpu.body_state(gpu_body),cpu.body_state(cpu_body),0.03f,
+            "Single-body resident GPU contact diverged from CPU PGS");
+    }
+
+    native::Scene empty_cpu,empty_gpu;
+    auto empty_owner=std::make_unique<
+        physx_gpu::SourceScOwnedGpuBroadphaseNative>(
+        backend,load_native_gpu_sap_shaders(backend,sap),
+        128u,128u,std::nullopt,
+        load_native_gpu_pcm_shaders(backend,pcm),std::move(shader));
+    auto* empty_producer=empty_owner.get();
+    empty_gpu.set_gpu_broadphase(std::move(empty_owner));
+    empty_gpu.set_gpu_dy_device_admission_enabled(true);
+    const Vec3 center{10.f,1.f,0.f};
+    const Vec3 other{11.08f,2.08f,0.f};
+    const Quat tilt{0.f,0.f,0.382683432f,0.923879533f};
+    const auto expected=empty_cpu.add_dynamic_box(
+        {0.5f,0.5f,0.5f},center,1.f);
+    const auto actual=empty_gpu.add_dynamic_box(
+        {0.5f,0.5f,0.5f},center,1.f);
+    const auto fixed_cpu=empty_cpu.add_static_box(
+        {0.5f,0.5f,0.5f},other);
+    const auto fixed_gpu=empty_gpu.add_static_box(
+        {0.5f,0.5f,0.5f},other);
+    empty_cpu.set_pose(fixed_cpu,other,tilt);
+    empty_gpu.set_pose(fixed_gpu,other,tilt);
+    RigidBodyDynamics dynamics{};
+    dynamics.gravity_enabled=false;
+    empty_cpu.set_dynamics(expected,dynamics);
+    empty_gpu.set_dynamics(actual,dynamics);
+    empty_cpu.step(1.f/120.f);
+    empty_gpu.step(1.f/120.f);
+    const auto stats=empty_producer->dy_launch_stats();
+    require(empty_gpu.pairs().size()==1u &&
+            empty_gpu.contacts().empty() &&
+            empty_cpu.contacts().empty() &&
+            stats.device_admitted_tasks==0u &&
+            stats.device_admitted_descriptors==0u,
+        "Non-touching PCM candidate incorrectly admitted one-body Dy work");
+    test::compound_compare_state(
+        empty_gpu.body_state(actual),empty_cpu.body_state(expected),0.003f,
+        "Non-touching PCM candidate changed free-flight motion");
 }
 // One PCM manager plus a disconnected joint-only island still admits
 // two independent numerical tasks before Sc joins the contact witness.
@@ -7231,6 +7318,8 @@ int main(int argc,char** argv) {
                     verify_gpu_single_island_hybrid_solver(
                         backend,argv[1],argv[2],argv[3],true);
                     verify_connected_pre_witness_island_admission(
+                        backend,argv[1],argv[2],argv[3]);
+                    verify_single_body_pre_witness_contact(
                         backend,argv[1],argv[2],argv[3]);
                     verify_world_device_island_admission(
                         backend,argv[1],argv[2],argv[3]);
