@@ -336,17 +336,23 @@ void verify(Context& context,const char* filename) {
                     std::to_string(errors));
     };
 
-    // Both dispatch schedules carry source-ordered PCM extents from
-    // physical-touch history without fetching contact witnesses.
-    for(const std::uint32_t nodes:{1u,257u}) {
+    // PCM and CPU Gu share one source-ordered numerical extent stream.
+    // The compact and parallel schedules preserve counts up to 255 without
+    // fetching physical witnesses or rebuilding Gu manifolds.
+    for(const std::uint32_t nodes:{1u,2u,257u}) {
         std::vector<SourceScDeviceIslandEdge> edges;
         std::vector<std::uint32_t> touches;
         edges.reserve(nodes);
         touches.reserve(nodes);
+        const auto count=[&](std::uint32_t source) {
+            return (source&1u)!=0u
+                ?(source==255u?255u:1u+source%19u)
+                :1u+source%4u;
+        };
         for(std::uint32_t i=0u;i<nodes;++i) {
             edges.push_back({i,i,invalid,i,0u});
-            const auto emitted=1u+i%4u;
-            touches.push_back(0x10000u|(emitted<<8u)|1u);
+            const auto producer=(i&1u)!=0u?0x20000u:0x10000u;
+            touches.push_back(producer|(count(i)<<8u)|1u);
         }
         const std::vector<std::uint32_t> flags(
             nodes,4u|source_sc_device_island_active_bit);
@@ -354,15 +360,15 @@ void verify(Context& context,const char* filename) {
         no_errors(result);
         check_task_mapping(result);
         require(header(result).admitted_edges==nodes,
-                "Device Sc numerical extent omitted a live PCM source");
+                "Device Sc numerical extent omitted a live contact source");
         for(std::uint32_t i=0u;i<nodes;++i) {
             const auto source=load<std::uint32_t>(
                 result.second,result.first.response_order+i*4u);
             const auto extent=load<std::uint32_t>(
                 result.second,result.first.response_extents+i*4u);
             require(source<nodes &&
-                    extent==(0x80000000u|(1u+source%4u)),
-                    "Device Sc numerical extent lost PCM source order");
+                    extent==(0x80000000u|count(source)),
+                    "Device Sc numerical extent lost source order or count");
         }
     }
     {
