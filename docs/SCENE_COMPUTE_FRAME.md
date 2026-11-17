@@ -121,16 +121,16 @@ joins the existing Dy completion transfer. Zero-contact pairs transfer their hea
 without a second witness download. Collision-only publication and frames
 with no numerical Dy task fetch required points at their public consumer. GPU PCM numerical admission uses one
 Sc friction patch per manager and advances contact ranges without walking
-device-owned contact points; CPU Gu retains its general multi-patch correlation. The Scene permits compact
-device admission via set_gpu_dy_device_admission_enabled() only when
-CPU task batching conceals independent responding islands, GPU PCM supplies
-contacts, and every numerical task fits compact execution. Otherwise Dy
-uses Sc's existing task boundaries without an additional device graph scan.
+device-owned contact points; CPU Gu retains its general multi-patch correlation. Portable GPU worlds with PCM and Dy enable Sc device island admission.
+Pre-witness Sc graphs retain device-authored tasks for eligible compact
+islands. Late admission is selected when Sc task batching hides independent
+responding islands; wide numerical groups use device partitioning instead.
 Selected admission passes stable contact and joint identities, reads resident
-physical touch, and supplies generated task/body ranges without host
-task/ordinal uploads. Device contact tokens address Sc's pre-PCM candidate
-ordinals, including zero-touch candidates, rather than Gu manifold positions.
-CPU-prepared task publication retains its original Gu-indexed ordering. The island work and Dy solve enter one ordered GPU
+physical touch, and supplies task/body ranges without host task/ordinal
+uploads. Every Scene-authored GPU contact descriptor and device response token
+addresses the original Sc pair-candidate ordinal. Physically non-touching
+candidates retain empty numerical slots; CPU PGS alone indexes published
+Gu manifolds. The island work and Dy solve enter one ordered GPU
 submission without an intermediate host wait. Dy reads Sc's resident
 body-ordinal and source response-token streams directly. Dy updates the transient Sc task records directly and reads the
 admission header in place. One Sc work-buffer binding serves the admission header, tasks,
@@ -170,9 +170,9 @@ graphs also admit before the GPU witness join, after CPU Gu publishes
 its EdgeIndex touch/loss journal. The deferred submission retains the
 provisional joint-source capacity until Dy resolves final joint rows. Sc defers GPU witness publication
 until all such Gu producers complete, regardless of their encounter order.
-A single GPU PCM contact candidate can admit independent joint-only
-islands; admission depends on the combined contact/joint graph rather
-than a minimum count of speculative contact candidates. Joint graphs
+A single responding dynamic body admits a GPU PCM contact task. Contact
+candidates and joint-only islands share the same device graph; physical
+touch, not speculative overlap, determines runnable numerical responses. Joint graphs
 admit stable Sc edge identities with the same early contact graph. Their provisional joint-source ordinals are resolved to prepared Dy
 joint rows in the ordered node/response remap, without rebuilding GPU
 connectivity or task ranges. CPU Sc still owns the committed island graph

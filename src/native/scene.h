@@ -281,6 +281,8 @@ static_assert(sizeof(GpuDyJointInput)==152u &&
               offsetof(GpuDyJointInput,kind)==140u &&
               offsetof(GpuDyJointInput,source_slot)==144u &&
               offsetof(GpuDyJointInput,source_generation)==148u);
+// Scene GPU contact indices address Sc candidates; CPU PGS contact
+// indices address published Gu manifolds. Joint indices address Dy rows.
 struct GpuDyDistanceDescriptor {
     std::uint32_t index=0,row0=0,row1=0,row_count=0;
 };
