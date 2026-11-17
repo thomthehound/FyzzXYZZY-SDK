@@ -383,6 +383,26 @@ struct GpuPcmFrictionAnchorFixture {
             throw std::runtime_error(
                 "Early device Sc joint remap omitted prepared numerical rows");
     }
+    static void verify_resident_joint_rows(const Scene& scene) {
+        std::size_t expected_rows=0u;
+        for(const auto edge:scene.indexed_joints_) {
+            const auto& joint=scene.constraint_records_[
+                scene.island_edges_[edge].constraint_id];
+            expected_rows+=joint.kind==Scene::JointKind::Distance?1u:
+                joint.kind==Scene::JointKind::Spherical?3u:
+                joint.kind==Scene::JointKind::Fixed?6u:5u;
+        }
+        if(!scene.joint_rows_.empty() ||
+           scene.gpu_dy_joint_inputs_.size()!=scene.indexed_joints_.size() ||
+           scene.gpu_dy_rows_.size()!=expected_rows ||
+           std::any_of(scene.gpu_dy_rows_.begin(),
+                       scene.gpu_dy_rows_.end(),
+                       [](const GpuDyJointRow& row) {
+                           return row.reserved!=2u;
+                       }))
+            throw std::runtime_error(
+                "GPU joint preparation retained CPU solver rows or lost device geometry");
+    }
     static void verify_device_partition_source(const Scene& scene) {
         const auto& edges=scene.gpu_dy_island_edges_;
         if(edges.size()!=
@@ -4933,6 +4953,8 @@ void verify_gpu_distance_solver(
         }
         cpu.step(dt);
         gpu.step(dt);
+        native::GpuPcmFrictionAnchorFixture::
+            verify_resident_joint_rows(gpu);
         require(gpu.accurate_island_id(ids_gpu[0])==
                     gpu.accurate_island_id(ids_gpu[1]) &&
                 gpu.accurate_island_id(ids_gpu[2])==
@@ -5045,6 +5067,8 @@ void verify_gpu_distance_solver(
         gpu.set_kinematic_target(kinematic_gpu,target,orientation);
         cpu.step(dt);
         gpu.step(dt);
+        native::GpuPcmFrictionAnchorFixture::
+            verify_resident_joint_rows(gpu);
         require(producer->dy_launch_stats().device_joint_input_rows>=4u &&
                 producer->dy_launch_stats().device_joint_geometry_count>=4u &&
                 producer->dy_launch_stats().device_joint_metadata_upload_bytes<=
@@ -5080,6 +5104,8 @@ void verify_gpu_distance_solver(
     for(unsigned frame=0u;frame<3u;++frame) {
         cpu.step(dt);
         gpu.step(dt);
+        native::GpuPcmFrictionAnchorFixture::
+            verify_resident_joint_rows(gpu);
         require(gpu.accurate_island_id(ids_gpu[2])==
                     gpu.accurate_island_id(ids_gpu[3]),
             "Recycled joint did not reconnect the accurate island");

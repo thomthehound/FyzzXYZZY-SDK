@@ -8178,8 +8178,11 @@ void Scene::partition_constraints() {
         joint_begin=task.joint_end;
     }
 
+    if(gpu_integration) {
+        gpu_dy_rows_.reserve(joint_row_begin);
+        return;
+    }
     joint_rows_.reserve(joint_row_begin);
-    if(gpu_integration)return;
 
     // Prefix-count and stable-scatter the unified descriptor sequence.
     // Source 1D rows precede contacts within each conflict-free batch;
@@ -8324,7 +8327,6 @@ void Scene::prepare_constraints(float seconds) {
             const float mass0=body0.motion==Motion::Dynamic?body0.inverse_mass:0.0f;
             const float mass1=body1.motion==Motion::Dynamic?body1.inverse_mass:0.0f;
             for(std::uint32_t i=0u;i<count;++i) {
-                joint_rows_.emplace_back();
                 auto& gpu=gpu_dy_rows_.emplace_back();
                 gpu.inverse_mass_a=mass0;
                 gpu.inverse_mass_b=mass1;
@@ -9549,9 +9551,10 @@ void Scene::solve_gpu_distance_constraints(float seconds) {
         pack(input.linear_velocity,actor.velocity);
         pack(input.angular_velocity,actor.angular_velocity);
     }
-    if(gpu_dy_rows_.size()!=joint_rows_.size())
+    if(!joint_rows_.empty() ||
+       gpu_dy_rows_.size()<gpu_dy_joint_inputs_.size())
         throw std::logic_error(
-            "Source GPU 1D row preparation did not cover source rows");
+            "Source GPU 1D preparation retained CPU rows or omitted device rows");
     gpu_dy_body_ordinals_.resize(solver_active_ids_.size());
     gpu_dy_tasks_.clear();
     // Device admission earns its graph traversal only when CPU task
