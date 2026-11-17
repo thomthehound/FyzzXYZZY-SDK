@@ -7694,6 +7694,17 @@ void Scene::partition_constraints() {
         gpu_dy_island_edges_.clear();
         gpu_dy_island_node_flags_.clear();
     }
+    // Compact early island work already owns typed numerical responses.
+    // Dy consumes those device-authored identities without a host pass.
+    const bool device_source_responses=gpu_integration &&
+        gpu_dy_early_islands_ && gpu_dy_responding_island_count_!=0u &&
+        (gpu_dy_island_edges_.size()<gpu_dy_wide_task_threshold ||
+         gpu_dy_early_actor_ids_.size()<gpu_dy_wide_task_threshold) &&
+        std::any_of(gpu_pcm_pairs_.begin(),gpu_pcm_pairs_.end(),
+            [](const GpuPcmBoxPair& pair){return !pair.host_generated;});
+    FYZZ_PROFILE_COUNTER("dy.source_response_capacity",
+        device_source_responses?gpu_dy_island_edges_.size():0u);
+    if(device_source_responses)return;
     constexpr std::uint32_t invalid_device_node=0xffffffffu;
     constexpr std::uint32_t nonresponding_device_node=1u<<17u;
     if(prepare_device_graph) {

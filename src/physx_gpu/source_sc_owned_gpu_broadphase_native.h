@@ -349,7 +349,8 @@ public:
                                     SourceScDeviceIslandDyView{
                                         pcm_->device_island_work_address(),
                                         pcm_->device_island_layout(),
-                                        *pcm_->device_island_indirect_args()}}
+                                        *pcm_->device_island_indirect_args(),
+                                        pcm_->device_island_response_capacity()}}
                                 :std::nullopt,
                             deferred_points);
         if(!deferred_points.empty())

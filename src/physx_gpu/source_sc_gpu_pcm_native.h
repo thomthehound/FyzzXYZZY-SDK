@@ -806,6 +806,9 @@ public:
     SourceScDeviceIslandLayout device_island_layout() const noexcept {
         return island_work_ready_?island_layout_:SourceScDeviceIslandLayout{};
     }
+    std::uint32_t device_island_response_capacity() const noexcept {
+        return island_work_ready_?island_edge_count_:0u;
+    }
     std::optional<compute::DispatchIndirectArgs>
     device_island_indirect_args() const noexcept {
         if(!island_work_ready_)return std::nullopt;

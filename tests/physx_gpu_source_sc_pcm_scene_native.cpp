@@ -360,11 +360,29 @@ struct GpuPcmFrictionAnchorFixture {
         }
         return true;
     }
+    static void verify_device_numerical_response_ownership(
+        const Scene& scene) {
+        if(!scene.gpu_dy_early_islands_ ||
+           !scene.gpu_dy_responding_island_count_ ||
+           !scene.ordered_constraints_.empty() ||
+           scene.gpu_dy_island_edges_.empty())
+            throw std::runtime_error(
+                "Early device Sc graph retained host numerical descriptors");
+    }
     static void verify_gpu_source_candidate_descriptors(
         const Scene& scene) {
         if(scene.gpu_dy_manifolds_.size()!=scene.previous_pairs_.size())
             throw std::runtime_error(
                 "GPU Dy contact table does not cover source candidates");
+        for(const auto& manager_index:scene.indexed_managers_) {
+            const auto& manager=scene.manifolds_[manager_index];
+            const auto candidate=manager.candidate_ordinal;
+            if(candidate>=scene.gpu_dy_manifolds_.size() ||
+               scene.gpu_dy_manifolds_[candidate].patch_count!=
+                   manager.friction_patch_count)
+                throw std::runtime_error(
+                    "GPU Dy numerical manager lost its source candidate");
+        }
         for(const auto& descriptor:scene.ordered_constraints_) {
             if((descriptor.row_count&255u)!=0u)continue;
             const auto candidate=descriptor.index;
@@ -3520,6 +3538,8 @@ void verify_connected_pre_witness_island_admission(
         gpu.step(1.f/120.f);
         native::GpuPcmFrictionAnchorFixture::
             verify_pre_witness_device_admission(gpu);
+        native::GpuPcmFrictionAnchorFixture::
+            verify_device_numerical_response_ownership(gpu);
         const auto stats=producer->dy_launch_stats();
         require(gpu.contacts().size()==cpu.contacts().size() &&
                 stats.device_island_indirect_dispatches==1u &&
@@ -3567,6 +3587,8 @@ void verify_single_body_pre_witness_contact(
         gpu.step(1.f/120.f);
         native::GpuPcmFrictionAnchorFixture::
             verify_pre_witness_device_admission(gpu);
+        native::GpuPcmFrictionAnchorFixture::
+            verify_device_numerical_response_ownership(gpu);
         const auto stats=producer->dy_launch_stats();
         require(gpu.pairs().size()==1u &&
                 gpu.contacts().size()==1u &&
@@ -3670,6 +3692,8 @@ void verify_single_pcm_joint_island_admission(
         gpu.step(1.f/120.f);
         native::GpuPcmFrictionAnchorFixture::
             verify_pre_witness_device_admission(gpu);
+        native::GpuPcmFrictionAnchorFixture::
+            verify_device_numerical_response_ownership(gpu);
         const auto stats=producer->dy_launch_stats();
         require(gpu.pairs().size()==1u && gpu.contacts().size()==1u &&
                 stats.device_island_indirect_dispatches==1u &&

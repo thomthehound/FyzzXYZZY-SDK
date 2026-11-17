@@ -318,6 +318,9 @@ public:
             return static_cast<std::uint32_t>(value);
         };
         const auto free_bodies=integration.size()-bodies.size();
+        const auto descriptor_capacity=device_admission
+            ?std::size_t(device_admission->response_capacity)
+            :descriptors.size();
         if(device_unconstrained_preparation &&
            sleep_states.size()!=integration.size())
             throw std::invalid_argument(
@@ -329,7 +332,7 @@ public:
                     throw std::logic_error(
                         "Native Dy inactive solver row has nonzero inverse mass");
         const auto partition_count=device_admission
-            ? descriptors.size()
+            ? descriptor_capacity
             : device_partitions
                 ? (tasks.empty()?0u:tasks.back().partition_end)
                 : partition_ends.size();
@@ -337,6 +340,7 @@ public:
             throw std::overflow_error("Source Dy partition arena exceeds 32-bit offsets");
         if(device_partitions) {
             build_device_launch_plan(tasks,descriptors,narrow(partition_count),
+                                     narrow(descriptor_capacity),
                                      narrow(body_ordinals.size()),
                                      narrow(bodies.size()),
                                      device_admission.has_value());
@@ -980,7 +984,7 @@ public:
                layout.response_tokens>layout.bytes ||
                body_ordinals.size_bytes()>
                    layout.response_tokens-layout.body_order ||
-               descriptors.size()>
+               descriptor_capacity>
                    (layout.bytes-layout.response_tokens)/
                        sizeof(std::uint32_t))
                 throw std::out_of_range(
@@ -1019,7 +1023,7 @@ public:
         }
         const std::uint64_t scratch_bytes=device_partitions
             ?(source_descriptors?(device_admission?32ull:24ull):20ull)+
-                std::uint64_t(descriptors.size())*24ull+
+                std::uint64_t(descriptor_capacity)*24ull+
                 std::uint64_t(bodies.size())*12ull+
                 (source_descriptors?sizeof(std::uint32_t):0u)+
                 std::uint64_t(source_descriptor_full_.size())*16ull
@@ -1030,7 +1034,7 @@ public:
         const auto partition_scratch_bytes=
             static_cast<std::size_t>(scratch_bytes);
         last_schedule_.device_source_descriptors=
-            source_descriptors?descriptors.size():0u;
+            source_descriptors?descriptor_capacity:0u;
         last_schedule_.source_descriptor_upload_bytes=source_descriptors
             ?source_descriptor_tokens_.size()*sizeof(std::uint32_t)+
                 source_descriptor_full_.size()*sizeof(native::GpuDyDistanceDescriptor)
@@ -1041,7 +1045,8 @@ public:
         // The integration prefix describes Sc/SAP views and the launch
         // table. Solver-body ordinals precede the free-body suffix.
         const std::array<std::size_t,count> bytes{
-            bodies.size_bytes(),rows.size_bytes(),descriptors.size_bytes(),
+            bodies.size_bytes(),rows.size_bytes(),
+            descriptor_capacity*sizeof(native::GpuDyDistanceDescriptor),
             partition_count*sizeof(std::uint32_t),
             device_admission?0u:body_ordinals.size_bytes(),
             device_admission?0u:tasks.size_bytes(),
@@ -1051,7 +1056,7 @@ public:
             integration_bytes,compact_anchor_bytes,
             tiles_.size()*sizeof(WorkTile),partition_scratch_bytes};
         const std::array<std::size_t,count> elements{
-            bodies.size(),rows.size(),descriptors.size(),partition_count,
+            bodies.size(),rows.size(),descriptor_capacity,partition_count,
             body_ordinals.size(),tasks.size(),contact_forces.size(),friction_count,
             patches.size(),manifolds.size(),contact_order.size(),
             contact_prep.size(),integration.size(),compact_anchors_.size(),
@@ -1189,7 +1194,7 @@ public:
                         inline_bodies_.data(),inline_bodies_.size()*
                             sizeof(native::GpuDyContactPrepBody));
         if(device_partitions) {
-            const auto n=descriptors.size();
+            const auto n=descriptor_capacity;
             const std::size_t header_bytes=source_descriptors
                 ?(device_admission?32u:24u):20u;
             const std::array<std::uint32_t,5> scratch_header{
@@ -1279,7 +1284,7 @@ public:
         const auto device_skip_begin=device_admission
             ?offsets[15]+32u:0u;
         const auto device_skip_end=device_admission
-            ?device_skip_begin+descriptors.size()*24u+bodies.size()*12u:0u;
+            ?device_skip_begin+descriptor_capacity*24u+bodies.size()*12u:0u;
         if(device_admission &&
            (device_skip_begin<upload_begin ||
             device_skip_end<device_skip_begin ||
@@ -1349,7 +1354,7 @@ public:
             throw std::logic_error("Source Sc GPU integration shape buffers are missing");
         std::array<std::uint32_t,10> integration_header{
             0u,0u,0u,shape_capacity,narrow(body_ordinals.size()),
-            narrow(descriptors.size()),narrow(tasks.size()),
+            narrow(descriptor_capacity),narrow(tasks.size()),
             device_partitions?narrow(std::size_t(params[28])+offsets[15]):
                 (tiles_.empty()?0u:narrow(std::size_t(params[28])+offsets[14])),
             narrow(integration.size()),
@@ -1527,10 +1532,10 @@ public:
                tasks.size_bytes()>layout.block_offsets-layout.tasks ||
                body_ordinals.size_bytes()>
                    layout.response_tokens-layout.body_order ||
-               descriptors.size()>
+               descriptor_capacity>
                    (layout.response_extents-layout.response_tokens)/
                        sizeof(std::uint32_t) ||
-               descriptors.size()>
+               descriptor_capacity>
                    (layout.bytes-layout.response_extents)/
                        sizeof(std::uint32_t))
                 throw std::out_of_range(
@@ -1700,14 +1705,14 @@ public:
             device_meta_offset=metadata.offset;
             device_task_source=device_tasks.offset;
             device_ordinal_source=device_ordinals.offset;
-            if(!descriptors.empty()) {
+            if(descriptor_capacity) {
                 const auto& view=*device_admission;
                 const auto responses=addresses_.resolve(
                     view.work+view.layout.response_tokens,
-                    descriptors.size()*sizeof(std::uint32_t));
+                    descriptor_capacity*sizeof(std::uint32_t));
                 device_response_buffer=responses.buffer;
                 device_response_source=responses.offset;
-                admitted_response_tokens_.resize(descriptors.size());
+                admitted_response_tokens_.resize(descriptor_capacity);
             }
         }
         // The final readback shares the numerical dispatch submission.
@@ -1718,6 +1723,7 @@ public:
             .patches=patches,.integration=integration,
             .integrated_poses=integrated_poses,.sleep_states=sleep_states,
             .descriptors=descriptors,.body_ordinals=body_ordinals,
+            .response_capacity=descriptor_capacity,
             .manifolds=manifolds,.contact_order=contact_order,
             .contact_prep=contact_prep,.result_offsets=result_offsets,
             .output_bytes=output_bytes,
@@ -1816,7 +1822,7 @@ public:
             invalid_device_admission=
                 admitted[0]!=0u || admitted[1]>tasks.size() ||
                 admitted[2]>body_ordinals.size() ||
-                admitted[3]>descriptors.size();
+                admitted[3]>pending.response_capacity;
             if(!invalid_device_admission) {
                 last_schedule_.device_admitted_tasks=admitted[1];
                 last_schedule_.device_admitted_bodies=admitted[2];
@@ -2107,7 +2113,7 @@ public:
             output_bytes+(pending.device_admission
                 ?16u+pending.tasks.size_bytes()+
                     pending.body_ordinals.size_bytes()+
-                    pending.descriptors.size()*sizeof(std::uint32_t):0u)};
+                    pending.response_capacity*sizeof(std::uint32_t):0u)};
         last_reused_pcm_contact_rows_=reused_pcm_rows;
         last_omitted_pcm_upload_bytes_=
             reused_pcm_rows*sizeof(native::GpuDyContactPoint);
@@ -2183,6 +2189,7 @@ private:
         std::span<native::GpuDySleepState> sleep_states{};
         std::span<const native::GpuDyDistanceDescriptor> descriptors{};
         std::span<const std::uint32_t> body_ordinals{};
+        std::size_t response_capacity=0u;
         std::span<const native::GpuDyContactManifold> manifolds{};
         std::span<const std::uint32_t> contact_order{};
         std::span<const native::GpuDyContactPrepPair> contact_prep{};
@@ -2217,7 +2224,7 @@ private:
     void build_device_launch_plan(
         std::span<const native::GpuDyDistanceTask> tasks,
         std::span<const native::GpuDyDistanceDescriptor> descriptors,
-        std::uint32_t partition_count,
+        std::uint32_t partition_count,std::uint32_t response_capacity,
         std::uint32_t ordinals,std::uint32_t bodies,
         bool resident_admission) {
         constexpr std::uint32_t threads=128u;
@@ -2230,7 +2237,7 @@ private:
         wide_iterations_=0u;
         last_schedule_={};
         last_schedule_.device_colored_tasks=tasks.size();
-        last_schedule_.device_colored_descriptors=descriptors.size();
+        last_schedule_.device_colored_descriptors=response_capacity;
         last_schedule_.max_partition_groups=tasks.empty()?0u:1u;
         if(resident_admission) {
             // The host supplies numerical capacities, not runnable task
