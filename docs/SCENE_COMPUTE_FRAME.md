@@ -204,6 +204,9 @@ join Dy's existing completion batch without another point-fetch fence
 on responding frames. A completed Dy numerical fence retires preceding
 source uploads and PCM readback submissions on the shared queue; PCM witness
 bytes remain unpublished until Sc joins or discards that readback.
+Compact device island graphs with up to 256 nodes and 256 edges use
+one workgroup admission instead of the parallel prefix and sort schedule;
+257-entry graphs retain the parallel path.
 The late numerical remap dispatches contact-only graphs by body count;
 their contact and full-descriptor tokens already have final source
 identities and are not revisited. Device-joint graphs retain their typed

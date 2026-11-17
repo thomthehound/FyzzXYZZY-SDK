@@ -146,9 +146,9 @@ void verify(Context& context,const char* filename) {
         stage.append(stream,addresses,edge_addr,touch_addr,node_addr,output_addr,
                      node_count,static_cast<std::uint32_t>(edges.size()),
                      static_cast<std::uint32_t>(touches.size()),sources);
-        if(node_count<=128u && edges.size()<=128u)
+        if(node_count<=256u && edges.size()<=256u)
             require(stream.commands().size()==1u,
-                "Small Sc device graph dispatched more than once");
+                "Compact Sc device graph dispatched more than once");
         else
             require(stream.commands().size()>1u,
                 "Large Sc device graph bypassed parallel admission");
@@ -1012,6 +1012,29 @@ void verify(Context& context,const char* filename) {
     // sparse active roots exercise the first, last and middle blocks.
     // Uniform singleton tasks share a lane-packed indirect launch.
     // One additional edge must restore full workgroup-per-task dispatch.
+    constexpr std::uint32_t compact_nodes=256u;
+    std::vector<std::uint32_t> compact_flags(
+        compact_nodes,4u|source_sc_device_island_active_bit);
+    std::vector<SourceScDeviceIslandEdge> compact_edges;
+    compact_edges.reserve(compact_nodes);
+    for(std::uint32_t node=0u;node<compact_nodes;++node)
+        compact_edges.push_back({
+            node,node,invalid,node,source_sc_device_island_joint_bit});
+    const auto compact=evaluate(compact_nodes,compact_edges,{},compact_flags);
+    no_errors(compact);
+    check_task_mapping(compact);
+    require(header(compact).runnable_components==compact_nodes &&
+            header(compact).admitted_edges==compact_nodes &&
+            header(compact).dispatch_x==2u &&
+            header(compact).has_non_singleton_task==0u,
+        "Compact 256-node Sc graph bypassed packed GPU task admission");
+    for(std::uint32_t i=0u;i<compact_nodes;++i)
+        require(load<std::uint32_t>(compact.second,
+                    compact.first.body_order+i*4u)==i &&
+                load<std::uint32_t>(compact.second,
+                    compact.first.response_tokens+i*4u)==i,
+            "Compact 256-node Sc graph changed canonical source order");
+
     constexpr std::uint32_t packed_nodes=257u;
     std::vector<std::uint32_t> packed_flags(
         packed_nodes,4u|source_sc_device_island_active_bit);

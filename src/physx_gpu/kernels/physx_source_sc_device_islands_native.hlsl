@@ -145,8 +145,8 @@ groupshared uint taskScan[128],responseScan[128],bodyScan[128];
 groupshared uint taskCarry,responseCarry,bodyCarry;
 groupshared uint radixBuckets[256],radixOffsets[256],radixTotals[256];
 groupshared uint radixDigits[128],radixRanks[128];
-groupshared uint compactBodyKeys[128],compactBodyStarts[128];
-groupshared uint compactEdgeKeys[128],compactEdgeStarts[128];
+groupshared uint compactBodyKeys[256],compactBodyStarts[256];
+groupshared uint compactEdgeKeys[256],compactEdgeStarts[256];
 
 uint responseRoot(uint edgeIndex) {
     if(work.Load(p.workBias)!=0u)return p.nodeCount;
@@ -249,16 +249,16 @@ void admitCompact(uint lane) {
         work.Store4(p.workBias+16u,uint4(0u,1u,1u,p.edgeCount));
         work.Store4(p.workBias+32u,uint4(0u,0u,0u,0u));
     }
-    if(lane<p.nodeCount) {
-        work.Store(p.rootBias+lane*4u,lane);
-        const uint count=p.countBias+lane*24u;
+    for(uint node=lane;node<p.nodeCount;node+=128u) {
+        work.Store(p.rootBias+node*4u,node);
+        const uint count=p.countBias+node*24u;
         work.Store4(count,uint4(0u,0u,0u,0u));
         work.Store2(count+16u,uint2(0u,invalid));
     }
     AllMemoryBarrierWithGroupSync();
 
-    if(lane<p.edgeCount) {
-        const uint input=p.edgeBias+lane*20u;
+    for(uint item=lane;item<p.edgeCount;item+=128u) {
+        const uint input=p.edgeBias+item*20u;
         const uint4 edge=scEdges.Load4(input);
         const uint kind=scEdges.Load(input+16u);
         if(validNode(edge.y) && validNode(edge.z) &&
@@ -268,11 +268,11 @@ void admitCompact(uint lane) {
     }
     AllMemoryBarrierWithGroupSync();
 
-    if(lane<p.nodeCount) {
-        const uint root=findRoot(lane);
+    for(uint node=lane;node<p.nodeCount;node+=128u) {
+        const uint root=findRoot(node);
         if(root!=invalid) {
-            work.Store(p.rootBias+lane*4u,root);
-            const uint flags=nodeFlags.Load(p.nodeBias+lane*4u);
+            work.Store(p.rootBias+node*4u,root);
+            const uint flags=nodeFlags.Load(p.nodeBias+node*4u);
             const uint position=flags&255u;
             const bool responds=(flags&nonrespondingNode)==0u;
             if((flags&0xfff80000u)!=0u ||
@@ -291,8 +291,8 @@ void admitCompact(uint lane) {
     }
     AllMemoryBarrierWithGroupSync();
 
-    if(lane<p.edgeCount) {
-        const uint input=p.edgeBias+lane*20u;
+    for(uint item=lane;item<p.edgeCount;item+=128u) {
+        const uint input=p.edgeBias+item*20u;
         const uint4 edge=scEdges.Load4(input);
         const uint kind=scEdges.Load(input+16u);
         uint owner=invalid;
@@ -313,7 +313,7 @@ void admitCompact(uint lane) {
                 }
             }
         }
-        const uint address=p.admissionBias+lane*24u;
+        const uint address=p.admissionBias+item*24u;
         work.Store4(address,uint4(edge.w,edge.x,edge.y,edge.z));
         work.Store2(address+16u,uint2(owner,kind));
     }
@@ -331,7 +331,7 @@ void admitCompact(uint lane) {
             work.Store(count+20u,taskCount);
             const uint task=p.taskBias+taskCount*36u;
             work.Store4(task,uint4(responseCount,responseCount+edges,
-                                   responseCount,responseCount+edges));
+                                    responseCount,responseCount+edges));
             work.Store4(task+16u,uint4(bodyCount,bodyCount+bodies,
                                        work.Load(count+12u),
                                        work.Load(count+16u)));
@@ -351,85 +351,115 @@ void admitCompact(uint lane) {
     AllMemoryBarrierWithGroupSync();
     if(work.Load(p.workBias)!=0u)return;
 
-    // Each compact stream fits one workgroup: sort by root and source
-    // ordinal, with joints preceding contacts inside each response root.
-    const uint bodyRoot=lane<p.nodeCount && respondingNode(lane)
-        ?work.Load(p.rootBias+lane*4u):invalid;
-    compactBodyKeys[lane]=bodyRoot<p.nodeCount
-        ?(bodyRoot<<7u)|lane:invalid;
-    const uint edgeRoot=lane<p.edgeCount?responseRoot(lane):invalid;
-    const uint edgeKind=lane<p.edgeCount
-        ?work.Load(p.admissionBias+lane*24u+20u):0u;
-    compactEdgeKeys[lane]=edgeRoot<p.nodeCount
-        ?(edgeRoot<<8u)|((edgeKind&jointEdge)!=0u?0u:128u)|lane
-        :invalid;
-    compactBodyStarts[lane]=invalid;
-    compactEdgeStarts[lane]=invalid;
+    // Two source entries per lane stay in one workgroup and retain
+    // the canonical root, kind and source order.
+    const uint bodyShift=p.nodeCount<=128u?7u:8u;
+    const uint edgeShift=p.edgeCount<=128u?8u:9u;
+    const uint contactBit=1u<<(edgeShift-1u);
+    for(uint item=lane;item<256u;item+=128u) {
+        const uint bodyRoot=item<p.nodeCount && respondingNode(item)
+            ?work.Load(p.rootBias+item*4u):invalid;
+        compactBodyKeys[item]=bodyRoot<p.nodeCount
+            ?(bodyRoot<<bodyShift)|item:invalid;
+        const uint edgeRoot=item<p.edgeCount?responseRoot(item):invalid;
+        const uint edgeKind=item<p.edgeCount
+            ?work.Load(p.admissionBias+item*24u+20u):0u;
+        compactEdgeKeys[item]=edgeRoot<p.nodeCount
+            ?(edgeRoot<<edgeShift)|
+                ((edgeKind&jointEdge)!=0u?0u:contactBit)|item
+            :invalid;
+        compactBodyStarts[item]=invalid;
+        compactEdgeStarts[item]=invalid;
+    }
     GroupMemoryBarrierWithGroupSync();
 
-    // Uniform network width preserves the one-dispatch path without
-    // paying 128-slot sorting barriers for tiny rigid-body islands.
     uint sortWidth=1u;
     while(sortWidth<max(p.nodeCount,p.edgeCount))sortWidth<<=1u;
     [loop]
     for(uint width=2u;width<=sortWidth;width<<=1u) {
         [loop]
         for(uint stride=width>>1u;stride!=0u;stride>>=1u) {
-            const uint currentBody=compactBodyKeys[lane];
-            const uint peerBody=compactBodyKeys[lane^stride];
-            const uint currentEdge=compactEdgeKeys[lane];
-            const uint peerEdge=compactEdgeKeys[lane^stride];
-            const bool ascending=((lane&width)==0u)==
+            const uint other=lane+128u;
+            const uint body0=compactBodyKeys[lane];
+            const uint body1=compactBodyKeys[other];
+            const uint edge0=compactEdgeKeys[lane];
+            const uint edge1=compactEdgeKeys[other];
+            const uint peerBody0=compactBodyKeys[lane^stride];
+            const uint peerBody1=compactBodyKeys[other^stride];
+            const uint peerEdge0=compactEdgeKeys[lane^stride];
+            const uint peerEdge1=compactEdgeKeys[other^stride];
+            const bool ascending0=((lane&width)==0u)==
                 ((lane&stride)==0u);
-            const uint nextBody=ascending
-                ?min(currentBody,peerBody):max(currentBody,peerBody);
-            const uint nextEdge=ascending
-                ?min(currentEdge,peerEdge):max(currentEdge,peerEdge);
+            const bool ascending1=((other&width)==0u)==
+                ((other&stride)==0u);
+            const uint nextBody0=ascending0
+                ?min(body0,peerBody0):max(body0,peerBody0);
+            const uint nextBody1=ascending1
+                ?min(body1,peerBody1):max(body1,peerBody1);
+            const uint nextEdge0=ascending0
+                ?min(edge0,peerEdge0):max(edge0,peerEdge0);
+            const uint nextEdge1=ascending1
+                ?min(edge1,peerEdge1):max(edge1,peerEdge1);
             GroupMemoryBarrierWithGroupSync();
-            compactBodyKeys[lane]=nextBody;
-            compactEdgeKeys[lane]=nextEdge;
+            compactBodyKeys[lane]=nextBody0;
+            compactBodyKeys[other]=nextBody1;
+            compactEdgeKeys[lane]=nextEdge0;
+            compactEdgeKeys[other]=nextEdge1;
             GroupMemoryBarrierWithGroupSync();
         }
     }
-    const uint sortedBody=compactBodyKeys[lane];
-    const uint sortedEdge=compactEdgeKeys[lane];
-    const uint bodyRootSorted=sortedBody>>7u;
-    const uint edgeRootSorted=sortedEdge>>8u;
-    if(bodyRootSorted<p.nodeCount) {
-        const uint previous=lane==0u?invalid:compactBodyKeys[lane-1u];
-        if((previous>>7u)!=bodyRootSorted)
-            compactBodyStarts[bodyRootSorted]=lane;
-    }
-    if(edgeRootSorted<p.nodeCount) {
-        const uint previous=lane==0u?invalid:compactEdgeKeys[lane-1u];
-        if((previous>>8u)!=edgeRootSorted)
-            compactEdgeStarts[edgeRootSorted]=lane;
+    for(uint item=lane;item<256u;item+=128u) {
+        const uint sortedBody=compactBodyKeys[item];
+        const uint sortedEdge=compactEdgeKeys[item];
+        const uint bodyRootSorted=sortedBody>>bodyShift;
+        const uint edgeRootSorted=sortedEdge>>edgeShift;
+        if(bodyRootSorted<p.nodeCount) {
+            const uint previous=item==0u
+                ?invalid:compactBodyKeys[item-1u];
+            if((previous>>bodyShift)!=bodyRootSorted)
+                compactBodyStarts[bodyRootSorted]=item;
+        }
+        if(edgeRootSorted<p.nodeCount) {
+            const uint previous=item==0u
+                ?invalid:compactEdgeKeys[item-1u];
+            if((previous>>edgeShift)!=edgeRootSorted)
+                compactEdgeStarts[edgeRootSorted]=item;
+        }
     }
     GroupMemoryBarrierWithGroupSync();
-    if(bodyRootSorted<p.nodeCount) {
-        const uint ordinal=work.Load(p.countBias+bodyRootSorted*24u+20u);
-        if(ordinal!=invalid) {
-            const uint task=p.taskBias+ordinal*36u;
-            const uint begin=work.Load(task+16u);
-            const uint end=work.Load(task+20u);
-            const uint rank=lane-compactBodyStarts[bodyRootSorted];
-            if(begin+rank>=end)reject(128u);
-            else work.Store(p.bodyOrderBias+(begin+rank)*4u,
-                            sortedBody&127u);
+
+    for(uint item=lane;item<256u;item+=128u) {
+        const uint sortedBody=compactBodyKeys[item];
+        const uint sortedEdge=compactEdgeKeys[item];
+        const uint bodyRootSorted=sortedBody>>bodyShift;
+        const uint edgeRootSorted=sortedEdge>>edgeShift;
+        if(bodyRootSorted<p.nodeCount) {
+            const uint ordinal=work.Load(
+                p.countBias+bodyRootSorted*24u+20u);
+            if(ordinal!=invalid) {
+                const uint task=p.taskBias+ordinal*36u;
+                const uint begin=work.Load(task+16u);
+                const uint end=work.Load(task+20u);
+                const uint rank=item-compactBodyStarts[bodyRootSorted];
+                if(begin+rank>=end)reject(128u);
+                else work.Store(p.bodyOrderBias+(begin+rank)*4u,
+                                sortedBody&((1u<<bodyShift)-1u));
+            }
         }
-    }
-    if(edgeRootSorted<p.nodeCount) {
-        const uint edge=sortedEdge&127u;
-        const uint ordinal=work.Load(p.countBias+edgeRootSorted*24u+20u);
-        const uint task=p.taskBias+ordinal*36u;
-        const uint begin=work.Load(task);
-        const uint end=work.Load(task+4u);
-        const uint rank=lane-compactEdgeStarts[edgeRootSorted];
-        if(begin+rank>=end)reject(128u);
-        else {
-            const uint position=begin+rank;
-            work.Store(p.responseOrderBias+position*4u,edge);
-            work.Store(p.tokenBias+position*4u,responseToken(edge));
+        if(edgeRootSorted<p.nodeCount) {
+            const uint edge=sortedEdge&((1u<<(edgeShift-1u))-1u);
+            const uint ordinal=work.Load(
+                p.countBias+edgeRootSorted*24u+20u);
+            const uint task=p.taskBias+ordinal*36u;
+            const uint begin=work.Load(task);
+            const uint end=work.Load(task+4u);
+            const uint rank=item-compactEdgeStarts[edgeRootSorted];
+            if(begin+rank>=end)reject(128u);
+            else {
+                const uint position=begin+rank;
+                work.Store(p.responseOrderBias+position*4u,edge);
+                work.Store(p.tokenBias+position*4u,responseToken(edge));
+            }
         }
     }
 }
