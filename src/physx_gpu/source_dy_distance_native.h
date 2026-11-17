@@ -1021,6 +1021,7 @@ public:
             ?(source_descriptors?(device_admission?32ull:24ull):20ull)+
                 std::uint64_t(descriptors.size())*24ull+
                 std::uint64_t(bodies.size())*12ull+
+                (source_descriptors?sizeof(std::uint32_t):0u)+
                 std::uint64_t(source_descriptor_full_.size())*16ull
             :0ull;
         if(scratch_bytes>std::numeric_limits<std::uint32_t>::max())
@@ -1224,6 +1225,13 @@ public:
                 const auto table=offsets[15]+scratch_header[3]+
                     bodies.size()*12u;
                 const auto total=narrow(source_descriptor_full_.size());
+                if(table<offsets[15] ||
+                   table-offsets[15]>bytes[15] ||
+                   sizeof(total)+std::size_t(total)*
+                       sizeof(native::GpuDyDistanceDescriptor)>
+                       bytes[15]-(table-offsets[15]))
+                    throw std::logic_error(
+                        "Source Dy descriptor table exceeds scratch allocation");
                 std::memcpy(host_.data()+table,&total,sizeof(total));
                 if(total)
                     std::memcpy(host_.data()+table+4u,
