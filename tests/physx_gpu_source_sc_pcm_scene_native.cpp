@@ -2068,6 +2068,10 @@ void verify_device_sc_dy_task_admission(
         physx_gpu::SourceScDeviceIslandSources{1u,0u,0u});
     physx_gpu::SourceScDeviceIslandFixture::overwrite_extent(
         *producer,0u,0x80000000u);
+    const auto injected_extent=
+        physx_gpu::SourceScDeviceIslandFixture::extent(*producer,0u);
+    require(injected_extent==0x80000000u,
+        "Sc extent injection did not reach its resident numerical source");
     producer->enqueue_gpu_dy_distance(
         body,{},contact_desc,{},ordinals,contact_tasks,
         capacity_forces,{},{},{},capacity_patches,capacity_managers,{},
@@ -2078,11 +2082,17 @@ void verify_device_sc_dy_task_admission(
     }catch(const std::overflow_error&) {
         extent_rejected=true;
     }
-    require(extent_rejected &&
-            (contact_tasks[0].error&65536u)!=0u &&
-            poses[0].valid==0u &&
-            witness[0].packed_counts==0u,
-        "Dy accepted a contact count inconsistent with resident Sc admission");
+    if(!(extent_rejected &&
+         (contact_tasks[0].error&65536u)!=0u &&
+         poses[0].valid==0u &&
+         witness[0].packed_counts==0u))
+        throw std::runtime_error(
+            "Dy accepted a contact count inconsistent with resident Sc admission"
+            " rejected="+std::to_string(extent_rejected)+
+            " flags="+std::to_string(contact_tasks[0].error)+
+            " pose="+std::to_string(poses[0].valid)+
+            " witness="+std::to_string(witness[0].packed_counts)+
+            " extent="+std::to_string(injected_extent));
     producer->finish_gpu_pcm_box_contacts();
     producer->invalidate_after_rollback();
 
