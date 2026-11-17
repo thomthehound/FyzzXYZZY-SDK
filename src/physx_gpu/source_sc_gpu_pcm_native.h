@@ -662,9 +662,15 @@ public:
            gu_touch_count_ || touches.size()>std::numeric_limits<std::uint32_t>::max())
             throw std::logic_error("CPU Gu touch journal has no active PCM epoch");
         const auto capacity=device_edge_history_capacity();
-        for(const auto& record:touches)
-            if(record.edge_index>=capacity || (record.touch_bits&~3u)!=0u)
+        for(const auto& record:touches) {
+            const auto bits=record.touch_bits;
+            if(record.edge_index>=capacity ||
+               (bits&~0x2ff03u)!=0u ||
+               ((bits&0xff00u)!=0u && (bits&0x20000u)==0u) ||
+               ((bits&0x20000u)!=0u &&
+                ((bits&1u)!=0u)!=(((bits>>8u)&255u)!=0u)))
                 throw std::out_of_range("CPU Gu touch exceeds resident EdgeIndex history");
+        }
         const auto count=static_cast<std::uint32_t>(touches.size());
         const auto bytes=touches.size_bytes();
         gu_touch_records_.allocate(bytes,PX_FL);
