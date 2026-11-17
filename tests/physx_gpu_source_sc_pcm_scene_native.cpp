@@ -6679,7 +6679,8 @@ void qualify_hardware_scene(
 
 void verify_host_lane_packed_islands(
     fyzz::compute::Backend backend,const char* sap,
-    const char* pcm,const char* dy_shader) {
+    const char* pcm,const char* dy_shader,
+    bool device_admission=false) {
     using namespace fyzz;
     std::ifstream stream(dy_shader,std::ios::binary);
     require(bool(stream),"GPU Dy shader bundle missing");
@@ -6697,6 +6698,7 @@ void verify_host_lane_packed_islands(
         load_native_gpu_pcm_shaders(backend,pcm),std::move(shader));
     auto* producer=owner.get();
     gpu.set_gpu_broadphase(std::move(owner));
+    gpu.set_gpu_dy_device_admission_enabled(device_admission);
     std::array<BodyId,129> cpu_bodies{},gpu_bodies{};
     for(std::size_t i=0;i<cpu_bodies.size();++i) {
         const Vec3 floor{static_cast<float>(i)*8.f,0.f,0.f};
@@ -6735,22 +6737,31 @@ void verify_host_lane_packed_islands(
         const auto schedule=producer->dy_launch_stats();
         const auto expected=frame==0u
             ?cpu_bodies.size()+2u:cpu_bodies.size();
-        if(schedule.host_lane_packed_tasks<expected ||
-           schedule.device_island_indirect_dispatches!=0u ||
-           schedule.wide_tasks!=0u)
+        const bool valid=device_admission
+            ?schedule.device_island_indirect_dispatches==1u &&
+             schedule.device_admitted_tasks>=expected &&
+             schedule.device_admitted_descriptors>=expected &&
+             schedule.wide_tasks==0u
+            :schedule.host_lane_packed_tasks>=expected &&
+             schedule.device_island_indirect_dispatches==0u &&
+             schedule.wide_tasks==0u;
+        if(!valid)
             throw std::runtime_error(
-                "Independent Sc islands lost packed execution: frame="+
+                "Independent Sc islands lost their numerical task execution: frame="+
                 std::to_string(frame)+
                 " packed="+std::to_string(schedule.host_lane_packed_tasks)+
-                " tasks="+std::to_string(schedule.device_colored_tasks)+
+                " admitted="+std::to_string(schedule.device_admitted_tasks)+
+                " descriptors="+std::to_string(schedule.device_admitted_descriptors)+
                 " indirect="+
                     std::to_string(schedule.device_island_indirect_dispatches)+
                 " wide="+std::to_string(schedule.wide_tasks)+
                 " contacts="+std::to_string(gpu.contacts().size())+
                 " largest_island="+
                     std::to_string(gpu.largest_accurate_island_size()));
-        saw_dependent_task|=schedule.host_lane_packed_tasks<
-            schedule.device_colored_tasks;
+        saw_dependent_task |= device_admission
+            ?gpu.largest_accurate_island_size()>=2u
+            :schedule.host_lane_packed_tasks<
+                schedule.device_colored_tasks;
         require(cpu.contacts().size()>=cpu_bodies.size() &&
                 cpu.contacts().size()==gpu.contacts().size() &&
                 cpu.solved_normal_impulses().size()==
@@ -6913,6 +6924,8 @@ int main(int argc,char** argv) {
                     verify_early_pcm_island_pipeline(
                         backend,argv[1],argv[2],argv[3],
                         false,false,true);
+                    verify_host_lane_packed_islands(
+                        backend,argv[1],argv[2],argv[3],true);
                 });
         if(scenario=="all" || scenario=="scene")
             fyzz::tests::measure_gpu_case("sc_pcm","scene",
