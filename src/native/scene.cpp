@@ -8485,7 +8485,9 @@ void Scene::prepare_constraints(float seconds) {
                 patch.disable_friction=disable_friction;
                 patch.disable_strong_friction=disable_strong_friction;
             }
-            patch.contact_count=static_cast<std::uint16_t>(manifold.count);
+            const auto& source=gpu_pcm_pairs_[manifold.pcm_result_index];
+            patch.contact_count=static_cast<std::uint16_t>(
+                source.candidate_capacity==1u?1u:4u);
             patch.contact_ids.fill(0xffff);
             patch.bounds_min={};
             patch.bounds_max={};
@@ -8951,8 +8953,10 @@ void Scene::prepare_constraints(float seconds) {
                 // therefore one correlated patch. Retain the source
                 // cached anchors as input; GPU Dy grows them directly
                 // from device Gu contacts before building tangent rows.
+                const auto& source=gpu_pcm_pairs_[manifold.pcm_result_index];
                 if(manifold.friction_patch_count!=1u ||
-                   patch.contact_count!=manifold.count)
+                   patch.contact_count!=
+                       (source.candidate_capacity==1u?1u:4u))
                     throw std::logic_error(
                         "Source GPU PCM friction is not one correlated patch");
                 patch.row_offset=prepared_friction_rows_;
@@ -9527,7 +9531,10 @@ void Scene::solve_gpu_distance_constraints(float seconds) {
                patch.anchor_count>2u ||
                patch.anchor_count*2u>
                    prepared_friction_rows_-patch.row_offset ||
-               patch.contact_count>m.count-(cursor-m.solver_offset))
+               cursor<m.solver_offset ||
+               cursor-m.solver_offset>numerical_count ||
+               patch.contact_count>
+                   numerical_count-(cursor-m.solver_offset))
                 throw std::logic_error("GPU Dy friction patch rows invalid");
             const bool pcm_growth=resident_pcm &&
                 !patch.disable_friction;
@@ -9571,7 +9578,7 @@ void Scene::solve_gpu_distance_constraints(float seconds) {
                 order_offset,cached_normal?encode_normal(patch.body0_normal):0u};
             cursor+=patch.contact_count;
         }
-        if(cursor!=m.solver_offset+m.count)
+        if(cursor!=m.solver_offset+numerical_count)
             throw std::logic_error("GPU Dy source patch contact stream truncated");
     }
     // Zero-response managers have no DyContactPrep record. Preserve
@@ -9708,6 +9715,11 @@ void Scene::solve_gpu_distance_constraints(float seconds) {
             i<m.friction_patch_offset+m.friction_patch_count;++i) {
             auto& patch=friction_patches_[i];
             const auto& returned=gpu_dy_patches_[i];
+            if(returned.contact_count!=m.count)
+                throw std::logic_error(
+                    "Source PCM device patch count disagrees with published Gu");
+            patch.contact_count=
+                static_cast<std::uint16_t>(returned.contact_count);
             const auto count=returned.anchor_count;
             if(patch.anchor_count==0u ||
                (returned.reserved&0x200u)!=0u) {
