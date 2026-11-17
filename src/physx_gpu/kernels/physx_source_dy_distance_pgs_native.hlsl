@@ -94,6 +94,11 @@ uint sourceDyResponseToken(uint scratch,uint colors,uint index) {
     }
     return arena.Load(colors+index*4u);
 }
+uint sourceDyResponseExtent(uint scratch,uint index) {
+    if((p.launchControl&0x08000000u)==0u)return 0u;
+    const uint offset=arena.Load(scratch+28u);
+    return scIslandWork.Load(p.ordinalBias+offset+index*4u);
+}
 uint sourceDyTaskLoad(uint address) {
     return (p.launchControl&0x08000000u)!=0u
         ?scIslandWork.Load(address):arena.Load(address);
@@ -413,7 +418,8 @@ groupshared uint dyHubA,dyHubB,dyHubMask;
 
 // The resident source token has one authoritative decoding rule for
 // colored and scalar tasks.
-bool sourceDyExpandDescriptor(uint token,uint sourceCount,uint sourceTable,
+bool sourceDyExpandDescriptor(uint token,uint extent,
+                              uint sourceCount,uint sourceTable,
                               uint errorAddress,out uint4 desc) {
     const uint kind=token>>30u;
     const uint index=token&0x3fffffffu;
@@ -441,7 +447,9 @@ bool sourceDyExpandDescriptor(uint token,uint sourceCount,uint sourceTable,
                 const uint capacity=arena.Load(manager+12u);
                 const uint begin=arena.Load(manager+8u);
                 if(pcmContacts.Load(source)!=arena.Load(prep+52u) ||
-                   ((packed>>3u)&7u)!=0u || emitted>capacity ||
+                   ((packed>>3u)&7u)!=0u ||
+                   ((extent&0x80000000u)!=0u && (extent&7u)!=emitted) ||
+                   emitted>capacity ||
                    emitted>4u || begin>p.contactCount ||
                    capacity>p.contactCount-begin) {
                     sourceDyTaskErrorOr(errorAddress,65536u);
@@ -544,7 +552,7 @@ void sourceDyPartitionTask(uint taskId,uint scratch,uint errorAddress,
     // The native Sc path transfers only encounter-order manager/joint
     // identities. Expand source descriptors from the existing resident
     // contact prep and joint-row records before partition coloring.
-    const bool sourceDescriptors=views.x==24u || views.x==28u;
+    const bool sourceDescriptors=views.x==24u || views.x==32u;
     const uint sourceTable=bodyState+p.bodyCount*12u;
     const uint sourceCount=sourceDescriptors?arena.Load(sourceTable):0u;
     for(uint i=first+lane;i<last;i+=128u) {
@@ -552,6 +560,7 @@ void sourceDyPartitionTask(uint taskId,uint scratch,uint errorAddress,
         if(sourceDescriptors) {
             if(!sourceDyExpandDescriptor(
                    sourceDyResponseToken(scratch,colors,i),
+                   sourceDyResponseExtent(scratch,i),
                    sourceCount,sourceTable,
                    errorAddress,desc))
                 continue;
@@ -1571,6 +1580,7 @@ void sourceDySolvePackedTask(uint taskId) {
     uint4 desc;
     if(!sourceDyExpandDescriptor(
             sourceDyResponseToken(scratch,colors,ranges.x),
+            sourceDyResponseExtent(scratch,ranges.x),
             arena.Load(sourceTable),sourceTable,
                                  errorAddress,desc)) {
         publishTaskError(taskId,sourceDyTaskLoad(errorAddress));
@@ -1643,7 +1653,7 @@ void main(uint3 group:SV_GroupID,uint3 lane:SV_GroupThreadID) {
     // The task error report still runs, including compact-only scenes.
     if(devicePartitions) {
         const uint4 schedule=arena.Load4(p.integrationBias+16u);
-        if(schedule.w!=0u && arena.Load(schedule.w)==28u) {
+        if(schedule.w!=0u && arena.Load(schedule.w)==32u) {
             const uint taskOffset=arena.Load(schedule.w+24u);
             const uint sourceHeader=p.taskBias-taskOffset;
             const uint4 header=scIslandWork.Load4(sourceHeader);
