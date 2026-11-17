@@ -1425,8 +1425,9 @@ void verify(fyzz::compute::Backend backend,const char* sap,
     if(edge==0xfffffffeu)
         throw std::overflow_error("Sc Gu rollback test EdgeIndex exhausted");
     const auto gu_edge=edge+1u;
+    constexpr std::uint32_t gu_extent=0x20000u|(7u<<8u)|1u;
     const std::array<native::GpuGuTouchRecord,1> gu_touch{{
-        {gu_edge,1u}
+        {gu_edge,gu_extent}
     }};
     std::array<native::GpuPcmBoxResult,1> shared_pending{};
     producer->enqueue_gpu_pcm_box_contacts(
@@ -1441,8 +1442,8 @@ void verify(fyzz::compute::Backend backend,const char* sap,
     producer->finish_gpu_pcm_box_contacts();
     const auto changed=physx_gpu::SourceScDeviceIslandFixture::touch(
         *producer,gu_edge);
-    require(changed[0]==1u && changed[1]==0u,
-            "CPU-only Gu physical touch did not reach device history");
+    require(changed[0]==gu_extent && changed[1]==0u,
+            "CPU-only Gu contact extent did not reach device history");
     producer->invalidate_after_rollback();
     std::array<native::GpuPcmBoxResult,1> restored_pcm{};
     producer->enqueue_gpu_pcm_box_contacts(
