@@ -2214,8 +2214,9 @@ void verify_device_sc_dy_task_admission(
         "GPU PCM numerical extent differs from the published witness");
     producer->commit_gpu_step();
 
-    // The Sc response extent is device-authored. A mismatched numerical
-    // count must reject the GPU task before it integrates or publishes.
+    // Device-authored PCM extents cannot be omitted or replaced by stale
+    // counts. Both failures reject before numerical integration.
+    for(const std::uint32_t bad_extent:{0x80000000u,0u}) {
     witness={};
     capacity_patches[0]={0u,contact_capacity,0u,0u,0.f,0.f,
                          0x80000000u,0u};
@@ -2230,10 +2231,10 @@ void verify_device_sc_dy_task_admission(
         touching,single_node,
         physx_gpu::SourceScDeviceIslandSources{1u,0u,0u});
     physx_gpu::SourceScDeviceIslandFixture::overwrite_extent(
-        *producer,0u,0x80000000u);
+        *producer,0u,bad_extent);
     const auto injected_extent=
         physx_gpu::SourceScDeviceIslandFixture::extent(*producer,0u);
-    require(injected_extent==0x80000000u,
+    require(injected_extent==bad_extent,
         "Sc extent injection did not reach its resident numerical source");
     producer->enqueue_gpu_dy_distance(
         body,{},contact_desc,{},ordinals,contact_tasks,
@@ -2258,6 +2259,7 @@ void verify_device_sc_dy_task_admission(
             " extent="+std::to_string(injected_extent));
     producer->finish_gpu_pcm_box_contacts();
     producer->invalidate_after_rollback();
+    }
 
     // A valid cached anchor with an incompatible local normal must be
     // replaced using the current resident Gu contact geometry.
