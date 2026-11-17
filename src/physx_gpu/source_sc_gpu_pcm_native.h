@@ -249,6 +249,8 @@ public:
         last_early_gu_touch_bytes_=0u;
         last_continuation_commands_=0u;
         last_face_pair_scan_count_=0u;
+        last_island_dispatches_=0u;
+        last_remap_dispatches_=0u;
         rebuild_required_=false;
     }
 
@@ -281,6 +283,8 @@ public:
         last_edge_history_copy_bytes_=0u;
         last_continuation_commands_=0u;
         last_face_pair_scan_count_=0u;
+        last_island_dispatches_=0u;
+        last_remap_dispatches_=0u;
         FYZZ_PROFILE_COUNTER("pcm.gjk_staged",staged_gjk_?1u:0u);
         if(requests.empty()) {
             rebuild_required_=false;
@@ -735,12 +739,14 @@ public:
                 island_nodes_.getDevicePtr(),node_flags.data(),
                 node_flags.size_bytes()});
         if(!uploads.empty())stream_.queue_uploads(uploads);
+        const auto before_islands=stream_.commands().size();
         island_stage_.append(stream_,addresses_,
             edge_count?island_edges_.getDevicePtr():0u,
             device_edge_history_address(),
             node_count?island_nodes_.getDevicePtr():0u,
             island_work_.getDevicePtr(),
             node_count,edge_count,edge_capacity,sources);
+        last_island_dispatches_=stream_.commands().size()-before_islands;
         // Early admission does not publish numerical dispatch arguments
         // until the actor rows have been remapped and validated.
         if(!early)
@@ -771,11 +777,13 @@ public:
                            source_to_solver_row.data(),
                            source_to_solver_row.size_bytes()});
         stream_.queue_uploads(uploads);
+        const auto before_remap=stream_.commands().size();
         island_stage_.append_body_remap(
             stream_,addresses_,island_nodes_.getDevicePtr(),
             island_work_.getDevicePtr(),
             island_node_count_,island_edge_count_,solver_row_capacity,
             joint_row_capacity,island_joint_count_);
+        last_remap_dispatches_=stream_.commands().size()-before_remap;
         stream_.queue_device_copy(
             indirect_address_,
             island_work_.getDevicePtr()+
@@ -968,6 +976,12 @@ public:
     std::size_t last_face_pair_scan_count() const noexcept {
         return last_face_pair_scan_count_;
     }
+    std::size_t last_island_dispatches() const noexcept {
+        return last_island_dispatches_;
+    }
+    std::size_t last_remap_dispatches() const noexcept {
+        return last_remap_dispatches_;
+    }
 private:
     static void validate_host_contact(
             const native::GpuPcmBoxPair& request,
@@ -1084,6 +1098,7 @@ private:
     std::size_t last_edge_history_copy_bytes_=0u;
     std::size_t last_continuation_commands_=0u;
     std::size_t last_face_pair_scan_count_=0u;
+    std::size_t last_island_dispatches_=0u,last_remap_dispatches_=0u;
     std::size_t published_edge_span_bytes_=0u;
 };
 } // namespace fyzz::physx_gpu

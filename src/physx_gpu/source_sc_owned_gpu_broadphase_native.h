@@ -492,6 +492,12 @@ public:
     std::size_t pcm_face_pair_scan_count() const noexcept {
         return pcm_ ? pcm_->last_face_pair_scan_count() : 0u;
     }
+    std::size_t sc_island_dispatch_count() const noexcept {
+        return pcm_ ? pcm_->last_island_dispatches() : 0u;
+    }
+    std::size_t sc_island_remap_dispatch_count() const noexcept {
+        return pcm_ ? pcm_->last_remap_dispatches() : 0u;
+    }
     std::size_t dy_pcm_device_contact_rows() const noexcept {
         return dy_distance_ ? dy_distance_->last_reused_pcm_contact_rows() : 0u;
     }
@@ -645,6 +651,10 @@ public:
             pcm_?pcm_->last_host_contact_upload_bytes():0u);
         FYZZ_PROFILE_COUNTER("pcm.edge_history_copy_bytes",
             pcm_?pcm_->last_edge_history_copy_bytes():0u);
+        FYZZ_PROFILE_COUNTER("sc.island_dispatches",
+            pcm_?pcm_->last_island_dispatches():0u);
+        FYZZ_PROFILE_COUNTER("sc.island_remap_dispatches",
+            pcm_?pcm_->last_remap_dispatches():0u);
 #endif
     }
     bool needs_gpu_contact_rebuild() const noexcept override {

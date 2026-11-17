@@ -6741,6 +6741,8 @@ void verify_host_lane_packed_islands(
             ?schedule.device_island_indirect_dispatches==1u &&
              schedule.device_admitted_tasks>=expected &&
              schedule.device_admitted_descriptors>=expected &&
+             producer->sc_island_dispatch_count()==1u &&
+             producer->sc_island_remap_dispatch_count()==1u &&
              schedule.wide_tasks==0u
             :schedule.host_lane_packed_tasks>=expected &&
              schedule.device_island_indirect_dispatches==0u &&
