@@ -4992,8 +4992,15 @@ void Scene::update_contacts(bool defer_device_points,float inverse_step) {
                 if(source_device_gu_history &&
                    manifold.pcm_result_index==
                        std::numeric_limits<std::uint32_t>::max())
-                    gpu_dy_gu_touches_.push_back({
-                        edge,previously_touching?3u:1u});
+                    {
+                        if(manifold.count>255u)
+                            throw std::overflow_error(
+                                "CPU Gu numerical extent exceeds 8-bit source count");
+                        gpu_dy_gu_touches_.push_back({
+                            edge,0x20000u|
+                                (static_cast<std::uint32_t>(manifold.count)<<8u)|
+                                (previously_touching?3u:1u)});
+                    }
                 next_manifold_by_edge_[edge]={
                     next_manifolds_.size(),new_lookup_generation};
                 next_manifolds_.push_back(manifold);
