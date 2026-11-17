@@ -3450,6 +3450,59 @@ void verify_gpu_single_island_hybrid_solver(
     require(saw_pcm_contact,
         "Single-island hybrid solver never processed GPU PCM contacts");
 }
+// One connected island reuses its pre-witness source graph even when
+// Sc's host task grouping would produce the same number of tasks.
+void verify_connected_pre_witness_island_admission(
+    fyzz::compute::Backend backend,const char* sap,
+    const char* pcm,const char* dy_shader) {
+    using namespace fyzz;
+    std::ifstream input(dy_shader,std::ios::binary);
+    require(bool(input),"Compiled source Dy shader unavailable");
+    compute::ShaderBinary shader{};
+    shader.format=backend==compute::Backend::Vulkan
+        ?compute::ShaderFormat::Spirv:compute::ShaderFormat::Dxil;
+    shader.bytes.assign(std::istreambuf_iterator<char>{input},
+                        std::istreambuf_iterator<char>{});
+    native::Scene cpu,gpu;
+    auto owner=std::make_unique<
+        physx_gpu::SourceScOwnedGpuBroadphaseNative>(
+        backend,load_native_gpu_sap_shaders(backend,sap),
+        128u,128u,std::nullopt,
+        load_native_gpu_pcm_shaders(backend,pcm),std::move(shader));
+    auto* producer=owner.get();
+    gpu.set_gpu_broadphase(std::move(owner));
+    gpu.set_gpu_dy_device_admission_enabled(true);
+    cpu.add_static_box({0.5f,0.5f,0.5f},{0.f,0.f,0.f});
+    gpu.add_static_box({0.5f,0.5f,0.5f},{0.f,0.f,0.f});
+    std::array<BodyId,2> cpu_ids{},gpu_ids{};
+    for(std::size_t i=0u;i<cpu_ids.size();++i) {
+        const Vec3 position{0.f,0.83f+0.83f*float(i),0.f};
+        cpu_ids[i]=cpu.add_dynamic_box(
+            {0.5f,0.5f,0.5f},position,1.f);
+        gpu_ids[i]=gpu.add_dynamic_box(
+            {0.5f,0.5f,0.5f},position,1.f);
+    }
+    cpu.create_center_distance_constraint(cpu_ids[0],cpu_ids[1],0.83f);
+    gpu.create_center_distance_constraint(gpu_ids[0],gpu_ids[1],0.83f);
+    for(std::uint32_t frame=0u;frame<3u;++frame) {
+        cpu.step(1.f/120.f);
+        gpu.step(1.f/120.f);
+        native::GpuPcmFrictionAnchorFixture::
+            verify_pre_witness_device_admission(gpu);
+        const auto stats=producer->dy_launch_stats();
+        require(gpu.contacts().size()==cpu.contacts().size() &&
+                stats.device_island_indirect_dispatches==1u &&
+                stats.device_admitted_tasks==1u &&
+                stats.device_admitted_descriptors>=2u &&
+                gpu.accurate_island_id(gpu_ids[0])==
+                    gpu.accurate_island_id(gpu_ids[1]),
+            "Connected pre-witness graph was replaced by host task admission");
+        for(std::size_t i=0u;i<cpu_ids.size();++i)
+            test::compound_compare_state(
+                gpu.body_state(gpu_ids[i]),cpu.body_state(cpu_ids[i]),
+                0.03f,"Connected resident GPU island diverged from CPU PGS");
+    }
+}
 // One PCM manager plus a disconnected joint-only island still admits
 // two independent numerical tasks before Sc joins the contact witness.
 void verify_single_pcm_joint_island_admission(
@@ -7177,6 +7230,8 @@ int main(int argc,char** argv) {
                 [&]{
                     verify_gpu_single_island_hybrid_solver(
                         backend,argv[1],argv[2],argv[3],true);
+                    verify_connected_pre_witness_island_admission(
+                        backend,argv[1],argv[2],argv[3]);
                     verify_world_device_island_admission(
                         backend,argv[1],argv[2],argv[3]);
                     verify_early_pcm_island_pipeline(

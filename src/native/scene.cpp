@@ -9368,9 +9368,9 @@ void Scene::solve_gpu_distance_constraints(float seconds) {
             "Source GPU 1D preparation retained CPU rows or omitted device rows");
     gpu_dy_body_ordinals_.resize(solver_active_ids_.size());
     gpu_dy_tasks_.clear();
-    // Device admission earns its graph traversal only when CPU task
-    // batching hides independent responding islands. Wide islands use
-    // their separate numerical partitioning path.
+    // A pre-witness Sc graph is already resident and owns admission.
+    // Late graphs still require more responding islands than host tasks.
+    // Wide islands retain their separate numerical partitioning path.
     std::size_t responding_tasks=0u;
     std::size_t previous_bodies=0u,previous_descriptors=0u;
     bool compact_tasks=true;
@@ -9390,7 +9390,8 @@ void Scene::solve_gpu_distance_constraints(float seconds) {
         [](const GpuPcmBoxPair& pair){return !pair.host_generated;});
     const bool device_admission=gpu_dy_device_admission_enabled_ &&
         has_gpu_pcm && compact_tasks &&
-        gpu_dy_responding_island_count_>responding_tasks &&
+        (gpu_dy_early_islands_ ||
+         gpu_dy_responding_island_count_>responding_tasks) &&
         gpu_dy_responding_island_count_<=
             gpu_broadphase_->gpu_dy_direct_task_limit();
     FYZZ_PROFILE_COUNTER("dy.device_island_selected",device_admission?1u:0u);
