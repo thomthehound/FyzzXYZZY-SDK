@@ -1018,7 +1018,7 @@ public:
             }
         }
         const std::uint64_t scratch_bytes=device_partitions
-            ?(source_descriptors?28ull:20ull)+
+            ?(source_descriptors?(device_admission?32ull:24ull):20ull)+
                 std::uint64_t(descriptors.size())*24ull+
                 std::uint64_t(bodies.size())*12ull+
                 std::uint64_t(source_descriptor_full_.size())*16ull
@@ -1190,7 +1190,7 @@ public:
         if(device_partitions) {
             const auto n=descriptors.size();
             const std::size_t header_bytes=source_descriptors
-                ?(device_admission?28u:24u):20u;
+                ?(device_admission?32u:24u):20u;
             const std::array<std::uint32_t,5> scratch_header{
                 narrow(header_bytes),narrow(header_bytes+n*16u),
                 narrow(header_bytes+n*20u),
@@ -1211,6 +1211,11 @@ public:
                         device_admission->layout.tasks);
                     std::memcpy(host_.data()+offsets[15]+24u,
                                 &task_offset,sizeof(task_offset));
+                    const auto extent_offset=narrow(
+                        device_admission->layout.response_extents-
+                        device_admission->layout.body_order);
+                    std::memcpy(host_.data()+offsets[15]+28u,
+                                &extent_offset,sizeof(extent_offset));
                 }
                 if(n && !device_admission)
                     std::memcpy(host_.data()+offsets[15]+scratch_header[1],
