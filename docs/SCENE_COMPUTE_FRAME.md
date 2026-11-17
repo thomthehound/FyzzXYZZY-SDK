@@ -212,12 +212,14 @@ history needs no normal transfer. Only the multi-patch validity checks
 that determine this early DMA precede PCM submission; ordinary friction
 validation overlaps device PCM. Resident PCM supplies numerical normals
 and contacts directly to Dy. The Sc EdgeIndex touch word retains exact PCM
-emission counts in bits 8–10, with bit 16 marking a valid numerical extent;
-bit 0 still records physical touch, and bit 31 rejects a failed producer.
+emission counts in bits 8–10, with bit 16 marking the PCM source. CPU Gu
+uses bits 8–15 for its exact count and bit 17 for its numerical source;
+both paths preserve the existing eight-byte Gu touch upload and journal.
+Bit 0 still records physical touch, and bit 31 rejects a failed producer.
 Sc accurate island admission writes these counts beside its source-ordered
-response tokens. Device-admitted PCM responses require a valid extent; Dy
-rejects missing or mismatched extents before constructing solver rows, with
-no extra dispatch or host join.
+response tokens. Device-admitted contact responses require a valid extent
+from their producer; Dy rejects missing or mismatched PCM and CPU Gu counts
+before constructing solver rows, with no extra dispatch or host join.
 Legacy CPU Gu responses keep their host-authored extents. For
 device-admitted single-patch PCM managers,
 the emitted count determines the active contact rows before numerical
