@@ -172,7 +172,11 @@ provisional joint-source capacity until Dy resolves final joint rows. Sc defers 
 until all such Gu producers complete, regardless of their encounter order.
 A single responding dynamic body admits a GPU PCM contact task. Contact
 candidates and joint-only islands share the same device graph; physical
-touch, not speculative overlap, determines runnable numerical responses. Joint graphs
+touch, not speculative overlap, determines runnable numerical responses.
+Sc stamps every PCM request with its original speculative candidate ordinal
+before Gu submission. Mixed CPU Gu scheduling, the early device response
+graph, and Dy's candidate-indexed manifold table consume that identity
+directly, including gaps where Gu publishes no contact manager. Joint graphs
 admit stable Sc edge identities with the same early contact graph. Their provisional joint-source ordinals are resolved to prepared Dy
 joint rows in the ordered node/response remap, without rebuilding GPU
 connectivity or task ranges. CPU Sc still owns the committed island graph
