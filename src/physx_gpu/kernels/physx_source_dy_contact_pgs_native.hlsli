@@ -217,7 +217,9 @@ void solveContact(uint4 descriptor,uint errorAddress,bool biased,
             arena.Store(po+12u,broken?1u:0u);
             uint reportAddress=p.writebackBias+p.resultPatchOffset+
                 patchIndex*4u;
-            uint report=gpuGrowth?arena.Load(reportAddress):0u;
+            uint report=(gpuGrowth ||
+                (p.launchControl&0x08000000u)!=0u)
+                ?arena.Load(reportAddress):0u;
             arena.Store(reportAddress,(report&~1u)|(broken?1u:0u));
         }
     }
@@ -688,8 +690,11 @@ void growPcmFrictionAnchors(uint patchIndex,uint pairIndex,
         ((changed[0]?(selected[0]+1u):0u)<<3u) |
         ((changed[1]?(selected[1]+1u):0u)<<6u) |
         (normalChanged?0x200u:0u);
-    arena.Store(p.writebackBias+p.resultPatchOffset+
-                patchIndex*4u,report);
+    const uint reportAddress=p.writebackBias+p.resultPatchOffset+
+        patchIndex*4u;
+    if((p.launchControl&0x08000000u)!=0u)
+        report|=arena.Load(reportAddress)&0x40070000u;
+    arena.Store(reportAddress,report);
 }
 
 void prepareFrictionPatch(uint patchIndex,uint pairIndex,uint errorAddress) {

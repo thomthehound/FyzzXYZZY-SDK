@@ -445,10 +445,11 @@ bool sourceDyExpandDescriptor(uint token,uint sourceCount,uint sourceTable,
                     sourceDyTaskErrorOr(errorAddress,65536u);
                     return false;
                 }
+                const uint patchIndex=arena.Load(manager);
+                const bool singlePatch=arena.Load(manager+4u)==1u &&
+                    patchIndex<p.patchCount;
                 if(emitted!=capacity) {
-                    const uint patchIndex=arena.Load(manager);
-                    if(arena.Load(manager+4u)!=1u ||
-                       patchIndex>=p.patchCount) {
+                    if(!singlePatch) {
                         sourceDyTaskErrorOr(errorAddress,65536u);
                         return false;
                     }
@@ -464,6 +465,21 @@ bool sourceDyExpandDescriptor(uint token,uint sourceCount,uint sourceTable,
                         arena.Store(p.writebackBias+p.resultContactOffset+
                                     (begin+i)*4u,0u);
                 }
+                // Exact PCM extent shares the existing patch-result word.
+                if(singlePatch && (p.launchControl&0x08000000u)!=0u)
+                    arena.Store(p.writebackBias+p.resultPatchOffset+
+                                patchIndex*4u,
+                                0x40000000u|(emitted<<16u));
+            } else if((p.launchControl&0x08000000u)!=0u) {
+                const uint first=arena.Load(manager);
+                const uint count=arena.Load(manager+4u);
+                if(first>p.patchCount || count>p.patchCount-first) {
+                    sourceDyTaskErrorOr(errorAddress,65536u);
+                    return false;
+                }
+                for(uint i=0u;i<count;++i)
+                    arena.Store(p.writebackBias+p.resultPatchOffset+
+                                (first+i)*4u,0u);
             }
             const uint refA=arena.Load(prep);
             const uint refB=arena.Load(prep+4u);
