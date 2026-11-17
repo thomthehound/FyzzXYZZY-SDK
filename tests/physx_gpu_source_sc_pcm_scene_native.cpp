@@ -72,6 +72,31 @@ struct SourceScDeviceIslandFixture {
                                 state.data(),sizeof(state));
         return state;
     }
+    static std::uint32_t extent(
+            SourceScOwnedGpuBroadphaseNative& owner,std::uint32_t response) {
+        if(!owner.pcm_ || !owner.pcm_->device_island_work_address())
+            throw std::runtime_error("Missing device Sc numerical extent stream");
+        owner.stream_.wait_at_fetch();
+        const auto layout=owner.pcm_->device_island_layout();
+        const auto address=owner.pcm_->device_island_work_address()+
+            layout.response_extents+std::size_t(response)*4u;
+        const auto view=owner.addresses_.resolve(address,4u);
+        std::uint32_t value=0u;
+        owner.context_.download(view.buffer,view.offset,&value,sizeof(value));
+        return value;
+    }
+    static void overwrite_extent(
+            SourceScOwnedGpuBroadphaseNative& owner,std::uint32_t response,
+            std::uint32_t value) {
+        if(!owner.pcm_ || !owner.pcm_->device_island_work_address())
+            throw std::runtime_error("Missing device Sc numerical extent stream");
+        const auto address=owner.pcm_->device_island_work_address()+
+            owner.pcm_->device_island_layout().response_extents+
+            std::size_t(response)*4u;
+        auto& uploads=owner.stream_.upload_scratch();
+        uploads.push_back({address,&value,sizeof(value)});
+        owner.stream_.queue_uploads(uploads);
+    }
     static float resident_position_x(
             SourceScOwnedGpuBroadphaseNative& owner,ShapeId shape) {
         owner.stream_.wait_at_fetch();
@@ -126,6 +151,8 @@ struct SourceScDeviceIslandFixture {
                layout.response_order+
                    std::uint64_t(header.admitted_edges)*4u>work.size() ||
                layout.response_tokens+
+                   std::uint64_t(header.admitted_edges)*4u>work.size() ||
+               layout.response_extents+
                    std::uint64_t(header.admitted_edges)*4u>work.size() ||
                layout.body_order+
                    std::uint64_t(header.responding_nodes)*4u>work.size())
@@ -1078,7 +1105,11 @@ void verify(fyzz::compute::Backend backend,const char* sap,
     producer->enqueue_gpu_dy_island_admission(source_edges,source_nodes,
         physx_gpu::SourceScDeviceIslandSources{1u,0u,0u});
     const auto graph=physx_gpu::SourceScDeviceIslandFixture::read(*producer);
+    const auto direct_extent=
+        physx_gpu::SourceScDeviceIslandFixture::extent(*producer,0u);
     require(graph.errors==0u &&
+            (direct_extent&0x80000000u)!=0u &&
+            (direct_extent&7u)>0u && (direct_extent&7u)<=4u &&
             graph.runnable_components==1u &&
             graph.responding_nodes==1u &&
             graph.admitted_edges==1u &&
@@ -1105,6 +1136,7 @@ void verify(fyzz::compute::Backend backend,const char* sap,
     require(header.edge_handle==direct[0].edge &&
             header.cached_count==direct[0].cached_count() &&
             header.emitted_count==direct[0].count() &&
+            (direct_extent&7u)==direct[0].count() &&
             header.touch_transition==
                 static_cast<std::uint32_t>(direct[0].touch_transition()),
         "Source Sc result does not share the 84-byte GPU contact ABI");
@@ -1365,7 +1397,14 @@ void verify(fyzz::compute::Backend backend,const char* sap,
     producer->enqueue_gpu_dy_island_admission(mixed_edges,mixed_nodes,
         physx_gpu::SourceScDeviceIslandSources{2u,0u,0u});
     const auto mixed_graph=physx_gpu::SourceScDeviceIslandFixture::read(*producer);
-    require(mixed_graph.errors==0u &&
+    const auto mixed_gpu_extent=
+        physx_gpu::SourceScDeviceIslandFixture::extent(*producer,0u);
+    const auto mixed_host_extent=
+        physx_gpu::SourceScDeviceIslandFixture::extent(*producer,1u);
+    require((mixed_gpu_extent&0x80000000u)!=0u &&
+            (mixed_gpu_extent&7u)>0u &&
+            mixed_host_extent==0x80000001u &&
+            mixed_graph.errors==0u &&
             mixed_graph.runnable_components==2u &&
             mixed_graph.responding_nodes==2u &&
             mixed_graph.admitted_edges==2u &&
@@ -1380,6 +1419,7 @@ void verify(fyzz::compute::Backend backend,const char* sap,
             mixed_results[0].status()==0u &&
             mixed_results[0].cached_count()<=4u &&
             mixed_results[0].count()<=mixed_results[0].cached_count() &&
+            (mixed_gpu_extent&7u)==mixed_results[0].count() &&
             primitive.edge==sphere_edge &&
             primitive.count()==1u,
         "Late CPU Gu upload or general PCM readback lost source ordinals");
