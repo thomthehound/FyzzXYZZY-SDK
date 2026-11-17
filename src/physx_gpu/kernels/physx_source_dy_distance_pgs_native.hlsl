@@ -448,6 +448,8 @@ bool sourceDyExpandDescriptor(uint token,uint extent,
                 const uint begin=arena.Load(manager+8u);
                 if(pcmContacts.Load(source)!=arena.Load(prep+52u) ||
                    ((packed>>3u)&7u)!=0u ||
+                   ((p.launchControl&0x08000000u)!=0u &&
+                    (extent&0x80000000u)==0u) ||
                    ((extent&0x80000000u)!=0u && (extent&7u)!=emitted) ||
                    emitted>capacity ||
                    emitted>4u || begin>p.contactCount ||
