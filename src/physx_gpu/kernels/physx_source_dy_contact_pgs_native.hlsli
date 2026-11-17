@@ -693,7 +693,8 @@ void growPcmFrictionAnchors(uint patchIndex,uint pairIndex,
     const uint reportAddress=p.writebackBias+p.resultPatchOffset+
         patchIndex*4u;
     if((p.launchControl&0x08000000u)!=0u)
-        report|=arena.Load(reportAddress)&0x40070000u;
+        report|=arena.Load(reportAddress)&
+            (sourceDyPcmExtentValid|(7u<<sourceDyPcmExtentShift));
     arena.Store(reportAddress,report);
 }
 

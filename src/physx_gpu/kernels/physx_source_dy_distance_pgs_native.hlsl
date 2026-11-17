@@ -64,6 +64,8 @@ struct Parameters {
 ConstantBuffer<Parameters> p : register(b0,space0);
 #endif
 static const uint invalidBody = 0xffffffffu;
+static const uint sourceDyPcmExtentValid = 1u<<30u;
+static const uint sourceDyPcmExtentShift = 16u;
 static const float maxImpulse = 3.4028234663852886e+38;
 
 // Source PxReal dot3 evaluates three rounded products followed by two
@@ -469,7 +471,7 @@ bool sourceDyExpandDescriptor(uint token,uint sourceCount,uint sourceTable,
                 if(singlePatch && (p.launchControl&0x08000000u)!=0u)
                     arena.Store(p.writebackBias+p.resultPatchOffset+
                                 patchIndex*4u,
-                                0x40000000u|(emitted<<16u));
+                                sourceDyPcmExtentValid|(emitted<<sourceDyPcmExtentShift));
             } else if((p.launchControl&0x08000000u)!=0u) {
                 const uint first=arena.Load(manager);
                 const uint count=arena.Load(manager+4u);

@@ -24,6 +24,11 @@
 
 namespace fyzz::physx_gpu {
 
+// Device-authored PCM contact extent travels with the existing patch report.
+inline constexpr std::uint32_t source_dy_pcm_extent_valid_bit=1u<<30u;
+inline constexpr std::uint32_t source_dy_pcm_extent_shift=16u;
+inline constexpr std::uint32_t source_dy_pcm_extent_count_mask=7u;
+
 // The GPU prep descriptor borrows active Dy bodies from the already uploaded
 // integrateCore input. Only immovable or nonintegrated participants require
 // an inline body. The source pair's 56-byte material/contact tail is intact.
@@ -1880,10 +1885,11 @@ public:
                 std::uint32_t report=0u;
                 std::memcpy(&report,host_.data()+result_offsets[4]+
                             manager.patch_offset*4u,sizeof(report));
-                if((report&0x40000000u)==0u)
+                if((report&source_dy_pcm_extent_valid_bit)==0u)
                     throw std::logic_error(
                         "Source Dy resident PCM contact extent was not published");
-                exact_contacts=(report>>16u)&7u;
+                exact_contacts=(report>>source_dy_pcm_extent_shift)&
+                    source_dy_pcm_extent_count_mask;
                 if(exact_contacts>manager.contact_count || exact_contacts>4u)
                     throw std::logic_error(
                         "Source Dy resident PCM contact extent exceeds capacity");

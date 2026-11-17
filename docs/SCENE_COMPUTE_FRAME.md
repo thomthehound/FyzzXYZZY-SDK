@@ -205,7 +205,13 @@ world-space points. Invalid, broken, retired, or material-incompatible
 history needs no normal transfer. Only the multi-patch validity checks
 that determine this early DMA precede PCM submission; ordinary friction
 validation overlaps device PCM. Resident PCM supplies numerical normals
-and contacts directly to Dy. A deferred span transfers 76 bytes for its
+and contacts directly to Dy. For device-admitted single-patch PCM managers,
+the emitted count determines the active contact rows before numerical
+preparation. Dy returns that count in its existing four-byte patch report
+(bit 30 valid, bits 16–18 count), alongside friction feedback. The host
+publishes only the active force slots and leaves unused reservation slots
+untouched. CPU Gu retains its correlated source extents; no additional
+readback or numerical registry is required. A deferred span transfers 76 bytes for its
 first touching pair, or 64 bytes when Sc already fetched that normal;
 subsequent pairs in the same span contribute 84 bytes each. Transfers
 join Dy's existing completion batch without another point-fetch fence
