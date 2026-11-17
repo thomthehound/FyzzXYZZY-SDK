@@ -30,6 +30,7 @@ struct Parameters {
     uint responseBiasA,responseBiasB,histBias,primaryCapacity;
     uint tokenBias,radixPasses,bodyOrderBias,combinedCount;
     uint responseOrderBias,jointRowCount,fullDescriptorCount,blockTilesBias;
+    uint extentBias;
 };
 #ifdef __spirv__
 [[vk::push_constant]] Parameters p;
@@ -39,6 +40,7 @@ ConstantBuffer<Parameters> p:register(b0,space0);
 
 static const uint invalid=0xffffffffu;
 static const uint contactEdge=0u;
+static const uint numericalExtentValid=0x80000000u;
 static const uint jointEdge=1u;
 static const uint noResponse=2u;
 static const uint deviceJoint=16u;
@@ -172,6 +174,26 @@ uint responseToken(uint edgeIndex) {
         ((kind&deviceJoint)!=0u?0x80000000u:0u);
     return tag|source;
 }
+// Admitted source responses retain the device-published numerical extent.
+uint responseExtent(uint edgeIndex) {
+    const uint address=p.admissionBias+edgeIndex*24u;
+    if((work.Load(address+20u)&jointEdge)!=0u)return 0u;
+    const uint edge=work.Load(address+4u);
+    if(edge>=p.edgeCapacity) {
+        reject(1u);
+        return 0u;
+    }
+    const uint touch=edgeHistory.Load(p.touchBias+edge*240u+72u);
+    // CPU Gu without a PCM source keeps its host-authored contact count.
+    if((touch&0x10000u)==0u)return 0u;
+    const uint emitted=(touch>>8u)&7u;
+    if(emitted>4u || ((touch&1u)!=0u)!=(emitted!=0u)) {
+        reject(256u);
+        work.Store(p.workBias+16u,0u);
+        return 0u;
+    }
+    return numericalExtentValid|emitted;
+}
 uint itemRoot(uint item) {
     if(item>=p.nodeCount)return responseRoot(item-p.nodeCount);
     if(!respondingNode(item) || work.Load(p.workBias)!=0u)
@@ -218,6 +240,7 @@ void scatterItem(uint position,uint item) {
         const uint edge=item-p.nodeCount;
         work.Store(p.responseOrderBias+response*4u,edge);
         work.Store(p.tokenBias+response*4u,responseToken(edge));
+        work.Store(p.extentBias+response*4u,responseExtent(edge));
     }
 }
 bool runnableRoot(uint index) {
@@ -459,6 +482,7 @@ void admitCompact(uint lane) {
                 const uint position=begin+rank;
                 work.Store(p.responseOrderBias+position*4u,edge);
                 work.Store(p.tokenBias+position*4u,responseToken(edge));
+                work.Store(p.extentBias+position*4u,responseExtent(edge));
             }
         }
     }
