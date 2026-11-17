@@ -1871,34 +1871,55 @@ public:
             // their Gu points already occupy the resident solver
             // arena consecutively. CPU Gu patches retain their
             // explicit correlation order, packed without PCM holes.
+            std::size_t exact_contacts=manager.contact_count;
+            const bool resident_extent=pending.device_admission &&
+                manager.patch_count==1u &&
+                manager.prep_index<contact_prep.size() &&
+                contact_prep[manager.prep_index].pcm_pair_index!=0xffffffffu;
+            if(resident_extent) {
+                std::uint32_t report=0u;
+                std::memcpy(&report,host_.data()+result_offsets[4]+
+                            manager.patch_offset*4u,sizeof(report));
+                if((report&0x40000000u)==0u)
+                    throw std::logic_error(
+                        "Source Dy resident PCM contact extent was not published");
+                exact_contacts=(report>>16u)&7u;
+                if(exact_contacts>manager.contact_count || exact_contacts>4u)
+                    throw std::logic_error(
+                        "Source Dy resident PCM contact extent exceeds capacity");
+            }
             std::size_t written=0u;
             for(std::size_t patch_index=manager.patch_offset;
                 patch_index<manager.patch_offset+manager.patch_count;
                 ++patch_index) {
-                const auto& patch=patches[patch_index];
+                auto& patch=patches[patch_index];
                 constexpr std::uint32_t direct=0x80000000u;
                 const bool resident=(patch.order_offset&direct)!=0u;
                 const std::size_t begin=patch.order_offset&~direct;
                 const std::size_t limit=resident
                     ?contact_forces.size():contact_order.size();
-                if(begin>limit || patch.contact_count>limit-begin ||
-                   written>manager.contact_count ||
-                   patch.contact_count>manager.contact_count-written)
+                const auto count=resident_extent
+                    ?exact_contacts:std::size_t(patch.contact_count);
+                if(begin>limit || count>limit-begin ||
+                   written>exact_contacts ||
+                   count>exact_contacts-written)
                     throw std::logic_error(
                         "Source Dy contact patch order is invalid");
-                for(std::size_t k=0u;k<patch.contact_count;++k) {
+                for(std::size_t k=0u;k<count;++k) {
                     const auto index=resident
                         ?begin+k:contact_order[begin+k];
                     if(index<manager.order_offset ||
-                       index>=manager.order_offset+manager.contact_count)
+                       index>=manager.order_offset+exact_contacts)
                         throw std::logic_error(
                             "Source Dy contact writeback index invalid");
                     std::memcpy(&contact_forces[index],
                         host_.data()+result_offsets[2]+index*4u,4u);
                 }
-                written+=patch.contact_count;
+                if(resident_extent)
+                    patch.contact_count=static_cast<std::uint32_t>(count);
+                written+=count;
             }
-            if(written!=manager.contact_count)
+            if(written!=exact_contacts)
                 throw std::logic_error(
                     "Source Dy contact writeback omitted Gu rows");
             for(std::size_t j=manager.patch_offset;
@@ -1940,7 +1961,7 @@ public:
                     patch.anchor_count=count;
                     patch.reserved=report;
                     patch.broken=report&1u;
-                }else if(count)patch.broken=report;
+                }else if(count)patch.broken=report&1u;
             }
         };
         for(const auto& task:tasks) {
