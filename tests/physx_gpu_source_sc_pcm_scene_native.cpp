@@ -1457,6 +1457,30 @@ void verify(fyzz::compute::Backend backend,const char* sap,
                 native::GpuPcmTouchTransition::Persists,
             "Rejected CPU Gu touch changed the committed device epoch");
     producer->commit_gpu_step();
+    // A Gu-only transaction uses the same journal without any PCM pairs.
+    // Rollback restores its exact edge word before the next epoch.
+    const std::array<native::GpuPcmBoxPair,0> no_pcm_pairs{};
+    std::array<native::GpuPcmBoxResult,0> no_pcm_results{};
+    constexpr std::uint32_t gu_only_extent=0x20000u|(5u<<8u)|1u;
+    const std::array<native::GpuGuTouchRecord,1> gu_only_touch{{
+        {gu_edge,gu_only_extent}
+    }};
+    producer->enqueue_gpu_pcm_box_contacts(
+        no_pcm_pairs,no_pcm_results,gu_edge+1u);
+    producer->enqueue_cpu_gu_touch_history(gu_only_touch);
+    const auto gu_only_observed=
+        physx_gpu::SourceScDeviceIslandFixture::touch(*producer,gu_edge);
+    require(gu_only_observed==
+                std::array<std::uint32_t,2>{gu_only_extent,0u},
+        "Gu-only device epoch lost its exact numerical extent");
+    producer->invalidate_after_rollback();
+    producer->enqueue_gpu_pcm_box_contacts(
+        no_pcm_pairs,no_pcm_results,gu_edge+1u);
+    const auto gu_only_restored=
+        physx_gpu::SourceScDeviceIslandFixture::touch(*producer,gu_edge);
+    require(gu_only_restored==std::array<std::uint32_t,2>{0u,0u},
+        "Gu-only device epoch failed to restore its contact journal");
+    producer->commit_gpu_step();
     check(true,true);
     require(gpu.contact_edge_index({gpu_a,gpu_b})==edge,
             "AABB capacity growth discarded an unchanged GPU PCM manifold");
