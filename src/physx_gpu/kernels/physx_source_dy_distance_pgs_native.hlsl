@@ -1314,6 +1314,14 @@ void integrateBody(uint ordinal) {
     float3 position;
     float4 quaternion;
     if(!sourceDyMassPose(input,position,quaternion))return;
+    const uint local=arena.Load(input+24u);
+    const float4 massLocalAxes=asfloat(scActorLocals.Load4(local+12u));
+    // World angular motion integrates the actor frame directly; the
+    // mass-frame origin still supplies the center-of-mass translation.
+    quaternion=(inputFlags&128u)!=0u
+        ?asfloat(scActorLocals.Load4(local+128u))
+        :sourceRigidMultiply(quaternion,
+            float4(-massLocalAxes.xyz,massLocalAxes.w));
     float3 motionLinear=baseLinear+linearDelta;
     if(locks&1u)motionLinear.x=0.0f;
     if(locks&2u)motionLinear.y=0.0f;
@@ -1388,12 +1396,8 @@ void integrateBody(uint ordinal) {
         if(!(length>0.0f) || !isfinite(length))return;
         nextQuaternion/=length;
     }
-    // integrateCore advances the principal mass frame. Recover the
-    // actor frame before composing each independent local shape pose.
-    const uint local=arena.Load(input+24u);
+    // The integrated actor rotation orients every attached shape.
     const float3 localCenter=asfloat(scActorLocals.Load3(local));
-    const float4 localAxes=asfloat(scActorLocals.Load4(local+12u));
-    nextQuaternion=sourceRigidMultiply(nextQuaternion,float4(-localAxes.xyz,localAxes.w));
     nextPosition-=sourceRigidRotate(nextQuaternion,localCenter);
     if(!all(isfinite(nextPosition)) || !all(isfinite(nextQuaternion)))return;
     float3 sleepLinear=0.0f,sleepAngular=0.0f;
