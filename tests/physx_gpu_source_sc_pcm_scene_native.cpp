@@ -810,14 +810,56 @@ struct GpuPcmFrictionAnchorFixture {
     static void reverse_first_retained_normal(Scene& scene,Pair shapes) {
         const auto edge=scene.contact_edge_index(shapes);
         if(edge==Scene::invalid_edge ||
-           edge>=scene.friction_by_edge_.size())
+           edge>=scene.friction_by_edge_.size() ||
+           edge>=scene.manifold_by_edge_.size())
             throw std::runtime_error(
                 "PCM normal validation fixture lacks an active manager");
         const auto span=scene.friction_by_edge_[edge];
+        const auto lookup=scene.manifold_by_edge_[edge];
         if(span.epoch!=scene.friction_cache_epoch_ ||
-           span.count!=2u || span.offset>=scene.friction_patches_.size())
+           span.count!=2u ||
+           span.offset>scene.friction_patches_.size() ||
+           span.count>scene.friction_patches_.size()-span.offset ||
+           lookup.generation!=scene.manifold_lookup_generation_ ||
+           lookup.index>=scene.manifolds_.size())
             throw std::runtime_error(
                 "PCM normal validation fixture lacks retained patches");
+        const auto& manager=scene.manifolds_[lookup.index];
+        if(manager.points.empty())
+            throw std::runtime_error(
+                "PCM normal validation fixture lacks contact witnesses");
+        const bool swapped=scene.island_edges_[edge].gu_order_reversed;
+        const auto& first=scene.shapes_[swapped?shapes.b:shapes.a];
+        const auto& second=scene.shapes_[swapped?shapes.a:shapes.b];
+        const auto& actor0=scene.actors_[first.body];
+        const auto& actor1=scene.actors_[second.body];
+        const auto cross=[](Vec3 a,Vec3 b) {
+            return Vec3{a.y*b.z-a.z*b.y,a.z*b.x-a.x*b.z,
+                        a.x*b.y-a.y*b.x};
+        };
+        const auto local=[&](const auto& actor,Vec3 world) {
+            const Vec3 origin=scene.mass_position(actor);
+            const Quat q=scene.mass_orientation(actor);
+            const Vec3 u{-q.x,-q.y,-q.z};
+            const Vec3 v{world.x-origin.x,world.y-origin.y,
+                         world.z-origin.z};
+            const auto c=cross(u,v);
+            const Vec3 t{2.f*c.x,2.f*c.y,2.f*c.z};
+            const auto d=cross(u,t);
+            return Vec3{v.x+q.w*t.x+d.x,
+                        v.y+q.w*t.y+d.y,v.z+q.w*t.z+d.z};
+        };
+        // Current witnesses define valid retained anchors before the
+        // device tests a deliberately incompatible historical normal.
+        for(std::size_t i=0u;i<span.count;++i) {
+            auto& patch=scene.friction_patches_[span.offset+i];
+            for(std::size_t k=0u;k<patch.anchor_count;++k) {
+                const auto& point=manager.points[
+                    std::min(k,manager.points.size()-1u)].position;
+                patch.body0_anchors[k]=local(actor0,point);
+                patch.body1_anchors[k]=local(actor1,point);
+            }
+        }
         auto& patch=scene.friction_patches_[span.offset];
         const auto reverse=[](Vec3 n) {
             return Vec3{-n.x,-n.y,-n.z};
@@ -825,14 +867,23 @@ struct GpuPcmFrictionAnchorFixture {
         patch.normal=reverse(patch.normal);
         patch.body0_normal=reverse(patch.body0_normal);
         patch.body1_normal=reverse(patch.body1_normal);
-        const bool swapped=scene.island_edges_[edge].gu_order_reversed;
-        const auto& first=scene.shapes_[swapped?shapes.b:shapes.a];
-        const auto& second=scene.shapes_[swapped?shapes.a:shapes.b];
-        if(!scene.cached_friction_patch_valid(
-                patch,scene.actors_[first.body],
-                scene.actors_[second.body]))
-            throw std::runtime_error(
-                "PCM normal validation fixture has invalid retained anchors");
+        for(std::size_t i=0u;i<span.count;++i)
+            if(!scene.cached_friction_patch_valid(
+                    scene.friction_patches_[span.offset+i],actor0,actor1))
+                throw std::runtime_error(
+                    "PCM normal validation fixture has invalid retained anchors");
+    }
+    static bool device_rejected_retained_normal(const Scene& scene) {
+        for(const auto& manager:scene.manifolds_) {
+            if(manager.pcm_result_index==0xffffffffu)continue;
+            for(std::size_t i=manager.friction_patch_offset;
+                i<manager.friction_patch_offset+
+                  manager.friction_patch_count;++i)
+                if(i<scene.gpu_dy_patches_.size() &&
+                   (scene.gpu_dy_patches_[i].reserved&0x200u)!=0u)
+                    return true;
+        }
+        return false;
     }
     static void seed_multiple_friction_patches(Scene& scene,Pair shapes,
                                                bool broken=false) {
@@ -4901,10 +4952,13 @@ void verify_pcm_friction_normal_revalidation(
             producer->pcm_deferred_point_bytes()==
                 sizeof(native::GpuPcmBoxResult)-2u*sizeof(std::uint32_t),
         "Unique cached PCM patch still fetched an early contact normal");
-    require(normal.x*previous_normal.x+
-                normal.y*previous_normal.y+
-                normal.z*previous_normal.z>0.5f,
-        "PCM normal validation fixture changed the current contact normal");
+    require(cpu.contacts().size()==1u &&
+            normal.x*cpu.contacts().front().points.front().normal.x+
+                normal.y*cpu.contacts().front().points.front().normal.y+
+                normal.z*cpu.contacts().front().points.front().normal.z>0.99f &&
+            native::GpuPcmFrictionAnchorFixture::
+                device_rejected_retained_normal(gpu),
+        "Resident PCM did not reject the incompatible historical normal");
     require(friction.anchor_count>0u,
         "PCM did not regenerate a friction anchor after normal change");
     for(std::size_t anchor=0u;anchor<friction.anchor_count;++anchor) {
