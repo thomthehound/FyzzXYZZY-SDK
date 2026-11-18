@@ -4037,22 +4037,21 @@ std::uint8_t Scene::publish_gpu_pcm_box_box(
     // This frame's device stream already contains Gu world contacts.
     cache.initialized=true;
     if(!gpu.count())return 0u;
-    if(gpu.count()>output.size())
-        throw std::logic_error("Source GPU PCM contact arena exhausted");
     if(defer_points) {
-        // Sc may need the current normal for retained friction correlation,
-        // but Dy keeps all world-space witnesses resident until completion.
-        output[0]={};
+        // GPU witnesses have no host point range until Sc publishes the
+        // exact contact counts. Friction correlation needs only the normal
+        // of a selected multi-patch history.
         if(require_normal) {
             const float sq=gpu.normal.x*gpu.normal.x+
                            gpu.normal.y*gpu.normal.y+
                            gpu.normal.z*gpu.normal.z;
             if(!(sq>0.f) || !std::isfinite(sq) || !finite(gpu.normal))
                 throw std::overflow_error("Source GPU PCM normal is invalid");
-            output[0].normal=gpu.normal;
         }
         return static_cast<std::uint8_t>(gpu.count());
     }
+    if(gpu.count()>output.size())
+        throw std::logic_error("Source GPU PCM contact arena exhausted");
     const float sq=gpu.normal.x*gpu.normal.x+
                    gpu.normal.y*gpu.normal.y+
                    gpu.normal.z*gpu.normal.z;
@@ -4735,8 +4734,9 @@ void Scene::update_contacts(bool defer_device_points,float inverse_step) {
                     manifold.pcm_result_index=
                         static_cast<std::uint32_t>(gpu_pcm_index++);
                     manifold.count=static_cast<std::uint8_t>(reservation);
-                    next_contact_points_.resize(
-                        next_contact_points_.size()+reservation);
+                    if(!defer_device_points)
+                        next_contact_points_.resize(
+                            next_contact_points_.size()+reservation);
                     deferred_gpu_manifold=true;
                 }else {
                     manifold.count=convex_pair
@@ -5054,7 +5054,7 @@ void Scene::update_contacts(bool defer_device_points,float inverse_step) {
                     "Deferred GPU PCM result lost Sc manager identity");
             const bool deferred=defer_device_points;
             std::span<ContactPoint> contacts{};
-            if(result.count())
+            if(result.count() && !defer_device_points)
                 contacts={next_contact_points_.data()+manifold.contact_offset,
                           result.count()};
             auto& cache=island_edges_[manifold.edge_handle].pcm_cache;
@@ -5077,24 +5077,91 @@ void Scene::update_contacts(bool defer_device_points,float inverse_step) {
             if(found)next_found_contacts_.push_back(manifold.pair);
             else if(lost)next_lost_contacts_.push_back(manifold.pair);
         }
-        // Keep Gu offsets and force writeback in source pair order.
-        // Compact the exact GPU PCM runs after their headers join.
-        std::size_t point_end=0u,manager_end=0u;
+        // The resident PCM stream owns its witnesses and exact counts.
+        // Sc holds only CPU Gu geometry until these contact managers are
+        // published. Expand their exact point ranges backwards so Gu
+        // geometry moves once without a provisional PCM point arena.
+        if(defer_device_points) {
+            std::size_t resident_points=0u;
+            for(const auto& manifold:next_manifolds_) {
+                if(manifold.pcm_result_index==
+                   std::numeric_limits<std::uint32_t>::max())continue;
+                if(manifold.count>std::numeric_limits<std::size_t>::max()-
+                                      resident_points)
+                    throw std::overflow_error("GPU PCM public point range overflow");
+                resident_points+=manifold.count;
+            }
+            const auto cpu_points=next_contact_points_.size();
+            if(resident_points>std::numeric_limits<std::size_t>::max()-
+                               cpu_points)
+                throw std::overflow_error("Sc public contact arena overflow");
+            next_contact_points_.resize(cpu_points+resident_points);
+            std::size_t point_end=next_contact_points_.size();
+            for(std::size_t i=next_manifolds_.size();i>0u;--i) {
+                auto& manifold=next_manifolds_[i-1u];
+                if(!manifold.count)continue;
+                if(manifold.count>point_end)
+                    throw std::logic_error("Sc public contact range underflow");
+                point_end-=manifold.count;
+                const auto pcm_index=manifold.pcm_result_index;
+                if(pcm_index!=std::numeric_limits<std::uint32_t>::max()) {
+                    if(pcm_index>=gpu_pcm_pairs_.size())
+                        throw std::logic_error("Sc PCM point source is invalid");
+                    const auto& request=gpu_pcm_pairs_[pcm_index];
+                    const auto& result=gpu_pcm_results_[pcm_index];
+                    if(request.host_generated) {
+                        auto& cache=island_edges_[manifold.edge_handle].pcm_cache;
+                        const auto emitted=publish_gpu_pcm_box_box(
+                            result,cache,
+                            {next_contact_points_.data()+point_end,
+                             manifold.count},false,false);
+                        if(emitted!=manifold.count)
+                            throw std::logic_error(
+                                "Sc host PCM point count changed at publication");
+                    }else {
+                        std::fill_n(next_contact_points_.begin()+point_end,
+                                    manifold.count,ContactPoint{});
+                        if(request.early_host_normal)
+                            next_contact_points_[point_end].normal=result.normal;
+                    }
+                }else {
+                    if(manifold.contact_offset>cpu_points ||
+                       manifold.count>cpu_points-manifold.contact_offset ||
+                       manifold.contact_offset>point_end)
+                        throw std::logic_error(
+                            "Sc CPU Gu point order cannot be compacted");
+                    std::move_backward(
+                        next_contact_points_.begin()+manifold.contact_offset,
+                        next_contact_points_.begin()+manifold.contact_offset+
+                            manifold.count,
+                        next_contact_points_.begin()+point_end+manifold.count);
+                }
+                manifold.contact_offset=point_end;
+            }
+            if(point_end!=0u)
+                throw std::logic_error("Sc public point ranges are incomplete");
+        }else {
+            std::size_t point_end=0u;
+            for(auto& manifold:next_manifolds_) {
+                if(!manifold.count)continue;
+                for(std::size_t j=0u;j<manifold.count;++j)
+                    next_contact_points_[point_end+j]=
+                        next_contact_points_[manifold.contact_offset+j];
+                manifold.contact_offset=point_end;
+                point_end+=manifold.count;
+            }
+            next_contact_points_.resize(point_end);
+        }
+        std::size_t manager_end=0u;
         for(std::size_t i=0u;i<next_manifolds_.size();++i) {
-            auto& manifold=next_manifolds_[i];
+            const auto& manifold=next_manifolds_[i];
             if(!manifold.count)continue;
-            for(std::size_t j=0u;j<manifold.count;++j)
-                next_contact_points_[point_end+j]=
-                    next_contact_points_[manifold.contact_offset+j];
-            manifold.contact_offset=point_end;
-            point_end+=manifold.count;
             next_manifold_by_edge_[manifold.edge_handle]={
                 manager_end,new_lookup_generation};
             if(i!=manager_end)next_manifolds_[manager_end]=manifold;
             ++manager_end;
         }
         next_manifolds_.resize(manager_end);
-        next_contact_points_.resize(point_end);
         std::sort(next_found_contacts_.begin(),next_found_contacts_.end());
         std::sort(next_lost_contacts_.begin(),next_lost_contacts_.end());
     }
