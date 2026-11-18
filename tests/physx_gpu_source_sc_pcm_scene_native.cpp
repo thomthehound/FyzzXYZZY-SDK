@@ -3879,6 +3879,11 @@ void verify_single_pcm_joint_island_admission(
                 stats.device_island_indirect_dispatches==1u &&
                 stats.device_admitted_tasks==2u &&
                 stats.device_admitted_descriptors==2u &&
+                stats.prewitness_joint_source_upload_bytes==
+                    (frame==0u?sizeof(native::GpuDyJointInput):0u) &&
+                stats.device_joint_metadata_upload_bytes==
+                    stats.prewitness_joint_source_upload_bytes &&
+                stats.device_joint_geometry_count==1u &&
                 gpu.accurate_island_id(joints_gpu[0])==
                     gpu.accurate_island_id(joints_gpu[1]) &&
                 gpu.accurate_island_id(contact_gpu)!=

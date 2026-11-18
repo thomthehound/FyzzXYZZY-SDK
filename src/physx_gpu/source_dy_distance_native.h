@@ -139,6 +139,7 @@ struct SourceDyLaunchStats {
     std::size_t device_joint_input_rows=0u;
     std::size_t device_joint_geometry_count=0u;
     std::size_t device_joint_metadata_upload_bytes=0u;
+    std::size_t prewitness_joint_source_upload_bytes=0u;
     std::size_t resident_joint_source_bytes=0u;
     std::size_t device_joint_metadata_upload_spans=0u;
     std::size_t device_joint_metadata_reuses=0u;
@@ -221,10 +222,79 @@ public:
         std::fill(actor_velocity_valid_.begin(),actor_velocity_valid_.end(),0u);
         std::fill(actor_pose_valid_.begin(),actor_pose_valid_.end(),0u);
         std::fill(joint_source_valid_.begin(),joint_source_valid_.end(),0u);
+        prewitness_joint_source_slots_.clear();
+        prewitness_joint_source_upload_bytes_=0u;
+        prewitness_joint_source_upload_spans_=0u;
         if(++history_epoch_==0u) {
             std::fill(history_epochs_.begin(),history_epochs_.end(),0u);
             history_epoch_=1u;
         }
+    }
+
+    void enqueue_joint_sources(
+        std::span<const native::GpuDyJointInput> inputs) {
+        if(pending_solve_)
+            throw std::logic_error("Dy joint source overlaps a numerical epoch");
+        prewitness_joint_source_slots_.clear();
+        prewitness_joint_source_upload_bytes_=0u;
+        prewitness_joint_source_upload_spans_=0u;
+        if(inputs.empty())return;
+        std::size_t capacity=joint_source_capacity_;
+        for(const auto& joint:inputs) {
+            if(joint.source_slot==0xffffffffu)
+                throw std::logic_error("Native Dy joint has no live Sc slot");
+            capacity=std::max(capacity,std::size_t(joint.source_slot)+1u);
+        }
+        if(capacity>
+               (std::numeric_limits<std::uint32_t>::max()-127u)/
+                   sizeof(native::GpuDyJointInput) ||
+           capacity>max_view_/sizeof(native::GpuDyJointInput))
+            throw std::overflow_error("Native Dy joint sources exceed device view");
+        joint_source_host_.resize(capacity);
+        joint_source_valid_.resize(capacity,0u);
+        if(capacity>joint_source_capacity_) {
+            joint_sources_.allocateCopyPrefixAsync(
+                capacity*sizeof(native::GpuDyJointInput)+127u,
+                joint_source_capacity_*sizeof(native::GpuDyJointInput),
+                stream_,PX_FL);
+            joint_source_capacity_=capacity;
+        }
+        for(const auto& joint:inputs) {
+            const auto slot=joint.source_slot;
+            if(!joint_source_valid_[slot] ||
+               std::memcmp(&joint_source_host_[slot],&joint,sizeof(joint))!=0) {
+                joint_source_valid_[slot]=0u;
+                joint_source_host_[slot]=joint;
+                prewitness_joint_source_slots_.push_back(slot);
+            }
+        }
+        std::sort(prewitness_joint_source_slots_.begin(),
+                  prewitness_joint_source_slots_.end());
+        if(std::adjacent_find(prewitness_joint_source_slots_.begin(),
+                              prewitness_joint_source_slots_.end())!=
+           prewitness_joint_source_slots_.end())
+            throw std::logic_error("Native Dy joint source admitted twice");
+        auto& uploads=stream_.upload_scratch();
+        uploads.clear();
+        for(std::size_t i=0u;i<prewitness_joint_source_slots_.size();) {
+            const auto first=prewitness_joint_source_slots_[i];
+            auto last=first+1u;
+            ++i;
+            while(i<prewitness_joint_source_slots_.size() &&
+                  prewitness_joint_source_slots_[i]==last) {
+                ++last;
+                ++i;
+            }
+            const auto bytes=std::size_t(last-first)*
+                sizeof(native::GpuDyJointInput);
+            uploads.push_back({
+                joint_sources_.getDevicePtr()+std::size_t(first)*
+                    sizeof(native::GpuDyJointInput),
+                joint_source_host_.data()+first,bytes});
+            prewitness_joint_source_upload_bytes_+=bytes;
+        }
+        prewitness_joint_source_upload_spans_=uploads.size();
+        stream_.queue_uploads(uploads);
     }
 
     void solve(std::span<native::GpuDyDistanceBody> bodies,
@@ -372,8 +442,12 @@ public:
             std::count_if(rows.begin(),rows.end(),
                 [](const auto& row){return row.reserved==1u || row.reserved==2u;});
         last_schedule_.device_joint_geometry_count=joint_inputs.size();
-        last_schedule_.device_joint_metadata_upload_bytes=0u;
-        last_schedule_.device_joint_metadata_upload_spans=0u;
+        last_schedule_.device_joint_metadata_upload_bytes=
+            prewitness_joint_source_upload_bytes_;
+        last_schedule_.device_joint_metadata_upload_spans=
+            prewitness_joint_source_upload_spans_;
+        last_schedule_.prewitness_joint_source_upload_bytes=
+            prewitness_joint_source_upload_bytes_;
         last_schedule_.device_joint_metadata_reuses=0u;
         if(!joint_inputs.empty() && !device_world_motion)
             throw std::invalid_argument(
@@ -455,19 +529,27 @@ public:
         joint_source_host_.resize(next_joint_capacity);
         joint_source_valid_.resize(next_joint_capacity,0u);
         joint_source_dirty_.clear();
+        joint_source_late_upload_slots_.clear();
         for(const auto& joint:joint_inputs) {
             const auto slot=joint.source_slot;
+            const bool matches_staged=
+                std::binary_search(prewitness_joint_source_slots_.begin(),
+                                   prewitness_joint_source_slots_.end(),slot) &&
+                std::memcmp(&joint_source_host_[slot],&joint,sizeof(joint))==0;
             if(!joint_source_valid_[slot] ||
                std::memcmp(&joint_source_host_[slot],&joint,sizeof(joint))!=0) {
-                // An attempted edit is not resident until the full frame
-                // completes. A failed submission must reupload on retry.
+                // A rejected frame never commits source-slot residency.
                 joint_source_valid_[slot]=0u;
                 joint_source_host_[slot]=joint;
                 joint_source_dirty_.push_back(slot);
+                if(!matches_staged)
+                    joint_source_late_upload_slots_.push_back(slot);
             }else
                 ++last_schedule_.device_joint_metadata_reuses;
         }
         std::sort(joint_source_dirty_.begin(),joint_source_dirty_.end());
+        std::sort(joint_source_late_upload_slots_.begin(),
+                  joint_source_late_upload_slots_.end());
         if(std::adjacent_find(joint_source_dirty_.begin(),
                               joint_source_dirty_.end())!=joint_source_dirty_.end())
             throw std::logic_error("Native Dy joint slot admitted more than once");
@@ -1315,12 +1397,12 @@ public:
         // Adjacent Sc constraint slot edits share one DMA into the
         // resident Dy allocation, not the transient solver-row upload.
         joint_source_uploads_.clear();
-        for(std::size_t i=0u;i<joint_source_dirty_.size();) {
-            const auto first=joint_source_dirty_[i];
+        for(std::size_t i=0u;i<joint_source_late_upload_slots_.size();) {
+            const auto first=joint_source_late_upload_slots_[i];
             auto last=first+1u;
             ++i;
-            while(i<joint_source_dirty_.size() &&
-                  joint_source_dirty_[i]==last) {
+            while(i<joint_source_late_upload_slots_.size() &&
+                  joint_source_late_upload_slots_[i]==last) {
                 ++last;
                 ++i;
             }
@@ -1332,7 +1414,7 @@ public:
             last_schedule_.device_joint_metadata_upload_bytes+=
                 std::size_t(last-first)*sizeof(native::GpuDyJointInput);
         }
-        last_schedule_.device_joint_metadata_upload_spans=
+        last_schedule_.device_joint_metadata_upload_spans+=
             joint_source_uploads_.size();
         std::array<std::uint32_t,32> params{};
         for(std::size_t i=0;i<11u;++i)
@@ -1554,6 +1636,9 @@ public:
             address+upload_begin,host_.data()+upload_begin,uploaded_bytes});
         // These disjoint source spans share one ordered DMA submission.
         stream_.queue_uploads(uploads);
+        prewitness_joint_source_slots_.clear();
+        prewitness_joint_source_upload_bytes_=0u;
+        prewitness_joint_source_upload_spans_=0u;
         last_schedule_.device_upload_batches=
             stream_.submission_stats().upload_batches-previous_batches;
         // Sc and Dy use one ordered source stream. The admission header,
@@ -2683,6 +2768,10 @@ private:
     std::vector<native::GpuDyJointInput> joint_source_host_;
     std::vector<std::uint8_t> joint_source_valid_;
     std::vector<std::uint32_t> joint_source_dirty_;
+    std::vector<std::uint32_t> joint_source_late_upload_slots_;
+    std::vector<std::uint32_t> prewitness_joint_source_slots_;
+    std::size_t prewitness_joint_source_upload_bytes_=0u;
+    std::size_t prewitness_joint_source_upload_spans_=0u;
     std::vector<SourceSapUpload> joint_source_uploads_;
     std::size_t joint_source_capacity_=0u;
     struct InlineBodySlot {

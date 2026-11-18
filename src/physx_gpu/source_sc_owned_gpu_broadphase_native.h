@@ -272,6 +272,12 @@ public:
     bool has_gpu_dy_distance() const noexcept override {
         return bool(dy_distance_);
     }
+    void enqueue_gpu_dy_joint_sources(
+        std::span<const native::GpuDyJointInput> inputs) override {
+        if(!dy_distance_)
+            throw std::logic_error("Source GPU Dy joint stage is unavailable");
+        dy_distance_->enqueue_joint_sources(inputs);
+    }
     std::uint32_t gpu_dy_direct_task_limit() const noexcept override {
         return dy_distance_
             ?source_sc_indirect_task_limit(context_.device_info()):0u;
@@ -377,6 +383,7 @@ public:
         FYZZ_PROFILE_COUNTER("dy.device_inertia_bytes",schedule.device_inertia_generated_bytes);
         FYZZ_PROFILE_COUNTER("dy.actor_local_upload_bytes",schedule.actor_local_upload_bytes);
         FYZZ_PROFILE_COUNTER("dy.resident_joint_source_bytes",schedule.resident_joint_source_bytes);
+        FYZZ_PROFILE_COUNTER("dy.prewitness_joint_upload_bytes",schedule.prewitness_joint_source_upload_bytes);
         FYZZ_PROFILE_COUNTER("dy.upload_batches",schedule.device_upload_batches);
         FYZZ_PROFILE_COUNTER("dy.resident_poses_reused",schedule.reused_actor_local_poses);
         FYZZ_PROFILE_COUNTER("dy.resident_velocities_reused",schedule.resident_velocity_reuses);

@@ -491,6 +491,10 @@ public:
         throw std::logic_error("Source GPU host PCM stream unavailable");
     }
     virtual bool has_gpu_dy_distance() const noexcept { return false; }
+    virtual void enqueue_gpu_dy_joint_sources(
+        std::span<const GpuDyJointInput>) {
+        throw std::logic_error("Source GPU Dy joint source is unavailable");
+    }
     virtual std::uint32_t gpu_dy_direct_task_limit() const noexcept {
         return 0u;
     }
@@ -1508,6 +1512,7 @@ private:
     void split_lost_island(bool accurate,BodyId seed);
     void prepare_solver_bodies();
     void partition_constraints();
+    GpuDyJointInput pack_gpu_dy_joint_input(EdgeIndex edge) const;
     void prepare_constraints(float seconds);
     void erase_shape_friction_history(ShapeId id);
     void erase_body_friction_history(BodyId id);

@@ -4418,6 +4418,16 @@ void Scene::update_contacts(bool defer_device_points,float inverse_step) {
             request.numerical=prepare_contact_material(
                 request.first,request.second);
     validate_pcm_history(true);
+    // Joint-source identity and authored frames are independent of PCM
+    // witnesses. Queue their changed records before the host header join.
+    if(gpu_results_pending && defer_device_points &&
+       gpu_dy_active() && !active_constraint_handles_.empty()) {
+        gpu_dy_joint_inputs_.clear();
+        gpu_dy_joint_inputs_.reserve(active_constraint_handles_.size());
+        for(const EdgeIndex edge:active_constraint_handles_)
+            gpu_dy_joint_inputs_.push_back(pack_gpu_dy_joint_input(edge));
+        gpu_broadphase_->enqueue_gpu_dy_joint_sources(gpu_dy_joint_inputs_);
+    }
     // Only selected normals cross early; the validated source history
     // remains available to Sc when the PCM header joins later.
     if(gpu_results_pending || gu_only_device_epoch ||
@@ -8143,6 +8153,47 @@ void Scene::partition_constraints() {
     }
 }
 
+GpuDyJointInput Scene::pack_gpu_dy_joint_input(EdgeIndex edge_id) const {
+    if(edge_id>=island_edges_.size() ||
+       island_edges_[edge_id].type!=IslandEdgeType::Constraint ||
+       island_edges_[edge_id].constraint_id>=constraint_records_.size())
+        throw std::logic_error("Sc joint source has no constraint edge");
+    const auto& edge=island_edges_[edge_id];
+    const auto& joint=constraint_records_[edge.constraint_id];
+    if(!joint.live || joint.edge!=edge_id)
+        throw std::logic_error("Sc joint source has no live owner");
+    const auto id0=joint.swapped?edge.pair.b:edge.pair.a;
+    const auto id1=joint.swapped?edge.pair.a:edge.pair.b;
+    const auto& body0=actors_[id0];
+    const auto& body1=actors_[id1];
+    GpuDyJointInput input{};
+    const auto pack3=[](float(&out)[3],Vec3 v) {
+        out[0]=v.x;out[1]=v.y;out[2]=v.z;
+    };
+    const auto pack4=[](float(&out)[4],Quat q) {
+        out[0]=q.x;out[1]=q.y;out[2]=q.z;out[3]=q.w;
+    };
+    pack3(input.local_a_position,joint.local_a.position);
+    pack4(input.local_a_orientation,joint.local_a.orientation);
+    pack3(input.local_b_position,joint.local_b.position);
+    pack4(input.local_b_orientation,joint.local_b.orientation);
+    if(body0.motion!=Motion::Dynamic) {
+        pack3(input.actor_a_position,body0.position);
+        pack4(input.actor_a_orientation,body0.orientation);
+        pack3(input.center_a,mass_position(body0));
+    }
+    if(body1.motion!=Motion::Dynamic) {
+        pack3(input.actor_b_position,body1.position);
+        pack4(input.actor_b_orientation,body1.orientation);
+        pack3(input.center_b,mass_position(body1));
+    }
+    input.distance_length=joint.distance_length;
+    input.kind=static_cast<std::uint32_t>(joint.kind);
+    input.source_slot=edge.constraint_id;
+    input.source_generation=joint.generation;
+    return input;
+}
+
 void Scene::prepare_constraints(float seconds) {
     FYZZ_PROFILE_SCOPE("dy.prepare_constraints");
     // DyContactPrepShared.h::constructContactConstraint, rigid-body
@@ -8206,33 +8257,8 @@ void Scene::prepare_constraints(float seconds) {
         solver_kinematic_participant_ |=
             body0.motion==Motion::Kinematic || body1.motion==Motion::Kinematic;
         if(gpu_normal_prep) {
-            // Only authored local frames and non-dynamic endpoint poses
-            // cross into Dy. World Jacobians use resident actor motion.
-            GpuDyJointInput input{};
-            const auto pack3=[](float(&out)[3],Vec3 v) {
-                out[0]=v.x;out[1]=v.y;out[2]=v.z;
-            };
-            const auto pack4=[](float(&out)[4],Quat q) {
-                out[0]=q.x;out[1]=q.y;out[2]=q.z;out[3]=q.w;
-            };
-            pack3(input.local_a_position,joint.local_a.position);
-            pack4(input.local_a_orientation,joint.local_a.orientation);
-            pack3(input.local_b_position,joint.local_b.position);
-            pack4(input.local_b_orientation,joint.local_b.orientation);
-            if(body0.motion!=Motion::Dynamic) {
-                pack3(input.actor_a_position,body0.position);
-                pack4(input.actor_a_orientation,body0.orientation);
-                pack3(input.center_a,mass_position(body0));
-            }
-            if(body1.motion!=Motion::Dynamic) {
-                pack3(input.actor_b_position,body1.position);
-                pack4(input.actor_b_orientation,body1.orientation);
-                pack3(input.center_b,mass_position(body1));
-            }
-            input.distance_length=joint.distance_length;
-            input.kind=static_cast<std::uint32_t>(joint.kind);
-            input.source_slot=edge.constraint_id;
-            input.source_generation=joint.generation;
+            // Sc reuses the authored source admitted before PCM witnesses.
+            const GpuDyJointInput input=pack_gpu_dy_joint_input(edge_id);
             if(gpu_dy_joint_inputs_.size()>=std::numeric_limits<std::uint32_t>::max())
                 throw std::overflow_error("Native GPU joint admission count overflow");
             const auto source_index=static_cast<std::uint32_t>(gpu_dy_joint_inputs_.size());
