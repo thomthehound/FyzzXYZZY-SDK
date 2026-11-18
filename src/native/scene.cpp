@@ -4316,8 +4316,8 @@ void Scene::update_contacts(bool defer_device_points,float inverse_step) {
     const bool gpu_results_pending=
         source_gpu_pcm && !gpu_pcm_pairs_.empty();
     const bool gu_only_device_epoch=!gpu_results_pending &&
+        gpu_dy_device_admission_enabled_ && gpu_dy_active() &&
         gpu_broadphase_ && gpu_broadphase_->has_gpu_pcm_box() &&
-        gpu_broadphase_->has_gpu_dy_distance() &&
         (!previous_pairs_.empty() || !manifolds_.empty());
     const bool source_device_gu_history=gpu_broadphase_ &&
         gpu_broadphase_->has_gpu_dy_distance() &&
@@ -4415,7 +4415,8 @@ void Scene::update_contacts(bool defer_device_points,float inverse_step) {
        (source_gpu_pcm && gpu_pcm_pairs_.empty()))
         gpu_broadphase_->enqueue_gpu_pcm_box_contacts(
             gpu_pcm_pairs_,gpu_pcm_results_,
-            gpu_broadphase_->has_gpu_dy_distance()
+            gpu_broadphase_->has_gpu_dy_distance() &&
+                (gpu_results_pending || gu_only_device_epoch)
                 ?static_cast<std::uint32_t>(island_edges_.size()):0u,
             defer_device_points);
     validate_pcm_history(false);
@@ -9178,8 +9179,9 @@ void Scene::publish_cpu_gu_touch_history(
     // when the already prepared Sc task groups need no device admission.
     if(gpu_broadphase_ && gpu_broadphase_->has_gpu_dy_distance() &&
        gpu_broadphase_->has_gpu_pcm_box() &&
-       (!gpu_pcm_pairs_.empty() || !gpu_dy_gu_touches_.empty() ||
-        !previous_manifolds.empty())) {
+       (!gpu_pcm_pairs_.empty() ||
+        (gpu_dy_device_admission_enabled_ && gpu_dy_active() &&
+         (!gpu_dy_gu_touches_.empty() || !previous_manifolds.empty())))) {
         // Sc publishes live Gu touch bits while building the contact
         // manifold. Only retired touches still require edge lookup here.
         for(const Pair pair:lost_pairs) {
