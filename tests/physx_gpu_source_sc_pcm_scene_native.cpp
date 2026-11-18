@@ -1867,7 +1867,8 @@ void verify_device_sc_dy_indirect_api(
                 bodies.size()*9u*sizeof(float) &&
             producer->dy_launch_stats().device_inertia_generated_bytes==0u &&
             producer->dy_launch_stats().source_descriptor_upload_bytes==0u &&
-            producer->dy_upload_span_count()==2u,
+            producer->dy_upload_span_count()==
+                    producer->dy_launch_stats().authored_input_spans,
         "Source Sc task admission retained a host numerical task upload");
     producer->finish_gpu_dy_distance();
     require(tasks[0].error==0u && tasks[1].error==0u &&
@@ -2081,7 +2082,8 @@ void verify_device_sc_dy_task_admission(
     require(tasks[0].error==0u && poses[0].valid==1u &&
             producer->dy_launch_stats().device_island_indirect_dispatches==1u &&
             producer->dy_launch_stats().source_descriptor_upload_bytes==0u &&
-            producer->dy_upload_span_count()==2u &&
+            producer->dy_upload_span_count()==
+                    producer->dy_launch_stats().authored_input_spans &&
             std::fabs(poses[0].position[0]-
                       (2.f+0.5f*seconds))<0.002f,
         "Dy did not indirectly execute the resident Sc task");
@@ -4226,10 +4228,12 @@ void verify_gpu_coupled_solver(
         saw_device_pcm_contact_rows |= device_rows>0u;
         saved_prep_bytes+=prep_saving;
         saw_compact_prep|=prep_saving>0u;
-        require(producer->dy_upload_span_count()==
-                    1u+schedule.device_island_indirect_dispatches &&
+        require(schedule.device_upload_batches==1u &&
+                producer->dy_upload_span_count()==
+                    producer->dy_launch_stats().authored_input_spans &&
+                schedule.authored_input_bytes<schedule.input_window_bytes &&
                 producer->dy_cpu_gu_geometry_bytes()==0u,
-            "PCM-only Dy source stage fragmented its HtoD upload");
+            "PCM-only Dy transferred device-owned numerical scratch");
         require(producer->dy_friction_prepared_rows()>0u &&
                 producer->dy_friction_anchor_upload_bytes()==0u,
             "Resident PCM friction anchors were retransferred to GPU Dy");
@@ -4527,7 +4531,8 @@ void verify_cpu_gu_gpu_dy_solver(
             "Source GPU Dy legacy Gu touch differs from CPU");
         require(producer->dy_pcm_device_contact_rows()==0u &&
                 producer->dy_pcm_contact_upload_bytes_saved()==0u &&
-                producer->dy_upload_span_count()==1u &&
+                producer->dy_upload_span_count()==
+                    producer->dy_launch_stats().authored_input_spans &&
                 producer->dy_cpu_gu_geometry_bytes()>0u &&
                 producer->dy_cpu_gu_geometry_bytes()%sizeof(
                     native::GpuDyGuContactInput)==0u,
@@ -5275,7 +5280,7 @@ void verify_mixed_gu_pcm_gpu_dy_solver(
                     producer->dy_cpu_gu_geometry_bytes()>=
                         sizeof(native::GpuDyGuContactInput) &&
                     producer->dy_upload_span_count()==
-                        (device_admission?2u:1u) &&
+                    producer->dy_launch_stats().authored_input_spans &&
                     producer->dy_launch_stats().device_island_indirect_dispatches==
                         (device_admission?1u:0u) &&
                     (device_admission
@@ -6644,7 +6649,7 @@ void verify_gpu_free_integration(
         require(producer->dy_distance_dispatch_count()==frame+1u &&
                 producer->dy_gpu_integrated_body_count()==actual.size() &&
                 producer->dy_upload_span_count()==
-                    1u+producer->dy_launch_stats().device_island_indirect_dispatches,
+                    producer->dy_launch_stats().authored_input_spans,
                 "GPU Dy did not integrate every active body in one upload");
         const auto resident=producer->dy_resident_pose_count();
         const auto metadata=producer->dy_launch_stats();
@@ -6972,8 +6977,10 @@ void verify_gpu_wide_island_solver(
                         sizeof(std::uint32_t),
                 "Source Sc did not materialize Dy descriptors on the device");
         require(schedule.device_upload_batches==1u &&
-                producer->dy_upload_span_count()==1u &&
-                producer->dy_gpu_integrated_body_count()==actual.bodies.size() &&
+                producer->dy_upload_span_count()==
+                    producer->dy_launch_stats().authored_input_spans &&
+                schedule.authored_input_bytes<schedule.input_window_bytes &&
+                 producer->dy_gpu_integrated_body_count()==actual.bodies.size() &&
                 producer->dy_pcm_device_contact_rows()>=actual.bodies.size() &&
                 producer->dy_cpu_gu_geometry_bytes()==0u,
                 "Wide island lost GPU contact preparation or body integration");

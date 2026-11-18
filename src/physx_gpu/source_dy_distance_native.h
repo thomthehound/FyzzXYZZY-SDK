@@ -132,6 +132,9 @@ struct SourceDyLaunchStats {
     std::size_t actor_local_upload_bytes=0u;
     std::size_t actor_local_upload_spans=0u;
     std::size_t device_upload_batches=0u;
+    std::size_t authored_input_bytes=0u;
+    std::size_t input_window_bytes=0u;
+    std::size_t authored_input_spans=0u;
     std::size_t reused_actor_local_poses=0u;
     std::size_t resident_velocity_reuses=0u;
     std::size_t prepared_velocity_updated_bodies=0u;
@@ -1308,18 +1311,8 @@ public:
         // descriptors, colors, cursors, and body partition state. None
         // of those scratch arrays has a host source in a device-owned
         // island epoch. Skip their entire contiguous upload window.
-        const auto device_skip_begin=device_admission
-            ?offsets[15]+32u:0u;
-        const auto device_skip_end=device_admission
-            ?device_skip_begin+descriptor_capacity*24u+bodies.size()*12u:0u;
-        if(device_admission &&
-           (device_skip_begin<upload_begin ||
-            device_skip_end<device_skip_begin ||
-            device_skip_end>input_end))
-            throw std::out_of_range(
-                "Source Sc numerical scratch upload window is invalid");
-        const std::size_t uploaded_bytes=input_end-upload_begin-
-            (device_admission?device_skip_end-device_skip_begin:0u);
+        std::size_t uploaded_bytes=0u;
+        last_schedule_.input_window_bytes=input_end-upload_begin;
         // Adjacent Sc constraint slot edits share one DMA into the
         // resident Dy allocation, not the transient solver-row upload.
         joint_source_uploads_.clear();
@@ -1535,24 +1528,88 @@ public:
         const auto previous_spans=stream_.submission_stats().upload_spans;
         const auto previous_batches=stream_.submission_stats().upload_batches;
         auto& uploads=stream_.upload_scratch();
+        // CPU-authored spans share one transfer batch. Device-written
+        // rows, partition scratch and task records are never re-uploaded.
+        std::array<std::pair<std::size_t,std::size_t>,count+4u> ranges{};
+        std::size_t range_count=0u;
+        const auto append_range=[&](std::size_t offset,std::size_t bytes) {
+            if(!bytes)return;
+            if(offset<upload_begin || offset>input_end ||
+               bytes>input_end-offset || range_count>=ranges.size())
+                throw std::logic_error(
+                    "Source Dy authored upload exceeds its input allocation");
+            ranges[range_count++]={offset,offset+bytes};
+        };
+        const auto device_owned=[&](std::size_t i) {
+            return i==6u || i==7u || i==15u ||
+                (i==0u && device_initial_bodies) ||
+                ((i==2u || i==3u) && device_partitions) ||
+                ((i==4u || i==5u) && device_admission) ||
+                (i==16u && device_generated_inertia);
+        };
+        for(std::size_t i=0u;i<count;++i) {
+            if(device_owned(i) || !bytes[i])continue;
+            append_range(offsets[i],bytes[i]);
+        }
+        if(device_partitions) {
+            const auto n=descriptor_capacity;
+            const std::size_t header_bytes=source_descriptors
+                ?(device_admission?32u:24u):20u;
+            append_range(offsets[15],header_bytes);
+            if(source_descriptors) {
+                if(n && !device_admission)
+                    append_range(offsets[15]+header_bytes+n*16u,
+                                 n*sizeof(std::uint32_t));
+                const auto table=offsets[15]+header_bytes+n*24u+
+                    bodies.size()*12u;
+                append_range(table,sizeof(std::uint32_t)+
+                    source_descriptor_full_.size()*
+                        sizeof(native::GpuDyDistanceDescriptor));
+            }else if(n)
+                append_range(offsets[15]+20u,
+                             n*sizeof(native::GpuDyDistanceDescriptor));
+        }
+        std::sort(ranges.begin(),ranges.begin()+range_count);
+        const auto crosses_device_data=[&](std::size_t first,
+                                            std::size_t last) {
+            for(std::size_t i=0u;i<count;++i) {
+                if(!device_owned(i) || !bytes[i] ||
+                   offsets[i]>=input_end)continue;
+                const auto end=std::min(input_end,offsets[i]+bytes[i]);
+                if(offsets[i]<last && first<end)return true;
+            }
+            return false;
+        };
         uploads.reserve(joint_source_uploads_.size()+
-                        actor_local_uploads_.size()+
-                        (device_admission?2u:1u));
+                        actor_local_uploads_.size()+range_count);
         uploads.insert(uploads.end(),joint_source_uploads_.begin(),
                        joint_source_uploads_.end());
         uploads.insert(uploads.end(),actor_local_uploads_.begin(),
                        actor_local_uploads_.end());
-        if(device_admission) {
-            // The device-generated scratch window has no host input.
-            uploads.push_back({
-                address+upload_begin,host_.data()+upload_begin,
-                device_skip_begin-upload_begin});
-            uploads.push_back({
-                address+device_skip_end,host_.data()+device_skip_end,
-                input_end-device_skip_end});
-        }else uploads.push_back({
-            address+upload_begin,host_.data()+upload_begin,uploaded_bytes});
-        // These disjoint source spans share one ordered DMA submission.
+        const auto source_begin=uploads.size();
+        const auto push_source=[&](std::size_t first,std::size_t last) {
+            uploads.push_back({address+first,host_.data()+first,last-first});
+            uploaded_bytes+=last-first;
+        };
+        if(range_count) {
+            auto [first,last]=ranges[0];
+            for(std::size_t i=1u;i<range_count;++i) {
+                const auto [begin,end]=ranges[i];
+                if(begin<last)
+                    throw std::logic_error(
+                        "Source Dy authored upload regions overlap");
+                if(begin-last<=127u && !crosses_device_data(last,begin))
+                    last=end;
+                else {
+                    push_source(first,last);
+                    first=begin;
+                    last=end;
+                }
+            }
+            push_source(first,last);
+        }
+        last_schedule_.authored_input_bytes=uploaded_bytes;
+        last_schedule_.authored_input_spans=uploads.size()-source_begin;
         stream_.queue_uploads(uploads);
         last_schedule_.device_upload_batches=
             stream_.submission_stats().upload_batches-previous_batches;

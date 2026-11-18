@@ -81,6 +81,8 @@ not a blanket requirement that all GPU data be host mapped.
   GPU-preferred storage. Dy packs authored integration inputs separately
   from its per-solver-body world inertia matrices; native device-owned
   inertia is computed into GPU work storage without host tensor uploads.
+  The Dy upload contains only authored input spans, preserving the one-batch
+  source queue without transferring device-generated numerical scratch.
   Dependent passes exchange device addresses or offsets; they do not
   materialize host mirrors between passes.
 - **Public output:** small completion/delta records can occupy CPU-readable
