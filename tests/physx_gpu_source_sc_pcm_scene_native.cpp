@@ -4458,6 +4458,8 @@ void verify_cpu_gu_gpu_dy_solver(
     const auto another_gpu=gpu.add_dynamic_box(
         {0.5f,0.5f,0.5f},{8.f,0.84f,0.f},1.f);
     gpu.set_gpu_dy_device_admission_enabled(true);
+    std::uint32_t cpu_contact_edge=0xffffffffu;
+    std::uint32_t gpu_contact_edge=0xffffffffu;
     for(std::uint32_t frame=0u;frame<4u;++frame) {
         if(frame==2u) {
             cpu.set_position(another_cpu,{8.f,3.f,0.f});
@@ -4488,11 +4490,23 @@ void verify_cpu_gu_gpu_dy_solver(
         test::compound_compare_state(
             gpu.body_state(another_gpu),cpu.body_state(another_cpu),0.003f,
             "CPU Gu device island admission changed new contact motion");
-        require(gpu.contact_edge_index({another_fixed_gpu,another_gpu})!=
-                    0xffffffffu &&
-                cpu.contact_edge_index({another_fixed_cpu,another_cpu})!=
-                    0xffffffffu,
-            "CPU Gu-only numerical admission lost stable contact identity");
+        const auto current_cpu=cpu.contact_edge_index(
+            {another_fixed_cpu,another_cpu});
+        const auto current_gpu=gpu.contact_edge_index(
+            {another_fixed_gpu,another_gpu});
+        if(frame==0u) {
+            cpu_contact_edge=current_cpu;
+            gpu_contact_edge=current_gpu;
+            require(cpu_contact_edge!=0xffffffffu &&
+                    gpu_contact_edge!=0xffffffffu,
+                "CPU Gu-only numerical admission omitted live contact identity");
+        }
+        require(frame<2u
+                    ?current_cpu==cpu_contact_edge &&
+                     current_gpu==gpu_contact_edge
+                    :current_cpu==0xffffffffu &&
+                     current_gpu==0xffffffffu,
+            "CPU Gu-only numerical admission did not preserve or retire contact identity");
     }
 }
 
