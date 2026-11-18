@@ -55,6 +55,7 @@ struct SourceDyPackedIntegrationNative {
     std::uint32_t counted_interactions=0u;
 };
 static_assert(sizeof(SourceDyPackedIntegrationNative)==40u &&
+              offsetof(SourceDyPackedIntegrationNative,seconds)==4u &&
               offsetof(SourceDyPackedIntegrationNative,pose_index)==20u &&
               offsetof(SourceDyPackedIntegrationNative,actor_local_offset)==24u &&
               offsetof(SourceDyPackedIntegrationNative,velocity_offset)==28u &&
