@@ -216,10 +216,13 @@ public:
             actor_local_valid_[id]=0u;
             actor_velocity_valid_[id]=0u;
             actor_pose_valid_[id]=0u;
+            prewitness_actor_changed_[id]=0u;
         }
     }
     void invalidate_after_rollback() noexcept {
         pending_solve_.reset();
+        std::fill(prewitness_actor_changed_.begin(),
+                  prewitness_actor_changed_.end(),0u);
         std::fill(actor_local_valid_.begin(),actor_local_valid_.end(),0u);
         std::fill(actor_velocity_valid_.begin(),actor_velocity_valid_.end(),0u);
         std::fill(actor_pose_valid_.begin(),actor_pose_valid_.end(),0u);
@@ -302,13 +305,19 @@ public:
         stream_.queue_uploads(uploads);
     }
 
+    void discard_unconsumed_actor_sources() noexcept {
+        for(const auto id:prewitness_actor_slots_)
+            prewitness_actor_changed_[id]=0u;
+        prewitness_actor_slots_.clear();
+        prewitness_actor_local_upload_bytes_=0u;
+        prewitness_actor_local_upload_spans_=0u;
+    }
+
     void enqueue_actor_sources(
         std::span<const native::GpuDyBodyIntegrationInput> inputs) {
         if(pending_solve_)
             throw std::logic_error("Dy actor source overlaps a numerical epoch");
-        prewitness_actor_local_upload_bytes_=0u;
-        prewitness_actor_local_upload_spans_=0u;
-        prewitness_actor_slots_.clear();
+        discard_unconsumed_actor_sources();
         if(inputs.empty())return;
         std::size_t needed_actor_slots=0u;
         for(const auto& input:inputs) {
@@ -345,24 +354,25 @@ public:
             std::memcpy(local.world_orientation,input.actor_orientation,
                         sizeof(local.world_orientation));
             auto& resident=actor_local_host_[id];
-            bool dirty=!actor_local_valid_[id];
-            if(dirty || std::memcmp(&resident,&local,metadata_bytes)!=0) {
+            const bool metadata_changed=!actor_local_valid_[id] ||
+                std::memcmp(&resident,&local,metadata_bytes)!=0;
+            const bool pose_changed=!actor_pose_valid_[id] ||
+                std::memcmp(resident.world_position,local.world_position,
+                            pose_bytes)!=0;
+            bool dirty=metadata_changed || pose_changed;
+            if(metadata_changed)
                 std::memcpy(&resident,&local,metadata_bytes);
-                dirty=true;
-            }
-            if(!actor_pose_valid_[id] ||
-               std::memcmp(resident.world_position,local.world_position,
-                           pose_bytes)!=0) {
+            if(pose_changed)
                 std::memcpy(resident.world_position,local.world_position,
                             pose_bytes);
-                dirty=true;
-            }
             if(dirty || std::memcmp(&resident.wake_counter,
                                     &local.wake_counter,sleep_bytes)!=0) {
                 std::memcpy(&resident.wake_counter,
                             &local.wake_counter,sleep_bytes);
                 dirty=true;
             }
+            prewitness_actor_changed_[id]=
+                (metadata_changed?1u:0u)|(pose_changed?2u:0u);
             if(dirty)prewitness_actor_slots_.push_back(id);
         }
         std::sort(prewitness_actor_slots_.begin(),
@@ -961,7 +971,7 @@ public:
                     std::memcpy(&actor_local_host_[id],&local,metadata_bytes);
                     actor_local_valid_[id]=0u;
                     pending_actor_locals_.push_back(id);
-                }else
+                }else if((prewitness_actor_changed_[id]&1u)==0u)
                     ++last_schedule_.reused_actor_local_poses;
                 // Authored and restored poses re-seed only their actor slot.
                 // Unchanged integrated poses remain the next device input.
@@ -973,8 +983,10 @@ public:
                         std::memcmp(actor_local_host_[id].world_orientation,
                             input.actor_orientation,
                             sizeof(local.world_orientation))==0;
-                    if(reused)++last_resident_pose_count_;
-                    else {
+                    if(reused) {
+                        if((prewitness_actor_changed_[id]&2u)==0u)
+                            ++last_resident_pose_count_;
+                    }else {
                         std::memcpy(actor_local_host_[id].world_position,
                                     input.actor_position,
                                     sizeof(local.world_position));
@@ -1727,6 +1739,8 @@ public:
             address+upload_begin,host_.data()+upload_begin,uploaded_bytes});
         // These disjoint source spans share one ordered DMA submission.
         stream_.queue_uploads(uploads);
+        for(const auto id:prewitness_actor_slots_)
+            prewitness_actor_changed_[id]=0u;
         prewitness_joint_source_slots_.clear();
         prewitness_joint_source_upload_bytes_=0u;
         prewitness_joint_source_upload_spans_=0u;
@@ -2411,6 +2425,7 @@ private:
             actor_local_valid_.resize(capacity,0u);
             actor_velocity_valid_.resize(capacity,0u);
             actor_pose_valid_.resize(capacity,0u);
+            prewitness_actor_changed_.resize(capacity,0u);
             actor_locals_.allocateCopyPrefixAsync(
                 capacity*sizeof(SourceDyActorLocalNative)+127u,
                 actor_local_capacity_*sizeof(SourceDyActorLocalNative),
@@ -2876,6 +2891,7 @@ private:
     std::vector<SourceDyHostPoseNative> host_poses_;
     std::vector<SourceDyActorLocalNative> actor_local_host_;
     std::vector<std::uint8_t> actor_local_valid_,actor_velocity_valid_,actor_pose_valid_;
+    std::vector<std::uint8_t> prewitness_actor_changed_;
     std::vector<float> prepared_velocity_components_,force_mod_components_;
     std::vector<std::uint32_t> pending_actor_locals_;
     std::vector<SourceSapUpload> actor_local_uploads_;

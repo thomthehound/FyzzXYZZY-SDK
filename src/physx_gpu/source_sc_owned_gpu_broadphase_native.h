@@ -648,6 +648,7 @@ public:
             throw std::logic_error(
                 "Source Sc frame cannot commit before Dy numerical writeback");
         if(pcm_)pcm_->commit_step();
+        if(dy_distance_)dy_distance_->discard_unconsumed_actor_sources();
 #if defined(FYZZXYZZY_PROFILE_GPU)
         const auto heap=manager_->getDeviceHeapStats();
         FYZZ_PROFILE_COUNTER("heap.device_reserved_bytes",manager_->getDeviceMemorySize());
