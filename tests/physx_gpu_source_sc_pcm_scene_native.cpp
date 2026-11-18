@@ -4849,10 +4849,12 @@ void verify_pcm_friction_normal_revalidation(
     gpu.set_pose(gb,side_contact,{0.f,0.f,0.f,1.f});
     cpu.step(1.f/120.f);
     gpu.step(1.f/120.f);
+    require(gpu.contacts().size()==1u &&
+            !gpu.solved_friction_patches().empty(),
+        "Side-contact PCM friction fixture has no published patch");
     const auto normal=gpu.contacts().front().points.front().normal;
     const auto& friction=gpu.solved_friction_patches().front();
-    require(gpu.contacts().size()==1u &&
-            producer->pcm_header_join_bytes()==2u*sizeof(std::uint32_t) &&
+    require(producer->pcm_header_join_bytes()==2u*sizeof(std::uint32_t) &&
             producer->pcm_deferred_point_bytes()==
                 sizeof(native::GpuPcmBoxResult)-2u*sizeof(std::uint32_t) &&
             native::GpuPcmFrictionAnchorFixture::
