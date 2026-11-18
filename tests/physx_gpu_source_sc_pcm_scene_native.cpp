@@ -4677,6 +4677,7 @@ void verify_plane_pcm_without_finite_pcm(
     // No solver step has run at this point.
     cpu.advance_collision(true);
     gpu.advance_collision(true);
+    native::GpuPcmFrictionAnchorFixture::verify_pcm_contact_arena(gpu);
     const auto box_edge=native::GpuPcmFrictionAnchorFixture::
         contact_manager_edge(gpu,{box_support,g[1]});
     const auto sphere_edge=native::GpuPcmFrictionAnchorFixture::
@@ -5062,6 +5063,8 @@ void verify_mixed_gu_pcm_gpu_dy_solver(
         for(std::uint32_t frame=0;frame<4u;++frame) {
             cpu.step(dt);
             gpu.step(dt);
+            native::GpuPcmFrictionAnchorFixture::
+                verify_pcm_contact_arena(gpu);
             native::GpuPcmFrictionAnchorFixture::
                 verify_pcm_candidate_ownership(gpu);
             native::GpuPcmFrictionAnchorFixture::
