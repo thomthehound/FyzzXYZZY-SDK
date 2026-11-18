@@ -174,9 +174,9 @@ public:
         max_view_=info.max_storage_buffer_range;
         compute::ComputePipelineDesc pipeline{};
         pipeline.shader=std::move(shader);
-        pipeline.storage_buffer_binding_count=7u;
+        pipeline.storage_buffer_binding_count=8u;
         pipeline.storage_buffer_views.assign(
-            7u,compute::StorageBufferViewKind::RawReadWrite);
+            8u,compute::StorageBufferViewKind::RawReadWrite);
         pipeline.push_constant_bytes=128u;
         pipeline_=context_.create_compute_pipeline(pipeline);
 #if defined(FYZZXYZZY_PROFILE_GPU)
@@ -185,9 +185,9 @@ public:
         if(convex_shader) {
             try {
                 pipeline.shader=std::move(*convex_shader);
-                pipeline.storage_buffer_binding_count=8u;
+                pipeline.storage_buffer_binding_count=9u;
                 pipeline.storage_buffer_views.assign(
-                    8u,compute::StorageBufferViewKind::RawReadWrite);
+                    9u,compute::StorageBufferViewKind::RawReadWrite);
                 convex_pipeline_=context_.create_compute_pipeline(pipeline);
 #if defined(FYZZXYZZY_PROFILE_GPU)
                 context_.set_pipeline_profile_label(convex_pipeline_,"dy.convex");
