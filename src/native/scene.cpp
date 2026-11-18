@@ -4313,10 +4313,15 @@ void Scene::update_contacts(bool defer_device_points,float inverse_step) {
         }
         gpu_pcm_results_.resize(gpu_pcm_pairs_.size());
     }
-    const bool source_device_gu_history=source_gpu_pcm &&
-        gpu_broadphase_->has_gpu_dy_distance() && !gpu_pcm_pairs_.empty();
     const bool gpu_results_pending=
         source_gpu_pcm && !gpu_pcm_pairs_.empty();
+    const bool gu_only_device_epoch=!gpu_results_pending &&
+        gpu_broadphase_ && gpu_broadphase_->has_gpu_pcm_box() &&
+        gpu_broadphase_->has_gpu_dy_distance() &&
+        (!previous_pairs_.empty() || !manifolds_.empty());
+    const bool source_device_gu_history=gpu_broadphase_ &&
+        gpu_broadphase_->has_gpu_dy_distance() &&
+        (gpu_results_pending || gu_only_device_epoch);
     // Legacy Gu after the first GPU witness can run while PCM executes.
     // Reserve those PCM runs in the original Gu arena and publish them
     // after the independent CPU generators have completed.
@@ -4406,7 +4411,8 @@ void Scene::update_contacts(bool defer_device_points,float inverse_step) {
     validate_pcm_history(true);
     // Only selected normals cross early; the validated source history
     // remains available to Sc when the PCM header joins later.
-    if(gpu_results_pending || (source_gpu_pcm && gpu_pcm_pairs_.empty()))
+    if(gpu_results_pending || gu_only_device_epoch ||
+       (source_gpu_pcm && gpu_pcm_pairs_.empty()))
         gpu_broadphase_->enqueue_gpu_pcm_box_contacts(
             gpu_pcm_pairs_,gpu_pcm_results_,
             gpu_broadphase_->has_gpu_dy_distance()
@@ -7570,8 +7576,8 @@ void Scene::partition_constraints() {
     const bool gpu_integration=gpu_dy_active();
     const bool device_sc_grouping=gpu_integration &&
         gpu_dy_device_admission_enabled_ &&
-        std::any_of(gpu_pcm_pairs_.begin(),gpu_pcm_pairs_.end(),
-            [](const GpuPcmBoxPair& pair){return !pair.host_generated;});
+        gpu_broadphase_->has_gpu_pcm_box() &&
+        (!gpu_pcm_pairs_.empty() || !previous_pairs_.empty());
     // Device Sc expands compact grouped source ranges into distinct
     // accurate-island numerical tasks using its resident touch graph.
     std::size_t joint_task_begin=0;
@@ -9172,8 +9178,8 @@ void Scene::publish_cpu_gu_touch_history(
     // when the already prepared Sc task groups need no device admission.
     if(gpu_broadphase_ && gpu_broadphase_->has_gpu_dy_distance() &&
        gpu_broadphase_->has_gpu_pcm_box() &&
-       (pcm_box_box_enabled_ || pcm_plane_box_enabled_) &&
-       !gpu_pcm_pairs_.empty()) {
+       (!gpu_pcm_pairs_.empty() || !gpu_dy_gu_touches_.empty() ||
+        !previous_manifolds.empty())) {
         // Sc publishes live Gu touch bits while building the contact
         // manifold. Only retired touches still require edge lookup here.
         for(const Pair pair:lost_pairs) {
@@ -9428,11 +9434,11 @@ void Scene::solve_gpu_distance_constraints(float seconds) {
         previous_bodies=task.solver_body_end;
         previous_descriptors=task.constraint_end;
     }
-    const bool has_gpu_pcm=std::any_of(
-        gpu_pcm_pairs_.begin(),gpu_pcm_pairs_.end(),
-        [](const GpuPcmBoxPair& pair){return !pair.host_generated;});
+    const bool has_device_contact_sources=
+        gpu_broadphase_->has_gpu_pcm_box() &&
+        (!gpu_pcm_pairs_.empty() || !previous_pairs_.empty());
     const bool device_admission=gpu_dy_device_admission_enabled_ &&
-        has_gpu_pcm && compact_tasks &&
+        has_device_contact_sources && compact_tasks &&
         gpu_dy_responding_island_count_!=0u &&
         (gpu_dy_early_islands_ ||
          gpu_dy_responding_island_count_>responding_tasks) &&
