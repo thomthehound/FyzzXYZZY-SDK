@@ -4461,6 +4461,9 @@ void verify_cpu_gu_gpu_dy_solver(
     for(std::uint32_t frame=0u;frame<2u;++frame) {
         cpu.step(dt);
         gpu.step(dt);
+        if(frame==0u)
+            native::GpuPcmFrictionAnchorFixture::
+                verify_pre_witness_device_admission(gpu);
         const auto stats=producer->dy_launch_stats();
         require(stats.device_island_indirect_dispatches==1u &&
                 stats.device_admitted_tasks==2u &&
@@ -5442,6 +5445,9 @@ void verify_joint_only_device_admission(
         }
         cpu.step(dt);
         gpu.step(dt);
+        if(frame==0u)
+            native::GpuPcmFrictionAnchorFixture::
+                verify_pre_witness_device_admission(gpu);
         const auto admitted=frame<2u?3u:2u;
         const auto stats=producer->dy_launch_stats();
         const auto tokens=producer->gpu_dy_admitted_response_tokens();
