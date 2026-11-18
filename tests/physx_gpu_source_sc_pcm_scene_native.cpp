@@ -5471,31 +5471,33 @@ void verify_joint_only_device_admission(
             b[i*2u],b[i*2u+1u],1.5f);
     }
     constexpr float dt=1.f/120.f;
-    for(std::uint32_t frame=0u;frame<4u;++frame) {
-        if(frame==2u) {
-            cpu.retire_constraint(joints_cpu[1]);
-            gpu.retire_constraint(joints_gpu[1]);
+    for(std::uint32_t frame=0u;frame<5u;++frame) {
+        if(frame==2u || frame==4u) {
+            const auto index=frame==2u?1u:2u;
+            cpu.retire_constraint(joints_cpu[index]);
+            gpu.retire_constraint(joints_gpu[index]);
         }
         cpu.step(dt);
         gpu.step(dt);
         if(frame==0u)
             native::GpuPcmFrictionAnchorFixture::
                 verify_pre_witness_device_admission(gpu);
-        const auto admitted=frame<2u?3u:2u;
+        const auto responding=frame<2u?3u:frame<4u?2u:1u;
+        const bool device_graph=responding>1u;
         const auto stats=producer->dy_launch_stats();
         const auto tokens=producer->gpu_dy_admitted_response_tokens();
         require(cpu.contacts().empty() && gpu.contacts().empty() &&
                 producer->pcm_header_join_bytes()==0u &&
                 producer->dy_pcm_device_contact_rows()==0u &&
-                stats.device_island_indirect_dispatches==1u &&
-                stats.device_admitted_tasks==admitted &&
-                stats.device_admitted_descriptors==admitted &&
-                tokens.size()==admitted &&
+                stats.device_island_indirect_dispatches==(device_graph?1u:0u) &&
+                stats.device_admitted_tasks==(device_graph?responding:0u) &&
+                stats.device_admitted_descriptors==(device_graph?responding:0u) &&
+                tokens.size()==(device_graph?responding:0u) &&
                 std::all_of(tokens.begin(),tokens.end(),
                     [](std::uint32_t token) {
                         return (token&0xc0000000u)==0x80000000u;
                     }),
-            "Joint-only Sc islands did not own device numerical admission");
+            "Joint-only Sc task ownership disagreed with numerical work");
         for(std::size_t i=0u;i<a.size();++i)
             test::compound_compare_state(
                 gpu.body_state(b[i]),cpu.body_state(a[i]),0.003f,
