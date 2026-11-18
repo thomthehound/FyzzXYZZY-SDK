@@ -220,7 +220,10 @@ Sc accurate island admission writes these counts beside its source-ordered
 response tokens. CPU-generated Gu and GPU-generated PCM contacts use the
 same device-admitted response stream for selected compact numerical tasks.
 When no PCM pair is active, the existing Gu touch journal opens the resident
-EdgeIndex epoch without allocating a parallel contact registry. Dy rejects missing or mismatched PCM and CPU Gu counts before
+EdgeIndex epoch without allocating a parallel contact registry. Joint-only
+islands use the same typed device response path without creating any PCM
+contact history or running narrowphase; the source joint rows remain the
+authoritative solver inputs. Dy rejects missing or mismatched PCM and CPU Gu counts before
 constructing solver rows, with no extra dispatch or host join.
 Legacy CPU Gu responses keep their host-authored extents. For
 device-admitted single-patch PCM managers,
