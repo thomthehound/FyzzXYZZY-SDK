@@ -5415,7 +5415,7 @@ void verify_joint_only_device_admission(
     gpu.set_gpu_broadphase(std::move(owner));
     gpu.set_gpu_dy_device_admission_enabled(true);
     std::array<BodyId,6> a{},b{};
-    std::array<std::uint32_t,3> joints_cpu{},joints_gpu{};
+    std::array<ConstraintId,3> joints_cpu{},joints_gpu{};
     for(std::size_t i=0u;i<3u;++i) {
         const Vec3 p{float(i)*10.f,3.f,0.f};
         const Vec3 q{p.x+2.f,3.f,0.f};
