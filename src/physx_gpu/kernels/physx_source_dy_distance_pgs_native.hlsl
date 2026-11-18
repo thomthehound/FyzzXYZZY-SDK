@@ -952,13 +952,13 @@ bool sourceDyPrepareJointGeometry(uint4 desc,uint endError) {
     const uint source=arena.Load(first+60u);
     if(arena.Load(source+144u)!=arena.Load(first+48u) ||
        arena.Load(source+148u)!=arena.Load(first+52u)) {
-        sourceDyTaskErrorOr(endError,8192u);
+        sourceDyTaskErrorOr(endError,8192u|(1u<<25u));
         return false;
     }
     const uint kind=arena.Load(source+140u);
     const uint count=kind==0u?1u:kind==2u?3u:kind==1u?6u:5u;
     if(kind>4u || desc.w!=count) {
-        sourceDyTaskErrorOr(endError,8192u);
+        sourceDyTaskErrorOr(endError,8192u|(2u<<25u));
         return false;
     }
     const float3 localA=asfloat(arena.Load3(source));
@@ -971,7 +971,7 @@ bool sourceDyPrepareJointGeometry(uint4 desc,uint endError) {
     float4 qA,qB;
     if(!sourceDyJointActorFrame(desc.y,source+56u,source+112u,pA,qA,cA) ||
        !sourceDyJointActorFrame(desc.z,source+84u,source+124u,pB,qB,cB)) {
-        sourceDyTaskErrorOr(endError,8192u);
+        sourceDyTaskErrorOr(endError,8192u|(3u<<25u));
         return false;
     }
      const float3 wA=pA+sourceRigidRotate(qA,localA);
@@ -1001,7 +1001,7 @@ bool sourceDyPrepareJointGeometry(uint4 desc,uint endError) {
     const uint dtInput=mass0>0.0f?inputA:inputB;
     const float dt=asfloat(arena.Load(dtInput+40u));
     if(!(dt>0.0f) || !isfinite(dt)) {
-        sourceDyTaskErrorOr(endError,8192u);
+        sourceDyTaskErrorOr(endError,8192u|(4u<<25u));
         return false;
     }
     const float invDt=1.0f/dt;
@@ -1015,7 +1015,7 @@ bool sourceDyPrepareJointGeometry(uint4 desc,uint endError) {
             precise float3 offset=((cA+rA)-cB)-rB;
             const float distance=sqrt(sourceDyDot3(offset,offset));
             if(!isfinite(distance)) {
-                sourceDyTaskErrorOr(endError,8192u);
+                sourceDyTaskErrorOr(endError,8192u|(5u<<25u));
                 return false;
             }
             axis=distance<1.192092896e-07f
@@ -1059,7 +1059,7 @@ bool sourceDyPrepareJointGeometry(uint4 desc,uint endError) {
         const float response=(mass0+mass1)*sourceDyDot3(axis,axis)+
             sourceDyDot3(ja,ja)+sourceDyDot3(jb,jb);
         if(!(response>0.0f) || !isfinite(response)) {
-            sourceDyTaskErrorOr(endError,8192u);
+            sourceDyTaskErrorOr(endError,8192u|(6u<<25u));
             return false;
         }
         invResponse[i]=1.0f/response;
@@ -1074,7 +1074,7 @@ bool sourceDyPrepareJointGeometry(uint4 desc,uint endError) {
         if(!all(isfinite(axis)) || !all(isfinite(ja)) ||
            !all(isfinite(jb)) || !isfinite(constant) ||
            !isfinite(unbiased)) {
-            sourceDyTaskErrorOr(endError,8192u);
+            sourceDyTaskErrorOr(endError,8192u|(7u<<25u));
             return false;
         }
         const uint row=first+i*64u;
@@ -1146,7 +1146,7 @@ void prepareJointRows(uint4 desc,uint lane,uint endError) {
         const float unbiased=multiplier*speed;
         if(!isfinite(constant) || !isfinite(unbiased) ||
            !all(isfinite(ja)) || !all(isfinite(jb))) {
-            sourceDyTaskErrorOr(endError,8192u);
+            sourceDyTaskErrorOr(endError,8192u|(8u<<25u));
             continue;
         }
         arena.Store3(row+12u,asuint(ja));
