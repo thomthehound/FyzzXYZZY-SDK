@@ -139,6 +139,7 @@ struct SourceDyLaunchStats {
     std::size_t device_joint_input_rows=0u;
     std::size_t device_joint_geometry_count=0u;
     std::size_t device_joint_metadata_upload_bytes=0u;
+    std::size_t resident_joint_source_bytes=0u;
     std::size_t device_joint_metadata_upload_spans=0u;
     std::size_t device_joint_metadata_reuses=0u;
     std::size_t device_preintegrated_bodies=0u;
@@ -449,6 +450,8 @@ public:
                    sizeof(native::GpuDyJointInput) ||
            next_joint_capacity>max_view_/sizeof(native::GpuDyJointInput))
             throw std::overflow_error("Native Dy resident joints exceed device view");
+        last_schedule_.resident_joint_source_bytes=
+            next_joint_capacity*sizeof(native::GpuDyJointInput);
         joint_source_host_.resize(next_joint_capacity);
         joint_source_valid_.resize(next_joint_capacity,0u);
         joint_source_dirty_.clear();
