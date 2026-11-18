@@ -4862,20 +4862,23 @@ void verify_pcm_friction_normal_revalidation(
         "Side-contact PCM friction fixture has no published patch");
     const auto normal=gpu.contacts().front().points.front().normal;
     const auto& friction=gpu.solved_friction_patches().front();
-    require(producer->pcm_header_join_bytes()==2u*sizeof(std::uint32_t) &&
-            producer->pcm_deferred_point_bytes()==
-                sizeof(native::GpuPcmBoxResult)-2u*sizeof(std::uint32_t) &&
+    require(native::GpuPcmFrictionAnchorFixture::
+                single_eligible_history_on_device(gpu) &&
             native::GpuPcmFrictionAnchorFixture::
                 had_early_friction_history(gpu) &&
             native::GpuPcmFrictionAnchorFixture::
-                had_compatible_friction_history(gpu) &&
-            native::GpuPcmFrictionAnchorFixture::
-                single_eligible_history_on_device(gpu) &&
-            normal.x*previous_normal.x+
+                had_compatible_friction_history(gpu),
+        "Side-contact PCM history has no uniquely eligible cached patch");
+    require(producer->pcm_header_join_bytes()==2u*sizeof(std::uint32_t) &&
+            producer->pcm_deferred_point_bytes()==
+                sizeof(native::GpuPcmBoxResult)-2u*sizeof(std::uint32_t),
+        "Unique cached PCM patch still fetched an early contact normal");
+    require(normal.x*previous_normal.x+
                 normal.y*previous_normal.y+
-                normal.z*previous_normal.z<0.5f &&
-            friction.anchor_count>0u,
-        "Unique compatible PCM friction history required an early normal");
+                normal.z*previous_normal.z<0.5f,
+        "Side-contact PCM did not change the prior normal");
+    require(friction.anchor_count>0u,
+        "PCM did not regenerate a friction anchor after normal change");
     for(std::size_t anchor=0u;anchor<friction.anchor_count;++anchor) {
         const auto& world=friction.anchor_positions[anchor];
         float best=std::numeric_limits<float>::max();
