@@ -6004,6 +6004,7 @@ void verify_host_primitive_pcm_solver(
         std::nullopt,load_native_gpu_pcm_shaders(backend,pcm),std::move(dy));
     auto* producer=owner.get();
     gpu.set_gpu_broadphase(std::move(owner));
+    gpu.set_gpu_dy_device_admission_enabled(true);
     const auto make=[](native::Scene& scene) {
         scene.add_static_floor(0.f);
         const auto box=scene.add_dynamic_box(
@@ -6030,6 +6031,14 @@ void verify_host_primitive_pcm_solver(
         cpu.step(dt);
         gpu.step(dt);
         if(frame==0u) {
+            native::GpuPcmFrictionAnchorFixture::
+                verify_pre_witness_device_admission(gpu);
+            native::GpuPcmFrictionAnchorFixture::
+                verify_device_numerical_response_ownership(gpu);
+            const auto stats=producer->dy_launch_stats();
+            require(stats.device_island_indirect_dispatches==1u &&
+                    stats.device_admitted_descriptors==2u,
+                "Primitive-only contacts fell back to host numerical admission");
             constexpr std::int64_t expected_saving=
                 2*std::int64_t(sizeof(native::GpuDyContactPrepPair))-
                 2*std::int64_t(sizeof(
