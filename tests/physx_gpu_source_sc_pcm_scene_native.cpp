@@ -841,7 +841,8 @@ struct GpuPcmFrictionAnchorFixture {
                 -patch.body1_normal.z};
         }
     }
-    static void invalidate_multiple_friction_materials(Scene& scene,Pair shapes) {
+    static void invalidate_multiple_friction_materials(
+            Scene& scene,Pair shapes,bool only_last=false) {
         const auto edge=scene.contact_edge_index(shapes);
         if(edge==Scene::invalid_edge ||
            edge>=scene.friction_by_edge_.size())
@@ -851,7 +852,7 @@ struct GpuPcmFrictionAnchorFixture {
         if(span.epoch!=scene.friction_cache_epoch_ || span.count!=2u)
             throw std::runtime_error(
                 "Material-mismatch PCM fixture needs two retained patches");
-        for(std::size_t j=0u;j<span.count;++j) {
+        for(std::size_t j=only_last?1u:0u;j<span.count;++j) {
             auto& patch=scene.friction_patches_[span.offset+j];
             patch.broken=false;
             patch.static_friction+=10.f;
@@ -4835,6 +4836,48 @@ void verify_pcm_friction_normal_revalidation(
                 cpu.contact_edge_index({cs,cb})!=0xffffffffu,
             "PCM friction normal change retired the live Sc edge");
     }
+
+    // One compatible retained patch needs no early normal DMA: the
+    // resident numerical pass validates and regenerates its anchors when
+    // the contact normal changes.
+    native::GpuPcmFrictionAnchorFixture::seed_multiple_friction_patches(
+        gpu,{gs,gb});
+    native::GpuPcmFrictionAnchorFixture::invalidate_multiple_friction_materials(
+        gpu,{gs,gb},true);
+    const Vec3 side_contact{0.95f,1.8f,0.f};
+    cpu.set_pose(cb,side_contact,{0.f,0.f,0.f,1.f});
+    gpu.set_pose(gb,side_contact,{0.f,0.f,0.f,1.f});
+    cpu.step(1.f/120.f);
+    gpu.step(1.f/120.f);
+    const auto normal=gpu.contacts().front().points.front().normal;
+    const auto& friction=gpu.solved_friction_patches().front();
+    require(gpu.contacts().size()==1u &&
+            producer->pcm_header_join_bytes()==2u*sizeof(std::uint32_t) &&
+            producer->pcm_deferred_point_bytes()==
+                sizeof(native::GpuPcmBoxResult)-2u*sizeof(std::uint32_t) &&
+            native::GpuPcmFrictionAnchorFixture::
+                had_early_friction_history(gpu) &&
+            native::GpuPcmFrictionAnchorFixture::
+                had_compatible_friction_history(gpu) &&
+            normal.x*previous_normal.x+
+                normal.y*previous_normal.y+
+                normal.z*previous_normal.z<0.5f &&
+            friction.anchor_count>0u,
+        "Unique compatible PCM friction history required an early normal");
+    for(std::size_t anchor=0u;anchor<friction.anchor_count;++anchor) {
+        const auto& world=friction.anchor_positions[anchor];
+        float best=std::numeric_limits<float>::max();
+        for(const auto& point:gpu.contacts()[0].points) {
+            const auto dx=world.x-point.position.x;
+            const auto dy=world.y-point.position.y;
+            const auto dz=world.z-point.position.z;
+            best=std::min(best,dx*dx+dy*dy+dz*dz);
+        }
+        require(best<0.04f,
+            "Device PCM retained an anchor with a mismatched normal");
+    }
+    test::compound_compare_state(gpu.body_state(gb),cpu.body_state(cb),
+        0.05f,"Unique-history device normal validation changed rigid response");
 }
 
 void verify_dy_execution_switch(
