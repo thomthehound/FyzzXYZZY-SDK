@@ -1290,11 +1290,8 @@ public:
             for(std::size_t i=0;i<bodies.size();++i)
                 std::memcpy(host_.data()+offsets[12]+mass_offset+i*4u,
                             &bodies[i].inverse_mass,sizeof(float));
-        // The source GPU kernel constructs all writable Gu contact rows.
-        // One ordered source upload covers every other active input and
-        // stops before the contact-row arena, without scattered HtoD spans.
-        // Retain both the source friction prefix and stable joint slots.
-        // A friction growth moves the joint base and reuploads its records.
+        // Device contact kernels write numerical rows into the arena.
+        // Retained friction and authored joint slots survive frame growth.
         const auto old_joint_base=(
             friction_history_capacity_*64u+127u)&~std::size_t(127u);
         const auto preserved_bytes=friction_history_capacity_==
@@ -1307,10 +1304,8 @@ public:
         friction_history_capacity_=next_history_capacity_;
         joint_source_capacity_=next_joint_capacity;
         const auto address=arena_.getDevicePtr();
-        // Sc supplies the descriptor tokens and Dy computes the raw
-        // descriptors, colors, cursors, and body partition state. None
-        // of those scratch arrays has a host source in a device-owned
-        // island epoch. Skip their entire contiguous upload window.
+        // Descriptor tokens are authored; Dy owns coloring and partition
+        // scratch. Only its authored input ranges cross the host boundary.
         std::size_t uploaded_bytes=0u;
         last_schedule_.input_window_bytes=input_end-upload_begin;
         // Adjacent Sc constraint slot edits share one DMA into the
