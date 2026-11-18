@@ -131,6 +131,8 @@ struct SourceDyLaunchStats {
     std::size_t device_world_motion_bodies=0u;
     std::size_t actor_local_upload_bytes=0u;
     std::size_t actor_local_upload_spans=0u;
+    std::size_t prewitness_actor_local_upload_bytes=0u;
+    std::size_t prewitness_actor_local_upload_spans=0u;
     std::size_t device_upload_batches=0u;
     std::size_t reused_actor_local_poses=0u;
     std::size_t resident_velocity_reuses=0u;
@@ -225,6 +227,9 @@ public:
         prewitness_joint_source_slots_.clear();
         prewitness_joint_source_upload_bytes_=0u;
         prewitness_joint_source_upload_spans_=0u;
+        prewitness_actor_local_upload_bytes_=0u;
+        prewitness_actor_local_upload_spans_=0u;
+        prewitness_actor_slots_.clear();
         if(++history_epoch_==0u) {
             std::fill(history_epochs_.begin(),history_epochs_.end(),0u);
             history_epoch_=1u;
@@ -295,6 +300,102 @@ public:
         }
         prewitness_joint_source_upload_spans_=uploads.size();
         stream_.queue_uploads(uploads);
+    }
+
+    void enqueue_actor_sources(
+        std::span<const native::GpuDyBodyIntegrationInput> inputs) {
+        if(pending_solve_)
+            throw std::logic_error("Dy actor source overlaps a numerical epoch");
+        prewitness_actor_local_upload_bytes_=0u;
+        prewitness_actor_local_upload_spans_=0u;
+        prewitness_actor_slots_.clear();
+        if(inputs.empty())return;
+        std::size_t needed_actor_slots=0u;
+        for(const auto& input:inputs) {
+            const auto id=input.source_actor;
+            if(!(input.active&1u) || id==0xffffffffu ||
+               id>(std::numeric_limits<std::uint32_t>::max()-128u)/
+                      sizeof(SourceDyActorLocalNative))
+                throw std::overflow_error(
+                    "Pre-witness Dy actor lacks a valid source slot");
+            needed_actor_slots=std::max(needed_actor_slots,std::size_t(id)+1u);
+        }
+        reserve_actor_local_slots(needed_actor_slots);
+        constexpr auto metadata_bytes=
+            offsetof(SourceDyActorLocalNative,linear_velocity);
+        constexpr std::size_t pose_bytes=28u,sleep_bytes=28u;
+        for(const auto& input:inputs) {
+            const auto id=input.source_actor;
+            SourceDyActorLocalNative local{};
+            std::memcpy(local.position,input.mass_local_position,
+                        sizeof(local.position));
+            std::memcpy(local.orientation,input.mass_local_orientation,
+                        sizeof(local.orientation));
+            local.inverse_mass=input.source_inverse_mass;
+            local.linear_damping=input.linear_damping;
+            local.angular_damping=input.angular_damping;
+            local.max_linear_speed_squared=input.max_linear_speed_squared;
+            local.max_angular_speed_squared=input.max_angular_speed_squared;
+            std::memcpy(local.inverse_inertia_local,input.inverse_inertia_local,
+                        sizeof(local.inverse_inertia_local));
+            local.dynamics_flags=input.dynamics_flags;
+            std::memcpy(&local.wake_counter,&input.wake_counter,sleep_bytes);
+            std::memcpy(local.world_position,input.actor_position,
+                        sizeof(local.world_position));
+            std::memcpy(local.world_orientation,input.actor_orientation,
+                        sizeof(local.world_orientation));
+            auto& resident=actor_local_host_[id];
+            bool dirty=!actor_local_valid_[id];
+            if(dirty || std::memcmp(&resident,&local,metadata_bytes)!=0) {
+                std::memcpy(&resident,&local,metadata_bytes);
+                dirty=true;
+            }
+            if(!actor_pose_valid_[id] ||
+               std::memcmp(resident.world_position,local.world_position,
+                           pose_bytes)!=0) {
+                std::memcpy(resident.world_position,local.world_position,
+                            pose_bytes);
+                dirty=true;
+            }
+            if(dirty || std::memcmp(&resident.wake_counter,
+                                    &local.wake_counter,sleep_bytes)!=0) {
+                std::memcpy(&resident.wake_counter,
+                            &local.wake_counter,sleep_bytes);
+                dirty=true;
+            }
+            if(dirty)prewitness_actor_slots_.push_back(id);
+        }
+        std::sort(prewitness_actor_slots_.begin(),
+                  prewitness_actor_slots_.end());
+        if(std::adjacent_find(prewitness_actor_slots_.begin(),
+                             prewitness_actor_slots_.end())!=
+           prewitness_actor_slots_.end())
+            throw std::logic_error("Pre-witness Dy actor source admitted twice");
+        auto& uploads=stream_.upload_scratch();
+        uploads.clear();
+        for(std::size_t i=0u;i<prewitness_actor_slots_.size();) {
+            const auto first=prewitness_actor_slots_[i];
+            auto last=first+1u;
+            ++i;
+            while(i<prewitness_actor_slots_.size() &&
+                  prewitness_actor_slots_[i]==last) {
+                ++last;
+                ++i;
+            }
+            const auto bytes=std::size_t(last-first)*
+                sizeof(SourceDyActorLocalNative);
+            uploads.push_back({
+                actor_locals_.getDevicePtr()+std::size_t(first)*
+                    sizeof(SourceDyActorLocalNative),
+                actor_local_host_.data()+first,bytes});
+            prewitness_actor_local_upload_bytes_+=bytes;
+        }
+        prewitness_actor_local_upload_spans_=uploads.size();
+        stream_.queue_uploads(uploads);
+        for(const auto id:prewitness_actor_slots_) {
+            actor_local_valid_[id]=1u;
+            actor_pose_valid_[id]=1u;
+        }
     }
 
     void solve(std::span<native::GpuDyDistanceBody> bodies,
@@ -448,6 +549,10 @@ public:
             prewitness_joint_source_upload_spans_;
         last_schedule_.prewitness_joint_source_upload_bytes=
             prewitness_joint_source_upload_bytes_;
+        last_schedule_.prewitness_actor_local_upload_bytes=
+            prewitness_actor_local_upload_bytes_;
+        last_schedule_.prewitness_actor_local_upload_spans=
+            prewitness_actor_local_upload_spans_;
         last_schedule_.device_joint_metadata_reuses=0u;
         if(!joint_inputs.empty() && !device_world_motion)
             throw std::invalid_argument(
@@ -812,25 +917,7 @@ public:
                     "Source Dy rigid actor local-pose index exceeds GPU address space");
             needed_actor_slots=std::max(needed_actor_slots,std::size_t(id)+1u);
         }
-        if(needed_actor_slots>actor_local_capacity_) {
-            const auto capacity=std::max(needed_actor_slots,
-                actor_local_capacity_+
-                    std::max(actor_local_capacity_,std::size_t(8u)));
-            if(capacity>(std::numeric_limits<std::uint32_t>::max()-128u)/
-                            sizeof(SourceDyActorLocalNative) ||
-               capacity>max_view_/sizeof(SourceDyActorLocalNative))
-                throw std::overflow_error(
-                    "Source Dy rigid actor local-pose pool exceeds GPU view");
-            actor_local_host_.resize(capacity);
-            actor_local_valid_.resize(capacity,0u);
-            actor_velocity_valid_.resize(capacity,0u);
-            actor_pose_valid_.resize(capacity,0u);
-            actor_locals_.allocateCopyPrefixAsync(
-                capacity*sizeof(SourceDyActorLocalNative)+127u,
-                actor_local_capacity_*sizeof(SourceDyActorLocalNative),
-                stream_,PX_FL);
-            actor_local_capacity_=capacity;
-        }
+        reserve_actor_local_slots(needed_actor_slots);
         for(std::size_t ordinal=0u;ordinal<integration.size();++ordinal) {
             const auto& input=integration[ordinal];
             SourceDyPackedIntegrationNative record{};
@@ -1643,6 +1730,9 @@ public:
         prewitness_joint_source_slots_.clear();
         prewitness_joint_source_upload_bytes_=0u;
         prewitness_joint_source_upload_spans_=0u;
+        prewitness_actor_local_upload_bytes_=0u;
+        prewitness_actor_local_upload_spans_=0u;
+        prewitness_actor_slots_.clear();
         last_schedule_.device_upload_batches=
             stream_.submission_stats().upload_batches-previous_batches;
         // Sc and Dy use one ordered source stream. The admission header,
@@ -2307,6 +2397,27 @@ public:
         return last_contact_prep_upload_saving_;
     }
 private:
+    void reserve_actor_local_slots(std::size_t needed_actor_slots) {
+        if(needed_actor_slots>actor_local_capacity_) {
+            const auto capacity=std::max(needed_actor_slots,
+                actor_local_capacity_+
+                    std::max(actor_local_capacity_,std::size_t(8u)));
+            if(capacity>(std::numeric_limits<std::uint32_t>::max()-128u)/
+                            sizeof(SourceDyActorLocalNative) ||
+               capacity>max_view_/sizeof(SourceDyActorLocalNative))
+                throw std::overflow_error(
+                    "Source Dy rigid actor local-pose pool exceeds GPU view");
+            actor_local_host_.resize(capacity);
+            actor_local_valid_.resize(capacity,0u);
+            actor_velocity_valid_.resize(capacity,0u);
+            actor_pose_valid_.resize(capacity,0u);
+            actor_locals_.allocateCopyPrefixAsync(
+                capacity*sizeof(SourceDyActorLocalNative)+127u,
+                actor_local_capacity_*sizeof(SourceDyActorLocalNative),
+                stream_,PX_FL);
+            actor_local_capacity_=capacity;
+        }
+    }
     struct PendingSolve {
         std::span<native::GpuDyDistanceBody> bodies{};
         std::span<native::GpuDyDistanceTask> tasks{};
@@ -2774,6 +2885,9 @@ private:
     std::vector<std::uint32_t> joint_source_dirty_;
     std::vector<std::uint32_t> joint_source_late_upload_slots_;
     std::vector<std::uint32_t> prewitness_joint_source_slots_;
+    std::vector<std::uint32_t> prewitness_actor_slots_;
+    std::size_t prewitness_actor_local_upload_bytes_=0u;
+    std::size_t prewitness_actor_local_upload_spans_=0u;
     std::size_t prewitness_joint_source_upload_bytes_=0u;
     std::size_t prewitness_joint_source_upload_spans_=0u;
     std::vector<SourceSapUpload> joint_source_uploads_;

@@ -495,6 +495,10 @@ public:
         std::span<const GpuDyJointInput>) {
         throw std::logic_error("Source GPU Dy joint source is unavailable");
     }
+    virtual void enqueue_gpu_dy_actor_sources(
+        std::span<const GpuDyBodyIntegrationInput>) {
+        throw std::logic_error("Source GPU Dy actor source is unavailable");
+    }
     virtual std::uint32_t gpu_dy_direct_task_limit() const noexcept {
         return 0u;
     }
@@ -1545,6 +1549,8 @@ private:
     std::size_t rigid_shape_count_=0;
     using EdgeIndex=std::uint32_t;
     GpuDyJointInput pack_gpu_dy_joint_input(EdgeIndex edge) const;
+    void pack_gpu_dy_integration_input(
+        BodyId id,float seconds,GpuDyBodyIntegrationInput& input) const;
     static constexpr EdgeIndex invalid_edge=std::numeric_limits<EdgeIndex>::max();
     static constexpr std::size_t invalid_instance=
         std::numeric_limits<std::size_t>::max();
@@ -2209,6 +2215,7 @@ private:
     // the original source Dy task, constraint and body row storage.
     std::vector<GpuDyDistanceBody> gpu_dy_bodies_;
     std::vector<GpuDyBodyIntegrationInput> gpu_dy_integration_inputs_;
+    std::vector<GpuDyBodyIntegrationInput> gpu_dy_early_integration_inputs_;
     std::vector<GpuDyIntegratedPose> gpu_dy_integrated_poses_;
     std::vector<GpuDySleepState> gpu_dy_sleep_states_;
     std::vector<BodyId> gpu_dy_free_ids_;

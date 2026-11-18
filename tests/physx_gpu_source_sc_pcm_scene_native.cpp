@@ -3887,6 +3887,10 @@ void verify_single_pcm_joint_island_admission(
                 stats.device_joint_metadata_upload_bytes==
                     stats.prewitness_joint_source_upload_bytes &&
                 stats.device_joint_geometry_count==2u &&
+                (frame!=0u ||
+                    (stats.prewitness_actor_local_upload_bytes>=
+                        sizeof(physx_gpu::SourceDyActorLocalNative) &&
+                     stats.prewitness_actor_local_upload_spans>0u)) &&
                 gpu.accurate_island_id(joints_gpu[0])==
                     gpu.accurate_island_id(joints_gpu[1]) &&
                 gpu.accurate_island_id(joints_gpu[2])==

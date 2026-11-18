@@ -278,6 +278,12 @@ public:
             throw std::logic_error("Source GPU Dy joint stage is unavailable");
         dy_distance_->enqueue_joint_sources(inputs);
     }
+    void enqueue_gpu_dy_actor_sources(
+        std::span<const native::GpuDyBodyIntegrationInput> inputs) override {
+        if(!dy_distance_)
+            throw std::logic_error("Source GPU Dy actor stage is unavailable");
+        dy_distance_->enqueue_actor_sources(inputs);
+    }
     std::uint32_t gpu_dy_direct_task_limit() const noexcept override {
         return dy_distance_
             ?source_sc_indirect_task_limit(context_.device_info()):0u;

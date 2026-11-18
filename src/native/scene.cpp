@@ -4601,6 +4601,16 @@ void Scene::update_contacts(bool defer_device_points,float inverse_step) {
                 edge.node_a=ordinal(edge.node_a);
                 edge.node_b=ordinal(edge.node_b);
             }
+            // Queue authored actor-local inputs on Sc's early device
+            // submission; final Dy admission validates any Sc changes.
+            gpu_dy_early_integration_inputs_.resize(
+                gpu_dy_early_actor_ids_.size());
+            for(std::size_t i=0u;i<gpu_dy_early_actor_ids_.size();++i)
+                pack_gpu_dy_integration_input(
+                    gpu_dy_early_actor_ids_[i],seconds,
+                    gpu_dy_early_integration_inputs_[i]);
+            gpu_broadphase_->enqueue_gpu_dy_actor_sources(
+                gpu_dy_early_integration_inputs_);
             if(has_legacy_gu) {
                 early_device_graph_awaits_gu=true;
                 // CPU Gu physical touches enter the ordered device queue
@@ -9474,34 +9484,12 @@ void Scene::prepare_gpu_dy_device_islands(bool selected) {
         gpu_dy_island_edges_,gpu_dy_island_node_flags_,
         {narrow(gpu_dy_manifolds_.size()),narrow(gpu_dy_rows_.size()),0u});
 }
-void Scene::solve_gpu_distance_constraints(float seconds) {
-    FYZZ_PROFILE_SCOPE("dy.gpu_enqueue_join");
-    // Source Dy owns task, body and 1D row order; the device receives
-    // transient packed views of those exact prepared source inputs.
-    if(ordered_constraints_.empty() && solver_active_ids_.empty() &&
-       gpu_dy_free_ids_.empty()) {
-        materialize_gpu_pcm_points();
-        begin_contact_writeback();
-        return;
-    }
-    const auto narrow=[](std::size_t value) {
-        if(value>=std::numeric_limits<std::uint32_t>::max())
-            throw std::overflow_error("Native GPU Dy row index exceeds 32 bits");
-        return static_cast<std::uint32_t>(value);
-    };
+void Scene::pack_gpu_dy_integration_input(
+    BodyId id,float seconds,GpuDyBodyIntegrationInput& input) const {
+    const auto& actor=actors_[id];
     const auto pack=[](float(&out)[3],Vec3 v) {
         out[0]=v.x;out[1]=v.y;out[2]=v.z;
     };
-    // The world-motion stage reads inverse mass from the actor-local
-    // input. This body span carries only result capacity, not a second
-    // host-authored mass stream.
-    gpu_dy_bodies_.resize(solver_rows_.size());
-    const auto integration_count=solver_rows_.size()+gpu_dy_free_ids_.size();
-    gpu_dy_integration_inputs_.assign(integration_count,{});
-    gpu_dy_integrated_poses_.resize(integration_count);
-    gpu_dy_sleep_states_.resize(integration_count);
-    const auto pack_integration=[&](BodyId id,const Actor& actor,
-                                   GpuDyBodyIntegrationInput& input) {
         input.source_actor=id;
         input.source_inverse_mass=actor.inverse_mass;
         const auto& d=actor.dynamics;
@@ -9544,12 +9532,40 @@ void Scene::solve_gpu_distance_constraints(float seconds) {
         // The sphere AABB remains rotation-invariant on the device.
         if(actor.first_simulation_shape!=invalid_shape)
             input.active|=4u;
+    pack(input.linear_velocity,actor.velocity);
+    pack(input.angular_velocity,actor.angular_velocity);
+}
+void Scene::solve_gpu_distance_constraints(float seconds) {
+    FYZZ_PROFILE_SCOPE("dy.gpu_enqueue_join");
+    // Source Dy owns task, body and 1D row order; the device receives
+    // transient packed views of those exact prepared source inputs.
+    if(ordered_constraints_.empty() && solver_active_ids_.empty() &&
+       gpu_dy_free_ids_.empty()) {
+        materialize_gpu_pcm_points();
+        begin_contact_writeback();
+        return;
+    }
+    const auto narrow=[](std::size_t value) {
+        if(value>=std::numeric_limits<std::uint32_t>::max())
+            throw std::overflow_error("Native GPU Dy row index exceeds 32 bits");
+        return static_cast<std::uint32_t>(value);
     };
+    const auto pack=[](float(&out)[3],Vec3 v) {
+        out[0]=v.x;out[1]=v.y;out[2]=v.z;
+    };
+    // The world-motion stage reads inverse mass from the actor-local
+    // input. This body span carries only result capacity, not a second
+    // host-authored mass stream.
+    gpu_dy_bodies_.resize(solver_rows_.size());
+    const auto integration_count=solver_rows_.size()+gpu_dy_free_ids_.size();
+    gpu_dy_integration_inputs_.assign(integration_count,{});
+    gpu_dy_integrated_poses_.resize(integration_count);
+    gpu_dy_sleep_states_.resize(integration_count);
     for(const BodyId id:solver_active_ids_) {
         const auto& actor=actors_[id];
         const auto& row=solver_rows_[actor.solver_row_index];
         auto& input=gpu_dy_integration_inputs_[actor.solver_row_index];
-        pack_integration(id,actor,input);
+        pack_gpu_dy_integration_input(id,seconds,input);
         pack(input.linear_velocity,row.data.linear_velocity);
         if(row.device_world_inertia)input.active|=32u;
         // GPU preintegration clamps and applies gyroscopic correction
@@ -9583,7 +9599,7 @@ void Scene::solve_gpu_distance_constraints(float seconds) {
     for(std::size_t i=0;i<gpu_dy_free_ids_.size();++i) {
         const auto& actor=actors_[gpu_dy_free_ids_[i]];
         auto& input=gpu_dy_integration_inputs_[solver_rows_.size()+i];
-        pack_integration(gpu_dy_free_ids_[i],actor,input);
+        pack_gpu_dy_integration_input(gpu_dy_free_ids_[i],seconds,input);
         pack(input.linear_velocity,actor.velocity);
         pack(input.angular_velocity,actor.angular_velocity);
     }
