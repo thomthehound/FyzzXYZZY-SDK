@@ -4458,19 +4458,28 @@ void verify_cpu_gu_gpu_dy_solver(
     const auto another_gpu=gpu.add_dynamic_box(
         {0.5f,0.5f,0.5f},{8.f,0.84f,0.f},1.f);
     gpu.set_gpu_dy_device_admission_enabled(true);
-    for(std::uint32_t frame=0u;frame<2u;++frame) {
+    for(std::uint32_t frame=0u;frame<4u;++frame) {
+        if(frame==2u) {
+            cpu.set_position(another_cpu,{8.f,3.f,0.f});
+            gpu.set_position(another_gpu,{8.f,3.f,0.f});
+        }
         cpu.step(dt);
         gpu.step(dt);
-        if(frame==0u)
+        if(frame==0u || frame==2u)
             native::GpuPcmFrictionAnchorFixture::
                 verify_pre_witness_device_admission(gpu);
         const auto stats=producer->dy_launch_stats();
+        const auto expected=frame<2u?2u:1u;
         require(stats.device_island_indirect_dispatches==1u &&
-                stats.device_admitted_tasks==2u &&
-                stats.device_admitted_descriptors==2u &&
+                stats.device_admitted_tasks==expected &&
+                stats.device_admitted_descriptors==expected &&
                 producer->dy_pcm_device_contact_rows()==0u &&
-                producer->dy_cpu_gu_geometry_bytes()>0u,
-            "CPU Gu-only scene did not admit device-authored numerical tasks");
+                producer->dy_cpu_gu_geometry_bytes()>0u &&
+                gpu.contacts().size()==expected &&
+                cpu.contacts().size()==expected &&
+                gpu.lost_contacts().size()==cpu.lost_contacts().size() &&
+                (frame!=2u || gpu.lost_contacts().size()==1u),
+            "CPU Gu-only device admission retained an invalid contact response");
         native::GpuPcmFrictionAnchorFixture::
             verify_device_admitted_contact_sources(gpu);
         test::compound_compare_state(
