@@ -262,7 +262,9 @@ host-upload extent; raw descriptors, colors and partition-state scratch are
 also omitted from the source packet. The remaining input prefix and
 numerical source-table suffix share one staging submission. Its compact-task
 numerical launch consumes the device indirect triple rather than a CPU
-workgroup count. Sc supplies separate numerical task boundaries for independent active
+workgroup count. The grid spans two bounded workgroup dimensions, preserving
+canonical task ordinals when one dimension is insufficient. This does not
+change task or island identity and requires no host scheduling fallback. Sc supplies separate numerical task boundaries for independent active
 islands. One-constraint tasks with one or two responding bodies execute
 as GPU lanes; each lane owns its PGS sequence and body integration, with
 up to 128 tasks per workgroup. Other compact tasks execute through the

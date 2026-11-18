@@ -142,7 +142,10 @@ Wide islands use their separate device-partition execution path; the compact
 admission selection rejects them. Sc otherwise reuses CPU-prepared
 accurate-island task boundaries. Independent one-constraint islands with one
 or two responding bodies execute in packed GPU lanes; dependent compact
-islands use fused workgroups. Device-generated roots are numerical task IDs,
+islands use fused workgroups. The compact numerical launch uses a two-axis
+GPU-authored indirect grid when one dispatch dimension cannot hold its
+workgroups; Dy flattens that grid into canonical task ordinals without host
+task reconstruction. Device-generated roots are numerical task IDs,
 not replacements for Sc's persistent island identities. The Scene prepares kinematic target velocities after PCM submission,
 before Sc joins its witness stream; these changes remain covered by the
 frame's motion journal. Solver-body admission still follows accurate island
