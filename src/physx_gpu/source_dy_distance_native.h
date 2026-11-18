@@ -43,7 +43,6 @@ static_assert(sizeof(SourceDyPackedContactPrepNative)==64u &&
 // authorized Sc device poses omit the host pose entirely; authored edits
 // and bodies without eligible device shapes retain an explicit 28-byte pose.
 struct SourceDyPackedIntegrationNative {
-    float sqrt_inverse_inertia[9]{};
     std::uint32_t lock_flags=0u;
     float seconds=0.0f;
     std::uint32_t active=0u,source_element=0xffffffffu;
@@ -55,12 +54,12 @@ struct SourceDyPackedIntegrationNative {
     std::uint32_t force_offset=0xffffffffu;
     std::uint32_t counted_interactions=0u;
 };
-static_assert(sizeof(SourceDyPackedIntegrationNative)==76u &&
-              offsetof(SourceDyPackedIntegrationNative,pose_index)==56u &&
-              offsetof(SourceDyPackedIntegrationNative,actor_local_offset)==60u &&
-              offsetof(SourceDyPackedIntegrationNative,velocity_offset)==64u &&
-              offsetof(SourceDyPackedIntegrationNative,force_offset)==68u &&
-              offsetof(SourceDyPackedIntegrationNative,counted_interactions)==72u);
+static_assert(sizeof(SourceDyPackedIntegrationNative)==40u &&
+              offsetof(SourceDyPackedIntegrationNative,pose_index)==20u &&
+              offsetof(SourceDyPackedIntegrationNative,actor_local_offset)==24u &&
+              offsetof(SourceDyPackedIntegrationNative,velocity_offset)==28u &&
+              offsetof(SourceDyPackedIntegrationNative,force_offset)==32u &&
+              offsetof(SourceDyPackedIntegrationNative,counted_interactions)==36u);
 inline constexpr std::uint32_t source_dy_device_inertia_flag=0x4000u;
 static_assert((source_dy_device_inertia_flag&
     ((63u<<8u)|(4095u<<16u)|1u|8u|16u|32u|64u|128u))==0u);
@@ -126,6 +125,7 @@ struct SourceDyLaunchStats {
     std::size_t device_body_upload_bytes=0u;
     std::size_t device_initialization_dispatches=0u;
     std::size_t device_world_inertia_bodies=0u;
+    std::size_t host_inertia_upload_bytes=0u;
     std::size_t device_world_motion_bodies=0u;
     std::size_t actor_local_upload_bytes=0u;
     std::size_t actor_local_upload_spans=0u;
@@ -754,8 +754,6 @@ public:
         for(std::size_t ordinal=0u;ordinal<integration.size();++ordinal) {
             const auto& input=integration[ordinal];
             SourceDyPackedIntegrationNative record{};
-            std::memcpy(record.sqrt_inverse_inertia,input.sqrt_inverse_inertia,
-                        sizeof(record.sqrt_inverse_inertia));
             record.lock_flags=input.lock_flags;
             record.seconds=input.seconds;
             record.active=(input.active&1u)|
@@ -914,7 +912,7 @@ public:
             }
             packed_integration_.push_back(record);
         }
-        constexpr std::size_t integration_header_bytes=40u;
+        constexpr std::size_t integration_header_bytes=44u;
         if(integration.size()>
            (std::numeric_limits<std::uint32_t>::max()-integration_header_bytes)/
                sizeof(SourceDyPackedIntegrationNative))
@@ -955,6 +953,20 @@ public:
         const std::size_t mass_bytes=upload_body_masses
             ? bodies.size()*sizeof(float):0u;
         const std::size_t integration_bytes=mass_offset+mass_bytes;
+        // Contact-only native rigid bodies derive their world inertia from
+        // resident actor mass properties. Separate that GPU-written matrix
+        // from the compact authored input without adding a dispatch.
+        const bool device_generated_inertia=device_world_motion &&
+            std::all_of(integration.begin(),integration.begin()+bodies.size(),
+                [](const auto& input) {
+                    return (input.active&1u)==0u || (input.active&32u)!=0u;
+                });
+        if(integration.size()>
+           std::numeric_limits<std::uint32_t>::max()/(9u*sizeof(float)))
+            throw std::overflow_error("Source Dy inertia work exceeds address space");
+        const std::size_t inertia_bytes=integration.size()*9u*sizeof(float);
+        last_schedule_.host_inertia_upload_bytes=
+            device_generated_inertia?0u:inertia_bytes;
         last_host_pose_upload_bytes_=host_poses_.size()*sizeof(SourceDyHostPoseNative);
         // Native Sc transfers source-order manager and joint identities.
         // Contact prep already encodes active body ordinals; device-owned
@@ -1041,7 +1053,7 @@ public:
             :descriptors.size_bytes();
         if(rows.size_bytes()>std::numeric_limits<std::uint32_t>::max())
             throw std::overflow_error("Device Dy joint rows exceed 32-bit view");
-        constexpr std::size_t count=16u;
+        constexpr std::size_t count=17u;
         // The integration prefix describes Sc/SAP views and the launch
         // table. Solver-body ordinals precede the free-body suffix.
         const std::array<std::size_t,count> bytes{
@@ -1054,13 +1066,14 @@ public:
             patches.size_bytes(),manifolds.size_bytes(),contact_order.size_bytes(),
             compact_prep_bytes,
             integration_bytes,compact_anchor_bytes,
-            tiles_.size()*sizeof(WorkTile),partition_scratch_bytes};
+            tiles_.size()*sizeof(WorkTile),partition_scratch_bytes,
+            inertia_bytes};
         const std::array<std::size_t,count> elements{
             bodies.size(),rows.size(),descriptor_capacity,partition_count,
             body_ordinals.size(),tasks.size(),contact_forces.size(),friction_count,
             patches.size(),manifolds.size(),contact_order.size(),
             contact_prep.size(),integration.size(),compact_anchors_.size(),
-            tiles_.size(),device_partitions?1u:0u};
+            tiles_.size(),device_partitions?1u:0u,integration.size()};
         const std::array<const void*,count> sources{
             bodies.data(),rows.data(),
             device_partitions?nullptr:descriptors.data(),
@@ -1068,7 +1081,7 @@ public:
             body_ordinals.data(),tasks.data(),nullptr,nullptr,
             patches.data(),manifolds.data(),contact_order.data(),
             contact_prep.data(),integration.data(),nullptr,tiles_.data(),
-            nullptr};
+            nullptr,nullptr};
         // Both full contact and friction solver rows live on device.
         // Sc returns normal impulses and compact per-anchor friction;
         // standalone conformance may return complete tangent/force rows.
@@ -1132,21 +1145,33 @@ public:
         // Resident Sc tasks and body ordinals are GPU copy destinations,
         // not CPU packet inputs. Keep them beyond the host upload cutoff,
         // alongside Dy's other device-written numerical ranges.
-        const std::array<std::size_t,count> order=device_admission
-            ? std::array<std::size_t,count>{
+        const std::array<std::size_t,count-1u> source_order=device_admission
+            ? std::array<std::size_t,count-1u>{
                 1u,8u,9u,10u,11u,12u,14u,15u,13u,6u,7u,0u,2u,3u,4u,5u}
             : device_initial_bodies
-                ? std::array<std::size_t,count>{
+                ? std::array<std::size_t,count-1u>{
                 1u,5u,8u,4u,9u,10u,11u,12u,14u,15u,13u,6u,7u,0u,2u,3u}
             : device_partitions
-                ? std::array<std::size_t,count>{
+                ? std::array<std::size_t,count-1u>{
                     0u,1u,5u,8u,4u,9u,10u,11u,12u,14u,15u,13u,6u,7u,2u,3u}
-                : std::array<std::size_t,count>{
+                : std::array<std::size_t,count-1u>{
                     0u,1u,5u,8u,2u,3u,4u,9u,10u,11u,12u,14u,15u,13u,6u,7u};
+        std::array<std::size_t,count> order{};
+        std::size_t order_count=0u;
+        for(const auto slot:source_order) {
+            if(!device_generated_inertia && slot==6u)
+                order[order_count++]=16u;
+            order[order_count++]=slot;
+        }
+        if(device_generated_inertia)order[order_count++]=16u;
+        if(order_count!=count)
+            throw std::logic_error("Source Dy inertia placement omitted a view");
         last_schedule_.device_generated_bytes=device_partitions
             ? bytes[2]+bytes[3]+
                 (device_admission
                     ?body_ordinals.size_bytes()+tasks.size_bytes():0u):0u;
+        if(device_generated_inertia)
+            last_schedule_.device_generated_bytes+=inertia_bytes;
         std::array<std::size_t,count> offsets{};
         // The original Dy heap retains an EdgeIndex-keyed Sc anchor
         // prefix. Solver output follows it and remains the sole readback;
@@ -1176,7 +1201,7 @@ public:
         host_.resize(std::max(input_end,host_result_bytes));
         for(std::size_t i=0;i<count;++i)
             if(i!=6u && i!=7u && i!=11u && i!=12u &&
-               i!=13u && i!=15u && bytes[i] &&
+               i!=13u && i!=15u && i!=16u && bytes[i] &&
                (!device_initial_bodies || i!=0u) &&
                (!device_partitions || (i!=2u && i!=3u)) &&
                (!device_admission || (i!=4u && i!=5u)))
@@ -1352,7 +1377,7 @@ public:
         }
         if(has_shape_targets && (!shape_cache || !shape_bounds || !shape_geometry))
             throw std::logic_error("Source Sc GPU integration shape buffers are missing");
-        std::array<std::uint32_t,10> integration_header{
+        std::array<std::uint32_t,11> integration_header{
             0u,0u,0u,shape_capacity,narrow(body_ordinals.size()),
             narrow(descriptor_capacity),narrow(tasks.size()),
             device_partitions?narrow(std::size_t(params[28])+offsets[15]):
@@ -1361,7 +1386,8 @@ public:
             device_initial_bodies
                 ? (device_world_motion?invalid
                     :narrow(std::size_t(params[28])+offsets[12]+mass_offset))
-                :0u};
+                :0u,
+            narrow(std::size_t(params[28])+offsets[16])};
         const auto bind_shape=[&](CudaDeviceAddressMap::Address source,
                                   std::uint32_t stride,std::uint32_t slot,
                                   compute::BufferAccess access,
@@ -1439,6 +1465,11 @@ public:
             std::memcpy(host_.data()+offsets[12]+integration_header_bytes,
                         packed_integration_.data(),
                         packed_integration_.size()*sizeof(SourceDyPackedIntegrationNative));
+        if(!device_generated_inertia)
+            for(std::size_t i=0u;i<integration.size();++i)
+                std::memcpy(host_.data()+offsets[16]+i*9u*sizeof(float),
+                            integration[i].sqrt_inverse_inertia,
+                            9u*sizeof(float));
         // Source joint inputs own the first-row pointer independent
         // of Sc contact descriptor publication. Joint preparation
         // replaces the transient endpoint words with Jacobian axes.

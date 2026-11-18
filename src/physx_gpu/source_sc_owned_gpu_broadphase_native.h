@@ -373,6 +373,7 @@ public:
         FYZZ_PROFILE_COUNTER("dy.source_copy_bytes",schedule.device_source_copy_bytes);
         FYZZ_PROFILE_COUNTER("dy.source_descriptor_upload_bytes",schedule.source_descriptor_upload_bytes);
         FYZZ_PROFILE_COUNTER("dy.body_upload_bytes",schedule.device_body_upload_bytes);
+        FYZZ_PROFILE_COUNTER("dy.inertia_upload_bytes",schedule.host_inertia_upload_bytes);
         FYZZ_PROFILE_COUNTER("dy.actor_local_upload_bytes",schedule.actor_local_upload_bytes);
         FYZZ_PROFILE_COUNTER("dy.upload_batches",schedule.device_upload_batches);
         FYZZ_PROFILE_COUNTER("dy.resident_poses_reused",schedule.reused_actor_local_poses);

@@ -9468,12 +9468,13 @@ void Scene::solve_gpu_distance_constraints(float seconds) {
         // GPU preintegration clamps and applies gyroscopic correction
         // before masking angular axes, just like CPU source preintegration.
         pack(input.angular_velocity,actor.angular_velocity);
-        for(std::size_t axis=0;axis<3u;++axis) {
-            const auto& inertia=row.data.sqrt_inverse_inertia[axis];
-            input.sqrt_inverse_inertia[axis*3u]=inertia.x;
-            input.sqrt_inverse_inertia[axis*3u+1u]=inertia.y;
-            input.sqrt_inverse_inertia[axis*3u+2u]=inertia.z;
-        }
+        if(!row.device_world_inertia)
+            for(std::size_t axis=0;axis<3u;++axis) {
+                const auto& inertia=row.data.sqrt_inverse_inertia[axis];
+                input.sqrt_inverse_inertia[axis*3u]=inertia.x;
+                input.sqrt_inverse_inertia[axis*3u+1u]=inertia.y;
+                input.sqrt_inverse_inertia[axis*3u+2u]=inertia.z;
+            }
     }
     // Kinematic 1D endpoints contribute authored velocities but are
     // not integrated or treated as dynamic solver-body owners.

@@ -64,6 +64,9 @@ struct Parameters {
 ConstantBuffer<Parameters> p : register(b0,space0);
 #endif
 static const uint invalidBody = 0xffffffffu;
+uint sourceDyInertiaAddress(uint ordinal) {
+    return arena.Load(p.integrationBias+40u)+ordinal*36u;
+}
 static const uint sourceDyPcmExtentValid = 1u<<30u;
 static const uint sourceDyPcmExtentShift = 16u;
 static const float maxImpulse = 3.4028234663852886e+38;
@@ -192,9 +195,9 @@ void solveJoint(uint4 desc,uint errorAddress,bool biased) {
 // Native Dy reconstructs the mass frame from resident actor motion.
 // Standalone inputs retain their cached-shape or explicit pose source.
 bool sourceDyMassPose(uint input,out float3 position,out float4 quaternion) {
-    const uint pose=arena.Load(input+56u);
-    if((arena.Load(input+44u)&128u)!=0u) {
-        const uint local=arena.Load(input+60u);
+    const uint pose=arena.Load(input+20u);
+    if((arena.Load(input+8u)&128u)!=0u) {
+        const uint local=arena.Load(input+24u);
         const float3 actorPosition=asfloat(scActorLocals.Load3(local+116u));
         const float4 actorAxes=asfloat(scActorLocals.Load4(local+128u));
         const float3 massLocal=asfloat(scActorLocals.Load3(local));
@@ -203,7 +206,7 @@ bool sourceDyMassPose(uint input,out float3 position,out float4 quaternion) {
         quaternion=sourceRigidMultiply(actorAxes,massAxes);
     }else if(pose==invalidBody) {
         const uint4 views=arena.Load4(p.integrationBias);
-        const uint element=arena.Load(input+48u);
+        const uint element=arena.Load(input+12u);
         if(element>=views.w)return false;
         const uint geo=views.z+element*64u;
         const uint kind=scGeometry.Load(geo+28u);
@@ -221,7 +224,7 @@ bool sourceDyMassPose(uint input,out float3 position,out float4 quaternion) {
             shapeAxes,float4(-shapeLocalAxes.xyz,shapeLocalAxes.w));
         const float3 actorPosition=shapeCenter-
             sourceRigidRotate(actorAxes,shapeLocal);
-        const uint local=arena.Load(input+60u);
+        const uint local=arena.Load(input+24u);
         const float3 centerLocal=asfloat(scActorLocals.Load3(local));
         const float4 massLocalAxes=asfloat(scActorLocals.Load4(local+12u));
         quaternion=sourceRigidMultiply(actorAxes,massLocalAxes);
@@ -237,15 +240,15 @@ bool sourceDyMassPose(uint input,out float3 position,out float4 quaternion) {
 // an FP32 component has actually changed. Dy preintegration consumes
 // this exact input and commits its prepared velocities in the actor pool.
 float3 sourceDyAuthoredVelocity(uint input,bool angular) {
-    const uint flags=arena.Load(input+44u);
+    const uint flags=arena.Load(input+8u);
     const uint changed=(flags>>8u)&63u;
     const uint component=angular?12u:0u;
     if(changed==63u)
-        return asfloat(arena.Load3(arena.Load(input+64u)+component));
-    const uint local=arena.Load(input+60u);
+        return asfloat(arena.Load3(arena.Load(input+28u)+component));
+    const uint local=arena.Load(input+24u);
     float3 velocity=asfloat(scActorLocals.Load3(local+64u+component));
     if(changed==0u)return velocity;
-    const uint source=arena.Load(input+64u);
+    const uint source=arena.Load(input+28u);
     [unroll]
     for(uint axis=0u;axis<3u;++axis) {
         const uint bit=1u<<((angular?3u:0u)+axis);
@@ -256,8 +259,8 @@ float3 sourceDyAuthoredVelocity(uint input,bool angular) {
     return velocity;
 }
 float3 sourceDyPreparedVelocity(uint input,bool angular) {
-    if((arena.Load(input+44u)&32u)!=0u) {
-        const uint local=arena.Load(input+60u);
+    if((arena.Load(input+8u)&32u)!=0u) {
+        const uint local=arena.Load(input+24u);
         return asfloat(scActorLocals.Load3(local+64u+(angular?12u:0u)));
     }
     return sourceDyAuthoredVelocity(input,angular);
@@ -265,11 +268,11 @@ float3 sourceDyPreparedVelocity(uint input,bool angular) {
 // Sparse per-step velocity and acceleration modifiers retain their
 // original Sc ordering: velocity delta, then acceleration * dt.
 float3 sourceDyMotionMod(uint input,uint stream) {
-    const uint flags=arena.Load(input+44u);
+    const uint flags=arena.Load(input+8u);
     const uint mask=(flags>>16u)&4095u;
     float3 result=0.0f;
     if(mask==0u)return result;
-    const uint source=arena.Load(input+68u);
+    const uint source=arena.Load(input+32u);
     [unroll]
     for(uint axis=0u;axis<3u;++axis) {
         const uint bit=1u<<(stream*3u+axis);
@@ -284,11 +287,11 @@ float3 sourceDyMotionMod(uint input,uint stream) {
 // before contact/joint PGS; free flight performs it immediately before
 // integrateCore. No host solver-state shadow participates.
 bool sourceDyPreIntegrateBody(uint ordinal) {
-    const uint input=p.integrationBias+40u+ordinal*76u;
-    if((arena.Load(input+44u)&32u)==0u)return true;
-    const uint local=arena.Load(input+60u);
+    const uint input=p.integrationBias+44u+ordinal*40u;
+    if((arena.Load(input+8u)&32u)==0u)return true;
+    const uint local=arena.Load(input+24u);
     if(local==invalidBody)return false;
-    const float dt=asfloat(arena.Load(input+40u));
+    const float dt=asfloat(arena.Load(input+4u));
     const uint flags=scActorLocals.Load(local+60u);
     const float3 rawLinear=sourceDyAuthoredVelocity(input,false);
     const float3 rawAngular=sourceDyAuthoredVelocity(input,true);
@@ -333,7 +336,7 @@ bool sourceDyPreIntegrateBody(uint ordinal) {
             q,inverseInertia*next-localAngular);
         angular+=delta;
     }
-    const uint locks=arena.Load(input+36u);
+    const uint locks=arena.Load(input+0u);
     if(locks&8u)angular.x=0.0f;
     if(locks&16u)angular.y=0.0f;
     if(locks&32u)angular.z=0.0f;
@@ -343,8 +346,8 @@ bool sourceDyPreIntegrateBody(uint ordinal) {
     return true;
 }
 void sourceDyInvalidatePreparedVelocity(uint ordinal) {
-    const uint input=p.integrationBias+40u+ordinal*76u;
-    const uint local=arena.Load(input+60u);
+    const uint input=p.integrationBias+44u+ordinal*40u;
+    const uint local=arena.Load(input+24u);
     if(local==invalidBody)return;
     const uint3 invalid=uint3(0x7fc00000u,0x7fc00000u,0x7fc00000u);
     scActorLocals.Store3(local+64u,invalid);
@@ -362,7 +365,7 @@ bool sourceDyPrepareSleep(uint input,uint local,
     wakeCounter=asfloat(scActorLocals.Load(local+88u));
     linearAcc=asfloat(scActorLocals.Load3(local+92u));
     angularAcc=asfloat(scActorLocals.Load3(local+104u));
-    const float dt=asfloat(arena.Load(input+40u));
+    const float dt=asfloat(arena.Load(input+4u));
     if(wakeCounter<0.2f || wakeCounter<dt) {
         const float4 inverseOrientation=
             float4(-actorOrientation.xyz,actorOrientation.w);
@@ -387,7 +390,7 @@ bool sourceDyPrepareSleep(uint input,uint local,
             linearAcc.y*linearAcc.y+
             linearAcc.z*linearAcc.z;
         const float normalizedEnergy=0.5f*(angularEnergy+accumulatedLinear);
-        const float cluster=1.0f+float(arena.Load(input+72u));
+        const float cluster=1.0f+float(arena.Load(input+36u));
         const float threshold=cluster*0.005f;
         if(normalizedEnergy>=threshold) {
             linearAcc=0.0f;
@@ -924,9 +927,9 @@ bool sourceDyJointActorFrame(uint ordinal,uint fallback,uint centerFallback,
     actorAxes=asfloat(arena.Load4(fallback+12u));
     massCenter=asfloat(arena.Load3(centerFallback));
     if(ordinal!=invalidBody) {
-        const uint input=p.integrationBias+40u+ordinal*76u;
-        if((arena.Load(input+44u)&128u)!=0u) {
-            const uint local=arena.Load(input+60u);
+        const uint input=p.integrationBias+44u+ordinal*40u;
+        if((arena.Load(input+8u)&128u)!=0u) {
+            const uint local=arena.Load(input+24u);
             if(local==invalidBody)return false;
             actorPosition=asfloat(scActorLocals.Load3(local+116u));
             actorAxes=asfloat(scActorLocals.Load4(local+128u));
@@ -939,10 +942,10 @@ bool sourceDyJointActorFrame(uint ordinal,uint fallback,uint centerFallback,
 }
 float3 sourceDyJointInertia(uint ordinal,float3 angular) {
     if(ordinal==invalidBody)return 0.0f;
-    const uint input=p.integrationBias+40u+ordinal*76u;
-    return asfloat(arena.Load3(input))*angular.x+
-           asfloat(arena.Load3(input+12u))*angular.y+
-           asfloat(arena.Load3(input+24u))*angular.z;
+    const uint inertia=sourceDyInertiaAddress(ordinal);
+    return asfloat(arena.Load3(inertia))*angular.x+
+           asfloat(arena.Load3(inertia+12u))*angular.y+
+           asfloat(arena.Load3(inertia+24u))*angular.z;
 }
 bool sourceDyPrepareJointGeometry(uint4 desc,uint endError) {
     const uint first=p.distanceBias+desc.x*64u;
@@ -989,8 +992,8 @@ bool sourceDyPrepareJointGeometry(uint4 desc,uint endError) {
         float3(1.0f,0.0f,0.0f),float3(0.0f,1.0f,0.0f),float3(0.0f,0.0f,1.0f)};
     const float mass0=asfloat(arena.Load(first+36u));
     const float mass1=asfloat(arena.Load(first+40u));
-    const uint inputA=p.integrationBias+40u+desc.y*76u;
-    const uint inputB=p.integrationBias+40u+desc.z*76u;
+    const uint inputA=p.integrationBias+44u+desc.y*40u;
+    const uint inputB=p.integrationBias+44u+desc.z*40u;
     const float3 vA=desc.y==invalidBody?0.0f:sourceDyPreparedVelocity(inputA,false);
     const float3 vB=desc.z==invalidBody?0.0f:sourceDyPreparedVelocity(inputB,false);
     const float3 omegaA=desc.y==invalidBody?0.0f:sourceDyPreparedVelocity(inputA,true);
@@ -1105,8 +1108,8 @@ void prepareJointRows(uint4 desc,uint lane,uint endError) {
     }
     const float inverseMassA=asfloat(arena.Load(massRow+36u));
     const float inverseMassB=asfloat(arena.Load(massRow+40u));
-    const uint inputA=p.integrationBias+40u+desc.y*76u;
-    const uint inputB=p.integrationBias+40u+desc.z*76u;
+    const uint inputA=p.integrationBias+44u+desc.y*40u;
+    const uint inputB=p.integrationBias+44u+desc.z*40u;
     float3 va=0.0f,vb=0.0f,wa=0.0f,wb=0.0f;
     if(desc.y!=invalidBody) {
         va=sourceDyPreparedVelocity(inputA,false);
@@ -1124,14 +1127,16 @@ void prepareJointRows(uint4 desc,uint lane,uint endError) {
         const float3 angularB=asfloat(arena.Load3(row+24u));
         float3 ja=0.0f,jb=0.0f;
         if(inverseMassA>0.0f) {
-            ja=asfloat(arena.Load3(inputA))*angularA.x+
-               asfloat(arena.Load3(inputA+12u))*angularA.y+
-               asfloat(arena.Load3(inputA+24u))*angularA.z;
+            const uint inertia=sourceDyInertiaAddress(desc.y);
+            ja=asfloat(arena.Load3(inertia))*angularA.x+
+               asfloat(arena.Load3(inertia+12u))*angularA.y+
+               asfloat(arena.Load3(inertia+24u))*angularA.z;
         }
         if(inverseMassB>0.0f) {
-            jb=asfloat(arena.Load3(inputB))*angularB.x+
-               asfloat(arena.Load3(inputB+12u))*angularB.y+
-               asfloat(arena.Load3(inputB+24u))*angularB.z;
+            const uint inertia=sourceDyInertiaAddress(desc.z);
+            jb=asfloat(arena.Load3(inertia))*angularB.x+
+               asfloat(arena.Load3(inertia+12u))*angularB.y+
+               asfloat(arena.Load3(inertia+24u))*angularB.z;
         }
         precise float speed=sourceDyDot3(axis,va-vb)+
             sourceDyDot3(angularA,wa)-sourceDyDot3(angularB,wb);
@@ -1275,8 +1280,8 @@ void saveMotion(uint index,uint endError) {
 void integrateBody(uint ordinal) {
     float3 linearDelta=0.0f;
     float3 angularState=0.0f;
-    const uint input=p.integrationBias+40u+ordinal*76u;
-    const uint inputFlags=arena.Load(input+44u);
+    const uint input=p.integrationBias+44u+ordinal*40u;
+    const uint inputFlags=arena.Load(input+8u);
     [branch]
     if(ordinal<p.bodyCount) {
         const uint from=p.bodyBias+ordinal*52u;
@@ -1304,8 +1309,8 @@ void integrateBody(uint ordinal) {
     const float3 baseLinear=sourceDyPreparedVelocity(input,false);
     const float3 baseAngular=sourceDyPreparedVelocity(input,true);
     if(!all(isfinite(baseLinear)) || !all(isfinite(baseAngular)))return;
-    const uint locks=arena.Load(input+36u);
-    const float dt=asfloat(arena.Load(input+40u));
+    const uint locks=arena.Load(input+0u);
+    const float dt=asfloat(arena.Load(input+4u));
     float3 position;
     float4 quaternion;
     if(!sourceDyMassPose(input,position,quaternion))return;
@@ -1316,9 +1321,13 @@ void integrateBody(uint ordinal) {
     if(locks&8u)angularState.x=0.0f;
     if(locks&16u)angularState.y=0.0f;
     if(locks&32u)angularState.z=0.0f;
-    const float3 inertiaX=asfloat(arena.Load3(input));
-    const float3 inertiaY=asfloat(arena.Load3(input+12u));
-    const float3 inertiaZ=asfloat(arena.Load3(input+24u));
+    const uint inertia=sourceDyInertiaAddress(ordinal);
+    const float3 inertiaX=ordinal<p.bodyCount
+        ?asfloat(arena.Load3(inertia)):float3(0.0f,0.0f,0.0f);
+    const float3 inertiaY=ordinal<p.bodyCount
+        ?asfloat(arena.Load3(inertia+12u)):float3(0.0f,0.0f,0.0f);
+    const float3 inertiaZ=ordinal<p.bodyCount
+        ?asfloat(arena.Load3(inertia+24u)):float3(0.0f,0.0f,0.0f);
     const float3 angular=baseAngular+float3(
         sourceDyDot3(inertiaX,angularState),
         sourceDyDot3(inertiaY,angularState),
@@ -1381,7 +1390,7 @@ void integrateBody(uint ordinal) {
     }
     // integrateCore advances the principal mass frame. Recover the
     // actor frame before composing each independent local shape pose.
-    const uint local=arena.Load(input+60u);
+    const uint local=arena.Load(input+24u);
     const float3 localCenter=asfloat(scActorLocals.Load3(local));
     const float4 localAxes=asfloat(scActorLocals.Load4(local+12u));
     nextQuaternion=sourceRigidMultiply(nextQuaternion,float4(-localAxes.xyz,localAxes.w));
@@ -1423,8 +1432,8 @@ void integrateBody(uint ordinal) {
     }
     arena.Store3(destination,asuint(nextPosition));
     arena.Store4(destination+12u,asuint(nextQuaternion));
-    uint element=arena.Load(input+48u);
-    const uint shapeCount=arena.Load(input+52u);
+    uint element=arena.Load(input+12u);
+    const uint shapeCount=arena.Load(input+16u);
     const uint4 views=arena.Load4(p.integrationBias);
     for(uint shape=0u;shape<shapeCount;++shape) {
         if(element>=views.w)return;
@@ -1521,10 +1530,20 @@ float3 sourceDyRotateOrdered(float4 q,float3 v) {
     return float3(x,y,z);
 }
 bool sourceDyPrepareWorldInertia(uint ordinal) {
-    const uint input=p.integrationBias+40u+ordinal*76u;
-    // Bit 14 does not overlap velocity changes [8:13] or force mods [16:27].
-    if((arena.Load(input+44u)&0x4000u)==0u)return true;
-    const uint local=arena.Load(input+60u);
+    const uint input=p.integrationBias+44u+ordinal*40u;
+    const uint inertia=sourceDyInertiaAddress(ordinal);
+    // Nonresponding kinematic rows have no numerical inertia.
+    const uint flags=arena.Load(input+8u);
+    if((flags&0x4000u)==0u) {
+        if((flags&1u)==0u) {
+            const uint3 zero=uint3(0u,0u,0u);
+            arena.Store3(inertia,zero);
+            arena.Store3(inertia+12u,zero);
+            arena.Store3(inertia+24u,zero);
+        }
+        return true;
+    }
+    const uint local=arena.Load(input+24u);
     if(local==invalidBody)return false;
     const float3 inverseI=asfloat(scActorLocals.Load3(local+48u));
     if(!all(isfinite(inverseI)) || any(inverseI<0.0f))return false;
@@ -1554,9 +1573,9 @@ bool sourceDyPrepareWorldInertia(uint ordinal) {
     }
     if(!all(isfinite(c0)) || !all(isfinite(c1)) ||
        !all(isfinite(c2)))return false;
-    arena.Store3(input,asuint(c0));
-    arena.Store3(input+12u,asuint(c1));
-    arena.Store3(input+24u,asuint(c2));
+    arena.Store3(inertia,asuint(c0));
+    arena.Store3(inertia+12u,asuint(c1));
+    arena.Store3(inertia+24u,asuint(c2));
     return true;
 }
 
@@ -1568,8 +1587,8 @@ void initializeSolverBody(uint ordinal,uint source) {
     arena.Store4(target+32u,zero);
     uint massBits=0u;
     if(source==invalidBody) {
-        const uint input=p.integrationBias+40u+ordinal*76u;
-        const uint local=arena.Load(input+60u);
+        const uint input=p.integrationBias+44u+ordinal*40u;
+        const uint local=arena.Load(input+24u);
         if(local!=invalidBody)
             massBits=scActorLocals.Load(local+28u);
     }else
