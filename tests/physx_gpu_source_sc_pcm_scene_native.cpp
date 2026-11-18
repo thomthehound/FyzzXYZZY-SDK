@@ -799,6 +799,14 @@ struct GpuPcmFrictionAnchorFixture {
                 return request.friction_eligible_mask!=0u;
             });
     }
+    static bool single_eligible_history_on_device(const Scene& scene) {
+        return std::any_of(scene.gpu_pcm_pairs_.begin(),
+            scene.gpu_pcm_pairs_.end(),[](const auto& request) {
+                const auto eligible=request.friction_eligible_mask;
+                return request.friction_history_mask==3u &&
+                       eligible==1u && !request.early_host_normal;
+            });
+    }
     static void seed_multiple_friction_patches(Scene& scene,Pair shapes,
                                                bool broken=false) {
         const auto edge=scene.contact_edge_index(shapes);
@@ -4861,6 +4869,8 @@ void verify_pcm_friction_normal_revalidation(
                 had_early_friction_history(gpu) &&
             native::GpuPcmFrictionAnchorFixture::
                 had_compatible_friction_history(gpu) &&
+            native::GpuPcmFrictionAnchorFixture::
+                single_eligible_history_on_device(gpu) &&
             normal.x*previous_normal.x+
                 normal.y*previous_normal.y+
                 normal.z*previous_normal.z<0.5f &&
