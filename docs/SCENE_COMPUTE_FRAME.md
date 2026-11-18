@@ -217,9 +217,10 @@ uses bits 8–15 for its exact count and bit 17 for its numerical source;
 both paths preserve the existing eight-byte Gu touch upload and journal.
 Bit 0 still records physical touch, and bit 31 rejects a failed producer.
 Sc accurate island admission writes these counts beside its source-ordered
-response tokens. Host-produced primitives and GPU-produced contacts use the
-same device-admitted response stream; neither needs a separate host numerical
-descriptor path. Dy rejects missing or mismatched PCM and CPU Gu counts before
+response tokens. CPU-generated Gu and GPU-generated PCM contacts use the
+same device-admitted response stream for selected compact numerical tasks.
+When no PCM pair is active, the existing Gu touch journal opens the resident
+EdgeIndex epoch without allocating a parallel contact registry. Dy rejects missing or mismatched PCM and CPU Gu counts before
 constructing solver rows, with no extra dispatch or host join.
 Legacy CPU Gu responses keep their host-authored extents. For
 device-admitted single-patch PCM managers,
