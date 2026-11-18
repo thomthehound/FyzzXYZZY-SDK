@@ -1512,7 +1512,6 @@ private:
     void split_lost_island(bool accurate,BodyId seed);
     void prepare_solver_bodies();
     void partition_constraints();
-    GpuDyJointInput pack_gpu_dy_joint_input(EdgeIndex edge) const;
     void prepare_constraints(float seconds);
     void erase_shape_friction_history(ShapeId id);
     void erase_body_friction_history(BodyId id);
@@ -1545,6 +1544,7 @@ private:
     std::size_t uploaded_convex_vertex_count_=0;
     std::size_t rigid_shape_count_=0;
     using EdgeIndex=std::uint32_t;
+    GpuDyJointInput pack_gpu_dy_joint_input(EdgeIndex edge) const;
     static constexpr EdgeIndex invalid_edge=std::numeric_limits<EdgeIndex>::max();
     static constexpr std::size_t invalid_instance=
         std::numeric_limits<std::size_t>::max();
