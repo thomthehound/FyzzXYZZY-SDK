@@ -78,8 +78,11 @@ not a blanket requirement that all GPU data be host mapped.
   inputs instead of repeating their state in contact descriptors.
 - **Device numerical state:** broadphase scratch, PCM witnesses, contact
   history, island worklists, constraint rows, and solver motion remain in
-  GPU-preferred storage. Dependent passes exchange device addresses or
-  offsets; they do not materialize host mirrors between passes.
+  GPU-preferred storage. Dy packs authored integration inputs separately
+  from its per-solver-body world inertia matrices; native device-owned
+  inertia is computed into GPU work storage without host tensor uploads.
+  Dependent passes exchange device addresses or offsets; they do not
+  materialize host mirrors between passes.
 - **Public output:** small completion/delta records can occupy CPU-readable
   mapped allocations. Bulk pose, impulse and contact readbacks are selected
   by real public consumers, not by the existence of a CPU scene.

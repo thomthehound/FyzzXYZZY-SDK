@@ -1863,6 +1863,9 @@ void verify_device_sc_dy_indirect_api(
             producer->dy_launch_stats().device_generated_bytes==
                 sizeof(tasks)+sizeof(ordinals) &&
             producer->dy_launch_stats().device_source_copy_bytes==0u &&
+            producer->dy_launch_stats().host_inertia_upload_bytes==
+                bodies.size()*9u*sizeof(float) &&
+            producer->dy_launch_stats().device_inertia_generated_bytes==0u &&
             producer->dy_launch_stats().source_descriptor_upload_bytes==0u &&
             producer->dy_upload_span_count()==2u,
         "Source Sc task admission retained a host numerical task upload");

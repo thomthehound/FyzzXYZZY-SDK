@@ -962,10 +962,10 @@ public:
                 [](const auto& input) {
                     return (input.active&1u)==0u || (input.active&32u)!=0u;
                 });
-        if(integration.size()>
+        if(bodies.size()>
            std::numeric_limits<std::uint32_t>::max()/(9u*sizeof(float)))
             throw std::overflow_error("Source Dy inertia work exceeds address space");
-        const std::size_t inertia_bytes=integration.size()*9u*sizeof(float);
+        const std::size_t inertia_bytes=bodies.size()*9u*sizeof(float);
         last_schedule_.host_inertia_upload_bytes=
             device_generated_inertia?0u:inertia_bytes;
         last_schedule_.device_inertia_generated_bytes=
@@ -1076,7 +1076,7 @@ public:
             body_ordinals.size(),tasks.size(),contact_forces.size(),friction_count,
             patches.size(),manifolds.size(),contact_order.size(),
             contact_prep.size(),integration.size(),compact_anchors_.size(),
-            tiles_.size(),device_partitions?1u:0u,integration.size()};
+            tiles_.size(),device_partitions?1u:0u,bodies.size()};
         const std::array<const void*,count> sources{
             bodies.data(),rows.data(),
             device_partitions?nullptr:descriptors.data(),
@@ -1467,7 +1467,7 @@ public:
                         packed_integration_.data(),
                         packed_integration_.size()*sizeof(SourceDyPackedIntegrationNative));
         if(!device_generated_inertia)
-            for(std::size_t i=0u;i<integration.size();++i)
+            for(std::size_t i=0u;i<bodies.size();++i)
                 std::memcpy(host_.data()+offsets[16]+i*9u*sizeof(float),
                             integration[i].sqrt_inverse_inertia,
                             9u*sizeof(float));

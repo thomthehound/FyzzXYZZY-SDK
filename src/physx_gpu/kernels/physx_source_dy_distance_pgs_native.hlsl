@@ -1321,13 +1321,13 @@ void integrateBody(uint ordinal) {
     if(locks&8u)angularState.x=0.0f;
     if(locks&16u)angularState.y=0.0f;
     if(locks&32u)angularState.z=0.0f;
-    const uint inertia=sourceDyInertiaAddress(ordinal);
-    const float3 inertiaX=ordinal<p.bodyCount
-        ?asfloat(arena.Load3(inertia)):float3(0.0f,0.0f,0.0f);
-    const float3 inertiaY=ordinal<p.bodyCount
-        ?asfloat(arena.Load3(inertia+12u)):float3(0.0f,0.0f,0.0f);
-    const float3 inertiaZ=ordinal<p.bodyCount
-        ?asfloat(arena.Load3(inertia+24u)):float3(0.0f,0.0f,0.0f);
+    float3 inertiaX=0.0f,inertiaY=0.0f,inertiaZ=0.0f;
+    if(ordinal<p.bodyCount) {
+        const uint inertia=sourceDyInertiaAddress(ordinal);
+        inertiaX=asfloat(arena.Load3(inertia));
+        inertiaY=asfloat(arena.Load3(inertia+12u));
+        inertiaZ=asfloat(arena.Load3(inertia+24u));
+    }
     const float3 angular=baseAngular+float3(
         sourceDyDot3(inertiaX,angularState),
         sourceDyDot3(inertiaY,angularState),
