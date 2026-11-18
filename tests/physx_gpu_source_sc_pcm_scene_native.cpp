@@ -3870,6 +3870,25 @@ void verify_single_pcm_joint_island_admission(
         gpu.create_center_distance_constraint(
             joints_gpu[i],joints_gpu[i+1u],2.8f);
     }
+    // This speculative PCM overlap has no physical touch. Sc's device
+    // task stream must exclude it without a host-authored endpoint row.
+    constexpr Vec3 empty_center{40.f,1.f,0.f};
+    constexpr Vec3 empty_other{41.08f,2.08f,0.f};
+    constexpr Quat empty_tilt{0.f,0.f,0.382683432f,0.923879533f};
+    const auto empty_cpu=cpu.add_dynamic_box(
+        {0.5f,0.5f,0.5f},empty_center,1.f);
+    const auto empty_gpu=gpu.add_dynamic_box(
+        {0.5f,0.5f,0.5f},empty_center,1.f);
+    const auto fixed_cpu=cpu.add_static_box(
+        {0.5f,0.5f,0.5f},empty_other);
+    const auto fixed_gpu=gpu.add_static_box(
+        {0.5f,0.5f,0.5f},empty_other);
+    cpu.set_pose(fixed_cpu,empty_other,empty_tilt);
+    gpu.set_pose(fixed_gpu,empty_other,empty_tilt);
+    RigidBodyDynamics no_gravity{};
+    no_gravity.gravity_enabled=false;
+    cpu.set_dynamics(empty_cpu,no_gravity);
+    gpu.set_dynamics(empty_gpu,no_gravity);
     for(std::uint32_t frame=0u;frame<3u;++frame) {
         cpu.step(1.f/120.f);
         gpu.step(1.f/120.f);
@@ -3878,7 +3897,8 @@ void verify_single_pcm_joint_island_admission(
         native::GpuPcmFrictionAnchorFixture::
             verify_device_numerical_response_ownership(gpu);
         const auto stats=producer->dy_launch_stats();
-        require(gpu.pairs().size()==1u && gpu.contacts().size()==1u &&
+        require(gpu.pairs().size()==2u && gpu.contacts().size()==1u &&
+                cpu.contacts().size()==1u &&
                 stats.device_island_indirect_dispatches==1u &&
                 stats.device_admitted_tasks==3u &&
                 stats.device_admitted_descriptors==3u &&
@@ -3900,6 +3920,9 @@ void verify_single_pcm_joint_island_admission(
                 gpu.accurate_island_id(contact_gpu)!=
                     gpu.accurate_island_id(joints_gpu[0]),
             "PCM and multiple joint sources lost independent device tasks");
+        test::compound_compare_state(
+            gpu.body_state(empty_gpu),cpu.body_state(empty_cpu),0.003f,
+            "Non-touching GPU PCM candidate acquired a numerical response");
         test::compound_compare_state(
             gpu.body_state(contact_gpu),cpu.body_state(contact_cpu),0.03f,
             "Single PCM island diverged from CPU PGS");

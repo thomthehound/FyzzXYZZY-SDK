@@ -173,7 +173,9 @@ The GPU resolves physical touch and runnable task topology on its own
 ordered queue. After accurate Sc publication, a compact node-to-solver-row upload
 remaps the device body order in place against the full Dy row capacity;
 Dy consumes the same admitted tasks without a second graph dispatch or
-topology readback.
+topology readback. Device-admitted numerical tasks do not materialize
+host endpoint descriptors for physically non-touching PCM candidates;
+CPU-authored tasks retain their explicit zero-response endpoints.
 Contact-only tasks require an admitted response, so empty PCM candidates
 do not produce solver work. Mixed ordinary CPU Gu and GPU PCM contact/joint
 graphs also admit before the GPU witness join, after CPU Gu publishes

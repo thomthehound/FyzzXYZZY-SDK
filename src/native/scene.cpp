@@ -9825,10 +9825,9 @@ void Scene::solve_gpu_distance_constraints(float seconds) {
         if(cursor!=m.solver_offset+numerical_count)
             throw std::logic_error("GPU Dy source patch contact stream truncated");
     }
-    // Zero-response managers have no DyContactPrep record. Preserve
-    // their original endpoint ordinals and dynamic classification in
-    // the otherwise unused manifold slots for device task admission.
-    for(const auto& desc:ordered_constraints_) {
+    // Device-admitted responses exclude dormant managers. Host-authored
+    // task descriptors still require their zero-response endpoint rows.
+    if(!device_admission)for(const auto& desc:ordered_constraints_) {
         if((desc.row_count&255u)!=0u)continue;
         const auto source=desc.index;
         if(source>=gpu_dy_manifolds_.size() ||
