@@ -5394,6 +5394,76 @@ void verify_mixed_gu_pcm_gpu_dy_solver(
 
 // The explicitly installed device Dy 1D stage must replace the
 // production PGS solve, not merely compute a disconnected fixture result.
+void verify_joint_only_device_admission(
+    fyzz::compute::Backend backend,const char* sap,
+    const char* pcm,const char* dy_shader) {
+    using namespace fyzz;
+    std::ifstream stream(dy_shader,std::ios::binary);
+    require(bool(stream),"Compiled device joint shader is unavailable");
+    compute::ShaderBinary shader{};
+    shader.format=backend==compute::Backend::Vulkan
+        ?compute::ShaderFormat::Spirv:compute::ShaderFormat::Dxil;
+    shader.bytes.assign(std::istreambuf_iterator<char>{stream},
+                        std::istreambuf_iterator<char>{});
+    native::Scene cpu,gpu;
+    auto owner=std::make_unique<
+        physx_gpu::SourceScOwnedGpuBroadphaseNative>(
+            backend,load_native_gpu_sap_shaders(backend,sap),
+            128u,128u,std::nullopt,
+            load_native_gpu_pcm_shaders(backend,pcm),std::move(shader));
+    auto* producer=owner.get();
+    gpu.set_gpu_broadphase(std::move(owner));
+    gpu.set_gpu_dy_device_admission_enabled(true);
+    std::array<BodyId,6> a{},b{};
+    std::array<std::uint32_t,3> joints_cpu{},joints_gpu{};
+    for(std::size_t i=0u;i<3u;++i) {
+        const Vec3 p{float(i)*10.f,3.f,0.f};
+        const Vec3 q{p.x+2.f,3.f,0.f};
+        a[i*2u]=cpu.add_dynamic_box({0.25f,0.25f,0.25f},p,1.f);
+        b[i*2u]=gpu.add_dynamic_box({0.25f,0.25f,0.25f},p,1.f);
+        a[i*2u+1u]=cpu.add_dynamic_box({0.25f,0.25f,0.25f},q,1.f);
+        b[i*2u+1u]=gpu.add_dynamic_box({0.25f,0.25f,0.25f},q,1.f);
+        RigidBodyDynamics dynamics{};
+        dynamics.gravity_enabled=false;
+        for(const auto id:{a[i*2u],a[i*2u+1u]})
+            cpu.set_dynamics(id,dynamics);
+        for(const auto id:{b[i*2u],b[i*2u+1u]})
+            gpu.set_dynamics(id,dynamics);
+        joints_cpu[i]=cpu.create_center_distance_constraint(
+            a[i*2u],a[i*2u+1u],1.5f);
+        joints_gpu[i]=gpu.create_center_distance_constraint(
+            b[i*2u],b[i*2u+1u],1.5f);
+    }
+    constexpr float dt=1.f/120.f;
+    for(std::uint32_t frame=0u;frame<4u;++frame) {
+        if(frame==2u) {
+            cpu.retire_constraint(joints_cpu[1]);
+            gpu.retire_constraint(joints_gpu[1]);
+        }
+        cpu.step(dt);
+        gpu.step(dt);
+        const auto admitted=frame<2u?3u:2u;
+        const auto stats=producer->dy_launch_stats();
+        const auto tokens=producer->gpu_dy_admitted_response_tokens();
+        require(cpu.contacts().empty() && gpu.contacts().empty() &&
+                producer->pcm_header_join_bytes()==0u &&
+                producer->dy_pcm_device_contact_rows()==0u &&
+                stats.device_island_indirect_dispatches==1u &&
+                stats.device_admitted_tasks==admitted &&
+                stats.device_admitted_descriptors==admitted &&
+                tokens.size()==admitted &&
+                std::all_of(tokens.begin(),tokens.end(),
+                    [](std::uint32_t token) {
+                        return (token&0xc0000000u)==0x80000000u;
+                    }),
+            "Joint-only Sc islands did not own device numerical admission");
+        for(std::size_t i=0u;i<a.size();++i)
+            test::compound_compare_state(
+                gpu.body_state(b[i]),cpu.body_state(a[i]),0.003f,
+                "Joint-only device admission diverged from CPU PGS");
+    }
+}
+
 void verify_gpu_distance_solver(
     fyzz::compute::Backend backend,const char* sap,
     const char* pcm,const char* dy_shader,
@@ -7619,8 +7689,12 @@ int main(int argc,char** argv) {
                     backend,argv[1],argv[2],argv[3]);});
         if(scenario=="device_admission_joint_scene")
             fyzz::tests::measure_gpu_case("sc_pcm","device_admission_joint_scene",
-                [&]{verify_gpu_distance_solver(
-                    backend,argv[1],argv[2],argv[3],true);});
+                [&]{
+                    verify_joint_only_device_admission(
+                        backend,argv[1],argv[2],argv[3]);
+                    verify_gpu_distance_solver(
+                        backend,argv[1],argv[2],argv[3],true);
+                });
         if(scenario=="all" || scenario=="host_packed")
             fyzz::tests::measure_gpu_case("sc_pcm","host_packed",
                 [&]{verify_host_lane_packed_islands(
