@@ -3823,8 +3823,8 @@ void verify_single_body_pre_witness_contact(
         empty_gpu.body_state(actual),empty_cpu.body_state(expected),0.003f,
         "Non-touching PCM candidate changed free-flight motion");
 }
-// One PCM manager plus a disconnected joint-only island still admits
-// two independent numerical tasks before Sc joins the contact witness.
+// One PCM manager and two disconnected joint-only islands admit
+// three independent numerical tasks before Sc joins contact witnesses.
 void verify_single_pcm_joint_island_admission(
     fyzz::compute::Backend backend,const char* sap,
     const char* pcm,const char* dy_shader) {
@@ -3851,9 +3851,10 @@ void verify_single_pcm_joint_island_admission(
         {0.5f,0.5f,0.5f},{0.f,0.83f,0.f},1.f);
     const auto contact_gpu=gpu.add_dynamic_box(
         {0.5f,0.5f,0.5f},{0.f,0.83f,0.f},1.f);
-    std::array<BodyId,2> joints_cpu{},joints_gpu{};
-    for(std::uint32_t i=0u;i<2u;++i) {
-        const Vec3 center{10.f+float(i)*3.f,4.f,0.f};
+    std::array<BodyId,4> joints_cpu{},joints_gpu{};
+    for(std::uint32_t i=0u;i<4u;++i) {
+        const Vec3 center{10.f+float(i/2u)*10.f+
+            float(i%2u)*3.f,4.f,0.f};
         joints_cpu[i]=cpu.add_dynamic_box(
             {0.3f,0.3f,0.3f},center,1.f);
         joints_gpu[i]=gpu.add_dynamic_box(
@@ -3863,10 +3864,12 @@ void verify_single_pcm_joint_island_admission(
         cpu.set_dynamics(joints_cpu[i],dynamics);
         gpu.set_dynamics(joints_gpu[i],dynamics);
     }
-    cpu.create_center_distance_constraint(
-        joints_cpu[0],joints_cpu[1],2.8f);
-    gpu.create_center_distance_constraint(
-        joints_gpu[0],joints_gpu[1],2.8f);
+    for(std::size_t i=0u;i<joints_cpu.size();i+=2u) {
+        cpu.create_center_distance_constraint(
+            joints_cpu[i],joints_cpu[i+1u],2.8f);
+        gpu.create_center_distance_constraint(
+            joints_gpu[i],joints_gpu[i+1u],2.8f);
+    }
     for(std::uint32_t frame=0u;frame<3u;++frame) {
         cpu.step(1.f/120.f);
         gpu.step(1.f/120.f);
@@ -3877,18 +3880,22 @@ void verify_single_pcm_joint_island_admission(
         const auto stats=producer->dy_launch_stats();
         require(gpu.pairs().size()==1u && gpu.contacts().size()==1u &&
                 stats.device_island_indirect_dispatches==1u &&
-                stats.device_admitted_tasks==2u &&
-                stats.device_admitted_descriptors==2u &&
+                stats.device_admitted_tasks==3u &&
+                stats.device_admitted_descriptors==3u &&
                 stats.prewitness_joint_source_upload_bytes==
-                    (frame==0u?sizeof(native::GpuDyJointInput):0u) &&
+                    (frame==0u?2u*sizeof(native::GpuDyJointInput):0u) &&
                 stats.device_joint_metadata_upload_bytes==
                     stats.prewitness_joint_source_upload_bytes &&
-                stats.device_joint_geometry_count==1u &&
+                stats.device_joint_geometry_count==2u &&
                 gpu.accurate_island_id(joints_gpu[0])==
                     gpu.accurate_island_id(joints_gpu[1]) &&
+                gpu.accurate_island_id(joints_gpu[2])==
+                    gpu.accurate_island_id(joints_gpu[3]) &&
+                gpu.accurate_island_id(joints_gpu[0])!=
+                    gpu.accurate_island_id(joints_gpu[2]) &&
                 gpu.accurate_island_id(contact_gpu)!=
                     gpu.accurate_island_id(joints_gpu[0]),
-            "Single PCM/joint graph did not admit two independent device tasks");
+            "PCM and multiple joint sources lost independent device tasks");
         test::compound_compare_state(
             gpu.body_state(contact_gpu),cpu.body_state(contact_cpu),0.03f,
             "Single PCM island diverged from CPU PGS");

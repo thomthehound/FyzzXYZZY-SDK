@@ -4426,6 +4426,16 @@ void Scene::update_contacts(bool defer_device_points,float inverse_step) {
         gpu_dy_joint_inputs_.reserve(active_constraint_handles_.size());
         for(const EdgeIndex edge:active_constraint_handles_)
             gpu_dy_joint_inputs_.push_back(pack_gpu_dy_joint_input(edge));
+        std::sort(gpu_dy_joint_inputs_.begin(),gpu_dy_joint_inputs_.end(),
+            [](const GpuDyJointInput& a,const GpuDyJointInput& b) {
+                return a.source_slot<b.source_slot;
+            });
+        if(std::adjacent_find(gpu_dy_joint_inputs_.begin(),
+                             gpu_dy_joint_inputs_.end(),
+            [](const GpuDyJointInput& a,const GpuDyJointInput& b) {
+                return a.source_slot==b.source_slot;
+            })!=gpu_dy_joint_inputs_.end())
+            throw std::logic_error("Sc staged a joint source slot twice");
         gpu_broadphase_->enqueue_gpu_dy_joint_sources(gpu_dy_joint_inputs_);
     }
     // Only selected normals cross early; the validated source history
@@ -8239,8 +8249,39 @@ void Scene::prepare_constraints(float seconds) {
     gpu_dy_contact_order_.clear();
     joint_rows_.clear();
     gpu_dy_rows_.clear();
-    gpu_dy_joint_inputs_.clear();
     const bool gpu_normal_prep=gpu_dy_active();
+    const bool prewitness_joint_sources=
+        gpu_normal_prep && !gpu_dy_joint_inputs_.empty();
+    if(prewitness_joint_sources) {
+        // Keep only responding joints. The staged authored records remain
+        // ordered by their stable source slot, independent of Dy task order.
+        gpu_dy_joint_source_slots_.clear();
+        gpu_dy_joint_source_slots_.reserve(indexed_joints_.size());
+        for(const EdgeIndex edge:indexed_joints_) {
+            if(edge>=island_edges_.size() ||
+               island_edges_[edge].type!=IslandEdgeType::Constraint)
+                throw std::logic_error("Dy indexed an invalid joint source");
+            gpu_dy_joint_source_slots_.push_back(
+                island_edges_[edge].constraint_id);
+        }
+        std::sort(gpu_dy_joint_source_slots_.begin(),
+                  gpu_dy_joint_source_slots_.end());
+        if(std::adjacent_find(gpu_dy_joint_source_slots_.begin(),
+                             gpu_dy_joint_source_slots_.end())!=
+           gpu_dy_joint_source_slots_.end())
+            throw std::logic_error("Dy indexed one joint source twice");
+        const auto last=std::remove_if(
+            gpu_dy_joint_inputs_.begin(),gpu_dy_joint_inputs_.end(),
+            [this](const GpuDyJointInput& input) {
+                return !std::binary_search(
+                    gpu_dy_joint_source_slots_.begin(),
+                    gpu_dy_joint_source_slots_.end(),input.source_slot);
+            });
+        gpu_dy_joint_inputs_.erase(last,gpu_dy_joint_inputs_.end());
+        if(gpu_dy_joint_inputs_.size()!=gpu_dy_joint_source_slots_.size())
+            throw std::logic_error(
+                "Pre-witness joint snapshot omitted a responding source");
+    }else gpu_dy_joint_inputs_.clear();
     gpu_dy_contact_prep_pairs_.clear();
     if(gpu_normal_prep)
         gpu_dy_contact_prep_indices_.assign(previous_pairs_.size(),0xffffffffu);
@@ -8257,12 +8298,32 @@ void Scene::prepare_constraints(float seconds) {
         solver_kinematic_participant_ |=
             body0.motion==Motion::Kinematic || body1.motion==Motion::Kinematic;
         if(gpu_normal_prep) {
-            // Sc reuses the authored source admitted before PCM witnesses.
-            const GpuDyJointInput input=pack_gpu_dy_joint_input(edge_id);
-            if(gpu_dy_joint_inputs_.size()>=std::numeric_limits<std::uint32_t>::max())
-                throw std::overflow_error("Native GPU joint admission count overflow");
-            const auto source_index=static_cast<std::uint32_t>(gpu_dy_joint_inputs_.size());
-            gpu_dy_joint_inputs_.push_back(input);
+            std::uint32_t source_index=0u;
+            if(prewitness_joint_sources) {
+                const auto found=std::lower_bound(
+                    gpu_dy_joint_inputs_.begin(),gpu_dy_joint_inputs_.end(),
+                    edge.constraint_id,
+                    [](const GpuDyJointInput& input,std::uint32_t slot) {
+                        return input.source_slot<slot;
+                    });
+                if(found==gpu_dy_joint_inputs_.end() ||
+                   found->source_slot!=edge.constraint_id ||
+                   found->source_generation!=joint.generation)
+                    throw std::logic_error(
+                        "Pre-witness joint source changed before Dy admission");
+                source_index=static_cast<std::uint32_t>(
+                    found-gpu_dy_joint_inputs_.begin());
+            }else {
+                if(gpu_dy_joint_inputs_.size()>=
+                   std::numeric_limits<std::uint32_t>::max())
+                    throw std::overflow_error(
+                        "Native GPU joint admission count overflow");
+                source_index=static_cast<std::uint32_t>(
+                    gpu_dy_joint_inputs_.size());
+                gpu_dy_joint_inputs_.push_back(
+                    pack_gpu_dy_joint_input(edge_id));
+            }
+            const auto& input=gpu_dy_joint_inputs_[source_index];
             const auto count=joint.kind==JointKind::Distance?1u:
                 joint.kind==JointKind::Spherical?3u:
                 joint.kind==JointKind::Fixed?6u:5u;
@@ -12240,6 +12301,8 @@ void Scene::advance_collision_internal(
     // change source AABB inputs. On GPU frames, execute this work after
     // the SAP producer submits but before its host-facing fetch joins.
     const auto prepare_sc_publication=[&] {
+        gpu_dy_joint_inputs_.clear();
+        gpu_dy_joint_source_slots_.clear();
         gpu_dy_early_islands_=false;
         gpu_dy_early_actor_ids_.clear();
         gpu_dy_early_joint_edges_.clear();

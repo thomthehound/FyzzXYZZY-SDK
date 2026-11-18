@@ -2215,6 +2215,7 @@ private:
     bool gpu_dy_pose_ready_=false;
     std::vector<GpuDyJointRow> gpu_dy_rows_;
     std::vector<GpuDyJointInput> gpu_dy_joint_inputs_;
+    std::vector<std::uint32_t> gpu_dy_joint_source_slots_;
     std::vector<std::uint32_t> gpu_dy_body_ordinals_;
     std::vector<GpuGuTouchRecord> gpu_dy_gu_touches_;
     std::vector<GpuDyDistanceTask> gpu_dy_tasks_;
