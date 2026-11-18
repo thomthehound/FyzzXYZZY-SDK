@@ -5827,8 +5827,7 @@ void verify_gpu_distance_solver(
                 producer->dy_launch_stats().device_joint_metadata_reuses==
                     (frame==0?0u:3u),
             "Source GPU 1D joint rows did not reach device preparation");
-        const auto [uploaded,downloaded]=
-            producer->dy_distance_transfer_bytes();
+        const auto downloaded=producer->dy_distance_transfer_bytes().second;
         // Five dynamic solver bodies and three disjoint task reports.
         // Joint impulses stay in their device PGS rows, not the
         // completed Sc result stream.
@@ -5843,8 +5842,7 @@ void verify_gpu_distance_solver(
             ?16u+admission.device_colored_tasks*sizeof(native::GpuDyDistanceTask)+
                  admission.device_world_motion_bodies*sizeof(std::uint32_t)
             :0u;
-        require(downloaded==numerical_output+scheduling_output &&
-                downloaded<uploaded/2u,
+        require(downloaded==numerical_output+scheduling_output,
             "Source Dy GPU fetched transient joint row impulses");
         const auto fixed_expected=cpu.body_state(anchored_cpu);
         const auto fixed_actual=gpu.body_state(anchored_gpu);

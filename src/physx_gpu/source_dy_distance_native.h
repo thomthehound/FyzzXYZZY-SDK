@@ -1536,7 +1536,7 @@ public:
             ranges[range_count++]={offset,offset+bytes};
         };
         const auto device_owned=[&](std::size_t i) {
-            return i==6u || i==7u || i==15u ||
+            return i==6u || i==7u ||
                 (i==0u && device_initial_bodies) ||
                 ((i==2u || i==3u) && device_partitions) ||
                 ((i==4u || i==5u) && device_admission) ||
@@ -1546,24 +1546,8 @@ public:
             if(device_owned(i) || !bytes[i])continue;
             append_range(offsets[i],bytes[i]);
         }
-        if(device_partitions) {
-            const auto n=descriptor_capacity;
-            const std::size_t header_bytes=source_descriptors
-                ?(device_admission?32u:24u):20u;
-            append_range(offsets[15],header_bytes);
-            if(source_descriptors) {
-                if(n && !device_admission)
-                    append_range(offsets[15]+header_bytes+n*16u,
-                                 n*sizeof(std::uint32_t));
-                const auto table=offsets[15]+header_bytes+n*24u+
-                    bodies.size()*12u;
-                append_range(table,sizeof(std::uint32_t)+
-                    source_descriptor_full_.size()*
-                        sizeof(native::GpuDyDistanceDescriptor));
-            }else if(n)
-                append_range(offsets[15]+20u,
-                             n*sizeof(native::GpuDyDistanceDescriptor));
-        }
+        // Partition scratch retains initialized task-color and body
+        // state until their GPU consumers have written every word.
         std::sort(ranges.begin(),ranges.begin()+range_count);
         const auto crosses_device_data=[&](std::size_t first,
                                             std::size_t last) {
