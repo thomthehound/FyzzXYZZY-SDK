@@ -231,15 +231,19 @@ struct GpuPcmFrictionAnchorFixture {
         result.set_primitive(2u,false);
         result.normal={0.f,1.f,0.f};
         std::array<ContactPoint,4> contacts{};
+        contacts[0].normal={0.f,0.f,2.f};
         const auto count=scene.publish_gpu_pcm_box_box(
             result,cache,contacts,true,true);
-        if(count!=2u || !cache.initialized ||
-           contacts[0].normal.y!=1.f ||
+        const auto empty_count=scene.publish_gpu_pcm_box_box(
+            result,cache,{},true,true);
+        if(count!=2u || empty_count!=2u || !cache.initialized ||
+           contacts[0].normal.z!=2.f ||
+           contacts[0].normal.y!=0.f ||
            contacts[0].position.y!=0.f ||
            contacts[0].separation!=0.f ||
            contacts[1].position.y!=0.f)
             throw std::runtime_error(
-                "Sc early PCM normal admission materialized world contacts");
+                "Deferred PCM allocated or modified host world contacts");
         result.normal={};
         bool rejected=false;
         try {
@@ -644,17 +648,20 @@ struct GpuPcmFrictionAnchorFixture {
     }
     static void verify_pcm_contact_arena(const Scene& scene) {
         const auto* base=scene.contact_points_.data();
+        std::size_t next=0u;
         for(const auto& manager:scene.manifolds_) {
-            if(manager.pcm_result_index==
-               std::numeric_limits<std::uint32_t>::max())continue;
-            if(manager.count==0u ||
-               manager.contact_offset>scene.contact_points_.size() ||
-               manager.count>scene.contact_points_.size()-manager.contact_offset ||
+            if(!manager.count || manager.contact_offset!=next ||
+               next>scene.contact_points_.size() ||
+               manager.count>scene.contact_points_.size()-next ||
                manager.points.size()!=manager.count ||
-               manager.points.data()!=base+manager.contact_offset)
+               manager.points.data()!=base+next)
                 throw std::runtime_error(
-                    "Source GPU PCM published outside its Sc Gu contact arena");
+                    "Sc published noncontiguous Gu and PCM contact ranges");
+            next+=manager.count;
         }
+        if(next!=scene.contact_points_.size())
+            throw std::runtime_error(
+                "Sc retained speculative GPU PCM point reservations");
     }
     static void verify_device_contact_order(const Scene& scene,
                                             bool require_pcm,
