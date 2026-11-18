@@ -4356,6 +4356,8 @@ void verify_cpu_gu_gpu_dy_solver(
     native::Scene cpu,gpu;
     cpu.set_pcm_box_box(false);
     gpu.set_pcm_box_box(false);
+    cpu.set_pcm_plane_box(false);
+    gpu.set_pcm_plane_box(false);
     auto owner=std::make_unique<
         physx_gpu::SourceScOwnedGpuBroadphaseNative>(
             backend,load_native_gpu_sap_shaders(backend,sap),
@@ -4421,6 +4423,41 @@ void verify_cpu_gu_gpu_dy_solver(
             "Source GPU Dy legacy Gu contact solve diverged from CPU");
     }
     require(saw_contact,"Source legacy Gu fixture never generated a contact");
+    // Both CPU Gu contacts own exact EdgeIndex extents. The accurate
+    // device graph partitions their independent response islands.
+    const auto another_fixed_cpu=cpu.add_static_box(
+        {0.5f,0.5f,0.5f},{8.f,0.f,0.f});
+    const auto another_fixed_gpu=gpu.add_static_box(
+        {0.5f,0.5f,0.5f},{8.f,0.f,0.f});
+    const auto another_cpu=cpu.add_dynamic_box(
+        {0.5f,0.5f,0.5f},{8.f,0.84f,0.f},1.f);
+    const auto another_gpu=gpu.add_dynamic_box(
+        {0.5f,0.5f,0.5f},{8.f,0.84f,0.f},1.f);
+    gpu.set_gpu_dy_device_admission_enabled(true);
+    for(std::uint32_t frame=0u;frame<2u;++frame) {
+        cpu.step(dt);
+        gpu.step(dt);
+        const auto stats=producer->dy_launch_stats();
+        require(stats.device_island_indirect_dispatches==1u &&
+                stats.device_admitted_tasks==2u &&
+                stats.device_admitted_descriptors==2u &&
+                producer->dy_pcm_device_contact_rows()==0u &&
+                producer->dy_cpu_gu_geometry_bytes()>0u,
+            "CPU Gu-only scene did not admit device-authored numerical tasks");
+        native::GpuPcmFrictionAnchorFixture::
+            verify_device_admitted_contact_sources(gpu);
+        test::compound_compare_state(
+            gpu.body_state(moving_gpu),cpu.body_state(moving_cpu),0.003f,
+            "CPU Gu device island admission changed existing contact motion");
+        test::compound_compare_state(
+            gpu.body_state(another_gpu),cpu.body_state(another_cpu),0.003f,
+            "CPU Gu device island admission changed new contact motion");
+        require(gpu.contact_edge_index({another_fixed_gpu,another_gpu})!=
+                    0xffffffffu &&
+                cpu.contact_edge_index({another_fixed_cpu,another_cpu})!=
+                    0xffffffffu,
+            "CPU Gu-only numerical admission lost stable contact identity");
+    }
 }
 
 // An already-admitted native scene can change numerical executor while
