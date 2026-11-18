@@ -4852,9 +4852,14 @@ void verify_pcm_friction_normal_revalidation(
         gpu,{gs,gb});
     native::GpuPcmFrictionAnchorFixture::invalidate_multiple_friction_materials(
         gpu,{gs,gb},true);
-    const Vec3 side_contact{0.95f,1.8f,0.f};
-    cpu.set_pose(cb,side_contact,{0.f,0.f,0.f,1.f});
-    gpu.set_pose(gb,side_contact,{0.f,0.f,0.f,1.f});
+    const auto prior_cpu=cpu.body_state(cb);
+    const auto prior_gpu=gpu.body_state(gb);
+    // Preserve normal-direction anchor validity while changing the
+    // shallowest contact axis from the top face to the side face.
+    cpu.set_pose(cb,{0.995f,prior_cpu.position.y,0.f},
+                 prior_cpu.orientation);
+    gpu.set_pose(gb,{0.995f,prior_gpu.position.y,0.f},
+                 prior_gpu.orientation);
     cpu.step(1.f/120.f);
     gpu.step(1.f/120.f);
     require(gpu.contacts().size()==1u &&
@@ -4863,12 +4868,14 @@ void verify_pcm_friction_normal_revalidation(
     const auto normal=gpu.contacts().front().points.front().normal;
     const auto& friction=gpu.solved_friction_patches().front();
     require(native::GpuPcmFrictionAnchorFixture::
-                single_eligible_history_on_device(gpu) &&
-            native::GpuPcmFrictionAnchorFixture::
-                had_early_friction_history(gpu) &&
-            native::GpuPcmFrictionAnchorFixture::
+                had_early_friction_history(gpu),
+        "Side-contact PCM lost geometric validity of cached friction");
+    require(native::GpuPcmFrictionAnchorFixture::
                 had_compatible_friction_history(gpu),
-        "Side-contact PCM history has no uniquely eligible cached patch");
+        "Side-contact PCM lost material compatibility of cached friction");
+    require(native::GpuPcmFrictionAnchorFixture::
+                single_eligible_history_on_device(gpu),
+        "Side-contact PCM did not retain one device-validated patch");
     require(producer->pcm_header_join_bytes()==2u*sizeof(std::uint32_t) &&
             producer->pcm_deferred_point_bytes()==
                 sizeof(native::GpuPcmBoxResult)-2u*sizeof(std::uint32_t),
