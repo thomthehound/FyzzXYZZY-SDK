@@ -126,6 +126,7 @@ struct SourceDyLaunchStats {
     std::size_t device_initialization_dispatches=0u;
     std::size_t device_world_inertia_bodies=0u;
     std::size_t host_inertia_upload_bytes=0u;
+    std::size_t device_inertia_generated_bytes=0u;
     std::size_t device_world_motion_bodies=0u;
     std::size_t actor_local_upload_bytes=0u;
     std::size_t actor_local_upload_spans=0u;
@@ -967,6 +968,8 @@ public:
         const std::size_t inertia_bytes=integration.size()*9u*sizeof(float);
         last_schedule_.host_inertia_upload_bytes=
             device_generated_inertia?0u:inertia_bytes;
+        last_schedule_.device_inertia_generated_bytes=
+            device_generated_inertia?bodies.size()*9u*sizeof(float):0u;
         last_host_pose_upload_bytes_=host_poses_.size()*sizeof(SourceDyHostPoseNative);
         // Native Sc transfers source-order manager and joint identities.
         // Contact prep already encodes active body ordinals; device-owned
@@ -1170,8 +1173,6 @@ public:
             ? bytes[2]+bytes[3]+
                 (device_admission
                     ?body_ordinals.size_bytes()+tasks.size_bytes():0u):0u;
-        if(device_generated_inertia)
-            last_schedule_.device_generated_bytes+=inertia_bytes;
         std::array<std::size_t,count> offsets{};
         // The original Dy heap retains an EdgeIndex-keyed Sc anchor
         // prefix. Solver output follows it and remains the sole readback;

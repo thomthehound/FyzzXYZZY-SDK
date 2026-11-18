@@ -4204,8 +4204,12 @@ void verify_gpu_coupled_solver(
                 schedule.device_world_motion_bodies>0u &&
                 schedule.device_world_motion_bodies<=
                     schedule.device_initialized_bodies &&
-                schedule.device_body_upload_bytes==0u,
-            "Coupled Dy failed device world-motion publication");
+                schedule.device_body_upload_bytes==0u &&
+                schedule.device_world_inertia_bodies>0u &&
+                schedule.host_inertia_upload_bytes==0u &&
+                schedule.device_inertia_generated_bytes==
+                    schedule.device_initialized_bodies*9u*sizeof(float),
+            "Coupled Dy failed device-resident motion and inertia publication");
         const auto prep_saving=producer->dy_contact_prep_upload_saving();
         // Compare writeback with the source-sized upload baseline. The
         // GPU contact-prep payload is intentionally smaller now.
