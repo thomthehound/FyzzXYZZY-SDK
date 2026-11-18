@@ -4435,7 +4435,8 @@ void Scene::update_contacts(bool defer_device_points,float inverse_step) {
     // Deterministic task grouping already preserves individual islands.
     const bool early_device_graph=defer_device_points &&
         gpu_dy_device_admission_enabled_ && !enhanced_determinism_ &&
-        gpu_results_pending &&
+        (gpu_results_pending || gu_only_device_epoch ||
+         joint_only_device_admission) &&
         gpu_broadphase_->gpu_dy_direct_task_limit()!=0u;
     if(early_device_graph) {
         constexpr std::uint32_t invalid=0xffffffffu;
@@ -4575,8 +4576,8 @@ void Scene::update_contacts(bool defer_device_points,float inverse_step) {
             }
             if(has_legacy_gu) {
                 early_device_graph_awaits_gu=true;
-                // All independent CPU Gu contacts finish before the PCM
-                // header join, irrespective of their Sc encounter order.
+                // CPU Gu physical touches enter the ordered device queue
+                // before Sc's witness consumer or numerical task lowering.
                 overlap_legacy_gu=true;
             }else {
                 gpu_broadphase_->enqueue_gpu_dy_island_admission(
@@ -5025,21 +5026,21 @@ void Scene::update_contacts(bool defer_device_points,float inverse_step) {
     // contacts before any GPU PCM result becomes visible to Sc.
     while(old_cursor<manifolds_.size())
         next_lost_contacts_.push_back(manifolds_[old_cursor++].pair);
+    // Every CPU Gu producer publishes its exact EdgeIndex touch and extent
+    // before the device accurate-island stage reads that history. PCM may
+    // still have an independent witness DMA that Sc joins afterwards.
+    const bool early_gu_history=overlap_legacy_gu;
+    if(early_gu_history)
+        publish_cpu_gu_touch_history(next_lost_contacts_,manifolds_);
+    if(early_device_graph_awaits_gu) {
+        gpu_broadphase_->enqueue_gpu_dy_island_admission(
+            gpu_dy_island_edges_,gpu_dy_island_node_flags_,
+            {static_cast<std::uint32_t>(previous_pairs_.size()),
+             static_cast<std::uint32_t>(gpu_dy_early_joint_edges_.size()),0u},
+            true);
+        gpu_dy_early_islands_=true;
+    }
     if(gpu_results_pending) {
-        // A mixed CPU Gu producer publishes touch before GPU admission.
-        // PCM-only frames retain their ordinary Sc touch publication.
-        if(overlap_legacy_gu)
-            publish_cpu_gu_touch_history(next_lost_contacts_,manifolds_);
-        if(early_device_graph_awaits_gu) {
-            // All CPU Gu physical transitions now precede this device
-            // admission, while the GPU witness DMA remains unjoined.
-            gpu_broadphase_->enqueue_gpu_dy_island_admission(
-                gpu_dy_island_edges_,gpu_dy_island_node_flags_,
-                {static_cast<std::uint32_t>(previous_pairs_.size()),
-                 static_cast<std::uint32_t>(gpu_dy_early_joint_edges_.size()),0u},
-                true);
-            gpu_dy_early_islands_=true;
-        }
         FYZZ_PROFILE_SCOPE("sc.pcm_witness_join");
         gpu_broadphase_->finish_gpu_pcm_box_contacts();
         for(auto& manifold:next_manifolds_) {
@@ -5134,9 +5135,9 @@ void Scene::update_contacts(bool defer_device_points,float inverse_step) {
     found_contacts_.swap(next_found_contacts_);
     lost_contacts_.swap(next_lost_contacts_);
     ++contact_epoch_;
-    // Mixed CPU Gu history was already queued before the witness join.
-    // Other frames publish after Sc completes its contact arena swap.
-    if(!overlap_legacy_gu)
+    // Gu extents already queued for early device admission keep their
+    // original transaction. Other frames publish after the arena swap.
+    if(!early_gu_history)
         publish_cpu_gu_touch_history(lost_contacts_,next_manifolds_);
 }
 // IG::SimpleIslandManager::firstPassIslandGen/secondPassIslandGen:
