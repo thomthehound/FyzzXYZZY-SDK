@@ -212,7 +212,9 @@ The GPU Dy path fetches 8 bytes of edge/touch metadata for ordinary
 GPU pairs before numerical admission. Managers with multiple
 geometrically valid, material-compatible retained friction patches fetch
 their 12-byte contact normal in the same early batch, without fetching
-world-space points. Invalid, broken, retired, or material-incompatible
+world-space points. One eligible cached patch is validated against the
+resident normal by Dy, which regenerates anchors when the normal changes
+without an early host transfer. Invalid, broken, retired, or material-incompatible
 history needs no normal transfer. Only the multi-patch validity checks
 that determine this early DMA precede PCM submission; ordinary friction
 validation overlaps device PCM. Resident PCM supplies numerical normals
