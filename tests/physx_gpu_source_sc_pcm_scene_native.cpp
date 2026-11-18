@@ -837,22 +837,29 @@ struct GpuPcmFrictionAnchorFixture {
             return Vec3{a.y*b.z-a.z*b.y,a.z*b.x-a.x*b.z,
                         a.x*b.y-a.y*b.x};
         };
-        const auto local=[&](const auto& actor,Vec3 world) {
-            const Vec3 origin=scene.mass_position(actor);
-            const Quat q=scene.mass_orientation(actor);
+        const auto inverse_rotate=[&](Quat q,Vec3 v) {
             const Vec3 u{-q.x,-q.y,-q.z};
-            const Vec3 v{world.x-origin.x,world.y-origin.y,
-                         world.z-origin.z};
             const auto c=cross(u,v);
             const Vec3 t{2.f*c.x,2.f*c.y,2.f*c.z};
             const auto d=cross(u,t);
             return Vec3{v.x+q.w*t.x+d.x,
                         v.y+q.w*t.y+d.y,v.z+q.w*t.z+d.z};
         };
-        // Current witnesses define valid retained anchors before the
-        // device tests a deliberately incompatible historical normal.
+        const auto local=[&](const auto& actor,Vec3 world) {
+            const Vec3 origin=scene.mass_position(actor);
+            return inverse_rotate(scene.mass_orientation(actor),
+                {world.x-origin.x,world.y-origin.y,world.z-origin.z});
+        };
+        // Current witnesses define valid retained anchors and normals
+        // before the device rejects the deliberately inverted history.
+        const auto current=manager.points.front().normal;
         for(std::size_t i=0u;i<span.count;++i) {
             auto& patch=scene.friction_patches_[span.offset+i];
+            patch.normal=current;
+            patch.body0_normal=inverse_rotate(
+                scene.mass_orientation(actor0),current);
+            patch.body1_normal=inverse_rotate(
+                scene.mass_orientation(actor1),current);
             for(std::size_t k=0u;k<patch.anchor_count;++k) {
                 const auto& point=manager.points[
                     std::min(k,manager.points.size()-1u)].position;
