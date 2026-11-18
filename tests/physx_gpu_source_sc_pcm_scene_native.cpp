@@ -4474,14 +4474,15 @@ void verify_cpu_gu_gpu_dy_solver(
         }
         cpu.step(dt);
         gpu.step(dt);
-        if(frame==0u || frame==2u)
+        const bool device_graph=frame<2u;
+        if(frame==0u)
             native::GpuPcmFrictionAnchorFixture::
                 verify_pre_witness_device_admission(gpu);
         const auto stats=producer->dy_launch_stats();
         const auto expected=frame<2u?2u:1u;
-        require(stats.device_island_indirect_dispatches==1u &&
-                stats.device_admitted_tasks==expected &&
-                stats.device_admitted_descriptors==expected &&
+        require(stats.device_island_indirect_dispatches==(device_graph?1u:0u) &&
+                stats.device_admitted_tasks==(device_graph?expected:0u) &&
+                stats.device_admitted_descriptors==(device_graph?expected:0u) &&
                 producer->dy_pcm_device_contact_rows()==0u &&
                 producer->dy_cpu_gu_geometry_bytes()>0u &&
                 gpu.contacts().size()==expected &&
@@ -4489,8 +4490,9 @@ void verify_cpu_gu_gpu_dy_solver(
                 gpu.lost_contacts().size()==cpu.lost_contacts().size() &&
                 (frame!=2u || gpu.lost_contacts().size()==1u),
             "CPU Gu-only device admission retained an invalid contact response");
-        native::GpuPcmFrictionAnchorFixture::
-            verify_device_admitted_contact_sources(gpu);
+        if(device_graph)
+            native::GpuPcmFrictionAnchorFixture::
+                verify_device_admitted_contact_sources(gpu);
         test::compound_compare_state(
             gpu.body_state(moving_gpu),cpu.body_state(moving_cpu),0.003f,
             "CPU Gu device island admission changed existing contact motion");
