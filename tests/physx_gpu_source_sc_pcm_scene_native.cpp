@@ -807,6 +807,33 @@ struct GpuPcmFrictionAnchorFixture {
                        eligible==1u && !request.early_host_normal;
             });
     }
+    static void reverse_first_retained_normal(Scene& scene,Pair shapes) {
+        const auto edge=scene.contact_edge_index(shapes);
+        if(edge==Scene::invalid_edge ||
+           edge>=scene.friction_by_edge_.size())
+            throw std::runtime_error(
+                "PCM normal validation fixture lacks an active manager");
+        const auto span=scene.friction_by_edge_[edge];
+        if(span.epoch!=scene.friction_cache_epoch_ ||
+           span.count!=2u || span.offset>=scene.friction_patches_.size())
+            throw std::runtime_error(
+                "PCM normal validation fixture lacks retained patches");
+        auto& patch=scene.friction_patches_[span.offset];
+        const auto reverse=[](Vec3 n) {
+            return Vec3{-n.x,-n.y,-n.z};
+        };
+        patch.normal=reverse(patch.normal);
+        patch.body0_normal=reverse(patch.body0_normal);
+        patch.body1_normal=reverse(patch.body1_normal);
+        const bool swapped=scene.island_edges_[edge].gu_order_reversed;
+        const auto& first=scene.shapes_[swapped?shapes.b:shapes.a];
+        const auto& second=scene.shapes_[swapped?shapes.a:shapes.b];
+        if(!scene.cached_friction_patch_valid(
+                patch,scene.actors_[first.body],
+                scene.actors_[second.body]))
+            throw std::runtime_error(
+                "PCM normal validation fixture has invalid retained anchors");
+    }
     static void seed_multiple_friction_patches(Scene& scene,Pair shapes,
                                                bool broken=false) {
         const auto edge=scene.contact_edge_index(shapes);
@@ -4845,45 +4872,39 @@ void verify_pcm_friction_normal_revalidation(
             "PCM friction normal change retired the live Sc edge");
     }
 
-    // One compatible retained patch needs no early normal DMA: the
-    // resident numerical pass validates and regenerates its anchors when
-    // the contact normal changes.
+    // One compatible retained patch needs no early normal DMA. The
+    // resident numerical pass rejects an incompatible historical normal
+    // and regenerates its anchors from the current contact witnesses.
     native::GpuPcmFrictionAnchorFixture::seed_multiple_friction_patches(
         gpu,{gs,gb});
     native::GpuPcmFrictionAnchorFixture::invalidate_multiple_friction_materials(
         gpu,{gs,gb},true);
-    const auto prior_cpu=cpu.body_state(cb);
-    const auto prior_gpu=gpu.body_state(gb);
-    // Preserve normal-direction anchor validity while changing the
-    // shallowest contact axis from the top face to the side face.
-    cpu.set_pose(cb,{0.995f,prior_cpu.position.y,0.f},
-                 prior_cpu.orientation);
-    gpu.set_pose(gb,{0.995f,prior_gpu.position.y,0.f},
-                 prior_gpu.orientation);
+    native::GpuPcmFrictionAnchorFixture::reverse_first_retained_normal(
+        gpu,{gs,gb});
     cpu.step(1.f/120.f);
     gpu.step(1.f/120.f);
     require(gpu.contacts().size()==1u &&
             !gpu.solved_friction_patches().empty(),
-        "Side-contact PCM friction fixture has no published patch");
+        "PCM normal validation fixture has no published patch");
     const auto normal=gpu.contacts().front().points.front().normal;
     const auto& friction=gpu.solved_friction_patches().front();
     require(native::GpuPcmFrictionAnchorFixture::
                 had_early_friction_history(gpu),
-        "Side-contact PCM lost geometric validity of cached friction");
+        "PCM normal validation lost geometric validity of cached friction");
     require(native::GpuPcmFrictionAnchorFixture::
                 had_compatible_friction_history(gpu),
-        "Side-contact PCM lost material compatibility of cached friction");
+        "PCM normal validation lost material compatibility of cached friction");
     require(native::GpuPcmFrictionAnchorFixture::
                 single_eligible_history_on_device(gpu),
-        "Side-contact PCM did not retain one device-validated patch");
+        "PCM normal validation did not retain one device-validated patch");
     require(producer->pcm_header_join_bytes()==2u*sizeof(std::uint32_t) &&
             producer->pcm_deferred_point_bytes()==
                 sizeof(native::GpuPcmBoxResult)-2u*sizeof(std::uint32_t),
         "Unique cached PCM patch still fetched an early contact normal");
     require(normal.x*previous_normal.x+
                 normal.y*previous_normal.y+
-                normal.z*previous_normal.z<0.5f,
-        "Side-contact PCM did not change the prior normal");
+                normal.z*previous_normal.z>0.5f,
+        "PCM normal validation fixture changed the current contact normal");
     require(friction.anchor_count>0u,
         "PCM did not regenerate a friction anchor after normal change");
     for(std::size_t anchor=0u;anchor<friction.anchor_count;++anchor) {
