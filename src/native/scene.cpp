@@ -4319,6 +4319,11 @@ void Scene::update_contacts(bool defer_device_points,float inverse_step) {
         gpu_dy_device_admission_enabled_ && gpu_dy_active() &&
         gpu_broadphase_ && gpu_broadphase_->has_gpu_pcm_box() &&
         (!previous_pairs_.empty() || !manifolds_.empty());
+    const bool joint_only_device_admission=!gpu_results_pending &&
+        !gu_only_device_epoch && previous_pairs_.empty() &&
+        gpu_dy_device_admission_enabled_ && gpu_dy_active() &&
+        gpu_broadphase_ && gpu_broadphase_->has_gpu_pcm_box() &&
+        !active_constraint_handles_.empty();
     const bool source_device_gu_history=gpu_broadphase_ &&
         gpu_broadphase_->has_gpu_dy_distance() &&
         (gpu_results_pending || gu_only_device_epoch);
@@ -4412,6 +4417,7 @@ void Scene::update_contacts(bool defer_device_points,float inverse_step) {
     // Only selected normals cross early; the validated source history
     // remains available to Sc when the PCM header joins later.
     if(gpu_results_pending || gu_only_device_epoch ||
+       joint_only_device_admission ||
        (source_gpu_pcm && gpu_pcm_pairs_.empty()))
         gpu_broadphase_->enqueue_gpu_pcm_box_contacts(
             gpu_pcm_pairs_,gpu_pcm_results_,
@@ -7578,7 +7584,8 @@ void Scene::partition_constraints() {
     const bool device_sc_grouping=gpu_integration &&
         gpu_dy_device_admission_enabled_ &&
         gpu_broadphase_->has_gpu_pcm_box() &&
-        (!gpu_pcm_pairs_.empty() || !previous_pairs_.empty());
+        (!gpu_pcm_pairs_.empty() || !previous_pairs_.empty() ||
+         !active_constraint_handles_.empty());
     // Device Sc expands compact grouped source ranges into distinct
     // accurate-island numerical tasks using its resident touch graph.
     std::size_t joint_task_begin=0;
@@ -9436,11 +9443,12 @@ void Scene::solve_gpu_distance_constraints(float seconds) {
         previous_bodies=task.solver_body_end;
         previous_descriptors=task.constraint_end;
     }
-    const bool has_device_contact_sources=
+    const bool has_device_numerical_sources=
         gpu_broadphase_->has_gpu_pcm_box() &&
-        (!gpu_pcm_pairs_.empty() || !previous_pairs_.empty());
+        (!gpu_pcm_pairs_.empty() || !previous_pairs_.empty() ||
+         !active_constraint_handles_.empty());
     const bool device_admission=gpu_dy_device_admission_enabled_ &&
-        has_device_contact_sources && compact_tasks &&
+        has_device_numerical_sources && compact_tasks &&
         gpu_dy_responding_island_count_!=0u &&
         (gpu_dy_early_islands_ ||
          gpu_dy_responding_island_count_>responding_tasks) &&
