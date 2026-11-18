@@ -288,6 +288,32 @@ public:
         FYZZ_PROFILE_COUNTER("pcm.gjk_staged",staged_gjk_?1u:0u);
         if(requests.empty()) {
             rebuild_required_=false;
+            if(minimum_edge_capacity) {
+                // CPU Gu can own the current contact epoch without a PCM
+                // pair. Its touch records use the same resident journal.
+                const auto bytes=source_allocation_bytes(
+                    minimum_edge_capacity,240u);
+                const bool grew=bytes>edges_.getSize();
+                if(grew)
+                    last_edge_history_copy_bytes_=published_edge_span_bytes_;
+                edges_.allocateCopyPrefixAsync(
+                    bytes,published_edge_span_bytes_,stream_,PX_FL);
+                if(grew && published_edge_span_bytes_)stream_.submit();
+                const auto initialized=static_cast<std::uint32_t>(
+                    std::min<std::size_t>(
+                        minimum_edge_capacity,published_edge_span_bytes_/240u));
+                if(initialized<minimum_edge_capacity)
+                    journal_stage_.append(stream_,addresses_,
+                        SourceScContactHistoryNativeStage::Phase::Initialize,
+                        edges_.getDevicePtr(),edges_.getDevicePtr(),
+                        edges_.getDevicePtr(),0u,minimum_edge_capacity,
+                        initialized);
+                pcm_transaction_pending_=true;
+                journal_pair_count_=0u;
+                journal_edge_capacity_=minimum_edge_capacity;
+                pending_edge_span_bytes_=
+                    std::size_t(minimum_edge_capacity)*240u;
+            }
             return;
         }
         if((!shape_capacity && !requests.empty()) ||
