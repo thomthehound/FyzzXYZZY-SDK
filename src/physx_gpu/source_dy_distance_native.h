@@ -1554,25 +1554,29 @@ public:
                 std::memcpy(host_.data()+offsets[16]+i*9u*sizeof(float),
                             integration[i].sqrt_inverse_inertia,
                             9u*sizeof(float));
-        // Source joint inputs own the first-row pointer independent
-        // of Sc contact descriptor publication. Joint preparation
-        // replaces the transient endpoint words with Jacobian axes.
+        // Joint source slots are stable; Dy rows retain task order.
+        // Each first-row descriptor selects its source independently.
+        joint_row_source_seen_.assign(joint_inputs.size(),0u);
         std::size_t joint_row_begin=0u;
-        for(std::size_t source=0u;source<joint_inputs.size();++source) {
+        for(std::size_t i=0u;i<joint_inputs.size();++i) {
+            if(joint_row_begin>=rows.size())
+                throw std::logic_error(
+                    "Source Dy joint input exceeds prepared row storage");
+            const auto& first=rows[joint_row_begin];
+            const auto source=std::bit_cast<std::uint32_t>(first.applied_force);
+            if(first.reserved!=2u || source>=joint_inputs.size() ||
+               joint_row_source_seen_[source]++)
+                throw std::logic_error(
+                    "Source Dy joint input lacks a unique first-row descriptor");
             const auto& input=joint_inputs[source];
             const auto kind=input.kind;
             const std::size_t count=kind==0u?1u:kind==2u?3u:
                 kind==1u?6u:5u;
-            if(kind>4u || joint_row_begin>=rows.size() ||
-               count>rows.size()-joint_row_begin)
+            if(kind>4u || count>rows.size()-joint_row_begin)
                 throw std::logic_error(
                     "Source Dy joint input exceeds prepared row storage");
-            const auto& first=rows[joint_row_begin];
             const auto flags=std::bit_cast<std::uint32_t>(first.axis[2]);
-            if(first.reserved!=2u ||
-               std::bit_cast<std::uint32_t>(first.applied_force)!=source ||
-               (flags&255u)!=count ||
-               (flags&~0x3ffu)!=0u)
+            if((flags&255u)!=count || (flags&~0x3ffu)!=0u)
                 throw std::logic_error(
                     "Source Dy joint input lacks its first-row descriptor");
             const auto address=narrow(std::size_t(joint_source_bias)+
@@ -2766,7 +2770,7 @@ private:
     std::vector<SourceSapUpload> actor_local_uploads_;
     std::size_t actor_local_capacity_=0u;
     std::vector<native::GpuDyJointInput> joint_source_host_;
-    std::vector<std::uint8_t> joint_source_valid_;
+    std::vector<std::uint8_t> joint_source_valid_,joint_row_source_seen_;
     std::vector<std::uint32_t> joint_source_dirty_;
     std::vector<std::uint32_t> joint_source_late_upload_slots_;
     std::vector<std::uint32_t> prewitness_joint_source_slots_;
