@@ -4401,7 +4401,12 @@ void Scene::update_contacts(bool defer_device_points,float inverse_step) {
             }
             request.friction_history_mask=valid;
             request.friction_eligible_mask=eligible;
-            if(before_submit && eligible!=0u)
+            // The resident Dy normal check can validate a single
+            // compatible history patch without an early host normal.
+            // Multiple choices still require source-ordered correlation.
+            if(before_submit && eligible!=0u &&
+               (!std::has_single_bit(eligible) ||
+                valid==std::numeric_limits<std::uint32_t>::max()))
                 request.early_host_normal=true;
         }
     };
@@ -8576,9 +8581,12 @@ void Scene::prepare_constraints(float seconds) {
                         if((request.friction_history_mask&bit)==0u)continue;
                         ++admitted_history;
                         if((request.friction_eligible_mask&bit)!=0u &&
-                           (history.count==1u ||
+                           (!request.early_host_normal ||
                             dot(rotate(mass_orientation(actor0),old.body0_normal),
                                 manifold.points.front().normal)>=same_normal)) {
+                            // With one eligible patch, Dy checks the
+                            // source normal and regenerates mismatched
+                            // anchors from resident PCM witnesses.
                             retained=&old;
                             break;
                         }
