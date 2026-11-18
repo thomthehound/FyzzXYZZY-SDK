@@ -4197,7 +4197,8 @@ void verify_gpu_coupled_solver(
                 "First Sc contact solve reused an unauthorized device pose");
         else if(frame==6u)
             require(resident>=2u && resident<integrated &&
-                    producer->dy_launch_stats().actor_local_upload_bytes>=
+                    producer->dy_launch_stats().actor_local_upload_bytes+
+                    producer->dy_launch_stats().prewitness_actor_local_upload_bytes>=
                         sizeof(physx_gpu::SourceDyActorLocalNative),
                 "Authored Sc contact pose did not invalidate only its device owner");
         else
@@ -6078,7 +6079,8 @@ void verify_sphere_gpu_solver(
                 "New sphere actors reused unauthorised device mass poses");
         else if(frame==3u)
             require(resident<integrated &&
-                    producer->dy_launch_stats().actor_local_upload_bytes>=
+                    producer->dy_launch_stats().actor_local_upload_bytes+
+                    producer->dy_launch_stats().prewitness_actor_local_upload_bytes>=
                         sizeof(physx_gpu::SourceDyActorLocalNative),
                 "Authored sphere quaternion did not invalidate its device pose");
         else
@@ -6715,25 +6717,28 @@ void verify_gpu_free_integration(
         const auto resident_record_bytes=
             sizeof(physx_gpu::SourceDyActorLocalNative);
         const auto mass_frame_edits=(frame==3u || frame==4u)?1u:0u;
+        const auto actor_upload_bytes=metadata.actor_local_upload_bytes+
+            metadata.prewitness_actor_local_upload_bytes;
+        const auto actor_upload_spans=metadata.actor_local_upload_spans+
+            metadata.prewitness_actor_local_upload_spans;
         const auto transfer_error=
             std::string{"Source Dy actor-state refresh exceeded authored changes: frame="}+
             std::to_string(frame)+
-            " bytes="+std::to_string(metadata.actor_local_upload_bytes)+
+            " bytes="+std::to_string(actor_upload_bytes)+
             " reuses="+std::to_string(metadata.reused_actor_local_poses)+
-            " spans="+std::to_string(metadata.actor_local_upload_spans);
+            " spans="+std::to_string(actor_upload_spans);
         require((frame==0u
-                    ? metadata.actor_local_upload_bytes==
+                    ? actor_upload_bytes==
                           actual.size()*resident_record_bytes &&
-                      metadata.actor_local_upload_spans==1u &&
+                      actor_upload_spans>=1u && actor_upload_spans<=3u &&
                       metadata.reused_actor_local_poses==0u
                     : metadata.reused_actor_local_poses==
                           actual.size()-mass_frame_edits &&
-                      metadata.actor_local_upload_bytes%resident_record_bytes==0u &&
-                      metadata.actor_local_upload_bytes<=
-                          6u*resident_record_bytes &&
-                      metadata.actor_local_upload_spans<=3u &&
+                      actor_upload_bytes%resident_record_bytes==0u &&
+                      actor_upload_bytes<=6u*resident_record_bytes &&
+                      actor_upload_spans<=4u &&
                       (mass_frame_edits==0u ||
-                       metadata.actor_local_upload_bytes>=resident_record_bytes)),
+                       actor_upload_bytes>=resident_record_bytes)),
             transfer_error.c_str());
         require(resident<=actual.size() &&
                 producer->dy_host_pose_upload_bytes()==0u &&
@@ -6822,9 +6827,11 @@ void verify_gpu_free_integration(
                 after_replacement.prepared_velocity_updated_bodies*
                     sizeof(physx_gpu::SourceDyPreparedVelocityNative),
         "Retired native body contaminated resident velocity publication");
-    require(after_replacement.actor_local_upload_bytes==
-                sizeof(physx_gpu::SourceDyActorLocalNative) &&
-            after_replacement.actor_local_upload_spans==1u &&
+    require(after_replacement.actor_local_upload_bytes+
+                after_replacement.prewitness_actor_local_upload_bytes==
+                    sizeof(physx_gpu::SourceDyActorLocalNative) &&
+            after_replacement.actor_local_upload_spans+
+                after_replacement.prewitness_actor_local_upload_spans==1u &&
             after_replacement.reused_actor_local_poses==actual.size()-1u,
         "GPU Dy retired actor metadata leaked into newly admitted rigid");
     test::compound_compare_state(
