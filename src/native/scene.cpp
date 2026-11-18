@@ -4431,10 +4431,11 @@ void Scene::update_contacts(bool defer_device_points,float inverse_step) {
     // Compact responding candidates independently of the scene actor count.
     // Each CPU Gu source must publish physical touch before admission.
     bool early_device_graph_awaits_gu=false;
-    // A single source edge has only one possible numerical task; the
-    // existing CPU task chain needs no separate device island graph.
+    // A lone CPU-authored source needs no device island graph. GPU PCM
+    // still admits its resident touch response before the host witness join.
     const bool early_device_graph=defer_device_points &&
-        previous_pairs_.size()+active_constraint_handles_.size()>1u &&
+        (gpu_results_pending ||
+         previous_pairs_.size()+active_constraint_handles_.size()>1u) &&
         gpu_dy_device_admission_enabled_ && !enhanced_determinism_ &&
         (gpu_results_pending || gu_only_device_epoch ||
          joint_only_device_admission) &&
