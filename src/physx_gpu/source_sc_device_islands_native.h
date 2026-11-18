@@ -22,6 +22,20 @@ namespace fyzz::physx_gpu {
 using SourceScDeviceIslandEdge=native::GpuDyIslandEdge;
 using SourceScDeviceIslandSources=native::GpuDyIslandSources;
 static_assert(sizeof(SourceScDeviceIslandEdge)==20u);
+// A portable two-dimensional indirect launch never exceeds the 32-bit
+// task ordinal range, even if a backend advertises larger grid axes.
+inline constexpr std::uint32_t source_sc_indirect_axis_limit=65535u;
+inline std::array<std::uint32_t,2> source_sc_indirect_group_limits(
+        const compute::DeviceInfo& device) noexcept {
+    return {
+        std::min(device.max_workgroup_count[0],source_sc_indirect_axis_limit),
+        std::min(device.max_workgroup_count[1],source_sc_indirect_axis_limit)};
+}
+inline std::uint32_t source_sc_indirect_task_limit(
+        const compute::DeviceInfo& device) noexcept {
+    const auto groups=source_sc_indirect_group_limits(device);
+    return static_cast<std::uint32_t>(std::uint64_t(groups[0])*groups[1]);
+}
 // Typed numerical table ordinals are distinct from graph-edge identities.
 // Every source index is validated against its own resident Dy table.
 inline constexpr std::uint32_t source_sc_device_island_joint_bit=1u;
@@ -70,8 +84,8 @@ struct SourceScDeviceIslandHeader {
     std::uint32_t errors=0,runnable_components=0;
     std::uint32_t responding_nodes=0,admitted_edges=0;
     // This triple is directly consumable as DispatchIndirectArgs at +16.
-    // Device admission requires a task capacity within the backend's
-    // workgroup limit; larger frames use the chunked Sc task schedule.
+    // Device admission uses both dispatch axes for large compact task
+    // sets, retaining device-authored tasks without host re-admission.
     std::uint32_t dispatch_x=0,dispatch_y=1,dispatch_z=1;
     // Number of source admissions, including dormant and nonresponding edges.
     std::uint32_t source_edges=0u;
@@ -180,6 +194,7 @@ public:
         if(info.max_workgroup_invocations<128u ||
            info.max_workgroup_size[0]<128u ||
            !info.max_workgroup_count[0] ||
+           !info.max_workgroup_count[1] ||
            !info.max_storage_buffer_range)
             throw std::runtime_error("Device Sc accurate islands unavailable");
         alignment_=std::max<std::uint64_t>(
@@ -190,7 +205,7 @@ public:
         pipeline.storage_buffer_binding_count=4u;
         pipeline.storage_buffer_views.assign(
             4u,compute::StorageBufferViewKind::RawReadWrite);
-        pipeline.push_constant_bytes=116u;
+        pipeline.push_constant_bytes=120u;
         pipeline_=context_.create_compute_pipeline(pipeline);
 #if defined(FYZZXYZZY_PROFILE_GPU)
         context_.set_pipeline_profile_label(pipeline_,"sc.device_islands");
@@ -245,7 +260,7 @@ public:
         const auto touch_bytes=edge_capacity
             ?source_allocation_bytes(edge_capacity,240u):edge_bytes;
         const auto touch_address=edge_capacity?touch_history:edge_address;
-        std::array<std::uint32_t,29> args{};
+        std::array<std::uint32_t,30> args{};
         compute::DispatchCommand dispatch{};
         dispatch.pipeline=pipeline_;
         dispatch.buffers={
@@ -274,7 +289,9 @@ public:
         args[10]=edge_count;
         args[11]=edge_capacity;
         const auto max_groups=context_.device_info().max_workgroup_count[0];
-        args[14]=max_groups;
+        const auto limits=source_sc_indirect_group_limits(context_.device_info());
+        args[14]=limits[0];
+        args[29]=limits[1];
         args[15]=static_cast<std::uint32_t>(
             (std::uint64_t(node_count)+127u)/128u);
         args[16]=offset(layout.response_primary,args[3]);
@@ -370,7 +387,7 @@ public:
            (joint_source_count && !joint_row_capacity) ||
            layout.bytes>max_view_)
             throw std::invalid_argument("Missing Sc numerical remap resource");
-        std::array<std::uint32_t,29> args{};
+        std::array<std::uint32_t,30> args{};
         const auto bytes=source_allocation_bytes(
             std::uint64_t(node_count)+joint_source_count,4u);
         compute::DispatchCommand dispatch{};
@@ -398,6 +415,7 @@ public:
         args[22]=offset(layout.body_order,args[3]);
         args[25]=joint_row_capacity;
         args[26]=joint_source_count;
+        args[29]=source_sc_indirect_group_limits(context_.device_info())[1];
         const auto max_groups=context_.device_info().max_workgroup_count[0];
         if(!max_groups)
             throw std::logic_error("Device Sc remap has no compute groups");

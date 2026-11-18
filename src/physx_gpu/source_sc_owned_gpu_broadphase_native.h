@@ -273,7 +273,8 @@ public:
         return bool(dy_distance_);
     }
     std::uint32_t gpu_dy_direct_task_limit() const noexcept override {
-        return dy_distance_ ? context_.device_info().max_workgroup_count[0] : 0u;
+        return dy_distance_
+            ?source_sc_indirect_task_limit(context_.device_info()):0u;
     }
     void enqueue_gpu_dy_distance(
         std::span<native::GpuDyDistanceBody> bodies,

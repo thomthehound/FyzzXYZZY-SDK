@@ -30,7 +30,7 @@ struct Parameters {
     uint responseBiasA,responseBiasB,histBias,primaryCapacity;
     uint tokenBias,radixPasses,bodyOrderBias,combinedCount;
     uint responseOrderBias,jointRowCount,fullDescriptorCount,blockTilesBias;
-    uint extentBias;
+    uint extentBias,maxGroupsY;
 };
 #ifdef __spirv__
 [[vk::push_constant]] Parameters p;
@@ -51,6 +51,16 @@ static const uint permittedKinds=jointEdge|noResponse|deviceJoint;
 void reject(uint bits) {
     uint previous;
     work.InterlockedOr(p.workBias,bits,previous);
+}
+void publishDispatch(uint groups) {
+    const uint y=groups==0u?1u:1u+(groups-1u)/p.maxGroups;
+    if(y>p.maxGroupsY) {
+        reject(128u);
+        work.Store2(p.workBias+16u,uint2(0u,1u));
+        return;
+    }
+    const uint x=groups==0u?0u:1u+(groups-1u)/y;
+    work.Store2(p.workBias+16u,uint2(x,y));
 }
 bool validNode(uint node) {
     if(node==invalid)return true;
@@ -373,7 +383,7 @@ void admitCompact(uint lane) {
         work.Store(p.workBias+32u,nonSingleton);
         const uint dispatch=nonSingleton!=0u?taskCount:
             ((taskCount+127u)/128u);
-        work.Store(p.workBias+16u,min(dispatch,p.maxGroups));
+        publishDispatch(dispatch);
     }
     AllMemoryBarrierWithGroupSync();
     if(work.Load(p.workBias)!=0u)return;
@@ -675,11 +685,9 @@ void main(uint3 thread:SV_DispatchThreadID,
                 work.Store(p.workBias+4u,taskCarry);
                 work.Store(p.workBias+8u,bodyCarry);
                 work.Store(p.workBias+12u,responseCarry);
-                work.Store(p.workBias+16u,min(
-                    work.Load(p.workBias+32u)==0u && taskCarry>1u
+                publishDispatch(work.Load(p.workBias+32u)==0u && taskCarry>1u
                         ?(taskCarry>>7u)+uint((taskCarry&127u)!=0u)
-                        :taskCarry,
-                    p.maxGroups));
+                        :taskCarry);
             }
             return;
         }
@@ -736,11 +744,9 @@ void main(uint3 thread:SV_DispatchThreadID,
             work.Store(p.workBias+4u,taskCarry);
             work.Store(p.workBias+8u,bodyCarry);
             work.Store(p.workBias+12u,responseCarry);
-            work.Store(p.workBias+16u,min(
-                    work.Load(p.workBias+32u)==0u && taskCarry>1u
+            publishDispatch(work.Load(p.workBias+32u)==0u && taskCarry>1u
                         ?(taskCarry>>7u)+uint((taskCarry&127u)!=0u)
-                        :taskCarry,
-                    p.maxGroups));
+                        :taskCarry);
         }
         return;
     }

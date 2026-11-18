@@ -11,7 +11,10 @@ cbuffer Arguments:register(b0,space0) {
 [numthreads(128,1,1)]
 void main(uint3 group:SV_GroupID,uint3 lane:SV_GroupThreadID) {
     if(lane.x!=0u)return;
-    const uint task=taskBias+group.x*36u;
-    result.Store4(group.x*16u,
+    const uint taskCount=work.Load(4u);
+    const uint ordinal=group.y*work.Load(16u)+group.x;
+    if(ordinal>=taskCount)return;
+    const uint task=taskBias+ordinal*36u;
+    result.Store4(ordinal*16u,
                   work.Load4(task+16u));
 }

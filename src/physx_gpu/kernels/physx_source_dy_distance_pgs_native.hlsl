@@ -1670,9 +1670,10 @@ void main(uint3 group:SV_GroupID,uint3 lane:SV_GroupThreadID) {
     const bool devicePartitions=(p.launchControl&0x80000000u)!=0u;
     const bool precolored=(p.launchControl&0x40000000u)!=0u;
     const uint iter=(p.launchControl&0x1fffffffu)>>4u;
-    const uint index=p.launchBegin+group.x;
+    uint index=p.launchBegin+group.x;
     uint admittedTasks=0xffffffffu;
     uint admittedDispatch=0u;
+    uint admittedDispatchX=0u;
     // A submitted Sc island graph can differ from CPU-predicted counts
     // because contact activation is owned by resident Gu history. Reject
     // the entire numerical epoch before initializing any solver body.
@@ -1693,9 +1694,13 @@ void main(uint3 group:SV_GroupID,uint3 lane:SV_GroupThreadID) {
                 return;
             }
             admittedTasks=header.y;
-            admittedDispatch=scIslandWork.Load(sourceHeader+16u);
+            admittedDispatchX=scIslandWork.Load(sourceHeader+16u);
+            admittedDispatch=admittedDispatchX*
+                scIslandWork.Load(sourceHeader+20u);
         }
     }
+    if(phase==fusedTask && admittedTasks!=0xffffffffu)
+        index+=group.y*admittedDispatchX;
     // Sc partitions independent compact tasks into packed lane ranges.
     if(phase==fusedTask && devicePartitions && !precolored &&
        (p.launchControl&0x10000000u)!=0u) {

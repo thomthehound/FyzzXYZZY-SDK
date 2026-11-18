@@ -299,7 +299,7 @@ public:
         if(pending_solve_)
             throw std::logic_error("Source Dy numerical epoch already queued");
         if(device_admission &&
-           tasks.size()>context_.device_info().max_workgroup_count[0])
+           tasks.size()>source_sc_indirect_task_limit(context_.device_info()))
             throw std::out_of_range(
                 "Device Sc compact tasks exceed indirect GPU Dy launch capacity");
 
@@ -1592,7 +1592,7 @@ public:
             if(device_admission && phase==Launch::Fused &&
                wide_tasks_.empty()) {
                 if(range.begin!=0u || range.count!=tasks.size() ||
-                   range.count>max_groups)
+                   range.count>source_sc_indirect_task_limit(context_.device_info()))
                     throw std::out_of_range(
                         "Source device Sc task launch exceeds compact dispatch bounds");
                 params[8]=0u;
