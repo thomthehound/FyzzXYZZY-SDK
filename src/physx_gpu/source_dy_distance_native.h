@@ -1162,7 +1162,7 @@ public:
         std::array<std::size_t,count> order{};
         std::size_t order_count=0u;
         for(const auto slot:source_order) {
-            if(!device_generated_inertia && slot==6u)
+            if(!device_generated_inertia && slot==13u)
                 order[order_count++]=16u;
             order[order_count++]=slot;
         }
