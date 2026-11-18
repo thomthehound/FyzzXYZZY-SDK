@@ -173,6 +173,8 @@ until all such Gu producers complete, regardless of their encounter order.
 A single responding dynamic body admits a GPU PCM contact task. Contact
 candidates and joint-only islands share the same device graph; physical
 touch, not speculative overlap, determines runnable numerical responses.
+A lone source edge uses the existing CPU-authored numerical task rather
+than launching a device graph and remapping a singleton.
 Sc stamps every PCM request with its original speculative candidate ordinal
 before Gu submission. Mixed CPU Gu scheduling, the early device response
 graph, and Dy's candidate-indexed manifold and contact-preparation tables
