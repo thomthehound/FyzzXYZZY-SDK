@@ -5964,6 +5964,27 @@ void verify_gpu_distance_solver(
                 "Recycled GPU joint diverged from source constraint response");
         }
     }
+    // An active contact extends EdgeIndex friction history without
+    // invalidating resident definitions of unrelated 1D joints.
+    cpu.add_static_floor(0.f);
+    gpu.add_static_floor(0.f);
+    const auto touching_cpu=cpu.add_dynamic_box(
+        {0.3f,0.3f,0.3f},{120.f,0.29f,0.f},1.f);
+    const auto touching_gpu=gpu.add_dynamic_box(
+        {0.3f,0.3f,0.3f},{120.f,0.29f,0.f},1.f);
+    RigidBodyDynamics contact_dynamics{};
+    contact_dynamics.gravity_enabled=false;
+    cpu.set_dynamics(touching_cpu,contact_dynamics);
+    gpu.set_dynamics(touching_gpu,contact_dynamics);
+    cpu.step(dt);
+    gpu.step(dt);
+    const auto growth=producer->dy_launch_stats();
+    require(!gpu.contacts().empty() &&
+            cpu.contacts().size()==gpu.contacts().size() &&
+            growth.device_joint_geometry_count==3u &&
+            growth.device_joint_metadata_upload_bytes==0u &&
+            growth.device_joint_metadata_reuses==3u,
+        "PCM friction-history growth reuploaded unchanged joint sources");
 }
 } // namespace
 

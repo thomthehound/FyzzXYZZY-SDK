@@ -160,7 +160,8 @@ public:
         std::optional<compute::ShaderBinary> convex_shader=std::nullopt)
         : context_(context),addresses_(addresses),stream_(stream),
           arena_(allocator,physx::PxsHeapStats::eSOLVER),
-          actor_locals_(allocator,physx::PxsHeapStats::eSOLVER) {
+          actor_locals_(allocator,physx::PxsHeapStats::eSOLVER),
+          joint_sources_(allocator,physx::PxsHeapStats::eSOLVER) {
         const auto& info=context_.device_info();
         if(info.max_workgroup_invocations<128u ||
            info.max_workgroup_size[0]<128u ||
@@ -204,6 +205,7 @@ public:
         if(pipeline_)context_.destroy_compute_pipeline(pipeline_);
         arena_.deallocate();
         actor_locals_.deallocate();
+        joint_sources_.deallocate();
     }
     void retire_rigid_actor(BodyId id) noexcept {
         if(id<actor_local_valid_.size()) {
@@ -433,10 +435,8 @@ public:
            (std::numeric_limits<std::uint32_t>::max()-127u)/64u)
             throw std::overflow_error(
                 "Source GPU friction history exceeds address space");
-        const std::size_t joint_base=(
+        const std::size_t history_bytes=(
             next_history_capacity_*64u+127u)&~std::size_t(127u);
-        // EdgeIndex friction history occupies the first part of Dy's
-        // allocation; stable Sc constraint records follow that prefix.
         std::size_t next_joint_capacity=joint_source_capacity_;
         for(const auto& joint:joint_inputs) {
             if(joint.source_slot==0xffffffffu)
@@ -444,18 +444,11 @@ public:
             next_joint_capacity=std::max(next_joint_capacity,
                                          std::size_t(joint.source_slot)+1u);
         }
-        if(joint_base>std::numeric_limits<std::uint32_t>::max()-127u ||
-           next_joint_capacity>
-               (std::numeric_limits<std::uint32_t>::max()-joint_base-127u)/
-               sizeof(native::GpuDyJointInput))
-            throw std::overflow_error("Native Dy resident joints exceed 32-bit view");
-        const std::size_t history_bytes=(joint_base+
-            next_joint_capacity*sizeof(native::GpuDyJointInput)+127u)&
-            ~std::size_t(127u);
-        // Friction growth moves the joint base. Re-admit the source
-        // record spans instead of preserving bytes at obsolete offsets.
-        if(next_history_capacity_!=friction_history_capacity_)
-            std::fill(joint_source_valid_.begin(),joint_source_valid_.end(),0u);
+        if(next_joint_capacity>
+               (std::numeric_limits<std::uint32_t>::max()-127u)/
+                   sizeof(native::GpuDyJointInput) ||
+           next_joint_capacity>max_view_/sizeof(native::GpuDyJointInput))
+            throw std::overflow_error("Native Dy resident joints exceed device view");
         joint_source_host_.resize(next_joint_capacity);
         joint_source_valid_.resize(next_joint_capacity,0u);
         joint_source_dirty_.clear();
@@ -1287,22 +1280,18 @@ public:
             for(std::size_t i=0;i<bodies.size();++i)
                 std::memcpy(host_.data()+offsets[12]+mass_offset+i*4u,
                             &bodies[i].inverse_mass,sizeof(float));
-        // The source GPU kernel constructs all writable Gu contact rows.
-        // One ordered source upload covers every other active input and
-        // stops before the contact-row arena, without scattered HtoD spans.
-        // Retain both the source friction prefix and stable joint slots.
-        // A friction growth moves the joint base and reuploads its records.
-        const auto old_joint_base=(
-            friction_history_capacity_*64u+127u)&~std::size_t(127u);
-        const auto preserved_bytes=friction_history_capacity_==
-                next_history_capacity_
-            ?old_joint_base+joint_source_capacity_*
-                sizeof(native::GpuDyJointInput)
-            :friction_history_capacity_*64u;
+        // Friction history and joint-source slots retain independent
+        // allocations. EdgeIndex growth leaves joint records resident.
         arena_.allocateCopyPrefixAsync(
-            total,preserved_bytes,stream_,PX_FL);
+            total,friction_history_capacity_*64u,stream_,PX_FL);
         friction_history_capacity_=next_history_capacity_;
-        joint_source_capacity_=next_joint_capacity;
+        if(next_joint_capacity>joint_source_capacity_) {
+            joint_sources_.allocateCopyPrefixAsync(
+                next_joint_capacity*sizeof(native::GpuDyJointInput)+127u,
+                joint_source_capacity_*sizeof(native::GpuDyJointInput),
+                stream_,PX_FL);
+            joint_source_capacity_=next_joint_capacity;
+        }
         const auto address=arena_.getDevicePtr();
         // Sc supplies the descriptor tokens and Dy computes the raw
         // descriptors, colors, cursors, and body partition state. None
@@ -1333,7 +1322,7 @@ public:
                 ++i;
             }
             joint_source_uploads_.push_back({
-                address+joint_base+std::size_t(first)*
+                joint_sources_.getDevicePtr()+std::size_t(first)*
                     sizeof(native::GpuDyJointInput),
                 joint_source_host_.data()+first,
                 std::size_t(last-first)*sizeof(native::GpuDyJointInput)});
@@ -1442,6 +1431,14 @@ public:
             resident_task_bias=narrow(
                 base+device_admission->layout.tasks);
         }
+        std::uint32_t joint_source_bias=0u;
+        dispatch.buffers.push_back(source_native_view(
+            addresses_,joint_source_capacity_
+                ?joint_sources_.getDevicePtr():address,
+            joint_source_capacity_
+                ?joint_source_capacity_*sizeof(native::GpuDyJointInput):total,
+            alignment_,convex_vertex_count?8u:7u,
+            compute::BufferAccess::Read,joint_source_bias,max_view_));
         for(auto& record:packed_integration_) {
             if(record.actor_local_offset!=invalid) {
                 const auto offset=std::size_t(actor_local_bias)+
@@ -1493,7 +1490,7 @@ public:
                (flags&~0x3ffu)!=0u)
                 throw std::logic_error(
                     "Source Dy joint input lacks its first-row descriptor");
-            const auto address=narrow(std::size_t(params[28])+joint_base+
+            const auto address=narrow(std::size_t(joint_source_bias)+
                 std::size_t(input.source_slot)*sizeof(native::GpuDyJointInput));
             std::memcpy(host_.data()+offsets[1]+
                             joint_row_begin*sizeof(native::GpuDyJointRow)+
@@ -2661,6 +2658,7 @@ private:
     SourceSapDmaNative& stream_;
     physx::PxgCudaBuffer arena_;
     physx::PxgCudaBuffer actor_locals_;
+    physx::PxgCudaBuffer joint_sources_;
     compute::PipelineId pipeline_=0;
     compute::PipelineId convex_pipeline_=0;
     std::size_t alignment_=0u;

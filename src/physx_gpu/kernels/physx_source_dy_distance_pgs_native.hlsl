@@ -39,11 +39,19 @@ RWByteAddressBuffer scHullVertices : register(u6,space0);
 [[vk::binding(7,0)]]
 #endif
 RWByteAddressBuffer scIslandWork : register(u7,space0);
+#ifdef __spirv__
+[[vk::binding(8,0)]]
+#endif
+RWByteAddressBuffer jointSources : register(u8,space0);
 #else
 #ifdef __spirv__
 [[vk::binding(6,0)]]
 #endif
 RWByteAddressBuffer scIslandWork : register(u6,space0);
+#ifdef __spirv__
+[[vk::binding(7,0)]]
+#endif
+RWByteAddressBuffer jointSources : register(u7,space0);
 #endif
 
 struct Parameters {
@@ -923,9 +931,9 @@ void sourceDyPartitionTask(uint taskId,uint scratch,uint errorAddress,
 bool sourceDyJointActorFrame(uint ordinal,uint fallback,uint centerFallback,
                              out float3 actorPosition,out float4 actorAxes,
                              out float3 massCenter) {
-    actorPosition=asfloat(arena.Load3(fallback));
-    actorAxes=asfloat(arena.Load4(fallback+12u));
-    massCenter=asfloat(arena.Load3(centerFallback));
+    actorPosition=asfloat(jointSources.Load3(fallback));
+    actorAxes=asfloat(jointSources.Load4(fallback+12u));
+    massCenter=asfloat(jointSources.Load3(centerFallback));
     if(ordinal!=invalidBody) {
         const uint input=p.integrationBias+44u+ordinal*40u;
         if((arena.Load(input+8u)&128u)!=0u) {
@@ -950,21 +958,21 @@ float3 sourceDyJointInertia(uint ordinal,float3 angular) {
 bool sourceDyPrepareJointGeometry(uint4 desc,uint endError) {
     const uint first=p.distanceBias+desc.x*64u;
     const uint source=arena.Load(first+60u);
-    if(arena.Load(source+144u)!=arena.Load(first+48u) ||
-       arena.Load(source+148u)!=arena.Load(first+52u)) {
+    if(jointSources.Load(source+144u)!=arena.Load(first+48u) ||
+       jointSources.Load(source+148u)!=arena.Load(first+52u)) {
         sourceDyTaskErrorOr(endError,8192u);
         return false;
     }
-    const uint kind=arena.Load(source+140u);
+    const uint kind=jointSources.Load(source+140u);
     const uint count=kind==0u?1u:kind==2u?3u:kind==1u?6u:5u;
     if(kind>4u || desc.w!=count) {
         sourceDyTaskErrorOr(endError,8192u);
         return false;
     }
-    const float3 localA=asfloat(arena.Load3(source));
-    const float4 localQA=asfloat(arena.Load4(source+12u));
-    const float3 localB=asfloat(arena.Load3(source+28u));
-    const float4 localQB=asfloat(arena.Load4(source+40u));
+    const float3 localA=asfloat(jointSources.Load3(source));
+    const float4 localQA=asfloat(jointSources.Load4(source+12u));
+    const float3 localB=asfloat(jointSources.Load3(source+28u));
+    const float4 localQB=asfloat(jointSources.Load4(source+40u));
     // Fallback actor frames and mass centers are borrowed authored state.
     // Dynamic endpoints consume the resident actor frame instead.
     float3 pA,pB,cA,cB;
@@ -1007,7 +1015,7 @@ bool sourceDyPrepareJointGeometry(uint4 desc,uint endError) {
     const float invDt=1.0f/dt;
     float3 linearRows[6],angularA[6],angularB[6],jacA[6],jacB[6];
     float invResponse[6],projectedError[6];
-    const float requiredDistance=asfloat(arena.Load(source+136u));
+    const float requiredDistance=asfloat(jointSources.Load(source+136u));
     for(uint i=0u;i<count;++i) {
         float3 axis=0.0f,angA=0.0f,angB=0.0f;
         float error=0.0f;
