@@ -4603,14 +4603,14 @@ void Scene::update_contacts(bool defer_device_points,float inverse_step) {
             }
             // Queue authored actor-local inputs on Sc's early device
             // submission; final Dy admission validates any Sc changes.
-            gpu_dy_early_integration_inputs_.resize(
+            gpu_dy_integration_inputs_.resize(
                 gpu_dy_early_actor_ids_.size());
             for(std::size_t i=0u;i<gpu_dy_early_actor_ids_.size();++i)
                 pack_gpu_dy_integration_input(
                     gpu_dy_early_actor_ids_[i],seconds,
-                    gpu_dy_early_integration_inputs_[i]);
+                    gpu_dy_integration_inputs_[i]);
             gpu_broadphase_->enqueue_gpu_dy_actor_sources(
-                gpu_dy_early_integration_inputs_);
+                gpu_dy_integration_inputs_);
             if(has_legacy_gu) {
                 early_device_graph_awaits_gu=true;
                 // CPU Gu physical touches enter the ordered device queue

@@ -2215,7 +2215,6 @@ private:
     // the original source Dy task, constraint and body row storage.
     std::vector<GpuDyDistanceBody> gpu_dy_bodies_;
     std::vector<GpuDyBodyIntegrationInput> gpu_dy_integration_inputs_;
-    std::vector<GpuDyBodyIntegrationInput> gpu_dy_early_integration_inputs_;
     std::vector<GpuDyIntegratedPose> gpu_dy_integrated_poses_;
     std::vector<GpuDySleepState> gpu_dy_sleep_states_;
     std::vector<BodyId> gpu_dy_free_ids_;
