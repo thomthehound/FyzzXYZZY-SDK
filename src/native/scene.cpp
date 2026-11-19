@@ -9888,7 +9888,7 @@ void Scene::solve_gpu_distance_constraints(float seconds) {
         gpu_dy_contact_prep_pairs_,
         gpu_dy_integration_inputs_,gpu_dy_integrated_poses_,true,
         gpu_dy_friction_impulses_,true,true,true,gpu_dy_sleep_states_,
-        gpu_dy_joint_inputs_);
+        gpu_dy_joint_inputs_,false);
     // Sc's Gu-indexed force buffer and retired-manager bookkeeping are
     // independent of the submitted numerical solve. Prepare them while
     // the ordered GPU Dy task graph executes, before its result join.
