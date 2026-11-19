@@ -2236,6 +2236,7 @@ private:
     std::vector<GpuDyIslandEdge> gpu_dy_island_edges_;
     std::vector<std::uint32_t> gpu_dy_island_node_flags_;
     std::vector<BodyId> gpu_dy_early_actor_ids_;
+    std::vector<BodyId> gpu_dy_staged_actor_ids_;
     std::vector<EdgeIndex> gpu_dy_early_joint_edges_;
     bool gpu_dy_early_islands_=false;
      std::vector<float> gpu_dy_contact_forces_;

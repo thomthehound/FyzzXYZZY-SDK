@@ -4651,10 +4651,27 @@ void Scene::update_contacts(bool defer_device_points,float inverse_step) {
     if(gpu_results_pending && defer_device_points && gpu_dy_active() &&
        !gpu_dy_early_islands_ && !early_device_graph_awaits_gu &&
        inverse_step>0.0f) {
+        gpu_dy_staged_actor_ids_.assign(
+            accurate_islands_.active_nodes.begin(),
+            accurate_islands_.active_nodes.end());
+        gpu_dy_staged_actor_ids_.reserve(
+            gpu_dy_staged_actor_ids_.size()+2u*gpu_pcm_pairs_.size());
+        // Newly intersecting bodies may not yet belong to the accurate
+        // graph's active prefix. Their source PCM pairs still identify
+        // stable actor-local data before physical touch is known.
+        for(const auto& pair:gpu_pcm_pairs_) {
+            gpu_dy_staged_actor_ids_.push_back(shapes_[pair.first].body);
+            gpu_dy_staged_actor_ids_.push_back(shapes_[pair.second].body);
+        }
+        std::sort(gpu_dy_staged_actor_ids_.begin(),
+                  gpu_dy_staged_actor_ids_.end());
+        gpu_dy_staged_actor_ids_.erase(
+            std::unique(gpu_dy_staged_actor_ids_.begin(),
+                        gpu_dy_staged_actor_ids_.end()),
+            gpu_dy_staged_actor_ids_.end());
         gpu_dy_integration_inputs_.clear();
-        gpu_dy_integration_inputs_.reserve(
-            accurate_islands_.active_nodes.size());
-        for(const BodyId id:accurate_islands_.active_nodes) {
+        gpu_dy_integration_inputs_.reserve(gpu_dy_staged_actor_ids_.size());
+        for(const BodyId id:gpu_dy_staged_actor_ids_) {
             const auto& actor=actors_[id];
             if(!actor.alive || actor.motion!=Motion::Dynamic ||
                actor.sleeping)continue;
