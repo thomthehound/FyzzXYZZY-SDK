@@ -2309,7 +2309,7 @@ void verify_device_sc_dy_task_admission(
     constexpr std::uint32_t contact_capacity=5u;
     std::vector<float> capacity_forces(contact_capacity,-17.f);
     std::array<native::GpuDyContactPatch,1> capacity_patches{{
-        {0u,contact_capacity,0u,0u,0.f,0.f,0x80000000u,0u}
+        {0u,contact_capacity,0u,0u,0.f,0.f,0u,0u}
     }};
     std::array<native::GpuDyContactManifold,1> capacity_managers{{
         {0u,1u,0u,0u,0u}
@@ -2335,6 +2335,7 @@ void verify_device_sc_dy_task_admission(
             contact_tasks[0].error==0u && poses[0].valid==1u &&
             capacity_patches[0].contact_count>0u &&
             capacity_patches[0].contact_count<contact_capacity &&
+            capacity_patches[0].order_offset==0u &&
             capacity_forces[0]!=-17.f &&
             capacity_forces[contact_capacity-1u]==-17.f &&
             producer->dy_launch_stats().device_island_indirect_dispatches==1u,
@@ -2553,9 +2554,9 @@ void verify_device_sc_dy_task_admission(
     }};
     std::array<native::GpuDyContactPatch,2> mixed_patches{{
         {0u,contact_capacity,0u,0x80000000u,0.f,0.f,
-         0x80000000u,0u},
+         0u,0u},
         {0u,contact_capacity,1u,0x80000000u,0.5f,0.5f,
-         0x80000000u|contact_capacity,0u}
+         0u,0u}
     }};
     std::array<native::GpuDyContactPrepPair,2> mixed_prep{{
         contact_prep[0],contact_prep[0]
@@ -2612,6 +2613,8 @@ void verify_device_sc_dy_task_admission(
             published_touch && retained_untouched &&
             mixed_patches[0].contact_count>0u &&
             mixed_patches[0].contact_count<contact_capacity &&
+            mixed_patches[0].order_offset==0u &&
+            mixed_patches[1].order_offset==0u &&
             mixed_patches[1].contact_count==contact_capacity &&
             std::all_of(
                 mixed_forces.begin()+mixed_patches[0].contact_count,
