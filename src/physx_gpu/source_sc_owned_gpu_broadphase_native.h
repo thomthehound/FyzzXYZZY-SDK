@@ -311,7 +311,8 @@ public:
         bool device_world_motion=false,
         bool device_unconstrained_preparation=false,
         std::span<native::GpuDySleepState> sleep_states={},
-        std::span<const native::GpuDyJointInput> joint_inputs={}) override {
+        std::span<const native::GpuDyJointInput> joint_inputs={},
+        bool readback_device_task_records=true) override {
         FYZZ_PROFILE_SCOPE("dy.device_enqueue");
         if(!dy_distance_)
             throw std::logic_error("Source GPU Dy shader not installed");
@@ -365,7 +366,7 @@ public:
                                         *pcm_->device_island_indirect_args(),
                                         pcm_->device_island_response_capacity()}}
                                 :std::nullopt,
-                            deferred_points);
+                            deferred_points,readback_device_task_records);
         if(!deferred_points.empty())
             pcm_->mark_deferred_points_in_numerical();
         ++dy_distance_dispatch_count_;
