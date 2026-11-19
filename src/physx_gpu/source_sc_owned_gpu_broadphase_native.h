@@ -365,7 +365,8 @@ public:
                                         pcm_->device_island_work_address(),
                                         pcm_->device_island_layout(),
                                         *pcm_->device_island_indirect_args(),
-                                        pcm_->device_island_response_capacity()}}
+                                        pcm_->device_island_response_capacity(),
+                                        pcm_->device_island_contact_capacity()}}
                                 :std::nullopt,
                             deferred_points,readback_device_task_records,
                             admission_sources);

@@ -118,7 +118,8 @@ struct SourceScDeviceIslandLayout {
                key<=0xffffffu?3u:4u;
     }
     static SourceScDeviceIslandLayout for_counts(
-        std::uint32_t node_count,std::uint32_t edge_count) {
+        std::uint32_t node_count,std::uint32_t edge_count,
+        std::uint32_t contact_manager_count) {
         const auto align=[](std::uint64_t value) {
             return (value+15u)&~std::uint64_t{15u};
         };
@@ -172,7 +173,7 @@ struct SourceScDeviceIslandLayout {
             align(std::uint64_t(result.response_extents)+
                   std::uint64_t(edge_count)*4u));
         bytes=align(std::uint64_t(result.contact_admissions)+
-                    ((std::uint64_t(edge_count)+31u)/32u)*4u);
+                    ((std::uint64_t(contact_manager_count)+31u)/32u)*4u);
         if(bytes>std::numeric_limits<std::uint32_t>::max())
             throw std::out_of_range("Device Sc island work exceeds 32-bit view");
         result.bytes=static_cast<std::size_t>(bytes);
@@ -188,6 +189,7 @@ struct SourceScDeviceIslandDyView {
     SourceScDeviceIslandLayout layout{};
     compute::DispatchIndirectArgs task_dispatch{};
     std::uint32_t response_capacity=0u;
+    std::uint32_t contact_manager_capacity=0u;
 };
 class SourceScDeviceIslandsNativeStage final {
 public:
@@ -241,7 +243,7 @@ public:
         // runnable-task header. Reused output storage may contain a
         // preceding frame's nonzero task admission.
         const auto layout=SourceScDeviceIslandLayout::for_counts(
-            node_count,edge_count);
+            node_count,edge_count,sources.contact_managers);
         if(!output || (node_count && !node_flags) ||
            (edge_count && !edges) ||
            (edge_capacity && !touch_history))
@@ -347,7 +349,8 @@ public:
         };
         launch(0u,std::max(
             std::max(1u,node_count),
-            static_cast<std::uint32_t>((std::uint64_t(edge_count)+31u)/32u)));
+            static_cast<std::uint32_t>(
+                (std::uint64_t(sources.contact_managers)+31u)/32u)));
         launch(1u,edge_count);
         launch(2u,std::max(node_count,edge_count));
         // Stable task ordinals are the exclusive prefix of runnable
@@ -387,9 +390,10 @@ public:
                            std::uint32_t edge_count,
                            std::uint32_t solver_row_capacity,
                            std::uint32_t joint_row_capacity=0u,
-                           std::uint32_t joint_source_count=0u) const {
+                           std::uint32_t joint_source_count=0u,
+                           std::uint32_t contact_manager_count=0u) const {
         const auto layout=SourceScDeviceIslandLayout::for_counts(
-            node_count,edge_count);
+            node_count,edge_count,contact_manager_count);
         if(!mapping || !output || !node_count || !solver_row_capacity ||
            (joint_source_count && !joint_row_capacity) ||
            layout.bytes>max_view_)

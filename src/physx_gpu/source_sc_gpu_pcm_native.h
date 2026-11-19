@@ -750,9 +750,10 @@ public:
                 (word&0xffu)==0u))
                 throw std::invalid_argument("Device Sc node iterations invalid");
         island_layout_=SourceScDeviceIslandLayout::for_counts(
-            node_count,edge_count);
+            node_count,edge_count,sources.contact_managers);
         island_node_count_=node_count;
         island_edge_count_=edge_count;
+        island_contact_count_=sources.contact_managers;
         island_joint_count_=early?sources.joint_rows:0u;
         island_work_.allocate(island_layout_.bytes,PX_FL);
         if(edge_count)
@@ -822,7 +823,7 @@ public:
                 stream_,addresses_,island_nodes_.getDevicePtr(),
                 island_work_.getDevicePtr(),
                 island_node_count_,island_edge_count_,solver_row_capacity,
-                joint_row_capacity,island_joint_count_);
+                joint_row_capacity,island_joint_count_,island_contact_count_);
             last_remap_dispatches_=stream_.commands().size()-before_remap;
         }
         stream_.queue_device_copy(
@@ -840,6 +841,9 @@ public:
     }
     std::uint32_t device_island_response_capacity() const noexcept {
         return island_work_ready_?island_edge_count_:0u;
+    }
+    std::uint32_t device_island_contact_capacity() const noexcept {
+        return island_work_ready_?island_contact_count_:0u;
     }
     std::optional<compute::DispatchIndirectArgs>
     device_island_indirect_args() const noexcept {
@@ -1106,7 +1110,8 @@ private:
     physx::PxgCudaBuffer gu_touch_records_,gu_touch_journal_;
     physx::PxgCudaBuffer island_edges_,island_nodes_,island_work_;
     SourceScDeviceIslandLayout island_layout_{};
-    std::uint32_t island_node_count_=0u,island_edge_count_=0u;
+    std::uint32_t island_node_count_=0u,island_edge_count_=0u,
+                  island_contact_count_=0u;
     std::uint32_t island_joint_count_=0u;
     compute::BufferId indirect_buffer_=0u;
     CudaDeviceAddressMap::Address indirect_address_=0u;
