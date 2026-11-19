@@ -474,8 +474,7 @@ bool sourceDyExpandDescriptor(uint token,uint extent,
                    emitted>capacity || emitted>4u ||
                    begin>p.contactCount ||
                    capacity>p.contactCount-begin ||
-                   (admitted!=0u && admitted!=emitted) ||
-                   arena.Load(patch+24u)!=(0x80000000u|begin)) {
+                   (admitted!=0u && admitted!=emitted)) {
                     sourceDyTaskErrorOr(errorAddress,65536u);
                     return false;
                 }
@@ -487,6 +486,9 @@ bool sourceDyExpandDescriptor(uint token,uint extent,
                         arena.Store(p.writebackBias+p.resultContactOffset+
                                     (begin+i)*4u,0u);
                 }
+                // Device PCM resolves this patch's contact interval
+                // from the manager's source-owned reserved window.
+                arena.Store(patch+24u,0x80000000u|begin);
                 arena.Store(p.writebackBias+p.resultPatchOffset+
                             patchIndex*4u,
                             sourceDyPcmExtentValid|(emitted<<sourceDyPcmExtentShift));

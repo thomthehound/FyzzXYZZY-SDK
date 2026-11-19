@@ -2169,8 +2169,14 @@ public:
                 ++patch_index) {
                 auto& patch=patches[patch_index];
                 constexpr std::uint32_t direct=0x80000000u;
-                const bool resident=(patch.order_offset&direct)!=0u;
-                const std::size_t begin=patch.order_offset&~direct;
+                const bool resident=
+                    manager.prep_index<contact_prep.size() &&
+                    contact_prep[manager.prep_index].pcm_pair_index!=0xffffffffu;
+                const std::size_t begin=resident
+                    ?manager.order_offset:patch.order_offset&~direct;
+                if(!resident && (patch.order_offset&direct)!=0u)
+                    throw std::logic_error(
+                        "Source CPU Gu patch unexpectedly has PCM contact order");
                 const std::size_t limit=resident
                     ?contact_forces.size():contact_order.size();
                 const auto count=resident_extent

@@ -9794,15 +9794,12 @@ void Scene::solve_gpu_distance_constraints(float seconds) {
                     pack(anchor.local_b,patch.body1_anchors[k]);
                 }
             }
-            std::uint32_t order_offset;
+            std::uint32_t order_offset=0u;
             if(resident_pcm) {
                 if(cursor>=device_contact_order ||
                    numerical_count>device_contact_order-cursor)
                     throw std::overflow_error(
                         "GPU PCM direct contact order exceeds address space");
-                // PCM retains source order in the resident contact arena.
-                // Do not upload a second list of identical indices.
-                order_offset=device_contact_order|narrow(cursor);
             } else {
                 order_offset=narrow(explicit_order_cursor);
                 if(explicit_order_cursor>gpu_dy_contact_order_.size() ||
