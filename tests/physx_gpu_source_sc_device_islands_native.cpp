@@ -55,7 +55,7 @@ void verify(Context& context,const char* filename) {
     struct DeviceResult {
         SourceScDeviceIslandLayout first{};
         std::vector<std::byte> second{};
-        std::uint32_t node_count=0u,edge_count=0u;
+        std::uint32_t node_count=0u,edge_count=0u,contact_count=0u;
     };
     SourceScDeviceIslandsNativeStage stage(context,load_shader(filename));
     const auto evaluate=[&](std::uint32_t node_count,
@@ -80,8 +80,22 @@ void verify(Context& context,const char* filename) {
         }
         require(node_flags.size()==node_count,
                 "Device Sc test node metadata does not cover its graph");
+        // Default fixture limits represent actual typed Dy source
+        // tables; targeted tests can narrow one independently.
+        SourceScDeviceIslandSources sources{};
+        for(const auto& edge:edges) {
+            if((edge.kind&source_sc_device_island_no_response_bit)!=0u ||
+               edge.source_index>=0x40000000u)continue;
+            auto& count=(edge.kind&source_sc_device_island_joint_bit)==0u
+                ?sources.contact_managers:
+                (edge.kind&source_sc_device_island_device_joint_bit)!=0u
+                    ?sources.joint_rows:sources.full_descriptors;
+            count=std::max(count,edge.source_index+1u);
+        }
+        if(limits)sources=*limits;
         const auto layout=SourceScDeviceIslandLayout::for_counts(
-            node_count,static_cast<std::uint32_t>(edges.size()));
+            node_count,static_cast<std::uint32_t>(edges.size()),
+            sources.contact_managers);
         const auto input_bytes=std::max<std::size_t>(
             sizeof(SourceScDeviceIslandEdge),
             edges.size()*sizeof(SourceScDeviceIslandEdge));
@@ -129,19 +143,6 @@ void verify(Context& context,const char* filename) {
         if(!history.empty())
             context.upload(touch_buffer,0u,history.data(),
                            history.size()*sizeof(history[0]));
-        // Default fixture limits represent actual typed Dy source
-        // tables; targeted tests can narrow one independently.
-        SourceScDeviceIslandSources sources{};
-        for(const auto& edge:edges) {
-            if((edge.kind&source_sc_device_island_no_response_bit)!=0u ||
-               edge.source_index>=0x40000000u)continue;
-            auto& count=(edge.kind&source_sc_device_island_joint_bit)==0u
-                ?sources.contact_managers:
-                (edge.kind&source_sc_device_island_device_joint_bit)!=0u
-                    ?sources.joint_rows:sources.full_descriptors;
-            count=std::max(count,edge.source_index+1u);
-        }
-        if(limits)sources=*limits;
         SourceSapDmaNative stream(context,addresses);
         stage.append(stream,addresses,edge_addr,touch_addr,node_addr,output_addr,
                      node_count,static_cast<std::uint32_t>(edges.size()),
@@ -173,7 +174,8 @@ void verify(Context& context,const char* filename) {
                                     remap_capacity.value_or(node_count),
                                     joint_row_capacity,
                                     static_cast<std::uint32_t>(
-                                        joint_remap.size()));
+                                        joint_remap.size()),
+                                    sources.contact_managers);
             if(joint_remap.empty() && edges.size()>node_count) {
                 const auto* last=std::get_if<DispatchCommand>(
                     &stream.commands().back());
@@ -196,7 +198,8 @@ void verify(Context& context,const char* filename) {
         context.destroy_buffer(touch_buffer);
         context.destroy_buffer(edge_buffer);
         return DeviceResult{layout,std::move(bytes),node_count,
-                            static_cast<std::uint32_t>(edges.size())};
+                            static_cast<std::uint32_t>(edges.size()),
+                            sources.contact_managers};
     };
     const auto root=[&](const auto& result,std::size_t node) {
         return load<std::uint32_t>(result.second,
@@ -309,7 +312,7 @@ void verify(Context& context,const char* filename) {
         require(expected.size()==summary.admitted_edges,
                 "Device Sc response count disagrees with source admissions");
         std::vector<std::uint32_t> contact_bits(
-            (std::size_t(result.edge_count)+31u)/32u,0u);
+            (std::size_t(result.contact_count)+31u)/32u,0u);
         for(std::size_t i=0u;i<expected.size();++i) {
             const auto edge=expected[i].second;
             const auto record=admitted(result,edge);
@@ -329,13 +332,14 @@ void verify(Context& context,const char* filename) {
                     std::to_string(edge) + ", token=" +
                     std::to_string(token));
             if((record.kind&source_sc_device_island_joint_bit)==0u)
-                contact_bits[edge/32u]|=1u<<(edge%32u);
+                contact_bits[record.source_index/32u]|=
+                    1u<<(record.source_index%32u);
         }
         for(std::size_t word=0u;word<contact_bits.size();++word)
             require(load<std::uint32_t>(result.second,
                         result.first.contact_admissions+word*4u)==
                         contact_bits[word],
-                "Device Sc compact contact admission lost source edge ownership");
+                "Device Sc contact admission lost stable candidate ownership");
     };
     const auto no_errors=[&](const auto& result) {
         const auto errors=load<std::uint32_t>(result.second,0u);
