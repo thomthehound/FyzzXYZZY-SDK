@@ -690,26 +690,35 @@ public:
         }
         for(const auto& manager:manifolds) {
             if(!manager.patch_count)continue;
-            if(manager.prep_index>=contact_prep.size() ||
-               manager.order_offset>contact_forces.size() ||
-               manager.contact_count>
-                   contact_forces.size()-manager.order_offset)
+            if(manager.prep_index>=contact_prep.size())
+                throw std::logic_error(
+                    "Source Dy contact preparation has no source pair");
+            const auto& pair=contact_prep[manager.prep_index];
+            const bool pcm=pair.pcm_pair_index!=0xffffffffu;
+            if(pcm && (manager.patch_count!=1u ||
+                       manager.patch_offset>=patches.size() ||
+                       manager.contact_count!=0u))
+                throw std::logic_error(
+                    "Source PCM numerical count must be device-authored");
+            const auto capacity=pcm
+                ?patches[manager.patch_offset].contact_count
+                :manager.contact_count;
+            if(manager.order_offset>contact_forces.size() ||
+               capacity>contact_forces.size()-manager.order_offset)
                 throw std::logic_error(
                     "Source Dy Gu contact preparation range invalid");
-            const auto& pair=contact_prep[manager.prep_index];
-            if(pair.pcm_pair_index!=0xffffffffu) {
+            if(pcm) {
                 if(pair.cpu_gu_offset!=0xffffffffu)
                     throw std::logic_error(
                         "Source PCM pair unexpectedly owns CPU Gu geometry");
-                reused_pcm_rows+=manager.contact_count;
+                reused_pcm_rows+=capacity;
             } else {
                 if(pair.cpu_gu_offset==0xffffffffu ||
                    pair.cpu_gu_offset>cpu_gu.size() ||
-                   manager.contact_count>
-                       cpu_gu.size()-pair.cpu_gu_offset)
+                   capacity>cpu_gu.size()-pair.cpu_gu_offset)
                     throw std::logic_error(
                         "Source CPU Gu contact inputs are incomplete");
-                cpu_gu_rows+=manager.contact_count;
+                cpu_gu_rows+=capacity;
             }
         }
         if(cpu_gu_rows!=cpu_gu.size() ||
@@ -2125,21 +2134,22 @@ public:
                 throw std::logic_error("Source Dy manager writeback index invalid");
             const auto& manager=manifolds[desc.index];
             if(!manager.patch_count)return;
-            if(manager.order_offset>contact_forces.size() ||
-               manager.contact_count>
-                   contact_forces.size()-manager.order_offset ||
-               manager.patch_offset>patches.size() ||
+            if(manager.patch_offset>patches.size() ||
                manager.patch_count>patches.size()-manager.patch_offset)
                 throw std::logic_error("Source Dy contact writeback range invalid");
-            // The source contact order is implicit for PCM patches:
-            // their Gu points already occupy the resident solver
-            // arena consecutively. CPU Gu patches retain their
-            // explicit correlation order, packed without PCM holes.
-            std::size_t exact_contacts=manager.contact_count;
             const bool resident_extent=pending.source_descriptors &&
                 manager.patch_count==1u &&
                 manager.prep_index<contact_prep.size() &&
                 contact_prep[manager.prep_index].pcm_pair_index!=0xffffffffu;
+            const std::size_t capacity=resident_extent
+                ?patches[manager.patch_offset].contact_count
+                :manager.contact_count;
+            if(manager.order_offset>contact_forces.size() ||
+               capacity>contact_forces.size()-manager.order_offset)
+                throw std::logic_error("Source Dy contact writeback range invalid");
+            // PCM's patch reserves a window; its exact count comes
+            // from the GPU result rather than the host manifold.
+            std::size_t exact_contacts=capacity;
             if(resident_extent) {
                 std::uint32_t report=0u;
                 std::memcpy(&report,host_.data()+result_offsets[4]+
@@ -2149,7 +2159,7 @@ public:
                         "Source Dy resident PCM contact extent was not published");
                 exact_contacts=(report>>source_dy_pcm_extent_shift)&
                     source_dy_pcm_extent_count_mask;
-                if(exact_contacts>manager.contact_count || exact_contacts>4u)
+                if(exact_contacts>capacity || exact_contacts>4u)
                     throw std::logic_error(
                         "Source Dy resident PCM contact extent exceeds capacity");
             }

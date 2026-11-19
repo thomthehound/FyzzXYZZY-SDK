@@ -455,44 +455,41 @@ bool sourceDyExpandDescriptor(uint token,uint extent,
                 const uint source=p.pcmBias+pcmIndex*84u;
                 const uint packed=pcmContacts.Load(source+4u);
                 const uint emitted=(packed>>10u)&7u;
-                const uint capacity=arena.Load(manager+12u);
                 const uint begin=arena.Load(manager+8u);
+                const uint admitted=arena.Load(manager+12u);
+                const uint patchIndex=arena.Load(manager);
+                const bool singlePatch=arena.Load(manager+4u)==1u &&
+                    patchIndex<p.patchCount;
+                if(!singlePatch) {
+                    sourceDyTaskErrorOr(errorAddress,65536u);
+                    return false;
+                }
+                const uint patch=p.patchBias+patchIndex*32u;
+                const uint capacity=arena.Load(patch+4u);
                 if(pcmContacts.Load(source)!=arena.Load(prep+52u) ||
                    ((packed>>3u)&7u)!=0u ||
                    ((p.launchControl&0x08000000u)!=0u &&
                     (extent&0x80000000u)==0u) ||
                    ((extent&0x80000000u)!=0u && (extent&7u)!=emitted) ||
-                   emitted>capacity ||
-                   emitted>4u || begin>p.contactCount ||
-                   capacity>p.contactCount-begin) {
+                   emitted>capacity || emitted>4u ||
+                   begin>p.contactCount ||
+                   capacity>p.contactCount-begin ||
+                   (admitted!=0u && admitted!=emitted) ||
+                   arena.Load(patch+24u)!=(0x80000000u|begin)) {
                     sourceDyTaskErrorOr(errorAddress,65536u);
                     return false;
                 }
-                const uint patchIndex=arena.Load(manager);
-                const bool singlePatch=arena.Load(manager+4u)==1u &&
-                    patchIndex<p.patchCount;
-                if(emitted!=capacity) {
-                    if(!singlePatch) {
-                        sourceDyTaskErrorOr(errorAddress,65536u);
-                        return false;
-                    }
-                    const uint patch=p.patchBias+patchIndex*32u;
-                    if(arena.Load(patch+4u)!=capacity ||
-                       arena.Load(patch+24u)!=(0x80000000u|begin)) {
-                        sourceDyTaskErrorOr(errorAddress,65536u);
-                        return false;
-                    }
+                if(admitted==0u) {
+                    // PCM resolves the exact numerical extent in place.
                     arena.Store(manager+12u,emitted);
                     arena.Store(patch+4u,emitted);
                     for(uint i=emitted;i<capacity;++i)
                         arena.Store(p.writebackBias+p.resultContactOffset+
                                     (begin+i)*4u,0u);
                 }
-                // Exact PCM extent shares the existing patch-result word.
-                if(singlePatch)
-                    arena.Store(p.writebackBias+p.resultPatchOffset+
-                                patchIndex*4u,
-                                sourceDyPcmExtentValid|(emitted<<sourceDyPcmExtentShift));
+                arena.Store(p.writebackBias+p.resultPatchOffset+
+                            patchIndex*4u,
+                            sourceDyPcmExtentValid|(emitted<<sourceDyPcmExtentShift));
             } else if((p.launchControl&0x08000000u)!=0u) {
                 const uint first=arena.Load(manager);
                 const uint count=arena.Load(manager+4u);

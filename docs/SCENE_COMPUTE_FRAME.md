@@ -253,8 +253,9 @@ remain the authoritative solver inputs. Dy rejects missing or mismatched PCM and
 constructing solver rows, with no extra dispatch or host join.
 Legacy CPU Gu responses keep their host-authored extents. For
 device-admitted single-patch PCM managers,
-the emitted count determines the active contact rows before numerical
-preparation. Dy returns that count in its existing four-byte patch report
+Sc supplies a reserved contact and friction window, but no numerical
+contact count. The GPU writes the emitted count into the numerical
+manager and patch before normal-row preparation. Dy returns that count in its existing four-byte patch report
 (bit 30 valid, bits 16–18 count), alongside friction feedback. The host
 publishes only the active force slots and leaves unused reservation slots
 untouched. CPU Gu retains its correlated source extents; no additional

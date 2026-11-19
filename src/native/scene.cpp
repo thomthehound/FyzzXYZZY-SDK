@@ -9763,9 +9763,10 @@ void Scene::solve_gpu_distance_constraints(float seconds) {
            active_edge_handles_[source]!=m.edge_handle)
             throw std::logic_error(
                 "GPU Dy contact source differs from Sc candidate identity");
+        // PCM owns the active numerical count; Sc reserves the window.
         gpu_dy_manifolds_[source]={
             narrow(m.friction_patch_offset),m.friction_patch_count,
-            narrow(m.solver_offset),narrow(numerical_count),
+            narrow(m.solver_offset),resident_pcm?0u:narrow(numerical_count),
             gpu_dy_contact_prep_indices_[source]};
         std::size_t cursor=m.solver_offset;
         for(std::size_t i=m.friction_patch_offset;

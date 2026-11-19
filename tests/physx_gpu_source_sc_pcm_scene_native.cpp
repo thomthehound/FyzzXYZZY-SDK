@@ -696,7 +696,9 @@ struct GpuPcmFrictionAnchorFixture {
                         "Device PCM numerical patch has no result");
                 const auto& patch=scene.gpu_dy_patches_[patchIndex];
                 const auto extent=patch.reserved;
-                if(patch.contact_count!=manager.count ||
+                if(scene.gpu_dy_manifolds_[
+                       manager.candidate_ordinal].contact_count!=0u ||
+                   patch.contact_count!=manager.count ||
                    (extent&physx_gpu::source_dy_pcm_extent_valid_bit)==0u ||
                    ((extent>>physx_gpu::source_dy_pcm_extent_shift)&
                       physx_gpu::source_dy_pcm_extent_count_mask)!=manager.count)
