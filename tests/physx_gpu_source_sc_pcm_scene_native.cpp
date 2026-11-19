@@ -2876,7 +2876,7 @@ void verify_device_sc_dy_compact_contact_ranges(
 // their source force reservations are interleaved.
 void verify_device_sc_dy_sparse_task_windows(
     fyzz::compute::Backend backend,const char* sap,const char* pcm,
-    const char* dy_shader) {
+    const char* dy_shader,bool pack_singletons=false) {
     using namespace fyzz;
     std::ifstream binary_file(dy_shader,std::ios::binary);
     require(bool(binary_file),"Sparse Sc/Dy shader unavailable");
@@ -2924,7 +2924,8 @@ void verify_device_sc_dy_sparse_task_windows(
     const std::array<physx_gpu::SourceScDeviceIslandEdge,3> edges{{
         {handles[0],0u,0xffffffffu,0u,0u},
         {handles[1],1u,0xffffffffu,1u,0u},
-        {handles[2],0u,0xffffffffu,2u,0u}
+        {handles[2],0u,0xffffffffu,2u,
+            pack_singletons?physx_gpu::source_sc_device_island_no_response_bit:0u}
     }};
     const std::array<std::uint32_t,2> nodes{{
         4u|(1u<<8u)|physx_gpu::source_sc_device_island_active_bit,
@@ -3003,27 +3004,39 @@ void verify_device_sc_dy_sparse_task_windows(
     require(tasks[0].error==0u && tasks[1].error==0u &&
             poses[0].valid==1u && poses[1].valid==1u &&
             schedule.device_admitted_tasks==2u &&
-            schedule.device_admitted_descriptors==3u &&
+            schedule.device_admitted_descriptors==
+                (pack_singletons?2u:3u) &&
+            schedule.device_island_indirect_dispatches==1u &&
             fyzz::physx_gpu::SourceScDeviceIslandFixture::
                 contact_admissions(*producer)==
-                    std::vector<std::uint32_t>{7u} &&
-            std::all_of(patches.begin(),patches.end(),
-                [](const auto& patch) {
-                    return patch.contact_count>0u &&
-                           patch.contact_count<capacity;
-                }) &&
-            (patches[2].reserved&
+                    std::vector<std::uint32_t>{pack_singletons?3u:7u} &&
+            patches[0].contact_count>0u &&
+            patches[0].contact_count<capacity &&
+            patches[1].contact_count>0u &&
+            patches[1].contact_count<capacity &&
+            (pack_singletons
+                ?patches[2].contact_count==capacity &&
+                    (patches[2].reserved&
+                        physx_gpu::source_dy_pcm_compacted_bit)==0u &&
+                    forces[2u*capacity]==-17.f
+                :patches[2].contact_count>0u &&
+                    patches[2].contact_count<capacity &&
+                    (patches[2].reserved&
+                        physx_gpu::source_dy_pcm_compacted_bit)!=0u &&
+                    forces[2u*capacity]!=-17.f) &&
+            (patches[1].reserved&
                 physx_gpu::source_dy_pcm_compacted_bit)!=0u &&
             forces[0]!=-17.f && forces[capacity]!=-17.f &&
-            forces[2u*capacity]!=-17.f &&
             forces[capacity-1u]==-17.f &&
             forces[2u*capacity-1u]==-17.f &&
             forces[3u*capacity-1u]==-17.f,
         "Sparse device contact tasks crossed Sc row reservations");
     producer->finish_gpu_pcm_box_contacts();
-    for(std::size_t i=0u;i<witness.size();++i)
+    for(std::size_t i=0u;i<witness.size();++i) {
+        if(pack_singletons && i==2u)continue;
         require(witness[i].count()==patches[i].contact_count,
             "Sparse task contact extent differs from Sc publication");
+    }
     producer->commit_gpu_step();
 }
 
@@ -8157,6 +8170,8 @@ int main(int argc,char** argv) {
                         backend,argv[1],argv[2],argv[3],true);
                     verify_device_sc_dy_sparse_task_windows(
                         backend,argv[1],argv[2],argv[3]);
+                    verify_device_sc_dy_sparse_task_windows(
+                        backend,argv[1],argv[2],argv[3],true);
                 });
         if(scenario=="all" || scenario=="friction_normal")
             fyzz::tests::measure_gpu_case("sc_pcm","friction_normal",
