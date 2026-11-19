@@ -1276,19 +1276,6 @@ public:
             patches.data(),manifolds.data(),contact_order.data(),
             contact_prep.data(),integration.data(),nullptr,tiles_.data(),
             nullptr,nullptr};
-        if(device_admission)
-            for(std::size_t i=0u;i<manifolds.size();++i) {
-                const auto& manager=manifolds[i];
-                if(!manager.patch_count ||
-                   manager.prep_index>=contact_prep.size() ||
-                   contact_prep[manager.prep_index].pcm_pair_index!=invalid)
-                    continue;
-                const auto source=manager.order_offset;
-                std::memcpy(host_.data()+offsets[9]+
-                    i*sizeof(native::GpuDyContactManifold)+
-                    offsetof(native::GpuDyContactManifold,source_order_offset),
-                    &source,sizeof(source));
-            }
         // Both full contact and friction solver rows live on device.
         // Sc returns normal impulses and compact per-anchor friction;
         // standalone conformance may return complete tangent/force rows.
@@ -1411,6 +1398,19 @@ public:
                (!device_partitions || (i!=2u && i!=3u)) &&
                (!device_admission || (i!=4u && i!=5u)))
                 std::memcpy(host_.data()+offsets[i],sources[i],bytes[i]);
+        if(device_admission)
+            for(std::size_t i=0u;i<manifolds.size();++i) {
+                const auto& manager=manifolds[i];
+                if(!manager.patch_count ||
+                   manager.prep_index>=contact_prep.size() ||
+                   contact_prep[manager.prep_index].pcm_pair_index!=invalid)
+                    continue;
+                const auto source=manager.order_offset;
+                std::memcpy(host_.data()+offsets[9]+
+                    i*sizeof(native::GpuDyContactManifold)+
+                    offsetof(native::GpuDyContactManifold,source_order_offset),
+                    &source,sizeof(source));
+            }
         if(prep_bytes)
             std::memcpy(host_.data()+offsets[11],packed_.data(),prep_bytes);
         if(!cpu_gu.empty())
