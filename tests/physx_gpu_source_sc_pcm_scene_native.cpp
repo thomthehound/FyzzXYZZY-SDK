@@ -2726,6 +2726,131 @@ void verify_device_sc_dy_task_admission(
     producer->invalidate_after_rollback();
 }
 
+// A coupled contact island compacts working rows without changing their
+// source-indexed force destinations.
+void verify_device_sc_dy_compact_contact_ranges(
+    fyzz::compute::Backend backend,const char* sap,const char* pcm,
+    const char* dy_shader) {
+    using namespace fyzz;
+    std::ifstream binary_file(dy_shader,std::ios::binary);
+    require(bool(binary_file),"Device Sc/Dy shader unavailable");
+    compute::ShaderBinary shader{};
+    shader.format=backend==compute::Backend::Vulkan
+        ?compute::ShaderFormat::Spirv:compute::ShaderFormat::Dxil;
+    shader.bytes.assign(std::istreambuf_iterator<char>{binary_file},
+                        std::istreambuf_iterator<char>{});
+    native::Scene scene;
+    auto owner=std::make_unique<physx_gpu::SourceScOwnedGpuBroadphaseNative>(
+        backend,load_native_gpu_sap_shaders(backend,sap),128u,128u,
+        std::nullopt,load_native_gpu_pcm_shaders(backend,pcm),
+        std::move(shader));
+    auto* producer=owner.get();
+    scene.set_gpu_broadphase(std::move(owner));
+    const auto moving=scene.add_dynamic_box(
+        {0.5f,0.5f,0.5f},{0.f,1.f,0.f},1.f);
+    const auto left=scene.add_static_box(
+        {0.5f,0.5f,0.5f},{-0.8f,1.f,0.f});
+    const auto right=scene.add_static_box(
+        {0.5f,0.5f,0.5f},{0.8f,1.f,0.f});
+    scene.advance_collision(true);
+    const auto edge0=scene.contact_edge_index({moving,left});
+    const auto edge1=scene.contact_edge_index({moving,right});
+    require(edge0!=0xffffffffu && edge1!=0xffffffffu &&
+            edge0!=edge1,
+        "Coupled PCM compaction requires two live contact edges");
+    constexpr std::uint32_t capacity=5u;
+    constexpr float seconds=1.f/120.f;
+    const std::array<native::GpuPcmBoxPair,2> requests{{
+        {moving,left,edge0,false},{moving,right,edge1,false}
+    }};
+    std::array<native::GpuPcmBoxResult,2> witness{};
+    const std::array<physx_gpu::SourceScDeviceIslandEdge,2> edges{{
+        {edge0,0u,0xffffffffu,0u,0u},
+        {edge1,0u,0xffffffffu,1u,0u}
+    }};
+    const std::array<std::uint32_t,1> nodes{{
+        4u|(1u<<8u)|physx_gpu::source_sc_device_island_active_bit
+    }};
+    std::array<native::GpuDyDistanceBody,1> bodies{};
+    bodies[0].inverse_mass=1.f;
+    const std::array<native::GpuDyDistanceDescriptor,2> descriptors{{
+        {0u,0u,0xffffffffu,0x100u},
+        {1u,0u,0xffffffffu,0x100u}
+    }};
+    const std::array<std::uint32_t,1> ordinals{{0u}};
+    std::array<native::GpuDyDistanceTask,1> tasks{{
+        {0u,2u,0u,2u,0u,1u,4u,1u,0u}
+    }};
+    std::array<native::GpuDyContactPatch,2> patches{{
+        {0u,capacity,0u,0u,0.f,0.f,0u,0u},
+        {0u,capacity,0u,0u,0.f,0.f,0u,0u}
+    }};
+    const std::array<native::GpuDyContactManifold,2> managers{{
+        {0u,1u,0xffffffffu,0u,0u,0u},
+        {1u,1u,0xffffffffu,0u,1u,capacity}
+    }};
+    std::array<native::GpuDyContactPrepPair,2> preparation{};
+    for(std::uint32_t i=0u;i<preparation.size();++i) {
+        auto& pair=preparation[i];
+        pair.pcm_pair_index=i;
+        pair.pcm_edge=i?edge1:edge0;
+        pair.body0.solver_ordinal=0u;
+        pair.body0.inverse_mass=1.f;
+        pair.body0.orientation[3]=1.f;
+        pair.body1.orientation[3]=1.f;
+        pair.inv_dt=1.f/seconds;
+        pair.rigid_contact_bias=0.8f;
+        pair.seconds=seconds;
+        pair.max_contact_impulse=std::numeric_limits<float>::max();
+    }
+    std::array<native::GpuDyBodyIntegrationInput,1> input{};
+    input[0].active=1u;
+    input[0].source_actor=moving;
+    input[0].source_element=0xffffffffu;
+    input[0].source_inverse_mass=1.f;
+    input[0].position[1]=1.f;
+    input[0].actor_position[1]=1.f;
+    input[0].orientation[3]=1.f;
+    input[0].actor_orientation[3]=1.f;
+    input[0].mass_local_orientation[3]=1.f;
+    input[0].max_linear_speed_squared=100.f;
+    input[0].max_angular_speed_squared=100.f;
+    input[0].wake_counter=0.4f;
+    input[0].seconds=seconds;
+    std::array<native::GpuDyIntegratedPose,1> poses{};
+    std::array<native::GpuDySleepState,1> sleep{};
+    std::array<float,2u*capacity> forces{};
+    forces.fill(-17.f);
+    producer->enqueue_gpu_pcm_box_contacts(requests,witness);
+    producer->enqueue_gpu_dy_island_admission(
+        edges,nodes,physx_gpu::SourceScDeviceIslandSources{2u,0u,0u});
+    producer->enqueue_gpu_dy_distance(
+        bodies,{},descriptors,{},ordinals,tasks,
+        forces,{},{},{},patches,managers,{},preparation,input,poses,
+        true,{},true,true,true,sleep);
+    producer->finish_gpu_dy_distance();
+    const auto schedule=producer->dy_launch_stats();
+    require(witness[0].packed_counts==0u &&
+            witness[1].packed_counts==0u &&
+            tasks[0].error==0u && poses[0].valid==1u &&
+            schedule.device_admitted_tasks==1u &&
+            schedule.device_admitted_descriptors==2u &&
+            patches[0].contact_count>0u &&
+            patches[0].contact_count<capacity &&
+            patches[1].contact_count>0u &&
+            patches[1].contact_count<capacity &&
+            (patches[1].reserved&
+                physx_gpu::source_dy_pcm_compacted_bit)!=0u &&
+            forces[0]!=-17.f && forces[capacity]!=-17.f &&
+            forces[capacity-1u]==-17.f &&
+            forces[2u*capacity-1u]==-17.f,
+        "GPU coupled PCM compaction lost source-indexed force publication");
+    producer->finish_gpu_pcm_box_contacts();
+    require(witness[0].count()==patches[0].contact_count &&
+            witness[1].count()==patches[1].contact_count,
+        "Compacted PCM extents disagree with physical contact publication");
+    producer->commit_gpu_step();
+}
 void verify_queued_pcm_dy(fyzz::compute::Backend backend,const char* sap,
                           const char* pcm,const char* dy_shader) {
     using namespace fyzz;
@@ -7846,8 +7971,12 @@ int main(int argc,char** argv) {
                     backend,argv[1],argv[2],argv[3]);});
         if(scenario=="device_admission")
             fyzz::tests::measure_gpu_case("sc_pcm","device_admission",
-                [&]{verify_device_sc_dy_task_admission(
-                    backend,argv[1],argv[2],argv[3]);});
+                [&]{
+                    verify_device_sc_dy_task_admission(
+                        backend,argv[1],argv[2],argv[3]);
+                    verify_device_sc_dy_compact_contact_ranges(
+                        backend,argv[1],argv[2],argv[3]);
+                });
         if(scenario=="all" || scenario=="friction_normal")
             fyzz::tests::measure_gpu_case("sc_pcm","friction_normal",
                 [&]{
