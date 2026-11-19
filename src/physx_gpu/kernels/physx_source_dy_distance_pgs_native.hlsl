@@ -420,6 +420,76 @@ bool sourceDyPrepareSleep(uint input,uint local,
 
 #include "physx_source_dy_contact_pgs_native.hlsli"
 
+// Packed single-descriptor tasks bypass workgroup coloring, but still
+// participate in the same exact-size numerical row allocation.
+bool sourceDyRelocateSingletonContact(uint4 desc,uint scratch,
+                                      uint errorAddress) {
+    if((desc.w&255u)!=0u)return true;
+    if(desc.x>=p.manifoldCount) {
+        sourceDyTaskErrorOr(errorAddress,65536u);
+        return false;
+    }
+    const uint manager=p.manifoldBias+desc.x*24u;
+    const uint patchFirst=arena.Load(manager);
+    const uint patchCount=arena.Load(manager+4u);
+    if(patchCount==0u)return true;
+    const uint prepIndex=arena.Load(manager+16u);
+    if(prepIndex>=p.prepCount ||
+       patchFirst>p.patchCount ||
+       patchCount>p.patchCount-patchFirst) {
+        sourceDyTaskErrorOr(errorAddress,65536u);
+        return false;
+    }
+    const bool pcm=arena.Load(
+        p.prepBias+prepIndex*64u+48u)!=invalidBody;
+    const uint source=arena.Load(manager+20u);
+    const uint exact=arena.Load(manager+12u);
+    if(source>p.contactCount || exact>p.contactCount-source ||
+       (pcm && patchCount!=1u)) {
+        sourceDyTaskErrorOr(errorAddress,65536u);
+        return false;
+    }
+    uint firstRow;
+    arena.InterlockedAdd(scratch+32u,exact,firstRow);
+    if(firstRow>p.contactCount || exact>p.contactCount-firstRow) {
+        sourceDyTaskErrorOr(errorAddress,65536u);
+        return false;
+    }
+    arena.Store(manager+8u,firstRow);
+    if(pcm) {
+        arena.Store(p.patchBias+patchFirst*32u+24u,
+                    0x80000000u|firstRow);
+        if(firstRow!=source) {
+            uint previous;
+            arena.InterlockedOr(
+                p.writebackBias+p.resultPatchOffset+patchFirst*4u,
+                sourceDyPcmCompacted,previous);
+        }
+    }else {
+        for(uint patch=patchFirst;patch<patchFirst+patchCount;++patch) {
+            const uint po=p.patchBias+patch*32u;
+            const uint order=arena.Load(po+24u);
+            const uint points=arena.Load(po+4u);
+            if((order&0x80000000u)!=0u ||
+               order>p.orderCount ||
+               points>p.orderCount-order) {
+                sourceDyTaskErrorOr(errorAddress,65536u);
+                return false;
+            }
+            for(uint j=0u;j<points;++j) {
+                const uint address=p.orderBias+(order+j)*4u;
+                const uint old=arena.Load(address);
+                if(old<source || old-source>=exact) {
+                    sourceDyTaskErrorOr(errorAddress,65536u);
+                    return false;
+                }
+                arena.Store(address,firstRow+(old-source));
+            }
+        }
+    }
+    return true;
+}
+
 // Sc owns task membership. One workgroup colors independent source
 // constraints concurrently while preserving per-body greedy precedence.
 // Static reservations follow the source descriptor encounter order.
@@ -665,8 +735,15 @@ void sourceDyPartitionTask(uint taskId,uint scratch,uint errorAddress,
     AllMemoryBarrierWithGroupSync();
     if(sourceDyTaskLoad(errorAddress)!=0u)return;
     const bool deviceAdmission=(p.launchControl&0x08000000u)!=0u;
+    if(deviceAdmission && count==1u && dyContactManagers!=0u) {
+        if(lane==0u)
+            sourceDyRelocateSingletonContact(
+                arena.Load4(raw+first*16u),scratch,errorAddress);
+        AllMemoryBarrierWithGroupSync();
+        if(sourceDyTaskLoad(errorAddress)!=0u)return;
+    }
     if(dyContactManagers!=0u &&
-       (deviceAdmission || dyContactManagers>1u)) {
+       (deviceAdmission ? count>1u : dyContactManagers>1u)) {
         if(lane==0u) {
             dySourceFirst=invalidBody;
             dySourceLast=0u;
@@ -1839,76 +1916,6 @@ void initializeSolverBody(uint ordinal,uint source) {
 
 void publishTaskError(uint task,uint error) {
     arena.Store(p.writebackBias+p.resultTaskOffset+task*4u,error);
-}
-
-// Packed single-descriptor tasks bypass workgroup coloring, but still
-// participate in the same exact-size numerical row allocation.
-bool sourceDyRelocateSingletonContact(uint4 desc,uint scratch,
-                                      uint errorAddress) {
-    if((desc.w&255u)!=0u)return true;
-    if(desc.x>=p.manifoldCount) {
-        sourceDyTaskErrorOr(errorAddress,65536u);
-        return false;
-    }
-    const uint manager=p.manifoldBias+desc.x*24u;
-    const uint patchFirst=arena.Load(manager);
-    const uint patchCount=arena.Load(manager+4u);
-    if(patchCount==0u)return true;
-    const uint prepIndex=arena.Load(manager+16u);
-    if(prepIndex>=p.prepCount ||
-       patchFirst>p.patchCount ||
-       patchCount>p.patchCount-patchFirst) {
-        sourceDyTaskErrorOr(errorAddress,65536u);
-        return false;
-    }
-    const bool pcm=arena.Load(
-        p.prepBias+prepIndex*64u+48u)!=invalidBody;
-    const uint source=arena.Load(manager+20u);
-    const uint exact=arena.Load(manager+12u);
-    if(source>p.contactCount || exact>p.contactCount-source ||
-       (pcm && patchCount!=1u)) {
-        sourceDyTaskErrorOr(errorAddress,65536u);
-        return false;
-    }
-    uint firstRow;
-    arena.InterlockedAdd(scratch+32u,exact,firstRow);
-    if(firstRow>p.contactCount || exact>p.contactCount-firstRow) {
-        sourceDyTaskErrorOr(errorAddress,65536u);
-        return false;
-    }
-    arena.Store(manager+8u,firstRow);
-    if(pcm) {
-        arena.Store(p.patchBias+patchFirst*32u+24u,
-                    0x80000000u|firstRow);
-        if(firstRow!=source) {
-            uint previous;
-            arena.InterlockedOr(
-                p.writebackBias+p.resultPatchOffset+patchFirst*4u,
-                sourceDyPcmCompacted,previous);
-        }
-    }else {
-        for(uint patch=patchFirst;patch<patchFirst+patchCount;++patch) {
-            const uint po=p.patchBias+patch*32u;
-            const uint order=arena.Load(po+24u);
-            const uint points=arena.Load(po+4u);
-            if((order&0x80000000u)!=0u ||
-               order>p.orderCount ||
-               points>p.orderCount-order) {
-                sourceDyTaskErrorOr(errorAddress,65536u);
-                return false;
-            }
-            for(uint j=0u;j<points;++j) {
-                const uint address=p.orderBias+(order+j)*4u;
-                const uint old=arena.Load(address);
-                if(old<source || old-source>=exact) {
-                    sourceDyTaskErrorOr(errorAddress,65536u);
-                    return false;
-                }
-                arena.Store(address,firstRow+(old-source));
-            }
-        }
-    }
-    return true;
 }
 
 // Each lane owns one independent constraint and up to two integrated bodies.
