@@ -809,7 +809,8 @@ void sourceDyPartitionTask(uint taskId,uint scratch,uint errorAddress,
                     compactOffset;
                 if(originalOffset>dySourceCapacity ||
                    compactOffset>dySourceCapacity ||
-                   begin<dySourceFirst || begin>p.contactCount ||
+                   (!deviceAdmission && begin<dySourceFirst) ||
+                   begin>p.contactCount ||
                    exact>p.contactCount-begin) {
                     sourceDyTaskErrorOr(errorAddress,65536u);
                 } else {
