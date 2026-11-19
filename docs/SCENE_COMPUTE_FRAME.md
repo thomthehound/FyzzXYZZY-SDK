@@ -257,7 +257,11 @@ Sc supplies a reserved contact and friction window, but no numerical
 contact count. Sc preserves a stable source-indexed impulse reservation while Dy
 resolves the numerical row base, exact emitted count, and direct patch
 interval in device memory. The two row-address domains are separate;
-GPU force writeback maps numerical points to their Sc source slots. Dy returns that count in its existing four-byte patch report
+GPU force writeback maps numerical points to their Sc source slots.
+Multi-contact device tasks prefix exact PCM and CPU Gu response counts
+into their disjoint reserved normal-row windows. Device contact-order
+indices follow the compact rows; returned impulses retain Sc's source
+offsets. Task-local workgroups need no extra dispatch or global allocator. Dy returns that count in its existing four-byte patch report
 (bit 30 valid, bits 16–18 count), alongside friction feedback. The host
 publishes only the active force slots and leaves unused reservation slots
 untouched. CPU Gu retains its correlated source extents; no additional

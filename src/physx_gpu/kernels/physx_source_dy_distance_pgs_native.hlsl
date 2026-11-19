@@ -77,6 +77,7 @@ uint sourceDyInertiaAddress(uint ordinal) {
 }
 static const uint sourceDyPcmExtentValid = 1u<<30u;
 static const uint sourceDyPcmExtentShift = 16u;
+static const uint sourceDyPcmCompacted = 1u<<28u;
 static const float maxImpulse = 3.4028234663852886e+38;
 
 // Source PxReal dot3 evaluates three rounded products followed by two
@@ -426,6 +427,10 @@ groupshared uint dyNeeded,dyAssigned,dyWave,dyProgress,dyHighest;
 groupshared uint dyNextWave,dySerial;
 groupshared uint dySingletonPartitions;
 groupshared uint dyHubA,dyHubB,dyHubMask;
+groupshared uint dyContactManagers,dySourceFirst,dySourceLast;
+groupshared uint dySourceCapacity,dyExactContacts;
+groupshared uint dyCapacityCarry,dyExactCarry;
+groupshared uint dyCapacityScan[128],dyExactScan[128];
 
 // The resident source token has one authoritative decoding rule for
 // colored and scalar tasks.
@@ -564,6 +569,7 @@ void sourceDyPartitionTask(uint taskId,uint scratch,uint errorAddress,
     if(lane==0u) {
         dyNeeded=0u;dyAssigned=0u;dyWave=0u;dyHighest=0u;
         dyNextWave=0u;dySerial=0u;
+        dyContactManagers=0u;
     }
     AllMemoryBarrierWithGroupSync();
     // The native Sc path transfers only encounter-order manager/joint
@@ -575,11 +581,32 @@ void sourceDyPartitionTask(uint taskId,uint scratch,uint errorAddress,
     for(uint i=first+lane;i<last;i+=128u) {
         uint4 desc;
         if(sourceDescriptors) {
+            const uint token=sourceDyResponseToken(scratch,colors,i);
+            if((p.launchControl&0x08000000u)!=0u) {
+                uint capacity=0u;
+                const uint index=token&0x3fffffffu;
+                if((token>>30u)==3u && index<p.manifoldCount) {
+                    const uint mo=p.manifoldBias+index*24u;
+                    if(arena.Load(mo+4u)!=0u) {
+                        const uint prepIndex=arena.Load(mo+16u);
+                        const uint patchIndex=arena.Load(mo);
+                        if(prepIndex<p.prepCount) {
+                            const bool pcm=arena.Load(
+                                p.prepBias+prepIndex*64u+48u)!=invalidBody;
+                            if(!pcm || patchIndex<p.patchCount) {
+                                capacity=pcm
+                                    ?arena.Load(p.patchBias+patchIndex*32u+4u)
+                                    :arena.Load(mo+12u);
+                                InterlockedAdd(dyContactManagers,1u);
+                            }
+                        }
+                    }
+                }
+                arena.Store(cursors+i*4u,capacity);
+            }
             if(!sourceDyExpandDescriptor(
-                   sourceDyResponseToken(scratch,colors,i),
-                   sourceDyResponseExtent(scratch,i),
-                   sourceCount,sourceTable,
-                   errorAddress,desc))
+                    token,sourceDyResponseExtent(scratch,i),
+                    sourceCount,sourceTable,errorAddress,desc))
                 continue;
             arena.Store4(raw+i*16u,desc);
         }else desc=arena.Load4(raw+i*16u);
@@ -636,6 +663,136 @@ void sourceDyPartitionTask(uint taskId,uint scratch,uint errorAddress,
     }
     AllMemoryBarrierWithGroupSync();
     if(sourceDyTaskLoad(errorAddress)!=0u)return;
+    if((p.launchControl&0x08000000u)!=0u &&
+       dyContactManagers>1u) {
+        if(lane==0u) {
+            dySourceFirst=invalidBody;
+            dySourceLast=0u;
+            dySourceCapacity=0u;
+            dyExactContacts=0u;
+            dyCapacityCarry=0u;
+            dyExactCarry=0u;
+        }
+        AllMemoryBarrierWithGroupSync();
+        for(uint i=first+lane;i<last;i+=128u) {
+            const uint4 desc=arena.Load4(raw+i*16u);
+            if((desc.w&255u)!=0u || desc.x>=p.manifoldCount)
+                continue;
+            const uint mo=p.manifoldBias+desc.x*24u;
+            if(arena.Load(mo+4u)==0u)continue;
+            const uint source=arena.Load(mo+20u);
+            const uint capacity=arena.Load(cursors+i*4u);
+            const uint exact=arena.Load(mo+12u);
+            if(capacity==0u || source>p.contactCount ||
+               capacity>p.contactCount-source || exact>capacity) {
+                sourceDyTaskErrorOr(errorAddress,65536u);
+                continue;
+            }
+            InterlockedMin(dySourceFirst,source);
+            InterlockedMax(dySourceLast,source+capacity);
+            InterlockedAdd(dySourceCapacity,capacity);
+            InterlockedAdd(dyExactContacts,exact);
+        }
+        AllMemoryBarrierWithGroupSync();
+        if(lane==0u &&
+           (dySourceFirst==invalidBody ||
+            dySourceLast<dySourceFirst ||
+            dySourceCapacity!=dySourceLast-dySourceFirst ||
+            dyExactContacts>dySourceCapacity))
+            sourceDyTaskErrorOr(errorAddress,65536u);
+        AllMemoryBarrierWithGroupSync();
+        if(sourceDyTaskLoad(errorAddress)!=0u)return;
+        // Disjoint source windows give each task an exclusive compact arena.
+        for(uint block=first;block<last;block+=128u) {
+            const uint i=block+lane;
+            uint capacity=0u,exact=0u,mo=0u,source=0u;
+            if(i<last) {
+                const uint4 desc=arena.Load4(raw+i*16u);
+                if((desc.w&255u)==0u && desc.x<p.manifoldCount) {
+                    mo=p.manifoldBias+desc.x*24u;
+                    if(arena.Load(mo+4u)!=0u) {
+                        capacity=arena.Load(cursors+i*4u);
+                        exact=arena.Load(mo+12u);
+                        source=arena.Load(mo+20u);
+                    }
+                }
+            }
+            dyCapacityScan[lane]=capacity;
+            dyExactScan[lane]=exact;
+            GroupMemoryBarrierWithGroupSync();
+            [unroll]
+            for(uint step=1u;step<128u;step<<=1u) {
+                const uint priorCapacity=lane>=step
+                    ?dyCapacityScan[lane-step]:0u;
+                const uint priorExact=lane>=step
+                    ?dyExactScan[lane-step]:0u;
+                GroupMemoryBarrierWithGroupSync();
+                dyCapacityScan[lane]+=priorCapacity;
+                dyExactScan[lane]+=priorExact;
+                GroupMemoryBarrierWithGroupSync();
+            }
+            if(capacity!=0u) {
+                const uint originalOffset=dyCapacityCarry+
+                    dyCapacityScan[lane]-capacity;
+                const uint compactOffset=dyExactCarry+
+                    dyExactScan[lane]-exact;
+                const uint begin=dySourceFirst+compactOffset;
+                if(originalOffset>dySourceCapacity ||
+                   compactOffset>dySourceCapacity ||
+                   begin<dySourceFirst || begin>p.contactCount ||
+                   exact>p.contactCount-begin) {
+                    sourceDyTaskErrorOr(errorAddress,65536u);
+                } else {
+                    arena.Store(mo+8u,begin);
+                    const uint patchFirst=arena.Load(mo);
+                    const uint patchCount=arena.Load(mo+4u);
+                    const uint prepIndex=arena.Load(mo+16u);
+                    const bool pcm=arena.Load(
+                        p.prepBias+prepIndex*64u+48u)!=invalidBody;
+                    if(pcm) {
+                        const uint po=p.patchBias+patchFirst*32u;
+                        arena.Store(po+24u,0x80000000u|begin);
+                        if(begin!=source) {
+                            uint previous;
+                            arena.InterlockedOr(
+                                p.writebackBias+p.resultPatchOffset+
+                                patchFirst*4u,sourceDyPcmCompacted,previous);
+                        }
+                    } else {
+                        for(uint patch=patchFirst;
+                            patch<patchFirst+patchCount;++patch) {
+                            const uint po=p.patchBias+patch*32u;
+                            const uint order=arena.Load(po+24u);
+                            const uint points=arena.Load(po+4u);
+                            if((order&0x80000000u)!=0u ||
+                               order>p.orderCount ||
+                               points>p.orderCount-order) {
+                                sourceDyTaskErrorOr(errorAddress,65536u);
+                                break;
+                            }
+                            for(uint j=0u;j<points;++j) {
+                                const uint address=p.orderBias+
+                                    (order+j)*4u;
+                                const uint old=arena.Load(address);
+                                if(old<source || old-source>=capacity) {
+                                    sourceDyTaskErrorOr(errorAddress,65536u);
+                                    break;
+                                }
+                                arena.Store(address,begin+(old-source));
+                            }
+                        }
+                    }
+                }
+            }
+            GroupMemoryBarrierWithGroupSync();
+            if(lane==0u) {
+                dyCapacityCarry+=dyCapacityScan[127u];
+                dyExactCarry+=dyExactScan[127u];
+            }
+            GroupMemoryBarrierWithGroupSync();
+        }
+        if(sourceDyTaskLoad(errorAddress)!=0u)return;
+    }
     if(count==1u) {
         // A single constraint owns its entire partition and requires
         // no conflict-mask coloring or cross-lane prefix scan.

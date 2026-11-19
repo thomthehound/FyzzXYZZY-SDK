@@ -28,6 +28,7 @@ namespace fyzz::physx_gpu {
 inline constexpr std::uint32_t source_dy_pcm_extent_valid_bit=1u<<30u;
 inline constexpr std::uint32_t source_dy_pcm_extent_shift=16u;
 inline constexpr std::uint32_t source_dy_pcm_extent_count_mask=7u;
+inline constexpr std::uint32_t source_dy_pcm_compacted_bit=1u<<28u;
 
 // The GPU prep descriptor borrows active Dy bodies from the already uploaded
 // integrateCore input. Only immovable or nonintegrated participants require
@@ -1275,6 +1276,19 @@ public:
             patches.data(),manifolds.data(),contact_order.data(),
             contact_prep.data(),integration.data(),nullptr,tiles_.data(),
             nullptr,nullptr};
+        if(device_admission)
+            for(std::size_t i=0u;i<manifolds.size();++i) {
+                const auto& manager=manifolds[i];
+                if(!manager.patch_count ||
+                   manager.prep_index>=contact_prep.size() ||
+                   contact_prep[manager.prep_index].pcm_pair_index!=invalid)
+                    continue;
+                const auto source=manager.order_offset;
+                std::memcpy(host_.data()+offsets[9]+
+                    i*sizeof(native::GpuDyContactManifold)+
+                    offsetof(native::GpuDyContactManifold,source_order_offset),
+                    &source,sizeof(source));
+            }
         // Both full contact and friction solver rows live on device.
         // Sc returns normal impulses and compact per-anchor friction;
         // standalone conformance may return complete tangent/force rows.

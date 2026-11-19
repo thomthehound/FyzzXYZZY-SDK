@@ -90,7 +90,9 @@ void solveContact(uint4 descriptor,uint errorAddress,bool biased,
     const uint prepIndex=arena.Load(managerAddress+16u);
     const bool pcm=prepIndex<p.prepCount &&
         arena.Load(p.prepBias+prepIndex*64u+48u)!=invalidBody;
-    const uint sourceBegin=pcm?arena.Load(managerAddress+20u):manager.z;
+    const uint sourceBegin=pcm ||
+        (p.launchControl&0x08000000u)!=0u
+        ?arena.Load(managerAddress+20u):manager.z;
     uint a=descriptor.y,b=descriptor.z;
     uint ao=p.bodyBias+a*52u,bo=p.bodyBias+b*52u;
     float ma=0.f,mb=0.f;
@@ -547,7 +549,7 @@ void growPcmFrictionAnchors(uint patchIndex,uint pairIndex,
         const uint report=p.writebackBias+p.resultPatchOffset+
             patchIndex*4u;
         arena.Store(report,arena.Load(report)&
-            (sourceDyPcmExtentValid|(7u<<sourceDyPcmExtentShift)));
+            (sourceDyPcmExtentValid|(7u<<sourceDyPcmExtentShift)|sourceDyPcmCompacted));
         return;
     }
     // The source PCM manager has one contiguous correlated contact run.
@@ -711,7 +713,7 @@ void growPcmFrictionAnchors(uint patchIndex,uint pairIndex,
     const uint reportAddress=p.writebackBias+p.resultPatchOffset+
         patchIndex*4u;
     report|=arena.Load(reportAddress)&
-        (sourceDyPcmExtentValid|(7u<<sourceDyPcmExtentShift));
+        (sourceDyPcmExtentValid|(7u<<sourceDyPcmExtentShift)|sourceDyPcmCompacted);
     arena.Store(reportAddress,report);
 }
 
