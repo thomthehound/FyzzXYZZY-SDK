@@ -87,6 +87,10 @@ void solveContact(uint4 descriptor,uint errorAddress,bool biased,
         sourceDyTaskErrorOr(errorAddress,64u);
         return;
     }
+    const uint prepIndex=arena.Load(managerAddress+16u);
+    const bool pcm=prepIndex<p.prepCount &&
+        arena.Load(p.prepBias+prepIndex*64u+48u)!=invalidBody;
+    const uint sourceBegin=pcm?arena.Load(managerAddress+20u):manager.z;
     uint a=descriptor.y,b=descriptor.z;
     uint ao=p.bodyBias+a*52u,bo=p.bodyBias+b*52u;
     float ma=0.f,mb=0.f;
@@ -151,17 +155,16 @@ void solveContact(uint4 descriptor,uint errorAddress,bool biased,
             if(!contactImpulse(a,b,ao,bo,n,ja,jb,
                                va,vb,aa,ab,nextForce-oldForce,
                                ma,mb,errorAddress))return;
-            const uint sourceBegin=arena.Load(managerAddress+20u);
-            const uint local=pointIndex-manager.z;
-            const uint prepIndex=arena.Load(managerAddress+16u);
-            const bool pcm=prepIndex<p.prepCount &&
-                arena.Load(p.prepBias+prepIndex*64u+48u)!=invalidBody;
-            const uint outputIndex=pcm?sourceBegin+local:pointIndex;
-            if(pointIndex<manager.z || local>=manager.w ||
-               (pcm && (sourceBegin>p.contactCount ||
-                        local>=p.contactCount-sourceBegin))) {
-                sourceDyTaskErrorOr(errorAddress,256u);
-                return;
+            uint outputIndex=pointIndex;
+            if(finalPass) {
+                const uint local=pointIndex-manager.z;
+                if(pointIndex<manager.z || local>=manager.w ||
+                   sourceBegin>p.contactCount ||
+                   local>=p.contactCount-sourceBegin) {
+                    sourceDyTaskErrorOr(errorAddress,256u);
+                    return;
+                }
+                outputIndex=sourceBegin+local;
             }
             storeContactScalar(co+56u,nextForce,outputIndex,finalPass);
             normalImpulse+=nextForce;
