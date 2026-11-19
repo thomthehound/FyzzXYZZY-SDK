@@ -2837,6 +2837,8 @@ void verify_device_sc_dy_compact_contact_ranges(
             tasks[0].error==0u && poses[0].valid==1u &&
             schedule.device_admitted_tasks==1u &&
             schedule.device_admitted_descriptors==2u &&
+            schedule.device_task_readback_bytes==
+                tasks.size()*sizeof(native::GpuDyDistanceTask) &&
             patches[0].contact_count>0u &&
             patches[0].contact_count<capacity &&
             patches[1].contact_count>0u &&
@@ -5605,6 +5607,7 @@ void verify_mixed_gu_pcm_gpu_dy_solver(
                         (device_admission?2u:1u) &&
                     producer->dy_launch_stats().device_island_indirect_dispatches==
                         (device_admission?1u:0u) &&
+                    producer->dy_launch_stats().device_task_readback_bytes==0u &&
                     (device_admission
                         ?producer->dy_launch_stats().device_admitted_tasks>=2u &&
                          producer->dy_launch_stats().device_admitted_descriptors>=2u
