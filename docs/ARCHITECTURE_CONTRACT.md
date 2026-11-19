@@ -137,6 +137,12 @@ chosen for the complete producer-to-consumer chain, not isolated kernel time.
   transient numerical products only when they expose more parallelism
   than CPU-prepared task spans. Never build both task sets merely to choose
   between them after the work is done.
+- **Numerical addressing:** Sc's source-indexed contact and force destinations
+  remain stable for the frame. Dy's working row offsets are independent,
+  device-writable addresses derived from exact contact counts. A compact
+  task may rewrite only its owned numerical window; interleaved source
+  reservations do not imply exclusive ownership of their enclosing range.
+  Exact extents and task bounds are validated before numerical mutation.
 - **Storage:** compact CPU-authored inputs may use direct coherent UMA
   allocations when supported; hot numerical arrays use GPU-preferred
   storage. Shared addressing does not eliminate cache-coherence costs,
