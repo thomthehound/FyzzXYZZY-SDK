@@ -539,7 +539,8 @@ public:
         bool /*device_world_motion*/=false,
         bool /*device_unconstrained_preparation*/=false,
         std::span<GpuDySleepState> /*sleep_states*/={},
-        std::span<const GpuDyJointInput> /*joint_inputs*/={}) {
+        std::span<const GpuDyJointInput> /*joint_inputs*/={},
+        bool /*readback_device_task_records*/=true) {
         throw std::logic_error("Source GPU Dy shader is not installed");
     }
     virtual void finish_gpu_dy_distance() {
