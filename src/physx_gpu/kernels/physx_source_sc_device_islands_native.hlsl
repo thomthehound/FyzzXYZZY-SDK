@@ -30,7 +30,7 @@ struct Parameters {
     uint responseBiasA,responseBiasB,histBias,primaryCapacity;
     uint tokenBias,radixPasses,bodyOrderBias,combinedCount;
     uint responseOrderBias,jointRowCount,fullDescriptorCount,blockTilesBias;
-    uint extentBias,maxGroupsY;
+    uint extentBias,maxGroupsY,contactAdmissionBias;
 };
 #ifdef __spirv__
 [[vk::push_constant]] Parameters p;
@@ -255,6 +255,11 @@ void scatterItem(uint position,uint item) {
         work.Store(p.responseOrderBias+response*4u,edge);
         work.Store(p.tokenBias+response*4u,responseToken(edge));
         work.Store(p.extentBias+response*4u,responseExtent(edge));
+        if((work.Load(p.admissionBias+edge*24u+20u)&jointEdge)==0u) {
+            uint unused;
+            work.InterlockedOr(p.contactAdmissionBias+(edge>>5u)*4u,
+                1u<<(edge&31u),unused);
+        }
     }
 }
 bool runnableRoot(uint index) {
@@ -286,6 +291,8 @@ void admitCompact(uint lane) {
         work.Store4(p.workBias+16u,uint4(0u,1u,1u,p.edgeCount));
         work.Store4(p.workBias+32u,uint4(0u,0u,0u,0u));
     }
+    for(uint word=lane;word<(p.edgeCount/32u+uint((p.edgeCount&31u)!=0u));word+=128u)
+        work.Store(p.contactAdmissionBias+word*4u,0u);
     for(uint node=lane;node<p.nodeCount;node+=128u) {
         work.Store(p.rootBias+node*4u,node);
         const uint count=p.countBias+node*24u;
@@ -497,6 +504,11 @@ void admitCompact(uint lane) {
                 work.Store(p.responseOrderBias+position*4u,edge);
                 work.Store(p.tokenBias+position*4u,responseToken(edge));
                 work.Store(p.extentBias+position*4u,responseExtent(edge));
+                if((work.Load(p.admissionBias+edge*24u+20u)&jointEdge)==0u) {
+                    uint unused;
+                    work.InterlockedOr(p.contactAdmissionBias+(edge>>5u)*4u,
+                        1u<<(edge&31u),unused);
+                }
             }
         }
     }
@@ -545,6 +557,8 @@ void main(uint3 thread:SV_DispatchThreadID,
             work.Store4(p.workBias+16u,uint4(0u,1u,1u,p.edgeCount));
             work.Store(p.workBias+32u,0u);
         }
+        if(index<(p.edgeCount/32u+uint((p.edgeCount&31u)!=0u)))
+            work.Store(p.contactAdmissionBias+index*4u,0u);
         if(index<p.nodeCount) {
             work.Store(p.rootBias+index*4u,index);
             const uint count=p.countBias+index*24u;
