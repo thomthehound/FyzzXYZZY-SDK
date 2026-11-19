@@ -621,6 +621,9 @@ struct GpuPcmFrictionAnchorFixture {
         std::vector<std::uint8_t> expected(actual.size(),0u);
         const auto admitted=
             scene.gpu_broadphase_->gpu_dy_admitted_contact_edges();
+        if(!scene.gpu_broadphase_->gpu_dy_admitted_response_tokens().empty())
+            throw std::runtime_error(
+                "Production Sc downloaded redundant response tokens");
         if(admitted.size()!=(scene.gpu_dy_island_edges_.size()+31u)/32u)
             throw std::runtime_error(
                 "Resident Sc contact mask does not cover source edges");
