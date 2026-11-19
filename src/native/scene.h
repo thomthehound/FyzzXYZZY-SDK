@@ -541,7 +541,7 @@ public:
         std::span<GpuDySleepState> /*sleep_states*/={},
         std::span<const GpuDyJointInput> /*joint_inputs*/={},
         bool /*readback_device_task_records*/=true,
-        std::span<const GpuDyIslandEdge> /*admission_sources*/={}) {
+        bool /*compact_contact_admission*/=false) {
         throw std::logic_error("Source GPU Dy shader is not installed");
     }
     virtual void finish_gpu_dy_distance() {
@@ -550,7 +550,7 @@ public:
     virtual std::span<const std::uint32_t> gpu_dy_admitted_response_tokens() const {
         throw std::logic_error("Source GPU Dy response admission is unavailable");
     }
-    virtual std::span<const std::uint32_t> gpu_dy_admitted_contact_edges() const {
+    virtual std::span<const std::uint32_t> gpu_dy_admitted_contact_sources() const {
         throw std::logic_error("Source GPU Dy contact admission is unavailable");
     }
     // Sc's afterIntegration authorizes the source ElementSim device pose.
@@ -1539,6 +1539,7 @@ private:
     void complete_solver_end_task(std::size_t task_index,float seconds,
                                   std::vector<BodyId>& ready_nodes);
     void begin_contact_writeback();
+    bool gpu_dy_admits_contact(const ContactManifold& manifold) const;
     void write_back_contacts(std::size_t first,std::size_t last);
     void update_threshold_stream(float seconds);
     void publish_contact_events();
@@ -2237,8 +2238,7 @@ private:
     std::vector<BodyId> gpu_dy_early_actor_ids_;
     std::vector<EdgeIndex> gpu_dy_early_joint_edges_;
     bool gpu_dy_early_islands_=false;
-    std::vector<std::uint8_t> gpu_dy_admitted_manager_flags_;
-    std::vector<float> gpu_dy_contact_forces_;
+     std::vector<float> gpu_dy_contact_forces_;
     std::vector<GpuDyGuContactInput> gpu_dy_gu_inputs_;
     std::vector<GpuDyFrictionAnchorImpulse> gpu_dy_friction_impulses_;
     std::vector<GpuDyFrictionAnchorInput> gpu_dy_friction_anchors_;

@@ -486,7 +486,7 @@ public:
                std::optional<SourceScDeviceIslandDyView> device_admission=std::nullopt,
                std::span<const compute::DownloadSpan> extra_downloads={},
                bool readback_device_task_records=true,
-               std::span<const native::GpuDyIslandEdge> admission_sources={}) {
+               bool compact_contact_admission=false) {
         if(pending_solve_)
             throw std::logic_error("Source Dy numerical epoch already queued");
         if(device_admission &&
@@ -512,11 +512,11 @@ public:
         const auto descriptor_capacity=device_admission
             ?std::size_t(device_admission->response_capacity)
             :descriptors.size();
-        const bool compact_contact_admission=!admission_sources.empty();
         if(compact_contact_admission &&
-           (!device_admission || admission_sources.size()!=descriptor_capacity))
+           (!device_admission ||
+            device_admission->contact_manager_capacity!=manifolds.size()))
             throw std::invalid_argument(
-                "Source Dy contact admission requires the complete Sc edge view");
+                "Source Dy compact admission requires the complete Sc candidate table");
         if(device_unconstrained_preparation &&
            sleep_states.size()!=integration.size())
             throw std::invalid_argument(
@@ -1195,7 +1195,7 @@ public:
             const auto& layout=device_admission->layout;
             if(compact_contact_admission &&
                (layout.contact_admissions>layout.bytes ||
-                ((descriptor_capacity+31u)/32u)*
+                ((std::size_t(device_admission->contact_manager_capacity)+31u)/32u)*
                     sizeof(std::uint32_t)>
                     layout.bytes-layout.contact_admissions))
                 throw std::out_of_range(
@@ -1347,7 +1347,8 @@ public:
         last_schedule_.device_task_readback_bytes=device_task_bytes;
         last_schedule_.device_contact_admission_readback_bytes=
             compact_contact_admission
-                ?((descriptor_capacity+31u)/32u)*sizeof(std::uint32_t):0u;
+                ?((std::size_t(device_admission->contact_manager_capacity)+31u)/32u)*
+                    sizeof(std::uint32_t):0u;
         last_schedule_.free_velocity_readback_bytes=free_velocity_bytes;
         last_schedule_.sleep_readback_bytes=
             device_unconstrained_preparation
@@ -1971,7 +1972,7 @@ public:
         compute::BufferId device_response_buffer=0u;
         std::size_t device_response_source=0u;
         admitted_response_tokens_.clear();
-        admitted_contact_edges_.clear();
+        admitted_contact_sources_.clear();
         if(device_admission) {
             const auto metadata=addresses_.resolve(
                 device_admission->work,16u);
@@ -1992,20 +1993,22 @@ public:
                 device_ordinal_buffer=device_ordinals.buffer;
                 device_ordinal_source=device_ordinals.offset;
             }
-            if(descriptor_capacity) {
+            if(descriptor_capacity || compact_contact_admission) {
                 const auto& view=*device_admission;
-                const auto responses=addresses_.resolve(
-                    view.work+(compact_contact_admission
-                        ?view.layout.contact_admissions
-                        :view.layout.response_tokens),
-                    compact_contact_admission
-                        ?last_schedule_.device_contact_admission_readback_bytes
-                        :descriptor_capacity*sizeof(std::uint32_t));
-                device_response_buffer=responses.buffer;
-                device_response_source=responses.offset;
+                const auto bytes=compact_contact_admission
+                    ?last_schedule_.device_contact_admission_readback_bytes
+                    :descriptor_capacity*sizeof(std::uint32_t);
+                if(bytes) {
+                    const auto responses=addresses_.resolve(
+                        view.work+(compact_contact_admission
+                            ?view.layout.contact_admissions
+                            :view.layout.response_tokens),bytes);
+                    device_response_buffer=responses.buffer;
+                    device_response_source=responses.offset;
+                }
                 if(compact_contact_admission)
-                    admitted_contact_edges_.resize(
-                        (descriptor_capacity+31u)/32u);
+                    admitted_contact_sources_.resize(
+                        (std::size_t(view.contact_manager_capacity)+31u)/32u);
                 else admitted_response_tokens_.resize(descriptor_capacity);
             }
         }
@@ -2017,7 +2020,7 @@ public:
             .patches=patches,.integration=integration,
             .integrated_poses=integrated_poses,.sleep_states=sleep_states,
             .descriptors=descriptors,.body_ordinals=body_ordinals,
-            .admission_sources=admission_sources,
+            .compact_contact_admission=compact_contact_admission,
             .response_capacity=descriptor_capacity,
             .manifolds=manifolds,.contact_order=contact_order,
             .contact_prep=contact_prep,.result_offsets=result_offsets,
@@ -2056,11 +2059,11 @@ public:
                     host_.data()+device_ordinal_offset,
                     body_ordinals.size_bytes()};
         }
-        if(!admitted_contact_edges_.empty())
+        if(!admitted_contact_sources_.empty())
             downloads[download_count++]={
                 device_response_buffer,device_response_source,
-                admitted_contact_edges_.data(),
-                admitted_contact_edges_.size()*sizeof(std::uint32_t)};
+                admitted_contact_sources_.data(),
+                admitted_contact_sources_.size()*sizeof(std::uint32_t)};
         else if(!admitted_response_tokens_.empty())
             downloads[download_count++]={
                 device_response_buffer,device_response_source,
@@ -2321,25 +2324,28 @@ public:
                     host_.data()+result_offsets[0]+index*48u,48u);
         }
         if(pending.device_admission) {
-            if(!pending.admission_sources.empty()) {
-                // Sc already owns the edge-to-manager map. A compact
-                // device admission mask replaces a redundant token stream.
-                const auto edges=pending.admission_sources;
-                if(admitted_contact_edges_.size()!=(edges.size()+31u)/32u)
+            if(pending.compact_contact_admission) {
+                // Device Sc exposes the original candidate ownership.
+                // Numerical publication does not reconstruct an edge map.
+                if(admitted_contact_sources_.size()!=
+                    (manifolds.size()+31u)/32u)
                     throw std::logic_error(
-                        "Resident Sc returned an invalid contact admission mask");
+                        "Resident Sc returned an invalid candidate admission mask");
                 std::size_t admitted=0u;
-                for(std::size_t edge=0u;edge<edges.size();++edge) {
-                    if((admitted_contact_edges_[edge/32u]&
-                        (1u<<(edge%32u)))==0u)continue;
-                    const auto& source=edges[edge];
-                    if(source.kind!=0u ||
-                       source.source_index>=manifolds.size() ||
-                       !manifolds[source.source_index].patch_count)
-                        throw std::logic_error(
-                            "Resident Sc contact admission has no prepared manager");
-                    publish_descriptor({source.source_index,0u,0u,0u});
-                    ++admitted;
+                for(std::size_t word=0u;word<admitted_contact_sources_.size();
+                    ++word) {
+                    std::uint32_t bits=admitted_contact_sources_[word];
+                    while(bits) {
+                        const auto source=word*32u+std::countr_zero(bits);
+                        if(source>=manifolds.size() ||
+                           !manifolds[source].patch_count)
+                            throw std::logic_error(
+                                "Resident Sc contact admission has no prepared manager");
+                        publish_descriptor({static_cast<std::uint32_t>(source),
+                                            0u,0u,0u});
+                        ++admitted;
+                        bits&=bits-1u;
+                    }
                 }
                 if(admitted>last_schedule_.device_admitted_descriptors)
                     throw std::logic_error(
@@ -2447,9 +2453,9 @@ public:
                 ?16u+(pending.readback_device_task_records
                         ?pending.tasks.size_bytes():0u)+
                     pending.body_ordinals.size_bytes()+
-                    (pending.admission_sources.empty()
-                        ?pending.response_capacity*sizeof(std::uint32_t)
-                        :admitted_contact_edges_.size()*sizeof(std::uint32_t))
+                    (pending.compact_contact_admission
+                        ?admitted_contact_sources_.size()*sizeof(std::uint32_t)
+                        :pending.response_capacity*sizeof(std::uint32_t))
                     :0u)};
         last_reused_pcm_contact_rows_=reused_pcm_rows;
         last_omitted_pcm_upload_bytes_=
@@ -2487,8 +2493,9 @@ public:
             std::min(admitted_response_tokens_.size(),
                      last_schedule_.device_admitted_descriptors)};
     }
-    std::span<const std::uint32_t> admitted_contact_edges() const noexcept {
-        return {admitted_contact_edges_.data(),admitted_contact_edges_.size()};
+    std::span<const std::uint32_t> admitted_contact_sources() const noexcept {
+        return {admitted_contact_sources_.data(),
+                admitted_contact_sources_.size()};
     }
     std::pair<std::size_t,std::size_t> last_transfer_bytes() const noexcept {
         return last_transfer_bytes_;
@@ -2552,7 +2559,7 @@ private:
         std::span<native::GpuDySleepState> sleep_states{};
         std::span<const native::GpuDyDistanceDescriptor> descriptors{};
         std::span<const std::uint32_t> body_ordinals{};
-        std::span<const native::GpuDyIslandEdge> admission_sources{};
+        bool compact_contact_admission=false;
         std::size_t response_capacity=0u;
         std::span<const native::GpuDyContactManifold> manifolds{};
         std::span<const std::uint32_t> contact_order{};
@@ -2993,7 +3000,7 @@ private:
     std::vector<std::uint8_t> host_;
     std::vector<std::uint32_t> admitted_body_ordinals_;
     std::vector<std::uint32_t> admitted_response_tokens_;
-    std::vector<std::uint32_t> admitted_contact_edges_;
+    std::vector<std::uint32_t> admitted_contact_sources_;
     std::vector<SourceDyPackedContactPrepNative> packed_;
     std::vector<std::uint32_t> source_descriptor_tokens_;
     std::vector<native::GpuDyDistanceDescriptor> source_descriptor_full_;

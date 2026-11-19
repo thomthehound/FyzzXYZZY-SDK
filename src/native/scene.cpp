@@ -9888,10 +9888,7 @@ void Scene::solve_gpu_distance_constraints(float seconds) {
         gpu_dy_contact_prep_pairs_,
         gpu_dy_integration_inputs_,gpu_dy_integrated_poses_,true,
         gpu_dy_friction_impulses_,true,true,true,gpu_dy_sleep_states_,
-        gpu_dy_joint_inputs_,false,
-        device_admission
-            ?std::span<const GpuDyIslandEdge>{gpu_dy_island_edges_}
-            :std::span<const GpuDyIslandEdge>{});
+        gpu_dy_joint_inputs_,false,device_admission);
     // Sc's Gu-indexed force buffer and retired-manager bookkeeping are
     // independent of the submitted numerical solve. Prepare them while
     // the ordered GPU Dy task graph executes, before its result join.
@@ -9909,38 +9906,33 @@ void Scene::solve_gpu_distance_constraints(float seconds) {
     for(const BodyId id:gpu_dy_free_ids_)consume_preintegration(id);
     gpu_broadphase_->finish_gpu_dy_distance();
     if(device_admission) {
-        gpu_dy_admitted_manager_flags_.assign(manifolds_.size(),0u);
-        const auto admitted=gpu_broadphase_->gpu_dy_admitted_contact_edges();
-        if(admitted.size()!=(gpu_dy_island_edges_.size()+31u)/32u)
+        const auto admitted=gpu_broadphase_->gpu_dy_admitted_contact_sources();
+        if(admitted.size()!=(gpu_dy_manifolds_.size()+31u)/32u)
             throw std::logic_error(
-                "Sc device contact admission has invalid source capacity");
-        for(std::size_t i=0u;i<gpu_dy_island_edges_.size();++i) {
-            if((admitted[i/32u]&(1u<<(i%32u)))==0u)continue;
-            const auto& source=gpu_dy_island_edges_[i];
-            if(source.kind!=0u)
-                throw std::logic_error(
-                    "Sc device contact admission selected a non-contact response");
-            const auto candidate=source.source_index;
-            if(candidate>=previous_pairs_.size() ||
-               candidate>=active_edge_handles_.size())
-                throw std::logic_error(
-                    "Sc device admission returned an unknown contact candidate");
-            const auto edge=active_edge_handles_[candidate];
-            if(edge!=source.edge_index ||
-               edge>=manifold_by_edge_.size() ||
-               manifold_by_edge_[edge].generation!=
-                   manifold_lookup_generation_ ||
-               manifold_by_edge_[edge].index>=manifolds_.size())
-                throw std::logic_error(
-                    "Sc device admission returned a contact without a Gu manager");
-            const auto manager=manifold_by_edge_[edge].index;
-            const auto& manifold=manifolds_[manager];
-            if(manifold.edge_handle!=edge ||
-               manifold.candidate_ordinal!=candidate ||
-               !(manifold.pair==previous_pairs_[candidate]))
-                throw std::logic_error(
-                    "Sc device admission contact identity differs from Gu");
-            gpu_dy_admitted_manager_flags_[manager]=1u;
+                "Sc candidate admission has invalid source capacity");
+        for(std::size_t word=0u;word<admitted.size();++word) {
+            std::uint32_t bits=admitted[word];
+            while(bits) {
+                const auto candidate=word*32u+std::countr_zero(bits);
+                if(candidate>=previous_pairs_.size() ||
+                   candidate>=active_edge_handles_.size())
+                    throw std::logic_error(
+                        "Sc device admission returned an unknown contact candidate");
+                const auto edge=active_edge_handles_[candidate];
+                if(edge>=manifold_by_edge_.size() ||
+                   manifold_by_edge_[edge].generation!=
+                       manifold_lookup_generation_ ||
+                   manifold_by_edge_[edge].index>=manifolds_.size())
+                    throw std::logic_error(
+                        "Sc device admission returned a contact without a Gu manager");
+                const auto& manifold=manifolds_[manifold_by_edge_[edge].index];
+                if(manifold.edge_handle!=edge ||
+                   manifold.candidate_ordinal!=candidate ||
+                   !(manifold.pair==previous_pairs_[candidate]))
+                    throw std::logic_error(
+                        "Sc device contact source differs from Gu");
+                bits&=bits-1u;
+            }
         }
     }
     materialize_gpu_pcm_points();
@@ -9963,8 +9955,7 @@ void Scene::solve_gpu_distance_constraints(float seconds) {
             {world.x-p.x,world.y-p.y,world.z-p.z});
     };
     for(const auto manager_index:indexed_managers_) {
-        if(!gpu_dy_admitted_manager_flags_.empty() &&
-           !gpu_dy_admitted_manager_flags_[manager_index])continue;
+        if(!gpu_dy_admits_contact(manifolds_[manager_index]))continue;
         const auto& m=manifolds_[manager_index];
         if(m.pcm_result_index==std::numeric_limits<std::uint32_t>::max())
             continue;
@@ -10013,17 +10004,12 @@ void Scene::solve_gpu_distance_constraints(float seconds) {
             patch.anchor_count=static_cast<std::uint8_t>(count);
         }
     }
-    if(gpu_dy_admitted_manager_flags_.empty()) {
-        for(std::size_t i=0;i<friction_patches_.size();++i)
+    for(const auto manager_index:indexed_managers_) {
+        const auto& m=manifolds_[manager_index];
+        if(!gpu_dy_admits_contact(m))continue;
+        for(std::size_t i=m.friction_patch_offset;
+            i<m.friction_patch_offset+m.friction_patch_count;++i)
             friction_patches_[i].broken=gpu_dy_patches_[i].broken!=0u;
-    }else {
-        for(const auto manager_index:indexed_managers_) {
-            if(!gpu_dy_admitted_manager_flags_[manager_index])continue;
-            const auto& m=manifolds_[manager_index];
-            for(std::size_t i=m.friction_patch_offset;
-                i<m.friction_patch_offset+m.friction_patch_count;++i)
-                friction_patches_[i].broken=gpu_dy_patches_[i].broken!=0u;
-        }
     }
 }
 
@@ -10440,7 +10426,6 @@ void Scene::publish_contact_events() {
     contact_events_.swap(next_contact_events_);
 }
 void Scene::begin_contact_writeback() {
-    gpu_dy_admitted_manager_flags_.clear();
     // DySolverConstraints.cpp::writeBackContact copies final forceBuffer
     // impulses after the last velocity/writeback solve. Gu contact order,
     // not the reordered Dy partition list, owns output offsets. Here the
@@ -10474,6 +10459,16 @@ void Scene::begin_contact_writeback() {
     }
 }
 
+bool Scene::gpu_dy_admits_contact(const ContactManifold& manifold) const {
+    if(!gpu_dy_pose_ready_ || !gpu_broadphase_)return true;
+    const auto admitted=gpu_broadphase_->gpu_dy_admitted_contact_sources();
+    if(admitted.empty())return true;
+    const auto source=manifold.candidate_ordinal;
+    if(source/32u>=admitted.size())
+        throw std::logic_error(
+            "Source contact manager exceeds resident admission capacity");
+    return (admitted[source/32u]&(1u<<(source&31u)))!=0u;
+}
 void Scene::write_back_contacts(std::size_t first,std::size_t last) {
     // PxsSolverEndTask writes the Gu-indexed force/patch windows owned
     // by this source island task before the task completion edge. The
@@ -10483,8 +10478,7 @@ void Scene::write_back_contacts(std::size_t first,std::size_t last) {
     for(std::size_t manager=first;manager<last;++manager) {
         const std::size_t manifold_index=indexed_managers_[manager];
         const auto& manifold=manifolds_[manifold_index];
-        if(!gpu_dy_admitted_manager_flags_.empty() &&
-           !gpu_dy_admitted_manager_flags_[manifold_index]) {
+        if(!gpu_dy_admits_contact(manifold)) {
             if(manifold.friction_patch_offset>friction_impulse_writeback_.size() ||
                manifold.friction_patch_count>
                    friction_impulse_writeback_.size()-manifold.friction_patch_offset)
