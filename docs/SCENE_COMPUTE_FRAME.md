@@ -212,11 +212,12 @@ Other PCM frames retain their single-pass publication. Mixed late-Gu
 frames queue the
 CPU-generated physical-touch and loss journal before joining PCM's host
 witness, without waiting on that later device continuation.
-For early admitted GPU islands, the Scene queues actor-local mass,
-pose and sleep inputs before the host PCM witness join. The numerical
-enqueue validates the final Sc state and transfers only changed actor
-slots. The actor-local GPU pool remains the sole motion input owner;
-the early upload shares the existing Sc island-admission submission.
+During GPU PCM, Sc queues actor-local mass, pose and sleep inputs
+before the host witness join, including when early device island
+admission is unavailable. Already-active bodies and PCM candidate
+endpoints supply stable actor IDs; physical touch remains device-authored.
+Numerical enqueue reconciles final Sc changes and transfers only changed
+actor slots. The actor-local GPU pool remains the sole motion input owner.
 
 GPU 1D constraints author their numerical rows and joint geometry in
 the device input stream. The CPU PGS JointRow arena is not reserved or
