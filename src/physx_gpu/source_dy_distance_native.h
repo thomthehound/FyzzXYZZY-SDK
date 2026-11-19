@@ -1312,10 +1312,9 @@ public:
             throw std::overflow_error(
                 "Source GPU free-body velocity writeback exceeds 32-bit view");
         output_bytes+=free_velocity_bytes+free_sleep_bytes;
-        // Actual compact tasks and body ordinals are separate spans of
-        // the same ordered Dy result fetch, not GPU copies to a mirror
-        // region. Their destinations follow numerical output in host
-        // staging; the device arena retains only its real output extent.
+        // Sc needs admitted body ordinals for numerical publication.
+        // Device task records enter host staging only when the caller
+        // requests them; neither output requires a device mirror.
         const std::size_t device_header_offset=output_bytes;
         const std::size_t device_task_offset=output_bytes+
             (device_admission?16u:0u);
@@ -1958,19 +1957,23 @@ public:
         if(device_admission) {
             const auto metadata=addresses_.resolve(
                 device_admission->work,16u);
-            const auto device_tasks=addresses_.resolve(
-                device_admission->work+
-                    device_admission->layout.tasks,tasks.size_bytes());
-            const auto device_ordinals=addresses_.resolve(
-                device_admission->work+
-                    device_admission->layout.body_order,
-                std::max<std::size_t>(4u,body_ordinals.size_bytes()));
             device_meta_buffer=metadata.buffer;
-            device_task_buffer=device_tasks.buffer;
-            device_ordinal_buffer=device_ordinals.buffer;
             device_meta_offset=metadata.offset;
-            device_task_source=device_tasks.offset;
-            device_ordinal_source=device_ordinals.offset;
+            if(device_task_bytes) {
+                const auto device_tasks=addresses_.resolve(
+                    device_admission->work+
+                        device_admission->layout.tasks,device_task_bytes);
+                device_task_buffer=device_tasks.buffer;
+                device_task_source=device_tasks.offset;
+            }
+            if(!body_ordinals.empty()) {
+                const auto device_ordinals=addresses_.resolve(
+                    device_admission->work+
+                        device_admission->layout.body_order,
+                    body_ordinals.size_bytes());
+                device_ordinal_buffer=device_ordinals.buffer;
+                device_ordinal_source=device_ordinals.offset;
+            }
             if(descriptor_capacity) {
                 const auto& view=*device_admission;
                 const auto responses=addresses_.resolve(
