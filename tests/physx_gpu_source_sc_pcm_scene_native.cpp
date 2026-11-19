@@ -2853,6 +2853,158 @@ void verify_device_sc_dy_compact_contact_ranges(
         "Compacted PCM extents disagree with physical contact publication");
     producer->commit_gpu_step();
 }
+// Interleaved task reservations must never compact through another
+// island's source contact rows or its independent force destinations.
+void verify_device_sc_dy_sparse_task_windows(
+    fyzz::compute::Backend backend,const char* sap,const char* pcm,
+    const char* dy_shader) {
+    using namespace fyzz;
+    std::ifstream binary_file(dy_shader,std::ios::binary);
+    require(bool(binary_file),"Sparse Sc/Dy shader unavailable");
+    compute::ShaderBinary shader{};
+    shader.format=backend==compute::Backend::Vulkan
+        ?compute::ShaderFormat::Spirv:compute::ShaderFormat::Dxil;
+    shader.bytes.assign(std::istreambuf_iterator<char>{binary_file},
+                        std::istreambuf_iterator<char>{});
+    native::Scene scene;
+    auto owner=std::make_unique<physx_gpu::SourceScOwnedGpuBroadphaseNative>(
+        backend,load_native_gpu_sap_shaders(backend,sap),128u,128u,
+        std::nullopt,load_native_gpu_pcm_shaders(backend,pcm),
+        std::move(shader));
+    auto* producer=owner.get();
+    scene.set_gpu_broadphase(std::move(owner));
+    const auto body_a=scene.add_dynamic_box(
+        {0.5f,0.5f,0.5f},{0.f,1.f,0.f},1.f);
+    const auto fixed_a0=scene.add_static_box(
+        {0.5f,0.5f,0.5f},{-0.8f,1.f,0.f});
+    const auto fixed_a1=scene.add_static_box(
+        {0.5f,0.5f,0.5f},{0.8f,1.f,0.f});
+    const auto body_b=scene.add_dynamic_box(
+        {0.5f,0.5f,0.5f},{4.f,1.f,0.f},1.f);
+    const auto fixed_b=scene.add_static_box(
+        {0.5f,0.5f,0.5f},{4.8f,1.f,0.f});
+    scene.advance_collision(true);
+    const std::array<std::uint32_t,3> handles{{
+        scene.contact_edge_index({body_a,fixed_a0}),
+        scene.contact_edge_index({body_b,fixed_b}),
+        scene.contact_edge_index({body_a,fixed_a1})
+    }};
+    require(std::all_of(handles.begin(),handles.end(),
+                [](std::uint32_t handle){return handle!=0xffffffffu;}) &&
+            handles[0]!=handles[1] && handles[0]!=handles[2] &&
+            handles[1]!=handles[2],
+        "Sparse task fixture lacks three independent contact managers");
+    constexpr std::uint32_t capacity=5u;
+    constexpr float seconds=1.f/120.f;
+    const std::array<native::GpuPcmBoxPair,3> requests{{
+        {body_a,fixed_a0,handles[0],false},
+        {body_b,fixed_b,handles[1],false},
+        {body_a,fixed_a1,handles[2],false}
+    }};
+    std::array<native::GpuPcmBoxResult,3> witness{};
+    const std::array<physx_gpu::SourceScDeviceIslandEdge,3> edges{{
+        {handles[0],0u,0xffffffffu,0u,0u},
+        {handles[1],1u,0xffffffffu,1u,0u},
+        {handles[2],0u,0xffffffffu,2u,0u}
+    }};
+    const std::array<std::uint32_t,2> nodes{{
+        4u|(1u<<8u)|physx_gpu::source_sc_device_island_active_bit,
+        4u|(1u<<8u)|physx_gpu::source_sc_device_island_active_bit
+    }};
+    std::array<native::GpuDyDistanceBody,2> bodies{};
+    for(auto& body:bodies)body.inverse_mass=1.f;
+    const std::array<native::GpuDyDistanceDescriptor,3> descriptors{{
+        {0u,0u,0xffffffffu,0x100u},
+        {1u,1u,0xffffffffu,0x100u},
+        {2u,0u,0xffffffffu,0x100u}
+    }};
+    const std::array<std::uint32_t,2> ordinals{{0u,1u}};
+    std::array<native::GpuDyDistanceTask,2> tasks{{
+        {0u,2u,0u,2u,0u,1u,4u,1u,0u},
+        {2u,3u,2u,3u,1u,2u,4u,1u,0u}
+    }};
+    std::array<native::GpuDyContactPatch,3> patches{{
+        {0u,capacity,0u,0x80000000u,0.5f,0.5f,0u,0u},
+        {4u,capacity,0u,0x80000000u,0.5f,0.5f,0u,0u},
+        {8u,capacity,0u,0x80000000u,0.5f,0.5f,0u,0u}
+    }};
+    const std::array<native::GpuDyContactManifold,3> managers{{
+        {0u,1u,0xffffffffu,0u,0u,0u},
+        {1u,1u,0xffffffffu,0u,1u,capacity},
+        {2u,1u,0xffffffffu,0u,2u,2u*capacity}
+    }};
+    std::array<native::GpuDyContactPrepPair,3> preparation{};
+    for(std::uint32_t i=0u;i<preparation.size();++i) {
+        auto& pair=preparation[i];
+        pair.pcm_pair_index=i;
+        pair.pcm_edge=handles[i];
+        pair.body0.solver_ordinal=i==1u?1u:0u;
+        pair.body0.inverse_mass=1.f;
+        pair.body0.orientation[3]=1.f;
+        pair.body1.orientation[3]=1.f;
+        pair.inv_dt=1.f/seconds;
+        pair.rigid_contact_bias=0.8f;
+        pair.seconds=seconds;
+        pair.max_contact_impulse=std::numeric_limits<float>::max();
+    }
+    std::array<native::GpuDyBodyIntegrationInput,2> input{};
+    for(std::size_t i=0u;i<input.size();++i) {
+        auto& body=input[i];
+        body.active=1u;
+        body.source_actor=i?body_b:body_a;
+        body.source_element=0xffffffffu;
+        body.source_inverse_mass=1.f;
+        body.position[0]=i?4.f:0.f;
+        body.position[1]=1.f;
+        body.actor_position[0]=body.position[0];
+        body.actor_position[1]=1.f;
+        body.orientation[3]=1.f;
+        body.actor_orientation[3]=1.f;
+        body.mass_local_orientation[3]=1.f;
+        body.max_linear_speed_squared=100.f;
+        body.max_angular_speed_squared=100.f;
+        body.wake_counter=0.4f;
+        body.seconds=seconds;
+    }
+    std::array<native::GpuDyIntegratedPose,2> poses{};
+    std::array<native::GpuDySleepState,2> sleep{};
+    std::array<native::GpuDyFrictionAnchorInput,6> anchors{};
+    std::array<native::GpuDyFrictionAnchorImpulse,6> anchor_impulses{};
+    std::array<float,3u*capacity> forces{};
+    forces.fill(-17.f);
+    producer->enqueue_gpu_pcm_box_contacts(requests,witness);
+    producer->enqueue_gpu_dy_island_admission(
+        edges,nodes,physx_gpu::SourceScDeviceIslandSources{3u,0u,0u});
+    producer->enqueue_gpu_dy_distance(
+        bodies,{},descriptors,{},ordinals,tasks,
+        forces,{},{},anchors,patches,managers,{},preparation,input,poses,
+        true,anchor_impulses,true,true,true,sleep);
+    producer->finish_gpu_dy_distance();
+    const auto schedule=producer->dy_launch_stats();
+    require(tasks[0].error==0u && tasks[1].error==0u &&
+            poses[0].valid==1u && poses[1].valid==1u &&
+            schedule.device_admitted_tasks==2u &&
+            schedule.device_admitted_descriptors==3u &&
+            std::all_of(patches.begin(),patches.end(),
+                [](const auto& patch) {
+                    return patch.contact_count>0u &&
+                           patch.contact_count<capacity;
+                }) &&
+            (patches[2].reserved&
+                physx_gpu::source_dy_pcm_compacted_bit)==0u &&
+            forces[0]!=-17.f && forces[capacity]!=-17.f &&
+            forces[2u*capacity]!=-17.f &&
+            forces[capacity-1u]==-17.f &&
+            forces[2u*capacity-1u]==-17.f &&
+            forces[3u*capacity-1u]==-17.f,
+        "Sparse device contact tasks crossed Sc row reservations");
+    producer->finish_gpu_pcm_box_contacts();
+    for(std::size_t i=0u;i<witness.size();++i)
+        require(witness[i].count()==patches[i].contact_count,
+            "Sparse task contact extent differs from Sc publication");
+    producer->commit_gpu_step();
+}
+
 void verify_queued_pcm_dy(fyzz::compute::Backend backend,const char* sap,
                           const char* pcm,const char* dy_shader) {
     using namespace fyzz;
@@ -7977,6 +8129,8 @@ int main(int argc,char** argv) {
                     verify_device_sc_dy_task_admission(
                         backend,argv[1],argv[2],argv[3]);
                     verify_device_sc_dy_compact_contact_ranges(
+                        backend,argv[1],argv[2],argv[3]);
+                    verify_device_sc_dy_sparse_task_windows(
                         backend,argv[1],argv[2],argv[3]);
                 });
         if(scenario=="all" || scenario=="friction_normal")
