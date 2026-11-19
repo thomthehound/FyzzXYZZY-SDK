@@ -308,6 +308,8 @@ void verify(Context& context,const char* filename) {
             });
         require(expected.size()==summary.admitted_edges,
                 "Device Sc response count disagrees with source admissions");
+        std::vector<std::uint32_t> contact_bits(
+            (std::size_t(result.edge_count)+31u)/32u,0u);
         for(std::size_t i=0u;i<expected.size();++i) {
             const auto edge=expected[i].second;
             const auto record=admitted(result,edge);
@@ -326,7 +328,14 @@ void verify(Context& context,const char* filename) {
                     std::to_string(observed) + ", expected=" +
                     std::to_string(edge) + ", token=" +
                     std::to_string(token));
+            if((record.kind&source_sc_device_island_joint_bit)==0u)
+                contact_bits[edge/32u]|=1u<<(edge%32u);
         }
+        for(std::size_t word=0u;word<contact_bits.size();++word)
+            require(load<std::uint32_t>(result.second,
+                        result.first.contact_admissions+word*4u)==
+                        contact_bits[word],
+                "Device Sc compact contact admission lost source edge ownership");
     };
     const auto no_errors=[&](const auto& result) {
         const auto errors=load<std::uint32_t>(result.second,0u);
@@ -1180,10 +1189,11 @@ void verify(Context& context,const char* filename) {
         const auto owner=i%4u==0u?0u:i%4u==1u?256u:
                          i%4u==2u?127u:1u;
         radix_edges.push_back({i,owner,invalid,517u-i,
-            source_sc_device_island_joint_bit|
+            (i%5u==0u?0u:source_sc_device_island_joint_bit)|
             (i%17u==0u?source_sc_device_island_no_response_bit:0u)});
     }
-    auto radix=evaluate(radix_nodes,radix_edges,{},radix_flags);
+    auto radix=evaluate(radix_nodes,radix_edges,
+        std::vector<std::uint32_t>(517u,0x10101u),radix_flags);
     no_errors(radix);
     check_task_mapping(radix);
     require(header(radix).runnable_components==3u &&
