@@ -10,6 +10,7 @@
 
 #include <algorithm>
 #include <array>
+#include <bit>
 #include <chrono>
 #include <cmath>
 #include <cstddef>
@@ -71,6 +72,24 @@ struct SourceScDeviceIslandFixture {
         owner.context_.download(view.buffer,view.offset,
                                 state.data(),sizeof(state));
         return state;
+    }
+    static std::vector<std::uint32_t> contact_admissions(
+            SourceScOwnedGpuBroadphaseNative& owner) {
+        if(!owner.pcm_ || !owner.pcm_->device_island_work_address())
+            throw std::runtime_error("Missing resident Sc contact admission");
+        const auto words=std::size_t(
+            (owner.pcm_->device_island_response_capacity()+31u)/32u);
+        std::vector<std::uint32_t> admitted(words);
+        if(words) {
+            owner.stream_.wait_at_fetch();
+            const auto address=owner.pcm_->device_island_work_address()+
+                owner.pcm_->device_island_layout().contact_admissions;
+            const auto view=owner.addresses_.resolve(
+                address,admitted.size()*sizeof(std::uint32_t));
+            owner.context_.download(view.buffer,view.offset,
+                                    admitted.data(),admitted.size()*sizeof(std::uint32_t));
+        }
+        return admitted;
     }
     static std::uint32_t extent(
             SourceScOwnedGpuBroadphaseNative& owner,std::uint32_t response) {
@@ -600,13 +619,19 @@ struct GpuPcmFrictionAnchorFixture {
             throw std::runtime_error(
                 "Resident Sc contact admission did not publish Gu manager flags");
         std::vector<std::uint8_t> expected(actual.size(),0u);
-        for(const auto token:
-            scene.gpu_broadphase_->gpu_dy_admitted_response_tokens()) {
-            if((token>>30u)!=3u)continue;
-            const auto candidate=token&0x3fffffffu;
-            if(candidate>=scene.previous_pairs_.size())
+        const auto admitted=
+            scene.gpu_broadphase_->gpu_dy_admitted_contact_edges();
+        if(admitted.size()!=(scene.gpu_dy_island_edges_.size()+31u)/32u)
+            throw std::runtime_error(
+                "Resident Sc contact mask does not cover source edges");
+        for(std::size_t i=0u;i<scene.gpu_dy_island_edges_.size();++i) {
+            if((admitted[i/32u]&(1u<<(i%32u)))==0u)continue;
+            const auto& edge=scene.gpu_dy_island_edges_[i];
+            if(edge.kind!=0u ||
+               edge.source_index>=scene.previous_pairs_.size())
                 throw std::runtime_error(
-                    "Resident Sc contact response has no candidate");
+                    "Resident Sc contact bit has no source candidate");
+            const auto candidate=edge.source_index;
             const auto pair=scene.previous_pairs_[candidate];
             const auto it=std::lower_bound(scene.manifolds_.begin(),
                 scene.manifolds_.end(),pair,
@@ -622,7 +647,7 @@ struct GpuPcmFrictionAnchorFixture {
         }
         if(actual!=expected)
             throw std::runtime_error(
-                "Resident Sc response tokens were not mapped to Gu indices");
+                "Resident Sc contact bits were not mapped to Gu indices");
     }
     static void verify_active_reverse_indices(const Scene& scene) {
         const auto verify=[](const auto& graph) {
@@ -2837,6 +2862,9 @@ void verify_device_sc_dy_compact_contact_ranges(
             tasks[0].error==0u && poses[0].valid==1u &&
             schedule.device_admitted_tasks==1u &&
             schedule.device_admitted_descriptors==2u &&
+            fyzz::physx_gpu::SourceScDeviceIslandFixture::
+                contact_admissions(*producer)==
+                    std::vector<std::uint32_t>{3u} &&
             schedule.device_task_readback_bytes==
                 tasks.size()*sizeof(native::GpuDyDistanceTask) &&
             patches[0].contact_count>0u &&
@@ -2990,6 +3018,9 @@ void verify_device_sc_dy_sparse_task_windows(
             poses[0].valid==1u && poses[1].valid==1u &&
             schedule.device_admitted_tasks==2u &&
             schedule.device_admitted_descriptors==3u &&
+            fyzz::physx_gpu::SourceScDeviceIslandFixture::
+                contact_admissions(*producer)==
+                    std::vector<std::uint32_t>{7u} &&
             std::all_of(patches.begin(),patches.end(),
                 [](const auto& patch) {
                     return patch.contact_count>0u &&
@@ -5569,14 +5600,14 @@ void verify_mixed_gu_pcm_gpu_dy_solver(
                 native::GpuPcmFrictionAnchorFixture::
                     verify_device_admitted_contact_sources(gpu);
                 if(with_joint) {
-                    const auto tokens=
-                        producer->gpu_dy_admitted_response_tokens();
-                    const auto count=std::count_if(
-                        tokens.begin(),tokens.end(),[](std::uint32_t token) {
-                            return (token>>30u)==2u;
-                        });
-                    require(count==1u,
-                        "Mixed CPU Gu/PCM admission lost the typed joint response");
+                    const auto contact_bits=
+                        producer->gpu_dy_admitted_contact_edges();
+                    std::size_t contacts=0u;
+                    for(const auto bits:contact_bits)
+                        contacts+=std::popcount(bits);
+                    require(producer->dy_launch_stats().
+                                device_admitted_descriptors==contacts+1u,
+                        "Mixed CPU Gu/PCM admission lost its joint response");
                 }
             }
             if(device_admission && !plane_first && frame==0u) {
@@ -5971,18 +6002,18 @@ void verify_joint_only_device_admission(
         const auto responding=frame<2u?3u:frame<4u?2u:1u;
         const bool device_graph=responding>1u;
         const auto stats=producer->dy_launch_stats();
-        const auto tokens=producer->gpu_dy_admitted_response_tokens();
+        const auto contact_bits=producer->gpu_dy_admitted_contact_edges();
         require(cpu.contacts().empty() && gpu.contacts().empty() &&
                 producer->pcm_header_join_bytes()==0u &&
                 producer->dy_pcm_device_contact_rows()==0u &&
                 stats.device_island_indirect_dispatches==(device_graph?1u:0u) &&
                 stats.device_admitted_tasks==(device_graph?responding:0u) &&
                 stats.device_admitted_descriptors==(device_graph?responding:0u) &&
-                tokens.size()==(device_graph?responding:0u) &&
-                std::all_of(tokens.begin(),tokens.end(),
-                    [](std::uint32_t token) {
-                        return (token&0xc0000000u)==0x80000000u;
-                    }),
+                stats.device_contact_admission_readback_bytes==
+                    (device_graph?sizeof(std::uint32_t):0u) &&
+                contact_bits.size()==(device_graph?1u:0u) &&
+                std::all_of(contact_bits.begin(),contact_bits.end(),
+                    [](std::uint32_t bits) {return bits==0u;}),
             "Joint-only Sc task ownership disagreed with numerical work");
         for(std::size_t i=0u;i<a.size();++i)
             test::compound_compare_state(
