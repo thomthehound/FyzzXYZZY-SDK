@@ -4644,6 +4644,29 @@ void Scene::update_contacts(bool defer_device_points,float inverse_step) {
     if(gpu_results_pending &&
        (island_topology_dirty_ || !found_.empty() || !lost_.empty()))
         update_island_connectivity(true);
+    // Active Sc bodies have authored mass frames and motion inputs
+    // independently of this frame's PCM touch results. Stage them while
+    // narrowphase runs even when early device island admission is unavailable.
+    // Final Dy preparation revalidates any subsequent wake or authored edit.
+    if(gpu_results_pending && defer_device_points && gpu_dy_active() &&
+       !gpu_dy_early_islands_ && !early_device_graph_awaits_gu &&
+       inverse_step>0.0f) {
+        gpu_dy_integration_inputs_.clear();
+        gpu_dy_integration_inputs_.reserve(
+            accurate_islands_.active_nodes.size());
+        for(const BodyId id:accurate_islands_.active_nodes) {
+            const auto& actor=actors_[id];
+            if(!actor.alive || actor.motion!=Motion::Dynamic ||
+               actor.sleeping)continue;
+            auto& input=gpu_dy_integration_inputs_.emplace_back();
+            pack_gpu_dy_integration_input(id,1.0f/inverse_step,input);
+        }
+        if(!gpu_dy_integration_inputs_.empty())
+            gpu_broadphase_->enqueue_gpu_dy_actor_sources(
+                gpu_dy_integration_inputs_);
+    }
+    FYZZ_PROFILE_COUNTER("pcm.prewitness_actor_sources",
+        gpu_dy_integration_inputs_.size());
     FYZZ_PROFILE_COUNTER("sc.device_island_early",
         (gpu_dy_early_islands_ || early_device_graph_awaits_gu)?1u:0u);
     // Every device PCM manager reserves a bounded Gu run. Sc reconciles
