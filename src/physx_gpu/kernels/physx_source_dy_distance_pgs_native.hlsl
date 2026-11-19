@@ -429,7 +429,7 @@ groupshared uint dySingletonPartitions;
 groupshared uint dyHubA,dyHubB,dyHubMask;
 groupshared uint dyContactManagers,dySourceFirst,dySourceLast;
 groupshared uint dySourceCapacity,dyExactContacts;
-groupshared uint dyCapacityCarry,dyExactCarry;
+groupshared uint dyCapacityCarry,dyExactCarry,dySourceDisjoint;
 groupshared uint dyCapacityScan[128],dyExactScan[128];
 
 // The resident source token has one authoritative decoding rule for
@@ -702,9 +702,57 @@ void sourceDyPartitionTask(uint taskId,uint scratch,uint errorAddress,
             sourceDyTaskErrorOr(errorAddress,65536u);
         AllMemoryBarrierWithGroupSync();
         if(sourceDyTaskLoad(errorAddress)!=0u)return;
-        // Only a contiguous source union can be compacted in place;
-        // gaps may belong to independent Sc tasks.
-        if(dySourceCapacity==dySourceLast-dySourceFirst)
+        // Capacity equality alone cannot prove ownership: overlapping
+        // reservations can conceal a gap owned by another Sc task.
+        // Validate the source-ordered union before changing any row.
+        if(dySourceCapacity==dySourceLast-dySourceFirst &&
+           dyContactManagers>1u) {
+            if(lane==0u) {
+                dyCapacityCarry=0u;
+                dySourceDisjoint=1u;
+            }
+            GroupMemoryBarrierWithGroupSync();
+            for(uint block=first;block<last;block+=128u) {
+                const uint i=block+lane;
+                uint capacity=0u,source=0u;
+                if(i<last) {
+                    const uint4 desc=arena.Load4(raw+i*16u);
+                    if((desc.w&255u)==0u && desc.x<p.manifoldCount) {
+                        const uint mo=p.manifoldBias+desc.x*24u;
+                        if(arena.Load(mo+4u)!=0u) {
+                            capacity=arena.Load(cursors+i*4u);
+                            source=arena.Load(mo+20u);
+                        }
+                    }
+                }
+                dyCapacityScan[lane]=capacity;
+                GroupMemoryBarrierWithGroupSync();
+                [unroll]
+                for(uint step=1u;step<128u;step<<=1u) {
+                    const uint prior=lane>=step
+                        ?dyCapacityScan[lane-step]:0u;
+                    GroupMemoryBarrierWithGroupSync();
+                    dyCapacityScan[lane]+=prior;
+                    GroupMemoryBarrierWithGroupSync();
+                }
+                if(capacity!=0u &&
+                   source!=dySourceFirst+dyCapacityCarry+
+                       dyCapacityScan[lane]-capacity) {
+                    uint unused;
+                    InterlockedAnd(dySourceDisjoint,0u,unused);
+                }
+                GroupMemoryBarrierWithGroupSync();
+                if(lane==0u)dyCapacityCarry+=dyCapacityScan[127u];
+                GroupMemoryBarrierWithGroupSync();
+            }
+        }
+        if(lane==0u) {
+            dyCapacityCarry=0u;
+            dyExactCarry=0u;
+        }
+        GroupMemoryBarrierWithGroupSync();
+        if(dySourceCapacity==dySourceLast-dySourceFirst &&
+           (dyContactManagers<=1u || dySourceDisjoint!=0u))
         for(uint block=first;block<last;block+=128u) {
             const uint i=block+lane;
             uint capacity=0u,exact=0u,mo=0u,source=0u;
