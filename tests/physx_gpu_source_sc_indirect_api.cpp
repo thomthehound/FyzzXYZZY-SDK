@@ -52,7 +52,7 @@ void verify(const char* source_shader,const char* consumer_shader) {
     const auto consumer=context.create_compute_pipeline(desc);
 
     const auto exercise=[&](std::uint32_t node_count) {
-        const auto layout=SourceScDeviceIslandLayout::for_counts(node_count,0u);
+        const auto layout=SourceScDeviceIslandLayout::for_counts(node_count,0u,0u);
         const auto node_bytes=std::size_t(node_count)*sizeof(std::uint32_t);
         const auto result_bytes=std::size_t(node_count)*4u*sizeof(std::uint32_t);
         const auto node_buffer=context.create_buffer(
