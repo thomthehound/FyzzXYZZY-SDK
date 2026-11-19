@@ -2857,11 +2857,11 @@ void verify_device_sc_dy_compact_contact_ranges(
             patches[0].contact_count<capacity &&
             patches[1].contact_count>0u &&
             patches[1].contact_count<capacity &&
-            (patches[0].reserved&
-                physx_gpu::source_dy_pcm_compacted_bit)==0u &&
-            ((patches[1].reserved&
+            ((patches[0].reserved&
                 physx_gpu::source_dy_pcm_compacted_bit)!=0u)==
-                    !reverse_source &&
+                    reverse_source &&
+            (patches[1].reserved&
+                physx_gpu::source_dy_pcm_compacted_bit)!=0u &&
             forces[0]!=-17.f && forces[capacity]!=-17.f &&
             forces[capacity-1u]==-17.f &&
             forces[2u*capacity-1u]==-17.f,
@@ -2872,8 +2872,8 @@ void verify_device_sc_dy_compact_contact_ranges(
         "Compacted PCM extents disagree with physical contact publication");
     producer->commit_gpu_step();
 }
-// Interleaved task reservations must never compact through another
-// island's source contact rows or its independent force destinations.
+// Independent islands compact into disjoint numerical rows even when
+// their source force reservations are interleaved.
 void verify_device_sc_dy_sparse_task_windows(
     fyzz::compute::Backend backend,const char* sap,const char* pcm,
     const char* dy_shader) {
@@ -3013,7 +3013,7 @@ void verify_device_sc_dy_sparse_task_windows(
                            patch.contact_count<capacity;
                 }) &&
             (patches[2].reserved&
-                physx_gpu::source_dy_pcm_compacted_bit)==0u &&
+                physx_gpu::source_dy_pcm_compacted_bit)!=0u &&
             forces[0]!=-17.f && forces[capacity]!=-17.f &&
             forces[2u*capacity]!=-17.f &&
             forces[capacity-1u]==-17.f &&
