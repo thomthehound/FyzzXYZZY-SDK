@@ -697,12 +697,14 @@ void sourceDyPartitionTask(uint taskId,uint scratch,uint errorAddress,
         if(lane==0u &&
            (dySourceFirst==invalidBody ||
             dySourceLast<dySourceFirst ||
-            dySourceCapacity!=dySourceLast-dySourceFirst ||
+            dySourceCapacity>dySourceLast-dySourceFirst ||
             dyExactContacts>dySourceCapacity))
             sourceDyTaskErrorOr(errorAddress,65536u);
         AllMemoryBarrierWithGroupSync();
         if(sourceDyTaskLoad(errorAddress)!=0u)return;
-        // Disjoint source windows give each task an exclusive compact arena.
+        // Only a contiguous source union can be compacted in place;
+        // gaps may belong to independent Sc tasks.
+        if(dySourceCapacity==dySourceLast-dySourceFirst)
         for(uint block=first;block<last;block+=128u) {
             const uint i=block+lane;
             uint capacity=0u,exact=0u,mo=0u,source=0u;
