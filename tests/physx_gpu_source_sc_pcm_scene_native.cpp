@@ -4522,14 +4522,15 @@ void verify_gpu_coupled_solver(
                 host_pose_bytes==0u,
             "GPU Dy resident contact poses have inconsistent transfer accounting");
         if(frame==0u)
-            require(resident==0u,
-                "First Sc contact solve reused an unauthorized device pose");
+            require(resident==0u &&
+                    producer->dy_launch_stats().prewitness_actor_local_upload_bytes>=
+                        2u*sizeof(physx_gpu::SourceDyActorLocalNative),
+                "Initial coupled actors were not staged during GPU PCM");
         else if(frame==6u)
             require(resident>=2u && resident<integrated &&
-                    producer->dy_launch_stats().actor_local_upload_bytes+
                     producer->dy_launch_stats().prewitness_actor_local_upload_bytes>=
                         sizeof(physx_gpu::SourceDyActorLocalNative),
-                "Authored Sc contact pose did not invalidate only its device owner");
+                "Authored Sc contact pose was not staged before the witness join");
         else
             require(resident>=2u && host_pose_bytes==0u,
                 "Active GPU contact bodies still upload authored mass poses");
