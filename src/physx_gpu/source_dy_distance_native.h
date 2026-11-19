@@ -115,6 +115,7 @@ struct SourceDyLaunchStats {
     std::size_t device_admitted_bodies=0u;
     std::size_t device_admitted_descriptors=0u;
     std::size_t device_task_readback_bytes=0u;
+    std::size_t device_contact_admission_readback_bytes=0u;
     std::size_t tile_bytes=0u;
     // Device-written descriptors, partition ranges, tasks, and ordinals
     // omitted from the host numerical input packet.
@@ -484,7 +485,8 @@ public:
                std::span<const native::GpuDyJointInput> joint_inputs={},
                std::optional<SourceScDeviceIslandDyView> device_admission=std::nullopt,
                std::span<const compute::DownloadSpan> extra_downloads={},
-               bool readback_device_task_records=true) {
+               bool readback_device_task_records=true,
+               std::span<const native::GpuDyIslandEdge> admission_sources={}) {
         if(pending_solve_)
             throw std::logic_error("Source Dy numerical epoch already queued");
         if(device_admission &&
@@ -510,6 +512,11 @@ public:
         const auto descriptor_capacity=device_admission
             ?std::size_t(device_admission->response_capacity)
             :descriptors.size();
+        const bool compact_contact_admission=!admission_sources.empty();
+        if(compact_contact_admission &&
+           (!device_admission || admission_sources.size()!=descriptor_capacity))
+            throw std::invalid_argument(
+                "Source Dy contact admission requires the complete Sc edge view");
         if(device_unconstrained_preparation &&
            sleep_states.size()!=integration.size())
             throw std::invalid_argument(
@@ -1186,6 +1193,12 @@ public:
                 "Source Dy device island admission requires resident numerical task launch");
         if(device_admission) {
             const auto& layout=device_admission->layout;
+            if(compact_contact_admission &&
+               (layout.contact_admissions>layout.bytes ||
+                last_schedule_.device_contact_admission_readback_bytes>
+                    layout.bytes-layout.contact_admissions))
+                throw std::out_of_range(
+                    "Source Sc device contact admission exceeds its view");
             if(layout.tasks>layout.block_offsets ||
                tasks.size_bytes()>layout.block_offsets-layout.tasks ||
                layout.body_order>layout.response_tokens ||
@@ -1331,6 +1344,9 @@ public:
             throw std::overflow_error(
                 "Resident Sc Dy scheduling result exceeds address space");
         last_schedule_.device_task_readback_bytes=device_task_bytes;
+        last_schedule_.device_contact_admission_readback_bytes=
+            compact_contact_admission
+                ?((descriptor_capacity+31u)/32u)*sizeof(std::uint32_t):0u;
         last_schedule_.free_velocity_readback_bytes=free_velocity_bytes;
         last_schedule_.sleep_readback_bytes=
             device_unconstrained_preparation
@@ -1954,6 +1970,7 @@ public:
         compute::BufferId device_response_buffer=0u;
         std::size_t device_response_source=0u;
         admitted_response_tokens_.clear();
+        admitted_contact_edges_.clear();
         if(device_admission) {
             const auto metadata=addresses_.resolve(
                 device_admission->work,16u);
@@ -1977,11 +1994,18 @@ public:
             if(descriptor_capacity) {
                 const auto& view=*device_admission;
                 const auto responses=addresses_.resolve(
-                    view.work+view.layout.response_tokens,
-                    descriptor_capacity*sizeof(std::uint32_t));
+                    view.work+(compact_contact_admission
+                        ?view.layout.contact_admissions
+                        :view.layout.response_tokens),
+                    compact_contact_admission
+                        ?last_schedule_.device_contact_admission_readback_bytes
+                        :descriptor_capacity*sizeof(std::uint32_t));
                 device_response_buffer=responses.buffer;
                 device_response_source=responses.offset;
-                admitted_response_tokens_.resize(descriptor_capacity);
+                if(compact_contact_admission)
+                    admitted_contact_edges_.resize(
+                        (descriptor_capacity+31u)/32u);
+                else admitted_response_tokens_.resize(descriptor_capacity);
             }
         }
         // The final readback shares the numerical dispatch submission.
@@ -1992,6 +2016,7 @@ public:
             .patches=patches,.integration=integration,
             .integrated_poses=integrated_poses,.sleep_states=sleep_states,
             .descriptors=descriptors,.body_ordinals=body_ordinals,
+            .admission_sources=admission_sources,
             .response_capacity=descriptor_capacity,
             .manifolds=manifolds,.contact_order=contact_order,
             .contact_prep=contact_prep,.result_offsets=result_offsets,
@@ -2030,7 +2055,12 @@ public:
                     host_.data()+device_ordinal_offset,
                     body_ordinals.size_bytes()};
         }
-        if(!admitted_response_tokens_.empty())
+        if(!admitted_contact_edges_.empty())
+            downloads[download_count++]={
+                device_response_buffer,device_response_source,
+                admitted_contact_edges_.data(),
+                admitted_contact_edges_.size()*sizeof(std::uint32_t)};
+        else if(!admitted_response_tokens_.empty())
             downloads[download_count++]={
                 device_response_buffer,device_response_source,
                 admitted_response_tokens_.data(),
@@ -2290,22 +2320,45 @@ public:
                     host_.data()+result_offsets[0]+index*48u,48u);
         }
         if(pending.device_admission) {
-            // Device Sc returns the ordered source tokens of admitted
-            // numerical responses. Unconnected PCM candidates have no
-            // solver output and must not publish stale host capacities.
-            for(std::size_t i=0u;
-                i<last_schedule_.device_admitted_descriptors;++i) {
-                const std::uint32_t token=admitted_response_tokens_[i];
-                const auto type=token>>30u;
-                if(type==0u || type==2u)continue;
-                if(type!=3u)
+            if(!pending.admission_sources.empty()) {
+                // Sc already owns the edge-to-manager map. A compact
+                // device admission mask replaces a redundant token stream.
+                const auto edges=pending.admission_sources;
+                if(admitted_contact_edges_.size()!=(edges.size()+31u)/32u)
                     throw std::logic_error(
-                        "Resident Sc returned an invalid response token");
-                const auto index=token&0x3fffffffu;
-                if(index>=manifolds.size())
+                        "Resident Sc returned an invalid contact admission mask");
+                std::size_t admitted=0u;
+                for(std::size_t edge=0u;edge<edges.size();++edge) {
+                    if((admitted_contact_edges_[edge/32u]&
+                        (1u<<(edge%32u)))==0u)continue;
+                    const auto& source=edges[edge];
+                    if(source.kind!=0u ||
+                       source.source_index>=manifolds.size() ||
+                       !manifolds[source.source_index].patch_count)
+                        throw std::logic_error(
+                            "Resident Sc contact admission has no prepared manager");
+                    publish_descriptor({source.source_index,0u,0u,0u});
+                    ++admitted;
+                }
+                if(admitted>last_schedule_.device_admitted_descriptors)
                     throw std::logic_error(
-                        "Resident Sc contact token exceeds its manager table");
-                publish_descriptor({index,0u,0u,0u});
+                        "Resident Sc contact admission exceeds numerical responses");
+            } else {
+                // Diagnostic callers retain the full typed response view.
+                for(std::size_t i=0u;
+                    i<last_schedule_.device_admitted_descriptors;++i) {
+                    const std::uint32_t token=admitted_response_tokens_[i];
+                    const auto type=token>>30u;
+                    if(type==0u || type==2u)continue;
+                    if(type!=3u)
+                        throw std::logic_error(
+                            "Resident Sc returned an invalid response token");
+                    const auto index=token&0x3fffffffu;
+                    if(index>=manifolds.size())
+                        throw std::logic_error(
+                            "Resident Sc contact token exceeds its manager table");
+                    publish_descriptor({index,0u,0u,0u});
+                }
             }
         }else for(const auto& task:tasks)
             for(std::size_t i=task.descriptor_begin;
@@ -2393,7 +2446,10 @@ public:
                 ?16u+(pending.readback_device_task_records
                         ?pending.tasks.size_bytes():0u)+
                     pending.body_ordinals.size_bytes()+
-                    pending.response_capacity*sizeof(std::uint32_t):0u)};
+                    (pending.admission_sources.empty()
+                        ?pending.response_capacity*sizeof(std::uint32_t)
+                        :admitted_contact_edges_.size()*sizeof(std::uint32_t))
+                    :0u)};
         last_reused_pcm_contact_rows_=reused_pcm_rows;
         last_omitted_pcm_upload_bytes_=
             reused_pcm_rows*sizeof(native::GpuDyContactPoint);
@@ -2427,7 +2483,11 @@ public:
     SourceDyLaunchStats last_schedule() const noexcept { return last_schedule_; }
     std::span<const std::uint32_t> admitted_response_tokens() const noexcept {
         return {admitted_response_tokens_.data(),
-                last_schedule_.device_admitted_descriptors};
+            std::min(admitted_response_tokens_.size(),
+                     last_schedule_.device_admitted_descriptors)};
+    }
+    std::span<const std::uint32_t> admitted_contact_edges() const noexcept {
+        return admitted_contact_edges_;
     }
     std::pair<std::size_t,std::size_t> last_transfer_bytes() const noexcept {
         return last_transfer_bytes_;
@@ -2491,6 +2551,7 @@ private:
         std::span<native::GpuDySleepState> sleep_states{};
         std::span<const native::GpuDyDistanceDescriptor> descriptors{};
         std::span<const std::uint32_t> body_ordinals{};
+        std::span<const native::GpuDyIslandEdge> admission_sources{};
         std::size_t response_capacity=0u;
         std::span<const native::GpuDyContactManifold> manifolds{};
         std::span<const std::uint32_t> contact_order{};
@@ -2931,6 +2992,7 @@ private:
     std::vector<std::uint8_t> host_;
     std::vector<std::uint32_t> admitted_body_ordinals_;
     std::vector<std::uint32_t> admitted_response_tokens_;
+    std::vector<std::uint32_t> admitted_contact_edges_;
     std::vector<SourceDyPackedContactPrepNative> packed_;
     std::vector<std::uint32_t> source_descriptor_tokens_;
     std::vector<native::GpuDyDistanceDescriptor> source_descriptor_full_;
