@@ -429,7 +429,7 @@ groupshared uint dySingletonPartitions;
 groupshared uint dyHubA,dyHubB,dyHubMask;
 groupshared uint dyContactManagers,dySourceFirst,dySourceLast;
 groupshared uint dySourceCapacity,dyExactContacts;
-groupshared uint dyCapacityCarry,dyExactCarry,dySourceDisjoint;
+groupshared uint dyCapacityCarry,dyExactCarry,dySourceDisjoint,dyWorkBase;
 groupshared uint dyCapacityScan[128],dyExactScan[128];
 
 // The resident source token has one authoritative decoding rule for
@@ -576,7 +576,7 @@ void sourceDyPartitionTask(uint taskId,uint scratch,uint errorAddress,
     // The native Sc path transfers only encounter-order manager/joint
     // identities. Expand source descriptors from the existing resident
     // contact prep and joint-row records before partition coloring.
-    const bool sourceDescriptors=views.x==24u || views.x==32u;
+    const bool sourceDescriptors=views.x==24u || views.x==36u;
     const uint sourceTable=bodyState+p.bodyCount*12u;
     const uint sourceCount=sourceDescriptors?arena.Load(sourceTable):0u;
     for(uint i=first+lane;i<last;i+=128u) {
@@ -664,8 +664,9 @@ void sourceDyPartitionTask(uint taskId,uint scratch,uint errorAddress,
     }
     AllMemoryBarrierWithGroupSync();
     if(sourceDyTaskLoad(errorAddress)!=0u)return;
-    if((p.launchControl&0x08000000u)!=0u &&
-       dyContactManagers>1u) {
+    const bool deviceAdmission=(p.launchControl&0x08000000u)!=0u;
+    if(dyContactManagers!=0u &&
+       (deviceAdmission || dyContactManagers>1u)) {
         if(lane==0u) {
             dySourceFirst=invalidBody;
             dySourceLast=0u;
@@ -703,10 +704,26 @@ void sourceDyPartitionTask(uint taskId,uint scratch,uint errorAddress,
             sourceDyTaskErrorOr(errorAddress,65536u);
         AllMemoryBarrierWithGroupSync();
         if(sourceDyTaskLoad(errorAddress)!=0u)return;
+        // Device admission owns one packed numerical row arena. Every
+        // task receives a disjoint exact-size range, independently of
+        // how Sc interleaves its stable source force reservations.
+        if(deviceAdmission) {
+            if(lane==0u) {
+                uint firstRow;
+                arena.InterlockedAdd(scratch+32u,dyExactContacts,firstRow);
+                dyWorkBase=firstRow;
+                if(firstRow>p.contactCount ||
+                   dyExactContacts>p.contactCount-firstRow)
+                    sourceDyTaskErrorOr(errorAddress,65536u);
+            }
+            AllMemoryBarrierWithGroupSync();
+            if(sourceDyTaskLoad(errorAddress)!=0u)return;
+        }
         // Capacity equality alone cannot prove ownership: overlapping
         // reservations can conceal a gap owned by another Sc task.
         // Validate the source-ordered union before changing any row.
-        if(dySourceCapacity==dySourceLast-dySourceFirst &&
+        if(!deviceAdmission &&
+           dySourceCapacity==dySourceLast-dySourceFirst &&
            dyContactManagers>1u) {
             if(lane==0u) {
                 dyCapacityCarry=0u;
@@ -752,8 +769,9 @@ void sourceDyPartitionTask(uint taskId,uint scratch,uint errorAddress,
             dyExactCarry=0u;
         }
         GroupMemoryBarrierWithGroupSync();
-        if(dySourceCapacity==dySourceLast-dySourceFirst &&
-           (dyContactManagers<=1u || dySourceDisjoint!=0u))
+        if(deviceAdmission ||
+           (dySourceCapacity==dySourceLast-dySourceFirst &&
+            (dyContactManagers<=1u || dySourceDisjoint!=0u)))
         for(uint block=first;block<last;block+=128u) {
             const uint i=block+lane;
             uint capacity=0u,exact=0u,mo=0u,source=0u;
@@ -787,7 +805,8 @@ void sourceDyPartitionTask(uint taskId,uint scratch,uint errorAddress,
                     dyCapacityScan[lane]-capacity;
                 const uint compactOffset=dyExactCarry+
                     dyExactScan[lane]-exact;
-                const uint begin=dySourceFirst+compactOffset;
+                const uint begin=(deviceAdmission?dyWorkBase:dySourceFirst)+
+                    compactOffset;
                 if(originalOffset>dySourceCapacity ||
                    compactOffset>dySourceCapacity ||
                    begin<dySourceFirst || begin>p.contactCount ||
@@ -1821,6 +1840,76 @@ void publishTaskError(uint task,uint error) {
     arena.Store(p.writebackBias+p.resultTaskOffset+task*4u,error);
 }
 
+// Packed single-descriptor tasks bypass workgroup coloring, but still
+// participate in the same exact-size numerical row allocation.
+bool sourceDyRelocateSingletonContact(uint4 desc,uint scratch,
+                                      uint errorAddress) {
+    if((desc.w&255u)!=0u)return true;
+    if(desc.x>=p.manifoldCount) {
+        sourceDyTaskErrorOr(errorAddress,65536u);
+        return false;
+    }
+    const uint manager=p.manifoldBias+desc.x*24u;
+    const uint patchFirst=arena.Load(manager);
+    const uint patchCount=arena.Load(manager+4u);
+    if(patchCount==0u)return true;
+    const uint prepIndex=arena.Load(manager+16u);
+    if(prepIndex>=p.prepCount ||
+       patchFirst>p.patchCount ||
+       patchCount>p.patchCount-patchFirst) {
+        sourceDyTaskErrorOr(errorAddress,65536u);
+        return false;
+    }
+    const bool pcm=arena.Load(
+        p.prepBias+prepIndex*64u+48u)!=invalidBody;
+    const uint source=arena.Load(manager+20u);
+    const uint exact=arena.Load(manager+12u);
+    if(source>p.contactCount || exact>p.contactCount-source ||
+       (pcm && patchCount!=1u)) {
+        sourceDyTaskErrorOr(errorAddress,65536u);
+        return false;
+    }
+    uint firstRow;
+    arena.InterlockedAdd(scratch+32u,exact,firstRow);
+    if(firstRow>p.contactCount || exact>p.contactCount-firstRow) {
+        sourceDyTaskErrorOr(errorAddress,65536u);
+        return false;
+    }
+    arena.Store(manager+8u,firstRow);
+    if(pcm) {
+        arena.Store(p.patchBias+patchFirst*32u+24u,
+                    0x80000000u|firstRow);
+        if(firstRow!=source) {
+            uint previous;
+            arena.InterlockedOr(
+                p.writebackBias+p.resultPatchOffset+patchFirst*4u,
+                sourceDyPcmCompacted,previous);
+        }
+    }else {
+        for(uint patch=patchFirst;patch<patchFirst+patchCount;++patch) {
+            const uint po=p.patchBias+patch*32u;
+            const uint order=arena.Load(po+24u);
+            const uint points=arena.Load(po+4u);
+            if((order&0x80000000u)!=0u ||
+               order>p.orderCount ||
+               points>p.orderCount-order) {
+                sourceDyTaskErrorOr(errorAddress,65536u);
+                return false;
+            }
+            for(uint j=0u;j<points;++j) {
+                const uint address=p.orderBias+(order+j)*4u;
+                const uint old=arena.Load(address);
+                if(old<source || old-source>=exact) {
+                    sourceDyTaskErrorOr(errorAddress,65536u);
+                    return false;
+                }
+                arena.Store(address,firstRow+(old-source));
+            }
+        }
+    }
+    return true;
+}
+
 // Each lane owns one independent constraint and up to two integrated bodies.
 void sourceDySolvePackedTask(uint taskId) {
     const uint task=p.taskBias+taskId*36u;
@@ -1858,6 +1947,11 @@ void sourceDySolvePackedTask(uint taskId) {
        (da && desc.y>=p.bodyCount) ||
        (db && desc.z>=p.bodyCount)) {
         sourceDyTaskErrorOr(errorAddress,1048576u);
+        publishTaskError(taskId,sourceDyTaskLoad(errorAddress));
+        return;
+    }
+    if((p.launchControl&0x08000000u)!=0u &&
+       !sourceDyRelocateSingletonContact(desc,scratch,errorAddress)) {
         publishTaskError(taskId,sourceDyTaskLoad(errorAddress));
         return;
     }
