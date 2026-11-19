@@ -697,14 +697,17 @@ public:
             const bool pcm=pair.pcm_pair_index!=0xffffffffu;
             if(pcm && (manager.patch_count!=1u ||
                        manager.patch_offset>=patches.size() ||
-                       manager.contact_count!=0u))
+                       manager.contact_count!=0u ||
+                       manager.order_offset!=0xffffffffu))
                 throw std::logic_error(
                     "Source PCM numerical count must be device-authored");
             const auto capacity=pcm
                 ?patches[manager.patch_offset].contact_count
                 :manager.contact_count;
-            if(manager.order_offset>contact_forces.size() ||
-               capacity>contact_forces.size()-manager.order_offset)
+            const auto source_begin=pcm
+                ?manager.source_order_offset:manager.order_offset;
+            if(source_begin>contact_forces.size() ||
+               capacity>contact_forces.size()-source_begin)
                 throw std::logic_error(
                     "Source Dy Gu contact preparation range invalid");
             if(pcm) {
@@ -2144,8 +2147,10 @@ public:
             const std::size_t capacity=resident_extent
                 ?patches[manager.patch_offset].contact_count
                 :manager.contact_count;
-            if(manager.order_offset>contact_forces.size() ||
-               capacity>contact_forces.size()-manager.order_offset)
+            const auto source_begin=resident_extent
+                ?manager.source_order_offset:manager.order_offset;
+            if(source_begin>contact_forces.size() ||
+               capacity>contact_forces.size()-source_begin)
                 throw std::logic_error("Source Dy contact writeback range invalid");
             // PCM's patch reserves a window; its exact count comes
             // from the GPU result rather than the host manifold.
@@ -2173,7 +2178,7 @@ public:
                     manager.prep_index<contact_prep.size() &&
                     contact_prep[manager.prep_index].pcm_pair_index!=0xffffffffu;
                 const std::size_t begin=resident
-                    ?manager.order_offset:patch.order_offset&~direct;
+                    ?manager.source_order_offset:patch.order_offset&~direct;
                 if(!resident && (patch.order_offset&direct)!=0u)
                     throw std::logic_error(
                         "Source CPU Gu patch unexpectedly has PCM contact order");
@@ -2189,8 +2194,8 @@ public:
                 for(std::size_t k=0u;k<count;++k) {
                     const auto index=resident
                         ?begin+k:contact_order[begin+k];
-                    if(index<manager.order_offset ||
-                       index>=manager.order_offset+exact_contacts)
+                    if(index<source_begin ||
+                       index>=source_begin+exact_contacts)
                         throw std::logic_error(
                             "Source Dy contact writeback index invalid");
                     std::memcpy(&contact_forces[index],

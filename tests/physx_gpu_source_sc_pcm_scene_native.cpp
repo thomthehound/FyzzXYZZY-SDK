@@ -2211,7 +2211,7 @@ void verify_device_sc_dy_task_admission(
         {0u,short_count,0u,0u,0.f,0.f,0x80000000u,0u}
     }};
     std::array<native::GpuDyContactManifold,1> contact_managers{{
-        {0u,1u,0u,0u,0u}
+        {0u,1u,0xffffffffu,0u,0u,0u}
     }};
     std::array<native::GpuDyContactPrepPair,1> contact_prep{};
     contact_prep[0].pcm_pair_index=0u;
@@ -2312,7 +2312,7 @@ void verify_device_sc_dy_task_admission(
         {0u,contact_capacity,0u,0u,0.f,0.f,0u,0u}
     }};
     std::array<native::GpuDyContactManifold,1> capacity_managers{{
-        {0u,1u,0u,0u,0u}
+        {0u,1u,0xffffffffu,0u,0u,0u}
     }};
     body={};
     body[0].inverse_mass=1.f;
@@ -2549,8 +2549,8 @@ void verify_device_sc_dy_task_admission(
         {1u,2u,1u,2u,1u,2u,4u,1u,0u}
     }};
     std::array<native::GpuDyContactManifold,2> mixed_managers{{
-        {0u,1u,0u,0u,0u},
-        {1u,1u,contact_capacity,0u,1u}
+        {0u,1u,0xffffffffu,0u,0u,0u},
+        {1u,1u,0xffffffffu,0u,1u,contact_capacity}
     }};
     std::array<native::GpuDyContactPatch,2> mixed_patches{{
         {0u,contact_capacity,0u,0x80000000u,0.f,0.f,

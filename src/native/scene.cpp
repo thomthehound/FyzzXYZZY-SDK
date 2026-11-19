@@ -9766,8 +9766,9 @@ void Scene::solve_gpu_distance_constraints(float seconds) {
         // PCM owns the active numerical count; Sc reserves the window.
         gpu_dy_manifolds_[source]={
             narrow(m.friction_patch_offset),m.friction_patch_count,
-            narrow(m.solver_offset),resident_pcm?0u:narrow(numerical_count),
-            gpu_dy_contact_prep_indices_[source]};
+            resident_pcm?0xffffffffu:narrow(m.solver_offset),
+            resident_pcm?0u:narrow(numerical_count),
+            gpu_dy_contact_prep_indices_[source],narrow(m.solver_offset)};
         std::size_t cursor=m.solver_offset;
         for(std::size_t i=m.friction_patch_offset;
             i<m.friction_patch_offset+m.friction_patch_count;++i) {

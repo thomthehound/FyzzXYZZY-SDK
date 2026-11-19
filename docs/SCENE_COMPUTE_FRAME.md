@@ -254,10 +254,10 @@ constructing solver rows, with no extra dispatch or host join.
 Legacy CPU Gu responses keep their host-authored extents. For
 device-admitted single-patch PCM managers,
 Sc supplies a reserved contact and friction window, but no numerical
-contact count. The GPU writes the emitted count and the direct contact-order interval
-into the numerical manager and patch before normal-row and friction
-preparation. Sc supplies reserved bounds rather than a duplicate PCM
-patch-order map. Dy returns that count in its existing four-byte patch report
+contact count. Sc preserves a stable source-indexed impulse reservation while Dy
+resolves the numerical row base, exact emitted count, and direct patch
+interval in device memory. The two row-address domains are separate;
+GPU force writeback maps numerical points to their Sc source slots. Dy returns that count in its existing four-byte patch report
 (bit 30 valid, bits 16–18 count), alongside friction feedback. The host
 publishes only the active force slots and leaves unused reservation slots
 untouched. CPU Gu retains its correlated source extents; no additional

@@ -76,8 +76,8 @@ void solveContact(uint4 descriptor,uint errorAddress,bool biased,
         sourceDyTaskErrorOr(errorAddress,32u);
         return;
     }
-    uint4 manager=arena.Load4(
-        p.manifoldBias+descriptor.x*20u);
+    const uint managerAddress=p.manifoldBias+descriptor.x*24u;
+    uint4 manager=arena.Load4(managerAddress);
     // Zero-response descriptors carry source endpoint ordinals in the
     // otherwise unused patch offsets. They have no contact rows to read.
     if(manager.y==0u)return;
@@ -151,7 +151,19 @@ void solveContact(uint4 descriptor,uint errorAddress,bool biased,
             if(!contactImpulse(a,b,ao,bo,n,ja,jb,
                                va,vb,aa,ab,nextForce-oldForce,
                                ma,mb,errorAddress))return;
-            storeContactScalar(co+56u,nextForce,pointIndex,finalPass);
+            const uint sourceBegin=arena.Load(managerAddress+20u);
+            const uint local=pointIndex-manager.z;
+            const uint prepIndex=arena.Load(managerAddress+16u);
+            const bool pcm=prepIndex<p.prepCount &&
+                arena.Load(p.prepBias+prepIndex*64u+48u)!=invalidBody;
+            const uint outputIndex=pcm?sourceBegin+local:pointIndex;
+            if(pointIndex<manager.z || local>=manager.w ||
+               (pcm && (sourceBegin>p.contactCount ||
+                        local>=p.contactCount-sourceBegin))) {
+                sourceDyTaskErrorOr(errorAddress,256u);
+                return;
+            }
+            storeContactScalar(co+56u,nextForce,outputIndex,finalPass);
             normalImpulse+=nextForce;
         }
         contactCursor+=patch.y;

@@ -439,7 +439,7 @@ bool sourceDyExpandDescriptor(uint token,uint extent,
             sourceDyTaskErrorOr(errorAddress,1048576u);
             return false;
         }
-        const uint manager=p.manifoldBias+index*20u;
+        const uint manager=p.manifoldBias+index*24u;
         if(arena.Load(manager+4u)==0u) {
             desc=uint4(index,arena.Load(manager),
                        arena.Load(manager+8u),arena.Load(manager+16u));
@@ -455,7 +455,8 @@ bool sourceDyExpandDescriptor(uint token,uint extent,
                 const uint source=p.pcmBias+pcmIndex*84u;
                 const uint packed=pcmContacts.Load(source+4u);
                 const uint emitted=(packed>>10u)&7u;
-                const uint begin=arena.Load(manager+8u);
+                const uint sourceBegin=arena.Load(manager+20u);
+                const uint numericalBegin=arena.Load(manager+8u);
                 const uint admitted=arena.Load(manager+12u);
                 const uint patchIndex=arena.Load(manager);
                 const bool singlePatch=arena.Load(manager+4u)==1u &&
@@ -472,23 +473,24 @@ bool sourceDyExpandDescriptor(uint token,uint extent,
                     (extent&0x80000000u)==0u) ||
                    ((extent&0x80000000u)!=0u && (extent&7u)!=emitted) ||
                    emitted>capacity || emitted>4u ||
-                   begin>p.contactCount ||
-                   capacity>p.contactCount-begin ||
+                   sourceBegin>p.contactCount ||
+                   capacity>p.contactCount-sourceBegin ||
+                   (numericalBegin!=invalidBody &&
+                    numericalBegin!=sourceBegin) ||
                    (admitted!=0u && admitted!=emitted)) {
                     sourceDyTaskErrorOr(errorAddress,65536u);
                     return false;
                 }
+                if(numericalBegin==invalidBody)
+                    arena.Store(manager+8u,sourceBegin);
                 if(admitted==0u) {
-                    // PCM resolves the exact numerical extent in place.
                     arena.Store(manager+12u,emitted);
                     arena.Store(patch+4u,emitted);
                     for(uint i=emitted;i<capacity;++i)
                         arena.Store(p.writebackBias+p.resultContactOffset+
-                                    (begin+i)*4u,0u);
+                                    (sourceBegin+i)*4u,0u);
                 }
-                // Device PCM resolves this patch's contact interval
-                // from the manager's source-owned reserved window.
-                arena.Store(patch+24u,0x80000000u|begin);
+                arena.Store(patch+24u,0x80000000u|sourceBegin);
                 arena.Store(p.writebackBias+p.resultPatchOffset+
                             patchIndex*4u,
                             sourceDyPcmExtentValid|(emitted<<sourceDyPcmExtentShift));
@@ -1170,7 +1172,7 @@ void admitPcmContactExtents(uint begin,uint end,uint lane,uint endError) {
     for(uint i=begin+lane;i<end;i+=128u) {
         const uint4 desc=arena.Load4(p.descriptorBias+i*16u);
         if(desc.w!=0u || desc.x>=p.manifoldCount)continue;
-        const uint manager=p.manifoldBias+desc.x*20u;
+        const uint manager=p.manifoldBias+desc.x*24u;
         if(arena.Load(manager+4u)==0u)continue;
         const uint prepIndex=arena.Load(manager+16u);
         if(prepIndex>=p.prepCount) {
@@ -1196,7 +1198,7 @@ void prepareNormals(uint begin,uint end,uint lane,uint endError) {
             sourceDyTaskErrorOr(endError,4096u);
             continue;
         }
-        uint mo=p.manifoldBias+desc.x*20u;
+        uint mo=p.manifoldBias+desc.x*24u;
         uint4 manager=arena.Load4(mo);
         if(manager.y==0u)continue;
         uint pairIndex=arena.Load(mo+16u);
@@ -1235,7 +1237,7 @@ void prepareFriction(uint begin,uint end,uint lane,uint endError) {
         uint4 desc=arena.Load4(p.descriptorBias+i*16u);
         if(desc.w!=0u)continue;
         if(desc.x>=p.manifoldCount)continue;
-        uint mo=p.manifoldBias+desc.x*20u;
+        uint mo=p.manifoldBias+desc.x*24u;
         uint4 manager=arena.Load4(mo);
         if(manager.y==0u)continue;
         uint pairIndex=arena.Load(mo+16u);

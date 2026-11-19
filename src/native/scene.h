@@ -379,8 +379,10 @@ struct GpuDyContactManifold {
     std::uint32_t patch_offset=0,patch_count=0;
     std::uint32_t order_offset=0,contact_count=0;
     std::uint32_t prep_index=0xffffffffu;
+    // Sc's source result slot is stable while Dy resolves working rows.
+    std::uint32_t source_order_offset=0u;
 };
-static_assert(sizeof(GpuDyContactManifold)==20u);
+static_assert(sizeof(GpuDyContactManifold)==24u);
 
 // DyContactPrepShared normal-row inputs, packed in the same source-owned
 // GPU arena as the solver. Correlated friction patches retain Sc ownership.
