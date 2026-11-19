@@ -2730,7 +2730,7 @@ void verify_device_sc_dy_task_admission(
 // source-indexed force destinations.
 void verify_device_sc_dy_compact_contact_ranges(
     fyzz::compute::Backend backend,const char* sap,const char* pcm,
-    const char* dy_shader) {
+    const char* dy_shader,bool reverse_source=false) {
     using namespace fyzz;
     std::ifstream binary_file(dy_shader,std::ios::binary);
     require(bool(binary_file),"Device Sc/Dy shader unavailable");
@@ -2786,8 +2786,8 @@ void verify_device_sc_dy_compact_contact_ranges(
         {4u,capacity,0u,0x80000000u,0.5f,0.5f,0u,0u}
     }};
     const std::array<native::GpuDyContactManifold,2> managers{{
-        {0u,1u,0xffffffffu,0u,0u,0u},
-        {1u,1u,0xffffffffu,0u,1u,capacity}
+        {0u,1u,0xffffffffu,0u,0u,reverse_source?capacity:0u},
+        {1u,1u,0xffffffffu,0u,1u,reverse_source?0u:capacity}
     }};
     std::array<native::GpuDyContactPrepPair,2> preparation{};
     for(std::uint32_t i=0u;i<preparation.size();++i) {
@@ -2841,8 +2841,11 @@ void verify_device_sc_dy_compact_contact_ranges(
             patches[0].contact_count<capacity &&
             patches[1].contact_count>0u &&
             patches[1].contact_count<capacity &&
-            (patches[1].reserved&
-                physx_gpu::source_dy_pcm_compacted_bit)!=0u &&
+            (patches[0].reserved&
+                physx_gpu::source_dy_pcm_compacted_bit)==0u &&
+            ((patches[1].reserved&
+                physx_gpu::source_dy_pcm_compacted_bit)!=0u)==
+                    !reverse_source &&
             forces[0]!=-17.f && forces[capacity]!=-17.f &&
             forces[capacity-1u]==-17.f &&
             forces[2u*capacity-1u]==-17.f,
@@ -8130,6 +8133,8 @@ int main(int argc,char** argv) {
                         backend,argv[1],argv[2],argv[3]);
                     verify_device_sc_dy_compact_contact_ranges(
                         backend,argv[1],argv[2],argv[3]);
+                    verify_device_sc_dy_compact_contact_ranges(
+                        backend,argv[1],argv[2],argv[3],true);
                     verify_device_sc_dy_sparse_task_windows(
                         backend,argv[1],argv[2],argv[3]);
                 });
