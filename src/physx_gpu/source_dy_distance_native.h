@@ -114,6 +114,7 @@ struct SourceDyLaunchStats {
     std::size_t device_admitted_tasks=0u;
     std::size_t device_admitted_bodies=0u;
     std::size_t device_admitted_descriptors=0u;
+    std::size_t device_task_readback_bytes=0u;
     std::size_t tile_bytes=0u;
     // Device-written descriptors, partition ranges, tasks, and ordinals
     // omitted from the host numerical input packet.
@@ -482,7 +483,8 @@ public:
                std::span<native::GpuDySleepState> sleep_states={},
                std::span<const native::GpuDyJointInput> joint_inputs={},
                std::optional<SourceScDeviceIslandDyView> device_admission=std::nullopt,
-               std::span<const compute::DownloadSpan> extra_downloads={}) {
+               std::span<const compute::DownloadSpan> extra_downloads={},
+               bool readback_device_task_records=true) {
         if(pending_solve_)
             throw std::logic_error("Source Dy numerical epoch already queued");
         if(device_admission &&
@@ -1317,8 +1319,11 @@ public:
         const std::size_t device_header_offset=output_bytes;
         const std::size_t device_task_offset=output_bytes+
             (device_admission?16u:0u);
+        const std::size_t device_task_bytes=
+            device_admission && readback_device_task_records
+                ?tasks.size_bytes():0u;
         const std::size_t device_ordinal_offset=device_task_offset+
-            (device_admission?tasks.size_bytes():0u);
+            device_task_bytes;
         const std::size_t host_result_bytes=device_ordinal_offset+
             (device_admission?body_ordinals.size_bytes():0u);
         if(device_admission &&
@@ -1326,6 +1331,7 @@ public:
             host_result_bytes>std::numeric_limits<std::uint32_t>::max()))
             throw std::overflow_error(
                 "Resident Sc Dy scheduling result exceeds address space");
+        last_schedule_.device_task_readback_bytes=device_task_bytes;
         last_schedule_.free_velocity_readback_bytes=free_velocity_bytes;
         last_schedule_.sleep_readback_bytes=
             device_unconstrained_preparation
@@ -1988,6 +1994,7 @@ public:
             .contact_prep=contact_prep,.result_offsets=result_offsets,
             .output_bytes=output_bytes,
             .device_admission=device_admission.has_value(),
+            .readback_device_task_records=readback_device_task_records,
             .source_descriptors=source_descriptors,
             .device_header_offset=device_header_offset,
             .device_task_offset=device_task_offset,
@@ -2002,21 +2009,24 @@ public:
             .compact_friction=compact_friction,
             .device_unconstrained_preparation=device_unconstrained_preparation,
             .device_world_motion=device_world_motion});
-        std::array<compute::DownloadSpan,5u> downloads{{
-            {mapped.buffer,mapped.offset,host_.data(),output_bytes},
-            {device_meta_buffer,device_meta_offset,
-             device_admission?host_.data()+device_header_offset:nullptr,
-             device_admission?16u:0u},
-            {device_task_buffer,device_task_source,
-             device_admission?host_.data()+device_task_offset:nullptr,
-             device_admission?tasks.size_bytes():0u},
-            {device_ordinal_buffer,device_ordinal_source,
-             device_admission?host_.data()+device_ordinal_offset:nullptr,
-             device_admission?body_ordinals.size_bytes():0u},
-            {}
-        }};
-        std::size_t download_count=!device_admission?1u:
-            body_ordinals.empty()?3u:4u;
+        std::array<compute::DownloadSpan,5u> downloads{};
+        std::size_t download_count=0u;
+        downloads[download_count++]={
+            mapped.buffer,mapped.offset,host_.data(),output_bytes};
+        if(device_admission) {
+            downloads[download_count++]={
+                device_meta_buffer,device_meta_offset,
+                host_.data()+device_header_offset,16u};
+            if(device_task_bytes)
+                downloads[download_count++]={
+                    device_task_buffer,device_task_source,
+                    host_.data()+device_task_offset,device_task_bytes};
+            if(!body_ordinals.empty())
+                downloads[download_count++]={
+                    device_ordinal_buffer,device_ordinal_source,
+                    host_.data()+device_ordinal_offset,
+                    body_ordinals.size_bytes()};
+        }
         if(!admitted_response_tokens_.empty())
             downloads[download_count++]={
                 device_response_buffer,device_response_source,
@@ -2087,7 +2097,7 @@ public:
                 last_schedule_.device_admitted_tasks=admitted[1];
                 last_schedule_.device_admitted_bodies=admitted[2];
                 last_schedule_.device_admitted_descriptors=admitted[3];
-                if(admitted[1])
+                if(pending.readback_device_task_records && admitted[1])
                     std::memcpy(tasks.data(),
                         host_.data()+pending.device_task_offset,
                         admitted[1]*sizeof(native::GpuDyDistanceTask));
@@ -2264,20 +2274,17 @@ public:
                 }else if(count)patch.broken=report&1u;
             }
         };
-        for(const auto& task:tasks) {
-            for(std::size_t i=task.body_begin;i<task.body_end;++i) {
-                const auto index=body_ordinals[i];
-                if(index>=bodies.size())
-                    throw std::logic_error("Source Dy body writeback index invalid");
-                if(device_unconstrained_preparation) {
-                    const auto* output=host_.data()+result_offsets[0]+index*52u;
-                    std::memcpy(&bodies[index],output,24u);
-                    std::memcpy(&sleep_states[index],output+24u,
-                                sizeof(native::GpuDySleepState));
-                }else
-                    std::memcpy(&bodies[index],
-                        host_.data()+result_offsets[0]+index*48u,48u);
-            }
+        for(const auto index:body_ordinals) {
+            if(index>=bodies.size())
+                throw std::logic_error("Source Dy body writeback index invalid");
+            if(device_unconstrained_preparation) {
+                const auto* output=host_.data()+result_offsets[0]+index*52u;
+                std::memcpy(&bodies[index],output,24u);
+                std::memcpy(&sleep_states[index],output+24u,
+                            sizeof(native::GpuDySleepState));
+            }else
+                std::memcpy(&bodies[index],
+                    host_.data()+result_offsets[0]+index*48u,48u);
         }
         if(pending.device_admission) {
             // Device Sc returns the ordered source tokens of admitted
@@ -2380,7 +2387,8 @@ public:
         }
         last_transfer_bytes_={uploaded_bytes,
             output_bytes+(pending.device_admission
-                ?16u+pending.tasks.size_bytes()+
+                ?16u+(pending.readback_device_task_records
+                        ?pending.tasks.size_bytes():0u)+
                     pending.body_ordinals.size_bytes()+
                     pending.response_capacity*sizeof(std::uint32_t):0u)};
         last_reused_pcm_contact_rows_=reused_pcm_rows;
@@ -2487,6 +2495,7 @@ private:
         std::array<std::size_t,6> result_offsets{};
         std::size_t output_bytes=0u;
         bool device_admission=false;
+        bool readback_device_task_records=true;
         bool source_descriptors=false;
         std::size_t device_header_offset=0u,device_task_offset=0u,
                     device_ordinal_offset=0u;
