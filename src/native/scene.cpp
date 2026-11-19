@@ -9888,7 +9888,10 @@ void Scene::solve_gpu_distance_constraints(float seconds) {
         gpu_dy_contact_prep_pairs_,
         gpu_dy_integration_inputs_,gpu_dy_integrated_poses_,true,
         gpu_dy_friction_impulses_,true,true,true,gpu_dy_sleep_states_,
-        gpu_dy_joint_inputs_,false);
+        gpu_dy_joint_inputs_,false,
+        device_admission
+            ?std::span<const GpuDyIslandEdge>{gpu_dy_island_edges_}
+            :std::span<const GpuDyIslandEdge>{});
     // Sc's Gu-indexed force buffer and retired-manager bookkeeping are
     // independent of the submitted numerical solve. Prepare them while
     // the ordered GPU Dy task graph executes, before its result join.
@@ -9907,18 +9910,24 @@ void Scene::solve_gpu_distance_constraints(float seconds) {
     gpu_broadphase_->finish_gpu_dy_distance();
     if(device_admission) {
         gpu_dy_admitted_manager_flags_.assign(manifolds_.size(),0u);
-        for(const auto token:gpu_broadphase_->gpu_dy_admitted_response_tokens()) {
-            const auto kind=token>>30u;
-            if(kind==0u || kind==2u)continue;
-            if(kind!=3u)
-                throw std::logic_error("Sc device admission returned an unknown response type");
-            const auto candidate=token&0x3fffffffu;
+        const auto admitted=gpu_broadphase_->gpu_dy_admitted_contact_edges();
+        if(admitted.size()!=(gpu_dy_island_edges_.size()+31u)/32u)
+            throw std::logic_error(
+                "Sc device contact admission has invalid source capacity");
+        for(std::size_t i=0u;i<gpu_dy_island_edges_.size();++i) {
+            if((admitted[i/32u]&(1u<<(i%32u)))==0u)continue;
+            const auto& source=gpu_dy_island_edges_[i];
+            if(source.kind!=0u)
+                throw std::logic_error(
+                    "Sc device contact admission selected a non-contact response");
+            const auto candidate=source.source_index;
             if(candidate>=previous_pairs_.size() ||
                candidate>=active_edge_handles_.size())
                 throw std::logic_error(
                     "Sc device admission returned an unknown contact candidate");
             const auto edge=active_edge_handles_[candidate];
-            if(edge>=manifold_by_edge_.size() ||
+            if(edge!=source.edge_index ||
+               edge>=manifold_by_edge_.size() ||
                manifold_by_edge_[edge].generation!=
                    manifold_lookup_generation_ ||
                manifold_by_edge_[edge].index>=manifolds_.size())

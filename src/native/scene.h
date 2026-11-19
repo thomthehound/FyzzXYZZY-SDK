@@ -540,7 +540,8 @@ public:
         bool /*device_unconstrained_preparation*/=false,
         std::span<GpuDySleepState> /*sleep_states*/={},
         std::span<const GpuDyJointInput> /*joint_inputs*/={},
-        bool /*readback_device_task_records*/=true) {
+        bool /*readback_device_task_records*/=true,
+        std::span<const GpuDyIslandEdge> /*admission_sources*/={}) {
         throw std::logic_error("Source GPU Dy shader is not installed");
     }
     virtual void finish_gpu_dy_distance() {
@@ -548,6 +549,9 @@ public:
     }
     virtual std::span<const std::uint32_t> gpu_dy_admitted_response_tokens() const {
         throw std::logic_error("Source GPU Dy response admission is unavailable");
+    }
+    virtual std::span<const std::uint32_t> gpu_dy_admitted_contact_edges() const {
+        throw std::logic_error("Source GPU Dy contact admission is unavailable");
     }
     // Sc's afterIntegration authorizes the source ElementSim device pose.
     virtual void authorize_device_integrated_pose(BodyId) {

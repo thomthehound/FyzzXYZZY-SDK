@@ -312,7 +312,8 @@ public:
         bool device_unconstrained_preparation=false,
         std::span<native::GpuDySleepState> sleep_states={},
         std::span<const native::GpuDyJointInput> joint_inputs={},
-        bool readback_device_task_records=true) override {
+        bool readback_device_task_records=true,
+        std::span<const native::GpuDyIslandEdge> admission_sources={}) override {
         FYZZ_PROFILE_SCOPE("dy.device_enqueue");
         if(!dy_distance_)
             throw std::logic_error("Source GPU Dy shader not installed");
@@ -366,7 +367,8 @@ public:
                                         *pcm_->device_island_indirect_args(),
                                         pcm_->device_island_response_capacity()}}
                                 :std::nullopt,
-                            deferred_points,readback_device_task_records);
+                            deferred_points,readback_device_task_records,
+                            admission_sources);
         if(!deferred_points.empty())
             pcm_->mark_deferred_points_in_numerical();
         ++dy_distance_dispatch_count_;
@@ -409,6 +411,12 @@ public:
         if(!dy_distance_)
             throw std::logic_error("Source GPU Dy shader is not installed");
         return dy_distance_->admitted_response_tokens();
+    }
+    std::span<const std::uint32_t>
+    gpu_dy_admitted_contact_edges() const override {
+        if(!dy_distance_)
+            throw std::logic_error("Source GPU Dy shader is not installed");
+        return dy_distance_->admitted_contact_edges();
     }
     bool has_queued_gpu_dy_distance() const noexcept {
         return dy_distance_ && dy_distance_->has_queued_solve();
