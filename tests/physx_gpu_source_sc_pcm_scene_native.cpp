@@ -2782,8 +2782,8 @@ void verify_device_sc_dy_compact_contact_ranges(
         {0u,2u,0u,2u,0u,1u,4u,1u,0u}
     }};
     std::array<native::GpuDyContactPatch,2> patches{{
-        {0u,capacity,0u,0u,0.f,0.f,0u,0u},
-        {0u,capacity,0u,0u,0.f,0.f,0u,0u}
+        {0u,capacity,0u,0x80000000u,0.5f,0.5f,0u,0u},
+        {4u,capacity,0u,0x80000000u,0.5f,0.5f,0u,0u}
     }};
     const std::array<native::GpuDyContactManifold,2> managers{{
         {0u,1u,0xffffffffu,0u,0u,0u},
@@ -2819,6 +2819,8 @@ void verify_device_sc_dy_compact_contact_ranges(
     input[0].seconds=seconds;
     std::array<native::GpuDyIntegratedPose,1> poses{};
     std::array<native::GpuDySleepState,1> sleep{};
+    std::array<native::GpuDyFrictionAnchorInput,4> anchors{};
+    std::array<native::GpuDyFrictionAnchorImpulse,4> anchor_impulses{};
     std::array<float,2u*capacity> forces{};
     forces.fill(-17.f);
     producer->enqueue_gpu_pcm_box_contacts(requests,witness);
@@ -2826,8 +2828,8 @@ void verify_device_sc_dy_compact_contact_ranges(
         edges,nodes,physx_gpu::SourceScDeviceIslandSources{2u,0u,0u});
     producer->enqueue_gpu_dy_distance(
         bodies,{},descriptors,{},ordinals,tasks,
-        forces,{},{},{},patches,managers,{},preparation,input,poses,
-        true,{},true,true,true,sleep);
+        forces,{},{},anchors,patches,managers,{},preparation,input,poses,
+        true,anchor_impulses,true,true,true,sleep);
     producer->finish_gpu_dy_distance();
     const auto schedule=producer->dy_launch_stats();
     require(witness[0].packed_counts==0u &&
