@@ -570,6 +570,7 @@ void sourceDyPartitionTask(uint taskId,uint scratch,uint errorAddress,
         dyNeeded=0u;dyAssigned=0u;dyWave=0u;dyHighest=0u;
         dyNextWave=0u;dySerial=0u;
         dyContactManagers=0u;
+        dySourceDisjoint=1u;
     }
     AllMemoryBarrierWithGroupSync();
     // The native Sc path transfers only encounter-order manager/joint
