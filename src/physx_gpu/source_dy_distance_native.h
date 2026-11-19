@@ -1195,7 +1195,8 @@ public:
             const auto& layout=device_admission->layout;
             if(compact_contact_admission &&
                (layout.contact_admissions>layout.bytes ||
-                last_schedule_.device_contact_admission_readback_bytes>
+                ((descriptor_capacity+31u)/32u)*
+                    sizeof(std::uint32_t)>
                     layout.bytes-layout.contact_admissions))
                 throw std::out_of_range(
                     "Source Sc device contact admission exceeds its view");
@@ -2487,7 +2488,7 @@ public:
                      last_schedule_.device_admitted_descriptors)};
     }
     std::span<const std::uint32_t> admitted_contact_edges() const noexcept {
-        return admitted_contact_edges_;
+        return {admitted_contact_edges_.data(),admitted_contact_edges_.size()};
     }
     std::pair<std::size_t,std::size_t> last_transfer_bytes() const noexcept {
         return last_transfer_bytes_;
