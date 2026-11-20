@@ -4436,6 +4436,13 @@ void verify_early_pcm_island_pipeline(
         native::GpuPcmFrictionAnchorFixture::
             verify_gpu_source_candidate_descriptors(gpu);
         const auto responding=with_sphere?3u:2u;
+        if(!enhanced_determinism) {
+            const auto source_capacity=responding+
+                (identity_order?0u:1u);
+            require(schedule.device_colored_tasks==source_capacity &&
+                    schedule.device_admitted_tasks==responding,
+                "Pre-witness Sc tasks were sized from host touch results");
+        }
         require(gpu.pairs().size()==responding+(identity_order?0u:1u) &&
                 gpu.contacts().size()==responding &&
                 cpu.contacts().size()==responding &&
