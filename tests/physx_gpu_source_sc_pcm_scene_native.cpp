@@ -33,6 +33,10 @@ struct SourceScDeviceIslandFixture {
             const SourceScOwnedGpuBroadphaseNative& owner) {
         return owner.pcm_ ? owner.pcm_->last_candidate_dispatches() : 0u;
     }
+    static std::size_t pcm_pair_upload_spans(
+            const SourceScOwnedGpuBroadphaseNative& owner) {
+        return owner.pcm_ ? owner.pcm_->last_pair_upload_spans() : 0u;
+    }
     static bool software_adapter(const SourceScOwnedGpuBroadphaseNative& owner) {
         return owner.context_.device_info().software_adapter;
     }
@@ -3494,6 +3498,36 @@ void verify_sparse_contact_stream(
     gpu.advance_collision(true);
     require(producer->pcm_pair_upload_bytes()==0u,
         "Stable PCM manager descriptors triggered a redundant upload");
+    check_ordinals();
+    // Distant edits share the PCM command batch without retransferring
+    // unchanged descriptors between their original Sc ordinals.
+    for(const std::uint32_t i:{0u,11u}) {
+        const Vec3 moved{5.f*float(i)+0.02f,1.f,0.f};
+        cpu.set_position(moving_cpu[i],moved);
+        gpu.set_position(moving_gpu[i],moved);
+    }
+    cpu.advance_collision();
+    gpu.advance_collision();
+    require(producer->pcm_pair_upload_bytes()==
+                2u*sizeof(physx_gpu::SourcePcmBoxPairNative) &&
+            physx_gpu::SourceScDeviceIslandFixture::
+                pcm_pair_upload_spans(*producer)==2u,
+        "Distant Sc PCM edits reuploaded unchanged pair descriptors");
+    check_transitions(0u,0u);
+    check_ordinals();
+    cpu.advance_collision(true);
+    gpu.advance_collision(true);
+    require(producer->pcm_pair_upload_bytes()==
+                2u*sizeof(physx_gpu::SourcePcmBoxPairNative) &&
+            physx_gpu::SourceScDeviceIslandFixture::
+                pcm_pair_upload_spans(*producer)==2u,
+        "Sparse PCM reset retirement crossed unchanged source ordinals");
+    cpu.advance_collision(true);
+    gpu.advance_collision(true);
+    require(producer->pcm_pair_upload_bytes()==0u &&
+            physx_gpu::SourceScDeviceIslandFixture::
+                pcm_pair_upload_spans(*producer)==0u,
+        "Unchanged PCM pair input retained dirty transfer spans");
     check_ordinals();
     // Physically retire disjoint managers before their BP EdgeIndex
     // handles are reused. The simultaneous lost and later found sets
