@@ -9907,9 +9907,19 @@ void Scene::solve_gpu_distance_constraints(float seconds) {
             "GPU Dy explicit Gu contact order was not fully consumed");
     // Sc owns persistent island identities. Device admission consumes
     // physical EdgeIndex touch history and authors only numerical ranges.
+    // Its resident response tokens replace the host numerical descriptors.
+    if(device_admission)
+        for(const auto& joint:gpu_dy_rows_)
+            if(joint.reserved!=2u)
+                throw std::logic_error(
+                    "Device Sc response requires device-authored joint rows");
     prepare_gpu_dy_device_islands(device_admission);
+    const std::span<const GpuDyDistanceDescriptor> dy_descriptors=
+        device_admission?std::span<const GpuDyDistanceDescriptor>{}
+                        :std::span<const GpuDyDistanceDescriptor>{
+                            ordered_constraints_};
     gpu_broadphase_->enqueue_gpu_dy_distance(
-        gpu_dy_bodies_,gpu_dy_rows_,ordered_constraints_,
+        gpu_dy_bodies_,gpu_dy_rows_,dy_descriptors,
         {},gpu_dy_body_ordinals_,gpu_dy_tasks_,
         gpu_dy_contact_forces_,gpu_dy_gu_inputs_,
         {},gpu_dy_friction_anchors_,
