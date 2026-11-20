@@ -122,6 +122,7 @@ struct SourceDyLaunchStats {
     std::size_t device_generated_bytes=0u;
     std::size_t device_source_copy_bytes=0u;
     std::size_t device_source_descriptors=0u;
+    std::size_t host_descriptor_inputs=0u;
     std::size_t source_descriptor_upload_bytes=0u;
     // Native Sc initializes transient solver bodies from the resident
     // actor inverse masses; standalone Dy retains explicit input support.
@@ -547,6 +548,7 @@ public:
             build_launch_plan(tasks,partition_ends,narrow(descriptors.size()),
                               narrow(body_ordinals.size()));
         }
+        last_schedule_.host_descriptor_inputs=descriptors.size();
         last_schedule_.device_initialized_bodies=device_initial_bodies?bodies.size():0u;
         last_schedule_.device_body_upload_bytes=device_initial_bodies
             ? (device_world_motion?0u:bodies.size()*sizeof(float))
