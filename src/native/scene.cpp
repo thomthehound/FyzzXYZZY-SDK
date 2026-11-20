@@ -4418,28 +4418,6 @@ void Scene::update_contacts(bool defer_device_points,float inverse_step) {
             request.numerical=prepare_contact_material(
                 request.first,request.second);
     validate_pcm_history(true);
-    // Joint identities and authored frames are independent of Gu touch.
-    // Stage the same source records before narrowphase for PCM, Gu-only
-    // and joint-only device epochs; Dy consumes them without another upload.
-    if((gpu_results_pending || gu_only_device_epoch ||
-        joint_only_device_admission) && defer_device_points &&
-       gpu_dy_active() && !active_constraint_handles_.empty()) {
-        gpu_dy_joint_inputs_.clear();
-        gpu_dy_joint_inputs_.reserve(active_constraint_handles_.size());
-        for(const EdgeIndex edge:active_constraint_handles_)
-            gpu_dy_joint_inputs_.push_back(pack_gpu_dy_joint_input(edge));
-        std::sort(gpu_dy_joint_inputs_.begin(),gpu_dy_joint_inputs_.end(),
-            [](const GpuDyJointInput& a,const GpuDyJointInput& b) {
-                return a.source_slot<b.source_slot;
-            });
-        if(std::adjacent_find(gpu_dy_joint_inputs_.begin(),
-                             gpu_dy_joint_inputs_.end(),
-            [](const GpuDyJointInput& a,const GpuDyJointInput& b) {
-                return a.source_slot==b.source_slot;
-            })!=gpu_dy_joint_inputs_.end())
-            throw std::logic_error("Sc staged a joint source slot twice");
-        gpu_broadphase_->enqueue_gpu_dy_joint_sources(gpu_dy_joint_inputs_);
-    }
     // Only selected normals cross early; the validated source history
     // remains available to Sc when the PCM header joins later.
     if(gpu_results_pending || gu_only_device_epoch ||
@@ -12372,6 +12350,26 @@ void Scene::advance_collision_internal(
         friction_impulse_writeback_.clear();
         solved_result_frame_=0;
         threshold_changes_.clear();
+        // Authored joint sources are independent of SAP and Gu results.
+        // Queue them during the SAP fetch rather than after PCM begins.
+        if(defer_device_points && step_seconds>0.f &&
+           gpu_broadphase_ && gpu_dy_active() &&
+           !active_constraint_handles_.empty()) {
+            gpu_dy_joint_inputs_.reserve(active_constraint_handles_.size());
+            for(const EdgeIndex edge:active_constraint_handles_)
+                gpu_dy_joint_inputs_.push_back(pack_gpu_dy_joint_input(edge));
+            std::sort(gpu_dy_joint_inputs_.begin(),gpu_dy_joint_inputs_.end(),
+                [](const GpuDyJointInput& a,const GpuDyJointInput& b) {
+                    return a.source_slot<b.source_slot;
+                });
+            if(std::adjacent_find(gpu_dy_joint_inputs_.begin(),
+                                  gpu_dy_joint_inputs_.end(),
+                [](const GpuDyJointInput& a,const GpuDyJointInput& b) {
+                    return a.source_slot==b.source_slot;
+                })!=gpu_dy_joint_inputs_.end())
+                throw std::logic_error("Sc staged a joint source slot twice");
+            gpu_broadphase_->enqueue_gpu_dy_joint_sources(gpu_dy_joint_inputs_);
+        }
     };
     // ScPipeline.cpp CPU ordering:
     // BP first pass -> BP update -> post-BP pair publication ->
