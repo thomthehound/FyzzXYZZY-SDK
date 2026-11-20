@@ -278,6 +278,11 @@ public:
             throw std::logic_error("Source GPU Dy joint stage is unavailable");
         dy_distance_->enqueue_joint_sources(inputs);
     }
+    void begin_gpu_dy_actor_sources() override {
+        if(!dy_distance_)
+            throw std::logic_error("Source GPU Dy actor stage is unavailable");
+        dy_distance_->discard_unconsumed_actor_sources();
+    }
     void enqueue_gpu_dy_actor_sources(
         std::span<const native::GpuDyBodyIntegrationInput> inputs) override {
         if(!dy_distance_)
