@@ -5771,6 +5771,23 @@ void verify_mixed_gu_pcm_gpu_dy_solver(
                     "Mixed source Gu/PCM GPU Dy motion diverged from CPU");
             }
         }
+        // Lost and regained CPU Gu contacts must reach the resident
+        // EdgeIndex journal before Sc consumes unrelated GPU witnesses.
+        // Both source orders use the same producer and rollback contract.
+        for(const auto [height,touching]:
+            std::array<std::pair<float,bool>,2>{{{5.f,false},{0.43f,true}}}) {
+            cpu.set_position(moving_cpu[0],{0.f,height,0.f});
+            gpu.set_position(moving_gpu[0],{0.f,height,0.f});
+            cpu.step(dt);
+            gpu.step(dt);
+            require(producer->pcm_early_gu_touch_bytes()>=
+                        sizeof(native::GpuGuTouchRecord) &&
+                    cpu.contact_edge_connected({floor_cpu,moving_cpu[0]})==
+                        touching &&
+                    gpu.contact_edge_connected({floor_gpu,moving_gpu[0]})==
+                        touching,
+                "Mixed CPU Gu loss/recontact waited for GPU PCM publication");
+        }
         if(!plane_first) {
             // Reject after mixed PCM and Gu have prepared their shared
             // contact arena, then retry from the committed Sc epoch.
