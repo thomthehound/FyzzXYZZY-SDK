@@ -7860,12 +7860,27 @@ void Scene::partition_constraints() {
         gpu_dy_island_edges_.clear();
         gpu_dy_island_node_flags_.clear();
     }
-    // Compact early island work already owns typed numerical responses.
-    // Dy consumes those device-authored identities without a host pass.
+    // The GPU owns early numerical responses for independent compact
+    // components regardless of their aggregate count. A genuinely wide
+    // connected task retains host-authored descriptors for GPU tiling.
+    bool compact_source_tasks=true;
+    if(gpu_integration && gpu_dy_early_islands_ &&
+       gpu_dy_responding_island_count_!=0u) {
+        std::size_t prior_bodies=0u,prior_descriptors=0u;
+        for(const auto& task:solver_tasks_) {
+            if(task.solver_body_end<prior_bodies ||
+               task.constraint_end<prior_descriptors)
+                throw std::logic_error("Early Sc source task range regressed");
+            if(task.solver_body_end-prior_bodies>=gpu_dy_wide_task_threshold &&
+               task.constraint_end-prior_descriptors>=gpu_dy_wide_task_threshold)
+                compact_source_tasks=false;
+            prior_bodies=task.solver_body_end;
+            prior_descriptors=task.constraint_end;
+        }
+    }
     const bool device_source_responses=gpu_integration &&
         gpu_dy_early_islands_ && gpu_dy_responding_island_count_!=0u &&
-        (gpu_dy_island_edges_.size()<gpu_dy_wide_task_threshold ||
-         gpu_dy_early_actor_ids_.size()<gpu_dy_wide_task_threshold);
+        compact_source_tasks;
     FYZZ_PROFILE_COUNTER("dy.source_response_capacity",
         device_source_responses?gpu_dy_island_edges_.size():0u);
     if(device_source_responses)return;
