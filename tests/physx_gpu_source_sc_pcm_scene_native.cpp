@@ -4572,7 +4572,7 @@ void verify_sparse_large_device_response_graph(
              <<gpu.pairs().size()
              <<" admitted_tasks="<<schedule.device_admitted_tasks
              <<" task_capacity="<<schedule.device_colored_tasks
-             <<" host_descriptors="<<schedule.host_descriptor_inputs<<'\\n';
+             <<" host_descriptors="<<schedule.host_descriptor_inputs<<'\n';
 }
 
 // Source Gu PCM rows, friction patches, and 1D joints share the same
