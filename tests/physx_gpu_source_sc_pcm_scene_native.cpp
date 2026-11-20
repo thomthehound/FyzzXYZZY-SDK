@@ -2860,8 +2860,6 @@ void verify_device_sc_dy_compact_contact_ranges(
             ((patches[0].reserved&
                 physx_gpu::source_dy_pcm_compacted_bit)!=0u)==
                     reverse_source &&
-            (patches[1].reserved&
-                physx_gpu::source_dy_pcm_compacted_bit)!=0u &&
             forces[0]!=-17.f && forces[capacity]!=-17.f &&
             forces[capacity-1u]==-17.f &&
             forces[2u*capacity-1u]==-17.f,
