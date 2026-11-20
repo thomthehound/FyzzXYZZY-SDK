@@ -7866,16 +7866,22 @@ void Scene::partition_constraints() {
     bool compact_source_tasks=true;
     if(gpu_integration && gpu_dy_early_islands_ &&
        gpu_dy_responding_island_count_!=0u) {
-        std::size_t prior_bodies=0u,prior_descriptors=0u;
+        std::size_t prior_bodies=0u,prior_managers=0u,prior_joints=0u;
         for(const auto& task:solver_tasks_) {
             if(task.solver_body_end<prior_bodies ||
-               task.constraint_end<prior_descriptors)
+               task.manager_end<prior_managers ||
+               task.joint_end<prior_joints)
                 throw std::logic_error("Early Sc source task range regressed");
+            // Dy descriptors do not exist yet. Source manager and joint
+            // ranges bound a connected task's eventual numerical width.
+            const auto sources=task.manager_end-prior_managers+
+                task.joint_end-prior_joints;
             if(task.solver_body_end-prior_bodies>=gpu_dy_wide_task_threshold &&
-               task.constraint_end-prior_descriptors>=gpu_dy_wide_task_threshold)
+               sources>=gpu_dy_wide_task_threshold)
                 compact_source_tasks=false;
             prior_bodies=task.solver_body_end;
-            prior_descriptors=task.constraint_end;
+            prior_managers=task.manager_end;
+            prior_joints=task.joint_end;
         }
     }
     const bool device_source_responses=gpu_integration &&
