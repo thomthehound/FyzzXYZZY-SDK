@@ -9681,18 +9681,26 @@ void Scene::solve_gpu_distance_constraints(float seconds) {
     // Late graphs still require more responding islands than host tasks.
     // Wide islands retain their separate numerical partitioning path.
     std::size_t responding_tasks=0u;
-    std::size_t previous_bodies=0u,previous_descriptors=0u;
     bool compact_tasks=true;
-    for(const auto& task:solver_tasks_) {
-        if(task.solver_body_end<previous_bodies ||
-           task.constraint_end<previous_descriptors)
-            throw std::logic_error("Source Dy task range regressed");
-        if(task.solver_body_end>previous_bodies)++responding_tasks;
-        if(task.solver_body_end-previous_bodies>=gpu_dy_wide_task_threshold &&
-           task.constraint_end-previous_descriptors>=gpu_dy_wide_task_threshold)
-            compact_tasks=false;
-        previous_bodies=task.solver_body_end;
-        previous_descriptors=task.constraint_end;
+    if(gpu_dy_early_islands_) {
+        // Early device Sc owns the numerical task partition. Its source
+        // graph determines whether the work is compact; host grouped
+        // task boundaries cannot change device admission.
+        compact_tasks=gpu_dy_island_edges_.size()<gpu_dy_wide_task_threshold ||
+            gpu_dy_early_actor_ids_.size()<gpu_dy_wide_task_threshold;
+    }else {
+        std::size_t previous_bodies=0u,previous_descriptors=0u;
+        for(const auto& task:solver_tasks_) {
+            if(task.solver_body_end<previous_bodies ||
+               task.constraint_end<previous_descriptors)
+                throw std::logic_error("Source Dy task range regressed");
+            if(task.solver_body_end>previous_bodies)++responding_tasks;
+            if(task.solver_body_end-previous_bodies>=gpu_dy_wide_task_threshold &&
+               task.constraint_end-previous_descriptors>=gpu_dy_wide_task_threshold)
+                compact_tasks=false;
+            previous_bodies=task.solver_body_end;
+            previous_descriptors=task.constraint_end;
+        }
     }
     const bool has_device_numerical_sources=
         gpu_broadphase_->has_gpu_pcm_box() &&
