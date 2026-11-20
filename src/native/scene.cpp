@@ -9680,7 +9680,8 @@ void Scene::solve_gpu_distance_constraints(float seconds) {
         has_device_numerical_sources && compact_tasks &&
         gpu_dy_responding_island_count_!=0u &&
         (gpu_dy_early_islands_ ||
-         gpu_dy_responding_island_count_>responding_tasks) &&
+         (!gpu_dy_island_edges_.empty() &&
+          gpu_dy_responding_island_count_>responding_tasks)) &&
         gpu_dy_responding_island_count_<=
             gpu_broadphase_->gpu_dy_direct_task_limit();
     FYZZ_PROFILE_COUNTER("dy.device_island_selected",device_admission?1u:0u);
