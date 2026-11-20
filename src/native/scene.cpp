@@ -7815,9 +7815,19 @@ void Scene::partition_constraints() {
         gpu_dy_responding_island_count_>responding_task_count &&
         gpu_dy_responding_island_count_<=
             gpu_broadphase_->gpu_dy_direct_task_limit();
-    // Wide tasks retain their own GPU coloring. Decide this before
-    // emitting descriptors so direct Sc tasks never need host rows.
+    // Wide tasks retain their own GPU coloring. Select the owner
+    // before packing any host descriptors. Sleeping sources do not
+    // contribute to the actual numerical width.
     if(prepare_device_graph) {
+        const auto responds=[&](BodyId id0,BodyId id1) {
+            const auto& a=actors_[id0];
+            const auto& b=actors_[id1];
+            const bool dynamic_a=a.motion==Motion::Dynamic;
+            const bool dynamic_b=b.motion==Motion::Dynamic;
+            return (dynamic_a || dynamic_b) &&
+                (!dynamic_a || !a.sleeping) &&
+                (!dynamic_b || !b.sleeping);
+        };
         std::size_t previous_managers=0u,previous_joints=0u;
         std::size_t previous_bodies=0u;
         for(const auto& task:solver_tasks_) {
@@ -7826,8 +7836,20 @@ void Scene::partition_constraints() {
             if(potential>=gpu_dy_wide_task_threshold &&
                task.solver_body_end-previous_bodies>=
                    gpu_dy_wide_task_threshold) {
-                prepare_device_graph=false;
-                break;
+                std::size_t responding=0u;
+                for(std::size_t i=previous_joints;i<task.joint_end;++i) {
+                    const auto pair=island_edges_[indexed_joints_[i]].pair;
+                    responding+=responds(pair.a,pair.b)?1u:0u;
+                }
+                for(std::size_t i=previous_managers;i<task.manager_end;++i) {
+                    const auto pair=manifolds_[indexed_managers_[i]].pair;
+                    responding+=responds(shapes_[pair.a].body,
+                                          shapes_[pair.b].body)?1u:0u;
+                }
+                if(responding>=gpu_dy_wide_task_threshold) {
+                    prepare_device_graph=false;
+                    break;
+                }
             }
             previous_managers=task.manager_end;
             previous_joints=task.joint_end;
