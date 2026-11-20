@@ -24,6 +24,7 @@
 #include <span>
 #include <stdexcept>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace fyzz::physx_gpu {
