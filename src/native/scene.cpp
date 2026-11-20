@@ -12350,6 +12350,50 @@ void Scene::advance_collision_internal(
         friction_impulse_writeback_.clear();
         solved_result_frame_=0;
         threshold_changes_.clear();
+        if(defer_device_points && step_seconds>0.f &&
+           gpu_broadphase_ && gpu_dy_active()) {
+            gpu_broadphase_->begin_gpu_dy_actor_sources();
+            // The published contact/joint identities can stage their
+            // actor-local inputs while the GPU produces SAP reports.
+            // New-touch actors are included by later PCM admission.
+            gpu_dy_staged_actor_ids_.clear();
+            gpu_dy_staged_actor_ids_.reserve(
+                2u*(manifolds_.size()+active_constraint_handles_.size()));
+            const stage_actor=[&](BodyId id) {
+                const auto& actor=actors_[id];
+                if(actor.alive && actor.motion==Motion::Dynamic &&
+                   !actor.sleeping)
+                    gpu_dy_staged_actor_ids_.push_back(id);
+            };
+            for(const auto& manager:manifolds_) {
+                if(manager.pair.a>=shapes_.size() ||
+                   manager.pair.b>=shapes_.size())continue;
+                const auto& a=shapes_[manager.pair.a];
+                const auto& b=shapes_[manager.pair.b];
+                if(a.alive)stage_actor(a.body);
+                if(b.alive)stage_actor(b.body);
+            }
+            for(const EdgeIndex edge:active_constraint_handles_) {
+                const auto endpoints=island_edges_[edge].pair;
+                stage_actor(endpoints.a);
+                stage_actor(endpoints.b);
+            }
+            std::sort(gpu_dy_staged_actor_ids_.begin(),
+                      gpu_dy_staged_actor_ids_.end());
+            gpu_dy_staged_actor_ids_.erase(
+                std::unique(gpu_dy_staged_actor_ids_.begin(),
+                            gpu_dy_staged_actor_ids_.end()),
+                gpu_dy_staged_actor_ids_.end());
+            gpu_dy_integration_inputs_.clear();
+            gpu_dy_integration_inputs_.reserve(gpu_dy_staged_actor_ids_.size());
+            for(const BodyId id:gpu_dy_staged_actor_ids_) {
+                auto& input=gpu_dy_integration_inputs_.emplace_back();
+                pack_gpu_dy_integration_input(id,step_seconds,input);
+            }
+            if(!gpu_dy_integration_inputs_.empty())
+                gpu_broadphase_->enqueue_gpu_dy_actor_sources(
+                    gpu_dy_integration_inputs_);
+        }
         // Authored joint sources are independent of SAP and Gu results.
         // Queue them during the SAP fetch rather than after PCM begins.
         if(defer_device_points && step_seconds>0.f &&
