@@ -4614,10 +4614,9 @@ void Scene::update_contacts(bool defer_device_points,float inverse_step) {
             gpu_broadphase_->enqueue_gpu_dy_actor_sources(
                 gpu_dy_integration_inputs_);
             if(has_legacy_gu) {
+                // CPU Gu physical touch must enter the ordered queue
+                // before device connectivity consumes its EdgeIndex.
                 early_device_graph_awaits_gu=true;
-                // CPU Gu physical touches enter the ordered device queue
-                // before Sc's witness consumer or numerical task lowering.
-                overlap_legacy_gu=true;
             }else {
                 gpu_broadphase_->enqueue_gpu_dy_island_admission(
                     gpu_dy_island_edges_,gpu_dy_island_node_flags_,
@@ -5106,13 +5105,10 @@ void Scene::update_contacts(bool defer_device_points,float inverse_step) {
     // contacts before any GPU PCM result becomes visible to Sc.
     while(old_cursor<manifolds_.size())
         next_lost_contacts_.push_back(manifolds_[old_cursor++].pair);
-    // Every CPU Gu producer publishes its exact EdgeIndex touch and extent
-    // before the device accurate-island stage reads that history. PCM may
-    // still have an independent witness DMA that Sc joins afterwards.
-    // Device island admission must observe CPU Gu touch before it runs.
-    // Mixed GPU PCM also needs the same ordered history regardless of
-    // which producer came first in the source stream.
-    const bool early_gu_history=overlap_legacy_gu ||
+    // Device admission consumes exact CPU Gu touch before its graph
+    // dispatch. Mixed GPU PCM also requires source-ordered Gu history,
+    // independent of where CPU managers occur in the candidate stream.
+    const bool early_gu_history=early_device_graph_awaits_gu ||
         (source_device_gu_history && gpu_results_pending);
     if(early_gu_history)
         publish_cpu_gu_touch_history(next_lost_contacts_,manifolds_);
