@@ -1562,6 +1562,7 @@ private:
     GpuDyJointInput pack_gpu_dy_joint_input(EdgeIndex edge) const;
     void pack_gpu_dy_integration_input(
         BodyId id,float seconds,GpuDyBodyIntegrationInput& input) const;
+    void stage_gpu_dy_actor_sources(std::span<const BodyId> ids,float seconds);
     static constexpr EdgeIndex invalid_edge=std::numeric_limits<EdgeIndex>::max();
     static constexpr std::size_t invalid_instance=
         std::numeric_limits<std::size_t>::max();
