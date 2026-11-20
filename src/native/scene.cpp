@@ -7815,6 +7815,25 @@ void Scene::partition_constraints() {
         gpu_dy_responding_island_count_>responding_task_count &&
         gpu_dy_responding_island_count_<=
             gpu_broadphase_->gpu_dy_direct_task_limit();
+    // Wide tasks retain their own GPU coloring. Decide this before
+    // emitting descriptors so direct Sc tasks never need host rows.
+    if(prepare_device_graph) {
+        std::size_t previous_managers=0u,previous_joints=0u;
+        std::size_t previous_bodies=0u;
+        for(const auto& task:solver_tasks_) {
+            const auto potential=task.manager_end-previous_managers+
+                task.joint_end-previous_joints;
+            if(potential>=gpu_dy_wide_task_threshold &&
+               task.solver_body_end-previous_bodies>=
+                   gpu_dy_wide_task_threshold) {
+                prepare_device_graph=false;
+                break;
+            }
+            previous_managers=task.manager_end;
+            previous_joints=task.joint_end;
+            previous_bodies=task.solver_body_end;
+        }
+    }
     if(!gpu_dy_early_islands_) {
         gpu_dy_island_edges_.clear();
         gpu_dy_island_node_flags_.clear();
@@ -7880,11 +7899,13 @@ void Scene::partition_constraints() {
     std::size_t joint_begin=0, joint_row_begin=0;
     std::size_t partition_base=0;
     std::size_t prepared_body_begin=0u;
+    std::size_t device_descriptor_count=0u;
     pending_dynamic_constraints_.clear();
     for(auto& task:solver_tasks_) {
         const std::size_t manager_end=task.manager_end;
         const std::size_t descriptor_begin=constraint_descriptors_.size();
-        const auto gpu_first=ordered_constraints_.size();
+        const auto gpu_first=prepare_device_graph
+            ?device_descriptor_count:ordered_constraints_.size();
         // GPU coloring does not need host contact endpoint ordinals
         // unless this task could use wide numerical tiling. The upper
         // bound includes sleeping descriptors so this decision cannot
@@ -7930,6 +7951,10 @@ void Scene::partition_constraints() {
                 return false;
             const auto flags=row_count |
                 (dynamic_a?0x100u:0u)|(dynamic_b?0x200u:0u);
+            if(prepare_device_graph) {
+                ++device_descriptor_count;
+                return true;
+            }
             if(compact_gpu_task && row_count==0u) {
                 // The device expands contacts from the already
                 // prepared manager table. Only zero-patch contacts
@@ -7999,22 +8024,14 @@ void Scene::partition_constraints() {
             }
         }
         if(gpu_integration) {
-            const auto count=ordered_constraints_.size()-gpu_first;
+            const auto current=prepare_device_graph
+                ?device_descriptor_count:ordered_constraints_.size();
+            const auto count=current-gpu_first;
             if(count>std::numeric_limits<std::size_t>::max()-partition_base)
                 throw std::overflow_error("Device Dy task partition capacity overflow");
-            if(prepare_device_graph &&
-               count>=gpu_dy_wide_task_threshold &&
-               task.solver_body_end-prepared_body_begin>=
-                   gpu_dy_wide_task_threshold) {
-                // Wide numerical tasks use device coloring directly,
-                // without compact source-island admission.
-                prepare_device_graph=false;
-                gpu_dy_island_edges_.clear();
-                gpu_dy_island_node_flags_.clear();
-            }
             partition_base+=count;
             task.partition_end=partition_base;
-            task.constraint_end=ordered_constraints_.size();
+            task.constraint_end=current;
             manager_begin=manager_end;
             joint_begin=task.joint_end;
             prepared_body_begin=task.solver_body_end;
