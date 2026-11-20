@@ -282,6 +282,7 @@ public:
         deferred_point_downloads_.clear();
         last_edge_history_copy_bytes_=0u;
         last_continuation_commands_=0u;
+        last_candidate_dispatches_=0u;
         last_face_pair_scan_count_=0u;
         last_island_dispatches_=0u;
         last_remap_dispatches_=0u;
@@ -323,6 +324,7 @@ public:
         std::uint32_t candidate_count=0u;
         std::uint32_t largest_edge=0u;
         bool needs_continuation=false;
+        bool has_device_witnesses=false;
         std::uint32_t first_face_pair=pair_count,face_pair_end=0u;
         bool full_upload=reset_manifolds_ ||
             previous_count!=pair_count || pair_host_.size()!=pair_count;
@@ -331,6 +333,7 @@ public:
         for(std::uint32_t i=0u;i<pair_count;++i) {
             const auto& request=requests[i];
             needs_continuation|=!request.candidate_complete;
+            has_device_witnesses|=!request.host_generated;
             if(request.host_generated && !request.candidate_complete)
                 throw std::logic_error(
                     "CPU source Gu cannot own GPU continuation pair");
@@ -408,13 +411,14 @@ public:
             pairs_.allocate(requested_pair_bytes,PX_FL);
             full_upload |= requested_pair_bytes>previous_pair_capacity ||
                            pairs_.getDevicePtr()!=previous_pair_address;
-            results_.allocate(source_allocation_bytes(pair_count,32u),PX_FL);
+            if(has_device_witnesses)
+                results_.allocate(source_allocation_bytes(pair_count,32u),PX_FL);
         }
         // Plane-only PCM frames need no candidate storage; retain the
         // source stages' nonzero view contract without 16 unused slots
         // per plane pair.
         const auto candidate_capacity=std::max(candidate_count,1u);
-        if(pair_count)
+        if(has_device_witnesses)
             candidates_.allocate(source_allocation_bytes(candidate_capacity,40u),PX_FL);
         // Only previously published EdgeIndex records belong to the
         // persistent Gu manifold. Capacity slack and the alignment pad
@@ -436,9 +440,10 @@ public:
         if(pair_count) {
             journal_.allocate(source_allocation_bytes(pair_count,240u),PX_FL);
         }
-        if(pair_count) {
+        if(needs_continuation)
             work_.allocate(source_allocation_bytes(
                 std::size_t(pair_count)+1u,4u),PX_FL);
+        if(pair_count) {
             dense_contacts_.allocate(source_allocation_bytes(
                 pair_count,sizeof(SourcePcmGpuContactStreamNative)+
                     (defer_points?8u:0u)),PX_FL);
@@ -478,14 +483,17 @@ public:
                 pairs_.getDevicePtr(),edges_.getDevicePtr(),
                 journal_.getDevicePtr(),pair_count,edge_capacity);
 
-        candidates_stage_.append(stream_,addresses_,
-            transforms_.getDevicePtr(),geometry_.getDevicePtr(),
-            pairs_.getDevicePtr(),results_.getDevicePtr(),
-            candidates_.getDevicePtr(),edges_.getDevicePtr(),
-            indirect_address_,dense_contacts_.getDevicePtr(),
-            convex_vertices_.getDevicePtr(),convex_vertex_count_,
-            pair_count,shape_capacity,candidate_capacity,edge_capacity,
-            defer_points);
+        if(has_device_witnesses) {
+            candidates_stage_.append(stream_,addresses_,
+                transforms_.getDevicePtr(),geometry_.getDevicePtr(),
+                pairs_.getDevicePtr(),results_.getDevicePtr(),
+                candidates_.getDevicePtr(),edges_.getDevicePtr(),
+                indirect_address_,dense_contacts_.getDevicePtr(),
+                convex_vertices_.getDevicePtr(),convex_vertex_count_,
+                pair_count,shape_capacity,candidate_capacity,edge_capacity,
+                defer_points);
+            last_candidate_dispatches_=1u;
+        }
         const auto before_continuation=stream_.commands().size();
         if(needs_continuation) {
             const auto append_gjk=[&](const SourcePcmEpaNativeStage& stage,
@@ -884,8 +892,9 @@ public:
         // Sc needs the GPU witnesses now, not the CPU Gu device upload.
         // The independent CPU Gu upload was already queued after the
         // witness DMA; only the earlier GPU result is a host dependency.
+        // CPU-origin witnesses are already available to Sc. Their
+        // device upload and touch journal remain ordered for Dy and commit.
         if(!gpu_downloads_.empty())stream_.finish_fetch();
-        else stream_.wait_at_fetch();
         if(deferred_points_pending_)
             for(std::uint32_t i=0u;i<journal_pair_count_;++i)
                 if(!requests[i].host_generated) {
@@ -1021,6 +1030,9 @@ public:
     std::size_t last_continuation_commands() const noexcept {
         return last_continuation_commands_;
     }
+    std::size_t last_candidate_dispatches() const noexcept {
+        return last_candidate_dispatches_;
+    }
     std::size_t last_face_pair_scan_count() const noexcept {
         return last_face_pair_scan_count_;
     }
@@ -1146,6 +1158,7 @@ private:
     std::size_t last_early_gu_touch_bytes_=0u;
     std::size_t last_edge_history_copy_bytes_=0u;
     std::size_t last_continuation_commands_=0u;
+    std::size_t last_candidate_dispatches_=0u;
     std::size_t last_face_pair_scan_count_=0u;
     std::size_t last_island_dispatches_=0u,last_remap_dispatches_=0u;
     std::size_t published_edge_span_bytes_=0u;
