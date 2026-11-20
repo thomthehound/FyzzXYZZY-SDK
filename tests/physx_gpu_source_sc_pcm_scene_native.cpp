@@ -3984,6 +3984,8 @@ void verify_gpu_single_island_hybrid_solver(
                     2u+free_count+(resident_admission?1u:0u) &&
                 schedule.device_colored_tasks>0u &&
                 schedule.device_colored_descriptors>0u &&
+                schedule.host_descriptor_inputs==
+                    (resident_admission?0u:schedule.device_colored_descriptors) &&
                 schedule.device_island_indirect_dispatches==
                     (resident_admission?1u:0u) &&
                 (resident_admission
@@ -6049,6 +6051,8 @@ void verify_joint_only_device_admission(
         const auto responding=frame<2u?3u:frame<4u?2u:1u;
         const bool device_graph=responding>1u;
         const auto stats=producer->dy_launch_stats();
+        require(stats.host_descriptor_inputs==0u,
+            "Device Sc joint response retained host Dy descriptors");
         const auto contact_bits=producer->gpu_dy_admitted_contact_sources();
         require(stats.prewitness_joint_source_upload_bytes==
                     (frame==0u?3u*sizeof(native::GpuDyJointInput):0u) &&
