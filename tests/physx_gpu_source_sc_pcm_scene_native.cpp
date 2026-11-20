@@ -4532,15 +4532,13 @@ void verify_sparse_large_device_response_graph(
             {0.5f,0.5f,0.5f},{x,0.83f,0.f},1.f);
     }
     constexpr auto inactive=native::gpu_dy_wide_task_threshold+8u;
-    constexpr Quat tilt{0.f,0.f,0.382683432f,0.923879533f};
     const auto add_candidates=[&](native::Scene& scene) {
         for(std::uint32_t i=0u;i<inactive;++i) {
             const float x=20.f+5.f*float(i);
-            const auto moving=scene.add_dynamic_box(
-                {0.5f,0.5f,0.5f},{x,1.f,0.f},1.f);
-            const auto fixed=scene.add_static_box(
-                {0.5f,0.5f,0.5f},{x+1.08f,2.08f,0.f});
-            scene.set_pose(fixed,{x+1.08f,2.08f,0.f},tilt);
+            const auto moving=scene.add_dynamic_sphere(
+                0.5f,{x,1.f,0.f},1.f);
+            scene.add_static_sphere(
+                0.5f,{x+0.85f,1.85f,0.f});
             RigidBodyDynamics dynamics{};
             dynamics.gravity_enabled=false;
             scene.set_dynamics(moving,dynamics);
