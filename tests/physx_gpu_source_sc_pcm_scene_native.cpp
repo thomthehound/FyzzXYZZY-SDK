@@ -6063,8 +6063,9 @@ void verify_joint_only_device_admission(
         const auto responding=frame<2u?3u:frame<4u?2u:1u;
         const bool device_graph=responding>1u;
         const auto stats=producer->dy_launch_stats();
-        require(stats.host_descriptor_inputs==0u,
-            "Device Sc joint response retained host Dy descriptors");
+        require(stats.host_descriptor_inputs==
+                    (device_graph?0u:responding),
+            "Joint-only Sc descriptor ownership differs from task admission");
         const auto contact_bits=producer->gpu_dy_admitted_contact_sources();
         require(stats.prewitness_joint_source_upload_bytes==
                     (frame==0u?3u*sizeof(native::GpuDyJointInput):0u) &&
