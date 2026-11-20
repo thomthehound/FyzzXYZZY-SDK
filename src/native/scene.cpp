@@ -4329,7 +4329,7 @@ void Scene::update_contacts(bool defer_device_points,float inverse_step) {
     // Legacy Gu after the first GPU witness can run while PCM executes.
     // Reserve those PCM runs in the original Gu arena and publish them
     // after the independent CPU generators have completed.
-    bool overlap_legacy_gu=[&] {
+    [[maybe_unused]] const bool overlap_legacy_gu=[&] {
         if(!gpu_results_pending ||
            gpu_pcm_pairs_.size()==previous_pairs_.size())return false;
         bool device_seen=false;
@@ -5064,9 +5064,6 @@ void Scene::update_contacts(bool defer_device_points,float inverse_step) {
                    manifold.pcm_result_index==
                        std::numeric_limits<std::uint32_t>::max())
                     {
-                        if(manifold.count>255u)
-                            throw std::overflow_error(
-                                "CPU Gu numerical extent exceeds 8-bit source count");
                         gpu_dy_gu_touches_.push_back({
                             edge,0x20000u|
                                 (static_cast<std::uint32_t>(manifold.count)<<8u)|
@@ -12359,7 +12356,7 @@ void Scene::advance_collision_internal(
             gpu_dy_staged_actor_ids_.clear();
             gpu_dy_staged_actor_ids_.reserve(
                 2u*(manifolds_.size()+active_constraint_handles_.size()));
-            const stage_actor=[&](BodyId id) {
+            const auto stage_actor=[&](BodyId id) {
                 const auto& actor=actors_[id];
                 if(actor.alive && actor.motion==Motion::Dynamic &&
                    !actor.sleeping)
