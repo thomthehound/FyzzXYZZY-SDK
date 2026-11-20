@@ -248,6 +248,7 @@ public:
         last_host_contact_upload_bytes_=results.size_bytes();
         last_early_gu_touch_bytes_=0u;
         last_continuation_commands_=0u;
+        last_candidate_dispatches_=0u;
         last_face_pair_scan_count_=0u;
         last_island_dispatches_=0u;
         last_remap_dispatches_=0u;
