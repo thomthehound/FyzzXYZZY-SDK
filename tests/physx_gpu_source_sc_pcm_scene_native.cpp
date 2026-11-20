@@ -567,8 +567,8 @@ struct GpuPcmFrictionAnchorFixture {
         const auto responds=[&](BodyId id0,BodyId id1) {
             const auto& a=scene.actors_[id0];
             const auto& b=scene.actors_[id1];
-            const bool dynamic_a=a.motion==Motion::Dynamic;
-            const bool dynamic_b=b.motion==Motion::Dynamic;
+            const bool dynamic_a=a.motion==Scene::Motion::Dynamic;
+            const bool dynamic_b=b.motion==Scene::Motion::Dynamic;
             return (dynamic_a || dynamic_b) &&
                 (!dynamic_a || !a.sleeping) &&
                 (!dynamic_b || !b.sleeping);
