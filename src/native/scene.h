@@ -497,6 +497,9 @@ public:
         std::span<const GpuDyJointInput>) {
         throw std::logic_error("Source GPU Dy joint source is unavailable");
     }
+    virtual void begin_gpu_dy_actor_sources() {
+        throw std::logic_error("Source GPU Dy actor source is unavailable");
+    }
     virtual void enqueue_gpu_dy_actor_sources(
         std::span<const GpuDyBodyIntegrationInput>) {
         throw std::logic_error("Source GPU Dy actor source is unavailable");
