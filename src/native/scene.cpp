@@ -4583,14 +4583,7 @@ void Scene::update_contacts(bool defer_device_points,float inverse_step) {
             }
             // Queue authored actor-local inputs on Sc's early device
             // submission; final Dy admission validates any Sc changes.
-            gpu_dy_integration_inputs_.resize(
-                gpu_dy_early_actor_ids_.size());
-            for(std::size_t i=0u;i<gpu_dy_early_actor_ids_.size();++i)
-                pack_gpu_dy_integration_input(
-                    gpu_dy_early_actor_ids_[i],seconds,
-                    gpu_dy_integration_inputs_[i]);
-            gpu_broadphase_->enqueue_gpu_dy_actor_sources(
-                gpu_dy_integration_inputs_);
+            stage_gpu_dy_actor_sources(gpu_dy_early_actor_ids_,seconds);
             if(has_legacy_gu) {
                 // CPU Gu physical touch must enter the ordered queue
                 // before device connectivity consumes its EdgeIndex.
@@ -4630,39 +4623,24 @@ void Scene::update_contacts(bool defer_device_points,float inverse_step) {
     if(gpu_results_pending && defer_device_points && gpu_dy_active() &&
        !gpu_dy_early_islands_ && !early_device_graph_awaits_gu &&
        inverse_step>0.0f) {
-        gpu_dy_staged_actor_ids_.assign(
+        gpu_dy_early_actor_ids_.assign(
             accurate_islands_.active_nodes.begin(),
             accurate_islands_.active_nodes.end());
-        gpu_dy_staged_actor_ids_.reserve(
-            gpu_dy_staged_actor_ids_.size()+2u*gpu_pcm_pairs_.size());
+        gpu_dy_early_actor_ids_.reserve(
+            gpu_dy_early_actor_ids_.size()+2u*gpu_pcm_pairs_.size());
         // Newly intersecting bodies may not yet belong to the accurate
         // graph's active prefix. Their source PCM pairs still identify
         // stable actor-local data before physical touch is known.
         for(const auto& pair:gpu_pcm_pairs_) {
-            gpu_dy_staged_actor_ids_.push_back(shapes_[pair.first].body);
-            gpu_dy_staged_actor_ids_.push_back(shapes_[pair.second].body);
+            gpu_dy_early_actor_ids_.push_back(shapes_[pair.first].body);
+            gpu_dy_early_actor_ids_.push_back(shapes_[pair.second].body);
         }
-        std::sort(gpu_dy_staged_actor_ids_.begin(),
-                  gpu_dy_staged_actor_ids_.end());
-        gpu_dy_staged_actor_ids_.erase(
-            std::unique(gpu_dy_staged_actor_ids_.begin(),
-                        gpu_dy_staged_actor_ids_.end()),
-            gpu_dy_staged_actor_ids_.end());
-        gpu_dy_integration_inputs_.clear();
-        gpu_dy_integration_inputs_.reserve(gpu_dy_staged_actor_ids_.size());
-        for(const BodyId id:gpu_dy_staged_actor_ids_) {
-            const auto& actor=actors_[id];
-            if(!actor.alive || actor.motion!=Motion::Dynamic ||
-               actor.sleeping)continue;
-            auto& input=gpu_dy_integration_inputs_.emplace_back();
-            pack_gpu_dy_integration_input(id,1.0f/inverse_step,input);
-        }
-        if(!gpu_dy_integration_inputs_.empty())
-            gpu_broadphase_->enqueue_gpu_dy_actor_sources(
-                gpu_dy_integration_inputs_);
+        stage_gpu_dy_actor_sources(
+            gpu_dy_early_actor_ids_,1.0f/inverse_step);
+        gpu_dy_early_actor_ids_.clear();
     }
     FYZZ_PROFILE_COUNTER("pcm.prewitness_actor_sources",
-        gpu_dy_integration_inputs_.size());
+        gpu_dy_staged_actor_ids_.size());
     FYZZ_PROFILE_COUNTER("sc.device_island_early",
         (gpu_dy_early_islands_ || early_device_graph_awaits_gu)?1u:0u);
     // Every device PCM manager reserves a bounded Gu run. Sc reconciles
@@ -9501,6 +9479,40 @@ void Scene::prepare_gpu_dy_device_islands(bool selected) {
         gpu_dy_island_edges_,gpu_dy_island_node_flags_,
         {narrow(gpu_dy_manifolds_.size()),narrow(gpu_dy_rows_.size()),0u});
 }
+void Scene::stage_gpu_dy_actor_sources(
+    std::span<const BodyId> ids,float seconds) {
+    const auto first=gpu_dy_staged_actor_ids_.size();
+    for(const BodyId id:ids) {
+        if(id>=actors_.size())
+            throw std::logic_error("Sc GPU actor source references an absent actor");
+        const auto& actor=actors_[id];
+        if(!actor.alive || actor.motion!=Motion::Dynamic || actor.sleeping ||
+           std::binary_search(gpu_dy_staged_actor_ids_.begin(),
+                              gpu_dy_staged_actor_ids_.begin()+first,id))
+            continue;
+        gpu_dy_staged_actor_ids_.push_back(id);
+    }
+    auto added=gpu_dy_staged_actor_ids_.begin()+first;
+    std::sort(added,gpu_dy_staged_actor_ids_.end());
+    gpu_dy_staged_actor_ids_.erase(
+        std::unique(added,gpu_dy_staged_actor_ids_.end()),
+        gpu_dy_staged_actor_ids_.end());
+    gpu_dy_integration_inputs_.clear();
+    gpu_dy_integration_inputs_.reserve(
+        gpu_dy_staged_actor_ids_.size()-first);
+    for(auto i=first;i<gpu_dy_staged_actor_ids_.size();++i) {
+        auto& input=gpu_dy_integration_inputs_.emplace_back();
+        pack_gpu_dy_integration_input(
+            gpu_dy_staged_actor_ids_[i],seconds,input);
+    }
+    if(!gpu_dy_integration_inputs_.empty())
+        gpu_broadphase_->enqueue_gpu_dy_actor_sources(
+            gpu_dy_integration_inputs_);
+    // Keep the encounter-independent source set for the next Sc phase.
+    std::inplace_merge(gpu_dy_staged_actor_ids_.begin(),
+                       gpu_dy_staged_actor_ids_.begin()+first,
+                       gpu_dy_staged_actor_ids_.end());
+}
 void Scene::pack_gpu_dy_integration_input(
     BodyId id,float seconds,GpuDyBodyIntegrationInput& input) const {
     const auto& actor=actors_[id];
@@ -12339,6 +12351,7 @@ void Scene::advance_collision_internal(
         gpu_dy_joint_source_slots_.clear();
         gpu_dy_early_islands_=false;
         gpu_dy_early_actor_ids_.clear();
+        gpu_dy_staged_actor_ids_.clear();
         gpu_dy_early_joint_edges_.clear();
         speculative_connectivity_prepared_=false;
             speculative_split_sleep_candidates_.clear();
@@ -12353,14 +12366,10 @@ void Scene::advance_collision_internal(
             // The published contact/joint identities can stage their
             // actor-local inputs while the GPU produces SAP reports.
             // New-touch actors are included by later PCM admission.
-            gpu_dy_staged_actor_ids_.clear();
-            gpu_dy_staged_actor_ids_.reserve(
+            gpu_dy_early_actor_ids_.reserve(
                 2u*(manifolds_.size()+active_constraint_handles_.size()));
             const auto stage_actor=[&](BodyId id) {
-                const auto& actor=actors_[id];
-                if(actor.alive && actor.motion==Motion::Dynamic &&
-                   !actor.sleeping)
-                    gpu_dy_staged_actor_ids_.push_back(id);
+                gpu_dy_early_actor_ids_.push_back(id);
             };
             for(const auto& manager:manifolds_) {
                 if(manager.pair.a>=shapes_.size() ||
@@ -12375,21 +12384,8 @@ void Scene::advance_collision_internal(
                 stage_actor(endpoints.a);
                 stage_actor(endpoints.b);
             }
-            std::sort(gpu_dy_staged_actor_ids_.begin(),
-                      gpu_dy_staged_actor_ids_.end());
-            gpu_dy_staged_actor_ids_.erase(
-                std::unique(gpu_dy_staged_actor_ids_.begin(),
-                            gpu_dy_staged_actor_ids_.end()),
-                gpu_dy_staged_actor_ids_.end());
-            gpu_dy_integration_inputs_.clear();
-            gpu_dy_integration_inputs_.reserve(gpu_dy_staged_actor_ids_.size());
-            for(const BodyId id:gpu_dy_staged_actor_ids_) {
-                auto& input=gpu_dy_integration_inputs_.emplace_back();
-                pack_gpu_dy_integration_input(id,step_seconds,input);
-            }
-            if(!gpu_dy_integration_inputs_.empty())
-                gpu_broadphase_->enqueue_gpu_dy_actor_sources(
-                    gpu_dy_integration_inputs_);
+            stage_gpu_dy_actor_sources(gpu_dy_early_actor_ids_,step_seconds);
+            gpu_dy_early_actor_ids_.clear();
         }
         // Authored joint sources are independent of SAP and Gu results.
         // Queue them during the SAP fetch rather than after PCM begins.
