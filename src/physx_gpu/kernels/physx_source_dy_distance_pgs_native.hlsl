@@ -2022,7 +2022,7 @@ void main(uint3 group:SV_GroupID,uint3 lane:SV_GroupThreadID) {
     // The task error report still runs, including compact-only scenes.
     if(devicePartitions) {
         const uint4 schedule=arena.Load4(p.integrationBias+16u);
-        if(schedule.w!=0u && arena.Load(schedule.w)==32u) {
+        if(schedule.w!=0u && arena.Load(schedule.w)==36u) {
             const uint taskOffset=arena.Load(schedule.w+24u);
             const uint sourceHeader=p.taskBias-taskOffset;
             const uint4 header=scIslandWork.Load4(sourceHeader);
