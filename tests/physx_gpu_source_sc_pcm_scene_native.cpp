@@ -6018,6 +6018,11 @@ void verify_joint_only_device_admission(
         const bool device_graph=responding>1u;
         const auto stats=producer->dy_launch_stats();
         const auto contact_bits=producer->gpu_dy_admitted_contact_sources();
+        require(stats.prewitness_joint_source_upload_bytes==
+                    (frame==0u?3u*sizeof(native::GpuDyJointInput):0u) &&
+                stats.device_joint_metadata_upload_bytes==
+                    stats.prewitness_joint_source_upload_bytes,
+            "Joint-only numerical sources were restaged after Sc admission");
         require(cpu.contacts().empty() && gpu.contacts().empty() &&
                 producer->pcm_header_join_bytes()==0u &&
                 producer->dy_pcm_device_contact_rows()==0u &&
