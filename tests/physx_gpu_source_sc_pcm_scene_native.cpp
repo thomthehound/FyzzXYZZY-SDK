@@ -5621,9 +5621,8 @@ void verify_mixed_gu_pcm_gpu_dy_solver(
                     "Device admission did not exercise sparse contact candidates");
             }
             if(frame==0u)
-                require((producer->pcm_early_gu_touch_bytes()>=
-                            sizeof(native::GpuGuTouchRecord))==
-                            (device_admission || !plane_first),
+                require(producer->pcm_early_gu_touch_bytes()>=
+                            sizeof(native::GpuGuTouchRecord),
                     "CPU Gu touch journal waited for Sc PCM witness");
             if(frame>0u)
                 require(producer->last_frame().device_cached_box_count>0u,
