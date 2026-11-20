@@ -5576,8 +5576,23 @@ void verify_mixed_gu_pcm_gpu_dy_solver(
         gpu.set_dynamics(empty_gpu,free_dynamics);
         constexpr float dt=1.f/120.f;
         for(std::uint32_t frame=0;frame<4u;++frame) {
+            if(with_joint && frame==2u) {
+                const Vec3 edited{5.02f,10.f,0.f};
+                cpu.set_position(pcm_static_cpu,edited);
+                gpu.set_position(pcm_static_gpu,edited);
+            }
             cpu.step(dt);
             gpu.step(dt);
+            if(with_joint) {
+                const auto transferred=(frame==0u || frame==2u)
+                    ?sizeof(native::GpuDyJointInput):0u;
+                const auto schedule=producer->dy_launch_stats();
+                require(schedule.prewitness_joint_source_upload_bytes==
+                            transferred &&
+                        schedule.device_joint_metadata_upload_bytes==
+                            transferred,
+                    "Authored joint source was re-uploaded after SAP admission");
+            }
             native::GpuPcmFrictionAnchorFixture::
                 verify_pcm_contact_arena(gpu);
             native::GpuPcmFrictionAnchorFixture::
