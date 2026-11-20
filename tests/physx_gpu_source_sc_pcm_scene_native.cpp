@@ -4498,6 +4498,83 @@ void verify_early_pcm_island_pipeline(
     }
 }
 
+// A large set of independent speculative contacts must not be routed
+// through CPU numerical descriptor construction merely because the total
+// source graph exceeds the connected-island tiling threshold.
+void verify_sparse_large_device_response_graph(
+    fyzz::compute::Backend backend,const char* sap,
+    const char* pcm,const char* dy_shader) {
+    using namespace fyzz;
+    std::ifstream input(dy_shader,std::ios::binary);
+    require(bool(input),"Sparse device-response shader unavailable");
+    compute::ShaderBinary shader{};
+    shader.format=backend==compute::Backend::Vulkan
+        ?compute::ShaderFormat::Spirv:compute::ShaderFormat::Dxil;
+    shader.bytes.assign(std::istreambuf_iterator<char>{input},
+                        std::istreambuf_iterator<char>{});
+    native::Scene cpu,gpu;
+    auto producer=std::make_unique<
+        physx_gpu::SourceScOwnedGpuBroadphaseNative>(
+            backend,load_native_gpu_sap_shaders(backend,sap),
+            128u,128u,std::nullopt,
+            load_native_gpu_pcm_shaders(backend,pcm),std::move(shader));
+    auto* device=producer.get();
+    gpu.set_gpu_broadphase(std::move(producer));
+    gpu.set_gpu_dy_device_admission_enabled(true);
+    std::array<BodyId,2> cpu_responders{},gpu_responders{};
+    for(std::uint32_t i=0u;i<2u;++i) {
+        const float x=5.f*float(i);
+        cpu.add_static_box({0.5f,0.5f,0.5f},{x,0.f,0.f});
+        gpu.add_static_box({0.5f,0.5f,0.5f},{x,0.f,0.f});
+        cpu_responders[i]=cpu.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{x,0.83f,0.f},1.f);
+        gpu_responders[i]=gpu.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{x,0.83f,0.f},1.f);
+    }
+    constexpr auto inactive=native::gpu_dy_wide_task_threshold+8u;
+    constexpr Quat tilt{0.f,0.f,0.382683432f,0.923879533f};
+    const auto add_candidates=[&](native::Scene& scene) {
+        for(std::uint32_t i=0u;i<inactive;++i) {
+            const float x=20.f+5.f*float(i);
+            const auto moving=scene.add_dynamic_box(
+                {0.5f,0.5f,0.5f},{x,1.f,0.f},1.f);
+            const auto fixed=scene.add_static_box(
+                {0.5f,0.5f,0.5f},{x+1.08f,2.08f,0.f});
+            scene.set_pose(fixed,{x+1.08f,2.08f,0.f},tilt);
+            RigidBodyDynamics dynamics{};
+            dynamics.gravity_enabled=false;
+            scene.set_dynamics(moving,dynamics);
+        }
+    };
+    add_candidates(cpu);
+    add_candidates(gpu);
+    constexpr float dt=1.f/120.f;
+    cpu.step(dt);
+    gpu.step(dt);
+    native::GpuPcmFrictionAnchorFixture::
+        verify_device_numerical_response_ownership(gpu);
+    const auto schedule=device->dy_launch_stats();
+    require(gpu.pairs().size()==inactive+2u &&
+            gpu.contacts().size()==2u &&
+            cpu.contacts().size()==gpu.contacts().size() &&
+            schedule.device_colored_tasks==inactive+2u &&
+            schedule.device_admitted_tasks==2u &&
+            schedule.device_admitted_descriptors==2u &&
+            schedule.host_descriptor_inputs==0u &&
+            schedule.device_island_indirect_dispatches==1u,
+        "Independent PCM candidates crossed into host numerical tasks");
+    for(std::size_t i=0u;i<cpu_responders.size();++i)
+        test::compound_compare_state(
+            gpu.body_state(gpu_responders[i]),
+            cpu.body_state(cpu_responders[i]),0.03f,
+            "Large sparse device response changed rigid contact dynamics");
+    std::cout<<"FYZZXYZZY_METRIC sparse_device_response candidates="
+             <<gpu.pairs().size()
+             <<" admitted_tasks="<<schedule.device_admitted_tasks
+             <<" task_capacity="<<schedule.device_colored_tasks
+             <<" host_descriptors="<<schedule.host_descriptor_inputs<<'\\n';
+}
+
 // Source Gu PCM rows, friction patches, and 1D joints share the same
 // production Dy task partitions and device execution on both backends.
 void verify_gpu_coupled_solver(
@@ -8346,6 +8423,8 @@ int main(int argc,char** argv) {
                         backend,argv[1],argv[2],argv[3],
                         false,false,false,true);
                     verify_single_pcm_joint_island_admission(
+                        backend,argv[1],argv[2],argv[3]);
+                    verify_sparse_large_device_response_graph(
                         backend,argv[1],argv[2],argv[3]);
                     verify_early_pcm_island_pipeline(
                         backend,argv[1],argv[2],argv[3],
