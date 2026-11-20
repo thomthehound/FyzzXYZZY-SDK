@@ -242,6 +242,7 @@ public:
         host_upload_pending_=true;
         stream_.submit();
         last_pair_upload_bytes_=0u;
+        last_pair_upload_spans_=0u;
         last_contact_download_bytes_=0u;
         last_header_join_bytes_=0u;
         last_deferred_point_download_bytes_=0u;
@@ -270,6 +271,7 @@ public:
         const auto previous_count=published_pair_count_;
         published_pair_count_=0u;
         last_pair_upload_bytes_=0u;
+        last_pair_upload_spans_=0u;
         last_contact_download_bytes_=0u;
         last_header_join_bytes_=0u;
         last_deferred_point_download_bytes_=0u;
@@ -330,6 +332,9 @@ public:
         bool full_upload=reset_manifolds_ ||
             previous_count!=pair_count || pair_host_.size()!=pair_count;
         std::uint32_t first_dirty=pair_count,last_dirty=0u;
+        std::array<std::pair<std::uint32_t,std::uint32_t>,8> dirty_runs{};
+        std::size_t dirty_run_count=0u;
+        bool dirty_runs_exceeded=false;
         pair_host_.resize(pair_count);
         for(std::uint32_t i=0u;i<pair_count;++i) {
             const auto& request=requests[i];
@@ -392,12 +397,16 @@ public:
                     request.candidate_capacity | reset | prior |
                         (request.host_generated?source_pcm_host_gu_bit:0u)};
             candidate_count+=reservation;
-            // Sc's previous pair records are the transfer baseline.
-            // Preserve a single ordered upload by widening one dirty
-            // interval over changed descriptors, never creating per-pair
-            // submissions or another pair registry.
+            // Track bounded dirty runs during the existing source walk.
+            // More than eight runs use one containing transfer interval.
             if(!full_upload &&
                std::memcmp(&pair_host_[i],&next,sizeof(next))!=0) {
+                if(dirty_run_count &&
+                   dirty_runs[dirty_run_count-1u].second==i)
+                    dirty_runs[dirty_run_count-1u].second=i+1u;
+                else if(dirty_run_count<dirty_runs.size())
+                    dirty_runs[dirty_run_count++]={i,i+1u};
+                else dirty_runs_exceeded=true;
                 first_dirty=std::min(first_dirty,i);
                 last_dirty=i+1u;
             }
@@ -457,13 +466,23 @@ public:
             last_dirty=pair_count;
         }
         auto& uploads=stream_.upload_scratch();
-        if(first_dirty<last_dirty) {
+        const auto queue_pair_range=[&](std::uint32_t first,
+                                        std::uint32_t end) {
             const auto stride=sizeof(pair_host_[0]);
-            const auto bytes=std::size_t(last_dirty-first_dirty)*stride;
+            const auto bytes=std::size_t(end-first)*stride;
             uploads.push_back({
-                pairs_.getDevicePtr()+std::size_t(first_dirty)*stride,
-                pair_host_.data()+first_dirty,bytes});
-            last_pair_upload_bytes_=bytes;
+                pairs_.getDevicePtr()+std::size_t(first)*stride,
+                pair_host_.data()+first,bytes});
+            last_pair_upload_bytes_+=bytes;
+            ++last_pair_upload_spans_;
+        };
+        if(first_dirty<last_dirty) {
+            if(full_upload || dirty_runs_exceeded)
+                queue_pair_range(first_dirty,last_dirty);
+            else
+                for(std::size_t i=0u;i<dirty_run_count;++i)
+                    queue_pair_range(dirty_runs[i].first,
+                                     dirty_runs[i].second);
         }
         if(!uploads.empty())stream_.queue_uploads(uploads);
         reset_manifolds_=false;
@@ -1010,6 +1029,9 @@ public:
     std::size_t last_pair_upload_bytes() const noexcept {
         return last_pair_upload_bytes_;
     }
+    std::size_t last_pair_upload_spans() const noexcept {
+        return last_pair_upload_spans_;
+    }
     std::size_t last_contact_download_bytes() const noexcept {
         return last_contact_download_bytes_;
     }
@@ -1152,6 +1174,7 @@ private:
     std::size_t pending_edge_span_bytes_=0u;
     std::uint32_t published_pair_count_=0u;
     std::size_t last_pair_upload_bytes_=0u;
+    std::size_t last_pair_upload_spans_=0u;
     std::size_t last_contact_download_bytes_=0u;
     std::size_t last_header_join_bytes_=0u;
     std::size_t last_deferred_point_download_bytes_=0u;
