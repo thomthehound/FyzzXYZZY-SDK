@@ -3091,6 +3091,9 @@ void verify_queued_pcm_dy(fyzz::compute::Backend backend,const char* sap,
         body.max_linear_speed_squared=100.f;
         body.max_angular_speed_squared=100.f;
         body.wake_counter=0.4f;
+        producer->begin_gpu_dy_actor_sources();
+        producer->enqueue_gpu_dy_actor_sources(inputs);
+        producer->enqueue_gpu_dy_actor_sources(inputs);
         producer->enqueue_gpu_pcm_box_contacts(request,witness);
         producer->enqueue_gpu_dy_distance(
             {},{},{},{},{},{},{},{},{},{},{},{},{},{},
@@ -3133,6 +3136,11 @@ void verify_queued_pcm_dy(fyzz::compute::Backend backend,const char* sap,
             witness[0].packed_counts==0u,
         "Numerical completion did not retire the unpublished PCM fence");
     const auto joined_stats=producer->stream_submission_stats();
+    const auto early=producer->dy_launch_stats();
+    require(early.prewitness_actor_local_upload_bytes==
+                sizeof(physx_gpu::SourceDyActorLocalNative) &&
+            early.prewitness_actor_local_upload_spans==1u,
+        "Repeated source staging uploaded an unchanged actor twice");
     require(joined_stats.command_batches==queued.command_batches &&
             joined_stats.fused_readbacks==queued.fused_readbacks &&
             !producer->has_queued_gpu_dy_distance() &&
