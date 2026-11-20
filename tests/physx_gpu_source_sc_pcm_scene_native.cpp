@@ -553,9 +553,10 @@ struct GpuPcmFrictionAnchorFixture {
         const auto& edges=scene.gpu_dy_island_edges_;
         if(edges.size()!=
                scene.indexed_joints_.size()+scene.indexed_managers_.size() ||
-           scene.gpu_dy_island_node_flags_.size()!=scene.solver_rows_.size())
+           scene.gpu_dy_island_node_flags_.size()!=scene.solver_rows_.size() ||
+           !scene.ordered_constraints_.empty())
             throw std::runtime_error(
-                "Source Dy partition omitted device island identities");
+                "Source Dy partition retained host numerical descriptors");
         for(const BodyId id:scene.solver_active_ids_) {
             const auto index=scene.actors_[id].solver_row_index;
             if(index>=scene.gpu_dy_island_node_flags_.size() ||
@@ -563,6 +564,15 @@ struct GpuPcmFrictionAnchorFixture {
                 throw std::runtime_error(
                     "Device Sc numerical body lost its responding ordinal");
         }
+        const auto responds=[&](BodyId id0,BodyId id1) {
+            const auto& a=scene.actors_[id0];
+            const auto& b=scene.actors_[id1];
+            const bool dynamic_a=a.motion==Motion::Dynamic;
+            const bool dynamic_b=b.motion==Motion::Dynamic;
+            return (dynamic_a || dynamic_b) &&
+                (!dynamic_a || !a.sleeping) &&
+                (!dynamic_b || !b.sleeping);
+        };
         std::size_t ordinal=0u,joint=0u,manager=0u,joint_row=0u;
         std::size_t descriptor=0u;
         for(const auto& task:scene.solver_tasks_) {
@@ -574,9 +584,7 @@ struct GpuPcmFrictionAnchorFixture {
                 const std::size_t rows=source.kind==Scene::JointKind::Distance
                     ?1u:source.kind==Scene::JointKind::Spherical
                         ?3u:source.kind==Scene::JointKind::Fixed?6u:5u;
-                const bool admitted=descriptor<task.constraint_end &&
-                    (scene.ordered_constraints_[descriptor].row_count&255u)!=0u &&
-                    scene.ordered_constraints_[descriptor].index==joint_row;
+                const bool admitted=responds(graph.pair.a,graph.pair.b);
                 if(admitted)++descriptor;
                 if(entry.edge_index!=id ||
                    entry.kind!=(admitted?17u:3u) ||
@@ -589,13 +597,18 @@ struct GpuPcmFrictionAnchorFixture {
                 const auto index=scene.indexed_managers_[manager];
                 const auto& m=scene.manifolds_[index];
                 const auto& entry=edges[ordinal++];
-                const bool admitted=descriptor<task.constraint_end &&
-                    (scene.ordered_constraints_[descriptor].row_count&255u)==0u &&
-                    scene.ordered_constraints_[descriptor].index==index;
+                const auto& a=scene.actors_[scene.shapes_[m.pair.a].body];
+                const auto& b=scene.actors_[scene.shapes_[m.pair.b].body];
+                const bool admitted=responds(
+                    scene.shapes_[m.pair.a].body,
+                    scene.shapes_[m.pair.b].body);
                 if(admitted)++descriptor;
+                const bool numerical=admitted &&
+                    std::min(a.dynamics.max_contact_impulse,
+                             b.dynamics.max_contact_impulse)!=0.0f;
                 if(entry.edge_index!=m.edge_handle ||
                    entry.source_index!=m.candidate_ordinal ||
-                   entry.kind!=(admitted && m.friction_patch_count?0u:2u))
+                   entry.kind!=(numerical?0u:2u))
                     throw std::runtime_error(
                         "Source Dy partition changed contact response ownership");
             }
@@ -604,7 +617,6 @@ struct GpuPcmFrictionAnchorFixture {
                     "Device Sc source identity order differs from Dy task order");
         }
         if(ordinal!=edges.size() ||
-           descriptor!=scene.ordered_constraints_.size() ||
            joint_row!=scene.gpu_dy_rows_.size())
             throw std::runtime_error(
                 "Device Sc numerical source table has unconsumed records");
