@@ -2185,7 +2185,7 @@ void main(uint3 group:SV_GroupID,uint3 lane:SV_GroupThreadID) {
             const uint scratch=arena.Load(p.integrationBias+28u);
             const uint recordBytes=devicePartitions && scratch!=0u
                 ?arena.Load(scratch):0u;
-            if(recordBytes!=24u && recordBytes!=32u) {
+            if(recordBytes!=24u && recordBytes!=36u) {
                 admitPcmContactExtents(
                     descriptors.x,descriptors.y,lane.x,endError);
                 AllMemoryBarrierWithGroupSync();
