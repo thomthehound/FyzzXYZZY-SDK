@@ -1690,7 +1690,9 @@ void verify(fyzz::compute::Backend backend,const char* sap,
     }};
     std::array<native::GpuPcmBoxResult,2> mixed_results{};
     producer->enqueue_gpu_pcm_box_contacts(mixed,mixed_results);
-    require(producer->pcm_host_contact_upload_bytes()==0u &&
+    require(physx_gpu::SourceScDeviceIslandFixture::
+                pcm_candidate_dispatches(*producer)==1u &&
+            producer->pcm_host_contact_upload_bytes()==0u &&
             mixed_results[1].packed_counts==0u &&
             producer->device_pcm_contact_count()==0u &&
             producer->device_pcm_contact_stream()==0u &&
