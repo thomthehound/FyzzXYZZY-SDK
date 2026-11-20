@@ -9698,21 +9698,31 @@ void Scene::solve_gpu_distance_constraints(float seconds) {
         gpu_broadphase_->has_gpu_pcm_box() &&
         (!gpu_pcm_pairs_.empty() || !previous_pairs_.empty() ||
          !active_constraint_handles_.empty());
+    // An early Sc graph owns its task count on the GPU. Allocate a
+    // source-derived upper bound, not the CPU's post-witness island count.
+    // Each device task requires at least one admitted node and edge.
+    const auto direct_task_limit=
+        gpu_broadphase_->gpu_dy_direct_task_limit();
+    const auto early_task_capacity=gpu_dy_early_islands_
+        ?std::min(gpu_dy_early_actor_ids_.size(),
+                  gpu_dy_island_edges_.size()):0u;
+    const bool early_device_admission=gpu_dy_early_islands_ &&
+        gpu_dy_responding_island_count_!=0u &&
+        early_task_capacity!=0u && early_task_capacity<=direct_task_limit;
+    const bool late_device_admission=!gpu_dy_early_islands_ &&
+        gpu_dy_responding_island_count_!=0u &&
+        !gpu_dy_island_edges_.empty() &&
+        gpu_dy_responding_island_count_>responding_tasks &&
+        gpu_dy_responding_island_count_<=direct_task_limit;
     const bool device_admission=gpu_dy_device_admission_enabled_ &&
         has_device_numerical_sources && compact_tasks &&
-        gpu_dy_responding_island_count_!=0u &&
-        (gpu_dy_early_islands_ ||
-         (!gpu_dy_island_edges_.empty() &&
-          gpu_dy_responding_island_count_>responding_tasks)) &&
-        gpu_dy_responding_island_count_<=
-            gpu_broadphase_->gpu_dy_direct_task_limit();
+        (early_device_admission || late_device_admission);
     FYZZ_PROFILE_COUNTER("dy.device_island_selected",device_admission?1u:0u);
     if(device_admission) {
-        // One responding accurate island can admit one numerical task.
-        // Free-flight Sc task groups are not resident solver islands;
-        // counting them would exceed the device node/task allocation.
-        // These spans provide capacity only, not host-authored work.
-        gpu_dy_tasks_.resize(gpu_dy_responding_island_count_);
+        // These spans provide storage for the device-authored task
+        // count, not a CPU prediction of runnable island membership.
+        gpu_dy_tasks_.resize(early_device_admission
+            ?early_task_capacity:gpu_dy_responding_island_count_);
     }else {
         for(std::size_t i=0;i<solver_active_ids_.size();++i)
             gpu_dy_body_ordinals_[i]=narrow(
