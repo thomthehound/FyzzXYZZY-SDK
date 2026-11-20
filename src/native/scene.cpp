@@ -5107,10 +5107,11 @@ void Scene::update_contacts(bool defer_device_points,float inverse_step) {
     // Every CPU Gu producer publishes its exact EdgeIndex touch and extent
     // before the device accurate-island stage reads that history. PCM may
     // still have an independent witness DMA that Sc joins afterwards.
-    // CPU Gu has completed its actual contact generation. Publish its
-    // EdgeIndex transitions before the unrelated GPU PCM witness join,
-    // regardless of which producer appeared first in the source stream.
-    const bool early_gu_history=source_device_gu_history && gpu_results_pending;
+    // Device island admission must observe CPU Gu touch before it runs.
+    // Mixed GPU PCM also needs the same ordered history regardless of
+    // which producer came first in the source stream.
+    const bool early_gu_history=overlap_legacy_gu ||
+        (source_device_gu_history && gpu_results_pending);
     if(early_gu_history)
         publish_cpu_gu_touch_history(next_lost_contacts_,manifolds_);
     if(early_device_graph_awaits_gu) {
