@@ -426,7 +426,7 @@ bool sourceDyRelocateSingletonContact(uint4 desc,uint scratch,
                                       uint errorAddress) {
     if((desc.w&255u)!=0u)return true;
     if(desc.x>=p.manifoldCount) {
-        sourceDyTaskErrorOr(errorAddress,65536u|0x10000000u);
+        sourceDyTaskErrorOr(errorAddress,65536u);
         return false;
     }
     const uint manager=p.manifoldBias+desc.x*24u;
@@ -437,7 +437,7 @@ bool sourceDyRelocateSingletonContact(uint4 desc,uint scratch,
     if(prepIndex>=p.prepCount ||
        patchFirst>p.patchCount ||
        patchCount>p.patchCount-patchFirst) {
-        sourceDyTaskErrorOr(errorAddress,65536u|0x10000000u);
+        sourceDyTaskErrorOr(errorAddress,65536u);
         return false;
     }
     const bool pcm=arena.Load(
@@ -446,13 +446,13 @@ bool sourceDyRelocateSingletonContact(uint4 desc,uint scratch,
     const uint exact=arena.Load(manager+12u);
     if(source>p.contactCount || exact>p.contactCount-source ||
        (pcm && patchCount!=1u)) {
-        sourceDyTaskErrorOr(errorAddress,65536u|0x10000000u);
+        sourceDyTaskErrorOr(errorAddress,65536u);
         return false;
     }
     uint firstRow;
     arena.InterlockedAdd(scratch+32u,exact,firstRow);
     if(firstRow>p.contactCount || exact>p.contactCount-firstRow) {
-        sourceDyTaskErrorOr(errorAddress,65536u|0x10000000u);
+        sourceDyTaskErrorOr(errorAddress,65536u);
         return false;
     }
     arena.Store(manager+8u,firstRow);
@@ -473,14 +473,14 @@ bool sourceDyRelocateSingletonContact(uint4 desc,uint scratch,
             if((order&0x80000000u)!=0u ||
                order>p.orderCount ||
                points>p.orderCount-order) {
-                sourceDyTaskErrorOr(errorAddress,65536u|0x10000000u);
+                sourceDyTaskErrorOr(errorAddress,65536u);
                 return false;
             }
             for(uint j=0u;j<points;++j) {
                 const uint address=p.orderBias+(order+j)*4u;
                 const uint old=arena.Load(address);
                 if(old<source || old-source>=exact) {
-                    sourceDyTaskErrorOr(errorAddress,65536u|0x10000000u);
+                    sourceDyTaskErrorOr(errorAddress,65536u);
                     return false;
                 }
                 arena.Store(address,firstRow+(old-source));
@@ -537,7 +537,7 @@ bool sourceDyExpandDescriptor(uint token,uint extent,
                 const bool singlePatch=arena.Load(manager+4u)==1u &&
                     patchIndex<p.patchCount;
                 if(!singlePatch) {
-                    sourceDyTaskErrorOr(errorAddress,65536u|0x20000000u);
+                    sourceDyTaskErrorOr(errorAddress,65536u);
                     return false;
                 }
                 const uint patch=p.patchBias+patchIndex*32u;
@@ -553,7 +553,7 @@ bool sourceDyExpandDescriptor(uint token,uint extent,
                    (numericalBegin!=invalidBody &&
                     numericalBegin!=sourceBegin) ||
                    (admitted!=0u && admitted!=emitted)) {
-                    sourceDyTaskErrorOr(errorAddress,65536u|0x20000000u);
+                    sourceDyTaskErrorOr(errorAddress,65536u);
                     return false;
                 }
                 if(numericalBegin==invalidBody)
@@ -576,7 +576,7 @@ bool sourceDyExpandDescriptor(uint token,uint extent,
                 if((extent&0x80000000u)==0u ||
                    (extent&255u)!=contacts ||
                    first>p.patchCount || count>p.patchCount-first) {
-                    sourceDyTaskErrorOr(errorAddress,65536u|0x20000000u);
+                    sourceDyTaskErrorOr(errorAddress,65536u);
                     return false;
                 }
                 for(uint i=0u;i<count;++i)
@@ -764,7 +764,7 @@ void sourceDyPartitionTask(uint taskId,uint scratch,uint errorAddress,
             const uint exact=arena.Load(mo+12u);
             if(capacity==0u || source>p.contactCount ||
                capacity>p.contactCount-source || exact>capacity) {
-                sourceDyTaskErrorOr(errorAddress,65536u|0x40000000u);
+                sourceDyTaskErrorOr(errorAddress,65536u);
                 continue;
             }
             InterlockedMin(dySourceFirst,source);
@@ -778,7 +778,7 @@ void sourceDyPartitionTask(uint taskId,uint scratch,uint errorAddress,
             dySourceLast<dySourceFirst ||
             dySourceCapacity>dySourceLast-dySourceFirst ||
             dyExactContacts>dySourceCapacity))
-            sourceDyTaskErrorOr(errorAddress,65536u|0x40000000u);
+            sourceDyTaskErrorOr(errorAddress,65536u);
         AllMemoryBarrierWithGroupSync();
         if(sourceDyTaskLoad(errorAddress)!=0u)return;
         // Device admission owns one packed numerical row arena. Every
@@ -791,7 +791,7 @@ void sourceDyPartitionTask(uint taskId,uint scratch,uint errorAddress,
                 dyWorkBase=firstRow;
                 if(firstRow>p.contactCount ||
                    dyExactContacts>p.contactCount-firstRow)
-                    sourceDyTaskErrorOr(errorAddress,65536u|0x40000000u);
+                    sourceDyTaskErrorOr(errorAddress,65536u);
             }
             AllMemoryBarrierWithGroupSync();
             if(sourceDyTaskLoad(errorAddress)!=0u)return;
@@ -889,7 +889,7 @@ void sourceDyPartitionTask(uint taskId,uint scratch,uint errorAddress,
                    (!deviceAdmission && begin<dySourceFirst) ||
                    begin>p.contactCount ||
                    exact>p.contactCount-begin) {
-                    sourceDyTaskErrorOr(errorAddress,65536u|0x40000000u);
+                    sourceDyTaskErrorOr(errorAddress,65536u);
                 } else {
                     arena.Store(mo+8u,begin);
                     const uint patchFirst=arena.Load(mo);
@@ -915,7 +915,7 @@ void sourceDyPartitionTask(uint taskId,uint scratch,uint errorAddress,
                             if((order&0x80000000u)!=0u ||
                                order>p.orderCount ||
                                points>p.orderCount-order) {
-                                sourceDyTaskErrorOr(errorAddress,65536u|0x40000000u);
+                                sourceDyTaskErrorOr(errorAddress,65536u);
                                 break;
                             }
                             for(uint j=0u;j<points;++j) {
@@ -923,7 +923,7 @@ void sourceDyPartitionTask(uint taskId,uint scratch,uint errorAddress,
                                     (order+j)*4u;
                                 const uint old=arena.Load(address);
                                 if(old<source || old-source>=capacity) {
-                                    sourceDyTaskErrorOr(errorAddress,65536u|0x40000000u);
+                                    sourceDyTaskErrorOr(errorAddress,65536u);
                                     break;
                                 }
                                 arena.Store(address,begin+(old-source));
@@ -1481,7 +1481,7 @@ void admitPcmContactExtents(uint begin,uint end,uint lane,uint endError) {
         if(arena.Load(manager+4u)==0u)continue;
         const uint prepIndex=arena.Load(manager+16u);
         if(prepIndex>=p.prepCount) {
-            sourceDyTaskErrorOr(endError,65536u|0x80000000u);
+            sourceDyTaskErrorOr(endError,65536u);
             continue;
         }
         if(arena.Load(p.prepBias+prepIndex*64u+48u)==invalidBody)
