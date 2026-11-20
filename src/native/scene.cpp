@@ -4418,9 +4418,11 @@ void Scene::update_contacts(bool defer_device_points,float inverse_step) {
             request.numerical=prepare_contact_material(
                 request.first,request.second);
     validate_pcm_history(true);
-    // Joint-source identity and authored frames are independent of PCM
-    // witnesses. Queue their changed records before the host header join.
-    if(gpu_results_pending && defer_device_points &&
+    // Joint identities and authored frames are independent of Gu touch.
+    // Stage the same source records before narrowphase for PCM, Gu-only
+    // and joint-only device epochs; Dy consumes them without another upload.
+    if((gpu_results_pending || gu_only_device_epoch ||
+        joint_only_device_admission) && defer_device_points &&
        gpu_dy_active() && !active_constraint_handles_.empty()) {
         gpu_dy_joint_inputs_.clear();
         gpu_dy_joint_inputs_.reserve(active_constraint_handles_.size());
