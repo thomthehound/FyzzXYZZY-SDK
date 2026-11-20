@@ -440,7 +440,16 @@ struct GpuPcmFrictionAnchorFixture {
            scene.gpu_dy_island_node_flags_.size()!=
                scene.gpu_dy_early_actor_ids_.size()+joints ||
            !std::is_sorted(scene.gpu_dy_early_actor_ids_.begin(),
-                           scene.gpu_dy_early_actor_ids_.end()))
+                           scene.gpu_dy_early_actor_ids_.end()) ||
+           !std::is_sorted(scene.gpu_dy_staged_actor_ids_.begin(),
+                           scene.gpu_dy_staged_actor_ids_.end()) ||
+           std::adjacent_find(scene.gpu_dy_staged_actor_ids_.begin(),
+                              scene.gpu_dy_staged_actor_ids_.end())!=
+               scene.gpu_dy_staged_actor_ids_.end() ||
+           !std::includes(scene.gpu_dy_staged_actor_ids_.begin(),
+                          scene.gpu_dy_staged_actor_ids_.end(),
+                          scene.gpu_dy_early_actor_ids_.begin(),
+                          scene.gpu_dy_early_actor_ids_.end()))
             throw std::runtime_error(
                 "Sc did not queue compact actor and contact identities before Gu");
         for(std::size_t i=0u;i<scene.gpu_dy_island_edges_.size();++i) {
