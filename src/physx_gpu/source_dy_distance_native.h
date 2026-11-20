@@ -1534,7 +1534,7 @@ public:
         // of those scratch arrays has a host source in a device-owned
         // island epoch. Skip their entire contiguous upload window.
         const auto device_skip_begin=device_admission
-            ?offsets[15]+32u:0u;
+            ?offsets[15]+36u:0u;
         const auto device_skip_end=device_admission
             ?device_skip_begin+descriptor_capacity*24u+bodies.size()*12u:0u;
         if(device_admission &&
