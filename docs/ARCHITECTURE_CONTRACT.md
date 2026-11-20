@@ -350,8 +350,10 @@ independently of the CPU result fetch. Its queued execution consumes the
 device-ready PCM/CPU Gu stream after the input producers, and the normal
 single Dy readback, task-error checks and Sc writeback occur at the result
 join. A pending Dy epoch cannot be overwritten or published on rollback.
-The shared Context retains one outstanding readback batch, so the PCM
-witness DMA must be retired before Dy requests its final result transfer.
+The shared Context permits multiple pending readbacks, each owned by its
+submission token. PCM witness and Dy numerical transfers complete
+independently, while host joins still obey actual consumer dependencies
+and scene-epoch rollback.
 Native Scene now enqueues GPU Dy numerical work before initializing
 its Gu-indexed result buffers and consuming source force modifications.
 The existing Dy completion join still validates numerical results before

@@ -268,11 +268,11 @@ public:
     SubmissionId submit_upload_batch(const std::vector<UploadSpan>& uploads);
 
     void download(BufferId id, std::size_t offset, void* data, std::size_t bytes) const;
-    // Submit one ordered GPU readback into Context-owned staging without
-    // blocking the caller. Destination pointers remain borrowed until
-    // finish_download_batch; false retires the transfer without publishing
-    // bytes from a rejected scene transaction. One outstanding readback
-    // batch per Context retains the existing reusable staging allocation.
+    // Submit an ordered GPU readback into Context-owned staging without
+    // blocking the caller. Pending readbacks own separate staging and can
+    // finish or be cancelled independently by submission ID. Destination
+    // pointers remain borrowed until finish_download_batch; false retires
+    // the transfer without publishing rejected scene results.
     SubmissionId submit_download_batch(std::span<const DownloadSpan> downloads);
     // Append a readback tail to the producer's native submission.
     // The backend borrows the command vector as recording scratch and
