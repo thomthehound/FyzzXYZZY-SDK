@@ -29,6 +29,10 @@ struct SourceScDeviceIslandFixture {
     static bool pcm_ready(const SourceScOwnedGpuBroadphaseNative& owner) {
         return owner.pcm_ && owner.pcm_->device_contact_ready();
     }
+    static std::size_t pcm_candidate_dispatches(
+            const SourceScOwnedGpuBroadphaseNative& owner) {
+        return owner.pcm_ ? owner.pcm_->last_candidate_dispatches() : 0u;
+    }
     static bool software_adapter(const SourceScOwnedGpuBroadphaseNative& owner) {
         return owner.context_.device_info().software_adapter;
     }
@@ -1811,6 +1815,32 @@ void verify(fyzz::compute::Backend backend,const char* sap,
     require(after_commit_batches==before_commit_batches+1u &&
             committed_touch[0]==1u && committed_touch[1]==0u,
         "Collision-only Gu touch did not finish its source transaction");
+
+    // CPU-origin PCM has no device witness to fetch. The existing
+    // source queue must retain its host upload until the real consumer.
+    const std::array<native::GpuPcmBoxPair,1> host_only{{mixed[1]}};
+    std::array<native::GpuPcmBoxResult,1> host_only_results{{primitive}};
+    producer->enqueue_gpu_pcm_box_contacts(host_only,host_only_results);
+    const auto pending_host_only=
+        physx_gpu::SourceScDeviceIslandFixture::source_submissions(*producer);
+    require(pending_host_only>0u &&
+            physx_gpu::SourceScDeviceIslandFixture::
+                pcm_candidate_dispatches(*producer)==0u,
+        "CPU-origin PCM scheduled GPU candidate work");
+    producer->enqueue_host_pcm_contacts(host_only,host_only_results);
+    producer->finish_gpu_pcm_box_contacts();
+    require(physx_gpu::SourceScDeviceIslandFixture::
+                source_submissions(*producer)==pending_host_only &&
+            producer->pcm_contact_readback_bytes()==0u &&
+            producer->pcm_host_contact_upload_bytes()==
+                sizeof(physx_gpu::SourcePcmGpuContactStreamNative) &&
+            host_only_results[0].edge==sphere_edge &&
+            host_only_results[0].count()==1u,
+        "CPU-origin PCM blocked on GPU or lost its source witness");
+    producer->commit_gpu_step();
+    require((physx_gpu::SourceScDeviceIslandFixture::touch(
+                 *producer,sphere_edge)[0]&1u)!=0u,
+        "CPU-origin PCM failed to commit its device touch history");
 }
 
 // A PCM readback may remain pending while independent Dy integration
