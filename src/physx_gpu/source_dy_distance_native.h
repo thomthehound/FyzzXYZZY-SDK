@@ -320,8 +320,8 @@ public:
         std::span<const native::GpuDyBodyIntegrationInput> inputs) {
         if(pending_solve_)
             throw std::logic_error("Dy actor source overlaps a numerical epoch");
-        discard_unconsumed_actor_sources();
         if(inputs.empty())return;
+        const std::size_t first_dirty_slot=prewitness_actor_slots_.size();
         std::size_t needed_actor_slots=0u;
         for(const auto& input:inputs) {
             const auto id=input.source_actor;
@@ -374,19 +374,21 @@ public:
                             &local.wake_counter,sleep_bytes);
                 dirty=true;
             }
-            prewitness_actor_changed_[id]=
+            prewitness_actor_changed_[id]|=
                 (metadata_changed?1u:0u)|(pose_changed?2u:0u);
             if(dirty)prewitness_actor_slots_.push_back(id);
         }
-        std::sort(prewitness_actor_slots_.begin(),
+        // Multiple source stages share one transaction. Upload only
+        // records changed by this stage; retain earlier pose-change bits.
+        std::sort(prewitness_actor_slots_.begin()+first_dirty_slot,
                   prewitness_actor_slots_.end());
-        if(std::adjacent_find(prewitness_actor_slots_.begin(),
+        if(std::adjacent_find(prewitness_actor_slots_.begin()+first_dirty_slot,
                              prewitness_actor_slots_.end())!=
            prewitness_actor_slots_.end())
             throw std::logic_error("Pre-witness Dy actor source admitted twice");
         auto& uploads=stream_.upload_scratch();
         uploads.clear();
-        for(std::size_t i=0u;i<prewitness_actor_slots_.size();) {
+        for(std::size_t i=first_dirty_slot;i<prewitness_actor_slots_.size();) {
             const auto first=prewitness_actor_slots_[i];
             auto last=first+1u;
             ++i;
@@ -403,9 +405,10 @@ public:
                 actor_local_host_.data()+first,bytes});
             prewitness_actor_local_upload_bytes_+=bytes;
         }
-        prewitness_actor_local_upload_spans_=uploads.size();
+        prewitness_actor_local_upload_spans_+=uploads.size();
         stream_.queue_uploads(uploads);
-        for(const auto id:prewitness_actor_slots_) {
+        for(std::size_t i=first_dirty_slot;i<prewitness_actor_slots_.size();++i) {
+            const auto id=prewitness_actor_slots_[i];
             actor_local_valid_[id]=1u;
             actor_pose_valid_[id]=1u;
         }
