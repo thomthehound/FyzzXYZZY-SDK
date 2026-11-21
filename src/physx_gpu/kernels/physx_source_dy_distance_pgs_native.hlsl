@@ -1915,7 +1915,14 @@ void initializeSolverBody(uint ordinal,uint source) {
 }
 
 void publishTaskError(uint task,uint error) {
-    arena.Store(p.writebackBias+p.resultTaskOffset+task*4u,error);
+    if((p.launchControl&0x08000000u)!=0u) {
+        if(error!=0u) {
+            const uint scratch=arena.Load(p.integrationBias+28u);
+            arena.InterlockedOr(scratch+36u,error);
+            arena.InterlockedMin(scratch+40u,task);
+        }
+    }else
+        arena.Store(p.writebackBias+p.resultTaskOffset+task*4u,error);
 }
 
 // Each lane owns one independent constraint and up to two integrated bodies.
@@ -2022,7 +2029,7 @@ void main(uint3 group:SV_GroupID,uint3 lane:SV_GroupThreadID) {
     // The task error report still runs, including compact-only scenes.
     if(devicePartitions) {
         const uint4 schedule=arena.Load4(p.integrationBias+16u);
-        if(schedule.w!=0u && arena.Load(schedule.w)==36u) {
+        if(schedule.w!=0u && arena.Load(schedule.w)==48u) {
             const uint taskOffset=arena.Load(schedule.w+24u);
             const uint sourceHeader=p.taskBias-taskOffset;
             const uint4 header=scIslandWork.Load4(sourceHeader);
@@ -2185,7 +2192,7 @@ void main(uint3 group:SV_GroupID,uint3 lane:SV_GroupThreadID) {
             const uint scratch=arena.Load(p.integrationBias+28u);
             const uint recordBytes=devicePartitions && scratch!=0u
                 ?arena.Load(scratch):0u;
-            if(recordBytes!=24u && recordBytes!=36u) {
+            if(recordBytes!=24u && recordBytes!=48u) {
                 admitPcmContactExtents(
                     descriptors.x,descriptors.y,lane.x,endError);
                 AllMemoryBarrierWithGroupSync();
