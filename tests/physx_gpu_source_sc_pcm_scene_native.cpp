@@ -2258,11 +2258,12 @@ void verify_device_sc_dy_task_admission(
     bool rejected=false;
     try {
         producer->finish_gpu_dy_distance();
-    }catch(const std::overflow_error&) {
-        rejected=true;
+    }catch(const std::overflow_error& error) {
+        const std::string_view message{error.what()};
+        rejected=message.find("task 0")!=std::string_view::npos &&
+            message.find("flags 16777216")!=std::string_view::npos;
     }
-    require(rejected && poses[0].valid==0u &&
-            (tasks[0].error&0x01000000u)!=0u,
+    require(rejected && poses[0].valid==0u,
         "Dy accepted device Sc island counts inconsistent with its numerical tables");
     producer->invalidate_after_rollback();
 
