@@ -592,6 +592,61 @@ void growPcmFrictionAnchors(uint patchIndex,uint pairIndex,
     precise float diagonal=(extent.x*extent.x+extent.y*extent.y)+
         extent.z*extent.z;
     uint count=patch.z;
+    uint retainedOrdinal=0u;
+    // Multiple valid source patches share one numerical contact patch.
+    // Select the first matching historical normal against PCM's current
+    // resident normal, then borrow its anchors in the same EdgeIndex slot.
+    if((patch.w&0x10000000u)!=0u) {
+        const uint candidates=(patch.w>>8u)&63u;
+        const uint first=arena.Load(po+24u);
+        float3 position0;
+        float4 orientation0;
+        if(candidates==0u || candidates>32u ||
+           !prepBodyPose(body0,position0,orientation0)) {
+            sourceDyTaskErrorOr(errorAddress,262144u);
+            return;
+        }
+        const float3 current=asfloat(pcmContacts.Load3(stream+8u));
+        if(!all(isfinite(current))) {
+            sourceDyTaskErrorOr(errorAddress,262144u);
+            return;
+        }
+        [loop]
+        for(uint j=0u;j<candidates;++j) {
+            const uint src=p.prepBias+first+j*68u;
+            const float3 local=asfloat(arena.Load3(src));
+            const float3 previous=sourceRigidRotate(orientation0,local);
+            if(!all(isfinite(previous))) {
+                sourceDyTaskErrorOr(errorAddress,262144u);
+                return;
+            }
+            if(sourceDyDot3(previous,current)<0.999f)continue;
+            const uint ordinal=arena.Load(src+12u);
+            const uint anchors=arena.Load(src+64u);
+            if(ordinal>=32u || anchors==0u || anchors>2u) {
+                sourceDyTaskErrorOr(errorAddress,262144u);
+                return;
+            }
+            count=anchors;
+            retainedOrdinal=ordinal+1u;
+            arena.Store(history,count);
+            [unroll]
+            for(uint k=0u;k<2u;++k) {
+                if(k>=count)break;
+                arena.Store3(history+8u+k*24u,
+                             arena.Load3(src+16u+k*24u));
+                arena.Store3(history+20u+k*24u,
+                             arena.Load3(src+28u+k*24u));
+            }
+            break;
+        }
+        if(retainedOrdinal==0u && (patch.w&0x04000000u)!=0u) {
+            sourceDyTaskErrorOr(errorAddress,262144u);
+            return;
+        }
+        arena.Store(po+8u,count);
+        arena.Store(po+24u,0u);
+    }
     bool normalChanged=false;
     if((patch.w&0x20000000u)!=0u) {
         float3 position0;
@@ -725,7 +780,8 @@ void growPcmFrictionAnchors(uint patchIndex,uint pairIndex,
     uint report=(count<<1u) |
         ((changed[0]?(selected[0]+1u):0u)<<3u) |
         ((changed[1]?(selected[1]+1u):0u)<<6u) |
-        (normalChanged?0x200u:0u);
+        (normalChanged?0x200u:0u) |
+        (retainedOrdinal<<19u);
     const uint reportAddress=p.writebackBias+p.resultPatchOffset+
         patchIndex*4u;
     report|=arena.Load(reportAddress)&
