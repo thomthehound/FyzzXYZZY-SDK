@@ -2356,20 +2356,25 @@ void verify_device_sc_dy_task_admission(
     producer->enqueue_gpu_dy_distance(
         body,{},contact_desc,{},ordinals,contact_tasks,
         forces,{},{},{},contact_patches,contact_managers,{},
-        contact_prep,inputs,poses,true,{},true,true,true,sleep);
+        contact_prep,inputs,poses,true,{},true,true,true,sleep,{},false);
     require(witness[0].packed_counts==0u,
         "Sc contact preparation joined the PCM header before device admission");
     bool device_contact_rejected=false;
     try {
         producer->finish_gpu_dy_distance();
-    }catch(const std::overflow_error&) {
-        device_contact_rejected=true;
+    }catch(const std::overflow_error& error) {
+        const std::string_view message{error.what()};
+        device_contact_rejected=
+            message.find("task 0")!=std::string_view::npos &&
+            message.find("flags 65536")!=std::string_view::npos;
     }
     require(device_contact_rejected &&
-            (contact_tasks[0].error&65536u)!=0u &&
+            producer->dy_launch_stats().device_task_readback_bytes==0u &&
+            producer->dy_launch_stats().device_epoch_error_readback_bytes==8u &&
+            contact_tasks[0].error==0u &&
             poses[0].valid==0u &&
             witness[0].packed_counts==0u,
-        "Resident Sc task missed a Dy contact-preparation rejection");
+        "Resident Sc task missed a compact Dy contact-preparation rejection");
     producer->finish_gpu_pcm_box_contacts();
     producer->invalidate_after_rollback();
 
@@ -4559,6 +4564,8 @@ void verify_sparse_large_device_response_graph(
             schedule.device_admitted_tasks==2u &&
             schedule.device_admitted_descriptors==2u &&
             schedule.host_descriptor_inputs==0u &&
+            schedule.device_task_readback_bytes==0u &&
+            schedule.device_epoch_error_readback_bytes==8u &&
             schedule.device_island_indirect_dispatches==1u,
         "Independent PCM candidates crossed into host numerical tasks");
     for(std::size_t i=0u;i<cpu_responders.size();++i)
