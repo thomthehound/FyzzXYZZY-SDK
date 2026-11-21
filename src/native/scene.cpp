@@ -9465,17 +9465,19 @@ void Scene::prepare_gpu_dy_device_islands(bool selected) {
             throw std::overflow_error("Early Sc solver-row capacity exceeds 32 bits");
         gpu_dy_island_node_flags_.assign(
             gpu_dy_early_actor_ids_.size(),invalid);
-        for(const BodyId id:solver_active_ids_) {
-            const auto it=std::lower_bound(
-                gpu_dy_early_actor_ids_.begin(),
-                gpu_dy_early_actor_ids_.end(),id);
-            if(it==gpu_dy_early_actor_ids_.end() || *it!=id)continue;
+        for(std::size_t i=0u;i<gpu_dy_early_actor_ids_.size();++i) {
+            const BodyId id=gpu_dy_early_actor_ids_[i];
             const auto& actor=actors_[id];
-            if(actor.solver_row_generation!=solver_preparation_generation_ ||
-               actor.solver_row_index>=solver_rows_.size())
+            if(actor.motion!=Motion::Dynamic || actor.sleeping ||
+               actor.solver_row_generation!=solver_preparation_generation_)
+                continue;
+            if(actor.solver_row_index>=solver_rows_.size())
                 throw std::logic_error(
                     "Early Sc admission has no final solver-row identity");
-            gpu_dy_island_node_flags_[it-gpu_dy_early_actor_ids_.begin()]=
+            if(solver_rows_[actor.solver_row_index].prepared_generation!=
+                   solver_preparation_generation_)
+                continue;
+            gpu_dy_island_node_flags_[i]=
                 static_cast<std::uint32_t>(actor.solver_row_index);
         }
         const auto joint_count=gpu_dy_early_joint_edges_.size();
