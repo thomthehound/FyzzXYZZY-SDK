@@ -4637,6 +4637,9 @@ void verify_early_pcm_island_pipeline(
                         has_identity_device_body_order(gpu) &&
                     device->sc_island_remap_dispatch_count()==0u,
                 "Identity-ordered source Sc bodies still uploaded and dispatched a remap");
+        else if(!enhanced_determinism)
+            require(device->sc_island_remap_dispatch_count()==1u,
+                "Nonidentity Sc candidate rows were not remapped on the device");
         const auto expected_found=frame==0u?responding:0u;
         require(gpu.found_contacts().size()==expected_found &&
                 gpu.lost_contacts().empty() &&
