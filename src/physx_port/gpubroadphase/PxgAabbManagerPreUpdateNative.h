@@ -7,6 +7,7 @@
 #include "physx_port/gpubroadphase/PxgSapBroadphaseDescriptorNative.h"
 #include "physx_gpu/source_sap_dma_native.h"
 #include "physx_gpu/source_sc_box_transform_bounds_native.h"
+#include "physx_gpu/source_frame_input_arena_native.h"
 #include "physx_gpu/source_aggregate_gpu_native.h"
 #include "physx_port/lowlevelaabb/include/BpBroadPhaseUpdate.h"
 #include "physx_port/lowlevelaabb/include/BpVolumeData.h"
@@ -35,6 +36,7 @@ struct SourceSapGpuBoxTransformOwnersNative {
     physx::PxgCudaBuffer& cached_geometry;
     physx::PxgCudaBuffer& convex_vertices;
     std::uint32_t convex_vertex_count=0u;
+    SourceFrameInputArenaNative* frame_input=nullptr;
 };
 
 struct SourceSapGpuBoxTransformsNative {
@@ -46,6 +48,12 @@ struct SourceSapGpuBoxTransformsNative {
     physx::PxgCudaBuffer& convex_vertices;
     std::uint32_t convex_vertex_count;
     std::span<const SourceScBoxTransformInputNative> changed;
+    SourceFrameInputArenaNative* frame_input=nullptr;
+
+    CudaDeviceAddressMap::Address input_address() const noexcept {
+        return frame_input && frame_input->direct()
+            ?frame_input->address():input_device.getDevicePtr();
+    }
 };
 
 struct SourceSapAabbManagerPreUpdateNative {
@@ -140,6 +148,16 @@ inline void pre_update_source_sap_aabb_manager_native(
         capacity<=manager.sap.boxes_capacity &&
         manager.volume_data_device.getDevicePtr()!=0u &&
         manager.volume_data_device.getSize()>=volume_bytes;
+    const bool sparse_retired_identity=state_changed &&
+        !manager.has_aggregates &&
+        !update.getNumCreatedHandles() &&
+        update.getNumRemovedHandles()!=0u &&
+        capacity<=manager.sap.boxes_capacity &&
+        manager.volume_data_device.getDevicePtr()!=0u &&
+        manager.volume_data_device.getSize()>=volume_bytes;
+    const auto retired_ranges=sparse_retired_identity
+        ?source_sap_dirty_ranges_native(update,manager.changed.words,true)
+        :std::nullopt;
     if(boxes && boxes->changed.size()>capacity)
         throw std::out_of_range("GPU box transform count exceeds source AABB capacity");
     const auto shape_bytes=boxes
@@ -175,9 +193,20 @@ inline void pre_update_source_sap_aabb_manager_native(
         manager.aggregated.device.allocate(aggregate_bytes,PX_FL);
         manager.volume_data_device.allocate(volume_bytes,PX_FL);
         append_bitmap(uploads,manager.aggregated,aggregate_bytes);
-        if(volume_bytes && !resident_volume_identity)
-            uploads.push_back({manager.volume_data_device.getDevicePtr(),
-                               manager.volume_data.data(),volume_bytes});
+        if(volume_bytes && !resident_volume_identity) {
+            if(sparse_retired_identity && retired_ranges) {
+                for(std::size_t i=0;i<retired_ranges->count;++i) {
+                    const auto [first,last]=retired_ranges->spans[i];
+                    uploads.push_back({
+                        manager.volume_data_device.getDevicePtr()+
+                            std::uint64_t(first)*sizeof(physx::Bp::VolumeData),
+                        manager.volume_data.data()+first,
+                        std::size_t(last-first)*sizeof(physx::Bp::VolumeData)});
+                }
+            }else uploads.push_back({
+                manager.volume_data_device.getDevicePtr(),
+                manager.volume_data.data(),volume_bytes});
+        }
 
         // preBroadPhase follows the manager's original bitmap/volume
         // records without a kernel, copy or fence between them.
@@ -191,20 +220,29 @@ inline void pre_update_source_sap_aabb_manager_native(
         append_bitmap(uploads,manager.changed,changed_bytes);
     }
     if(shape_bytes) {
-        boxes->input_device.allocate(shape_bytes,PX_FL);
-        // Unchanged Sc elements remain authoritative GPU geometry even
-        // when another element expands the original AABB manager capacity.
+        // Unchanged Sc elements retain their resident geometry.
         boxes->cached_transforms.allocateCopyOldDataAsync(
             cache_bytes,stream,PX_FL);
         boxes->cached_geometry.allocateCopyOldDataAsync(
             geometry_bytes,stream,PX_FL);
-        uploads.push_back({boxes->input_device.getDevicePtr(),
-                           boxes->changed.data(),shape_bytes});
+        if(boxes->frame_input && boxes->frame_input->direct()) {
+            // A resizing frame input cannot retire recorded readers
+            // until their command list has been submitted.
+            if(boxes->frame_input->capacity() &&
+               shape_bytes>boxes->frame_input->capacity())
+                stream.submit();
+            boxes->frame_input->write(boxes->changed.data(),shape_bytes);
+            FYZZ_PROFILE_COUNTER("sc.mapped_frame_input_bytes",shape_bytes);
+        }else {
+            boxes->input_device.allocate(shape_bytes,PX_FL);
+            uploads.push_back({boxes->input_device.getDevicePtr(),
+                               boxes->changed.data(),shape_bytes});
+        }
     }
     stream.queue_uploads(uploads);
     if(shape_bytes && manager.has_aggregates) {
         boxes->stage.append(stream,boxes->addresses,
-            boxes->input_device.getDevicePtr(),
+            boxes->input_address(),
             manager.sap.bounds.getDevicePtr(),
             boxes->cached_transforms.getDevicePtr(),
             boxes->cached_geometry.getDevicePtr(),

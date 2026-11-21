@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 #include "fyzzxyzzy/compute.h"
 #include "physx_gpu/source_sc_box_transform_bounds_native.h"
+#include "physx_gpu/source_frame_input_arena_native.h"
 
 #include <array>
 #include <cmath>
@@ -253,6 +254,83 @@ void verify_convex_bounds(Context& context,const char* shader) {
     context.destroy_buffer(buffer);
 }
 
+void verify_direct_frame_input(Context& context,const char* shader) {
+    using namespace fyzz::physx_gpu;
+    CudaDeviceAddressMap addresses;
+    SourceSapDmaNative stream(context,addresses);
+    SourceFrameInputArenaNative input(context,addresses);
+    if(!input.direct())return;
+
+    constexpr std::uint32_t count=8u;
+    const auto bounds_buffer=context.create_buffer(
+        sizeof(Bounds)*count,MemoryPlacement::DeviceLocal);
+    const auto cache_buffer=context.create_buffer(
+        sizeof(CachedTransform)*count,MemoryPlacement::DeviceLocal);
+    const auto geometry_buffer=context.create_buffer(
+        sizeof(SourceScBoxGeometryNative)*count,MemoryPlacement::DeviceLocal);
+    const auto bounds=addresses.register_allocation(bounds_buffer,sizeof(Bounds)*count);
+    const auto cache=addresses.register_allocation(cache_buffer,sizeof(CachedTransform)*count);
+    const auto geometry=addresses.register_allocation(
+        geometry_buffer,sizeof(SourceScBoxGeometryNative)*count);
+
+    {
+        SourceScBoxTransformBoundsNativeStage stage(context,load(shader));
+        std::array<SourceScBoxTransformInputNative,count> shapes{};
+        for(std::uint32_t i=0u;i<count;++i) {
+            shapes[i].element_index=i;
+            shapes[i].position[0]=static_cast<float>(i*3u);
+            shapes[i].orientation[3]=1.f;
+            shapes[i].half_extents[0]=1.f;
+            shapes[i].half_extents[1]=2.f;
+            shapes[i].half_extents[2]=3.f;
+        }
+
+        const auto first=input.write(shapes.data(),sizeof(shapes[0]));
+        stage.append(stream,addresses,first,bounds,cache,geometry,first,
+                     0u,1u,count);
+        require(stream.submission_stats().upload_bytes==0u,
+                "Mapped input triggered a source transfer");
+        stream.wait_at_fetch();
+        Bounds result{};
+        context.download(bounds_buffer,0u,&result,sizeof(result));
+        require(std::abs(result.minimum[0]+1.f)<1.0e-5f &&
+                std::abs(result.maximum[0]-1.f)<1.0e-5f,
+                "Mapped frame input failed first GPU transform");
+
+        const auto grown=input.write(shapes.data(),sizeof(shapes));
+        require(grown!=first && input.capacity()>=sizeof(shapes),
+                "Frame input growth reused an invalid previous device address");
+        stage.append(stream,addresses,grown,bounds,cache,geometry,grown,
+                     0u,count,count);
+        stream.wait_at_fetch();
+        std::array<Bounds,count> results{};
+        context.download(bounds_buffer,0u,results.data(),sizeof(results));
+        for(std::uint32_t i=0u;i<count;++i)
+            require(std::abs(results[i].minimum[0]-(float(i*3u)-1.f))<1.0e-5f &&
+                    std::abs(results[i].maximum[0]-(float(i*3u)+1.f))<1.0e-5f,
+                    "Mapped frame input lost source order during growth");
+
+        shapes[0].position[0]=42.f;
+        const auto reused=input.write(shapes.data(),sizeof(shapes));
+        require(reused==grown,"Stable mapped frame input changed its allocation");
+        stage.append(stream,addresses,reused,bounds,cache,geometry,reused,
+                     0u,count,count);
+        stream.wait_at_fetch();
+        context.download(bounds_buffer,0u,&result,sizeof(result));
+        require(std::abs(result.minimum[0]-41.f)<1.0e-5f &&
+                std::abs(result.maximum[0]-43.f)<1.0e-5f &&
+                stream.submission_stats().upload_bytes==0u,
+                "Mapped frame input did not update without GPU transfer");
+    }
+    input.close();
+    addresses.unregister_allocation(geometry);
+    addresses.unregister_allocation(cache);
+    addresses.unregister_allocation(bounds);
+    context.destroy_buffer(geometry_buffer);
+    context.destroy_buffer(cache_buffer);
+    context.destroy_buffer(bounds_buffer);
+}
+
 } // namespace
 
 int main(int argc,char** argv) {
@@ -265,6 +343,7 @@ int main(int argc,char** argv) {
 #endif
         verify(context,argv[1]);
         verify_convex_bounds(context,argv[1]);
+        verify_direct_frame_input(context,argv[1]);
         std::cout<<"Source GPU box/convex transform/cache/bounds PASS\n";
         return 0;
     }catch(const std::exception& e) {

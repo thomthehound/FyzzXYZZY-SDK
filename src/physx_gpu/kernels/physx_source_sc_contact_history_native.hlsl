@@ -32,6 +32,22 @@ ConstantBuffer<Parameters> p:register(b0,space0);
 void main(uint3 dispatch:SV_DispatchThreadID) {
     const uint word=p.wordStart+dispatch.x;
     if(word>=p.wordCount)return;
+    if(p.phase==6u || p.phase==7u) {
+        // CPU-only Gu uses eight bytes per EdgeIndex, not a synthetic
+        // PCM manifold. Journal its physical touch on the same queue
+        // before accurate Sc consumes the shared device history.
+        const uint source=p.pairBias+word*8u;
+        const uint edge=pairInputs.Load(source);
+        if(edge>=p.edgeCapacity)return;
+        const uint cache=p.edgeBias+edge*240u+72u;
+        const uint journal=p.checkpointBias+word*8u;
+        if(p.phase==6u) {
+            const uint bits=pairInputs.Load(source+4u);
+            checkpoint.Store2(journal,edgeCaches.Load2(cache));
+            edgeCaches.Store2(cache,uint2(bits&0x2ff01u,(bits>>1u)&1u));
+        }else edgeCaches.Store2(cache,checkpoint.Load2(journal));
+        return;
+    }
     if(p.phase==3u || p.phase==4u) {
         // A host-only epoch snapshots and publishes its touch in one lane.
         // Mixed epochs have already journaled GPU and host-owned edges.
@@ -43,8 +59,10 @@ void main(uint3 dispatch:SV_DispatchThreadID) {
         if(p.phase==4u)
             checkpoint.Store2(p.checkpointBias+word*8u,
                               edgeCaches.Load2(cache));
+        const uint emitted=(packed>>10u)&7u;
         edgeCaches.Store2(cache,uint2(
-            transition==1u || transition==2u?1u:0u,
+            (transition==1u || transition==2u?1u:0u)|
+                0x10000u|(emitted<<8u),
             transition==2u || transition==3u?1u:0u));
         return;
     }

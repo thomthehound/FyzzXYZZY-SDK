@@ -86,6 +86,9 @@ public:
             5u,compute::StorageBufferViewKind::RawReadWrite);
         desc.push_constant_bytes=24u;
         pipeline_=context_.create_compute_pipeline(desc);
+#if defined(FYZZXYZZY_PROFILE_GPU)
+        context_.set_pipeline_profile_label(pipeline_,"sc.box_bounds");
+#endif
     }
     SourceScBoxTransformBoundsNativeStage(
         const SourceScBoxTransformBoundsNativeStage&)=delete;

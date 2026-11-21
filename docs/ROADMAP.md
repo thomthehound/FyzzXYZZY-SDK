@@ -151,61 +151,69 @@ the native scene. The complete workload remains open for shared shape
 authoring, filter/trigger semantics, device-generated sphere contacts and
 cross-API physical hardware qualification.
 
-### Device foundation — qualify the execution model now
+### Accelerated execution foundation — hybrid CPU/GPU scene
 
-Complete these decisions alongside the compound scene, before large-scale
-articulation or nonrigid kernel intake:
+The native Scene owns actor, shape, contact-manager and island identity, rigid
+state and result publication. Vulkan and D3D12 construct selected SAP,
+aggregate, PCM, and Dy stages in one compute context, allocator and ordered
+queue. Source numerical execution can run on the CPU or GPU between completed
+frames without creating a second scene or discarding contact history.
 
-- Extend numerical quality qualification from the admitted source PxReal
-  rigid solver into new subsystems. Validate mass ratios, supported input
-  ranges, conditioning, friction/compliance and angular response. Select
-  representations per operation against physical error and runtime cost.
-- Qualify the selected local-offset/segmented-reference model with explicit
-  null, alignment, atomics, aliasing, range, multi-segment addressing,
-  growth/relocation and completion-delayed reuse. A scene is not limited to
-  one 4 GiB arena. Benchmark actual contact/solver descriptor traversal;
-  compare a Vulkan BDA lowering and D3D12 views on supported hardware.
-- Preserve task ordering while exposing sufficient GPU work for a large
-  connected island. Partition tiling and inter-partition dependencies must
-  be source-derived; one workgroup per island/task is not accepted merely
-  because many small islands run concurrently.
-- Keep device-generated contacts, prepared rows, velocities and integrated
-  poses across dependent stages and frames. The scene execution graph in
-  [ARCHITECTURE_CONTRACT.md](ARCHITECTURE_CONTRACT.md) is binding. The remaining
-  general PCM-to-Sc host witness fetch is a blocking migration dependency,
-  not the long-term solver scheduling model.
-- Complete the device-side accurate touch/connectivity admission first:
-  source EdgeIndex identity stays stable, while current-frame GPU touch
-  and constraint edges determine actual islands without CPU witness
-  reconstruction. Broadphase overlap alone cannot admit a physical touch.
-- Move GPU-owned contact/friction correlation and active task/row admission
-  onto the dependent device graph, reusing the existing PCM contact stream,
-  persistent anchor history and Dy partition/solve pipeline. Preserve
-  source Gu ordinals, mixed CPU-authored contact slots, exact island
-  ordering and generation-safe retirement; do not duplicate numerical Gu.
-- Reconcile compact topology, contact events and requested host-visible
-  results at scene publication. An early host join must correspond to a
-  real CPU consumer such as an authored callback. Validate rejection
-  between enqueue, numerical execution and final commit before removing
-  the current intermediate fetch.
-- Measure refiltering and topology churn separately from quiet frames.
-  Do not rebuild full device broadphase history to avoid a cheap host
-  overlap lookup unless measured critical-path cost establishes a win.
-- Keep the existing scene allocator, task owner and backend hazard tracking.
-  Retire transitional host mirrors as their consumers migrate. Publish
-  failures atomically; device loss may invalidate the scene and require
-  reconstruction rather than promising impossible GPU rollback.
+- **Placement:** choose CPU or GPU stages from whole-frame cost, including CPU
+  preparation, kernel time, dispatch, synchronization, transfer traffic and
+  publication. Sparse structural work and bounded analytic Gu contacts may
+  remain on the CPU. Incremental CPU SAP and dense GPU SAP are competing
+  execution choices, not universal policies. GPU bounds/contact residency
+  changes their crossover. Batched contact work and numerical Dy use GPU
+  acceleration where total cost justifies it. Executor changes invalidate
+  affected device pose caches without rebuilding unrelated shape state.
+- **Dependencies:** keep GPU-produced records resident when their consumers
+  can use them directly. A PCM witness fetch is permitted when Sc genuinely
+  consumes contact geometry or friction history and the resulting CPU/GPU
+  handoff is more efficient than moving that work to the device. Overlap
+  independent host preparation with GPU submissions and readback. Record
+  unavoidable joins; do not require zero host synchronization as a design goal.
+- **Scheduling:** preserve accurate contact/joint connectivity, task ordering,
+  sleep/wake, rollback and generation-safe retirement in one Sc graph. Reuse
+  CPU-prepared Dy task boundaries when they expose the available independent
+  islands; device admission can split groups that otherwise conceal GPU
+  parallelism. Tile large connected islands without serializing them into one
+  workgroup. Do not introduce separate persistent CPU and GPU island owners.
+- **State and lifetime:** preserve the same scene-owned contact/response
+  identities across mixed GPU PCM, CPU Gu, and CPU/GPU Dy execution. CPU Gu
+  touch transitions update the shared device edge history independently of
+  solver selection. Device-produced numerical state must not be re-uploaded
+  merely to satisfy a host-facing abstraction. Keep hazard tracking,
+  completion-delayed recycling, failure-atomic publication and explicit
+  rollback/rebuild behavior.
+- **Addressing and precision:** qualify local 32-bit offsets and segmented
+  cross-allocation references under growth, relocation, aliasing and delayed
+  reuse. Compare appropriate Vulkan BDA and D3D12 descriptor lowerings.
+  Select precision by supported input range, conditioning, numerical quality
+  and hardware cost rather than imposing FP64 on all operations.
+- **Extension:** articulations, deformables, particles and coupled constraints
+  join this existing scene clock and execution graph through their real state
+  and response contracts. Their algorithms determine the necessary compute
+  placement; no rigid-body surrogate or independent scene scheduler substitutes
+  for their numerical models.
 
-**Exit workloads:** steady and changing mixed-primitive scenes at 1K, 10K
-and 100K active bodies where resources permit, plus a single connected
-constraint/contact network and many independent islands. Record numerical
-quality, peak memory, dispatch/transfer/wait counts and critical path.
-Normal GPU numerical stages progress without an obligatory intermediate
-host contact/body readback, regardless of whether sparse metadata is
-CPU-owned. Test authored churn, host callbacks and requested results as
-separate visibility boundaries. Both APIs must produce equivalent admitted
-behavior; physical GPU performance and addressing qualification are
-separate from software CI.
+**Acceleration-candidate exit:** one production World can compose the available
+GPU stages, run real coupled contacts and rigid constraints, switch CPU/GPU
+numerical execution across completed frames, preserve consistent shape/contact
+history and publication, and reject failed work atomically. Vulkan and D3D12
+must compile and pass their available functional gates. A complete SDK feature
+inventory and physical-GPU performance acceptance are separate milestones.
+
+**Hardware qualification:** profile quiet and changing mixed-primitive scenes
+at 1K, 10K and 100K active bodies where supported, varying the fraction of
+moving shapes and found/lost pair density separately. Include wide connected
+networks, independent islands and authored topology churn. Record numerical
+quality, CPU and GPU critical paths, peak allocations, dispatches, transferred
+bytes and waits. Build and qualify an equivalent CPU SAP -> GPU PCM -> GPU Dy
+production configuration before selecting a broadphase crossover; the current
+GPU World does not provide that placement. Measure CPU/GPU solver crossovers
+and switching costs before installing any automatic selection policy. WARP and
+software Vulkan validate functional behavior, not native GPU throughput.
 
 ### Geometry — primitives, convex, meshes and queries
 

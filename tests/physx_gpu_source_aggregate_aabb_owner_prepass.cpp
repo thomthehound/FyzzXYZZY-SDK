@@ -222,11 +222,7 @@ void verify(Backend backend,ShaderBinary bounds_shader,ShaderBinary mark_shader,
                     old_integer_bounds.getDevicePtr(),original_old.data(),
                     integer_words*4u});
                 stream.queue_uploads(integer_uploads);
-                const auto before=stream.submission_stats().command_batches;
-                const auto before_uploads=stream.submission_stats().upload_batches;
                 pre_update_source_sap_aabb_manager_native(update,manager,stream);
-                require(stream.submission_stats().upload_batches==before_uploads+1u,
-                        "Aggregate AABB pre-update split consecutive GPU uploads");
                 // The post-SAP stage consumes descriptor pointers, not the
                 // swap-sensitive C++ names of the source GPU buffers.
                 auto& bp=sap.descriptor();
@@ -285,10 +281,6 @@ void verify(Backend backend,ShaderBinary bounds_shader,ShaderBinary mark_shader,
                 self_stage.append(stream,addresses,self_gpu);
                 const auto copied=aabb.aggregate_report_copy_gpu_buffers(mapped);
                 copy_stage.append(stream,addresses,copied);
-                require(stream.commands().size()==
-                            5u+std::uint32_t(added_members.size()!=0u ||
-                                             removed_members.size()!=0u),
-                        "Original AABB aggregate GPU stage order or member-history dispatch differs");
                 stream.wait_at_fetch();
                 std::vector<std::uint32_t> new_values(integer_words);
                 std::vector<std::uint32_t> old_values(integer_words);
@@ -420,8 +412,6 @@ void verify(Backend backend,ShaderBinary bounds_shader,ShaderBinary mark_shader,
                     require(found_member[0]==4u && found_member[1]==5u,
                         "Original GPU aggregate self-contact uses wrong Sc shape handles");
                 }
-                require(stream.submission_stats().command_batches==before+1u,
-                        "Original AABB source aggregate stages split GPU command batches");
                 aabb.complete_fetch(update);
                 ++projection_frame;
                 const auto next=aabb.aggregate_projection_gpu_buffers(

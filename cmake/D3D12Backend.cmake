@@ -16,6 +16,12 @@ if(FYZZXYZZY_BUILD_D3D12)
   if(MSVC)
     target_compile_options(fyzzxyzzy_compute_d3d12 PRIVATE /W4)
   endif()
+  if(BUILD_TESTING)
+    fyzzxyzzy_add_gpu_test(fyzzxyzzy_compute_readback_ownership_d3d12
+      SOURCES tests/compute_readback_ownership.cpp
+      DEFINITIONS FYZZXYZZY_TEST_D3D12=1
+      LIBRARIES FyzzXYZZY::ComputeD3D12)
+  endif()
 
   fyzzxyzzy_add_native_gpu_libraries(
     fyzzxyzzy_source_gpu_primitives_d3d12
@@ -511,6 +517,13 @@ if(FYZZXYZZY_BUILD_D3D12)
     add_custom_target(fyzzxyzzy_source_pcm_epa_work_shader_d3d12
       DEPENDS "${FYZZXYZZY_SOURCE_PCM_EPA_WORK_DXIL_COMPACT}"
         "${FYZZXYZZY_SOURCE_PCM_EPA_ARGS_RESET_DXIL}")
+    set(FYZZXYZZY_SOURCE_PCM_GJK_FUSED_DXIL
+      "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_source_pcm_gjk_fused_native.dxil")
+    fyzzxyzzy_compile_hlsl("${FYZZXYZZY_SOURCE_PCM_GJK_FUSED_DXIL}"
+      "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_pcm_box_gjk_native.hlsl" cs_6_0 main
+      DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_pcm_box_math_native.hlsli"
+        "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_pcm_box_gjk_native.hlsli"
+        "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_pcm_sc_contact_publish_native.hlsli")
     set(FYZZXYZZY_SOURCE_PCM_GJK_DXIL
       "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_source_pcm_box_gjk_native.dxil")
     fyzzxyzzy_compile_hlsl("${FYZZXYZZY_SOURCE_PCM_GJK_DXIL}"
@@ -707,6 +720,23 @@ if(FYZZXYZZY_BUILD_D3D12)
 
 
 
+    # Source Sc device accurate-island graph and ordered Dy admission.
+    set(FYZZXYZZY_SOURCE_SC_DEVICE_ISLAND_DXIL
+      "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_source_sc_device_islands_native.dxil")
+    fyzzxyzzy_compile_hlsl("${FYZZXYZZY_SOURCE_SC_DEVICE_ISLAND_DXIL}"
+      "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_sc_device_islands_native.hlsl"
+      cs_6_0 main)
+    add_custom_target(fyzzxyzzy_source_sc_device_island_shader_d3d12
+      DEPENDS "${FYZZXYZZY_SOURCE_SC_DEVICE_ISLAND_DXIL}")
+    fyzzxyzzy_add_gpu_test(fyzzxyzzy_source_sc_device_islands_d3d12
+      SOURCES tests/physx_gpu_source_sc_device_islands_native.cpp
+      DEFINITIONS FYZZXYZZY_TEST_D3D12=1
+      INCLUDES "${CMAKE_CURRENT_SOURCE_DIR}/src"
+      LIBRARIES FyzzXYZZY::ComputeD3D12 fyzzxyzzy_source_gpu_primitives_d3d12
+      DEPENDS fyzzxyzzy_source_sc_device_island_shader_d3d12
+      ARGS "${FYZZXYZZY_SOURCE_SC_DEVICE_ISLAND_DXIL}")
+    set_tests_properties(fyzzxyzzy_source_sc_device_islands_d3d12
+      PROPERTIES ENVIRONMENT "FYZZXYZZY_D3D12_DEBUG=1" TIMEOUT 180)
     # Source aggregate.cu::updateAggregateBounds, original 32-lane
     # aggregate member reduction (4 warps per native workgroup).
     set(FYZZXYZZY_SOURCE_AGGREGATE_BOUNDS_DXIL
@@ -1040,10 +1070,12 @@ if(FYZZXYZZY_BUILD_D3D12)
       "${FYZZXYZZY_SOURCE_PCM_GJK_PUBLISH_DXIL}"
       "${FYZZXYZZY_SOURCE_PCM_EPA_ARGS_RESET_DXIL}"
       "${FYZZXYZZY_SOURCE_PCM_GJK_PRIMITIVE_DXIL}"
-      "${FYZZXYZZY_SOURCE_SC_CONTACT_JOURNAL_DXIL}")
-    set(_pcm_stages Candidates EpaCompact GjkContact EpaContact FaceContacts GjkReduce GjkPublish EpaArgsReset GjkPrimitive ContactJournal)
+      "${FYZZXYZZY_SOURCE_SC_CONTACT_JOURNAL_DXIL}"
+       "${FYZZXYZZY_SOURCE_SC_DEVICE_ISLAND_DXIL}"
+      "${FYZZXYZZY_SOURCE_PCM_GJK_FUSED_DXIL}")
+    set(_pcm_stages Candidates EpaCompact GjkContact EpaContact FaceContacts GjkReduce GjkPublish EpaArgsReset GjkPrimitive ContactJournal DeviceIslands GjkFused)
     set(_pcm_manifest "FYZZXYZZY_SOURCE_PCM_1 DXIL\n")
-    foreach(_idx RANGE 0 9)
+    foreach(_idx RANGE 0 11)
       list(GET _pcm_stages ${_idx} _stage)
       list(GET _pcm_binaries ${_idx} _binary)
       get_filename_component(_name "${_binary}" NAME)
@@ -1064,13 +1096,44 @@ if(FYZZXYZZY_BUILD_D3D12)
       INCLUDES "${CMAKE_CURRENT_SOURCE_DIR}/src" "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_port"
       DEFINITIONS FYZZXYZZY_TEST_D3D12=1
       LIBRARIES FyzzXYZZY::NativeGpuWorldD3D12
-      DEPENDS fyzzxyzzy_native_gpu_sap_shaders_d3d12 fyzzxyzzy_native_gpu_pcm_shaders_d3d12 fyzzxyzzy_source_dy_distance_shader_d3d12 fyzzxyzzy_source_dy_convex_shader_d3d12
+      DEPENDS fyzzxyzzy_native_gpu_sap_shaders_d3d12 fyzzxyzzy_native_gpu_aggregate_shaders_d3d12 fyzzxyzzy_native_gpu_pcm_shaders_d3d12 fyzzxyzzy_source_dy_distance_shader_d3d12 fyzzxyzzy_source_dy_convex_shader_d3d12
       ARGS ${_sc_pcm_scene_args} scene)
+    add_test(NAME fyzzxyzzy_source_sc_gpu_pcm_scene_sap_overlap_d3d12
+      COMMAND fyzzxyzzy_source_sc_gpu_pcm_scene_d3d12
+        ${_sc_pcm_scene_args} sap_overlap)
+    set_tests_properties(fyzzxyzzy_source_sc_gpu_pcm_scene_sap_overlap_d3d12
+      PROPERTIES TIMEOUT 60)
+    add_test(NAME fyzzxyzzy_source_sc_gpu_pcm_scene_aggregate_coupled_d3d12
+      COMMAND fyzzxyzzy_source_sc_gpu_pcm_scene_d3d12
+        ${_sc_pcm_scene_args} aggregate_coupled
+        "${CMAKE_CURRENT_BINARY_DIR}/kernels/fyzzxyzzy_native_aggregate_dxil.manifest")
+    set_tests_properties(
+      fyzzxyzzy_source_sc_gpu_pcm_scene_aggregate_coupled_d3d12
+      PROPERTIES TIMEOUT 180 LABELS "d3d12-extended")
+    # Exercise Sc's actual GPU task prefix and indirect launch ABI
+    # without constructing unrelated simulation pipelines on WARP.
+    set(FYZZXYZZY_SOURCE_SC_INDIRECT_PROBE_DXIL
+      "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_source_sc_indirect_probe_native.dxil")
+    fyzzxyzzy_compile_hlsl("${FYZZXYZZY_SOURCE_SC_INDIRECT_PROBE_DXIL}"
+      "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_sc_indirect_probe_native.hlsl"
+      cs_6_0 main)
+    add_custom_target(fyzzxyzzy_source_sc_indirect_probe_shader_d3d12
+      DEPENDS "${FYZZXYZZY_SOURCE_SC_INDIRECT_PROBE_DXIL}")
+    fyzzxyzzy_add_gpu_test(fyzzxyzzy_source_sc_indirect_api_d3d12
+      SOURCES tests/physx_gpu_source_sc_indirect_api.cpp
+      INCLUDES "${CMAKE_CURRENT_SOURCE_DIR}/src"
+      LIBRARIES FyzzXYZZY::ComputeD3D12 fyzzxyzzy_source_gpu_primitives_d3d12
+      DEPENDS fyzzxyzzy_source_sc_device_island_shader_d3d12
+        fyzzxyzzy_source_sc_indirect_probe_shader_d3d12
+      ARGS "${FYZZXYZZY_SOURCE_SC_DEVICE_ISLAND_DXIL}"
+        "${FYZZXYZZY_SOURCE_SC_INDIRECT_PROBE_DXIL}")
+    set_tests_properties(fyzzxyzzy_source_sc_indirect_api_d3d12
+      PROPERTIES TIMEOUT 45)
     # Independent scene cases share one executable. Give each WARP
     # workload its own timeout and keep its timing in the CTest log.
     set(_sc_pcm_scene_tests fyzzxyzzy_source_sc_gpu_pcm_scene_d3d12)
     foreach(_case IN ITEMS compound_shapes compound_solver sphere_solver convex_plane convex_finite
-        sparse_contacts coupled_stack coupled_solver legacy_gu_solver
+         sparse_contacts friction_normal coupled_stack coupled_solver single_island device_admission_scene device_admission_mixed_scene device_admission_joint_scene dy_switch plane_only_pcm legacy_gu_solver
         mixed_solver distance_solver free_integration wide_islands zero_response_wide
         dual_hub star_island star_island_10k)
       set(_test "fyzzxyzzy_source_sc_gpu_pcm_scene_${_case}_d3d12")

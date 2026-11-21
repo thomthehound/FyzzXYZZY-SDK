@@ -278,6 +278,9 @@ void World::remove_constraint(ConstraintId id) {
     impl_->remove_constraint(id);
 }
 
+void World::set_gpu_dy_enabled(bool enabled) {
+    impl_->set_gpu_dy_enabled(enabled);
+}
 void World::step(float seconds) {
     if (!std::isfinite(seconds) || seconds <= 0.0f) {
         throw std::invalid_argument("Simulation step must be finite and positive");
