@@ -309,7 +309,9 @@ When solver-row indices differ, Sc uploads the source-to-row map into
 the same island work allocation, and Dy resolves each consumed body
 ordinal without another dispatch. Identity-ordered graphs omit the map
 upload. Device-joint graphs retain their typed row-remap dispatch
-because joint response tokens also require rewriting.
+because joint response tokens also require rewriting. Contact-only
+indirect dispatch arguments are published with early Sc admission;
+joint graphs publish them after token-remap validation.
 Sc authors one source-ordered numerical input table before PCM touch
 classification, covering GPU PCM and CPU Gu candidates. Each slot records
 typed actor endpoints and resolved material coefficients without a host

@@ -813,9 +813,9 @@ public:
             island_work_.getDevicePtr(),
             node_count,edge_count,edge_capacity,sources);
         last_island_dispatches_=stream_.commands().size()-before_islands;
-        // Early admission does not publish numerical dispatch arguments
-        // until the actor rows have been remapped and validated.
-        if(!early)
+        // Contact-only task admission is complete before the witness
+        // join. Joint-token remapping can still invalidate its dispatch.
+        if(!early || island_joint_count_==0u)
             stream_.queue_device_copy(
                 indirect_address_,
                 island_work_.getDevicePtr()+
@@ -876,11 +876,15 @@ public:
                 last_remap_dispatches_=stream_.commands().size()-before_remap;
             }
         }
-        stream_.queue_device_copy(
-            indirect_address_,
-            island_work_.getDevicePtr()+
-                offsetof(SourceScDeviceIslandHeader,dispatch_x),
-            sizeof(compute::DispatchSize));
+        // Contact-only indirect arguments were published with early
+        // admission. Joint-token validation publishes its final dispatch
+        // after the remap kernel.
+        if(island_joint_count_!=0u)
+            stream_.queue_device_copy(
+                indirect_address_,
+                island_work_.getDevicePtr()+
+                    offsetof(SourceScDeviceIslandHeader,dispatch_x),
+                sizeof(compute::DispatchSize));
     }
     void discard_device_islands() noexcept {
         island_work_ready_=false;
