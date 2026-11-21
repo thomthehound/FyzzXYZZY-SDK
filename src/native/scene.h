@@ -103,6 +103,8 @@ struct GpuDyCandidateSource {
     BodyId first=0xffffffffu,second=0xffffffffu;
     std::uint32_t pcm_pair_index=0xffffffffu;
     GpuDyPairMaterial material{};
+    std::uint32_t retained_first=0u,retained_count=0u;
+    bool retained_full=false;
 };
 // Gu PCM contacts remain keyed by Sc's original contact-manager EdgeIndex.
 // These are borrowed per-frame views; GPU state belongs to the same Sc edge.
@@ -349,6 +351,15 @@ struct GpuDyFrictionAnchorInput {
     float local_a[3]{},local_b[3]{};
 };
 static_assert(sizeof(GpuDyFrictionAnchorInput)==24u);
+struct GpuDyRetainedFrictionCandidate {
+    float body0_normal[3]{};
+    std::uint32_t source_ordinal=0u;
+    std::array<GpuDyFrictionAnchorInput,2> anchors{};
+    std::uint32_t anchor_count=0u;
+};
+static_assert(sizeof(GpuDyRetainedFrictionCandidate)==68u &&
+              offsetof(GpuDyRetainedFrictionCandidate,anchors)==16u &&
+              offsetof(GpuDyRetainedFrictionCandidate,anchor_count)==64u);
 struct GpuDyFrictionWriteback {
     float tangent[3]{};
     float applied_force=0.0f;
@@ -570,7 +581,8 @@ public:
         std::span<const GpuDyJointInput> /*joint_inputs*/={},
         bool /*readback_device_task_records*/=true,
         bool /*compact_contact_admission*/=false,
-        std::span<const GpuDyCompactContactPrep> /*compact_contact_prep*/={}) {
+        std::span<const GpuDyCompactContactPrep> /*compact_contact_prep*/={},
+        std::span<const GpuDyRetainedFrictionCandidate> /*retained_candidates*/={}) {
         throw std::logic_error("Source GPU Dy shader is not installed");
     }
     virtual void finish_gpu_dy_distance() {
@@ -2279,6 +2291,7 @@ private:
     std::vector<GpuDyContactManifold> gpu_dy_manifolds_;
     std::vector<std::uint32_t> gpu_dy_contact_order_;
     std::vector<GpuDyCompactContactPrep> gpu_dy_contact_prep_pairs_;
+    std::vector<GpuDyRetainedFrictionCandidate> gpu_dy_history_candidates_;
     // Pre-PCM candidate ordinals index prepared contact pairs; empty
     // candidate slots never acquire a numerical preparation.
     std::vector<std::uint32_t> gpu_dy_contact_prep_indices_;
