@@ -115,6 +115,7 @@ struct SourceDyLaunchStats {
     std::size_t device_admitted_bodies=0u;
     std::size_t device_admitted_descriptors=0u;
     std::size_t device_task_readback_bytes=0u;
+    std::size_t device_epoch_error_readback_bytes=0u;
     std::size_t device_contact_admission_readback_bytes=0u;
     std::size_t tile_bytes=0u;
     // Device-written descriptors, partition ranges, tasks, and ordinals
@@ -1249,7 +1250,7 @@ public:
             }
         }
         const std::uint64_t scratch_bytes=device_partitions
-            ?(source_descriptors?(device_admission?36ull:24ull):20ull)+
+            ?(source_descriptors?(device_admission?48ull:24ull):20ull)+
                 std::uint64_t(descriptor_capacity)*24ull+
                 std::uint64_t(bodies.size())*12ull+
                 (source_descriptors?sizeof(std::uint32_t):0u)+
@@ -1313,8 +1314,9 @@ public:
         std::array<std::size_t,6> result_offsets{};
         std::size_t output_bytes=0u;
         for(std::size_t i=0;i<output_inputs.size();++i) {
-            const auto n=i==3u && compact_friction
-                ? anchor_impulses.size():elements[output_inputs[i]];
+            const auto n=i==1u && device_admission
+                ?0u:i==3u && compact_friction
+                    ?anchor_impulses.size():elements[output_inputs[i]];
             if(n>(std::numeric_limits<std::uint32_t>::max()-output_bytes)/
                 output_strides[i])
                 throw std::overflow_error("Source Dy writeback exceeds 32-bit view ABI");
@@ -1342,14 +1344,18 @@ public:
                 ?tasks.size_bytes():0u;
         const std::size_t device_ordinal_offset=device_task_offset+
             device_task_bytes;
-        const std::size_t host_result_bytes=device_ordinal_offset+
+        const std::size_t device_error_offset=device_ordinal_offset+
             (device_admission?body_ordinals.size_bytes():0u);
+        const std::size_t host_result_bytes=device_error_offset+
+            (device_admission?8u:0u);
         if(device_admission &&
            (host_result_bytes<device_ordinal_offset ||
             host_result_bytes>std::numeric_limits<std::uint32_t>::max()))
             throw std::overflow_error(
                 "Resident Sc Dy scheduling result exceeds address space");
         last_schedule_.device_task_readback_bytes=device_task_bytes;
+        last_schedule_.device_epoch_error_readback_bytes=
+            device_admission?8u:0u;
         last_schedule_.device_contact_admission_readback_bytes=
             compact_contact_admission
                 ?((std::size_t(device_admission->contact_manager_capacity)+31u)/32u)*
@@ -1454,7 +1460,7 @@ public:
         if(device_partitions) {
             const auto n=descriptor_capacity;
             const std::size_t header_bytes=source_descriptors
-                ?(device_admission?36u:24u):20u;
+                ?(device_admission?48u:24u):20u;
             const std::array<std::uint32_t,5> scratch_header{
                 narrow(header_bytes),narrow(header_bytes+n*16u),
                 narrow(header_bytes+n*20u),
@@ -1483,6 +1489,10 @@ public:
                     const std::uint32_t next_contact_row=0u;
                     std::memcpy(host_.data()+offsets[15]+32u,
                                 &next_contact_row,sizeof(next_contact_row));
+                    const std::array<std::uint32_t,2> epoch_errors{
+                        0u,std::numeric_limits<std::uint32_t>::max()};
+                    std::memcpy(host_.data()+offsets[15]+36u,
+                                epoch_errors.data(),sizeof(epoch_errors));
                 }
                 if(n && !device_admission)
                     std::memcpy(host_.data()+offsets[15]+scratch_header[1],
@@ -2039,6 +2049,7 @@ public:
             .device_header_offset=device_header_offset,
             .device_task_offset=device_task_offset,
             .device_ordinal_offset=device_ordinal_offset,
+            .device_error_offset=device_error_offset,
             .free_velocity_offset=free_velocity_offset,
             .friction_count=friction_count,
             .uploaded_bytes=uploaded_bytes,
@@ -2049,7 +2060,7 @@ public:
             .compact_friction=compact_friction,
             .device_unconstrained_preparation=device_unconstrained_preparation,
             .device_world_motion=device_world_motion});
-        std::array<compute::DownloadSpan,5u> downloads{};
+        std::array<compute::DownloadSpan,6u> downloads{};
         std::size_t download_count=0u;
         downloads[download_count++]={
             mapped.buffer,mapped.offset,host_.data(),output_bytes};
@@ -2066,6 +2077,11 @@ public:
                     device_ordinal_buffer,device_ordinal_source,
                     host_.data()+device_ordinal_offset,
                     body_ordinals.size_bytes()};
+            const auto errors=addresses_.resolve(
+                address+offsets[15]+36u,8u);
+            downloads[download_count++]={
+                errors.buffer,errors.offset,
+                host_.data()+device_error_offset,8u};
         }
         if(!admitted_contact_sources_.empty())
             downloads[download_count++]={
@@ -2159,14 +2175,24 @@ public:
         }
         for(const auto id:pending_actor_locals_)
             actor_local_valid_[id]=1u;
-        for(std::size_t i=0;i<tasks.size();++i)
-            std::memcpy(&tasks[i].error,
-                host_.data()+result_offsets[1]+i*4u,4u);
-        for(std::size_t i=0u;i<tasks.size();++i)
-            if(tasks[i].error!=0u)
+        if(pending.device_admission) {
+            std::array<std::uint32_t,2> errors{};
+            std::memcpy(errors.data(),
+                host_.data()+pending.device_error_offset,sizeof(errors));
+            if(errors[0]!=0u)
                 throw std::overflow_error(
-                    "Source Dy GPU solver task "+std::to_string(i)+
-                    " rejected flags "+std::to_string(tasks[i].error));
+                    "Source Dy GPU solver task "+std::to_string(errors[1])+
+                    " rejected flags "+std::to_string(errors[0]));
+        }else {
+            for(std::size_t i=0;i<tasks.size();++i)
+                std::memcpy(&tasks[i].error,
+                    host_.data()+result_offsets[1]+i*4u,4u);
+            for(std::size_t i=0u;i<tasks.size();++i)
+                if(tasks[i].error!=0u)
+                    throw std::overflow_error(
+                        "Source Dy GPU solver task "+std::to_string(i)+
+                        " rejected flags "+std::to_string(tasks[i].error));
+        }
         if(invalid_device_admission)
             throw std::overflow_error(
                 "Resident Sc Dy scheduling result exceeds declared capacities");
@@ -2460,7 +2486,7 @@ public:
             output_bytes+(pending.device_admission
                 ?16u+(pending.readback_device_task_records
                         ?pending.tasks.size_bytes():0u)+
-                    pending.body_ordinals.size_bytes()+
+                    pending.body_ordinals.size_bytes()+8u+
                     (pending.compact_contact_admission
                         ?admitted_contact_sources_.size()*sizeof(std::uint32_t)
                         :pending.response_capacity*sizeof(std::uint32_t))
@@ -2578,7 +2604,7 @@ private:
         bool readback_device_task_records=true;
         bool source_descriptors=false;
         std::size_t device_header_offset=0u,device_task_offset=0u,
-                    device_ordinal_offset=0u;
+                    device_ordinal_offset=0u,device_error_offset=0u;
         std::size_t free_velocity_offset=0u,friction_count=0u;
         std::size_t uploaded_bytes=0u,cpu_gu_bytes=0u,reused_pcm_rows=0u;
         std::size_t compact_anchor_bytes=0u,prep_bytes=0u;
