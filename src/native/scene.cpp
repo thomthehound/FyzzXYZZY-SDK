@@ -9545,11 +9545,6 @@ void Scene::stage_gpu_dy_actor_sources(
     for(const BodyId id:ids) {
         if(id>=actors_.size())
             throw std::logic_error("Sc GPU actor source references an absent actor");
-        const auto& actor=actors_[id];
-        if(!actor.alive || actor.motion!=Motion::Dynamic || actor.sleeping ||
-           std::binary_search(gpu_dy_staged_actor_ids_.begin(),
-                              gpu_dy_staged_actor_ids_.begin()+first,id))
-            continue;
         gpu_dy_staged_actor_ids_.push_back(id);
     }
     auto added=gpu_dy_staged_actor_ids_.begin()+first;
@@ -9557,6 +9552,20 @@ void Scene::stage_gpu_dy_actor_sources(
     gpu_dy_staged_actor_ids_.erase(
         std::unique(added,gpu_dy_staged_actor_ids_.end()),
         gpu_dy_staged_actor_ids_.end());
+    // Both spans are sorted. Compact new live actors against the
+    // already-staged prefix before packing or uploading any source.
+    std::size_t retained=first,prior=0u;
+    for(std::size_t i=first;i<gpu_dy_staged_actor_ids_.size();++i) {
+        const BodyId id=gpu_dy_staged_actor_ids_[i];
+        while(prior<first && gpu_dy_staged_actor_ids_[prior]<id)
+            ++prior;
+        const auto& actor=actors_[id];
+        if((prior<first && gpu_dy_staged_actor_ids_[prior]==id) ||
+           !actor.alive || actor.motion!=Motion::Dynamic || actor.sleeping)
+            continue;
+        gpu_dy_staged_actor_ids_[retained++]=id;
+    }
+    gpu_dy_staged_actor_ids_.resize(retained);
     gpu_dy_integration_inputs_.clear();
     gpu_dy_integration_inputs_.reserve(
         gpu_dy_staged_actor_ids_.size()-first);
