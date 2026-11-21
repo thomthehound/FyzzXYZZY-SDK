@@ -705,7 +705,7 @@ void sourceDyPartitionTask(uint taskId,uint scratch,uint errorAddress,
     // The native Sc path transfers only encounter-order manager/joint
     // identities. Expand source descriptors from the existing resident
     // contact prep and joint-row records before partition coloring.
-    const bool sourceDescriptors=views.x==24u || views.x==48u;
+    const bool sourceDescriptors=views.x==24u || views.x==64u;
     const uint sourceTable=bodyState+p.bodyCount*12u;
     const uint sourceCount=sourceDescriptors?arena.Load(sourceTable):0u;
     for(uint i=first+lane;i<last;i+=128u) {
@@ -2063,7 +2063,7 @@ void main(uint3 group:SV_GroupID,uint3 lane:SV_GroupThreadID) {
     // The task error report still runs, including compact-only scenes.
     if(devicePartitions) {
         const uint4 schedule=arena.Load4(p.integrationBias+16u);
-        if(schedule.w!=0u && arena.Load(schedule.w)==48u) {
+        if(schedule.w!=0u && arena.Load(schedule.w)==64u) {
             const uint taskOffset=arena.Load(schedule.w+24u);
             const uint sourceHeader=p.taskBias-taskOffset;
             const uint4 header=scIslandWork.Load4(sourceHeader);
@@ -2226,7 +2226,7 @@ void main(uint3 group:SV_GroupID,uint3 lane:SV_GroupThreadID) {
             const uint scratch=arena.Load(p.integrationBias+28u);
             const uint recordBytes=devicePartitions && scratch!=0u
                 ?arena.Load(scratch):0u;
-            if(recordBytes!=24u && recordBytes!=48u) {
+            if(recordBytes!=24u && recordBytes!=64u) {
                 admitPcmContactExtents(
                     descriptors.x,descriptors.y,lane.x,endError);
                 AllMemoryBarrierWithGroupSync();
