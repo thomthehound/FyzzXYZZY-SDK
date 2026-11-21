@@ -425,6 +425,27 @@ static_assert(sizeof(GpuDyContactPrepPair)==256u &&
               offsetof(GpuDyContactPrepPair,max_contact_impulse)==240u &&
               offsetof(GpuDyContactPrepPair,cpu_gu_offset)==244u &&
               offsetof(GpuDyContactPrepPair,source_body0)==248u);
+// The Scene numerical path borrows every actor frame from Dy's resident
+// pool. Only source identities, inverse masses and material coefficients
+// enter the CPU-to-GPU preparation boundary.
+struct GpuDyCompactContactPrep {
+    std::uint32_t solver_ordinal0=0xffffffffu,solver_ordinal1=0xffffffffu;
+    BodyId source_body0=0xffffffffu,source_body1=0xffffffffu;
+    float inverse_mass0=0.0f,inverse_mass1=0.0f;
+    float rest_distance=0.0f,pair_slop=0.0f;
+    float restitution=0.0f,damping=0.0f;
+    float max_penetration_bias=0.0f,inv_dt=0.0f;
+    float seconds=0.0f,rigid_contact_bias=0.0f;
+    float bounce_threshold=0.0f;
+    std::uint32_t acceleration_spring=0u;
+    std::uint32_t pcm_pair_index=0xffffffffu,pcm_edge=0u;
+    float max_contact_impulse=0.0f;
+    std::uint32_t cpu_gu_offset=0xffffffffu;
+};
+static_assert(sizeof(GpuDyCompactContactPrep)==80u &&
+              offsetof(GpuDyCompactContactPrep,rest_distance)==24u &&
+              offsetof(GpuDyCompactContactPrep,pcm_pair_index)==64u &&
+              offsetof(GpuDyCompactContactPrep,cpu_gu_offset)==76u);
 
 struct GpuConvexFaceSpan {
     std::uint32_t first_face=0;
@@ -548,7 +569,8 @@ public:
         std::span<GpuDySleepState> /*sleep_states*/={},
         std::span<const GpuDyJointInput> /*joint_inputs*/={},
         bool /*readback_device_task_records*/=true,
-        bool /*compact_contact_admission*/=false) {
+        bool /*compact_contact_admission*/=false,
+        std::span<const GpuDyCompactContactPrep> /*compact_contact_prep*/={}) {
         throw std::logic_error("Source GPU Dy shader is not installed");
     }
     virtual void finish_gpu_dy_distance() {
@@ -2256,7 +2278,7 @@ private:
     std::vector<GpuDyContactPatch> gpu_dy_patches_;
     std::vector<GpuDyContactManifold> gpu_dy_manifolds_;
     std::vector<std::uint32_t> gpu_dy_contact_order_;
-    std::vector<GpuDyContactPrepPair> gpu_dy_contact_prep_pairs_;
+    std::vector<GpuDyCompactContactPrep> gpu_dy_contact_prep_pairs_;
     // Pre-PCM candidate ordinals index prepared contact pairs; empty
     // candidate slots never acquire a numerical preparation.
     std::vector<std::uint32_t> gpu_dy_contact_prep_indices_;

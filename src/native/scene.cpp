@@ -9025,63 +9025,28 @@ void Scene::prepare_constraints(float seconds) {
             if(gpu_dy_contact_prep_pairs_.size()>=
                 std::numeric_limits<std::uint32_t>::max())
                 throw std::overflow_error("Source GPU contact preparation limit");
-            const auto pack_body=[](native::GpuDyContactPrepBody& out,
-                                    const SolverBodyData& body) {
-                const auto pack=[](float(&to)[3],Vec3 v) {
-                    to[0]=v.x;to[1]=v.y;to[2]=v.z;
-                };
-                pack(out.position,body.position);
-                pack(out.linear_velocity,body.linear_velocity);
-                pack(out.angular_velocity,body.angular_velocity);
-                for(std::size_t i=0;i<3u;++i) {
-                    const Vec3 c=body.sqrt_inverse_inertia[i];
-                    out.sqrt_inverse_inertia[i*3u+0u]=c.x;
-                    out.sqrt_inverse_inertia[i*3u+1u]=c.y;
-                    out.sqrt_inverse_inertia[i*3u+2u]=c.z;
-                }
-                out.inverse_mass=body.inverse_mass;
-            };
-            native::GpuDyContactPrepPair prep{};
+            native::GpuDyCompactContactPrep prep{};
             prep.source_body0=id0;
             prep.source_body1=id1;
-            // Dynamic endpoints already have resident actor-local motion,
-            // inertia and pose. The source packer needs only their ordinal
-            // and mass; static and kinematic endpoints retain inline data.
             const bool resident0=actor0.motion==Motion::Dynamic &&
                 !actor0.sleeping;
             const bool resident1=actor1.motion==Motion::Dynamic &&
                 !actor1.sleeping;
-            if(resident0)prep.body0.inverse_mass=actor0.inverse_mass;
-            else pack_body(prep.body0,a);
-            if(resident1)prep.body1.inverse_mass=actor1.inverse_mass;
-            else pack_body(prep.body1,b);
-            // The prepared contact endpoints already own their solver
-            // rows. Compact Dy descriptors omit duplicate row indices.
-            const auto pack_ordinal=[&](native::GpuDyContactPrepBody& out,
-                                        const Actor& actor) {
-                if(!rigid_node(actor.motion))return;
+            prep.inverse_mass0=resident0?actor0.inverse_mass:a.inverse_mass;
+            prep.inverse_mass1=resident1?actor1.inverse_mass:b.inverse_mass;
+            // Only exact, prepared solver ordinals belong to the Dy
+            // contact source; all actor motion lives in the resident pool.
+            const auto pack_ordinal=[&](const Actor& actor) {
+                if(!rigid_node(actor.motion))return invalid_solver_row;
                 if(actor.solver_row_generation!=solver_preparation_generation_ ||
                    actor.solver_row_index>=solver_rows_.size() ||
                    actor.solver_row_index>=invalid_solver_row)
                     throw std::logic_error(
                         "GPU Dy contact preparation lacks a solver row");
-                out.solver_ordinal=
-                    static_cast<std::uint32_t>(actor.solver_row_index);
+                return static_cast<std::uint32_t>(actor.solver_row_index);
             };
-            pack_ordinal(prep.body0,actor0);
-            pack_ordinal(prep.body1,actor1);
-            // Gu anchors are actor-local, including the immovable shape.
-            // World solver-body data uses a zero-mass static sentinel.
-            const auto pack_pose=[this](native::GpuDyContactPrepBody& out,
-                                    const Actor& actor) {
-                const Vec3 p=mass_position(actor);
-                const Quat q=mass_orientation(actor);
-                out.position[0]=p.x;out.position[1]=p.y;out.position[2]=p.z;
-                out.orientation[0]=q.x;out.orientation[1]=q.y;
-                out.orientation[2]=q.z;out.orientation[3]=q.w;
-            };
-            if(!resident0)pack_pose(prep.body0,actor0);
-            if(!resident1)pack_pose(prep.body1,actor1);
+            prep.solver_ordinal0=pack_ordinal(actor0);
+            prep.solver_ordinal1=pack_ordinal(actor1);
             prep.rest_distance=rest_distance;
             prep.pair_slop=pair_slop;
             prep.restitution=restitution;
@@ -10079,10 +10044,11 @@ void Scene::solve_gpu_distance_constraints(float seconds) {
         gpu_dy_contact_forces_,gpu_dy_gu_inputs_,
         {},gpu_dy_friction_anchors_,
         gpu_dy_patches_,gpu_dy_manifolds_,gpu_dy_contact_order_,
-        gpu_dy_contact_prep_pairs_,
+        {},
         gpu_dy_integration_inputs_,gpu_dy_integrated_poses_,true,
         gpu_dy_friction_impulses_,true,true,true,gpu_dy_sleep_states_,
-        gpu_dy_joint_inputs_,false,device_admission);
+        gpu_dy_joint_inputs_,false,device_admission,
+        gpu_dy_contact_prep_pairs_);
     // Sc's Gu-indexed force buffer and retired-manager bookkeeping are
     // independent of the submitted numerical solve. Prepare them while
     // the ordered GPU Dy task graph executes, before its result join.

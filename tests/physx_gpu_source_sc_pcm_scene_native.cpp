@@ -266,6 +266,10 @@ struct SourceScDeviceIslandFixture {
 
 namespace fyzz::native {
 struct GpuPcmFrictionAnchorFixture {
+    static std::size_t compact_contact_source_bytes(const Scene& scene) {
+        return scene.gpu_dy_contact_prep_pairs_.size()*
+            sizeof(GpuDyCompactContactPrep);
+    }
     static void verify_early_normal_contract(Scene& scene) {
         Scene::PcmManifoldCache cache{};
         GpuPcmBoxResult result{};
@@ -815,27 +819,21 @@ struct GpuPcmFrictionAnchorFixture {
             throw std::runtime_error(
                 "GPU Dy duplicated CPU numerical contact rows or lost Gu order");
         for(const auto& prep:scene.gpu_dy_contact_prep_pairs_) {
-            const auto verify=[&](const GpuDyContactPrepBody& endpoint,
-                                  BodyId id) {
+            const auto verify=[&](BodyId id,float inverse_mass,
+                                  std::uint32_t ordinal) {
+                if(id>=scene.actors_.size())
+                    throw std::runtime_error(
+                        "Compact GPU contact preparation has no actor owner");
                 const auto& actor=scene.actors_[id];
                 if(actor.motion!=Scene::Motion::Dynamic ||
                    actor.sleeping)return;
-                const auto cleared=[](const auto& values) {
-                    return std::all_of(std::begin(values),std::end(values),
-                                       [](float value){return value==0.0f;});
-                };
-                if(endpoint.inverse_mass!=actor.inverse_mass ||
-                   endpoint.solver_ordinal>=scene.solver_rows_.size() ||
-                   !cleared(endpoint.position) ||
-                   !cleared(endpoint.linear_velocity) ||
-                   !cleared(endpoint.angular_velocity) ||
-                   !cleared(endpoint.sqrt_inverse_inertia) ||
-                   !cleared(endpoint.orientation))
+                if(inverse_mass!=actor.inverse_mass ||
+                   ordinal>=scene.solver_rows_.size())
                     throw std::runtime_error(
-                        "GPU Dy contact preparation duplicated resident body motion");
+                        "Compact GPU contact source lost its resident solver row");
             };
-            verify(prep.body0,prep.source_body0);
-            verify(prep.body1,prep.source_body1);
+            verify(prep.source_body0,prep.inverse_mass0,prep.solver_ordinal0);
+            verify(prep.source_body1,prep.inverse_mass1,prep.solver_ordinal1);
         }
     }
     static void verify_pcm_candidate_ownership(const Scene& scene) {
@@ -4661,6 +4659,10 @@ void verify_early_pcm_island_pipeline(
             native::GpuPcmFrictionAnchorFixture::
                 verify_pre_witness_device_admission(gpu);
         const auto schedule=device->dy_launch_stats();
+        require(schedule.host_contact_source_bytes==
+                    native::GpuPcmFrictionAnchorFixture::
+                        compact_contact_source_bytes(gpu),
+            "Scene uploaded full inline body source records to GPU Dy");
         require(schedule.resident_immovable_contact_bodies>=2u &&
                 schedule.inline_contact_body_bytes==0u,
             "GPU PCM contact preparation uploaded repeated static body records");

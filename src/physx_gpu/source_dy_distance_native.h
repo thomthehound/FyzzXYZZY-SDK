@@ -135,6 +135,7 @@ struct SourceDyLaunchStats {
     std::size_t device_inertia_generated_bytes=0u;
     std::size_t device_world_motion_bodies=0u;
     std::size_t actor_local_upload_bytes=0u;
+    std::size_t host_contact_source_bytes=0u;
     std::size_t resident_immovable_contact_bodies=0u;
     std::size_t inline_contact_body_bytes=0u;
     std::size_t actor_local_upload_spans=0u;
@@ -506,9 +507,23 @@ public:
                std::optional<SourceScDeviceIslandDyView> device_admission=std::nullopt,
                std::span<const compute::DownloadSpan> extra_downloads={},
                bool readback_device_task_records=true,
-               bool compact_contact_admission=false) {
+               bool compact_contact_admission=false,
+               std::span<const native::GpuDyCompactContactPrep> compact_contact_prep={}) {
         if(pending_solve_)
             throw std::logic_error("Source Dy numerical epoch already queued");
+        if(!contact_prep.empty() && !compact_contact_prep.empty())
+            throw std::invalid_argument(
+                "Native Dy contact preparation has multiple source representations");
+        const std::size_t prep_count=
+            contact_prep.size()+compact_contact_prep.size();
+        contact_origins_.clear();
+        contact_origins_.reserve(prep_count);
+        for(const auto& source:contact_prep)
+            contact_origins_.push_back({source.pcm_pair_index,
+                                        source.pcm_edge,source.cpu_gu_offset});
+        for(const auto& source:compact_contact_prep)
+            contact_origins_.push_back({source.pcm_pair_index,
+                                        source.pcm_edge,source.cpu_gu_offset});
         if(device_admission &&
            tasks.size()>source_sc_indirect_task_limit(context_.device_info()))
             throw std::out_of_range(
@@ -567,6 +582,8 @@ public:
                               narrow(body_ordinals.size()));
         }
         last_schedule_.host_descriptor_inputs=descriptors.size();
+        last_schedule_.host_contact_source_bytes=compact_contact_prep.empty()
+            ?contact_prep.size_bytes():compact_contact_prep.size_bytes();
         last_schedule_.device_initialized_bodies=device_initial_bodies?bodies.size():0u;
         last_schedule_.device_body_upload_bytes=device_initial_bodies
             ? (device_world_motion?0u:bodies.size()*sizeof(float))
@@ -643,14 +660,14 @@ public:
             : friction.size()*sizeof(native::GpuDyFrictionWriteback);
         std::size_t reused_pcm_rows=0u;
         std::size_t cpu_gu_rows=0u;
-        for(const auto& pair:contact_prep)
+        for(const auto& pair:contact_origins_)
             if(pair.pcm_pair_index!=0xffffffffu &&
                (!pcm_contacts || pair.pcm_pair_index>=pcm_pair_count ||
                 pair.pcm_edge==0xffffffffu))
                 throw std::logic_error(
                     "Source Dy PCM contact provenance is invalid");
         std::size_t next_history_capacity_=friction_history_capacity_;
-        for(const auto& pair:contact_prep)
+        for(const auto& pair:contact_origins_)
             if(pair.pcm_pair_index!=0xffffffffu)
                 next_history_capacity_=std::max(next_history_capacity_,
                     std::size_t(pair.pcm_edge)+1u);
@@ -704,12 +721,12 @@ public:
         history_epochs_.resize(next_history_capacity_,0u);
         for(const auto& manager:manifolds) {
             if(!manager.patch_count)continue;
-            if(manager.prep_index>=contact_prep.size() ||
+            if(manager.prep_index>=prep_count ||
                manager.patch_offset>patches.size() ||
                manager.patch_count>patches.size()-manager.patch_offset)
                 throw std::logic_error(
                     "Source friction history has an invalid Sc patch");
-            const auto& pair=contact_prep[manager.prep_index];
+            const auto& pair=contact_origins_[manager.prep_index];
             if(pair.pcm_pair_index==0xffffffffu)continue;
             for(std::size_t j=manager.patch_offset;
                 j<manager.patch_offset+manager.patch_count;++j) {
@@ -723,10 +740,10 @@ public:
         }
         for(const auto& manager:manifolds) {
             if(!manager.patch_count)continue;
-            if(manager.prep_index>=contact_prep.size())
+            if(manager.prep_index>=prep_count)
                 throw std::logic_error(
                     "Source Dy contact preparation has no source pair");
-            const auto& pair=contact_prep[manager.prep_index];
+            const auto& pair=contact_origins_[manager.prep_index];
             const bool pcm=pair.pcm_pair_index!=0xffffffffu;
             if(pcm && (manager.patch_count!=1u ||
                        manager.patch_offset>=patches.size() ||
@@ -765,25 +782,25 @@ public:
         // records. Lower their GPU transfer into 72-byte descriptors and
         // reuse the already uploaded active Dy body/integrateCore inputs.
         constexpr auto invalid=std::numeric_limits<std::uint32_t>::max();
-        if(contact_prep.size()>
+        if(prep_count>
            std::numeric_limits<std::uint32_t>::max()/
                sizeof(SourceDyPackedContactPrepNative))
             throw std::overflow_error("Source Dy contact prep descriptor overflow");
-        const std::size_t prep_bytes=contact_prep.size()*
+        const std::size_t prep_bytes=prep_count*
             sizeof(SourceDyPackedContactPrepNative);
         if(cpu_gu.size_bytes()>
            std::numeric_limits<std::uint32_t>::max()-prep_bytes)
             throw std::overflow_error(
                 "Source Gu contact-prep arena exceeds address space");
         const std::size_t static_begin=prep_bytes+cpu_gu.size_bytes();
-        packed_.resize(contact_prep.size());
+        packed_.resize(prep_count);
         inline_bodies_.clear();
         if(++inline_body_epoch_==0u) {
             std::fill(inline_body_slots_.begin(),inline_body_slots_.end(),
                       InlineBodySlot{});
             inline_body_epoch_=1u;
         }
-        assigned_.assign(contact_prep.size(),0u);
+        assigned_.assign(prep_count,0u);
         const auto ref_body=[&](const native::GpuDyContactPrepBody& body,
                                 std::uint32_t ordinal,
                                 BodyId actor) -> std::uint32_t {
@@ -823,6 +840,9 @@ public:
                 ++last_schedule_.resident_immovable_contact_bodies;
                 return (actor<<2u)|3u;
             }
+            if(!compact_contact_prep.empty())
+                throw std::logic_error(
+                    "Scene Dy contact source omitted its resident actor-local input");
             if(actor!=invalid && actor<inline_body_slots_.size()) {
                 const auto& slot=inline_body_slots_[actor];
                 if(slot.epoch==inline_body_epoch_) {
@@ -855,27 +875,51 @@ public:
         };
         const auto pack_manager=[&](const native::GpuDyContactManifold& manager,
                                 std::uint32_t row0,std::uint32_t row1) {
-            if(manager.prep_index>=contact_prep.size() ||
+            if(manager.prep_index>=prep_count ||
                assigned_[manager.prep_index]++)
                 throw std::logic_error("Source Dy contact prep is not unique");
-            const auto& source=contact_prep[manager.prep_index];
             auto& target=packed_[manager.prep_index];
-            target.body0_source=ref_body(source.body0,row0,source.source_body0);
-            target.body1_source=ref_body(source.body1,row1,source.source_body1);
-            std::memcpy(target.constants.data(),
-                reinterpret_cast<const std::uint8_t*>(&source)+192u,
-                target.constants.size());
+            if(!compact_contact_prep.empty()) {
+                const auto& source=compact_contact_prep[manager.prep_index];
+                native::GpuDyContactPrepBody first{},second{};
+                first.inverse_mass=source.inverse_mass0;
+                second.inverse_mass=source.inverse_mass1;
+                first.solver_ordinal=source.solver_ordinal0;
+                second.solver_ordinal=source.solver_ordinal1;
+                target.body0_source=ref_body(
+                    first,row0,source.source_body0);
+                target.body1_source=ref_body(
+                    second,row1,source.source_body1);
+                std::memcpy(target.constants.data(),
+                    reinterpret_cast<const std::uint8_t*>(&source)+
+                        offsetof(native::GpuDyCompactContactPrep,rest_distance),
+                    target.constants.size());
+            }else {
+                const auto& source=contact_prep[manager.prep_index];
+                target.body0_source=ref_body(
+                    source.body0,row0,source.source_body0);
+                target.body1_source=ref_body(
+                    source.body1,row1,source.source_body1);
+                std::memcpy(target.constants.data(),
+                    reinterpret_cast<const std::uint8_t*>(&source)+
+                        offsetof(native::GpuDyContactPrepPair,rest_distance),
+                    target.constants.size());
+            }
         };
         if(device_admission) {
             // Device tokens use pre-PCM candidate ordinals; prepared
             // endpoints already carry their authoritative solver ordinals.
             for(const auto& manager:manifolds) {
                 if(!manager.patch_count)continue;
-                if(manager.prep_index>=contact_prep.size())
+                if(manager.prep_index>=prep_count)
                     throw std::logic_error("Device contact source has no preparation");
-                const auto& source=contact_prep[manager.prep_index];
-                pack_manager(manager,source.body0.solver_ordinal,
-                             source.body1.solver_ordinal);
+                const auto first=compact_contact_prep.empty()
+                    ?contact_prep[manager.prep_index].body0.solver_ordinal
+                    :compact_contact_prep[manager.prep_index].solver_ordinal0;
+                const auto second=compact_contact_prep.empty()
+                    ?contact_prep[manager.prep_index].body1.solver_ordinal
+                    :compact_contact_prep[manager.prep_index].solver_ordinal1;
+                pack_manager(manager,first,second);
             }
         }else {
             for(const auto& desc:descriptors) {
@@ -897,7 +941,7 @@ public:
             std::numeric_limits<std::size_t>::max());
         for(const auto& manager:manifolds) {
             if(!manager.patch_count)continue;
-            const auto& pair=contact_prep[manager.prep_index];
+            const auto& pair=contact_origins_[manager.prep_index];
             const bool pcm=pair.pcm_pair_index!=invalid;
             for(std::size_t j=manager.patch_offset;
                 j<manager.patch_offset+manager.patch_count;++j) {
@@ -924,7 +968,7 @@ public:
                 "Source GPU compact friction inputs exceed address space");
         for(const auto& manager:manifolds) {
             if(!manager.patch_count)continue;
-            const auto& pair=contact_prep[manager.prep_index];
+            const auto& pair=contact_origins_[manager.prep_index];
             const bool pcm=pair.pcm_pair_index!=invalid;
             for(std::size_t j=manager.patch_offset;
                 j<manager.patch_offset+manager.patch_count;++j) {
@@ -1316,7 +1360,7 @@ public:
             bodies.size(),rows.size(),descriptor_capacity,partition_count,
             body_ordinals.size(),tasks.size(),contact_forces.size(),friction_count,
             patches.size(),manifolds.size(),contact_order.size(),
-            contact_prep.size(),integration.size(),compact_anchors_.size(),
+            prep_count,integration.size(),compact_anchors_.size(),
             tiles_.size(),device_partitions?1u:0u,bodies.size()};
         const std::array<const void*,count> sources{
             bodies.data(),rows.data(),
@@ -1464,8 +1508,8 @@ public:
             for(std::size_t i=0u;i<manifolds.size();++i) {
                 const auto& manager=manifolds[i];
                 if(!manager.patch_count ||
-                   manager.prep_index>=contact_prep.size() ||
-                   contact_prep[manager.prep_index].pcm_pair_index!=invalid)
+                   manager.prep_index>=prep_count ||
+                   contact_origins_[manager.prep_index].pcm_pair_index!=invalid)
                     continue;
                 const auto source=manager.order_offset;
                 std::memcpy(host_.data()+offsets[9]+
@@ -2111,7 +2155,7 @@ public:
             .compact_contact_admission=compact_contact_admission,
             .response_capacity=descriptor_capacity,
             .manifolds=manifolds,.contact_order=contact_order,
-            .contact_prep=contact_prep,.result_offsets=result_offsets,
+            .result_offsets=result_offsets,
             .output_bytes=output_bytes,
             .device_admission=device_admission.has_value(),
             .readback_device_task_records=readback_device_task_records,
@@ -2199,7 +2243,7 @@ public:
         std::span<const std::uint32_t> body_ordinals=pending.body_ordinals;
         const auto manifolds=pending.manifolds;
         const auto contact_order=pending.contact_order;
-        const auto contact_prep=pending.contact_prep;
+        const auto& contact_prep=contact_origins_;
         const auto result_offsets=pending.result_offsets;
         const auto output_bytes=pending.output_bytes;
         const auto free_velocity_offset=pending.free_velocity_offset;
@@ -2579,7 +2623,8 @@ public:
         for(const auto slot:joint_source_dirty_)
             joint_source_valid_[slot]=1u;
         last_contact_prep_upload_saving_=
-            static_cast<std::int64_t>(contact_prep.size_bytes())-
+            static_cast<std::int64_t>(contact_prep.size()*
+                sizeof(native::GpuDyContactPrepPair))-
             static_cast<std::int64_t>(prep_bytes+inline_body_bytes);
     }
     std::size_t last_resident_pose_count() const noexcept {
@@ -2667,7 +2712,7 @@ private:
         std::size_t response_capacity=0u;
         std::span<const native::GpuDyContactManifold> manifolds{};
         std::span<const std::uint32_t> contact_order{};
-        std::span<const native::GpuDyContactPrepPair> contact_prep{};
+
         std::array<std::size_t,6> result_offsets{};
         std::size_t output_bytes=0u;
         bool device_admission=false;
@@ -3105,6 +3150,12 @@ private:
     std::vector<std::uint32_t> admitted_body_ordinals_;
     std::vector<std::uint32_t> admitted_response_tokens_;
     std::vector<std::uint32_t> admitted_contact_sources_;
+    struct ContactOrigin {
+        std::uint32_t pcm_pair_index=0xffffffffu;
+        std::uint32_t pcm_edge=0xffffffffu;
+        std::uint32_t cpu_gu_offset=0xffffffffu;
+    };
+    std::vector<ContactOrigin> contact_origins_;
     std::vector<SourceDyPackedContactPrepNative> packed_;
     std::vector<std::uint32_t> source_descriptor_tokens_;
     std::vector<native::GpuDyDistanceDescriptor> source_descriptor_full_;

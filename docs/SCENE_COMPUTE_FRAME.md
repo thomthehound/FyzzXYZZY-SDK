@@ -235,8 +235,13 @@ inputs carry tagged references to integrated solver rows or the stable
 actor-local pool. Static and kinematic contact participants retain their
 authored velocities and mass-frame transforms in the same actor-local
 allocation before PCM witness publication; no repeated inline body
-record is transferred for them. Standalone numerical inputs without
-a Scene actor identity retain their explicit inline body payload.
+record is transferred for them. Scene emits an 80-byte compact
+contact source containing only actor IDs, prepared solver ordinals,
+inverse masses and the numerical material tail. Dy lowers it to the
+unchanged 64-byte GPU preparation descriptor. Neither the 192-byte
+inline-body prefix nor its associated CPU packing is constructed on
+production Scene frames. Standalone numerical inputs without a Scene
+actor identity retain their explicit inline body payload.
 The GPU Dy path fetches 8 bytes of edge/touch metadata for ordinary
 GPU pairs before numerical admission. Managers with multiple
 geometrically valid, material-compatible retained friction patches fetch
