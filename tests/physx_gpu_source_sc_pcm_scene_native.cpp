@@ -2859,7 +2859,7 @@ void verify_mixed_pre_witness_numerical(
     std::array<native::GpuDyDistanceBody,2> bodies{};
     std::array<native::GpuDyContactManifold,2> managers{{
         {0u,1u,0xffffffffu,0u,0u,0u},
-        {1u,1u,0u,sphere_capacity,1u,box_capacity}
+        {1u,1u,box_capacity,sphere_capacity,1u,box_capacity}
     }};
     std::array<native::GpuDyContactPrepPair,2> preparation{};
     for(std::uint32_t i=0u;i<preparation.size();++i) {
