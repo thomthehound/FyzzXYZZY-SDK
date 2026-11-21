@@ -111,6 +111,10 @@ uint sourceDyResponseExtent(uint scratch,uint index) {
     const uint offset=arena.Load(scratch+28u);
     return scIslandWork.Load(p.ordinalBias+offset+index*4u);
 }
+uint sourceDyContactPrefix(uint scratch,uint response) {
+    const uint offset=arena.Load(scratch+44u);
+    return scIslandWork.Load(p.ordinalBias+offset+response*4u);
+}
 uint sourceDyTaskLoad(uint address) {
     return (p.launchControl&0x08000000u)!=0u
         ?scIslandWork.Load(address):arena.Load(address);
@@ -423,6 +427,7 @@ bool sourceDyPrepareSleep(uint input,uint local,
 // Packed single-descriptor tasks bypass workgroup coloring, but still
 // participate in the same exact-size numerical row allocation.
 bool sourceDyRelocateSingletonContact(uint4 desc,uint scratch,
+                                      uint responseIndex,
                                       uint errorAddress) {
     if((desc.w&255u)!=0u)return true;
     if(desc.x>=p.manifoldCount) {
@@ -450,7 +455,10 @@ bool sourceDyRelocateSingletonContact(uint4 desc,uint scratch,
         return false;
     }
     uint firstRow;
-    arena.InterlockedAdd(scratch+32u,exact,firstRow);
+    if(arena.Load(scratch+44u)!=0u)
+        firstRow=sourceDyContactPrefix(scratch,responseIndex);
+    else
+        arena.InterlockedAdd(scratch+32u,exact,firstRow);
     if(firstRow>p.contactCount || exact>p.contactCount-firstRow) {
         sourceDyTaskErrorOr(errorAddress,65536u);
         return false;
@@ -738,7 +746,7 @@ void sourceDyPartitionTask(uint taskId,uint scratch,uint errorAddress,
     if(deviceAdmission && count==1u && dyContactManagers!=0u) {
         if(lane==0u)
             sourceDyRelocateSingletonContact(
-                arena.Load4(raw+first*16u),scratch,errorAddress);
+                arena.Load4(raw+first*16u),scratch,first,errorAddress);
         AllMemoryBarrierWithGroupSync();
         if(sourceDyTaskLoad(errorAddress)!=0u)return;
     }
@@ -787,7 +795,11 @@ void sourceDyPartitionTask(uint taskId,uint scratch,uint errorAddress,
         if(deviceAdmission) {
             if(lane==0u) {
                 uint firstRow;
-                arena.InterlockedAdd(scratch+32u,dyExactContacts,firstRow);
+                if(arena.Load(scratch+44u)!=0u)
+                    firstRow=sourceDyContactPrefix(scratch,first);
+                else
+                    arena.InterlockedAdd(
+                        scratch+32u,dyExactContacts,firstRow);
                 dyWorkBase=firstRow;
                 if(firstRow>p.contactCount ||
                    dyExactContacts>p.contactCount-firstRow)
@@ -1966,7 +1978,8 @@ void sourceDySolvePackedTask(uint taskId) {
         return;
     }
     if((p.launchControl&0x08000000u)!=0u &&
-       !sourceDyRelocateSingletonContact(desc,scratch,errorAddress)) {
+       !sourceDyRelocateSingletonContact(
+            desc,scratch,ranges.x,errorAddress)) {
         publishTaskError(taskId,sourceDyTaskLoad(errorAddress));
         return;
     }

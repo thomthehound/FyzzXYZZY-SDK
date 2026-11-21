@@ -170,7 +170,10 @@ Hardware scene qualification now compares identical CPU, GPU Sc-authored
 and GPU device-admitted numerical workloads, including frame percentiles
 and CPU-referenced pose/velocity error.
 The GPU resolves physical touch and runnable task topology on its own
-ordered queue. After accurate Sc publication, a compact node-to-solver-row upload
+ordered queue. Compact admission also assigns exact source-ordered contact-row
+prefixes from resident PCM and Gu extents. Dy consumes those offsets directly
+instead of atomically reserving global row ranges for each task.
+After accurate Sc publication, a compact node-to-solver-row upload
 remaps the device body order in place against the full Dy row capacity;
 Dy consumes the same admitted tasks without a second graph dispatch or
 topology readback. Device-admitted numerical tasks do not materialize

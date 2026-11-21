@@ -108,7 +108,8 @@ struct SourceScDeviceIslandLayout {
     std::size_t response_primary=0u,response_scratch=0u;
     std::size_t response_order=0u,body_order=0u;
     std::size_t response_tokens=0u,response_extents=0u;
-    std::size_t contact_admissions=0u;
+    std::size_t response_prefixes=0u,contact_admissions=0u;
+    bool compact_contact_prefix=false;
     std::size_t radix_histogram=0u,bytes=0u;
     static std::uint32_t radix_passes(std::uint32_t nodes) noexcept {
         // Body, joint and contact identities share root-ordered
@@ -169,9 +170,14 @@ struct SourceScDeviceIslandLayout {
         result.response_extents=static_cast<std::size_t>(
             align(std::uint64_t(result.response_tokens)+
                   std::uint64_t(edge_count)*4u));
-        result.contact_admissions=static_cast<std::size_t>(
+        result.response_prefixes=static_cast<std::size_t>(
             align(std::uint64_t(result.response_extents)+
                   std::uint64_t(edge_count)*4u));
+        result.contact_admissions=static_cast<std::size_t>(
+            align(std::uint64_t(result.response_prefixes)+
+                  std::uint64_t(edge_count)*4u));
+        result.compact_contact_prefix=
+            node_count<=256u && edge_count<=256u;
         bytes=align(std::uint64_t(result.contact_admissions)+
                     ((std::uint64_t(contact_manager_count)+31u)/32u)*4u);
         if(bytes>std::numeric_limits<std::uint32_t>::max())
@@ -211,7 +217,7 @@ public:
         pipeline.storage_buffer_binding_count=4u;
         pipeline.storage_buffer_views.assign(
             4u,compute::StorageBufferViewKind::RawReadWrite);
-        pipeline.push_constant_bytes=124u;
+        pipeline.push_constant_bytes=128u;
         pipeline_=context_.create_compute_pipeline(pipeline);
 #if defined(FYZZXYZZY_PROFILE_GPU)
         context_.set_pipeline_profile_label(pipeline_,"sc.device_islands");
@@ -266,7 +272,7 @@ public:
         const auto touch_bytes=edge_capacity
             ?source_allocation_bytes(edge_capacity,240u):edge_bytes;
         const auto touch_address=edge_capacity?touch_history:edge_address;
-        std::array<std::uint32_t,31> args{};
+        std::array<std::uint32_t,32> args{};
         compute::DispatchCommand dispatch{};
         dispatch.pipeline=pipeline_;
         dispatch.buffers={
@@ -318,6 +324,7 @@ public:
             ?offset(layout.block_tiles,args[3]):args[8];
         args[28]=offset(layout.response_extents,args[3]);
         args[30]=offset(layout.contact_admissions,args[3]);
+        args[31]=offset(layout.response_prefixes,args[3]);
         dispatch.push_constants.resize(sizeof(args));
         // A bounded single-workgroup graph avoids the multi-dispatch
         // union, prefix and response-ordering schedule.
@@ -398,7 +405,7 @@ public:
            (joint_source_count && !joint_row_capacity) ||
            layout.bytes>max_view_)
             throw std::invalid_argument("Missing Sc numerical remap resource");
-        std::array<std::uint32_t,31> args{};
+        std::array<std::uint32_t,32> args{};
         const auto bytes=source_allocation_bytes(
             std::uint64_t(node_count)+joint_source_count,4u);
         compute::DispatchCommand dispatch{};
@@ -428,6 +435,7 @@ public:
         args[26]=joint_source_count;
         args[29]=source_sc_indirect_group_limits(context_.device_info())[1];
         args[30]=offset(layout.contact_admissions,args[3]);
+        args[31]=offset(layout.response_prefixes,args[3]);
         const auto max_groups=context_.device_info().max_workgroup_count[0];
         if(!max_groups)
             throw std::logic_error("Device Sc remap has no compute groups");

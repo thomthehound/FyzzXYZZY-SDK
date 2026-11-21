@@ -30,7 +30,7 @@ struct Parameters {
     uint responseBiasA,responseBiasB,histBias,primaryCapacity;
     uint tokenBias,radixPasses,bodyOrderBias,combinedCount;
     uint responseOrderBias,jointRowCount,fullDescriptorCount,blockTilesBias;
-    uint extentBias,maxGroupsY,contactAdmissionBias;
+    uint extentBias,maxGroupsY,contactAdmissionBias,contactPrefixBias;
 };
 #ifdef __spirv__
 [[vk::push_constant]] Parameters p;
@@ -157,6 +157,7 @@ groupshared uint taskScan[128],responseScan[128],bodyScan[128];
 groupshared uint taskCarry,responseCarry,bodyCarry;
 groupshared uint radixBuckets[256],radixOffsets[256],radixTotals[256];
 groupshared uint radixDigits[128],radixRanks[128];
+groupshared uint compactContactScan[256];
 groupshared uint compactBodyKeys[256],compactBodyStarts[256];
 groupshared uint compactEdgeKeys[256],compactEdgeStarts[256];
 
@@ -514,6 +515,40 @@ void admitCompact(uint lane) {
                 }
             }
         }
+    }
+    // The resident response stream owns exact contact-row offsets.
+    // Compact graphs compute their global prefix inside admission.
+    AllMemoryBarrierWithGroupSync();
+    if(work.Load(p.workBias)!=0u)return;
+    const uint responses=work.Load(p.workBias+12u);
+    if(responses<=1u) {
+        if(lane==0u && responses!=0u)
+            work.Store(p.contactPrefixBias,0u);
+        return;
+    }
+    for(uint index=lane;index<256u;index+=128u) {
+        const uint extent=index<responses
+            ?work.Load(p.extentBias+index*4u):0u;
+        compactContactScan[index]=(extent&numericalExtentValid)!=0u
+            ?(extent&255u):0u;
+    }
+    GroupMemoryBarrierWithGroupSync();
+    [unroll]
+    for(uint step=1u;step<256u;step<<=1u) {
+        const uint a=lane>=step?compactContactScan[lane-step]:0u;
+        const uint other=lane+128u;
+        const uint b=other>=step?compactContactScan[other-step]:0u;
+        GroupMemoryBarrierWithGroupSync();
+        compactContactScan[lane]+=a;
+        compactContactScan[other]+=b;
+        GroupMemoryBarrierWithGroupSync();
+    }
+    for(uint index=lane;index<responses;index+=128u) {
+        const uint extent=work.Load(p.extentBias+index*4u);
+        const uint count=(extent&numericalExtentValid)!=0u
+            ?(extent&255u):0u;
+        work.Store(p.contactPrefixBias+index*4u,
+                   compactContactScan[index]-count);
     }
 }
 [numthreads(128,1,1)]

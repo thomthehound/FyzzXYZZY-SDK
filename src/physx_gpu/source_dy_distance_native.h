@@ -1489,6 +1489,13 @@ public:
                     const std::uint32_t next_contact_row=0u;
                     std::memcpy(host_.data()+offsets[15]+32u,
                                 &next_contact_row,sizeof(next_contact_row));
+                    const auto contact_prefix_offset=
+                        device_admission->layout.compact_contact_prefix
+                        ?narrow(device_admission->layout.response_prefixes-
+                                device_admission->layout.body_order):0u;
+                    std::memcpy(host_.data()+offsets[15]+44u,
+                                &contact_prefix_offset,
+                                sizeof(contact_prefix_offset));
                     const std::array<std::uint32_t,2> epoch_errors{
                         0u,std::numeric_limits<std::uint32_t>::max()};
                     std::memcpy(host_.data()+offsets[15]+36u,
@@ -1829,7 +1836,9 @@ public:
                layout.tasks>layout.block_offsets ||
                layout.body_order>layout.response_tokens ||
                layout.response_tokens>layout.response_extents ||
-               layout.response_extents>layout.bytes ||
+               layout.response_extents>layout.response_prefixes ||
+               layout.response_prefixes>layout.contact_admissions ||
+               layout.contact_admissions>layout.bytes ||
                tasks.size_bytes()>layout.block_offsets-layout.tasks ||
                body_ordinals.size_bytes()>
                    layout.response_tokens-layout.body_order ||
@@ -1837,8 +1846,12 @@ public:
                    (layout.response_extents-layout.response_tokens)/
                        sizeof(std::uint32_t) ||
                descriptor_capacity>
-                   (layout.bytes-layout.response_extents)/
-                       sizeof(std::uint32_t))
+                   (layout.response_prefixes-layout.response_extents)/
+                       sizeof(std::uint32_t) ||
+               (layout.compact_contact_prefix &&
+                descriptor_capacity>
+                   (layout.contact_admissions-layout.response_prefixes)/
+                       sizeof(std::uint32_t)))
                 throw std::out_of_range(
                     "Source Sc device admission capacity exceeds its typed stream");
         }
