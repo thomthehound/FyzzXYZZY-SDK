@@ -193,33 +193,6 @@ jobs:
             2>&1 | tee "${RUNNER_TEMP}/fyzzxyzzy-editor-runtime.log"
           grep -Fq "FyzzXYZZY Godot acceptance PASS" "${RUNNER_TEMP}/fyzzxyzzy-editor-runtime.log"
 
-  d3d12-aabb:
-    runs-on: windows-latest
-    timeout-minutes: 35
-    steps:
-      - uses: actions/checkout@v7
-      - name: Find Windows SDK DXC
-        shell: pwsh
-        run: |
-          $sdkBin = Join-Path ${env:ProgramFiles(x86)} 'Windows Kits\10\bin'
-          $candidates = @(Get-ChildItem -Path $sdkBin -Filter dxc.exe -File -Recurse |
-            Where-Object { $_.FullName -match '[\\/]x64[\\/]' } |
-            Sort-Object FullName -Descending)
-          if (-not $candidates) { throw 'Windows SDK DXC compiler not found' }
-          "FYZZXYZZY_DXC=$($candidates[0].FullName)" >> $env:GITHUB_ENV
-      - name: Configure source-independent D3D12 conformance
-        shell: pwsh
-        run: cmake -S . -B build -A x64 -DBUILD_TESTING=ON -DFYZZXYZZY_ENABLE_PHYSX_SOURCE=OFF -DFYZZXYZZY_BUILD_D3D12=ON -DFYZZXYZZY_BUILD_D3D12_AABB_TEST=ON -DFETCHCONTENT_FULLY_DISCONNECTED=ON "-DFYZZXYZZY_DXC=$env:FYZZXYZZY_DXC"
-      - name: Build and test D3D12 AABB conformance
-        shell: pwsh
-        env:
-          FYZZXYZZY_D3D12_FORCE_WARP: '1'
-        run: |
-          cmake --build build --config Release --parallel 4
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          ctest --test-dir build -C Release -LE '^d3d12-extended$' --output-on-failure --stop-on-failure
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-
   windows:
     runs-on: windows-latest
     timeout-minutes: 35
@@ -444,9 +417,13 @@ jobs:
           ctest --test-dir build-profile-vulkan -R '^fyzzxyzzy_hardware_profile_stream$' --output-on-failure
 
   native-no-physx-windows:
-    name: Independent SDK / D3D12 without PhysX
+    name: Independent SDK / D3D12 ${{ matrix.suite }} without PhysX
     runs-on: windows-latest
     timeout-minutes: 35
+    strategy:
+      fail-fast: false
+      matrix:
+        suite: [source, aabb]
     steps:
       - uses: actions/checkout@v7
       - name: Locate Windows SDK DXC for reference-free source GPU conformance
@@ -515,7 +492,10 @@ jobs:
           }
       - name: Configure without external source or network
         shell: pwsh
-        run: cmake -S . -B build-native -A x64 -DBUILD_TESTING=ON -DFYZZXYZZY_ENABLE_PHYSX_SOURCE=OFF -DFYZZXYZZY_BUILD_D3D12=ON -DFYZZXYZZY_BUILD_SOURCE_GPU_TESTS=ON -DFETCHCONTENT_FULLY_DISCONNECTED=ON "-DFYZZXYZZY_DXC=$env:FYZZXYZZY_DXC"
+        run: |
+          $sourceTests = if ('${{ matrix.suite }}' -eq 'source') { 'ON' } else { 'OFF' }
+          $aabbTests = if ('${{ matrix.suite }}' -eq 'aabb') { 'ON' } else { 'OFF' }
+          cmake -S . -B build-native -A x64 -DBUILD_TESTING=ON -DFYZZXYZZY_ENABLE_PHYSX_SOURCE=OFF -DFYZZXYZZY_BUILD_D3D12=ON -DFYZZXYZZY_BUILD_SOURCE_GPU_TESTS=$sourceTests -DFYZZXYZZY_BUILD_D3D12_AABB_TEST=$aabbTests -DFETCHCONTENT_FULLY_DISCONNECTED=ON "-DFYZZXYZZY_DXC=$env:FYZZXYZZY_DXC"
       - name: Build and test native core and compute on WARP
         shell: pwsh
         env:
@@ -525,13 +505,16 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           ctest --test-dir build-native -C Release -LE '^d3d12-extended$' --output-on-failure --stop-on-failure
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          $measurements = @(Select-String -Path 'build-native/Testing/Temporary/LastTest.log' -Pattern 'FYZZXYZZY_METRIC' |
-            ForEach-Object { $_.Line })
-          if (-not $measurements) { throw 'Native GPU integration measurements missing' }
-          $measurements | Tee-Object -FilePath $env:GITHUB_STEP_SUMMARY -Append
+          if ('${{ matrix.suite }}' -eq 'source') {
+            $measurements = @(Select-String -Path 'build-native/Testing/Temporary/LastTest.log' -Pattern 'FYZZXYZZY_METRIC' |
+              ForEach-Object { $_.Line })
+            if (-not $measurements) { throw 'Native GPU integration measurements missing' }
+            $measurements | Tee-Object -FilePath $env:GITHUB_STEP_SUMMARY -Append
+          }
           if (Test-Path 'build-native/_deps/fyzzxyzzy_physx-src') { throw 'Native-only build unexpectedly fetched source dependencies' }
           if (-not (Test-Path 'build-native/Release/fyzzxyzzy_source_gpu_primitives_d3d12.lib')) { throw 'Independent source GPU primitive library missing' }
       - name: Compile instrumented D3D12 scene with the production execution graph
+        if: matrix.suite == 'source'
         shell: pwsh
         run: |
           cmake -S . -B build-profile-d3d12 -A x64 -DBUILD_TESTING=ON -DFYZZXYZZY_ENABLE_PHYSX_SOURCE=OFF -DFYZZXYZZY_BUILD_D3D12=ON -DFYZZXYZZY_BUILD_SOURCE_GPU_TESTS=ON -DFYZZXYZZY_PROFILE_GPU=ON -DFETCHCONTENT_FULLY_DISCONNECTED=ON "-DFYZZXYZZY_DXC=$env:FYZZXYZZY_DXC"
@@ -541,6 +524,7 @@ jobs:
           ctest --test-dir build-profile-d3d12 -C Release -R '^fyzzxyzzy_hardware_profile_stream$' --output-on-failure
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Validate qualified D3D12 shader artifact inventory
+        if: matrix.suite == 'source'
         shell: pwsh
         run: |
           pwsh -NoProfile -File tools/hardware/qualify.ps1 -Backend D3D12 -ValidateArtifactsOnly
