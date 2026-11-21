@@ -2585,13 +2585,16 @@ void verify_device_sc_dy_task_admission(
     sleep={};
     witness={};
     producer->enqueue_gpu_pcm_box_contacts(empty_request,witness);
+    std::array<native::GpuDyRetainedFrictionCandidate,2> unused_history{};
+    for(auto& record:unused_history)record.anchor_count=1u;
     producer->enqueue_gpu_dy_distance(
         body,{},contact_desc,{},ordinals,contact_tasks,
         capacity_forces,{},{},cached_anchors,empty_patches,
         capacity_managers,{},contact_prep,inputs,poses,true,
-        cached_impulses,true,true,true,sleep);
-    require(witness[0].packed_counts==0u,
-        "Empty PCM capacity admission read the host witness early");
+        cached_impulses,true,true,true,sleep,{},true,false,{},unused_history);
+    require(witness[0].packed_counts==0u &&
+            producer->dy_launch_stats().retained_friction_source_bytes==0u,
+        "Non-touching PCM candidate transferred unused retained friction");
     producer->finish_gpu_dy_distance();
     require(witness[0].packed_counts==0u &&
             contact_tasks[0].error==0u && poses[0].valid==1u &&
