@@ -893,6 +893,9 @@ public:
     bool device_island_deferred_body_remap() const noexcept {
         return island_work_ready_ && island_deferred_body_remap_;
     }
+    bool last_deferred_body_remap() const noexcept {
+        return island_deferred_body_remap_;
+    }
     CudaDeviceAddressMap::Address device_island_work_address() const noexcept {
         return island_work_ready_?island_work_.getDevicePtr():0u;
     }

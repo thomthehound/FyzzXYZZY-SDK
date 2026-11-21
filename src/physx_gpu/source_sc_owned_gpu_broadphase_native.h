@@ -536,7 +536,7 @@ public:
         return pcm_ ? pcm_->last_remap_dispatches() : 0u;
     }
     bool sc_island_deferred_body_remap() const noexcept {
-        return pcm_ && pcm_->device_island_deferred_body_remap();
+        return pcm_ && pcm_->last_deferred_body_remap();
     }
     std::size_t dy_pcm_device_contact_rows() const noexcept {
         return dy_distance_ ? dy_distance_->last_reused_pcm_contact_rows() : 0u;
