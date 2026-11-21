@@ -242,17 +242,23 @@ unchanged 64-byte GPU preparation descriptor. Neither the 192-byte
 inline-body prefix nor its associated CPU packing is constructed on
 production Scene frames. Standalone numerical inputs without a Scene
 actor identity retain their explicit inline body payload.
-The GPU Dy path fetches 8 bytes of edge/touch metadata for ordinary
-GPU pairs before numerical admission. Managers with multiple
-geometrically valid, material-compatible retained friction patches fetch
-their 12-byte contact normal in the same early batch, without fetching
-world-space points. One eligible cached patch is validated against the
-resident normal by Dy, which regenerates anchors when the normal changes
-without an early host transfer. Invalid, broken, retired, or material-incompatible
-history needs no normal transfer. Only the multi-patch validity checks
-that determine this early DMA precede PCM submission; ordinary friction
-validation overlaps device PCM. Resident PCM supplies numerical normals
-and contacts directly to Dy. The Sc EdgeIndex touch word retains exact PCM
+The GPU Dy path still fetches 8 bytes of edge/touch metadata for ordinary
+GPU pairs before numerical admission. Sc validates geometrically sound,
+material-compatible retained friction patches before PCM submission.
+When more than one historical patch is eligible, Dy receives their
+source-ordered local normals and anchors in its existing transient numerical
+input arena. Dy chooses the first compatible historical normal against the
+resident PCM normal and reports the selected source ordinal through the
+existing patch result. Only candidates consumed by prepared numerical
+patches are uploaded; non-touching candidates add no history-upload bytes.
+One eligible cached patch retains its direct device normal check and
+regenerates anchors when the normal changes. Broken, retired or
+material-incompatible history does not require a normal transfer.
+This removes the separate early normal readback at the cost of bounded
+candidate uploads; representative hardware latency and transfer-cost
+qualification is still required. Full PCM-to-Dy numerical submission
+continues to depend on Sc's host header publication. Resident PCM supplies
+numerical normals and contacts directly to Dy. The Sc EdgeIndex touch word retains exact PCM
 emission counts in bits 8–10, with bit 16 marking the PCM source. CPU Gu
 uses bits 8–15 for its exact count and bit 17 for its numerical source;
 both paths preserve the existing eight-byte Gu touch upload and journal.
