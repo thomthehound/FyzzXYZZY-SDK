@@ -10023,8 +10023,9 @@ void Scene::solve_gpu_distance_constraints(float seconds) {
                         (source.retained_count<<8u)|
                         (source.retained_full?0x04000000u:0u):0u),
                 patch.static_friction,patch.dynamic_friction,
-                select_history?source.retained_first:order_offset,
-                cached_normal?encode_normal(patch.body0_normal):0u};
+                order_offset,
+                select_history?source.retained_first:
+                    cached_normal?encode_normal(patch.body0_normal):0u};
             cursor+=patch.contact_count;
         }
         if(cursor!=m.solver_offset+numerical_count)
