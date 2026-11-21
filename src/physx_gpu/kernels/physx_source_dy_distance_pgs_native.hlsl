@@ -694,6 +694,18 @@ void sourceDyPartitionTask(uint taskId,uint scratch,uint errorAddress,
         sourceDyTaskErrorOr(errorAddress,1048576u);
     AllMemoryBarrierWithGroupSync();
     if(sourceDyTaskLoad(errorAddress)!=0u)return;
+    if(views.x==64u && arena.Load(scratch+48u)!=0u) {
+        const uint2 bodyRange=sourceDyTaskLoad2(task+16u);
+        if(lane==0u &&
+           (bodyRange.x>bodyRange.y || bodyRange.y>p.bodyCount))
+            sourceDyTaskErrorOr(errorAddress,8u);
+        for(uint i=bodyRange.x+lane;
+            i<bodyRange.y && i<p.bodyCount;i+=128u)
+            if(sourceDyBodyOrdinal(i)>=p.bodyCount)
+                sourceDyTaskErrorOr(errorAddress,8u);
+        AllMemoryBarrierWithGroupSync();
+        if(sourceDyTaskLoad(errorAddress)!=0u)return;
+    }
     const uint count=last-first;
     if(lane==0u) {
         dyNeeded=0u;dyAssigned=0u;dyWave=0u;dyHighest=0u;
@@ -1976,6 +1988,15 @@ void sourceDySolvePackedTask(uint taskId) {
         return;
     }
     const uint scratch=schedule.w;
+    if(arena.Load(scratch+48u)!=0u) {
+        for(uint body=bodies.x;body<bodies.y;++body)
+            if(sourceDyBodyOrdinal(body)>=p.bodyCount)
+                sourceDyTaskErrorOr(errorAddress,8u);
+        if(sourceDyTaskLoad(errorAddress)!=0u) {
+            publishTaskError(taskId,sourceDyTaskLoad(errorAddress));
+            return;
+        }
+    }
     const uint4 views=arena.Load4(scratch);
     const uint colors=scratch+views.y;
     const uint bodyState=scratch+views.w;
