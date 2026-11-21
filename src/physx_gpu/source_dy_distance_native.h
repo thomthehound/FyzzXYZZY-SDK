@@ -383,6 +383,7 @@ public:
                                 input.linear_velocity,velocity_bytes);
                     dirty=true;
                 }
+                actor_velocity_valid_[id]=0u;
             }
             if(dirty || std::memcmp(&resident.wake_counter,
                                     &local.wake_counter,sleep_bytes)!=0) {
