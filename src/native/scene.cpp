@@ -4207,6 +4207,7 @@ GpuDyPairMaterial Scene::prepare_contact_material(
 }
 
 void Scene::prepare_gpu_dy_candidate_contact_preps(float seconds) {
+    FYZZ_PROFILE_SCOPE("dy.prewitness_contact_prep");
     gpu_dy_contact_prep_pairs_.clear();
     if(!gpu_dy_active() || seconds<=0.0f)return;
     if(gpu_dy_candidate_sources_.size()!=previous_pairs_.size() ||
@@ -4529,8 +4530,6 @@ void Scene::update_contacts(bool defer_device_points,float step_seconds) {
             throw std::logic_error(
                 "GPU Dy numerical sources omitted a PCM candidate");
     }
-    if(early_device_materials && step_seconds>0.0f)
-        prepare_gpu_dy_candidate_contact_preps(step_seconds);
     validate_pcm_history(true);
     // Source-ordered numerical and friction-history candidates are ready
     // before PCM publication. Sc joins compact touch metadata separately.
@@ -4544,6 +4543,10 @@ void Scene::update_contacts(bool defer_device_points,float step_seconds) {
                 ?static_cast<std::uint32_t>(island_edges_.size()):0u,
             defer_device_points);
     validate_pcm_history(false);
+    // CPU prepares candidate numerics while the submitted PCM queue
+    // produces the physical touch and contact stream.
+    if(early_device_materials && step_seconds>0.0f)
+        prepare_gpu_dy_candidate_contact_preps(step_seconds);
     FYZZ_PROFILE_COUNTER("pcm.early_numerical_materials",
         early_device_materials?gpu_dy_candidate_sources_.size():0u);
 
