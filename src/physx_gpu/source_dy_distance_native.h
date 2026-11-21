@@ -136,6 +136,7 @@ struct SourceDyLaunchStats {
     std::size_t device_world_motion_bodies=0u;
     std::size_t actor_local_upload_bytes=0u;
     std::size_t host_contact_source_bytes=0u;
+    std::size_t retained_friction_source_bytes=0u;
     std::size_t resident_immovable_contact_bodies=0u;
     std::size_t inline_contact_body_bytes=0u;
     std::size_t actor_local_upload_spans=0u;
@@ -508,7 +509,8 @@ public:
                std::span<const compute::DownloadSpan> extra_downloads={},
                bool readback_device_task_records=true,
                bool compact_contact_admission=false,
-               std::span<const native::GpuDyCompactContactPrep> compact_contact_prep={}) {
+               std::span<const native::GpuDyCompactContactPrep> compact_contact_prep={},
+        std::span<const native::GpuDyRetainedFrictionCandidate> retained_candidates={}) {
         if(pending_solve_)
             throw std::logic_error("Source Dy numerical epoch already queued");
         if(!contact_prep.empty() && !compact_contact_prep.empty())
@@ -584,6 +586,8 @@ public:
         last_schedule_.host_descriptor_inputs=descriptors.size();
         last_schedule_.host_contact_source_bytes=compact_contact_prep.empty()
             ?contact_prep.size_bytes():compact_contact_prep.size_bytes();
+        last_schedule_.retained_friction_source_bytes=
+            retained_candidates.size_bytes();
         last_schedule_.device_initialized_bodies=device_initial_bodies?bodies.size():0u;
         last_schedule_.device_body_upload_bytes=device_initial_bodies
             ? (device_world_motion?0u:bodies.size()*sizeof(float))
@@ -992,7 +996,55 @@ public:
         // GPU reader; only scheduled descriptors require body references.
         const std::size_t inline_body_bytes=
             inline_bodies_.size()*sizeof(native::GpuDyContactPrepBody);
-        const std::size_t compact_prep_bytes=static_begin+inline_body_bytes;
+        const std::size_t retained_begin=static_begin+inline_body_bytes;
+        if(retained_candidates.size()>
+           (std::numeric_limits<std::uint32_t>::max()-retained_begin)/
+               sizeof(native::GpuDyRetainedFrictionCandidate))
+            throw std::overflow_error(
+                "Retained GPU friction candidates exceed address space");
+        const std::size_t retained_bytes=retained_candidates.size_bytes();
+        const std::size_t compact_prep_bytes=retained_begin+retained_bytes;
+        packed_patches_.clear();
+        if(!retained_candidates.empty()) {
+            packed_patches_.assign(patches.begin(),patches.end());
+            std::vector<std::uint8_t> referenced(retained_candidates.size());
+            for(const auto& manager:manifolds) {
+                if(!manager.patch_count)continue;
+                if(manager.patch_offset>patches.size() ||
+                   manager.patch_count>patches.size()-manager.patch_offset)
+                    throw std::logic_error(
+                        "Retained friction source has invalid patch bounds");
+                for(std::size_t i=manager.patch_offset;
+                    i<manager.patch_offset+manager.patch_count;++i) {
+                    auto& patch=packed_patches_[i];
+                    if((patch.broken&0x10000000u)==0u)continue;
+                    const auto count=(patch.broken>>8u)&63u;
+                    const auto first=patch.order_offset;
+                    if((patch.broken&0x80000000u)==0u ||
+                       count==0u || count>32u ||
+                       first>retained_candidates.size() ||
+                       count>retained_candidates.size()-first)
+                        throw std::logic_error(
+                            "Device PCM retained candidates have invalid bounds");
+                    for(std::size_t j=first;j<first+count;++j) {
+                        const auto& candidate=retained_candidates[j];
+                        if(referenced[j]++ ||
+                           candidate.source_ordinal>=32u ||
+                           candidate.anchor_count==0u ||
+                           candidate.anchor_count>2u)
+                            throw std::logic_error(
+                                "Device PCM retained candidate is invalid");
+                    }
+                    patch.order_offset=narrow(
+                        retained_begin+std::size_t(first)*
+                            sizeof(native::GpuDyRetainedFrictionCandidate));
+                }
+            }
+            if(std::find(referenced.begin(),referenced.end(),0u)!=
+               referenced.end())
+                throw std::logic_error(
+                    "Device PCM retained candidates lack a numerical consumer");
+        }
         // Contact/friction prep and integrateCore share one actor world pose.
         // Sc retains the completed-frame mirror for publication and rollback.
         packed_integration_.clear();
@@ -1367,7 +1419,8 @@ public:
             device_partitions?nullptr:descriptors.data(),
             device_partitions?nullptr:partition_ends.data(),
             body_ordinals.data(),tasks.data(),nullptr,nullptr,
-            patches.data(),manifolds.data(),contact_order.data(),
+            packed_patches_.empty()?patches.data():packed_patches_.data(),
+            manifolds.data(),contact_order.data(),
             contact_prep.data(),integration.data(),nullptr,tiles_.data(),
             nullptr,nullptr};
         // Both full contact and friction solver rows live on device.
@@ -1529,6 +1582,9 @@ public:
             std::memcpy(host_.data()+offsets[11]+static_begin,
                         inline_bodies_.data(),inline_bodies_.size()*
                             sizeof(native::GpuDyContactPrepBody));
+        if(retained_bytes)
+            std::memcpy(host_.data()+offsets[11]+retained_begin,
+                        retained_candidates.data(),retained_bytes);
         last_schedule_.inline_contact_body_bytes=
             inline_bodies_.size()*sizeof(native::GpuDyContactPrepBody);
         if(device_partitions) {
@@ -2625,7 +2681,8 @@ public:
         last_contact_prep_upload_saving_=
             static_cast<std::int64_t>(contact_prep.size()*
                 sizeof(native::GpuDyContactPrepPair))-
-            static_cast<std::int64_t>(prep_bytes+inline_body_bytes);
+            static_cast<std::int64_t>(prep_bytes+inline_body_bytes+
+                                      retained_bytes);
     }
     std::size_t last_resident_pose_count() const noexcept {
         return last_resident_pose_count_;
@@ -3157,6 +3214,7 @@ private:
     };
     std::vector<ContactOrigin> contact_origins_;
     std::vector<SourceDyPackedContactPrepNative> packed_;
+    std::vector<native::GpuDyContactPatch> packed_patches_;
     std::vector<std::uint32_t> source_descriptor_tokens_;
     std::vector<native::GpuDyDistanceDescriptor> source_descriptor_full_;
     std::vector<SourceDyPackedIntegrationNative> packed_integration_;
