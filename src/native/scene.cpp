@@ -4483,8 +4483,8 @@ void Scene::update_contacts(bool defer_device_points,float inverse_step) {
                 "GPU Dy numerical sources omitted a PCM candidate");
     }
     validate_pcm_history(true);
-    // Only selected normals cross early; the validated source history
-    // remains available to Sc when the PCM header joins later.
+    // Source-ordered numerical and friction-history candidates are ready
+    // before PCM publication. Sc joins compact touch metadata separately.
     if(gpu_results_pending || gu_only_device_epoch ||
        joint_only_device_admission ||
        (source_gpu_pcm && gpu_pcm_pairs_.empty()))
