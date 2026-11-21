@@ -7616,6 +7616,29 @@ void Scene::prepare_solver_bodies() {
     }
     solver_active_ids_.clear();
     world_solver_row_ = {};
+    // The early Sc graph already has a stable, ascending BodyId stream.
+    // Assign its active contact/joint participants solver rows in that
+    // order so the device can consume the original node ordinals directly.
+    // Non-touching or dormant candidates acquire no numerical row.
+    if(gpu_dy_active() && gpu_dy_early_islands_) {
+        for(const BodyId id:gpu_dy_early_actor_ids_) {
+            if(id>=actors_.size() ||
+               id>=accurate_islands_.node_island.size())
+                throw std::logic_error(
+                    "Early Sc numerical node has no live actor");
+            const auto& actor=actors_[id];
+            if(actor.motion!=Motion::Dynamic || actor.sleeping)continue;
+            const auto handle=accurate_islands_.node_island[id];
+            if(handle==IslandGraph::invalid ||
+               handle>=accurate_islands_.islands.size())
+                continue;
+            const auto& island=accurate_islands_.islands[handle];
+            if(!island.live || island.active_index==invalid_instance ||
+               (!island.contact_count && !island.constraint_count))
+                continue;
+            admit_solver_row(id);
+        }
+    }
     // Kinematic rigid nodes are not accurate-island solver bodies,
     // but all active contacts/1D constraints referencing them need a
     // current-frame, infinite-mass SolverBodyData row. A settled target
