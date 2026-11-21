@@ -4573,6 +4573,79 @@ void verify_single_pcm_joint_island_admission(
                 0.03f,"Joint-only island diverged from CPU PGS");
     }
 }
+// A newly touching GPU PCM pair can wake a sleeping solver body without
+// requiring Sc to authorize a speculative contact before device admission.
+void verify_sleeping_new_touch_device_admission(
+    fyzz::compute::Backend backend,const char* sap,
+    const char* pcm,const char* dy_shader) {
+    using namespace fyzz;
+    std::ifstream input(dy_shader,std::ios::binary);
+    require(bool(input),"Sleeping-contact Dy shader unavailable");
+    compute::ShaderBinary shader{};
+    shader.format=backend==compute::Backend::Vulkan
+        ?compute::ShaderFormat::Spirv:compute::ShaderFormat::Dxil;
+    shader.bytes.assign(std::istreambuf_iterator<char>{input},
+                        std::istreambuf_iterator<char>{});
+    native::Scene cpu,gpu;
+    auto owner=std::make_unique<
+        physx_gpu::SourceScOwnedGpuBroadphaseNative>(
+        backend,load_native_gpu_sap_shaders(backend,sap),
+        128u,128u,std::nullopt,
+        load_native_gpu_pcm_shaders(backend,pcm),std::move(shader));
+    auto* producer=owner.get();
+    gpu.set_gpu_broadphase(std::move(owner));
+    gpu.set_gpu_dy_device_admission_enabled(true);
+    const auto fixed_cpu=cpu.add_static_box(
+        {0.5f,0.5f,0.5f},{0.f,0.f,0.f});
+    const auto fixed_gpu=gpu.add_static_box(
+        {0.5f,0.5f,0.5f},{0.f,0.f,0.f});
+    const auto moving_cpu=cpu.add_dynamic_box(
+        {0.5f,0.5f,0.5f},{0.f,2.5f,0.f},1.f);
+    const auto moving_gpu=gpu.add_dynamic_box(
+        {0.5f,0.5f,0.5f},{0.f,2.5f,0.f},1.f);
+    RigidBodyDynamics dynamics{};
+    dynamics.gravity_enabled=false;
+    cpu.set_dynamics(moving_cpu,dynamics);
+    gpu.set_dynamics(moving_gpu,dynamics);
+    constexpr float seconds=1.f/30.f;
+    for(unsigned frame=0u;frame<40u &&
+        (!cpu.body_is_sleeping(moving_cpu) ||
+         !gpu.body_is_sleeping(moving_gpu));++frame) {
+        cpu.step(seconds);
+        gpu.step(seconds);
+    }
+    require(cpu.body_is_sleeping(moving_cpu) &&
+            gpu.body_is_sleeping(moving_gpu) &&
+            cpu.contacts().empty() && gpu.contacts().empty(),
+        "Free rigid body did not enter sleep before its first contact");
+
+    const Vec3 contact_pose{0.f,2.1f,0.f};
+    cpu.set_pose(fixed_cpu,contact_pose,{});
+    gpu.set_pose(fixed_gpu,contact_pose,{});
+    require(cpu.body_is_sleeping(moving_cpu) &&
+            gpu.body_is_sleeping(moving_gpu),
+        "Static shape edit woke the isolated actor before physical touch");
+
+    cpu.step(seconds);
+    gpu.step(seconds);
+    const auto schedule=producer->dy_launch_stats();
+    require(cpu.contacts().size()==1u &&
+            gpu.contacts().size()==1u &&
+            cpu.found_contacts().size()==1u &&
+            gpu.found_contacts().size()==1u &&
+            !cpu.body_is_sleeping(moving_cpu) &&
+            !gpu.body_is_sleeping(moving_gpu) &&
+            native::GpuPcmFrictionAnchorFixture::
+                has_early_device_admission(gpu) &&
+            schedule.device_island_indirect_dispatches==1u &&
+            schedule.device_admitted_tasks==1u &&
+            schedule.device_admitted_descriptors==1u,
+        "New physical touch did not wake an early device-admitted island");
+    test::compound_compare_state(
+        gpu.body_state(moving_gpu),cpu.body_state(moving_cpu),0.04f,
+        "Sleeping first-touch device admission diverged from CPU PGS");
+}
+
 void verify_early_pcm_island_pipeline(
     fyzz::compute::Backend backend,const char* sap,
     const char* pcm,const char* dy_shader,
@@ -8650,6 +8723,8 @@ int main(int argc,char** argv) {
                     verify_connected_pre_witness_island_admission(
                         backend,argv[1],argv[2],argv[3]);
                     verify_single_body_pre_witness_contact(
+                        backend,argv[1],argv[2],argv[3]);
+                    verify_sleeping_new_touch_device_admission(
                         backend,argv[1],argv[2],argv[3]);
                     verify_world_device_island_admission(
                         backend,argv[1],argv[2],argv[3]);
