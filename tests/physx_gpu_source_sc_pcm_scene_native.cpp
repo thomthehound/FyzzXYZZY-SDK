@@ -2801,7 +2801,7 @@ void verify_device_sc_dy_task_admission(
     producer->invalidate_after_rollback();
 }
 
-// GPU PCM and a later CPU Gu primitive share one resident numerical epoch.
+// GPU PCM and independently generated CPU Gu share one numerical epoch.
 void verify_mixed_pre_witness_numerical(
     fyzz::compute::Backend backend,const char* sap,const char* pcm,
     const char* dy_shader) {
@@ -2839,10 +2839,8 @@ void verify_mixed_pre_witness_numerical(
     constexpr float dt=1.f/120.f;
     constexpr std::uint32_t box_capacity=4u;
     constexpr std::uint32_t sphere_capacity=1u;
-    const std::array<native::GpuPcmBoxPair,2> sources{{
-        {box,box_static,box_edge,false},
-        {sphere,sphere_static,sphere_edge,false,1u,false,0.f,0.f,
-         true,true,true}
+    const std::array<native::GpuPcmBoxPair,1> sources{{
+        {box,box_static,box_edge,false}
     }};
     const std::array<physx_gpu::SourceScDeviceIslandEdge,2> edges{{
         {box_edge,0u,0xffffffffu,0u,0u},
@@ -2861,22 +2859,28 @@ void verify_mixed_pre_witness_numerical(
     std::array<native::GpuDyDistanceBody,2> bodies{};
     std::array<native::GpuDyContactManifold,2> managers{{
         {0u,1u,0xffffffffu,0u,0u,0u},
-        {1u,1u,0xffffffffu,0u,1u,box_capacity}
+        {1u,1u,0u,sphere_capacity,1u,box_capacity}
     }};
     std::array<native::GpuDyContactPrepPair,2> preparation{};
     for(std::uint32_t i=0u;i<preparation.size();++i) {
         auto& pair=preparation[i];
-        pair.pcm_pair_index=i;
-        pair.pcm_edge=i?sphere_edge:box_edge;
+        if(i==0u) {
+            pair.pcm_pair_index=0u;
+            pair.pcm_edge=box_edge;
+        }else pair.cpu_gu_offset=0u;
         pair.source_body0=i?sphere:box;
         pair.source_body1=i?sphere_static:box_static;
         pair.body0.solver_ordinal=i;
         pair.body0.inverse_mass=1.f;
         pair.body0.orientation[3]=1.f;
         pair.body1.orientation[3]=1.f;
+        pair.body1.position[0]=i?20.f:0.8f;
+        pair.body1.position[1]=i?2.f:1.f;
         pair.inv_dt=1.f/dt;
         pair.seconds=dt;
         pair.rigid_contact_bias=0.8f;
+        pair.max_penetration_bias=-1.0e32f;
+        pair.bounce_threshold=-2.f;
         pair.max_contact_impulse=std::numeric_limits<float>::max();
     }
     std::array<native::GpuDyBodyIntegrationInput,2> inputs{};
@@ -2904,26 +2908,35 @@ void verify_mixed_pre_witness_numerical(
     std::array<native::GpuDyFrictionAnchorImpulse,4> impulses{};
     std::array<native::GpuDyContactPatch,2> patches{{
         {0u,box_capacity,0u,0x80000000u,0.5f,0.5f,0u,0u},
-        {4u,sphere_capacity,0u,0x80000000u,0.5f,0.5f,0u,0u}
+        {4u,sphere_capacity,0u,0u,0.5f,0.5f,0u,0u}
     }};
     std::array<float,box_capacity+sphere_capacity> forces{};
     forces.fill(-17.f);
-    std::array<native::GpuPcmBoxResult,2> witness{};
-    producer->enqueue_gpu_pcm_box_contacts(sources,witness);
+    std::array<native::GpuPcmBoxResult,1> witness{};
+    producer->enqueue_gpu_pcm_box_contacts(
+        sources,witness,sphere_edge+1u);
     std::array<native::ContactPoint,1> point{};
     const auto count=native::source_pcm_sphere_sphere(
         {20.7f,2.f,0.f},0.5f,{20.f,2.f,0.f},0.5f,0.04f,point);
     require(count==1u,"Mixed numerical CPU Gu fixture has no contact");
-    witness[1].edge=sphere_edge;
-    witness[1].set_primitive(count,true);
-    witness[1].normal=point[0].normal;
-    witness[1].points[0]={point[0].position,point[0].separation};
-    producer->enqueue_host_pcm_contacts(sources,witness);
+    const std::array<native::GpuGuTouchRecord,1> touch{{
+        {sphere_edge,0x20000u|(count<<8u)|1u}
+    }};
+    producer->enqueue_cpu_gu_touch_history(touch);
+    std::array<native::GpuDyGuContactInput,1> gu{};
+    gu[0].normal[0]=point[0].normal.x;
+    gu[0].normal[1]=point[0].normal.y;
+    gu[0].normal[2]=point[0].normal.z;
+    gu[0].position[0]=point[0].position.x;
+    gu[0].position[1]=point[0].position.y;
+    gu[0].position[2]=point[0].position.z;
+    gu[0].separation=point[0].separation;
+    const std::array<std::uint32_t,1> order{{box_capacity}};
     producer->enqueue_gpu_dy_island_admission(
         edges,nodes,physx_gpu::SourceScDeviceIslandSources{2u,0u,0u});
     producer->enqueue_gpu_dy_distance(
-        bodies,{},descriptors,{},ordinals,tasks,forces,{},{},anchors,
-        patches,managers,{},preparation,inputs,poses,true,
+        bodies,{},descriptors,{},ordinals,tasks,forces,gu,{},anchors,
+        patches,managers,order,preparation,inputs,poses,true,
         impulses,true,true,true,sleep,{},false,true);
     require(witness[0].packed_counts==0u &&
             producer->has_queued_gpu_dy_distance() &&
@@ -2944,15 +2957,15 @@ void verify_mixed_pre_witness_numerical(
             box_force && forces[box_capacity]!=-17.f &&
             patches[0].contact_count>0u &&
             patches[0].contact_count<=box_capacity &&
-            patches[1].contact_count==sphere_capacity,
+            patches[1].contact_count==sphere_capacity &&
+            producer->dy_cpu_gu_geometry_bytes()==sizeof(gu),
         "Mixed CPU Gu/GPU PCM did not solve from resident witnesses");
     producer->finish_gpu_pcm_box_contacts();
     require(witness[0].edge==box_edge &&
             witness[0].status()==0u &&
             witness[0].count()==patches[0].contact_count &&
-            witness[1].count()==sphere_capacity &&
-            producer->pcm_host_contact_upload_bytes()==
-                sizeof(physx_gpu::SourcePcmGpuContactStreamNative),
+            producer->pcm_early_gu_touch_bytes()==sizeof(touch) &&
+            producer->pcm_host_contact_upload_bytes()==0u,
         "Mixed GPU PCM numerical completion changed source contact identity");
     producer->commit_gpu_step();
 }
