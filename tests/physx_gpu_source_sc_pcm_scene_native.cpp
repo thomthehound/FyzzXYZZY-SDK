@@ -5319,9 +5319,10 @@ void verify_cpu_gu_gpu_dy_solver(
             "CPU Gu GPU Dy returned tangent rows instead of anchor impulses");
         require(producer->dy_contact_prep_upload_saving()==
                     std::int64_t(sizeof(native::GpuDyContactPrepPair)-
-                    sizeof(physx_gpu::SourceDyPackedContactPrepNative)-
-                    sizeof(native::GpuDyContactPrepBody)),
-            "CPU Gu contact-prep accounting includes friction anchors or geometry");
+                    sizeof(physx_gpu::SourceDyPackedContactPrepNative)) &&
+                producer->dy_launch_stats().resident_immovable_contact_bodies==1u &&
+                producer->dy_launch_stats().inline_contact_body_bytes==0u,
+            "CPU Gu contact preparation retained an inline static body");
         require(producer->dy_distance_dispatch_count()==frame+1u,
             "CPU Gu contact rows did not enter source GPU Dy solver");
         const auto a=cpu.body_state(moving_cpu);
@@ -6091,9 +6092,10 @@ void verify_mixed_gu_pcm_gpu_dy_solver(
             native::GpuPcmFrictionAnchorFixture::verify(cpu,gpu);
             require(producer->dy_contact_prep_upload_saving()==
                         2*std::int64_t(sizeof(native::GpuDyContactPrepPair)-
-                    sizeof(physx_gpu::SourceDyPackedContactPrepNative)-
-                    sizeof(native::GpuDyContactPrepBody)),
-                "Mixed Gu/PCM contact-prep savings counted unrelated inputs");
+                            sizeof(physx_gpu::SourceDyPackedContactPrepNative)) &&
+                    producer->dy_launch_stats().resident_immovable_contact_bodies==2u &&
+                    producer->dy_launch_stats().inline_contact_body_bytes==0u,
+                "Mixed Gu/PCM contact preparation retained inline static bodies");
             require(cpu.contacts().size()==gpu.contacts().size() &&
                     cpu.solved_normal_impulses().size()==
                         gpu.solved_normal_impulses().size() &&
@@ -7203,12 +7205,12 @@ void verify_host_primitive_pcm_solver(
                     stats.device_admitted_descriptors==2u,
                 "Primitive-only contacts fell back to host numerical admission");
             constexpr std::int64_t expected_saving=
-                2*std::int64_t(sizeof(native::GpuDyContactPrepPair))-
-                2*std::int64_t(sizeof(
-                    physx_gpu::SourceDyPackedContactPrepNative))-
-                std::int64_t(sizeof(native::GpuDyContactPrepBody));
-            require(producer->dy_contact_prep_upload_saving()==expected_saving,
-                "Two plane contact managers uploaded the same static body twice");
+                2*std::int64_t(sizeof(native::GpuDyContactPrepPair)-
+                    sizeof(physx_gpu::SourceDyPackedContactPrepNative));
+            require(producer->dy_contact_prep_upload_saving()==expected_saving &&
+                    stats.resident_immovable_contact_bodies==2u &&
+                    stats.inline_contact_body_bytes==0u,
+                "Two plane contact managers retained an inline static body");
         }
         const auto& completed=producer->stream_submission_stats();
         const auto indirect=
