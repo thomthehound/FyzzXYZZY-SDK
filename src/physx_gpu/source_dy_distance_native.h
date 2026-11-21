@@ -1020,7 +1020,7 @@ public:
                     auto& patch=packed_patches_[i];
                     if((patch.broken&0x10000000u)==0u)continue;
                     const auto count=(patch.broken>>8u)&63u;
-                    const auto first=patch.order_offset;
+                    const auto first=patch.reserved;
                     if((patch.broken&0x80000000u)==0u ||
                        count==0u || count>32u ||
                        first>retained_candidates.size() ||
@@ -1036,7 +1036,7 @@ public:
                             throw std::logic_error(
                                 "Device PCM retained candidate is invalid");
                     }
-                    patch.order_offset=narrow(
+                    patch.reserved=narrow(
                         retained_begin+std::size_t(first)*
                             sizeof(native::GpuDyRetainedFrictionCandidate));
                 }
