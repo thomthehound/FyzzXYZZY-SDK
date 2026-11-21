@@ -598,7 +598,7 @@ void growPcmFrictionAnchors(uint patchIndex,uint pairIndex,
     // resident normal, then borrow its anchors in the same EdgeIndex slot.
     if((patch.w&0x10000000u)!=0u) {
         const uint candidates=(patch.w>>8u)&63u;
-        const uint first=arena.Load(po+24u);
+        const uint first=arena.Load(po+28u);
         float3 position0;
         float4 orientation0;
         if(candidates==0u || candidates>32u ||
@@ -645,7 +645,6 @@ void growPcmFrictionAnchors(uint patchIndex,uint pairIndex,
             return;
         }
         arena.Store(po+8u,count);
-        arena.Store(po+24u,0u);
     }
     bool normalChanged=false;
     if((patch.w&0x20000000u)!=0u) {
