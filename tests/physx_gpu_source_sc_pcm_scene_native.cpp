@@ -377,6 +377,22 @@ struct GpuPcmFrictionAnchorFixture {
         }
         if(pcm_source!=scene.gpu_pcm_pairs_.size())
             throw std::runtime_error("Pre-witness numerical sources skipped PCM pairs");
+        std::size_t active_sources=0u;
+        for(std::size_t i=0u;i<scene.previous_pairs_.size();++i) {
+            const auto slot=scene.gpu_dy_contact_prep_indices_[i];
+            if(slot==0xffffffffu)continue;
+            if(slot!=active_sources++ ||
+               slot>=scene.gpu_dy_contact_prep_pairs_.size() ||
+               scene.gpu_dy_contact_prep_pairs_[slot].source_body0!=
+                   scene.gpu_dy_candidate_sources_[i].first ||
+               scene.gpu_dy_contact_prep_pairs_[slot].source_body1!=
+                   scene.gpu_dy_candidate_sources_[i].second)
+                throw std::runtime_error(
+                    "Dy numerical source was not compacted in Sc candidate order");
+        }
+        if(active_sources!=scene.gpu_dy_contact_prep_pairs_.size())
+            throw std::runtime_error(
+                "Dy uploaded unused source candidates after PCM publication");
         for(const auto& request:scene.gpu_pcm_pairs_) {
             const auto& actual=scene.gpu_dy_candidate_sources_.at(
                 request.candidate_ordinal).material;

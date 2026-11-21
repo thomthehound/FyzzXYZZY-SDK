@@ -1501,7 +1501,8 @@ private:
     GpuDyPairMaterial prepare_contact_material(ShapeId first,
                                              ShapeId second) const;
     void update_contacts(bool defer_device_points=false,
-                         float inverse_step=0.0f);
+                         float step_seconds=0.0f);
+    void prepare_gpu_dy_candidate_contact_preps(float seconds);
     void materialize_gpu_pcm_points();
     // Original contact-manager addEdge/setEdgeConnected/removeConnection
     // lifecycle, within the existing single scene-owned island pipeline.

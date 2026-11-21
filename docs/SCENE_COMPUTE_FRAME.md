@@ -237,8 +237,12 @@ authored velocities and mass-frame transforms in the same actor-local
 allocation before PCM witness publication; no repeated inline body
 record is transferred for them. Scene emits an 80-byte compact
 contact source containing only actor IDs, prepared solver ordinals,
-inverse masses and the numerical material tail. Dy lowers it to the
-unchanged 64-byte GPU preparation descriptor. Neither the 192-byte
+inverse masses and the numerical material tail. Material and actor
+identities are authored in original Sc candidate order before PCM
+classification. After accurate island admission, Sc fills solver ordinals
+and CPU Gu offsets, compacts the same records in place by candidate
+ordinal, and uploads only admitted sources. Dy lowers the compact result
+to the unchanged 64-byte GPU preparation descriptor. Neither the 192-byte
 inline-body prefix nor its associated CPU packing is constructed on
 production Scene frames. Standalone numerical inputs without a Scene
 actor identity retain their explicit inline body payload.

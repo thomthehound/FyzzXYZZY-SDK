@@ -4206,8 +4206,55 @@ GpuDyPairMaterial Scene::prepare_contact_material(
     return result;
 }
 
-void Scene::update_contacts(bool defer_device_points,float inverse_step) {
+void Scene::prepare_gpu_dy_candidate_contact_preps(float seconds) {
+    gpu_dy_contact_prep_pairs_.clear();
+    if(!gpu_dy_active() || seconds<=0.0f)return;
+    if(gpu_dy_candidate_sources_.size()!=previous_pairs_.size() ||
+       active_edge_handles_.size()!=previous_pairs_.size() ||
+       previous_pairs_.size()>=std::numeric_limits<std::uint32_t>::max())
+        throw std::logic_error(
+            "Pre-witness numerical input lacks its source Sc candidates");
+    gpu_dy_contact_prep_pairs_.resize(previous_pairs_.size());
+    for(std::size_t i=0u;i<previous_pairs_.size();++i) {
+        const auto& source=gpu_dy_candidate_sources_[i];
+        const auto& material=source.material;
+        const auto pcm=source.pcm_pair_index;
+        if(!material.prepared || source.first>=actors_.size() ||
+           source.second>=actors_.size() ||
+           (pcm!=0xffffffffu &&
+            (pcm>=gpu_pcm_pairs_.size() ||
+             gpu_pcm_pairs_[pcm].candidate_ordinal!=i ||
+             gpu_pcm_pairs_[pcm].edge!=active_edge_handles_[i])))
+            throw std::logic_error(
+                "Pre-witness numerical source lost its Sc contact identity");
+        const auto& first=actors_[source.first];
+        const auto& second=actors_[source.second];
+        auto& prep=gpu_dy_contact_prep_pairs_[i];
+        prep.source_body0=source.first;
+        prep.source_body1=source.second;
+        prep.inverse_mass0=first.motion==Motion::Dynamic
+            ?first.inverse_mass:0.0f;
+        prep.inverse_mass1=second.motion==Motion::Dynamic
+            ?second.inverse_mass:0.0f;
+        prep.rest_distance=material.rest_distance;
+        prep.pair_slop=material.pair_slop;
+        prep.restitution=material.restitution;
+        prep.damping=material.damping;
+        prep.max_penetration_bias=material.max_penetration_bias;
+        prep.inv_dt=1.0f/seconds;
+        prep.seconds=seconds;
+        prep.rigid_contact_bias=0.8f;
+        prep.bounce_threshold=-2.0f;
+        prep.acceleration_spring=material.acceleration_spring?1u:0u;
+        prep.pcm_pair_index=pcm;
+        prep.pcm_edge=pcm==0xffffffffu?0u:active_edge_handles_[i];
+        prep.max_contact_impulse=material.max_contact_impulse;
+    }
+}
+void Scene::update_contacts(bool defer_device_points,float step_seconds) {
     FYZZ_PROFILE_SCOPE("gu.contacts_pcm");
+    const float inverse_step=step_seconds>0.0f
+        ?1.0f/step_seconds:0.0f;
     gpu_pcm_points_deferred_=false;
     // Gu narrowphase consumes the sum of both PxShapeCore contact offsets.
     next_manifolds_.clear();
@@ -4482,6 +4529,8 @@ void Scene::update_contacts(bool defer_device_points,float inverse_step) {
             throw std::logic_error(
                 "GPU Dy numerical sources omitted a PCM candidate");
     }
+    if(early_device_materials && step_seconds>0.0f)
+        prepare_gpu_dy_candidate_contact_preps(step_seconds);
     validate_pcm_history(true);
     // Source-ordered numerical and friction-history candidates are ready
     // before PCM publication. Sc joins compact touch metadata separately.
@@ -8428,9 +8477,12 @@ void Scene::prepare_constraints(float seconds) {
             throw std::logic_error(
                 "Pre-witness joint snapshot omitted a responding source");
     }else gpu_dy_joint_inputs_.clear();
-    gpu_dy_contact_prep_pairs_.clear();
-    if(gpu_normal_prep)
+    if(gpu_normal_prep) {
+        if(gpu_dy_contact_prep_pairs_.size()!=previous_pairs_.size())
+            throw std::logic_error(
+                "Dy has no pre-witness candidate-indexed contact inputs");
         gpu_dy_contact_prep_indices_.assign(previous_pairs_.size(),0xffffffffu);
+    }else gpu_dy_contact_prep_pairs_.clear();
     solver_kinematic_participant_=false;
     for(EdgeIndex edge_id:indexed_joints_) {
         const auto& edge=island_edges_[edge_id];
@@ -9069,20 +9121,39 @@ void Scene::prepare_constraints(float seconds) {
         }
         }
         if(gpu_normal_prep) {
-            if(gpu_dy_contact_prep_pairs_.size()>=
-                std::numeric_limits<std::uint32_t>::max())
-                throw std::overflow_error("Source GPU contact preparation limit");
-            native::GpuDyCompactContactPrep prep{};
-            prep.source_body0=id0;
-            prep.source_body1=id1;
+            const auto source=manifold.candidate_ordinal;
+            if(source>=gpu_dy_contact_prep_indices_.size() ||
+               source>=gpu_dy_contact_prep_pairs_.size() ||
+               !(previous_pairs_[source]==manifold.pair) ||
+               active_edge_handles_[source]!=edge ||
+               gpu_dy_contact_prep_indices_[source]!=0xffffffffu)
+                throw std::logic_error(
+                    "Source GPU contact prep lost its original Sc candidate");
+            auto& prep=gpu_dy_contact_prep_pairs_[source];
+            const auto pcm_index=gpu_dy_candidate_sources_[source].pcm_pair_index;
+            if(prep.source_body0!=id0 || prep.source_body1!=id1 ||
+               prep.pcm_pair_index!=pcm_index ||
+               (pcm_index!=0xffffffffu && prep.pcm_edge!=edge) ||
+               prep.rest_distance!=rest_distance ||
+               prep.pair_slop!=pair_slop ||
+               prep.restitution!=restitution ||
+               prep.damping!=damping ||
+               prep.max_penetration_bias!=max_penetration_bias ||
+               prep.inv_dt!=inv_dt || prep.seconds!=seconds ||
+               prep.rigid_contact_bias!=rigid_contact_bias ||
+               prep.bounce_threshold!=bounce_threshold ||
+               prep.acceleration_spring!=(acceleration_spring?1u:0u) ||
+               prep.max_contact_impulse!=pair_max_impulse)
+                throw std::logic_error(
+                    "Dy numerical source differs from pre-witness material");
             const bool resident0=actor0.motion==Motion::Dynamic &&
                 !actor0.sleeping;
             const bool resident1=actor1.motion==Motion::Dynamic &&
                 !actor1.sleeping;
             prep.inverse_mass0=resident0?actor0.inverse_mass:a.inverse_mass;
             prep.inverse_mass1=resident1?actor1.inverse_mass:b.inverse_mass;
-            // Only exact, prepared solver ordinals belong to the Dy
-            // contact source; all actor motion lives in the resident pool.
+            // Sc assigns final solver ordinals after accurate island
+            // admission; the candidate coefficients do not change.
             const auto pack_ordinal=[&](const Actor& actor) {
                 if(!rigid_node(actor.motion))return invalid_solver_row;
                 if(actor.solver_row_generation!=solver_preparation_generation_ ||
@@ -9094,24 +9165,7 @@ void Scene::prepare_constraints(float seconds) {
             };
             prep.solver_ordinal0=pack_ordinal(actor0);
             prep.solver_ordinal1=pack_ordinal(actor1);
-            prep.rest_distance=rest_distance;
-            prep.pair_slop=pair_slop;
-            prep.restitution=restitution;
-            prep.damping=damping;
-            prep.max_penetration_bias=max_penetration_bias;
-            prep.inv_dt=inv_dt;
-            prep.seconds=seconds;
-            prep.rigid_contact_bias=rigid_contact_bias;
-            prep.bounce_threshold=bounce_threshold;
-            prep.acceleration_spring=acceleration_spring?1u:0u;
-            prep.max_contact_impulse=pair_max_impulse;
-            // Numerical producer identity precedes the host witness.
-            const auto pcm_index=gpu_dy_candidate_sources_[
-                manifold.candidate_ordinal].pcm_pair_index;
-            if(pcm_index!=std::numeric_limits<std::uint32_t>::max()) {
-                prep.pcm_pair_index=pcm_index;
-                prep.pcm_edge=edge;
-            }else {
+            if(pcm_index==0xffffffffu) {
                 if(gpu_dy_gu_inputs_.size()>=
                    std::numeric_limits<std::uint32_t>::max())
                     throw std::overflow_error(
@@ -9119,16 +9173,7 @@ void Scene::prepare_constraints(float seconds) {
                 prep.cpu_gu_offset=static_cast<std::uint32_t>(
                     gpu_dy_gu_inputs_.size());
             }
-            const auto source=manifold.candidate_ordinal;
-            if(source>=gpu_dy_contact_prep_indices_.size() ||
-               !(previous_pairs_[source]==manifold.pair) ||
-               active_edge_handles_[source]!=edge ||
-               gpu_dy_contact_prep_indices_[source]!=0xffffffffu)
-                throw std::logic_error(
-                    "Source GPU contact prep lost its original Sc candidate");
-            gpu_dy_contact_prep_indices_[source]=
-                static_cast<std::uint32_t>(gpu_dy_contact_prep_pairs_.size());
-            gpu_dy_contact_prep_pairs_.push_back(prep);
+            gpu_dy_contact_prep_indices_[source]=source;
         }
         // CPU PGS retains the complete correlated contact order.
         // Device Dy needs explicit indices only for non-PCM Gu:
@@ -9460,6 +9505,21 @@ void Scene::prepare_constraints(float seconds) {
             }
             prepared_friction_rows_+=count*2u;
         }
+    }
+    if(gpu_normal_prep) {
+        // Reuse the source arena in place. Sparse candidates do not
+        // enter the numerical upload, and live records keep Sc order.
+        std::size_t packed=0u;
+        for(std::size_t source=0u;
+            source<gpu_dy_contact_prep_pairs_.size();++source) {
+            if(gpu_dy_contact_prep_indices_[source]==0xffffffffu)continue;
+            if(source!=packed)
+                gpu_dy_contact_prep_pairs_[packed]=
+                    gpu_dy_contact_prep_pairs_[source];
+            gpu_dy_contact_prep_indices_[source]=
+                static_cast<std::uint32_t>(packed++);
+        }
+        gpu_dy_contact_prep_pairs_.resize(packed);
     }
     // Swap only after the new rows and patch anchors are fully prepared.
     // Old shape-local anchors remain available throughout correlation.
@@ -12641,7 +12701,7 @@ void Scene::advance_collision_internal(
         }
         publish_pairs();
         update_contacts(defer_device_points && gpu_dy_active(),
-            step_seconds>0.0f?1.0f/step_seconds:0.0f);
+            step_seconds);
     } else {
         // A quiet query/step still publishes empty per-frame event
         // streams. Rotate only their reusable buffers so a later
@@ -12659,6 +12719,8 @@ void Scene::advance_collision_internal(
         ++quiet_event_epoch_;
         if(step_seconds>0.0f)
             calculate_kinematic_velocities(1.0f/step_seconds);
+        if(defer_device_points && step_seconds>0.0f && gpu_dy_active())
+            prepare_gpu_dy_candidate_contact_preps(step_seconds);
     }
     // Source first speculative and second accurate pass: edge insertion
     // and active body admission, but no lost-edge island splitting yet.
