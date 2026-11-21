@@ -589,11 +589,13 @@ bool sourceDyExpandDescriptor(uint token,uint extent,
             }
             const uint refA=arena.Load(prep);
             const uint refB=arena.Load(prep+4u);
-            const bool dynamicA=(refA&1u)!=0u;
-            const bool dynamicB=(refB&1u)!=0u;
-            const uint ordinalA=dynamicA?(refA>>1u):
+            const bool dynamicA=(refA&3u)==1u;
+            const bool dynamicB=(refB&3u)==1u;
+            const uint ordinalA=dynamicA?(refA>>2u):
+                (refA&3u)==3u?invalidBody:
                 arena.Load(p.prepBias+refA+76u);
-            const uint ordinalB=dynamicB?(refB>>1u):
+            const uint ordinalB=dynamicB?(refB>>2u):
+                (refB&3u)==3u?invalidBody:
                 arena.Load(p.prepBias+refB+76u);
             desc=uint4(index,ordinalA,ordinalB,
                        (dynamicA?0x100u:0u)|

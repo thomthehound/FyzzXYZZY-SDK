@@ -231,9 +231,12 @@ the device input stream. The CPU PGS JointRow arena is not reserved or
 populated on GPU frames. Native GPU world motion reads inverse mass from
 the actor-local integration input, not a second Sc-authored body array;
 the transient body span only provides the Dy result count. Contact-manager
-inputs likewise carry only the dynamic endpoint ordinal and inverse mass;
-full inline motion and mass-frame data are prepared only for non-dynamic
-endpoints that do not own a resident Dy solver body.
+inputs carry tagged references to integrated solver rows or the stable
+actor-local pool. Static and kinematic contact participants retain their
+authored velocities and mass-frame transforms in the same actor-local
+allocation before PCM witness publication; no repeated inline body
+record is transferred for them. Standalone numerical inputs without
+a Scene actor identity retain their explicit inline body payload.
 The GPU Dy path fetches 8 bytes of edge/touch metadata for ordinary
 GPU pairs before numerical admission. Managers with multiple
 geometrically valid, material-compatible retained friction patches fetch

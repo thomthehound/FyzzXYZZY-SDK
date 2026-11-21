@@ -4634,6 +4634,20 @@ void Scene::update_contacts(bool defer_device_points,float inverse_step) {
     // before any host observation of its witness stream.
     if(inverse_step>0.0f)
         calculate_kinematic_velocities(inverse_step);
+    // Fixed and kinematic contact endpoints share the resident actor
+    // pool with Dy motion. Their final authored velocities are ready
+    // after kinematic target processing, independently of PCM touch.
+    if(defer_device_points && inverse_step>0.0f && gpu_dy_active()) {
+        gpu_dy_immovable_source_ids_.clear();
+        for(const Pair pair:previous_pairs_)
+            for(const ShapeId shape:{pair.a,pair.b}) {
+                const BodyId id=shapes_[shape].body;
+                if(actors_[id].motion!=Motion::Dynamic)
+                    gpu_dy_immovable_source_ids_.push_back(id);
+            }
+        stage_gpu_dy_actor_sources(
+            gpu_dy_immovable_source_ids_,1.0f/inverse_step,true);
+    }
     // The speculative IslandSim consumes SAP membership, never Gu
     // witness geometry. Admit its first/second-pass topology on the CPU
     // while the same scene stream executes general GPU PCM. Accurate
@@ -9574,7 +9588,7 @@ void Scene::prepare_gpu_dy_device_islands(bool selected) {
         {narrow(gpu_dy_manifolds_.size()),narrow(gpu_dy_rows_.size()),0u});
 }
 void Scene::stage_gpu_dy_actor_sources(
-    std::span<const BodyId> ids,float seconds) {
+    std::span<const BodyId> ids,float seconds,bool immovable) {
     const auto first=gpu_dy_staged_actor_ids_.size();
     for(const BodyId id:ids) {
         if(id>=actors_.size())
@@ -9595,7 +9609,9 @@ void Scene::stage_gpu_dy_actor_sources(
             ++prior;
         const auto& actor=actors_[id];
         if((prior<first && gpu_dy_staged_actor_ids_[prior]==id) ||
-           !actor.alive || actor.motion!=Motion::Dynamic || actor.sleeping)
+           !actor.alive ||
+           (immovable ? actor.motion==Motion::Dynamic :
+              actor.motion!=Motion::Dynamic || actor.sleeping))
             continue;
         gpu_dy_staged_actor_ids_[retained++]=id;
     }
@@ -9607,6 +9623,10 @@ void Scene::stage_gpu_dy_actor_sources(
         auto& input=gpu_dy_integration_inputs_.emplace_back();
         pack_gpu_dy_integration_input(
             gpu_dy_staged_actor_ids_[i],seconds,input);
+        if(immovable) {
+            input.active|=0x100u;
+            input.source_inverse_mass=0.0f;
+        }
     }
     if(!gpu_dy_integration_inputs_.empty())
         gpu_broadphase_->enqueue_gpu_dy_actor_sources(
@@ -9739,6 +9759,18 @@ void Scene::solve_gpu_distance_constraints(float seconds) {
        gpu_dy_rows_.size()<gpu_dy_joint_inputs_.size())
         throw std::logic_error(
             "Source GPU 1D preparation retained CPU rows or omitted device rows");
+    // Quiet frames bypass PCM admission but still need the current
+    // kinematic velocities and poses for active contact preparation.
+    gpu_dy_immovable_source_ids_.clear();
+    for(const auto manager:indexed_managers_) {
+        const auto pair=manifolds_[manager].pair;
+        for(const ShapeId shape:{pair.a,pair.b}) {
+            const BodyId id=shapes_[shape].body;
+            if(actors_[id].motion!=Motion::Dynamic)
+                gpu_dy_immovable_source_ids_.push_back(id);
+        }
+    }
+    stage_gpu_dy_actor_sources(gpu_dy_immovable_source_ids_,seconds,true);
     gpu_dy_body_ordinals_.resize(solver_active_ids_.size());
     gpu_dy_tasks_.clear();
     // A pre-witness Sc graph is already resident and owns admission.

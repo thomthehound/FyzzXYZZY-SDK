@@ -135,6 +135,8 @@ struct SourceDyLaunchStats {
     std::size_t device_inertia_generated_bytes=0u;
     std::size_t device_world_motion_bodies=0u;
     std::size_t actor_local_upload_bytes=0u;
+    std::size_t resident_immovable_contact_bodies=0u;
+    std::size_t inline_contact_body_bytes=0u;
     std::size_t actor_local_upload_spans=0u;
     std::size_t prewitness_actor_local_upload_bytes=0u;
     std::size_t prewitness_actor_local_upload_spans=0u;
@@ -337,7 +339,7 @@ public:
         reserve_actor_local_slots(needed_actor_slots);
         constexpr auto metadata_bytes=
             offsetof(SourceDyActorLocalNative,linear_velocity);
-        constexpr std::size_t pose_bytes=28u,sleep_bytes=28u;
+        constexpr std::size_t velocity_bytes=24u,pose_bytes=28u,sleep_bytes=28u;
         for(const auto& input:inputs) {
             const auto id=input.source_actor;
             SourceDyActorLocalNative local{};
@@ -370,6 +372,18 @@ public:
             if(pose_changed)
                 std::memcpy(resident.world_position,local.world_position,
                             pose_bytes);
+            if((input.active&0x100u)!=0u) {
+                if(input.source_inverse_mass!=0.0f)
+                    throw std::logic_error(
+                        "Immovable Dy source has responding inverse mass");
+                if(!actor_local_valid_[id] ||
+                   std::memcmp(resident.linear_velocity,
+                               input.linear_velocity,velocity_bytes)!=0) {
+                    std::memcpy(resident.linear_velocity,
+                                input.linear_velocity,velocity_bytes);
+                    dirty=true;
+                }
+            }
             if(dirty || std::memcmp(&resident.wake_counter,
                                     &local.wake_counter,sleep_bytes)!=0) {
                 std::memcpy(&resident.wake_counter,
@@ -505,6 +519,8 @@ public:
             throw std::invalid_argument(
                 "Source Dy GPU integrateCore inputs do not match solver bodies");
         last_integrated_body_count_=0u;
+        last_schedule_.resident_immovable_contact_bodies=0u;
+        last_schedule_.inline_contact_body_bytes=0u;
         if(device_initial_bodies && !device_partitions)
             throw std::invalid_argument(
                 "Source Dy device body initialization requires device partitions");
@@ -782,7 +798,7 @@ public:
                 ordinal<integration.size() &&
                 (integration[ordinal].active&1u)!=0u;
             if(active_dynamic) {
-                if(ordinal>=bodies.size() || ordinal>=invalid/2u ||
+                if(ordinal>=bodies.size() || ordinal>=invalid/4u ||
                    body.inverse_mass!=(device_world_motion
                        ?integration[ordinal].source_inverse_mass
                        :bodies[ordinal].inverse_mass) ||
@@ -790,11 +806,22 @@ public:
                     integration[ordinal].source_actor!=actor))
                     throw std::logic_error(
                         "Active source Dy contact body has no matching solver row");
-                return (ordinal<<1u)|1u;
+                return (ordinal<<2u)|1u;
             }
             if(body.inverse_mass>0.f)
                 throw std::logic_error(
                     "Responding source Dy contact body has no solver ordinal");
+            // Fixed and kinematic actors use the staged actor-local pool.
+            if(device_world_motion && actor!=invalid &&
+               actor<actor_local_valid_.size() &&
+               actor_local_valid_[actor] &&
+               actor_local_host_[actor].inverse_mass==0.0f) {
+                if(actor>=invalid/4u)
+                    throw std::overflow_error(
+                        "Resident contact actor source exceeds tagged address space");
+                ++last_schedule_.resident_immovable_contact_bodies;
+                return (actor<<2u)|3u;
+            }
             if(actor!=invalid && actor<inline_body_slots_.size()) {
                 const auto& slot=inline_body_slots_[actor];
                 if(slot.epoch==inline_body_epoch_) {
@@ -1457,6 +1484,8 @@ public:
             std::memcpy(host_.data()+offsets[11]+static_begin,
                         inline_bodies_.data(),inline_bodies_.size()*
                             sizeof(native::GpuDyContactPrepBody));
+        last_schedule_.inline_contact_body_bytes=
+            inline_bodies_.size()*sizeof(native::GpuDyContactPrepBody);
         if(device_partitions) {
             const auto n=descriptor_capacity;
             const std::size_t header_bytes=source_descriptors
@@ -1665,6 +1694,33 @@ public:
                 ?actor_local_capacity_*sizeof(SourceDyActorLocalNative):total,
             alignment_,5u,compute::BufferAccess::Read,
             actor_local_bias,max_view_));
+        // Packed immovable body sources are stable actor IDs until the
+        // binding's byte offset is known. Resolve them in the final
+        // upload packet; no inline pose or velocity payload is needed.
+        for(std::size_t i=0u;i<packed_.size();++i) {
+            const auto resolve=[&](std::uint32_t source,
+                                   std::size_t field) {
+                if((source&3u)!=3u)return;
+                const auto actor=source>>2u;
+                if(actor>=actor_local_valid_.size() ||
+                   !actor_local_valid_[actor] ||
+                   actor_local_host_[actor].inverse_mass!=0.0f)
+                    throw std::logic_error(
+                        "Source Dy immovable actor has no resident input");
+                const std::uint64_t address=
+                    std::uint64_t(actor_local_bias)+
+                    std::uint64_t(actor)*sizeof(SourceDyActorLocalNative);
+                if(address>std::numeric_limits<std::uint32_t>::max()-144u)
+                    throw std::overflow_error(
+                        "Dy immovable actor-local reference exceeds 32-bit view");
+                const auto tagged=static_cast<std::uint32_t>(address)|3u;
+                std::memcpy(host_.data()+offsets[11]+
+                    i*sizeof(SourceDyPackedContactPrepNative)+field,
+                    &tagged,sizeof(tagged));
+            };
+            resolve(packed_[i].body0_source,0u);
+            resolve(packed_[i].body1_source,4u);
+        }
         if(convex_vertex_count)
             dispatch.buffers.push_back(source_native_view(
                 addresses_,convex_vertices,

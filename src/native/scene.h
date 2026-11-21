@@ -1566,7 +1566,8 @@ private:
     GpuDyJointInput pack_gpu_dy_joint_input(EdgeIndex edge) const;
     void pack_gpu_dy_integration_input(
         BodyId id,float seconds,GpuDyBodyIntegrationInput& input) const;
-    void stage_gpu_dy_actor_sources(std::span<const BodyId> ids,float seconds);
+    void stage_gpu_dy_actor_sources(std::span<const BodyId> ids,float seconds,
+                                    bool immovable=false);
     static constexpr EdgeIndex invalid_edge=std::numeric_limits<EdgeIndex>::max();
     static constexpr std::size_t invalid_instance=
         std::numeric_limits<std::size_t>::max();
@@ -2245,6 +2246,7 @@ private:
     std::vector<std::uint32_t> gpu_dy_island_node_flags_;
     std::vector<BodyId> gpu_dy_early_actor_ids_;
     std::vector<BodyId> gpu_dy_staged_actor_ids_;
+    std::vector<BodyId> gpu_dy_immovable_source_ids_;
     std::vector<EdgeIndex> gpu_dy_early_joint_edges_;
     bool gpu_dy_early_islands_=false;
      std::vector<float> gpu_dy_contact_forces_;

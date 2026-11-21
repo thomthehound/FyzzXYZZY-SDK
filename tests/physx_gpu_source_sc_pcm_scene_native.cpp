@@ -4661,6 +4661,9 @@ void verify_early_pcm_island_pipeline(
             native::GpuPcmFrictionAnchorFixture::
                 verify_pre_witness_device_admission(gpu);
         const auto schedule=device->dy_launch_stats();
+        require(schedule.resident_immovable_contact_bodies>=2u &&
+                schedule.inline_contact_body_bytes==0u,
+            "GPU PCM contact preparation uploaded repeated static body records");
         native::GpuPcmFrictionAnchorFixture::
             verify_gpu_source_candidate_descriptors(gpu);
         const auto responding=with_sphere?3u:2u;
@@ -5157,8 +5160,10 @@ void verify_gpu_coupled_solver(
             require(schedule.device_source_descriptors>0u &&
                     schedule.device_island_indirect_dispatches==0u &&
                     schedule.source_descriptor_upload_bytes==
-                        schedule.device_source_descriptors*sizeof(std::uint32_t),
-                "Moving kinematic contact retained a host numerical descriptor upload");
+                        schedule.device_source_descriptors*sizeof(std::uint32_t) &&
+                    schedule.resident_immovable_contact_bodies>0u &&
+                    schedule.inline_contact_body_bytes==0u,
+                "Moving kinematic contact retained redundant numerical body inputs");
             const native::Pair pair{kinematic_cpu,responder_cpu};
             const auto contains=[&](const native::Scene& scene) {
                 const auto pairs=scene.pairs();

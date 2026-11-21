@@ -249,41 +249,57 @@ float3 prepSlop(float3 value,float slop) {
                   abs(value.y)<slop?0.0f:value.y,
                   abs(value.z)<slop?0.0f:value.z);
 }
-// Low-bit-tagged references reuse one active integrateCore body for every
-// contact manager. Even references address the inline immovable-body payload
-// relative to the packed source contact-prep block.
+// Packed body references distinguish inline standalone data (00),
+// integrated solver rows (01), and resident immovable actors (11).
 uint prepBodyOffset(uint source,uint offset) {
-    if((source&1u)==0u)return p.prepBias+source+offset;
-    const uint ordinal=source>>1u;
+    if((source&3u)==0u)return p.prepBias+source+offset;
+    const uint ordinal=source>>2u;
     const uint base=p.integrationBias+44u+ordinal*40u;
     if(offset>=36u && offset<=60u)
         return sourceDyInertiaAddress(ordinal)+offset-36u;
     if(offset==72u)return p.bodyBias+ordinal*52u+48u;
     return base+offset;
 }
-// Resolve the identical Sc mass frame for fixed and integrated participants.
-// A tagged body with no host pose reads the authorized device transform.
 bool prepBodyPose(uint source,out float3 position,out float4 orientation) {
-    if((source&1u)==0u) {
+    if((source&3u)==3u) {
+        const uint local=source&~3u;
+        const float3 actorPosition=asfloat(
+            scActorLocals.Load3(local+116u));
+        const float4 actorAxes=asfloat(
+            scActorLocals.Load4(local+128u));
+        const float3 massLocal=asfloat(scActorLocals.Load3(local));
+        const float4 massAxes=asfloat(scActorLocals.Load4(local+12u));
+        position=actorPosition+sourceRigidRotate(actorAxes,massLocal);
+        orientation=sourceRigidMultiply(actorAxes,massAxes);
+    } else if((source&3u)==0u) {
         const uint base=p.prepBias+source;
         position=asfloat(arena.Load3(base));
         orientation=asfloat(arena.Load4(base+80u));
-        return all(isfinite(position)) && all(isfinite(orientation));
+    } else {
+        const uint input=p.integrationBias+44u+(source>>2u)*40u;
+        return sourceDyMassPose(input,position,orientation);
     }
-    const uint input=p.integrationBias+44u+(source>>1u)*40u;
-    return sourceDyMassPose(input,position,orientation);
+    return all(isfinite(position)) && all(isfinite(orientation));
 }
 float3 prepBody3(uint source,uint offset) {
-    if((source&1u)!=0u && (offset==12u || offset==24u)) {
-        const uint input=p.integrationBias+44u+(source>>1u)*40u;
+    if((source&3u)==3u) {
+        if(offset==12u || offset==24u)
+            return asfloat(scActorLocals.Load3(
+                (source&~3u)+64u+(offset==24u?12u:0u)));
+        return 0.0f;
+    }
+    if((source&3u)==1u && (offset==12u || offset==24u)) {
+        const uint input=p.integrationBias+44u+(source>>2u)*40u;
         return sourceDyPreparedVelocity(input,offset==24u);
     }
     return asfloat(arena.Load3(prepBodyOffset(source,offset)));
 }
 float prepBodyFloat(uint source,uint offset) {
+    if((source&3u)==3u)return 0.0f;
     return asfloat(arena.Load(prepBodyOffset(source,offset)));
 }
 float3 prepInertia(uint source,float3 v) {
+    if((source&3u)==3u)return 0.0f;
     float3 c0=prepBody3(source,36u);
     float3 c1=prepBody3(source,48u);
     float3 c2=prepBody3(source,60u);
