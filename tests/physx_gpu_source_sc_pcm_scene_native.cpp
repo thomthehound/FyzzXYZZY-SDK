@@ -207,13 +207,13 @@ struct SourceScDeviceIslandFixture {
             }
             std::uint32_t exact_prefix=0u;
             for(std::uint32_t i=0u;i<header.admitted_edges;++i) {
-                if(layout.compact_contact_prefix) {
+                if(layout.device_contact_prefix) {
                     std::uint32_t row=0u,extent=0u;
                     std::memcpy(&row,work.data()+layout.response_prefixes+i*4u,4u);
                     std::memcpy(&extent,work.data()+layout.response_extents+i*4u,4u);
                     if(row!=exact_prefix)
                         throw std::runtime_error(
-                            "Compact Sc numerical rows lost device source order");
+                            "Sc numerical rows lost device source order");
                     if(extent&0x80000000u)
                         exact_prefix+=extent&255u;
                 }

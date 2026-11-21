@@ -1490,7 +1490,7 @@ public:
                     std::memcpy(host_.data()+offsets[15]+32u,
                                 &next_contact_row,sizeof(next_contact_row));
                     const auto contact_prefix_offset=
-                        device_admission->layout.compact_contact_prefix
+                        device_admission->layout.device_contact_prefix
                         ?narrow(device_admission->layout.response_prefixes-
                                 device_admission->layout.body_order):0u;
                     std::memcpy(host_.data()+offsets[15]+44u,
@@ -1848,7 +1848,7 @@ public:
                descriptor_capacity>
                    (layout.response_prefixes-layout.response_extents)/
                        sizeof(std::uint32_t) ||
-               (layout.compact_contact_prefix &&
+               (layout.device_contact_prefix &&
                 descriptor_capacity>
                    (layout.contact_admissions-layout.response_prefixes)/
                        sizeof(std::uint32_t)))

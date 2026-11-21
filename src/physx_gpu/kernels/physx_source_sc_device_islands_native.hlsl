@@ -158,6 +158,7 @@ groupshared uint taskCarry,responseCarry,bodyCarry;
 groupshared uint radixBuckets[256],radixOffsets[256],radixTotals[256];
 groupshared uint radixDigits[128],radixRanks[128];
 groupshared uint compactContactScan[256];
+groupshared uint contactGroupCarry;
 groupshared uint compactBodyKeys[256],compactBodyStarts[256];
 groupshared uint compactEdgeKeys[256],compactEdgeStarts[256];
 
@@ -551,6 +552,17 @@ void admitCompact(uint lane) {
                    compactContactScan[index]-count);
     }
 }
+// The large-graph scan uses the discarded radix histogram as its
+// block/group prefix workspace after response ordering has completed.
+void scanContactBlock(uint lane) {
+    [unroll]
+    for(uint step=1u;step<128u;step<<=1u) {
+        const uint prior=lane>=step?compactContactScan[lane-step]:0u;
+        GroupMemoryBarrierWithGroupSync();
+        compactContactScan[lane]+=prior;
+        GroupMemoryBarrierWithGroupSync();
+    }
+}
 [numthreads(128,1,1)]
 void main(uint3 thread:SV_DispatchThreadID,
           uint3 group:SV_GroupID,uint3 lane:SV_GroupThreadID) {
@@ -586,6 +598,76 @@ void main(uint3 thread:SV_DispatchThreadID,
                     work.Store(p.workBias+16u,0u);
                 } else work.Store(address,0x80000000u|row);
             }
+        }
+        return;
+    }
+    if(p.phase>=34u && p.phase<=37u) {
+        const uint responses=work.Load(p.workBias+12u);
+        const uint blocks=(p.edgeCount+127u)/128u;
+        const uint groups=(blocks+127u)/128u;
+        if(p.phase==34u) {
+            const uint extent=index<responses
+                ?work.Load(p.extentBias+index*4u):0u;
+            const uint amount=(extent&numericalExtentValid)!=0u
+                ?(extent&255u):0u;
+            compactContactScan[lane.x]=amount;
+            GroupMemoryBarrierWithGroupSync();
+            scanContactBlock(lane.x);
+            if(index<responses)
+                work.Store(p.contactPrefixBias+index*4u,
+                           compactContactScan[lane.x]-amount);
+            if(lane.x==127u)
+                work.Store(p.histBias+
+                    ((p.first>>7u)+group.x)*4u,
+                    compactContactScan[127u]);
+            return;
+        }
+        if(p.phase==35u) {
+            const uint amount=index<blocks
+                ?work.Load(p.histBias+index*4u):0u;
+            compactContactScan[lane.x]=amount;
+            GroupMemoryBarrierWithGroupSync();
+            scanContactBlock(lane.x);
+            if(index<blocks)
+                work.Store(p.histBias+index*4u,
+                           compactContactScan[lane.x]-amount);
+            if(lane.x==127u)
+                work.Store(p.histBias+
+                    (blocks+(p.first>>7u)+group.x)*4u,
+                    compactContactScan[127u]);
+            return;
+        }
+        if(p.phase==36u) {
+            if(group.x!=0u)return;
+            if(lane.x==0u)contactGroupCarry=0u;
+            GroupMemoryBarrierWithGroupSync();
+            for(uint start=0u;start<groups;start+=128u) {
+                const uint i=start+lane.x;
+                const uint amount=i<groups
+                    ?work.Load(p.histBias+(blocks+i)*4u):0u;
+                compactContactScan[lane.x]=amount;
+                GroupMemoryBarrierWithGroupSync();
+                scanContactBlock(lane.x);
+                if(i<groups)
+                    work.Store(p.histBias+(blocks+i)*4u,
+                               contactGroupCarry+
+                               compactContactScan[lane.x]-amount);
+                GroupMemoryBarrierWithGroupSync();
+                if(lane.x==0u)
+                    contactGroupCarry+=compactContactScan[127u];
+                GroupMemoryBarrierWithGroupSync();
+            }
+            return;
+        }
+        if(index<responses) {
+            const uint block=index>>7u;
+            const uint groupIndex=block>>7u;
+            const uint local=work.Load(p.contactPrefixBias+index*4u);
+            const uint blockOffset=work.Load(p.histBias+block*4u);
+            const uint groupOffset=work.Load(
+                p.histBias+(blocks+groupIndex)*4u);
+            work.Store(p.contactPrefixBias+index*4u,
+                       local+blockOffset+groupOffset);
         }
         return;
     }

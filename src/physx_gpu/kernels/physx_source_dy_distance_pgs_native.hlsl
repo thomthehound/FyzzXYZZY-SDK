@@ -454,11 +454,7 @@ bool sourceDyRelocateSingletonContact(uint4 desc,uint scratch,
         sourceDyTaskErrorOr(errorAddress,65536u);
         return false;
     }
-    uint firstRow;
-    if(arena.Load(scratch+44u)!=0u)
-        firstRow=sourceDyContactPrefix(scratch,responseIndex);
-    else
-        arena.InterlockedAdd(scratch+32u,exact,firstRow);
+    const uint firstRow=sourceDyContactPrefix(scratch,responseIndex);
     if(firstRow>p.contactCount || exact>p.contactCount-firstRow) {
         sourceDyTaskErrorOr(errorAddress,65536u);
         return false;
@@ -794,12 +790,7 @@ void sourceDyPartitionTask(uint taskId,uint scratch,uint errorAddress,
         // how Sc interleaves its stable source force reservations.
         if(deviceAdmission) {
             if(lane==0u) {
-                uint firstRow;
-                if(arena.Load(scratch+44u)!=0u)
-                    firstRow=sourceDyContactPrefix(scratch,first);
-                else
-                    arena.InterlockedAdd(
-                        scratch+32u,dyExactContacts,firstRow);
+                const uint firstRow=sourceDyContactPrefix(scratch,first);
                 dyWorkBase=firstRow;
                 if(firstRow>p.contactCount ||
                    dyExactContacts>p.contactCount-firstRow)

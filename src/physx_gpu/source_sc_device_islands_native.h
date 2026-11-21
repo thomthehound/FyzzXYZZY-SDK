@@ -109,7 +109,7 @@ struct SourceScDeviceIslandLayout {
     std::size_t response_order=0u,body_order=0u;
     std::size_t response_tokens=0u,response_extents=0u;
     std::size_t response_prefixes=0u,contact_admissions=0u;
-    bool compact_contact_prefix=false;
+    bool device_contact_prefix=false;
     std::size_t radix_histogram=0u,bytes=0u;
     static std::uint32_t radix_passes(std::uint32_t nodes) noexcept {
         // Body, joint and contact identities share root-ordered
@@ -176,8 +176,7 @@ struct SourceScDeviceIslandLayout {
         result.contact_admissions=static_cast<std::size_t>(
             align(std::uint64_t(result.response_prefixes)+
                   std::uint64_t(edge_count)*4u));
-        result.compact_contact_prefix=
-            node_count<=256u && edge_count<=256u;
+        result.device_contact_prefix=true;
         bytes=align(std::uint64_t(result.contact_admissions)+
                     ((std::uint64_t(contact_manager_count)+31u)/32u)*4u);
         if(bytes>std::numeric_limits<std::uint32_t>::max())
@@ -381,6 +380,24 @@ public:
                 launch(9u+pass*3u,1u);
                 launch(10u+pass*3u,combined);
             }
+        // Response extents already belong to the device. Scan their
+        // exact counts in bounded workgroups and retain the global
+        // source-ordered row prefix for Dy's numerical submission.
+        if(edge_count) {
+            const auto contact_blocks=
+                (std::uint64_t(edge_count)+127u)/128u;
+            const auto contact_groups=(contact_blocks+127u)/128u;
+            if(!layout.radix_histogram ||
+               layout.response_order<layout.radix_histogram ||
+               (contact_blocks+contact_groups)*sizeof(std::uint32_t)>
+                   layout.response_order-layout.radix_histogram)
+                throw std::out_of_range(
+                    "Device Sc contact prefix has no scan workspace");
+            launch(34u,edge_count);
+            launch(35u,static_cast<std::uint32_t>(contact_blocks));
+            launch(36u,1u);
+            launch(37u,edge_count);
+        }
         } catch (...) {
             ordered.erase(ordered.begin()+original_command_count,ordered.end());
             throw;
