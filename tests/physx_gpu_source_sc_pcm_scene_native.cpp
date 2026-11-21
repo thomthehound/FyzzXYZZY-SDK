@@ -986,6 +986,18 @@ struct GpuPcmFrictionAnchorFixture {
         }
         return false;
     }
+    static bool selected_second_retained_patch(const Scene& scene) {
+        for(const auto& manifold:scene.manifolds_) {
+            if(manifold.pcm_result_index==0xffffffffu ||
+               manifold.friction_patch_count!=1u ||
+               manifold.friction_patch_offset>=scene.gpu_dy_patches_.size())
+                continue;
+            const auto choice=(scene.gpu_dy_patches_[
+                manifold.friction_patch_offset].reserved>>19u)&63u;
+            if(choice==2u)return true;
+        }
+        return false;
+    }
     static void seed_multiple_friction_patches(Scene& scene,Pair shapes,
                                                bool broken=false) {
         const auto edge=scene.contact_edge_index(shapes);
@@ -7106,21 +7118,26 @@ void verify_scene_normal_only_multi_patch(
         "Multi-patch Sc fixture did not establish physical GPU PCM contact");
     native::GpuPcmFrictionAnchorFixture::seed_multiple_friction_patches(
         gpu,{b[0],b[1]});
+    native::GpuPcmFrictionAnchorFixture::reverse_first_retained_normal(
+        gpu,{b[0],b[1]});
     cpu.step(seconds);
     gpu.step(seconds);
     constexpr auto metadata=2u*sizeof(std::uint32_t);
-    constexpr auto normal=sizeof(Vec3);
     constexpr auto full=sizeof(native::GpuPcmBoxResult);
     require(gpu.contacts().size()==1u &&
-            producer->pcm_header_join_bytes()==metadata+normal &&
-            producer->pcm_deferred_point_bytes()==full-metadata-normal &&
+            producer->pcm_header_join_bytes()==metadata &&
+            producer->pcm_deferred_point_bytes()==full-metadata &&
             producer->pcm_contact_readback_bytes()==full &&
             producer->dy_pcm_device_contact_rows()>0u &&
+            producer->dy_launch_stats().retained_friction_source_bytes==
+                2u*sizeof(native::GpuDyRetainedFrictionCandidate) &&
+            native::GpuPcmFrictionAnchorFixture::
+                selected_second_retained_patch(gpu) &&
             native::GpuPcmFrictionAnchorFixture::
                 had_early_friction_history(gpu) &&
             native::GpuPcmFrictionAnchorFixture::
                 had_compatible_friction_history(gpu),
-        "Production Sc multi-patch PCM fetched points before numerical Dy");
+        "Device PCM did not select the matching retained friction source");
     require(cpu.contacts().size()==gpu.contacts().size() &&
             cpu.contacts()[0].count==gpu.contacts()[0].count &&
             std::isfinite(gpu.contacts()[0].points[0].separation) &&
