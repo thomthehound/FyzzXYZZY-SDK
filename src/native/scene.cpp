@@ -4551,12 +4551,18 @@ void Scene::update_contacts(bool defer_device_points,float inverse_step) {
             const bool responding=
                 numerical_source.material.max_contact_impulse!=0.f;
             std::uint32_t nodes[2]{invalid,invalid};
+            const bool new_device_touch_candidate=pcm_source &&
+                !gpu_pcm_pairs_[numerical_source.pcm_pair_index].host_generated &&
+                !gpu_pcm_pairs_[numerical_source.pcm_pair_index].previously_touching;
             for(std::size_t side=0u;side<2u;++side) {
                 const BodyId id=side?id1:id0;
                 const auto& actor=actors_[id];
                 if(actor.motion!=Motion::Dynamic)continue;
-                if(actor.sleeping || actor.ready_for_sleep ||
-                   actor.wake_counter<=2.f*seconds) {
+                const bool awake=!actor.sleeping && !actor.ready_for_sleep &&
+                    actor.wake_counter>2.f*seconds;
+                // Only a new GPU physical touch can activate an otherwise
+                // sleeping candidate before Sc observes the PCM result.
+                if(!awake && (!responding || !new_device_touch_candidate)) {
                     admitted=false;
                     break;
                 }
@@ -4587,8 +4593,11 @@ void Scene::update_contacts(bool defer_device_points,float inverse_step) {
         if(admitted) {
             gpu_dy_island_node_flags_.resize(gpu_dy_early_actor_ids_.size());
             for(std::size_t i=0u;i<gpu_dy_early_actor_ids_.size();++i) {
-                const auto& dynamics=actors_[gpu_dy_early_actor_ids_[i]].dynamics;
-                gpu_dy_island_node_flags_[i]=active|require_contact|
+                const auto& actor=actors_[gpu_dy_early_actor_ids_[i]];
+                const auto& dynamics=actor.dynamics;
+                const bool awake=!actor.sleeping && !actor.ready_for_sleep &&
+                    actor.wake_counter>2.f*seconds;
+                gpu_dy_island_node_flags_[i]=(awake?active:0u)|require_contact|
                     dynamics.position_iterations|
                     (std::uint32_t(dynamics.velocity_iterations)<<8u);
             }
