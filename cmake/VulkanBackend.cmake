@@ -911,7 +911,19 @@ if(FYZZXYZZY_BUILD_VULKAN)
       INCLUDES "${CMAKE_CURRENT_SOURCE_DIR}/src" "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_port"
       LIBRARIES FyzzXYZZY::NativeGpuWorld
       DEPENDS fyzzxyzzy_native_gpu_sap_shaders fyzzxyzzy_native_gpu_aggregate_shaders fyzzxyzzy_native_gpu_pcm_shaders fyzzxyzzy_source_dy_distance_shader fyzzxyzzy_source_dy_convex_shader
-      ARGS "${CMAKE_CURRENT_BINARY_DIR}/kernels/fyzzxyzzy_native_sap_spirv.manifest" "${CMAKE_CURRENT_BINARY_DIR}/kernels/fyzzxyzzy_native_pcm_spv.manifest" "${FYZZXYZZY_SOURCE_DY_DISTANCE_SPV}" "${FYZZXYZZY_SOURCE_DY_CONVEX_SPV}")
+      ARGS "${CMAKE_CURRENT_BINARY_DIR}/kernels/fyzzxyzzy_native_sap_spirv.manifest" "${CMAKE_CURRENT_BINARY_DIR}/kernels/fyzzxyzzy_native_pcm_spv.manifest" "${FYZZXYZZY_SOURCE_DY_DISTANCE_SPV}" "${FYZZXYZZY_SOURCE_DY_CONVEX_SPV}" scene)
+    foreach(_scene_case IN ITEMS
+        compound_shapes sap_overlap compound_solver sphere_solver
+        convex_plane convex_finite sparse_contacts coupled_stack
+        coupled_solver legacy_gu_solver mixed_solver distance_solver
+        host_packed free_integration wide_islands)
+      add_test(NAME fyzzxyzzy_source_sc_gpu_pcm_scene_${_scene_case}
+        COMMAND fyzzxyzzy_source_sc_gpu_pcm_scene
+          "${CMAKE_CURRENT_BINARY_DIR}/kernels/fyzzxyzzy_native_sap_spirv.manifest"
+          "${CMAKE_CURRENT_BINARY_DIR}/kernels/fyzzxyzzy_native_pcm_spv.manifest"
+          "${FYZZXYZZY_SOURCE_DY_DISTANCE_SPV}"
+          "${FYZZXYZZY_SOURCE_DY_CONVEX_SPV}" "${_scene_case}")
+    endforeach()
     add_test(NAME fyzzxyzzy_source_sc_gpu_pcm_scene_aggregate_coupled
       COMMAND fyzzxyzzy_source_sc_gpu_pcm_scene
         "${CMAKE_CURRENT_BINARY_DIR}/kernels/fyzzxyzzy_native_sap_spirv.manifest"
