@@ -4516,7 +4516,7 @@ void verify_sparse_large_device_response_graph(
     auto producer=std::make_unique<
         physx_gpu::SourceScOwnedGpuBroadphaseNative>(
             backend,load_native_gpu_sap_shaders(backend,sap),
-            128u,128u,std::nullopt,
+            native::gpu_dy_wide_task_threshold+16u,128u,std::nullopt,
             load_native_gpu_pcm_shaders(backend,pcm),std::move(shader));
     auto* device=producer.get();
     gpu.set_gpu_broadphase(std::move(producer));
