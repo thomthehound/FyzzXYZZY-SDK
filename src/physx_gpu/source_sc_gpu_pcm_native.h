@@ -128,6 +128,7 @@ public:
         host_upload_pending_=false;
         result_pending_=false;
         island_work_ready_=false;
+        island_deferred_body_remap_=false;
         pending_host_inputs_=false;
         pending_requests_={};
         pending_output_={};
@@ -254,6 +255,7 @@ public:
         last_face_pair_scan_count_=0u;
         last_island_dispatches_=0u;
         last_remap_dispatches_=0u;
+        island_deferred_body_remap_=false;
         rebuild_required_=false;
     }
 
@@ -280,6 +282,7 @@ public:
         last_early_gu_touch_bytes_=0u;
         host_upload_pending_=false;
         island_work_ready_=false;
+        island_deferred_body_remap_=false;
         pending_host_inputs_=false;
         deferred_points_pending_=false;
         deferred_points_in_numerical_=false;
@@ -780,6 +783,7 @@ public:
                 throw std::invalid_argument("Device Sc node iterations invalid");
         island_layout_=SourceScDeviceIslandLayout::for_counts(
             node_count,edge_count,sources.contact_managers);
+        island_deferred_body_remap_=false;
         island_node_count_=node_count;
         island_edge_count_=edge_count;
         island_contact_count_=sources.contact_managers;
@@ -843,17 +847,34 @@ public:
             identity=source_to_solver_row[i]==i;
         if(!identity) {
             auto& uploads=stream_.upload_scratch();
-            uploads.push_back({island_nodes_.getDevicePtr(),
-                               source_to_solver_row.data(),
-                               source_to_solver_row.size_bytes()});
-            stream_.queue_uploads(uploads);
-            const auto before_remap=stream_.commands().size();
-            island_stage_.append_body_remap(
-                stream_,addresses_,island_nodes_.getDevicePtr(),
-                island_work_.getDevicePtr(),
-                island_node_count_,island_edge_count_,solver_row_capacity,
-                joint_row_capacity,island_joint_count_,island_contact_count_);
-            last_remap_dispatches_=stream_.commands().size()-before_remap;
+            if(island_joint_count_==0u) {
+                const auto offset=island_layout_.body_remap;
+                if(offset>island_layout_.bytes ||
+                   source_to_solver_row.size_bytes()>
+                       island_layout_.bytes-offset)
+                    throw std::out_of_range(
+                        "Sc body remap exceeds its resident work allocation");
+                // Dy consumes original Sc node ordinals with one indexed
+                // lookup; no standalone remap dispatch is required.
+                uploads.push_back({
+                    island_work_.getDevicePtr()+offset,
+                    source_to_solver_row.data(),
+                    source_to_solver_row.size_bytes()});
+                stream_.queue_uploads(uploads);
+                island_deferred_body_remap_=true;
+            }else {
+                uploads.push_back({island_nodes_.getDevicePtr(),
+                                   source_to_solver_row.data(),
+                                   source_to_solver_row.size_bytes()});
+                stream_.queue_uploads(uploads);
+                const auto before_remap=stream_.commands().size();
+                island_stage_.append_body_remap(
+                    stream_,addresses_,island_nodes_.getDevicePtr(),
+                    island_work_.getDevicePtr(),
+                    island_node_count_,island_edge_count_,solver_row_capacity,
+                    joint_row_capacity,island_joint_count_,island_contact_count_);
+                last_remap_dispatches_=stream_.commands().size()-before_remap;
+            }
         }
         stream_.queue_device_copy(
             indirect_address_,
@@ -861,7 +882,13 @@ public:
                 offsetof(SourceScDeviceIslandHeader,dispatch_x),
             sizeof(compute::DispatchSize));
     }
-    void discard_device_islands() noexcept {island_work_ready_=false;}
+    void discard_device_islands() noexcept {
+        island_work_ready_=false;
+        island_deferred_body_remap_=false;
+    }
+    bool device_island_deferred_body_remap() const noexcept {
+        return island_work_ready_ && island_deferred_body_remap_;
+    }
     CudaDeviceAddressMap::Address device_island_work_address() const noexcept {
         return island_work_ready_?island_work_.getDevicePtr():0u;
     }
@@ -1165,6 +1192,7 @@ private:
     bool result_pending_=false,host_upload_pending_=false;
     bool pending_host_inputs_=false;
     bool island_work_ready_=false;
+    bool island_deferred_body_remap_=false;
     bool journal_host_only_=false;
     // Borrowed Sc views survive until finish() or rollback; GPU output
     // is written directly into the enqueued Sc result arena at the join.

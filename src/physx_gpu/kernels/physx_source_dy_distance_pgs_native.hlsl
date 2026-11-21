@@ -96,8 +96,13 @@ float loadScalar(uint byteOffset) {
 }
 uint sourceDyBodyOrdinal(uint index) {
     const uint address=p.ordinalBias+index*4u;
-    return (p.launchControl&0x08000000u)!=0u
-        ?scIslandWork.Load(address):arena.Load(address);
+    if((p.launchControl&0x08000000u)==0u)
+        return arena.Load(address);
+    const uint source=scIslandWork.Load(address);
+    const uint scratch=arena.Load(p.integrationBias+28u);
+    const uint remap=arena.Load(scratch+48u);
+    return remap!=0u && source!=invalidBody
+        ?scIslandWork.Load(p.ordinalBias+remap+source*4u):source;
 }
 uint sourceDyResponseToken(uint scratch,uint colors,uint index) {
     if((p.launchControl&0x08000000u)!=0u) {

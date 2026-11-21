@@ -1336,6 +1336,12 @@ public:
                     layout.bytes-layout.contact_admissions))
                 throw std::out_of_range(
                     "Source Sc device contact admission exceeds its view");
+            if(device_admission->deferred_body_remap &&
+               (layout.body_remap<=layout.body_order ||
+                layout.body_remap>layout.bytes ||
+                layout.bytes-layout.body_remap<sizeof(std::uint32_t)))
+                throw std::out_of_range(
+                    "Dy deferred body remap exceeds the Sc work allocation");
             if(layout.tasks>layout.block_offsets ||
                tasks.size_bytes()>layout.block_offsets-layout.tasks ||
                layout.body_order>layout.response_tokens ||
@@ -1380,7 +1386,7 @@ public:
             }
         }
         const std::uint64_t scratch_bytes=device_partitions
-            ?(source_descriptors?(device_admission?48ull:24ull):20ull)+
+            ?(source_descriptors?(device_admission?64ull:24ull):20ull)+
                 std::uint64_t(descriptor_capacity)*24ull+
                 std::uint64_t(bodies.size())*12ull+
                 (source_descriptors?sizeof(std::uint32_t):0u)+
@@ -1596,7 +1602,7 @@ public:
         if(device_partitions) {
             const auto n=descriptor_capacity;
             const std::size_t header_bytes=source_descriptors
-                ?(device_admission?48u:24u):20u;
+                ?(device_admission?64u:24u):20u;
             const std::array<std::uint32_t,5> scratch_header{
                 narrow(header_bytes),narrow(header_bytes+n*16u),
                 narrow(header_bytes+n*20u),
@@ -1632,6 +1638,13 @@ public:
                     std::memcpy(host_.data()+offsets[15]+44u,
                                 &contact_prefix_offset,
                                 sizeof(contact_prefix_offset));
+                    const auto body_remap_offset=
+                        device_admission->deferred_body_remap
+                        ?narrow(device_admission->layout.body_remap-
+                                device_admission->layout.body_order):0u;
+                    std::memcpy(host_.data()+offsets[15]+48u,
+                                &body_remap_offset,
+                                sizeof(body_remap_offset));
                     const std::array<std::uint32_t,2> epoch_errors{
                         0u,std::numeric_limits<std::uint32_t>::max()};
                     std::memcpy(host_.data()+offsets[15]+36u,

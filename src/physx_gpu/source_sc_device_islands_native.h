@@ -109,6 +109,7 @@ struct SourceScDeviceIslandLayout {
     std::size_t response_order=0u,body_order=0u;
     std::size_t response_tokens=0u,response_extents=0u;
     std::size_t response_prefixes=0u,contact_admissions=0u;
+    std::size_t body_remap=0u;
     bool device_contact_prefix=false;
     std::size_t radix_histogram=0u,bytes=0u;
     static std::uint32_t radix_passes(std::uint32_t nodes) noexcept {
@@ -179,6 +180,8 @@ struct SourceScDeviceIslandLayout {
         result.device_contact_prefix=true;
         bytes=align(std::uint64_t(result.contact_admissions)+
                     ((std::uint64_t(contact_manager_count)+31u)/32u)*4u);
+        result.body_remap=static_cast<std::size_t>(bytes);
+        bytes=align(bytes+std::uint64_t(node_count)*4u);
         if(bytes>std::numeric_limits<std::uint32_t>::max())
             throw std::out_of_range("Device Sc island work exceeds 32-bit view");
         result.bytes=static_cast<std::size_t>(bytes);
@@ -195,6 +198,7 @@ struct SourceScDeviceIslandDyView {
     compute::DispatchIndirectArgs task_dispatch{};
     std::uint32_t response_capacity=0u;
     std::uint32_t contact_manager_capacity=0u;
+    bool deferred_body_remap=false;
 };
 class SourceScDeviceIslandsNativeStage final {
 public:

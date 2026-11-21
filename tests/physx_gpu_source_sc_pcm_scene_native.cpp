@@ -4810,11 +4810,14 @@ void verify_early_pcm_island_pipeline(
         if(identity_order)
             require(native::GpuPcmFrictionAnchorFixture::
                         has_identity_device_body_order(gpu) &&
-                    device->sc_island_remap_dispatch_count()==0u,
+                    device->sc_island_remap_dispatch_count()==0u &&
+                    !device->sc_island_deferred_body_remap(),
                 "Identity-ordered source Sc bodies still uploaded and dispatched a remap");
         else if(!enhanced_determinism)
-            require(device->sc_island_remap_dispatch_count()==1u,
-                "Nonidentity Sc candidate rows were not remapped on the device");
+            require(device->sc_island_remap_dispatch_count()==
+                        (with_joints?1u:0u) &&
+                    device->sc_island_deferred_body_remap()==!with_joints,
+                "Nonidentity Sc body order did not reach its numerical consumer");
         const auto expected_found=frame==0u?responding:0u;
         require(gpu.found_contacts().size()==expected_found &&
                 gpu.lost_contacts().empty() &&
@@ -8588,7 +8591,8 @@ void verify_host_lane_packed_islands(
              schedule.device_admitted_tasks>=expected &&
              schedule.device_admitted_descriptors>=expected &&
              producer->sc_island_dispatch_count()==1u &&
-             producer->sc_island_remap_dispatch_count()==1u &&
+             producer->sc_island_remap_dispatch_count()==0u &&
+              producer->sc_island_deferred_body_remap() &&
              schedule.wide_tasks==0u
             :schedule.host_lane_packed_tasks>=expected &&
              schedule.device_island_indirect_dispatches==0u &&

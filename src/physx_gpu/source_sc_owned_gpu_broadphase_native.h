@@ -373,7 +373,8 @@ public:
                                         pcm_->device_island_layout(),
                                         *pcm_->device_island_indirect_args(),
                                         pcm_->device_island_response_capacity(),
-                                        pcm_->device_island_contact_capacity()}}
+                                        pcm_->device_island_contact_capacity(),
+                                        pcm_->device_island_deferred_body_remap()}}
                                 :std::nullopt,
                             deferred_points,readback_device_task_records,
                             compact_contact_admission,compact_contact_prep,
@@ -533,6 +534,9 @@ public:
     }
     std::size_t sc_island_remap_dispatch_count() const noexcept {
         return pcm_ ? pcm_->last_remap_dispatches() : 0u;
+    }
+    bool sc_island_deferred_body_remap() const noexcept {
+        return pcm_ && pcm_->device_island_deferred_body_remap();
     }
     std::size_t dy_pcm_device_contact_rows() const noexcept {
         return dy_distance_ ? dy_distance_->last_reused_pcm_contact_rows() : 0u;
