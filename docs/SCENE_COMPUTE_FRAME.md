@@ -283,6 +283,12 @@ The late numerical remap dispatches contact-only graphs by body count;
 their contact and full-descriptor tokens already have final source
 identities and are not revisited. Device-joint graphs retain their typed
 row remap across the entire response stream.
+Sc authors one source-ordered numerical input table before PCM touch
+classification, covering GPU PCM and CPU Gu candidates. Each slot records
+typed actor endpoints and resolved material coefficients without a host
+contact-count dependency. The later Dy preparation consumes this table
+without repeating the authored material combination. Contact/friction
+row construction still follows Sc's witness publication.
 A continuous PCM-to-Dy numerical path without a host header dependency
 remains open; compact admission alone does not remove that synchronization.
 

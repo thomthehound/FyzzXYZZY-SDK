@@ -318,11 +318,51 @@ struct GpuPcmFrictionAnchorFixture {
         }
     }
     static void verify_early_pcm_numerical_materials(const Scene& scene) {
-        if(scene.gpu_pcm_pairs_.empty())
+        if(scene.gpu_pcm_pairs_.empty() ||
+           scene.gpu_dy_candidate_sources_.size()!=scene.previous_pairs_.size())
             throw std::runtime_error(
-                "Resident PCM numerical preparation lacks candidate pairs");
+                "Resident PCM numerical preparation lacks candidate sources");
+        std::size_t pcm_source=0u;
+        for(std::size_t i=0u;i<scene.previous_pairs_.size();++i) {
+            const auto pair=scene.previous_pairs_[i];
+            const auto edge=scene.active_edge_handles_[i];
+            if(edge>=scene.island_edges_.size() ||
+               !(scene.island_edges_[edge].shapes==pair))
+                throw std::runtime_error(
+                    "Pre-witness numerical source differs from Sc candidate identity");
+            const auto reversed=scene.island_edges_[edge].gu_order_reversed;
+            const auto first=reversed?pair.b:pair.a;
+            const auto second=reversed?pair.a:pair.b;
+            const auto& source=scene.gpu_dy_candidate_sources_[i];
+            const auto expected_pcm=pcm_source<scene.gpu_pcm_pairs_.size() &&
+                scene.gpu_pcm_pairs_[pcm_source].candidate_ordinal==i
+                    ?static_cast<std::uint32_t>(pcm_source++)
+                    :0xffffffffu;
+            const auto expected=scene.prepare_contact_material(first,second);
+            const auto& actual=source.material;
+            if(source.first!=scene.shapes_[first].body ||
+               source.second!=scene.shapes_[second].body ||
+               source.pcm_pair_index!=expected_pcm ||
+               !actual.prepared ||
+               actual.rest_distance!=expected.rest_distance ||
+               actual.pair_slop!=expected.pair_slop ||
+               actual.max_contact_impulse!=expected.max_contact_impulse ||
+               actual.max_penetration_bias!=expected.max_penetration_bias ||
+               actual.restitution!=expected.restitution ||
+               actual.damping!=expected.damping ||
+               actual.static_friction!=expected.static_friction ||
+               actual.dynamic_friction!=expected.dynamic_friction ||
+               actual.acceleration_spring!=expected.acceleration_spring ||
+               actual.disable_friction!=expected.disable_friction ||
+               actual.disable_strong_friction!=expected.disable_strong_friction)
+                throw std::runtime_error(
+                    "Sc candidate numerical source changed across witness publication");
+        }
+        if(pcm_source!=scene.gpu_pcm_pairs_.size())
+            throw std::runtime_error("Pre-witness numerical sources skipped PCM pairs");
         for(const auto& request:scene.gpu_pcm_pairs_) {
-            const auto& actual=request.numerical;
+            const auto& actual=scene.gpu_dy_candidate_sources_.at(
+                request.candidate_ordinal).material;
             const auto expected=scene.prepare_contact_material(
                 request.first,request.second);
             if(!actual.prepared ||
@@ -348,7 +388,8 @@ struct GpuPcmFrictionAnchorFixture {
                scene.gpu_pcm_pairs_[index].edge!=manifold.edge_handle)
                 throw std::runtime_error(
                     "Resident PCM numerical material lost its source EdgeIndex");
-            const auto& material=scene.gpu_pcm_pairs_[index].numerical;
+            const auto& material=scene.gpu_dy_candidate_sources_.at(
+                manifold.candidate_ordinal).material;
             const auto prep_index=scene.gpu_dy_contact_prep_indices_[
                 manifold.candidate_ordinal];
             if(prep_index>=scene.gpu_dy_contact_prep_pairs_.size())
@@ -370,10 +411,9 @@ struct GpuPcmFrictionAnchorFixture {
         }
     }
     static void verify_cpu_dy_omits_device_materials(const Scene& scene) {
-        for(const auto& request:scene.gpu_pcm_pairs_)
-            if(request.numerical.prepared)
-                throw std::runtime_error(
-                    "CPU Dy prepared unused GPU PCM numerical materials");
+        if(!scene.gpu_dy_candidate_sources_.empty())
+            throw std::runtime_error(
+                "CPU Dy prepared unused GPU numerical sources");
     }
     static bool has_early_device_admission(const Scene& scene) {
         return scene.gpu_dy_early_islands_;

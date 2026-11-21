@@ -99,6 +99,11 @@ struct GpuDyPairMaterial {
     bool acceleration_spring=false,disable_friction=false;
     bool disable_strong_friction=false,prepared=false;
 };
+struct GpuDyCandidateSource {
+    BodyId first=0xffffffffu,second=0xffffffffu;
+    std::uint32_t pcm_pair_index=0xffffffffu;
+    GpuDyPairMaterial material{};
+};
 // Gu PCM contacts remain keyed by Sc's original contact-manager EdgeIndex.
 // These are borrowed per-frame views; GPU state belongs to the same Sc edge.
 struct GpuPcmBoxPair {
@@ -118,7 +123,6 @@ struct GpuPcmBoxPair {
     // general managers in the same batch remain GPU-owned.
     bool candidate_complete=false;
     bool host_generated=false;
-    GpuDyPairMaterial numerical{};
     // Sc validates retained friction before GPU witness publication.
     std::uint32_t friction_history_mask=0u,friction_eligible_mask=0u;
     // Stable source candidate identity precedes Gu contact publication.
@@ -2371,6 +2375,9 @@ private:
     bool broadphase_pair_membership_changed_=true;
     std::vector<Pair> sap_created_pairs_,sap_deleted_pairs_;
     std::vector<Pair> previous_pairs_;
+    // Numerical coefficients and ordered actor endpoints are fixed by
+    // Sc's candidate identities before GPU touch classification.
+    std::vector<GpuDyCandidateSource> gpu_dy_candidate_sources_;
     std::vector<Pair> pending_pairs_;
     std::vector<Pair> gpu_plane_pair_candidates_;
     // Sc's ordered contact-manager stream borrows these GPU per-frame
