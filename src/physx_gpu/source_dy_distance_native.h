@@ -997,7 +997,8 @@ public:
         const std::size_t inline_body_bytes=
             inline_bodies_.size()*sizeof(native::GpuDyContactPrepBody);
         const std::size_t retained_begin=static_begin+inline_body_bytes;
-        if(retained_candidates.size()>
+        if(retained_begin>std::numeric_limits<std::uint32_t>::max() ||
+           retained_candidates.size()>
            (std::numeric_limits<std::uint32_t>::max()-retained_begin)/
                sizeof(native::GpuDyRetainedFrictionCandidate))
             throw std::overflow_error(
@@ -2681,8 +2682,9 @@ public:
         last_contact_prep_upload_saving_=
             static_cast<std::int64_t>(contact_prep.size()*
                 sizeof(native::GpuDyContactPrepPair))-
-            static_cast<std::int64_t>(prep_bytes+inline_body_bytes+
-                                      retained_bytes);
+            static_cast<std::int64_t>(
+                prep_bytes+inline_body_bytes+
+                last_schedule_.retained_friction_source_bytes);
     }
     std::size_t last_resident_pose_count() const noexcept {
         return last_resident_pose_count_;
