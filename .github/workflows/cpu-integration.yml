@@ -353,9 +353,13 @@ jobs:
           }
 
   native-no-physx-linux:
-    name: Independent SDK / Vulkan without PhysX
+    name: Independent SDK / Vulkan ${{ matrix.suite }} without PhysX
     runs-on: ubuntu-26.04
     timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        suite: [source, profile]
     steps:
       - uses: actions/checkout@v7
       - name: Record Ubuntu release for package-cache isolation
@@ -398,18 +402,21 @@ jobs:
         shell: bash
         run: *install_linux_dxc
       - name: Configure without external source or network
+        if: matrix.suite == 'source'
         run: cmake -S . -B build-native -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON -DFYZZXYZZY_ENABLE_PHYSX_SOURCE=OFF -DFYZZXYZZY_BUILD_VULKAN=ON -DFYZZXYZZY_BUILD_SOURCE_GPU_TESTS=ON -DFYZZXYZZY_ENABLE_GPU_PHYSICS_PROTOTYPES=ON -DFETCHCONTENT_FULLY_DISCONNECTED=ON
       - name: Build and test native core and compute
+        if: matrix.suite == 'source'
         shell: bash
         run: |
           cmake --build build-native --parallel 4
-          ctest --test-dir build-native --output-on-failure
+          ctest --test-dir build-native --parallel 2 --output-on-failure --stop-on-failure
           grep -F 'FYZZXYZZY_METRIC' build-native/Testing/Temporary/LastTest.log | tee -a "$GITHUB_STEP_SUMMARY"
           test ! -d build-native/_deps/fyzzxyzzy_physx-src
           test -f build-native/libfyzzxyzzy_core.a
           test -f build-native/libfyzzxyzzy_compute.a
           test -f build-native/libfyzzxyzzy_source_gpu_primitives.a
       - name: Compile instrumented Vulkan scene with the production execution graph
+        if: matrix.suite == 'profile'
         shell: bash
         run: |
           cmake -S . -B build-profile-vulkan -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON -DFYZZXYZZY_ENABLE_PHYSX_SOURCE=OFF -DFYZZXYZZY_BUILD_VULKAN=ON -DFYZZXYZZY_BUILD_SOURCE_GPU_TESTS=ON -DFYZZXYZZY_PROFILE_GPU=ON -DFETCHCONTENT_FULLY_DISCONNECTED=ON
