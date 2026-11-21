@@ -533,6 +533,19 @@ struct GpuPcmFrictionAnchorFixture {
                           scene.gpu_dy_early_actor_ids_.end()))
             throw std::runtime_error(
                 "Sc did not queue compact actor and contact identities before Gu");
+        std::size_t previous_row=0u;
+        bool seen_row=false;
+        for(const BodyId id:scene.gpu_dy_early_actor_ids_) {
+            const auto& actor=scene.actors_[id];
+            if(actor.solver_row_generation!=
+               scene.solver_preparation_generation_)continue;
+            if(actor.solver_row_index>=scene.solver_rows_.size() ||
+               (seen_row && actor.solver_row_index<=previous_row))
+                throw std::runtime_error(
+                    "Early Sc dynamic solver rows lost stable candidate order");
+            previous_row=actor.solver_row_index;
+            seen_row=true;
+        }
         for(std::size_t i=0u;i<scene.gpu_dy_island_edges_.size();++i) {
             const auto& edge=scene.gpu_dy_island_edges_[i];
             if(i<joints) {
