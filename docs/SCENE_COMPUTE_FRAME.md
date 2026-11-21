@@ -173,8 +173,10 @@ The GPU resolves physical touch and runnable task topology on its own
 ordered queue. Device admission assigns exact source-ordered contact-row
 prefixes from resident PCM and Gu extents. Compact graphs compute the prefix
 in their admission workgroup; larger graphs scan response blocks in parallel
-using the completed radix workspace. Dy consumes these GPU-owned offsets
-without global contact-row allocation atomics or a host prefix readback.
+using the completed radix workspace. Device-admitted Dy tasks place
+PCM and CPU Gu managers directly in those ranges, without repeating
+a task-local capacity scan or allocating contact rows with global atomics.
+The CPU-authored task path retains its original source-order correlation.
 After accurate Sc publication, a compact node-to-solver-row upload
 remaps the device body order in place against the full Dy row capacity;
 Dy consumes the same admitted tasks without a second graph dispatch or
