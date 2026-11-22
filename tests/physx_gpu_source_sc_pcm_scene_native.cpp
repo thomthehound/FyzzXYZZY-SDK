@@ -931,12 +931,13 @@ struct GpuPcmFrictionAnchorFixture {
                 return request.friction_eligible_mask!=0u;
             });
     }
-    static bool single_eligible_history_on_device(const Scene& scene) {
+    static bool single_eligible_history_on_device(const Scene& scene,
+                                                  std::uint32_t eligible_bit=1u) {
         return std::any_of(scene.gpu_pcm_pairs_.begin(),
-            scene.gpu_pcm_pairs_.end(),[](const auto& request) {
-                const auto eligible=request.friction_eligible_mask;
+            scene.gpu_pcm_pairs_.end(),[eligible_bit](const auto& request) {
                 return request.friction_history_mask==3u &&
-                       eligible==1u && !request.early_host_normal;
+                       request.friction_eligible_mask==eligible_bit &&
+                       !request.early_host_normal;
             });
     }
     static void reverse_first_retained_normal(Scene& scene,Pair shapes) {
@@ -1058,6 +1059,22 @@ struct GpuPcmFrictionAnchorFixture {
         scene.friction_patches_[span.offset].broken=broken;
         scene.friction_patches_.push_back(patch);
         scene.friction_by_edge_[edge].count=2u;
+    }
+    static void invalidate_first_friction_material(Scene& scene,Pair shapes) {
+        const auto edge=scene.contact_edge_index(shapes);
+        if(edge==Scene::invalid_edge ||
+           edge>=scene.friction_by_edge_.size())
+            throw std::runtime_error(
+                "Single-compatible PCM fixture lost its contact manager");
+        const auto span=scene.friction_by_edge_[edge];
+        if(span.epoch!=scene.friction_cache_epoch_ || span.count!=2u ||
+           span.offset>scene.friction_patches_.size() ||
+           span.count>scene.friction_patches_.size()-span.offset)
+            throw std::runtime_error(
+                "Single-compatible PCM fixture needs two retained patches");
+        auto& patch=scene.friction_patches_[span.offset];
+        patch.broken=false;
+        patch.static_friction+=10.f;
     }
     static void invalidate_multiple_friction_normals(Scene& scene,Pair shapes) {
         const auto edge=scene.contact_edge_index(shapes);
@@ -5933,6 +5950,27 @@ void verify_pcm_friction_normal_revalidation(
     }
     test::compound_compare_state(gpu.body_state(gb),cpu.body_state(cb),
         0.05f,"Unique-history device normal validation changed rigid response");
+
+    // The sole compatible source need not occupy the first cached slot.
+    // Sc uses the existing pre-witness eligibility mask rather than
+    // revisiting each historical patch after PCM publication.
+    native::GpuPcmFrictionAnchorFixture::seed_multiple_friction_patches(
+        gpu,{gs,gb});
+    native::GpuPcmFrictionAnchorFixture::invalidate_first_friction_material(
+        gpu,{gs,gb});
+    cpu.step(1.f/120.f);
+    gpu.step(1.f/120.f);
+    require(native::GpuPcmFrictionAnchorFixture::
+                single_eligible_history_on_device(gpu,2u) &&
+            producer->pcm_header_join_bytes()==
+                2u*sizeof(std::uint32_t) &&
+            producer->dy_launch_stats().retained_friction_source_bytes==0u &&
+            gpu.contacts().size()==1u &&
+            !gpu.solved_friction_patches().empty() &&
+            gpu.solved_friction_patches().front().anchor_count>0u,
+        "Second-slot PCM friction history lost its pre-witness selection");
+    test::compound_compare_state(gpu.body_state(gb),cpu.body_state(cb),
+        0.05f,"Second-slot PCM history changed the rigid-body response");
 }
 
 void verify_dy_execution_switch(
