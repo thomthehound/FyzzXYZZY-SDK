@@ -8902,10 +8902,11 @@ void Scene::prepare_constraints(float seconds) {
             if(manifold.count==0u)
                 throw std::logic_error("Resident PCM has no contact run");
             const FrictionPatch* retained=nullptr;
-            std::size_t admitted_history=0u;
             const bool device_select=gpu_normal_prep &&
                 gpu_dy_candidate_sources_[manifold.candidate_ordinal].
                     retained_count!=0u;
+            const auto& request=gpu_pcm_pairs_[manifold.pcm_result_index];
+            std::uint32_t valid_history=0u;
             if(!disable_strong_friction && edge<friction_by_edge_.size()) {
                 const auto& history=friction_by_edge_[edge];
                 if(history.epoch==friction_cache_epoch_ &&
@@ -8915,30 +8916,27 @@ void Scene::prepare_constraints(float seconds) {
                     if(history.count>max_source_patches)
                         throw std::logic_error(
                             "Source PCM friction history exceeds patch limit");
-                    for(std::size_t previous=history.offset;
-                        previous<history.offset+history.count;++previous) {
-                        const auto& old=friction_patches_[previous];
-                        const auto& request=gpu_pcm_pairs_[
-                            manifold.pcm_result_index];
-                        const auto bit=1u<<(previous-history.offset);
-                        if((request.friction_history_mask&bit)==0u)continue;
-                        ++admitted_history;
-                        if((request.friction_eligible_mask&bit)!=0u &&
-                           !device_select &&
-                           (!request.early_host_normal ||
-                            dot(rotate(mass_orientation(actor0),old.body0_normal),
-                                manifold.points.front().normal)>=same_normal)) {
-                            // With one eligible patch, Dy checks the
-                            // source normal and regenerates mismatched
-                            // anchors from resident PCM witnesses.
+                    valid_history=request.friction_history_mask;
+                    const auto eligible=request.friction_eligible_mask;
+                    const auto permitted=history.count==max_source_patches
+                        ?std::numeric_limits<std::uint32_t>::max()
+                        :(1u<<history.count)-1u;
+                    if(((valid_history|eligible)&~permitted)!=0u ||
+                       (eligible&~valid_history)!=0u)
+                        throw std::logic_error(
+                            "Pre-witness PCM friction history changed before Dy");
+                    if(!device_select && eligible!=0u) {
+                        const auto slot=std::countr_zero(eligible);
+                        const auto& old=friction_patches_[history.offset+slot];
+                        if(!request.early_host_normal ||
+                           dot(rotate(mass_orientation(actor0),old.body0_normal),
+                               manifold.points.front().normal)>=same_normal)
                             retained=&old;
-                            break;
-                        }
                     }
                 }
             }
             if(!retained && !device_select &&
-               admitted_history==max_source_patches)
+               std::popcount(valid_history)==max_source_patches)
                 throw std::overflow_error(
                     "Native source friction correlation exceeds 32 patches");
             FrictionPatch patch=retained?*retained:FrictionPatch{};
