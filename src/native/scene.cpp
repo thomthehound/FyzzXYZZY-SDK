@@ -4788,12 +4788,20 @@ void Scene::update_contacts(bool defer_device_points,float step_seconds) {
     // only after CPU narrowphase produces a physical contact.
     if(defer_device_points && inverse_step>0.0f && gpu_dy_active()) {
         gpu_dy_immovable_source_ids_.clear();
-        for(const auto& request:gpu_pcm_pairs_)
+        for(std::size_t i=0u;i<gpu_pcm_pairs_.size();++i) {
+            if(i>=gpu_dy_candidate_sources_.size() ||
+               !gpu_dy_candidate_sources_[i].material.prepared)
+                throw std::logic_error(
+                    "Pre-witness PCM immovable source has no numerical material");
+            if(gpu_dy_candidate_sources_[i].material.max_contact_impulse==0.f)
+                continue;
+            const auto& request=gpu_pcm_pairs_[i];
             for(const ShapeId shape:{request.first,request.second}) {
                 const BodyId id=shapes_[shape].body;
                 if(actors_[id].motion!=Motion::Dynamic)
                     gpu_dy_immovable_source_ids_.push_back(id);
             }
+        }
         stage_gpu_dy_actor_sources(
             gpu_dy_immovable_source_ids_,1.0f/inverse_step,true);
     }
@@ -4819,7 +4827,14 @@ void Scene::update_contacts(bool defer_device_points,float step_seconds) {
         // Newly intersecting bodies may not yet belong to the accurate
         // graph's active prefix. Their source PCM pairs still identify
         // stable actor-local data before physical touch is known.
-        for(const auto& pair:gpu_pcm_pairs_) {
+        for(std::size_t i=0u;i<gpu_pcm_pairs_.size();++i) {
+            if(i>=gpu_dy_candidate_sources_.size() ||
+               !gpu_dy_candidate_sources_[i].material.prepared)
+                throw std::logic_error(
+                    "Pre-witness PCM actor source has no numerical material");
+            if(gpu_dy_candidate_sources_[i].material.max_contact_impulse==0.f)
+                continue;
+            const auto& pair=gpu_pcm_pairs_[i];
             gpu_dy_early_actor_ids_.push_back(shapes_[pair.first].body);
             gpu_dy_early_actor_ids_.push_back(shapes_[pair.second].body);
         }
@@ -9931,8 +9946,9 @@ void Scene::solve_gpu_distance_constraints(float seconds) {
     // kinematic velocities and poses for active contact preparation.
     gpu_dy_immovable_source_ids_.clear();
     for(const auto manager:indexed_managers_) {
-        const auto pair=manifolds_[manager].pair;
-        for(const ShapeId shape:{pair.a,pair.b}) {
+        const auto& manifold=manifolds_[manager];
+        if(!manifold.friction_patch_count)continue;
+        for(const ShapeId shape:{manifold.pair.a,manifold.pair.b}) {
             const BodyId id=shapes_[shape].body;
             if(actors_[id].motion!=Motion::Dynamic)
                 gpu_dy_immovable_source_ids_.push_back(id);

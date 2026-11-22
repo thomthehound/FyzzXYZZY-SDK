@@ -228,7 +228,10 @@ joining PCM's host witness, without waiting on that later device continuation.
 During GPU PCM, Sc queues actor-local mass, pose and sleep inputs
 before the host witness join, including when early device island
 admission is unavailable. Speculative PCM endpoints stage before
-contact classification; CPU Gu immovable endpoints stage only after
+contact classification when the authored pair permits physical response.
+A response-disabled PCM pair does not stage numerical endpoints, including
+immovable actors; the final Dy pass also omits immovable participants
+without contact patches. CPU Gu immovable endpoints stage only after
 CPU narrowphase reports a touching, responding manager, while PCM is
 still in flight. Empty Gu candidates never upload actor-local inputs.
 Already-active bodies and PCM candidate endpoints supply stable actor IDs;

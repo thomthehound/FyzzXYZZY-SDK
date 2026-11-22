@@ -5163,6 +5163,11 @@ void verify_gpu_coupled_solver(
         cpu.step(dt);
         const auto cpu_done=std::chrono::steady_clock::now();
         gpu.step(dt);
+        const bool capped_immovable_staged=
+            native::GpuPcmFrictionAnchorFixture::actor_has_staged_source(
+                gpu,capped_fixed_gpu);
+        require(capped_immovable_staged==(frame>=4u && frame<8u),
+            "Response-disabled PCM staged an immovable numerical actor");
         if(frame>0u) {
             const auto gpu_done=std::chrono::steady_clock::now();
             cpu_step_ms[frame-1u]=
