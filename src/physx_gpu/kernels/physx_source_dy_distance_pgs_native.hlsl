@@ -439,6 +439,9 @@ bool sourceDyPrepareSleep(uint input,uint local,
            isfinite(wakeCounter) && wakeCounter>=0.0f;
 }
 
+uint sourceDyPrepAddress(uint index) {
+    return p.prepBias+16u+index*48u;
+}
 #include "physx_source_dy_contact_pgs_native.hlsli"
 
 // Packed single-descriptor tasks bypass workgroup coloring, but still
@@ -463,7 +466,7 @@ bool sourceDyRelocateSingletonContact(uint4 desc,uint scratch,
         return false;
     }
     const bool pcm=arena.Load(
-        p.prepBias+prepIndex*64u+48u)!=invalidBody;
+        sourceDyPrepAddress(prepIndex)+32u)!=invalidBody;
     const uint source=arena.Load(manager+20u);
     const uint exact=arena.Load(manager+12u);
     if(source>p.contactCount || exact>p.contactCount-source ||
@@ -545,8 +548,8 @@ bool sourceDyExpandDescriptor(uint token,uint extent,
                 sourceDyTaskErrorOr(errorAddress,1048576u);
                 return false;
             }
-            const uint prep=p.prepBias+prepIndex*64u;
-            const uint pcmIndex=arena.Load(prep+48u);
+            const uint prep=sourceDyPrepAddress(prepIndex);
+            const uint pcmIndex=arena.Load(prep+32u);
             if(pcmIndex!=invalidBody) {
                 const uint source=p.pcmBias+pcmIndex*84u;
                 const uint packed=pcmContacts.Load(source+4u);
@@ -563,7 +566,7 @@ bool sourceDyExpandDescriptor(uint token,uint extent,
                 }
                 const uint patch=p.patchBias+patchIndex*32u;
                 const uint capacity=arena.Load(patch+4u);
-                if(pcmContacts.Load(source)!=arena.Load(prep+52u) ||
+                if(pcmContacts.Load(source)!=arena.Load(prep+36u) ||
                    ((packed>>3u)&7u)!=0u ||
                    ((p.launchControl&0x08000000u)!=0u &&
                     (extent&0x80000000u)==0u) ||
@@ -650,7 +653,7 @@ void sourceDyPlaceContactManager(uint mo,uint source,uint capacity,
         sourceDyTaskErrorOr(errorAddress,65536u);
         return;
     }
-    const bool pcm=arena.Load(p.prepBias+prepIndex*64u+48u)!=invalidBody;
+    const bool pcm=arena.Load(sourceDyPrepAddress(prepIndex)+32u)!=invalidBody;
     if(pcm) {
         if(patchCount!=1u) {
             sourceDyTaskErrorOr(errorAddress,65536u);
@@ -746,7 +749,7 @@ void sourceDyPartitionTask(uint taskId,uint scratch,uint errorAddress,
                         const uint patchIndex=arena.Load(mo);
                         if(prepIndex<p.prepCount) {
                             const bool pcm=arena.Load(
-                                p.prepBias+prepIndex*64u+48u)!=invalidBody;
+                                sourceDyPrepAddress(prepIndex)+32u)!=invalidBody;
                             if(!pcm || patchIndex<p.patchCount) {
                                 capacity=pcm
                                     ?arena.Load(p.patchBias+patchIndex*32u+4u)
@@ -1541,7 +1544,7 @@ void admitPcmContactExtents(uint begin,uint end,uint lane,uint endError) {
             sourceDyTaskErrorOr(endError,65536u);
             continue;
         }
-        if(arena.Load(p.prepBias+prepIndex*64u+48u)==invalidBody)
+        if(arena.Load(sourceDyPrepAddress(prepIndex)+32u)==invalidBody)
             continue;
         uint4 resolved;
         sourceDyExpandDescriptor(0xc0000000u|desc.x,0u,0u,0u,

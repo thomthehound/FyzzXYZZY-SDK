@@ -89,7 +89,7 @@ void solveContact(uint4 descriptor,uint errorAddress,bool biased,
     }
     const uint prepIndex=arena.Load(managerAddress+16u);
     const bool pcm=prepIndex<p.prepCount &&
-        arena.Load(p.prepBias+prepIndex*64u+48u)!=invalidBody;
+        arena.Load(sourceDyPrepAddress(prepIndex)+32u)!=invalidBody;
     const uint sourceBegin=pcm ||
         (p.launchControl&0x08000000u)!=0u
         ?arena.Load(managerAddress+20u):manager.z;
@@ -315,21 +315,21 @@ void prepareContactRow(uint index,uint pairIndex,uint contactBegin,
         return;
     }
     uint co=p.contactBias+index*64u;
-    uint pair=p.prepBias+pairIndex*64u;
+    uint pair=sourceDyPrepAddress(pairIndex);
     uint b0=arena.Load(pair),b1=arena.Load(pair+4u);
     // The source correlation fixes patch order and body inputs. The GPU
     // reconstructs PCM normal rows without uploading a placeholder row.
     float3 n;
     float3 pos;
     float separation;
-    uint pcmIndex=arena.Load(pair+48u);
+    uint pcmIndex=arena.Load(pair+32u);
     if(pcmIndex!=0xffffffffu) {
         uint local=index-contactBegin;
         uint source=p.pcmBias+pcmIndex*84u;
         uint packed=pcmContacts.Load(source+4u);
         if(index<contactBegin || local>=contactCount ||
            local>=4u ||
-           pcmContacts.Load(source)!=arena.Load(pair+52u) ||
+           pcmContacts.Load(source)!=arena.Load(pair+36u) ||
            ((packed>>3u)&7u)!=0u ||
            contactCount!=((packed>>10u)&7u)) {
             sourceDyTaskErrorOr(errorAddress,65536u);
@@ -341,13 +341,13 @@ void prepareContactRow(uint index,uint pairIndex,uint contactBegin,
         separation=asfloat(pcmContacts.Load(contact+12u));
         arena.Store3(co,asuint(n));
     } else {
-        uint cpuOffset=arena.Load(pair+60u);
+        uint cpuOffset=arena.Load(pair+44u);
         if(cpuOffset==0xffffffffu || index<contactBegin ||
            index-contactBegin>=contactCount) {
             sourceDyTaskErrorOr(errorAddress,131072u);
             return;
         }
-        uint raw=p.prepBias+p.prepCount*64u+
+        uint raw=p.prepBias+16u+p.prepCount*48u+
             (cpuOffset+index-contactBegin)*28u;
         n=asfloat(arena.Load3(raw));
         pos=asfloat(arena.Load3(raw+12u));
@@ -388,11 +388,11 @@ void prepareContactRow(uint index,uint pairIndex,uint contactBegin,
     float restitution=asfloat(arena.Load(pair+16u));
     float damping=asfloat(arena.Load(pair+20u));
     float maxPenBias=asfloat(arena.Load(pair+24u));
-    float invDt=asfloat(arena.Load(pair+28u));
-    float seconds=asfloat(arena.Load(pair+32u));
-    float rigidBias=asfloat(arena.Load(pair+36u));
-    float bounceThreshold=asfloat(arena.Load(pair+40u));
-    bool acceleration=arena.Load(pair+44u)!=0u;
+    float invDt=asfloat(arena.Load(p.prepBias));
+    float seconds=asfloat(arena.Load(p.prepBias+4u));
+    float rigidBias=asfloat(arena.Load(p.prepBias+8u));
+    float bounceThreshold=asfloat(arena.Load(p.prepBias+12u));
+    bool acceleration=arena.Load(pair+28u)!=0u;
     float penetration=separation-restDistance;
     float penetrationInvDt=penetration*invDt;
     bool separated=penetration>=0.0f;
@@ -435,7 +435,7 @@ void prepareContactRow(uint index,uint pairIndex,uint contactBegin,
     // Its limit is common to the entire contact-manager pair.
     arena.Store(co+36u,0u);
     arena.Store(co+56u,0u);
-    arena.Store(co+60u,arena.Load(pair+56u));
+    arena.Store(co+60u,arena.Load(pair+40u));
     arena.Store3(co+12u,asuint(ja));
     arena.Store3(co+24u,asuint(jb));
     prepStoreScalar(co+40u,multiplier);
@@ -451,7 +451,7 @@ void prepareFrictionRow(uint index,uint patchIndex,uint pairIndex,
         return;
     }
     uint fo=p.frictionBias+index*56u;
-    uint pair=p.prepBias+pairIndex*64u;
+    uint pair=sourceDyPrepAddress(pairIndex);
     uint b0=arena.Load(pair),b1=arena.Load(pair+4u);
     // Source DyFrictionCorrelation selected these body-local anchors.
     // Source DyContactPrep selected the two tangents and their order.
@@ -467,8 +467,8 @@ void prepareFrictionRow(uint index,uint patchIndex,uint pairIndex,
     }
     uint slot=(index-first)>>1u;
     uint anchor;
-    if(arena.Load(pair+48u)!=0xffffffffu) {
-        uint history=p.writebackBias+arena.Load(pair+52u)*64u;
+    if(arena.Load(pair+32u)!=0xffffffffu) {
+        uint history=p.writebackBias+arena.Load(pair+36u)*64u;
         if(arena.Load(history)<=slot) {
             sourceDyTaskErrorOr(errorAddress,262144u);
             return;
@@ -497,8 +497,8 @@ void prepareFrictionRow(uint index,uint patchIndex,uint pairIndex,
     float m0=prepBodyFloat(b0,72u);
     float m1=prepBodyFloat(b1,72u);
     float slop=asfloat(arena.Load(pair+12u));
-    float invDt=asfloat(arena.Load(pair+28u));
-    float rigidBias=asfloat(arena.Load(pair+36u));
+    float invDt=asfloat(arena.Load(p.prepBias));
+    float rigidBias=asfloat(arena.Load(p.prepBias+8u));
     float3 error=prepSlop((r0+p0)-(r1+p1),slop);
     float3 ax0=prepSlop(cross(r0,tangent),slop);
     float3 ax1=prepSlop(cross(r1,tangent),slop);
@@ -537,8 +537,8 @@ void growPcmFrictionAnchors(uint patchIndex,uint pairIndex,
                             uint errorAddress) {
     uint po=p.patchBias+patchIndex*32u;
     uint4 patch=arena.Load4(po);
-    uint pair=p.prepBias+pairIndex*64u;
-    uint pcmIndex=arena.Load(pair+48u);
+    uint pair=sourceDyPrepAddress(pairIndex);
+    uint pcmIndex=arena.Load(pair+32u);
     if(pcmIndex==0xffffffffu || patch.y>4u || patch.z>2u ||
        (patch.x&1u)!=0u || patch.x+4u>p.frictionCount) {
         sourceDyTaskErrorOr(errorAddress,262144u);
@@ -547,7 +547,7 @@ void growPcmFrictionAnchors(uint patchIndex,uint pairIndex,
     uint stream=p.pcmBias+pcmIndex*84u;
     uint packed=pcmContacts.Load(stream+4u);
     if(((packed>>3u)&7u)!=0u || ((packed>>10u)&7u)!=patch.y ||
-       pcmContacts.Load(stream)!=arena.Load(pair+52u)) {
+       pcmContacts.Load(stream)!=arena.Load(pair+36u)) {
         sourceDyTaskErrorOr(errorAddress,262144u);
         return;
     }
@@ -556,7 +556,7 @@ void growPcmFrictionAnchors(uint patchIndex,uint pairIndex,
     // One Sc-owned EdgeIndex physical mirror feeds both patch growth
     // and Dy tangent preparation. Only a rejected-frame recovery reads
     // the compact host anchor input through PCM's spare Gu offset slot.
-    uint history=p.writebackBias+arena.Load(pair+52u)*64u;
+    uint history=p.writebackBias+arena.Load(pair+36u)*64u;
     // A reserved contact manager can resolve to no physical touch.
     // Discard its previous anchors before any friction-row preparation.
     if(patch.y==0u) {
@@ -676,7 +676,7 @@ void growPcmFrictionAnchors(uint patchIndex,uint pairIndex,
     }
     if(count>0u) {
         if((patch.w&0x40000000u)!=0u) {
-            uint backward=arena.Load(pair+60u);
+            uint backward=arena.Load(pair+44u);
             if(backward==0xffffffffu || backward==0u ||
                backward>p.contactBias-p.writebackBias) {
                 sourceDyTaskErrorOr(errorAddress,262144u);
@@ -815,7 +815,7 @@ void prepareFrictionPatch(uint patchIndex,uint pairIndex,uint errorAddress) {
         return;
     }
     float3 n=asfloat(arena.Load3(p.contactBias+first*64u));
-    uint pair=p.prepBias+pairIndex*64u;
+    uint pair=sourceDyPrepAddress(pairIndex);
     float3 a=prepBody3(arena.Load(pair),12u);
     float3 b=prepBody3(arena.Load(pair+4u),12u);
     float3 relative=a-b;

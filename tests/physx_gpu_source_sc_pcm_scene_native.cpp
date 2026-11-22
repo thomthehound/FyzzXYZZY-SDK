@@ -5470,7 +5470,8 @@ void verify_cpu_gu_gpu_dy_solver(
             "CPU Gu GPU Dy returned tangent rows instead of anchor impulses");
         require(producer->dy_contact_prep_upload_saving()==
                     std::int64_t(sizeof(native::GpuDyContactPrepPair)-
-                    sizeof(physx_gpu::SourceDyPackedContactPrepNative)) &&
+                    sizeof(physx_gpu::SourceDyPackedContactPrepNative)-
+                    physx_gpu::source_dy_contact_frame_bytes) &&
                 producer->dy_launch_stats().resident_immovable_contact_bodies==1u &&
                 producer->dy_launch_stats().inline_contact_body_bytes==0u,
             "CPU Gu contact preparation retained an inline static body");
@@ -6243,7 +6244,8 @@ void verify_mixed_gu_pcm_gpu_dy_solver(
             native::GpuPcmFrictionAnchorFixture::verify(cpu,gpu);
             require(producer->dy_contact_prep_upload_saving()==
                         2*std::int64_t(sizeof(native::GpuDyContactPrepPair)-
-                            sizeof(physx_gpu::SourceDyPackedContactPrepNative)) &&
+                            sizeof(physx_gpu::SourceDyPackedContactPrepNative))-
+                        physx_gpu::source_dy_contact_frame_bytes &&
                     producer->dy_launch_stats().resident_immovable_contact_bodies==2u &&
                     producer->dy_launch_stats().inline_contact_body_bytes==0u,
                 "Mixed Gu/PCM contact preparation retained inline static bodies");
@@ -7362,7 +7364,8 @@ void verify_host_primitive_pcm_solver(
                 "Primitive-only contacts fell back to host numerical admission");
             constexpr std::int64_t expected_saving=
                 2*std::int64_t(sizeof(native::GpuDyContactPrepPair)-
-                    sizeof(physx_gpu::SourceDyPackedContactPrepNative));
+                    sizeof(physx_gpu::SourceDyPackedContactPrepNative))-
+                physx_gpu::source_dy_contact_frame_bytes;
             require(producer->dy_contact_prep_upload_saving()==expected_saving &&
                     stats.resident_immovable_contact_bodies==2u &&
                     stats.inline_contact_body_bytes==0u,

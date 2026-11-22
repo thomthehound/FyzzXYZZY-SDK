@@ -30,15 +30,15 @@ inline constexpr std::uint32_t source_dy_pcm_extent_shift=16u;
 inline constexpr std::uint32_t source_dy_pcm_extent_count_mask=7u;
 inline constexpr std::uint32_t source_dy_pcm_compacted_bit=1u<<28u;
 
-// The GPU prep descriptor borrows active Dy bodies from the already uploaded
-// integrateCore input. Only immovable or nonintegrated participants require
-// an inline body. The source pair's 56-byte material/contact tail is intact.
+// Dy contact preparation shares timestep coefficients across a frame.
+// Per-manager records retain only body references and numerical material.
 struct SourceDyPackedContactPrepNative {
     std::uint32_t body0_source=0u,body1_source=0u;
-    std::array<std::uint8_t,56> constants{};
+    std::array<std::uint8_t,40> constants{};
 };
-static_assert(sizeof(SourceDyPackedContactPrepNative)==64u &&
+static_assert(sizeof(SourceDyPackedContactPrepNative)==48u &&
               offsetof(SourceDyPackedContactPrepNative,constants)==8u);
+inline constexpr std::size_t source_dy_contact_frame_bytes=16u;
 
 // Dy integrateCore reads compact transient inputs. Box-shaped bodies with
 // authorized Sc device poses omit the host pose entirely; authored edits
@@ -520,12 +520,21 @@ public:
             contact_prep.size()+compact_contact_prep.size();
         contact_origins_.clear();
         contact_origins_.reserve(prep_count);
-        for(const auto& source:contact_prep)
+        std::array<float,4> contact_frame{};
+        const auto append_source=[&](const auto& source) {
+            const std::array<float,4> coefficients{
+                source.inv_dt,source.seconds,source.rigid_contact_bias,
+                source.bounce_threshold};
+            if(contact_origins_.empty())contact_frame=coefficients;
+            else if(std::memcmp(contact_frame.data(),coefficients.data(),
+                                sizeof(contact_frame))!=0)
+                throw std::invalid_argument(
+                    "Dy contact sources disagree on frame timestep coefficients");
             contact_origins_.push_back({source.pcm_pair_index,
                                         source.pcm_edge,source.cpu_gu_offset});
-        for(const auto& source:compact_contact_prep)
-            contact_origins_.push_back({source.pcm_pair_index,
-                                        source.pcm_edge,source.cpu_gu_offset});
+        };
+        for(const auto& source:contact_prep)append_source(source);
+        for(const auto& source:compact_contact_prep)append_source(source);
         if(device_admission &&
            tasks.size()>source_sc_indirect_task_limit(context_.device_info()))
             throw std::out_of_range(
@@ -782,16 +791,16 @@ public:
            reused_pcm_rows+cpu_gu_rows!=contact_forces.size())
             throw std::logic_error(
                 "Source Gu contact preparation does not cover solver rows");
-        // Original Sc contact managers keep their 256-byte CPU input
-        // records. Lower their GPU transfer into 72-byte descriptors and
-        // reuse the already uploaded active Dy body/integrateCore inputs.
+        // Reuse resident Dy body inputs and share identical timestep
+        // coefficients across the source contact-preparation records.
         constexpr auto invalid=std::numeric_limits<std::uint32_t>::max();
         if(prep_count>
            std::numeric_limits<std::uint32_t>::max()/
                sizeof(SourceDyPackedContactPrepNative))
             throw std::overflow_error("Source Dy contact prep descriptor overflow");
-        const std::size_t prep_bytes=prep_count*
-            sizeof(SourceDyPackedContactPrepNative);
+        const std::size_t prep_bytes=prep_count
+            ?source_dy_contact_frame_bytes+
+                prep_count*sizeof(SourceDyPackedContactPrepNative):0u;
         if(cpu_gu.size_bytes()>
            std::numeric_limits<std::uint32_t>::max()-prep_bytes)
             throw std::overflow_error(
@@ -894,20 +903,22 @@ public:
                     first,row0,source.source_body0);
                 target.body1_source=ref_body(
                     second,row1,source.source_body1);
-                std::memcpy(target.constants.data(),
+                const auto* coeffs=
                     reinterpret_cast<const std::uint8_t*>(&source)+
-                        offsetof(native::GpuDyCompactContactPrep,rest_distance),
-                    target.constants.size());
+                    offsetof(native::GpuDyCompactContactPrep,rest_distance);
+                std::memcpy(target.constants.data(),coeffs,20u);
+                std::memcpy(target.constants.data()+20u,coeffs+36u,20u);
             }else {
                 const auto& source=contact_prep[manager.prep_index];
                 target.body0_source=ref_body(
                     source.body0,row0,source.source_body0);
                 target.body1_source=ref_body(
                     source.body1,row1,source.source_body1);
-                std::memcpy(target.constants.data(),
+                const auto* coeffs=
                     reinterpret_cast<const std::uint8_t*>(&source)+
-                        offsetof(native::GpuDyContactPrepPair,rest_distance),
-                    target.constants.size());
+                    offsetof(native::GpuDyContactPrepPair,rest_distance);
+                std::memcpy(target.constants.data(),coeffs,20u);
+                std::memcpy(target.constants.data()+20u,coeffs+36u,20u);
             }
         };
         if(device_admission) {
@@ -985,9 +996,7 @@ public:
                     // The GPU source descriptor uses the CPU-Gu offset
                     // slot for recovery anchors only when PCM is resident.
                     auto& target=packed_[manager.prep_index];
-                    std::memcpy(target.constants.data()+
-                        offsetof(native::GpuDyContactPrepPair,cpu_gu_offset)-
-                        offsetof(native::GpuDyContactPrepPair,rest_distance),
+                    std::memcpy(target.constants.data()+36u,
                                 &distance,sizeof(distance));
                 }else patch.reserved=distance;
             }
@@ -1589,8 +1598,13 @@ public:
                     offsetof(native::GpuDyContactManifold,source_order_offset),
                     &source,sizeof(source));
             }
-        if(prep_bytes)
-            std::memcpy(host_.data()+offsets[11],packed_.data(),prep_bytes);
+        if(prep_bytes) {
+            std::memcpy(host_.data()+offsets[11],contact_frame.data(),
+                        source_dy_contact_frame_bytes);
+            std::memcpy(host_.data()+offsets[11]+source_dy_contact_frame_bytes,
+                        packed_.data(),
+                        packed_.size()*sizeof(SourceDyPackedContactPrepNative));
+        }
         if(!cpu_gu.empty())
             std::memcpy(host_.data()+offsets[11]+prep_bytes,
                         cpu_gu.data(),cpu_gu.size_bytes());

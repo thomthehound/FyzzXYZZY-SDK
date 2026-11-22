@@ -249,6 +249,11 @@ to the unchanged 64-byte GPU preparation descriptor. Neither the 192-byte
 inline-body prefix nor its associated CPU packing is constructed on
 production Scene frames. Standalone numerical inputs without a Scene
 actor identity retain their explicit inline body payload.
+The GPU Dy contact-preparation upload stores one 16-byte timestep
+coefficient header followed by 48-byte per-manager records. Per-manager
+source materials and body references remain distinct; a numerical frame
+requires identical inverse-timestep, timestep, rigid-bias and bounce-threshold
+coefficients across all its contact sources.
 The GPU Dy path still fetches 8 bytes of edge/touch metadata for ordinary
 GPU pairs before numerical admission. Sc validates geometrically sound,
 material-compatible retained friction patches before PCM submission.
