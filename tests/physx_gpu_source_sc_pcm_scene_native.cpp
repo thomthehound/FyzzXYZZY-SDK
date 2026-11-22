@@ -357,7 +357,9 @@ struct GpuPcmFrictionAnchorFixture {
                     :0xffffffffu;
             const auto expected=scene.prepare_contact_material(first,second);
             const auto& actual=source.material;
-            if(!actual.prepared ||
+            if((expected_pcm!=0xffffffffu &&
+                scene.gpu_pcm_pairs_[expected_pcm].edge!=edge) ||
+               !actual.prepared ||
                actual.rest_distance!=expected.rest_distance ||
                actual.pair_slop!=expected.pair_slop ||
                actual.max_contact_impulse!=expected.max_contact_impulse ||
@@ -374,14 +376,18 @@ struct GpuPcmFrictionAnchorFixture {
         }
         if(pcm_source!=scene.gpu_pcm_pairs_.size())
             throw std::runtime_error("Pre-witness numerical sources skipped PCM pairs");
-        std::size_t active_sources=0u;
+        std::size_t active_sources=0u,active_pcm_cursor=0u;
         for(std::size_t i=0u;i<scene.previous_pairs_.size();++i) {
             const auto pair=scene.previous_pairs_[i];
             const auto edge=scene.active_edge_handles_[i];
+            const auto expected_pcm=active_pcm_cursor<scene.gpu_pcm_pairs_.size() &&
+                scene.gpu_pcm_pairs_[active_pcm_cursor].candidate_ordinal==i
+                ?static_cast<std::uint32_t>(active_pcm_cursor++):0xffffffffu;
             const auto slot=scene.gpu_dy_contact_prep_indices_[i];
             if(slot==0xffffffffu)continue;
             if(slot!=active_sources++ ||
                slot>=scene.gpu_dy_contact_prep_pairs_.size() ||
+               scene.gpu_dy_contact_prep_pairs_[slot].pcm_pair_index!=expected_pcm ||
                scene.gpu_dy_contact_prep_pairs_[slot].source_body0!=
                    scene.shapes_[scene.island_edges_[edge].gu_order_reversed
                        ?pair.b:pair.a].body ||
@@ -391,6 +397,8 @@ struct GpuPcmFrictionAnchorFixture {
                 throw std::runtime_error(
                     "Dy numerical source was not compacted in Sc candidate order");
         }
+        if(active_pcm_cursor!=scene.gpu_pcm_pairs_.size())
+            throw std::runtime_error("Compact Dy numerical sources omitted PCM candidates");
         if(active_sources!=scene.gpu_dy_contact_prep_pairs_.size())
             throw std::runtime_error(
                 "Dy uploaded unused source candidates after PCM publication");
