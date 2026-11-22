@@ -215,10 +215,13 @@ while device witnesses remain resident. At header publication, Sc expands
 the exact PCM ranges backwards, preserving CPU Gu order and public event
 lifetimes without copying or compacting speculative PCM point reservations.
 GPU contact points remain deferred until their public consumer.
-Other PCM frames retain their single-pass publication. Mixed late-Gu
-frames queue the
-CPU-generated physical-touch and loss journal before joining PCM's host
-witness, without waiting on that later device continuation.
+Other PCM frames retain their single-pass publication. Host-generated-only
+PCM snapshots and Gu records enter one native submission when the host
+witnesses are ready. Rejecting an unsubmitted snapshot discards its queued
+commands without restoring nonexistent device journal data; submitted
+epochs restore the original EdgeIndex history on rollback. Mixed late-Gu
+frames queue the CPU-generated physical-touch and loss journal before
+joining PCM's host witness, without waiting on that later device continuation.
 During GPU PCM, Sc queues actor-local mass, pose and sleep inputs
 before the host witness join, including when early device island
 admission is unavailable. Already-active bodies and PCM candidate
