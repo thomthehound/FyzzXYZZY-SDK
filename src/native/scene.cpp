@@ -4557,6 +4557,7 @@ void Scene::update_contacts(bool defer_device_points,float step_seconds) {
     // only managers whose PCM witnesses eventually touch. Mixed CPU Gu
     // and GPU PCM consume these same authored coefficients.
     gpu_dy_candidate_sources_.clear();
+    gpu_dy_candidate_sources_compacted_=false;
     gpu_dy_history_candidates_.clear();
     const bool early_device_materials=gpu_dy_active();
     if(early_device_materials) {
@@ -8586,6 +8587,7 @@ void Scene::prepare_constraints(float seconds) {
         gpu_dy_contact_prep_sources_.clear();
         gpu_dy_contact_prep_indices_.clear();
         gpu_dy_candidate_sources_.clear();
+        gpu_dy_candidate_sources_compacted_=false;
     }
     solver_kinematic_participant_=false;
     for(EdgeIndex edge_id:indexed_joints_) {
@@ -9653,6 +9655,7 @@ void Scene::prepare_constraints(float seconds) {
         gpu_dy_contact_prep_pairs_.resize(packed);
         gpu_dy_contact_prep_sources_.resize(packed);
         gpu_dy_candidate_sources_.resize(packed);
+        gpu_dy_candidate_sources_compacted_=true;
     }
     // Swap only after the new rows and patch anchors are fully prepared.
     // Old shape-local anchors remain available throughout correlation.
@@ -12863,6 +12866,43 @@ void Scene::advance_collision_internal(
         if(step_seconds>0.0f)
             calculate_kinematic_velocities(1.0f/step_seconds);
         if(defer_device_points && step_seconds>0.0f && gpu_dy_active()) {
+            if(gpu_dy_candidate_sources_compacted_) {
+                // Restore the PCM prefix from the last admitted compact
+                // source table; sparse Gu entries do not occupy PCM slots.
+                gpu_dy_candidate_source_scratch_.clear();
+                gpu_dy_candidate_source_scratch_.reserve(
+                    gpu_pcm_pairs_.size());
+                for(std::size_t pcm=0u;pcm<gpu_pcm_pairs_.size();++pcm) {
+                    const auto& request=gpu_pcm_pairs_[pcm];
+                    const auto source=request.candidate_ordinal;
+                    if(source>=previous_pairs_.size() ||
+                       source>=active_edge_handles_.size() ||
+                       request.edge!=active_edge_handles_[source])
+                        throw std::logic_error(
+                            "Quiet PCM numerical source lost its Sc identity");
+                    const auto slot=source<gpu_dy_contact_prep_indices_.size()
+                        ?gpu_dy_contact_prep_indices_[source]:0xffffffffu;
+                    if(slot<gpu_dy_candidate_sources_.size() &&
+                       slot<gpu_dy_contact_prep_pairs_.size() &&
+                       slot<gpu_dy_contact_prep_sources_.size() &&
+                       gpu_dy_contact_prep_sources_[slot]==source &&
+                       gpu_dy_contact_prep_pairs_[slot].pcm_pair_index==pcm) {
+                        gpu_dy_candidate_source_scratch_.push_back(
+                            gpu_dy_candidate_sources_[slot]);
+                    }else {
+                        const auto pair=previous_pairs_[source];
+                        const bool reversed=
+                            island_edges_[request.edge].gu_order_reversed;
+                        auto& material=gpu_dy_candidate_source_scratch_.
+                            emplace_back().material;
+                        material=prepare_contact_material(
+                            reversed?pair.b:pair.a,reversed?pair.a:pair.b);
+                    }
+                }
+                gpu_dy_candidate_sources_.swap(
+                    gpu_dy_candidate_source_scratch_);
+                gpu_dy_candidate_sources_compacted_=false;
+            }
             prepare_gpu_dy_candidate_contact_preps(step_seconds);
             // A quiet step retains Sc's touching Gu managers. They still
             // need this timestep's numerical coefficients even though
