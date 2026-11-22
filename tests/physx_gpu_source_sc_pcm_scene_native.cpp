@@ -477,11 +477,17 @@ struct GpuPcmFrictionAnchorFixture {
             throw std::runtime_error(
                 "CPU Dy prepared unused GPU numerical sources");
     }
-    static void verify_collision_only_omits_numerical_preps(const Scene& scene) {
-        if(!scene.gpu_dy_contact_prep_pairs_.empty() ||
-           !scene.gpu_dy_contact_prep_sources_.empty())
+    static std::array<std::size_t,3> numerical_prep_sizes(
+        const Scene& scene) {
+        return {scene.gpu_dy_contact_prep_pairs_.size(),
+                scene.gpu_dy_contact_prep_sources_.size(),
+                scene.gpu_dy_contact_prep_indices_.size()};
+    }
+    static void verify_collision_only_omits_numerical_preps(
+        const Scene& scene,std::array<std::size_t,3> previous) {
+        if(numerical_prep_sizes(scene)!=previous)
             throw std::runtime_error(
-                "Collision-only PCM constructed unconsumed numerical preps");
+                "Collision-only PCM modified numerical preparation records");
     }
     static bool has_early_device_admission(const Scene& scene) {
         return scene.gpu_dy_early_islands_;
@@ -5987,10 +5993,13 @@ void verify_pcm_friction_normal_revalidation(
         gpu,{gs,gb},true);
     native::GpuPcmFrictionAnchorFixture::reverse_first_retained_normal(
         gpu,{gs,gb});
+    const auto prior_numerical_preps=
+        native::GpuPcmFrictionAnchorFixture::numerical_prep_sizes(gpu);
     cpu.advance_collision(true);
     gpu.advance_collision(true);
     native::GpuPcmFrictionAnchorFixture::
-        verify_collision_only_omits_numerical_preps(gpu);
+        verify_collision_only_omits_numerical_preps(
+            gpu,prior_numerical_preps);
     require(native::GpuPcmFrictionAnchorFixture::
                 single_eligible_history_on_device(gpu),
         "Collision-only PCM lost retained friction material eligibility");
@@ -7289,6 +7298,8 @@ void verify_sphere_gpu_solver(
     cpu.add_dynamic_sphere(0.25f,{20.f,10.f,0.f},1.f);
     gpu.add_dynamic_sphere(0.25f,{20.f,10.f,0.f},1.f);
     const auto solved_before=producer->dy_distance_dispatch_count();
+    const auto prior_numerical_preps=
+        native::GpuPcmFrictionAnchorFixture::numerical_prep_sizes(gpu);
     cpu.advance_collision(true);
     gpu.advance_collision(true);
     require(producer->pcm_contact_readback_bytes()>0u &&
@@ -7296,7 +7307,8 @@ void verify_sphere_gpu_solver(
             producer->dy_distance_dispatch_count()==solved_before,
         "Collision-only GPU PCM unexpectedly dispatched numerical work");
     native::GpuPcmFrictionAnchorFixture::
-        verify_collision_only_omits_numerical_preps(gpu);
+        verify_collision_only_omits_numerical_preps(
+            gpu,prior_numerical_preps);
     const auto embedded=[](const native::Scene& scene) -> native::ContactPoint {
         for(const auto& manager:scene.contacts())
             for(const auto& point:manager.points)
