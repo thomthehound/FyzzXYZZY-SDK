@@ -7282,6 +7282,8 @@ void verify_sphere_gpu_solver(
             producer->pcm_host_contact_upload_bytes()==0u &&
             producer->dy_distance_dispatch_count()==solved_before,
         "Collision-only GPU PCM unexpectedly dispatched numerical work");
+    native::GpuPcmFrictionAnchorFixture::
+        verify_cpu_dy_omits_device_materials(gpu);
     const auto embedded=[](const native::Scene& scene) -> native::ContactPoint {
         for(const auto& manager:scene.contacts())
             for(const auto& point:manager.points)

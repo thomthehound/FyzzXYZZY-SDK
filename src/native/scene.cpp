@@ -4285,12 +4285,14 @@ void Scene::prepare_gpu_dy_candidate_contact_preps(float seconds) {
     gpu_dy_contact_prep_sources_.clear();
     gpu_dy_contact_prep_indices_.clear();
     if(!gpu_dy_active() || seconds<=0.0f)return;
-    if(gpu_dy_candidate_sources_.size()<gpu_pcm_pairs_.size() ||
+    if((!gpu_dy_candidate_sources_.empty() &&
+        gpu_dy_candidate_sources_.size()!=gpu_pcm_pairs_.size()) ||
        active_edge_handles_.size()!=previous_pairs_.size() ||
        previous_pairs_.size()>=std::numeric_limits<std::uint32_t>::max())
         throw std::logic_error(
             "Pre-witness numerical input lacks its source Sc candidates");
     // PCM sources lead the sparse arena; Gu contacts append only on touch.
+    // Materials have no GPU PCM consumer and are prepared after its enqueue.
     gpu_dy_candidate_sources_.resize(gpu_pcm_pairs_.size());
     gpu_dy_contact_prep_indices_.assign(
         previous_pairs_.size(),0xffffffffu);
@@ -4554,30 +4556,11 @@ void Scene::update_contacts(bool defer_device_points,float step_seconds) {
     gpu_dy_candidate_sources_.clear();
     gpu_dy_candidate_sources_compacted_=false;
     gpu_dy_history_candidates_.clear();
-    const bool early_device_materials=gpu_dy_active();
-    if(early_device_materials) {
-        gpu_dy_candidate_sources_.resize(gpu_pcm_pairs_.size());
-        std::uint32_t last_source=0u;
-        for(std::size_t pcm=0u;pcm<gpu_pcm_pairs_.size();++pcm) {
-            const auto& request=gpu_pcm_pairs_[pcm];
-            const auto source=request.candidate_ordinal;
-            if(source>=previous_pairs_.size() ||
-               source>=active_edge_handles_.size() ||
-               (pcm!=0u && source<=last_source) ||
-               request.edge>=island_edges_.size() ||
-               request.edge!=active_edge_handles_[source] ||
-               !(island_edges_[request.edge].shapes==previous_pairs_[source]))
-                throw std::logic_error(
-                    "GPU Dy PCM source lost its Sc candidate identity");
-            last_source=source;
-            const auto pair=previous_pairs_[source];
-            const bool reversed=island_edges_[request.edge].gu_order_reversed;
-            gpu_dy_candidate_sources_[pcm].material=prepare_contact_material(
-                reversed?pair.b:pair.a,reversed?pair.a:pair.b);
-        }
-    }
-    // The GPU contact producer does not consume host friction-history
-    // correlation. Queue the physical witness first.
+    const bool early_device_materials=gpu_dy_active() &&
+        step_seconds>0.0f;
+    // PCM depends only on geometry and the Sc contact identity.
+    // Numerical materials and retained friction are CPU work concurrent
+    // with the executing GPU contact producer.
     if(gpu_results_pending || gu_only_device_epoch ||
        joint_only_device_admission ||
        (source_gpu_pcm && gpu_pcm_pairs_.empty()))
@@ -4587,11 +4570,11 @@ void Scene::update_contacts(bool defer_device_points,float step_seconds) {
                 (gpu_results_pending || gu_only_device_epoch)
                 ?static_cast<std::uint32_t>(island_edges_.size()):0u,
             defer_device_points);
-    validate_pcm_history();
-    // CPU prepares candidate numerics while the submitted PCM queue
-    // produces the physical touch and contact stream.
-    if(early_device_materials && step_seconds>0.0f)
+    // Candidate preparation combines source material only once, after
+    // PCM has entered the device queue and before Dy admission needs it.
+    if(early_device_materials)
         prepare_gpu_dy_candidate_contact_preps(step_seconds);
+    validate_pcm_history();
     FYZZ_PROFILE_COUNTER("pcm.early_numerical_materials",
         early_device_materials?gpu_pcm_pairs_.size():0u);
 
