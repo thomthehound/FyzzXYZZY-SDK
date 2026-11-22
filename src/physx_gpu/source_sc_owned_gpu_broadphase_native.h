@@ -374,7 +374,8 @@ public:
                                         *pcm_->device_island_indirect_args(),
                                         pcm_->device_island_response_capacity(),
                                         pcm_->device_island_contact_capacity(),
-                                        pcm_->device_island_deferred_body_remap()}}
+                                        pcm_->device_island_deferred_body_remap(),
+                                        pcm_->device_island_body_remap()}}
                                 :std::nullopt,
                             deferred_points,readback_device_task_records,
                             compact_contact_admission,compact_contact_prep,

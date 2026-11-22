@@ -199,6 +199,7 @@ struct SourceScDeviceIslandDyView {
     std::uint32_t response_capacity=0u;
     std::uint32_t contact_manager_capacity=0u;
     bool deferred_body_remap=false;
+    std::span<const std::uint32_t> source_to_solver_row{};
 };
 class SourceScDeviceIslandsNativeStage final {
 public:

@@ -2227,6 +2227,9 @@ public:
             .patches=patches,.integration=integration,
             .integrated_poses=integrated_poses,.sleep_states=sleep_states,
             .descriptors=descriptors,.body_ordinals=body_ordinals,
+            .source_to_solver_row=device_admission
+                ?device_admission->source_to_solver_row:
+                 std::span<const std::uint32_t>{},
             .compact_contact_admission=compact_contact_admission,
             .response_capacity=descriptor_capacity,
             .manifolds=manifolds,.contact_order=contact_order,
@@ -2359,6 +2362,16 @@ public:
                     std::memcpy(admitted_body_ordinals_.data(),
                         host_.data()+pending.device_ordinal_offset,
                         admitted[2]*sizeof(std::uint32_t));
+                if(!pending.source_to_solver_row.empty())
+                    for(auto& index:admitted_body_ordinals_) {
+                        if(index>=pending.source_to_solver_row.size())
+                            throw std::logic_error(
+                                "Source Dy GPU body source ordinal invalid");
+                        index=pending.source_to_solver_row[index];
+                        if(index>=bodies.size())
+                            throw std::logic_error(
+                                "Source Dy GPU mapped solver row invalid");
+                    }
                 body_ordinals=admitted_body_ordinals_;
             }
         }
@@ -2785,6 +2798,7 @@ private:
         std::span<native::GpuDySleepState> sleep_states{};
         std::span<const native::GpuDyDistanceDescriptor> descriptors{};
         std::span<const std::uint32_t> body_ordinals{};
+        std::span<const std::uint32_t> source_to_solver_row{};
         bool compact_contact_admission=false;
         std::size_t response_capacity=0u;
         std::span<const native::GpuDyContactManifold> manifolds{};

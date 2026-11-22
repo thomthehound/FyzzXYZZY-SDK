@@ -129,6 +129,7 @@ public:
         result_pending_=false;
         island_work_ready_=false;
         island_deferred_body_remap_=false;
+        island_body_remap_={};
         pending_host_inputs_=false;
         pending_requests_={};
         pending_output_={};
@@ -160,6 +161,7 @@ public:
                 "Source Sc island admission committed before numerical submission");
         if(!pcm_transaction_pending_) {
             island_work_ready_=false;
+            island_body_remap_={};
             return;
         }
         // A collision-only publication has no Dy device consumer to
@@ -175,6 +177,7 @@ public:
         journal_pair_count_=0u;
         gu_touch_count_=0u;
         island_work_ready_=false;
+        island_body_remap_={};
         journal_host_only_=false;
     }
 
@@ -256,6 +259,7 @@ public:
         last_island_dispatches_=0u;
         last_remap_dispatches_=0u;
         island_deferred_body_remap_=false;
+        island_body_remap_={};
         rebuild_required_=false;
     }
 
@@ -283,6 +287,7 @@ public:
         host_upload_pending_=false;
         island_work_ready_=false;
         island_deferred_body_remap_=false;
+        island_body_remap_={};
         pending_host_inputs_=false;
         deferred_points_pending_=false;
         deferred_points_in_numerical_=false;
@@ -784,6 +789,7 @@ public:
         island_layout_=SourceScDeviceIslandLayout::for_counts(
             node_count,edge_count,sources.contact_managers);
         island_deferred_body_remap_=false;
+        island_body_remap_={};
         island_node_count_=node_count;
         island_edge_count_=edge_count;
         island_contact_count_=sources.contact_managers;
@@ -862,6 +868,7 @@ public:
                     source_to_solver_row.size_bytes()});
                 stream_.queue_uploads(uploads);
                 island_deferred_body_remap_=true;
+                island_body_remap_=source_to_solver_row.first(island_node_count_);
             }else {
                 uploads.push_back({island_nodes_.getDevicePtr(),
                                    source_to_solver_row.data(),
@@ -889,6 +896,11 @@ public:
     void discard_device_islands() noexcept {
         island_work_ready_=false;
         island_deferred_body_remap_=false;
+        island_body_remap_={};
+    }
+    std::span<const std::uint32_t> device_island_body_remap() const noexcept {
+        return island_work_ready_?island_body_remap_:
+            std::span<const std::uint32_t>{};
     }
     bool device_island_deferred_body_remap() const noexcept {
         return island_work_ready_ && island_deferred_body_remap_;
@@ -1200,6 +1212,7 @@ private:
     bool pending_host_inputs_=false;
     bool island_work_ready_=false;
     bool island_deferred_body_remap_=false;
+    std::span<const std::uint32_t> island_body_remap_{};
     bool journal_host_only_=false;
     // Borrowed Sc views survive until finish() or rollback; GPU output
     // is written directly into the enqueued Sc result arena at the join.
