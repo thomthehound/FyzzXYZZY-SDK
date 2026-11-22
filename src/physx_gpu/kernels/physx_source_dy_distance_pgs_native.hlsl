@@ -1988,7 +1988,7 @@ void sourceDySolvePackedTask(uint taskId) {
         return;
     }
     const uint scratch=schedule.w;
-    if(arena.Load(scratch+48u)!=0u) {
+    if(arena.Load(scratch)==64u && arena.Load(scratch+48u)!=0u) {
         for(uint body=bodies.x;body<bodies.y;++body)
             if(sourceDyBodyOrdinal(body)>=p.bodyCount)
                 sourceDyTaskErrorOr(errorAddress,8u);
