@@ -1867,6 +1867,7 @@ public:
                         "Dy immovable actor-local reference exceeds 32-bit view");
                 const auto tagged=static_cast<std::uint32_t>(address)|3u;
                 std::memcpy(host_.data()+offsets[11]+
+                    source_dy_contact_frame_bytes+
                     i*sizeof(SourceDyPackedContactPrepNative)+field,
                     &tagged,sizeof(tagged));
             };
