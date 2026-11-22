@@ -518,20 +518,23 @@ public:
                 "Native Dy contact preparation has multiple source representations");
         const std::size_t prep_count=
             contact_prep.size()+compact_contact_prep.size();
-        contact_origins_.clear();
-        contact_origins_.reserve(prep_count);
         std::array<float,4> contact_frame{};
+        bool first_contact_source=true;
         const auto append_source=[&](const auto& source) {
             const std::array<float,4> coefficients{
                 source.inv_dt,source.seconds,source.rigid_contact_bias,
                 source.bounce_threshold};
-            if(contact_origins_.empty())contact_frame=coefficients;
-            else if(std::memcmp(contact_frame.data(),coefficients.data(),
-                                sizeof(contact_frame))!=0)
+            if(first_contact_source) {
+                contact_frame=coefficients;
+                first_contact_source=false;
+            }else if(std::memcmp(contact_frame.data(),coefficients.data(),
+                                 sizeof(contact_frame))!=0)
                 throw std::invalid_argument(
                     "Dy contact sources disagree on frame timestep coefficients");
-            contact_origins_.push_back({source.pcm_pair_index,
-                                        source.pcm_edge,source.cpu_gu_offset});
+        };
+        const auto contact_origin=[&](std::size_t index) {
+            return source_contact_origin(index,contact_prep,
+                                         compact_contact_prep);
         };
         for(const auto& source:contact_prep)append_source(source);
         for(const auto& source:compact_contact_prep)append_source(source);
@@ -673,17 +676,17 @@ public:
             : friction.size()*sizeof(native::GpuDyFrictionWriteback);
         std::size_t reused_pcm_rows=0u;
         std::size_t cpu_gu_rows=0u;
-        for(const auto& pair:contact_origins_)
-            if(pair.pcm_pair_index!=0xffffffffu &&
-               (!pcm_contacts || pair.pcm_pair_index>=pcm_pair_count ||
-                pair.pcm_edge==0xffffffffu))
+        std::size_t next_history_capacity_=friction_history_capacity_;
+        for(std::size_t i=0u;i<prep_count;++i) {
+            const auto pair=contact_origin(i);
+            if(pair.pcm_pair_index==0xffffffffu)continue;
+            if(!pcm_contacts || pair.pcm_pair_index>=pcm_pair_count ||
+               pair.pcm_edge==0xffffffffu)
                 throw std::logic_error(
                     "Source Dy PCM contact provenance is invalid");
-        std::size_t next_history_capacity_=friction_history_capacity_;
-        for(const auto& pair:contact_origins_)
-            if(pair.pcm_pair_index!=0xffffffffu)
-                next_history_capacity_=std::max(next_history_capacity_,
-                    std::size_t(pair.pcm_edge)+1u);
+            next_history_capacity_=std::max(next_history_capacity_,
+                std::size_t(pair.pcm_edge)+1u);
+        }
         if(next_history_capacity_>
            (std::numeric_limits<std::uint32_t>::max()-127u)/64u)
             throw std::overflow_error(
@@ -739,7 +742,7 @@ public:
                manager.patch_count>patches.size()-manager.patch_offset)
                 throw std::logic_error(
                     "Source friction history has an invalid Sc patch");
-            const auto& pair=contact_origins_[manager.prep_index];
+            const auto pair=contact_origin(manager.prep_index);
             if(pair.pcm_pair_index==0xffffffffu)continue;
             for(std::size_t j=manager.patch_offset;
                 j<manager.patch_offset+manager.patch_count;++j) {
@@ -756,7 +759,7 @@ public:
             if(manager.prep_index>=prep_count)
                 throw std::logic_error(
                     "Source Dy contact preparation has no source pair");
-            const auto& pair=contact_origins_[manager.prep_index];
+            const auto pair=contact_origin(manager.prep_index);
             const bool pcm=pair.pcm_pair_index!=0xffffffffu;
             if(pcm && (manager.patch_count!=1u ||
                        manager.patch_offset>=patches.size() ||
@@ -956,7 +959,7 @@ public:
             std::numeric_limits<std::size_t>::max());
         for(const auto& manager:manifolds) {
             if(!manager.patch_count)continue;
-            const auto& pair=contact_origins_[manager.prep_index];
+            const auto pair=contact_origin(manager.prep_index);
             const bool pcm=pair.pcm_pair_index!=invalid;
             for(std::size_t j=manager.patch_offset;
                 j<manager.patch_offset+manager.patch_count;++j) {
@@ -983,7 +986,7 @@ public:
                 "Source GPU compact friction inputs exceed address space");
         for(const auto& manager:manifolds) {
             if(!manager.patch_count)continue;
-            const auto& pair=contact_origins_[manager.prep_index];
+            const auto pair=contact_origin(manager.prep_index);
             const bool pcm=pair.pcm_pair_index!=invalid;
             for(std::size_t j=manager.patch_offset;
                 j<manager.patch_offset+manager.patch_count;++j) {
@@ -1590,7 +1593,7 @@ public:
                 const auto& manager=manifolds[i];
                 if(!manager.patch_count ||
                    manager.prep_index>=prep_count ||
-                   contact_origins_[manager.prep_index].pcm_pair_index!=invalid)
+                   contact_origin(manager.prep_index).pcm_pair_index!=invalid)
                     continue;
                 const auto source=manager.order_offset;
                 std::memcpy(host_.data()+offsets[9]+
@@ -2266,6 +2269,8 @@ public:
             .compact_contact_admission=compact_contact_admission,
             .response_capacity=descriptor_capacity,
             .manifolds=manifolds,.contact_order=contact_order,
+            .contact_prep=contact_prep,
+            .compact_contact_prep=compact_contact_prep,
             .result_offsets=result_offsets,
             .output_bytes=output_bytes,
             .device_admission=device_admission.has_value(),
@@ -2354,7 +2359,13 @@ public:
         std::span<const std::uint32_t> body_ordinals=pending.body_ordinals;
         const auto manifolds=pending.manifolds;
         const auto contact_order=pending.contact_order;
-        const auto& contact_prep=contact_origins_;
+        // Numerical sources share the pending solve's borrowed lifetime.
+        const auto prep_count=pending.contact_prep.size()+
+                              pending.compact_contact_prep.size();
+        const auto contact_origin=[&](std::size_t index) {
+            return source_contact_origin(index,pending.contact_prep,
+                                         pending.compact_contact_prep);
+        };
         const auto result_offsets=pending.result_offsets;
         const auto output_bytes=pending.output_bytes;
         const auto free_velocity_offset=pending.free_velocity_offset;
@@ -2472,8 +2483,8 @@ public:
                 throw std::logic_error("Source Dy contact writeback range invalid");
             const bool resident_extent=pending.source_descriptors &&
                 manager.patch_count==1u &&
-                manager.prep_index<contact_prep.size() &&
-                contact_prep[manager.prep_index].pcm_pair_index!=0xffffffffu;
+                manager.prep_index<prep_count &&
+                contact_origin(manager.prep_index).pcm_pair_index!=0xffffffffu;
             const std::size_t capacity=resident_extent
                 ?patches[manager.patch_offset].contact_count
                 :manager.contact_count;
@@ -2505,8 +2516,8 @@ public:
                 auto& patch=patches[patch_index];
                 constexpr std::uint32_t direct=0x80000000u;
                 const bool resident=
-                    manager.prep_index<contact_prep.size() &&
-                    contact_prep[manager.prep_index].pcm_pair_index!=0xffffffffu;
+                    manager.prep_index<prep_count &&
+                    contact_origin(manager.prep_index).pcm_pair_index!=0xffffffffu;
                 const std::size_t begin=resident
                     ?manager.source_order_offset:patch.order_offset&~direct;
                 if(!resident && (patch.order_offset&direct)!=0u)
@@ -2732,9 +2743,9 @@ public:
         last_cpu_gu_geometry_bytes_=pending.cpu_gu_bytes;
         last_friction_anchor_upload_bytes_=compact_anchor_bytes;
         for(const auto& manager:manifolds) {
-            if(!manager.patch_count || manager.prep_index>=contact_prep.size())
+            if(!manager.patch_count || manager.prep_index>=prep_count)
                 continue;
-            const auto& pair=contact_prep[manager.prep_index];
+            const auto pair=contact_origin(manager.prep_index);
             if(pair.pcm_pair_index!=0xffffffffu)
                 history_epochs_[pair.pcm_edge]=history_epoch_;
         }
@@ -2744,7 +2755,7 @@ public:
         for(const auto slot:joint_source_dirty_)
             joint_source_valid_[slot]=1u;
         last_contact_prep_upload_saving_=
-            static_cast<std::int64_t>(contact_prep.size()*
+            static_cast<std::int64_t>(prep_count*
                 sizeof(native::GpuDyContactPrepPair))-
             static_cast<std::int64_t>(
                 prep_bytes+inline_body_bytes+
@@ -2836,6 +2847,8 @@ private:
         std::size_t response_capacity=0u;
         std::span<const native::GpuDyContactManifold> manifolds{};
         std::span<const std::uint32_t> contact_order{};
+        std::span<const native::GpuDyContactPrepPair> contact_prep{};
+        std::span<const native::GpuDyCompactContactPrep> compact_contact_prep{};
 
         std::array<std::size_t,6> result_offsets{};
         std::size_t output_bytes=0u;
@@ -3279,7 +3292,21 @@ private:
         std::uint32_t pcm_edge=0xffffffffu;
         std::uint32_t cpu_gu_offset=0xffffffffu;
     };
-    std::vector<ContactOrigin> contact_origins_;
+    static ContactOrigin source_contact_origin(
+            std::size_t index,
+            std::span<const native::GpuDyContactPrepPair> pairs,
+            std::span<const native::GpuDyCompactContactPrep> compact) {
+        if(!compact.empty()) {
+            if(index>=compact.size())
+                throw std::logic_error("Compact Dy contact source index invalid");
+            const auto& source=compact[index];
+            return {source.pcm_pair_index,source.pcm_edge,source.cpu_gu_offset};
+        }
+        if(index>=pairs.size())
+            throw std::logic_error("Dy contact source index invalid");
+        const auto& source=pairs[index];
+        return {source.pcm_pair_index,source.pcm_edge,source.cpu_gu_offset};
+    }
     std::vector<SourceDyPackedContactPrepNative> packed_;
     std::vector<native::GpuDyContactPatch> packed_patches_;
     std::vector<native::GpuDyRetainedFrictionCandidate> packed_retained_candidates_;
