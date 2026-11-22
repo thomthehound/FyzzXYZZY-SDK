@@ -5208,7 +5208,11 @@ void Scene::update_contacts(bool defer_device_points,float step_seconds) {
     }
     if(gpu_results_pending) {
         FYZZ_PROFILE_SCOPE("sc.pcm_witness_join");
-        gpu_broadphase_->finish_gpu_pcm_box_contacts();
+        {
+            FYZZ_PROFILE_SCOPE("sc.pcm_witness_wait");
+            gpu_broadphase_->finish_gpu_pcm_box_contacts();
+        }
+        FYZZ_PROFILE_SCOPE("sc.pcm_witness_publish");
         for(auto& manifold:next_manifolds_) {
             const auto index=manifold.pcm_result_index;
             if(index==std::numeric_limits<std::uint32_t>::max())continue;
