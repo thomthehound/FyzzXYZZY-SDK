@@ -227,7 +227,10 @@ frames queue the CPU-generated physical-touch and loss journal before
 joining PCM's host witness, without waiting on that later device continuation.
 During GPU PCM, Sc queues actor-local mass, pose and sleep inputs
 before the host witness join, including when early device island
-admission is unavailable. Already-active bodies and PCM candidate
+admission is unavailable. Speculative PCM endpoints stage before
+contact classification; CPU Gu immovable endpoints stage only after
+CPU narrowphase reports a touching, responding manager, while PCM is
+still in flight. Empty Gu candidates never upload actor-local inputs. Already-active bodies and PCM candidate
 endpoints supply stable actor IDs; physical touch remains device-authored.
 Numerical enqueue reconciles final Sc changes and transfers only changed
 actor slots. The actor-local GPU pool remains the sole motion input owner.

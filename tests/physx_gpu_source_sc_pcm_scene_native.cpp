@@ -266,6 +266,11 @@ struct SourceScDeviceIslandFixture {
 
 namespace fyzz::native {
 struct GpuPcmFrictionAnchorFixture {
+    static bool actor_staged_pre_witness(const Scene& scene,BodyId id) {
+        return std::binary_search(
+            scene.gpu_dy_staged_actor_ids_.begin(),
+            scene.gpu_dy_staged_actor_ids_.end(),id);
+    }
     static std::size_t compact_contact_source_bytes(const Scene& scene) {
         return scene.gpu_dy_contact_prep_pairs_.size()*
             sizeof(GpuDyCompactContactPrep);
@@ -6234,6 +6239,10 @@ void verify_mixed_gu_pcm_gpu_dy_solver(
             add_pcm_contact();
             add_plane_contact();
         }
+        // Plane candidates are speculative even without physical touch.
+        // The untouched floor must not acquire a pre-witness actor input.
+        cpu.add_static_floor(-100.f);
+        const auto unused_floor_gpu=gpu.add_static_floor(-100.f);
         if(with_joint) {
             cpu.create_center_distance_constraint(
                 pcm_static_cpu,moving_cpu[1],0.84f);
@@ -6270,6 +6279,12 @@ void verify_mixed_gu_pcm_gpu_dy_solver(
             }
             cpu.step(dt);
             gpu.step(dt);
+            require(gpu.contact_edge_index({unused_floor_gpu,moving_gpu[0]})!=
+                        0xffffffffu &&
+                    !gpu.contact_edge_connected({unused_floor_gpu,moving_gpu[0]}) &&
+                    !native::GpuPcmFrictionAnchorFixture::
+                        actor_staged_pre_witness(gpu,unused_floor_gpu),
+                "Non-touching CPU Gu candidate staged an immovable actor");
             if(with_joint) {
                 const auto transferred=(frame==0u || frame==2u)
                     ?sizeof(native::GpuDyJointInput):0u;
