@@ -4206,6 +4206,50 @@ GpuDyPairMaterial Scene::prepare_contact_material(
     return result;
 }
 
+void Scene::prepare_gpu_dy_contact_prep(std::size_t source,float seconds) {
+    if(source>=previous_pairs_.size() ||
+       source>=active_edge_handles_.size() ||
+       source>=gpu_dy_candidate_sources_.size() ||
+       source>=gpu_dy_contact_prep_pairs_.size() ||
+       seconds<=0.0f)
+        throw std::logic_error("Source numerical preparation lacks its candidate");
+    const auto pair=previous_pairs_[source];
+    const auto edge=active_edge_handles_[source];
+    if(edge>=island_edges_.size() ||
+       !(island_edges_[edge].shapes==pair))
+        throw std::logic_error(
+            "Source numerical preparation lost its Sc contact identity");
+    const auto& material=gpu_dy_candidate_sources_[source].material;
+    if(!material.prepared)
+        throw std::logic_error("Source numerical material is not prepared");
+    const bool reversed=island_edges_[edge].gu_order_reversed;
+    const BodyId id0=shapes_[reversed?pair.b:pair.a].body;
+    const BodyId id1=shapes_[reversed?pair.a:pair.b].body;
+    if(id0>=actors_.size() || id1>=actors_.size())
+        throw std::logic_error("Source numerical preparation has no actors");
+    const auto& first=actors_[id0];
+    const auto& second=actors_[id1];
+    auto& prep=gpu_dy_contact_prep_pairs_[source];
+    if(prep.pcm_pair_index!=0xffffffffu && prep.pcm_edge!=edge)
+        throw std::logic_error("PCM numerical preparation lost its contact edge");
+    prep.source_body0=id0;
+    prep.source_body1=id1;
+    prep.inverse_mass0=first.motion==Motion::Dynamic
+        ?first.inverse_mass:0.0f;
+    prep.inverse_mass1=second.motion==Motion::Dynamic
+        ?second.inverse_mass:0.0f;
+    prep.rest_distance=material.rest_distance;
+    prep.pair_slop=material.pair_slop;
+    prep.restitution=material.restitution;
+    prep.damping=material.damping;
+    prep.max_penetration_bias=material.max_penetration_bias;
+    prep.inv_dt=1.0f/seconds;
+    prep.seconds=seconds;
+    prep.rigid_contact_bias=0.8f;
+    prep.bounce_threshold=-2.0f;
+    prep.acceleration_spring=material.acceleration_spring?1u:0u;
+    prep.max_contact_impulse=material.max_contact_impulse;
+}
 void Scene::prepare_gpu_dy_candidate_contact_preps(float seconds) {
     FYZZ_PROFILE_SCOPE("dy.prewitness_contact_prep");
     gpu_dy_contact_prep_pairs_.clear();
@@ -4218,46 +4262,17 @@ void Scene::prepare_gpu_dy_candidate_contact_preps(float seconds) {
     gpu_dy_contact_prep_pairs_.resize(previous_pairs_.size());
     std::size_t pcm_cursor=0u;
     for(std::size_t i=0u;i<previous_pairs_.size();++i) {
-        const auto& material=gpu_dy_candidate_sources_[i].material;
-        const auto pair=previous_pairs_[i];
-        const auto edge=active_edge_handles_[i];
-        if(edge>=island_edges_.size() ||
-           !(island_edges_[edge].shapes==pair))
+        if(pcm_cursor>=gpu_pcm_pairs_.size() ||
+           gpu_pcm_pairs_[pcm_cursor].candidate_ordinal!=i)
+            continue;
+        const auto& request=gpu_pcm_pairs_[pcm_cursor];
+        if(request.edge!=active_edge_handles_[i])
             throw std::logic_error(
-                "Pre-witness numerical source lost its Sc contact identity");
-        const bool reversed=island_edges_[edge].gu_order_reversed;
-        const BodyId id0=shapes_[reversed?pair.b:pair.a].body;
-        const BodyId id1=shapes_[reversed?pair.a:pair.b].body;
-        const auto pcm=pcm_cursor<gpu_pcm_pairs_.size() &&
-            gpu_pcm_pairs_[pcm_cursor].candidate_ordinal==i
-            ?static_cast<std::uint32_t>(pcm_cursor++):0xffffffffu;
-        if(!material.prepared || id0>=actors_.size() ||
-           id1>=actors_.size() ||
-           (pcm!=0xffffffffu && gpu_pcm_pairs_[pcm].edge!=edge))
-            throw std::logic_error(
-                "Pre-witness numerical source lost its authored inputs");
-        const auto& first=actors_[id0];
-        const auto& second=actors_[id1];
+                "Pre-witness PCM numerical source lost its Sc edge");
         auto& prep=gpu_dy_contact_prep_pairs_[i];
-        prep.source_body0=id0;
-        prep.source_body1=id1;
-        prep.inverse_mass0=first.motion==Motion::Dynamic
-            ?first.inverse_mass:0.0f;
-        prep.inverse_mass1=second.motion==Motion::Dynamic
-            ?second.inverse_mass:0.0f;
-        prep.rest_distance=material.rest_distance;
-        prep.pair_slop=material.pair_slop;
-        prep.restitution=material.restitution;
-        prep.damping=material.damping;
-        prep.max_penetration_bias=material.max_penetration_bias;
-        prep.inv_dt=1.0f/seconds;
-        prep.seconds=seconds;
-        prep.rigid_contact_bias=0.8f;
-        prep.bounce_threshold=-2.0f;
-        prep.acceleration_spring=material.acceleration_spring?1u:0u;
-        prep.pcm_pair_index=pcm;
-        prep.pcm_edge=pcm==0xffffffffu?0u:active_edge_handles_[i];
-        prep.max_contact_impulse=material.max_contact_impulse;
+        prep.pcm_pair_index=static_cast<std::uint32_t>(pcm_cursor++);
+        prep.pcm_edge=request.edge;
+        prepare_gpu_dy_contact_prep(i,seconds);
     }
     if(pcm_cursor!=gpu_pcm_pairs_.size())
         throw std::logic_error("Pre-witness numerical sources omitted PCM candidates");
@@ -4520,16 +4535,14 @@ void Scene::update_contacts(bool defer_device_points,float step_seconds) {
                !(island_edges_[edge].shapes==pair))
                 throw std::logic_error(
                     "GPU Dy numerical source lost its Sc candidate identity");
-            const bool reversed=island_edges_[edge].gu_order_reversed;
-            const ShapeId first=reversed?pair.b:pair.a;
-            const ShapeId second=reversed?pair.a:pair.b;
-            auto& source=gpu_dy_candidate_sources_[i];
-            source.material=prepare_contact_material(first,second);
             if(pcm_source_index<gpu_pcm_pairs_.size() &&
                gpu_pcm_pairs_[pcm_source_index].candidate_ordinal==i) {
                 if(gpu_pcm_pairs_[pcm_source_index].edge!=edge)
                     throw std::logic_error(
                         "PCM source ordinal differs from the Sc contact edge");
+                const bool reversed=island_edges_[edge].gu_order_reversed;
+                gpu_dy_candidate_sources_[i].material=prepare_contact_material(
+                    reversed?pair.b:pair.a,reversed?pair.a:pair.b);
                 ++pcm_source_index;
             }
         }
@@ -4641,8 +4654,10 @@ void Scene::update_contacts(bool defer_device_points,float step_seconds) {
             if(!pcm_source)has_legacy_gu=true;
             const BodyId id0=shapes_[pair.a].body;
             const BodyId id1=shapes_[pair.b].body;
-            const bool responding=
-                numerical_source.material.max_contact_impulse!=0.f;
+            const bool responding=pcm_source
+                ?numerical_source.material.max_contact_impulse!=0.f
+                :std::min(actors_[id0].dynamics.max_contact_impulse,
+                          actors_[id1].dynamics.max_contact_impulse)!=0.f;
             std::uint32_t nodes[2]{invalid,invalid};
             const bool new_device_touch_candidate=pcm_source &&
                 !gpu_pcm_pairs_[pcm_index].host_generated &&
@@ -5164,6 +5179,19 @@ void Scene::update_contacts(bool defer_device_points,float step_seconds) {
                 Vec3& n=next_contact_points_[manifold.contact_offset+k].normal;
                 n={-n.x,-n.y,-n.z};
             }
+        }
+        // CPU Gu prepares numerical inputs only for physical contacts,
+        // while submitted PCM is still producing its device witnesses.
+        if(early_device_materials && step_seconds>0.0f &&
+           !deferred_gpu_manifold && manifold.count!=0u &&
+           manifold.pcm_result_index==0xffffffffu) {
+            const bool source_reversed=
+                island_edges_[edge].gu_order_reversed;
+            gpu_dy_candidate_sources_[candidate_ordinal].material=
+                prepare_contact_material(
+                    source_reversed?pair.b:pair.a,
+                    source_reversed?pair.a:pair.b);
+            prepare_gpu_dy_contact_prep(candidate_ordinal,step_seconds);
         }
         // Deferred GPU managers receive their actual contact counts
         // after independent Gu geometry completes on the CPU.

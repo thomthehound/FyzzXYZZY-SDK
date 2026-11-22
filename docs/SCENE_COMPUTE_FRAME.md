@@ -323,12 +323,14 @@ table in the same allocation, and Dy resolves typed joint tokens at
 descriptor expansion. Identity-ordered bodies omit the body map.
 Neither graph requires a standalone numerical remap dispatch; the
 indirect launch arguments are published with early Sc admission.
-Sc authors one source-ordered numerical input table before PCM touch
-classification, covering GPU PCM and CPU Gu candidates. Each slot records
-typed actor endpoints and resolved material coefficients without a host
-contact-count dependency. The later Dy preparation consumes this table
-without repeating the authored material combination. Contact/friction
-row construction still follows Sc's witness publication.
+Sc reserves a source-ordered numerical input table before PCM touch
+classification. GPU PCM candidates receive typed actor endpoints and
+material coefficients before GPU submission. CPU Gu candidates receive
+numerical inputs only when their local narrowphase produces contacts,
+while PCM is still running. Untouched Gu candidates do not acquire
+numerical preparation records. Dy consumes the resulting source-indexed
+table without repeating material combination. Contact/friction row
+construction still follows Sc's witness publication.
 A continuous PCM-to-Dy numerical path without a host header dependency
 remains open; compact admission alone does not remove that synchronization.
 

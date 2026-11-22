@@ -1500,6 +1500,7 @@ private:
                                              ShapeId second) const;
     void update_contacts(bool defer_device_points=false,
                          float step_seconds=0.0f);
+    void prepare_gpu_dy_contact_prep(std::size_t source,float seconds);
     void prepare_gpu_dy_candidate_contact_preps(float seconds);
     void materialize_gpu_pcm_points();
     // Original contact-manager addEdge/setEdgeConnected/removeConnection

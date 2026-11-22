@@ -912,6 +912,18 @@ struct GpuPcmFrictionAnchorFixture {
                    (prepared && index>=scene.gpu_dy_contact_prep_pairs_.size()))
                     throw std::runtime_error(
                         "Dy populated a nonresponding candidate preparation");
+                const bool pcm=std::any_of(scene.gpu_pcm_pairs_.begin(),
+                    scene.gpu_pcm_pairs_.end(),[source](const auto& request) {
+                        return request.candidate_ordinal==source;
+                    });
+                const bool touching=std::any_of(scene.manifolds_.begin(),
+                    scene.manifolds_.end(),[source](const auto& manager) {
+                        return manager.candidate_ordinal==source;
+                    });
+                if(!pcm && !touching &&
+                   scene.gpu_dy_candidate_sources_[source].material.prepared)
+                    throw std::runtime_error(
+                        "CPU Gu prepared numerical material for a non-touching candidate");
             }
         }
     }
