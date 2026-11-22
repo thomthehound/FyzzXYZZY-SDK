@@ -5977,14 +5977,18 @@ void verify_pcm_friction_normal_revalidation(
     cpu.step(1.f/120.f);
     gpu.step(1.f/120.f);
     require(native::GpuPcmFrictionAnchorFixture::
-                single_eligible_history_on_device(gpu,2u) &&
-            producer->pcm_header_join_bytes()==
-                2u*sizeof(std::uint32_t) &&
-            producer->dy_launch_stats().retained_friction_source_bytes==0u &&
-            gpu.contacts().size()==1u &&
-            !gpu.solved_friction_patches().empty() &&
-            gpu.solved_friction_patches().front().anchor_count>0u,
-        "Second-slot PCM friction history lost its pre-witness selection");
+                single_eligible_history_on_device(gpu,2u),
+        "Second-slot PCM friction eligibility mask is incorrect");
+    require(producer->pcm_header_join_bytes()==
+                2u*sizeof(std::uint32_t),
+        "Second-slot PCM friction requested an early normal transfer");
+    require(producer->dy_launch_stats().retained_friction_source_bytes==0u,
+        "Second-slot PCM friction uploaded redundant retained candidates");
+    require(gpu.contacts().size()==1u &&
+            !gpu.solved_friction_patches().empty(),
+        "Second-slot PCM friction lost its published contact patch");
+    require(gpu.solved_friction_patches().front().anchor_count>0u,
+        "Second-slot PCM friction failed to retain or regenerate anchors");
     test::compound_compare_state(gpu.body_state(gb),cpu.body_state(cb),
         0.05f,"Second-slot PCM history changed the rigid-body response");
 }
