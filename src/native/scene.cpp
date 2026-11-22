@@ -8906,7 +8906,7 @@ void Scene::prepare_constraints(float seconds) {
             ?gpu_dy_contact_prep_indices_[source]:0xffffffffu;
         const auto prep_slot=pending_slot&~unadmitted_dy_prep;
         if(gpu_normal_prep &&
-           (source>=gpu_dy_candidate_sources_.size() ||
+           (source>=gpu_dy_contact_prep_indices_.size() ||
             pending_slot==0xffffffffu ||
             prep_slot>=gpu_dy_contact_prep_pairs_.size() ||
             prep_slot>=gpu_dy_contact_prep_sources_.size() ||
