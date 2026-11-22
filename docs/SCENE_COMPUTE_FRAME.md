@@ -226,9 +226,11 @@ commands without restoring nonexistent device journal data; submitted
 epochs restore the original EdgeIndex history on rollback. Mixed late-Gu
 frames queue the CPU-generated physical-touch and loss journal before
 joining PCM's host witness, without waiting on that later device continuation.
-During GPU PCM, Sc queues actor-local mass, pose and sleep inputs
-before the host witness join, including when early device island
-admission is unavailable. Speculative PCM endpoints stage before
+During GPU SAP, Sc stages actor-local mass, pose and sleep inputs for
+the awake accurate-island actor set, including free-flight bodies. GPU
+PCM subsequently stages newly intersecting actors that were absent
+from the preceding accurate graph, before the host witness join and
+even when early device island admission is unavailable. Speculative PCM endpoints stage before
 contact classification when the authored pair permits physical response.
 A response-disabled PCM pair does not stage numerical endpoints, including
 immovable actors; the final Dy pass also omits immovable participants

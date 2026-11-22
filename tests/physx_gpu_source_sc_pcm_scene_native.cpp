@@ -7821,6 +7821,11 @@ void verify_gpu_free_integration(
         const auto mass_frame_edits=(frame==3u || frame==4u)?1u:0u;
         const auto actor_upload_bytes=metadata.actor_local_upload_bytes+
             metadata.prewitness_actor_local_upload_bytes;
+        if(frame==3u || frame==4u)
+            require(metadata.prewitness_actor_local_upload_bytes>=
+                        offsetof(physx_gpu::SourceDyActorLocalNative,
+                                 linear_velocity),
+                "Active free-flight actor metadata waited for the Dy join");
         const auto actor_upload_spans=metadata.actor_local_upload_spans+
             metadata.prewitness_actor_local_upload_spans;
         const auto transfer_error=

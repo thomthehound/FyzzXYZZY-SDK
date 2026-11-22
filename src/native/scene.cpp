@@ -12805,11 +12805,15 @@ void Scene::advance_collision_internal(
         if(defer_device_points && step_seconds>0.f &&
            gpu_broadphase_ && gpu_dy_active()) {
             gpu_broadphase_->begin_gpu_dy_actor_sources();
-            // The published contact/joint identities can stage their
-            // actor-local inputs while the GPU produces SAP reports.
-            // New-touch actors are included by later PCM admission.
+            // Awake accurate-island actors, including free-flight bodies,
+            // stage during SAP. Later contact admission adds new-touch actors.
             gpu_dy_early_actor_ids_.reserve(
+                accurate_islands_.active_nodes.size()+
                 2u*(manifolds_.size()+active_constraint_handles_.size()));
+            gpu_dy_early_actor_ids_.insert(
+                gpu_dy_early_actor_ids_.end(),
+                accurate_islands_.active_nodes.begin(),
+                accurate_islands_.active_nodes.end());
             const auto stage_actor=[&](BodyId id) {
                 gpu_dy_early_actor_ids_.push_back(id);
             };
