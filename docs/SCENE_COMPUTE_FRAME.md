@@ -282,7 +282,7 @@ All numerical contacts in one frame share inverse-timestep, timestep,
 rigid-bias and bounce-threshold coefficients.
 The GPU Dy path still fetches 8 bytes of edge/touch metadata for ordinary
 GPU pairs before numerical admission. Sc validates geometrically sound,
-material-compatible retained friction patches before PCM submission.
+material-compatible retained friction patches while GPU PCM executes.
 When more than one historical patch is eligible, Dy receives their
 source-ordered local normals and anchors in its existing transient numerical
 input arena. Dy chooses the first compatible historical normal against the
@@ -346,10 +346,11 @@ table in the same allocation, and Dy resolves typed joint tokens at
 descriptor expansion. Identity-ordered bodies omit the body map.
 Neither graph requires a standalone numerical remap dispatch; the
 indirect launch arguments are published with early Sc admission.
-Sc reserves a source-ordered numerical input table before PCM touch
-classification. GPU PCM candidates receive typed actor endpoints and
-material coefficients before GPU submission. CPU Gu candidates receive
-numerical inputs only when their local narrowphase produces contacts,
+Sc reserves a source-ordered numerical input table independently of PCM
+touch classification. GPU PCM candidates receive typed actor endpoints
+and material coefficients while the contact producer executes, before
+Dy admission. CPU Gu candidates receive numerical inputs only when
+their local narrowphase produces contacts,
 while PCM is still running. Untouched Gu candidates do not acquire
 numerical preparation records. Dy consumes the resulting source-indexed
 table without repeating material combination. Contact/friction row
