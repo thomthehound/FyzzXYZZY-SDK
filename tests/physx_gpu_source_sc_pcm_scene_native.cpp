@@ -5982,6 +5982,8 @@ void verify_pcm_friction_normal_revalidation(
     // revisiting each historical patch after PCM publication.
     native::GpuPcmFrictionAnchorFixture::seed_multiple_friction_patches(
         gpu,{gs,gb});
+    native::GpuPcmFrictionAnchorFixture::reverse_first_retained_normal(
+        gpu,{gs,gb});
     native::GpuPcmFrictionAnchorFixture::invalidate_first_friction_material(
         gpu,{gs,gb});
     cpu.step(1.f/120.f);
