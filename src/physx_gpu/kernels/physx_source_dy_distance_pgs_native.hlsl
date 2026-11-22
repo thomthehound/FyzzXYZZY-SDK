@@ -107,7 +107,19 @@ uint sourceDyBodyOrdinal(uint index) {
 uint sourceDyResponseToken(uint scratch,uint colors,uint index) {
     if((p.launchControl&0x08000000u)!=0u) {
         const uint offset=arena.Load(scratch+20u);
-        return scIslandWork.Load(p.ordinalBias+offset+index*4u);
+        const uint token=scIslandWork.Load(p.ordinalBias+offset+index*4u);
+        if((token&0xc0000000u)==0x80000000u) {
+            const uint remap=arena.Load(scratch+52u);
+            if(remap!=0u) {
+                const uint ordinal=token&0x3fffffffu;
+                const uint count=arena.Load(scratch+56u);
+                const uint row=ordinal<count
+                    ?scIslandWork.Load(p.ordinalBias+remap+ordinal*4u)
+                    :invalidBody;
+                return 0x80000000u|(row&0x3fffffffu);
+            }
+        }
+        return token;
     }
     return arena.Load(colors+index*4u);
 }

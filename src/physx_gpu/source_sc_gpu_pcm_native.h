@@ -129,6 +129,7 @@ public:
         result_pending_=false;
         island_work_ready_=false;
         island_deferred_body_remap_=false;
+        island_deferred_joint_remap_=false;
         island_body_remap_={};
         pending_host_inputs_=false;
         pending_requests_={};
@@ -259,6 +260,7 @@ public:
         last_island_dispatches_=0u;
         last_remap_dispatches_=0u;
         island_deferred_body_remap_=false;
+        island_deferred_joint_remap_=false;
         island_body_remap_={};
         rebuild_required_=false;
     }
@@ -287,6 +289,7 @@ public:
         host_upload_pending_=false;
         island_work_ready_=false;
         island_deferred_body_remap_=false;
+        island_deferred_joint_remap_=false;
         island_body_remap_={};
         pending_host_inputs_=false;
         deferred_points_pending_=false;
@@ -789,6 +792,7 @@ public:
         island_layout_=SourceScDeviceIslandLayout::for_counts(
             node_count,edge_count,sources.contact_managers);
         island_deferred_body_remap_=false;
+        island_deferred_joint_remap_=false;
         island_body_remap_={};
         island_node_count_=node_count;
         island_edge_count_=edge_count;
@@ -819,14 +823,13 @@ public:
             island_work_.getDevicePtr(),
             node_count,edge_count,edge_capacity,sources);
         last_island_dispatches_=stream_.commands().size()-before_islands;
-        // Contact-only task admission is complete before the witness
-        // join. Joint-token remapping can still invalidate its dispatch.
-        if(!early || island_joint_count_==0u)
-            stream_.queue_device_copy(
-                indirect_address_,
-                island_work_.getDevicePtr()+
-                    offsetof(SourceScDeviceIslandHeader,dispatch_x),
-                sizeof(compute::DispatchSize));
+        // The device-authored task count is final at admission. Dy
+        // resolves body and joint rows while consuming the stream.
+        stream_.queue_device_copy(
+            indirect_address_,
+            island_work_.getDevicePtr()+
+                offsetof(SourceScDeviceIslandHeader,dispatch_x),
+            sizeof(compute::DispatchSize));
         // Early admission starts before Sc's GPU witness join. Its
         // submission remains ordered with PCM and later Dy remapping,
         // without creating another CPU observation or host fence.
@@ -844,58 +847,46 @@ public:
            (island_joint_count_ && !joint_row_capacity))
             throw std::logic_error(
                 "Source Sc numerical remap lacks prepared source rows");
-        // Source-ordered compact body indices already address Dy rows
-        // when the final solver row sequence is identical. Contact
-        // tokens are final; only joint tokens require a separate remap.
-        bool identity=island_joint_count_==0u &&
-            source_to_solver_row.size()<=solver_row_capacity;
-        for(std::size_t i=0u;identity && i<source_to_solver_row.size();++i)
-            identity=source_to_solver_row[i]==i;
-        if(!identity) {
-            auto& uploads=stream_.upload_scratch();
-            if(island_joint_count_==0u) {
-                const auto offset=island_layout_.body_remap;
-                if(offset>island_layout_.bytes ||
-                   source_to_solver_row.size_bytes()>
-                       island_layout_.bytes-offset)
-                    throw std::out_of_range(
-                        "Sc body remap exceeds its resident work allocation");
-                // Dy consumes original Sc node ordinals with one indexed
-                // lookup; no standalone remap dispatch is required.
-                uploads.push_back({
-                    island_work_.getDevicePtr()+offset,
-                    source_to_solver_row.data(),
-                    source_to_solver_row.size_bytes()});
-                stream_.queue_uploads(uploads);
-                island_deferred_body_remap_=true;
-                island_body_remap_=source_to_solver_row.first(island_node_count_);
-            }else {
-                uploads.push_back({island_nodes_.getDevicePtr(),
-                                   source_to_solver_row.data(),
-                                   source_to_solver_row.size_bytes()});
-                stream_.queue_uploads(uploads);
-                const auto before_remap=stream_.commands().size();
-                island_stage_.append_body_remap(
-                    stream_,addresses_,island_nodes_.getDevicePtr(),
-                    island_work_.getDevicePtr(),
-                    island_node_count_,island_edge_count_,solver_row_capacity,
-                    joint_row_capacity,island_joint_count_,island_contact_count_);
-                last_remap_dispatches_=stream_.commands().size()-before_remap;
-            }
+        const auto bodies=source_to_solver_row.first(island_node_count_);
+        constexpr auto invalid=std::numeric_limits<std::uint32_t>::max();
+        bool body_identity=bodies.size()<=solver_row_capacity;
+        for(std::size_t i=0u;body_identity && i<bodies.size();++i)
+            body_identity=bodies[i]==i;
+        for(const auto row:bodies)
+            if(row!=invalid && row>=solver_row_capacity)
+                throw std::out_of_range(
+                    "Sc body source maps outside the prepared Dy rows");
+        auto& uploads=stream_.upload_scratch();
+        if(!body_identity) {
+            uploads.push_back({
+                island_work_.getDevicePtr()+island_layout_.body_remap,
+                bodies.data(),bodies.size_bytes()});
+            island_deferred_body_remap_=true;
+            island_body_remap_=bodies;
         }
-        // Contact-only indirect arguments were published with early
-        // admission. Joint-token validation publishes its final dispatch
-        // after the remap kernel.
-        if(island_joint_count_!=0u)
-            stream_.queue_device_copy(
-                indirect_address_,
-                island_work_.getDevicePtr()+
-                    offsetof(SourceScDeviceIslandHeader,dispatch_x),
-                sizeof(compute::DispatchSize));
+        if(island_joint_count_) {
+            const auto joints=source_to_solver_row.subspan(island_node_count_);
+            if(joints.size()!=island_joint_count_ ||
+               island_layout_.joint_remap>island_layout_.bytes ||
+               joints.size_bytes()>
+                   island_layout_.bytes-island_layout_.joint_remap)
+                throw std::out_of_range(
+                    "Sc joint source exceeds resident remap capacity");
+            for(const auto row:joints)
+                if(row>=joint_row_capacity || row>=0x40000000u)
+                    throw std::out_of_range(
+                        "Sc joint source maps outside prepared Dy rows");
+            uploads.push_back({
+                island_work_.getDevicePtr()+island_layout_.joint_remap,
+                joints.data(),joints.size_bytes()});
+            island_deferred_joint_remap_=true;
+        }
+        if(!uploads.empty())stream_.queue_uploads(uploads);
     }
     void discard_device_islands() noexcept {
         island_work_ready_=false;
         island_deferred_body_remap_=false;
+        island_deferred_joint_remap_=false;
         island_body_remap_={};
     }
     std::span<const std::uint32_t> device_island_body_remap() const noexcept {
@@ -905,8 +896,17 @@ public:
     bool device_island_deferred_body_remap() const noexcept {
         return island_work_ready_ && island_deferred_body_remap_;
     }
+    bool device_island_deferred_joint_remap() const noexcept {
+        return island_work_ready_ && island_deferred_joint_remap_;
+    }
+    std::uint32_t device_island_joint_source_count() const noexcept {
+        return island_work_ready_?island_joint_count_:0u;
+    }
     bool last_deferred_body_remap() const noexcept {
         return island_deferred_body_remap_;
+    }
+    bool last_deferred_joint_remap() const noexcept {
+        return island_deferred_joint_remap_;
     }
     CudaDeviceAddressMap::Address device_island_work_address() const noexcept {
         return island_work_ready_?island_work_.getDevicePtr():0u;
@@ -1212,6 +1212,7 @@ private:
     bool pending_host_inputs_=false;
     bool island_work_ready_=false;
     bool island_deferred_body_remap_=false;
+    bool island_deferred_joint_remap_=false;
     std::span<const std::uint32_t> island_body_remap_{};
     bool journal_host_only_=false;
     // Borrowed Sc views survive until finish() or rollback; GPU output

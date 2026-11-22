@@ -1342,6 +1342,13 @@ public:
                 layout.bytes-layout.body_remap<sizeof(std::uint32_t)))
                 throw std::out_of_range(
                     "Dy deferred body remap exceeds the Sc work allocation");
+            if(device_admission->deferred_joint_remap &&
+               (layout.joint_remap<=layout.body_remap ||
+                layout.joint_remap>layout.bytes ||
+                device_admission->joint_source_count>
+                    (layout.bytes-layout.joint_remap)/sizeof(std::uint32_t)))
+                throw std::out_of_range(
+                    "Dy deferred joint remap exceeds the Sc work allocation");
             if(layout.tasks>layout.block_offsets ||
                tasks.size_bytes()>layout.block_offsets-layout.tasks ||
                layout.body_order>layout.response_tokens ||
@@ -1645,6 +1652,17 @@ public:
                     std::memcpy(host_.data()+offsets[15]+48u,
                                 &body_remap_offset,
                                 sizeof(body_remap_offset));
+                    const auto joint_remap_offset=
+                        device_admission->deferred_joint_remap
+                        ?narrow(device_admission->layout.joint_remap-
+                                device_admission->layout.body_order):0u;
+                    std::memcpy(host_.data()+offsets[15]+52u,
+                                &joint_remap_offset,
+                                sizeof(joint_remap_offset));
+                    const auto joint_count=
+                        device_admission->joint_source_count;
+                    std::memcpy(host_.data()+offsets[15]+56u,
+                                &joint_count,sizeof(joint_count));
                     const std::array<std::uint32_t,2> epoch_errors{
                         0u,std::numeric_limits<std::uint32_t>::max()};
                     std::memcpy(host_.data()+offsets[15]+36u,

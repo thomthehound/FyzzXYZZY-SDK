@@ -304,14 +304,14 @@ bytes remain unpublished until Sc joins or discards that readback.
 Compact device island graphs with up to 256 nodes and 256 edges use
 one workgroup admission instead of the parallel prefix and sort schedule;
 257-entry graphs retain the parallel path.
-Contact-only graphs leave their device-authored body order intact.
+Sc leaves device-authored body and typed response order intact.
 When solver-row indices differ, Sc uploads the source-to-row map into
-the same island work allocation, and Dy resolves each consumed body
-ordinal without another dispatch. Identity-ordered graphs omit the map
-upload. Device-joint graphs retain their typed row-remap dispatch
-because joint response tokens also require rewriting. Contact-only
-indirect dispatch arguments are published with early Sc admission;
-joint graphs publish them after token-remap validation.
+its resident island work allocation; Dy resolves each consumed body
+ordinal. Device-joint graphs upload their stable source-to-joint-row
+table in the same allocation, and Dy resolves typed joint tokens at
+descriptor expansion. Identity-ordered bodies omit the body map.
+Neither graph requires a standalone numerical remap dispatch; the
+indirect launch arguments are published with early Sc admission.
 Sc authors one source-ordered numerical input table before PCM touch
 classification, covering GPU PCM and CPU Gu candidates. Each slot records
 typed actor endpoints and resolved material coefficients without a host
