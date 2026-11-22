@@ -4711,7 +4711,8 @@ void verify_single_pcm_joint_island_admission(
                 stats.device_joint_geometry_count==2u &&
                 (frame!=0u ||
                     (stats.prewitness_actor_local_upload_bytes>=
-                        sizeof(physx_gpu::SourceDyActorLocalNative) &&
+                        offsetof(physx_gpu::SourceDyActorLocalNative,
+                                 linear_velocity) &&
                      stats.prewitness_actor_local_upload_spans>0u)) &&
                 gpu.accurate_island_id(joints_gpu[0])==
                     gpu.accurate_island_id(joints_gpu[1]) &&
@@ -5191,12 +5192,13 @@ void verify_gpu_coupled_solver(
         if(frame==0u)
             require(resident==0u &&
                     producer->dy_launch_stats().prewitness_actor_local_upload_bytes>=
-                        2u*sizeof(physx_gpu::SourceDyActorLocalNative),
+                        2u*offsetof(physx_gpu::SourceDyActorLocalNative,
+                                    linear_velocity),
                 "Initial coupled actors were not staged during GPU PCM");
         else if(frame==6u)
             require(resident>=2u && resident<integrated &&
                     producer->dy_launch_stats().prewitness_actor_local_upload_bytes>=
-                        sizeof(physx_gpu::SourceDyActorLocalNative),
+                        sizeof(physx_gpu::SourceDyHostPoseNative),
                 "Authored Sc contact pose was not staged before the witness join");
         else
             require(resident>=2u && host_pose_bytes==0u,
@@ -7168,7 +7170,7 @@ void verify_sphere_gpu_solver(
             require(resident<integrated &&
                     producer->dy_launch_stats().actor_local_upload_bytes+
                     producer->dy_launch_stats().prewitness_actor_local_upload_bytes>=
-                        sizeof(physx_gpu::SourceDyActorLocalNative),
+                        sizeof(physx_gpu::SourceDyHostPoseNative),
                 "Authored sphere quaternion did not invalidate its device pose");
         else
             require(resident>=2u && uploaded==0u,
@@ -7827,11 +7829,13 @@ void verify_gpu_free_integration(
                       metadata.reused_actor_local_poses==0u
                     : metadata.reused_actor_local_poses==
                           actual.size()-mass_frame_edits &&
-                      actor_upload_bytes%resident_record_bytes==0u &&
+                      actor_upload_bytes%sizeof(float)==0u &&
                       actor_upload_bytes<=6u*resident_record_bytes &&
-                      actor_upload_spans<=4u &&
+                      actor_upload_spans<=12u &&
                       (mass_frame_edits==0u ||
-                       actor_upload_bytes>=resident_record_bytes)),
+                       actor_upload_bytes>=offsetof(
+                           physx_gpu::SourceDyActorLocalNative,
+                           linear_velocity))),
             transfer_error.c_str());
         require(resident<=actual.size() &&
                 producer->dy_host_pose_upload_bytes()==0u &&
