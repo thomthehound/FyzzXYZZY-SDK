@@ -336,7 +336,8 @@ struct GpuPcmFrictionAnchorFixture {
     }
     static void verify_early_pcm_numerical_materials(const Scene& scene) {
         if(scene.gpu_pcm_pairs_.empty() ||
-           scene.gpu_dy_candidate_sources_.size()!=scene.previous_pairs_.size())
+           scene.gpu_dy_candidate_sources_.size()!=
+               scene.gpu_dy_contact_prep_pairs_.size())
             throw std::runtime_error(
                 "Resident PCM numerical preparation lacks candidate sources");
         std::size_t pcm_source=0u;
@@ -350,22 +351,16 @@ struct GpuPcmFrictionAnchorFixture {
             const auto reversed=scene.island_edges_[edge].gu_order_reversed;
             const auto first=reversed?pair.b:pair.a;
             const auto second=reversed?pair.a:pair.b;
-            const auto& source=scene.gpu_dy_candidate_sources_[i];
+            const auto slot=scene.gpu_dy_contact_prep_indices_[i];
             const auto expected_pcm=pcm_source<scene.gpu_pcm_pairs_.size() &&
                 scene.gpu_pcm_pairs_[pcm_source].candidate_ordinal==i
                     ?static_cast<std::uint32_t>(pcm_source++)
                     :0xffffffffu;
-            const auto& actual=source.material;
-            const bool touching=std::any_of(scene.manifolds_.begin(),
-                scene.manifolds_.end(),[i](const auto& manager) {
-                    return manager.candidate_ordinal==i;
-                });
-            if(expected_pcm==0xffffffffu && !touching) {
-                if(actual.prepared)
-                    throw std::runtime_error(
-                        "Non-touching CPU Gu candidate acquired numerical material");
-                continue;
-            }
+            if(slot==0xffffffffu)continue;
+            if(slot>=scene.gpu_dy_candidate_sources_.size())
+                throw std::runtime_error(
+                    "Numerical source material has no compact record");
+            const auto& actual=scene.gpu_dy_candidate_sources_[slot].material;
             const auto expected=scene.prepare_contact_material(first,second);
             if((expected_pcm!=0xffffffffu &&
                 scene.gpu_pcm_pairs_[expected_pcm].edge!=edge) ||
@@ -398,6 +393,7 @@ struct GpuPcmFrictionAnchorFixture {
             if(slot==0xffffffffu)continue;
             if(slot>=scene.gpu_dy_contact_prep_pairs_.size() ||
                slot>=scene.gpu_dy_contact_prep_sources_.size() ||
+               slot>=scene.gpu_dy_candidate_sources_.size() ||
                scene.gpu_dy_contact_prep_sources_[slot]!=i ||
                seen[slot] ||
                scene.gpu_dy_contact_prep_pairs_[slot].pcm_pair_index!=expected_pcm ||
@@ -419,8 +415,11 @@ struct GpuPcmFrictionAnchorFixture {
             throw std::runtime_error(
                 "Dy compact preparation has missing or unused source records");
         for(const auto& request:scene.gpu_pcm_pairs_) {
+            const auto slot=scene.gpu_dy_contact_prep_indices_.at(
+                request.candidate_ordinal);
+            if(slot==0xffffffffu)continue;
             const auto& actual=scene.gpu_dy_candidate_sources_.at(
-                request.candidate_ordinal).material;
+                slot).material;
             const auto expected=scene.prepare_contact_material(
                 request.first,request.second);
             if(!actual.prepared ||
@@ -446,10 +445,10 @@ struct GpuPcmFrictionAnchorFixture {
                scene.gpu_pcm_pairs_[index].edge!=manifold.edge_handle)
                 throw std::runtime_error(
                     "Resident PCM numerical material lost its source EdgeIndex");
-            const auto& material=scene.gpu_dy_candidate_sources_.at(
-                manifold.candidate_ordinal).material;
             const auto prep_index=scene.gpu_dy_contact_prep_indices_[
                 manifold.candidate_ordinal];
+            const auto& material=scene.gpu_dy_candidate_sources_.at(
+                prep_index).material;
             if(prep_index>=scene.gpu_dy_contact_prep_pairs_.size())
                 throw std::runtime_error(
                     "Resident PCM material did not enter numerical contact prep");
@@ -936,10 +935,9 @@ struct GpuPcmFrictionAnchorFixture {
                     scene.manifolds_.end(),[source](const auto& manager) {
                         return manager.candidate_ordinal==source;
                     });
-                if(!pcm && !touching &&
-                   scene.gpu_dy_candidate_sources_[source].material.prepared)
+                if(!pcm && !touching && index!=0xffffffffu)
                     throw std::runtime_error(
-                        "CPU Gu prepared numerical material for a non-touching candidate");
+                        "CPU Gu allocated material for a non-touching candidate");
             }
         }
     }

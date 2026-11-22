@@ -2414,7 +2414,8 @@ private:
     std::vector<Pair> sap_created_pairs_,sap_deleted_pairs_;
     std::vector<Pair> previous_pairs_;
     // Numerical coefficients and ordered actor endpoints are fixed by
-    // Sc's candidate identities before GPU touch classification.
+    // Sparse numerical material and retained friction follow the same
+    // compact Sc source slots as device contact preparation.
     std::vector<GpuDyCandidateSource> gpu_dy_candidate_sources_;
     std::vector<Pair> pending_pairs_;
     std::vector<Pair> gpu_plane_pair_candidates_;

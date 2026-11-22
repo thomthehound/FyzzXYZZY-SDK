@@ -247,8 +247,9 @@ inverse masses and the numerical material tail. Material and actor
 identities are authored in original Sc candidate order before PCM
 classification. After accurate island admission, Sc fills solver ordinals
 and CPU Gu offsets, retires unused PCM preparation slots, and uploads
-only responding sources. A sparse source-index map preserves Sc candidate
-identities without allocating full records for speculative Gu holes. Dy lowers the compact result
+only responding sources. Material, friction-history candidates and contact
+preparation share one sparse source-index map, preserving Sc candidate
+identities without allocating records for speculative Gu holes. Dy lowers the compact result
 to 48-byte per-manager GPU descriptors and one shared 16-byte frame
 coefficient header. The numerical producer borrows source PCM identities,
 EdgeIndex handles, and CPU Gu offsets from those inputs for the duration

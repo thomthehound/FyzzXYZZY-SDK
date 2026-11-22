@@ -4240,8 +4240,14 @@ void Scene::prepare_gpu_dy_contact_prep(std::size_t source,float seconds) {
        dense>=gpu_dy_contact_prep_sources_.size() ||
        gpu_dy_contact_prep_sources_[dense]!=source)
         throw std::logic_error("Source numerical sparse slot identity is invalid");
+    if(dense>=gpu_dy_candidate_sources_.size()) {
+        if(dense!=gpu_dy_candidate_sources_.size())
+            throw std::logic_error(
+                "Sparse numerical material slot has no source record");
+        gpu_dy_candidate_sources_.emplace_back();
+    }
     auto& prep=gpu_dy_contact_prep_pairs_[dense];
-    auto& material=gpu_dy_candidate_sources_[source].material;
+    auto& material=gpu_dy_candidate_sources_[dense].material;
     if(!material.prepared) {
         if(prep.pcm_pair_index!=0xffffffffu)
             throw std::logic_error(
@@ -4280,11 +4286,13 @@ void Scene::prepare_gpu_dy_candidate_contact_preps(float seconds) {
     gpu_dy_contact_prep_sources_.clear();
     gpu_dy_contact_prep_indices_.clear();
     if(!gpu_dy_active() || seconds<=0.0f)return;
-    if(gpu_dy_candidate_sources_.size()!=previous_pairs_.size() ||
+    if(gpu_dy_candidate_sources_.size()<gpu_pcm_pairs_.size() ||
        active_edge_handles_.size()!=previous_pairs_.size() ||
        previous_pairs_.size()>=std::numeric_limits<std::uint32_t>::max())
         throw std::logic_error(
             "Pre-witness numerical input lacks its source Sc candidates");
+    // PCM sources lead the sparse arena; Gu contacts append only on touch.
+    gpu_dy_candidate_sources_.resize(gpu_pcm_pairs_.size());
     gpu_dy_contact_prep_indices_.assign(
         previous_pairs_.size(),0xffffffffu);
     std::uint32_t last_source=0u;
@@ -4485,10 +4493,8 @@ void Scene::update_contacts(bool defer_device_points,float step_seconds) {
             const Actor& actor1=actors_[shape1.body];
             auto& request=gpu_pcm_pairs_[i];
             const GpuDyPairMaterial empty{};
-            const auto& material=
-                request.candidate_ordinal<gpu_dy_candidate_sources_.size()
-                    ?gpu_dy_candidate_sources_[request.candidate_ordinal].material
-                    :empty;
+            const auto& material=i<gpu_dy_candidate_sources_.size()
+                ?gpu_dy_candidate_sources_[i].material:empty;
             std::uint32_t valid=0u,eligible=0u;
             for(std::size_t j=0u;j<history.count;++j) {
                 const auto& old=friction_patches_[history.offset+j];
@@ -4513,11 +4519,11 @@ void Scene::update_contacts(bool defer_device_points,float step_seconds) {
                (!std::has_single_bit(eligible) ||
                 valid==std::numeric_limits<std::uint32_t>::max())) {
                 const auto source_index=request.candidate_ordinal;
-                if(source_index>=gpu_dy_candidate_sources_.size() ||
+                if(i>=gpu_dy_candidate_sources_.size() ||
                    gpu_pcm_pairs_[i].candidate_ordinal!=source_index)
                     throw std::logic_error(
                         "Retained friction has no original Sc numerical source");
-                auto& source=gpu_dy_candidate_sources_[source_index];
+                auto& source=gpu_dy_candidate_sources_[i];
                 source.retained_first=static_cast<std::uint32_t>(
                     gpu_dy_history_candidates_.size());
                 source.retained_full=
@@ -4554,7 +4560,7 @@ void Scene::update_contacts(bool defer_device_points,float step_seconds) {
     gpu_dy_history_candidates_.clear();
     const bool early_device_materials=gpu_dy_active();
     if(early_device_materials) {
-        gpu_dy_candidate_sources_.resize(previous_pairs_.size());
+        gpu_dy_candidate_sources_.resize(gpu_pcm_pairs_.size());
         std::uint32_t last_source=0u;
         for(std::size_t pcm=0u;pcm<gpu_pcm_pairs_.size();++pcm) {
             const auto& request=gpu_pcm_pairs_[pcm];
@@ -4570,7 +4576,7 @@ void Scene::update_contacts(bool defer_device_points,float step_seconds) {
             last_source=source;
             const auto pair=previous_pairs_[source];
             const bool reversed=island_edges_[request.edge].gu_order_reversed;
-            gpu_dy_candidate_sources_[source].material=prepare_contact_material(
+            gpu_dy_candidate_sources_[pcm].material=prepare_contact_material(
                 reversed?pair.b:pair.a,reversed?pair.a:pair.b);
         }
     }
@@ -4668,11 +4674,10 @@ void Scene::update_contacts(bool defer_device_points,float step_seconds) {
                 admitted=false;
                 break;
             }
-            const auto& numerical_source=gpu_dy_candidate_sources_[i];
             const auto slot=gpu_dy_contact_prep_indices_[i];
+            const auto dense=slot&~unadmitted_dy_prep;
             const auto pcm_index=slot==invalid?invalid:
-                gpu_dy_contact_prep_pairs_[
-                    slot&~unadmitted_dy_prep].pcm_pair_index;
+                gpu_dy_contact_prep_pairs_[dense].pcm_pair_index;
             const bool pcm_source=pcm_index!=invalid;
             if(!pcm_source && dormant_pcm(pair,edge)) {
                 admitted=false;
@@ -4682,7 +4687,7 @@ void Scene::update_contacts(bool defer_device_points,float step_seconds) {
             const BodyId id0=shapes_[pair.a].body;
             const BodyId id1=shapes_[pair.b].body;
             const bool responding=pcm_source
-                ?numerical_source.material.max_contact_impulse!=0.f
+                ?gpu_dy_candidate_sources_[dense].material.max_contact_impulse!=0.f
                 :std::min(actors_[id0].dynamics.max_contact_impulse,
                           actors_[id1].dynamics.max_contact_impulse)!=0.f;
             std::uint32_t nodes[2]{invalid,invalid};
@@ -8571,13 +8576,16 @@ void Scene::prepare_constraints(float seconds) {
     if(gpu_normal_prep) {
         if(gpu_dy_contact_prep_indices_.size()!=previous_pairs_.size() ||
            gpu_dy_contact_prep_pairs_.size()!=
-               gpu_dy_contact_prep_sources_.size())
+               gpu_dy_contact_prep_sources_.size() ||
+           gpu_dy_contact_prep_pairs_.size()!=
+               gpu_dy_candidate_sources_.size())
             throw std::logic_error(
                 "Dy has no pre-witness sparse contact input map");
     }else {
         gpu_dy_contact_prep_pairs_.clear();
         gpu_dy_contact_prep_sources_.clear();
         gpu_dy_contact_prep_indices_.clear();
+        gpu_dy_candidate_sources_.clear();
     }
     solver_kinematic_participant_=false;
     for(EdgeIndex edge_id:indexed_joints_) {
@@ -8901,8 +8909,9 @@ void Scene::prepare_constraints(float seconds) {
             pending_slot==0xffffffffu ||
             prep_slot>=gpu_dy_contact_prep_pairs_.size() ||
             prep_slot>=gpu_dy_contact_prep_sources_.size() ||
+            prep_slot>=gpu_dy_candidate_sources_.size() ||
             gpu_dy_contact_prep_sources_[prep_slot]!=source ||
-            !gpu_dy_candidate_sources_[source].material.prepared ||
+            !gpu_dy_candidate_sources_[prep_slot].material.prepared ||
             gpu_dy_contact_prep_pairs_[prep_slot].source_body0!=id0 ||
             gpu_dy_contact_prep_pairs_[prep_slot].source_body1!=id1))
             throw std::logic_error(
@@ -8920,7 +8929,7 @@ void Scene::prepare_constraints(float seconds) {
                     "GPU Dy source producer changed after PCM publication");
         }
         const auto numerical=gpu_normal_prep
-            ?gpu_dy_candidate_sources_[manifold.candidate_ordinal].material
+            ?gpu_dy_candidate_sources_[prep_slot].material
             :prepare_contact_material(
                 reversed?manifold.pair.b:manifold.pair.a,
                 reversed?manifold.pair.a:manifold.pair.b);
@@ -8966,8 +8975,7 @@ void Scene::prepare_constraints(float seconds) {
                 throw std::logic_error("Resident PCM has no contact run");
             const FrictionPatch* retained=nullptr;
             const bool device_select=gpu_normal_prep &&
-                gpu_dy_candidate_sources_[manifold.candidate_ordinal].
-                    retained_count!=0u;
+                gpu_dy_candidate_sources_[prep_slot].retained_count!=0u;
             const auto& request=gpu_pcm_pairs_[manifold.pcm_result_index];
             std::uint32_t valid_history=0u;
             if(!disable_strong_friction && edge<friction_by_edge_.size()) {
@@ -9636,12 +9644,15 @@ void Scene::prepare_constraints(float seconds) {
                 gpu_dy_contact_prep_pairs_[packed]=
                     gpu_dy_contact_prep_pairs_[dense];
                 gpu_dy_contact_prep_sources_[packed]=source;
+                gpu_dy_candidate_sources_[packed]=
+                    gpu_dy_candidate_sources_[dense];
             }
             gpu_dy_contact_prep_indices_[source]=
                 static_cast<std::uint32_t>(packed++);
         }
         gpu_dy_contact_prep_pairs_.resize(packed);
         gpu_dy_contact_prep_sources_.resize(packed);
+        gpu_dy_candidate_sources_.resize(packed);
     }
     // Swap only after the new rows and patch anchors are fully prepared.
     // Old shape-local anchors remain available throughout correlation.
@@ -10115,13 +10126,14 @@ void Scene::solve_gpu_distance_constraints(float seconds) {
         // normal rows; source CPU PGS skips its zero-patch descriptor.
         if(!m.friction_patch_count)continue;
         const auto source=m.candidate_ordinal;
-        if(source>=gpu_dy_candidate_sources_.size())
+        if(source>=gpu_dy_contact_prep_indices_.size())
             throw std::logic_error("GPU Dy numerical source exceeds Sc candidates");
-        if(source>=gpu_dy_contact_prep_indices_.size() ||
-           gpu_dy_contact_prep_indices_[source]>=gpu_dy_contact_prep_pairs_.size())
+        const auto prep_index=gpu_dy_contact_prep_indices_[source];
+        if(prep_index>=gpu_dy_contact_prep_pairs_.size() ||
+           prep_index>=gpu_dy_candidate_sources_.size())
             throw std::logic_error("GPU Dy source lacks its compact numerical preparation");
         const auto pcm_index=gpu_dy_contact_prep_pairs_[
-            gpu_dy_contact_prep_indices_[source]].pcm_pair_index;
+            prep_index].pcm_pair_index;
         const bool resident_pcm=pcm_index!=
             std::numeric_limits<std::uint32_t>::max();
         if(resident_pcm &&
@@ -10193,7 +10205,7 @@ void Scene::solve_gpu_distance_constraints(float seconds) {
                 explicit_order_cursor+=patch.contact_count;
             }
             const bool cached_normal=pcm_growth && patch.anchor_count>0u;
-            const auto& source=gpu_dy_candidate_sources_[m.candidate_ordinal];
+            const auto& source=gpu_dy_candidate_sources_[prep_index];
             const bool select_history=pcm_growth && source.retained_count!=0u;
             if(select_history && (patch.anchor_count!=0u ||
                source.retained_count>32u))
@@ -10370,7 +10382,12 @@ void Scene::solve_gpu_distance_constraints(float seconds) {
             i<m.friction_patch_offset+m.friction_patch_count;++i) {
             auto& patch=friction_patches_[i];
             const auto& returned=gpu_dy_patches_[i];
-            const auto& source=gpu_dy_candidate_sources_[m.candidate_ordinal];
+            const auto prep_index=gpu_dy_contact_prep_indices_[
+                m.candidate_ordinal];
+            if(prep_index>=gpu_dy_candidate_sources_.size())
+                throw std::logic_error(
+                    "GPU Dy returned an unowned friction source");
+            const auto& source=gpu_dy_candidate_sources_[prep_index];
             if(source.retained_count!=0u) {
                 const auto choice=(returned.reserved>>19u)&63u;
                 if(choice!=0u) {
