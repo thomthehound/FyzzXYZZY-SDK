@@ -248,15 +248,15 @@ identities are authored in original Sc candidate order before PCM
 classification. After accurate island admission, Sc fills solver ordinals
 and CPU Gu offsets, compacts the same records in place by candidate
 ordinal, and uploads only admitted sources. Dy lowers the compact result
-to the unchanged 64-byte GPU preparation descriptor. Neither the 192-byte
-inline-body prefix nor its associated CPU packing is constructed on
-production Scene frames. Standalone numerical inputs without a Scene
-actor identity retain their explicit inline body payload.
-The GPU Dy contact-preparation upload stores one 16-byte timestep
-coefficient header followed by 48-byte per-manager records. Per-manager
-source materials and body references remain distinct; a numerical frame
-requires identical inverse-timestep, timestep, rigid-bias and bounce-threshold
-coefficients across all its contact sources.
+to 48-byte per-manager GPU descriptors and one shared 16-byte frame
+coefficient header. The numerical producer borrows source PCM identities,
+EdgeIndex handles, and CPU Gu offsets from those inputs for the duration
+of the queued solve; it does not copy a second host provenance table.
+The 192-byte inline-body prefix and associated CPU packing are not
+constructed on production Scene frames. Standalone numerical inputs without
+a Scene actor identity retain their explicit inline body payload.
+All numerical contacts in one frame share inverse-timestep, timestep,
+rigid-bias and bounce-threshold coefficients.
 The GPU Dy path still fetches 8 bytes of edge/touch metadata for ordinary
 GPU pairs before numerical admission. Sc validates geometrically sound,
 material-compatible retained friction patches before PCM submission.

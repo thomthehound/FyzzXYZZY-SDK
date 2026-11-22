@@ -3210,6 +3210,22 @@ void verify_device_sc_dy_compact_contact_ranges(
     producer->enqueue_gpu_pcm_box_contacts(requests,witness);
     producer->enqueue_gpu_dy_island_admission(
         edges,nodes,physx_gpu::SourceScDeviceIslandSources{2u,0u,0u});
+    auto invalid_provenance=preparation;
+    invalid_provenance[1].pcm_pair_index=
+        static_cast<std::uint32_t>(requests.size());
+    bool provenance_rejected=false;
+    try {
+        producer->enqueue_gpu_dy_distance(
+            bodies,{},descriptors,{},ordinals,tasks,
+            forces,{},{},anchors,patches,managers,{},
+            invalid_provenance,input,poses,
+            true,anchor_impulses,true,true,true,sleep);
+    } catch(const std::logic_error&) {
+        provenance_rejected=true;
+    }
+    require(provenance_rejected &&
+            !producer->has_queued_gpu_dy_distance(),
+        "Dy accepted an invalid borrowed PCM provenance record");
     auto conflicting_preparation=preparation;
     conflicting_preparation[1].seconds=seconds*2.f;
     bool timestep_mismatch_rejected=false;

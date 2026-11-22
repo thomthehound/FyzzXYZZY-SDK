@@ -520,6 +520,7 @@ public:
             contact_prep.size()+compact_contact_prep.size();
         std::array<float,4> contact_frame{};
         bool first_contact_source=true;
+        std::size_t next_history_capacity_=friction_history_capacity_;
         const auto append_source=[&](const auto& source) {
             const std::array<float,4> coefficients{
                 source.inv_dt,source.seconds,source.rigid_contact_bias,
@@ -531,6 +532,13 @@ public:
                                  sizeof(contact_frame))!=0)
                 throw std::invalid_argument(
                     "Dy contact sources disagree on frame timestep coefficients");
+            if(source.pcm_pair_index==0xffffffffu)return;
+            if(!pcm_contacts || source.pcm_pair_index>=pcm_pair_count ||
+               source.pcm_edge==0xffffffffu)
+                throw std::logic_error(
+                    "Source Dy PCM contact provenance is invalid");
+            next_history_capacity_=std::max(next_history_capacity_,
+                std::size_t(source.pcm_edge)+1u);
         };
         const auto contact_origin=[&](std::size_t index) {
             return source_contact_origin(index,contact_prep,
@@ -676,17 +684,6 @@ public:
             : friction.size()*sizeof(native::GpuDyFrictionWriteback);
         std::size_t reused_pcm_rows=0u;
         std::size_t cpu_gu_rows=0u;
-        std::size_t next_history_capacity_=friction_history_capacity_;
-        for(std::size_t i=0u;i<prep_count;++i) {
-            const auto pair=contact_origin(i);
-            if(pair.pcm_pair_index==0xffffffffu)continue;
-            if(!pcm_contacts || pair.pcm_pair_index>=pcm_pair_count ||
-               pair.pcm_edge==0xffffffffu)
-                throw std::logic_error(
-                    "Source Dy PCM contact provenance is invalid");
-            next_history_capacity_=std::max(next_history_capacity_,
-                std::size_t(pair.pcm_edge)+1u);
-        }
         if(next_history_capacity_>
            (std::numeric_limits<std::uint32_t>::max()-127u)/64u)
             throw std::overflow_error(
