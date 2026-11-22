@@ -6279,7 +6279,7 @@ void verify_mixed_gu_pcm_gpu_dy_solver(
             }
             cpu.step(dt);
             gpu.step(dt);
-            const Pair unused_pair{moving_gpu[0],unused_floor_gpu};
+            const native::Pair unused_pair{moving_gpu[0],unused_floor_gpu};
             require(gpu.contact_edge_index(unused_pair)!=0xffffffffu,
                 "Unused Gu floor is not a speculative Sc candidate");
             require(!gpu.contact_edge_connected(unused_pair),
