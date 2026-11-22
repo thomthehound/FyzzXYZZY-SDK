@@ -4457,21 +4457,17 @@ void Scene::update_contacts(bool defer_device_points,float step_seconds) {
     if(source_gpu_pcm && gpu_broadphase_->has_gpu_dy_distance() &&
        island_edges_.size()>std::numeric_limits<std::uint32_t>::max())
         throw std::overflow_error("Sc EdgeIndex watermark exceeds GPU history capacity");
-    // Only multi-patch GPU managers need prior-anchor validity before
-    // queuing their normal readback. Validate ordinary retained patches
-    // while PCM runs, using the same source correlation predicate.
+    // Friction correlation reads authored history, independently of
+    // the executing GPU PCM producer.
     const bool has_pcm_friction_history=
         gpu_results_pending && !friction_patches_.empty();
-    const auto validate_pcm_history=[&](bool before_submit) {
+    const auto validate_pcm_history=[&] {
         if(!has_pcm_friction_history)return;
         for(std::size_t i=0u;i<gpu_pcm_pairs_.size();++i) {
             const EdgeIndex edge=gpu_pcm_pairs_[i].edge;
             if(edge>=friction_by_edge_.size())continue;
             const Pair pair=island_edges_[edge].shapes;
             const auto& history=friction_by_edge_[edge];
-            const bool needs_early_normal=defer_device_points &&
-                !gpu_pcm_pairs_[i].host_generated && history.count>1u;
-            if(needs_early_normal!=before_submit)continue;
             if(history.epoch!=friction_cache_epoch_ ||
                !history.count || history.pair!=pair ||
                history.offset>friction_patches_.size() ||
@@ -4514,7 +4510,7 @@ void Scene::update_contacts(bool defer_device_points,float step_seconds) {
             // Source-ordered compatible anchors are fixed before PCM.
             // Dy selects the first matching local normal from this
             // bounded stream using the resident GPU contact normal.
-            if(before_submit && eligible!=0u &&
+            if(eligible!=0u &&
                (!std::has_single_bit(eligible) ||
                 valid==std::numeric_limits<std::uint32_t>::max())) {
                 const auto source_index=request.candidate_ordinal;
@@ -4580,9 +4576,8 @@ void Scene::update_contacts(bool defer_device_points,float step_seconds) {
                 reversed?pair.b:pair.a,reversed?pair.a:pair.b);
         }
     }
-    validate_pcm_history(true);
-    // Source-ordered numerical and friction-history candidates are ready
-    // before PCM publication. Sc joins compact touch metadata separately.
+    // The GPU contact producer does not consume host friction-history
+    // correlation. Queue the physical witness first.
     if(gpu_results_pending || gu_only_device_epoch ||
        joint_only_device_admission ||
        (source_gpu_pcm && gpu_pcm_pairs_.empty()))
@@ -4592,7 +4587,7 @@ void Scene::update_contacts(bool defer_device_points,float step_seconds) {
                 (gpu_results_pending || gu_only_device_epoch)
                 ?static_cast<std::uint32_t>(island_edges_.size()):0u,
             defer_device_points);
-    validate_pcm_history(false);
+    validate_pcm_history();
     // CPU prepares candidate numerics while the submitted PCM queue
     // produces the physical touch and contact stream.
     if(early_device_materials && step_seconds>0.0f)

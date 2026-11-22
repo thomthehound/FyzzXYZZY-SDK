@@ -208,9 +208,10 @@ connectivity or task ranges. CPU Sc still owns the committed island graph
 and the joint and contact publication lifetimes.
 The Scene joins GPU PCM headers for public contact state and
 reads back Dy scheduling and numerical results for publication.
-The GPU friction candidate masks are validated while PCM runs; later
-numerical correlation selects the retained source directly from those
-masks without traversing the prior friction-patch list a second time.
+Friction candidate validity and retained anchors are prepared in one
+source-ordered pass while GPU PCM executes. The contact producer does
+not consume those masks; Dy selects retained sources from the same
+candidate records without rescanning the prior patch list.
 When GPU Sc has already admitted an early numerical island graph, Sc
 retains PCM source identities and numerical capacity without allocating
 host contact-point slots. CPU Gu generates its own compact contact arena
