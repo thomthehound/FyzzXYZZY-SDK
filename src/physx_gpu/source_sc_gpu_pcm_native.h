@@ -125,6 +125,8 @@ public:
         // A rejected Sc transaction must not publish its outstanding
         // asynchronous witness DMA into the borrowed Gu result arena.
         stream_.abandon_fetch();
+        const bool unsubmitted_snapshot=host_snapshot_unsubmitted_;
+        host_snapshot_unsubmitted_=false;
         host_upload_pending_=false;
         result_pending_=false;
         island_work_ready_=false;
@@ -142,7 +144,8 @@ public:
         if(pcm_transaction_pending_) {
             // A submitted PCM epoch may have changed Gu witnesses even
             // when Sc/Dy later rejected the complete simulation frame.
-            restore_pending_=journal_pair_count_!=0u || gu_touch_count_!=0u;
+            restore_pending_=!unsubmitted_snapshot &&
+                (journal_pair_count_!=0u || gu_touch_count_!=0u);
             pcm_transaction_pending_=false;
             published_pair_count_=0u;
             // Refreshed PCM epochs restore their journal before the next submission.
@@ -287,6 +290,7 @@ public:
         last_host_contact_upload_bytes_=0u;
         last_early_gu_touch_bytes_=0u;
         host_upload_pending_=false;
+        host_snapshot_unsubmitted_=false;
         island_work_ready_=false;
         island_deferred_body_remap_=false;
         island_deferred_joint_remap_=false;
@@ -663,12 +667,14 @@ public:
         journal_host_only_=false;
         pending_host_inputs_=std::any_of(requests.begin(),requests.end(),
             [](const auto& request){return request.host_generated;});
+        host_snapshot_unsubmitted_=!has_device_witnesses;
         pending_edge_span_bytes_=std::size_t(edge_capacity)*240u;
         // The DMA follows the last PCM shader immediately, while Sc
         // independently admits speculative topology and CPU Gu.
         // No host wait occurs until the first GPU witness consumer.
-        if(gpu_downloads_.empty())stream_.submit();
-        else stream_.begin_fetch(gpu_downloads_);
+        if(!gpu_downloads_.empty())stream_.begin_fetch(gpu_downloads_);
+        // Host-only PCM has no witness consumer before its Gu upload.
+        // Keep the snapshot and its publication in one submission.
     }
     // Source Sc produces bounded primitive witnesses independently of
     // general GPU PCM. Snapshot their uploads before the Sc witness join;
@@ -716,6 +722,10 @@ public:
             journal_edge_capacity_);
         last_host_contact_upload_bytes_=bytes;
         host_upload_pending_=true;
+        if(host_snapshot_unsubmitted_) {
+            stream_.submit();
+            host_snapshot_unsubmitted_=false;
+        }
     }
 
     // Legacy CPU Gu publishes only its existing EdgeIndex and physical
@@ -1209,7 +1219,7 @@ private:
     bool rebuild_required_=false;
     bool pcm_transaction_pending_=false,restore_pending_=false;
     bool result_pending_=false,host_upload_pending_=false;
-    bool pending_host_inputs_=false;
+    bool pending_host_inputs_=false,host_snapshot_unsubmitted_=false;
     bool island_work_ready_=false;
     bool island_deferred_body_remap_=false;
     bool island_deferred_joint_remap_=false;
