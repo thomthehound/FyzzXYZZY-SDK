@@ -379,6 +379,12 @@ public:
             if(pose_changed)
                 std::memcpy(resident.world_position,local.world_position,
                             pose_bytes);
+            if(!actor_local_valid_[id] && !actor_velocity_valid_[id] &&
+               (input.active&0x100u)==0u) {
+                std::memcpy(resident.linear_velocity,input.linear_velocity,
+                            velocity_bytes);
+                dirty|=2u;
+            }
             if((input.active&0x100u)!=0u) {
                 if(input.source_inverse_mass!=0.0f)
                     throw std::logic_error(
@@ -1105,6 +1111,7 @@ public:
                     ?input.source_actor:narrow(ordinal);
                 record.actor_local_offset=id;
                 const bool resident_valid=actor_local_valid_[id]!=0u;
+                const bool resident_velocity_valid=actor_velocity_valid_[id]!=0u;
                 SourceDyActorLocalNative local{};
                 std::memcpy(local.position,input.mass_local_position,
                             sizeof(local.position));
@@ -1195,6 +1202,8 @@ public:
                 // Every published body must explicitly reestablish its
                 // committed velocity after a successful device solve.
                 actor_velocity_valid_[id]=0u;
+                if(!resident_valid && !resident_velocity_valid)
+                    pending_actor_locals_.push_back({id,15u});
                 if(device_unconstrained_preparation) {
                     record.active|=32u;
                     const float* streams[4]{
