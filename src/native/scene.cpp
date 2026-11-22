@@ -4773,11 +4773,6 @@ void Scene::update_contacts(bool defer_device_points,float step_seconds) {
         }
     }
     FYZZ_PROFILE_COUNTER("pcm.legacy_gu_overlap",overlap_legacy_gu?1u:0u);
-    // Kinematic targets depend on the authored pose and timestep, not
-    // physical touch. Prepare Dy velocities while queued PCM runs,
-    // before any host observation of its witness stream.
-    if(inverse_step>0.0f)
-        calculate_kinematic_velocities(inverse_step);
     // PCM candidates require stable actor-local inputs before their
     // resident witnesses are known. Gu immovable endpoints are staged
     // only after CPU narrowphase produces a physical contact.
@@ -12798,6 +12793,8 @@ void Scene::advance_collision_internal(
         speculative_connectivity_prepared_=false;
             speculative_split_sleep_candidates_.clear();
         clear_activated_edges(checkpointed);
+        if(step_seconds>0.f)
+            calculate_kinematic_velocities(1.0f/step_seconds);
         normal_impulse_writeback_.clear();
         friction_impulse_writeback_.clear();
         solved_result_frame_=0;
@@ -12814,6 +12811,7 @@ void Scene::advance_collision_internal(
                 gpu_dy_early_actor_ids_.end(),
                 accurate_islands_.active_nodes.begin(),
                 accurate_islands_.active_nodes.end());
+            gpu_dy_immovable_source_ids_.clear();
             const auto stage_actor=[&](BodyId id) {
                 gpu_dy_early_actor_ids_.push_back(id);
             };
@@ -12824,6 +12822,13 @@ void Scene::advance_collision_internal(
                 const auto& b=shapes_[manager.pair.b];
                 if(a.alive)stage_actor(a.body);
                 if(b.alive)stage_actor(b.body);
+                if(!manager.count || !a.alive || !b.alive ||
+                   std::min(actors_[a.body].dynamics.max_contact_impulse,
+                            actors_[b.body].dynamics.max_contact_impulse)==0.f)
+                    continue;
+                for(const BodyId id:{a.body,b.body})
+                    if(actors_[id].motion==Motion::Kinematic)
+                        gpu_dy_immovable_source_ids_.push_back(id);
             }
             for(const EdgeIndex edge:active_constraint_handles_) {
                 const auto endpoints=island_edges_[edge].pair;
@@ -12831,7 +12836,10 @@ void Scene::advance_collision_internal(
                 stage_actor(endpoints.b);
             }
             stage_gpu_dy_actor_sources(gpu_dy_early_actor_ids_,step_seconds);
+            stage_gpu_dy_actor_sources(
+                gpu_dy_immovable_source_ids_,step_seconds,true);
             gpu_dy_early_actor_ids_.clear();
+            gpu_dy_immovable_source_ids_.clear();
         }
         // Authored joint sources are independent of SAP and Gu results.
         // Queue them during the SAP fetch rather than after PCM begins.
@@ -12892,8 +12900,6 @@ void Scene::advance_collision_internal(
         found_contacts_.swap(next_found_contacts_);
         lost_contacts_.swap(next_lost_contacts_);
         ++quiet_event_epoch_;
-        if(step_seconds>0.0f)
-            calculate_kinematic_velocities(1.0f/step_seconds);
         if(defer_device_points && step_seconds>0.0f && gpu_dy_active()) {
             if(gpu_dy_candidate_sources_compacted_) {
                 // Restore the PCM prefix from the last admitted compact

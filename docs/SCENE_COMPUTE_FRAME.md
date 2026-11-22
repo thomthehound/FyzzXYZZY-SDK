@@ -226,8 +226,11 @@ commands without restoring nonexistent device journal data; submitted
 epochs restore the original EdgeIndex history on rollback. Mixed late-Gu
 frames queue the CPU-generated physical-touch and loss journal before
 joining PCM's host witness, without waiting on that later device continuation.
-During GPU SAP, Sc stages actor-local mass, pose and sleep inputs for
-the awake accurate-island actor set, including free-flight bodies. GPU
+During GPU SAP, Sc derives kinematic target velocities from authored
+poses and the timestep, then stages actor-local mass, pose and sleep
+inputs for the awake accurate-island actor set, including free-flight
+bodies. Kinematic endpoints of responding retained contacts also stage
+their resulting velocities before Sc observes SAP or PCM reports. GPU
 PCM subsequently stages newly intersecting actors that were absent
 from the preceding accurate graph, before the host witness join and
 even when early device island admission is unavailable. Speculative PCM endpoints stage before

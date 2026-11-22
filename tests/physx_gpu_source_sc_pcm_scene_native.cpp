@@ -5398,7 +5398,8 @@ void verify_gpu_coupled_solver(
         cpu.set_dynamics(responder_cpu,dynamics);
         gpu.set_dynamics(responder_gpu,dynamics);
         constexpr Quat identity{0.f,0.f,0.f,1.f};
-        for(float target_x:{30.1f,30.2f}) {
+        std::uint32_t moving_kinematic_frame=0u;
+        for(float target_x:{30.1f,30.25f}) {
             cpu.set_kinematic_target(
                 kinematic_cpu,{target_x,2.f,0.f},identity);
             gpu.set_kinematic_target(
@@ -5411,8 +5412,12 @@ void verify_gpu_coupled_solver(
                     schedule.source_descriptor_upload_bytes==
                         schedule.device_source_descriptors*sizeof(std::uint32_t) &&
                     schedule.resident_immovable_contact_bodies>0u &&
-                    schedule.inline_contact_body_bytes==0u,
-                "Moving kinematic contact retained redundant numerical body inputs");
+                    schedule.inline_contact_body_bytes==0u &&
+                    (moving_kinematic_frame++==0u ||
+                     schedule.prewitness_actor_local_upload_bytes>=
+                         offsetof(physx_gpu::SourceDyActorLocalNative,
+                                  wake_counter)),
+                "Moving kinematic contact did not stage its velocity before Dy");
             const native::Pair pair{kinematic_cpu,responder_cpu};
             const auto contains=[&](const native::Scene& scene) {
                 const auto pairs=scene.pairs();
