@@ -5415,8 +5415,7 @@ void verify_gpu_coupled_solver(
                     schedule.inline_contact_body_bytes==0u &&
                     (moving_kinematic_frame++==0u ||
                      schedule.prewitness_actor_local_upload_bytes>=
-                         offsetof(physx_gpu::SourceDyActorLocalNative,
-                                  wake_counter)),
+                         sizeof(physx_gpu::SourceDyPreparedVelocityNative)),
                 "Moving kinematic contact did not stage its velocity before Dy");
             const native::Pair pair{kinematic_cpu,responder_cpu};
             const auto contains=[&](const native::Scene& scene) {
