@@ -3193,6 +3193,21 @@ void verify_device_sc_dy_compact_contact_ranges(
     producer->enqueue_gpu_pcm_box_contacts(requests,witness);
     producer->enqueue_gpu_dy_island_admission(
         edges,nodes,physx_gpu::SourceScDeviceIslandSources{2u,0u,0u});
+    auto conflicting_preparation=preparation;
+    conflicting_preparation[1].seconds=seconds*2.f;
+    bool timestep_mismatch_rejected=false;
+    try {
+        producer->enqueue_gpu_dy_distance(
+            bodies,{},descriptors,{},ordinals,tasks,
+            forces,{},{},anchors,patches,managers,{},
+            conflicting_preparation,input,poses,
+            true,anchor_impulses,true,true,true,sleep);
+    } catch(const std::invalid_argument&) {
+        timestep_mismatch_rejected=true;
+    }
+    require(timestep_mismatch_rejected &&
+            !producer->has_queued_gpu_dy_distance(),
+        "Dy admitted contact sources with conflicting frame coefficients");
     producer->enqueue_gpu_dy_distance(
         bodies,{},descriptors,{},ordinals,tasks,
         forces,{},{},anchors,patches,managers,{},preparation,input,poses,
