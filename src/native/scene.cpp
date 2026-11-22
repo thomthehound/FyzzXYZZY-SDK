@@ -4260,22 +4260,21 @@ void Scene::prepare_gpu_dy_candidate_contact_preps(float seconds) {
         throw std::logic_error(
             "Pre-witness numerical input lacks its source Sc candidates");
     gpu_dy_contact_prep_pairs_.resize(previous_pairs_.size());
-    std::size_t pcm_cursor=0u;
-    for(std::size_t i=0u;i<previous_pairs_.size();++i) {
-        if(pcm_cursor>=gpu_pcm_pairs_.size() ||
-           gpu_pcm_pairs_[pcm_cursor].candidate_ordinal!=i)
-            continue;
-        const auto& request=gpu_pcm_pairs_[pcm_cursor];
-        if(request.edge!=active_edge_handles_[i])
+    std::uint32_t last_source=0u;
+    for(std::size_t pcm=0u;pcm<gpu_pcm_pairs_.size();++pcm) {
+        const auto& request=gpu_pcm_pairs_[pcm];
+        const auto source=request.candidate_ordinal;
+        if(source>=previous_pairs_.size() ||
+           (pcm!=0u && source<=last_source) ||
+           request.edge!=active_edge_handles_[source])
             throw std::logic_error(
-                "Pre-witness PCM numerical source lost its Sc edge");
-        auto& prep=gpu_dy_contact_prep_pairs_[i];
-        prep.pcm_pair_index=static_cast<std::uint32_t>(pcm_cursor++);
+                "Pre-witness PCM numerical source lost its Sc ordinal");
+        last_source=source;
+        auto& prep=gpu_dy_contact_prep_pairs_[source];
+        prep.pcm_pair_index=static_cast<std::uint32_t>(pcm);
         prep.pcm_edge=request.edge;
-        prepare_gpu_dy_contact_prep(i,seconds);
+        prepare_gpu_dy_contact_prep(source,seconds);
     }
-    if(pcm_cursor!=gpu_pcm_pairs_.size())
-        throw std::logic_error("Pre-witness numerical sources omitted PCM candidates");
 }
 void Scene::update_contacts(bool defer_device_points,float step_seconds) {
     FYZZ_PROFILE_SCOPE("gu.contacts_pcm");
@@ -4527,28 +4526,24 @@ void Scene::update_contacts(bool defer_device_points,float step_seconds) {
     const bool early_device_materials=gpu_dy_active();
     if(early_device_materials) {
         gpu_dy_candidate_sources_.resize(previous_pairs_.size());
-        std::size_t pcm_source_index=0u;
-        for(std::size_t i=0u;i<previous_pairs_.size();++i) {
-            const Pair pair=previous_pairs_[i];
-            const EdgeIndex edge=active_edge_handles_[i];
-            if(edge>=island_edges_.size() ||
-               !(island_edges_[edge].shapes==pair))
+        std::uint32_t last_source=0u;
+        for(std::size_t pcm=0u;pcm<gpu_pcm_pairs_.size();++pcm) {
+            const auto& request=gpu_pcm_pairs_[pcm];
+            const auto source=request.candidate_ordinal;
+            if(source>=previous_pairs_.size() ||
+               source>=active_edge_handles_.size() ||
+               (pcm!=0u && source<=last_source) ||
+               request.edge>=island_edges_.size() ||
+               request.edge!=active_edge_handles_[source] ||
+               !(island_edges_[request.edge].shapes==previous_pairs_[source]))
                 throw std::logic_error(
-                    "GPU Dy numerical source lost its Sc candidate identity");
-            if(pcm_source_index<gpu_pcm_pairs_.size() &&
-               gpu_pcm_pairs_[pcm_source_index].candidate_ordinal==i) {
-                if(gpu_pcm_pairs_[pcm_source_index].edge!=edge)
-                    throw std::logic_error(
-                        "PCM source ordinal differs from the Sc contact edge");
-                const bool reversed=island_edges_[edge].gu_order_reversed;
-                gpu_dy_candidate_sources_[i].material=prepare_contact_material(
-                    reversed?pair.b:pair.a,reversed?pair.a:pair.b);
-                ++pcm_source_index;
-            }
+                    "GPU Dy PCM source lost its Sc candidate identity");
+            last_source=source;
+            const auto pair=previous_pairs_[source];
+            const bool reversed=island_edges_[request.edge].gu_order_reversed;
+            gpu_dy_candidate_sources_[source].material=prepare_contact_material(
+                reversed?pair.b:pair.a,reversed?pair.a:pair.b);
         }
-        if(pcm_source_index!=gpu_pcm_pairs_.size())
-            throw std::logic_error(
-                "GPU Dy numerical sources omitted a PCM candidate");
     }
     validate_pcm_history(true);
     // Source-ordered numerical and friction-history candidates are ready
@@ -4568,7 +4563,7 @@ void Scene::update_contacts(bool defer_device_points,float step_seconds) {
     if(early_device_materials && step_seconds>0.0f)
         prepare_gpu_dy_candidate_contact_preps(step_seconds);
     FYZZ_PROFILE_COUNTER("pcm.early_numerical_materials",
-        early_device_materials?gpu_dy_candidate_sources_.size():0u);
+        early_device_materials?gpu_pcm_pairs_.size():0u);
 
     // Compact responding candidates independently of the scene actor count.
     // Each CPU Gu source must publish physical touch before admission.
@@ -4804,6 +4799,7 @@ void Scene::update_contacts(bool defer_device_points,float step_seconds) {
     FYZZ_PROFILE_COUNTER("pcm.witness_deferred",
         gpu_results_pending?1u:0u);
     std::size_t gpu_pcm_index=0u;
+    std::size_t gu_numerical_prepared=0u;
     std::size_t old_cursor = 0;
     std::size_t old_cache_cursor=0;
     std::size_t pair_index = 0;
@@ -5192,6 +5188,7 @@ void Scene::update_contacts(bool defer_device_points,float step_seconds) {
                     source_reversed?pair.b:pair.a,
                     source_reversed?pair.a:pair.b);
             prepare_gpu_dy_contact_prep(candidate_ordinal,step_seconds);
+            ++gu_numerical_prepared;
         }
         // Deferred GPU managers receive their actual contact counts
         // after independent Gu geometry completes on the CPU.
@@ -5223,6 +5220,8 @@ void Scene::update_contacts(bool defer_device_points,float step_seconds) {
         }
         if(previously_touching)++old_cursor;
     }
+    FYZZ_PROFILE_COUNTER("gu.prewitness_numerical_sources",
+        gu_numerical_prepared);
     // The old Gu arena also identifies physically lost, BP-retired
     // contacts before any GPU PCM result becomes visible to Sc.
     while(old_cursor<manifolds_.size())
