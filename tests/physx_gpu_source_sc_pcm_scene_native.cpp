@@ -5987,6 +5987,13 @@ void verify_pcm_friction_normal_revalidation(
         gpu,{gs,gb},true);
     native::GpuPcmFrictionAnchorFixture::reverse_first_retained_normal(
         gpu,{gs,gb});
+    cpu.advance_collision(true);
+    gpu.advance_collision(true);
+    native::GpuPcmFrictionAnchorFixture::
+        verify_collision_only_omits_numerical_preps(gpu);
+    require(native::GpuPcmFrictionAnchorFixture::
+                single_eligible_history_on_device(gpu),
+        "Collision-only PCM lost retained friction material eligibility");
     cpu.step(1.f/120.f);
     gpu.step(1.f/120.f);
     require(gpu.contacts().size()==1u &&
