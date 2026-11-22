@@ -477,6 +477,12 @@ struct GpuPcmFrictionAnchorFixture {
             throw std::runtime_error(
                 "CPU Dy prepared unused GPU numerical sources");
     }
+    static void verify_collision_only_omits_numerical_preps(const Scene& scene) {
+        if(!scene.gpu_dy_contact_prep_pairs_.empty() ||
+           !scene.gpu_dy_contact_prep_sources_.empty())
+            throw std::runtime_error(
+                "Collision-only PCM constructed unconsumed numerical preps");
+    }
     static bool has_early_device_admission(const Scene& scene) {
         return scene.gpu_dy_early_islands_;
     }
@@ -7283,7 +7289,7 @@ void verify_sphere_gpu_solver(
             producer->dy_distance_dispatch_count()==solved_before,
         "Collision-only GPU PCM unexpectedly dispatched numerical work");
     native::GpuPcmFrictionAnchorFixture::
-        verify_cpu_dy_omits_device_materials(gpu);
+        verify_collision_only_omits_numerical_preps(gpu);
     const auto embedded=[](const native::Scene& scene) -> native::ContactPoint {
         for(const auto& manager:scene.contacts())
             for(const auto& point:manager.points)

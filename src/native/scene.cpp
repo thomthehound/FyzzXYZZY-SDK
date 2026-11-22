@@ -4489,6 +4489,12 @@ void Scene::update_contacts(bool defer_device_points,float step_seconds) {
             const Actor& actor0=actors_[shape0.body];
             const Actor& actor1=actors_[shape1.body];
             auto& request=gpu_pcm_pairs_[i];
+            if(gpu_dy_active() &&
+               i<gpu_dy_candidate_sources_.size() &&
+               !gpu_dy_candidate_sources_[i].material.prepared)
+                gpu_dy_candidate_sources_[i].material=
+                    prepare_contact_material(
+                        reversed?pair.b:pair.a,reversed?pair.a:pair.b);
             const GpuDyPairMaterial empty{};
             const auto& material=i<gpu_dy_candidate_sources_.size()
                 ?gpu_dy_candidate_sources_[i].material:empty;
@@ -4574,6 +4580,8 @@ void Scene::update_contacts(bool defer_device_points,float step_seconds) {
     // PCM has entered the device queue and before Dy admission needs it.
     if(early_device_materials)
         prepare_gpu_dy_candidate_contact_preps(step_seconds);
+    else if(gpu_dy_active() && has_pcm_friction_history)
+        gpu_dy_candidate_sources_.resize(gpu_pcm_pairs_.size());
     validate_pcm_history();
     FYZZ_PROFILE_COUNTER("pcm.early_numerical_materials",
         early_device_materials?gpu_pcm_pairs_.size():0u);

@@ -263,7 +263,10 @@ record is transferred for them. Scene emits an 80-byte compact
 contact source containing only actor IDs, prepared solver ordinals,
 inverse masses and the numerical material tail. Material and actor
 identities retain original Sc candidate order; PCM runs independently
-while Sc combines numerical materials and validates friction history. After accurate island admission, Sc fills solver ordinals
+while Sc combines numerical materials and validates friction history.
+Collision-only publication omits numerical contact preparation, but
+checks material eligibility for retained friction history so the next
+numerical frame can reuse those anchors. After accurate island admission, Sc fills solver ordinals
 and CPU Gu offsets, retires unused PCM preparation slots, and uploads
 only responding sources. Material, friction-history candidates and contact
 preparation share one sparse source-index map, preserving Sc candidate
