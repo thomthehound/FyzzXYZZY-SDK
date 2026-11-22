@@ -328,6 +328,7 @@ public:
             throw std::logic_error("Dy actor source overlaps a numerical epoch");
         if(inputs.empty())return;
         const std::size_t first_dirty_slot=prewitness_actor_slots_.size();
+        pending_actor_locals_.clear();
         std::size_t needed_actor_slots=0u;
         for(const auto& input:inputs) {
             const auto id=input.source_actor;
@@ -368,7 +369,11 @@ public:
             const bool pose_changed=!actor_pose_valid_[id] ||
                 std::memcmp(resident.world_position,local.world_position,
                             pose_bytes)!=0;
-            bool dirty=metadata_changed || pose_changed;
+            const bool sleep_changed=!actor_local_valid_[id] ||
+                std::memcmp(&resident.wake_counter,
+                            &local.wake_counter,sleep_bytes)!=0;
+            std::uint8_t dirty=(metadata_changed?1u:0u)|
+                (sleep_changed?4u:0u)|(pose_changed?8u:0u);
             if(metadata_changed)
                 std::memcpy(&resident,&local,metadata_bytes);
             if(pose_changed)
@@ -383,47 +388,31 @@ public:
                                input.linear_velocity,velocity_bytes)!=0) {
                     std::memcpy(resident.linear_velocity,
                                 input.linear_velocity,velocity_bytes);
-                    dirty=true;
+                    dirty|=2u;
                 }
                 actor_velocity_valid_[id]=0u;
             }
-            if(dirty || std::memcmp(&resident.wake_counter,
-                                    &local.wake_counter,sleep_bytes)!=0) {
+            if(sleep_changed)
                 std::memcpy(&resident.wake_counter,
                             &local.wake_counter,sleep_bytes);
-                dirty=true;
-            }
             prewitness_actor_changed_[id]|=
                 (metadata_changed?1u:0u)|(pose_changed?2u:0u);
-            if(dirty)prewitness_actor_slots_.push_back(id);
+            if(dirty) {
+                prewitness_actor_slots_.push_back(id);
+                pending_actor_locals_.push_back({id,dirty});
+            }
         }
-        // Multiple source stages share one transaction. Upload only
-        // records changed by this stage; retain earlier pose-change bits.
         std::sort(prewitness_actor_slots_.begin()+first_dirty_slot,
                   prewitness_actor_slots_.end());
         if(std::adjacent_find(prewitness_actor_slots_.begin()+first_dirty_slot,
                              prewitness_actor_slots_.end())!=
            prewitness_actor_slots_.end())
             throw std::logic_error("Pre-witness Dy actor source admitted twice");
+        build_actor_local_uploads();
         auto& uploads=stream_.upload_scratch();
-        uploads.clear();
-        for(std::size_t i=first_dirty_slot;i<prewitness_actor_slots_.size();) {
-            const auto first=prewitness_actor_slots_[i];
-            auto last=first+1u;
-            ++i;
-            while(i<prewitness_actor_slots_.size() &&
-                  prewitness_actor_slots_[i]==last) {
-                ++last;
-                ++i;
-            }
-            const auto bytes=std::size_t(last-first)*
-                sizeof(SourceDyActorLocalNative);
-            uploads.push_back({
-                actor_locals_.getDevicePtr()+std::size_t(first)*
-                    sizeof(SourceDyActorLocalNative),
-                actor_local_host_.data()+first,bytes});
-            prewitness_actor_local_upload_bytes_+=bytes;
-        }
+        uploads.assign(actor_local_uploads_.begin(),actor_local_uploads_.end());
+        for(const auto& upload:uploads)
+            prewitness_actor_local_upload_bytes_+=upload.bytes;
         prewitness_actor_local_upload_spans_+=uploads.size();
         stream_.queue_uploads(uploads);
         for(std::size_t i=first_dirty_slot;i<prewitness_actor_slots_.size();++i) {
@@ -432,7 +421,6 @@ public:
             actor_pose_valid_[id]=1u;
         }
     }
-
     void solve(std::span<native::GpuDyDistanceBody> bodies,
                std::span<native::GpuDyJointRow> rows,
                std::span<const native::GpuDyDistanceDescriptor> descriptors,
@@ -1116,6 +1104,7 @@ public:
                 const auto id=device_world_motion
                     ?input.source_actor:narrow(ordinal);
                 record.actor_local_offset=id;
+                const bool resident_valid=actor_local_valid_[id]!=0u;
                 SourceDyActorLocalNative local{};
                 std::memcpy(local.position,input.mass_local_position,
                             sizeof(local.position));
@@ -1133,11 +1122,11 @@ public:
                 // metadata invalidation; Dy owns the trailing velocities.
                 constexpr auto metadata_bytes=
                     offsetof(SourceDyActorLocalNative,linear_velocity);
-                if(!actor_local_valid_[id] ||
+                if(!resident_valid ||
                    std::memcmp(&actor_local_host_[id],&local,metadata_bytes)!=0) {
                     std::memcpy(&actor_local_host_[id],&local,metadata_bytes);
                     actor_local_valid_[id]=0u;
-                    pending_actor_locals_.push_back(id);
+                    pending_actor_locals_.push_back({id,1u});
                 }else if((prewitness_actor_changed_[id]&1u)==0u)
                     ++last_schedule_.reused_actor_local_poses;
                 // Authored and restored poses re-seed only their actor slot.
@@ -1161,7 +1150,7 @@ public:
                                     input.actor_orientation,
                                     sizeof(local.world_orientation));
                         actor_local_valid_[id]=0u;
-                        pending_actor_locals_.push_back(id);
+                        pending_actor_locals_.push_back({id,8u});
                     }
                 }
                 std::uint32_t changed=0u;
@@ -1195,13 +1184,13 @@ public:
                 // state between device frames and must re-authorize it.
                 auto& cached=actor_local_host_[id];
                 constexpr auto sleep_bytes=28u;
-                if(!actor_local_valid_[id] ||
+                if(!resident_valid ||
                    std::memcmp(&cached.wake_counter,
                                &input.wake_counter,sleep_bytes)!=0) {
                     std::memcpy(&cached.wake_counter,
                                 &input.wake_counter,sleep_bytes);
                     actor_local_valid_[id]=0u;
-                    pending_actor_locals_.push_back(id);
+                    pending_actor_locals_.push_back({id,4u});
                 }
                 // Every published body must explicitly reestablish its
                 // committed velocity after a successful device solve.
@@ -1974,29 +1963,9 @@ public:
                 "Source Dy joint inputs omitted numerical rows");
         // Only newly admitted or edited actor-local transforms are
         // uploaded. Neighboring BodyIds share one source DMA span.
-        std::sort(pending_actor_locals_.begin(),pending_actor_locals_.end());
-        pending_actor_locals_.erase(std::unique(
-            pending_actor_locals_.begin(),pending_actor_locals_.end()),
-            pending_actor_locals_.end());
-        actor_local_uploads_.clear();
-        for(std::size_t i=0u;i<pending_actor_locals_.size();) {
-            const auto first=pending_actor_locals_[i];
-            auto last=first+1u;
-            ++i;
-            while(i<pending_actor_locals_.size() &&
-                  pending_actor_locals_[i]==last) {
-                ++last;
-                ++i;
-            }
-            const auto count=last-first;
-            actor_local_uploads_.push_back({
-                actor_locals_.getDevicePtr()+
-                    first*sizeof(SourceDyActorLocalNative),
-                actor_local_host_.data()+first,
-                count*sizeof(SourceDyActorLocalNative)});
-            last_schedule_.actor_local_upload_bytes+=
-                count*sizeof(SourceDyActorLocalNative);
-        }
+        build_actor_local_uploads();
+        for(const auto& upload:actor_local_uploads_)
+            last_schedule_.actor_local_upload_bytes+=upload.bytes;
         last_schedule_.actor_local_upload_spans=actor_local_uploads_.size();
         std::memcpy(host_.data()+offsets[12],
                     integration_header.data(),sizeof(integration_header));
@@ -2416,8 +2385,8 @@ public:
                 body_ordinals=admitted_body_ordinals_;
             }
         }
-        for(const auto id:pending_actor_locals_)
-            actor_local_valid_[id]=1u;
+        for(const auto& dirty:pending_actor_locals_)
+            actor_local_valid_[dirty.first]=1u;
         if(pending.device_admission) {
             std::array<std::uint32_t,2> errors{};
             std::memcpy(errors.data(),
@@ -2805,6 +2774,46 @@ public:
         return last_contact_prep_upload_saving_;
     }
 private:
+    void build_actor_local_uploads() {
+        std::sort(pending_actor_locals_.begin(),pending_actor_locals_.end(),
+            [](const auto& a,const auto& b){return a.first<b.first;});
+        std::size_t packed=0u;
+        for(const auto dirty:pending_actor_locals_) {
+            if(packed && pending_actor_locals_[packed-1u].first==dirty.first)
+                pending_actor_locals_[packed-1u].second|=dirty.second;
+            else pending_actor_locals_[packed++]=dirty;
+        }
+        pending_actor_locals_.resize(packed);
+        actor_local_uploads_.clear();
+        constexpr std::array<std::size_t,5> boundary{
+            0u,offsetof(SourceDyActorLocalNative,linear_velocity),
+            offsetof(SourceDyActorLocalNative,wake_counter),
+            offsetof(SourceDyActorLocalNative,world_position),
+            sizeof(SourceDyActorLocalNative)};
+        for(const auto& dirty:pending_actor_locals_) {
+            const auto* host=reinterpret_cast<const std::byte*>(
+                actor_local_host_.data()+dirty.first);
+            const auto base=actor_locals_.getDevicePtr()+
+                std::size_t(dirty.first)*sizeof(SourceDyActorLocalNative);
+            for(std::size_t field=0u;field<4u;++field) {
+                if((dirty.second&(1u<<field))==0u)continue;
+                const auto offset=boundary[field];
+                const auto bytes=boundary[field+1u]-offset;
+                const auto address=base+offset;
+                const auto* source=host+offset;
+                if(!actor_local_uploads_.empty()) {
+                    auto& previous=actor_local_uploads_.back();
+                    if(previous.destination+previous.bytes==address &&
+                       static_cast<const std::byte*>(previous.data)+
+                           previous.bytes==source) {
+                        previous.bytes+=bytes;
+                        continue;
+                    }
+                }
+                actor_local_uploads_.push_back({address,source,bytes});
+            }
+        }
+    }
     void reserve_actor_local_slots(std::size_t needed_actor_slots) {
         if(needed_actor_slots>actor_local_capacity_) {
             const auto capacity=std::max(needed_actor_slots,
@@ -3315,7 +3324,7 @@ private:
     std::vector<std::uint8_t> actor_local_valid_,actor_velocity_valid_,actor_pose_valid_;
     std::vector<std::uint8_t> prewitness_actor_changed_;
     std::vector<float> prepared_velocity_components_,force_mod_components_;
-    std::vector<std::uint32_t> pending_actor_locals_;
+    std::vector<std::pair<std::uint32_t,std::uint8_t>> pending_actor_locals_;
     std::vector<SourceSapUpload> actor_local_uploads_;
     std::size_t actor_local_capacity_=0u;
     std::vector<native::GpuDyJointInput> joint_source_host_;
