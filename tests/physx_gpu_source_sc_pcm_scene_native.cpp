@@ -5197,9 +5197,11 @@ void verify_gpu_coupled_solver(
                 "Initial coupled actors were not staged during GPU PCM");
         else if(frame==6u)
             require(resident>=2u && resident<integrated &&
-                    producer->dy_launch_stats().prewitness_actor_local_upload_bytes>=
-                        sizeof(physx_gpu::SourceDyHostPoseNative),
-                "Authored Sc contact pose was not staged before the witness join");
+                    (producer->dy_launch_stats().prewitness_actor_local_upload_bytes>=
+                        sizeof(physx_gpu::SourceDyHostPoseNative) &&
+                     producer->dy_launch_stats().prewitness_actor_local_upload_bytes<
+                        sizeof(physx_gpu::SourceDyActorLocalNative)),
+                "Authored Sc contact pose was not staged as a compact source update");
         else
             require(resident>=2u && host_pose_bytes==0u,
                 "Active GPU contact bodies still upload authored mass poses");

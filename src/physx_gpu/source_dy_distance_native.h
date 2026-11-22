@@ -1970,8 +1970,7 @@ public:
         if(!joint_inputs.empty() && joint_row_begin!=rows.size())
             throw std::logic_error(
                 "Source Dy joint inputs omitted numerical rows");
-        // Only newly admitted or edited actor-local transforms are
-        // uploaded. Neighboring BodyIds share one source DMA span.
+        // Changed actor-local fields share contiguous source DMA spans.
         build_actor_local_uploads();
         for(const auto& upload:actor_local_uploads_)
             last_schedule_.actor_local_upload_bytes+=upload.bytes;
@@ -2783,6 +2782,7 @@ public:
         return last_contact_prep_upload_saving_;
     }
 private:
+    // Host updates preserve the GPU-owned dynamic velocity interval.
     void build_actor_local_uploads() {
         std::sort(pending_actor_locals_.begin(),pending_actor_locals_.end(),
             [](const auto& a,const auto& b){return a.first<b.first;});

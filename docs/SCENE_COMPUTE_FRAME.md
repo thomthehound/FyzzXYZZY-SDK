@@ -235,6 +235,11 @@ Already-active bodies and PCM candidate endpoints supply stable actor IDs;
 physical touch remains device-authored.
 Numerical enqueue reconciles final Sc changes and transfers only changed
 actor slots. The actor-local GPU pool remains the sole motion input owner.
+First admission initializes contiguous actor records; later updates transfer
+only changed mass/dynamics, immovable-velocity, sleep and pose ranges.
+Adjacent ranges share an ordered upload, and host pose or mass edits do not
+overwrite GPU-owned dynamic velocities. Both pre-witness and final Dy
+admission use this same field-addressed transfer policy.
 
 GPU 1D constraints author their numerical rows and joint geometry in
 the device input stream. The CPU PGS JointRow arena is not reserved or
