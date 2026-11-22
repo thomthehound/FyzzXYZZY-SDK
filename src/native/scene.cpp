@@ -4219,17 +4219,23 @@ void Scene::prepare_gpu_dy_contact_prep(std::size_t source,float seconds) {
        !(island_edges_[edge].shapes==pair))
         throw std::logic_error(
             "Source numerical preparation lost its Sc contact identity");
-    const auto& material=gpu_dy_candidate_sources_[source].material;
-    if(!material.prepared)
-        throw std::logic_error("Source numerical material is not prepared");
     const bool reversed=island_edges_[edge].gu_order_reversed;
-    const BodyId id0=shapes_[reversed?pair.b:pair.a].body;
-    const BodyId id1=shapes_[reversed?pair.a:pair.b].body;
+    const auto first_shape=reversed?pair.b:pair.a;
+    const auto second_shape=reversed?pair.a:pair.b;
+    auto& prep=gpu_dy_contact_prep_pairs_[source];
+    auto& material=gpu_dy_candidate_sources_[source].material;
+    if(!material.prepared) {
+        if(prep.pcm_pair_index!=0xffffffffu)
+            throw std::logic_error(
+                "Resident PCM has no pre-witness numerical material");
+        material=prepare_contact_material(first_shape,second_shape);
+    }
+    const BodyId id0=shapes_[first_shape].body;
+    const BodyId id1=shapes_[second_shape].body;
     if(id0>=actors_.size() || id1>=actors_.size())
         throw std::logic_error("Source numerical preparation has no actors");
     const auto& first=actors_[id0];
     const auto& second=actors_[id1];
-    auto& prep=gpu_dy_contact_prep_pairs_[source];
     if(prep.pcm_pair_index!=0xffffffffu && prep.pcm_edge!=edge)
         throw std::logic_error("PCM numerical preparation lost its contact edge");
     prep.source_body0=id0;
@@ -5181,12 +5187,6 @@ void Scene::update_contacts(bool defer_device_points,float step_seconds) {
         if(early_device_materials && step_seconds>0.0f &&
            !deferred_gpu_manifold && manifold.count!=0u &&
            manifold.pcm_result_index==0xffffffffu) {
-            const bool source_reversed=
-                island_edges_[edge].gu_order_reversed;
-            gpu_dy_candidate_sources_[candidate_ordinal].material=
-                prepare_contact_material(
-                    source_reversed?pair.b:pair.a,
-                    source_reversed?pair.a:pair.b);
             prepare_gpu_dy_contact_prep(candidate_ordinal,step_seconds);
             ++gu_numerical_prepared;
         }
@@ -12789,8 +12789,25 @@ void Scene::advance_collision_internal(
         ++quiet_event_epoch_;
         if(step_seconds>0.0f)
             calculate_kinematic_velocities(1.0f/step_seconds);
-        if(defer_device_points && step_seconds>0.0f && gpu_dy_active())
+        if(defer_device_points && step_seconds>0.0f && gpu_dy_active()) {
             prepare_gpu_dy_candidate_contact_preps(step_seconds);
+            // A quiet step retains Sc's touching Gu managers. They still
+            // need this timestep's numerical coefficients even though
+            // no new Gu geometry or PCM witness is published.
+            for(const auto& manifold:manifolds_) {
+                if(!manifold.count ||
+                   manifold.pcm_result_index!=0xffffffffu)
+                    continue;
+                const auto source=manifold.candidate_ordinal;
+                if(source>=previous_pairs_.size() ||
+                   source>=active_edge_handles_.size() ||
+                   !(previous_pairs_[source]==manifold.pair) ||
+                   active_edge_handles_[source]!=manifold.edge_handle)
+                    throw std::logic_error(
+                        "Quiet Gu numerical source lost its Sc candidate");
+                prepare_gpu_dy_contact_prep(source,step_seconds);
+            }
+        }
     }
     // Source first speculative and second accurate pass: edge insertion
     // and active body admission, but no lost-edge island splitting yet.

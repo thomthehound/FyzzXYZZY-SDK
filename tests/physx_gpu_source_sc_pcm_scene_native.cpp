@@ -5824,6 +5824,10 @@ void verify_plane_pcm_without_finite_pcm(
     for(unsigned frame=0u;frame<3u;++frame) {
         cpu.step(1.f/120.f);
         gpu.step(1.f/120.f);
+        native::GpuPcmFrictionAnchorFixture::
+            verify_pcm_candidate_ownership(gpu);
+        native::GpuPcmFrictionAnchorFixture::
+            verify_early_pcm_numerical_materials(gpu);
         require(source->pcm_host_contact_upload_bytes()==0u &&
                 source->dy_cpu_gu_geometry_bytes()>0u &&
                 cpu.contacts().size()==3u &&
