@@ -1918,17 +1918,33 @@ void verify(fyzz::compute::Backend backend,const char* sap,
     // source queue must retain its host upload until the real consumer.
     const std::array<native::GpuPcmBoxPair,1> host_only{{mixed[1]}};
     std::array<native::GpuPcmBoxResult,1> host_only_results{{primitive}};
-    producer->enqueue_gpu_pcm_box_contacts(host_only,host_only_results);
-    const auto pending_host_only=
+    const auto before_host_only_batches=
+        producer->stream_submission_stats().command_batches;
+    const auto before_host_only_tokens=
         physx_gpu::SourceScDeviceIslandFixture::source_submissions(*producer);
-    require(pending_host_only>0u &&
+    producer->enqueue_gpu_pcm_box_contacts(host_only,host_only_results);
+    require(producer->stream_submission_stats().command_batches==
+                before_host_only_batches &&
+            physx_gpu::SourceScDeviceIslandFixture::
+                source_submissions(*producer)==before_host_only_tokens &&
             physx_gpu::SourceScDeviceIslandFixture::
                 pcm_candidate_dispatches(*producer)==0u,
-        "CPU-origin PCM scheduled GPU candidate work");
+        "CPU-origin PCM submitted its snapshot before the host witness");
+    // An unsubmitted source snapshot cannot be restored from the device
+    // journal. Reject it, then admit the same epoch without a stale copy.
+    producer->invalidate_after_rollback();
+    producer->enqueue_gpu_pcm_box_contacts(host_only,host_only_results);
     producer->enqueue_host_pcm_contacts(host_only,host_only_results);
+    const auto accepted_host_only_batches=
+        producer->stream_submission_stats().command_batches;
+    const auto accepted_host_only_tokens=
+        physx_gpu::SourceScDeviceIslandFixture::source_submissions(*producer);
+    require(accepted_host_only_batches==before_host_only_batches+1u &&
+            accepted_host_only_tokens==before_host_only_tokens+1u,
+        "CPU-origin PCM did not coalesce snapshot and host publication");
     producer->finish_gpu_pcm_box_contacts();
     require(physx_gpu::SourceScDeviceIslandFixture::
-                source_submissions(*producer)==pending_host_only &&
+                source_submissions(*producer)==accepted_host_only_tokens &&
             producer->pcm_contact_readback_bytes()==0u &&
             producer->pcm_host_contact_upload_bytes()==
                 sizeof(physx_gpu::SourcePcmGpuContactStreamNative) &&
@@ -1936,6 +1952,9 @@ void verify(fyzz::compute::Backend backend,const char* sap,
             host_only_results[0].count()==1u,
         "CPU-origin PCM blocked on GPU or lost its source witness");
     producer->commit_gpu_step();
+    require(producer->stream_submission_stats().command_batches==
+                accepted_host_only_batches,
+        "CPU-origin PCM committed with a redundant GPU submission");
     require((physx_gpu::SourceScDeviceIslandFixture::touch(
                  *producer,sphere_edge)[0]&1u)!=0u,
         "CPU-origin PCM failed to commit its device touch history");
