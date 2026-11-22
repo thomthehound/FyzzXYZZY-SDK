@@ -266,7 +266,7 @@ struct SourceScDeviceIslandFixture {
 
 namespace fyzz::native {
 struct GpuPcmFrictionAnchorFixture {
-    static bool actor_staged_pre_witness(const Scene& scene,BodyId id) {
+    static bool actor_has_staged_source(const Scene& scene,BodyId id) {
         return std::binary_search(
             scene.gpu_dy_staged_actor_ids_.begin(),
             scene.gpu_dy_staged_actor_ids_.end(),id);
@@ -6279,11 +6279,13 @@ void verify_mixed_gu_pcm_gpu_dy_solver(
             }
             cpu.step(dt);
             gpu.step(dt);
-            require(gpu.contact_edge_index({unused_floor_gpu,moving_gpu[0]})!=
-                        0xffffffffu &&
-                    !gpu.contact_edge_connected({unused_floor_gpu,moving_gpu[0]}) &&
-                    !native::GpuPcmFrictionAnchorFixture::
-                        actor_staged_pre_witness(gpu,unused_floor_gpu),
+            const Pair unused_pair{moving_gpu[0],unused_floor_gpu};
+            require(gpu.contact_edge_index(unused_pair)!=0xffffffffu,
+                "Unused Gu floor is not a speculative Sc candidate");
+            require(!gpu.contact_edge_connected(unused_pair),
+                "Unused Gu floor unexpectedly published physical contact");
+            require(!native::GpuPcmFrictionAnchorFixture::
+                        actor_has_staged_source(gpu,unused_floor_gpu),
                 "Non-touching CPU Gu candidate staged an immovable actor");
             if(with_joint) {
                 const auto transferred=(frame==0u || frame==2u)

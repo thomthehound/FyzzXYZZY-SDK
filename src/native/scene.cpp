@@ -4837,6 +4837,7 @@ void Scene::update_contacts(bool defer_device_points,float step_seconds) {
         gpu_results_pending?1u:0u);
     std::size_t gpu_pcm_index=0u;
     std::size_t gu_numerical_prepared=0u;
+    gpu_dy_immovable_source_ids_.clear();
     std::size_t old_cursor = 0;
     std::size_t old_cache_cursor=0;
     std::size_t pair_index = 0;
@@ -5219,6 +5220,15 @@ void Scene::update_contacts(bool defer_device_points,float step_seconds) {
            !deferred_gpu_manifold && manifold.count!=0u &&
            manifold.pcm_result_index==0xffffffffu) {
             prepare_gpu_dy_contact_prep(candidate_ordinal,step_seconds);
+            const auto slot=gpu_dy_contact_prep_indices_[candidate_ordinal]&
+                ~unadmitted_dy_prep;
+            if(gpu_dy_candidate_sources_[slot].
+                   material.max_contact_impulse!=0.0f)
+                for(const ShapeId shape:{pair.a,pair.b}) {
+                    const BodyId id=shapes_[shape].body;
+                    if(actors_[id].motion!=Motion::Dynamic)
+                        gpu_dy_immovable_source_ids_.push_back(id);
+                }
             ++gu_numerical_prepared;
         }
         // Deferred GPU managers receive their actual contact counts
@@ -5253,39 +5263,11 @@ void Scene::update_contacts(bool defer_device_points,float step_seconds) {
     }
     FYZZ_PROFILE_COUNTER("gu.prewitness_numerical_sources",
         gu_numerical_prepared);
-    // CPU Gu has completed while resident PCM remains in flight. Only
-    // touching, responding Gu managers need immovable numerical inputs.
-    // Their actor-local uploads enter the same ordered device epoch.
-    if(defer_device_points && step_seconds>0.0f && gpu_dy_active()) {
-        gpu_dy_immovable_source_ids_.clear();
-        for(const auto& manifold:next_manifolds_) {
-            if(manifold.pcm_result_index!=0xffffffffu ||
-               manifold.count==0u)
-                continue;
-            const auto source=manifold.candidate_ordinal;
-            if(source>=gpu_dy_contact_prep_indices_.size())
-                throw std::logic_error(
-                    "Touching Gu manager lost its Sc candidate slot");
-            const auto slot=gpu_dy_contact_prep_indices_[source];
-            const auto dense=slot&~unadmitted_dy_prep;
-            if(slot==0xffffffffu ||
-               dense>=gpu_dy_candidate_sources_.size() ||
-               dense>=gpu_dy_contact_prep_sources_.size() ||
-               gpu_dy_contact_prep_sources_[dense]!=source)
-                throw std::logic_error(
-                    "Touching Gu manager has no prepared numerical source");
-            if(gpu_dy_candidate_sources_[dense].
-                   material.max_contact_impulse==0.0f)
-                continue;
-            for(const ShapeId shape:{manifold.pair.a,manifold.pair.b}) {
-                const BodyId id=shapes_[shape].body;
-                if(actors_[id].motion!=Motion::Dynamic)
-                    gpu_dy_immovable_source_ids_.push_back(id);
-            }
-        }
+    // Physically touching Gu endpoints enter the same ordered device
+    // epoch before Sc observes the PCM witness headers.
+    if(defer_device_points && step_seconds>0.0f && gpu_dy_active())
         stage_gpu_dy_actor_sources(
             gpu_dy_immovable_source_ids_,step_seconds,true);
-    }
     // The old Gu arena also identifies physically lost, BP-retired
     // contacts before any GPU PCM result becomes visible to Sc.
     while(old_cursor<manifolds_.size())

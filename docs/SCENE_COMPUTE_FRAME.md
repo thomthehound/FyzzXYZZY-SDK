@@ -230,8 +230,9 @@ before the host witness join, including when early device island
 admission is unavailable. Speculative PCM endpoints stage before
 contact classification; CPU Gu immovable endpoints stage only after
 CPU narrowphase reports a touching, responding manager, while PCM is
-still in flight. Empty Gu candidates never upload actor-local inputs. Already-active bodies and PCM candidate
-endpoints supply stable actor IDs; physical touch remains device-authored.
+still in flight. Empty Gu candidates never upload actor-local inputs.
+Already-active bodies and PCM candidate endpoints supply stable actor IDs;
+physical touch remains device-authored.
 Numerical enqueue reconciles final Sc changes and transfers only changed
 actor slots. The actor-local GPU pool remains the sole motion input owner.
 
