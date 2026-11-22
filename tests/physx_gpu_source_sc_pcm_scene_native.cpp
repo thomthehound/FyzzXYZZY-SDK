@@ -355,8 +355,18 @@ struct GpuPcmFrictionAnchorFixture {
                 scene.gpu_pcm_pairs_[pcm_source].candidate_ordinal==i
                     ?static_cast<std::uint32_t>(pcm_source++)
                     :0xffffffffu;
-            const auto expected=scene.prepare_contact_material(first,second);
             const auto& actual=source.material;
+            const bool touching=std::any_of(scene.manifolds_.begin(),
+                scene.manifolds_.end(),[i](const auto& manager) {
+                    return manager.candidate_ordinal==i;
+                });
+            if(expected_pcm==0xffffffffu && !touching) {
+                if(actual.prepared)
+                    throw std::runtime_error(
+                        "Non-touching CPU Gu candidate acquired numerical material");
+                continue;
+            }
+            const auto expected=scene.prepare_contact_material(first,second);
             if((expected_pcm!=0xffffffffu &&
                 scene.gpu_pcm_pairs_[expected_pcm].edge!=edge) ||
                !actual.prepared ||
