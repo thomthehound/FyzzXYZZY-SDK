@@ -4216,23 +4216,31 @@ void Scene::prepare_gpu_dy_candidate_contact_preps(float seconds) {
         throw std::logic_error(
             "Pre-witness numerical input lacks its source Sc candidates");
     gpu_dy_contact_prep_pairs_.resize(previous_pairs_.size());
+    std::size_t pcm_cursor=0u;
     for(std::size_t i=0u;i<previous_pairs_.size();++i) {
-        const auto& source=gpu_dy_candidate_sources_[i];
-        const auto& material=source.material;
-        const auto pcm=source.pcm_pair_index;
-        if(!material.prepared || source.first>=actors_.size() ||
-           source.second>=actors_.size() ||
-           (pcm!=0xffffffffu &&
-            (pcm>=gpu_pcm_pairs_.size() ||
-             gpu_pcm_pairs_[pcm].candidate_ordinal!=i ||
-             gpu_pcm_pairs_[pcm].edge!=active_edge_handles_[i])))
+        const auto& material=gpu_dy_candidate_sources_[i].material;
+        const auto pair=previous_pairs_[i];
+        const auto edge=active_edge_handles_[i];
+        if(edge>=island_edges_.size() ||
+           !(island_edges_[edge].shapes==pair))
             throw std::logic_error(
                 "Pre-witness numerical source lost its Sc contact identity");
-        const auto& first=actors_[source.first];
-        const auto& second=actors_[source.second];
+        const bool reversed=island_edges_[edge].gu_order_reversed;
+        const BodyId id0=shapes_[reversed?pair.b:pair.a].body;
+        const BodyId id1=shapes_[reversed?pair.a:pair.b].body;
+        const auto pcm=pcm_cursor<gpu_pcm_pairs_.size() &&
+            gpu_pcm_pairs_[pcm_cursor].candidate_ordinal==i
+            ?static_cast<std::uint32_t>(pcm_cursor++):0xffffffffu;
+        if(!material.prepared || id0>=actors_.size() ||
+           id1>=actors_.size() ||
+           (pcm!=0xffffffffu && gpu_pcm_pairs_[pcm].edge!=edge))
+            throw std::logic_error(
+                "Pre-witness numerical source lost its authored inputs");
+        const auto& first=actors_[id0];
+        const auto& second=actors_[id1];
         auto& prep=gpu_dy_contact_prep_pairs_[i];
-        prep.source_body0=source.first;
-        prep.source_body1=source.second;
+        prep.source_body0=id0;
+        prep.source_body1=id1;
         prep.inverse_mass0=first.motion==Motion::Dynamic
             ?first.inverse_mass:0.0f;
         prep.inverse_mass1=second.motion==Motion::Dynamic
@@ -4251,6 +4259,8 @@ void Scene::prepare_gpu_dy_candidate_contact_preps(float seconds) {
         prep.pcm_edge=pcm==0xffffffffu?0u:active_edge_handles_[i];
         prep.max_contact_impulse=material.max_contact_impulse;
     }
+    if(pcm_cursor!=gpu_pcm_pairs_.size())
+        throw std::logic_error("Pre-witness numerical sources omitted PCM candidates");
 }
 void Scene::update_contacts(bool defer_device_points,float step_seconds) {
     FYZZ_PROFILE_SCOPE("gu.contacts_pcm");
@@ -4461,7 +4471,7 @@ void Scene::update_contacts(bool defer_device_points,float step_seconds) {
                 valid==std::numeric_limits<std::uint32_t>::max())) {
                 const auto source_index=request.candidate_ordinal;
                 if(source_index>=gpu_dy_candidate_sources_.size() ||
-                   gpu_dy_candidate_sources_[source_index].pcm_pair_index!=i)
+                   gpu_pcm_pairs_[i].candidate_ordinal!=source_index)
                     throw std::logic_error(
                         "Retained friction has no original Sc numerical source");
                 auto& source=gpu_dy_candidate_sources_[source_index];
@@ -4514,16 +4524,13 @@ void Scene::update_contacts(bool defer_device_points,float step_seconds) {
             const ShapeId first=reversed?pair.b:pair.a;
             const ShapeId second=reversed?pair.a:pair.b;
             auto& source=gpu_dy_candidate_sources_[i];
-            source.first=shapes_[first].body;
-            source.second=shapes_[second].body;
             source.material=prepare_contact_material(first,second);
             if(pcm_source_index<gpu_pcm_pairs_.size() &&
                gpu_pcm_pairs_[pcm_source_index].candidate_ordinal==i) {
                 if(gpu_pcm_pairs_[pcm_source_index].edge!=edge)
                     throw std::logic_error(
                         "PCM source ordinal differs from the Sc contact edge");
-                source.pcm_pair_index=
-                    static_cast<std::uint32_t>(pcm_source_index++);
+                ++pcm_source_index;
             }
         }
         if(pcm_source_index!=gpu_pcm_pairs_.size())
@@ -4625,7 +4632,8 @@ void Scene::update_contacts(bool defer_device_points,float step_seconds) {
                 break;
             }
             const auto& numerical_source=gpu_dy_candidate_sources_[i];
-            const bool pcm_source=numerical_source.pcm_pair_index!=invalid;
+            const auto pcm_index=gpu_dy_contact_prep_pairs_[i].pcm_pair_index;
+            const bool pcm_source=pcm_index!=invalid;
             if(!pcm_source && dormant_pcm(pair,edge)) {
                 admitted=false;
                 break;
@@ -4637,8 +4645,8 @@ void Scene::update_contacts(bool defer_device_points,float step_seconds) {
                 numerical_source.material.max_contact_impulse!=0.f;
             std::uint32_t nodes[2]{invalid,invalid};
             const bool new_device_touch_candidate=pcm_source &&
-                !gpu_pcm_pairs_[numerical_source.pcm_pair_index].host_generated &&
-                !gpu_pcm_pairs_[numerical_source.pcm_pair_index].previously_touching;
+                !gpu_pcm_pairs_[pcm_index].host_generated &&
+                !gpu_pcm_pairs_[pcm_index].previously_touching;
             for(std::size_t side=0u;side<2u;++side) {
                 const BodyId id=side?id1:id0;
                 const auto& actor=actors_[id];
@@ -8827,14 +8835,17 @@ void Scene::prepare_constraints(float seconds) {
                 std::numeric_limits<std::uint32_t>::max();
         if(gpu_normal_prep &&
            (manifold.candidate_ordinal>=gpu_dy_candidate_sources_.size() ||
+            manifold.candidate_ordinal>=gpu_dy_contact_prep_pairs_.size() ||
             !gpu_dy_candidate_sources_[manifold.candidate_ordinal].
                 material.prepared ||
-            gpu_dy_candidate_sources_[manifold.candidate_ordinal].first!=id0 ||
-            gpu_dy_candidate_sources_[manifold.candidate_ordinal].second!=id1))
+            gpu_dy_contact_prep_pairs_[manifold.candidate_ordinal].
+                source_body0!=id0 ||
+            gpu_dy_contact_prep_pairs_[manifold.candidate_ordinal].
+                source_body1!=id1))
             throw std::logic_error(
                 "GPU Dy contact preparation lost its pre-witness source");
         if(gpu_normal_prep) {
-            const auto pcm_index=gpu_dy_candidate_sources_[
+            const auto pcm_index=gpu_dy_contact_prep_pairs_[
                 manifold.candidate_ordinal].pcm_pair_index;
             if((pcm_index!=std::numeric_limits<std::uint32_t>::max())!=
                    resident_pcm_material ||
@@ -9160,7 +9171,7 @@ void Scene::prepare_constraints(float seconds) {
                 throw std::logic_error(
                     "Source GPU contact prep lost its original Sc candidate");
             auto& prep=gpu_dy_contact_prep_pairs_[source];
-            const auto pcm_index=gpu_dy_candidate_sources_[source].pcm_pair_index;
+            const auto pcm_index=prep.pcm_pair_index;
             if(prep.source_body0!=id0 || prep.source_body1!=id1 ||
                prep.pcm_pair_index!=pcm_index ||
                (pcm_index!=0xffffffffu && prep.pcm_edge!=edge) ||
@@ -10025,7 +10036,11 @@ void Scene::solve_gpu_distance_constraints(float seconds) {
         const auto source=m.candidate_ordinal;
         if(source>=gpu_dy_candidate_sources_.size())
             throw std::logic_error("GPU Dy numerical source exceeds Sc candidates");
-        const auto pcm_index=gpu_dy_candidate_sources_[source].pcm_pair_index;
+        if(source>=gpu_dy_contact_prep_indices_.size() ||
+           gpu_dy_contact_prep_indices_[source]>=gpu_dy_contact_prep_pairs_.size())
+            throw std::logic_error("GPU Dy source lacks its compact numerical preparation");
+        const auto pcm_index=gpu_dy_contact_prep_pairs_[
+            gpu_dy_contact_prep_indices_[source]].pcm_pair_index;
         const bool resident_pcm=pcm_index!=
             std::numeric_limits<std::uint32_t>::max();
         if(resident_pcm &&

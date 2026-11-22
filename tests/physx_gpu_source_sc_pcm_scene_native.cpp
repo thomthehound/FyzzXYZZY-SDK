@@ -357,10 +357,7 @@ struct GpuPcmFrictionAnchorFixture {
                     :0xffffffffu;
             const auto expected=scene.prepare_contact_material(first,second);
             const auto& actual=source.material;
-            if(source.first!=scene.shapes_[first].body ||
-               source.second!=scene.shapes_[second].body ||
-               source.pcm_pair_index!=expected_pcm ||
-               !actual.prepared ||
+            if(!actual.prepared ||
                actual.rest_distance!=expected.rest_distance ||
                actual.pair_slop!=expected.pair_slop ||
                actual.max_contact_impulse!=expected.max_contact_impulse ||
@@ -379,14 +376,18 @@ struct GpuPcmFrictionAnchorFixture {
             throw std::runtime_error("Pre-witness numerical sources skipped PCM pairs");
         std::size_t active_sources=0u;
         for(std::size_t i=0u;i<scene.previous_pairs_.size();++i) {
+            const auto pair=scene.previous_pairs_[i];
+            const auto edge=scene.active_edge_handles_[i];
             const auto slot=scene.gpu_dy_contact_prep_indices_[i];
             if(slot==0xffffffffu)continue;
             if(slot!=active_sources++ ||
                slot>=scene.gpu_dy_contact_prep_pairs_.size() ||
                scene.gpu_dy_contact_prep_pairs_[slot].source_body0!=
-                   scene.gpu_dy_candidate_sources_[i].first ||
+                   scene.shapes_[scene.island_edges_[edge].gu_order_reversed
+                       ?pair.b:pair.a].body ||
                scene.gpu_dy_contact_prep_pairs_[slot].source_body1!=
-                   scene.gpu_dy_candidate_sources_[i].second)
+                   scene.shapes_[scene.island_edges_[edge].gu_order_reversed
+                       ?pair.a:pair.b].body)
                 throw std::runtime_error(
                     "Dy numerical source was not compacted in Sc candidate order");
         }

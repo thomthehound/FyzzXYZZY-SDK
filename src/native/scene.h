@@ -100,8 +100,6 @@ struct GpuDyPairMaterial {
     bool disable_strong_friction=false,prepared=false;
 };
 struct GpuDyCandidateSource {
-    BodyId first=0xffffffffu,second=0xffffffffu;
-    std::uint32_t pcm_pair_index=0xffffffffu;
     GpuDyPairMaterial material{};
     std::uint32_t retained_first=0u,retained_count=0u;
     bool retained_full=false;
