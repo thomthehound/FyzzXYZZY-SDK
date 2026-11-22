@@ -4210,7 +4210,6 @@ GpuDyPairMaterial Scene::prepare_contact_material(
 void Scene::prepare_gpu_dy_contact_prep(std::size_t source,float seconds) {
     if(source>=previous_pairs_.size() ||
        source>=active_edge_handles_.size() ||
-       source>=gpu_dy_candidate_sources_.size() ||
        source>=gpu_dy_contact_prep_indices_.size() ||
        seconds<=0.0f)
         throw std::logic_error("Source numerical preparation lacks its candidate");
