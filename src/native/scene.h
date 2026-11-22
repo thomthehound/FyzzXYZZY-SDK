@@ -2291,9 +2291,10 @@ private:
     std::vector<GpuDyContactManifold> gpu_dy_manifolds_;
     std::vector<std::uint32_t> gpu_dy_contact_order_;
     std::vector<GpuDyCompactContactPrep> gpu_dy_contact_prep_pairs_;
+    std::vector<std::uint32_t> gpu_dy_contact_prep_sources_;
     std::vector<GpuDyRetainedFrictionCandidate> gpu_dy_history_candidates_;
-    // Pre-PCM candidate ordinals index prepared contact pairs; empty
-    // candidate slots never acquire a numerical preparation.
+    // Original Sc candidate ordinals resolve only authored numerical
+    // sources; unused source IDs have no compact preparation slot.
     std::vector<std::uint32_t> gpu_dy_contact_prep_indices_;
     // retired slots never participate in the SAP workload again. Keep
     // registration in insertion order; retirement erases only its live

@@ -21,6 +21,7 @@
 
 namespace fyzz::native {
 namespace {
+constexpr std::uint32_t unadmitted_dy_prep=0x80000000u;
 
 // Source transcription: PhysX BpBroadPhaseIntegerAABB.h::encodeFloat,
 // IntegerAABB::encodeFloatMin/Max, with its four-bit conservative expansion.
@@ -4210,7 +4211,7 @@ void Scene::prepare_gpu_dy_contact_prep(std::size_t source,float seconds) {
     if(source>=previous_pairs_.size() ||
        source>=active_edge_handles_.size() ||
        source>=gpu_dy_candidate_sources_.size() ||
-       source>=gpu_dy_contact_prep_pairs_.size() ||
+       source>=gpu_dy_contact_prep_indices_.size() ||
        seconds<=0.0f)
         throw std::logic_error("Source numerical preparation lacks its candidate");
     const auto pair=previous_pairs_[source];
@@ -4222,7 +4223,24 @@ void Scene::prepare_gpu_dy_contact_prep(std::size_t source,float seconds) {
     const bool reversed=island_edges_[edge].gu_order_reversed;
     const auto first_shape=reversed?pair.b:pair.a;
     const auto second_shape=reversed?pair.a:pair.b;
-    auto& prep=gpu_dy_contact_prep_pairs_[source];
+    auto slot=gpu_dy_contact_prep_indices_[source];
+    if(slot==0xffffffffu) {
+        if(gpu_dy_contact_prep_pairs_.size()>=unadmitted_dy_prep)
+            throw std::overflow_error(
+                "Source numerical preparation exceeds sparse slot range");
+        slot=static_cast<std::uint32_t>(
+            gpu_dy_contact_prep_pairs_.size())|unadmitted_dy_prep;
+        gpu_dy_contact_prep_indices_[source]=slot;
+        gpu_dy_contact_prep_pairs_.emplace_back();
+        gpu_dy_contact_prep_sources_.push_back(
+            static_cast<std::uint32_t>(source));
+    }
+    const auto dense=slot&~unadmitted_dy_prep;
+    if(dense>=gpu_dy_contact_prep_pairs_.size() ||
+       dense>=gpu_dy_contact_prep_sources_.size() ||
+       gpu_dy_contact_prep_sources_[dense]!=source)
+        throw std::logic_error("Source numerical sparse slot identity is invalid");
+    auto& prep=gpu_dy_contact_prep_pairs_[dense];
     auto& material=gpu_dy_candidate_sources_[source].material;
     if(!material.prepared) {
         if(prep.pcm_pair_index!=0xffffffffu)
@@ -4259,13 +4277,16 @@ void Scene::prepare_gpu_dy_contact_prep(std::size_t source,float seconds) {
 void Scene::prepare_gpu_dy_candidate_contact_preps(float seconds) {
     FYZZ_PROFILE_SCOPE("dy.prewitness_contact_prep");
     gpu_dy_contact_prep_pairs_.clear();
+    gpu_dy_contact_prep_sources_.clear();
+    gpu_dy_contact_prep_indices_.clear();
     if(!gpu_dy_active() || seconds<=0.0f)return;
     if(gpu_dy_candidate_sources_.size()!=previous_pairs_.size() ||
        active_edge_handles_.size()!=previous_pairs_.size() ||
        previous_pairs_.size()>=std::numeric_limits<std::uint32_t>::max())
         throw std::logic_error(
             "Pre-witness numerical input lacks its source Sc candidates");
-    gpu_dy_contact_prep_pairs_.resize(previous_pairs_.size());
+    gpu_dy_contact_prep_indices_.assign(
+        previous_pairs_.size(),0xffffffffu);
     std::uint32_t last_source=0u;
     for(std::size_t pcm=0u;pcm<gpu_pcm_pairs_.size();++pcm) {
         const auto& request=gpu_pcm_pairs_[pcm];
@@ -4276,10 +4297,12 @@ void Scene::prepare_gpu_dy_candidate_contact_preps(float seconds) {
             throw std::logic_error(
                 "Pre-witness PCM numerical source lost its Sc ordinal");
         last_source=source;
-        auto& prep=gpu_dy_contact_prep_pairs_[source];
+        prepare_gpu_dy_contact_prep(source,seconds);
+        const auto dense=gpu_dy_contact_prep_indices_[source]&
+            ~unadmitted_dy_prep;
+        auto& prep=gpu_dy_contact_prep_pairs_[dense];
         prep.pcm_pair_index=static_cast<std::uint32_t>(pcm);
         prep.pcm_edge=request.edge;
-        prepare_gpu_dy_contact_prep(source,seconds);
     }
 }
 void Scene::update_contacts(bool defer_device_points,float step_seconds) {
@@ -4646,7 +4669,10 @@ void Scene::update_contacts(bool defer_device_points,float step_seconds) {
                 break;
             }
             const auto& numerical_source=gpu_dy_candidate_sources_[i];
-            const auto pcm_index=gpu_dy_contact_prep_pairs_[i].pcm_pair_index;
+            const auto slot=gpu_dy_contact_prep_indices_[i];
+            const auto pcm_index=slot==invalid?invalid:
+                gpu_dy_contact_prep_pairs_[
+                    slot&~unadmitted_dy_prep].pcm_pair_index;
             const bool pcm_source=pcm_index!=invalid;
             if(!pcm_source && dormant_pcm(pair,edge)) {
                 admitted=false;
@@ -8543,11 +8569,16 @@ void Scene::prepare_constraints(float seconds) {
                 "Pre-witness joint snapshot omitted a responding source");
     }else gpu_dy_joint_inputs_.clear();
     if(gpu_normal_prep) {
-        if(gpu_dy_contact_prep_pairs_.size()!=previous_pairs_.size())
+        if(gpu_dy_contact_prep_indices_.size()!=previous_pairs_.size() ||
+           gpu_dy_contact_prep_pairs_.size()!=
+               gpu_dy_contact_prep_sources_.size())
             throw std::logic_error(
-                "Dy has no pre-witness candidate-indexed contact inputs");
-        gpu_dy_contact_prep_indices_.assign(previous_pairs_.size(),0xffffffffu);
-    }else gpu_dy_contact_prep_pairs_.clear();
+                "Dy has no pre-witness sparse contact input map");
+    }else {
+        gpu_dy_contact_prep_pairs_.clear();
+        gpu_dy_contact_prep_sources_.clear();
+        gpu_dy_contact_prep_indices_.clear();
+    }
     solver_kinematic_participant_=false;
     for(EdgeIndex edge_id:indexed_joints_) {
         const auto& edge=island_edges_[edge_id];
@@ -8860,20 +8891,25 @@ void Scene::prepare_constraints(float seconds) {
         const bool resident_pcm_material=gpu_normal_prep &&
             manifold.pcm_result_index!=
                 std::numeric_limits<std::uint32_t>::max();
+        const auto source=manifold.candidate_ordinal;
+        const auto pending_slot=gpu_normal_prep &&
+            source<gpu_dy_contact_prep_indices_.size()
+            ?gpu_dy_contact_prep_indices_[source]:0xffffffffu;
+        const auto prep_slot=pending_slot&~unadmitted_dy_prep;
         if(gpu_normal_prep &&
-           (manifold.candidate_ordinal>=gpu_dy_candidate_sources_.size() ||
-            manifold.candidate_ordinal>=gpu_dy_contact_prep_pairs_.size() ||
-            !gpu_dy_candidate_sources_[manifold.candidate_ordinal].
-                material.prepared ||
-            gpu_dy_contact_prep_pairs_[manifold.candidate_ordinal].
-                source_body0!=id0 ||
-            gpu_dy_contact_prep_pairs_[manifold.candidate_ordinal].
-                source_body1!=id1))
+           (source>=gpu_dy_candidate_sources_.size() ||
+            pending_slot==0xffffffffu ||
+            prep_slot>=gpu_dy_contact_prep_pairs_.size() ||
+            prep_slot>=gpu_dy_contact_prep_sources_.size() ||
+            gpu_dy_contact_prep_sources_[prep_slot]!=source ||
+            !gpu_dy_candidate_sources_[source].material.prepared ||
+            gpu_dy_contact_prep_pairs_[prep_slot].source_body0!=id0 ||
+            gpu_dy_contact_prep_pairs_[prep_slot].source_body1!=id1))
             throw std::logic_error(
                 "GPU Dy contact preparation lost its pre-witness source");
         if(gpu_normal_prep) {
-            const auto pcm_index=gpu_dy_contact_prep_pairs_[
-                manifold.candidate_ordinal].pcm_pair_index;
+            const auto pcm_index=
+                gpu_dy_contact_prep_pairs_[prep_slot].pcm_pair_index;
             if((pcm_index!=std::numeric_limits<std::uint32_t>::max())!=
                    resident_pcm_material ||
                (resident_pcm_material &&
@@ -9188,14 +9224,19 @@ void Scene::prepare_constraints(float seconds) {
         }
         if(gpu_normal_prep) {
             const auto source=manifold.candidate_ordinal;
-            if(source>=gpu_dy_contact_prep_indices_.size() ||
-               source>=gpu_dy_contact_prep_pairs_.size() ||
+            const auto slot=source<gpu_dy_contact_prep_indices_.size()
+                ?gpu_dy_contact_prep_indices_[source]:0xffffffffu;
+            const auto dense=slot&~unadmitted_dy_prep;
+            if(slot==0xffffffffu ||
+               (slot&unadmitted_dy_prep)==0u ||
+               dense>=gpu_dy_contact_prep_pairs_.size() ||
+               dense>=gpu_dy_contact_prep_sources_.size() ||
+               gpu_dy_contact_prep_sources_[dense]!=source ||
                !(previous_pairs_[source]==manifold.pair) ||
-               active_edge_handles_[source]!=edge ||
-               gpu_dy_contact_prep_indices_[source]!=0xffffffffu)
+               active_edge_handles_[source]!=edge)
                 throw std::logic_error(
                     "Source GPU contact prep lost its original Sc candidate");
-            auto& prep=gpu_dy_contact_prep_pairs_[source];
+            auto& prep=gpu_dy_contact_prep_pairs_[dense];
             const auto pcm_index=prep.pcm_pair_index;
             if(prep.source_body0!=id0 || prep.source_body1!=id1 ||
                prep.pcm_pair_index!=pcm_index ||
@@ -9239,7 +9280,7 @@ void Scene::prepare_constraints(float seconds) {
                 prep.cpu_gu_offset=static_cast<std::uint32_t>(
                     gpu_dy_gu_inputs_.size());
             }
-            gpu_dy_contact_prep_indices_[source]=source;
+            gpu_dy_contact_prep_indices_[source]=dense;
         }
         // CPU PGS retains the complete correlated contact order.
         // Device Dy needs explicit indices only for non-PCM Gu:
@@ -9573,19 +9614,34 @@ void Scene::prepare_constraints(float seconds) {
         }
     }
     if(gpu_normal_prep) {
-        // Reuse the source arena in place. Sparse candidates do not
-        // enter the numerical upload, and live records keep Sc order.
+        // Numerical inputs remain packed by original source mapping.
+        // Retain only active managers without ever allocating Gu holes.
         std::size_t packed=0u;
-        for(std::size_t source=0u;
-            source<gpu_dy_contact_prep_pairs_.size();++source) {
-            if(gpu_dy_contact_prep_indices_[source]==0xffffffffu)continue;
-            if(source!=packed)
+        for(std::size_t dense=0u;
+            dense<gpu_dy_contact_prep_pairs_.size();++dense) {
+            const auto source=gpu_dy_contact_prep_sources_[dense];
+            if(source>=gpu_dy_contact_prep_indices_.size())
+                throw std::logic_error(
+                    "Source numerical slot has no Sc candidate");
+            const auto slot=gpu_dy_contact_prep_indices_[source];
+            if(slot==0xffffffffu ||
+               (slot&~unadmitted_dy_prep)!=dense)
+                throw std::logic_error(
+                    "Source numerical sparse mapping changed during Dy prep");
+            if((slot&unadmitted_dy_prep)!=0u) {
+                gpu_dy_contact_prep_indices_[source]=0xffffffffu;
+                continue;
+            }
+            if(dense!=packed) {
                 gpu_dy_contact_prep_pairs_[packed]=
-                    gpu_dy_contact_prep_pairs_[source];
+                    gpu_dy_contact_prep_pairs_[dense];
+                gpu_dy_contact_prep_sources_[packed]=source;
+            }
             gpu_dy_contact_prep_indices_[source]=
                 static_cast<std::uint32_t>(packed++);
         }
         gpu_dy_contact_prep_pairs_.resize(packed);
+        gpu_dy_contact_prep_sources_.resize(packed);
     }
     // Swap only after the new rows and patch anchors are fully prepared.
     // Old shape-local anchors remain available throughout correlation.

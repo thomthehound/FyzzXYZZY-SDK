@@ -387,6 +387,7 @@ struct GpuPcmFrictionAnchorFixture {
         if(pcm_source!=scene.gpu_pcm_pairs_.size())
             throw std::runtime_error("Pre-witness numerical sources skipped PCM pairs");
         std::size_t active_sources=0u,active_pcm_cursor=0u;
+        std::vector<bool> seen(scene.gpu_dy_contact_prep_pairs_.size(),false);
         for(std::size_t i=0u;i<scene.previous_pairs_.size();++i) {
             const auto pair=scene.previous_pairs_[i];
             const auto edge=scene.active_edge_handles_[i];
@@ -395,8 +396,10 @@ struct GpuPcmFrictionAnchorFixture {
                 ?static_cast<std::uint32_t>(active_pcm_cursor++):0xffffffffu;
             const auto slot=scene.gpu_dy_contact_prep_indices_[i];
             if(slot==0xffffffffu)continue;
-            if(slot!=active_sources++ ||
-               slot>=scene.gpu_dy_contact_prep_pairs_.size() ||
+            if(slot>=scene.gpu_dy_contact_prep_pairs_.size() ||
+               slot>=scene.gpu_dy_contact_prep_sources_.size() ||
+               scene.gpu_dy_contact_prep_sources_[slot]!=i ||
+               seen[slot] ||
                scene.gpu_dy_contact_prep_pairs_[slot].pcm_pair_index!=expected_pcm ||
                scene.gpu_dy_contact_prep_pairs_[slot].source_body0!=
                    scene.shapes_[scene.island_edges_[edge].gu_order_reversed
@@ -405,13 +408,16 @@ struct GpuPcmFrictionAnchorFixture {
                    scene.shapes_[scene.island_edges_[edge].gu_order_reversed
                        ?pair.a:pair.b].body)
                 throw std::runtime_error(
-                    "Dy numerical source was not compacted in Sc candidate order");
+                    "Dy compact preparation lost its Sc source mapping");
+            seen[slot]=true;
+            ++active_sources;
         }
         if(active_pcm_cursor!=scene.gpu_pcm_pairs_.size())
             throw std::runtime_error("Compact Dy numerical sources omitted PCM candidates");
-        if(active_sources!=scene.gpu_dy_contact_prep_pairs_.size())
+        if(active_sources!=scene.gpu_dy_contact_prep_pairs_.size() ||
+           !std::all_of(seen.begin(),seen.end(),[](bool used) {return used;}))
             throw std::runtime_error(
-                "Dy uploaded unused source candidates after PCM publication");
+                "Dy compact preparation has missing or unused source records");
         for(const auto& request:scene.gpu_pcm_pairs_) {
             const auto& actual=scene.gpu_dy_candidate_sources_.at(
                 request.candidate_ordinal).material;
