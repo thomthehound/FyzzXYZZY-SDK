@@ -940,6 +940,16 @@ struct GpuPcmFrictionAnchorFixture {
                        !request.early_host_normal;
             });
     }
+    static std::string friction_history_state(const Scene& scene) {
+        std::string state="requests="+
+            std::to_string(scene.gpu_pcm_pairs_.size());
+        for(const auto& request:scene.gpu_pcm_pairs_)
+            state+=" [valid="+std::to_string(request.friction_history_mask)+
+                " eligible="+std::to_string(request.friction_eligible_mask)+
+                " normal="+std::to_string(request.early_host_normal)+
+                " source="+std::to_string(request.candidate_ordinal)+"]";
+        return state;
+    }
     static void reverse_first_retained_normal(Scene& scene,Pair shapes) {
         const auto edge=scene.contact_edge_index(shapes);
         if(edge==Scene::invalid_edge ||
@@ -5976,9 +5986,11 @@ void verify_pcm_friction_normal_revalidation(
         gpu,{gs,gb});
     cpu.step(1.f/120.f);
     gpu.step(1.f/120.f);
-    require(native::GpuPcmFrictionAnchorFixture::
-                single_eligible_history_on_device(gpu,2u),
-        "Second-slot PCM friction eligibility mask is incorrect");
+    if(!native::GpuPcmFrictionAnchorFixture::
+            single_eligible_history_on_device(gpu,2u))
+        throw std::runtime_error(
+            "Second-slot PCM friction eligibility mask is incorrect: "+
+            native::GpuPcmFrictionAnchorFixture::friction_history_state(gpu));
     require(producer->pcm_header_join_bytes()==
                 2u*sizeof(std::uint32_t),
         "Second-slot PCM friction requested an early normal transfer");
