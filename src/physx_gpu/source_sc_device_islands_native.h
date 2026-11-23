@@ -404,9 +404,11 @@ public:
                 throw std::out_of_range(
                     "Device Sc contact prefix has no scan workspace");
             launch(34u,edge_count);
-            launch(35u,static_cast<std::uint32_t>(contact_blocks));
-            launch(36u,1u);
-            launch(37u,edge_count);
+            if(contact_blocks>1u) {
+                launch(35u,static_cast<std::uint32_t>(contact_blocks));
+                if(contact_groups>1u)launch(36u,1u);
+                launch(37u,edge_count);
+            }
         }
         } catch (...) {
             ordered.erase(ordered.begin()+original_command_count,ordered.end());

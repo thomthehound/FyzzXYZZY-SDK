@@ -150,9 +150,25 @@ void verify(Context& context,const char* filename) {
         if(node_count<=256u && edges.size()<=256u)
             require(stream.commands().size()==1u,
                 "Compact Sc device graph dispatched more than once");
-        else
+        else {
             require(stream.commands().size()>1u,
                 "Large Sc device graph bypassed parallel admission");
+            std::array<bool,4> prefix_phases{};
+            for(const auto& command:stream.commands()) {
+                const auto* dispatch=std::get_if<DispatchCommand>(&command);
+                if(!dispatch || dispatch->push_constants.size()<13u*4u)
+                    continue;
+                std::uint32_t phase=0u;
+                std::memcpy(&phase,dispatch->push_constants.data()+12u*4u,
+                            sizeof(phase));
+                if(phase>=34u && phase<=37u)
+                    prefix_phases[phase-34u]=true;
+            }
+            const std::size_t blocks=(edges.size()+127u)/128u;
+            require(prefix_phases==std::array<bool,4>{
+                        !edges.empty(),blocks>1u,blocks>128u,blocks>1u},
+                "Sc contact-prefix schedule includes unnecessary dispatches");
+        }
         if(!node_count && (!edges.empty() || !touches.empty())) {
             const auto* dispatch=std::get_if<DispatchCommand>(
                 &stream.commands().back());
@@ -374,14 +390,19 @@ void verify(Context& context,const char* filename) {
         check_task_mapping(result);
         require(header(result).admitted_edges==nodes,
                 "Device Sc numerical extent omitted a live contact source");
+        std::uint32_t expected_prefix=0u;
         for(std::uint32_t i=0u;i<nodes;++i) {
             const auto source=load<std::uint32_t>(
                 result.second,result.first.response_order+i*4u);
             const auto extent=load<std::uint32_t>(
                 result.second,result.first.response_extents+i*4u);
+            const auto prefix=load<std::uint32_t>(
+                result.second,result.first.response_prefixes+i*4u);
             require(source<nodes &&
-                    extent==(0x80000000u|count(source)),
-                    "Device Sc numerical extent lost source order or count");
+                    extent==(0x80000000u|count(source)) &&
+                    prefix==expected_prefix,
+                    "Device Sc numerical extent or contact prefix lost source order");
+            expected_prefix+=count(source);
         }
     }
     {

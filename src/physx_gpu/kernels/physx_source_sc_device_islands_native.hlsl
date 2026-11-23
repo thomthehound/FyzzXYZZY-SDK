@@ -631,7 +631,9 @@ void main(uint3 thread:SV_DispatchThreadID,
             if(index<blocks)
                 work.Store(p.histBias+index*4u,
                            compactContactScan[lane.x]-amount);
-            if(lane.x==127u)
+            if(blocks<=128u) {
+                if(lane.x==0u)work.Store(p.histBias+blocks*4u,0u);
+            }else if(lane.x==127u)
                 work.Store(p.histBias+
                     (blocks+(p.first>>7u)+group.x)*4u,
                     compactContactScan[127u]);
