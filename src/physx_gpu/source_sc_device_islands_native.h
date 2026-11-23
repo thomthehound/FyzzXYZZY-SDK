@@ -394,7 +394,9 @@ public:
         // exact counts in bounded workgroups and retain the global
         // source-ordered row prefix for Dy's numerical submission.
         if(edge_count) {
-            if(edge_count<=512u) {
+            if(edge_count<=128u) {
+                launch(34u,edge_count);
+            } else if(edge_count<=512u) {
                 // One workgroup scans bounded exact numerical extents
                 // without a block-prefix submission or scratch histogram.
                 launch(38u,1u);
@@ -411,7 +413,7 @@ public:
                 launch(34u,edge_count);
                 if(contact_blocks>1u) {
                     launch(35u,static_cast<std::uint32_t>(contact_blocks));
-                    launch(36u,1u);
+                    if(contact_blocks>128u)launch(36u,1u);
                     launch(37u,edge_count);
                 }
             }

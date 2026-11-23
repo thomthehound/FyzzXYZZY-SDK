@@ -665,7 +665,7 @@ void main(uint3 thread:SV_DispatchThreadID,
             if(lane.x==127u)
                 work.Store(p.histBias+
                     (blocks+(p.first>>7u)+group.x)*4u,
-                    compactContactScan[127u]);
+                    blocks<=128u?0u:compactContactScan[127u]);
             return;
         }
         if(p.phase==36u) {

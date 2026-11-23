@@ -340,7 +340,11 @@ on responding frames. A completed Dy numerical fence retires preceding
 source uploads and PCM readback submissions on the shared queue; PCM witness
 bytes remain unpublished until Sc joins or discards that readback.
 Compact device island graphs with up to 256 nodes and 256 edges use
-one workgroup admission instead of the parallel prefix and sort schedule;
+one workgroup admission instead of the parallel prefix and sort schedule.
+Larger graphs keep source-ordered exact contact-row offsets on the GPU:
+up to 128 edges use one block scan, 129–512 edges use one bounded scan,
+and larger response streams use parallel block scans with group carries
+only beyond 16,384 edges;
 257-entry graphs retain the parallel path.
 Sc leaves device-authored body and typed response order intact.
 When solver-row indices differ, Sc uploads the source-to-row map into
