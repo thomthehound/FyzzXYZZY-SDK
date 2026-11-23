@@ -672,6 +672,39 @@ struct GpuPcmFrictionAnchorFixture {
                 throw std::runtime_error(
                     "Early device Sc compact node remap changed Dy row ownership");
         }
+        if(source_body_order) {
+            if(scene.gpu_dy_bodies_.size()!=scene.gpu_dy_early_actor_ids_.size())
+                throw std::runtime_error(
+                    "Device numerical storage lost its pre-witness body capacity");
+            constexpr auto invalid=std::numeric_limits<std::uint32_t>::max();
+            const auto ordinal=[&](BodyId id) {
+                if(id>=scene.actors_.size())
+                    throw std::runtime_error(
+                        "Device contact preparation references an invalid actor");
+                const auto& actor=scene.actors_[id];
+                if(actor.motion!=Scene::Motion::Dynamic || actor.sleeping ||
+                   actor.solver_row_generation!=
+                       scene.solver_preparation_generation_)
+                    return invalid;
+                if(actor.solver_row_index>=scene.solver_rows_.size() ||
+                   scene.solver_rows_[actor.solver_row_index].
+                       prepared_generation!=scene.solver_preparation_generation_)
+                    return invalid;
+                const auto it=std::lower_bound(
+                    scene.gpu_dy_early_actor_ids_.begin(),
+                    scene.gpu_dy_early_actor_ids_.end(),id);
+                if(it==scene.gpu_dy_early_actor_ids_.end() || *it!=id)
+                    throw std::runtime_error(
+                        "Device contact source has no compact body node");
+                return static_cast<std::uint32_t>(
+                    it-scene.gpu_dy_early_actor_ids_.begin());
+            };
+            for(const auto& prep:scene.gpu_dy_contact_prep_pairs_)
+                if(prep.solver_ordinal0!=ordinal(prep.source_body0) ||
+                   prep.solver_ordinal1!=ordinal(prep.source_body1))
+                    throw std::runtime_error(
+                        "Device contact endpoints disagree with Sc source body order");
+        }
         if(joints!=scene.indexed_joints_.size())
             throw std::runtime_error(
                 "Early device Sc joint graph disagrees with Dy source membership");
@@ -952,9 +985,10 @@ struct GpuPcmFrictionAnchorFixture {
                 if(actor.motion!=Scene::Motion::Dynamic ||
                    actor.sleeping)return;
                 if(inverse_mass!=actor.inverse_mass ||
-                   ordinal>=scene.solver_rows_.size())
+                   ordinal>=scene.gpu_dy_bodies_.size() ||
+                   ordinal!=scene.gpu_dy_body_index(id))
                     throw std::runtime_error(
-                        "Compact GPU contact source lost its resident solver row");
+                        "Compact GPU contact source lost its numerical body ordinal");
             };
             verify(prep.source_body0,prep.inverse_mass0,prep.solver_ordinal0);
             verify(prep.source_body1,prep.inverse_mass1,prep.solver_ordinal1);

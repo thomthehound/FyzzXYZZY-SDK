@@ -187,8 +187,8 @@ both come from device-authored island work; nonresponding source nodes
 occupy no task range. Sc correlates numerical results to its ActorIDs
 at publication. Joint-bearing and late-admitted paths retain their
 prepared source-to-solver-row mapping when needed, without a second
-graph dispatch or topology readback. Device-admitted numerical tasks do not materialize
-host endpoint descriptors for physically non-touching PCM candidates;
+graph dispatch or topology readback. Device-admitted numerical tasks do
+not materialize host endpoint descriptors for physically non-touching PCM candidates;
 CPU-authored tasks retain their explicit zero-response endpoints.
 Contact-only tasks require an admitted response, so empty PCM candidates
 do not produce solver work. Mixed ordinary CPU Gu and GPU PCM contact/joint
@@ -365,10 +365,9 @@ by their pre-witness source ordinals, regardless of the CPU's solver-row
 order. Joint-bearing and late-admitted tasks use the Sc source-to-row
 map when required. Device-joint graphs upload their stable
 source-to-joint-row table only when it differs from source order;
-Dy resolves typed joint tokens at descriptor expansion. No graph
-requires a standalone numerical remap dispatch.
-Neither graph requires a standalone numerical remap dispatch; the
-indirect launch arguments are published with early Sc admission.
+Dy resolves typed joint tokens at descriptor expansion. The
+indirect launch arguments are published with early Sc admission,
+without a standalone numerical remap dispatch.
 Sc reserves a source-ordered numerical input table independently of PCM
 touch classification. GPU PCM candidates receive typed actor endpoints
 and material coefficients while the contact producer executes, before
