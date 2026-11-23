@@ -601,6 +601,37 @@ void main(uint3 thread:SV_DispatchThreadID,
         }
         return;
     }
+    if(p.phase==38u) {
+        // Bounded response streams retain their exact row prefix in
+        // one dispatch without intermediate block and group launches.
+        if(group.x!=0u)return;
+        if(lane.x==0u)contactGroupCarry=0u;
+        GroupMemoryBarrierWithGroupSync();
+        const uint responses=work.Load(p.workBias+12u);
+        if(responses>p.edgeCount || p.edgeCount>512u) {
+            if(lane.x==0u)reject(128u);
+            return;
+        }
+        for(uint start=0u;start<p.edgeCount;start+=128u) {
+            const uint item=start+lane.x;
+            const uint extent=item<responses
+                ?work.Load(p.extentBias+item*4u):0u;
+            const uint amount=(extent&numericalExtentValid)!=0u
+                ?(extent&255u):0u;
+            compactContactScan[lane.x]=amount;
+            GroupMemoryBarrierWithGroupSync();
+            scanContactBlock(lane.x);
+            if(item<responses)
+                work.Store(p.contactPrefixBias+item*4u,
+                           contactGroupCarry+
+                           compactContactScan[lane.x]-amount);
+            GroupMemoryBarrierWithGroupSync();
+            if(lane.x==0u)
+                contactGroupCarry+=compactContactScan[127u];
+            GroupMemoryBarrierWithGroupSync();
+        }
+        return;
+    }
     if(p.phase>=34u && p.phase<=37u) {
         const uint responses=work.Load(p.workBias+12u);
         const uint blocks=(p.edgeCount+127u)/128u;

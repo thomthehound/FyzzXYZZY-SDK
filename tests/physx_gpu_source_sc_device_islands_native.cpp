@@ -153,7 +153,7 @@ void verify(Context& context,const char* filename) {
         else {
             require(stream.commands().size()>1u,
                 "Large Sc device graph bypassed parallel admission");
-            std::array<bool,4> prefix_phases{};
+            std::array<bool,5> prefix_phases{};
             for(const auto& command:stream.commands()) {
                 const auto* dispatch=std::get_if<DispatchCommand>(&command);
                 if(!dispatch || dispatch->push_constants.size()<13u*4u)
@@ -161,12 +161,16 @@ void verify(Context& context,const char* filename) {
                 std::uint32_t phase=0u;
                 std::memcpy(&phase,dispatch->push_constants.data()+12u*4u,
                             sizeof(phase));
-                if(phase>=34u && phase<=37u)
+                if(phase>=34u && phase<=38u)
                     prefix_phases[phase-34u]=true;
             }
             const std::size_t blocks=(edges.size()+127u)/128u;
-            require(prefix_phases==std::array<bool,4>{
-                        !edges.empty(),blocks>1u,blocks>1u,blocks>1u},
+            require(prefix_phases==std::array<bool,5>{
+                        edges.size()>512u,
+                        blocks>1u && edges.size()>512u,
+                        blocks>1u && edges.size()>512u,
+                        blocks>1u && edges.size()>512u,
+                        !edges.empty() && edges.size()<=512u},
                 "Sc contact-prefix schedule includes unnecessary dispatches");
         }
         if(!node_count && (!edges.empty() || !touches.empty())) {
@@ -368,7 +372,7 @@ void verify(Context& context,const char* filename) {
     // PCM and CPU Gu share one source-ordered numerical extent stream.
     // The compact and parallel schedules preserve counts up to 255 without
     // fetching physical witnesses or rebuilding Gu manifolds.
-    for(const std::uint32_t nodes:{1u,2u,257u}) {
+    for(const std::uint32_t nodes:{1u,2u,257u,384u,512u,513u,1024u}) {
         std::vector<SourceScDeviceIslandEdge> edges;
         std::vector<std::uint32_t> touches;
         edges.reserve(nodes);
