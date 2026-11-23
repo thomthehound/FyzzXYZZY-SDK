@@ -164,14 +164,16 @@ void verify(Context& context,const char* filename) {
                 if(phase>=34u && phase<=38u)
                     prefix_phases[phase-34u]=true;
             }
+            const bool contact_rows=sources.contact_managers!=0u;
             const std::size_t blocks=(edges.size()+127u)/128u;
             require(prefix_phases==std::array<bool,5>{
-                        !edges.empty() &&
+                        contact_rows && !edges.empty() &&
                             (edges.size()<=128u || edges.size()>512u),
-                        edges.size()>512u,
-                        blocks>128u,
-                        edges.size()>512u,
-                        edges.size()>128u && edges.size()<=512u},
+                        contact_rows && edges.size()>512u,
+                        contact_rows && blocks>128u,
+                        contact_rows && edges.size()>512u,
+                        contact_rows &&
+                            edges.size()>128u && edges.size()<=512u},
                 "Sc contact-prefix schedule includes unnecessary dispatches");
         }
         if(!node_count && (!edges.empty() || !touches.empty())) {
@@ -441,6 +443,26 @@ void verify(Context& context,const char* filename) {
                 task_nodes(result,0u)==nodes &&
                 task_edges(result,0u)==nodes-1u,
             "Compact and parallel Sc island admission disagree at graph limit");
+    }
+    // Large joint-only graphs retain their device task and response
+    // ordering without allocating numerical contact rows.
+    for(const std::uint32_t edge_count:{257u,513u}) {
+        std::vector<SourceScDeviceIslandEdge> joints;
+        joints.reserve(edge_count);
+        for(std::uint32_t i=0u;i<edge_count;++i)
+            joints.push_back({
+                1000u+i,0u,1u,i,source_sc_device_island_joint_bit});
+        const auto result=evaluate(
+            2u,joints,{},{
+                4u|source_sc_device_island_active_bit,4u});
+        no_errors(result);
+        check_task_mapping(result);
+        require(header(result).runnable_components==1u &&
+                header(result).responding_nodes==2u &&
+                header(result).admitted_edges==edge_count &&
+                task_nodes(result,0u)==2u &&
+                task_edges(result,0u)==edge_count,
+            "Joint-only parallel admission lost its response range");
     }
     // An edge-heavy single component crosses the direct-admission
     // boundary without changing numerical source or response ordering.

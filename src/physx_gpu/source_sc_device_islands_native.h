@@ -393,7 +393,7 @@ public:
         // Response extents already belong to the device. Scan their
         // exact counts in bounded workgroups and retain the global
         // source-ordered row prefix for Dy's numerical submission.
-        if(edge_count) {
+        if(edge_count && sources.contact_managers!=0u) {
             if(edge_count<=128u) {
                 launch(34u,edge_count);
             } else if(edge_count<=512u) {
