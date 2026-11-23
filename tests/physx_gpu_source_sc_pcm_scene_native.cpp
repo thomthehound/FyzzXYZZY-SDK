@@ -276,7 +276,7 @@ struct GpuPcmFrictionAnchorFixture {
             if(!manager.friction_patch_count)continue;
             for(const ShapeId shape:{manager.pair.a,manager.pair.b}) {
                 const BodyId body=scene.shapes_[shape].body;
-                if(scene.actors_[body].motion!=Motion::Dynamic &&
+                if(scene.actors_[body].motion!=Scene::Motion::Dynamic &&
                    !actor_has_staged_source(scene,body))
                     throw std::runtime_error(
                         "Responding contact omitted pre-witness immovable source");
