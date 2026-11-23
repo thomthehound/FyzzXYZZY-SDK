@@ -9730,24 +9730,40 @@ void Scene::prepare_gpu_dy_device_islands(bool selected) {
         constexpr auto invalid=std::numeric_limits<std::uint32_t>::max();
         if(solver_rows_.size()>=invalid)
             throw std::overflow_error("Early Sc solver-row capacity exceeds 32 bits");
-        gpu_dy_island_node_flags_.assign(
-            gpu_dy_early_actor_ids_.size(),invalid);
-        for(std::size_t i=0u;i<gpu_dy_early_actor_ids_.size();++i) {
-            const BodyId id=gpu_dy_early_actor_ids_[i];
+        const auto final_row=[this,invalid](BodyId id) -> std::uint32_t {
             const auto& actor=actors_[id];
             if(actor.motion!=Motion::Dynamic || actor.sleeping ||
                actor.solver_row_generation!=solver_preparation_generation_)
-                continue;
+                return invalid;
             if(actor.solver_row_index>=solver_rows_.size())
                 throw std::logic_error(
                     "Early Sc admission has no final solver-row identity");
             if(solver_rows_[actor.solver_row_index].prepared_generation!=
                    solver_preparation_generation_)
-                continue;
-            gpu_dy_island_node_flags_[i]=
-                static_cast<std::uint32_t>(actor.solver_row_index);
-        }
+                return invalid;
+            return static_cast<std::uint32_t>(actor.solver_row_index);
+        };
         const auto joint_count=gpu_dy_early_joint_edges_.size();
+        if(joint_count==0u) {
+            bool identity=true;
+            for(std::size_t i=0u;i<gpu_dy_early_actor_ids_.size();++i) {
+                const auto row=final_row(gpu_dy_early_actor_ids_[i]);
+                if(row==invalid ? i<solver_rows_.size() : row!=i) {
+                    identity=false;
+                    break;
+                }
+            }
+            if(identity) {
+                gpu_dy_island_node_flags_.clear();
+                gpu_broadphase_->remap_gpu_dy_island_bodies(
+                    {},static_cast<std::uint32_t>(solver_rows_.size()),0u);
+                return;
+            }
+        }
+        gpu_dy_island_node_flags_.resize(gpu_dy_early_actor_ids_.size());
+        for(std::size_t i=0u;i<gpu_dy_early_actor_ids_.size();++i)
+            gpu_dy_island_node_flags_[i]=
+                final_row(gpu_dy_early_actor_ids_[i]);
         if(joint_count>=0x40000000u ||
            gpu_dy_rows_.size()>=0x40000000u)
             throw std::overflow_error("Early Sc joint remap exceeds token range");

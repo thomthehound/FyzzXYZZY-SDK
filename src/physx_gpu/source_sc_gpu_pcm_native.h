@@ -874,13 +874,21 @@ public:
             std::span<const std::uint32_t> source_to_solver_row,
             std::uint32_t solver_row_capacity,
             std::uint32_t joint_row_capacity) {
+        const bool identity=source_to_solver_row.empty();
         if(!island_work_ready_ ||
-           source_to_solver_row.size()!=
-                std::uint64_t(island_node_count_)+island_joint_count_ ||
+           (!identity &&
+            source_to_solver_row.size()!=
+                std::uint64_t(island_node_count_)+island_joint_count_) ||
            !island_node_count_ || !solver_row_capacity ||
-           (island_joint_count_ && !joint_row_capacity))
+           (island_joint_count_ && (!joint_row_capacity || identity)))
             throw std::logic_error(
                 "Source Sc numerical remap lacks prepared source rows");
+        if(identity) {
+            island_deferred_body_remap_=false;
+            island_deferred_joint_remap_=false;
+            island_body_remap_={};
+            return;
+        }
         const auto bodies=source_to_solver_row.first(island_node_count_);
         constexpr auto invalid=std::numeric_limits<std::uint32_t>::max();
         bool body_identity=true;

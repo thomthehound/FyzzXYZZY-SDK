@@ -510,6 +510,7 @@ struct GpuPcmFrictionAnchorFixture {
     static bool has_identity_device_body_order(const Scene& scene) {
         if(!scene.gpu_dy_early_islands_ ||
            !scene.gpu_dy_early_joint_edges_.empty() ||
+           !scene.gpu_dy_island_node_flags_.empty() ||
            scene.gpu_dy_early_actor_ids_.size()!=scene.solver_active_ids_.size())
             return false;
         for(std::size_t i=0u;i<scene.gpu_dy_early_actor_ids_.size();++i) {
@@ -524,14 +525,23 @@ struct GpuPcmFrictionAnchorFixture {
     static bool has_trailing_excluded_device_bodies(const Scene& scene) {
         if(!scene.gpu_dy_early_islands_ ||
            scene.gpu_dy_early_actor_ids_.size()<=scene.solver_rows_.size() ||
-           scene.gpu_dy_island_node_flags_.size()<
-               scene.gpu_dy_early_actor_ids_.size())
+           !scene.gpu_dy_island_node_flags_.empty())
             return false;
-        constexpr auto invalid=std::numeric_limits<std::uint32_t>::max();
         for(std::size_t i=0u;i<scene.gpu_dy_early_actor_ids_.size();++i) {
-            const auto expected=i<scene.solver_rows_.size()
-                ?static_cast<std::uint32_t>(i):invalid;
-            if(scene.gpu_dy_island_node_flags_[i]!=expected)return false;
+            const auto& actor=scene.actors_[scene.gpu_dy_early_actor_ids_[i]];
+            if(i<scene.solver_rows_.size()) {
+                if(actor.solver_row_generation!=
+                       scene.solver_preparation_generation_ ||
+                   actor.solver_row_index!=i ||
+                   scene.solver_rows_[i].prepared_generation!=
+                       scene.solver_preparation_generation_)
+                    return false;
+            }else if(actor.solver_row_generation==
+                         scene.solver_preparation_generation_ &&
+                     actor.solver_row_index<scene.solver_rows_.size() &&
+                     scene.solver_rows_[actor.solver_row_index].
+                         prepared_generation==scene.solver_preparation_generation_)
+                return false;
         }
         return true;
     }
@@ -591,11 +601,14 @@ struct GpuPcmFrictionAnchorFixture {
             scene.gpu_dy_actor_stage_epochs_.end(),
             scene.gpu_dy_actor_stage_epoch_);
         const auto joints=scene.gpu_dy_early_joint_edges_.size();
+        const bool identity_remap=joints==0u &&
+            scene.gpu_dy_island_node_flags_.empty();
         if(!scene.gpu_dy_early_islands_ ||
            scene.gpu_dy_island_edges_.size()!=scene.previous_pairs_.size()+joints ||
            scene.gpu_dy_early_actor_ids_.empty() ||
-           scene.gpu_dy_island_node_flags_.size()!=
-               scene.gpu_dy_early_actor_ids_.size()+joints ||
+           (!identity_remap &&
+            scene.gpu_dy_island_node_flags_.size()!=
+                scene.gpu_dy_early_actor_ids_.size()+joints) ||
            !std::is_sorted(scene.gpu_dy_early_actor_ids_.begin(),
                            scene.gpu_dy_early_actor_ids_.end()) ||
            stamped!=scene.gpu_dy_staged_actor_count_ ||
@@ -660,7 +673,12 @@ struct GpuPcmFrictionAnchorFixture {
             const auto expected=it==scene.solver_active_ids_.end()
                 ?0xffffffffu:static_cast<std::uint32_t>(
                     scene.actors_[id].solver_row_index);
-            if(scene.gpu_dy_island_node_flags_[i]!=expected)
+            if(identity_remap) {
+                if(expected==0xffffffffu
+                    ?i<scene.solver_rows_.size():expected!=i)
+                    throw std::runtime_error(
+                        "Early device Sc identity row admission changed Dy ownership");
+            }else if(scene.gpu_dy_island_node_flags_[i]!=expected)
                 throw std::runtime_error(
                     "Early device Sc compact node remap changed Dy row ownership");
         }
