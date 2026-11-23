@@ -822,15 +822,9 @@ public:
             const auto node_offset=(edge_bytes+15u)&~std::size_t{15u};
             if(node_bytes>std::numeric_limits<std::size_t>::max()-node_offset)
                 throw std::out_of_range("Device Sc island source size overflow");
-            island_source_scratch_.resize(node_offset+node_bytes);
-            if(edge_bytes)
-                std::memcpy(island_source_scratch_.data(),
-                            edges.data(),edge_bytes);
-            if(node_bytes)
-                std::memcpy(island_source_scratch_.data()+node_offset,
-                            node_flags.data(),node_bytes);
-            const auto source=island_frame_input_.write(
-                island_source_scratch_.data(),island_source_scratch_.size());
+            const auto source=island_frame_input_.write_pair(
+                edges.data(),edge_bytes,node_flags.data(),
+                node_bytes,node_offset);
             if(edge_count)source_edges=source;
             if(node_count)source_nodes=source+node_offset;
             last_island_source_direct_bytes_=edge_bytes+node_bytes;
@@ -1248,7 +1242,6 @@ private:
     physx::PxgCudaBuffer gu_touch_records_,gu_touch_journal_;
     physx::PxgCudaBuffer island_edges_,island_nodes_,island_work_;
     SourceFrameInputArenaNative island_frame_input_;
-    std::vector<std::uint8_t> island_source_scratch_;
     SourceScDeviceIslandLayout island_layout_{};
     std::uint32_t island_node_count_=0u,island_edge_count_=0u,
                   island_contact_count_=0u;
