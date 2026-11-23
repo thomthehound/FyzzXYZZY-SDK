@@ -522,25 +522,21 @@ struct GpuPcmFrictionAnchorFixture {
         }
         return true;
     }
-    static bool has_trailing_excluded_device_bodies(const Scene& scene) {
+    static bool identity_body_remap_eligible(const Scene& scene) {
         if(!scene.gpu_dy_early_islands_ ||
-           scene.gpu_dy_early_actor_ids_.size()<=scene.solver_rows_.size() ||
-           !scene.gpu_dy_island_node_flags_.empty())
+           !scene.gpu_dy_early_joint_edges_.empty())
             return false;
         for(std::size_t i=0u;i<scene.gpu_dy_early_actor_ids_.size();++i) {
             const auto& actor=scene.actors_[scene.gpu_dy_early_actor_ids_[i]];
-            if(i<scene.solver_rows_.size()) {
-                if(actor.solver_row_generation!=
-                       scene.solver_preparation_generation_ ||
-                   actor.solver_row_index!=i ||
-                   scene.solver_rows_[i].prepared_generation!=
-                       scene.solver_preparation_generation_)
-                    return false;
-            }else if(actor.solver_row_generation==
-                         scene.solver_preparation_generation_ &&
-                     actor.solver_row_index<scene.solver_rows_.size() &&
-                     scene.solver_rows_[actor.solver_row_index].
-                         prepared_generation==scene.solver_preparation_generation_)
+            const bool responding=actor.motion==Scene::Motion::Dynamic &&
+                !actor.sleeping &&
+                actor.solver_row_generation==
+                    scene.solver_preparation_generation_ &&
+                actor.solver_row_index<scene.solver_rows_.size() &&
+                scene.solver_rows_[actor.solver_row_index].
+                    prepared_generation==scene.solver_preparation_generation_;
+            if(responding ? actor.solver_row_index!=i :
+                            i<scene.solver_rows_.size())
                 return false;
         }
         return true;
@@ -5030,10 +5026,10 @@ void verify_early_pcm_island_pipeline(
                     !device->sc_island_deferred_joint_remap(),
                 "Identity-ordered distance joints requested a numerical remap");
             if(!with_sphere)
-                require(native::GpuPcmFrictionAnchorFixture::
-                            has_trailing_excluded_device_bodies(gpu) &&
-                        !device->sc_island_deferred_body_remap(),
-                    "Trailing non-touching PCM source caused a body remap upload");
+                require(device->sc_island_deferred_body_remap()!=
+                            native::GpuPcmFrictionAnchorFixture::
+                                identity_body_remap_eligible(gpu),
+                    "Source Sc numerical body remap disagrees with responding row ownership");
         }
         const auto expected_found=frame==0u?responding:0u;
         require(gpu.found_contacts().size()==expected_found &&
