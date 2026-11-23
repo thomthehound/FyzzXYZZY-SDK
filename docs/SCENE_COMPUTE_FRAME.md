@@ -181,10 +181,13 @@ using the completed radix workspace. Device-admitted Dy tasks place
 PCM and CPU Gu managers directly in those ranges, without repeating
 a task-local capacity scan or allocating contact rows with global atomics.
 The CPU-authored task path retains its original source-order correlation.
-After accurate Sc publication, a compact node-to-solver-row upload
-remaps the device body order in place against the full Dy row capacity;
-Dy consumes the same admitted tasks without a second graph dispatch or
-topology readback. Device-admitted numerical tasks do not materialize
+Contact-only early admission uses compact Sc node ordinals as Dy's body
+addresses. The GPU's responding body order and exact contact-row prefixes
+both come from device-authored island work; nonresponding source nodes
+occupy no task range. Sc correlates numerical results to its ActorIDs
+at publication. Joint-bearing and late-admitted paths retain their
+prepared source-to-solver-row mapping when needed, without a second
+graph dispatch or topology readback. Device-admitted numerical tasks do not materialize
 host endpoint descriptors for physically non-touching PCM candidates;
 CPU-authored tasks retain their explicit zero-response endpoints.
 Contact-only tasks require an admitted response, so empty PCM candidates
@@ -357,12 +360,13 @@ and larger response streams use parallel block scans with group carries
 only beyond 16,384 edges;
 257-entry graphs retain the parallel path.
 Sc leaves device-authored body and typed response order intact.
-When solver-row indices differ, Sc uploads the source-to-row map into
-its resident island work allocation; Dy resolves each consumed body
-ordinal. Device-joint graphs upload their stable source-to-joint-row
-table only when it differs from source order, and Dy resolves typed
-joint tokens at descriptor expansion. Identity-ordered bodies and joints
-omit their respective maps.
+Early contact-only tasks index Dy body and contact preparation directly
+by their pre-witness source ordinals, regardless of the CPU's solver-row
+order. Joint-bearing and late-admitted tasks use the Sc source-to-row
+map when required. Device-joint graphs upload their stable
+source-to-joint-row table only when it differs from source order;
+Dy resolves typed joint tokens at descriptor expansion. No graph
+requires a standalone numerical remap dispatch.
 Neither graph requires a standalone numerical remap dispatch; the
 indirect launch arguments are published with early Sc admission.
 Sc reserves a source-ordered numerical input table independently of PCM

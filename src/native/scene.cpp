@@ -9727,6 +9727,19 @@ void Scene::prepare_gpu_dy_device_islands(bool selected) {
            gpu_dy_tasks_.size()>gpu_broadphase_->gpu_dy_direct_task_limit())
             throw std::logic_error(
                 "Early Sc accurate islands lost their node capacity");
+        if(gpu_dy_source_body_order_) {
+            if(!gpu_dy_early_joint_edges_.empty())
+                throw std::logic_error(
+                    "Device source body ordinals cannot carry joint rows");
+            if(gpu_dy_early_actor_ids_.size()>=
+               std::numeric_limits<std::uint32_t>::max())
+                throw std::overflow_error(
+                    "Device source body capacity exceeds 32-bit ordinals");
+            gpu_broadphase_->remap_gpu_dy_island_bodies(
+                {},static_cast<std::uint32_t>(
+                    gpu_dy_early_actor_ids_.size()),0u);
+            return;
+        }
         constexpr auto invalid=std::numeric_limits<std::uint32_t>::max();
         if(solver_rows_.size()>=invalid)
             throw std::overflow_error("Early Sc solver-row capacity exceeds 32 bits");
@@ -9903,8 +9916,18 @@ void Scene::pack_gpu_dy_integration_input(
     pack(input.linear_velocity,actor.velocity);
     pack(input.angular_velocity,actor.angular_velocity);
 }
+std::size_t Scene::gpu_dy_body_index(BodyId id) const {
+    if(!gpu_dy_source_body_order_)return actors_[id].solver_row_index;
+    const auto it=std::lower_bound(
+        gpu_dy_early_actor_ids_.begin(),gpu_dy_early_actor_ids_.end(),id);
+    if(it==gpu_dy_early_actor_ids_.end() || *it!=id)
+        throw std::logic_error(
+            "Device Sc numerical body has no pre-witness source node");
+    return static_cast<std::size_t>(it-gpu_dy_early_actor_ids_.begin());
+}
 void Scene::solve_gpu_distance_constraints(float seconds) {
     FYZZ_PROFILE_SCOPE("dy.gpu_enqueue_join");
+    gpu_dy_source_body_order_=false;
     // Source Dy owns task, body and 1D row order; the device receives
     // transient packed views of those exact prepared source inputs.
     if(ordered_constraints_.empty() && solver_active_ids_.empty() &&
@@ -9921,60 +9944,6 @@ void Scene::solve_gpu_distance_constraints(float seconds) {
     const auto pack=[](float(&out)[3],Vec3 v) {
         out[0]=v.x;out[1]=v.y;out[2]=v.z;
     };
-    // The world-motion stage reads inverse mass from the actor-local
-    // input. This body span carries only result capacity, not a second
-    // host-authored mass stream.
-    gpu_dy_bodies_.resize(solver_rows_.size());
-    const auto integration_count=solver_rows_.size()+gpu_dy_free_ids_.size();
-    gpu_dy_integration_inputs_.assign(integration_count,{});
-    gpu_dy_integrated_poses_.resize(integration_count);
-    gpu_dy_sleep_states_.resize(integration_count);
-    for(const BodyId id:solver_active_ids_) {
-        const auto& actor=actors_[id];
-        const auto& row=solver_rows_[actor.solver_row_index];
-        auto& input=gpu_dy_integration_inputs_[actor.solver_row_index];
-        pack_gpu_dy_integration_input(id,seconds,input);
-        pack(input.linear_velocity,row.data.linear_velocity);
-        if(row.device_world_inertia)input.active|=32u;
-        // GPU preintegration clamps and applies gyroscopic correction
-        // before masking angular axes, just like CPU source preintegration.
-        pack(input.angular_velocity,actor.angular_velocity);
-        if(!row.device_world_inertia)
-            for(std::size_t axis=0;axis<3u;++axis) {
-                const auto& inertia=row.data.sqrt_inverse_inertia[axis];
-                input.sqrt_inverse_inertia[axis*3u]=inertia.x;
-                input.sqrt_inverse_inertia[axis*3u+1u]=inertia.y;
-                input.sqrt_inverse_inertia[axis*3u+2u]=inertia.z;
-            }
-    }
-    // Kinematic 1D endpoints contribute authored velocities but are
-    // not integrated or treated as dynamic solver-body owners.
-    for(const EdgeIndex edge:indexed_joints_) {
-        const auto pair=island_edges_[edge].pair;
-        for(const BodyId id:{pair.a,pair.b}) {
-            const auto& actor=actors_[id];
-            if(actor.motion!=Motion::Kinematic)continue;
-            if(actor.solver_row_generation!=solver_preparation_generation_ ||
-               actor.solver_row_index>=solver_rows_.size())
-                throw std::logic_error(
-                    "Source GPU 1D kinematic lacks its prepared row");
-            auto& input=gpu_dy_integration_inputs_[actor.solver_row_index];
-            input.active=16u;
-            pack(input.linear_velocity,actor.velocity);
-            pack(input.angular_velocity,actor.angular_velocity);
-        }
-    }
-    for(std::size_t i=0;i<gpu_dy_free_ids_.size();++i) {
-        const auto& actor=actors_[gpu_dy_free_ids_[i]];
-        auto& input=gpu_dy_integration_inputs_[solver_rows_.size()+i];
-        pack_gpu_dy_integration_input(gpu_dy_free_ids_[i],seconds,input);
-        pack(input.linear_velocity,actor.velocity);
-        pack(input.angular_velocity,actor.angular_velocity);
-    }
-    if(!joint_rows_.empty() ||
-       gpu_dy_rows_.size()<gpu_dy_joint_inputs_.size())
-        throw std::logic_error(
-            "Source GPU 1D preparation retained CPU rows or omitted device rows");
     gpu_dy_body_ordinals_.resize(solver_active_ids_.size());
     gpu_dy_tasks_.clear();
     // A pre-witness Sc graph is already resident and owns admission.
@@ -10021,6 +9990,64 @@ void Scene::solve_gpu_distance_constraints(float seconds) {
         has_device_numerical_sources && compact_tasks &&
         (early_device_admission || late_device_admission);
     FYZZ_PROFILE_COUNTER("dy.device_island_selected",device_admission?1u:0u);
+    gpu_dy_source_body_order_=device_admission &&
+        gpu_dy_early_islands_ && gpu_dy_early_joint_edges_.empty();
+    // The world-motion stage reads inverse mass from the actor-local
+    // input. This body span carries only result capacity, not a second
+    // host-authored mass stream.
+    gpu_dy_bodies_.resize(gpu_dy_source_body_order_
+        ?gpu_dy_early_actor_ids_.size():solver_rows_.size());
+    const auto integration_count=gpu_dy_bodies_.size()+gpu_dy_free_ids_.size();
+    gpu_dy_integration_inputs_.assign(integration_count,{});
+    gpu_dy_integrated_poses_.resize(integration_count);
+    gpu_dy_sleep_states_.resize(integration_count);
+    for(const BodyId id:solver_active_ids_) {
+        const auto& actor=actors_[id];
+        const auto& row=solver_rows_[actor.solver_row_index];
+        auto& input=gpu_dy_integration_inputs_[gpu_dy_body_index(id)];
+        pack_gpu_dy_integration_input(id,seconds,input);
+        pack(input.linear_velocity,row.data.linear_velocity);
+        if(row.device_world_inertia)input.active|=32u;
+        // GPU preintegration clamps and applies gyroscopic correction
+        // before masking angular axes, just like CPU source preintegration.
+        pack(input.angular_velocity,actor.angular_velocity);
+        if(!row.device_world_inertia)
+            for(std::size_t axis=0;axis<3u;++axis) {
+                const auto& inertia=row.data.sqrt_inverse_inertia[axis];
+                input.sqrt_inverse_inertia[axis*3u]=inertia.x;
+                input.sqrt_inverse_inertia[axis*3u+1u]=inertia.y;
+                input.sqrt_inverse_inertia[axis*3u+2u]=inertia.z;
+            }
+    }
+    // Kinematic 1D endpoints contribute authored velocities but are
+    // not integrated or treated as dynamic solver-body owners.
+    for(const EdgeIndex edge:indexed_joints_) {
+        const auto pair=island_edges_[edge].pair;
+        for(const BodyId id:{pair.a,pair.b}) {
+            const auto& actor=actors_[id];
+            if(actor.motion!=Motion::Kinematic)continue;
+            if(actor.solver_row_generation!=solver_preparation_generation_ ||
+               actor.solver_row_index>=solver_rows_.size())
+                throw std::logic_error(
+                    "Source GPU 1D kinematic lacks its prepared row");
+            auto& input=gpu_dy_integration_inputs_[actor.solver_row_index];
+            input.active=16u;
+            pack(input.linear_velocity,actor.velocity);
+            pack(input.angular_velocity,actor.angular_velocity);
+        }
+    }
+    for(std::size_t i=0;i<gpu_dy_free_ids_.size();++i) {
+        const auto& actor=actors_[gpu_dy_free_ids_[i]];
+        auto& input=gpu_dy_integration_inputs_[gpu_dy_bodies_.size()+i];
+        pack_gpu_dy_integration_input(gpu_dy_free_ids_[i],seconds,input);
+        pack(input.linear_velocity,actor.velocity);
+        pack(input.angular_velocity,actor.angular_velocity);
+    }
+    if(!joint_rows_.empty() ||
+       gpu_dy_rows_.size()<gpu_dy_joint_inputs_.size())
+        throw std::logic_error(
+            "Source GPU 1D preparation retained CPU rows or omitted device rows");
+
     if(device_admission) {
         // These spans provide storage for the device-authored task
         // count, not a CPU prediction of runnable island membership.
@@ -10288,6 +10315,30 @@ void Scene::solve_gpu_distance_constraints(float seconds) {
             if(joint.reserved!=2u)
                 throw std::logic_error(
                     "Device Sc response requires device-authored joint rows");
+    // Device Sc body-order entries address their original source nodes.
+    // The same node ordinals identify active contact endpoints in Dy.
+    if(gpu_dy_source_body_order_) {
+        const auto ordinal=[&](BodyId id) -> std::uint32_t {
+            if(id>=actors_.size())
+                throw std::logic_error(
+                    "Device Dy contact source references an absent actor");
+            const auto& actor=actors_[id];
+            if(actor.motion!=Motion::Dynamic || actor.sleeping ||
+               actor.solver_row_generation!=solver_preparation_generation_)
+                return invalid_solver_row;
+            if(actor.solver_row_index>=solver_rows_.size())
+                throw std::logic_error(
+                    "Device contact source lacks a prepared solver body");
+            if(solver_rows_[actor.solver_row_index].prepared_generation!=
+               solver_preparation_generation_)
+                return invalid_solver_row;
+            return narrow(gpu_dy_body_index(id));
+        };
+        for(auto& prep:gpu_dy_contact_prep_pairs_) {
+            prep.solver_ordinal0=ordinal(prep.source_body0);
+            prep.solver_ordinal1=ordinal(prep.source_body1);
+        }
+    }
     prepare_gpu_dy_device_islands(device_admission);
     const std::span<const GpuDyDistanceDescriptor> dy_descriptors=
         device_admission?std::span<const GpuDyDistanceDescriptor>{}
@@ -11158,7 +11209,7 @@ void Scene::publish_solver_bodies(std::size_t first,std::size_t last) {
         if (!actor.alive || actor.motion != Motion::Dynamic) continue;
         Vec3 linear{},angular{};
         if(gpu_dy_pose_ready_) {
-            const auto& result=gpu_dy_bodies_[actor.solver_row_index];
+            const auto& result=gpu_dy_bodies_[gpu_dy_body_index(id)];
             linear=result.final_linear_velocity();
             angular=result.final_angular_velocity();
         }else {
@@ -12180,7 +12231,7 @@ void Scene::integrate_solver_task(
                     throw std::logic_error(
                         "Source GPU free-body velocity publication order invalid");
                 const auto& result=gpu_dy_integration_inputs_[
-                    solver_rows_.size()+free_index];
+                    gpu_dy_bodies_.size()+free_index];
                 actor.velocity={result.linear_velocity[0],
                     result.linear_velocity[1],result.linear_velocity[2]};
                 actor.angular_velocity={result.angular_velocity[0],
@@ -12221,8 +12272,8 @@ void Scene::integrate_solver_task(
                 if(!solved_contact && (free_index>=task.gpu_free_end ||
                    gpu_dy_free_ids_[free_index]!=id))
                     throw std::logic_error("Source GPU free-body order mismatch");
-                const auto pose_index=solved_contact?actor.solver_row_index:
-                    solver_rows_.size()+free_index++;
+                const auto pose_index=solved_contact?gpu_dy_body_index(id):
+                    gpu_dy_bodies_.size()+free_index++;
                 if(pose_index>=gpu_dy_integrated_poses_.size() ||
                    gpu_dy_integrated_poses_[pose_index].valid!=1u)
                     throw std::logic_error(
@@ -12256,8 +12307,8 @@ void Scene::integrate_solver_task(
             actor.orientation = q;
             if(gpu_dy_pose_ready_) {
                 const auto result_index=solved_contact
-                    ? actor.solver_row_index
-                    : solver_rows_.size()+free_index-1u;
+                    ? gpu_dy_body_index(id)
+                    : gpu_dy_bodies_.size()+free_index-1u;
                 if(result_index>=gpu_dy_sleep_states_.size())
                     throw std::logic_error(
                         "Native GPU sleep state ordinal is invalid");
@@ -12625,9 +12676,9 @@ void Scene::step(float seconds) {
                 gpu_broadphase_->authorize_device_integrated_pose(shape);
         };
         for(const auto id:solver_active_ids_)
-            authorize(id,actors_[id].solver_row_index);
+            authorize(id,gpu_dy_body_index(id));
         for(std::size_t i=0;i<gpu_dy_free_ids_.size();++i)
-            authorize(gpu_dy_free_ids_[i],solver_rows_.size()+i);
+            authorize(gpu_dy_free_ids_[i],gpu_dy_bodies_.size()+i);
     }
     join.finish_after_integration();
     // Threshold checks consume current Dy forces after the

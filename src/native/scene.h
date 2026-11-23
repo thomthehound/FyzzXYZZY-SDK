@@ -1580,6 +1580,7 @@ private:
         std::span<const ContactManifold> previous_manifolds);
     void prepare_gpu_dy_device_islands(bool selected);
     void solve_gpu_distance_constraints(float seconds);
+    std::size_t gpu_dy_body_index(BodyId id) const;
     void solve_constraint_task(std::size_t task_index);
     void integrate_solver_task(std::size_t task_index,float seconds,
                                std::vector<BodyId>& ready_nodes);
@@ -2276,6 +2277,7 @@ private:
     std::vector<GpuDySleepState> gpu_dy_sleep_states_;
     std::vector<BodyId> gpu_dy_free_ids_;
     bool gpu_dy_pose_ready_=false;
+    bool gpu_dy_source_body_order_=false;
     std::vector<GpuDyJointRow> gpu_dy_rows_;
     std::vector<GpuDyJointInput> gpu_dy_joint_inputs_;
     std::vector<std::uint32_t> gpu_dy_joint_source_slots_;
