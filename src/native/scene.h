@@ -528,6 +528,10 @@ public:
         throw std::logic_error("Source GPU host PCM stream unavailable");
     }
     virtual bool has_gpu_dy_distance() const noexcept { return false; }
+    virtual void enqueue_gpu_dy_retained_friction_sources(
+        std::span<const GpuDyRetainedFrictionCandidate>) {
+        throw std::logic_error("Source GPU Dy retained friction input is unavailable");
+    }
     virtual void enqueue_gpu_dy_joint_sources(
         std::span<const GpuDyJointInput>) {
         throw std::logic_error("Source GPU Dy joint source is unavailable");

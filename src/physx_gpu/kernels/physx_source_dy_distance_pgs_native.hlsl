@@ -43,6 +43,10 @@ RWByteAddressBuffer scIslandWork : register(u7,space0);
 [[vk::binding(8,0)]]
 #endif
 RWByteAddressBuffer jointSources : register(u8,space0);
+#ifdef __spirv__
+[[vk::binding(9,0)]]
+#endif
+RWByteAddressBuffer retainedSources : register(u9,space0);
 #else
 #ifdef __spirv__
 [[vk::binding(6,0)]]
@@ -52,6 +56,10 @@ RWByteAddressBuffer scIslandWork : register(u6,space0);
 [[vk::binding(7,0)]]
 #endif
 RWByteAddressBuffer jointSources : register(u7,space0);
+#ifdef __spirv__
+[[vk::binding(8,0)]]
+#endif
+RWByteAddressBuffer retainedSources : register(u8,space0);
 #endif
 
 struct Parameters {

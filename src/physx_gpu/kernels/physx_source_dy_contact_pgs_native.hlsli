@@ -613,16 +613,16 @@ void growPcmFrictionAnchors(uint patchIndex,uint pairIndex,
         }
         [loop]
         for(uint j=0u;j<candidates;++j) {
-            const uint src=p.prepBias+first+j*68u;
-            const float3 local=asfloat(arena.Load3(src));
+            const uint src=first+j*68u;
+            const float3 local=asfloat(retainedSources.Load3(src));
             const float3 previous=sourceRigidRotate(orientation0,local);
             if(!all(isfinite(previous))) {
                 sourceDyTaskErrorOr(errorAddress,262144u);
                 return;
             }
             if(sourceDyDot3(previous,current)<0.999f)continue;
-            const uint ordinal=arena.Load(src+12u);
-            const uint anchors=arena.Load(src+64u);
+            const uint ordinal=retainedSources.Load(src+12u);
+            const uint anchors=retainedSources.Load(src+64u);
             if(ordinal>=32u || anchors==0u || anchors>2u) {
                 sourceDyTaskErrorOr(errorAddress,262144u);
                 return;
@@ -634,9 +634,9 @@ void growPcmFrictionAnchors(uint patchIndex,uint pairIndex,
             for(uint k=0u;k<2u;++k) {
                 if(k>=count)break;
                 arena.Store3(history+8u+k*24u,
-                             arena.Load3(src+16u+k*24u));
+                             retainedSources.Load3(src+16u+k*24u));
                 arena.Store3(history+20u+k*24u,
-                             arena.Load3(src+28u+k*24u));
+                             retainedSources.Load3(src+28u+k*24u));
             }
             break;
         }

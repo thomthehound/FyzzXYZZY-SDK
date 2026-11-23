@@ -272,6 +272,12 @@ public:
     bool has_gpu_dy_distance() const noexcept override {
         return bool(dy_distance_);
     }
+    void enqueue_gpu_dy_retained_friction_sources(
+        std::span<const native::GpuDyRetainedFrictionCandidate> candidates) override {
+        if(!dy_distance_)
+            throw std::logic_error("Source GPU Dy retained friction stage is unavailable");
+        dy_distance_->enqueue_retained_friction_sources(candidates);
+    }
     void enqueue_gpu_dy_joint_sources(
         std::span<const native::GpuDyJointInput> inputs) override {
         if(!dy_distance_)

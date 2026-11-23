@@ -284,10 +284,13 @@ rigid-bias and bounce-threshold coefficients.
 The GPU Dy path still fetches 8 bytes of edge/touch metadata for ordinary
 GPU pairs before numerical admission. Sc validates geometrically sound,
 material-compatible retained friction patches while GPU PCM executes.
-When more than one historical patch is eligible, Dy receives their
-source-ordered local normals and anchors in its existing transient numerical
-input arena. Dy chooses the first compatible historical normal against the
-resident PCM normal and reports the selected source ordinal through the
+When more than one historical patch is eligible, Sc queues their
+source-ordered local normals and anchors into Dy's resident friction input
+before the host PCM witness join. Dy reads that source directly during
+numerical preparation, without repacking or re-uploading it after the join.
+Standalone numerical inputs upload only selected candidates to the same
+resident source. Dy chooses the first compatible historical normal against
+the resident PCM normal and reports the selected source ordinal through the
 existing patch result. Only candidates consumed by prepared numerical
 patches are uploaded; non-touching candidates add no history-upload bytes.
 One eligible cached patch retains its direct device normal check and

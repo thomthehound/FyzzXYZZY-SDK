@@ -4599,8 +4599,12 @@ void Scene::update_contacts(bool defer_device_points,float step_seconds) {
     else if(gpu_dy_active() && gpu_results_pending &&
             !friction_patches_.empty())
         gpu_dy_candidate_sources_.resize(gpu_pcm_pairs_.size());
-    if(gpu_results_pending)
+    if(gpu_results_pending) {
         prepare_gpu_dy_pcm_friction_history();
+        if(gpu_dy_active() && !gpu_dy_history_candidates_.empty())
+            gpu_broadphase_->enqueue_gpu_dy_retained_friction_sources(
+                gpu_dy_history_candidates_);
+    }
     FYZZ_PROFILE_COUNTER("pcm.early_numerical_materials",
         early_device_materials?gpu_pcm_pairs_.size():0u);
 

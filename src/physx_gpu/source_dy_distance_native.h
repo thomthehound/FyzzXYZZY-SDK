@@ -137,6 +137,8 @@ struct SourceDyLaunchStats {
     std::size_t actor_local_upload_bytes=0u;
     std::size_t host_contact_source_bytes=0u;
     std::size_t retained_friction_source_bytes=0u;
+    std::size_t prewitness_retained_friction_upload_bytes=0u;
+    std::size_t late_retained_friction_upload_bytes=0u;
     std::size_t resident_immovable_contact_bodies=0u;
     std::size_t inline_contact_body_bytes=0u;
     std::size_t actor_local_upload_spans=0u;
@@ -174,7 +176,8 @@ public:
         : context_(context),addresses_(addresses),stream_(stream),
           arena_(allocator,physx::PxsHeapStats::eSOLVER),
           actor_locals_(allocator,physx::PxsHeapStats::eSOLVER),
-          joint_sources_(allocator,physx::PxsHeapStats::eSOLVER) {
+          joint_sources_(allocator,physx::PxsHeapStats::eSOLVER),
+          retained_sources_(allocator,physx::PxsHeapStats::eSOLVER) {
         const auto& info=context_.device_info();
         if(info.max_workgroup_invocations<128u ||
            info.max_workgroup_size[0]<128u ||
@@ -186,9 +189,9 @@ public:
         max_view_=info.max_storage_buffer_range;
         compute::ComputePipelineDesc pipeline{};
         pipeline.shader=std::move(shader);
-        pipeline.storage_buffer_binding_count=8u;
+        pipeline.storage_buffer_binding_count=9u;
         pipeline.storage_buffer_views.assign(
-            8u,compute::StorageBufferViewKind::RawReadWrite);
+            9u,compute::StorageBufferViewKind::RawReadWrite);
         pipeline.push_constant_bytes=128u;
         pipeline_=context_.create_compute_pipeline(pipeline);
 #if defined(FYZZXYZZY_PROFILE_GPU)
@@ -197,9 +200,9 @@ public:
         if(convex_shader) {
             try {
                 pipeline.shader=std::move(*convex_shader);
-                pipeline.storage_buffer_binding_count=9u;
+                pipeline.storage_buffer_binding_count=10u;
                 pipeline.storage_buffer_views.assign(
-                    9u,compute::StorageBufferViewKind::RawReadWrite);
+                    10u,compute::StorageBufferViewKind::RawReadWrite);
                 convex_pipeline_=context_.create_compute_pipeline(pipeline);
 #if defined(FYZZXYZZY_PROFILE_GPU)
                 context_.set_pipeline_profile_label(convex_pipeline_,"dy.convex");
@@ -219,6 +222,7 @@ public:
         arena_.deallocate();
         actor_locals_.deallocate();
         joint_sources_.deallocate();
+        retained_sources_.deallocate();
     }
     void retire_rigid_actor(BodyId id) noexcept {
         if(id<actor_local_valid_.size()) {
@@ -242,10 +246,30 @@ public:
         prewitness_actor_local_upload_bytes_=0u;
         prewitness_actor_local_upload_spans_=0u;
         prewitness_actor_slots_.clear();
+        prewitness_retained_source_data_=nullptr;
+        prewitness_retained_source_count_=0u;
         if(++history_epoch_==0u) {
             std::fill(history_epochs_.begin(),history_epochs_.end(),0u);
             history_epoch_=1u;
         }
+    }
+
+    void enqueue_retained_friction_sources(
+        std::span<const native::GpuDyRetainedFrictionCandidate> candidates) {
+        if(pending_solve_ || prewitness_retained_source_data_)
+            throw std::logic_error(
+                "Dy retained friction source overlaps a numerical epoch");
+        if(candidates.empty())return;
+        const auto bytes=source_allocation_bytes(
+            candidates.size(),sizeof(native::GpuDyRetainedFrictionCandidate));
+        if(bytes>max_view_ ||
+           bytes>std::numeric_limits<std::uint32_t>::max())
+            throw std::out_of_range("Retained friction source exceeds device view");
+        retained_sources_.allocate(bytes,PX_FL);
+        stream_.queue_uploads(std::vector<SourceSapUpload>{{
+            retained_sources_.getDevicePtr(),candidates.data(),bytes}});
+        prewitness_retained_source_data_=candidates.data();
+        prewitness_retained_source_count_=candidates.size();
     }
 
     void enqueue_joint_sources(
@@ -1003,8 +1027,15 @@ public:
         if(retained_begin>std::numeric_limits<std::uint32_t>::max())
             throw std::overflow_error(
                 "Retained GPU friction input exceeds address space");
+        const bool early_retained=prewitness_retained_source_data_!=nullptr;
+        if(early_retained &&
+           (retained_candidates.data()!=prewitness_retained_source_data_ ||
+            retained_candidates.size()!=prewitness_retained_source_count_))
+            throw std::logic_error(
+                "Pre-witness retained friction source changed before Dy admission");
         packed_patches_.clear();
         packed_retained_candidates_.clear();
+        std::size_t selected_retained=0u;
         if(!retained_candidates.empty()) {
             packed_patches_.assign(patches.begin(),patches.end());
             for(const auto& manager:manifolds) {
@@ -1022,15 +1053,11 @@ public:
                     if((patch.broken&0x80000000u)==0u ||
                        count==0u || count>32u ||
                        first>retained_candidates.size() ||
-                       count>retained_candidates.size()-first ||
-                       packed_retained_candidates_.size()>
-                           (std::numeric_limits<std::uint32_t>::max()-
-                            retained_begin)/
-                               sizeof(native::GpuDyRetainedFrictionCandidate)-
-                           count)
+                       count>retained_candidates.size()-first)
                         throw std::logic_error(
                             "Device PCM retained candidates have invalid bounds");
-                    const auto packed_first=packed_retained_candidates_.size();
+                    const auto packed_first=early_retained
+                        ?std::size_t(first):packed_retained_candidates_.size();
                     std::uint32_t prior=0xffffffffu;
                     for(std::size_t j=first;j<first+count;++j) {
                         const auto& candidate=retained_candidates[j];
@@ -1042,18 +1069,33 @@ public:
                             throw std::logic_error(
                                 "Device PCM retained candidate is invalid");
                         prior=candidate.source_ordinal;
-                        packed_retained_candidates_.push_back(candidate);
+                        if(!early_retained)
+                            packed_retained_candidates_.push_back(candidate);
                     }
-                    patch.reserved=narrow(
-                        retained_begin+packed_first*
-                            sizeof(native::GpuDyRetainedFrictionCandidate));
+                    selected_retained+=count;
+                    patch.reserved=narrow(packed_first);
                 }
             }
         }
-        const std::size_t retained_bytes=packed_retained_candidates_.size()*
-            sizeof(native::GpuDyRetainedFrictionCandidate);
+        const auto stride=sizeof(native::GpuDyRetainedFrictionCandidate);
+        const std::size_t retained_bytes=selected_retained*stride;
+        const std::size_t retained_source_count=early_retained
+            ?prewitness_retained_source_count_:packed_retained_candidates_.size();
+        if(retained_source_count && !early_retained) {
+            const auto bytes=source_allocation_bytes(retained_source_count,stride);
+            if(bytes>max_view_ || bytes>std::numeric_limits<std::uint32_t>::max())
+                throw std::out_of_range("Retained friction source exceeds device view");
+            retained_sources_.allocate(bytes,PX_FL);
+            stream_.queue_uploads(std::vector<SourceSapUpload>{{
+                retained_sources_.getDevicePtr(),
+                packed_retained_candidates_.data(),bytes}});
+        }
         last_schedule_.retained_friction_source_bytes=retained_bytes;
-        const std::size_t compact_prep_bytes=retained_begin+retained_bytes;
+        last_schedule_.prewitness_retained_friction_upload_bytes=early_retained
+            ?prewitness_retained_source_count_*stride:0u;
+        last_schedule_.late_retained_friction_upload_bytes=early_retained
+            ?0u:packed_retained_candidates_.size()*stride;
+        const std::size_t compact_prep_bytes=retained_begin;
         // Contact/friction prep and integrateCore share one actor world pose.
         // Sc retains the completed-frame mirror for publication and rollback.
         packed_integration_.clear();
@@ -1613,9 +1655,6 @@ public:
             std::memcpy(host_.data()+offsets[11]+static_begin,
                         inline_bodies_.data(),inline_bodies_.size()*
                             sizeof(native::GpuDyContactPrepBody));
-        if(retained_bytes)
-            std::memcpy(host_.data()+offsets[11]+retained_begin,
-                        packed_retained_candidates_.data(),retained_bytes);
         last_schedule_.inline_contact_body_bytes=
             inline_bodies_.size()*sizeof(native::GpuDyContactPrepBody);
         if(device_partitions) {
@@ -1904,6 +1943,39 @@ public:
                 ?joint_source_capacity_*sizeof(native::GpuDyJointInput):total,
             alignment_,convex_vertex_count?8u:7u,
             compute::BufferAccess::Read,joint_source_bias,max_view_));
+        std::uint32_t retained_bias=0u;
+        if(retained_source_count) {
+            const auto retained_view=source_native_view(
+                addresses_,retained_sources_.getDevicePtr(),
+                retained_source_count*sizeof(native::GpuDyRetainedFrictionCandidate),
+                alignment_,convex_vertex_count?9u:8u,
+                compute::BufferAccess::Read,retained_bias,max_view_);
+            dispatch.buffers.push_back(retained_view);
+            for(std::size_t i=0u;i<packed_patches_.size();++i) {
+                auto& patch=packed_patches_[i];
+                if((patch.broken&0x10000000u)==0u)continue;
+                const auto index=std::size_t(patch.reserved);
+                if(index>retained_source_count ||
+                   std::size_t(retained_bias)+index*
+                       sizeof(native::GpuDyRetainedFrictionCandidate)>
+                       std::numeric_limits<std::uint32_t>::max())
+                    throw std::out_of_range(
+                        "Retained friction device source offset is invalid");
+                patch.reserved=static_cast<std::uint32_t>(
+                    std::size_t(retained_bias)+index*
+                        sizeof(native::GpuDyRetainedFrictionCandidate));
+                std::memcpy(host_.data()+offsets[8]+
+                    i*sizeof(native::GpuDyContactPatch)+
+                    offsetof(native::GpuDyContactPatch,reserved),
+                    &patch.reserved,sizeof(patch.reserved));
+            }
+        }else {
+            std::uint32_t dummy_bias=0u;
+            dispatch.buffers.push_back(source_native_view(
+                addresses_,address,total,alignment_,
+                convex_vertex_count?9u:8u,compute::BufferAccess::Read,
+                dummy_bias,max_view_));
+        }
         for(auto& record:packed_integration_) {
             if(record.actor_local_offset!=invalid) {
                 const auto offset=std::size_t(actor_local_bias)+
@@ -2309,6 +2381,8 @@ public:
                           extra_downloads.end());
             stream_.begin_numerical_fetch(joined);
         }
+        prewitness_retained_source_data_=nullptr;
+        prewitness_retained_source_count_=0u;
     }
     bool has_queued_solve() const noexcept {
         return pending_solve_.has_value();
@@ -3294,6 +3368,7 @@ private:
     physx::PxgCudaBuffer arena_;
     physx::PxgCudaBuffer actor_locals_;
     physx::PxgCudaBuffer joint_sources_;
+    physx::PxgCudaBuffer retained_sources_;
     compute::PipelineId pipeline_=0;
     compute::PipelineId convex_pipeline_=0;
     std::size_t alignment_=0u;
@@ -3325,6 +3400,8 @@ private:
     std::vector<SourceDyPackedContactPrepNative> packed_;
     std::vector<native::GpuDyContactPatch> packed_patches_;
     std::vector<native::GpuDyRetainedFrictionCandidate> packed_retained_candidates_;
+    const native::GpuDyRetainedFrictionCandidate* prewitness_retained_source_data_=nullptr;
+    std::size_t prewitness_retained_source_count_=0u;
     std::vector<std::uint32_t> source_descriptor_tokens_;
     std::vector<native::GpuDyDistanceDescriptor> source_descriptor_full_;
     std::vector<SourceDyPackedIntegrationNative> packed_integration_;

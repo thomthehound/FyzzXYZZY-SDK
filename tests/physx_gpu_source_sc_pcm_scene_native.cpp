@@ -7420,6 +7420,9 @@ void verify_scene_normal_only_multi_patch(
             producer->dy_pcm_device_contact_rows()>0u &&
             producer->dy_launch_stats().retained_friction_source_bytes==
                 2u*sizeof(native::GpuDyRetainedFrictionCandidate) &&
+            producer->dy_launch_stats().prewitness_retained_friction_upload_bytes==
+                2u*sizeof(native::GpuDyRetainedFrictionCandidate) &&
+            producer->dy_launch_stats().late_retained_friction_upload_bytes==0u &&
             native::GpuPcmFrictionAnchorFixture::
                 selected_second_retained_patch(gpu) &&
             native::GpuPcmFrictionAnchorFixture::
