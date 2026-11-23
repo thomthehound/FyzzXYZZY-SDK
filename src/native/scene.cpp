@@ -9902,7 +9902,7 @@ void Scene::solve_gpu_distance_constraints(float seconds) {
     const auto pack=[](float(&out)[3],Vec3 v) {
         out[0]=v.x;out[1]=v.y;out[2]=v.z;
     };
-     // The world-motion stage reads inverse mass from the actor-local
+    // The world-motion stage reads inverse mass from the actor-local
     // input. This body span carries only result capacity, not a second
     // host-authored mass stream.
     gpu_dy_bodies_.resize(solver_rows_.size());

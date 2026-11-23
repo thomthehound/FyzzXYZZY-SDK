@@ -260,9 +260,9 @@ actor-local pool. Static and kinematic contact participants retain their
 authored velocities and mass-frame transforms in the same actor-local
 allocation before PCM witness publication. Sc stages responding immovable
 contact endpoints once per collision epoch, without rescanning prepared
-managers at numerical submission or transferring repeated inline bodies. Scene emits an 80-byte compact
-contact source containing only actor IDs, prepared solver ordinals,
-inverse masses and the numerical material tail. Material and actor
+managers at numerical submission or transferring repeated inline bodies.
+Scene emits an 80-byte compact contact source containing actor IDs, prepared
+solver ordinals, inverse masses and the numerical material tail. Material and actor
 identities retain original Sc candidate order; PCM runs independently
 while Sc combines numerical materials and validates friction history.
 Collision-only publication omits numerical contact preparation, but
