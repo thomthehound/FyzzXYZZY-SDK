@@ -286,13 +286,16 @@ GPU pairs before numerical admission. Sc validates geometrically sound,
 material-compatible retained friction patches while GPU PCM executes.
 When more than one historical patch is eligible, Sc queues their
 source-ordered local normals and anchors into Dy's resident friction input
-before the host PCM witness join. Dy reads that source directly during
-numerical preparation, without repacking or re-uploading it after the join.
-Standalone numerical inputs upload only selected candidates to the same
-resident source. Dy chooses the first compatible historical normal against
-the resident PCM normal and reports the selected source ordinal through the
-existing patch result. Only candidates consumed by prepared numerical
-patches are uploaded; non-touching candidates add no history-upload bytes.
+before the host PCM witness join. Supported SharedLocal adapters write the
+small source directly into GPU-local CPU-mappable storage; other adapters
+stage it on the existing ordered queue. Dy reads the same typed source
+during numerical preparation, without repacking or re-uploading it after
+the join. Standalone numerical inputs transfer only selected candidates.
+Dy chooses the first compatible historical normal against the resident
+PCM normal and reports the selected source ordinal through the existing
+patch result. Pre-witness transport includes all eligible historical
+candidates, including pairs later found non-touching; the solver consumes
+only the admitted numerical sources.
 One eligible cached patch retains its direct device normal check and
 regenerates anchors when the normal changes. Broken, retired or
 material-incompatible history does not require a normal transfer.
@@ -407,6 +410,8 @@ A scheduling or memory-placement change is accepted only with:
    replaced by the Scene-owned graph. A temporary coexistence must not be
    released as the final execution architecture.
 
-The initial shared-frame input applies to the Sc shape-transform producer.
-Its input allocation is the device-bound source record on supported
-hardware; no GPU upload command or copy is emitted for those bytes.
+Shared-frame input applies to Sc shape-transform records and Dy retained
+friction sources on supported UMA adapters. The CPU writes directly into
+GPU-local storage before its ordered device consumers; no transfer command
+or copy is emitted for those bytes. Unsupported placements use the staged
+source queue rather than a CPU-only GPU input allocation.

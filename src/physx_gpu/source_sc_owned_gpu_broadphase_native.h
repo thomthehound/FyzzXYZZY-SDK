@@ -413,6 +413,12 @@ public:
         FYZZ_PROFILE_COUNTER("dy.actor_local_upload_bytes",schedule.actor_local_upload_bytes);
         FYZZ_PROFILE_COUNTER("dy.resident_joint_source_bytes",schedule.resident_joint_source_bytes);
         FYZZ_PROFILE_COUNTER("dy.prewitness_joint_upload_bytes",schedule.prewitness_joint_source_upload_bytes);
+        FYZZ_PROFILE_COUNTER("dy.retained_source_upload_bytes",
+            schedule.prewitness_retained_friction_upload_bytes+
+            schedule.late_retained_friction_upload_bytes);
+        FYZZ_PROFILE_COUNTER("dy.retained_source_direct_bytes",
+            schedule.prewitness_retained_friction_direct_bytes+
+            schedule.late_retained_friction_direct_bytes);
         FYZZ_PROFILE_COUNTER("dy.upload_batches",schedule.device_upload_batches);
         FYZZ_PROFILE_COUNTER("dy.resident_poses_reused",schedule.reused_actor_local_poses);
         FYZZ_PROFILE_COUNTER("dy.resident_velocities_reused",schedule.resident_velocity_reuses);

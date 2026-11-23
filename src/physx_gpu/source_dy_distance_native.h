@@ -4,6 +4,7 @@
 
 #include "native/scene.h"
 #include "physx_gpu/source_native_view.h"
+#include "physx_gpu/source_frame_input_arena_native.h"
 #include "physx_gpu/source_sap_dma_native.h"
 #include "physx_gpu/source_sc_device_islands_native.h"
 #include "physx_port/gpucommon/PxgCudaBuffer.h"
@@ -139,6 +140,8 @@ struct SourceDyLaunchStats {
     std::size_t retained_friction_source_bytes=0u;
     std::size_t prewitness_retained_friction_upload_bytes=0u;
     std::size_t late_retained_friction_upload_bytes=0u;
+    std::size_t prewitness_retained_friction_direct_bytes=0u;
+    std::size_t late_retained_friction_direct_bytes=0u;
     std::size_t resident_immovable_contact_bodies=0u;
     std::size_t inline_contact_body_bytes=0u;
     std::size_t actor_local_upload_spans=0u;
@@ -177,7 +180,8 @@ public:
           arena_(allocator,physx::PxsHeapStats::eSOLVER),
           actor_locals_(allocator,physx::PxsHeapStats::eSOLVER),
           joint_sources_(allocator,physx::PxsHeapStats::eSOLVER),
-          retained_sources_(allocator,physx::PxsHeapStats::eSOLVER) {
+          retained_sources_(allocator,physx::PxsHeapStats::eSOLVER),
+          retained_frame_input_(context,addresses) {
         const auto& info=context_.device_info();
         if(info.max_workgroup_invocations<128u ||
            info.max_workgroup_size[0]<128u ||
@@ -248,6 +252,7 @@ public:
         prewitness_actor_slots_.clear();
         prewitness_retained_source_data_=nullptr;
         prewitness_retained_source_count_=0u;
+        retained_source_address_=0u;
         if(++history_epoch_==0u) {
             std::fill(history_epochs_.begin(),history_epochs_.end(),0u);
             history_epoch_=1u;
@@ -257,6 +262,7 @@ public:
     void discard_unconsumed_retained_friction_sources() noexcept {
         prewitness_retained_source_data_=nullptr;
         prewitness_retained_source_count_=0u;
+        retained_source_address_=0u;
     }
 
     void enqueue_retained_friction_sources(
@@ -270,11 +276,17 @@ public:
         if(bytes>max_view_ ||
            bytes>std::numeric_limits<std::uint32_t>::max())
             throw std::out_of_range("Retained friction source exceeds device view");
-        retained_sources_.allocate(bytes,PX_FL);
-        auto& uploads=stream_.upload_scratch();
-        uploads.push_back({
-            retained_sources_.getDevicePtr(),candidates.data(),bytes});
-        stream_.queue_uploads(uploads);
+        if(retained_frame_input_.direct())
+            retained_source_address_=retained_frame_input_.write(
+                candidates.data(),bytes);
+        else {
+            retained_sources_.allocate(bytes,PX_FL);
+            retained_source_address_=retained_sources_.getDevicePtr();
+            auto& uploads=stream_.upload_scratch();
+            uploads.push_back({
+                retained_source_address_,candidates.data(),bytes});
+            stream_.queue_uploads(uploads);
+        }
         prewitness_retained_source_data_=candidates.data();
         prewitness_retained_source_count_=candidates.size();
     }
@@ -1092,18 +1104,29 @@ public:
             const auto bytes=source_allocation_bytes(retained_source_count,stride);
             if(bytes>max_view_ || bytes>std::numeric_limits<std::uint32_t>::max())
                 throw std::out_of_range("Retained friction source exceeds device view");
-            retained_sources_.allocate(bytes,PX_FL);
-            auto& uploads=stream_.upload_scratch();
-            uploads.push_back({
-                retained_sources_.getDevicePtr(),
-                packed_retained_candidates_.data(),bytes});
-            stream_.queue_uploads(uploads);
+            if(retained_frame_input_.direct())
+                retained_source_address_=retained_frame_input_.write(
+                    packed_retained_candidates_.data(),bytes);
+            else {
+                retained_sources_.allocate(bytes,PX_FL);
+                retained_source_address_=retained_sources_.getDevicePtr();
+                auto& uploads=stream_.upload_scratch();
+                uploads.push_back({
+                    retained_source_address_,
+                    packed_retained_candidates_.data(),bytes});
+                stream_.queue_uploads(uploads);
+            }
         }
+        const bool direct=retained_frame_input_.direct();
         last_schedule_.retained_friction_source_bytes=retained_bytes;
-        last_schedule_.prewitness_retained_friction_upload_bytes=early_retained
-            ?prewitness_retained_source_count_*stride:0u;
-        last_schedule_.late_retained_friction_upload_bytes=early_retained
-            ?0u:packed_retained_candidates_.size()*stride;
+        last_schedule_.prewitness_retained_friction_upload_bytes=
+            early_retained && !direct?prewitness_retained_source_count_*stride:0u;
+        last_schedule_.prewitness_retained_friction_direct_bytes=
+            early_retained && direct?prewitness_retained_source_count_*stride:0u;
+        last_schedule_.late_retained_friction_upload_bytes=
+            !early_retained && !direct?packed_retained_candidates_.size()*stride:0u;
+        last_schedule_.late_retained_friction_direct_bytes=
+            !early_retained && direct?packed_retained_candidates_.size()*stride:0u;
         const std::size_t compact_prep_bytes=retained_begin;
         // Contact/friction prep and integrateCore share one actor world pose.
         // Sc retains the completed-frame mirror for publication and rollback.
@@ -1955,7 +1978,7 @@ public:
         std::uint32_t retained_bias=0u;
         if(retained_source_count) {
             const auto retained_view=source_native_view(
-                addresses_,retained_sources_.getDevicePtr(),
+                addresses_,retained_source_address_,
                 retained_source_count*sizeof(native::GpuDyRetainedFrictionCandidate),
                 alignment_,convex_vertex_count?9u:8u,
                 compute::BufferAccess::Read,retained_bias,max_view_);
@@ -2392,6 +2415,7 @@ public:
         }
         prewitness_retained_source_data_=nullptr;
         prewitness_retained_source_count_=0u;
+        retained_source_address_=0u;
     }
     bool has_queued_solve() const noexcept {
         return pending_solve_.has_value();
@@ -3378,6 +3402,7 @@ private:
     physx::PxgCudaBuffer actor_locals_;
     physx::PxgCudaBuffer joint_sources_;
     physx::PxgCudaBuffer retained_sources_;
+    SourceFrameInputArenaNative retained_frame_input_;
     compute::PipelineId pipeline_=0;
     compute::PipelineId convex_pipeline_=0;
     std::size_t alignment_=0u;
@@ -3411,6 +3436,7 @@ private:
     std::vector<native::GpuDyRetainedFrictionCandidate> packed_retained_candidates_;
     const native::GpuDyRetainedFrictionCandidate* prewitness_retained_source_data_=nullptr;
     std::size_t prewitness_retained_source_count_=0u;
+    CudaDeviceAddressMap::Address retained_source_address_=0u;
     std::vector<std::uint32_t> source_descriptor_tokens_;
     std::vector<native::GpuDyDistanceDescriptor> source_descriptor_full_;
     std::vector<SourceDyPackedIntegrationNative> packed_integration_;
