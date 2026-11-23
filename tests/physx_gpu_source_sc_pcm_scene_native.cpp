@@ -1288,6 +1288,10 @@ namespace {
 void require(bool good,const char* message) {
     if(!good)throw std::runtime_error(message);
 }
+void report_pcm_friction_progress(const char* stage,std::size_t frame) {
+    std::cerr << "PCM friction stage=" << stage
+              << " frame=" << frame << '\n' << std::flush;
+}
 // Inspect compiled requirements: software adapters can execute FP64 and
 // would otherwise conceal an accidental increase of the hardware floor.
 void verify_rigid_shader_requirements(
@@ -5935,6 +5939,7 @@ void verify_pcm_friction_normal_revalidation(
     fyzz::compute::Backend backend,const char* sap,
     const char* pcm,const char* dy_shader) {
     using namespace fyzz;
+    std::size_t friction_step=0u;
     std::ifstream file(dy_shader,std::ios::binary);
     require(bool(file),"PCM friction Dy shader missing");
     compute::ShaderBinary shader{};
@@ -5971,7 +5976,9 @@ void verify_pcm_friction_normal_revalidation(
             gpu.set_pose(gb,positions[i],rotations[i]);
         }
         cpu.step(1.f/120.f);
-        gpu.step(1.f/120.f);
+        report_pcm_friction_progress("verify_pcm_friction_normal_revalidation-begin",friction_step);
+    gpu.step(1.f/120.f);
+    report_pcm_friction_progress("verify_pcm_friction_normal_revalidation-end",friction_step++);
         require(cpu.contacts().size()==1u && gpu.contacts().size()==1u &&
                 !gpu.solved_friction_patches().empty() &&
                 producer->pcm_host_contact_upload_bytes()==0u &&
@@ -6021,7 +6028,9 @@ void verify_pcm_friction_normal_revalidation(
     native::GpuPcmFrictionAnchorFixture::reverse_first_retained_normal(
         gpu,{gs,gb});
     cpu.step(1.f/120.f);
+    report_pcm_friction_progress("verify_pcm_friction_normal_revalidation-begin",friction_step);
     gpu.step(1.f/120.f);
+    report_pcm_friction_progress("verify_pcm_friction_normal_revalidation-end",friction_step++);
     require(gpu.contacts().size()==1u &&
             !gpu.solved_friction_patches().empty(),
         "PCM normal validation fixture has no published patch");
@@ -6074,7 +6083,9 @@ void verify_pcm_friction_normal_revalidation(
     native::GpuPcmFrictionAnchorFixture::invalidate_first_friction_material(
         gpu,{gs,gb});
     cpu.step(1.f/120.f);
+    report_pcm_friction_progress("verify_pcm_friction_normal_revalidation-begin",friction_step);
     gpu.step(1.f/120.f);
+    report_pcm_friction_progress("verify_pcm_friction_normal_revalidation-end",friction_step++);
     if(!native::GpuPcmFrictionAnchorFixture::
             single_eligible_history_on_device(gpu,2u))
         throw std::runtime_error(
@@ -7360,6 +7371,7 @@ void verify_scene_normal_only_multi_patch(
     fyzz::compute::Backend backend,const char* sap,
     const char* pcm,const char* dy_shader) {
     using namespace fyzz;
+    std::size_t friction_step=0u;
     std::ifstream input(dy_shader,std::ios::binary);
     require(bool(input),"Multi-patch GPU Dy shader unavailable");
     compute::ShaderBinary shader{};
@@ -7385,7 +7397,9 @@ void verify_scene_normal_only_multi_patch(
     const auto a=make(cpu),b=make(gpu);
     constexpr float seconds=1.f/120.f;
     cpu.step(seconds);
+    report_pcm_friction_progress("verify_scene_normal_only_multi_patch-begin",friction_step);
     gpu.step(seconds);
+    report_pcm_friction_progress("verify_scene_normal_only_multi_patch-end",friction_step++);
     require(cpu.contacts().size()==1u && gpu.contacts().size()==1u &&
             producer->dy_pcm_device_contact_rows()>0u,
         "Multi-patch Sc fixture did not establish physical GPU PCM contact");
@@ -7394,7 +7408,9 @@ void verify_scene_normal_only_multi_patch(
     native::GpuPcmFrictionAnchorFixture::reverse_first_retained_normal(
         gpu,{b[0],b[1]});
     cpu.step(seconds);
+    report_pcm_friction_progress("verify_scene_normal_only_multi_patch-begin",friction_step);
     gpu.step(seconds);
+    report_pcm_friction_progress("verify_scene_normal_only_multi_patch-end",friction_step++);
     constexpr auto metadata=2u*sizeof(std::uint32_t);
     constexpr auto full=sizeof(native::GpuPcmBoxResult);
     require(gpu.contacts().size()==1u &&
@@ -7427,7 +7443,9 @@ void verify_scene_normal_only_multi_patch(
     // correlation and must not force any early normal transfer.
     native::GpuPcmFrictionAnchorFixture::seed_multiple_friction_patches(
         gpu,{b[0],b[1]},true);
+    report_pcm_friction_progress("verify_scene_normal_only_multi_patch-begin",friction_step);
     gpu.step(seconds);
+    report_pcm_friction_progress("verify_scene_normal_only_multi_patch-end",friction_step++);
     require(gpu.contacts().size()==1u &&
             producer->pcm_header_join_bytes()==metadata &&
             producer->pcm_deferred_point_bytes()==full-metadata &&
@@ -7441,7 +7459,9 @@ void verify_scene_normal_only_multi_patch(
         gpu,{b[0],b[1]});
     native::GpuPcmFrictionAnchorFixture::invalidate_multiple_friction_normals(
         gpu,{b[0],b[1]});
+    report_pcm_friction_progress("verify_scene_normal_only_multi_patch-begin",friction_step);
     gpu.step(seconds);
+    report_pcm_friction_progress("verify_scene_normal_only_multi_patch-end",friction_step++);
     require(gpu.contacts().size()==1u &&
             producer->pcm_header_join_bytes()==metadata &&
             producer->pcm_deferred_point_bytes()==full-metadata &&
@@ -7459,7 +7479,9 @@ void verify_scene_normal_only_multi_patch(
         gpu,{b[0],b[1]});
     native::GpuPcmFrictionAnchorFixture::invalidate_multiple_friction_materials(
         gpu,{b[0],b[1]});
+    report_pcm_friction_progress("verify_scene_normal_only_multi_patch-begin",friction_step);
     gpu.step(seconds);
+    report_pcm_friction_progress("verify_scene_normal_only_multi_patch-end",friction_step++);
     require(gpu.contacts().size()==1u &&
             producer->pcm_header_join_bytes()==metadata &&
             producer->pcm_deferred_point_bytes()==full-metadata &&
