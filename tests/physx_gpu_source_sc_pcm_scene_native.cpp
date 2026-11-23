@@ -523,9 +523,7 @@ struct GpuPcmFrictionAnchorFixture {
         return true;
     }
     static bool identity_body_remap_eligible(const Scene& scene) {
-        if(!scene.gpu_dy_early_islands_ ||
-           !scene.gpu_dy_early_joint_edges_.empty())
-            return false;
+        if(!scene.gpu_dy_early_islands_)return false;
         for(std::size_t i=0u;i<scene.gpu_dy_early_actor_ids_.size();++i) {
             const auto& actor=scene.actors_[scene.gpu_dy_early_actor_ids_[i]];
             const bool responding=actor.motion==Scene::Motion::Dynamic &&
