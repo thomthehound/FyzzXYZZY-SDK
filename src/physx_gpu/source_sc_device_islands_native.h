@@ -406,7 +406,7 @@ public:
             launch(34u,edge_count);
             if(contact_blocks>1u) {
                 launch(35u,static_cast<std::uint32_t>(contact_blocks));
-                if(contact_groups>1u)launch(36u,1u);
+                launch(36u,1u);
                 launch(37u,edge_count);
             }
         }

@@ -322,9 +322,9 @@ Device-admitted tasks allocate disjoint exact-size working ranges from
 one GPU-owned numerical row counter. Within each task, PCM and CPU Gu
 response counts are prefixed in contact order; interleaved source
 reservations do not constrain numerical compaction. The parallel Sc
-source-order prefix uses one device dispatch for at most 128 edges,
-three for 129–16,384, and four above that range; no host scan or
-additional numerical dispatch is required. Packed singleton
+source-order prefix uses one device dispatch for at most 128 edges
+and the existing four-phase scan for larger response streams; no host
+scan or additional numerical dispatch is required. Packed singleton
 tasks use the same allocator. GPU force writeback retains Sc's source
 offsets. Allocation and compaction need no additional dispatch or host join.
 Dy returns the exact contact count in its existing four-byte patch report

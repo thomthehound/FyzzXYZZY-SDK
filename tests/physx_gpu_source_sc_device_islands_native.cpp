@@ -166,7 +166,7 @@ void verify(Context& context,const char* filename) {
             }
             const std::size_t blocks=(edges.size()+127u)/128u;
             require(prefix_phases==std::array<bool,4>{
-                        !edges.empty(),blocks>1u,blocks>128u,blocks>1u},
+                        !edges.empty(),blocks>1u,blocks>1u,blocks>1u},
                 "Sc contact-prefix schedule includes unnecessary dispatches");
         }
         if(!node_count && (!edges.empty() || !touches.empty())) {
