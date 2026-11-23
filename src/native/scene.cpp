@@ -12789,7 +12789,7 @@ void Scene::advance_collision_internal(
                             actors_[b.body].dynamics.max_contact_impulse)==0.f)
                     continue;
                 for(const BodyId id:{a.body,b.body})
-                    if(actors_[id].motion==Motion::Kinematic)
+                    if(actors_[id].motion!=Motion::Dynamic)
                         gpu_dy_immovable_source_ids_.push_back(id);
             }
             for(const EdgeIndex edge:active_constraint_handles_) {
