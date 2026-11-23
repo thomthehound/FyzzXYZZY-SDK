@@ -9313,19 +9313,22 @@ void Scene::prepare_constraints(float seconds) {
                 !actor1.sleeping;
             prep.inverse_mass0=resident0?actor0.inverse_mass:a.inverse_mass;
             prep.inverse_mass1=resident1?actor1.inverse_mass:b.inverse_mass;
-            // Sc assigns final solver ordinals after accurate island
-            // admission; the candidate coefficients do not change.
-            const auto pack_ordinal=[&](const Actor& actor) {
-                if(!rigid_node(actor.motion))return invalid_solver_row;
-                if(actor.solver_row_generation!=solver_preparation_generation_ ||
-                   actor.solver_row_index>=solver_rows_.size() ||
-                   actor.solver_row_index>=invalid_solver_row)
-                    throw std::logic_error(
-                        "GPU Dy contact preparation lacks a solver row");
-                return static_cast<std::uint32_t>(actor.solver_row_index);
-            };
-            prep.solver_ordinal0=pack_ordinal(actor0);
-            prep.solver_ordinal1=pack_ordinal(actor1);
+            // Contact-only early graphs retain their pre-witness source
+            // ordinals. Other graphs use Sc's final solver-row order.
+            if(!gpu_dy_early_islands_ ||
+               !gpu_dy_early_joint_edges_.empty()) {
+                const auto pack_ordinal=[&](const Actor& actor) {
+                    if(!rigid_node(actor.motion))return invalid_solver_row;
+                    if(actor.solver_row_generation!=solver_preparation_generation_ ||
+                       actor.solver_row_index>=solver_rows_.size() ||
+                       actor.solver_row_index>=invalid_solver_row)
+                        throw std::logic_error(
+                            "GPU Dy contact preparation lacks a solver row");
+                    return static_cast<std::uint32_t>(actor.solver_row_index);
+                };
+                prep.solver_ordinal0=pack_ordinal(actor0);
+                prep.solver_ordinal1=pack_ordinal(actor1);
+            }
             if(pcm_index==0xffffffffu) {
                 if(gpu_dy_gu_inputs_.size()>=
                    std::numeric_limits<std::uint32_t>::max())
