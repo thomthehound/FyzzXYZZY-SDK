@@ -6742,10 +6742,21 @@ void verify_joint_only_device_admission(
             cpu.set_dynamics(id,dynamics);
         for(const auto id:{b[i*2u],b[i*2u+1u]})
             gpu.set_dynamics(id,dynamics);
-        joints_cpu[i]=cpu.create_center_distance_constraint(
-            a[i*2u],a[i*2u+1u],1.5f);
-        joints_gpu[i]=gpu.create_center_distance_constraint(
-            b[i*2u],b[i*2u+1u],1.5f);
+        if(i==1u) {
+            // A middle multirow joint shifts the following source row.
+            // Retiring it restores identity-ordered distance joints.
+            const Transform anchor_a{{2.f,0.f,0.f},{}};
+            const Transform anchor_b{};
+            joints_cpu[i]=cpu.create_spherical_constraint(
+                a[i*2u],a[i*2u+1u],anchor_a,anchor_b);
+            joints_gpu[i]=gpu.create_spherical_constraint(
+                b[i*2u],b[i*2u+1u],anchor_a,anchor_b);
+        }else {
+            joints_cpu[i]=cpu.create_center_distance_constraint(
+                a[i*2u],a[i*2u+1u],1.5f);
+            joints_gpu[i]=gpu.create_center_distance_constraint(
+                b[i*2u],b[i*2u+1u],1.5f);
+        }
     }
     constexpr float dt=1.f/120.f;
     for(std::uint32_t frame=0u;frame<5u;++frame) {
@@ -6762,9 +6773,9 @@ void verify_joint_only_device_admission(
         const auto responding=frame<2u?3u:frame<4u?2u:1u;
         const bool device_graph=responding>1u;
         const auto stats=producer->dy_launch_stats();
-        require(!producer->sc_island_deferred_joint_remap() &&
+        require(producer->sc_island_deferred_joint_remap()==(frame<2u) &&
                 producer->sc_island_remap_dispatch_count()==0u,
-            "Distance-only Sc joint sources uploaded an identity numerical map");
+            "Sc joint numerical remap did not follow actual source row order");
         require(stats.host_descriptor_inputs==
                     (device_graph?0u:responding),
             "Joint-only Sc descriptor ownership differs from task admission");
