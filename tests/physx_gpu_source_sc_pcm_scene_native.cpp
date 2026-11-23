@@ -270,6 +270,19 @@ struct GpuPcmFrictionAnchorFixture {
         return id<scene.gpu_dy_actor_stage_epochs_.size() &&
             scene.gpu_dy_actor_stage_epochs_[id]==scene.gpu_dy_actor_stage_epoch_;
     }
+    static void verify_pre_witness_immovable_sources(const Scene& scene) {
+        for(const auto manager_index:scene.indexed_managers_) {
+            const auto& manager=scene.manifolds_[manager_index];
+            if(!manager.friction_patch_count)continue;
+            for(const ShapeId shape:{manager.pair.a,manager.pair.b}) {
+                const BodyId body=scene.shapes_[shape].body;
+                if(scene.actors_[body].motion!=Motion::Dynamic &&
+                   !actor_has_staged_source(scene,body))
+                    throw std::runtime_error(
+                        "Responding contact omitted pre-witness immovable source");
+            }
+        }
+    }
     static std::size_t compact_contact_source_bytes(const Scene& scene) {
         return scene.gpu_dy_contact_prep_pairs_.size()*
             sizeof(GpuDyCompactContactPrep);
@@ -516,6 +529,7 @@ struct GpuPcmFrictionAnchorFixture {
     }
     static void verify_gpu_source_candidate_descriptors(
         const Scene& scene) {
+        verify_pre_witness_immovable_sources(scene);
         if(scene.gpu_dy_manifolds_.size()!=scene.previous_pairs_.size())
             throw std::runtime_error(
                 "GPU Dy contact table does not cover source candidates");
@@ -554,6 +568,7 @@ struct GpuPcmFrictionAnchorFixture {
         }
     }
     static void verify_pre_witness_device_admission(const Scene& scene) {
+        verify_pre_witness_immovable_sources(scene);
         const auto stamped=std::count(
             scene.gpu_dy_actor_stage_epochs_.begin(),
             scene.gpu_dy_actor_stage_epochs_.end(),
@@ -6302,6 +6317,8 @@ void verify_mixed_gu_pcm_gpu_dy_solver(
             }
             cpu.step(dt);
             gpu.step(dt);
+            native::GpuPcmFrictionAnchorFixture::
+                verify_pre_witness_immovable_sources(gpu);
             const native::Pair unused_pair{moving_gpu[0],unused_floor_gpu};
             require(gpu.contact_edge_index(unused_pair)!=0xffffffffu,
                 "Unused Gu floor is not a speculative Sc candidate");

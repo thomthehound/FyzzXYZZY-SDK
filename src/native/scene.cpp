@@ -9902,20 +9902,7 @@ void Scene::solve_gpu_distance_constraints(float seconds) {
     const auto pack=[](float(&out)[3],Vec3 v) {
         out[0]=v.x;out[1]=v.y;out[2]=v.z;
     };
-    // Quiet frames bypass PCM admission but still need the current
-    // kinematic velocities and poses for active contact preparation.
-    gpu_dy_immovable_source_ids_.clear();
-    for(const auto manager:indexed_managers_) {
-        const auto& manifold=manifolds_[manager];
-        if(!manifold.friction_patch_count)continue;
-        for(const ShapeId shape:{manifold.pair.a,manifold.pair.b}) {
-            const BodyId id=shapes_[shape].body;
-            if(actors_[id].motion!=Motion::Dynamic)
-                gpu_dy_immovable_source_ids_.push_back(id);
-        }
-    }
-    stage_gpu_dy_actor_sources(gpu_dy_immovable_source_ids_,seconds,true);
-    // The world-motion stage reads inverse mass from the actor-local
+     // The world-motion stage reads inverse mass from the actor-local
     // input. This body span carries only result capacity, not a second
     // host-authored mass stream.
     gpu_dy_bodies_.resize(solver_rows_.size());
