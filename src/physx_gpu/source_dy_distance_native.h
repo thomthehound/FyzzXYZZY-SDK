@@ -254,6 +254,11 @@ public:
         }
     }
 
+    void discard_unconsumed_retained_friction_sources() noexcept {
+        prewitness_retained_source_data_=nullptr;
+        prewitness_retained_source_count_=0u;
+    }
+
     void enqueue_retained_friction_sources(
         std::span<const native::GpuDyRetainedFrictionCandidate> candidates) {
         if(pending_solve_ || prewitness_retained_source_data_)
