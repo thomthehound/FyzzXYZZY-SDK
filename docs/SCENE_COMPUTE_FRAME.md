@@ -345,8 +345,9 @@ Sc leaves device-authored body and typed response order intact.
 When solver-row indices differ, Sc uploads the source-to-row map into
 its resident island work allocation; Dy resolves each consumed body
 ordinal. Device-joint graphs upload their stable source-to-joint-row
-table in the same allocation, and Dy resolves typed joint tokens at
-descriptor expansion. Identity-ordered bodies omit the body map.
+table only when it differs from source order, and Dy resolves typed
+joint tokens at descriptor expansion. Identity-ordered bodies and joints
+omit their respective maps.
 Neither graph requires a standalone numerical remap dispatch; the
 indirect launch arguments are published with early Sc admission.
 Sc reserves a source-ordered numerical input table independently of PCM

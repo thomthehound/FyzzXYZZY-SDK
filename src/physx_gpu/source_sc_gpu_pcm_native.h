@@ -882,14 +882,20 @@ public:
                    island_layout_.bytes-island_layout_.joint_remap)
                 throw std::out_of_range(
                     "Sc joint source exceeds resident remap capacity");
-            for(const auto row:joints)
+            bool joint_identity=true;
+            for(std::size_t i=0u;i<joints.size();++i) {
+                const auto row=joints[i];
                 if(row>=joint_row_capacity || row>=0x40000000u)
                     throw std::out_of_range(
                         "Sc joint source maps outside prepared Dy rows");
-            uploads.push_back({
-                island_work_.getDevicePtr()+island_layout_.joint_remap,
-                joints.data(),joints.size_bytes()});
-            island_deferred_joint_remap_=true;
+                joint_identity&=row==i;
+            }
+            if(!joint_identity) {
+                uploads.push_back({
+                    island_work_.getDevicePtr()+island_layout_.joint_remap,
+                    joints.data(),joints.size_bytes()});
+                island_deferred_joint_remap_=true;
+            }
         }
         if(!uploads.empty())stream_.queue_uploads(uploads);
     }
