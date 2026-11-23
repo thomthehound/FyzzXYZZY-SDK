@@ -5307,6 +5307,37 @@ void Scene::update_contacts(bool defer_device_points,float step_seconds) {
             true);
         gpu_dy_early_islands_=true;
     }
+    // Sc's pre-witness graph supplies Dy's contact endpoint ordinals.
+    // Source nodes retain their identity across the later host join.
+    if(gpu_dy_early_islands_ && gpu_dy_early_joint_edges_.empty()) {
+        if(gpu_dy_island_edges_.size()!=previous_pairs_.size())
+            throw std::logic_error(
+                "Early device contact graph lost Sc candidate order");
+        for(std::size_t source=0u;source<previous_pairs_.size();++source) {
+            const auto slot=gpu_dy_contact_prep_indices_[source];
+            if(slot==0xffffffffu)continue;
+            const auto dense=slot&~unadmitted_dy_prep;
+            if(dense>=gpu_dy_contact_prep_pairs_.size() ||
+               dense>=gpu_dy_contact_prep_sources_.size() ||
+               gpu_dy_contact_prep_sources_[dense]!=source)
+                throw std::logic_error(
+                    "Early device contact preparation lost its source slot");
+            const auto& edge=gpu_dy_island_edges_[source];
+            if(edge.source_index!=source ||
+               edge.edge_index!=active_edge_handles_[source])
+                throw std::logic_error(
+                    "Early device contact graph lost its EdgeIndex");
+            const auto& pair=previous_pairs_[source];
+            const bool reversed=island_edges_[edge.edge_index].gu_order_reversed;
+            auto& prep=gpu_dy_contact_prep_pairs_[dense];
+            if(prep.source_body0!=shapes_[reversed?pair.b:pair.a].body ||
+               prep.source_body1!=shapes_[reversed?pair.a:pair.b].body)
+                throw std::logic_error(
+                    "Early device contact endpoints lost Sc interaction order");
+            prep.solver_ordinal0=reversed?edge.node_b:edge.node_a;
+            prep.solver_ordinal1=reversed?edge.node_a:edge.node_b;
+        }
+    }
     if(gpu_results_pending) {
         FYZZ_PROFILE_SCOPE("sc.pcm_witness_join");
         {
@@ -9992,6 +10023,12 @@ void Scene::solve_gpu_distance_constraints(float seconds) {
     FYZZ_PROFILE_COUNTER("dy.device_island_selected",device_admission?1u:0u);
     gpu_dy_source_body_order_=device_admission &&
         gpu_dy_early_islands_ && gpu_dy_early_joint_edges_.empty();
+    if(gpu_dy_early_islands_ && gpu_dy_early_joint_edges_.empty() &&
+       !gpu_dy_source_body_order_)
+        for(auto& prep:gpu_dy_contact_prep_pairs_) {
+            prep.solver_ordinal0=invalid_solver_row;
+            prep.solver_ordinal1=invalid_solver_row;
+        }
     // The world-motion stage reads inverse mass from the actor-local
     // input. This body span carries only result capacity, not a second
     // host-authored mass stream.
@@ -10315,30 +10352,6 @@ void Scene::solve_gpu_distance_constraints(float seconds) {
             if(joint.reserved!=2u)
                 throw std::logic_error(
                     "Device Sc response requires device-authored joint rows");
-    // Device Sc body-order entries address their original source nodes.
-    // The same node ordinals identify active contact endpoints in Dy.
-    if(gpu_dy_source_body_order_) {
-        const auto ordinal=[&](BodyId id) -> std::uint32_t {
-            if(id>=actors_.size())
-                throw std::logic_error(
-                    "Device Dy contact source references an absent actor");
-            const auto& actor=actors_[id];
-            if(actor.motion!=Motion::Dynamic || actor.sleeping ||
-               actor.solver_row_generation!=solver_preparation_generation_)
-                return invalid_solver_row;
-            if(actor.solver_row_index>=solver_rows_.size())
-                throw std::logic_error(
-                    "Device contact source lacks a prepared solver body");
-            if(solver_rows_[actor.solver_row_index].prepared_generation!=
-               solver_preparation_generation_)
-                return invalid_solver_row;
-            return narrow(gpu_dy_body_index(id));
-        };
-        for(auto& prep:gpu_dy_contact_prep_pairs_) {
-            prep.solver_ordinal0=ordinal(prep.source_body0);
-            prep.solver_ordinal1=ordinal(prep.source_body1);
-        }
-    }
     prepare_gpu_dy_device_islands(device_admission);
     const std::span<const GpuDyDistanceDescriptor> dy_descriptors=
         device_admission?std::span<const GpuDyDistanceDescriptor>{}
