@@ -9807,40 +9807,23 @@ void Scene::prepare_gpu_dy_device_islands(bool selected) {
 }
 void Scene::stage_gpu_dy_actor_sources(
     std::span<const BodyId> ids,float seconds,bool immovable) {
-    const auto first=gpu_dy_staged_actor_ids_.size();
+    if(gpu_dy_actor_stage_epochs_.size()<actors_.size())
+        gpu_dy_actor_stage_epochs_.resize(actors_.size(),0u);
+    gpu_dy_integration_inputs_.clear();
+    gpu_dy_integration_inputs_.reserve(ids.size());
     for(const BodyId id:ids) {
         if(id>=actors_.size())
             throw std::logic_error("Sc GPU actor source references an absent actor");
-        gpu_dy_staged_actor_ids_.push_back(id);
-    }
-    auto added=gpu_dy_staged_actor_ids_.begin()+first;
-    std::sort(added,gpu_dy_staged_actor_ids_.end());
-    gpu_dy_staged_actor_ids_.erase(
-        std::unique(added,gpu_dy_staged_actor_ids_.end()),
-        gpu_dy_staged_actor_ids_.end());
-    // Both spans are sorted. Compact new live actors against the
-    // already-staged prefix before packing or uploading any source.
-    std::size_t retained=first,prior=0u;
-    for(std::size_t i=first;i<gpu_dy_staged_actor_ids_.size();++i) {
-        const BodyId id=gpu_dy_staged_actor_ids_[i];
-        while(prior<first && gpu_dy_staged_actor_ids_[prior]<id)
-            ++prior;
         const auto& actor=actors_[id];
-        if((prior<first && gpu_dy_staged_actor_ids_[prior]==id) ||
-           !actor.alive ||
+        if(!actor.alive ||
            (immovable ? actor.motion==Motion::Dynamic :
-              actor.motion!=Motion::Dynamic || actor.sleeping))
+                        actor.motion!=Motion::Dynamic || actor.sleeping) ||
+           gpu_dy_actor_stage_epochs_[id]==gpu_dy_actor_stage_epoch_)
             continue;
-        gpu_dy_staged_actor_ids_[retained++]=id;
-    }
-    gpu_dy_staged_actor_ids_.resize(retained);
-    gpu_dy_integration_inputs_.clear();
-    gpu_dy_integration_inputs_.reserve(
-        gpu_dy_staged_actor_ids_.size()-first);
-    for(auto i=first;i<gpu_dy_staged_actor_ids_.size();++i) {
+        gpu_dy_actor_stage_epochs_[id]=gpu_dy_actor_stage_epoch_;
+        gpu_dy_staged_actor_ids_.push_back(id);
         auto& input=gpu_dy_integration_inputs_.emplace_back();
-        pack_gpu_dy_integration_input(
-            gpu_dy_staged_actor_ids_[i],seconds,input);
+        pack_gpu_dy_integration_input(id,seconds,input);
         if(immovable) {
             input.active|=0x100u;
             input.source_inverse_mass=0.0f;
@@ -9849,10 +9832,6 @@ void Scene::stage_gpu_dy_actor_sources(
     if(!gpu_dy_integration_inputs_.empty())
         gpu_broadphase_->enqueue_gpu_dy_actor_sources(
             gpu_dy_integration_inputs_);
-    // Keep the encounter-independent source set for the next Sc phase.
-    std::inplace_merge(gpu_dy_staged_actor_ids_.begin(),
-                       gpu_dy_staged_actor_ids_.begin()+first,
-                       gpu_dy_staged_actor_ids_.end());
 }
 void Scene::pack_gpu_dy_integration_input(
     BodyId id,float seconds,GpuDyBodyIntegrationInput& input) const {
@@ -12780,6 +12759,11 @@ void Scene::advance_collision_internal(
         gpu_dy_early_islands_=false;
         gpu_dy_early_actor_ids_.clear();
         gpu_dy_staged_actor_ids_.clear();
+        if(++gpu_dy_actor_stage_epoch_==0u) {
+            std::fill(gpu_dy_actor_stage_epochs_.begin(),
+                      gpu_dy_actor_stage_epochs_.end(),0u);
+            gpu_dy_actor_stage_epoch_=1u;
+        }
         gpu_dy_early_joint_edges_.clear();
         speculative_connectivity_prepared_=false;
             speculative_split_sleep_candidates_.clear();

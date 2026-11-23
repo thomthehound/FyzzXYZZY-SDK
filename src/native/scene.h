@@ -2280,6 +2280,8 @@ private:
     std::vector<std::uint32_t> gpu_dy_island_node_flags_;
     std::vector<BodyId> gpu_dy_early_actor_ids_;
     std::vector<BodyId> gpu_dy_staged_actor_ids_;
+    std::vector<std::uint32_t> gpu_dy_actor_stage_epochs_;
+    std::uint32_t gpu_dy_actor_stage_epoch_=0u;
     std::vector<BodyId> gpu_dy_immovable_source_ids_;
     std::vector<EdgeIndex> gpu_dy_early_joint_edges_;
     bool gpu_dy_early_islands_=false;

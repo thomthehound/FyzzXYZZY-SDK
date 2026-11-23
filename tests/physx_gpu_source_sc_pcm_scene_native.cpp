@@ -267,9 +267,8 @@ struct SourceScDeviceIslandFixture {
 namespace fyzz::native {
 struct GpuPcmFrictionAnchorFixture {
     static bool actor_has_staged_source(const Scene& scene,BodyId id) {
-        return std::binary_search(
-            scene.gpu_dy_staged_actor_ids_.begin(),
-            scene.gpu_dy_staged_actor_ids_.end(),id);
+        return id<scene.gpu_dy_actor_stage_epochs_.size() &&
+            scene.gpu_dy_actor_stage_epochs_[id]==scene.gpu_dy_actor_stage_epoch_;
     }
     static std::size_t compact_contact_source_bytes(const Scene& scene) {
         return scene.gpu_dy_contact_prep_pairs_.size()*
@@ -555,6 +554,8 @@ struct GpuPcmFrictionAnchorFixture {
         }
     }
     static void verify_pre_witness_device_admission(const Scene& scene) {
+        auto staged=scene.gpu_dy_staged_actor_ids_;
+        std::sort(staged.begin(),staged.end());
         const auto joints=scene.gpu_dy_early_joint_edges_.size();
         if(!scene.gpu_dy_early_islands_ ||
            scene.gpu_dy_island_edges_.size()!=scene.previous_pairs_.size()+joints ||
@@ -563,15 +564,13 @@ struct GpuPcmFrictionAnchorFixture {
                scene.gpu_dy_early_actor_ids_.size()+joints ||
            !std::is_sorted(scene.gpu_dy_early_actor_ids_.begin(),
                            scene.gpu_dy_early_actor_ids_.end()) ||
-           !std::is_sorted(scene.gpu_dy_staged_actor_ids_.begin(),
-                           scene.gpu_dy_staged_actor_ids_.end()) ||
-           std::adjacent_find(scene.gpu_dy_staged_actor_ids_.begin(),
-                              scene.gpu_dy_staged_actor_ids_.end())!=
-               scene.gpu_dy_staged_actor_ids_.end() ||
-           !std::includes(scene.gpu_dy_staged_actor_ids_.begin(),
-                          scene.gpu_dy_staged_actor_ids_.end(),
+           std::adjacent_find(staged.begin(),staged.end())!=staged.end() ||
+           !std::includes(staged.begin(),staged.end(),
                           scene.gpu_dy_early_actor_ids_.begin(),
-                          scene.gpu_dy_early_actor_ids_.end()))
+                          scene.gpu_dy_early_actor_ids_.end()) ||
+           std::any_of(staged.begin(),staged.end(),[&](BodyId id) {
+               return !actor_has_staged_source(scene,id);
+           }))
             throw std::runtime_error(
                 "Sc did not queue compact actor and contact identities before Gu");
         std::size_t previous_row=0u;
