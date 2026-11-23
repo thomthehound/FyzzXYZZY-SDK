@@ -102,6 +102,7 @@ struct GpuDyPairMaterial {
 struct GpuDyCandidateSource {
     GpuDyPairMaterial material{};
     std::uint32_t retained_first=0u,retained_count=0u;
+    std::uint32_t retained_single_patch=0xffffffffu;
     bool retained_full=false;
 };
 // Gu PCM contacts remain keyed by Sc's original contact-manager EdgeIndex.
@@ -1502,6 +1503,7 @@ private:
                          float step_seconds=0.0f);
     void prepare_gpu_dy_contact_prep(std::size_t source,float seconds);
     void prepare_gpu_dy_candidate_contact_preps(float seconds);
+    void prepare_gpu_dy_pcm_friction_history();
     void materialize_gpu_pcm_points();
     // Original contact-manager addEdge/setEdgeConnected/removeConnection
     // lifecycle, within the existing single scene-owned island pipeline.

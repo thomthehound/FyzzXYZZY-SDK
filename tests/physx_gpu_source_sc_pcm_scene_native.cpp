@@ -991,10 +991,24 @@ struct GpuPcmFrictionAnchorFixture {
     static bool single_eligible_history_on_device(const Scene& scene,
                                                   std::uint32_t eligible_bit=1u) {
         return std::any_of(scene.gpu_pcm_pairs_.begin(),
-            scene.gpu_pcm_pairs_.end(),[eligible_bit](const auto& request) {
-                return request.friction_history_mask==3u &&
-                       request.friction_eligible_mask==eligible_bit &&
-                       !request.early_host_normal;
+            scene.gpu_pcm_pairs_.end(),[&](const auto& request) {
+                if(request.friction_history_mask!=3u ||
+                   request.friction_eligible_mask!=eligible_bit ||
+                   request.early_host_normal ||
+                   !std::has_single_bit(eligible_bit) ||
+                   request.candidate_ordinal>=
+                       scene.gpu_dy_contact_prep_indices_.size() ||
+                   request.edge>=scene.next_friction_by_edge_.size())
+                    return false;
+                const auto slot=scene.gpu_dy_contact_prep_indices_[
+                    request.candidate_ordinal];
+                if(slot>=scene.gpu_dy_candidate_sources_.size())
+                    return false;
+                const auto& selected=scene.gpu_dy_candidate_sources_[slot];
+                const auto& history=scene.next_friction_by_edge_[request.edge];
+                return selected.retained_count==0u &&
+                       selected.retained_single_patch==
+                           history.offset+std::countr_zero(eligible_bit);
             });
     }
     static std::string friction_history_state(const Scene& scene) {
