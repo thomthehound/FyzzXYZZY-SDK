@@ -170,7 +170,11 @@ Hardware scene qualification now compares identical CPU, GPU Sc-authored
 and GPU device-admitted numerical workloads, including frame percentiles
 and CPU-referenced pose/velocity error.
 The GPU resolves physical touch and runnable task topology on its own
-ordered queue. Device admission assigns exact source-ordered contact-row
+ordered queue. Sc supplies stable edge and node inputs from one mapped
+GPU-local frame block on SharedLocal hardware. Other devices stage the
+same bounded input spans on the existing queue. Device output and
+persistent EdgeIndex touch history retain their separate owners.
+Device admission assigns exact source-ordered contact-row
 prefixes from resident PCM and Gu extents. Compact graphs compute the prefix
 in their admission workgroup; larger graphs scan response blocks in parallel
 using the completed radix workspace. Device-admitted Dy tasks place

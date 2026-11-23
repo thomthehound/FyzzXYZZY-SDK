@@ -40,6 +40,9 @@ struct SourceScDeviceIslandFixture {
     static bool software_adapter(const SourceScOwnedGpuBroadphaseNative& owner) {
         return owner.context_.device_info().software_adapter;
     }
+    static bool shared_frame_input(const SourceScOwnedGpuBroadphaseNative& owner) {
+        return owner.context_.device_info().supports_shared_frame_input;
+    }
     static std::size_t source_submissions(
             const SourceScOwnedGpuBroadphaseNative& owner) {
         return owner.stream_.submitted_token_count();
@@ -588,6 +591,20 @@ struct GpuPcmFrictionAnchorFixture {
            }))
             throw std::runtime_error(
                 "Sc did not queue compact actor and contact identities before Gu");
+        const auto& owner=*static_cast<const
+            physx_gpu::SourceScOwnedGpuBroadphaseNative*>(
+                scene.gpu_broadphase_.get());
+        const auto bytes=scene.gpu_dy_island_edges_.size()*
+            sizeof(GpuDyIslandEdge)+
+            scene.gpu_dy_early_actor_ids_.size()*sizeof(std::uint32_t);
+        const auto direct=owner.sc_island_source_direct_bytes();
+        const auto staged=owner.sc_island_source_upload_bytes();
+        if(direct+staged!=bytes ||
+           (physx_gpu::SourceScDeviceIslandFixture::shared_frame_input(owner)
+                ?(direct!=bytes || staged!=0u)
+                :(staged!=bytes || direct!=0u)))
+            throw std::runtime_error(
+                "Pre-witness Sc numerical graph used an unexpected source transfer");
         std::size_t previous_row=0u;
         bool seen_row=false;
         for(const BodyId id:scene.gpu_dy_early_actor_ids_) {

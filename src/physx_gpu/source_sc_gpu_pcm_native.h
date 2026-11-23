@@ -10,6 +10,7 @@
 #include "physx_gpu/source_pcm_sc_contact_stream_native.h"
 #include "physx_gpu/source_sc_contact_history_native.h"
 #include "physx_gpu/source_sc_device_islands_native.h"
+#include "physx_gpu/source_frame_input_arena_native.h"
 #include "physx_port/gpucommon/PxgCudaBuffer.h"
 
 #include <algorithm>
@@ -82,7 +83,8 @@ public:
           gu_touch_journal_(allocator,physx::PxsHeapStats::eNARROWPHASE),
           island_edges_(allocator,physx::PxsHeapStats::eNARROWPHASE),
           island_nodes_(allocator,physx::PxsHeapStats::eNARROWPHASE),
-          island_work_(allocator,physx::PxsHeapStats::eNARROWPHASE) {
+          island_work_(allocator,physx::PxsHeapStats::eNARROWPHASE),
+          island_frame_input_(context,addresses) {
         if(!stream_.bound_to(context_,addresses_))
             throw std::invalid_argument("Source Sc GPU PCM has another device stream");
         if(staged_gjk_) {
@@ -809,27 +811,55 @@ public:
         island_contact_count_=sources.contact_managers;
         island_joint_count_=early?sources.joint_rows:0u;
         island_work_.allocate(island_layout_.bytes,PX_FL);
-        if(edge_count)
-            island_edges_.allocate(source_allocation_bytes(
-                edge_count,sizeof(SourceScDeviceIslandEdge)),PX_FL);
-        if(node_count)
-            island_nodes_.allocate(source_allocation_bytes(
-                std::uint64_t(node_count)+island_joint_count_,
-                sizeof(std::uint32_t)),PX_FL);
-        auto& uploads=stream_.upload_scratch();
-        if(edge_count)
-            uploads.push_back({
-                island_edges_.getDevicePtr(),edges.data(),edges.size_bytes()});
-        if(node_count)
-            uploads.push_back({
-                island_nodes_.getDevicePtr(),node_flags.data(),
-                node_flags.size_bytes()});
-        if(!uploads.empty())stream_.queue_uploads(uploads);
+        CudaDeviceAddressMap::Address source_edges=0u,source_nodes=0u;
+        last_island_source_direct_bytes_=0u;
+        last_island_source_upload_bytes_=0u;
+        if(island_frame_input_.direct() && (edge_count || node_count)) {
+            const auto edge_bytes=edges.size_bytes();
+            const auto node_bytes=node_flags.size_bytes();
+            if(edge_bytes>std::numeric_limits<std::size_t>::max()-15u)
+                throw std::out_of_range("Device Sc island source alignment overflow");
+            const auto node_offset=(edge_bytes+15u)&~std::size_t{15u};
+            if(node_bytes>std::numeric_limits<std::size_t>::max()-node_offset)
+                throw std::out_of_range("Device Sc island source size overflow");
+            island_source_scratch_.resize(node_offset+node_bytes);
+            if(edge_bytes)
+                std::memcpy(island_source_scratch_.data(),
+                            edges.data(),edge_bytes);
+            if(node_bytes)
+                std::memcpy(island_source_scratch_.data()+node_offset,
+                            node_flags.data(),node_bytes);
+            const auto source=island_frame_input_.write(
+                island_source_scratch_.data(),island_source_scratch_.size());
+            if(edge_count)source_edges=source;
+            if(node_count)source_nodes=source+node_offset;
+            last_island_source_direct_bytes_=edge_bytes+node_bytes;
+        }else {
+            if(edge_count) {
+                island_edges_.allocate(source_allocation_bytes(
+                    edge_count,sizeof(SourceScDeviceIslandEdge)),PX_FL);
+                source_edges=island_edges_.getDevicePtr();
+            }
+            if(node_count) {
+                island_nodes_.allocate(source_allocation_bytes(
+                    std::uint64_t(node_count)+island_joint_count_,
+                    sizeof(std::uint32_t)),PX_FL);
+                source_nodes=island_nodes_.getDevicePtr();
+            }
+            auto& uploads=stream_.upload_scratch();
+            if(edge_count)
+                uploads.push_back({
+                    source_edges,edges.data(),edges.size_bytes()});
+            if(node_count)
+                uploads.push_back({
+                    source_nodes,node_flags.data(),node_flags.size_bytes()});
+            if(!uploads.empty())stream_.queue_uploads(uploads);
+            last_island_source_upload_bytes_=
+                edges.size_bytes()+node_flags.size_bytes();
+        }
         const auto before_islands=stream_.commands().size();
         island_stage_.append(stream_,addresses_,
-            edge_count?island_edges_.getDevicePtr():0u,
-            device_edge_history_address(),
-            node_count?island_nodes_.getDevicePtr():0u,
+            source_edges,device_edge_history_address(),source_nodes,
             island_work_.getDevicePtr(),
             node_count,edge_count,edge_capacity,sources);
         last_island_dispatches_=stream_.commands().size()-before_islands;
@@ -1125,6 +1155,12 @@ public:
     std::size_t last_island_dispatches() const noexcept {
         return last_island_dispatches_;
     }
+    std::size_t last_island_source_direct_bytes() const noexcept {
+        return last_island_source_direct_bytes_;
+    }
+    std::size_t last_island_source_upload_bytes() const noexcept {
+        return last_island_source_upload_bytes_;
+    }
     std::size_t last_remap_dispatches() const noexcept {
         return last_remap_dispatches_;
     }
@@ -1207,6 +1243,8 @@ private:
     physx::PxgCudaBuffer pairs_,results_,candidates_,edges_,work_,dense_contacts_,journal_;
     physx::PxgCudaBuffer gu_touch_records_,gu_touch_journal_;
     physx::PxgCudaBuffer island_edges_,island_nodes_,island_work_;
+    SourceFrameInputArenaNative island_frame_input_;
+    std::vector<std::uint8_t> island_source_scratch_;
     SourceScDeviceIslandLayout island_layout_{};
     std::uint32_t island_node_count_=0u,island_edge_count_=0u,
                   island_contact_count_=0u;
@@ -1251,6 +1289,8 @@ private:
     std::size_t last_candidate_dispatches_=0u;
     std::size_t last_face_pair_scan_count_=0u;
     std::size_t last_island_dispatches_=0u,last_remap_dispatches_=0u;
+    std::size_t last_island_source_direct_bytes_=0u;
+    std::size_t last_island_source_upload_bytes_=0u;
     std::size_t published_edge_span_bytes_=0u;
 };
 } // namespace fyzz::physx_gpu

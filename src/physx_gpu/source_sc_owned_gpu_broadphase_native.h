@@ -548,6 +548,12 @@ public:
     std::size_t sc_island_dispatch_count() const noexcept {
         return pcm_ ? pcm_->last_island_dispatches() : 0u;
     }
+    std::size_t sc_island_source_direct_bytes() const noexcept {
+        return pcm_ ? pcm_->last_island_source_direct_bytes() : 0u;
+    }
+    std::size_t sc_island_source_upload_bytes() const noexcept {
+        return pcm_ ? pcm_->last_island_source_upload_bytes() : 0u;
+    }
     std::size_t sc_island_remap_dispatch_count() const noexcept {
         return pcm_ ? pcm_->last_remap_dispatches() : 0u;
     }
@@ -713,6 +719,10 @@ public:
             pcm_?pcm_->last_edge_history_copy_bytes():0u);
         FYZZ_PROFILE_COUNTER("sc.island_dispatches",
             pcm_?pcm_->last_island_dispatches():0u);
+        FYZZ_PROFILE_COUNTER("sc.island_source_direct_bytes",
+            pcm_?pcm_->last_island_source_direct_bytes():0u);
+        FYZZ_PROFILE_COUNTER("sc.island_source_upload_bytes",
+            pcm_?pcm_->last_island_source_upload_bytes():0u);
         FYZZ_PROFILE_COUNTER("sc.island_remap_dispatches",
             pcm_?pcm_->last_remap_dispatches():0u);
 #endif
