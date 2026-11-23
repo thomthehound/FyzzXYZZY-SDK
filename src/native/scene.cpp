@@ -4327,105 +4327,105 @@ void Scene::prepare_gpu_dy_pcm_friction_history() {
         source.retained_full=false;
     }
     if(friction_patches_.empty())return;
-        for(std::size_t i=0u;i<gpu_pcm_pairs_.size();++i) {
-            const EdgeIndex edge=gpu_pcm_pairs_[i].edge;
-            if(edge>=friction_by_edge_.size())continue;
-            const Pair pair=island_edges_[edge].shapes;
-            const auto& history=friction_by_edge_[edge];
-            if(history.epoch!=friction_cache_epoch_ ||
-               !history.count || history.pair!=pair ||
-               history.offset>friction_patches_.size() ||
-               history.count>friction_patches_.size()-history.offset)
-                continue;
-            if(history.count>32u)
+    for(std::size_t i=0u;i<gpu_pcm_pairs_.size();++i) {
+        const EdgeIndex edge=gpu_pcm_pairs_[i].edge;
+        if(edge>=friction_by_edge_.size())continue;
+        const Pair pair=island_edges_[edge].shapes;
+        const auto& history=friction_by_edge_[edge];
+        if(history.epoch!=friction_cache_epoch_ ||
+           !history.count || history.pair!=pair ||
+           history.offset>friction_patches_.size() ||
+           history.count>friction_patches_.size()-history.offset)
+            continue;
+        if(history.count>32u)
+            throw std::logic_error(
+                "Source friction history exceeds patch correlation limit");
+        const bool reversed=island_edges_[edge].gu_order_reversed;
+        const Shape& shape0=shapes_[reversed?pair.b:pair.a];
+        const Shape& shape1=shapes_[reversed?pair.a:pair.b];
+        const auto& m0=shape0.material;
+        const auto& m1=shape1.material;
+        if(m0.disable_friction || m1.disable_friction ||
+           m0.disable_strong_friction || m1.disable_strong_friction)
+            continue;
+        const Actor& actor0=actors_[shape0.body];
+        const Actor& actor1=actors_[shape1.body];
+        auto& request=gpu_pcm_pairs_[i];
+        if(gpu_dy_active() &&
+           i<gpu_dy_candidate_sources_.size() &&
+           !gpu_dy_candidate_sources_[i].material.prepared)
+            gpu_dy_candidate_sources_[i].material=
+                prepare_contact_material(
+                    reversed?pair.b:pair.a,reversed?pair.a:pair.b);
+        const GpuDyPairMaterial empty{};
+        const auto& material=i<gpu_dy_candidate_sources_.size()
+            ?gpu_dy_candidate_sources_[i].material:empty;
+        std::uint32_t valid=0u,eligible=0u;
+        for(std::size_t j=0u;j<history.count;++j) {
+            const auto& old=friction_patches_[history.offset+j];
+            if(!cached_friction_patch_valid(old,actor0,actor1))continue;
+            valid|=1u<<j;
+            if(material.prepared &&
+               material.max_contact_impulse!=0.0f &&
+               !material.disable_strong_friction &&
+               old.restitution==material.restitution &&
+               old.damping==material.damping &&
+               old.acceleration_spring==material.acceleration_spring &&
+               old.static_friction==material.static_friction &&
+               old.dynamic_friction==material.dynamic_friction)
+                eligible|=1u<<j;
+        }
+        request.friction_history_mask=valid;
+        request.friction_eligible_mask=eligible;
+        // Source-ordered compatible anchors are fixed before PCM.
+        // Dy selects the first matching local normal from this
+        // bounded stream using the resident GPU contact normal.
+        if(eligible!=0u) {
+            const auto source_index=request.candidate_ordinal;
+            if(i>=gpu_dy_candidate_sources_.size() ||
+               gpu_pcm_pairs_[i].candidate_ordinal!=source_index)
                 throw std::logic_error(
-                    "Source friction history exceeds patch correlation limit");
-            const bool reversed=island_edges_[edge].gu_order_reversed;
-            const Shape& shape0=shapes_[reversed?pair.b:pair.a];
-            const Shape& shape1=shapes_[reversed?pair.a:pair.b];
-            const auto& m0=shape0.material;
-            const auto& m1=shape1.material;
-            if(m0.disable_friction || m1.disable_friction ||
-               m0.disable_strong_friction || m1.disable_strong_friction)
-                continue;
-            const Actor& actor0=actors_[shape0.body];
-            const Actor& actor1=actors_[shape1.body];
-            auto& request=gpu_pcm_pairs_[i];
-            if(gpu_dy_active() &&
-               i<gpu_dy_candidate_sources_.size() &&
-               !gpu_dy_candidate_sources_[i].material.prepared)
-                gpu_dy_candidate_sources_[i].material=
-                    prepare_contact_material(
-                        reversed?pair.b:pair.a,reversed?pair.a:pair.b);
-            const GpuDyPairMaterial empty{};
-            const auto& material=i<gpu_dy_candidate_sources_.size()
-                ?gpu_dy_candidate_sources_[i].material:empty;
-            std::uint32_t valid=0u,eligible=0u;
-            for(std::size_t j=0u;j<history.count;++j) {
+                    "Retained friction has no original Sc numerical source");
+            auto& source=gpu_dy_candidate_sources_[i];
+            if(std::has_single_bit(eligible) &&
+               valid!=std::numeric_limits<std::uint32_t>::max()) {
+                const auto selected=
+                    history.offset+std::countr_zero(eligible);
+                if(selected>=std::numeric_limits<std::uint32_t>::max())
+                    throw std::overflow_error(
+                        "Retained PCM patch exceeds numerical source range");
+                source.retained_single_patch=
+                    static_cast<std::uint32_t>(selected);
+            }else {
+            source.retained_first=static_cast<std::uint32_t>(
+                gpu_dy_history_candidates_.size());
+            source.retained_full=
+                valid==std::numeric_limits<std::uint32_t>::max();
+            for(std::uint32_t j=0u;j<history.count;++j) {
+                if((eligible&(1u<<j))==0u)continue;
                 const auto& old=friction_patches_[history.offset+j];
-                if(!cached_friction_patch_valid(old,actor0,actor1))continue;
-                valid|=1u<<j;
-                if(material.prepared &&
-                   material.max_contact_impulse!=0.0f &&
-                   !material.disable_strong_friction &&
-                   old.restitution==material.restitution &&
-                   old.damping==material.damping &&
-                   old.acceleration_spring==material.acceleration_spring &&
-                   old.static_friction==material.static_friction &&
-                   old.dynamic_friction==material.dynamic_friction)
-                    eligible|=1u<<j;
+                GpuDyRetainedFrictionCandidate candidate{};
+                candidate.body0_normal[0]=old.body0_normal.x;
+                candidate.body0_normal[1]=old.body0_normal.y;
+                candidate.body0_normal[2]=old.body0_normal.z;
+                candidate.source_ordinal=j;
+                candidate.anchor_count=old.anchor_count;
+                for(std::size_t k=0u;k<old.anchor_count;++k) {
+                    const Vec3 x=old.body0_anchors[k];
+                    const Vec3 y=old.body1_anchors[k];
+                    candidate.anchors[k].local_a[0]=x.x;
+                    candidate.anchors[k].local_a[1]=x.y;
+                    candidate.anchors[k].local_a[2]=x.z;
+                    candidate.anchors[k].local_b[0]=y.x;
+                    candidate.anchors[k].local_b[1]=y.y;
+                    candidate.anchors[k].local_b[2]=y.z;
+                }
+                gpu_dy_history_candidates_.push_back(candidate);
+                ++source.retained_count;
             }
-            request.friction_history_mask=valid;
-            request.friction_eligible_mask=eligible;
-            // Source-ordered compatible anchors are fixed before PCM.
-            // Dy selects the first matching local normal from this
-            // bounded stream using the resident GPU contact normal.
-            if(eligible!=0u) {
-                const auto source_index=request.candidate_ordinal;
-                if(i>=gpu_dy_candidate_sources_.size() ||
-                   gpu_pcm_pairs_[i].candidate_ordinal!=source_index)
-                    throw std::logic_error(
-                        "Retained friction has no original Sc numerical source");
-                auto& source=gpu_dy_candidate_sources_[i];
-                if(std::has_single_bit(eligible) &&
-                   valid!=std::numeric_limits<std::uint32_t>::max()) {
-                    const auto selected=
-                        history.offset+std::countr_zero(eligible);
-                    if(selected>=std::numeric_limits<std::uint32_t>::max())
-                        throw std::overflow_error(
-                            "Retained PCM patch exceeds numerical source range");
-                    source.retained_single_patch=
-                        static_cast<std::uint32_t>(selected);
-                }else {
-                source.retained_first=static_cast<std::uint32_t>(
-                    gpu_dy_history_candidates_.size());
-                source.retained_full=
-                    valid==std::numeric_limits<std::uint32_t>::max();
-                for(std::uint32_t j=0u;j<history.count;++j) {
-                    if((eligible&(1u<<j))==0u)continue;
-                    const auto& old=friction_patches_[history.offset+j];
-                    GpuDyRetainedFrictionCandidate candidate{};
-                    candidate.body0_normal[0]=old.body0_normal.x;
-                    candidate.body0_normal[1]=old.body0_normal.y;
-                    candidate.body0_normal[2]=old.body0_normal.z;
-                    candidate.source_ordinal=j;
-                    candidate.anchor_count=old.anchor_count;
-                    for(std::size_t k=0u;k<old.anchor_count;++k) {
-                        const Vec3 x=old.body0_anchors[k];
-                        const Vec3 y=old.body1_anchors[k];
-                        candidate.anchors[k].local_a[0]=x.x;
-                        candidate.anchors[k].local_a[1]=x.y;
-                        candidate.anchors[k].local_a[2]=x.z;
-                        candidate.anchors[k].local_b[0]=y.x;
-                        candidate.anchors[k].local_b[1]=y.y;
-                        candidate.anchors[k].local_b[2]=y.z;
-                    }
-                    gpu_dy_history_candidates_.push_back(candidate);
-                    ++source.retained_count;
-                }
-                }
             }
         }
+    }
 }
 void Scene::update_contacts(bool defer_device_points,float step_seconds) {
     FYZZ_PROFILE_SCOPE("gu.contacts_pcm");
@@ -9003,17 +9003,17 @@ void Scene::prepare_constraints(float seconds) {
         if(resident_pcm) {
             if(manifold.count==0u)
                 throw std::logic_error("Resident PCM has no contact run");
-            const auto& source=gpu_dy_candidate_sources_[prep_slot];
-            const bool device_select=source.retained_count!=0u;
+            const auto& candidate_source=gpu_dy_candidate_sources_[prep_slot];
+            const bool device_select=candidate_source.retained_count!=0u;
             const auto& request=gpu_pcm_pairs_[manifold.pcm_result_index];
             const FrictionPatch* retained=nullptr;
             if(!disable_strong_friction &&
-               source.retained_single_patch!=0xffffffffu) {
+               candidate_source.retained_single_patch!=0xffffffffu) {
                 if(device_select ||
-                   source.retained_single_patch>=friction_patches_.size())
+                   candidate_source.retained_single_patch>=friction_patches_.size())
                     throw std::logic_error(
                         "Pre-witness PCM retained patch is no longer available");
-                retained=&friction_patches_[source.retained_single_patch];
+                retained=&friction_patches_[candidate_source.retained_single_patch];
             }
             if(!retained && !device_select &&
                std::popcount(request.friction_history_mask)==max_source_patches)
