@@ -677,34 +677,46 @@ struct GpuPcmFrictionAnchorFixture {
                 throw std::runtime_error(
                     "Device numerical storage lost its pre-witness body capacity");
             constexpr auto invalid=std::numeric_limits<std::uint32_t>::max();
-            const auto ordinal=[&](BodyId id) {
-                if(id>=scene.actors_.size())
+            for(std::size_t i=0u;i<scene.gpu_dy_contact_prep_pairs_.size();++i) {
+                const auto source=scene.gpu_dy_contact_prep_sources_[i];
+                if(source>=scene.previous_pairs_.size() ||
+                   source>=scene.gpu_dy_island_edges_.size())
                     throw std::runtime_error(
-                        "Device contact preparation references an invalid actor");
-                const auto& actor=scene.actors_[id];
-                if(actor.motion!=Scene::Motion::Dynamic || actor.sleeping ||
-                   actor.solver_row_generation!=
-                       scene.solver_preparation_generation_)
-                    return invalid;
-                if(actor.solver_row_index>=scene.solver_rows_.size() ||
-                   scene.solver_rows_[actor.solver_row_index].
-                       prepared_generation!=scene.solver_preparation_generation_)
-                    return invalid;
-                const auto it=std::lower_bound(
-                    scene.gpu_dy_early_actor_ids_.begin(),
-                    scene.gpu_dy_early_actor_ids_.end(),id);
-                if(it==scene.gpu_dy_early_actor_ids_.end() || *it!=id)
+                        "Device contact preparation has no source graph edge");
+                const auto& edge=scene.gpu_dy_island_edges_[source];
+                if(edge.source_index!=source ||
+                   edge.edge_index!=scene.active_edge_handles_[source])
                     throw std::runtime_error(
-                        "Device contact source has no compact body node");
-                return static_cast<std::uint32_t>(
-                    it-scene.gpu_dy_early_actor_ids_.begin());
-            };
+                        "Device contact preparation lost its Sc EdgeIndex");
+                const auto& pair=scene.previous_pairs_[source];
+                const bool reversed=scene.island_edges_[edge.edge_index].
+                    gu_order_reversed;
+                const auto& prep=scene.gpu_dy_contact_prep_pairs_[i];
+                const auto expected0=reversed?edge.node_b:edge.node_a;
+                const auto expected1=reversed?edge.node_a:edge.node_b;
+                if(prep.solver_ordinal0!=expected0 ||
+                   prep.solver_ordinal1!=expected1 ||
+                   prep.source_body0!=scene.shapes_[
+                       reversed?pair.b:pair.a].body ||
+                   prep.source_body1!=scene.shapes_[
+                       reversed?pair.a:pair.b].body)
+                    throw std::runtime_error(
+                        "Device contact endpoints lost pre-witness source order");
+                for(const auto [row,id]:{
+                    std::pair{expected0,prep.source_body0},
+                    std::pair{expected1,prep.source_body1}})
+                    if(row!=invalid &&
+                       (row>=scene.gpu_dy_early_actor_ids_.size() ||
+                        scene.gpu_dy_early_actor_ids_[row]!=id))
+                        throw std::runtime_error(
+                            "Device contact ordinal addresses another actor");
+            }
+        } else if(joints==0u)
             for(const auto& prep:scene.gpu_dy_contact_prep_pairs_)
-                if(prep.solver_ordinal0!=ordinal(prep.source_body0) ||
-                   prep.solver_ordinal1!=ordinal(prep.source_body1))
+                if(prep.solver_ordinal0!=0xffffffffu ||
+                   prep.solver_ordinal1!=0xffffffffu)
                     throw std::runtime_error(
-                        "Device contact endpoints disagree with Sc source body order");
-        }
+                        "Host-scheduled contact retains a device source ordinal");
         if(joints!=scene.indexed_joints_.size())
             throw std::runtime_error(
                 "Early device Sc joint graph disagrees with Dy source membership");
