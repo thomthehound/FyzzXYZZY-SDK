@@ -889,13 +889,17 @@ public:
                 "Source Sc numerical remap lacks prepared source rows");
         const auto bodies=source_to_solver_row.first(island_node_count_);
         constexpr auto invalid=std::numeric_limits<std::uint32_t>::max();
-        bool body_identity=bodies.size()<=solver_row_capacity;
-        for(std::size_t i=0u;body_identity && i<bodies.size();++i)
-            body_identity=bodies[i]==i;
-        for(const auto row:bodies)
+        bool body_identity=true;
+        for(std::size_t i=0u;i<bodies.size();++i) {
+            const auto row=bodies[i];
             if(row!=invalid && row>=solver_row_capacity)
                 throw std::out_of_range(
                     "Sc body source maps outside the prepared Dy rows");
+            // Excluded trailing nodes cannot appear in device response
+            // ordinals. Preserve invalid mappings within solver capacity.
+            if(row==invalid ? i<solver_row_capacity : row!=i)
+                body_identity=false;
+        }
         auto& uploads=stream_.upload_scratch();
         if(!body_identity) {
             uploads.push_back({
