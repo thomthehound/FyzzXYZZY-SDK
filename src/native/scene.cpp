@@ -4599,7 +4599,9 @@ void Scene::update_contacts(bool defer_device_points,float step_seconds) {
     else if(gpu_dy_active() && gpu_results_pending &&
             !friction_patches_.empty())
         gpu_dy_candidate_sources_.resize(gpu_pcm_pairs_.size());
-    if(gpu_results_pending) {
+    // Collision-only queries have no Dy consumer. Retained friction
+    // sources are needed only by a numerical timestep.
+    if(gpu_results_pending && step_seconds>0.0f) {
         prepare_gpu_dy_pcm_friction_history();
         if(gpu_dy_active() && !gpu_dy_history_candidates_.empty())
             gpu_broadphase_->enqueue_gpu_dy_retained_friction_sources(

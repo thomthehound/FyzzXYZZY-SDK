@@ -271,8 +271,10 @@ public:
            bytes>std::numeric_limits<std::uint32_t>::max())
             throw std::out_of_range("Retained friction source exceeds device view");
         retained_sources_.allocate(bytes,PX_FL);
-        stream_.queue_uploads(std::vector<SourceSapUpload>{{
-            retained_sources_.getDevicePtr(),candidates.data(),bytes}});
+        auto& uploads=stream_.upload_scratch();
+        uploads.push_back({
+            retained_sources_.getDevicePtr(),candidates.data(),bytes});
+        stream_.queue_uploads(uploads);
         prewitness_retained_source_data_=candidates.data();
         prewitness_retained_source_count_=candidates.size();
     }
@@ -1091,9 +1093,11 @@ public:
             if(bytes>max_view_ || bytes>std::numeric_limits<std::uint32_t>::max())
                 throw std::out_of_range("Retained friction source exceeds device view");
             retained_sources_.allocate(bytes,PX_FL);
-            stream_.queue_uploads(std::vector<SourceSapUpload>{{
+            auto& uploads=stream_.upload_scratch();
+            uploads.push_back({
                 retained_sources_.getDevicePtr(),
-                packed_retained_candidates_.data(),bytes}});
+                packed_retained_candidates_.data(),bytes});
+            stream_.queue_uploads(uploads);
         }
         last_schedule_.retained_friction_source_bytes=retained_bytes;
         last_schedule_.prewitness_retained_friction_upload_bytes=early_retained
