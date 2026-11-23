@@ -4824,7 +4824,7 @@ void Scene::update_contacts(bool defer_device_points,float step_seconds) {
         gpu_dy_early_actor_ids_.clear();
     }
     FYZZ_PROFILE_COUNTER("pcm.prewitness_actor_sources",
-        gpu_dy_staged_actor_ids_.size());
+        gpu_dy_staged_actor_count_);
     FYZZ_PROFILE_COUNTER("sc.device_island_early",
         (gpu_dy_early_islands_ || early_device_graph_awaits_gu)?1u:0u);
     // Every device PCM manager reserves a bounded Gu run. Sc reconciles
@@ -9821,7 +9821,7 @@ void Scene::stage_gpu_dy_actor_sources(
            gpu_dy_actor_stage_epochs_[id]==gpu_dy_actor_stage_epoch_)
             continue;
         gpu_dy_actor_stage_epochs_[id]=gpu_dy_actor_stage_epoch_;
-        gpu_dy_staged_actor_ids_.push_back(id);
+        ++gpu_dy_staged_actor_count_;
         auto& input=gpu_dy_integration_inputs_.emplace_back();
         pack_gpu_dy_integration_input(id,seconds,input);
         if(immovable) {
@@ -12758,7 +12758,7 @@ void Scene::advance_collision_internal(
         gpu_dy_joint_source_slots_.clear();
         gpu_dy_early_islands_=false;
         gpu_dy_early_actor_ids_.clear();
-        gpu_dy_staged_actor_ids_.clear();
+        gpu_dy_staged_actor_count_=0u;
         if(++gpu_dy_actor_stage_epoch_==0u) {
             std::fill(gpu_dy_actor_stage_epochs_.begin(),
                       gpu_dy_actor_stage_epochs_.end(),0u);

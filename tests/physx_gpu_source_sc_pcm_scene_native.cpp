@@ -554,8 +554,10 @@ struct GpuPcmFrictionAnchorFixture {
         }
     }
     static void verify_pre_witness_device_admission(const Scene& scene) {
-        auto staged=scene.gpu_dy_staged_actor_ids_;
-        std::sort(staged.begin(),staged.end());
+        const auto stamped=std::count(
+            scene.gpu_dy_actor_stage_epochs_.begin(),
+            scene.gpu_dy_actor_stage_epochs_.end(),
+            scene.gpu_dy_actor_stage_epoch_);
         const auto joints=scene.gpu_dy_early_joint_edges_.size();
         if(!scene.gpu_dy_early_islands_ ||
            scene.gpu_dy_island_edges_.size()!=scene.previous_pairs_.size()+joints ||
@@ -564,11 +566,9 @@ struct GpuPcmFrictionAnchorFixture {
                scene.gpu_dy_early_actor_ids_.size()+joints ||
            !std::is_sorted(scene.gpu_dy_early_actor_ids_.begin(),
                            scene.gpu_dy_early_actor_ids_.end()) ||
-           std::adjacent_find(staged.begin(),staged.end())!=staged.end() ||
-           !std::includes(staged.begin(),staged.end(),
-                          scene.gpu_dy_early_actor_ids_.begin(),
-                          scene.gpu_dy_early_actor_ids_.end()) ||
-           std::any_of(staged.begin(),staged.end(),[&](BodyId id) {
+           stamped!=scene.gpu_dy_staged_actor_count_ ||
+           std::any_of(scene.gpu_dy_early_actor_ids_.begin(),
+                       scene.gpu_dy_early_actor_ids_.end(),[&](BodyId id) {
                return !actor_has_staged_source(scene,id);
            }))
             throw std::runtime_error(
