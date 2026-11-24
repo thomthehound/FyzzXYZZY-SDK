@@ -175,7 +175,8 @@ public:
     SourceDyDistanceNativeStage(compute::Context& context,
         CudaDeviceAddressMap& addresses,SourceSapDmaNative& stream,
         physx::PxgHeapMemoryAllocator& allocator,compute::ShaderBinary shader,
-        std::optional<compute::ShaderBinary> convex_shader=std::nullopt)
+        std::optional<compute::ShaderBinary> convex_shader=std::nullopt,
+        std::optional<compute::ShaderBinary> contact_endpoints_shader=std::nullopt)
         : context_(context),addresses_(addresses),stream_(stream),
           arena_(allocator,physx::PxsHeapStats::eSOLVER),
           actor_locals_(allocator,physx::PxsHeapStats::eSOLVER),
@@ -217,10 +218,33 @@ public:
                 throw;
             }
         }
+        if(contact_endpoints_shader) {
+            try {
+                compute::ComputePipelineDesc refs{};
+                refs.shader=std::move(*contact_endpoints_shader);
+                refs.storage_buffer_binding_count=2u;
+                refs.storage_buffer_views.assign(
+                    2u,compute::StorageBufferViewKind::RawReadWrite);
+                refs.push_constant_bytes=32u;
+                contact_endpoints_pipeline_=context_.create_compute_pipeline(refs);
+#if defined(FYZZXYZZY_PROFILE_GPU)
+                context_.set_pipeline_profile_label(
+                    contact_endpoints_pipeline_,"dy.contact_endpoints");
+#endif
+            }catch(...) {
+                if(convex_pipeline_)context_.destroy_compute_pipeline(convex_pipeline_);
+                if(pipeline_)context_.destroy_compute_pipeline(pipeline_);
+                convex_pipeline_=0u;
+                pipeline_=0u;
+                throw;
+            }
+        }
     }
     SourceDyDistanceNativeStage(const SourceDyDistanceNativeStage&)=delete;
     SourceDyDistanceNativeStage& operator=(const SourceDyDistanceNativeStage&)=delete;
     ~SourceDyDistanceNativeStage() {
+        if(contact_endpoints_pipeline_)
+            context_.destroy_compute_pipeline(contact_endpoints_pipeline_);
         if(convex_pipeline_)context_.destroy_compute_pipeline(convex_pipeline_);
         if(pipeline_)context_.destroy_compute_pipeline(pipeline_);
         arena_.deallocate();
@@ -3415,6 +3439,7 @@ private:
     physx::PxgCudaBuffer retained_sources_;
     SourceFrameInputArenaNative retained_frame_input_;
     compute::PipelineId pipeline_=0;
+    compute::PipelineId contact_endpoints_pipeline_=0;
     compute::PipelineId convex_pipeline_=0;
     std::size_t alignment_=0u;
     std::uint64_t max_view_=0u;
