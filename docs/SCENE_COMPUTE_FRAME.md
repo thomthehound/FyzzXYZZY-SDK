@@ -415,11 +415,14 @@ merging their response topology. Fully awake graphs need no wake-group
 source words. Accurate components reduce published sleep readiness,
 new touch activation and connected active-kinematic vetoes to decide
 runnable numerical tasks. A ready member does not suppress the admission
-of its still-active component. Compact all-awake scenes with a complete resident PCM source range
-submit Dy before the witness join. Sc publishes the witnesses and
+of its still-active component. Compact all-awake scenes with a complete
+resident PCM source range submit Dy before the witness join. Independent
+awake bodies occupy the existing free-integration suffix, without
+entering the accurate candidate graph. Sc publishes the witnesses and
 queues sparse PCM point DMA with numerical results, then consumes the
-already submitted source ordinals. Conditional activation, unrelated
-free-flight sources and wide components retain later authorization.
+submitted source ordinals. Conditional activation, newly admitted free
+sources outside the active inventory, and wide components retain later
+authorization.
 
 Retiring this join requires one Sc-authored, source-ordered table of stable
 candidate identities and typed responding endpoints. GPU PCM must derive

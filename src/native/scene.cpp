@@ -5578,9 +5578,28 @@ void Scene::update_contacts(bool defer_device_points,float step_seconds) {
     }
     FYZZ_PROFILE_COUNTER("pcm.prewitness_body_inputs",
         gpu_dy_prewitness_body_count_);
-    // Awake compact sources require no unresolved integration authorization.
+    // Independent awake bodies use the existing free-integration suffix.
+    // Only the accurate graph's candidate nodes consume solver capacity.
+    const auto awake_source=[&](BodyId id) {
+        const auto& actor=actors_[id];
+        return actor.alive && actor.motion==Motion::Dynamic &&
+            !actor.sleeping && !actor.ready_for_sleep &&
+            actor.angular_inertia_available;
+    };
+    gpu_dy_free_ids_.clear();
     if(gpu_results_pending && gpu_dy_early_islands_ &&
-       gpu_dy_early_actor_ids_.size()==live_dynamic_count_ &&
+       gpu_dy_early_actor_ids_.size()!=live_dynamic_count_) {
+        for(const BodyId id:accurate_islands_.active_nodes) {
+            if(!awake_source(id) ||
+               std::binary_search(gpu_dy_early_actor_ids_.begin(),
+                                  gpu_dy_early_actor_ids_.end(),id))
+                continue;
+            gpu_dy_free_ids_.push_back(id);
+        }
+        std::sort(gpu_dy_free_ids_.begin(),gpu_dy_free_ids_.end());
+    }
+    if(gpu_results_pending && gpu_dy_early_islands_ &&
+       gpu_dy_early_actor_ids_.size()+gpu_dy_free_ids_.size()==live_dynamic_count_ &&
        gpu_dy_early_actor_ids_.size()<gpu_dy_wide_task_threshold &&
        gpu_dy_joint_kinematic_ids_.empty() && retired_edge_handles_.empty() &&
        gpu_pcm_pairs_.size()==previous_pairs_.size() &&
@@ -5588,23 +5607,24 @@ void Scene::update_contacts(bool defer_device_points,float step_seconds) {
        std::none_of(gpu_pcm_pairs_.begin(),gpu_pcm_pairs_.end(),
            [](const auto& pair){return pair.host_generated;}) &&
        std::all_of(gpu_dy_early_actor_ids_.begin(),gpu_dy_early_actor_ids_.end(),
-           [&](BodyId id) {
-               const auto& actor=actors_[id];
-               return !actor.sleeping && !actor.ready_for_sleep &&
-                   actor.angular_inertia_available;
-           })) {
+                   awake_source)) {
         FYZZ_PROFILE_SCOPE("dy.prewitness_submit");
         const auto nodes=gpu_dy_early_actor_ids_.size();
         gpu_dy_bodies_.resize(nodes);
         gpu_dy_body_ordinals_.resize(nodes);
         gpu_dy_tasks_.clear();
         gpu_dy_tasks_.resize(std::min(nodes,gpu_dy_island_edges_.size()));
-        gpu_dy_integrated_poses_.resize(nodes);
-        gpu_dy_sleep_states_.resize(nodes);
+        const auto integration_count=nodes+gpu_dy_free_ids_.size();
+        gpu_dy_integrated_poses_.resize(integration_count);
+        gpu_dy_sleep_states_.resize(integration_count);
         gpu_dy_friction_impulses_.resize(gpu_dy_friction_anchors_.size());
         for(auto& input:gpu_dy_integration_inputs_)
             input.active=1u|32u|gpu_dy_source_indexed_integration|
                 (input.source_element!=invalid_shape?4u:0u);
+        gpu_dy_integration_inputs_.resize(integration_count);
+        for(std::size_t i=0u;i<gpu_dy_free_ids_.size();++i)
+            pack_gpu_dy_integration_input(gpu_dy_free_ids_[i],step_seconds,
+                gpu_dy_integration_inputs_[nodes+i]);
         gpu_broadphase_->enqueue_gpu_dy_distance(
             gpu_dy_bodies_,gpu_dy_rows_,{},{},gpu_dy_body_ordinals_,gpu_dy_tasks_,
             gpu_dy_contact_forces_,{},{},gpu_dy_friction_anchors_,
@@ -10685,14 +10705,33 @@ void Scene::solve_gpu_distance_constraints(float seconds) {
         // Consume submitted ordinals without rewriting borrowed storage.
         if(!gpu_dy_source_body_order_ ||
            solver_active_ids_.size()+gpu_dy_free_ids_.size()!=
-               gpu_dy_prewitness_body_count_ ||
+               gpu_dy_integration_inputs_.size() ||
            gpu_dy_contact_forces_.size()!=prepared_contact_rows_ ||
            gpu_dy_friction_anchors_.size()!=prepared_friction_rows_/2u ||
            !gpu_dy_gu_inputs_.empty() || !gpu_dy_contact_order_.empty())
             throw std::logic_error("Submitted Dy sources changed at Sc publication");
         gpu_dy_free_ordinals_.resize(gpu_dy_free_ids_.size());
-        for(std::size_t i=0u;i<gpu_dy_free_ids_.size();++i)
-            gpu_dy_free_ordinals_[i]=gpu_dy_source_body_index(gpu_dy_free_ids_[i]);
+        const auto first=gpu_dy_integration_inputs_.begin()+
+            gpu_dy_prewitness_body_count_;
+        const auto end=gpu_dy_integration_inputs_.end();
+        for(std::size_t i=0u;i<gpu_dy_free_ids_.size();++i) {
+            const auto id=gpu_dy_free_ids_[i];
+            const auto node=std::lower_bound(gpu_dy_early_actor_ids_.begin(),
+                gpu_dy_early_actor_ids_.end(),id);
+            if(node!=gpu_dy_early_actor_ids_.end() && *node==id) {
+                gpu_dy_free_ordinals_[i]=static_cast<std::size_t>(
+                    node-gpu_dy_early_actor_ids_.begin());
+                continue;
+            }
+            const auto found=std::lower_bound(first,end,id,
+                [](const auto& input,BodyId target) {
+                    return input.source_actor<target;
+                });
+            if(found==end || found->source_actor!=id)
+                throw std::logic_error("Submitted free-flight source is missing");
+            gpu_dy_free_ordinals_[i]=static_cast<std::size_t>(
+                found-gpu_dy_integration_inputs_.begin());
+        }
     }
     // Sc's Gu-indexed force buffer and retired-manager bookkeeping are
     // independent of the submitted numerical solve. Prepare them while

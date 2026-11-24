@@ -4783,10 +4783,17 @@ void verify_connected_pre_witness_island_admission(
         return std::array<BodyId,2>{bridge,responding};
     };
     const auto bridge_cpu=add_bridge(cpu),bridge_gpu=add_bridge(gpu);
+    BodyId free_cpu{},free_gpu{};
     for(std::uint32_t frame=0u;frame<3u;++frame) {
+        if(frame==1u) {
+            free_cpu=cpu.add_dynamic_box({0.25f,0.25f,0.25f},{20.f,5.f,0.f},1.f);
+            free_gpu=gpu.add_dynamic_box({0.25f,0.25f,0.25f},{20.f,5.f,0.f},1.f);
+            cpu.set_velocity(free_cpu,{1.f,0.f,0.f});
+            gpu.set_velocity(free_gpu,{1.f,0.f,0.f});
+        }
         cpu.step(1.f/120.f);
         gpu.step(1.f/120.f);
-        if(frame==0u)
+        if(frame!=1u)
             require(native::GpuPcmFrictionAnchorFixture::has_prewitness_solve(gpu),
                 "Compact awake numerical work waited for PCM publication");
         native::GpuPcmFrictionAnchorFixture::
@@ -4799,7 +4806,7 @@ void verify_connected_pre_witness_island_admission(
                 stats.device_admitted_tasks==1u &&
                 stats.device_admitted_bodies==4u &&
                 stats.device_admitted_descriptors==4u &&
-                producer->dy_gpu_integrated_body_count()==4u &&
+                producer->dy_gpu_integrated_body_count()==(frame==0u?4u:5u) &&
                 gpu.accurate_island_id(gpu_ids[0])==
                     gpu.accurate_island_id(gpu_ids[1]) &&
                 gpu.accurate_island_id(gpu_ids[0])==
@@ -4807,6 +4814,10 @@ void verify_connected_pre_witness_island_admission(
                 gpu.accurate_island_id(gpu_ids[0])==
                     gpu.accurate_island_id(bridge_gpu[1]),
             "Response-disabled bridge split resident numerical admission");
+        if(frame!=0u)
+            test::compound_compare_state(
+                gpu.body_state(free_gpu),cpu.body_state(free_cpu),0.003f,
+                "Independent free-flight source diverged during early solve");
         for(std::size_t i=0u;i<bridge_gpu.size();++i)
             test::compound_compare_state(
                 gpu.body_state(bridge_gpu[i]),cpu.body_state(bridge_cpu[i]),
