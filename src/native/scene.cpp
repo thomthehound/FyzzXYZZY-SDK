@@ -4727,7 +4727,9 @@ void Scene::update_contacts(bool defer_device_points,float step_seconds) {
             if(!admitted)break;
             gpu_dy_island_edges_.push_back({
                 edge,nodes[0],nodes[1],
-                static_cast<std::uint32_t>(i),responding?0u:2u});
+                static_cast<std::uint32_t>(i),
+                (responding?0u:2u)|
+                    (island_edges_[edge].gu_order_reversed?4u:0u)});
         }
         if(admitted) {
             std::sort(gpu_dy_early_actor_ids_.begin(),
