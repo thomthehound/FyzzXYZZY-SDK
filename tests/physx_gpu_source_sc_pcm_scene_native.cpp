@@ -698,14 +698,18 @@ struct GpuPcmFrictionAnchorFixture {
                 const auto& prep=scene.gpu_dy_contact_prep_pairs_[i];
                 const auto expected0=reversed?edge.node_b:edge.node_a;
                 const auto expected1=reversed?edge.node_a:edge.node_b;
-                if(prep.solver_ordinal0!=expected0 ||
-                   prep.solver_ordinal1!=expected1 ||
+                const auto numerical_source=[invalid](std::uint32_t node) {
+                    return node==invalid
+                        ?invalid:native::gpu_dy_unresolved_solver_ordinal;
+                };
+                if(prep.solver_ordinal0!=numerical_source(expected0) ||
+                   prep.solver_ordinal1!=numerical_source(expected1) ||
                    prep.source_body0!=scene.shapes_[
                        reversed?pair.b:pair.a].body ||
                    prep.source_body1!=scene.shapes_[
                        reversed?pair.a:pair.b].body)
                     throw std::runtime_error(
-                        "Device contact endpoints lost pre-witness source order");
+                        "Device contact prep reconstructed a host solver ordinal");
                 for(const auto [row,id]:{
                     std::pair{expected0,prep.source_body0},
                     std::pair{expected1,prep.source_body1}})
