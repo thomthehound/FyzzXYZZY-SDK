@@ -2196,6 +2196,42 @@ public:
             static_cast<std::size_t>(params[28])+offsets[12]);
         dispatch.push_constants.resize(sizeof(params));
         const auto max_groups=context_.device_info().max_workgroup_count[0];
+        if(device_admission && !device_admission->deferred_body_remap &&
+           device_admission->joint_source_count==0u &&
+           device_admission->contact_manager_capacity!=0u) {
+            if(!contact_endpoints_pipeline_ ||
+               device_admission->contact_manager_capacity!=manifolds.size())
+                throw std::logic_error(
+                    "Sc device contact endpoints require a complete Dy source table");
+            const auto& layout=device_admission->layout;
+            std::uint32_t work_base=0u;
+            compute::DispatchCommand refs{};
+            refs.pipeline=contact_endpoints_pipeline_;
+            refs.buffers.push_back(dispatch.buffers[0]);
+            refs.buffers.push_back(source_native_view(
+                addresses_,device_admission->work,layout.bytes,
+                alignment_,1u,compute::BufferAccess::ReadWrite,
+                work_base,max_view_));
+            const std::array<std::uint32_t,8> arguments{
+                params[15],params[29],work_base,
+                narrow(std::size_t(work_base)+layout.contact_endpoints),
+                narrow(std::size_t(work_base)+layout.contact_admissions),
+                narrow(manifolds.size()),narrow(prep_count),narrow(bodies.size())};
+            refs.push_constants.resize(sizeof(arguments));
+            std::memcpy(refs.push_constants.data(),
+                        arguments.data(),sizeof(arguments));
+            for(std::size_t first=0u;first<manifolds.size();) {
+                const auto groups=std::min<std::size_t>(
+                    max_groups,(manifolds.size()-first+127u)/128u);
+                refs.groups={narrow(groups),1u,1u};
+                if(first!=0u)
+                    throw std::out_of_range(
+                        "Dy contact endpoint admission exceeds one device dispatch");
+                stream_.commands().emplace_back(refs);
+                ++last_schedule_.dispatches;
+                first+=groups*128u;
+            }
+        }
         const auto launch=[&](Launch phase,TileRange range,std::uint32_t iteration=0u) {
             const bool integrates=phase==Launch::Fused || phase==Launch::Integrate ||
                                   phase==Launch::FreeBodies;
