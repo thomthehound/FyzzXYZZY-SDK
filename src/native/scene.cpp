@@ -5317,8 +5317,9 @@ void Scene::update_contacts(bool defer_device_points,float step_seconds) {
     }
     // Preserve the Sc graph's candidate identity across the witness
     // join; device admission resolves the numerical endpoint indices.
-    if(gpu_dy_early_islands_ && gpu_dy_early_joint_edges_.empty()) {
-        if(gpu_dy_island_edges_.size()!=previous_pairs_.size())
+    if(gpu_dy_early_islands_) {
+        const auto joint_count=gpu_dy_early_joint_edges_.size();
+        if(gpu_dy_island_edges_.size()!=previous_pairs_.size()+joint_count)
             throw std::logic_error(
                 "Early device contact graph lost Sc candidate order");
         for(std::size_t source=0u;source<previous_pairs_.size();++source) {
@@ -5330,7 +5331,7 @@ void Scene::update_contacts(bool defer_device_points,float step_seconds) {
                gpu_dy_contact_prep_sources_[dense]!=source)
                 throw std::logic_error(
                     "Early device contact preparation lost its source slot");
-            const auto& edge=gpu_dy_island_edges_[source];
+            const auto& edge=gpu_dy_island_edges_[joint_count+source];
             if(edge.source_index!=source ||
                edge.edge_index!=active_edge_handles_[source])
                 throw std::logic_error(
@@ -7978,6 +7979,9 @@ void Scene::partition_constraints() {
     indexed_joints_.clear();
     solver_tasks_.clear();
     gpu_dy_free_ids_.clear();
+    gpu_dy_source_body_order_=false;
+    gpu_dy_joint_kinematic_ids_.clear();
+    gpu_dy_joint_row_remap_.clear();
     gpu_dy_responding_island_count_=0u;
     const bool gpu_integration=gpu_dy_active();
     const bool device_sc_grouping=gpu_integration &&
@@ -8187,7 +8191,20 @@ void Scene::partition_constraints() {
         compact_source_tasks;
     FYZZ_PROFILE_COUNTER("dy.source_response_capacity",
         device_source_responses?gpu_dy_island_edges_.size():0u);
-    if(device_source_responses)return;
+    if(device_source_responses) {
+        gpu_dy_source_body_order_=true;
+        // Kinematics supply prescribed motion without joining dynamic components.
+        for(const auto edge:indexed_joints_) {
+            const auto pair=island_edges_[edge].pair;
+            for(const auto id:{pair.a,pair.b})
+                if(actors_[id].motion==Motion::Kinematic)
+                    gpu_dy_joint_kinematic_ids_.push_back(id);
+        }
+        auto& ids=gpu_dy_joint_kinematic_ids_;
+        std::sort(ids.begin(),ids.end());
+        ids.erase(std::unique(ids.begin(),ids.end()),ids.end());
+        return;
+    }
     constexpr std::uint32_t invalid_device_node=0xffffffffu;
     constexpr std::uint32_t nonresponding_device_node=1u<<17u;
     if(prepare_device_graph) {
@@ -8707,6 +8724,12 @@ void Scene::prepare_constraints(float seconds) {
             const auto source_row=[&](BodyId id) {
                 const auto& actor=actors_[id];
                 if(!rigid_node(actor.motion))return invalid_solver_row;
+                if(gpu_dy_source_body_order_) {
+                    const auto index=gpu_dy_body_index(id);
+                    if(index>=invalid_solver_row)
+                        throw std::overflow_error("Device joint body ordinal overflow");
+                    return static_cast<std::uint32_t>(index);
+                }
                 if(actor.solver_row_generation!=solver_preparation_generation_ ||
                    actor.solver_row_index>=solver_rows_.size() ||
                    actor.solver_row_index>=invalid_solver_row)
@@ -9319,10 +9342,9 @@ void Scene::prepare_constraints(float seconds) {
                 !actor1.sleeping;
             prep.inverse_mass0=resident0?actor0.inverse_mass:a.inverse_mass;
             prep.inverse_mass1=resident1?actor1.inverse_mass:b.inverse_mass;
-            // Contact-only early graphs retain their pre-witness source
-            // ordinals. Other graphs use Sc's final solver-row order.
-            if(!gpu_dy_early_islands_ ||
-               !gpu_dy_early_joint_edges_.empty()) {
+            // Early device graphs resolve responding endpoints from source admission.
+            if(!gpu_dy_source_body_order_ &&
+               (!gpu_dy_early_islands_ || !gpu_dy_early_joint_edges_.empty())) {
                 const auto pack_ordinal=[&](const Actor& actor) {
                     if(!rigid_node(actor.motion))return invalid_solver_row;
                     if(actor.solver_row_generation!=solver_preparation_generation_ ||
@@ -9767,61 +9789,15 @@ void Scene::prepare_gpu_dy_device_islands(bool selected) {
            gpu_dy_tasks_.size()>gpu_broadphase_->gpu_dy_direct_task_limit())
             throw std::logic_error(
                 "Early Sc accurate islands lost their node capacity");
-        if(gpu_dy_source_body_order_) {
-            if(!gpu_dy_early_joint_edges_.empty())
-                throw std::logic_error(
-                    "Device source body ordinals cannot carry joint rows");
-            if(gpu_dy_early_actor_ids_.size()>=
-               std::numeric_limits<std::uint32_t>::max())
-                throw std::overflow_error(
-                    "Device source body capacity exceeds 32-bit ordinals");
-            gpu_broadphase_->remap_gpu_dy_island_bodies(
-                {},static_cast<std::uint32_t>(
-                    gpu_dy_early_actor_ids_.size()),0u);
-            return;
-        }
-        constexpr auto invalid=std::numeric_limits<std::uint32_t>::max();
-        if(solver_rows_.size()>=invalid)
-            throw std::overflow_error("Early Sc solver-row capacity exceeds 32 bits");
-        const auto final_row=[this,invalid](BodyId id) -> std::uint32_t {
-            const auto& actor=actors_[id];
-            if(actor.motion!=Motion::Dynamic || actor.sleeping ||
-               actor.solver_row_generation!=solver_preparation_generation_)
-                return invalid;
-            if(actor.solver_row_index>=solver_rows_.size())
-                throw std::logic_error(
-                    "Early Sc admission has no final solver-row identity");
-            if(solver_rows_[actor.solver_row_index].prepared_generation!=
-                   solver_preparation_generation_)
-                return invalid;
-            return static_cast<std::uint32_t>(actor.solver_row_index);
-        };
+        if(!gpu_dy_source_body_order_)
+            throw std::logic_error("Early Sc admission lacks source body order");
         const auto joint_count=gpu_dy_early_joint_edges_.size();
-        if(joint_count==0u) {
-            bool identity=true;
-            for(std::size_t i=0u;i<gpu_dy_early_actor_ids_.size();++i) {
-                const auto row=final_row(gpu_dy_early_actor_ids_[i]);
-                if(row==invalid ? i<solver_rows_.size() : row!=i) {
-                    identity=false;
-                    break;
-                }
-            }
-            if(identity) {
-                gpu_dy_island_node_flags_.clear();
-                gpu_broadphase_->remap_gpu_dy_island_bodies(
-                    {},static_cast<std::uint32_t>(solver_rows_.size()),0u);
-                return;
-            }
-        }
-        gpu_dy_island_node_flags_.resize(gpu_dy_early_actor_ids_.size());
-        for(std::size_t i=0u;i<gpu_dy_early_actor_ids_.size();++i)
-            gpu_dy_island_node_flags_[i]=
-                final_row(gpu_dy_early_actor_ids_[i]);
+        if(!joint_count)return;
         if(joint_count>=0x40000000u ||
            gpu_dy_rows_.size()>=0x40000000u)
             throw std::overflow_error("Early Sc joint remap exceeds token range");
-        gpu_dy_island_node_flags_.resize(
-            gpu_dy_early_actor_ids_.size()+joint_count,invalid);
+        constexpr auto invalid=std::numeric_limits<std::uint32_t>::max();
+        gpu_dy_joint_row_remap_.assign(joint_count,invalid);
         std::size_t joint_row=0u;
         for(const EdgeIndex edge:indexed_joints_) {
             const auto it=std::lower_bound(
@@ -9833,9 +9809,7 @@ void Scene::prepare_gpu_dy_device_islands(bool selected) {
                 });
             if(it==gpu_dy_early_joint_edges_.end() || *it!=edge)
                 throw std::logic_error("Early Sc joint missing prepared source identity");
-            gpu_dy_island_node_flags_[
-                gpu_dy_early_actor_ids_.size()+
-                (it-gpu_dy_early_joint_edges_.begin())]=
+            gpu_dy_joint_row_remap_[it-gpu_dy_early_joint_edges_.begin()]=
                 static_cast<std::uint32_t>(joint_row);
             const auto kind=constraint_records_[
                 island_edges_[edge].constraint_id].kind;
@@ -9845,13 +9819,11 @@ void Scene::prepare_gpu_dy_device_islands(bool selected) {
         }
         if(joint_row!=gpu_dy_rows_.size())
             throw std::logic_error("Early Sc joint row mapping is incomplete");
-        for(std::size_t i=gpu_dy_early_actor_ids_.size();
-            i<gpu_dy_island_node_flags_.size();++i)
-            if(gpu_dy_island_node_flags_[i]==invalid)
+        for(const auto row:gpu_dy_joint_row_remap_)
+            if(row==invalid)
                 throw std::logic_error("Early Sc joint was not prepared by Dy");
-        gpu_broadphase_->remap_gpu_dy_island_bodies(
-            gpu_dy_island_node_flags_,
-            static_cast<std::uint32_t>(solver_rows_.size()),
+        gpu_broadphase_->remap_gpu_dy_island_joints(
+            gpu_dy_joint_row_remap_,
             static_cast<std::uint32_t>(gpu_dy_rows_.size()));
         return;
     }
@@ -9958,16 +9930,16 @@ void Scene::pack_gpu_dy_integration_input(
 }
 std::size_t Scene::gpu_dy_body_index(BodyId id) const {
     if(!gpu_dy_source_body_order_)return actors_[id].solver_row_index;
-    const auto it=std::lower_bound(
-        gpu_dy_early_actor_ids_.begin(),gpu_dy_early_actor_ids_.end(),id);
-    if(it==gpu_dy_early_actor_ids_.end() || *it!=id)
-        throw std::logic_error(
-            "Device Sc numerical body has no pre-witness source node");
-    return static_cast<std::size_t>(it-gpu_dy_early_actor_ids_.begin());
+    const bool kinematic=actors_[id].motion==Motion::Kinematic;
+    const auto& ids=kinematic?gpu_dy_joint_kinematic_ids_:gpu_dy_early_actor_ids_;
+    const auto it=std::lower_bound(ids.begin(),ids.end(),id);
+    if(it==ids.end() || *it!=id)
+        throw std::logic_error("Device Sc numerical body has no source ordinal");
+    return static_cast<std::size_t>(it-ids.begin())+
+        (kinematic?gpu_dy_early_actor_ids_.size():0u);
 }
 void Scene::solve_gpu_distance_constraints(float seconds) {
     FYZZ_PROFILE_SCOPE("dy.gpu_enqueue_join");
-    gpu_dy_source_body_order_=false;
     // Source Dy owns task, body and 1D row order; the device receives
     // transient packed views of those exact prepared source inputs.
     if(ordered_constraints_.empty() && solver_active_ids_.empty() &&
@@ -10018,20 +9990,19 @@ void Scene::solve_gpu_distance_constraints(float seconds) {
     const auto early_task_capacity=gpu_dy_early_islands_
         ?std::min(gpu_dy_early_actor_ids_.size(),
                   gpu_dy_island_edges_.size()):0u;
-    const bool early_device_admission=gpu_dy_early_islands_ &&
-        gpu_dy_responding_island_count_!=0u &&
-        early_task_capacity!=0u && early_task_capacity<=direct_task_limit;
+    const bool early_device_admission=gpu_dy_source_body_order_;
+    if(early_device_admission &&
+       (!early_task_capacity || early_task_capacity>direct_task_limit))
+        throw std::logic_error("Early Sc numerical task capacity is invalid");
     const bool late_device_admission=!gpu_dy_early_islands_ &&
         gpu_dy_responding_island_count_!=0u &&
         !gpu_dy_island_edges_.empty() &&
         gpu_dy_responding_island_count_>responding_tasks &&
         gpu_dy_responding_island_count_<=direct_task_limit;
-    const bool device_admission=gpu_dy_device_admission_enabled_ &&
-        has_device_numerical_sources && compact_tasks &&
-        (early_device_admission || late_device_admission);
+    const bool device_admission=early_device_admission ||
+        (gpu_dy_device_admission_enabled_ && has_device_numerical_sources &&
+         compact_tasks && late_device_admission);
     FYZZ_PROFILE_COUNTER("dy.device_island_selected",device_admission?1u:0u);
-    gpu_dy_source_body_order_=device_admission &&
-        gpu_dy_early_islands_ && gpu_dy_early_joint_edges_.empty();
     if(gpu_dy_early_islands_ && gpu_dy_early_joint_edges_.empty() &&
        !gpu_dy_source_body_order_)
         for(auto& prep:gpu_dy_contact_prep_pairs_) {
@@ -10042,7 +10013,8 @@ void Scene::solve_gpu_distance_constraints(float seconds) {
     // input. This body span carries only result capacity, not a second
     // host-authored mass stream.
     gpu_dy_bodies_.resize(gpu_dy_source_body_order_
-        ?gpu_dy_early_actor_ids_.size():solver_rows_.size());
+        ?gpu_dy_early_actor_ids_.size()+gpu_dy_joint_kinematic_ids_.size()
+        :solver_rows_.size());
     const auto integration_count=gpu_dy_bodies_.size()+gpu_dy_free_ids_.size();
     gpu_dy_integration_inputs_.assign(integration_count,{});
     gpu_dy_integrated_poses_.resize(integration_count);
@@ -10076,7 +10048,7 @@ void Scene::solve_gpu_distance_constraints(float seconds) {
                actor.solver_row_index>=solver_rows_.size())
                 throw std::logic_error(
                     "Source GPU 1D kinematic lacks its prepared row");
-            auto& input=gpu_dy_integration_inputs_[actor.solver_row_index];
+            auto& input=gpu_dy_integration_inputs_[gpu_dy_body_index(id)];
             input.active=16u;
             pack(input.linear_velocity,actor.velocity);
             pack(input.angular_velocity,actor.angular_velocity);

@@ -514,14 +514,12 @@ public:
             throw std::logic_error("Source Sc GPU island admission unavailable");
         pcm_->enqueue_device_islands(edges,node_flags,sources,early);
     }
-    void remap_gpu_dy_island_bodies(
-            std::span<const std::uint32_t> source_to_solver_row,
-            std::uint32_t solver_row_capacity,
+    void remap_gpu_dy_island_joints(
+            std::span<const std::uint32_t> joints,
             std::uint32_t joint_row_capacity) override {
         if(!pcm_)
-            throw std::logic_error("Source Sc numerical remap unavailable");
-        pcm_->remap_device_island_bodies(
-            source_to_solver_row,solver_row_capacity,joint_row_capacity);
+            throw std::logic_error("Source Sc joint remap unavailable");
+        pcm_->remap_device_island_joints(joints,joint_row_capacity);
     }
     void discard_gpu_dy_island_admission() override {
         if(!pcm_)

@@ -887,7 +887,6 @@ public:
             if(ordinal==native::gpu_dy_unresolved_solver_ordinal) {
                 if(!device_admission || !device_world_motion ||
                    device_admission->deferred_body_remap ||
-                   device_admission->joint_source_count!=0u ||
                    !contact_endpoints_pipeline_ || actor==invalid ||
                    !std::isfinite(body.inverse_mass) || body.inverse_mass<0.f)
                     throw std::logic_error(

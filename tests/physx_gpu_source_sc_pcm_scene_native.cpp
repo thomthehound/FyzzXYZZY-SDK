@@ -580,15 +580,12 @@ struct GpuPcmFrictionAnchorFixture {
             scene.gpu_dy_actor_stage_epochs_.end(),
             scene.gpu_dy_actor_stage_epoch_);
         const auto joints=scene.gpu_dy_early_joint_edges_.size();
-        const bool identity_remap=joints==0u &&
-            scene.gpu_dy_island_node_flags_.empty();
         const bool source_body_order=scene.gpu_dy_source_body_order_;
         if(!scene.gpu_dy_early_islands_ ||
            scene.gpu_dy_island_edges_.size()!=scene.previous_pairs_.size()+joints ||
            scene.gpu_dy_early_actor_ids_.empty() ||
-           (!identity_remap &&
-            scene.gpu_dy_island_node_flags_.size()!=
-                scene.gpu_dy_early_actor_ids_.size()+joints) ||
+           scene.gpu_dy_island_node_flags_.size()!=
+                scene.gpu_dy_early_actor_ids_.size() ||
            !std::is_sorted(scene.gpu_dy_early_actor_ids_.begin(),
                            scene.gpu_dy_early_actor_ids_.end()) ||
            stamped!=scene.gpu_dy_staged_actor_count_ ||
@@ -658,8 +655,7 @@ struct GpuPcmFrictionAnchorFixture {
                 ?0xffffffffu:static_cast<std::uint32_t>(
                     scene.actors_[id].solver_row_index);
             if(source_body_order) {
-                if(joints!=0u ||
-                   i>=scene.gpu_dy_integration_inputs_.size() ||
+                if(i>=scene.gpu_dy_integration_inputs_.size() ||
                    (expected!=0xffffffffu &&
                     (scene.gpu_dy_integration_inputs_[i].source_actor!=id ||
                      (scene.gpu_dy_integration_inputs_[i].active&1u)==0u)) ||
@@ -667,27 +663,21 @@ struct GpuPcmFrictionAnchorFixture {
                     (scene.gpu_dy_integration_inputs_[i].active&1u)!=0u))
                     throw std::runtime_error(
                         "Device Sc source ordinal does not own its numerical body");
-            }else if(identity_remap) {
-                if(expected==0xffffffffu
-                    ?i<scene.solver_rows_.size():expected!=i)
-                    throw std::runtime_error(
-                        "Early device Sc identity row admission changed Dy ownership");
-            }else if(scene.gpu_dy_island_node_flags_[i]!=expected)
-                throw std::runtime_error(
-                    "Early device Sc compact node remap changed Dy row ownership");
+            }
         }
         if(source_body_order) {
-            if(scene.gpu_dy_bodies_.size()!=scene.gpu_dy_early_actor_ids_.size())
+            if(scene.gpu_dy_bodies_.size()!=scene.gpu_dy_early_actor_ids_.size()+
+                scene.gpu_dy_joint_kinematic_ids_.size())
                 throw std::runtime_error(
                     "Device numerical storage lost its pre-witness body capacity");
             constexpr auto invalid=std::numeric_limits<std::uint32_t>::max();
             for(std::size_t i=0u;i<scene.gpu_dy_contact_prep_pairs_.size();++i) {
                 const auto source=scene.gpu_dy_contact_prep_sources_[i];
                 if(source>=scene.previous_pairs_.size() ||
-                   source>=scene.gpu_dy_island_edges_.size())
+                   joints+source>=scene.gpu_dy_island_edges_.size())
                     throw std::runtime_error(
                         "Device contact preparation has no source graph edge");
-                const auto& edge=scene.gpu_dy_island_edges_[source];
+                const auto& edge=scene.gpu_dy_island_edges_[joints+source];
                 if(edge.source_index!=source ||
                    edge.edge_index!=scene.active_edge_handles_[source])
                     throw std::runtime_error(
@@ -736,10 +726,10 @@ struct GpuPcmFrictionAnchorFixture {
             if(it==scene.gpu_dy_early_joint_edges_.end())
                 throw std::runtime_error(
                     "Early device Sc joint lost its prepared source identity");
-            const auto index=scene.gpu_dy_early_actor_ids_.size()+
-                static_cast<std::size_t>(
+            const auto index=static_cast<std::size_t>(
                     it-scene.gpu_dy_early_joint_edges_.begin());
-            if(scene.gpu_dy_island_node_flags_[index]!=prepared_row)
+            if(index>=scene.gpu_dy_joint_row_remap_.size() ||
+               scene.gpu_dy_joint_row_remap_[index]!=prepared_row)
                 throw std::runtime_error(
                     "Early device Sc joint remap changed prepared Dy row order");
             const auto& joint=scene.constraint_records_[
@@ -754,7 +744,9 @@ struct GpuPcmFrictionAnchorFixture {
     }
     static void verify_resident_mass_inputs(const Scene& scene) {
         if(scene.gpu_dy_bodies_.size()!=(scene.gpu_dy_source_body_order_
-               ?scene.gpu_dy_early_actor_ids_.size():scene.solver_rows_.size()))
+               ?scene.gpu_dy_early_actor_ids_.size()+
+                    scene.gpu_dy_joint_kinematic_ids_.size()
+               :scene.solver_rows_.size()))
             throw std::runtime_error(
                 "GPU world-motion results lack the admitted body count");
         for(const auto& body:scene.gpu_dy_bodies_)
@@ -5078,11 +5070,10 @@ void verify_early_pcm_island_pipeline(
             require(device->sc_island_remap_dispatch_count()==0u &&
                     !device->sc_island_deferred_joint_remap(),
                 "Distance joints requested an unneeded device remap dispatch");
-            if(!with_joints)
-                require(native::GpuPcmFrictionAnchorFixture::
-                            has_source_body_order(gpu) &&
-                        !device->sc_island_deferred_body_remap(),
-                    "Device Sc contact bodies still requested a host solver-row map");
+            require(native::GpuPcmFrictionAnchorFixture::
+                        has_source_body_order(gpu) &&
+                    !device->sc_island_deferred_body_remap(),
+                "Device Sc bodies still requested a host solver-row map");
         }
         const auto expected_found=frame==0u?responding:0u;
         require(gpu.found_contacts().size()==expected_found &&
@@ -6919,6 +6910,9 @@ void verify_joint_only_device_admission(
         const bool device_graph=responding>1u;
         const auto stats=producer->dy_launch_stats();
         require(producer->sc_island_deferred_joint_remap()==(frame<2u) &&
+                !producer->sc_island_deferred_body_remap() &&
+                native::GpuPcmFrictionAnchorFixture::
+                    has_source_body_order(gpu)==device_graph &&
                 producer->sc_island_remap_dispatch_count()==0u,
             "Sc joint numerical remap did not follow actual source row order");
         require(stats.host_descriptor_inputs==

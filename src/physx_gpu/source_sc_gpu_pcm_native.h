@@ -873,70 +873,31 @@ public:
         island_work_ready_=true;
         if(early)stream_.submit();
     }
-    void remap_device_island_bodies(
-            std::span<const std::uint32_t> source_to_solver_row,
-            std::uint32_t solver_row_capacity,
+    void remap_device_island_joints(
+            std::span<const std::uint32_t> joints,
             std::uint32_t joint_row_capacity) {
-        const bool identity=source_to_solver_row.empty();
-        if(!island_work_ready_ ||
-           (!identity &&
-            source_to_solver_row.size()!=
-                std::uint64_t(island_node_count_)+island_joint_count_) ||
-           !island_node_count_ || !solver_row_capacity ||
-           (island_joint_count_ && (!joint_row_capacity || identity)))
-            throw std::logic_error(
-                "Source Sc numerical remap lacks prepared source rows");
-        if(identity) {
-            island_deferred_body_remap_=false;
-            island_deferred_joint_remap_=false;
-            island_body_remap_={};
-            return;
+        if(!island_work_ready_ || joints.size()!=island_joint_count_ ||
+           (island_joint_count_ && !joint_row_capacity))
+            throw std::logic_error("Source Sc joint remap lacks prepared rows");
+        if(joints.empty())return;
+        if(island_layout_.joint_remap>island_layout_.bytes ||
+           joints.size_bytes()>island_layout_.bytes-island_layout_.joint_remap)
+            throw std::out_of_range("Sc joint source exceeds resident remap capacity");
+        bool identity=true;
+        for(std::size_t i=0u;i<joints.size();++i) {
+            const auto row=joints[i];
+            if(row>=joint_row_capacity || row>=0x40000000u)
+                throw std::out_of_range("Sc joint source maps outside prepared Dy rows");
+            identity&=row==i;
         }
-        const auto bodies=source_to_solver_row.first(island_node_count_);
-        constexpr auto invalid=std::numeric_limits<std::uint32_t>::max();
-        bool body_identity=true;
-        for(std::size_t i=0u;i<bodies.size();++i) {
-            const auto row=bodies[i];
-            if(row!=invalid && row>=solver_row_capacity)
-                throw std::out_of_range(
-                    "Sc body source maps outside the prepared Dy rows");
-            // Excluded trailing nodes cannot appear in device response
-            // ordinals. Preserve invalid mappings within solver capacity.
-            if(row==invalid ? i<solver_row_capacity : row!=i)
-                body_identity=false;
-        }
-        auto& uploads=stream_.upload_scratch();
-        if(!body_identity) {
+        if(!identity) {
+            auto& uploads=stream_.upload_scratch();
             uploads.push_back({
-                island_work_.getDevicePtr()+island_layout_.body_remap,
-                bodies.data(),bodies.size_bytes()});
-            island_deferred_body_remap_=true;
-            island_body_remap_=bodies;
+                island_work_.getDevicePtr()+island_layout_.joint_remap,
+                joints.data(),joints.size_bytes()});
+            stream_.queue_uploads(uploads);
+            island_deferred_joint_remap_=true;
         }
-        if(island_joint_count_) {
-            const auto joints=source_to_solver_row.subspan(island_node_count_);
-            if(joints.size()!=island_joint_count_ ||
-               island_layout_.joint_remap>island_layout_.bytes ||
-               joints.size_bytes()>
-                   island_layout_.bytes-island_layout_.joint_remap)
-                throw std::out_of_range(
-                    "Sc joint source exceeds resident remap capacity");
-            bool joint_identity=true;
-            for(std::size_t i=0u;i<joints.size();++i) {
-                const auto row=joints[i];
-                if(row>=joint_row_capacity || row>=0x40000000u)
-                    throw std::out_of_range(
-                        "Sc joint source maps outside prepared Dy rows");
-                joint_identity&=row==i;
-            }
-            if(!joint_identity) {
-                uploads.push_back({
-                    island_work_.getDevicePtr()+island_layout_.joint_remap,
-                    joints.data(),joints.size_bytes()});
-                island_deferred_joint_remap_=true;
-            }
-        }
-        if(!uploads.empty())stream_.queue_uploads(uploads);
     }
     void discard_device_islands() noexcept {
         island_work_ready_=false;
