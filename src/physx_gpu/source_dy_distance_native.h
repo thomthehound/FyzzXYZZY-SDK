@@ -883,6 +883,17 @@ public:
                 throw std::logic_error(
                     "Source Dy descriptor disagrees with prepared contact body");
             if(ordinal==invalid)ordinal=body.solver_ordinal;
+            if(ordinal==native::gpu_dy_unresolved_solver_ordinal) {
+                if(!device_admission || !device_world_motion ||
+                   device_admission->deferred_body_remap ||
+                   device_admission->joint_source_count!=0u ||
+                   !contact_endpoints_pipeline_ || actor==invalid ||
+                   !std::isfinite(body.inverse_mass) || body.inverse_mass<0.f)
+                    throw std::logic_error(
+                        "Device contact source cannot defer its numerical body");
+                // The device patches this tagged reference before PGS.
+                return 0xfffffffdu;
+            }
             // An awake zero-inverse-mass dynamic still has source motion.
             // GPU preintegration owns it, unlike static/kinematic inline
             // participants whose velocities Sc prepares independently.
@@ -983,8 +994,8 @@ public:
             }
         };
         if(device_admission) {
-            // Device tokens use pre-PCM candidate ordinals; prepared
-            // endpoints already carry their authoritative solver ordinals.
+            // Device contact tokens use stable source identities.
+            // Responding references resolve from Sc's resident topology.
             for(const auto& manager:manifolds) {
                 if(!manager.patch_count)continue;
                 if(manager.prep_index>=prep_count)
