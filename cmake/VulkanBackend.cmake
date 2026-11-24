@@ -543,6 +543,10 @@ if(FYZZXYZZY_BUILD_VULKAN)
         "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_pcm_sc_contact_publish_native.hlsli")
     add_custom_target(fyzzxyzzy_source_pcm_convex_contacts_shader
       DEPENDS "${FYZZXYZZY_SOURCE_PCM_FACE_SPV}")
+    set(FYZZXYZZY_SOURCE_DY_CONTACT_ENDPOINTS_SPV
+      "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_source_dy_contact_endpoints_native.spv")
+    fyzzxyzzy_compile_hlsl("${FYZZXYZZY_SOURCE_DY_CONTACT_ENDPOINTS_SPV}"
+      "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_dy_contact_endpoints_native.hlsl" cs_6_6 main)
     set(FYZZXYZZY_SOURCE_DY_DISTANCE_SPV
       "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_source_dy_distance_pgs_native.spv")
     fyzzxyzzy_compile_hlsl("${FYZZXYZZY_SOURCE_DY_DISTANCE_SPV}" "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_dy_distance_pgs_native.hlsl" cs_6_6 main
@@ -892,10 +896,11 @@ if(FYZZXYZZY_BUILD_VULKAN)
       "${FYZZXYZZY_SOURCE_PCM_GJK_SPV}"
       "${FYZZXYZZY_SOURCE_SC_CONTACT_JOURNAL_SPV}"
        "${FYZZXYZZY_SOURCE_SC_DEVICE_ISLAND_SPV}"
-      "${FYZZXYZZY_SOURCE_PCM_GJK_SPV}")
-    set(_pcm_stages Candidates EpaCompact GjkContact EpaContact FaceContacts GjkReduce GjkPublish EpaArgsReset GjkPrimitive ContactJournal DeviceIslands GjkFused)
+      "${FYZZXYZZY_SOURCE_PCM_GJK_SPV}"
+      "${FYZZXYZZY_SOURCE_DY_CONTACT_ENDPOINTS_SPV}")
+    set(_pcm_stages Candidates EpaCompact GjkContact EpaContact FaceContacts GjkReduce GjkPublish EpaArgsReset GjkPrimitive ContactJournal DeviceIslands GjkFused ContactEndpoints)
     set(_pcm_manifest "FYZZXYZZY_SOURCE_PCM_1 SPIRV\n")
-    foreach(_idx RANGE 0 11)
+    foreach(_idx RANGE 0 12)
       list(GET _pcm_stages ${_idx} _stage)
       list(GET _pcm_binaries ${_idx} _binary)
       get_filename_component(_name "${_binary}" NAME)
