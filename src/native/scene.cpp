@@ -4811,11 +4811,12 @@ void Scene::update_contacts(bool defer_device_points,float step_seconds) {
                     actor.wake_counter>2.f*seconds;
                 // Only a new GPU physical touch can activate an otherwise
                 // sleeping candidate before Sc observes the PCM result.
-                if(!awake && (!responding || !new_device_touch_candidate)) {
+                if(!awake && !new_device_touch_candidate) {
                     admitted=false;
                     break;
                 }
-                if(!responding)continue;
+                // Physical connectivity retains dynamic endpoints even
+                // when the contact contributes no numerical response.
                 if(actor.dynamics.position_iterations==0u) {
                     admitted=false;
                     break;
@@ -10082,7 +10083,6 @@ void Scene::solve_gpu_distance_constraints(float seconds) {
     const auto pack=[](float(&out)[3],Vec3 v) {
         out[0]=v.x;out[1]=v.y;out[2]=v.z;
     };
-    gpu_dy_body_ordinals_.resize(solver_active_ids_.size());
     gpu_dy_tasks_.clear();
     // A pre-witness Sc graph is already resident and owns admission.
     // Late graphs still require more responding islands than host tasks.
@@ -10117,6 +10117,8 @@ void Scene::solve_gpu_distance_constraints(float seconds) {
         ?std::min(gpu_dy_early_actor_ids_.size(),
                   gpu_dy_island_edges_.size()):0u;
     const bool early_device_admission=gpu_dy_source_body_order_;
+    gpu_dy_body_ordinals_.resize(early_device_admission
+        ?gpu_dy_early_actor_ids_.size():solver_active_ids_.size());
     if(early_device_admission &&
        (!early_task_capacity || early_task_capacity>direct_task_limit))
         throw std::logic_error("Early Sc numerical task capacity is invalid");

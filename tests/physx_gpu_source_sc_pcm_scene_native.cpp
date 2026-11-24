@@ -649,12 +649,26 @@ struct GpuPcmFrictionAnchorFixture {
                 const auto candidate=i-joints;
                 const auto reversed=scene.island_edges_[
                     scene.active_edge_handles_[candidate]].gu_order_reversed;
-                const auto expected_kind=reversed
-                    ?physx_gpu::source_sc_device_island_reverse_contact_bit:0u;
+                const auto pair=scene.previous_pairs_[candidate];
+                const auto a=scene.shapes_[pair.a].body;
+                const auto b=scene.shapes_[pair.b].body;
+                const bool responds=std::min(
+                    scene.actors_[a].dynamics.max_contact_impulse,
+                    scene.actors_[b].dynamics.max_contact_impulse)!=0.f;
+                const auto expected_kind=(reversed
+                    ?physx_gpu::source_sc_device_island_reverse_contact_bit:0u)|
+                    (responds?0u:physx_gpu::source_sc_device_island_no_response_bit);
+                const auto check_node=[&](BodyId id,std::uint32_t node) {
+                    return scene.actors_[id].motion==Scene::Motion::Dynamic
+                        ?node<scene.gpu_dy_early_actor_ids_.size() &&
+                         scene.gpu_dy_early_actor_ids_[node]==id
+                        :node==0xffffffffu;
+                };
                 if(edge.edge_index!=scene.active_edge_handles_[candidate] ||
-                   edge.source_index!=candidate || edge.kind!=expected_kind)
+                   edge.source_index!=candidate || edge.kind!=expected_kind ||
+                   !check_node(a,edge.node_a) || !check_node(b,edge.node_b))
                     throw std::runtime_error(
-                        "Early device Sc graph lost its contact identity");
+                        "Early device Sc graph lost its contact connectivity");
             }
             for(const auto node:{edge.node_a,edge.node_b})
                 if(node!=0xffffffffu &&
@@ -4747,6 +4761,22 @@ void verify_connected_pre_witness_island_admission(
     }
     cpu.create_center_distance_constraint(cpu_ids[0],cpu_ids[1],0.83f);
     gpu.create_center_distance_constraint(gpu_ids[0],gpu_ids[1],0.83f);
+    // A zero-impulse dynamic bridge connects a second responding region
+    // without contributing contact response rows of its own.
+    const auto add_bridge=[](native::Scene& scene) {
+        scene.add_static_box({0.5f,0.5f,0.5f},{1.8f,0.f,0.f});
+        const auto bridge=scene.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{0.9f,0.83f,0.f},1.f);
+        const auto responding=scene.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{1.8f,0.83f,0.f},1.f);
+        RigidBodyDynamics dynamics{};
+        dynamics.gravity_enabled=false;
+        dynamics.max_contact_impulse=0.f;
+        scene.set_dynamics(bridge,dynamics);
+        scene.set_velocity(bridge,{0.02f,0.f,0.f});
+        return std::array<BodyId,2>{bridge,responding};
+    };
+    const auto bridge_cpu=add_bridge(cpu),bridge_gpu=add_bridge(gpu);
     for(std::uint32_t frame=0u;frame<3u;++frame) {
         cpu.step(1.f/120.f);
         gpu.step(1.f/120.f);
@@ -4758,10 +4788,20 @@ void verify_connected_pre_witness_island_admission(
         require(gpu.contacts().size()==cpu.contacts().size() &&
                 stats.device_island_indirect_dispatches==1u &&
                 stats.device_admitted_tasks==1u &&
-                stats.device_admitted_descriptors>=2u &&
+                stats.device_admitted_bodies==4u &&
+                stats.device_admitted_descriptors==4u &&
+                producer->dy_gpu_integrated_body_count()==4u &&
                 gpu.accurate_island_id(gpu_ids[0])==
-                    gpu.accurate_island_id(gpu_ids[1]),
-            "Connected pre-witness graph was replaced by host task admission");
+                    gpu.accurate_island_id(gpu_ids[1]) &&
+                gpu.accurate_island_id(gpu_ids[0])==
+                    gpu.accurate_island_id(bridge_gpu[0]) &&
+                gpu.accurate_island_id(gpu_ids[0])==
+                    gpu.accurate_island_id(bridge_gpu[1]),
+            "Response-disabled bridge split resident numerical admission");
+        for(std::size_t i=0u;i<bridge_gpu.size();++i)
+            test::compound_compare_state(
+                gpu.body_state(bridge_gpu[i]),cpu.body_state(bridge_cpu[i]),
+                0.03f,"Response-disabled bridge motion diverged from CPU PGS");
         for(std::size_t i=0u;i<cpu_ids.size();++i)
             test::compound_compare_state(
                 gpu.body_state(gpu_ids[i]),cpu.body_state(cpu_ids[i]),

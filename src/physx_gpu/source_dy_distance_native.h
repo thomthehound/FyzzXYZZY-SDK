@@ -1618,9 +1618,10 @@ public:
             throw std::overflow_error(
                 "Source GPU free-body velocity writeback exceeds 32-bit view");
         output_bytes+=free_velocity_bytes+free_sleep_bytes;
-        // Sc needs admitted body ordinals for numerical publication.
-        // Device task records enter host staging only when the caller
-        // requests them; neither output requires a device mirror.
+        // Source-indexed integration publishes by numerical address;
+        // only remapped or diagnostic consumers need the ordinal list.
+        const bool readback_body_ordinals=device_admission &&
+            (!source_indexed_integration || readback_device_task_records);
         const std::size_t device_header_offset=output_bytes;
         const std::size_t device_task_offset=output_bytes+
             (device_admission?16u:0u);
@@ -1630,7 +1631,7 @@ public:
         const std::size_t device_ordinal_offset=device_task_offset+
             device_task_bytes;
         const std::size_t device_error_offset=device_ordinal_offset+
-            (device_admission?body_ordinals.size_bytes():0u);
+            (readback_body_ordinals?body_ordinals.size_bytes():0u);
         const std::size_t host_result_bytes=device_error_offset+
             (device_admission?8u:0u);
         if(device_admission &&
@@ -2405,7 +2406,7 @@ public:
                 device_task_buffer=device_tasks.buffer;
                 device_task_source=device_tasks.offset;
             }
-            if(!body_ordinals.empty()) {
+            if(readback_body_ordinals && !body_ordinals.empty()) {
                 const auto device_ordinals=addresses_.resolve(
                     device_admission->work+
                         device_admission->layout.body_order,
@@ -2453,6 +2454,7 @@ public:
             .output_bytes=output_bytes,
             .device_admission=device_admission.has_value(),
             .readback_device_task_records=readback_device_task_records,
+            .readback_body_ordinals=readback_body_ordinals,
             .source_descriptors=source_descriptors,
             .device_header_offset=device_header_offset,
             .device_task_offset=device_task_offset,
@@ -2480,7 +2482,7 @@ public:
                 downloads[download_count++]={
                     device_task_buffer,device_task_source,
                     host_.data()+device_task_offset,device_task_bytes};
-            if(!body_ordinals.empty())
+            if(readback_body_ordinals && !body_ordinals.empty())
                 downloads[download_count++]={
                     device_ordinal_buffer,device_ordinal_source,
                     host_.data()+device_ordinal_offset,
@@ -2583,22 +2585,25 @@ public:
                 for(std::size_t i=admitted[1];i<tasks.size();++i)
                     tasks[i].error=0u;
                 tasks=tasks.first(admitted[1]);
-                admitted_body_ordinals_.resize(admitted[2]);
-                if(admitted[2])
-                    std::memcpy(admitted_body_ordinals_.data(),
-                        host_.data()+pending.device_ordinal_offset,
-                        admitted[2]*sizeof(std::uint32_t));
-                if(!pending.source_to_solver_row.empty())
-                    for(auto& index:admitted_body_ordinals_) {
-                        if(index>=pending.source_to_solver_row.size())
-                            throw std::logic_error(
-                                "Source Dy GPU body source ordinal invalid");
-                        index=pending.source_to_solver_row[index];
-                        if(index>=bodies.size())
-                            throw std::logic_error(
-                                "Source Dy GPU mapped solver row invalid");
-                    }
-                body_ordinals=admitted_body_ordinals_;
+                if(pending.readback_body_ordinals) {
+                    admitted_body_ordinals_.resize(admitted[2]);
+                    if(admitted[2])
+                        std::memcpy(admitted_body_ordinals_.data(),
+                            host_.data()+pending.device_ordinal_offset,
+                            admitted[2]*sizeof(std::uint32_t));
+                    if(!pending.source_to_solver_row.empty())
+                        for(auto& index:admitted_body_ordinals_) {
+                            if(index>=pending.source_to_solver_row.size())
+                                throw std::logic_error(
+                                    "Source Dy GPU body source ordinal invalid");
+                            index=pending.source_to_solver_row[index];
+                            if(index>=bodies.size())
+                                throw std::logic_error(
+                                    "Source Dy GPU mapped solver row invalid");
+                        }
+                    body_ordinals=admitted_body_ordinals_;
+                }else if(device_world_motion)
+                    last_schedule_.device_world_motion_bodies=admitted[2];
             }
         }
         for(const auto& dirty:pending_actor_locals_)
@@ -2923,7 +2928,8 @@ public:
             output_bytes+(pending.device_admission
                 ?16u+(pending.readback_device_task_records
                         ?pending.tasks.size_bytes():0u)+
-                    pending.body_ordinals.size_bytes()+8u+
+                    (pending.readback_body_ordinals
+                        ?pending.body_ordinals.size_bytes():0u)+8u+
                     (pending.compact_contact_admission
                         ?admitted_contact_sources_.size()*sizeof(std::uint32_t)
                         :pending.response_capacity*sizeof(std::uint32_t))
@@ -3094,6 +3100,7 @@ private:
         std::size_t output_bytes=0u;
         bool device_admission=false;
         bool readback_device_task_records=true;
+        bool readback_body_ordinals=true;
         bool source_descriptors=false;
         std::size_t device_header_offset=0u,device_task_offset=0u,
                     device_ordinal_offset=0u,device_error_offset=0u;

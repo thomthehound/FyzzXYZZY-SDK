@@ -395,8 +395,13 @@ energy after island activation; it does not reconstruct the candidate
 mass frames, dynamics or force inputs. Counted interactions are already
 fixed by pair and constraint admission. Source-indexed dynamics integrate
 at the same ordinal whether their component admits a solver task or free
-flight. Unrelated free actors occupy the suffix. The early device path
-retains the PCM preparation prefix through publication; host-scheduled
+flight. Response-disabled contacts retain both dynamic graph endpoints, but
+publish no response token. Bodies connected to a responding component
+share its iteration and integration range; components without responses
+remain free-flight work. The source-indexed result path does not download
+the redundant solver-body ordinal list. Unrelated free actors occupy
+the suffix. The early device path retains the PCM preparation prefix
+through publication; host-scheduled
 tasks compact their preparation by touching manager. Numerical enqueue
 still requires Sc activation, sleep arbitration and free-body admission.
 
