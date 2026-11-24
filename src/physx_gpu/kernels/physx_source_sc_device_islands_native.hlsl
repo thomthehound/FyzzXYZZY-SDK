@@ -43,10 +43,11 @@ static const uint contactEdge=0u;
 static const uint numericalExtentValid=0x80000000u;
 static const uint jointEdge=1u;
 static const uint noResponse=2u;
+static const uint reverseContact=4u;
 static const uint deviceJoint=16u;
 static const uint nonrespondingNode=0x20000u;
 static const uint requireContactTask=0x40000u;
-static const uint permittedKinds=jointEdge|noResponse|deviceJoint;
+static const uint permittedKinds=jointEdge|noResponse|deviceJoint|reverseContact;
 
 void reject(uint bits) {
     uint previous;
@@ -87,7 +88,8 @@ bool edgeConnected(uint edge,uint kind) {
         return false;
     }
     if((kind&~permittedKinds)!=0u ||
-       ((kind&deviceJoint)!=0u && (kind&jointEdge)==0u)) {
+       ((kind&deviceJoint)!=0u && (kind&jointEdge)==0u) ||
+       ((kind&reverseContact)!=0u && (kind&jointEdge)!=0u)) {
         reject(1u);
         return false;
     }
@@ -229,6 +231,26 @@ uint itemKey(uint item) {
     // in descending Constraint.index order.
     return root*3u+((kind&jointEdge)!=0u?1u:2u);
 }
+// Sc publishes numerical endpoint ordinals in interaction order.
+void publishContactSource(uint edge) {
+    const uint address=p.admissionBias+edge*24u;
+    const uint kind=work.Load(address+20u);
+    if((kind&jointEdge)!=0u)return;
+    const uint source=work.Load(address);
+    if(source>=p.primaryCapacity) {
+        reject(64u);
+        return;
+    }
+    const uint nodeA=work.Load(address+8u);
+    const uint nodeB=work.Load(address+12u);
+    const uint endpointBase=p.bodyOrderBias+
+        ((p.nodeCount*4u+15u)&~15u)+source*8u;
+    work.Store2(endpointBase,(kind&reverseContact)!=0u
+        ?uint2(nodeB,nodeA):uint2(nodeA,nodeB));
+    uint unused;
+    work.InterlockedOr(p.contactAdmissionBias+(source>>5u)*4u,
+        1u<<(source&31u),unused);
+}
 void scatterItem(uint position,uint item) {
     const uint root=itemRoot(item);
     if(root==p.nodeCount)return;
@@ -257,12 +279,7 @@ void scatterItem(uint position,uint item) {
         work.Store(p.responseOrderBias+response*4u,edge);
         work.Store(p.tokenBias+response*4u,responseToken(edge));
         work.Store(p.extentBias+response*4u,responseExtent(edge));
-        if((work.Load(p.admissionBias+edge*24u+20u)&jointEdge)==0u) {
-            uint unused;
-            const uint source=work.Load(p.admissionBias+edge*24u);
-            work.InterlockedOr(p.contactAdmissionBias+(source>>5u)*4u,
-                1u<<(source&31u),unused);
-        }
+        publishContactSource(edge);
     }
 }
 bool runnableRoot(uint index) {
@@ -508,12 +525,7 @@ void admitCompact(uint lane) {
                 work.Store(p.responseOrderBias+position*4u,edge);
                 work.Store(p.tokenBias+position*4u,responseToken(edge));
                 work.Store(p.extentBias+position*4u,responseExtent(edge));
-                if((work.Load(p.admissionBias+edge*24u+20u)&jointEdge)==0u) {
-                    uint unused;
-                    const uint source=work.Load(p.admissionBias+edge*24u);
-                    work.InterlockedOr(p.contactAdmissionBias+(source>>5u)*4u,
-                        1u<<(source&31u),unused);
-                }
+                publishContactSource(edge);
             }
         }
     }
