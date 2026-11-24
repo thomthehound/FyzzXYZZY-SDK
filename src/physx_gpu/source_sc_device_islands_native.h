@@ -40,6 +40,7 @@ inline std::uint32_t source_sc_indirect_task_limit(
 // Every source index is validated against its own resident Dy table.
 inline constexpr std::uint32_t source_sc_device_island_joint_bit=1u;
 inline constexpr std::uint32_t source_sc_device_island_no_response_bit=2u;
+inline constexpr std::uint32_t source_sc_device_island_reverse_contact_bit=4u;
 // Direct joint tokens require device-authored 1D rows; other joints
 // use a source-indexed full Dy descriptor.
 inline constexpr std::uint32_t source_sc_device_island_device_joint_bit=16u;
