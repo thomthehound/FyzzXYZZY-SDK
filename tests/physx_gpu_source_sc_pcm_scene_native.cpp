@@ -1004,11 +1004,15 @@ struct GpuPcmFrictionAnchorFixture {
                 const auto& actor=scene.actors_[id];
                 if(actor.motion!=Scene::Motion::Dynamic ||
                    actor.sleeping)return;
+                const auto expected=scene.gpu_dy_source_body_order_
+                    ?native::gpu_dy_unresolved_solver_ordinal
+                    :static_cast<std::uint32_t>(scene.gpu_dy_body_index(id));
                 if(inverse_mass!=actor.inverse_mass ||
-                   ordinal>=scene.gpu_dy_bodies_.size() ||
-                   ordinal!=scene.gpu_dy_body_index(id))
+                   ordinal!=expected ||
+                   (!scene.gpu_dy_source_body_order_ &&
+                    ordinal>=scene.gpu_dy_bodies_.size()))
                     throw std::runtime_error(
-                        "Compact GPU contact source lost its numerical body ordinal");
+                        "Compact GPU contact source lost its numerical body ownership");
             };
             verify(prep.source_body0,prep.inverse_mass0,prep.solver_ordinal0);
             verify(prep.source_body1,prep.inverse_mass1,prep.solver_ordinal1);
