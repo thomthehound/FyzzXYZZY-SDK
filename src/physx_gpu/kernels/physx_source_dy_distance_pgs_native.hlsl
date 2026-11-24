@@ -625,26 +625,21 @@ bool sourceDyExpandDescriptor(uint token,uint extent,
             uint ordinalB=dynamicB?(refB>>2u):
                 (refB&3u)==3u?invalidBody:
                 arena.Load(p.prepBias+refB+76u);
-            if((p.launchControl&0x08000000u)!=0u) {
-                const uint scratch=arena.Load(p.integrationBias+28u);
-                const uint endpointOffset=arena.Load(scratch+60u);
-                if(endpointOffset!=0u) {
-                    const uint2 endpoints=scIslandWork.Load2(
-                        p.ordinalBias+endpointOffset+index*8u);
-                    if((dynamicA && endpoints.x>=p.bodyCount) ||
-                       (dynamicB && endpoints.y>=p.bodyCount)) {
-                        sourceDyTaskErrorOr(errorAddress,1048576u);
-                        return false;
-                    }
-                    if(dynamicA) {
-                        ordinalA=endpoints.x;
-                        arena.Store(prep,(ordinalA<<2u)|1u);
-                    }
-                    if(dynamicB) {
-                        ordinalB=endpoints.y;
-                        arena.Store(prep+4u,(ordinalB<<2u)|1u);
-                    }
+            const uint endpointOffset=(p.launchControl&0x08000000u)!=0u
+                ?arena.Load(arena.Load(p.integrationBias+28u)+60u):0u;
+            if(endpointOffset!=0u) {
+                const uint2 endpoints=scIslandWork.Load2(
+                    p.ordinalBias+endpointOffset+index*8u);
+                ordinalA=dynamicA?endpoints.x:ordinalA;
+                ordinalB=dynamicB?endpoints.y:ordinalB;
+                if((dynamicA && ordinalA>=p.bodyCount) ||
+                   (dynamicB && ordinalB>=p.bodyCount)) {
+                    sourceDyTaskErrorOr(errorAddress,1048576u);
+                    return false;
                 }
+                arena.Store2(prep,uint2(
+                    dynamicA?(ordinalA<<2u)|1u:refA,
+                    dynamicB?(ordinalB<<2u)|1u:refB));
             }
             desc=uint4(index,ordinalA,ordinalB,
                        (dynamicA?0x100u:0u)|
