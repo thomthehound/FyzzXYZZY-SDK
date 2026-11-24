@@ -872,7 +872,7 @@ public:
             throw std::overflow_error(
                 "Source Gu contact-prep arena exceeds address space");
         const std::size_t static_begin=prep_bytes+cpu_gu.size_bytes();
-        packed_.assign(prep_count,{});
+        packed_.resize(prep_count);
         inline_bodies_.clear();
         if(++inline_body_epoch_==0u) {
             std::fill(inline_body_slots_.begin(),inline_body_slots_.end(),
@@ -1024,6 +1024,9 @@ public:
                     pack_manager(manager,desc.row0,desc.row1);
             }
         }
+        if(device_admission)
+            for(std::size_t i=0u;i<packed_.size();++i)
+                if(!assigned_[i])packed_[i]={};
         // Only CPU Gu friction patches and invalidated GPU PCM history
         // require host anchor input. Compact those source-owned anchors
         // in patch order; each patch records its own position relative
