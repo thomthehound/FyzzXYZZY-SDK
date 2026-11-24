@@ -354,9 +354,19 @@ void verify(Context& context,const char* filename) {
                     std::to_string(observed) + ", expected=" +
                     std::to_string(edge) + ", token=" +
                     std::to_string(token));
-            if((record.kind&source_sc_device_island_joint_bit)==0u)
+            if((record.kind&source_sc_device_island_joint_bit)==0u) {
                 contact_bits[record.source_index/32u]|=
                     1u<<(record.source_index%32u);
+                const auto offset=result.first.contact_endpoints+
+                    std::size_t(record.source_index)*8u;
+                const bool reversed=(record.kind&
+                    source_sc_device_island_reverse_contact_bit)!=0u;
+                require(load<std::uint32_t>(result.second,offset)==
+                            (reversed?record.node_b:record.node_a) &&
+                        load<std::uint32_t>(result.second,offset+4u)==
+                            (reversed?record.node_a:record.node_b),
+                    "Device Sc numerical endpoints lost interaction ordering");
+            }
         }
         for(std::size_t word=0u;word<contact_bits.size();++word)
             require(load<std::uint32_t>(result.second,
@@ -514,7 +524,7 @@ void verify(Context& context,const char* filename) {
     // non-touching candidates, and remap only admitted bodies to Dy rows.
     const std::vector<SourceScDeviceIslandEdge> early_contacts{
         {0u,1u,invalid,0u,0u},
-        {1u,3u,invalid,1u,0u}};
+        {1u,3u,invalid,1u,source_sc_device_island_reverse_contact_bit}};
     const auto candidate_word=source_sc_device_island_active_bit|
         source_sc_device_island_contact_task_bit|0x104u;
     const std::vector<std::uint32_t> candidate_nodes{
