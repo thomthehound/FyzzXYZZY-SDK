@@ -671,14 +671,25 @@ struct GpuPcmFrictionAnchorFixture {
                 ?0xffffffffu:static_cast<std::uint32_t>(
                     scene.actors_[id].solver_row_index);
             if(source_body_order) {
+                const auto free=std::find(scene.gpu_dy_free_ids_.begin(),
+                    scene.gpu_dy_free_ids_.end(),id);
+                const bool active=expected!=0xffffffffu ||
+                    free!=scene.gpu_dy_free_ids_.end();
                 if(i>=scene.gpu_dy_integration_inputs_.size() ||
-                   (expected!=0xffffffffu &&
-                    (scene.gpu_dy_integration_inputs_[i].source_actor!=id ||
-                     (scene.gpu_dy_integration_inputs_[i].active&1u)==0u)) ||
-                   (expected==0xffffffffu &&
-                    (scene.gpu_dy_integration_inputs_[i].active&1u)!=0u))
+                   ((scene.gpu_dy_integration_inputs_[i].active&1u)!=0u)!=active ||
+                   (active && scene.gpu_dy_integration_inputs_[i].source_actor!=id) ||
+                   (free!=scene.gpu_dy_free_ids_.end() &&
+                    scene.gpu_dy_free_ordinals_[free-scene.gpu_dy_free_ids_.begin()]!=i))
                     throw std::runtime_error(
                         "Device Sc source ordinal does not own its numerical body");
+                if(active && (scene.gpu_dy_integrated_poses_[i].valid!=1u ||
+                    std::count_if(scene.gpu_dy_integration_inputs_.begin(),
+                        scene.gpu_dy_integration_inputs_.end(),
+                        [id](const auto& input) {
+                            return (input.active&1u) && input.source_actor==id;
+                        })!=1))
+                    throw std::runtime_error(
+                        "Device Sc candidate integrated more than once or lost its pose");
             }
         }
         if(source_body_order) {

@@ -204,8 +204,10 @@ struct GpuDyDistanceBody {
     }
 };
 static_assert(sizeof(GpuDyDistanceBody)==52u);
-// DyBodyCoreIntegrator::integrateCore inputs. Free bodies follow the
-// solver-body ordinals and integrate without solver deltas.
+// Source-indexed dynamic bodies share one integration slot, regardless
+// of whether their accurate component admits a numerical solver task.
+inline constexpr std::uint32_t gpu_dy_source_indexed_integration=0x200u;
+// DyBodyCoreIntegrator::integrateCore inputs.
 struct GpuDyBodyIntegrationInput {
     float position[3]{},orientation[4]{};
     float linear_velocity[3]{},angular_velocity[3]{};
@@ -2279,6 +2281,7 @@ private:
     std::vector<GpuDyIntegratedPose> gpu_dy_integrated_poses_;
     std::vector<GpuDySleepState> gpu_dy_sleep_states_;
     std::vector<BodyId> gpu_dy_free_ids_;
+    std::vector<std::size_t> gpu_dy_free_ordinals_;
     bool gpu_dy_pose_ready_=false;
     bool gpu_dy_source_body_order_=false;
     std::vector<GpuDyJointRow> gpu_dy_rows_;

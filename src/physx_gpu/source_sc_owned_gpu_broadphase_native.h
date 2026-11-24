@@ -345,7 +345,8 @@ public:
         // Body integration also covers shapes without a device target.
         for(auto& input:integration) {
             if(input.active&16u)continue;
-            const auto dy_flags=input.active&32u;
+            const auto dy_flags=input.active&
+                (32u|native::gpu_dy_source_indexed_integration);
             if(!input.active || input.source_element==0xffffffffu) {
                 input.active=(input.active&1u)|dy_flags;
                 continue;

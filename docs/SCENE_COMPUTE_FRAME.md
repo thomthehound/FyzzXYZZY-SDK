@@ -390,7 +390,10 @@ independently of the compact public friction cache. CPU Gu appends its
 correlated patch descriptors. Public writeback resolves the numerical
 patch through its candidate manager. A continuous PCM-to-Dy numerical
 path without a host header dependency still requires pre-witness
-integration admission. The early device path retains the PCM preparation
+awake-body and sleep-state inputs. Source-indexed dynamic candidates
+integrate at their original graph ordinal whether the accurate component
+admits a solver task or free flight. The device component root selects
+the integration path; unrelated free actors occupy the suffix. The early device path retains the PCM preparation
 prefix and its candidate addresses through publication; only host-scheduled
 tasks compact their numerical preparation by touching manager.
 

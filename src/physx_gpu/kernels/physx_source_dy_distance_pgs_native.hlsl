@@ -1660,13 +1660,13 @@ void saveMotion(uint index,uint endError) {
     arena.Store3(base+36u,arena.Load3(base+12u));
 }
 
-void integrateBody(uint ordinal) {
+void integrateBody(uint ordinal,bool freeSource) {
     float3 linearDelta=0.0f;
     float3 angularState=0.0f;
     const uint input=p.integrationBias+44u+ordinal*40u;
     const uint inputFlags=arena.Load(input+8u);
     [branch]
-    if(ordinal<p.bodyCount) {
+    if(ordinal<p.bodyCount && !freeSource) {
         const uint from=p.bodyBias+ordinal*52u;
         const uint to=p.writebackBias+p.resultBodyOffset+
             ordinal*((inputFlags&64u)!=0u?52u:48u);
@@ -1684,7 +1684,7 @@ void integrateBody(uint ordinal) {
     const uint destination=p.writebackBias+p.resultPatchOffset+
         p.patchCount*4u+ordinal*32u;
     arena.Store(destination+28u,0u);
-    if(ordinal>=p.bodyCount && (inputFlags&32u)!=0u &&
+    if(freeSource && (inputFlags&32u)!=0u &&
        !sourceDyPreIntegrateBody(ordinal)) {
         sourceDyInvalidatePreparedVelocity(ordinal);
         return;
@@ -1713,7 +1713,7 @@ void integrateBody(uint ordinal) {
     if(locks&16u)angularState.y=0.0f;
     if(locks&32u)angularState.z=0.0f;
     float3 inertiaX=0.0f,inertiaY=0.0f,inertiaZ=0.0f;
-    if(ordinal<p.bodyCount) {
+    if(ordinal<p.bodyCount && !freeSource) {
         const uint inertia=sourceDyInertiaAddress(ordinal);
         inertiaX=asfloat(arena.Load3(inertia));
         inertiaY=asfloat(arena.Load3(inertia+12u));
@@ -1725,7 +1725,7 @@ void integrateBody(uint ordinal) {
         sourceDyDot3(inertiaZ,angularState));
     float3 finalLinear=motionLinear;
     float3 finalAngular=baseAngular;
-    if(ordinal<p.bodyCount && (inputFlags&8u)!=0u) {
+    if(ordinal<p.bodyCount && (inputFlags&8u)!=0u && !freeSource) {
         const uint from=p.bodyBias+ordinal*52u;
         const uint to=p.writebackBias+p.resultBodyOffset+
             ordinal*((inputFlags&64u)!=0u?52u:48u);
@@ -1747,6 +1747,11 @@ void integrateBody(uint ordinal) {
             arena.Store3(to+24u,asuint(motionLinear));
             arena.Store3(to+36u,asuint(angular));
         }
+    }
+    if(freeSource && ordinal<p.bodyCount) {
+        const uint to=p.writebackBias+p.resultBodyOffset+ordinal*52u;
+        arena.Store3(to,asuint(finalLinear));
+        arena.Store3(to+12u,asuint(finalAngular));
     }
     // The axis lock was applied in solver space before the world
     // inverse-inertia transform; the resulting motion is not masked
@@ -2087,9 +2092,16 @@ void sourceDySolvePackedTask(uint taskId) {
         if(ordinal>=p.bodyCount)
             sourceDyTaskErrorOr(errorAddress,8u);
         else
-            integrateBody(ordinal);
+            integrateBody(ordinal,false);
     }
     publishTaskError(taskId,sourceDyTaskLoad(errorAddress));
+}
+
+// The accurate component root owns the source body's numerical admission.
+bool sourceDyRespondingSource(uint ordinal,uint counts,uint header) {
+    const uint root=scIslandWork.Load(header+48u+ordinal*4u);
+    return root<p.bodyCount &&
+        scIslandWork.Load(header+counts+root*24u+20u)!=invalidBody;
 }
 
 [numthreads(128,1,1)]
@@ -2104,6 +2116,7 @@ void main(uint3 group:SV_GroupID,uint3 lane:SV_GroupThreadID) {
     bool deviceBodyOrder=false;
     uint admittedDispatch=0u;
     uint admittedDispatchX=0u;
+    uint sourceCounts=0u,sourceHeaderBias=0u;
     // A submitted Sc island graph can differ from CPU-predicted counts
     // because contact activation is owned by resident Gu history. Reject
     // the entire numerical epoch before initializing any solver body.
@@ -2125,6 +2138,8 @@ void main(uint3 group:SV_GroupID,uint3 lane:SV_GroupThreadID) {
             }
             admittedTasks=header.y;
             admittedBodies=header.z;
+            sourceCounts=arena.Load(schedule.w+60u);
+            sourceHeaderBias=sourceHeader;
             deviceBodyOrder=arena.Load(schedule.w+56u)==0u;
             admittedDispatchX=scIslandWork.Load(sourceHeader+16u);
             admittedDispatch=admittedDispatchX*
@@ -2157,6 +2172,10 @@ void main(uint3 group:SV_GroupID,uint3 lane:SV_GroupThreadID) {
             const uint ordinal=deviceBodyOrder
                 ?sourceDyBodyOrdinal(item):item;
             if(ordinal<p.bodyCount) {
+                const uint flags=arena.Load(p.integrationBias+52u+ordinal*40u);
+                if(sourceCounts!=0u && (flags&1u)!=0u &&
+                   !sourceDyRespondingSource(ordinal,sourceCounts,sourceHeaderBias))
+                    return;
                 initializeSolverBody(ordinal,arena.Load(p.integrationBias+36u));
                 if(!sourceDyPreIntegrateBody(ordinal) ||
                    !sourceDyPrepareWorldInertia(ordinal))
@@ -2171,7 +2190,7 @@ void main(uint3 group:SV_GroupID,uint3 lane:SV_GroupThreadID) {
     uint2 bodies;
     [branch]
     if(freeBody) {
-        const uint begin=p.bodyCount+index*128u;
+        const uint begin=(sourceCounts!=0u?0u:p.bodyCount)+index*128u;
         bodies=uint2(begin,min(begin+128u,iter));
     } else {
         const uint4 schedule=arena.Load4(p.integrationBias+16u);
@@ -2196,7 +2215,11 @@ void main(uint3 group:SV_GroupID,uint3 lane:SV_GroupThreadID) {
            p.bodyCount<=128u) {
             const uint source=arena.Load(p.integrationBias+36u);
             if(source!=0u) {
-                if(lane.x<p.bodyCount) {
+                const uint flags=lane.x<p.bodyCount
+                    ?arena.Load(p.integrationBias+52u+lane.x*40u):0u;
+                if(lane.x<p.bodyCount &&
+                   (sourceCounts==0u || (flags&1u)==0u ||
+                    sourceDyRespondingSource(lane.x,sourceCounts,sourceHeaderBias))) {
                     initializeSolverBody(lane.x,source);
                     if(!sourceDyPreIntegrateBody(lane.x) ||
                        !sourceDyPrepareWorldInertia(lane.x))
@@ -2398,7 +2421,13 @@ void main(uint3 group:SV_GroupID,uint3 lane:SV_GroupThreadID) {
                     continue;
                 }
             }
-            integrateBody(ordinal);
+            if(freeBody && ordinal<p.bodyCount) {
+                const uint flags=arena.Load(p.integrationBias+52u+ordinal*40u);
+                if((flags&1u)==0u ||
+                   sourceDyRespondingSource(ordinal,sourceCounts,sourceHeaderBias))
+                    continue;
+            }
+            integrateBody(ordinal,freeBody);
         }
     }
     if(fused) {

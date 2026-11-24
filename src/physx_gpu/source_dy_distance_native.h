@@ -629,6 +629,19 @@ public:
             return static_cast<std::uint32_t>(value);
         };
         const auto free_bodies=integration.size()-bodies.size();
+        const bool source_indexed_integration=std::any_of(
+            integration.begin(),integration.begin()+bodies.size(),
+            [](const auto& input) {
+                return (input.active&native::gpu_dy_source_indexed_integration)!=0u;
+            });
+        if(source_indexed_integration &&
+           (!device_admission || device_admission->deferred_body_remap ||
+            !compact_contact_admission || !device_unconstrained_preparation))
+            throw std::logic_error("Source-indexed integration requires resident Sc admission");
+        const auto active_integration_count=source_indexed_integration
+            ?static_cast<std::size_t>(std::count_if(integration.begin(),integration.end(),
+                [](const auto& input){return (input.active&1u)!=0u;}))
+            :body_ordinals.size()+free_bodies;
         const auto descriptor_capacity=device_admission
             ?std::size_t(device_admission->response_capacity)
             :descriptors.size();
@@ -681,7 +694,7 @@ public:
                 "GPU preintegration requires native device body ownership");
         last_schedule_.device_preintegrated_bodies=
             device_unconstrained_preparation
-                ?body_ordinals.size()+free_bodies:0u;
+                ?active_integration_count:0u;
         last_schedule_.device_sleep_bodies=
             last_schedule_.device_preintegrated_bodies;
         last_schedule_.device_joint_input_rows=
@@ -1635,7 +1648,7 @@ public:
         last_schedule_.free_velocity_readback_bytes=free_velocity_bytes;
         last_schedule_.sleep_readback_bytes=
             device_unconstrained_preparation
-                ?(body_ordinals.size()+free_bodies)*28u:0u;
+                ?active_integration_count*28u:0u;
         // Both writable contact and friction arenas follow all source
         // inputs. The existing GPU preparation owns the complete rows.
         // Device coloring consumes raw descriptors in the scratch input
@@ -1793,6 +1806,10 @@ public:
                         device_admission->joint_source_count;
                     std::memcpy(host_.data()+offsets[15]+56u,
                                 &joint_count,sizeof(joint_count));
+                    const auto counts=source_indexed_integration
+                        ?narrow(device_admission->layout.counts):0u;
+                    std::memcpy(host_.data()+offsets[15]+60u,
+                                &counts,sizeof(counts));
                     const std::array<std::uint32_t,2> epoch_errors{
                         0u,std::numeric_limits<std::uint32_t>::max()};
                     std::memcpy(host_.data()+offsets[15]+36u,
@@ -2363,7 +2380,9 @@ public:
         }
         // The integration extent fits in launchControl's upper bits
         // because the packed arena is limited to 32-bit byte offsets.
-        launch(Launch::FreeBodies,{0u,(free_bodies+127u)/128u},
+        const auto free_scan_count=source_indexed_integration
+            ?integration.size():free_bodies;
+        launch(Launch::FreeBodies,{0u,(free_scan_count+127u)/128u},
                narrow(integration.size()));
         const auto mapped=addresses_.resolve(address+history_bytes,output_bytes);
         compute::BufferId device_meta_buffer=0u,device_task_buffer=0u,
@@ -2425,6 +2444,7 @@ public:
                 ?device_admission->source_to_solver_row:
                  std::span<const std::uint32_t>{},
             .compact_contact_admission=compact_contact_admission,
+            .source_indexed_integration=source_indexed_integration,
             .response_capacity=descriptor_capacity,
             .manifolds=manifolds,.contact_order=contact_order,
             .contact_prep=contact_prep,
@@ -2612,11 +2632,19 @@ public:
                 throw std::overflow_error("Source Dy GPU integrateCore rejected a body");
             ++last_integrated_body_count_;
         };
-        for(const auto index:body_ordinals) {
-            if(index>=bodies.size())
-                throw std::logic_error("Source Dy GPU integration body index invalid");
+        const auto each_body_result=[&](auto&& visit) {
+            if(pending.source_indexed_integration) {
+                for(std::size_t index=0u;index<bodies.size();++index)
+                    if(integration[index].active&1u)visit(index);
+            }else for(const auto index:body_ordinals) {
+                if(index>=bodies.size())
+                    throw std::logic_error("Source Dy GPU body index invalid");
+                visit(index);
+            }
+        };
+        each_body_result([&](std::size_t index) {
             if(integration[index].active&1u)fetch_pose(index);
-        }
+        });
         for(std::size_t index=bodies.size();index<integration.size();++index)
             fetch_pose(index);
         if(device_unconstrained_preparation)
@@ -2754,9 +2782,7 @@ public:
                 }else if(count)patch.broken=report&1u;
             }
         };
-        for(const auto index:body_ordinals) {
-            if(index>=bodies.size())
-                throw std::logic_error("Source Dy body writeback index invalid");
+        each_body_result([&](std::size_t index) {
             if(device_unconstrained_preparation) {
                 const auto* output=host_.data()+result_offsets[0]+index*52u;
                 std::memcpy(&bodies[index],output,24u);
@@ -2765,7 +2791,7 @@ public:
             }else
                 std::memcpy(&bodies[index],
                     host_.data()+result_offsets[0]+index*48u,48u);
-        }
+        });
         if(pending.device_admission) {
             if(pending.compact_contact_admission) {
                 // Device Sc exposes the original candidate ownership.
@@ -2818,8 +2844,8 @@ public:
         // baseline. Update the host comparison mirror from the same
         // fetched result, never by replaying PGS on the CPU.
         if(device_world_motion) {
-            for(const auto index:body_ordinals) {
-                if(!integration[index].active)continue;
+            each_body_result([&](std::size_t index) {
+                if(!integration[index].active)return;
                 const auto id=integration[index].source_actor;
                 std::memcpy(actor_local_host_[id].linear_velocity,
                             bodies[index].linear_delta,
@@ -2828,7 +2854,7 @@ public:
                             bodies[index].angular_state,
                             sizeof(actor_local_host_[id].angular_velocity));
                 actor_velocity_valid_[id]=1u;
-            }
+            });
             for(std::size_t index=bodies.size();index<integration.size();++index) {
                 const auto& input=integration[index];
                 if(!(input.active&1u))continue;
@@ -2869,8 +2895,9 @@ public:
                 std::memcpy(resident.sleep_angular_acc,state.angular_acc,
                             sizeof(state.angular_acc));
             };
-            for(const auto ordinal:body_ordinals)
+            each_body_result([&](std::size_t ordinal) {
                 if(integration[ordinal].active&1u)mirror_sleep(ordinal);
+            });
             for(std::size_t index=bodies.size();
                 index<integration.size();++index)
                 if(integration[index].active&1u)mirror_sleep(index);
@@ -2886,8 +2913,9 @@ public:
                             sizeof(mirror.world_orientation));
                 actor_pose_valid_[id]=1u;
             };
-            for(const auto ordinal:body_ordinals)
+            each_body_result([&](std::size_t ordinal) {
                 if(integration[ordinal].active&1u)mirror_pose(ordinal);
+            });
             for(std::size_t index=bodies.size();index<integration.size();++index)
                 if(integration[index].active&1u)mirror_pose(index);
         }
@@ -3055,6 +3083,7 @@ private:
         std::span<const std::uint32_t> body_ordinals{};
         std::span<const std::uint32_t> source_to_solver_row{};
         bool compact_contact_admission=false;
+        bool source_indexed_integration=false;
         std::size_t response_capacity=0u;
         std::span<const native::GpuDyContactManifold> manifolds{};
         std::span<const std::uint32_t> contact_order{};

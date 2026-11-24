@@ -10126,7 +10126,21 @@ void Scene::solve_gpu_distance_constraints(float seconds) {
     gpu_dy_bodies_.resize(gpu_dy_source_body_order_
         ?gpu_dy_early_actor_ids_.size()+gpu_dy_joint_kinematic_ids_.size()
         :solver_rows_.size());
-    const auto integration_count=gpu_dy_bodies_.size()+gpu_dy_free_ids_.size();
+    std::size_t integration_count=gpu_dy_bodies_.size();
+    gpu_dy_free_ordinals_.resize(gpu_dy_free_ids_.size());
+    for(std::size_t i=0u;i<gpu_dy_free_ids_.size();++i) {
+        const auto id=gpu_dy_free_ids_[i];
+        if(early_device_admission) {
+            const auto source=std::lower_bound(gpu_dy_early_actor_ids_.begin(),
+                gpu_dy_early_actor_ids_.end(),id);
+            if(source!=gpu_dy_early_actor_ids_.end() && *source==id) {
+                gpu_dy_free_ordinals_[i]=static_cast<std::size_t>(
+                    source-gpu_dy_early_actor_ids_.begin());
+                continue;
+            }
+        }
+        gpu_dy_free_ordinals_[i]=integration_count++;
+    }
     gpu_dy_integration_inputs_.assign(integration_count,{});
     gpu_dy_integrated_poses_.resize(integration_count);
     gpu_dy_sleep_states_.resize(integration_count);
@@ -10137,6 +10151,7 @@ void Scene::solve_gpu_distance_constraints(float seconds) {
         pack_gpu_dy_integration_input(id,seconds,input);
         pack(input.linear_velocity,row.data.linear_velocity);
         if(row.device_world_inertia)input.active|=32u;
+        if(early_device_admission)input.active|=gpu_dy_source_indexed_integration;
         // GPU preintegration clamps and applies gyroscopic correction
         // before masking angular axes, just like CPU source preintegration.
         pack(input.angular_velocity,actor.angular_velocity);
@@ -10167,8 +10182,13 @@ void Scene::solve_gpu_distance_constraints(float seconds) {
     }
     for(std::size_t i=0;i<gpu_dy_free_ids_.size();++i) {
         const auto& actor=actors_[gpu_dy_free_ids_[i]];
-        auto& input=gpu_dy_integration_inputs_[gpu_dy_bodies_.size()+i];
+        const auto ordinal=gpu_dy_free_ordinals_[i];
+        auto& input=gpu_dy_integration_inputs_[ordinal];
+        if(input.active)
+            throw std::logic_error("Free actor duplicates a numerical body source");
         pack_gpu_dy_integration_input(gpu_dy_free_ids_[i],seconds,input);
+        if(ordinal<gpu_dy_bodies_.size())
+            input.active|=32u|gpu_dy_source_indexed_integration;
         pack(input.linear_velocity,actor.velocity);
         pack(input.angular_velocity,actor.angular_velocity);
     }
@@ -12339,12 +12359,20 @@ void Scene::integrate_solver_task(
                    gpu_dy_free_ids_[free_index]!=id)
                     throw std::logic_error(
                         "Source GPU free-body velocity publication order invalid");
-                const auto& result=gpu_dy_integration_inputs_[
-                    gpu_dy_bodies_.size()+free_index];
-                actor.velocity={result.linear_velocity[0],
-                    result.linear_velocity[1],result.linear_velocity[2]};
-                actor.angular_velocity={result.angular_velocity[0],
-                    result.angular_velocity[1],result.angular_velocity[2]};
+                const auto ordinal=gpu_dy_free_ordinals_[free_index];
+                if(ordinal<gpu_dy_bodies_.size()) {
+                    const auto& result=gpu_dy_bodies_[ordinal];
+                    actor.velocity={result.linear_delta[0],
+                        result.linear_delta[1],result.linear_delta[2]};
+                    actor.angular_velocity={result.angular_state[0],
+                        result.angular_state[1],result.angular_state[2]};
+                }else {
+                    const auto& result=gpu_dy_integration_inputs_[ordinal];
+                    actor.velocity={result.linear_velocity[0],
+                        result.linear_velocity[1],result.linear_velocity[2]};
+                    actor.angular_velocity={result.angular_velocity[0],
+                        result.angular_velocity[1],result.angular_velocity[2]};
+                }
             }
             lock_linear_axes(actor.velocity,actor.dynamics.lock_flags);
             Vec3 motion_linear = actor.velocity;
@@ -12382,7 +12410,7 @@ void Scene::integrate_solver_task(
                    gpu_dy_free_ids_[free_index]!=id))
                     throw std::logic_error("Source GPU free-body order mismatch");
                 const auto pose_index=solved_contact?gpu_dy_body_index(id):
-                    gpu_dy_bodies_.size()+free_index++;
+                    gpu_dy_free_ordinals_[free_index++];
                 if(pose_index>=gpu_dy_integrated_poses_.size() ||
                    gpu_dy_integrated_poses_[pose_index].valid!=1u)
                     throw std::logic_error(
@@ -12417,7 +12445,7 @@ void Scene::integrate_solver_task(
             if(gpu_dy_pose_ready_) {
                 const auto result_index=solved_contact
                     ? gpu_dy_body_index(id)
-                    : gpu_dy_bodies_.size()+free_index-1u;
+                    : gpu_dy_free_ordinals_[free_index-1u];
                 if(result_index>=gpu_dy_sleep_states_.size())
                     throw std::logic_error(
                         "Native GPU sleep state ordinal is invalid");
@@ -12787,7 +12815,7 @@ void Scene::step(float seconds) {
         for(const auto id:solver_active_ids_)
             authorize(id,gpu_dy_body_index(id));
         for(std::size_t i=0;i<gpu_dy_free_ids_.size();++i)
-            authorize(gpu_dy_free_ids_[i],gpu_dy_bodies_.size()+i);
+            authorize(gpu_dy_free_ids_[i],gpu_dy_free_ordinals_[i]);
     }
     join.finish_after_integration();
     // Threshold checks consume current Dy forces after the
