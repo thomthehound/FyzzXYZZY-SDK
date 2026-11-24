@@ -5025,7 +5025,7 @@ void verify_sleeping_new_touch_device_admission(
         physx_gpu::SourceScOwnedGpuBroadphaseNative>(
         backend,load_native_gpu_sap_shaders(backend,sap),
         128u,128u,std::nullopt,
-        load_native_gpu_pcm_shaders(backend,pcm),std::move(shader));
+        load_native_gpu_pcm_shaders(backend,pcm),shader);
     auto* producer=owner.get();
     gpu.set_gpu_broadphase(std::move(owner));
     gpu.set_gpu_dy_device_admission_enabled(true);
@@ -5083,6 +5083,75 @@ void verify_sleeping_new_touch_device_admission(
     test::compound_compare_state(
         gpu.body_state(moving_gpu),cpu.body_state(moving_cpu),0.04f,
         "Sleeping first-touch device admission diverged from CPU PGS");
+
+    native::Scene speculative_cpu,speculative_gpu;
+    auto speculative_owner=std::make_unique<
+        physx_gpu::SourceScOwnedGpuBroadphaseNative>(
+        backend,load_native_gpu_sap_shaders(backend,sap),
+        128u,128u,std::nullopt,
+        load_native_gpu_pcm_shaders(backend,pcm),std::move(shader));
+    auto* speculative_producer=speculative_owner.get();
+    speculative_gpu.set_gpu_broadphase(std::move(speculative_owner));
+    speculative_gpu.set_gpu_dy_device_admission_enabled(true);
+    const auto make_joint=[&](native::Scene& scene) {
+        const auto a=scene.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{0.f,1.f,0.f},1.f);
+        const auto b=scene.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{-3.f,1.f,0.f},1.f);
+        scene.set_dynamics(a,dynamics);
+        scene.set_dynamics(b,dynamics);
+        scene.create_center_distance_constraint(a,b,3.f);
+        return std::array<BodyId,2>{a,b};
+    };
+    const auto joint_cpu=make_joint(speculative_cpu);
+    const auto joint_gpu=make_joint(speculative_gpu);
+    for(unsigned frame=0u;frame<40u &&
+        (!speculative_cpu.body_is_sleeping(joint_cpu[0]) ||
+         !speculative_gpu.body_is_sleeping(joint_gpu[0]));++frame) {
+        speculative_cpu.step(seconds);
+        speculative_gpu.step(seconds);
+    }
+    for(std::size_t i=0u;i<joint_cpu.size();++i)
+        require(speculative_cpu.body_is_sleeping(joint_cpu[i]) &&
+                speculative_gpu.body_is_sleeping(joint_gpu[i]),
+            "Speculative activation fixture joint did not sleep");
+    const auto add_candidate=[&](native::Scene& scene) {
+        const Vec3 p{1.08f,2.08f,0.f};
+        const Quat q{0.f,0.f,0.382683432f,0.923879533f};
+        const auto id=scene.add_dynamic_box({0.5f,0.5f,0.5f},p,1.f);
+        scene.set_dynamics(id,dynamics);
+        scene.set_pose(id,p,q);
+        return id;
+    };
+    const auto candidate_cpu=add_candidate(speculative_cpu);
+    const auto candidate_gpu=add_candidate(speculative_gpu);
+    speculative_cpu.step(seconds);
+    speculative_gpu.step(seconds);
+    const auto projected=speculative_producer->dy_launch_stats();
+    require(speculative_gpu.pairs().size()==1u &&
+            speculative_gpu.contacts().empty() &&
+            speculative_cpu.contacts().empty() &&
+            projected.device_island_indirect_dispatches==1u &&
+            projected.device_admitted_tasks==1u &&
+            projected.device_admitted_bodies==2u &&
+            projected.device_admitted_descriptors==1u &&
+            speculative_producer->dy_gpu_integrated_body_count()==3u,
+        "SAP-only wake did not admit dormant joint bodies before Gu publication");
+    native::GpuPcmFrictionAnchorFixture::
+        verify_pre_witness_device_admission(speculative_gpu);
+    for(std::size_t i=0u;i<joint_cpu.size();++i) {
+        require(!speculative_cpu.body_is_sleeping(joint_cpu[i]) &&
+                !speculative_gpu.body_is_sleeping(joint_gpu[i]),
+            "Speculative wake did not reach the retained joint component");
+        test::compound_compare_state(
+            speculative_gpu.body_state(joint_gpu[i]),
+            speculative_cpu.body_state(joint_cpu[i]),0.003f,
+            "Speculative joint activation changed numerical motion");
+    }
+    test::compound_compare_state(
+        speculative_gpu.body_state(candidate_gpu),
+        speculative_cpu.body_state(candidate_cpu),0.003f,
+        "Speculative activation changed unrelated free-flight motion");
 }
 
 void verify_early_pcm_island_pipeline(

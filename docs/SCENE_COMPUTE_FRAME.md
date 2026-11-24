@@ -404,6 +404,12 @@ the suffix. The early device path retains the PCM preparation prefix
 through publication; host-scheduled
 tasks compact their preparation by touching manager. Numerical enqueue
 still requires Sc activation, sleep arbitration and free-body admission.
+Known authored and SAP wake seeds are projected through the existing
+speculative island membership before numerical admission. Dormant
+candidates in that wake reach can supply retained contact and joint
+response sources; actor wake and event publication remain transactional.
+New physical-touch propagation across speculative-only edges still
+requires resident activation handling.
 
 Retiring this join requires one Sc-authored, source-ordered table of stable
 candidate identities and typed responding endpoints. GPU PCM must derive

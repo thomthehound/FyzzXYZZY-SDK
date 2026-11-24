@@ -4548,6 +4548,50 @@ void Scene::update_contacts(bool defer_device_points,float step_seconds) {
     const bool source_gpu_pcm =
         gpu_broadphase_ && gpu_broadphase_->has_gpu_pcm_box() &&
         (pcm_box_box_enabled_ || pcm_plane_box_enabled_);
+    // SAP and authored wake seeds already belong to the speculative
+    // graph. Project their wake reach without publishing actor motion.
+    auto& speculative=speculative_islands_;
+    std::uint32_t speculative_wake_stamp=0u;
+    const auto sap_wake_seed=[&](Pair shapes) {
+        const auto pair=body_pair(shapes);
+        return actors_[pair.a].motion==Motion::Dynamic &&
+               actors_[pair.b].motion==Motion::Dynamic &&
+               (!actors_[pair.a].sleeping || !actors_[pair.b].sleeping);
+    };
+    if(defer_device_points && source_gpu_pcm &&
+       gpu_dy_device_admission_enabled_ && !enhanced_determinism_ &&
+       (authored_activation_pending_ ||
+        std::any_of(found_.begin(),found_.end(),sap_wake_seed))) {
+        if(island_topology_dirty_ || !found_.empty() || !lost_.empty())
+            update_island_connectivity(true);
+        if(++speculative.active_island_visit_stamp==0u) {
+            std::fill(speculative.active_island_seen.begin(),
+                      speculative.active_island_seen.end(),0u);
+            speculative.active_island_visit_stamp=1u;
+        }
+        speculative_wake_stamp=speculative.active_island_visit_stamp;
+        const auto mark=[&](BodyId id) {
+            if(id>=speculative.node_island.size())return;
+            const auto owner=speculative.node_island[id];
+            if(owner<speculative.islands.size() &&
+               speculative.islands[owner].live)
+                speculative.active_island_seen[owner]=speculative_wake_stamp;
+        };
+        for(BodyId id:speculative.activating_nodes)mark(id);
+        for(Pair shapes:found_) {
+            if(!sap_wake_seed(shapes))continue;
+            const auto pair=body_pair(shapes);
+            mark(pair.a);
+            mark(pair.b);
+        }
+    }
+    const auto speculative_wake=[&](BodyId id) {
+        if(!speculative_wake_stamp || !actors_[id].sleeping ||
+           id>=speculative.node_island.size())return false;
+        const auto owner=speculative.node_island[id];
+        return owner<speculative.active_island_seen.size() &&
+            speculative.active_island_seen[owner]==speculative_wake_stamp;
+    };
     // Sc's source EdgeIndex and Gu cache already distinguish an untouched
     // speculative pair from a touching manifold. Once both rigid bodies
     // are inactive, neither case needs another PCM refresh: retain the
@@ -4564,7 +4608,8 @@ void Scene::update_contacts(bool defer_device_points,float step_seconds) {
         const bool dynamic_a=a.motion==Motion::Dynamic;
         const bool dynamic_b=b.motion==Motion::Dynamic;
         return (dynamic_a || dynamic_b) &&
-            (!dynamic_a || actors_[a.body].sleeping) && (!dynamic_b || actors_[b.body].sleeping);
+            (!dynamic_a || (actors_[a.body].sleeping && !speculative_wake(a.body))) &&
+            (!dynamic_b || (actors_[b.body].sleeping && !speculative_wake(b.body)));
     };
     if(source_gpu_pcm) {
         gpu_pcm_pairs_.reserve(previous_pairs_.size());
@@ -4756,9 +4801,9 @@ void Scene::update_contacts(bool defer_device_points,float step_seconds) {
                 if(actor.motion==Motion::Kinematic)
                     gpu_dy_joint_kinematic_ids_.push_back(id);
                 if(actor.motion!=Motion::Dynamic)continue;
-                if(actor.sleeping || actor.ready_for_sleep ||
-                   actor.wake_counter<=2.f*seconds ||
-                   !actor.dynamics.position_iterations) {
+                const bool awake=(!actor.sleeping && !actor.ready_for_sleep &&
+                    actor.wake_counter>2.f*seconds) || speculative_wake(id);
+                if(!awake || !actor.dynamics.position_iterations) {
                     admitted=false;
                     break;
                 }
@@ -4807,10 +4852,10 @@ void Scene::update_contacts(bool defer_device_points,float step_seconds) {
                 const BodyId id=side?id1:id0;
                 const auto& actor=actors_[id];
                 if(actor.motion!=Motion::Dynamic)continue;
-                const bool awake=!actor.sleeping && !actor.ready_for_sleep &&
-                    actor.wake_counter>2.f*seconds;
-                // Only a new GPU physical touch can activate an otherwise
-                // sleeping candidate before Sc observes the PCM result.
+                const bool awake=(!actor.sleeping && !actor.ready_for_sleep &&
+                    actor.wake_counter>2.f*seconds) || speculative_wake(id);
+                // Known speculative wakes and new physical touches
+                // can activate a dormant numerical candidate.
                 if(!awake && !new_device_touch_candidate) {
                     admitted=false;
                     break;
@@ -4847,8 +4892,9 @@ void Scene::update_contacts(bool defer_device_points,float step_seconds) {
             for(std::size_t i=0u;i<gpu_dy_early_actor_ids_.size();++i) {
                 const auto& actor=actors_[gpu_dy_early_actor_ids_[i]];
                 const auto& dynamics=actor.dynamics;
-                const bool awake=!actor.sleeping && !actor.ready_for_sleep &&
-                    actor.wake_counter>2.f*seconds;
+                const bool awake=(!actor.sleeping && !actor.ready_for_sleep &&
+                    actor.wake_counter>2.f*seconds) ||
+                    speculative_wake(gpu_dy_early_actor_ids_[i]);
                 gpu_dy_island_node_flags_[i]=(awake?active:0u)|require_contact|
                     dynamics.position_iterations|
                     (std::uint32_t(dynamics.velocity_iterations)<<8u);
@@ -4927,7 +4973,7 @@ void Scene::update_contacts(bool defer_device_points,float step_seconds) {
     // witness geometry. Admit its first/second-pass topology on the CPU
     // while the same scene stream executes general GPU PCM. Accurate
     // IslandSim admission remains dependent on the real Gu touch result.
-    if(gpu_results_pending &&
+    if(gpu_results_pending && !speculative_connectivity_prepared_ &&
        (island_topology_dirty_ || !found_.empty() || !lost_.empty()))
         update_island_connectivity(true);
     // Active Sc bodies have authored mass frames and motion inputs
