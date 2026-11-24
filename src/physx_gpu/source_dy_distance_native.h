@@ -875,6 +875,7 @@ public:
             inline_body_epoch_=1u;
         }
         assigned_.assign(prep_count,0u);
+        bool pending_device_contact_references=false;
         const auto ref_body=[&](const native::GpuDyContactPrepBody& body,
                                 std::uint32_t ordinal,
                                 BodyId actor) -> std::uint32_t {
@@ -892,6 +893,7 @@ public:
                     throw std::logic_error(
                         "Device contact source cannot defer its numerical body");
                 // The device patches this tagged reference before PGS.
+                pending_device_contact_references=true;
                 return 0xfffffffdu;
             }
             // An awake zero-inverse-mass dynamic still has source motion.
@@ -2199,9 +2201,7 @@ public:
             static_cast<std::size_t>(params[28])+offsets[12]);
         dispatch.push_constants.resize(sizeof(params));
         const auto max_groups=context_.device_info().max_workgroup_count[0];
-        if(device_admission && !device_admission->deferred_body_remap &&
-           device_admission->joint_source_count==0u &&
-           device_admission->contact_manager_capacity!=0u) {
+        if(pending_device_contact_references) {
             if(!contact_endpoints_pipeline_ ||
                device_admission->contact_manager_capacity!=manifolds.size())
                 throw std::logic_error(
