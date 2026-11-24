@@ -4793,9 +4793,9 @@ void verify_connected_pre_witness_island_admission(
         }
         cpu.step(1.f/120.f);
         gpu.step(1.f/120.f);
-        if(frame!=1u)
-            require(native::GpuPcmFrictionAnchorFixture::has_prewitness_solve(gpu),
-                "Compact awake numerical work waited for PCM publication");
+        require(native::GpuPcmFrictionAnchorFixture::has_prewitness_solve(gpu),
+            "Compact awake numerical work waited for PCM publication at frame "+
+                std::to_string(frame));
         native::GpuPcmFrictionAnchorFixture::
             verify_pre_witness_device_admission(gpu);
         native::GpuPcmFrictionAnchorFixture::

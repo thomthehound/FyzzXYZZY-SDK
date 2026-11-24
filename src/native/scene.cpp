@@ -5579,7 +5579,8 @@ void Scene::update_contacts(bool defer_device_points,float step_seconds) {
     FYZZ_PROFILE_COUNTER("pcm.prewitness_body_inputs",
         gpu_dy_prewitness_body_count_);
     // Independent awake bodies use the existing free-integration suffix.
-    // Only the accurate graph's candidate nodes consume solver capacity.
+    // Retired edges have no numerical source; Sc has already removed
+    // their counted interactions and queued their touch losses.
     const auto awake_source=[&](BodyId id) {
         const auto& actor=actors_[id];
         return actor.alive && actor.motion==Motion::Dynamic &&
@@ -5589,19 +5590,25 @@ void Scene::update_contacts(bool defer_device_points,float step_seconds) {
     gpu_dy_free_ids_.clear();
     if(gpu_results_pending && gpu_dy_early_islands_ &&
        gpu_dy_early_actor_ids_.size()!=live_dynamic_count_) {
-        for(const BodyId id:accurate_islands_.active_nodes) {
-            if(!awake_source(id) ||
-               std::binary_search(gpu_dy_early_actor_ids_.begin(),
-                                  gpu_dy_early_actor_ids_.end(),id))
-                continue;
-            gpu_dy_free_ids_.push_back(id);
-        }
+        const auto append_free=[&](BodyId id) {
+            if(awake_source(id) &&
+               !std::binary_search(gpu_dy_early_actor_ids_.begin(),
+                                   gpu_dy_early_actor_ids_.end(),id))
+                gpu_dy_free_ids_.push_back(id);
+        };
+        for(const BodyId id:accurate_islands_.active_nodes)append_free(id);
+        // Newly admitted awake actors are already in the speculative
+        // activation stream; their accurate active slots publish later.
+        for(const BodyId id:speculative_islands_.activating_nodes)append_free(id);
         std::sort(gpu_dy_free_ids_.begin(),gpu_dy_free_ids_.end());
+        gpu_dy_free_ids_.erase(
+            std::unique(gpu_dy_free_ids_.begin(),gpu_dy_free_ids_.end()),
+            gpu_dy_free_ids_.end());
     }
     if(gpu_results_pending && gpu_dy_early_islands_ &&
        gpu_dy_early_actor_ids_.size()+gpu_dy_free_ids_.size()==live_dynamic_count_ &&
        gpu_dy_early_actor_ids_.size()<gpu_dy_wide_task_threshold &&
-       gpu_dy_joint_kinematic_ids_.empty() && retired_edge_handles_.empty() &&
+       gpu_dy_joint_kinematic_ids_.empty() &&
        gpu_pcm_pairs_.size()==previous_pairs_.size() &&
        (gpu_dy_prewitness_contact_rows_ || gpu_dy_prewitness_joint_rows_) &&
        std::none_of(gpu_pcm_pairs_.begin(),gpu_pcm_pairs_.end(),

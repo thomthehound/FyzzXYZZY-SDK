@@ -417,12 +417,13 @@ new touch activation and connected active-kinematic vetoes to decide
 runnable numerical tasks. A ready member does not suppress the admission
 of its still-active component. Compact all-awake scenes with a complete
 resident PCM source range submit Dy before the witness join. Independent
-awake bodies occupy the existing free-integration suffix, without
-entering the accurate candidate graph. Sc publishes the witnesses and
-queues sparse PCM point DMA with numerical results, then consumes the
-submitted source ordinals. Conditional activation, newly admitted free
-sources outside the active inventory, and wide components retain later
-authorization.
+awake bodies, including newly admitted nodes in Sc's speculative activation
+stream, occupy the existing free-integration suffix without entering the
+accurate candidate graph. Retired edges have no numerical source once Sc
+has removed their counted interactions and submitted touch losses.
+Sc publishes the witnesses and queues sparse PCM point DMA with numerical
+results, then consumes the submitted source ordinals. Conditional
+activation and wide components retain later authorization.
 
 Retiring this join requires one Sc-authored, source-ordered table of stable
 candidate identities and typed responding endpoints. GPU PCM must derive
