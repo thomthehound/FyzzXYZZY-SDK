@@ -409,24 +409,7 @@ jobs:
         shell: bash
         run: |
           cmake --build build-native --parallel 4
-          sudo apt-get install -y -qq gdb
-          ctest --test-dir build-native -R '^fyzzxyzzy_source_sc_gpu_pcm_scene_friction_normal$' --output-on-failure > /tmp/fyzz-friction.log 2>&1 &
-          test_runner=$!
-          sleep 35
-          if kill -0 "$test_runner" 2>/dev/null; then
-            echo "Vulkan numerical execution snapshot:"
-            ps -eo pid,ppid,stat,pcpu,comm,wchan:24 --sort=-pcpu | head -n 35 || true
-            test_pid=$(pgrep -P "$test_runner" | head -n 1 || true)
-            if [ -n "$test_pid" ]; then
-              echo "Live test PID: $test_pid"
-              if command -v gdb >/dev/null; then
-                sudo gdb -q -batch -ex 'set pagination off' -ex 'thread apply all bt 12' -p "$test_pid" || true
-              fi
-              kill "$test_pid" || true
-            fi
-          fi
-          wait "$test_runner" || { cat /tmp/fyzz-friction.log; exit 8; }
-          cat /tmp/fyzz-friction.log
+          ctest --test-dir build-native -R '^fyzzxyzzy_source_sc_gpu_pcm_scene_friction_normal$' --output-on-failure
           ctest --test-dir build-native -E '^fyzzxyzzy_source_sc_gpu_pcm_scene_friction_normal$' --parallel 2 --output-on-failure --stop-on-failure
           grep -F 'FYZZXYZZY_METRIC' build-native/Testing/Temporary/LastTest.log | tee -a "$GITHUB_STEP_SUMMARY"
           test ! -d build-native/_deps/fyzzxyzzy_physx-src
