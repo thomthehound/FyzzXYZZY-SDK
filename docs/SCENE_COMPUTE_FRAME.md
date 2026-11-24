@@ -363,10 +363,12 @@ Sc leaves device-authored body and typed response order intact.
 Early contact-only tasks index Dy body and contact preparation directly
 by their pre-witness source ordinals, regardless of the CPU's solver-row
 order. Sc publishes interaction-ordered contact endpoint ordinals in its
-resident source-indexed admission table. A separate Dy preparation
-dispatch applies device-admitted endpoint references to the packed
-contact inputs on the same command queue, before PGS expands responding
-descriptors. Host-scheduled tasks consume their own prepared row indices.
+resident source-indexed admission table. Host contact preparations carry
+unresolved dynamic-body references, not a duplicate source-node map.
+A separate Dy preparation dispatch validates active body inputs and
+resolves only admitted references from the resident table on the
+same command queue, before PGS expands responding descriptors.
+Host-scheduled tasks consume their own prepared row indices.
 Joint-bearing and late-admitted tasks use the Sc source-to-row map when
 required. Device-joint graphs upload their stable
 source-to-joint-row table only when it differs from source order;
