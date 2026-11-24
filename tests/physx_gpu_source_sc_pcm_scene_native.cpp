@@ -634,12 +634,13 @@ struct GpuPcmFrictionAnchorFixture {
             previous_row=actor.solver_row_index;
             seen_row=true;
         }
+        constexpr auto veto=physx_gpu::source_sc_device_island_kinematic_awake_bit;
         std::size_t joint_row=0u;
         for(std::size_t i=0u;i<scene.gpu_dy_island_edges_.size();++i) {
             const auto& edge=scene.gpu_dy_island_edges_[i];
             if(i<joints) {
                 if(edge.edge_index!=scene.gpu_dy_early_joint_edges_[i] ||
-                   edge.source_index!=joint_row || edge.kind!=17u)
+                   edge.source_index!=joint_row || (edge.kind&~veto)!=17u)
                     throw std::runtime_error(
                         "Early device Sc graph lost its typed joint row");
                 const auto& joint=scene.constraint_records_[
@@ -667,7 +668,7 @@ struct GpuPcmFrictionAnchorFixture {
                         :node==0xffffffffu;
                 };
                 if(edge.edge_index!=scene.active_edge_handles_[candidate] ||
-                   edge.source_index!=candidate || edge.kind!=expected_kind ||
+                   edge.source_index!=candidate || (edge.kind&~veto)!=expected_kind ||
                    !check_node(a,edge.node_a) || !check_node(b,edge.node_b))
                     throw std::runtime_error(
                         "Early device Sc graph lost its contact connectivity");
@@ -5091,7 +5092,7 @@ void verify_sleeping_new_touch_device_admission(
         physx_gpu::SourceScOwnedGpuBroadphaseNative>(
         backend,load_native_gpu_sap_shaders(backend,sap),
         128u,128u,std::nullopt,
-        load_native_gpu_pcm_shaders(backend,pcm),std::move(shader));
+        load_native_gpu_pcm_shaders(backend,pcm),shader);
     auto* speculative_producer=speculative_owner.get();
     speculative_gpu.set_gpu_broadphase(std::move(speculative_owner));
     speculative_gpu.set_gpu_dy_device_admission_enabled(true);
@@ -5200,6 +5201,85 @@ void verify_sleeping_new_touch_device_admission(
         speculative_gpu.body_state(candidate_gpu),
         speculative_cpu.body_state(candidate_cpu),0.04f,
         "Physical-touch speculative wake changed contact motion");
+
+    native::Scene ready_cpu,ready_gpu;
+    auto ready_owner=std::make_unique<
+        physx_gpu::SourceScOwnedGpuBroadphaseNative>(
+        backend,load_native_gpu_sap_shaders(backend,sap),
+        128u,128u,std::nullopt,
+        load_native_gpu_pcm_shaders(backend,pcm),std::move(shader));
+    auto* ready_producer=ready_owner.get();
+    ready_gpu.set_gpu_broadphase(std::move(ready_owner));
+    ready_gpu.set_gpu_dy_device_admission_enabled(true);
+    const auto make_ready_chain=[&](native::Scene& scene) {
+        std::array<BodyId,4> ids{};
+        for(unsigned i=0u;i<3u;++i) {
+            ids[i]=scene.add_dynamic_box(
+                {0.5f,0.5f,0.5f},{3.f*i,1.f,0.f},1.f);
+            scene.set_dynamics(ids[i],dynamics);
+        }
+        ids[3]=scene.add_static_box({0.5f,0.5f,0.5f},{20.f,20.f,0.f});
+        scene.create_center_distance_constraint(ids[0],ids[1],3.f);
+        scene.create_center_distance_constraint(ids[1],ids[2],3.f);
+        return ids;
+    };
+    const auto ready_c=make_ready_chain(ready_cpu);
+    const auto ready_g=make_ready_chain(ready_gpu);
+    bool mixed_ready=false;
+    for(unsigned frame=0u;frame<20u;++frame) {
+        ready_cpu.set_velocity(ready_c[0],{});
+        ready_gpu.set_velocity(ready_g[0],{});
+        const Vec3 remote{20.f+0.01f*frame,20.f,0.f};
+        ready_cpu.set_pose(ready_c[3],remote,{});
+        ready_gpu.set_pose(ready_g[3],remote,{});
+        ready_cpu.step(seconds);
+        ready_gpu.step(seconds);
+        for(unsigned i=0u;i<3u;++i) {
+            require(!ready_cpu.body_is_sleeping(ready_c[i]) &&
+                    !ready_gpu.body_is_sleeping(ready_g[i]) &&
+                    ready_cpu.body_ready_for_sleep(ready_c[i])==
+                        ready_gpu.body_ready_for_sleep(ready_g[i]),
+                "Ready member prematurely deactivated its joint component");
+            test::compound_compare_state(
+                ready_gpu.body_state(ready_g[i]),ready_cpu.body_state(ready_c[i]),
+                0.003f,"Mixed-readiness joint motion diverged");
+        }
+        if(ready_gpu.body_ready_for_sleep(ready_g[1]) &&
+           ready_gpu.body_ready_for_sleep(ready_g[2])) {
+            const auto active=ready_producer->dy_launch_stats();
+            require(!ready_gpu.body_ready_for_sleep(ready_g[0]) &&
+                    active.device_island_indirect_dispatches==1u &&
+                    active.device_admitted_tasks==1u &&
+                    active.device_admitted_bodies==3u &&
+                    active.device_admitted_descriptors==2u,
+                "Sleep-ready joint members prevented device admission");
+            native::GpuPcmFrictionAnchorFixture::
+                verify_pre_witness_device_admission(ready_gpu);
+            mixed_ready=true;
+            break;
+        }
+    }
+    require(mixed_ready,"Joint component never reached mixed sleep readiness");
+    bool slept=false;
+    for(unsigned frame=0u;frame<20u;++frame) {
+        const Vec3 remote{21.f+0.01f*frame,20.f,0.f};
+        ready_cpu.set_pose(ready_c[3],remote,{});
+        ready_gpu.set_pose(ready_g[3],remote,{});
+        ready_cpu.step(seconds);
+        ready_gpu.step(seconds);
+        for(unsigned i=0u;i<3u;++i)
+            require(ready_cpu.body_is_sleeping(ready_c[i])==
+                    ready_gpu.body_is_sleeping(ready_g[i]),
+                "Joint component sleep arbitration diverged");
+        if(ready_gpu.body_is_sleeping(ready_g[0])) {
+            require(ready_gpu.body_is_sleeping(ready_g[1]) &&
+                    ready_gpu.body_is_sleeping(ready_g[2]),
+                "Ready component did not deactivate together");
+            slept=true;
+            break;
+        }
+    }
+    require(slept,"Fully ready joint component did not deactivate");
 }
 
 void verify_early_pcm_island_pipeline(

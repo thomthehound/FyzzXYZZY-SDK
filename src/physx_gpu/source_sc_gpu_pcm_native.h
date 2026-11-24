@@ -792,7 +792,10 @@ public:
                (edge.kind&~(source_sc_device_island_joint_bit|
                              source_sc_device_island_no_response_bit|
                              source_sc_device_island_reverse_contact_bit|
-                             source_sc_device_island_device_joint_bit))!=0u ||
+                             source_sc_device_island_device_joint_bit|
+                             source_sc_device_island_kinematic_awake_bit))!=0u ||
+               ((edge.kind&source_sc_device_island_kinematic_awake_bit)!=0u &&
+                ((edge.node_a==invalid)==(edge.node_b==invalid))) ||
                ((edge.kind&source_sc_device_island_device_joint_bit)!=0u &&
                 (edge.kind&source_sc_device_island_joint_bit)==0u) ||
                ((edge.kind&source_sc_device_island_reverse_contact_bit)!=0u &&

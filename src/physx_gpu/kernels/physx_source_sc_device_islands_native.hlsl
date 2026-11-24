@@ -47,7 +47,9 @@ static const uint reverseContact=4u;
 static const uint deviceJoint=16u;
 static const uint nonrespondingNode=0x20000u;
 static const uint requireContactTask=0x40000u;
-static const uint permittedKinds=jointEdge|noResponse|deviceJoint|reverseContact;
+static const uint kinematicAwake=32u;
+static const uint permittedKinds=jointEdge|noResponse|deviceJoint|reverseContact|
+    kinematicAwake;
 
 void reject(uint bits) {
     uint previous;
@@ -394,6 +396,8 @@ void admitCompact(uint lane,bool speculativeWake) {
                     uint previous;
                     if((kind&noResponse)==0u)
                         work.InterlockedAdd(count+4u,1u,previous);
+                    if((kind&kinematicAwake)!=0u)
+                        work.InterlockedAdd(count+8u,1u,previous);
                     if((kind&jointEdge)==0u &&
                        (edgeHistory.Load(p.touchBias+edge.x*240u+76u)&1u)==0u) {
                         work.InterlockedAdd(count+8u,1u,previous);
@@ -819,6 +823,9 @@ void main(uint3 thread:SV_DispatchThreadID,
                     uint previous;
                     if((kind&noResponse)==0u)
                         work.InterlockedAdd(p.countBias+owner*24u+4u,
+                                            1u,previous);
+                    if((kind&kinematicAwake)!=0u)
+                        work.InterlockedAdd(p.countBias+owner*24u+8u,
                                             1u,previous);
                     // Physical new-touch activation is derived from
                     // the journaled prior state for both Gu producers.

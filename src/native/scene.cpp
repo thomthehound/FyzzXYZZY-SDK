@@ -4796,6 +4796,16 @@ void Scene::update_contacts(bool defer_device_points,float step_seconds) {
         constexpr std::uint32_t invalid=0xffffffffu;
         constexpr std::uint32_t require_contact=1u<<18u;
         constexpr std::uint32_t active=1u<<16u;
+        constexpr std::uint32_t kinematic_awake=32u;
+        const auto kinematic_veto=[&](BodyId a,BodyId b) {
+            const auto awake=[&](BodyId id) {
+                const auto& actor=actors_[id];
+                return actor.motion==Motion::Kinematic && !actor.ready_for_sleep;
+            };
+            return ((actors_[a].motion==Motion::Dynamic && awake(b)) ||
+                    (actors_[b].motion==Motion::Dynamic && awake(a)))
+                ?kinematic_awake:0u;
+        };
         gpu_dy_early_actor_ids_.clear();
         gpu_dy_island_edges_.clear();
         gpu_dy_early_joint_edges_=active_constraint_handles_;
@@ -4835,10 +4845,8 @@ void Scene::update_contacts(bool defer_device_points,float step_seconds) {
                 if(actor.motion==Motion::Kinematic)
                     gpu_dy_joint_kinematic_ids_.push_back(id);
                 if(actor.motion!=Motion::Dynamic)continue;
-                const bool awake=(!actor.sleeping && !actor.ready_for_sleep &&
-                    actor.wake_counter>2.f*seconds) || speculative_wake(id);
-                if((!awake && !(actor.sleeping && possible_wake(id))) ||
-                   !actor.dynamics.position_iterations) {
+                if((actor.sleeping && !speculative_wake(id) &&
+                    !possible_wake(id)) || !actor.dynamics.position_iterations) {
                     admitted=false;
                     break;
                 }
@@ -4852,7 +4860,8 @@ void Scene::update_contacts(bool defer_device_points,float step_seconds) {
             if(early_joint_rows>=0x40000000u-rows)
                 throw std::overflow_error("Early Sc joint rows exceed token range");
             gpu_dy_island_edges_.push_back({
-                edge,nodes[0],nodes[1],early_joint_rows,17u});
+                edge,nodes[0],nodes[1],early_joint_rows,
+                17u|kinematic_veto(endpoints.a,endpoints.b)});
             early_joint_rows+=rows;
         }
         if(admitted)for(std::size_t i=0u;i<previous_pairs_.size();++i) {
@@ -4887,12 +4896,10 @@ void Scene::update_contacts(bool defer_device_points,float step_seconds) {
                 const BodyId id=side?id1:id0;
                 const auto& actor=actors_[id];
                 if(actor.motion!=Motion::Dynamic)continue;
-                const bool awake=(!actor.sleeping && !actor.ready_for_sleep &&
-                    actor.wake_counter>2.f*seconds) || speculative_wake(id);
-                // Known speculative wakes and new physical touches
-                // can activate a dormant numerical candidate.
-                if(!awake && !new_device_touch_candidate &&
-                   !(actor.sleeping && possible_wake(id))) {
+                // Sleep-ready bodies retain their candidate identity;
+                // only the accurate component can authorize deactivation.
+                if(actor.sleeping && !speculative_wake(id) &&
+                   !new_device_touch_candidate && !possible_wake(id)) {
                     admitted=false;
                     break;
                 }
@@ -4910,7 +4917,8 @@ void Scene::update_contacts(bool defer_device_points,float step_seconds) {
                 edge,nodes[0],nodes[1],
                 static_cast<std::uint32_t>(i),
                 (responding?0u:2u)|
-                    (island_edges_[edge].gu_order_reversed?4u:0u)});
+                    (island_edges_[edge].gu_order_reversed?4u:0u)|
+                    kinematic_veto(id0,id1)});
         }
         if(admitted) {
             std::sort(gpu_dy_early_actor_ids_.begin(),
@@ -4928,8 +4936,7 @@ void Scene::update_contacts(bool defer_device_points,float step_seconds) {
             for(std::size_t i=0u;i<gpu_dy_early_actor_ids_.size();++i) {
                 const auto& actor=actors_[gpu_dy_early_actor_ids_[i]];
                 const auto& dynamics=actor.dynamics;
-                const bool awake=(!actor.sleeping && !actor.ready_for_sleep &&
-                    actor.wake_counter>2.f*seconds) ||
+                const bool awake=(!actor.sleeping && !actor.ready_for_sleep) ||
                     speculative_wake(gpu_dy_early_actor_ids_[i]);
                 gpu_dy_island_node_flags_[i]=(awake?active:0u)|require_contact|
                     dynamics.position_iterations|

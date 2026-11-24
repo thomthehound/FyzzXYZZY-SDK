@@ -44,6 +44,8 @@ inline constexpr std::uint32_t source_sc_device_island_reverse_contact_bit=4u;
 // Direct joint tokens require device-authored 1D rows; other joints
 // use a source-indexed full Dy descriptor.
 inline constexpr std::uint32_t source_sc_device_island_device_joint_bit=16u;
+// A connected active kinematic vetoes deactivation without merging nodes.
+inline constexpr std::uint32_t source_sc_device_island_kinematic_awake_bit=32u;
 
 // Entries preserve the source input order. They are GPU-consumed Dy
 // admission records, not another persistent edge or island registry.

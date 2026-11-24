@@ -1093,6 +1093,28 @@ void verify(Context& context,const char* filename) {
             count(removed,1u).active_seeds==0u,
             "Lost physical touch emitted a spurious device wake task");
 
+    // A connected kinematic veto keeps a ready component runnable.
+    // A lost contact removes the veto, and a shared kinematic cannot
+    // connect independent dynamic components.
+    const auto veto=source_sc_device_island_kinematic_awake_bit;
+    const std::vector<SourceScDeviceIslandEdge> veto_edges{
+        {0u,0u,1u,0u,source_sc_device_island_joint_bit},
+        {0u,1u,invalid,0u,veto},
+        {1u,2u,invalid,1u,veto},
+    };
+    auto vetoed=evaluate(3u,veto_edges,{1u,1u},sleeping_flags,{1u,1u});
+    no_errors(vetoed);
+    check_task_mapping(vetoed);
+    require(header(vetoed).runnable_components==2u &&
+            header(vetoed).responding_nodes==3u &&
+            header(vetoed).admitted_edges==3u &&
+            root(vetoed,0u)!=root(vetoed,2u),
+            "Kinematic sleep veto merged or suppressed accurate components");
+    auto no_veto=evaluate(3u,veto_edges,{0u,0u},sleeping_flags,{1u,1u});
+    no_errors(no_veto);
+    require(header(no_veto).runnable_components==0u,
+            "Lost kinematic contacts retained a numerical sleep veto");
+
     // No responding nodes may coexist with live static/kinematic
     // managers. The task header must be zeroed even when last frame's
     // output allocation contains a nonzero runnable task count.
