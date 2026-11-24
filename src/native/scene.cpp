@@ -5578,6 +5578,44 @@ void Scene::update_contacts(bool defer_device_points,float step_seconds) {
     }
     FYZZ_PROFILE_COUNTER("pcm.prewitness_body_inputs",
         gpu_dy_prewitness_body_count_);
+    // Awake compact sources require no unresolved integration authorization.
+    if(gpu_results_pending && gpu_dy_early_islands_ &&
+       gpu_dy_early_actor_ids_.size()==live_dynamic_count_ &&
+       gpu_dy_early_actor_ids_.size()<gpu_dy_wide_task_threshold &&
+       gpu_dy_joint_kinematic_ids_.empty() && retired_edge_handles_.empty() &&
+       gpu_pcm_pairs_.size()==previous_pairs_.size() &&
+       (gpu_dy_prewitness_contact_rows_ || gpu_dy_prewitness_joint_rows_) &&
+       std::none_of(gpu_pcm_pairs_.begin(),gpu_pcm_pairs_.end(),
+           [](const auto& pair){return pair.host_generated;}) &&
+       std::all_of(gpu_dy_early_actor_ids_.begin(),gpu_dy_early_actor_ids_.end(),
+           [&](BodyId id) {
+               const auto& actor=actors_[id];
+               return !actor.sleeping && !actor.ready_for_sleep &&
+                   actor.angular_inertia_available;
+           })) {
+        FYZZ_PROFILE_SCOPE("dy.prewitness_submit");
+        const auto nodes=gpu_dy_early_actor_ids_.size();
+        gpu_dy_bodies_.resize(nodes);
+        gpu_dy_body_ordinals_.resize(nodes);
+        gpu_dy_tasks_.clear();
+        gpu_dy_tasks_.resize(std::min(nodes,gpu_dy_island_edges_.size()));
+        gpu_dy_integrated_poses_.resize(nodes);
+        gpu_dy_sleep_states_.resize(nodes);
+        gpu_dy_friction_impulses_.resize(gpu_dy_friction_anchors_.size());
+        for(auto& input:gpu_dy_integration_inputs_)
+            input.active=1u|32u|gpu_dy_source_indexed_integration|
+                (input.source_element!=invalid_shape?4u:0u);
+        gpu_broadphase_->enqueue_gpu_dy_distance(
+            gpu_dy_bodies_,gpu_dy_rows_,{},{},gpu_dy_body_ordinals_,gpu_dy_tasks_,
+            gpu_dy_contact_forces_,{},{},gpu_dy_friction_anchors_,
+            gpu_dy_patches_,gpu_dy_manifolds_,{},{},
+            gpu_dy_integration_inputs_,gpu_dy_integrated_poses_,true,
+            gpu_dy_friction_impulses_,true,true,true,gpu_dy_sleep_states_,
+            gpu_dy_joint_inputs_,false,true,
+            gpu_dy_contact_prep_pairs_,gpu_dy_history_candidates_);
+        gpu_dy_prewitness_solve_=true;
+    }
+    FYZZ_PROFILE_COUNTER("dy.prewitness_solve",gpu_dy_prewitness_solve_?1u:0u);
     if(gpu_results_pending) {
         FYZZ_PROFILE_SCOPE("sc.pcm_witness_join");
         {
@@ -8418,7 +8456,8 @@ void Scene::partition_constraints() {
         }
     }
     const bool device_source_responses=gpu_integration &&
-        gpu_dy_early_islands_ && gpu_dy_responding_island_count_!=0u &&
+        gpu_dy_early_islands_ &&
+        (gpu_dy_prewitness_solve_ || gpu_dy_responding_island_count_!=0u) &&
         compact_source_tasks;
     FYZZ_PROFILE_COUNTER("dy.source_response_capacity",
         device_source_responses?gpu_dy_island_edges_.size():0u);
@@ -10185,12 +10224,14 @@ void Scene::solve_gpu_distance_constraints(float seconds) {
     FYZZ_PROFILE_SCOPE("dy.gpu_enqueue_join");
     // Source Dy owns task, body and 1D row order; the device receives
     // transient packed views of those exact prepared source inputs.
-    if(ordered_constraints_.empty() && solver_active_ids_.empty() &&
-       gpu_dy_free_ids_.empty()) {
+    if(!gpu_dy_prewitness_solve_ && ordered_constraints_.empty() &&
+       solver_active_ids_.empty() && gpu_dy_free_ids_.empty()) {
         materialize_gpu_pcm_points();
         begin_contact_writeback();
         return;
     }
+    bool device_admission=gpu_dy_prewitness_solve_;
+    if(!gpu_dy_prewitness_solve_) {
     const auto narrow=[](std::size_t value) {
         if(value>=std::numeric_limits<std::uint32_t>::max())
             throw std::overflow_error("Native GPU Dy row index exceeds 32 bits");
@@ -10243,7 +10284,7 @@ void Scene::solve_gpu_distance_constraints(float seconds) {
         !gpu_dy_island_edges_.empty() &&
         gpu_dy_responding_island_count_>responding_tasks &&
         gpu_dy_responding_island_count_<=direct_task_limit;
-    const bool device_admission=early_device_admission ||
+    device_admission=early_device_admission ||
         (gpu_dy_device_admission_enabled_ && has_device_numerical_sources &&
          compact_tasks && late_device_admission);
     FYZZ_PROFILE_COUNTER("dy.device_island_selected",device_admission?1u:0u);
@@ -10640,6 +10681,19 @@ void Scene::solve_gpu_distance_constraints(float seconds) {
         gpu_dy_friction_impulses_,true,true,true,gpu_dy_sleep_states_,
         gpu_dy_joint_inputs_,false,device_admission,
         gpu_dy_contact_prep_pairs_,gpu_dy_history_candidates_);
+    }else {
+        // Consume submitted ordinals without rewriting borrowed storage.
+        if(!gpu_dy_source_body_order_ ||
+           solver_active_ids_.size()+gpu_dy_free_ids_.size()!=
+               gpu_dy_prewitness_body_count_ ||
+           gpu_dy_contact_forces_.size()!=prepared_contact_rows_ ||
+           gpu_dy_friction_anchors_.size()!=prepared_friction_rows_/2u ||
+           !gpu_dy_gu_inputs_.empty() || !gpu_dy_contact_order_.empty())
+            throw std::logic_error("Submitted Dy sources changed at Sc publication");
+        gpu_dy_free_ordinals_.resize(gpu_dy_free_ids_.size());
+        for(std::size_t i=0u;i<gpu_dy_free_ids_.size();++i)
+            gpu_dy_free_ordinals_[i]=gpu_dy_source_body_index(gpu_dy_free_ids_[i]);
+    }
     // Sc's Gu-indexed force buffer and retired-manager bookkeeping are
     // independent of the submitted numerical solve. Prepare them while
     // the ordered GPU Dy task graph executes, before its result join.
@@ -13023,6 +13077,7 @@ void Scene::step(float seconds) {
           step_checkpoint_.rollback(*this); }
         gpu_pcm_points_deferred_=false;
         gpu_dy_early_islands_=false;
+        gpu_dy_prewitness_solve_=false;
         FYZZ_PROFILE_END_FRAME(frame_index_,gpu_dy_active(),false);
         throw;
     }
@@ -13116,6 +13171,7 @@ void Scene::advance_collision_internal(
         gpu_dy_prewitness_contact_rows_=0u;
         gpu_dy_prewitness_friction_rows_=0u;
         gpu_dy_early_islands_=false;
+        gpu_dy_prewitness_solve_=false;
         gpu_dy_early_actor_ids_.clear();
         gpu_dy_staged_actor_count_=0u;
         if(++gpu_dy_actor_stage_epoch_==0u) {

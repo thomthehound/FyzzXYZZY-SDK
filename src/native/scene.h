@@ -2301,6 +2301,7 @@ private:
     std::vector<BodyId> gpu_dy_immovable_source_ids_;
     std::vector<EdgeIndex> gpu_dy_early_joint_edges_;
     bool gpu_dy_early_islands_=false;
+    bool gpu_dy_prewitness_solve_=false;
     std::size_t gpu_dy_prewitness_body_count_=0u;
     std::size_t gpu_dy_prewitness_joint_rows_=0u;
     std::size_t gpu_dy_prewitness_contact_rows_=0u;

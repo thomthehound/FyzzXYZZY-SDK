@@ -583,6 +583,9 @@ struct GpuPcmFrictionAnchorFixture {
                     "GPU Dy candidate and Sc contact preparation disagree");
         }
     }
+    static bool has_prewitness_solve(const Scene& scene) noexcept {
+        return scene.gpu_dy_prewitness_solve_;
+    }
     static void verify_pre_witness_device_admission(const Scene& scene) {
         verify_pre_witness_immovable_sources(scene);
         const auto stamped=std::count(
@@ -4783,6 +4786,9 @@ void verify_connected_pre_witness_island_admission(
     for(std::uint32_t frame=0u;frame<3u;++frame) {
         cpu.step(1.f/120.f);
         gpu.step(1.f/120.f);
+        if(frame==0u)
+            require(native::GpuPcmFrictionAnchorFixture::has_prewitness_solve(gpu),
+                "Compact awake numerical work waited for PCM publication");
         native::GpuPcmFrictionAnchorFixture::
             verify_pre_witness_device_admission(gpu);
         native::GpuPcmFrictionAnchorFixture::
