@@ -619,28 +619,13 @@ bool sourceDyExpandDescriptor(uint token,uint extent,
             const uint refB=arena.Load(prep+4u);
             const bool dynamicA=(refA&3u)==1u;
             const bool dynamicB=(refB&3u)==1u;
-            uint ordinalA=dynamicA?(refA>>2u):
+            const uint ordinalA=dynamicA?(refA>>2u):
                 (refA&3u)==3u?invalidBody:
                 arena.Load(p.prepBias+refA+76u);
-            uint ordinalB=dynamicB?(refB>>2u):
+            const uint ordinalB=dynamicB?(refB>>2u):
                 (refB&3u)==3u?invalidBody:
                 arena.Load(p.prepBias+refB+76u);
-            const uint endpointOffset=(p.launchControl&0x08000000u)!=0u
-                ?arena.Load(arena.Load(p.integrationBias+28u)+60u):0u;
-            if(endpointOffset!=0u) {
-                const uint2 endpoints=scIslandWork.Load2(
-                    p.ordinalBias+endpointOffset+index*8u);
-                ordinalA=dynamicA?endpoints.x:ordinalA;
-                ordinalB=dynamicB?endpoints.y:ordinalB;
-                if((dynamicA && ordinalA>=p.bodyCount) ||
-                   (dynamicB && ordinalB>=p.bodyCount)) {
-                    sourceDyTaskErrorOr(errorAddress,1048576u);
-                    return false;
-                }
-                arena.Store2(prep,uint2(
-                    dynamicA?(ordinalA<<2u)|1u:refA,
-                    dynamicB?(ordinalB<<2u)|1u:refB));
-            }
+
             desc=uint4(index,ordinalA,ordinalB,
                        (dynamicA?0x100u:0u)|
                        (dynamicB?0x200u:0u));
