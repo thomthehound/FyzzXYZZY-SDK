@@ -11,7 +11,6 @@
 #include <exception>
 #include <bit>
 #include <cmath>
-#include <cstdio>
 #include <iterator>
 #include <limits>
 #include <memory>
@@ -5343,11 +5342,7 @@ void Scene::update_contacts(bool defer_device_points,float step_seconds) {
         FYZZ_PROFILE_SCOPE("sc.pcm_witness_join");
         {
             FYZZ_PROFILE_SCOPE("sc.pcm_witness_wait");
-        if(gpu_broadphase_ && gpu_dy_active())
-        std::fprintf(stderr,"FYZZ_STAGE before_pcm_join\n");
-        gpu_broadphase_->finish_gpu_pcm_box_contacts();
-    if(gpu_broadphase_ && gpu_dy_active())
-        std::fprintf(stderr,"FYZZ_STAGE after_pcm_join\n");
+            gpu_broadphase_->finish_gpu_pcm_box_contacts();
         }
         FYZZ_PROFILE_SCOPE("sc.pcm_witness_publish");
         for(auto& manifold:next_manifolds_) {
@@ -10365,8 +10360,6 @@ void Scene::solve_gpu_distance_constraints(float seconds) {
         device_admission?std::span<const GpuDyDistanceDescriptor>{}
                         :std::span<const GpuDyDistanceDescriptor>{
                             ordered_constraints_};
-    if(gpu_broadphase_ && gpu_dy_active())
-        std::fprintf(stderr,"FYZZ_STAGE before_dy_enqueue\n");
     gpu_broadphase_->enqueue_gpu_dy_distance(
         gpu_dy_bodies_,gpu_dy_rows_,dy_descriptors,
         {},gpu_dy_body_ordinals_,gpu_dy_tasks_,
@@ -10393,11 +10386,7 @@ void Scene::solve_gpu_distance_constraints(float seconds) {
     };
     for(const BodyId id:solver_active_ids_)consume_preintegration(id);
     for(const BodyId id:gpu_dy_free_ids_)consume_preintegration(id);
-    if(gpu_broadphase_ && gpu_dy_active())
-        std::fprintf(stderr,"FYZZ_STAGE before_dy_join\n");
     gpu_broadphase_->finish_gpu_dy_distance();
-    if(gpu_broadphase_ && gpu_dy_active())
-        std::fprintf(stderr,"FYZZ_STAGE after_dy_join\n");
     if(device_admission) {
         const auto admitted=gpu_broadphase_->gpu_dy_admitted_contact_sources();
         if(admitted.size()!=(gpu_dy_manifolds_.size()+31u)/32u)
@@ -12481,11 +12470,7 @@ void Scene::step(float seconds) {
         accurate_islands_.active_nodes.size();
     speculative_islands_.initial_active_node_count=
         speculative_islands_.active_nodes.size();
-    if(gpu_broadphase_ && gpu_dy_active())
-        std::fprintf(stderr,"FYZZ_STAGE before_collision\n");
     advance_collision_internal(false,true,true,seconds);
-    if(gpu_broadphase_ && gpu_dy_active())
-        std::fprintf(stderr,"FYZZ_STAGE after_collision\n");
     // The source first/second-pass wakeIslands handoffs precede
     // third-pass processLostEdges, preserving old-island wake reach.
     activate_published_islands();
@@ -12561,12 +12546,8 @@ void Scene::step(float seconds) {
     retire_destroyed_contact_edges();
     join.finish_lost_contacts();
     if(!dy_prepared)prepare_unconstrained_velocities(seconds);
-    if(gpu_broadphase_ && gpu_dy_active())
-        std::fprintf(stderr,"FYZZ_STAGE before_solver_preparation\n");
     prepare_solver_bodies();
     partition_constraints();
-    if(gpu_broadphase_ && gpu_dy_active())
-        std::fprintf(stderr,"FYZZ_STAGE after_partition\n");
     // Dispatch is over the ACTUAL Dy::updatePostKinematic task-group
     // descriptors, including groups without contact rows. No task
     // allocations or second island registry are introduced.
@@ -12579,8 +12560,6 @@ void Scene::step(float seconds) {
     join.dispatch_solver_tasks(
         solver_task_completion_stamps_,solver_task_completion_generation_);
     prepare_constraints(seconds);
-    if(gpu_broadphase_ && gpu_dy_active())
-        std::fprintf(stderr,"FYZZ_STAGE after_constraints\n");
     const bool gpu_dy_distance=gpu_dy_active();
     gpu_dy_pose_ready_=false;
     if(gpu_dy_distance)solve_gpu_distance_constraints(seconds);
