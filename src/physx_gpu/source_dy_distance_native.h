@@ -262,6 +262,7 @@ public:
     }
     void invalidate_after_rollback() noexcept {
         pending_solve_.reset();
+        deferred_result_downloads_.clear();
         std::fill(prewitness_actor_changed_.begin(),
                   prewitness_actor_changed_.end(),0u);
         std::fill(actor_local_valid_.begin(),actor_local_valid_.end(),0u);
@@ -571,7 +572,8 @@ public:
                bool readback_device_task_records=true,
                bool compact_contact_admission=false,
                std::span<const native::GpuDyCompactContactPrep> compact_contact_prep={},
-        std::span<const native::GpuDyRetainedFrictionCandidate> retained_candidates={}) {
+        std::span<const native::GpuDyRetainedFrictionCandidate> retained_candidates={},
+        bool defer_result_dma=false) {
         if(pending_solve_)
             throw std::logic_error("Source Dy numerical epoch already queued");
         if(!contact_prep.empty() && !compact_contact_prep.empty())
@@ -2503,7 +2505,13 @@ public:
                 device_response_buffer,device_response_source,
                 admitted_response_tokens_.data(),
                 admitted_response_tokens_.size()*sizeof(std::uint32_t)};
-        if(extra_downloads.empty())
+        if(defer_result_dma) {
+            if(!extra_downloads.empty())
+                throw std::logic_error("Deferred Dy readback already has PCM spans");
+            deferred_result_downloads_.assign(
+                downloads.begin(),downloads.begin()+download_count);
+            stream_.submit();
+        }else if(extra_downloads.empty())
             stream_.begin_numerical_fetch(
                 std::span(downloads.data(),download_count));
         else {
@@ -2522,9 +2530,21 @@ public:
     bool has_queued_solve() const noexcept {
         return pending_solve_.has_value();
     }
+    bool has_deferred_result_dma() const noexcept {
+        return !deferred_result_downloads_.empty();
+    }
+    void enqueue_deferred_result_dma(
+            std::span<const compute::DownloadSpan> extra_downloads) {
+        if(!pending_solve_ || deferred_result_downloads_.empty())
+            throw std::logic_error("Source Dy result DMA has no submitted solve");
+        deferred_result_downloads_.insert(deferred_result_downloads_.end(),
+            extra_downloads.begin(),extra_downloads.end());
+        stream_.begin_numerical_fetch(deferred_result_downloads_);
+        deferred_result_downloads_.clear();
+    }
     void finish() {
-        if(!pending_solve_)
-            throw std::logic_error("No queued source Dy numerical epoch");
+        if(!pending_solve_ || has_deferred_result_dma())
+            throw std::logic_error("No queued source Dy numerical result DMA");
         // Sc owns the PCM witness publication. Numerical results can
         // finish after their device dependency without observing it.
         auto pending=std::move(*pending_solve_);
@@ -3113,6 +3133,7 @@ private:
         bool device_world_motion=false;
     };
     std::optional<PendingSolve> pending_solve_{};
+    std::vector<compute::DownloadSpan> deferred_result_downloads_;
     enum class Launch : std::uint32_t {
         Fused, Normals, Friction, Partition, Motion, Integrate, PublishErrors,
         FreeBodies, Color, InitializeBodies

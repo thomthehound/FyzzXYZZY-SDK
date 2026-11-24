@@ -926,6 +926,9 @@ public:
         return compute::DispatchIndirectArgs{indirect_buffer_,0u};
     }
 
+    bool needs_witness_before_point_dma() const noexcept {
+        return result_pending_ && deferred_points_pending_;
+    }
     std::span<const compute::DownloadSpan> deferred_point_downloads() const noexcept {
         return deferred_points_pending_ ?
             std::span<const compute::DownloadSpan>(deferred_point_downloads_) :

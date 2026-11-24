@@ -394,7 +394,8 @@ public:
                                 :std::nullopt,
                             deferred_points,readback_device_task_records,
                             compact_contact_admission,compact_contact_prep,
-                            retained_candidates);
+                            retained_candidates,
+                            pcm_ && pcm_->needs_witness_before_point_dma());
         if(!deferred_points.empty())
             pcm_->mark_deferred_points_in_numerical();
         ++dy_distance_dispatch_count_;
@@ -603,6 +604,11 @@ public:
         if(!pcm_)
             throw std::logic_error("Source Sc GPU PCM shaders not installed");
         pcm_->finish();
+        if(dy_distance_ && dy_distance_->has_deferred_result_dma()) {
+            const auto points=pcm_->deferred_point_downloads();
+            dy_distance_->enqueue_deferred_result_dma(points);
+            if(!points.empty())pcm_->mark_deferred_points_in_numerical();
+        }
     }
     void finish_deferred_gpu_pcm_points() override {
         if(pcm_)pcm_->finish_deferred_points();
