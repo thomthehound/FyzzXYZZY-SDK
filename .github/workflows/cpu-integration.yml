@@ -409,6 +409,7 @@ jobs:
         shell: bash
         run: |
           cmake --build build-native --parallel 4
+          sudo apt-get install -y -qq gdb
           ctest --test-dir build-native -R '^fyzzxyzzy_source_sc_gpu_pcm_scene_friction_normal$' --output-on-failure > /tmp/fyzz-friction.log 2>&1 &
           test_runner=$!
           sleep 35
