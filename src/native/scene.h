@@ -104,6 +104,7 @@ struct GpuDyCandidateSource {
     std::uint32_t retained_first=0u,retained_count=0u;
     std::uint32_t retained_single_patch=0xffffffffu;
     bool retained_full=false;
+    std::uint32_t contact_begin=0xffffffffu,friction_begin=0xffffffffu;
 };
 // Gu PCM contacts remain keyed by Sc's original contact-manager EdgeIndex.
 // These are borrowed per-frame views; GPU state belongs to the same Sc edge.
@@ -1505,6 +1506,7 @@ private:
                          float step_seconds=0.0f);
     void prepare_gpu_dy_contact_prep(std::size_t source,float seconds);
     void prepare_gpu_dy_candidate_contact_preps(float seconds);
+    void reserve_gpu_dy_pcm_source_rows();
     void prepare_gpu_dy_pcm_friction_history();
     void materialize_gpu_pcm_points();
     // Original contact-manager addEdge/setEdgeConnected/removeConnection
@@ -2296,6 +2298,8 @@ private:
     std::vector<EdgeIndex> gpu_dy_early_joint_edges_;
     bool gpu_dy_early_islands_=false;
     std::size_t gpu_dy_prewitness_joint_rows_=0u;
+    std::size_t gpu_dy_prewitness_contact_rows_=0u;
+    std::size_t gpu_dy_prewitness_friction_rows_=0u;
      std::vector<float> gpu_dy_contact_forces_;
     std::vector<GpuDyGuContactInput> gpu_dy_gu_inputs_;
     std::vector<GpuDyFrictionAnchorImpulse> gpu_dy_friction_impulses_;

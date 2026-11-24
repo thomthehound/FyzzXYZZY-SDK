@@ -848,10 +848,15 @@ public:
                 cpu_gu_rows+=capacity;
             }
         }
+        // Device-admitted PCM source windows may contain non-touching
+        // candidates. Only admitted responses use working rows.
+        const auto source_rows=reused_pcm_rows+cpu_gu_rows;
         if(cpu_gu_rows!=cpu_gu.size() ||
-           reused_pcm_rows+cpu_gu_rows!=contact_forces.size())
+           source_rows>contact_forces.size() ||
+           ((!device_admission || !compact_contact_admission) &&
+            source_rows!=contact_forces.size()))
             throw std::logic_error(
-                "Source Gu contact preparation does not cover solver rows");
+                "Source Gu contact preparation exceeds numerical row capacity");
         // Reuse resident Dy body inputs and share identical timestep
         // coefficients across the source contact-preparation records.
         constexpr auto invalid=std::numeric_limits<std::uint32_t>::max();

@@ -933,11 +933,15 @@ struct GpuPcmFrictionAnchorFixture {
     static void verify_device_contact_order(const Scene& scene,
                                             bool require_pcm,
                                             bool require_cpu) {
-        std::size_t pcm_count=0u,cpu_count=0u,numerical_end=0u;
+        std::size_t pcm_count=0u,cpu_count=0u;
+        std::size_t numerical_end=scene.gpu_dy_source_body_order_
+            ?scene.gpu_dy_prewitness_contact_rows_:0u;
         for(const auto index:scene.indexed_managers_) {
             const auto& manager=scene.manifolds_[index];
             if(!manager.friction_patch_count)continue;
-            if(manager.solver_offset!=numerical_end)
+            if((!scene.gpu_dy_source_body_order_ ||
+                manager.pcm_result_index==0xffffffffu) &&
+               manager.solver_offset!=numerical_end)
                 throw std::runtime_error(
                     "GPU Dy source numerical row reservation lost manager order");
             if(manager.pcm_result_index==
@@ -956,7 +960,24 @@ struct GpuPcmFrictionAnchorFixture {
                     throw std::runtime_error(
                         "GPU Dy PCM capacity disagrees with published Gu contacts");
                 pcm_count+=manager.count;
-                numerical_end+=capacity;
+                if(scene.gpu_dy_source_body_order_) {
+                    const auto slot=scene.gpu_dy_contact_prep_indices_[
+                        manager.candidate_ordinal];
+                    const auto& source=scene.gpu_dy_candidate_sources_[slot];
+                    if(manager.solver_offset!=source.contact_begin ||
+                       manager.solver_offset>scene.gpu_dy_prewitness_contact_rows_ ||
+                       capacity>scene.gpu_dy_prewitness_contact_rows_-manager.solver_offset)
+                        throw std::runtime_error(
+                            "PCM manager lost its pre-witness numerical range");
+                    const auto& patch=scene.friction_patches_[
+                        manager.friction_patch_offset];
+                    if(!patch.disable_friction &&
+                       (patch.row_offset!=source.friction_begin ||
+                        patch.row_offset>scene.gpu_dy_prewitness_friction_rows_ ||
+                        4u>scene.gpu_dy_prewitness_friction_rows_-patch.row_offset))
+                        throw std::runtime_error(
+                            "PCM friction lost its pre-witness numerical range");
+                }else numerical_end+=capacity;
                 const auto patchIndex=manager.friction_patch_offset;
                 if(patchIndex>=scene.gpu_dy_patches_.size())
                     throw std::runtime_error(

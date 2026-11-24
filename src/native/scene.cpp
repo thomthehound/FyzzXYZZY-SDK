@@ -4320,6 +4320,27 @@ void Scene::prepare_gpu_dy_candidate_contact_preps(float seconds) {
         prep.pcm_edge=request.edge;
     }
 }
+void Scene::reserve_gpu_dy_pcm_source_rows() {
+    FYZZ_PROFILE_SCOPE("dy.prewitness_pcm_row_capacity");
+    std::size_t contacts=0u,friction=0u;
+    for(std::size_t i=0u;i<gpu_pcm_pairs_.size();++i) {
+        auto& source=gpu_dy_candidate_sources_[i];
+        source.contact_begin=0xffffffffu;
+        source.friction_begin=0xffffffffu;
+        if(source.material.max_contact_impulse==0.f)continue;
+        const std::size_t capacity=gpu_pcm_pairs_[i].candidate_capacity==1u?1u:4u;
+        if(contacts>=0x80000000u-capacity || friction>=0x80000000u-4u)
+            throw std::overflow_error("Source PCM numerical capacity exceeds row range");
+        source.contact_begin=static_cast<std::uint32_t>(contacts);
+        source.friction_begin=static_cast<std::uint32_t>(friction);
+        contacts+=capacity;
+        if(!source.material.disable_friction)friction+=4u;
+    }
+    gpu_dy_prewitness_contact_rows_=contacts;
+    gpu_dy_prewitness_friction_rows_=friction;
+    gpu_dy_contact_forces_.assign(contacts,0.f);
+    gpu_dy_friction_anchors_.assign(friction/2u,{});
+}
 void Scene::prepare_gpu_dy_pcm_friction_history() {
     gpu_dy_history_candidates_.clear();
     for(auto& request:gpu_pcm_pairs_) {
@@ -4807,6 +4828,7 @@ void Scene::update_contacts(bool defer_device_points,float step_seconds) {
             if(gpu_dy_rows_.size()!=early_joint_rows)
                 throw std::logic_error("Early Sc joint row capacity changed");
             gpu_dy_prewitness_joint_rows_=gpu_dy_rows_.size();
+            reserve_gpu_dy_pcm_source_rows();
         }else {
             gpu_dy_early_actor_ids_.clear();
             gpu_dy_early_joint_edges_.clear();
@@ -8714,7 +8736,8 @@ void Scene::prepare_constraints(float seconds) {
                     c[0].z*v.x+c[1].z*v.y+c[2].z*v.z};
     };
     solver_contact_points_.clear();
-    prepared_contact_rows_=0u;
+    prepared_contact_rows_=gpu_dy_source_body_order_
+        ?gpu_dy_prewitness_contact_rows_:0u;
     gpu_dy_gu_inputs_.clear();
     solver_contact_order_.clear();
     gpu_dy_contact_order_.clear();
@@ -8932,8 +8955,9 @@ void Scene::prepare_constraints(float seconds) {
         }
     }
     solver_friction_rows_.clear();
-    prepared_friction_rows_=0u;
-    gpu_dy_friction_anchors_.clear();
+    prepared_friction_rows_=gpu_dy_source_body_order_
+        ?gpu_dy_prewitness_friction_rows_:0u;
+    if(!gpu_dy_source_body_order_)gpu_dy_friction_anchors_.clear();
     next_friction_patches_.clear();
     // PXC_SAME_NORMAL and DyCorrelationBuffer::MAX_FRICTION_PATCHES.
     constexpr float same_normal = 0.999f;
@@ -9062,6 +9086,12 @@ void Scene::prepare_constraints(float seconds) {
             throw std::overflow_error("Native Dy rest distance overflow");
         const float pair_max_impulse=numerical.max_contact_impulse;
         if(pair_max_impulse==0.0f)continue;
+        if(gpu_dy_source_body_order_ && resident_pcm_material) {
+            const auto& source=gpu_dy_candidate_sources_[prep_slot];
+            if(source.contact_begin>=gpu_dy_prewitness_contact_rows_)
+                throw std::logic_error("PCM manager lacks pre-witness row capacity");
+            manifold.solver_offset=source.contact_begin;
+        }
         const float max_penetration_bias=numerical.max_penetration_bias;
         const float restitution=numerical.restitution;
         const float damping=numerical.damping;
@@ -9425,11 +9455,18 @@ void Scene::prepare_constraints(float seconds) {
         if(resident_order) {
             const auto capacity=gpu_pcm_pairs_[
                 manifold.pcm_result_index].candidate_capacity==1u?1u:4u;
-            if(manifold.count>capacity ||
-               capacity>std::numeric_limits<std::size_t>::max()-
-                   prepared_contact_rows_)
+            if(manifold.count>capacity)
                 throw std::overflow_error("Source PCM numerical capacity overflow");
-            prepared_contact_rows_+=capacity;
+            if(gpu_dy_source_body_order_) {
+                if(manifold.solver_offset>gpu_dy_prewitness_contact_rows_ ||
+                   capacity>gpu_dy_prewitness_contact_rows_-manifold.solver_offset)
+                    throw std::logic_error("PCM contact exceeds pre-witness row range");
+            }else {
+                if(capacity>std::numeric_limits<std::size_t>::max()-
+                    prepared_contact_rows_)
+                    throw std::overflow_error("Source PCM numerical capacity overflow");
+                prepared_contact_rows_+=capacity;
+            }
         } else for(std::size_t j=0;j<manifold.count;++j) {
             const ContactPoint& contact=manifold.points[j];
             const std::size_t patch_id=contact_patch_ids[j];
@@ -9564,12 +9601,17 @@ void Scene::prepare_constraints(float seconds) {
                        (source.candidate_capacity==1u?1u:4u))
                     throw std::logic_error(
                         "Source GPU PCM friction is not one correlated patch");
-                patch.row_offset=prepared_friction_rows_;
-                // Device PCM grows up to two anchors in its own numerical
-                // workspace; only their compact source slots are needed.
-                gpu_dy_friction_anchors_.resize(
-                    gpu_dy_friction_anchors_.size()+2u);
-                prepared_friction_rows_+=4u;
+                if(gpu_dy_source_body_order_) {
+                    patch.row_offset=gpu_dy_candidate_sources_[prep_slot].friction_begin;
+                    if(patch.row_offset>gpu_dy_prewitness_friction_rows_ ||
+                       4u>gpu_dy_prewitness_friction_rows_-patch.row_offset)
+                        throw std::logic_error("PCM friction exceeds pre-witness row range");
+                }else {
+                    patch.row_offset=prepared_friction_rows_;
+                    gpu_dy_friction_anchors_.resize(
+                        gpu_dy_friction_anchors_.size()+2u);
+                    prepared_friction_rows_+=4u;
+                }
                 continue;
             }
             const Vec3 extent=sub(patch.bounds_max,patch.bounds_min);
@@ -12804,6 +12846,8 @@ void Scene::advance_collision_internal(
         gpu_dy_joint_source_slots_.clear();
         gpu_dy_joint_kinematic_ids_.clear();
         gpu_dy_prewitness_joint_rows_=0u;
+        gpu_dy_prewitness_contact_rows_=0u;
+        gpu_dy_prewitness_friction_rows_=0u;
         gpu_dy_early_islands_=false;
         gpu_dy_early_actor_ids_.clear();
         gpu_dy_staged_actor_count_=0u;
