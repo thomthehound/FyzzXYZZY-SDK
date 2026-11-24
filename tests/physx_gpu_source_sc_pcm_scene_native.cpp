@@ -6620,12 +6620,22 @@ void verify_mixed_gu_pcm_gpu_dy_solver(
                         producer->dy_friction_prepared_rows()*12u,
                 "Mixed source Gu/PCM Dy returned tangent rows instead of anchors");
             native::GpuPcmFrictionAnchorFixture::verify(cpu,gpu);
-            require(producer->dy_contact_prep_upload_saving()==
-                        2*std::int64_t(sizeof(native::GpuDyContactPrepPair)-
+            const auto source_count=
+                native::GpuPcmFrictionAnchorFixture::has_source_body_order(gpu)
+                    ?3u:2u;
+            const auto stats=producer->dy_launch_stats();
+            require(native::GpuPcmFrictionAnchorFixture::
+                        numerical_prep_sizes(gpu)[0]==source_count &&
+                    stats.host_contact_source_bytes==
+                        source_count*sizeof(native::GpuDyCompactContactPrep) &&
+                    producer->dy_contact_prep_upload_saving()==
+                        std::int64_t(source_count)*
+                        std::int64_t(sizeof(native::GpuDyContactPrepPair)-
                             sizeof(physx_gpu::SourceDyPackedContactPrepNative))-
-                        physx_gpu::source_dy_contact_frame_bytes &&
-                    producer->dy_launch_stats().resident_immovable_contact_bodies==2u &&
-                    producer->dy_launch_stats().inline_contact_body_bytes==0u,
+                        physx_gpu::source_dy_contact_frame_bytes,
+                "Mixed Gu/PCM numerical preparation lost its source capacity");
+            require(stats.resident_immovable_contact_bodies==source_count &&
+                    stats.inline_contact_body_bytes==0u,
                 "Mixed Gu/PCM contact preparation retained inline static bodies");
             require(cpu.contacts().size()==gpu.contacts().size() &&
                     cpu.solved_normal_impulses().size()==
