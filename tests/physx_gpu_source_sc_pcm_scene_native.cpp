@@ -5035,6 +5035,11 @@ void verify_sleeping_new_touch_device_admission(
             schedule.device_admitted_tasks==1u &&
             schedule.device_admitted_descriptors==1u,
         "New physical touch did not wake an early device-admitted island");
+    native::GpuPcmFrictionAnchorFixture::
+        verify_pre_witness_device_admission(gpu);
+    require(native::GpuPcmFrictionAnchorFixture::
+                actor_has_staged_source(gpu,moving_gpu),
+        "Dormant candidate actor source waited for physical touch publication");
     test::compound_compare_state(
         gpu.body_state(moving_gpu),cpu.body_state(moving_cpu),0.04f,
         "Sleeping first-touch device admission diverged from CPU PGS");

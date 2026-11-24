@@ -1613,7 +1613,7 @@ private:
     void pack_gpu_dy_integration_input(
         BodyId id,float seconds,GpuDyBodyIntegrationInput& input) const;
     void stage_gpu_dy_actor_sources(std::span<const BodyId> ids,float seconds,
-                                    bool immovable=false);
+                                    bool immovable=false,bool include_dormant=false);
     static constexpr EdgeIndex invalid_edge=std::numeric_limits<EdgeIndex>::max();
     static constexpr std::size_t invalid_instance=
         std::numeric_limits<std::size_t>::max();
@@ -2300,6 +2300,7 @@ private:
     std::vector<BodyId> gpu_dy_immovable_source_ids_;
     std::vector<EdgeIndex> gpu_dy_early_joint_edges_;
     bool gpu_dy_early_islands_=false;
+    std::size_t gpu_dy_prewitness_body_count_=0u;
     std::size_t gpu_dy_prewitness_joint_rows_=0u;
     std::size_t gpu_dy_prewitness_contact_rows_=0u;
     std::size_t gpu_dy_prewitness_friction_rows_=0u;

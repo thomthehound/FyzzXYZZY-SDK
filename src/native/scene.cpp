@@ -4872,7 +4872,7 @@ void Scene::update_contacts(bool defer_device_points,float step_seconds) {
                              kinematics.end());
             // Queue authored actor-local inputs on Sc's early device
             // submission; final Dy admission validates any Sc changes.
-            stage_gpu_dy_actor_sources(gpu_dy_early_actor_ids_,seconds);
+            stage_gpu_dy_actor_sources(gpu_dy_early_actor_ids_,seconds,false,true);
             if(has_legacy_gu) {
                 // CPU Gu physical touch must enter the ordered queue
                 // before device connectivity consumes its EdgeIndex.
@@ -5449,6 +5449,20 @@ void Scene::update_contacts(bool defer_device_points,float step_seconds) {
                     "Early device contact endpoints lost Sc interaction order");
         }
     }
+    // Candidate body inputs occupy their final numerical ordinals.
+    // Source state is available independently of integration eligibility.
+    if(gpu_dy_early_islands_) {
+        gpu_dy_prewitness_body_count_=gpu_dy_early_actor_ids_.size();
+        gpu_dy_integration_inputs_.assign(gpu_dy_prewitness_body_count_,{});
+        for(std::size_t i=0u;i<gpu_dy_prewitness_body_count_;++i) {
+            auto& input=gpu_dy_integration_inputs_[i];
+            pack_gpu_dy_integration_input(gpu_dy_early_actor_ids_[i],
+                                          step_seconds,input);
+            input.active=0u;
+        }
+    }
+    FYZZ_PROFILE_COUNTER("pcm.prewitness_body_inputs",
+        gpu_dy_prewitness_body_count_);
     if(gpu_results_pending) {
         FYZZ_PROFILE_SCOPE("sc.pcm_witness_join");
         {
@@ -9958,7 +9972,7 @@ void Scene::prepare_gpu_dy_device_islands(bool selected) {
         {narrow(gpu_dy_manifolds_.size()),narrow(gpu_dy_rows_.size()),0u});
 }
 void Scene::stage_gpu_dy_actor_sources(
-    std::span<const BodyId> ids,float seconds,bool immovable) {
+    std::span<const BodyId> ids,float seconds,bool immovable,bool include_dormant) {
     if(gpu_dy_actor_stage_epochs_.size()<actors_.size())
         gpu_dy_actor_stage_epochs_.resize(actors_.size(),0u);
     gpu_dy_integration_inputs_.clear();
@@ -9969,7 +9983,8 @@ void Scene::stage_gpu_dy_actor_sources(
         const auto& actor=actors_[id];
         if(!actor.alive ||
            (immovable ? actor.motion==Motion::Dynamic :
-                        actor.motion!=Motion::Dynamic || actor.sleeping) ||
+                        actor.motion!=Motion::Dynamic ||
+                         (actor.sleeping && !include_dormant)) ||
            gpu_dy_actor_stage_epochs_[id]==gpu_dy_actor_stage_epoch_)
             continue;
         gpu_dy_actor_stage_epochs_[id]=gpu_dy_actor_stage_epoch_;
@@ -10141,14 +10156,39 @@ void Scene::solve_gpu_distance_constraints(float seconds) {
         }
         gpu_dy_free_ordinals_[i]=integration_count++;
     }
-    gpu_dy_integration_inputs_.assign(integration_count,{});
+    if(early_device_admission) {
+        if(gpu_dy_prewitness_body_count_!=gpu_dy_early_actor_ids_.size() ||
+           gpu_dy_integration_inputs_.size()!=gpu_dy_prewitness_body_count_)
+            throw std::logic_error("Early Sc integration source range missing");
+        gpu_dy_integration_inputs_.resize(integration_count);
+    }else
+        gpu_dy_integration_inputs_.assign(integration_count,{});
+    const auto admit_input=[&](BodyId id,std::size_t ordinal) {
+        auto& input=gpu_dy_integration_inputs_[ordinal];
+        if(input.active)
+            throw std::logic_error("Sc actor duplicates a numerical body source");
+        if(early_device_admission && ordinal<gpu_dy_prewitness_body_count_) {
+            const auto& actor=actors_[id];
+            if(input.source_actor!=id ||
+               input.counted_interactions!=actor.num_counted_interactions)
+                throw std::logic_error("Early Sc actor source identity changed");
+            // Island activation can reset sleep energy without editing
+            // the authored mass frame, dynamics or velocity modifiers.
+            input.wake_counter=actor.wake_counter;
+            pack(input.sleep_linear_acc,actor.sleep_linear_acc);
+            pack(input.sleep_angular_acc,actor.sleep_angular_acc);
+            input.active=1u|(input.source_element!=invalid_shape?4u:0u);
+        }else
+            pack_gpu_dy_integration_input(id,seconds,input);
+    };
     gpu_dy_integrated_poses_.resize(integration_count);
     gpu_dy_sleep_states_.resize(integration_count);
     for(const BodyId id:solver_active_ids_) {
         const auto& actor=actors_[id];
         const auto& row=solver_rows_[actor.solver_row_index];
-        auto& input=gpu_dy_integration_inputs_[gpu_dy_body_index(id)];
-        pack_gpu_dy_integration_input(id,seconds,input);
+        const auto ordinal=gpu_dy_body_index(id);
+        admit_input(id,ordinal);
+        auto& input=gpu_dy_integration_inputs_[ordinal];
         pack(input.linear_velocity,row.data.linear_velocity);
         if(row.device_world_inertia)input.active|=32u;
         if(early_device_admission)input.active|=gpu_dy_source_indexed_integration;
@@ -10183,15 +10223,17 @@ void Scene::solve_gpu_distance_constraints(float seconds) {
     for(std::size_t i=0;i<gpu_dy_free_ids_.size();++i) {
         const auto& actor=actors_[gpu_dy_free_ids_[i]];
         const auto ordinal=gpu_dy_free_ordinals_[i];
+        admit_input(gpu_dy_free_ids_[i],ordinal);
         auto& input=gpu_dy_integration_inputs_[ordinal];
-        if(input.active)
-            throw std::logic_error("Free actor duplicates a numerical body source");
-        pack_gpu_dy_integration_input(gpu_dy_free_ids_[i],seconds,input);
         if(ordinal<gpu_dy_bodies_.size())
             input.active|=32u|gpu_dy_source_indexed_integration;
         pack(input.linear_velocity,actor.velocity);
         pack(input.angular_velocity,actor.angular_velocity);
     }
+    if(early_device_admission)
+        for(std::size_t i=0u;i<gpu_dy_prewitness_body_count_;++i)
+            if(!gpu_dy_integration_inputs_[i].active)
+                gpu_dy_integration_inputs_[i]={};
     if(!joint_rows_.empty() ||
        gpu_dy_rows_.size()<gpu_dy_joint_inputs_.size())
         throw std::logic_error(
@@ -12951,6 +12993,7 @@ void Scene::advance_collision_internal(
         gpu_dy_joint_inputs_.clear();
         gpu_dy_joint_source_slots_.clear();
         gpu_dy_joint_kinematic_ids_.clear();
+        gpu_dy_prewitness_body_count_=0u;
         gpu_dy_prewitness_joint_rows_=0u;
         gpu_dy_prewitness_contact_rows_=0u;
         gpu_dy_prewitness_friction_rows_=0u;

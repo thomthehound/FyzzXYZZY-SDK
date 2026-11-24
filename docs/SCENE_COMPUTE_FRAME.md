@@ -388,14 +388,17 @@ kinematic endpoint slots are also prepared before the witness join.
 PCM numerical patch descriptors follow the original producer ordinal,
 independently of the compact public friction cache. CPU Gu appends its
 correlated patch descriptors. Public writeback resolves the numerical
-patch through its candidate manager. A continuous PCM-to-Dy numerical
-path without a host header dependency still requires pre-witness
-awake-body and sleep-state inputs. Source-indexed dynamic candidates
-integrate at their original graph ordinal whether the accurate component
-admits a solver task or free flight. The device component root selects
-the integration path; unrelated free actors occupy the suffix. The early device path retains the PCM preparation
-prefix and its candidate addresses through publication; only host-scheduled
-tasks compact their numerical preparation by touching manager.
+patch through its candidate manager. Candidate dynamic actor inputs,
+including dormant candidates, occupy their final integration ordinals
+before the witness join. Sc finalizes integration eligibility and wake
+energy after island activation; it does not reconstruct the candidate
+mass frames, dynamics or force inputs. Counted interactions are already
+fixed by pair and constraint admission. Source-indexed dynamics integrate
+at the same ordinal whether their component admits a solver task or free
+flight. Unrelated free actors occupy the suffix. The early device path
+retains the PCM preparation prefix through publication; host-scheduled
+tasks compact their preparation by touching manager. Numerical enqueue
+still requires Sc activation, sleep arbitration and free-body admission.
 
 Retiring this join requires one Sc-authored, source-ordered table of stable
 candidate identities and typed responding endpoints. GPU PCM must derive
