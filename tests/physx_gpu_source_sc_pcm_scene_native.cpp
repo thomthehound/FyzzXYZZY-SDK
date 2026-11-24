@@ -543,8 +543,9 @@ struct GpuPcmFrictionAnchorFixture {
             const auto& manager=scene.manifolds_[manager_index];
             const auto candidate=manager.candidate_ordinal;
             if(candidate>=scene.gpu_dy_manifolds_.size() ||
-               scene.gpu_dy_manifolds_[candidate].patch_count!=
-                   manager.friction_patch_count)
+               ((manager.friction_patch_count || !scene.gpu_dy_source_body_order_) &&
+                scene.gpu_dy_manifolds_[candidate].patch_count!=
+                   manager.friction_patch_count))
                 throw std::runtime_error(
                     "GPU Dy numerical manager lost its source candidate");
         }
@@ -698,6 +699,8 @@ struct GpuPcmFrictionAnchorFixture {
                     return node==invalid
                         ?invalid:native::gpu_dy_unresolved_solver_ordinal;
                 };
+                if(scene.gpu_dy_candidate_sources_[i].material.max_contact_impulse==0.f)
+                    continue;
                 if(prep.solver_ordinal0!=numerical_source(expected0) ||
                    prep.solver_ordinal1!=numerical_source(expected1) ||
                    prep.source_body0!=scene.shapes_[
@@ -940,6 +943,18 @@ struct GpuPcmFrictionAnchorFixture {
            scene.prepared_friction_rows_!=expected_friction)
             throw std::runtime_error(
                 "Early PCM numerical windows depend on host touch results");
+        if(scene.gpu_dy_candidate_sources_compacted_ ||
+           scene.gpu_dy_contact_prep_pairs_.size()<scene.gpu_pcm_pairs_.size())
+            throw std::runtime_error("Early PCM source prefix was compacted");
+        for(std::size_t i=0u;i<scene.gpu_pcm_pairs_.size();++i) {
+            const auto source=scene.gpu_pcm_pairs_[i].candidate_ordinal;
+            const auto& manager=scene.gpu_dy_manifolds_[source];
+            if(scene.gpu_dy_contact_prep_indices_[source]!=i ||
+               scene.gpu_dy_contact_prep_pairs_[i].pcm_pair_index!=i ||
+               manager.prep_index!=i || manager.patch_offset!=i ||
+               manager.patch_count!=1u)
+                throw std::runtime_error("PCM response lost its original preparation slot");
+        }
         std::vector<bool> published(expected_contacts,false);
         for(const auto index:scene.indexed_managers_) {
             const auto& m=scene.manifolds_[index];
@@ -1097,10 +1112,11 @@ struct GpuPcmFrictionAnchorFixture {
                         responding=true;
                         break;
                     }
-                if(prepared!=responding ||
+                if((responding && !prepared) ||
+                   (!scene.gpu_dy_source_body_order_ && prepared!=responding) ||
                    (prepared && index>=scene.gpu_dy_contact_prep_pairs_.size()))
                     throw std::runtime_error(
-                        "Dy populated a nonresponding candidate preparation");
+                        "Dy candidate preparation lost its source membership");
                 const bool pcm=std::any_of(scene.gpu_pcm_pairs_.begin(),
                     scene.gpu_pcm_pairs_.end(),[source](const auto& request) {
                         return request.candidate_ordinal==source;
@@ -1112,6 +1128,12 @@ struct GpuPcmFrictionAnchorFixture {
                 if(!pcm && !touching && index!=0xffffffffu)
                     throw std::runtime_error(
                         "CPU Gu allocated material for a non-touching candidate");
+                if(scene.gpu_dy_source_body_order_ && pcm &&
+                   (!prepared ||
+                    scene.gpu_dy_contact_prep_pairs_[index].pcm_pair_index!=index ||
+                    scene.gpu_pcm_pairs_[index].candidate_ordinal!=source))
+                    throw std::runtime_error(
+                        "Early PCM preparation was compacted after witness publication");
             }
         }
     }

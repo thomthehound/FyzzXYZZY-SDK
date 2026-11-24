@@ -872,7 +872,7 @@ public:
             throw std::overflow_error(
                 "Source Gu contact-prep arena exceeds address space");
         const std::size_t static_begin=prep_bytes+cpu_gu.size_bytes();
-        packed_.resize(prep_count);
+        packed_.assign(prep_count,{});
         inline_bodies_.clear();
         if(++inline_body_epoch_==0u) {
             std::fill(inline_body_slots_.begin(),inline_body_slots_.end(),
@@ -2530,6 +2530,7 @@ public:
         const auto friction_count=pending.friction_count;
         const auto uploaded_bytes=pending.uploaded_bytes;
         const auto reused_pcm_rows=pending.reused_pcm_rows;
+        std::size_t admitted_pcm_rows=0u;
         const auto compact_anchor_bytes=pending.compact_anchor_bytes;
         const auto prep_bytes=pending.prep_bytes;
         const auto inline_body_bytes=pending.inline_body_bytes;
@@ -2655,6 +2656,7 @@ public:
             // from the GPU result rather than the host manifold.
             std::size_t exact_contacts=capacity;
             if(resident_extent) {
+                admitted_pcm_rows+=capacity;
                 std::uint32_t report=0u;
                 std::memcpy(&report,host_.data()+result_offsets[4]+
                             manager.patch_offset*4u,sizeof(report));
@@ -2895,17 +2897,24 @@ public:
                         ?admitted_contact_sources_.size()*sizeof(std::uint32_t)
                         :pending.response_capacity*sizeof(std::uint32_t))
                     :0u)};
-        last_reused_pcm_contact_rows_=reused_pcm_rows;
+        last_reused_pcm_contact_rows_=pending.compact_contact_admission
+            ?admitted_pcm_rows:reused_pcm_rows;
         last_omitted_pcm_upload_bytes_=
-            reused_pcm_rows*sizeof(native::GpuDyContactPoint);
+            last_reused_pcm_contact_rows_*sizeof(native::GpuDyContactPoint);
         last_cpu_gu_geometry_bytes_=pending.cpu_gu_bytes;
         last_friction_anchor_upload_bytes_=compact_anchor_bytes;
-        for(const auto& manager:manifolds) {
+        for(std::size_t i=0u;i<manifolds.size();++i) {
+            const auto& manager=manifolds[i];
             if(!manager.patch_count || manager.prep_index>=prep_count)
                 continue;
             const auto pair=contact_origin(manager.prep_index);
-            if(pair.pcm_pair_index!=0xffffffffu)
-                history_epochs_[pair.pcm_edge]=history_epoch_;
+            if(pair.pcm_pair_index==0xffffffffu)continue;
+            if(pending.compact_contact_admission &&
+               (admitted_contact_sources_[i/32u]&(1u<<(i&31u)))==0u) {
+                history_epochs_[pair.pcm_edge]=0u;
+                continue;
+            }
+            history_epochs_[pair.pcm_edge]=history_epoch_;
         }
         last_friction_prepared_rows_=friction_count;
         // The device accepted each changed joint only after all source

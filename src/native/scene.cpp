@@ -9831,9 +9831,18 @@ void Scene::prepare_constraints(float seconds) {
             prepared_friction_rows_+=count*2u;
         }
     }
-    if(gpu_normal_prep) {
-        // Numerical inputs remain packed by original source mapping.
-        // Retain only active managers without ever allocating Gu holes.
+    if(gpu_normal_prep && gpu_dy_source_body_order_) {
+        // PCM keeps its original preparation and manager addresses.
+        // Device response tokens, not host witness counts, admit work.
+        for(std::size_t i=0u;i<gpu_dy_contact_prep_sources_.size();++i) {
+            const auto source=gpu_dy_contact_prep_sources_[i];
+            auto& slot=gpu_dy_contact_prep_indices_[source];
+            if((slot&~unadmitted_dy_prep)!=i)
+                throw std::logic_error("Early contact preparation lost its source address");
+            slot=static_cast<std::uint32_t>(i);
+        }
+    }else if(gpu_normal_prep) {
+        // Host numerical tasks retain only their prepared managers.
         std::size_t packed=0u;
         for(std::size_t dense=0u;
             dense<gpu_dy_contact_prep_pairs_.size();++dense) {
@@ -9848,15 +9857,7 @@ void Scene::prepare_constraints(float seconds) {
                     "Source numerical sparse mapping changed during Dy prep");
             if((slot&unadmitted_dy_prep)!=0u) {
                 gpu_dy_contact_prep_indices_[source]=0xffffffffu;
-                if(gpu_dy_source_body_order_)gpu_dy_manifolds_[source]={};
                 continue;
-            }
-            if(gpu_dy_source_body_order_ &&
-               gpu_dy_contact_prep_pairs_[dense].pcm_pair_index!=0xffffffffu) {
-                auto& manager=gpu_dy_manifolds_[source];
-                if(manager.patch_count!=1u || manager.prep_index!=dense)
-                    throw std::logic_error("PCM manager lost its pre-witness descriptor");
-                manager.prep_index=static_cast<std::uint32_t>(packed);
             }
             if(dense!=packed) {
                 gpu_dy_contact_prep_pairs_[packed]=
@@ -13081,6 +13082,10 @@ void Scene::advance_collision_internal(
                 gpu_dy_candidate_sources_.swap(
                     gpu_dy_candidate_source_scratch_);
                 gpu_dy_candidate_sources_compacted_=false;
+            }else {
+                // The PCM prefix keeps its producer order; drop only
+                // the previous frame's appended CPU Gu inputs.
+                gpu_dy_candidate_sources_.resize(gpu_pcm_pairs_.size());
             }
             prepare_gpu_dy_candidate_contact_preps(step_seconds);
             prepare_gpu_dy_pcm_friction_history();
