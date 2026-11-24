@@ -281,7 +281,8 @@ public:
         const auto edge_address=edge_count?edges:
             node_count?node_flags:edge_capacity?touch_history:output;
         const auto node_bytes=node_count
-            ?source_allocation_bytes(node_count,4u):edge_bytes;
+            ?source_allocation_bytes(node_count,
+                sources.speculative_wake_groups?8u:4u):edge_bytes;
         const auto node_address=node_count?node_flags:edge_address;
         const auto touch_bytes=edge_capacity
             ?source_allocation_bytes(edge_capacity,240u):edge_bytes;
@@ -343,7 +344,7 @@ public:
         // A bounded single-workgroup graph avoids the multi-dispatch
         // union, prefix and response-ordering schedule.
         if(node_count<=256u && edge_count<=256u) {
-            args[12]=32u;
+            args[12]=sources.speculative_wake_groups?39u:32u;
             args[13]=0u;
             dispatch.groups={1u,1u,1u};
             std::memcpy(dispatch.push_constants.data(),
@@ -368,12 +369,14 @@ public:
                     count-first,groups*128u));
             }
         };
-        launch(0u,std::max(
+        launch(sources.speculative_wake_groups?42u:0u,std::max(
             std::max(1u,node_count),
             static_cast<std::uint32_t>(
                 (std::uint64_t(sources.contact_managers)+31u)/32u)));
         launch(1u,edge_count);
-        launch(2u,std::max(node_count,edge_count));
+        launch(sources.speculative_wake_groups?40u:2u,
+               std::max(node_count,edge_count));
+        if(sources.speculative_wake_groups)launch(41u,node_count);
         // Stable task ordinals are the exclusive prefix of runnable
         // roots. The compact block scan avoids atomic task ordering,
         // and the final scatter preserves the canonical root order.

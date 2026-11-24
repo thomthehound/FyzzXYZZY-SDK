@@ -408,8 +408,12 @@ Known authored and SAP wake seeds are projected through the existing
 speculative island membership before numerical admission. Dormant
 candidates in that wake reach can supply retained contact and joint
 response sources; actor wake and event publication remain transactional.
-New physical-touch propagation across speculative-only edges still
-requires resident activation handling.
+Potential physical wakes use dense representatives of existing
+speculative groups. New touches set the group's transient wake bit;
+accurate components consume that bit before task admission without
+merging their response topology. Fully awake graphs need no wake-group
+source words. Numerical submission still consumes Sc's post-publication
+integration authorization.
 
 Retiring this join requires one Sc-authored, source-ordered table of stable
 candidate identities and typed responding endpoints. GPU PCM must derive

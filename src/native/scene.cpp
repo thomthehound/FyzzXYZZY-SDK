@@ -4551,25 +4551,29 @@ void Scene::update_contacts(bool defer_device_points,float step_seconds) {
     // SAP and authored wake seeds already belong to the speculative
     // graph. Project their wake reach without publishing actor motion.
     auto& speculative=speculative_islands_;
-    std::uint32_t speculative_wake_stamp=0u;
+    std::uint32_t speculative_wake_stamp=0u,possible_wake_stamp=0u;
     const auto sap_wake_seed=[&](Pair shapes) {
         const auto pair=body_pair(shapes);
         return actors_[pair.a].motion==Motion::Dynamic &&
                actors_[pair.b].motion==Motion::Dynamic &&
                (!actors_[pair.a].sleeping || !actors_[pair.b].sleeping);
     };
-    if(defer_device_points && source_gpu_pcm &&
-       gpu_dy_device_admission_enabled_ && !enhanced_determinism_ &&
-       (authored_activation_pending_ ||
+    const bool project_wakes=defer_device_points && source_gpu_pcm &&
+        gpu_dy_device_admission_enabled_ && !enhanced_determinism_;
+    const bool may_have_dormant=project_wakes &&
+        live_dynamic_count_>accurate_islands_.active_nodes.size();
+    if(project_wakes &&
+       (may_have_dormant || authored_activation_pending_ ||
         std::any_of(found_.begin(),found_.end(),sap_wake_seed))) {
         if(island_topology_dirty_ || !found_.empty() || !lost_.empty())
             update_island_connectivity(true);
-        if(++speculative.active_island_visit_stamp==0u) {
+        if(speculative.active_island_visit_stamp>=0xfffffffeu) {
             std::fill(speculative.active_island_seen.begin(),
                       speculative.active_island_seen.end(),0u);
-            speculative.active_island_visit_stamp=1u;
+            speculative.active_island_visit_stamp=0u;
         }
-        speculative_wake_stamp=speculative.active_island_visit_stamp;
+        speculative_wake_stamp=++speculative.active_island_visit_stamp;
+        possible_wake_stamp=++speculative.active_island_visit_stamp;
         const auto mark=[&](BodyId id) {
             if(id>=speculative.node_island.size())return;
             const auto owner=speculative.node_island[id];
@@ -4598,7 +4602,7 @@ void Scene::update_contacts(bool defer_device_points,float step_seconds) {
     // published points for touching pairs and the authoritative absence
     // of points for zero-touch pairs. An authored shape edit resets the
     // same PCM cache and a rigid wake reenters the GPU narrowphase.
-    const auto dormant_pcm=[&](Pair pair,EdgeIndex edge) noexcept {
+    const auto retained_pcm=[&](Pair pair,EdgeIndex edge) noexcept {
         if(edge>=island_edges_.size() ||
            !island_edges_[edge].pcm_cache.initialized)return false;
         const auto& a=shapes_[pair.a];
@@ -4610,6 +4614,35 @@ void Scene::update_contacts(bool defer_device_points,float step_seconds) {
         return (dynamic_a || dynamic_b) &&
             (!dynamic_a || (actors_[a.body].sleeping && !speculative_wake(a.body))) &&
             (!dynamic_b || (actors_[b.body].sleeping && !speculative_wake(b.body)));
+    };
+    // Only refreshed, previously non-touching pairs can seed a wake.
+    if(may_have_dormant && possible_wake_stamp) {
+        for(std::size_t i=0u;i<previous_pairs_.size();++i) {
+            const auto pair=previous_pairs_[i];
+            const auto edge=active_edge_handles_[i];
+            if(island_edges_[edge].connected || retained_pcm(pair,edge))
+                continue;
+            for(BodyId id:{shapes_[pair.a].body,shapes_[pair.b].body}) {
+                if(actors_[id].motion!=Motion::Dynamic ||
+                   id>=speculative.node_island.size())continue;
+                const auto owner=speculative.node_island[id];
+                if(owner<speculative.active_island_seen.size() &&
+                   speculative.active_island_seen[owner]!=speculative_wake_stamp)
+                    speculative.active_island_seen[owner]=possible_wake_stamp;
+            }
+        }
+    }
+    const auto possible_wake=[&](BodyId id) {
+        if(!possible_wake_stamp || id>=speculative.node_island.size())
+            return false;
+        const auto owner=speculative.node_island[id];
+        return owner<speculative.active_island_seen.size() &&
+            speculative.active_island_seen[owner]==possible_wake_stamp;
+    };
+    const auto dormant_pcm=[&](Pair pair,EdgeIndex edge) {
+        return retained_pcm(pair,edge) &&
+            !possible_wake(shapes_[pair.a].body) &&
+            !possible_wake(shapes_[pair.b].body);
     };
     if(source_gpu_pcm) {
         gpu_pcm_pairs_.reserve(previous_pairs_.size());
@@ -4748,6 +4781,7 @@ void Scene::update_contacts(bool defer_device_points,float step_seconds) {
     // Compact responding candidates independently of the scene actor count.
     // Each CPU Gu source must publish physical touch before admission.
     bool early_device_graph_awaits_gu=false;
+    bool early_wake_groups=false;
     std::uint32_t early_joint_rows=0u;
     // A lone CPU-authored source needs no device island graph. GPU PCM
     // still admits its resident touch response before the host witness join.
@@ -4803,7 +4837,8 @@ void Scene::update_contacts(bool defer_device_points,float step_seconds) {
                 if(actor.motion!=Motion::Dynamic)continue;
                 const bool awake=(!actor.sleeping && !actor.ready_for_sleep &&
                     actor.wake_counter>2.f*seconds) || speculative_wake(id);
-                if(!awake || !actor.dynamics.position_iterations) {
+                if((!awake && !(actor.sleeping && possible_wake(id))) ||
+                   !actor.dynamics.position_iterations) {
                     admitted=false;
                     break;
                 }
@@ -4856,7 +4891,8 @@ void Scene::update_contacts(bool defer_device_points,float step_seconds) {
                     actor.wake_counter>2.f*seconds) || speculative_wake(id);
                 // Known speculative wakes and new physical touches
                 // can activate a dormant numerical candidate.
-                if(!awake && !new_device_touch_candidate) {
+                if(!awake && !new_device_touch_candidate &&
+                   !(actor.sleeping && possible_wake(id))) {
                     admitted=false;
                     break;
                 }
@@ -4899,6 +4935,31 @@ void Scene::update_contacts(bool defer_device_points,float step_seconds) {
                     dynamics.position_iterations|
                     (std::uint32_t(dynamics.velocity_iterations)<<8u);
             }
+            // Label potentially waking groups independently of accurate roots.
+            early_wake_groups=std::any_of(
+                gpu_dy_early_actor_ids_.begin(),gpu_dy_early_actor_ids_.end(),
+                [&](BodyId id){return actors_[id].sleeping && possible_wake(id);});
+            if(early_wake_groups) {
+                const auto count=gpu_dy_early_actor_ids_.size();
+                gpu_dy_island_node_flags_.resize(count*2u,invalid);
+                std::vector<std::pair<IslandGraph::IslandId,std::uint32_t>> groups;
+                groups.reserve(count);
+                for(std::uint32_t i=0u;i<count;++i) {
+                    const auto id=gpu_dy_early_actor_ids_[i];
+                    if(possible_wake(id))
+                        groups.emplace_back(speculative.node_island[id],i);
+                }
+                std::sort(groups.begin(),groups.end());
+                auto owner=IslandGraph::invalid;
+                std::uint32_t representative=invalid;
+                for(const auto [group,index]:groups) {
+                    if(owner!=group) {
+                        owner=group;
+                        representative=index;
+                    }
+                    gpu_dy_island_node_flags_[count+index]=representative;
+                }
+            }
             const auto ordinal=[&](std::uint32_t actor) {
                 if(actor==invalid)return invalid;
                 const auto it=std::lower_bound(
@@ -4928,7 +4989,7 @@ void Scene::update_contacts(bool defer_device_points,float step_seconds) {
                 gpu_broadphase_->enqueue_gpu_dy_island_admission(
                     gpu_dy_island_edges_,gpu_dy_island_node_flags_,
                     {static_cast<std::uint32_t>(previous_pairs_.size()),
-                 early_joint_rows,0u},
+                 early_joint_rows,0u,early_wake_groups},
                     true);
                 gpu_dy_early_islands_=true;
             }
@@ -5462,7 +5523,7 @@ void Scene::update_contacts(bool defer_device_points,float step_seconds) {
         gpu_broadphase_->enqueue_gpu_dy_island_admission(
             gpu_dy_island_edges_,gpu_dy_island_node_flags_,
             {static_cast<std::uint32_t>(previous_pairs_.size()),
-             early_joint_rows,0u},
+             early_joint_rows,0u,early_wake_groups},
             true);
         gpu_dy_early_islands_=true;
     }
@@ -8871,8 +8932,8 @@ void Scene::prepare_constraints(float seconds) {
     const bool prewitness_joint_sources=
         gpu_normal_prep && !gpu_dy_joint_inputs_.empty();
     if(gpu_dy_source_body_order_) {
-        if(gpu_dy_early_joint_edges_.size()!=indexed_joints_.size() ||
-           gpu_dy_joint_inputs_.size()!=indexed_joints_.size() ||
+        if(gpu_dy_early_joint_edges_.size()<indexed_joints_.size() ||
+           gpu_dy_joint_inputs_.size()!=gpu_dy_early_joint_edges_.size() ||
            gpu_dy_prewitness_joint_rows_!=gpu_dy_rows_.size())
             throw std::logic_error("Early Sc joint admission changed before Dy");
     }else if(prewitness_joint_sources) {
@@ -9988,7 +10049,9 @@ void Scene::prepare_gpu_dy_device_islands(bool selected) {
             gpu_broadphase_->discard_gpu_dy_island_admission();
             return;
         }
-        if(gpu_dy_island_node_flags_.size()!=gpu_dy_early_actor_ids_.size() ||
+        const auto nodes=gpu_dy_early_actor_ids_.size();
+        if((gpu_dy_island_node_flags_.size()!=nodes &&
+            gpu_dy_island_node_flags_.size()!=2u*nodes) ||
            gpu_dy_tasks_.size()>gpu_broadphase_->gpu_dy_direct_task_limit())
             throw std::logic_error(
                 "Early Sc accurate islands lost their node capacity");

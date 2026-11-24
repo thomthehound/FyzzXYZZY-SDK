@@ -304,8 +304,29 @@ void inclusiveTaskScan(uint lane) {
     }
 }
 
+// Sort scratch holds speculative wake bits until task admission.
+void seedSpeculativeWake(uint node) {
+    if(!respondingNode(node))return;
+    const uint group=nodeFlags.Load(p.nodeBias+(p.nodeCount+node)*4u);
+    if(group==invalid)return;
+    if(group>=p.nodeCount){reject(16u);return;}
+    uint previous;
+    work.InterlockedOr(p.responseBiasA+group*4u,1u,previous);
+}
+void propagateSpeculativeWake(uint node) {
+    if(!respondingNode(node))return;
+    const uint group=nodeFlags.Load(p.nodeBias+(p.nodeCount+node)*4u);
+    if(group==invalid)return;
+    if(group>=p.nodeCount){reject(16u);return;}
+    if(work.Load(p.responseBiasA+group*4u)==0u)return;
+    const uint root=work.Load(p.rootBias+node*4u);
+    if(root>=p.nodeCount){reject(4u);return;}
+    uint previous;
+    work.InterlockedOr(p.countBias+root*24u+8u,1u,previous);
+}
+
 // Small graphs complete accurate admission in one ordered dispatch.
-void admitCompact(uint lane) {
+void admitCompact(uint lane,bool speculativeWake) {
     if(lane==0u) {
         work.Store4(p.workBias,uint4(0u,0u,0u,0u));
         work.Store4(p.workBias+16u,uint4(0u,1u,1u,p.edgeCount));
@@ -319,6 +340,7 @@ void admitCompact(uint lane) {
         const uint count=p.countBias+node*24u;
         work.Store4(count,uint4(0u,0u,0u,0u));
         work.Store2(count+16u,uint2(0u,invalid));
+        if(speculativeWake)work.Store(p.responseBiasA+node*4u,0u);
     }
     AllMemoryBarrierWithGroupSync();
 
@@ -373,8 +395,13 @@ void admitCompact(uint lane) {
                     if((kind&noResponse)==0u)
                         work.InterlockedAdd(count+4u,1u,previous);
                     if((kind&jointEdge)==0u &&
-                       (edgeHistory.Load(p.touchBias+edge.x*240u+76u)&1u)==0u)
+                       (edgeHistory.Load(p.touchBias+edge.x*240u+76u)&1u)==0u) {
                         work.InterlockedAdd(count+8u,1u,previous);
+                        if(speculativeWake) {
+                            seedSpeculativeWake(edge.y);
+                            seedSpeculativeWake(edge.z);
+                        }
+                    }
                 }
             }
         }
@@ -384,6 +411,11 @@ void admitCompact(uint lane) {
     }
     AllMemoryBarrierWithGroupSync();
 
+    if(speculativeWake) {
+        for(uint node=lane;node<p.nodeCount;node+=128u)
+            propagateSpeculativeWake(node);
+        AllMemoryBarrierWithGroupSync();
+    }
     if(lane==0u && work.Load(p.workBias)==0u) {
         uint taskCount=0u,bodyCount=0u,responseCount=0u;
         uint nonSingleton=0u;
@@ -579,8 +611,8 @@ void scanContactBlock(uint lane) {
 void main(uint3 thread:SV_DispatchThreadID,
           uint3 group:SV_GroupID,uint3 lane:SV_GroupThreadID) {
     const uint index=p.first+thread.x;
-    if(p.phase==32u) {
-        if(group.x==0u)admitCompact(lane.x);
+    if(p.phase==32u || p.phase==39u) {
+        if(group.x==0u)admitCompact(lane.x,p.phase==39u);
         return;
     }
     if(p.phase==33u) {
@@ -714,7 +746,11 @@ void main(uint3 thread:SV_DispatchThreadID,
         }
         return;
     }
-    if(p.phase==0u) {
+    if(p.phase==41u) {
+        if(index<p.nodeCount)propagateSpeculativeWake(index);
+        return;
+    }
+    if(p.phase==0u || p.phase==42u) {
         if(index==0u) {
             work.Store4(p.workBias,uint4(0u,0u,0u,0u));
             work.Store4(p.workBias+16u,uint4(0u,1u,1u,p.edgeCount));
@@ -728,6 +764,7 @@ void main(uint3 thread:SV_DispatchThreadID,
             const uint count=p.countBias+index*24u;
             work.Store4(count,uint4(0u,0u,0u,0u));
             work.Store2(count+16u,uint2(0u,invalid));
+            if(p.phase==42u)work.Store(p.responseBiasA+index*4u,0u);
         }
         return;
     }
@@ -745,7 +782,7 @@ void main(uint3 thread:SV_DispatchThreadID,
             connectNodes(edge.y,edge.z);
         return;
     }
-    if(p.phase==2u) {
+    if(p.phase==2u || p.phase==40u) {
         if(index<p.nodeCount) {
             const uint root=findRoot(index);
             if(root!=invalid) {
@@ -788,9 +825,14 @@ void main(uint3 thread:SV_DispatchThreadID,
                     if((kind&jointEdge)==0u) {
                         const uint cache=p.touchBias+edge.x*240u;
                         const uint prior=edgeHistory.Load(cache+76u)&1u;
-                        if(prior==0u)
+                        if(prior==0u) {
                             work.InterlockedAdd(p.countBias+owner*24u+8u,
                                                 1u,previous);
+                            if(p.phase==40u) {
+                                seedSpeculativeWake(edge.y);
+                                seedSpeculativeWake(edge.z);
+                            }
+                        }
                     }
                 }
             }

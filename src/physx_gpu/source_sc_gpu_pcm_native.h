@@ -779,7 +779,11 @@ public:
         if(edges.size()>std::numeric_limits<std::uint32_t>::max() ||
            node_flags.size()>std::numeric_limits<std::uint32_t>::max())
             throw std::overflow_error("Device Sc island input exceeds 32-bit view");
-        const auto node_count=static_cast<std::uint32_t>(node_flags.size());
+        const auto node_stride=sources.speculative_wake_groups?2u:1u;
+        if(node_flags.size()%node_stride)
+            throw std::invalid_argument("Device Sc wake group input is truncated");
+        const auto node_count=static_cast<std::uint32_t>(
+            node_flags.size()/node_stride);
         const auto edge_count=static_cast<std::uint32_t>(edges.size());
         const auto edge_capacity=device_edge_history_capacity();
         constexpr std::uint32_t invalid=0xffffffffu;
@@ -799,11 +803,14 @@ public:
                (edge.node_b!=invalid && edge.node_b>=node_count))
                 throw std::invalid_argument("Device Sc island edge is not admitted");
         }
-        for(const auto word:node_flags)
+        for(const auto word:node_flags.first(node_count))
             if((word&0xfff80000u)!=0u ||
                ((word&source_sc_device_island_nonresponding_bit)==0u &&
                 (word&0xffu)==0u))
                 throw std::invalid_argument("Device Sc node iterations invalid");
+        for(const auto group:node_flags.subspan(node_count))
+            if(group!=invalid && group>=node_count)
+                throw std::invalid_argument("Device Sc wake group ordinal invalid");
         island_layout_=SourceScDeviceIslandLayout::for_counts(
             node_count,edge_count,sources.contact_managers);
         island_deferred_body_remap_=false;
@@ -840,7 +847,7 @@ public:
             if(node_count) {
                 island_nodes_.allocate(source_allocation_bytes(
                     node_count,
-                    sizeof(std::uint32_t)),PX_FL);
+                    node_stride*sizeof(std::uint32_t)),PX_FL);
                 source_nodes=island_nodes_.getDevicePtr();
             }
             auto& uploads=stream_.upload_scratch();

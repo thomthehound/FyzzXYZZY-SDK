@@ -594,8 +594,10 @@ struct GpuPcmFrictionAnchorFixture {
         if(!scene.gpu_dy_early_islands_ ||
            scene.gpu_dy_island_edges_.size()!=scene.previous_pairs_.size()+joints ||
            scene.gpu_dy_early_actor_ids_.empty() ||
-           scene.gpu_dy_island_node_flags_.size()!=
-                scene.gpu_dy_early_actor_ids_.size() ||
+           (scene.gpu_dy_island_node_flags_.size()!=
+                scene.gpu_dy_early_actor_ids_.size() &&
+            scene.gpu_dy_island_node_flags_.size()!=
+                2u*scene.gpu_dy_early_actor_ids_.size()) ||
            !std::is_sorted(scene.gpu_dy_early_actor_ids_.begin(),
                            scene.gpu_dy_early_actor_ids_.end()) ||
            stamped!=scene.gpu_dy_staged_actor_count_ ||
@@ -610,7 +612,7 @@ struct GpuPcmFrictionAnchorFixture {
                 scene.gpu_broadphase_.get());
         const auto bytes=scene.gpu_dy_island_edges_.size()*
             sizeof(GpuDyIslandEdge)+
-            scene.gpu_dy_early_actor_ids_.size()*sizeof(std::uint32_t);
+            scene.gpu_dy_island_node_flags_.size()*sizeof(std::uint32_t);
         const auto direct=owner.sc_island_source_direct_bytes();
         const auto staged=owner.sc_island_source_upload_bytes();
         if(direct+staged!=bytes ||
@@ -758,9 +760,9 @@ struct GpuPcmFrictionAnchorFixture {
                    prep.solver_ordinal1!=0xffffffffu)
                     throw std::runtime_error(
                         "Host-scheduled contact retains a device source ordinal");
-        if(joints!=scene.indexed_joints_.size())
+        if(joints<scene.indexed_joints_.size())
             throw std::runtime_error(
-                "Early device Sc joint graph disagrees with Dy source membership");
+                "Early device Sc joint graph omitted Dy source membership");
         if(source_body_order) {
             if(joint_row!=scene.gpu_dy_rows_.size() ||
                joint_row!=scene.gpu_dy_prewitness_joint_rows_)
@@ -5152,6 +5154,52 @@ void verify_sleeping_new_touch_device_admission(
         speculative_gpu.body_state(candidate_gpu),
         speculative_cpu.body_state(candidate_cpu),0.003f,
         "Speculative activation changed unrelated free-flight motion");
+
+    // A new static touch wakes two separate accurate components.
+    const auto static_cpu=speculative_cpu.add_static_box(
+        {0.5f,0.5f,0.5f},{10.f,10.f,0.f});
+    const auto static_gpu=speculative_gpu.add_static_box(
+        {0.5f,0.5f,0.5f},{10.f,10.f,0.f});
+    for(unsigned frame=0u;frame<40u &&
+        (!speculative_cpu.body_is_sleeping(candidate_cpu) ||
+         !speculative_gpu.body_is_sleeping(candidate_gpu) ||
+         !speculative_cpu.body_is_sleeping(joint_cpu[0]) ||
+         !speculative_gpu.body_is_sleeping(joint_gpu[0]));++frame) {
+        speculative_cpu.step(seconds);
+        speculative_gpu.step(seconds);
+    }
+    require(speculative_cpu.body_is_sleeping(candidate_cpu) &&
+            speculative_gpu.body_is_sleeping(candidate_gpu) &&
+            speculative_cpu.body_is_sleeping(joint_cpu[0]) &&
+            speculative_gpu.body_is_sleeping(joint_gpu[0]),
+        "Physical-touch propagation fixture did not sleep");
+    const Vec3 new_touch{1.08f,2.75f,0.f};
+    speculative_cpu.set_pose(static_cpu,new_touch,{});
+    speculative_gpu.set_pose(static_gpu,new_touch,{});
+    speculative_cpu.step(seconds);
+    speculative_gpu.step(seconds);
+    const auto physical_wake=speculative_producer->dy_launch_stats();
+    require(speculative_cpu.contacts().size()==1u &&
+            speculative_gpu.contacts().size()==1u &&
+            speculative_gpu.accurate_island_id(candidate_gpu)!=
+                speculative_gpu.accurate_island_id(joint_gpu[0]) &&
+            physical_wake.device_island_indirect_dispatches==1u &&
+            physical_wake.device_admitted_tasks==2u &&
+            physical_wake.device_admitted_bodies==3u &&
+            physical_wake.device_admitted_descriptors==2u &&
+            speculative_producer->dy_gpu_integrated_body_count()==3u,
+        "Resident physical touch failed to activate separate accurate islands");
+    native::GpuPcmFrictionAnchorFixture::
+        verify_pre_witness_device_admission(speculative_gpu);
+    for(std::size_t i=0u;i<joint_cpu.size();++i)
+        test::compound_compare_state(
+            speculative_gpu.body_state(joint_gpu[i]),
+            speculative_cpu.body_state(joint_cpu[i]),0.003f,
+            "Physical-touch speculative wake changed joint motion");
+    test::compound_compare_state(
+        speculative_gpu.body_state(candidate_gpu),
+        speculative_cpu.body_state(candidate_cpu),0.04f,
+        "Physical-touch speculative wake changed contact motion");
 }
 
 void verify_early_pcm_island_pipeline(

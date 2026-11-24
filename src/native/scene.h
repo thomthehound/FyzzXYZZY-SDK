@@ -323,6 +323,7 @@ struct GpuDyIslandSources {
     std::uint32_t contact_managers=0u;
     std::uint32_t joint_rows=0u;
     std::uint32_t full_descriptors=0u;
+    bool speculative_wake_groups=false;
 };
 // Both Sc endpoint admission and Dy wide-task scheduling use this gate.
 // Compact tasks never require host endpoint-degree analysis.
