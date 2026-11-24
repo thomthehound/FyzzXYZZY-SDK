@@ -492,6 +492,15 @@ struct GpuPcmFrictionAnchorFixture {
             throw std::runtime_error(
                 "CPU Dy prepared unused GPU numerical sources");
     }
+    static std::size_t expected_mixed_contact_source_count(const Scene& scene) {
+        const bool early=scene.gpu_dy_source_body_order_;
+        std::size_t count=early?scene.gpu_pcm_pairs_.size():0u;
+        for(const auto& manager:scene.manifolds_)
+            if(manager.friction_patch_count &&
+               (!early || manager.pcm_result_index==0xffffffffu))
+                ++count;
+        return count;
+    }
     static std::array<std::size_t,3> numerical_prep_sizes(
         const Scene& scene) {
         return {scene.gpu_dy_contact_prep_pairs_.size(),
@@ -6620,23 +6629,37 @@ void verify_mixed_gu_pcm_gpu_dy_solver(
                         producer->dy_friction_prepared_rows()*12u,
                 "Mixed source Gu/PCM Dy returned tangent rows instead of anchors");
             native::GpuPcmFrictionAnchorFixture::verify(cpu,gpu);
-            const auto source_count=
-                native::GpuPcmFrictionAnchorFixture::has_source_body_order(gpu)
-                    ?3u:2u;
+            const auto source_count=native::GpuPcmFrictionAnchorFixture::
+                expected_mixed_contact_source_count(gpu);
+            const auto actual_count=native::GpuPcmFrictionAnchorFixture::
+                numerical_prep_sizes(gpu)[0];
             const auto stats=producer->dy_launch_stats();
-            require(native::GpuPcmFrictionAnchorFixture::
-                        numerical_prep_sizes(gpu)[0]==source_count &&
-                    stats.host_contact_source_bytes==
-                        source_count*sizeof(native::GpuDyCompactContactPrep) &&
-                    producer->dy_contact_prep_upload_saving()==
-                        std::int64_t(source_count)*
-                        std::int64_t(sizeof(native::GpuDyContactPrepPair)-
-                            sizeof(physx_gpu::SourceDyPackedContactPrepNative))-
-                        physx_gpu::source_dy_contact_frame_bytes,
-                "Mixed Gu/PCM numerical preparation lost its source capacity");
-            require(stats.resident_immovable_contact_bodies==source_count &&
-                    stats.inline_contact_body_bytes==0u,
-                "Mixed Gu/PCM contact preparation retained inline static bodies");
+            const auto expected_bytes=
+                source_count*sizeof(native::GpuDyCompactContactPrep);
+            const auto expected_saving=
+                std::int64_t(source_count)*
+                std::int64_t(sizeof(native::GpuDyContactPrepPair)-
+                    sizeof(physx_gpu::SourceDyPackedContactPrepNative))-
+                std::int64_t(physx_gpu::source_dy_contact_frame_bytes)-
+                std::int64_t(stats.retained_friction_source_bytes);
+            if(actual_count!=source_count ||
+               stats.host_contact_source_bytes!=expected_bytes ||
+               producer->dy_contact_prep_upload_saving()!=expected_saving ||
+               stats.resident_immovable_contact_bodies!=source_count ||
+               stats.inline_contact_body_bytes!=0u)
+                throw std::runtime_error(
+                    "Mixed Gu/PCM numerical source accounting"
+                    " plane_first="+std::to_string(plane_first)+
+                    " joint="+std::to_string(with_joint)+
+                    " frame="+std::to_string(frame)+
+                    " sources="+std::to_string(actual_count)+
+                    "/"+std::to_string(source_count)+
+                    " source_bytes="+std::to_string(stats.host_contact_source_bytes)+
+                    "/"+std::to_string(expected_bytes)+
+                    " saving="+std::to_string(producer->dy_contact_prep_upload_saving())+
+                    "/"+std::to_string(expected_saving)+
+                    " immovable_refs="+std::to_string(stats.resident_immovable_contact_bodies)+
+                    " inline_bytes="+std::to_string(stats.inline_contact_body_bytes));
             require(cpu.contacts().size()==gpu.contacts().size() &&
                     cpu.solved_normal_impulses().size()==
                         gpu.solved_normal_impulses().size() &&
