@@ -438,6 +438,8 @@ static_assert(sizeof(GpuDyContactPrepPair)==256u &&
 // The Scene numerical path borrows every actor frame from Dy's resident
 // pool. Only source identities, inverse masses and material coefficients
 // enter the CPU-to-GPU preparation boundary.
+// Device admission resolves this responding-body reference after upload.
+inline constexpr std::uint32_t gpu_dy_unresolved_solver_ordinal=0xfffffffeu;
 struct GpuDyCompactContactPrep {
     std::uint32_t solver_ordinal0=0xffffffffu,solver_ordinal1=0xffffffffu;
     BodyId source_body0=0xffffffffu,source_body1=0xffffffffu;
