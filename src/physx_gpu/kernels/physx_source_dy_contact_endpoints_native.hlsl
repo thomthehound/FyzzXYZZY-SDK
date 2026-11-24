@@ -37,17 +37,18 @@ void main(uint3 thread:SV_DispatchThreadID) {
     }
     const uint prep=p.prepBias+16u+prepIndex*48u;
     const uint2 refs=dyArena.Load2(prep);
-    const bool dynamicA=(refs.x&3u)==1u;
-    const bool dynamicB=(refs.y&3u)==1u;
-    if(!dynamicA && !dynamicB)return;
+    // Only unresolved dynamic references need Sc's device-owned rows.
+    const bool pendingA=refs.x==0xfffffffdu;
+    const bool pendingB=refs.y==0xfffffffdu;
+    if(!pendingA && !pendingB)return;
     const uint2 endpoints=scWork.Load2(p.endpointBias+source*8u);
-    if((dynamicA && endpoints.x>=p.bodyCount) ||
-       (dynamicB && endpoints.y>=p.bodyCount)) {
+    if((pendingA && endpoints.x>=p.bodyCount) ||
+       (pendingB && endpoints.y>=p.bodyCount)) {
         uint unused;
         scWork.InterlockedOr(p.scHeaderBias,512u,unused);
         return;
     }
     dyArena.Store2(prep,uint2(
-        dynamicA?(endpoints.x<<2u)|1u:refs.x,
-        dynamicB?(endpoints.y<<2u)|1u:refs.y));
+        pendingA?(endpoints.x<<2u)|1u:refs.x,
+        pendingB?(endpoints.y<<2u)|1u:refs.y));
 }
