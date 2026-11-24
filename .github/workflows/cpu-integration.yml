@@ -407,27 +407,12 @@ jobs:
       - name: Build and test native core and compute
         if: matrix.suite == 'source'
         shell: bash
+        env:
+          # Software Vulkan qualifies numerical behavior, not JIT optimization.
+          GALLIVM_PERF: nopt
         run: |
           cmake --build build-native --parallel 4
-          ctest --test-dir build-native -R '^fyzzxyzzy_source_sc_gpu_pcm_scene_friction_normal$' --output-on-failure &
-          test_pid=$!
-          deadline=$((SECONDS + 135))
-          while kill -0 "$test_pid" 2>/dev/null && ((SECONDS < deadline)); do
-            sleep 1
-          done
-          if kill -0 "$test_pid" 2>/dev/null; then
-            for pid in $(pgrep -P "$test_pid" || true); do
-              echo "Vulkan conformance test thread state (PID $pid)"
-              ps -L -p "$pid" -o pid,tid,pcpu,stat,wchan:32,comm || true
-              if command -v gdb >/dev/null; then
-                timeout 25s sudo -n gdb -q -nx -batch \
-                  -ex 'set pagination off' -ex 'set debuginfod enabled off' \
-                  -ex 'thread apply all bt 16' -p "$pid" || true
-              fi
-            done
-          fi
-          wait "$test_pid"
-          ctest --test-dir build-native -E '^fyzzxyzzy_source_sc_gpu_pcm_scene_friction_normal$' --parallel 2 --output-on-failure --stop-on-failure
+          ctest --test-dir build-native --parallel 2 --output-on-failure
           grep -F 'FYZZXYZZY_METRIC' build-native/Testing/Temporary/LastTest.log | tee -a "$GITHUB_STEP_SUMMARY"
           test ! -d build-native/_deps/fyzzxyzzy_physx-src
           test -f build-native/libfyzzxyzzy_core.a
