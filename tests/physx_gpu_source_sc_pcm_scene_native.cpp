@@ -725,8 +725,9 @@ struct GpuPcmFrictionAnchorFixture {
             throw std::runtime_error(
                 "Early device Sc joint graph disagrees with Dy source membership");
         if(source_body_order) {
-            if(joint_row!=scene.gpu_dy_rows_.size())
-                throw std::runtime_error("Early Sc joint row capacity mismatch");
+            if(joint_row!=scene.gpu_dy_rows_.size() ||
+               joint_row!=scene.gpu_dy_prewitness_joint_rows_)
+                throw std::runtime_error("Early Sc joint rows were not prepared before witnesses");
             for(std::size_t i=0u;i<joints;++i) {
                 const auto& edge=scene.gpu_dy_island_edges_[i];
                 const auto& joint=scene.constraint_records_[

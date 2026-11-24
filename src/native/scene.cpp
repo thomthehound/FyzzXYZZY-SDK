@@ -4636,6 +4636,7 @@ void Scene::update_contacts(bool defer_device_points,float step_seconds) {
         gpu_dy_early_actor_ids_.clear();
         gpu_dy_island_edges_.clear();
         gpu_dy_early_joint_edges_=active_constraint_handles_;
+        gpu_dy_joint_kinematic_ids_.clear();
         std::sort(gpu_dy_early_joint_edges_.begin(),
                   gpu_dy_early_joint_edges_.end(),
             [&](EdgeIndex a,EdgeIndex b) {
@@ -4668,6 +4669,8 @@ void Scene::update_contacts(bool defer_device_points,float step_seconds) {
             for(std::size_t side=0u;side<2u;++side) {
                 const BodyId id=side?endpoints.b:endpoints.a;
                 const auto& actor=actors_[id];
+                if(actor.motion==Motion::Kinematic)
+                    gpu_dy_joint_kinematic_ids_.push_back(id);
                 if(actor.motion!=Motion::Dynamic)continue;
                 if(actor.sleeping || actor.ready_for_sleep ||
                    actor.wake_counter<=2.f*seconds ||
@@ -4779,6 +4782,15 @@ void Scene::update_contacts(bool defer_device_points,float step_seconds) {
                 edge.node_a=ordinal(edge.node_a);
                 edge.node_b=ordinal(edge.node_b);
             }
+            auto& kinematics=gpu_dy_joint_kinematic_ids_;
+            std::sort(kinematics.begin(),kinematics.end());
+            kinematics.erase(std::unique(kinematics.begin(),kinematics.end()),
+                             kinematics.end());
+            // Authored joint rows and endpoints do not consume PCM witnesses.
+            prepare_gpu_dy_joint_rows(gpu_dy_early_joint_edges_,true,true);
+            if(gpu_dy_rows_.size()!=early_joint_rows)
+                throw std::logic_error("Early Sc joint row capacity changed");
+            gpu_dy_prewitness_joint_rows_=gpu_dy_rows_.size();
             // Queue authored actor-local inputs on Sc's early device
             // submission; final Dy admission validates any Sc changes.
             stage_gpu_dy_actor_sources(gpu_dy_early_actor_ids_,seconds);
@@ -7986,7 +7998,6 @@ void Scene::partition_constraints() {
     solver_tasks_.clear();
     gpu_dy_free_ids_.clear();
     gpu_dy_source_body_order_=false;
-    gpu_dy_joint_kinematic_ids_.clear();
     gpu_dy_responding_island_count_=0u;
     const bool gpu_integration=gpu_dy_active();
     const bool device_sc_grouping=gpu_integration &&
@@ -8198,16 +8209,6 @@ void Scene::partition_constraints() {
         device_source_responses?gpu_dy_island_edges_.size():0u);
     if(device_source_responses) {
         gpu_dy_source_body_order_=true;
-        // Kinematics supply prescribed motion without joining dynamic components.
-        for(const auto edge:indexed_joints_) {
-            const auto pair=island_edges_[edge].pair;
-            for(const auto id:{pair.a,pair.b})
-                if(actors_[id].motion==Motion::Kinematic)
-                    gpu_dy_joint_kinematic_ids_.push_back(id);
-        }
-        auto& ids=gpu_dy_joint_kinematic_ids_;
-        std::sort(ids.begin(),ids.end());
-        ids.erase(std::unique(ids.begin(),ids.end()),ids.end());
         return;
     }
     constexpr std::uint32_t invalid_device_node=0xffffffffu;
@@ -8589,6 +8590,90 @@ GpuDyJointInput Scene::pack_gpu_dy_joint_input(EdgeIndex edge_id) const {
     return input;
 }
 
+void Scene::prepare_gpu_dy_joint_rows(std::span<const EdgeIndex> edges,
+                                      bool source_order,bool staged_sources) {
+    gpu_dy_rows_.clear();
+    for(const EdgeIndex edge_id:edges) {
+        const auto& edge=island_edges_[edge_id];
+        const auto& joint=constraint_records_[edge.constraint_id];
+        if(!joint.live || joint.edge!=edge_id)
+            throw std::logic_error("Source 1D constraint descriptor owner missing");
+        const auto id0=joint.swapped?edge.pair.b:edge.pair.a;
+        const auto id1=joint.swapped?edge.pair.a:edge.pair.b;
+        const auto& body0=actors_[id0];
+        const auto& body1=actors_[id1];
+        std::uint32_t source_index=0u;
+        if(staged_sources) {
+            const auto found=std::lower_bound(
+                gpu_dy_joint_inputs_.begin(),gpu_dy_joint_inputs_.end(),
+                edge.constraint_id,
+                [](const GpuDyJointInput& input,std::uint32_t slot) {
+                    return input.source_slot<slot;
+                });
+            if(found==gpu_dy_joint_inputs_.end() ||
+               found->source_slot!=edge.constraint_id ||
+               found->source_generation!=joint.generation)
+                throw std::logic_error(
+                    "Pre-witness joint source changed before Dy admission");
+            source_index=static_cast<std::uint32_t>(
+                found-gpu_dy_joint_inputs_.begin());
+        }else {
+            if(gpu_dy_joint_inputs_.size()>=
+               std::numeric_limits<std::uint32_t>::max())
+                throw std::overflow_error(
+                    "Native GPU joint admission count overflow");
+            source_index=static_cast<std::uint32_t>(
+                gpu_dy_joint_inputs_.size());
+            gpu_dy_joint_inputs_.push_back(
+                pack_gpu_dy_joint_input(edge_id));
+        }
+        const auto& input=gpu_dy_joint_inputs_[source_index];
+        const auto count=joint.kind==JointKind::Distance?1u:
+            joint.kind==JointKind::Spherical?3u:
+            joint.kind==JointKind::Fixed?6u:5u;
+        const float mass0=body0.motion==Motion::Dynamic?body0.inverse_mass:0.0f;
+        const float mass1=body1.motion==Motion::Dynamic?body1.inverse_mass:0.0f;
+        const auto source_row=[&](BodyId id) {
+            const auto& actor=actors_[id];
+            if(!rigid_node(actor.motion))return invalid_solver_row;
+            if(source_order) {
+                const auto index=gpu_dy_source_body_index(id);
+                if(index>=invalid_solver_row)
+                    throw std::overflow_error("Device joint body ordinal overflow");
+                return static_cast<std::uint32_t>(index);
+            }
+            if(actor.solver_row_generation!=solver_preparation_generation_ ||
+               actor.solver_row_index>=solver_rows_.size() ||
+               actor.solver_row_index>=invalid_solver_row)
+                throw std::logic_error(
+                    "Device joint source lacks a prepared solver row");
+            return static_cast<std::uint32_t>(actor.solver_row_index);
+        };
+        const auto row0=source_row(id0),row1=source_row(id1);
+        const std::uint32_t flags=count|
+            (body0.motion==Motion::Dynamic?0x100u:0u)|
+            (body1.motion==Motion::Dynamic?0x200u:0u);
+        for(std::uint32_t i=0u;i<count;++i) {
+            auto& gpu=gpu_dy_rows_.emplace_back();
+            gpu.inverse_mass_a=mass0;
+            gpu.inverse_mass_b=mass1;
+            gpu.reserved=2u;
+            if(i==0u) {
+                // Device joint tokens read their typed descriptor
+                // directly from the first row before Jacobian prep.
+                gpu.axis[0]=std::bit_cast<float>(row0);
+                gpu.axis[1]=std::bit_cast<float>(row1);
+                gpu.axis[2]=std::bit_cast<float>(flags);
+                gpu.applied_force=std::bit_cast<float>(source_index);
+                // The device verifies both source slot and generation
+                // before replacing these transient admission words.
+                gpu.constant=std::bit_cast<float>(input.source_slot);
+                gpu.unbiased_constant=std::bit_cast<float>(input.source_generation);
+            }
+        }
+    }
+}
+
 void Scene::prepare_constraints(float seconds) {
     FYZZ_PROFILE_SCOPE("dy.prepare_constraints");
     // DyContactPrepShared.h::constructContactConstraint, rigid-body
@@ -8633,11 +8718,16 @@ void Scene::prepare_constraints(float seconds) {
     solver_contact_order_.clear();
     gpu_dy_contact_order_.clear();
     joint_rows_.clear();
-    gpu_dy_rows_.clear();
     const bool gpu_normal_prep=gpu_dy_active();
+    if(!gpu_dy_source_body_order_)gpu_dy_rows_.clear();
     const bool prewitness_joint_sources=
         gpu_normal_prep && !gpu_dy_joint_inputs_.empty();
-    if(prewitness_joint_sources) {
+    if(gpu_dy_source_body_order_) {
+        if(gpu_dy_early_joint_edges_.size()!=indexed_joints_.size() ||
+           gpu_dy_joint_inputs_.size()!=indexed_joints_.size() ||
+           gpu_dy_prewitness_joint_rows_!=gpu_dy_rows_.size())
+            throw std::logic_error("Early Sc joint admission changed before Dy");
+    }else if(prewitness_joint_sources) {
         // Keep only responding joints. The staged authored records remain
         // ordered by their stable source slot, independent of Dy task order.
         gpu_dy_joint_source_slots_.clear();
@@ -8683,11 +8773,9 @@ void Scene::prepare_constraints(float seconds) {
         gpu_dy_candidate_sources_compacted_=false;
     }
     solver_kinematic_participant_=false;
-    const auto& numerical_joints=gpu_dy_source_body_order_
-        ?gpu_dy_early_joint_edges_:indexed_joints_;
-    if(numerical_joints.size()!=indexed_joints_.size())
-        throw std::logic_error("Early Sc joint membership changed before Dy");
-    for(EdgeIndex edge_id:numerical_joints) {
+    if(gpu_normal_prep && !gpu_dy_source_body_order_)
+        prepare_gpu_dy_joint_rows(indexed_joints_,false,prewitness_joint_sources);
+    if(!gpu_normal_prep)for(EdgeIndex edge_id:indexed_joints_) {
         const auto& edge=island_edges_[edge_id];
         const auto& joint=constraint_records_[edge.constraint_id];
         if(!joint.live || joint.edge!=edge_id)
@@ -8698,78 +8786,6 @@ void Scene::prepare_constraints(float seconds) {
         const auto& body1=actors_[id1];
         solver_kinematic_participant_ |=
             body0.motion==Motion::Kinematic || body1.motion==Motion::Kinematic;
-        if(gpu_normal_prep) {
-            std::uint32_t source_index=0u;
-            if(prewitness_joint_sources) {
-                const auto found=std::lower_bound(
-                    gpu_dy_joint_inputs_.begin(),gpu_dy_joint_inputs_.end(),
-                    edge.constraint_id,
-                    [](const GpuDyJointInput& input,std::uint32_t slot) {
-                        return input.source_slot<slot;
-                    });
-                if(found==gpu_dy_joint_inputs_.end() ||
-                   found->source_slot!=edge.constraint_id ||
-                   found->source_generation!=joint.generation)
-                    throw std::logic_error(
-                        "Pre-witness joint source changed before Dy admission");
-                source_index=static_cast<std::uint32_t>(
-                    found-gpu_dy_joint_inputs_.begin());
-            }else {
-                if(gpu_dy_joint_inputs_.size()>=
-                   std::numeric_limits<std::uint32_t>::max())
-                    throw std::overflow_error(
-                        "Native GPU joint admission count overflow");
-                source_index=static_cast<std::uint32_t>(
-                    gpu_dy_joint_inputs_.size());
-                gpu_dy_joint_inputs_.push_back(
-                    pack_gpu_dy_joint_input(edge_id));
-            }
-            const auto& input=gpu_dy_joint_inputs_[source_index];
-            const auto count=joint.kind==JointKind::Distance?1u:
-                joint.kind==JointKind::Spherical?3u:
-                joint.kind==JointKind::Fixed?6u:5u;
-            const float mass0=body0.motion==Motion::Dynamic?body0.inverse_mass:0.0f;
-            const float mass1=body1.motion==Motion::Dynamic?body1.inverse_mass:0.0f;
-            const auto source_row=[&](BodyId id) {
-                const auto& actor=actors_[id];
-                if(!rigid_node(actor.motion))return invalid_solver_row;
-                if(gpu_dy_source_body_order_) {
-                    const auto index=gpu_dy_body_index(id);
-                    if(index>=invalid_solver_row)
-                        throw std::overflow_error("Device joint body ordinal overflow");
-                    return static_cast<std::uint32_t>(index);
-                }
-                if(actor.solver_row_generation!=solver_preparation_generation_ ||
-                   actor.solver_row_index>=solver_rows_.size() ||
-                   actor.solver_row_index>=invalid_solver_row)
-                    throw std::logic_error(
-                        "Device joint source lacks a prepared solver row");
-                return static_cast<std::uint32_t>(actor.solver_row_index);
-            };
-            const auto row0=source_row(id0),row1=source_row(id1);
-            const std::uint32_t flags=count|
-                (body0.motion==Motion::Dynamic?0x100u:0u)|
-                (body1.motion==Motion::Dynamic?0x200u:0u);
-            for(std::uint32_t i=0u;i<count;++i) {
-                auto& gpu=gpu_dy_rows_.emplace_back();
-                gpu.inverse_mass_a=mass0;
-                gpu.inverse_mass_b=mass1;
-                gpu.reserved=2u;
-                if(i==0u) {
-                    // Device joint tokens read their typed descriptor
-                    // directly from the first row before Jacobian prep.
-                    gpu.axis[0]=std::bit_cast<float>(row0);
-                    gpu.axis[1]=std::bit_cast<float>(row1);
-                    gpu.axis[2]=std::bit_cast<float>(flags);
-                    gpu.applied_force=std::bit_cast<float>(source_index);
-                    // The device verifies both source slot and generation
-                    // before replacing these transient admission words.
-                    gpu.constant=std::bit_cast<float>(input.source_slot);
-                    gpu.unbiased_constant=std::bit_cast<float>(input.source_generation);
-                }
-            }
-            continue;
-        }
         const auto anchor0=rotate(body0.orientation,joint.local_a.position);
         const auto anchor1=rotate(body1.orientation,joint.local_b.position);
         const Vec3 world0{body0.position.x+anchor0.x,
@@ -9904,7 +9920,10 @@ void Scene::pack_gpu_dy_integration_input(
     pack(input.angular_velocity,actor.angular_velocity);
 }
 std::size_t Scene::gpu_dy_body_index(BodyId id) const {
-    if(!gpu_dy_source_body_order_)return actors_[id].solver_row_index;
+    return gpu_dy_source_body_order_?gpu_dy_source_body_index(id):
+        actors_[id].solver_row_index;
+}
+std::size_t Scene::gpu_dy_source_body_index(BodyId id) const {
     const bool kinematic=actors_[id].motion==Motion::Kinematic;
     const auto& ids=kinematic?gpu_dy_joint_kinematic_ids_:gpu_dy_early_actor_ids_;
     const auto it=std::lower_bound(ids.begin(),ids.end(),id);
@@ -12782,6 +12801,8 @@ void Scene::advance_collision_internal(
     const auto prepare_sc_publication=[&] {
         gpu_dy_joint_inputs_.clear();
         gpu_dy_joint_source_slots_.clear();
+        gpu_dy_joint_kinematic_ids_.clear();
+        gpu_dy_prewitness_joint_rows_=0u;
         gpu_dy_early_islands_=false;
         gpu_dy_early_actor_ids_.clear();
         gpu_dy_staged_actor_count_=0u;

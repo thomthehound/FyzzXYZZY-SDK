@@ -1569,6 +1569,8 @@ private:
     void prepare_solver_bodies();
     void partition_constraints();
     void prepare_constraints(float seconds);
+    void prepare_gpu_dy_joint_rows(std::span<const EdgeIndex> edges,
+                                   bool source_order,bool staged_sources);
     void erase_shape_friction_history(ShapeId id);
     void erase_body_friction_history(BodyId id);
     void erase_friction_history(std::uint32_t id,bool body_scope);
@@ -1579,6 +1581,7 @@ private:
     void prepare_gpu_dy_device_islands(bool selected);
     void solve_gpu_distance_constraints(float seconds);
     std::size_t gpu_dy_body_index(BodyId id) const;
+    std::size_t gpu_dy_source_body_index(BodyId id) const;
     void solve_constraint_task(std::size_t task_index);
     void integrate_solver_task(std::size_t task_index,float seconds,
                                std::vector<BodyId>& ready_nodes);
@@ -2292,6 +2295,7 @@ private:
     std::vector<BodyId> gpu_dy_immovable_source_ids_;
     std::vector<EdgeIndex> gpu_dy_early_joint_edges_;
     bool gpu_dy_early_islands_=false;
+    std::size_t gpu_dy_prewitness_joint_rows_=0u;
      std::vector<float> gpu_dy_contact_forces_;
     std::vector<GpuDyGuContactInput> gpu_dy_gu_inputs_;
     std::vector<GpuDyFrictionAnchorImpulse> gpu_dy_friction_impulses_;
