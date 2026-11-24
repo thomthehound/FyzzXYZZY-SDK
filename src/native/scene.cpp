@@ -4263,6 +4263,12 @@ void Scene::prepare_gpu_dy_contact_prep(std::size_t source,float seconds) {
         throw std::logic_error("PCM numerical preparation lost its contact edge");
     prep.source_body0=id0;
     prep.source_body1=id1;
+    // The resident Sc graph assigns numerical ordinals after physical
+    // admission; only the endpoint type is needed during source packing.
+    prep.solver_ordinal0=first.motion==Motion::Dynamic
+        ?gpu_dy_unresolved_solver_ordinal:invalid_solver_row;
+    prep.solver_ordinal1=second.motion==Motion::Dynamic
+        ?gpu_dy_unresolved_solver_ordinal:invalid_solver_row;
     prep.inverse_mass0=first.motion==Motion::Dynamic
         ?first.inverse_mass:0.0f;
     prep.inverse_mass1=second.motion==Motion::Dynamic
@@ -5309,8 +5315,8 @@ void Scene::update_contacts(bool defer_device_points,float step_seconds) {
             true);
         gpu_dy_early_islands_=true;
     }
-    // Sc's pre-witness graph supplies Dy's contact endpoint ordinals.
-    // Source nodes retain their identity across the later host join.
+    // Preserve the Sc graph's candidate identity across the witness
+    // join; device admission resolves the numerical endpoint indices.
     if(gpu_dy_early_islands_ && gpu_dy_early_joint_edges_.empty()) {
         if(gpu_dy_island_edges_.size()!=previous_pairs_.size())
             throw std::logic_error(
@@ -5336,8 +5342,6 @@ void Scene::update_contacts(bool defer_device_points,float step_seconds) {
                prep.source_body1!=shapes_[reversed?pair.a:pair.b].body)
                 throw std::logic_error(
                     "Early device contact endpoints lost Sc interaction order");
-            prep.solver_ordinal0=reversed?edge.node_b:edge.node_a;
-            prep.solver_ordinal1=reversed?edge.node_a:edge.node_b;
         }
     }
     if(gpu_results_pending) {
