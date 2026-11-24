@@ -362,9 +362,11 @@ only beyond 16,384 edges;
 Sc leaves device-authored body and typed response order intact.
 Early contact-only tasks index Dy body and contact preparation directly
 by their pre-witness source ordinals, regardless of the CPU's solver-row
-order. Sc assigns the contact endpoints from the early graph before the
-PCM witness join; Dy does not reconstruct their ordinals from CPU solver
-rows. Host-scheduled tasks consume their own prepared row indices.
+order. Sc publishes interaction-ordered contact endpoint ordinals in its
+resident source-indexed admission table. Dy lowers responding contact
+descriptors and their numerical body references from that device table,
+rather than accepting CPU solver-row assignments. Host-scheduled tasks
+consume their own prepared row indices.
 Joint-bearing and late-admitted tasks use the Sc source-to-row map when
 required. Device-joint graphs upload their stable
 source-to-joint-row table only when it differs from source order;
