@@ -385,8 +385,12 @@ candidates occupy no numerical task; the device assigns exact contact working
 rows from its admitted response prefixes. CPU Gu appends its correlated
 rows after the PCM source capacity. Joint numerical descriptors and their
 kinematic endpoint slots are also prepared before the witness join.
-A continuous PCM-to-Dy numerical path without a host header dependency
-still requires candidate-owned patch descriptors and integration admission.
+PCM numerical patch descriptors follow the original producer ordinal,
+independently of the compact public friction cache. CPU Gu appends its
+correlated patch descriptors. Public writeback resolves the numerical
+patch through its candidate manager. A continuous PCM-to-Dy numerical
+path without a host header dependency still requires pre-witness
+integration admission and removal of the host contact-preparation compaction.
 
 Retiring this join requires one Sc-authored, source-ordered table of stable
 candidate identities and typed responding endpoints. GPU PCM must derive

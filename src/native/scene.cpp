@@ -54,6 +54,23 @@ bool finite(Quat q) {
     return std::isfinite(q.x) && std::isfinite(q.y) &&
            std::isfinite(q.z) && std::isfinite(q.w);
 }
+std::uint32_t encode_dy_cached_normal(Vec3 n) {
+    const float length=std::abs(n.x)+std::abs(n.y)+std::abs(n.z);
+    if(!(length>0.f) || !finite(n))
+        throw std::overflow_error("Source PCM cached normal is invalid");
+    float x=n.x/length,y=n.y/length;
+    if(n.z<0.f) {
+        const float ox=x,oy=y;
+        x=(1.f-std::abs(oy))*(ox>=0.f?1.f:-1.f);
+        y=(1.f-std::abs(ox))*(oy>=0.f?1.f:-1.f);
+    }
+    const auto quantize=[](float value) {
+        return static_cast<std::uint32_t>(
+            static_cast<std::uint16_t>(std::lround(
+                std::clamp(value,-1.f,1.f)*32767.f)));
+    };
+    return quantize(x)|(quantize(y)<<16u);
+}
 // Equivalent to the original PxQuat::rotate and rotateInv using an
 // orthonormal body pose; inertia is transformed into world space by
 // R * diag(inverseInertia) * R^T, as in Cm::transformInertiaTensor.
@@ -4340,6 +4357,52 @@ void Scene::reserve_gpu_dy_pcm_source_rows() {
     gpu_dy_prewitness_friction_rows_=friction;
     gpu_dy_contact_forces_.assign(contacts,0.f);
     gpu_dy_friction_anchors_.assign(friction/2u,{});
+    // PCM patch slots follow the original producer ordinal, not Sc's
+    // compact public friction cache. Unadmitted slots have no task.
+    gpu_dy_patches_.assign(gpu_pcm_pairs_.size(),{});
+    gpu_dy_manifolds_.assign(previous_pairs_.size(),{});
+    for(std::size_t i=0u;i<gpu_pcm_pairs_.size();++i) {
+        const auto& source=gpu_dy_candidate_sources_[i];
+        if(source.contact_begin==0xffffffffu)continue;
+        const auto& request=gpu_pcm_pairs_[i];
+        const auto ordinal=request.candidate_ordinal;
+        const auto prep=gpu_dy_contact_prep_indices_[ordinal]&~unadmitted_dy_prep;
+        if(prep!=i || prep>=gpu_dy_contact_prep_pairs_.size())
+            throw std::logic_error("PCM patch lacks its numerical source");
+        const auto capacity=request.candidate_capacity==1u?1u:4u;
+        const auto& material=source.material;
+        const bool grow=!material.disable_friction;
+        const FrictionPatch* retained=nullptr;
+        if(grow && source.retained_single_patch!=0xffffffffu) {
+            if(source.retained_count ||
+               source.retained_single_patch>=friction_patches_.size())
+                throw std::logic_error("PCM patch lacks its retained source");
+            retained=&friction_patches_[source.retained_single_patch];
+        }
+        const auto anchors=retained?retained->anchor_count:0u;
+        const bool select=grow && source.retained_count!=0u;
+        if(anchors>2u || source.retained_count>32u)
+            throw std::logic_error("PCM retained patch exceeds source capacity");
+        for(std::size_t k=0u;k<anchors;++k) {
+            auto& anchor=gpu_dy_friction_anchors_[source.friction_begin/2u+k];
+            const auto a=retained->body0_anchors[k];
+            const auto b=retained->body1_anchors[k];
+            anchor.local_a[0]=a.x;anchor.local_a[1]=a.y;anchor.local_a[2]=a.z;
+            anchor.local_b[0]=b.x;anchor.local_b[1]=b.y;anchor.local_b[2]=b.z;
+        }
+        gpu_dy_patches_[i]={
+            source.friction_begin,capacity,anchors,
+            (grow?0x80000000u:0u)|
+                (anchors?0x20000000u:0u)|
+                (select?0x10000000u|(source.retained_count<<8u)|
+                    (source.retained_full?0x04000000u:0u):0u),
+            material.static_friction,material.dynamic_friction,0u,
+            select?source.retained_first:
+                anchors?encode_dy_cached_normal(retained->body0_normal):0u};
+        gpu_dy_manifolds_[ordinal]={
+            static_cast<std::uint32_t>(i),1u,0xffffffffu,0u,
+            prep,source.contact_begin};
+    }
 }
 void Scene::prepare_gpu_dy_pcm_friction_history() {
     gpu_dy_history_candidates_.clear();
@@ -9586,7 +9649,9 @@ void Scene::prepare_constraints(float seconds) {
             // local-to-world error/Jacobians for disabled patches.
             if (patch.disable_friction) {
                 patch.anchor_count=0;
-                patch.row_offset=prepared_friction_rows_;
+                patch.row_offset=gpu_dy_source_body_order_ && resident_pcm
+                    ?gpu_dy_candidate_sources_[prep_slot].friction_begin
+                    :prepared_friction_rows_;
                 continue;
             }
             if(gpu_normal_prep && manifold.pcm_result_index!=
@@ -9783,7 +9848,15 @@ void Scene::prepare_constraints(float seconds) {
                     "Source numerical sparse mapping changed during Dy prep");
             if((slot&unadmitted_dy_prep)!=0u) {
                 gpu_dy_contact_prep_indices_[source]=0xffffffffu;
+                if(gpu_dy_source_body_order_)gpu_dy_manifolds_[source]={};
                 continue;
+            }
+            if(gpu_dy_source_body_order_ &&
+               gpu_dy_contact_prep_pairs_[dense].pcm_pair_index!=0xffffffffu) {
+                auto& manager=gpu_dy_manifolds_[source];
+                if(manager.patch_count!=1u || manager.prep_index!=dense)
+                    throw std::logic_error("PCM manager lost its pre-witness descriptor");
+                manager.prep_index=static_cast<std::uint32_t>(packed);
             }
             if(dense!=packed) {
                 gpu_dy_contact_prep_pairs_[packed]=
@@ -10172,29 +10245,16 @@ void Scene::solve_gpu_distance_constraints(float seconds) {
         throw std::logic_error(
             "GPU Dy must consume only source-correlated friction anchors");
     gpu_dy_friction_impulses_.resize(gpu_dy_friction_anchors_.size());
-    gpu_dy_patches_.resize(friction_patches_.size());
-    // Every GPU task addresses the same pre-PCM candidate stream,
-    // including holes left by physically non-touching pairs.
-    gpu_dy_manifolds_.assign(previous_pairs_.size(),{});
+    // Early PCM descriptors already occupy their source slots.
+    // CPU Gu appends correlated patches; host tasks retain compact order.
+    if(!early_device_admission) {
+        gpu_dy_patches_.resize(friction_patches_.size());
+        gpu_dy_manifolds_.assign(previous_pairs_.size(),{});
+    }else if(gpu_dy_patches_.size()!=gpu_pcm_pairs_.size() ||
+             gpu_dy_manifolds_.size()!=previous_pairs_.size())
+        throw std::logic_error("Early PCM numerical descriptors lost source capacity");
     std::size_t explicit_order_cursor=0u;
     constexpr std::uint32_t device_contact_order=0x80000000u;
-    const auto encode_normal=[](Vec3 n) -> std::uint32_t {
-        const float length=std::abs(n.x)+std::abs(n.y)+std::abs(n.z);
-        if(!(length>0.f) || !finite(n))
-            throw std::overflow_error("Source PCM cached normal is invalid");
-        float x=n.x/length,y=n.y/length;
-        if(n.z<0.f) {
-            const float ox=x,oy=y;
-            x=(1.f-std::abs(oy))*(ox>=0.f?1.f:-1.f);
-            y=(1.f-std::abs(ox))*(oy>=0.f?1.f:-1.f);
-        }
-        const auto quantize=[](float value) {
-            return static_cast<std::uint32_t>(
-                static_cast<std::uint16_t>(std::lround(
-                    std::clamp(value,-1.f,1.f)*32767.f)));
-        };
-        return quantize(x)|(quantize(y)<<16u);
-    };
     for(const auto manager_index:indexed_managers_) {
         const auto& m=manifolds_[manager_index];
         if(m.prepared_friction_epoch!=friction_cache_epoch_)
@@ -10238,9 +10298,22 @@ void Scene::solve_gpu_distance_constraints(float seconds) {
            active_edge_handles_[source]!=m.edge_handle)
             throw std::logic_error(
                 "GPU Dy contact source differs from Sc candidate identity");
+        if(early_device_admission && resident_pcm) {
+            const auto& manager=gpu_dy_manifolds_[source];
+            if(manager.patch_count!=1u || manager.patch_offset!=pcm_index ||
+               manager.prep_index!=prep_index ||
+               manager.source_order_offset!=m.solver_offset ||
+               gpu_dy_patches_[pcm_index].contact_count!=numerical_count)
+                throw std::logic_error("PCM publication changed numerical source descriptor");
+            continue;
+        }
+        const auto patch_begin=early_device_admission
+            ?gpu_dy_patches_.size():m.friction_patch_offset;
+        if(early_device_admission)
+            gpu_dy_patches_.resize(patch_begin+m.friction_patch_count);
         // PCM owns the active numerical count; Sc reserves the window.
         gpu_dy_manifolds_[source]={
-            narrow(m.friction_patch_offset),m.friction_patch_count,
+            narrow(patch_begin),m.friction_patch_count,
             resident_pcm?0xffffffffu:narrow(m.solver_offset),
             resident_pcm?0u:narrow(numerical_count),
             gpu_dy_contact_prep_indices_[source],narrow(m.solver_offset)};
@@ -10292,7 +10365,7 @@ void Scene::solve_gpu_distance_constraints(float seconds) {
                source.retained_count>32u))
                 throw std::logic_error(
                     "Device-retained PCM candidates require a fresh patch");
-            gpu_dy_patches_[i]={
+            gpu_dy_patches_[patch_begin+i-m.friction_patch_offset]={
                 narrow(patch.row_offset),
                 narrow(resident_pcm?numerical_count:patch.contact_count),
                 patch.anchor_count,(patch.broken?1u:0u)|
@@ -10304,7 +10377,7 @@ void Scene::solve_gpu_distance_constraints(float seconds) {
                 patch.static_friction,patch.dynamic_friction,
                 order_offset,
                 select_history?source.retained_first:
-                    cached_normal?encode_normal(patch.body0_normal):0u};
+                    cached_normal?encode_dy_cached_normal(patch.body0_normal):0u};
             cursor+=patch.contact_count;
         }
         if(cursor!=m.solver_offset+numerical_count)
@@ -10462,7 +10535,9 @@ void Scene::solve_gpu_distance_constraints(float seconds) {
         for(std::size_t i=m.friction_patch_offset;
             i<m.friction_patch_offset+m.friction_patch_count;++i) {
             auto& patch=friction_patches_[i];
-            const auto& returned=gpu_dy_patches_[i];
+            const auto& returned=gpu_dy_patches_[
+                gpu_dy_manifolds_[m.candidate_ordinal].patch_offset+
+                i-m.friction_patch_offset];
             const auto prep_index=gpu_dy_contact_prep_indices_[
                 m.candidate_ordinal];
             if(prep_index>=gpu_dy_candidate_sources_.size())
@@ -10533,7 +10608,9 @@ void Scene::solve_gpu_distance_constraints(float seconds) {
         if(!gpu_dy_admits_contact(m))continue;
         for(std::size_t i=m.friction_patch_offset;
             i<m.friction_patch_offset+m.friction_patch_count;++i)
-            friction_patches_[i].broken=gpu_dy_patches_[i].broken!=0u;
+            friction_patches_[i].broken=gpu_dy_patches_[
+                gpu_dy_manifolds_[m.candidate_ordinal].patch_offset+
+                i-m.friction_patch_offset].broken!=0u;
     }
 }
 

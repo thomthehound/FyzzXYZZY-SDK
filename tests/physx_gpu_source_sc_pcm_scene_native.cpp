@@ -1005,7 +1005,12 @@ struct GpuPcmFrictionAnchorFixture {
                         throw std::runtime_error(
                             "PCM friction lost its pre-witness numerical range");
                 }else numerical_end+=capacity;
-                const auto patchIndex=manager.friction_patch_offset;
+                const auto patchIndex=scene.gpu_dy_manifolds_[
+                    manager.candidate_ordinal].patch_offset;
+                if(scene.gpu_dy_source_body_order_ &&
+                   patchIndex!=manager.pcm_result_index)
+                    throw std::runtime_error(
+                        "PCM numerical patch address depends on public cache order");
                 if(patchIndex>=scene.gpu_dy_patches_.size())
                     throw std::runtime_error(
                         "Device PCM numerical patch has no result");
@@ -1235,9 +1240,10 @@ struct GpuPcmFrictionAnchorFixture {
     static bool device_rejected_retained_normal(const Scene& scene) {
         for(const auto& manager:scene.manifolds_) {
             if(manager.pcm_result_index==0xffffffffu)continue;
-            for(std::size_t i=manager.friction_patch_offset;
-                i<manager.friction_patch_offset+
-                  manager.friction_patch_count;++i)
+            const auto first=scene.gpu_dy_manifolds_[
+                manager.candidate_ordinal].patch_offset;
+            for(std::size_t i=first;
+                i<first+manager.friction_patch_count;++i)
                 if(i<scene.gpu_dy_patches_.size() &&
                    (scene.gpu_dy_patches_[i].reserved&0x200u)!=0u)
                     return true;
@@ -1247,11 +1253,13 @@ struct GpuPcmFrictionAnchorFixture {
     static bool selected_second_retained_patch(const Scene& scene) {
         for(const auto& manifold:scene.manifolds_) {
             if(manifold.pcm_result_index==0xffffffffu ||
-               manifold.friction_patch_count!=1u ||
-               manifold.friction_patch_offset>=scene.gpu_dy_patches_.size())
+               manifold.friction_patch_count!=1u)
                 continue;
+            const auto patch=scene.gpu_dy_manifolds_[
+                manifold.candidate_ordinal].patch_offset;
+            if(patch>=scene.gpu_dy_patches_.size())continue;
             const auto choice=(scene.gpu_dy_patches_[
-                manifold.friction_patch_offset].reserved>>19u)&63u;
+                patch].reserved>>19u)&63u;
             if(choice==2u)return true;
         }
         return false;
