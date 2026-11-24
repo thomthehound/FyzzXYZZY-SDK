@@ -13,7 +13,7 @@ RWByteAddressBuffer scWork : register(u1,space0);
 struct Parameters {
     uint manifoldBias,prepBias,scHeaderBias,endpointBias;
     uint admissionsBias,managerCount,prepCount,bodyCount;
-    uint first;
+    uint first,integrationBias;
 };
 #ifdef __spirv__
 [[vk::push_constant]] Parameters p;
@@ -42,8 +42,13 @@ void main(uint3 thread:SV_DispatchThreadID) {
     const bool pendingB=refs.y==0xfffffffdu;
     if(!pendingA && !pendingB)return;
     const uint2 endpoints=scWork.Load2(p.endpointBias+source*8u);
-    if((pendingA && endpoints.x>=p.bodyCount) ||
-       (pendingB && endpoints.y>=p.bodyCount)) {
+    const bool validA=!pendingA ||
+        (endpoints.x<p.bodyCount &&
+         (dyArena.Load(p.integrationBias+52u+endpoints.x*40u)&1u)!=0u);
+    const bool validB=!pendingB ||
+        (endpoints.y<p.bodyCount &&
+         (dyArena.Load(p.integrationBias+52u+endpoints.y*40u)&1u)!=0u);
+    if(!validA || !validB) {
         uint unused;
         scWork.InterlockedOr(p.scHeaderBias,512u,unused);
         return;
