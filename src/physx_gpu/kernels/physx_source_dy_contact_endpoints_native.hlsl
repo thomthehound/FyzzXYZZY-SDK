@@ -13,6 +13,7 @@ RWByteAddressBuffer scWork : register(u1,space0);
 struct Parameters {
     uint manifoldBias,prepBias,scHeaderBias,endpointBias;
     uint admissionsBias,managerCount,prepCount,bodyCount;
+    uint first;
 };
 #ifdef __spirv__
 [[vk::push_constant]] Parameters p;
@@ -22,7 +23,7 @@ ConstantBuffer<Parameters> p:register(b0,space0);
 
 [numthreads(128,1,1)]
 void main(uint3 thread:SV_DispatchThreadID) {
-    const uint source=thread.x;
+    const uint source=p.first+thread.x;
     if(source>=p.managerCount || scWork.Load(p.scHeaderBias)!=0u)return;
     const uint word=scWork.Load(p.admissionsBias+(source>>5u)*4u);
     if((word&(1u<<(source&31u)))==0u)return;
