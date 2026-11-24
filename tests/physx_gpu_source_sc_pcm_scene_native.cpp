@@ -634,8 +634,12 @@ struct GpuPcmFrictionAnchorFixture {
                         "Early device Sc graph lost its typed joint identity");
             } else {
                 const auto candidate=i-joints;
+                const auto reversed=scene.island_edges_[
+                    scene.active_edge_handles_[candidate]].gu_order_reversed;
+                const auto expected_kind=reversed
+                    ?physx_gpu::source_sc_device_island_reverse_contact_bit:0u;
                 if(edge.edge_index!=scene.active_edge_handles_[candidate] ||
-                   edge.source_index!=candidate || edge.kind!=0u)
+                   edge.source_index!=candidate || edge.kind!=expected_kind)
                     throw std::runtime_error(
                         "Early device Sc graph lost its contact identity");
             }
