@@ -787,9 +787,12 @@ public:
             if(edge.edge_index==invalid ||
                (edge.kind&~(source_sc_device_island_joint_bit|
                              source_sc_device_island_no_response_bit|
+                             source_sc_device_island_reverse_contact_bit|
                              source_sc_device_island_device_joint_bit))!=0u ||
                ((edge.kind&source_sc_device_island_device_joint_bit)!=0u &&
                 (edge.kind&source_sc_device_island_joint_bit)==0u) ||
+               ((edge.kind&source_sc_device_island_reverse_contact_bit)!=0u &&
+                (edge.kind&source_sc_device_island_joint_bit)!=0u) ||
                ((edge.kind&source_sc_device_island_joint_bit)==0u &&
                 edge.edge_index>=edge_capacity) ||
                (edge.node_a!=invalid && edge.node_a>=node_count) ||
