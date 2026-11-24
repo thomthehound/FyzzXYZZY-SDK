@@ -42,13 +42,16 @@ void main(uint3 thread:SV_DispatchThreadID) {
     const bool pendingB=refs.y==0xfffffffdu;
     if(!pendingA && !pendingB)return;
     const uint2 endpoints=scWork.Load2(p.endpointBias+source*8u);
-    const bool validA=!pendingA ||
-        (endpoints.x<p.bodyCount &&
-         (dyArena.Load(p.integrationBias+52u+endpoints.x*40u)&1u)!=0u);
-    const bool validB=!pendingB ||
-        (endpoints.y<p.bodyCount &&
-         (dyArena.Load(p.integrationBias+52u+endpoints.y*40u)&1u)!=0u);
-    if(!validA || !validB) {
+    if((pendingA && endpoints.x>=p.bodyCount) ||
+       (pendingB && endpoints.y>=p.bodyCount)) {
+        uint unused;
+        scWork.InterlockedOr(p.scHeaderBias,512u,unused);
+        return;
+    }
+    if((pendingA &&
+        (dyArena.Load(p.integrationBias+52u+endpoints.x*40u)&1u)==0u) ||
+       (pendingB &&
+        (dyArena.Load(p.integrationBias+52u+endpoints.y*40u)&1u)==0u)) {
         uint unused;
         scWork.InterlockedOr(p.scHeaderBias,512u,unused);
         return;
