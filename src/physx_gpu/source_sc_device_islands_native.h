@@ -107,6 +107,7 @@ struct SourceScDeviceIslandLayout {
     std::size_t block_offsets=0u,block_tiles=0u;
     std::size_t response_primary=0u,response_scratch=0u;
     std::size_t response_order=0u,body_order=0u;
+    std::size_t contact_endpoints=0u;
     std::size_t response_tokens=0u,response_extents=0u;
     std::size_t response_prefixes=0u,contact_admissions=0u;
     std::size_t body_remap=0u,joint_remap=0u;
@@ -165,9 +166,12 @@ struct SourceScDeviceIslandLayout {
         result.body_order=static_cast<std::size_t>(
             align(std::uint64_t(result.response_order)+
                   std::uint64_t(edge_count)*4u));
-        result.response_tokens=static_cast<std::size_t>(
+        result.contact_endpoints=static_cast<std::size_t>(
             align(std::uint64_t(result.body_order)+
                   std::uint64_t(node_count)*4u));
+        result.response_tokens=static_cast<std::size_t>(
+            align(std::uint64_t(result.contact_endpoints)+
+                  std::uint64_t(contact_manager_count)*8u));
         result.response_extents=static_cast<std::size_t>(
             align(std::uint64_t(result.response_tokens)+
                   std::uint64_t(edge_count)*4u));
