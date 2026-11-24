@@ -1773,14 +1773,6 @@ public:
                         device_admission->joint_source_count;
                     std::memcpy(host_.data()+offsets[15]+56u,
                                 &joint_count,sizeof(joint_count));
-                    const auto contact_endpoints=
-                        !device_admission->deferred_body_remap &&
-                        joint_count==0u
-                            ?narrow(device_admission->layout.contact_endpoints-
-                                    device_admission->layout.body_order)
-                            :0u;
-                    std::memcpy(host_.data()+offsets[15]+60u,
-                                &contact_endpoints,sizeof(contact_endpoints));
                     const std::array<std::uint32_t,2> epoch_errors{
                         0u,std::numeric_limits<std::uint32_t>::max()};
                     std::memcpy(host_.data()+offsets[15]+36u,
