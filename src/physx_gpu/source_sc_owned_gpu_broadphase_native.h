@@ -159,11 +159,16 @@ public:
                 take_pcm_shader(*pcm_shaders,NativeGpuPcmStage::FaceContacts),
                 take_pcm_shader(*pcm_shaders,NativeGpuPcmStage::ContactJournal),
                 take_pcm_shader(*pcm_shaders,NativeGpuPcmStage::DeviceIslands));
-        if(dy_shader)
+        if(dy_shader) {
+            std::optional<compute::ShaderBinary> contact_endpoints;
+            if(pcm_shaders)
+                contact_endpoints=take_pcm_shader(
+                    *pcm_shaders,NativeGpuPcmStage::ContactEndpoints);
             dy_distance_=std::make_unique<SourceDyDistanceNativeStage>(
                 context_,addresses_,stream_,allocators_.deviceAlloc,
-                std::move(*dy_shader),std::move(convex_dy_shader));
-        else if(convex_dy_shader)
+                std::move(*dy_shader),std::move(convex_dy_shader),
+                std::move(contact_endpoints));
+        } else if(convex_dy_shader)
             throw std::invalid_argument(
                 "Convex Dy shader requires the primitive Dy solver");
     }
