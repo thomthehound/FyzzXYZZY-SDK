@@ -984,7 +984,7 @@ void verify(Context& context,const char* filename) {
             "CPU Gu contact bypassed its device physical-touch state");
 
     auto malformed_host=mixed_gu;
-    malformed_host.back().kind=4u;
+    malformed_host.back().kind=8u;
     auto rejected_host=evaluate(7u,malformed_host,gu_touches);
     require((header(rejected_host).errors&1u)!=0u &&
             header(rejected_host).runnable_components==0u,
