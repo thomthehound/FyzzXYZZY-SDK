@@ -225,7 +225,7 @@ public:
                 refs.storage_buffer_binding_count=2u;
                 refs.storage_buffer_views.assign(
                     2u,compute::StorageBufferViewKind::RawReadWrite);
-                refs.push_constant_bytes=32u;
+                refs.push_constant_bytes=36u;
                 contact_endpoints_pipeline_=context_.create_compute_pipeline(refs);
 #if defined(FYZZXYZZY_PROFILE_GPU)
                 context_.set_pipeline_profile_label(
@@ -2212,21 +2212,19 @@ public:
                 addresses_,device_admission->work,layout.bytes,
                 alignment_,1u,compute::BufferAccess::ReadWrite,
                 work_base,max_view_));
-            const std::array<std::uint32_t,8> arguments{
+            std::array<std::uint32_t,9> arguments{
                 params[15],params[29],work_base,
                 narrow(std::size_t(work_base)+layout.contact_endpoints),
                 narrow(std::size_t(work_base)+layout.contact_admissions),
-                narrow(manifolds.size()),narrow(prep_count),narrow(bodies.size())};
+                narrow(manifolds.size()),narrow(prep_count),narrow(bodies.size()),0u};
             refs.push_constants.resize(sizeof(arguments));
-            std::memcpy(refs.push_constants.data(),
-                        arguments.data(),sizeof(arguments));
             for(std::size_t first=0u;first<manifolds.size();) {
                 const auto groups=std::min<std::size_t>(
                     max_groups,(manifolds.size()-first+127u)/128u);
+                arguments[8]=narrow(first);
                 refs.groups={narrow(groups),1u,1u};
-                if(first!=0u)
-                    throw std::out_of_range(
-                        "Dy contact endpoint admission exceeds one device dispatch");
+                std::memcpy(refs.push_constants.data(),
+                            arguments.data(),sizeof(arguments));
                 stream_.commands().emplace_back(refs);
                 ++last_schedule_.dispatches;
                 first+=groups*128u;
