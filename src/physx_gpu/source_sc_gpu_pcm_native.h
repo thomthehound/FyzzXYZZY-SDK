@@ -839,7 +839,7 @@ public:
             }
             if(node_count) {
                 island_nodes_.allocate(source_allocation_bytes(
-                    std::uint64_t(node_count)+island_joint_count_,
+                    node_count,
                     sizeof(std::uint32_t)),PX_FL);
                 source_nodes=island_nodes_.getDevicePtr();
             }
@@ -872,32 +872,6 @@ public:
         // without creating another CPU observation or host fence.
         island_work_ready_=true;
         if(early)stream_.submit();
-    }
-    void remap_device_island_joints(
-            std::span<const std::uint32_t> joints,
-            std::uint32_t joint_row_capacity) {
-        if(!island_work_ready_ || joints.size()!=island_joint_count_ ||
-           (island_joint_count_ && !joint_row_capacity))
-            throw std::logic_error("Source Sc joint remap lacks prepared rows");
-        if(joints.empty())return;
-        if(island_layout_.joint_remap>island_layout_.bytes ||
-           joints.size_bytes()>island_layout_.bytes-island_layout_.joint_remap)
-            throw std::out_of_range("Sc joint source exceeds resident remap capacity");
-        bool identity=true;
-        for(std::size_t i=0u;i<joints.size();++i) {
-            const auto row=joints[i];
-            if(row>=joint_row_capacity || row>=0x40000000u)
-                throw std::out_of_range("Sc joint source maps outside prepared Dy rows");
-            identity&=row==i;
-        }
-        if(!identity) {
-            auto& uploads=stream_.upload_scratch();
-            uploads.push_back({
-                island_work_.getDevicePtr()+island_layout_.joint_remap,
-                joints.data(),joints.size_bytes()});
-            stream_.queue_uploads(uploads);
-            island_deferred_joint_remap_=true;
-        }
     }
     void discard_device_islands() noexcept {
         island_work_ready_=false;

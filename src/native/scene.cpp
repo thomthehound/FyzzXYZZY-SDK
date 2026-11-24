@@ -4619,6 +4619,7 @@ void Scene::update_contacts(bool defer_device_points,float step_seconds) {
     // Compact responding candidates independently of the scene actor count.
     // Each CPU Gu source must publish physical touch before admission.
     bool early_device_graph_awaits_gu=false;
+    std::uint32_t early_joint_rows=0u;
     // A lone CPU-authored source needs no device island graph. GPU PCM
     // still admits its resident touch response before the host witness join.
     const bool early_device_graph=defer_device_points &&
@@ -4646,8 +4647,7 @@ void Scene::update_contacts(bool defer_device_points,float step_seconds) {
         bool admitted=true;
         bool has_legacy_gu=false;
         const float seconds=inverse_step>0.f?1.f/inverse_step:0.f;
-        // Stable constraint identities are available before Gu publishes
-        // witnesses. Their final numerical rows are assigned by Dy later.
+        // Authored joint kinds determine exact numerical row ranges before Gu.
         for(std::size_t i=0u;i<gpu_dy_early_joint_edges_.size();++i) {
             const EdgeIndex edge=gpu_dy_early_joint_edges_[i];
             if(edge>=island_edges_.size() ||
@@ -4679,8 +4679,14 @@ void Scene::update_contacts(bool defer_device_points,float step_seconds) {
                 nodes[side]=id;
             }
             if(!admitted)break;
+            const std::uint32_t rows=joint.kind==JointKind::Distance?1u:
+                joint.kind==JointKind::Spherical?3u:
+                joint.kind==JointKind::Fixed?6u:5u;
+            if(early_joint_rows>=0x40000000u-rows)
+                throw std::overflow_error("Early Sc joint rows exceed token range");
             gpu_dy_island_edges_.push_back({
-                edge,nodes[0],nodes[1],static_cast<std::uint32_t>(i),17u});
+                edge,nodes[0],nodes[1],early_joint_rows,17u});
+            early_joint_rows+=rows;
         }
         if(admitted)for(std::size_t i=0u;i<previous_pairs_.size();++i) {
             const Pair pair=previous_pairs_[i];
@@ -4784,7 +4790,7 @@ void Scene::update_contacts(bool defer_device_points,float step_seconds) {
                 gpu_broadphase_->enqueue_gpu_dy_island_admission(
                     gpu_dy_island_edges_,gpu_dy_island_node_flags_,
                     {static_cast<std::uint32_t>(previous_pairs_.size()),
-                 static_cast<std::uint32_t>(gpu_dy_early_joint_edges_.size()),0u},
+                 early_joint_rows,0u},
                     true);
                 gpu_dy_early_islands_=true;
             }
@@ -5311,7 +5317,7 @@ void Scene::update_contacts(bool defer_device_points,float step_seconds) {
         gpu_broadphase_->enqueue_gpu_dy_island_admission(
             gpu_dy_island_edges_,gpu_dy_island_node_flags_,
             {static_cast<std::uint32_t>(previous_pairs_.size()),
-             static_cast<std::uint32_t>(gpu_dy_early_joint_edges_.size()),0u},
+             early_joint_rows,0u},
             true);
         gpu_dy_early_islands_=true;
     }
@@ -7981,7 +7987,6 @@ void Scene::partition_constraints() {
     gpu_dy_free_ids_.clear();
     gpu_dy_source_body_order_=false;
     gpu_dy_joint_kinematic_ids_.clear();
-    gpu_dy_joint_row_remap_.clear();
     gpu_dy_responding_island_count_=0u;
     const bool gpu_integration=gpu_dy_active();
     const bool device_sc_grouping=gpu_integration &&
@@ -8678,7 +8683,11 @@ void Scene::prepare_constraints(float seconds) {
         gpu_dy_candidate_sources_compacted_=false;
     }
     solver_kinematic_participant_=false;
-    for(EdgeIndex edge_id:indexed_joints_) {
+    const auto& numerical_joints=gpu_dy_source_body_order_
+        ?gpu_dy_early_joint_edges_:indexed_joints_;
+    if(numerical_joints.size()!=indexed_joints_.size())
+        throw std::logic_error("Early Sc joint membership changed before Dy");
+    for(EdgeIndex edge_id:numerical_joints) {
         const auto& edge=island_edges_[edge_id];
         const auto& joint=constraint_records_[edge.constraint_id];
         if(!joint.live || joint.edge!=edge_id)
@@ -9791,40 +9800,6 @@ void Scene::prepare_gpu_dy_device_islands(bool selected) {
                 "Early Sc accurate islands lost their node capacity");
         if(!gpu_dy_source_body_order_)
             throw std::logic_error("Early Sc admission lacks source body order");
-        const auto joint_count=gpu_dy_early_joint_edges_.size();
-        if(!joint_count)return;
-        if(joint_count>=0x40000000u ||
-           gpu_dy_rows_.size()>=0x40000000u)
-            throw std::overflow_error("Early Sc joint remap exceeds token range");
-        constexpr auto invalid=std::numeric_limits<std::uint32_t>::max();
-        gpu_dy_joint_row_remap_.assign(joint_count,invalid);
-        std::size_t joint_row=0u;
-        for(const EdgeIndex edge:indexed_joints_) {
-            const auto it=std::lower_bound(
-                gpu_dy_early_joint_edges_.begin(),
-                gpu_dy_early_joint_edges_.end(),edge,
-                [&](EdgeIndex left,EdgeIndex right) {
-                    return island_edges_[left].constraint_id >
-                           island_edges_[right].constraint_id;
-                });
-            if(it==gpu_dy_early_joint_edges_.end() || *it!=edge)
-                throw std::logic_error("Early Sc joint missing prepared source identity");
-            gpu_dy_joint_row_remap_[it-gpu_dy_early_joint_edges_.begin()]=
-                static_cast<std::uint32_t>(joint_row);
-            const auto kind=constraint_records_[
-                island_edges_[edge].constraint_id].kind;
-            joint_row+=kind==JointKind::Distance?1u:
-                kind==JointKind::Spherical?3u:
-                kind==JointKind::Fixed?6u:5u;
-        }
-        if(joint_row!=gpu_dy_rows_.size())
-            throw std::logic_error("Early Sc joint row mapping is incomplete");
-        for(const auto row:gpu_dy_joint_row_remap_)
-            if(row==invalid)
-                throw std::logic_error("Early Sc joint was not prepared by Dy");
-        gpu_broadphase_->remap_gpu_dy_island_joints(
-            gpu_dy_joint_row_remap_,
-            static_cast<std::uint32_t>(gpu_dy_rows_.size()));
         return;
     }
     if(!selected)return;

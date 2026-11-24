@@ -622,13 +622,19 @@ struct GpuPcmFrictionAnchorFixture {
             previous_row=actor.solver_row_index;
             seen_row=true;
         }
+        std::size_t joint_row=0u;
         for(std::size_t i=0u;i<scene.gpu_dy_island_edges_.size();++i) {
             const auto& edge=scene.gpu_dy_island_edges_[i];
             if(i<joints) {
                 if(edge.edge_index!=scene.gpu_dy_early_joint_edges_[i] ||
-                   edge.source_index!=i || edge.kind!=17u)
+                   edge.source_index!=joint_row || edge.kind!=17u)
                     throw std::runtime_error(
-                        "Early device Sc graph lost its typed joint identity");
+                        "Early device Sc graph lost its typed joint row");
+                const auto& joint=scene.constraint_records_[
+                    scene.island_edges_[edge.edge_index].constraint_id];
+                joint_row+=joint.kind==Scene::JointKind::Distance?1u:
+                    joint.kind==Scene::JointKind::Spherical?3u:
+                    joint.kind==Scene::JointKind::Fixed?6u:5u;
             } else {
                 const auto candidate=i-joints;
                 const auto reversed=scene.island_edges_[
@@ -718,29 +724,22 @@ struct GpuPcmFrictionAnchorFixture {
         if(joints!=scene.indexed_joints_.size())
             throw std::runtime_error(
                 "Early device Sc joint graph disagrees with Dy source membership");
-        std::size_t prepared_row=0u;
-        for(const auto edge:scene.indexed_joints_) {
-            const auto it=std::find(
-                scene.gpu_dy_early_joint_edges_.begin(),
-                scene.gpu_dy_early_joint_edges_.end(),edge);
-            if(it==scene.gpu_dy_early_joint_edges_.end())
-                throw std::runtime_error(
-                    "Early device Sc joint lost its prepared source identity");
-            const auto index=static_cast<std::size_t>(
-                    it-scene.gpu_dy_early_joint_edges_.begin());
-            if(index>=scene.gpu_dy_joint_row_remap_.size() ||
-               scene.gpu_dy_joint_row_remap_[index]!=prepared_row)
-                throw std::runtime_error(
-                    "Early device Sc joint remap changed prepared Dy row order");
-            const auto& joint=scene.constraint_records_[
-                scene.island_edges_[edge].constraint_id];
-            prepared_row+=joint.kind==Scene::JointKind::Distance?1u:
-                joint.kind==Scene::JointKind::Spherical?3u:
-                joint.kind==Scene::JointKind::Fixed?6u:5u;
+        if(source_body_order) {
+            if(joint_row!=scene.gpu_dy_rows_.size())
+                throw std::runtime_error("Early Sc joint row capacity mismatch");
+            for(std::size_t i=0u;i<joints;++i) {
+                const auto& edge=scene.gpu_dy_island_edges_[i];
+                const auto& joint=scene.constraint_records_[
+                    scene.island_edges_[edge.edge_index].constraint_id];
+                const auto& row=scene.gpu_dy_rows_[edge.source_index];
+                if(row.reserved!=2u ||
+                   std::bit_cast<std::uint32_t>(row.constant)!=
+                       scene.island_edges_[edge.edge_index].constraint_id ||
+                   std::bit_cast<std::uint32_t>(row.unbiased_constant)!=joint.generation)
+                    throw std::runtime_error(
+                        "Device joint token does not address its authored source");
+            }
         }
-        if(prepared_row!=scene.gpu_dy_rows_.size())
-            throw std::runtime_error(
-                "Early device Sc joint remap omitted prepared numerical rows");
     }
     static void verify_resident_mass_inputs(const Scene& scene) {
         if(scene.gpu_dy_bodies_.size()!=(scene.gpu_dy_source_body_order_
@@ -6879,8 +6878,7 @@ void verify_joint_only_device_admission(
         for(const auto id:{b[i*2u],b[i*2u+1u]})
             gpu.set_dynamics(id,dynamics);
         if(i==1u) {
-            // A middle multirow joint shifts the following source row.
-            // Retiring it restores identity-ordered distance joints.
+            // A multirow joint changes the following source row offset.
             const Transform anchor_a{{2.f,0.f,0.f},{}};
             const Transform anchor_b{};
             joints_cpu[i]=cpu.create_spherical_constraint(
@@ -6909,12 +6907,12 @@ void verify_joint_only_device_admission(
         const auto responding=frame<2u?3u:frame<4u?2u:1u;
         const bool device_graph=responding>1u;
         const auto stats=producer->dy_launch_stats();
-        require(producer->sc_island_deferred_joint_remap()==(frame<2u) &&
+        require(!producer->sc_island_deferred_joint_remap() &&
                 !producer->sc_island_deferred_body_remap() &&
                 native::GpuPcmFrictionAnchorFixture::
                     has_source_body_order(gpu)==device_graph &&
                 producer->sc_island_remap_dispatch_count()==0u,
-            "Sc joint numerical remap did not follow actual source row order");
+            "Sc joint numerical admission retained a remap");
         require(stats.host_descriptor_inputs==
                     (device_graph?0u:responding),
             "Joint-only Sc descriptor ownership differs from task admission");

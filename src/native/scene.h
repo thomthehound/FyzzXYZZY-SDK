@@ -554,10 +554,6 @@ public:
         bool /*early*/=false) {
         throw std::logic_error("Device Sc accurate-island admission is unavailable");
     }
-    virtual void remap_gpu_dy_island_joints(
-        std::span<const std::uint32_t>,std::uint32_t) {
-        throw std::logic_error("Device Sc joint-row remapping is unavailable");
-    }
     virtual void discard_gpu_dy_island_admission() {
         throw std::logic_error("Device Sc admission discard is unavailable");
     }
@@ -2290,7 +2286,6 @@ private:
     std::vector<std::uint32_t> gpu_dy_island_node_flags_;
     std::vector<BodyId> gpu_dy_early_actor_ids_;
     std::vector<BodyId> gpu_dy_joint_kinematic_ids_;
-    std::vector<std::uint32_t> gpu_dy_joint_row_remap_;
     std::vector<std::uint32_t> gpu_dy_actor_stage_epochs_;
     std::uint32_t gpu_dy_actor_stage_epoch_=0u;
     std::size_t gpu_dy_staged_actor_count_=0u;
