@@ -2178,18 +2178,13 @@ void main(uint3 group:SV_GroupID,uint3 lane:SV_GroupThreadID) {
         // SAME dispatch initialize distinct body blocks in parallel.
         // No solver reads body state until the next ordered dispatch.
         if(phase==colorTile && index>=schedule.z) {
-            const uint item=(index-schedule.z)*128u+lane.x;
+            const uint ordinal=(index-schedule.z)*128u+lane.x;
             const uint source=arena.Load(p.integrationBias+36u);
-            const uint count=deviceBodyOrder?admittedBodies:p.bodyCount;
-            if(source!=0u && item<count) {
-                const uint ordinal=deviceBodyOrder
-                    ?sourceDyBodyOrdinal(item):item;
-                if(ordinal<p.bodyCount) {
-                    initializeSolverBody(ordinal,source);
-                    if(!sourceDyPreIntegrateBody(ordinal) ||
-                       !sourceDyPrepareWorldInertia(ordinal))
-                        sourceDyInvalidatePreparedVelocity(ordinal);
-                }
+            if(source!=0u && ordinal<p.bodyCount) {
+                initializeSolverBody(ordinal,source);
+                if(!sourceDyPreIntegrateBody(ordinal) ||
+                   !sourceDyPrepareWorldInertia(ordinal))
+                    sourceDyInvalidatePreparedVelocity(ordinal);
             }
             return;
         }
@@ -2200,16 +2195,11 @@ void main(uint3 group:SV_GroupID,uint3 lane:SV_GroupThreadID) {
            p.bodyCount<=128u) {
             const uint source=arena.Load(p.integrationBias+36u);
             if(source!=0u) {
-                const uint count=deviceBodyOrder?admittedBodies:p.bodyCount;
-                if(lane.x<count) {
-                    const uint ordinal=deviceBodyOrder
-                        ?sourceDyBodyOrdinal(lane.x):lane.x;
-                    if(ordinal<p.bodyCount) {
-                        initializeSolverBody(ordinal,source);
-                        if(!sourceDyPreIntegrateBody(ordinal) ||
-                           !sourceDyPrepareWorldInertia(ordinal))
-                            sourceDyInvalidatePreparedVelocity(ordinal);
-                    }
+                if(lane.x<p.bodyCount) {
+                    initializeSolverBody(lane.x,source);
+                    if(!sourceDyPreIntegrateBody(lane.x) ||
+                       !sourceDyPrepareWorldInertia(lane.x))
+                        sourceDyInvalidatePreparedVelocity(lane.x);
                 }
                 AllMemoryBarrierWithGroupSync();
             }
