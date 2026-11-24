@@ -4786,11 +4786,6 @@ void Scene::update_contacts(bool defer_device_points,float step_seconds) {
             std::sort(kinematics.begin(),kinematics.end());
             kinematics.erase(std::unique(kinematics.begin(),kinematics.end()),
                              kinematics.end());
-            // Authored joint rows and endpoints do not consume PCM witnesses.
-            prepare_gpu_dy_joint_rows(gpu_dy_early_joint_edges_,true,true);
-            if(gpu_dy_rows_.size()!=early_joint_rows)
-                throw std::logic_error("Early Sc joint row capacity changed");
-            gpu_dy_prewitness_joint_rows_=gpu_dy_rows_.size();
             // Queue authored actor-local inputs on Sc's early device
             // submission; final Dy admission validates any Sc changes.
             stage_gpu_dy_actor_sources(gpu_dy_early_actor_ids_,seconds);
@@ -4806,6 +4801,12 @@ void Scene::update_contacts(bool defer_device_points,float step_seconds) {
                     true);
                 gpu_dy_early_islands_=true;
             }
+            gpu_dy_rows_.reserve(early_joint_rows);
+            // Authored joint rows and endpoints do not consume PCM witnesses.
+            prepare_gpu_dy_joint_rows(gpu_dy_early_joint_edges_,true,true);
+            if(gpu_dy_rows_.size()!=early_joint_rows)
+                throw std::logic_error("Early Sc joint row capacity changed");
+            gpu_dy_prewitness_joint_rows_=gpu_dy_rows_.size();
         }else {
             gpu_dy_early_actor_ids_.clear();
             gpu_dy_early_joint_edges_.clear();

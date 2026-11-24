@@ -1569,8 +1569,6 @@ private:
     void prepare_solver_bodies();
     void partition_constraints();
     void prepare_constraints(float seconds);
-    void prepare_gpu_dy_joint_rows(std::span<const EdgeIndex> edges,
-                                   bool source_order,bool staged_sources);
     void erase_shape_friction_history(ShapeId id);
     void erase_body_friction_history(BodyId id);
     void erase_friction_history(std::uint32_t id,bool body_scope);
@@ -1606,6 +1604,8 @@ private:
     std::size_t rigid_shape_count_=0;
     using EdgeIndex=std::uint32_t;
     GpuDyJointInput pack_gpu_dy_joint_input(EdgeIndex edge) const;
+    void prepare_gpu_dy_joint_rows(std::span<const EdgeIndex> edges,
+                                   bool source_order,bool staged_sources);
     void pack_gpu_dy_integration_input(
         BodyId id,float seconds,GpuDyBodyIntegrationInput& input) const;
     void stage_gpu_dy_actor_sources(std::span<const BodyId> ids,float seconds,
