@@ -6938,6 +6938,52 @@ void verify_joint_only_device_admission(
                 gpu.body_state(b[i]),cpu.body_state(a[i]),0.003f,
                 "Joint-only device admission diverged from CPU PGS");
     }
+    cpu.retire_constraint(joints_cpu[0]);
+    gpu.retire_constraint(joints_gpu[0]);
+
+    const auto kcpu=cpu.add_dynamic_box(
+        {0.25f,0.25f,0.25f},{80.f,3.f,0.f},1.f);
+    const auto kgpu=gpu.add_dynamic_box(
+        {0.25f,0.25f,0.25f},{80.f,3.f,0.f},1.f);
+    cpu.set_kinematic(kcpu,true);
+    gpu.set_kinematic(kgpu,true);
+    std::array<BodyId,2> followers_cpu{},followers_gpu{};
+    for(std::size_t i=0u;i<2u;++i) {
+        const Vec3 position{77.f+6.f*float(i),3.f,0.f};
+        followers_cpu[i]=cpu.add_dynamic_box(
+            {0.25f,0.25f,0.25f},position,1.f);
+        followers_gpu[i]=gpu.add_dynamic_box(
+            {0.25f,0.25f,0.25f},position,1.f);
+        RigidBodyDynamics dynamics{};
+        dynamics.gravity_enabled=false;
+        cpu.set_dynamics(followers_cpu[i],dynamics);
+        gpu.set_dynamics(followers_gpu[i],dynamics);
+        cpu.create_center_distance_constraint(kcpu,followers_cpu[i],3.f);
+        gpu.create_center_distance_constraint(kgpu,followers_gpu[i],3.f);
+    }
+    for(unsigned frame=0u;frame<2u;++frame) {
+        const Vec3 target{80.f+0.05f*float(frame+1u),3.f,0.f};
+        cpu.set_kinematic_target(kcpu,target,Quat{});
+        gpu.set_kinematic_target(kgpu,target,Quat{});
+        cpu.step(dt);
+        gpu.step(dt);
+        native::GpuPcmFrictionAnchorFixture::
+            verify_pre_witness_device_admission(gpu);
+        const auto stats=producer->dy_launch_stats();
+        require(stats.device_admitted_tasks==2u &&
+                stats.device_admitted_descriptors==2u &&
+                stats.device_island_indirect_dispatches==1u &&
+                !producer->sc_island_deferred_body_remap() &&
+                !producer->sc_island_deferred_joint_remap() &&
+                gpu.accurate_island_id(followers_gpu[0])!=
+                    gpu.accurate_island_id(followers_gpu[1]),
+            "Shared kinematic endpoint merged independent responding tasks");
+        for(std::size_t i=0u;i<2u;++i)
+            test::compound_compare_state(
+                gpu.body_state(followers_gpu[i]),
+                cpu.body_state(followers_cpu[i]),0.003f,
+                "Shared kinematic joint motion diverged from CPU PGS");
+    }
 }
 
 void verify_gpu_distance_solver(

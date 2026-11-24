@@ -164,8 +164,7 @@ produces some PCM records, admission is queued after those host records
 publish physical touch into the same device journal. Unrelated scene
 actors never enlarge the resident numerical graph. Early responding nodes
 are bounded by the device task capacity rather than the single-workgroup
-128-node threshold. Larger source graphs use parallel device admission,
-and the ordered body/joint remap dispatches in bounded workgroup ranges.
+single-workgroup threshold. Larger source graphs use parallel device admission.
 Hardware scene qualification now compares identical CPU, GPU Sc-authored
 and GPU device-admitted numerical workloads, including frame percentiles
 and CPU-referenced pose/velocity error.
@@ -181,20 +180,18 @@ using the completed radix workspace. Device-admitted Dy tasks place
 PCM and CPU Gu managers directly in those ranges, without repeating
 a task-local capacity scan or allocating contact rows with global atomics.
 The CPU-authored task path retains its original source-order correlation.
-Contact-only early admission uses compact Sc node ordinals as Dy's body
-addresses. The GPU's responding body order and exact contact-row prefixes
-both come from device-authored island work; nonresponding source nodes
-occupy no task range. Sc correlates numerical results to its ActorIDs
-at publication. Joint-bearing and late-admitted paths retain their
-prepared source-to-solver-row mapping when needed, without a second
-graph dispatch or topology readback. Device-admitted numerical tasks do
+Early admission uses compact Sc node ordinals as Dy's responding body
+addresses. Kinematic joint endpoints occupy separate nonresponding slots.
+The GPU's responding body order and exact contact-row prefixes come from
+device-authored island work. Sc correlates numerical results to ActorIDs
+at publication. Late-admitted tasks consume the prepared solver-row order. Device-admitted numerical tasks do
 not materialize host endpoint descriptors for physically non-touching PCM candidates;
 CPU-authored tasks retain their explicit zero-response endpoints.
 Contact-only tasks require an admitted response, so empty PCM candidates
 do not produce solver work. Mixed ordinary CPU Gu and GPU PCM contact/joint
 graphs also admit before the GPU witness join, after CPU Gu publishes
-its EdgeIndex touch/loss journal. The deferred submission retains the
-provisional joint-source capacity until Dy resolves final joint rows. Sc defers GPU witness publication
+its EdgeIndex touch/loss journal. Joint tokens address exact row ranges
+derived from authored joint kinds before witness publication. Sc defers GPU witness publication
 until all such Gu producers complete, regardless of their encounter order.
 A single responding dynamic body admits a GPU PCM contact task. Contact
 candidates and joint-only islands share the same device graph; physical
@@ -209,9 +206,9 @@ graph, and Dy's candidate-indexed manifold and contact-preparation tables
 consume that identity directly, including gaps where Gu publishes no contact
 manager. Only responding, prepared candidates own a contact-preparation entry;
 non-touching and zero-response candidate slots remain invalid. Joint graphs
-admit stable Sc edge identities with the same early contact graph. Their provisional joint-source ordinals are resolved to prepared Dy
-joint rows in the ordered node/response remap, without rebuilding GPU
-connectivity or task ranges. CPU Sc still owns the committed island graph
+admit stable Sc edge identities with the same early contact graph. Each
+joint token addresses its first source-ordered Dy row directly, independently
+of the CPU task order. CPU Sc still owns the committed island graph
 and the joint and contact publication lifetimes.
 The Scene joins GPU PCM headers for public contact state and
 reads back Dy scheduling and numerical results for publication.
@@ -360,7 +357,7 @@ and larger response streams use parallel block scans with group carries
 only beyond 16,384 edges;
 257-entry graphs retain the parallel path.
 Sc leaves device-authored body and typed response order intact.
-Early contact-only tasks index Dy body and contact preparation directly
+Early device-admitted tasks index Dy body and contact preparation directly
 by their pre-witness source ordinals, regardless of the CPU's solver-row
 order. Sc publishes interaction-ordered contact endpoint ordinals in its
 resident source-indexed admission table. Host contact preparations carry
@@ -369,12 +366,10 @@ A separate Dy preparation dispatch validates active body inputs and
 resolves only admitted references from the resident table on the
 same command queue, before PGS expands responding descriptors.
 Host-scheduled tasks consume their own prepared row indices.
-Joint-bearing and late-admitted tasks use the Sc source-to-row map when
-required. Device-joint graphs upload their stable
-source-to-joint-row table only when it differs from source order;
-Dy resolves typed joint tokens at descriptor expansion. The
-indirect launch arguments are published with early Sc admission,
-without a standalone numerical remap dispatch.
+Joint source rows occupy exact contiguous ranges in descending constraint
+identity order. The device's typed joint tokens address those ranges
+directly. Early Sc admission publishes indirect launch arguments without
+a numerical body or joint remap upload or dispatch.
 Sc reserves a source-ordered numerical input table independently of PCM
 touch classification. GPU PCM candidates receive typed actor endpoints
 and material coefficients while the contact producer executes, before
