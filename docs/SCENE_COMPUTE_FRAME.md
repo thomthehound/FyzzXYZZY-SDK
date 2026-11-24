@@ -379,8 +379,14 @@ while PCM is still running. Untouched Gu candidates do not acquire
 numerical preparation records. Dy consumes the resulting source-indexed
 table without repeating material combination. Contact/friction row
 construction still follows Sc's witness publication.
+Early device admission reserves bounded PCM normal-force and friction
+anchor windows by source candidate before witness publication. Non-touching
+candidates occupy no numerical task; the device assigns exact contact working
+rows from its admitted response prefixes. CPU Gu appends its correlated
+rows after the PCM source capacity. Joint numerical descriptors and their
+kinematic endpoint slots are also prepared before the witness join.
 A continuous PCM-to-Dy numerical path without a host header dependency
-remains open; compact admission alone does not remove that synchronization.
+still requires candidate-owned patch descriptors and integration admission.
 
 Retiring this join requires one Sc-authored, source-ordered table of stable
 candidate identities and typed responding endpoints. GPU PCM must derive

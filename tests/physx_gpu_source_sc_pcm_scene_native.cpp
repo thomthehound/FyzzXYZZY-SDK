@@ -930,6 +930,33 @@ struct GpuPcmFrictionAnchorFixture {
             throw std::runtime_error(
                 "Sc retained speculative GPU PCM point reservations");
     }
+    static void verify_pre_witness_pcm_capacity(const Scene& scene,
+                                                std::size_t expected_contacts,
+                                                std::size_t expected_friction) {
+        if(!scene.gpu_dy_source_body_order_ ||
+           scene.gpu_dy_prewitness_contact_rows_!=expected_contacts ||
+           scene.gpu_dy_prewitness_friction_rows_!=expected_friction ||
+           scene.prepared_contact_rows_!=expected_contacts ||
+           scene.prepared_friction_rows_!=expected_friction)
+            throw std::runtime_error(
+                "Early PCM numerical windows depend on host touch results");
+        std::vector<bool> published(expected_contacts,false);
+        for(const auto index:scene.indexed_managers_) {
+            const auto& m=scene.manifolds_[index];
+            if(!m.friction_patch_count)continue;
+            if(m.solver_offset>published.size() ||
+               m.count>published.size()-m.solver_offset)
+                throw std::runtime_error("PCM result window exceeds source capacity");
+            for(std::size_t j=0u;j<m.count;++j) {
+                if(published[m.solver_offset+j])
+                    throw std::runtime_error("PCM source result windows overlap");
+                published[m.solver_offset+j]=true;
+            }
+        }
+        for(std::size_t i=0u;i<published.size();++i)
+            if(!published[i] && scene.gpu_dy_contact_forces_[i]!=0.f)
+                throw std::runtime_error("Unadmitted PCM source returned a normal force");
+    }
     static void verify_device_contact_order(const Scene& scene,
                                             bool require_pcm,
                                             bool require_cpu) {
@@ -5065,6 +5092,12 @@ void verify_early_pcm_island_pipeline(
             require(schedule.device_colored_tasks==source_capacity &&
                     schedule.device_admitted_tasks==responding,
                 "Pre-witness Sc tasks were sized from host touch results");
+            native::GpuPcmFrictionAnchorFixture::
+                verify_pre_witness_pcm_capacity(gpu,
+                    4u*(identity_order?2u:3u)+(with_sphere?1u:0u),
+                    4u*source_capacity);
+            native::GpuPcmFrictionAnchorFixture::
+                verify_device_contact_order(gpu,true,false);
         }
         require(gpu.pairs().size()==responding+(identity_order?0u:1u) &&
                 gpu.contacts().size()==responding &&
