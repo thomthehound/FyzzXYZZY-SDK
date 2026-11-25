@@ -427,14 +427,16 @@ interactions and submits touch losses, but a retired speculative bridge
 can still propagate a wake before the island splits. A reachable dormant
 endpoint outside the submitted graph requires later authorization.
 Sc publishes the witnesses and queues sparse PCM point DMA with numerical
-results, then consumes the submitted source ordinals. Conditional
-wakes and wide components retain later authorization. Sleep-ready
-candidate bodies use the accurate component's device activity count:
+results, then consumes the submitted source ordinals. Wide components
+retain later authorization. Dormant and sleep-ready candidate bodies
+use the accurate component's device activity count:
 runnable tasks integrate their members; active components without response
 rows integrate through the free-body pass. Inactive components publish an
 explicit no-integration result without updating actor-local motion.
-Sc validates returned integration identities against its active publication
-before committing motion.
+Admitted dormant sources initialize the wake counter and clear sleep
+accumulators in Dy sleepCheck; rejected candidates leave sleep state
+unchanged. Sc validates returned integration identities against its active
+publication before committing motion.
 
 Retiring this join requires one Sc-authored, source-ordered table of stable
 candidate identities and typed responding endpoints. GPU PCM must derive

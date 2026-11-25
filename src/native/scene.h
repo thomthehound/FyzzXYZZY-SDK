@@ -209,6 +209,8 @@ static_assert(sizeof(GpuDyDistanceBody)==52u);
 inline constexpr std::uint32_t gpu_dy_source_indexed_integration=0x200u;
 // Sleep-ready integration depends on the accurate component's activity.
 inline constexpr std::uint32_t gpu_dy_conditional_integration=0x400u;
+// A dormant source initializes sleep state only on admitted integration.
+inline constexpr std::uint32_t gpu_dy_wake_integration=0x800u;
 inline constexpr std::uint32_t gpu_dy_integration_inactive=2u;
 // DyBodyCoreIntegrator::integrateCore inputs.
 struct GpuDyBodyIntegrationInput {

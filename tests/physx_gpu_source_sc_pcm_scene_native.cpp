@@ -5145,6 +5145,25 @@ void verify_sleeping_new_touch_device_admission(
             cpu.contacts().empty() && gpu.contacts().empty(),
         "Free rigid body did not enter sleep before its first contact");
 
+    // A refreshed speculative candidate without touch must leave the
+    // dormant source inactive, including its sleep counter.
+    const Vec3 miss_pose{1.08f,3.58f,0.f};
+    const Quat tilt{0.f,0.f,0.382683432f,0.923879533f};
+    cpu.set_pose(fixed_cpu,miss_pose,tilt);
+    gpu.set_pose(fixed_gpu,miss_pose,tilt);
+    cpu.step(seconds);
+    gpu.step(seconds);
+    require(gpu.pairs().size()==1u &&
+            cpu.contacts().empty() && gpu.contacts().empty() &&
+            cpu.body_is_sleeping(moving_cpu) && gpu.body_is_sleeping(moving_gpu) &&
+            gpu.body_wake_counter(moving_gpu)==0.f &&
+            native::GpuPcmFrictionAnchorFixture::has_prewitness_solve(gpu) &&
+            producer->dy_gpu_integrated_body_count()==0u,
+        "Non-touching dormant PCM candidate executed integration");
+    test::compound_compare_state(
+        gpu.body_state(moving_gpu),cpu.body_state(moving_cpu),0.003f,
+        "Non-touching dormant PCM candidate changed motion");
+
     const Vec3 contact_pose{0.f,2.1f,0.f};
     cpu.set_pose(fixed_cpu,contact_pose,{});
     gpu.set_pose(fixed_gpu,contact_pose,{});
@@ -5165,7 +5184,11 @@ void verify_sleeping_new_touch_device_admission(
                 has_early_device_admission(gpu) &&
             schedule.device_island_indirect_dispatches==1u &&
             schedule.device_admitted_tasks==1u &&
-            schedule.device_admitted_descriptors==1u,
+            schedule.device_admitted_descriptors==1u &&
+            native::GpuPcmFrictionAnchorFixture::has_prewitness_solve(gpu) &&
+            producer->dy_gpu_integrated_body_count()==1u &&
+            std::fabs(gpu.body_wake_counter(moving_gpu)-
+                      cpu.body_wake_counter(moving_cpu))<1.e-5f,
         "New physical touch did not wake an early device-admitted island");
     native::GpuPcmFrictionAnchorFixture::
         verify_pre_witness_device_admission(gpu);
@@ -5227,13 +5250,16 @@ void verify_sleeping_new_touch_device_admission(
             projected.device_admitted_tasks==1u &&
             projected.device_admitted_bodies==2u &&
             projected.device_admitted_descriptors==1u &&
-            speculative_producer->dy_gpu_integrated_body_count()==3u,
+            speculative_producer->dy_gpu_integrated_body_count()==3u &&
+            native::GpuPcmFrictionAnchorFixture::has_prewitness_solve(speculative_gpu),
         "SAP-only wake did not admit dormant joint bodies before Gu publication");
     native::GpuPcmFrictionAnchorFixture::
         verify_pre_witness_device_admission(speculative_gpu);
     for(std::size_t i=0u;i<joint_cpu.size();++i) {
         require(!speculative_cpu.body_is_sleeping(joint_cpu[i]) &&
-                !speculative_gpu.body_is_sleeping(joint_gpu[i]),
+                !speculative_gpu.body_is_sleeping(joint_gpu[i]) &&
+                std::fabs(speculative_gpu.body_wake_counter(joint_gpu[i])-
+                          speculative_cpu.body_wake_counter(joint_cpu[i]))<1.e-5f,
             "Speculative wake did not reach the retained joint component");
         test::compound_compare_state(
             speculative_gpu.body_state(joint_gpu[i]),
@@ -5277,15 +5303,23 @@ void verify_sleeping_new_touch_device_admission(
             physical_wake.device_admitted_tasks==2u &&
             physical_wake.device_admitted_bodies==3u &&
             physical_wake.device_admitted_descriptors==2u &&
-            speculative_producer->dy_gpu_integrated_body_count()==3u,
+            speculative_producer->dy_gpu_integrated_body_count()==3u &&
+            native::GpuPcmFrictionAnchorFixture::has_prewitness_solve(speculative_gpu),
         "Resident physical touch failed to activate separate accurate islands");
     native::GpuPcmFrictionAnchorFixture::
         verify_pre_witness_device_admission(speculative_gpu);
-    for(std::size_t i=0u;i<joint_cpu.size();++i)
+    for(std::size_t i=0u;i<joint_cpu.size();++i) {
+        require(std::fabs(speculative_gpu.body_wake_counter(joint_gpu[i])-
+                          speculative_cpu.body_wake_counter(joint_cpu[i]))<1.e-5f,
+            "Physical-touch propagation lost joint wake state");
         test::compound_compare_state(
             speculative_gpu.body_state(joint_gpu[i]),
             speculative_cpu.body_state(joint_cpu[i]),0.003f,
             "Physical-touch speculative wake changed joint motion");
+    }
+    require(std::fabs(speculative_gpu.body_wake_counter(candidate_gpu)-
+                      speculative_cpu.body_wake_counter(candidate_cpu))<1.e-5f,
+        "Physical-touch propagation lost contact wake state");
     test::compound_compare_state(
         speculative_gpu.body_state(candidate_gpu),
         speculative_cpu.body_state(candidate_cpu),0.04f,

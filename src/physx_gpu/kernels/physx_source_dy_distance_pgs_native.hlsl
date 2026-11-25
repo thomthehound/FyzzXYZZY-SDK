@@ -403,6 +403,12 @@ bool sourceDyPrepareSleep(uint input,uint local,
     wakeCounter=asfloat(scActorLocals.Load(local+88u));
     linearAcc=asfloat(scActorLocals.Load3(local+92u));
     angularAcc=asfloat(scActorLocals.Load3(local+104u));
+    // Only a device-admitted dormant body reaches sleepCheck.
+    if((arena.Load(input+8u)&0x10000000u)!=0u) {
+        wakeCounter=max(wakeCounter,0.4f);
+        linearAcc=0.0f;
+        angularAcc=0.0f;
+    }
     const float dt=asfloat(arena.Load(input+4u));
     if(wakeCounter<0.2f || wakeCounter<dt) {
         const float4 inverseOrientation=

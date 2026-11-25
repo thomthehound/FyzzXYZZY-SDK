@@ -5599,7 +5599,7 @@ void Scene::update_contacts(bool defer_device_points,float step_seconds) {
            [&](BodyId id) {
                const auto& actor=actors_[id];
                return actor.alive && actor.motion==Motion::Dynamic &&
-                   !actor.sleeping && actor.angular_inertia_available;
+                   actor.angular_inertia_available;
            });
     gpu_dy_free_ids_.clear();
     if(prewitness_ready &&
@@ -5654,11 +5654,14 @@ void Scene::update_contacts(bool defer_device_points,float step_seconds) {
         gpu_dy_integrated_poses_.resize(integration_count);
         gpu_dy_sleep_states_.resize(integration_count);
         gpu_dy_friction_impulses_.resize(gpu_dy_friction_anchors_.size());
-        for(auto& input:gpu_dy_integration_inputs_)
+        for(auto& input:gpu_dy_integration_inputs_) {
+            const auto& actor=actors_[input.source_actor];
             input.active=1u|32u|gpu_dy_source_indexed_integration|
                 (input.source_element!=invalid_shape?4u:0u)|
-                (actors_[input.source_actor].ready_for_sleep
-                    ?gpu_dy_conditional_integration:0u);
+                ((actor.sleeping || actor.ready_for_sleep)
+                    ?gpu_dy_conditional_integration:0u)|
+                (actor.sleeping?gpu_dy_wake_integration:0u);
+        }
         gpu_dy_integration_inputs_.resize(integration_count);
         for(std::size_t i=0u;i<gpu_dy_free_ids_.size();++i)
             pack_gpu_dy_integration_input(gpu_dy_free_ids_[i],step_seconds,

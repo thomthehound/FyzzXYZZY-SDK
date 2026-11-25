@@ -65,7 +65,9 @@ static_assert(sizeof(SourceDyPackedIntegrationNative)==40u &&
               offsetof(SourceDyPackedIntegrationNative,counted_interactions)==36u);
 inline constexpr std::uint32_t source_dy_device_inertia_flag=0x4000u;
 inline constexpr std::uint32_t source_dy_conditional_integration_flag=0x8000u;
-static_assert(((source_dy_device_inertia_flag|source_dy_conditional_integration_flag)&
+inline constexpr std::uint32_t source_dy_wake_integration_flag=0x10000000u;
+static_assert(((source_dy_device_inertia_flag|source_dy_conditional_integration_flag|
+                source_dy_wake_integration_flag)&
     ((63u<<8u)|(4095u<<16u)|1u|8u|16u|32u|64u|128u))==0u);
 struct SourceDyPreparedVelocityNative {
     float linear[3]{},angular[3]{};
@@ -1232,7 +1234,12 @@ public:
                 (device_world_motion && (input.active&1u) ?(8u|128u):0u)|
                 (device_world_motion && (input.active&32u) ?source_dy_device_inertia_flag:0u)|
                 ((input.active&native::gpu_dy_conditional_integration)
-                    ?source_dy_conditional_integration_flag:0u);
+                    ?source_dy_conditional_integration_flag:0u)|
+                ((input.active&native::gpu_dy_wake_integration)
+                    ?source_dy_wake_integration_flag:0u);
+            if((record.active&source_dy_wake_integration_flag) &&
+               !(record.active&source_dy_conditional_integration_flag))
+                throw std::logic_error("Dormant Dy source lacks conditional integration");
             if((record.active&source_dy_conditional_integration_flag) &&
                (!source_indexed_integration || ordinal>=bodies.size() ||
                 !(input.active&1u)))
