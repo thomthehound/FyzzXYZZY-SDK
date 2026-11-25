@@ -5803,9 +5803,10 @@ void Scene::update_contacts(bool defer_device_points,float step_seconds) {
         const auto nodes=gpu_dy_early_actor_ids_.size();
         const auto body_count=nodes+gpu_dy_joint_kinematic_ids_.size();
         gpu_dy_bodies_.resize(body_count);
-        gpu_dy_body_ordinals_.resize(nodes);
+        gpu_dy_body_ordinals_.clear();
         gpu_dy_tasks_.clear();
-        gpu_dy_tasks_.resize(std::min(nodes,gpu_dy_island_edges_.size()));
+        const GpuDyResidentScheduleCapacity resident_capacity{
+            std::min(nodes,gpu_dy_island_edges_.size()),nodes};
         const auto integration_count=body_count+gpu_dy_free_ids_.size();
         gpu_dy_integrated_poses_.resize(integration_count);
         gpu_dy_sleep_states_.resize(integration_count);
@@ -5844,7 +5845,8 @@ void Scene::update_contacts(bool defer_device_points,float step_seconds) {
             gpu_dy_integration_inputs_,gpu_dy_integrated_poses_,true,
             gpu_dy_friction_impulses_,true,true,true,gpu_dy_sleep_states_,
             gpu_dy_joint_inputs_,false,true,
-            gpu_dy_contact_prep_pairs_,gpu_dy_history_candidates_,wide_bounds);
+            gpu_dy_contact_prep_pairs_,gpu_dy_history_candidates_,wide_bounds,
+            resident_capacity);
         gpu_dy_prewitness_solve_=true;
     }
     FYZZ_PROFILE_COUNTER("dy.prewitness_solve",gpu_dy_prewitness_solve_?1u:0u);
@@ -10400,7 +10402,7 @@ void Scene::publish_cpu_gu_touch_history(
                 gpu_dy_gu_touches_);
     }
 }
-void Scene::prepare_gpu_dy_device_islands(bool selected) {
+void Scene::prepare_gpu_dy_device_islands(bool selected,std::size_t task_capacity) {
     if(gpu_dy_early_islands_) {
         if(!selected) {
             gpu_broadphase_->discard_gpu_dy_island_admission();
@@ -10409,7 +10411,7 @@ void Scene::prepare_gpu_dy_device_islands(bool selected) {
         const auto nodes=gpu_dy_early_actor_ids_.size();
         if((gpu_dy_island_node_flags_.size()!=nodes &&
             gpu_dy_island_node_flags_.size()!=2u*nodes) ||
-           gpu_dy_tasks_.size()>gpu_broadphase_->gpu_dy_direct_task_limit())
+           task_capacity>gpu_broadphase_->gpu_dy_direct_task_limit())
             throw std::logic_error(
                 "Early Sc accurate islands lost their node capacity");
         if(!gpu_dy_source_body_order_)
@@ -10417,10 +10419,10 @@ void Scene::prepare_gpu_dy_device_islands(bool selected) {
         return;
     }
     if(!selected)return;
-    if(gpu_dy_tasks_.size()>gpu_broadphase_->gpu_dy_direct_task_limit())
+    if(task_capacity>gpu_broadphase_->gpu_dy_direct_task_limit())
         throw std::out_of_range(
             "Resident Sc island admission exceeds device task capacity");
-    if(gpu_dy_tasks_.size()<gpu_dy_responding_island_count_ ||
+    if(task_capacity<gpu_dy_responding_island_count_ ||
        gpu_dy_island_node_flags_.size()!=solver_rows_.size() ||
        gpu_dy_island_edges_.size()!=
            indexed_joints_.size()+indexed_managers_.size())
@@ -10705,8 +10707,6 @@ void Scene::solve_gpu_distance_constraints(float seconds) {
         ?std::min(gpu_dy_early_actor_ids_.size(),
                   gpu_dy_island_edges_.size()):0u;
     const bool early_device_admission=gpu_dy_source_body_order_;
-    gpu_dy_body_ordinals_.resize(early_device_admission
-        ?gpu_dy_early_actor_ids_.size():solver_active_ids_.size());
     if(early_device_admission &&
        (!early_task_capacity || early_task_capacity>direct_task_limit))
         throw std::logic_error("Early Sc numerical task capacity is invalid");
@@ -10715,6 +10715,12 @@ void Scene::solve_gpu_distance_constraints(float seconds) {
     const bool late_device_admission=!gpu_dy_early_islands_ &&
         !gpu_dy_island_edges_.empty();
     device_admission=early_device_admission || late_device_admission;
+    const GpuDyResidentScheduleCapacity resident_capacity=device_admission
+        ?GpuDyResidentScheduleCapacity{
+            early_device_admission?early_task_capacity:gpu_dy_responding_island_count_,
+            early_device_admission?gpu_dy_early_actor_ids_.size():solver_active_ids_.size()}
+        :GpuDyResidentScheduleCapacity{};
+    gpu_dy_body_ordinals_.resize(device_admission?0u:solver_active_ids_.size());
     FYZZ_PROFILE_COUNTER("dy.device_island_selected",device_admission?1u:0u);
     if(gpu_dy_early_islands_ && gpu_dy_early_joint_edges_.empty() &&
        !gpu_dy_source_body_order_)
@@ -10825,12 +10831,7 @@ void Scene::solve_gpu_distance_constraints(float seconds) {
         throw std::logic_error(
             "Source GPU 1D preparation retained CPU rows or omitted device rows");
 
-    if(device_admission) {
-        // These spans provide storage for the device-authored task
-        // count, not a CPU prediction of runnable island membership.
-        gpu_dy_tasks_.resize(early_device_admission
-            ?early_task_capacity:gpu_dy_responding_island_count_);
-    }else {
+    if(!device_admission) {
         for(std::size_t i=0;i<solver_active_ids_.size();++i)
             gpu_dy_body_ordinals_[i]=narrow(
                 actors_[solver_active_ids_[i]].solver_row_index);
@@ -10940,7 +10941,7 @@ void Scene::solve_gpu_distance_constraints(float seconds) {
             if(joint.reserved!=2u)
                 throw std::logic_error(
                     "Device Sc response requires device-authored joint rows");
-    prepare_gpu_dy_device_islands(device_admission);
+    prepare_gpu_dy_device_islands(device_admission,resident_capacity.tasks);
     const std::span<const GpuDyDistanceDescriptor> dy_descriptors=
         device_admission?std::span<const GpuDyDistanceDescriptor>{}
                         :std::span<const GpuDyDistanceDescriptor>{
@@ -10955,7 +10956,7 @@ void Scene::solve_gpu_distance_constraints(float seconds) {
         gpu_dy_integration_inputs_,gpu_dy_integrated_poses_,true,
         gpu_dy_friction_impulses_,true,true,true,gpu_dy_sleep_states_,
         gpu_dy_joint_inputs_,false,device_admission,
-        gpu_dy_contact_prep_pairs_,gpu_dy_history_candidates_);
+        gpu_dy_contact_prep_pairs_,gpu_dy_history_candidates_,{},resident_capacity);
     }else {
         // Consume submitted ordinals without rewriting borrowed storage.
         if(!gpu_dy_source_body_order_ ||

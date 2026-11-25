@@ -583,7 +583,8 @@ public:
                std::span<const native::GpuDyCompactContactPrep> compact_contact_prep={},
         std::span<const native::GpuDyRetainedFrictionCandidate> retained_candidates={},
         bool defer_result_dma=false,
-        native::GpuDyWideScheduleBounds wide_bounds={}) {
+        native::GpuDyWideScheduleBounds wide_bounds={},
+        native::GpuDyResidentScheduleCapacity resident_capacity={}) {
         if(pending_solve_)
             throw std::logic_error("Source Dy numerical epoch already queued");
         if(!contact_prep.empty() && !compact_contact_prep.empty())
@@ -619,14 +620,26 @@ public:
         };
         for(const auto& source:contact_prep)append_source(source);
         for(const auto& source:compact_contact_prep)append_source(source);
+        if(resident_capacity.tasks || resident_capacity.body_ordinals) {
+            if(!device_admission || !resident_capacity.tasks ||
+               !tasks.empty() || !body_ordinals.empty() ||
+               readback_device_task_records)
+                throw std::invalid_argument("Dy resident capacity conflicts with host schedule");
+        }
+        const auto task_capacity=resident_capacity.tasks
+            ?resident_capacity.tasks:tasks.size();
+        const auto ordinal_capacity=resident_capacity.tasks
+            ?resident_capacity.body_ordinals:body_ordinals.size();
+        const auto task_bytes=task_capacity*sizeof(native::GpuDyDistanceTask);
+        const auto ordinal_bytes=ordinal_capacity*sizeof(std::uint32_t);
         if(device_admission &&
-           tasks.size()>source_sc_indirect_task_limit(context_.device_info()))
+           task_capacity>source_sc_indirect_task_limit(context_.device_info()))
             throw std::out_of_range(
                 "Device Sc compact tasks exceed indirect GPU Dy launch capacity");
 
         if(integration.size()<bodies.size() ||
            integrated_poses.size()!=integration.size() ||
-           (tasks.empty() && integration.size()==bodies.size()))
+           (task_capacity==0u && integration.size()==bodies.size()))
             throw std::invalid_argument(
                 "Source Dy GPU integrateCore inputs do not match solver bodies");
         last_integrated_body_count_=0u;
@@ -653,7 +666,7 @@ public:
         const auto active_integration_count=source_indexed_integration
             ?static_cast<std::size_t>(std::count_if(integration.begin(),integration.end(),
                 [](const auto& input){return (input.active&1u)!=0u;}))
-            :body_ordinals.size()+free_bodies;
+            :ordinal_capacity+free_bodies;
         const auto descriptor_capacity=device_admission
             ?std::size_t(device_admission->response_capacity)
             :descriptors.size();
@@ -675,19 +688,19 @@ public:
         const auto partition_count=device_admission
             ? descriptor_capacity
             : device_partitions
-                ? (tasks.empty()?0u:tasks.back().partition_end)
+                ? (task_capacity==0u?0u:tasks.back().partition_end)
                 : partition_ends.size();
         if(partition_count>std::numeric_limits<std::uint32_t>::max()/4u)
             throw std::overflow_error("Source Dy partition arena exceeds 32-bit offsets");
         if(device_partitions) {
             build_device_launch_plan(tasks,descriptors,narrow(partition_count),
                                      narrow(descriptor_capacity),
-                                     narrow(body_ordinals.size()),
+                                     narrow(ordinal_capacity),
                                      narrow(bodies.size()),
-                                     device_admission.has_value());
+                                     device_admission.has_value(),task_capacity);
         } else {
             build_launch_plan(tasks,partition_ends,narrow(descriptors.size()),
-                              narrow(body_ordinals.size()));
+                              narrow(ordinal_capacity));
         }
         const bool resident_wide=wide_bounds.stages!=0u;
         if(resident_wide) {
@@ -695,7 +708,7 @@ public:
                !device_partitions || !descriptors.empty())
                 throw std::logic_error("Resident wide Dy requires source-indexed admission");
             build_resident_launch_plan(wide_bounds,bodies.size(),
-                                       descriptor_capacity,tasks.size());
+                                       descriptor_capacity,task_capacity);
         }
         last_schedule_.host_descriptor_inputs=descriptors.size();
         last_schedule_.host_contact_source_bytes=compact_contact_prep.empty()
@@ -707,7 +720,7 @@ public:
             ? (device_world_motion?0u:bodies.size()*sizeof(float))
             : bodies.size_bytes();
         last_schedule_.device_world_motion_bodies=
-            device_world_motion?body_ordinals.size():0u;
+            device_world_motion?ordinal_capacity:0u;
         if(device_unconstrained_preparation &&
            (!device_world_motion || !device_initial_bodies))
             throw std::invalid_argument(
@@ -1488,12 +1501,12 @@ public:
                    task.body_end-task.body_begin<=2u;
         };
         const bool host_lane_packing=source_descriptors && !device_admission &&
-            tasks.size()>1u && wide_tasks_.empty();
+            task_capacity>1u && wide_tasks_.empty();
         last_schedule_.host_lane_packed_tasks=host_lane_packing
             ?std::count_if(tasks.begin(),tasks.end(),lane_task):0u;
         if(device_admission &&
            (!source_descriptors || !device_admission->work ||
-            !device_admission->task_dispatch.buffer || tasks.empty()))
+            !device_admission->task_dispatch.buffer || task_capacity==0u))
             throw std::invalid_argument(
                 "Source Dy device island admission requires resident numerical task launch");
         if(device_admission) {
@@ -1519,13 +1532,13 @@ public:
                 throw std::out_of_range(
                     "Dy deferred joint remap exceeds the Sc work allocation");
             if(layout.tasks>layout.block_offsets ||
-               tasks.size_bytes()>layout.block_offsets-layout.tasks ||
+               task_bytes>layout.block_offsets-layout.tasks ||
                layout.body_order>layout.contact_endpoints ||
                layout.contact_endpoints>layout.response_tokens ||
                layout.response_tokens>layout.bytes ||
                std::size_t(device_admission->contact_manager_capacity)*8u>
                    layout.response_tokens-layout.contact_endpoints ||
-               body_ordinals.size_bytes()>
+               ordinal_bytes>
                    layout.response_tokens-layout.body_order ||
                descriptor_capacity>
                    (layout.bytes-layout.response_tokens)/
@@ -1591,8 +1604,8 @@ public:
             bodies.size_bytes(),rows.size_bytes(),
             descriptor_capacity*sizeof(native::GpuDyDistanceDescriptor),
             partition_count*sizeof(std::uint32_t),
-            device_admission?0u:body_ordinals.size_bytes(),
-            device_admission?0u:tasks.size_bytes(),
+            device_admission?0u:ordinal_bytes,
+            device_admission?0u:task_bytes,
             contact_bytes,friction_bytes,
             patches.size_bytes(),manifolds.size_bytes(),contact_order.size_bytes(),
             compact_prep_bytes,
@@ -1601,7 +1614,7 @@ public:
             inertia_bytes};
         const std::array<std::size_t,count> elements{
             bodies.size(),rows.size(),descriptor_capacity,partition_count,
-            body_ordinals.size(),tasks.size(),contact_forces.size(),friction_count,
+            ordinal_capacity,task_capacity,contact_forces.size(),friction_count,
             patches.size(),manifolds.size(),contact_order.size(),
             prep_count,integration.size(),compact_anchors_.size(),
             tiles_.size(),device_partitions?1u:0u,bodies.size()};
@@ -1659,11 +1672,11 @@ public:
             (device_admission?16u:0u);
         const std::size_t device_task_bytes=
             device_admission && readback_device_task_records
-                ?tasks.size_bytes():0u;
+                ?task_bytes:0u;
         const std::size_t device_ordinal_offset=device_task_offset+
             device_task_bytes;
         const std::size_t device_error_offset=device_ordinal_offset+
-            (readback_body_ordinals?body_ordinals.size_bytes():0u);
+            (readback_body_ordinals?ordinal_bytes:0u);
         const std::size_t host_result_bytes=device_error_offset+
             (device_admission?8u:0u);
         if(device_admission &&
@@ -1715,7 +1728,7 @@ public:
         last_schedule_.device_generated_bytes=device_partitions
             ? bytes[2]+bytes[3]+
                 (device_admission
-                    ?body_ordinals.size_bytes()+tasks.size_bytes():0u):0u;
+                    ?ordinal_bytes+task_bytes:0u):0u;
         std::array<std::size_t,count> offsets{};
         // The original Dy heap retains an EdgeIndex-keyed Sc anchor
         // prefix. Solver output follows it and remains the sole readback;
@@ -1745,9 +1758,9 @@ public:
         const auto mode_output_offset=total;
         if(resident_wide) {
             if(total>std::numeric_limits<std::uint32_t>::max() ||
-               tasks.size()>(std::numeric_limits<std::uint32_t>::max()-total)/4u)
+               task_capacity>(std::numeric_limits<std::uint32_t>::max()-total)/4u)
                 throw std::overflow_error("Resident Dy task modes exceed arena");
-            total+=tasks.size()*4u;
+            total+=task_capacity*4u;
         }
         narrow(total);
         // The contact shader addresses anchors backward from contactBias.
@@ -1997,8 +2010,8 @@ public:
         if(has_shape_targets && (!shape_cache || !shape_bounds || !shape_geometry))
             throw std::logic_error("Source Sc GPU integration shape buffers are missing");
         std::array<std::uint32_t,11> integration_header{
-            0u,0u,0u,shape_capacity,narrow(body_ordinals.size()),
-            narrow(descriptor_capacity),narrow(tasks.size()),
+            0u,0u,0u,shape_capacity,narrow(ordinal_capacity),
+            narrow(descriptor_capacity),narrow(task_capacity),
             device_partitions?narrow(std::size_t(params[28])+offsets[15]):
                 (tiles_.empty()?0u:narrow(std::size_t(params[28])+offsets[14])),
             narrow(integration.size()),
@@ -2249,8 +2262,8 @@ public:
                layout.response_extents>layout.response_prefixes ||
                layout.response_prefixes>layout.contact_admissions ||
                layout.contact_admissions>layout.bytes ||
-               tasks.size_bytes()>layout.block_offsets-layout.tasks ||
-               body_ordinals.size_bytes()>
+               task_bytes>layout.block_offsets-layout.tasks ||
+               ordinal_bytes>
                    layout.response_tokens-layout.body_order ||
                descriptor_capacity>
                    (layout.response_extents-layout.response_tokens)/
@@ -2362,7 +2375,7 @@ public:
             // host task count into the launch command.
             if(device_admission && phase==Launch::Fused &&
                wide_tasks_.empty() && !resident_wide) {
-                if(range.begin!=0u || range.count!=tasks.size() ||
+                if(range.begin!=0u || range.count!=task_capacity ||
                    range.count>source_sc_indirect_task_limit(context_.device_info()))
                     throw std::out_of_range(
                         "Source device Sc task launch exceeds compact dispatch bounds");
@@ -2446,7 +2459,7 @@ public:
         // separate ordered dispatch rather than serializing body writes.
         if(device_initial_bodies && !bodies.empty() &&
            wide_tasks_.empty() &&
-           (tasks.size()!=1u || bodies.size()>128u)) {
+           (task_capacity!=1u || bodies.size()>128u)) {
             const auto before=last_schedule_.dispatches;
             launch(Launch::InitializeBodies,
                 {0u,(bodies.size()+127u)/128u});
@@ -2454,7 +2467,7 @@ public:
                 last_schedule_.dispatches-before;
         }
         if(device_partitions && (!wide_tasks_.empty() || resident_wide))
-            launch(Launch::Color,{0u,tasks.size()+
+            launch(Launch::Color,{0u,task_capacity+
                 (device_initial_bodies && !resident_wide
                     ? (bodies.size()+127u)/128u : 0u)});
         if(partition_dispatch_count_) {
@@ -2478,7 +2491,7 @@ public:
             if(resident_wide) {
                 arguments[10]|=0x0c000000u;
                 arguments[18]=wide_bounds.stages;
-                arguments[19]=narrow(tasks.size());
+                arguments[19]=narrow(task_capacity);
                 arguments[21]=narrow(descriptor_capacity);
                 arguments[24]=narrow(history_bytes+output_bytes-4u);
             }
@@ -2492,10 +2505,10 @@ public:
             }
         }
         if(last_schedule_.host_lane_packed_tasks) {
-            for(std::size_t first=0u;first<tasks.size();) {
+            for(std::size_t first=0u;first<task_capacity;) {
                 const bool packed=lane_task(tasks[first]);
                 std::size_t end=first+1u;
-                while(end<tasks.size() && lane_task(tasks[end])==packed)
+                while(end<task_capacity && lane_task(tasks[end])==packed)
                     ++end;
                 if(packed)launch_packed(first,end-first);
                 else launch(Launch::Fused,{first,end-first});
@@ -2516,11 +2529,11 @@ public:
                     launch(Launch::Motion,body_tiles_,iteration);
             }
             launch(Launch::Integrate,body_tiles_);
-            launch(Launch::PublishErrors,{0u,(tasks.size()+127u)/128u});
+            launch(Launch::PublishErrors,{0u,(task_capacity+127u)/128u});
         }else if(device_admission) {
             // Even compact tasks must report a failed resident Sc epoch,
             // including an indirect launch with a mismatched task count.
-            launch(Launch::PublishErrors,{0u,(tasks.size()+127u)/128u});
+            launch(Launch::PublishErrors,{0u,(task_capacity+127u)/128u});
         }
         // The integration extent fits in launchControl's upper bits
         // because the packed arena is limited to 32-bit byte offsets.
@@ -2549,11 +2562,11 @@ public:
                 device_task_buffer=device_tasks.buffer;
                 device_task_source=device_tasks.offset;
             }
-            if(readback_body_ordinals && !body_ordinals.empty()) {
+            if(readback_body_ordinals && ordinal_capacity!=0u) {
                 const auto device_ordinals=addresses_.resolve(
                     device_admission->work+
                         device_admission->layout.body_order,
-                    body_ordinals.size_bytes());
+                    ordinal_bytes);
                 device_ordinal_buffer=device_ordinals.buffer;
                 device_ordinal_source=device_ordinals.offset;
             }
@@ -2590,6 +2603,7 @@ public:
             .compact_contact_admission=compact_contact_admission,
             .source_indexed_integration=source_indexed_integration,
             .response_capacity=descriptor_capacity,
+            .task_capacity=task_capacity,.ordinal_capacity=ordinal_capacity,
             .manifolds=manifolds,.contact_order=contact_order,
             .contact_prep=contact_prep,
             .compact_contact_prep=compact_contact_prep,
@@ -2625,11 +2639,11 @@ public:
                 downloads[download_count++]={
                     device_task_buffer,device_task_source,
                     host_.data()+device_task_offset,device_task_bytes};
-            if(readback_body_ordinals && !body_ordinals.empty())
+            if(readback_body_ordinals && ordinal_capacity!=0u)
                 downloads[download_count++]={
                     device_ordinal_buffer,device_ordinal_source,
                     host_.data()+device_ordinal_offset,
-                    body_ordinals.size_bytes()};
+                    ordinal_bytes};
             const auto errors=addresses_.resolve(
                 address+offsets[15]+36u,8u);
             downloads[download_count++]={
@@ -2732,8 +2746,8 @@ public:
             std::memcpy(admitted.data(),
                 host_.data()+pending.device_header_offset,sizeof(admitted));
             invalid_device_admission=
-                admitted[0]!=0u || admitted[1]>tasks.size() ||
-                admitted[2]>body_ordinals.size() ||
+                admitted[0]!=0u || admitted[1]>pending.task_capacity ||
+                admitted[2]>pending.ordinal_capacity ||
                 admitted[3]>pending.response_capacity;
             if(!invalid_device_admission) {
                 last_schedule_.device_admitted_tasks=admitted[1];
@@ -2746,13 +2760,15 @@ public:
                         throw std::logic_error("Resident Dy wide task count is invalid");
                     last_schedule_.wide_tasks=wide;
                 }
-                if(pending.readback_device_task_records && admitted[1])
-                    std::memcpy(tasks.data(),
-                        host_.data()+pending.device_task_offset,
-                        admitted[1]*sizeof(native::GpuDyDistanceTask));
-                for(std::size_t i=admitted[1];i<tasks.size();++i)
-                    tasks[i].error=0u;
-                tasks=tasks.first(admitted[1]);
+                if(pending.readback_device_task_records) {
+                    if(admitted[1])
+                        std::memcpy(tasks.data(),
+                            host_.data()+pending.device_task_offset,
+                            admitted[1]*sizeof(native::GpuDyDistanceTask));
+                    for(std::size_t i=admitted[1];i<tasks.size();++i)
+                        tasks[i].error=0u;
+                    tasks=tasks.first(admitted[1]);
+                }
                 if(pending.readback_body_ordinals) {
                     admitted_body_ordinals_.resize(admitted[2]);
                     if(admitted[2])
@@ -3109,9 +3125,9 @@ public:
         last_transfer_bytes_={uploaded_bytes,
             output_bytes+(pending.device_admission
                 ?16u+(pending.readback_device_task_records
-                        ?pending.tasks.size_bytes():0u)+
+                        ?pending.task_capacity*sizeof(native::GpuDyDistanceTask):0u)+
                     (pending.readback_body_ordinals
-                        ?pending.body_ordinals.size_bytes():0u)+8u+
+                        ?pending.ordinal_capacity*sizeof(std::uint32_t):0u)+8u+
                     (pending.compact_contact_admission
                         ?admitted_contact_sources_.size()*sizeof(std::uint32_t)
                         :pending.response_capacity*sizeof(std::uint32_t))
@@ -3273,6 +3289,7 @@ private:
         bool compact_contact_admission=false;
         bool source_indexed_integration=false;
         std::size_t response_capacity=0u;
+        std::size_t task_capacity=0u,ordinal_capacity=0u;
         std::span<const native::GpuDyContactManifold> manifolds{};
         std::span<const std::uint32_t> contact_order{};
         std::span<const native::GpuDyContactPrepPair> contact_prep{};
@@ -3315,7 +3332,7 @@ private:
         std::span<const native::GpuDyDistanceDescriptor> descriptors,
         std::uint32_t partition_count,std::uint32_t response_capacity,
         std::uint32_t ordinals,std::uint32_t bodies,
-        bool resident_admission) {
+        bool resident_admission,std::size_t task_capacity) {
         constexpr std::uint32_t threads=128u;
         constexpr std::uint32_t prep_managers=threads/4u;
         constexpr std::uint32_t wide_min=native::gpu_dy_wide_task_threshold;
@@ -3326,9 +3343,9 @@ private:
         position_ends_.fill(false);
         wide_iterations_=0u;
         last_schedule_={};
-        last_schedule_.device_colored_tasks=tasks.size();
+        last_schedule_.device_colored_tasks=task_capacity;
         last_schedule_.device_colored_descriptors=response_capacity;
-        last_schedule_.max_partition_groups=tasks.empty()?0u:1u;
+        last_schedule_.max_partition_groups=task_capacity?1u:0u;
         if(resident_admission) {
             // The host supplies numerical capacities, not runnable task
             // ranges. GPU Sc writes the compact tasks and their actual
@@ -3339,7 +3356,7 @@ private:
             degree_static_.clear();
             color_bounds_.clear();
             partition_endpoint_counts_.clear();
-            fused_tiles_={0u,tasks.size()};
+            fused_tiles_={0u,task_capacity};
             prep_tiles_={};
             body_tiles_={};
             return;

@@ -269,6 +269,9 @@ struct SourceScDeviceIslandFixture {
 
 namespace fyzz::native {
 struct GpuPcmFrictionAnchorFixture {
+    static bool has_host_schedule(const Scene& scene) {
+        return !scene.gpu_dy_tasks_.empty() || !scene.gpu_dy_body_ordinals_.empty();
+    }
     static bool actor_has_staged_source(const Scene& scene,BodyId id) {
         return id<scene.gpu_dy_actor_stage_epochs_.size() &&
             scene.gpu_dy_actor_stage_epochs_[id]==scene.gpu_dy_actor_stage_epoch_;
@@ -5950,6 +5953,8 @@ void verify_resident_wide_device_response(
     gpu.step(dt);
     const auto schedule=producer->dy_launch_stats();
     const auto [uploaded,downloaded]=producer->dy_distance_transfer_bytes();
+    require(!native::GpuPcmFrictionAnchorFixture::has_host_schedule(gpu),
+        "Resident Dy allocated host task or ordinal records");
     require(schedule.host_staging_bytes>=uploaded &&
             schedule.host_staging_bytes<=std::max(uploaded,downloaded),
         "Resident Dy staging includes device-only arena storage");

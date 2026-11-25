@@ -333,6 +333,10 @@ struct GpuDyIslandSources {
 // Both Sc endpoint admission and Dy wide-task scheduling use this gate.
 // Compact tasks never require host endpoint-degree analysis.
 inline constexpr std::uint32_t gpu_dy_wide_task_threshold=4u*128u;
+// Device-owned schedule ranges have no host records.
+struct GpuDyResidentScheduleCapacity {
+    std::size_t tasks=0u,body_ordinals=0u;
+};
 // Candidate topology bounds the portable indirect command envelope.
 struct GpuDyWideScheduleBounds {
     std::uint32_t nodes=0u,stages=0u,iterations=0u;
@@ -598,7 +602,8 @@ public:
         bool /*compact_contact_admission*/=false,
         std::span<const GpuDyCompactContactPrep> /*compact_contact_prep*/={},
         std::span<const GpuDyRetainedFrictionCandidate> /*retained_candidates*/={},
-        GpuDyWideScheduleBounds /*wide_bounds*/={}) {
+        GpuDyWideScheduleBounds /*wide_bounds*/={},
+        GpuDyResidentScheduleCapacity /*resident_capacity*/={}) {
         throw std::logic_error("Source GPU Dy shader is not installed");
     }
     virtual void finish_gpu_dy_distance() {
@@ -1598,7 +1603,7 @@ private:
     void publish_cpu_gu_touch_history(
         std::span<const Pair> lost_pairs,
         std::span<const ContactManifold> previous_manifolds);
-    void prepare_gpu_dy_device_islands(bool selected);
+    void prepare_gpu_dy_device_islands(bool selected,std::size_t task_capacity);
     void solve_gpu_distance_constraints(float seconds);
     std::size_t gpu_dy_body_index(BodyId id) const;
     std::size_t gpu_dy_source_body_index(BodyId id) const;
