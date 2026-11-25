@@ -16,6 +16,7 @@
 #include <memory>
 #include <stop_token>
 #include <stdexcept>
+#include <string>
 #include <thread>
 #include <utility>
 
@@ -10790,14 +10791,46 @@ void Scene::solve_gpu_distance_constraints(float seconds) {
         const auto integrated=std::count_if(gpu_dy_integrated_poses_.begin(),
             gpu_dy_integrated_poses_.end(),
             [](const auto& pose){return pose.valid==1u;});
+        const auto reject_integration=[&]() {
+            std::string message="Submitted Dy integration disagrees with Sc activity: frame="+
+                std::to_string(frame_index_)+
+                " integrated="+std::to_string(integrated)+
+                " solver="+std::to_string(solver_active_ids_.size())+
+                " free="+std::to_string(gpu_dy_free_ids_.size())+
+                " candidates="+std::to_string(gpu_dy_prewitness_body_count_)+
+                " found="+std::to_string(found_contacts_.size())+
+                " lost="+std::to_string(lost_contacts_.size());
+            for(std::size_t ordinal=0u;ordinal<gpu_dy_integration_inputs_.size();++ordinal) {
+                const auto& input=gpu_dy_integration_inputs_[ordinal];
+                const auto id=input.source_actor;
+                const auto& actor=actors_[id];
+                const bool solved=std::find(solver_active_ids_.begin(),
+                    solver_active_ids_.end(),id)!=solver_active_ids_.end();
+                const bool free=std::find(gpu_dy_free_ids_.begin(),
+                    gpu_dy_free_ids_.end(),id)!=gpu_dy_free_ids_.end();
+                const auto valid=gpu_dy_integrated_poses_[ordinal].valid;
+                if((valid==1u)==(solved || free))continue;
+                message+=" [actor="+std::to_string(id)+
+                    " ordinal="+std::to_string(ordinal)+
+                    " input="+std::to_string(input.active)+
+                    " node="+std::to_string(ordinal<gpu_dy_prewitness_body_count_
+                        ?gpu_dy_island_node_flags_[ordinal]:0u)+
+                    " pose="+std::to_string(valid)+
+                    " sleeping="+std::to_string(actor.sleeping)+
+                    " ready="+std::to_string(actor.ready_for_sleep)+
+                    " solved="+std::to_string(solved)+
+                    " free="+std::to_string(free)+"]";
+            }
+            throw std::logic_error(message);
+        };
         if(static_cast<std::size_t>(integrated)!=
             solver_active_ids_.size()+gpu_dy_free_ids_.size())
-            throw std::logic_error("Submitted Dy integration disagrees with Sc activity");
+            reject_integration();
         const auto verify_integration=[&](BodyId id,std::size_t ordinal) {
             if(ordinal>=gpu_dy_integration_inputs_.size() ||
                gpu_dy_integration_inputs_[ordinal].source_actor!=id ||
                gpu_dy_integrated_poses_[ordinal].valid!=1u)
-                throw std::logic_error("Sc active actor lacks its submitted Dy integration");
+                reject_integration();
         };
         for(const BodyId id:solver_active_ids_)
             verify_integration(id,gpu_dy_body_index(id));
