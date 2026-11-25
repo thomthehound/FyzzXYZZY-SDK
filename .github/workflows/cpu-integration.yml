@@ -96,6 +96,8 @@ jobs:
             build/fyzzxyzzy-godot-cpp-targets.cmake
           key: godotcpp-v6-${{ runner.os }}-${{ runner.arch }}-${{ steps.cache_toolchain.outputs.toolchain }}-${{ hashFiles('godot/dependency.json', 'cmake/GodotDependency.cmake') }}-template_debug-Release
       - name: Configure
+        env:
+          GIT_LFS_SKIP_SMUDGE: '1'
         run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON -DFYZZXYZZY_BUILD_GODOT=ON -DFYZZXYZZY_STRICT_RIGID_FRICTION_CONFORMANCE=ON -DFYZZXYZZY_BUILD_VULKAN=ON -DFYZZXYZZY_BUILD_PHYSX_GPU_AABB_TEST=ON -DFYZZXYZZY_ENABLE_GPU_PHYSICS_PROTOTYPES=ON -DFYZZXYZZY_GODOT_CPP_CACHED=${{ steps.godot_cpp_cache.outputs.cache-hit }}
       - name: Verify SDK C++23 compiler and standard library
         run: |
@@ -241,6 +243,8 @@ jobs:
             build/fyzzxyzzy-godot-cpp-runtime.cmake
           key: godotcpp-v6-${{ runner.os }}-${{ runner.arch }}-${{ steps.cache_toolchain.outputs.toolchain }}-${{ hashFiles('godot/dependency.json', 'cmake/GodotDependency.cmake') }}-template_debug-Release
       - name: Configure
+        env:
+          GIT_LFS_SKIP_SMUDGE: '1'
         shell: pwsh
         run: cmake -S . -B build -A x64 -DBUILD_TESTING=ON -DFYZZXYZZY_BUILD_GODOT=ON -DFYZZXYZZY_STRICT_RIGID_FRICTION_CONFORMANCE=ON -DFYZZXYZZY_BUILD_D3D12=ON -DFYZZXYZZY_GODOT_CPP_CACHED=${{ steps.godot_cpp_cache.outputs.cache-hit }} "-DFYZZXYZZY_DXC=$env:FYZZXYZZY_DXC"
       - name: Verify SDK C++23 compiler and standard library
