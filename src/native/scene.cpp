@@ -5780,18 +5780,6 @@ void Scene::update_contacts(bool defer_device_points,float step_seconds) {
             throw std::logic_error("Early CPU Gu manager identity changed");
         return manager;
     };
-    // A touching Gu manager with an awake endpoint has a runnable component.
-    // Other Gu activation still depends on accurate island publication.
-    if(prewitness_ready)
-        for(std::size_t i=gpu_pcm_pairs_.size();
-            i<gpu_dy_contact_prep_sources_.size();++i) {
-            const auto& prep=gpu_dy_contact_prep_pairs_[i];
-            if(gpu_dy_candidate_sources_[i].material.max_contact_impulse!=0.f &&
-               !awake_source(prep.source_body0) && !awake_source(prep.source_body1)) {
-                prewitness_ready=false;
-                break;
-            }
-        }
     if(prewitness_ready) {
         FYZZ_PROFILE_SCOPE("dy.prewitness_submit");
         // The Gu producer has completed; append its exact correlated rows
@@ -9233,16 +9221,14 @@ void Scene::prepare_contact_constraints(
         throw std::logic_error(
             "Dy source manager preparation has a mismatched island edge");
     manifold.prepared_friction_epoch=next_cache_epoch;
-    // An inactive accurate island retains its Gu contact manager
-    // but the source does not prepare or solve constraints for it.
-    // Keep the Gu-indexed zero-impulse result slots without paying
-    // for contact Jacobians, friction correlation or solver rows.
+    // Early Gu sources reserve correlated geometry before device wake
+    // arbitration. Late preparation visits only active accurate managers.
     const Actor& actor_a=actors_[shapes_[manifold.pair.a].body];
     const Actor& actor_b=actors_[shapes_[manifold.pair.b].body];
     const bool active_dynamic=
         (actor_a.motion==Motion::Dynamic && !actor_a.sleeping) ||
         (actor_b.motion==Motion::Dynamic && !actor_b.sleeping);
-    if(!active_dynamic) {
+    if(!prewitness && !active_dynamic) {
         manifold.solver_offset=prepared_contact_rows_;
         manifold.friction_patch_offset=next_friction_patches_.size();
         manifold.friction_patch_count=0;
@@ -10269,10 +10255,15 @@ void Scene::prepare_constraints(float seconds) {
                 throw std::logic_error("Submitted Gu manager lacks correlated sources");
             const auto& a=actors_[shapes_[manifold.pair.a].body];
             const auto& b=actors_[shapes_[manifold.pair.b].body];
-            if(manifold.friction_patch_count &&
-               !((a.motion==Motion::Dynamic && !a.sleeping) ||
-                 (b.motion==Motion::Dynamic && !b.sleeping)))
-                throw std::logic_error("Submitted Gu manager lost activation");
+            if(!((a.motion==Motion::Dynamic && !a.sleeping) ||
+                 (b.motion==Motion::Dynamic && !b.sleeping))) {
+                if(manifold.friction_patch_count)
+                    next_friction_by_edge_[manifold.edge_handle].epoch=0u;
+                manifold.friction_patch_count=0;
+                manifold.solver_offset=prepared_contact_rows_;
+                manifold.friction_patch_offset=0u;
+                continue;
+            }
             solver_kinematic_participant_ |=
                 a.motion==Motion::Kinematic || b.motion==Motion::Kinematic;
             continue;
@@ -10307,14 +10298,48 @@ void Scene::prepare_constraints(float seconds) {
                 target=destination++;
             }
         }
-        if(destination!=permutation.size())
-            throw std::logic_error("Early Gu public patch has no active manager");
+        const auto public_count=destination;
+        if(public_count!=permutation.size()) {
+            // Unactivated Gu sources retain their borrowed numerical slots,
+            // but have no public friction history for this epoch.
+            for(std::size_t i=gpu_pcm_pairs_.size();
+                i<gpu_dy_contact_prep_sources_.size();++i) {
+                const auto source=gpu_dy_contact_prep_sources_[i];
+                const auto edge=active_edge_handles_[source];
+                const auto& lookup=manifold_by_edge_[edge];
+                if(lookup.generation!=manifold_lookup_generation_ ||
+                   lookup.index>=manifolds_.size())
+                    throw std::logic_error("Submitted Gu manager lost publication");
+                auto& manager=manifolds_[lookup.index];
+                if(!manager.friction_patch_count)continue;
+                const auto& history=next_friction_by_edge_[edge];
+                if(history.epoch!=next_cache_epoch)
+                    throw std::logic_error("Submitted Gu patch lost its correlation epoch");
+                // Active managers already carry their public destinations.
+                // Dormant managers retain the original source offsets.
+                const auto& a=actors_[shapes_[manager.pair.a].body];
+                const auto& b=actors_[shapes_[manager.pair.b].body];
+                if((a.motion==Motion::Dynamic && !a.sleeping) ||
+                   (b.motion==Motion::Dynamic && !b.sleeping))continue;
+                if(manager.friction_patch_offset>=permutation.size() ||
+                   permutation[manager.friction_patch_offset]!=invalid_instance)
+                    throw std::logic_error("Dormant Gu patch acquired public ownership");
+                next_friction_by_edge_[edge].epoch=0u;
+                manager.friction_patch_count=0u;
+                manager.friction_patch_offset=0u;
+                manager.solver_offset=0u;
+                manager.prepared_friction_epoch=0u;
+            }
+            for(auto& target:permutation)
+                if(target==invalid_instance)target=destination++;
+        }
         for(std::size_t i=0u;i<permutation.size();++i)
             while(permutation[i]!=i) {
                 const auto j=permutation[i];
                 std::swap(next_friction_patches_[i],next_friction_patches_[j]);
                 std::swap(permutation[i],permutation[j]);
             }
+        next_friction_patches_.resize(public_count);
     }
     if(gpu_normal_prep && gpu_dy_source_body_order_) {
         // PCM keeps its original preparation and manager addresses.

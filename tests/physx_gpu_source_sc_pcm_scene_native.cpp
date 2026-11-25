@@ -5424,6 +5424,92 @@ void verify_sleeping_new_touch_device_admission(
                 "Retired bridge conditional integration diverged from CPU PGS");
         }
 
+    // Dormant CPU Gu contacts are numerical candidates, not wake authority.
+    // A new PCM touch activates only the first of two sleeping components.
+    native::Scene mixed_cpu,mixed_gpu;
+    mixed_cpu.set_pcm_plane_box(false);
+    mixed_gpu.set_pcm_plane_box(false);
+    auto mixed_owner=std::make_unique<
+        physx_gpu::SourceScOwnedGpuBroadphaseNative>(
+        backend,load_native_gpu_sap_shaders(backend,sap),
+        128u,128u,std::nullopt,
+        load_native_gpu_pcm_shaders(backend,pcm),shader);
+    auto* mixed_producer=mixed_owner.get();
+    mixed_gpu.set_gpu_broadphase(std::move(mixed_owner));
+    mixed_gpu.set_gpu_dy_device_admission_enabled(true);
+    mixed_cpu.add_static_floor(0.f);
+    mixed_gpu.add_static_floor(0.f);
+    const auto make_mixed=[&](native::Scene& scene,float x) {
+        const auto body=scene.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{x,0.5f,0.f},1.f);
+        const auto fixed=scene.add_static_box(
+            {0.5f,0.5f,0.5f},{x,8.f,0.f});
+        scene.set_dynamics(body,dynamics);
+        return std::array<BodyId,2>{body,fixed};
+    };
+    const std::array mixed_c{make_mixed(mixed_cpu,0.f),
+                             make_mixed(mixed_cpu,20.f)};
+    const std::array mixed_g{make_mixed(mixed_gpu,0.f),
+                             make_mixed(mixed_gpu,20.f)};
+    for(unsigned frame=0u;frame<40u;++frame) {
+        mixed_cpu.step(seconds);
+        mixed_gpu.step(seconds);
+        if(mixed_cpu.body_is_sleeping(mixed_c[0][0]) &&
+           mixed_cpu.body_is_sleeping(mixed_c[1][0]) &&
+           mixed_gpu.body_is_sleeping(mixed_g[0][0]) &&
+           mixed_gpu.body_is_sleeping(mixed_g[1][0]))break;
+    }
+    require(mixed_cpu.contacts().size()==2u &&
+            mixed_gpu.contacts().size()==2u &&
+            mixed_cpu.body_is_sleeping(mixed_c[0][0]) &&
+            mixed_cpu.body_is_sleeping(mixed_c[1][0]) &&
+            mixed_gpu.body_is_sleeping(mixed_g[0][0]) &&
+            mixed_gpu.body_is_sleeping(mixed_g[1][0]),
+        "Mixed wake fixture did not retain two dormant Gu floor contacts");
+    mixed_cpu.set_position(mixed_c[0][1],{-0.85f,0.5f,0.f});
+    mixed_gpu.set_position(mixed_g[0][1],{-0.85f,0.5f,0.f});
+    const Vec3 miss_position{21.08f,1.58f,0.f};
+    const Quat miss_rotation{0.f,0.f,0.382683432f,0.923879533f};
+    mixed_cpu.set_pose(mixed_c[1][1],miss_position,miss_rotation);
+    mixed_gpu.set_pose(mixed_g[1][1],miss_position,miss_rotation);
+    require(mixed_gpu.body_is_sleeping(mixed_g[0][0]) &&
+            mixed_gpu.body_is_sleeping(mixed_g[1][0]),
+        "Static edit woke mixed Gu candidates before physical touch");
+    mixed_cpu.step(seconds);
+    mixed_gpu.step(seconds);
+    const auto mixed_schedule=mixed_producer->dy_launch_stats();
+    require(mixed_cpu.contacts().size()==3u &&
+            mixed_gpu.contacts().size()==3u &&
+            native::GpuPcmFrictionAnchorFixture::has_prewitness_solve(mixed_gpu) &&
+            mixed_schedule.device_admitted_tasks==1u &&
+            mixed_schedule.device_admitted_bodies==1u &&
+            mixed_schedule.device_admitted_descriptors==2u &&
+            mixed_schedule.host_descriptor_inputs==0u &&
+            mixed_producer->dy_gpu_integrated_body_count()==1u &&
+            mixed_producer->dy_cpu_gu_geometry_bytes()>0u &&
+            !mixed_cpu.body_is_sleeping(mixed_c[0][0]) &&
+            !mixed_gpu.body_is_sleeping(mixed_g[0][0]) &&
+            mixed_cpu.body_is_sleeping(mixed_c[1][0]) &&
+            mixed_gpu.body_is_sleeping(mixed_g[1][0]),
+        "Mixed dormant Gu sources did not follow device wake authorization");
+    native::GpuPcmFrictionAnchorFixture::verify(mixed_cpu,mixed_gpu);
+    native::GpuPcmFrictionAnchorFixture::
+        verify_device_admitted_contact_sources(mixed_gpu);
+    for(const auto& manager:mixed_gpu.contacts())
+        if(manager.pair.a==mixed_g[1][0] ||
+           manager.pair.b==mixed_g[1][0])
+            require(manager.friction_patch_count==0u,
+                "Unactivated Gu candidate published friction history");
+    for(std::size_t i=0u;i<2u;++i) {
+        require(std::fabs(mixed_cpu.body_wake_counter(mixed_c[i][0])-
+                          mixed_gpu.body_wake_counter(mixed_g[i][0]))<1.e-5f,
+            "Mixed Gu wake counter diverged");
+        test::compound_compare_state(
+            mixed_gpu.body_state(mixed_g[i][0]),
+            mixed_cpu.body_state(mixed_c[i][0]),0.04f,
+            "Mixed conditional Gu response diverged from CPU PGS");
+    }
+
     native::Scene ready_cpu,ready_gpu;
     auto ready_owner=std::make_unique<
         physx_gpu::SourceScOwnedGpuBroadphaseNative>(
