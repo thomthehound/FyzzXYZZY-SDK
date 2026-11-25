@@ -3569,9 +3569,9 @@ private:
     void build_resident_launch_plan(native::GpuDyWideScheduleBounds bounds,
             std::size_t nodes,std::size_t responses,std::size_t task_capacity) {
         const auto max_groups=context_.device_info().max_workgroup_count[0];
-        const auto wide_capacity=nodes/native::gpu_dy_wide_task_threshold;
-        const auto body_groups=(nodes+127u)/128u+wide_capacity;
-        if(!wide_capacity || !bounds.colors || !bounds.iterations ||
+        const auto wide_capacity=bounds.nodes/native::gpu_dy_wide_task_threshold;
+        const auto body_groups=(std::size_t(bounds.nodes)+127u)/128u+wide_capacity;
+        if(bounds.nodes>nodes || !wide_capacity || !bounds.colors || !bounds.iterations ||
            bounds.iterations>510u || bounds.colors>responses/body_groups ||
            !task_capacity)
             throw std::logic_error("Resident Dy wide reservation is invalid");

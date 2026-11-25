@@ -335,7 +335,7 @@ struct GpuDyIslandSources {
 inline constexpr std::uint32_t gpu_dy_wide_task_threshold=4u*128u;
 // Candidate topology bounds the portable indirect command envelope.
 struct GpuDyWideScheduleBounds {
-    std::uint32_t colors=0u,iterations=0u;
+    std::uint32_t nodes=0u,colors=0u,iterations=0u;
     std::array<std::uint32_t,8> position_ends{};
 };
 
@@ -2304,6 +2304,10 @@ private:
     std::vector<GpuDyDistanceTask> gpu_dy_tasks_;
     std::vector<GpuDyIslandEdge> gpu_dy_island_edges_;
     std::vector<std::uint32_t> gpu_dy_island_node_flags_;
+    struct GpuDyCandidateWidth {
+        std::uint32_t nodes=0u,degree=0u,cover=0u;
+    };
+    std::vector<GpuDyCandidateWidth> gpu_dy_candidate_widths_;
     std::vector<std::uint32_t> gpu_dy_candidate_degrees_;
     std::vector<BodyId> gpu_dy_early_actor_ids_;
     std::vector<BodyId> gpu_dy_joint_kinematic_ids_;

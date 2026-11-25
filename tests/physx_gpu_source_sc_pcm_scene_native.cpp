@@ -5709,8 +5709,8 @@ void verify_resident_wide_device_response(
     gpu.set_gpu_dy_device_admission_enabled(true);
     constexpr auto count=native::gpu_dy_wide_task_threshold;
     const auto assemble=[&](native::Scene& scene) {
-        std::array<BodyId,count+1u> ids{};
-        for(std::uint32_t i=0u;i<ids.size();++i) {
+        std::array<BodyId,2u*count+1u> ids{};
+        for(std::uint32_t i=0u;i<=count;++i) {
             const float x=i==count?-8.f:1.25f*float(i);
             scene.add_static_box({0.5f,0.5f,0.5f},{x,0.f,0.f});
             ids[i]=scene.add_dynamic_box(
@@ -5718,6 +5718,20 @@ void verify_resident_wide_device_response(
             if(i && i<count)
                 scene.create_center_distance_constraint(ids[i-1u],ids[i],1.25f);
             scene.set_velocity(ids[i],{i%2u?0.02f:-0.02f,0.f,0.01f});
+        }
+        // A hub with a static contact and hundreds of spokes has
+        // only one useful lane per color, regardless of its degree.
+        scene.add_static_box({0.5f,0.5f,0.5f},{0.f,0.f,8.f});
+        const auto hub=scene.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{0.f,0.83f,8.f},1.f);
+        ids[count+1u]=hub;
+        for(std::uint32_t i=1u;i<count;++i) {
+            const float x=1.5f*float(i);
+            const auto leaf=scene.add_dynamic_box(
+                {0.3f,0.3f,0.3f},{x,0.83f,8.f},1.f);
+            ids[count+1u+i]=leaf;
+            scene.create_center_distance_constraint(hub,leaf,x);
+            scene.set_velocity(leaf,{0.f,0.f,0.01f});
         }
         return ids;
     };
@@ -5729,16 +5743,17 @@ void verify_resident_wide_device_response(
     require(native::GpuPcmFrictionAnchorFixture::has_prewitness_solve(gpu) &&
             schedule.resident_wide_schedule &&
             schedule.wide_tasks==1u &&
-            schedule.device_admitted_tasks==2u &&
+            schedule.device_admitted_tasks==3u &&
             schedule.device_admitted_bodies==b.size() &&
-            schedule.device_admitted_descriptors==2u*count &&
+            schedule.device_admitted_descriptors==3u*count &&
+            schedule.max_partition_groups==(count+127u)/128u+1u &&
             schedule.host_descriptor_inputs==0u &&
             schedule.host_degree_scanned_descriptors==0u &&
             schedule.device_task_readback_bytes==0u &&
             schedule.device_partition_indirect_dispatches>0u &&
             producer->dy_gpu_integrated_body_count()==b.size(),
         "Resident wide component lost device-authored numerical scheduling");
-    require(cpu.contacts().size()==b.size() &&
+    require(cpu.contacts().size()==count+2u &&
             gpu.contacts().size()==cpu.contacts().size(),
         "Resident wide execution changed contact publication");
     for(std::size_t i=0u;i<b.size();++i)

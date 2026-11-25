@@ -5621,36 +5621,87 @@ void Scene::update_contacts(bool defer_device_points,float step_seconds) {
                 gpu_dy_wide_task_threshold;
         }
         if(prewitness_ready && may_be_wide) {
-            // All candidate incidences bound first-fit dynamic colors
-            // and subsequent static reservations without Gu witnesses.
-            gpu_dy_candidate_degrees_.assign(nodes,0u);
-            std::uint32_t degree=0u;
-            for(const auto& edge:gpu_dy_island_edges_)
-                for(const auto node:{edge.node_a,edge.node_b})
-                    if(node!=0xffffffffu) {
-                        if(node>=nodes)
-                            throw std::logic_error("Sc candidate endpoint is invalid");
-                        degree=std::max(degree,++gpu_dy_candidate_degrees_[node]);
-                    }
-            const auto colors=degree?std::uint64_t(degree)*2u-1u:0u;
-            const auto groups=(nodes+127u)/128u+
-                nodes/gpu_dy_wide_task_threshold;
-            // The cross-workgroup command envelope must remain linear
-            // in the candidate workload, including high-degree graphs.
-            prewitness_ready=colors && colors<=gpu_dy_island_edges_.size()/groups;
-            if(prewitness_ready) {
-                wide_bounds.colors=static_cast<std::uint32_t>(colors);
-                std::uint32_t position=0u,velocity=0u;
-                for(const auto id:gpu_dy_early_actor_ids_) {
-                    const auto& dynamics=actors_[id].dynamics;
-                    const std::uint32_t pos=dynamics.position_iterations;
-                    position=std::max(position,pos);
-                    velocity=std::max(velocity,
-                        std::uint32_t(dynamics.velocity_iterations));
-                    wide_bounds.position_ends[(pos-1u)/32u]|=
-                        1u<<((pos-1u)%32u);
+            // A conflict-free color uses each dynamic endpoint at most
+            // once. A vertex cover therefore bounds its parallel width.
+            // Mandatory static endpoints and a maximal matching cover
+            // every candidate response, including any later touch subset.
+            constexpr std::uint32_t covered=0x80000000u;
+            constexpr std::uint32_t invalid=0xffffffffu;
+            auto& widths=gpu_dy_candidate_widths_;
+            widths.resize(speculative.islands.size());
+            for(const auto id:gpu_dy_early_actor_ids_)
+                widths[speculative.node_island[id]]={};
+            for(const auto id:gpu_dy_early_actor_ids_)
+                ++widths[speculative.node_island[id]].nodes;
+            auto& degrees=gpu_dy_candidate_degrees_;
+            degrees.assign(nodes,0u);
+            const auto component=[&](std::uint32_t node)
+                -> GpuDyCandidateWidth& {
+                if(node>=nodes)
+                    throw std::logic_error("Sc candidate endpoint is invalid");
+                return widths[speculative.node_island[
+                    gpu_dy_early_actor_ids_[node]]];
+            };
+            const auto cover=[&](std::uint32_t node) {
+                if(!(degrees[node]&covered)) {
+                    degrees[node]|=covered;
+                    ++component(node).cover;
                 }
-                wide_bounds.iterations=position+std::max(velocity,1u);
+            };
+            for(const auto& edge:gpu_dy_island_edges_) {
+                if(edge.kind&2u)continue;
+                const auto a=edge.node_a,b=edge.node_b;
+                if(a!=invalid && b!=invalid &&
+                   &component(a)!=&component(b))
+                    throw std::logic_error("Sc response crosses speculative components");
+                for(const auto node:{a,b})if(node!=invalid) {
+                    auto& width=component(node);
+                    if(width.nodes>=gpu_dy_wide_task_threshold) {
+                        const auto degree=++degrees[node]&~covered;
+                        width.degree=std::max(width.degree,degree);
+                        if(a==invalid || b==invalid)cover(node);
+                    }
+                }
+            }
+            for(const auto& edge:gpu_dy_island_edges_) {
+                const auto a=edge.node_a,b=edge.node_b;
+                if((edge.kind&2u) || a==invalid || b==invalid ||
+                   component(a).nodes<gpu_dy_wide_task_threshold ||
+                   ((degrees[a]|degrees[b])&covered))continue;
+                cover(a);
+                cover(b);
+            }
+            std::uint32_t degree=0u;
+            for(const auto id:gpu_dy_early_actor_ids_) {
+                auto& width=widths[speculative.node_island[id]];
+                if(width.nodes>=gpu_dy_wide_task_threshold &&
+                   width.cover>=128u) {
+                    wide_bounds.nodes+=width.nodes;
+                    degree=std::max(degree,width.degree);
+                }
+                width.nodes=0u;
+            }
+            if(wide_bounds.nodes) {
+                const auto colors=std::uint64_t(degree)*2u-1u;
+                const auto groups=(std::size_t(wide_bounds.nodes)+127u)/128u+
+                    wide_bounds.nodes/gpu_dy_wide_task_threshold;
+                // Only potentially tiled components reserve cross-group
+                // commands. Narrow high-degree components stay fused.
+                prewitness_ready=colors<=gpu_dy_island_edges_.size()/groups;
+                if(prewitness_ready) {
+                    wide_bounds.colors=static_cast<std::uint32_t>(colors);
+                    std::uint32_t position=0u,velocity=0u;
+                    for(const auto id:gpu_dy_early_actor_ids_) {
+                        const auto& dynamics=actors_[id].dynamics;
+                        const std::uint32_t pos=dynamics.position_iterations;
+                        position=std::max(position,pos);
+                        velocity=std::max(velocity,
+                            std::uint32_t(dynamics.velocity_iterations));
+                        wide_bounds.position_ends[(pos-1u)/32u]|=
+                            1u<<((pos-1u)%32u);
+                    }
+                    wide_bounds.iterations=position+std::max(velocity,1u);
+                }
             }
         }
     }
