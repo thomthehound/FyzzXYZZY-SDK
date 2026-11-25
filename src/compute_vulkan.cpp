@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #include "fyzzxyzzy/compute.h"
+#include "compute_readback_cache.h"
 #if defined(FYZZXYZZY_PROFILE_GPU)
 #include "hardware_profile.h"
 #endif
@@ -328,9 +329,7 @@ struct Context::Impl {
         BufferId buffer=0u;
         std::size_t capacity=0u;
     };
-    static constexpr std::size_t kReadbackCacheSize=4u;
-    std::array<ReadbackStaging,kReadbackCacheSize> readback_cache_{};
-    std::size_t readback_cached_=0u;
+    CompletedReadbackCache<BufferId> readback_cache_;
     struct PendingReadback {
         BufferId staging=0;
         std::size_t bytes=0;
@@ -1070,35 +1069,24 @@ struct Context::Impl {
         release_buffer(staging);
     }
 
-    ReadbackStaging acquire_readback(std::size_t bytes) {
-        std::size_t selected=readback_cached_;
-        for(std::size_t i=0u;i<readback_cached_;++i)
-            if(readback_cache_[i].capacity>=bytes &&
-               (selected==readback_cached_ ||
-                readback_cache_[i].capacity<readback_cache_[selected].capacity))
-                selected=i;
-        if(selected==readback_cached_)
-            return {create_buffer(bytes,MemoryPlacement::HostVisible,false),bytes};
-        const auto result=readback_cache_[selected];
-        const auto last=--readback_cached_;
-        if(selected!=last)readback_cache_[selected]=readback_cache_[last];
-        readback_cache_[last]={};
-        return result;
+    // Cache entries have no in-flight users or externally visible handles.
+    void release_completed_readback(BufferId id) noexcept {
+        const auto it=buffers.find(id);
+        release_buffer(it->second);
+        buffers.erase(it);
     }
-    void recycle_readback(ReadbackStaging staging) {
-        if(readback_cached_<readback_cache_.size()) {
-            readback_cache_[readback_cached_++]=staging;
-            return;
-        }
-        std::size_t smallest=0u;
-        for(std::size_t i=1u;i<readback_cached_;++i)
-            if(readback_cache_[i].capacity<readback_cache_[smallest].capacity)
-                smallest=i;
-        if(staging.capacity>readback_cache_[smallest].capacity) {
-            retire_buffer(readback_cache_[smallest].buffer);
-            readback_cache_[smallest]=staging;
-        }else
-            retire_buffer(staging.buffer);
+    ReadbackStaging acquire_readback(std::size_t bytes) {
+        const auto cached=readback_cache_.acquire(bytes,[this](BufferId id) noexcept {
+            release_completed_readback(id);
+        });
+        if(!cached.capacity)
+            return {create_buffer(bytes,MemoryPlacement::HostVisible,false),bytes};
+        return {cached.resource,cached.capacity};
+    }
+    void recycle_readback(ReadbackStaging staging) noexcept {
+        readback_cache_.recycle(staging.buffer,staging.capacity,[this](BufferId id) noexcept {
+            release_completed_readback(id);
+        });
     }
     SubmissionId submit_download_batch(
             std::span<const DownloadSpan> downloads,

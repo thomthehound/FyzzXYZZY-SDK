@@ -19,6 +19,7 @@ if(FYZZXYZZY_BUILD_D3D12)
   if(BUILD_TESTING)
     fyzzxyzzy_add_gpu_test(fyzzxyzzy_compute_readback_ownership_d3d12
       SOURCES tests/compute_readback_ownership.cpp
+      INCLUDES "${CMAKE_CURRENT_SOURCE_DIR}/src"
       DEFINITIONS FYZZXYZZY_TEST_D3D12=1
       LIBRARIES FyzzXYZZY::ComputeD3D12)
   endif()

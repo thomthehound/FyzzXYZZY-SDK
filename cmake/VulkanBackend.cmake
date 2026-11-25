@@ -45,6 +45,7 @@ if(FYZZXYZZY_BUILD_VULKAN)
   if(BUILD_TESTING)
     fyzzxyzzy_add_gpu_test(fyzzxyzzy_compute_readback_ownership_vulkan
       SOURCES tests/compute_readback_ownership.cpp
+      INCLUDES "${CMAKE_CURRENT_SOURCE_DIR}/src"
       LIBRARIES FyzzXYZZY::Compute)
   endif()
 

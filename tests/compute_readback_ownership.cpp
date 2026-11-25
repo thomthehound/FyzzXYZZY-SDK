@@ -2,14 +2,51 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #include "fyzzxyzzy/compute.h"
+#include "compute_readback_cache.h"
 
 #include <array>
 #include <cstdint>
 #include <iostream>
 #include <stdexcept>
 
+namespace {
+
+void verify_cache_working_set() {
+    fyzz::compute::CompletedReadbackCache<unsigned> cache;
+    unsigned released=0u;
+    const auto release=[&](unsigned id) noexcept { released|=1u<<id; };
+    cache.recycle(1u,4096u,release);
+    if(cache.acquire(64u,release).capacity)
+        throw std::runtime_error("Peak staging reused for a much smaller request");
+    cache.recycle(2u,64u,release);
+    cache.recycle(3u,96u,release);
+    for(std::size_t i=0u;i<cache.reuse_window;++i) {
+        auto entry=cache.acquire(48u,release);
+        if(entry.resource!=2u || entry.capacity!=64u)
+            throw std::runtime_error("Readback cache lost a near-sized working allocation");
+        cache.recycle(entry.resource,entry.capacity,release);
+    }
+    if(released!=((1u<<1u)|(1u<<3u)) ||
+       cache.acquire(4096u,release).capacity)
+        throw std::runtime_error("Idle peak readback storage was not reclaimed");
+    cache.recycle(4u,4096u,release);
+    cache.recycle(5u,128u,release);
+    cache.recycle(6u,256u,release);
+    // A recent 64-byte entry must outlive older, larger allocations.
+    auto entry=cache.acquire(64u,release);
+    if(entry.resource!=2u)
+        throw std::runtime_error("Readback cache lost best-fit storage");
+    cache.recycle(entry.resource,entry.capacity,release);
+    cache.recycle(7u,512u,release);
+    if((released&(1u<<4u))==0u || (released&(1u<<2u))!=0u)
+        throw std::runtime_error("Readback cache eviction did not follow demand");
+}
+
+} // namespace
+
 int main() {
     try {
+        verify_cache_working_set();
         using namespace fyzz::compute;
 #if defined(FYZZXYZZY_TEST_D3D12)
         Context context(Backend::D3D12);
@@ -66,6 +103,13 @@ int main() {
             if(second[i]!=input[20u+i])
                 throw std::runtime_error(
                     "Abandoning one readback lost an independent result");
+        std::array<std::uint32_t,64u> peak{};
+        const std::array<DownloadSpan,1u> peak_download{{
+            {gpu,0u,peak.data(),sizeof(peak)}
+        }};
+        context.finish_download_batch(context.submit_download_batch(peak_download),true);
+        if(peak!=input)
+            throw std::runtime_error("Peak readback lost source data");
         for(std::uint32_t round=0u;round<6u;++round) {
             first.fill(sentinel);
             second.fill(sentinel);

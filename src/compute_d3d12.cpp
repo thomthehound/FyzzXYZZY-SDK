@@ -7,6 +7,7 @@
 // setup; this layer never interprets CUDA virtual addresses.
 
 #include "fyzzxyzzy/compute.h"
+#include "compute_readback_cache.h"
 #if defined(FYZZXYZZY_PROFILE_GPU)
 #include "hardware_profile.h"
 #endif
@@ -346,9 +347,7 @@ struct Context::Impl {
     // The largest completed source relocation scratch can serve later
     // submissions. In-flight command lists retain their own allocation.
     ComPtr<ID3D12Resource> completed_copy_scratch;
-    static constexpr std::size_t kReadbackCacheSize=4u;
-    std::array<ComPtr<ID3D12Resource>,kReadbackCacheSize> completed_readbacks_{};
-    std::size_t readback_cached_=0u;
+    CompletedReadbackCache<ComPtr<ID3D12Resource>> completed_readbacks_;
     struct PendingReadback {
         std::size_t bytes=0;
         ComPtr<ID3D12Resource> staging;
@@ -941,37 +940,18 @@ struct Context::Impl {
     };
 
     ComPtr<ID3D12Resource> acquire_readback(std::size_t bytes) {
-        std::size_t selected=readback_cached_;
-        for(std::size_t i=0u;i<readback_cached_;++i)
-            if(completed_readbacks_[i]->GetDesc().Width>=bytes &&
-               (selected==readback_cached_ ||
-                completed_readbacks_[i]->GetDesc().Width<
-                    completed_readbacks_[selected]->GetDesc().Width))
-                selected=i;
-        if(selected==readback_cached_)
+        auto cached=completed_readbacks_.acquire(bytes,
+            [](ComPtr<ID3D12Resource>) noexcept {});
+        if(!cached.capacity)
             return allocate_resource(device.Get(),bytes,
                 D3D12_HEAP_TYPE_READBACK,D3D12_RESOURCE_FLAG_NONE,
                 D3D12_RESOURCE_STATE_COPY_DEST);
-        auto result=std::move(completed_readbacks_[selected]);
-        const auto last=--readback_cached_;
-        if(selected!=last)
-            completed_readbacks_[selected]=std::move(completed_readbacks_[last]);
-        completed_readbacks_[last].Reset();
-        return result;
+        return std::move(cached.resource);
     }
-    void recycle_readback(ComPtr<ID3D12Resource> staging) {
-        if(readback_cached_<completed_readbacks_.size()) {
-            completed_readbacks_[readback_cached_++]=std::move(staging);
-            return;
-        }
-        std::size_t smallest=0u;
-        for(std::size_t i=1u;i<readback_cached_;++i)
-            if(completed_readbacks_[i]->GetDesc().Width<
-               completed_readbacks_[smallest]->GetDesc().Width)
-                smallest=i;
-        if(staging->GetDesc().Width>
-           completed_readbacks_[smallest]->GetDesc().Width)
-            completed_readbacks_[smallest]=std::move(staging);
+    void recycle_readback(ComPtr<ID3D12Resource> staging) noexcept {
+        const auto capacity=static_cast<std::size_t>(staging->GetDesc().Width);
+        completed_readbacks_.recycle(std::move(staging),capacity,
+            [](ComPtr<ID3D12Resource>) noexcept {});
     }
     SubmissionId submit_download_batch(
             std::span<const DownloadSpan> downloads,
