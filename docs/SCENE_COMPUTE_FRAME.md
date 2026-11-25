@@ -446,10 +446,13 @@ island sizes bound accurate component width independently of aggregate
 candidate count. Wide candidate graphs submit before witness publication. A candidate vertex
 cover bounds conflict-free partition width for each speculative component.
 Components whose cover is narrower than a workgroup need no tiled
-reservation. Candidate degrees of the remaining components bound the
-indirect command count. Device coloring selects fused or tiled execution
-and packs each color's exact tiles into a shared pool bounded by the
-response count, independently of the maximum color depth. Dormant and
+reservation. Each tiled color consumes at least one workgroup's worth of
+responses. The candidate response count bounds the number of tiled stages;
+intervening narrow color runs execute within a single workgroup per task.
+Device coloring selects fused or tiled execution, records the wide-color
+ordinals in released coloring scratch, and packs exact stage tiles into a
+shared response-bounded pool. Command count and tile storage are independent
+of narrow-color dependency depth. Dormant and
 sleep-ready candidate bodies
 use the accurate component's device activity count:
 runnable tasks integrate their members; active components without response

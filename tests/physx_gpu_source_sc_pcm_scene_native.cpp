@@ -5949,8 +5949,10 @@ void verify_resident_wide_device_response(
             schedule.host_degree_scanned_descriptors==0u &&
             schedule.device_task_readback_bytes==0u &&
             schedule.device_partition_indirect_dispatches>0u &&
+            schedule.device_partition_indirect_dispatches<=
+                2u*(2u*((2u*count-1u+spokes)/128u)+1u) &&
             producer->dy_gpu_integrated_body_count()==b.size(),
-        "Resident wide component lost device-authored numerical scheduling");
+        "Resident wide component lost bounded device-authored scheduling");
     require(cpu.contacts().size()==count+2u &&
             gpu.contacts().size()==cpu.contacts().size(),
         "Resident wide execution changed contact publication");

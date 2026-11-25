@@ -5657,7 +5657,6 @@ void Scene::update_contacts(bool defer_device_points,float step_seconds) {
             // once. A vertex cover therefore bounds its parallel width.
             // Mandatory static endpoints and a maximal matching cover
             // every candidate response, including any later touch subset.
-            constexpr std::uint32_t covered=0x80000000u;
             constexpr std::uint32_t invalid=0xffffffffu;
             auto& widths=gpu_dy_candidate_widths_;
             widths.resize(speculative.islands.size());
@@ -5665,8 +5664,8 @@ void Scene::update_contacts(bool defer_device_points,float step_seconds) {
                 widths[speculative.node_island[id]]={};
             for(const auto id:gpu_dy_early_actor_ids_)
                 ++widths[speculative.node_island[id]].nodes;
-            auto& degrees=gpu_dy_candidate_degrees_;
-            degrees.assign(nodes,0u);
+            auto& covered=gpu_dy_candidate_covered_;
+            covered.assign(nodes,0u);
             const auto component=[&](std::uint32_t node)
                 -> GpuDyCandidateWidth& {
                 if(node>=nodes)
@@ -5675,8 +5674,8 @@ void Scene::update_contacts(bool defer_device_points,float step_seconds) {
                     gpu_dy_early_actor_ids_[node]]];
             };
             const auto cover=[&](std::uint32_t node) {
-                if(!(degrees[node]&covered)) {
-                    degrees[node]|=covered;
+                if(!covered[node]) {
+                    covered[node]=1u;
                     ++component(node).cover;
                 }
             };
@@ -5686,11 +5685,11 @@ void Scene::update_contacts(bool defer_device_points,float step_seconds) {
                 if(a!=invalid && b!=invalid &&
                    &component(a)!=&component(b))
                     throw std::logic_error("Sc response crosses speculative components");
-                for(const auto node:{a,b})if(node!=invalid) {
+                const auto node=a!=invalid?a:b;
+                if(node!=invalid) {
                     auto& width=component(node);
                     if(width.nodes>=gpu_dy_wide_task_threshold) {
-                        const auto degree=++degrees[node]&~covered;
-                        width.degree=std::max(width.degree,degree);
+                        ++width.responses;
                         if(a==invalid || b==invalid)cover(node);
                     }
                 }
@@ -5699,26 +5698,25 @@ void Scene::update_contacts(bool defer_device_points,float step_seconds) {
                 const auto a=edge.node_a,b=edge.node_b;
                 if((edge.kind&2u) || a==invalid || b==invalid ||
                    component(a).nodes<gpu_dy_wide_task_threshold ||
-                   ((degrees[a]|degrees[b])&covered))continue;
+                   (covered[a] || covered[b]))continue;
                 cover(a);
                 cover(b);
             }
-            std::uint32_t degree=0u;
+            std::uint32_t max_wide_colors=0u;
             for(const auto id:gpu_dy_early_actor_ids_) {
                 auto& width=widths[speculative.node_island[id]];
                 if(width.nodes>=gpu_dy_wide_task_threshold &&
                    width.cover>=128u) {
                     wide_bounds.nodes+=width.nodes;
-                    degree=std::max(degree,width.degree);
+                    max_wide_colors=std::max(max_wide_colors,
+                        width.responses/128u);
                 }
                 width.nodes=0u;
             }
             if(wide_bounds.nodes) {
-                // Color depth bounds command count, not tile storage.
-                // Each actual tile consumes at least one response.
-                const auto colors=std::min<std::uint64_t>(
-                    std::uint64_t(degree)*2u-1u,gpu_dy_island_edges_.size());
-                wide_bounds.colors=static_cast<std::uint32_t>(colors);
+                // Each tiled color consumes at least 128 responses.
+                // Intervening narrow runs each occupy one local stage.
+                wide_bounds.stages=2u*max_wide_colors+1u;
                 std::uint32_t position=0u,velocity=0u;
                 for(const auto id:gpu_dy_early_actor_ids_) {
                     const auto& dynamics=actors_[id].dynamics;

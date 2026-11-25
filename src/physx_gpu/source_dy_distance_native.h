@@ -688,7 +688,7 @@ public:
             build_launch_plan(tasks,partition_ends,narrow(descriptors.size()),
                               narrow(body_ordinals.size()));
         }
-        const bool resident_wide=wide_bounds.colors!=0u;
+        const bool resident_wide=wide_bounds.stages!=0u;
         if(resident_wide) {
             if(!source_indexed_integration || !device_admission ||
                !device_partitions || !descriptors.empty())
@@ -2374,7 +2374,7 @@ public:
                 if(phase==Launch::Partition)params[10]|=0x10000000u;
                 for(std::size_t group=0u;group<range.count;group+=max_groups) {
                     if(resident_wide && phase==Launch::Partition) {
-                        // The device assigns the color's tile base;
+                        // The device assigns the stage's tile base;
                         // each indirect chunk supplies its local offset.
                         params[8]=narrow(std::size_t(params[28])+offsets[14]+
                             range.begin*sizeof(WorkTile));
@@ -2466,7 +2466,7 @@ public:
             const auto reservations=partition_tiles_.size()+(resident_wide?3u:0u);
             if(resident_wide) {
                 arguments[10]|=0x0c000000u;
-                arguments[18]=wide_bounds.colors;
+                arguments[18]=wide_bounds.stages;
                 arguments[19]=narrow(tasks.size());
                 arguments[21]=narrow(descriptor_capacity);
                 arguments[24]=narrow(history_bytes+output_bytes-4u);
@@ -3579,8 +3579,8 @@ private:
         const auto max_groups=context_.device_info().max_workgroup_count[0];
         const auto wide_capacity=bounds.nodes/native::gpu_dy_wide_task_threshold;
         const auto body_groups=(std::size_t(bounds.nodes)+127u)/128u+wide_capacity;
-        if(bounds.nodes>nodes || !wide_capacity || !bounds.colors || !bounds.iterations ||
-           bounds.iterations>510u || bounds.colors>responses ||
+        if(bounds.nodes>nodes || !wide_capacity || !bounds.stages || !bounds.iterations ||
+           bounds.iterations>510u || bounds.stages>responses ||
            !task_capacity)
             throw std::logic_error("Resident Dy wide reservation is invalid");
         const auto narrow=[](std::size_t value) {
@@ -3601,9 +3601,9 @@ private:
         reserve(fused_tiles_,task_capacity);
         reserve(prep_tiles_,(responses+31u)/32u+wide_capacity);
         reserve(body_tiles_,body_groups);
-        // Each color reserves commands, but consumes only its actual
-        // tiles from a shared response-bounded pool.
-        partition_tiles_.resize(bounds.colors);
+        // Wide colors and intervening local runs share a response-bounded
+        // tile pool. Each stage reserves only its indirect commands.
+        partition_tiles_.resize(bounds.stages);
         for(auto& range:partition_tiles_) {
             range={tiles_.size(),body_groups,bounds.iterations,
                    partition_dispatch_count_};
@@ -3614,7 +3614,7 @@ private:
         }
         const auto pool_capacity=static_cast<std::size_t>(
             std::min<std::uint64_t>(responses,
-                std::uint64_t(bounds.colors)*body_groups));
+                std::uint64_t(bounds.stages)*body_groups));
         tiles_.push_back({narrow(partition_output_count_),narrow(pool_capacity),
                           0u,0u});
         partition_output_count_+=pool_capacity;
