@@ -179,6 +179,24 @@ void exercise(Context& context) {
                 probe_address,first_values.data(),sizeof(first_values)
             }});
             first_values.fill(0u);
+            // Another group in the same submission must occupy a distinct
+            // range of the same page, without replacing the first snapshot.
+            stream.queue_uploads({{
+                probe_address+16u,next_values.data()+4u,16u
+            }});
+            const auto& commands=stream.commands();
+            require(commands.size()==2u &&
+                    std::holds_alternative<CopyCommand>(commands[0]) &&
+                    std::holds_alternative<CopyCommand>(commands[1]),
+                    "Source uploads did not use native transfer copies");
+            const auto first_copy=std::get<CopyCommand>(commands[0]);
+            const auto second_copy=std::get<CopyCommand>(commands[1]);
+            require(first_copy.source==second_copy.source &&
+                    second_copy.source_offset>=first_copy.source_offset+first_copy.bytes,
+                    "Source upload groups did not share disjoint page ranges");
+            auto expected_snapshot=expected_first;
+            std::copy(next_values.begin()+4u,next_values.end(),
+                      expected_snapshot.begin()+4u);
             const auto fused_before=
                 stream.submission_stats().fused_readbacks;
             const auto separate_before=
@@ -192,13 +210,26 @@ void exercise(Context& context) {
             stream.queue_uploads({{
                 probe_address,next_values.data(),sizeof(next_values)
             }});
+            require(std::get<CopyCommand>(stream.commands().front()).source!=
+                        first_copy.source,
+                    "In-flight upload page was reused before its fence");
             stream.submit();
             stream.finish_fetch();
-            require(read_values==expected_first,
+            require(read_values==expected_snapshot,
                     "Source readback lost its enqueue-time upload snapshot");
             stream.fetch(probe_readback);
             require(read_values==next_values,
                     "Source fetch failed to retain later ordered GPU work");
+            stream.queue_uploads({{
+                probe_address,expected_first.data(),sizeof(expected_first)
+            }});
+            const auto cancelled=std::get<CopyCommand>(stream.commands().front());
+            require(cancelled.source==first_copy.source,
+                    "Completed source upload page was not reused");
+            stream.discard_unsubmitted_commands();
+            stream.fetch(probe_readback);
+            require(read_values==next_values,
+                    "Discarded source upload reached the GPU");
             require(addresses.unregister_allocation(probe_address)==probe,
                     "Source probe allocation lost its owner");
             context.retire_buffer(probe);

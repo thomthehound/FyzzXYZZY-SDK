@@ -35,9 +35,8 @@ struct SourceSapUpload {
 // descriptor, stream lifetime and task/scene ownership. This class neither
 // creates a scheduler nor introduces cross-stream/event semantics.
 //
-// Source HtoD bytes are snapshotted at enqueue and share the same ordered
-// native batch as GPU copies and shader launches. The backend owns staging
-// until the batch fence completes; no upload-only queue submission is needed.
+// Source HtoD bytes are snapshotted into upload pages at enqueue.
+// Pages remain immutable through the ordered batch's completion fence.
 // All submission tokens are reaped only at the source fetch boundary.
 class SourceSapDmaNative final {
 public:
@@ -68,6 +67,13 @@ public:
                        const CudaDeviceAddressMap& addresses) noexcept
         : context_(context), addresses_(addresses) {}
 
+    SourceSapDmaNative(const SourceSapDmaNative&)=delete;
+    SourceSapDmaNative& operator=(const SourceSapDmaNative&)=delete;
+    ~SourceSapDmaNative() noexcept {
+        for(const auto& page:upload_pages_)
+            try { context_.retire_buffer(page.buffer); } catch(...) {}
+    }
+
     // Staged copies borrow an unmapped transfer source through the solve fence.
     void queue_uploads(const std::vector<SourceSapUpload>& uploads,
                        std::span<const compute::CopyCommand> staged={}) {
@@ -84,12 +90,15 @@ public:
                                          upload.data, upload.bytes});
         }
         if (resolved_uploads_.empty() && staged.empty()) return;
-        // Validate the whole group before appending owned snapshots to the
-        // ordered source command stream. No intermediate command vector.
-        for(const auto& span:resolved_uploads_)
+        std::size_t upload_bytes=0u;
+        for(const auto& span:resolved_uploads_) {
             if(span.destination_offset%4u || span.bytes%4u)
                 throw std::invalid_argument(
                     "PhysX source upload requires aligned buffer bytes");
+            if(span.bytes>std::numeric_limits<std::size_t>::max()-upload_bytes)
+                throw std::overflow_error("Source upload extent overflow");
+            upload_bytes+=span.bytes;
+        }
         for(const auto& copy:staged)
             if(!copy.source || !copy.destination || copy.source==copy.destination ||
                !copy.bytes || copy.source_offset%4u || copy.destination_offset%4u ||
@@ -97,18 +106,33 @@ public:
                 throw std::invalid_argument("Invalid staged source upload");
         const auto original_size=pending_.size();
         pending_.reserve(original_size+resolved_uploads_.size()+staged.size());
+        UploadPage* page=nullptr;
+        std::size_t previous_used=0u;
         try {
-            for(const auto& span:resolved_uploads_) {
-                compute::UploadCommand command;
-                command.destination=span.destination;
-                command.destination_offset=span.destination_offset;
-                const auto* first=static_cast<const std::uint8_t*>(span.data);
-                command.bytes.assign(first,first+span.bytes);
-                pending_.emplace_back(std::move(command));
+            if(upload_bytes) {
+                page=&acquire_upload_page(upload_bytes);
+                previous_used=page->used;
+                auto* mapped=static_cast<std::byte*>(context_.map_buffer(
+                    page->buffer,compute::HostMapAccess::Write));
+                auto cursor=previous_used;
+                for(const auto& span:resolved_uploads_) {
+                    std::memcpy(mapped+cursor,span.data,span.bytes);
+                    cursor+=span.bytes;
+                }
+                context_.unmap_buffer(page->buffer);
+                cursor=previous_used;
+                for(const auto& span:resolved_uploads_) {
+                    pending_.emplace_back(compute::CopyCommand{
+                        page->buffer,cursor,span.destination,
+                        span.destination_offset,span.bytes});
+                    cursor+=span.bytes;
+                }
+                page->used=cursor;
             }
             for(const auto& copy:staged)pending_.emplace_back(copy);
         } catch(...) {
             pending_.erase(pending_.begin()+original_size,pending_.end());
+            if(page)page->used=previous_used;
             throw;
         }
         ++stats_.upload_batches;
@@ -171,7 +195,11 @@ public:
     // Rejected Sc transactions must never submit commands that were
     // staged but never accepted into the native queue. Previously
     // submitted source copy/upload tokens remain owned by Context.
-    void discard_unsubmitted_commands() noexcept { pending_.clear(); }
+    void discard_unsubmitted_commands() noexcept {
+        pending_.clear();
+        for(auto& page:upload_pages_)
+            if(!page.ticket)page.used=0u;
+    }
 
     // Submit existing source-ordered device commands without a host wait.
     compute::SubmissionId submit() { return flush_gpu_commands(); }
@@ -198,6 +226,7 @@ public:
         }else {
             FYZZ_PROFILE_COUNTER("source.batch_ops",pending_.size());
             pending_fetch_=context_.submit_batch_with_readback(pending_,outputs);
+            mark_upload_pages_submitted(pending_fetch_);
             pending_.clear();
             ++stats_.command_batches;
             ++stats_.fused_readbacks;
@@ -225,6 +254,7 @@ public:
                 tokens_.begin(),tokens_.begin()+preceding);
             fetch_wait_tokens_.push_back(pending_fetch_);
             context_.wait_submissions(fetch_wait_tokens_);
+            reclaim_upload_pages(pending_fetch_);
             retire_source_tokens(preceding);
         }else if(preceding!=0u)
             throw std::logic_error(
@@ -249,6 +279,7 @@ public:
         if(!pending_fetch_)return;
         try {
             context_.finish_download_batch(pending_fetch_,false);
+            reclaim_upload_pages(pending_fetch_);
         } catch (...) {
             // A lost GPU cannot publish rejected source data; Context
             // retains any unretired submission until final teardown.
@@ -301,6 +332,7 @@ public:
         }else {
             FYZZ_PROFILE_COUNTER("source.batch_ops",pending_.size());
             ticket=context_.submit_batch_with_readback(pending_,outputs);
+            mark_upload_pages_submitted(ticket);
             pending_.clear();
             ++stats_.command_batches;
             ++stats_.fused_readbacks;
@@ -336,6 +368,7 @@ public:
         }
         fetch_wait_tokens_.push_back(pending_numerical_fetch_);
         context_.wait_submissions(fetch_wait_tokens_);
+        reclaim_upload_pages(pending_numerical_fetch_);
         retire_source_tokens(preceding);
         if(retire_witness)pending_fetch_reaped_=true;
         context_.finish_download_batch(pending_numerical_fetch_,true);
@@ -356,6 +389,7 @@ public:
         if(!pending_numerical_fetch_)return;
         try {
             context_.finish_download_batch(pending_numerical_fetch_,false);
+            reclaim_upload_pages(pending_numerical_fetch_);
         }catch(...) {}
         pending_numerical_fetch_=0u;
         pending_numerical_prior_fetch_=0u;
@@ -395,7 +429,7 @@ public:
             wait_at_fetch();
             return true;
         } catch (...) {
-            pending_.clear();
+            discard_unsubmitted_commands();
             return false;
         }
     }
@@ -408,10 +442,62 @@ public:
         // GPU upload, copy and kernel. Retire their staging and descriptors
         // together without issuing an OS fence wait for each older token.
         context_.wait_submissions(tokens_);
+        reclaim_upload_pages(tokens_.back());
         retire_source_tokens(tokens_.size());
     }
 
 private:
+    struct UploadPage {
+        compute::BufferId buffer=0u;
+        std::size_t capacity=0u,used=0u;
+        compute::SubmissionId ticket=0u;
+        unsigned idle_requests=0u;
+    };
+
+    UploadPage& acquire_upload_page(std::size_t bytes) {
+        for(auto& page:upload_pages_)
+            if(!page.ticket && page.used && bytes<=page.capacity-page.used)
+                return page;
+        constexpr std::size_t minimum_page=64u*1024u;
+        const auto capacity=std::max(bytes,minimum_page);
+        // Age only unused pages, and never map a page with a live ticket.
+        for(std::size_t i=0u;i<upload_pages_.size();) {
+            auto& page=upload_pages_[i];
+            if(!page.ticket && !page.used && ++page.idle_requests>=8u) {
+                context_.retire_buffer(page.buffer);
+                upload_pages_.erase(upload_pages_.begin()+i);
+            }else ++i;
+        }
+        UploadPage* best=nullptr;
+        for(auto& page:upload_pages_)
+            if(!page.ticket && !page.used &&
+               page.capacity>=capacity && page.capacity-capacity<=capacity &&
+               (!best || page.capacity<best->capacity))best=&page;
+        if(best) {
+            best->idle_requests=0u;
+            return *best;
+        }
+        upload_pages_.reserve(upload_pages_.size()+1u);
+        const auto buffer=context_.create_buffer(
+            capacity,compute::MemoryPlacement::Upload);
+        upload_pages_.push_back({buffer,capacity});
+        return upload_pages_.back();
+    }
+
+    void mark_upload_pages_submitted(compute::SubmissionId ticket) noexcept {
+        for(auto& page:upload_pages_)
+            if(!page.ticket && page.used)page.ticket=ticket;
+    }
+
+    void reclaim_upload_pages(compute::SubmissionId completed) noexcept {
+        for(auto& page:upload_pages_)
+            if(page.ticket && page.ticket<=completed) {
+                page.ticket=0u;
+                page.used=0u;
+                page.idle_requests=0u;
+            }
+    }
+
     void retire_source_tokens(std::size_t count) {
         if(count>tokens_.size())
             throw std::logic_error("Source stream retired an unsubmitted token");
@@ -428,6 +514,7 @@ private:
         tokens_.reserve(tokens_.size() + 1u);
         FYZZ_PROFILE_COUNTER("source.batch_ops",pending_.size());
         const auto token = context_.submit_batch(pending_);
+        mark_upload_pages_submitted(token);
         pending_.clear();
         tokens_.push_back(token);
         ++stats_.command_batches;
@@ -440,6 +527,7 @@ private:
     std::vector<compute::BatchCommand> update_scratch_;
     std::vector<SourceSapUpload> upload_scratch_;
     std::vector<compute::UploadSpan> resolved_uploads_;
+    std::vector<UploadPage> upload_pages_;
     std::vector<compute::SubmissionId> tokens_,fetch_wait_tokens_;
     compute::SubmissionId pending_fetch_=0;
     compute::SubmissionId pending_numerical_fetch_=0;
