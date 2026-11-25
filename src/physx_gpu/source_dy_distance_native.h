@@ -1673,15 +1673,15 @@ public:
         const std::size_t device_task_bytes=
             device_admission && readback_device_task_records
                 ?task_bytes:0u;
-        const std::size_t device_ordinal_offset=device_task_offset+
+        const std::size_t device_error_offset=device_task_offset+
             device_task_bytes;
-        const std::size_t device_error_offset=device_ordinal_offset+
-            (readback_body_ordinals?ordinal_bytes:0u);
         const std::size_t host_result_bytes=device_error_offset+
             (device_admission?8u:0u);
         if(device_admission &&
-           (host_result_bytes<device_ordinal_offset ||
-            host_result_bytes>std::numeric_limits<std::uint32_t>::max()))
+           (host_result_bytes<device_task_offset ||
+            host_result_bytes>std::numeric_limits<std::uint32_t>::max() ||
+            (readback_body_ordinals && ordinal_bytes>
+                std::numeric_limits<std::uint32_t>::max()-host_result_bytes)))
             throw std::overflow_error(
                 "Resident Sc Dy scheduling result exceeds address space");
         last_schedule_.device_task_readback_bytes=device_task_bytes;
@@ -2548,6 +2548,8 @@ public:
                     device_ordinal_source=0u;
         compute::BufferId device_response_buffer=0u;
         std::size_t device_response_source=0u;
+        admitted_body_ordinals_.resize(
+            readback_body_ordinals?ordinal_capacity:0u);
         admitted_response_tokens_.clear();
         admitted_contact_sources_.clear();
         if(device_admission) {
@@ -2615,7 +2617,6 @@ public:
             .source_descriptors=source_descriptors,
             .device_header_offset=device_header_offset,
             .device_task_offset=device_task_offset,
-            .device_ordinal_offset=device_ordinal_offset,
             .device_error_offset=device_error_offset,
             .free_velocity_offset=free_velocity_offset,
             .friction_count=friction_count,
@@ -2642,8 +2643,7 @@ public:
             if(readback_body_ordinals && ordinal_capacity!=0u)
                 downloads[download_count++]={
                     device_ordinal_buffer,device_ordinal_source,
-                    host_.data()+device_ordinal_offset,
-                    ordinal_bytes};
+                    admitted_body_ordinals_.data(),ordinal_bytes};
             const auto errors=addresses_.resolve(
                 address+offsets[15]+36u,8u);
             downloads[download_count++]={
@@ -2739,7 +2739,6 @@ public:
             pending.device_unconstrained_preparation;
         const auto device_world_motion=pending.device_world_motion;
         stream_.finish_numerical_fetch();
-        admitted_body_ordinals_.clear();
         bool invalid_device_admission=false;
         if(pending.device_admission) {
             std::array<std::uint32_t,4> admitted{};
@@ -2771,10 +2770,6 @@ public:
                 }
                 if(pending.readback_body_ordinals) {
                     admitted_body_ordinals_.resize(admitted[2]);
-                    if(admitted[2])
-                        std::memcpy(admitted_body_ordinals_.data(),
-                            host_.data()+pending.device_ordinal_offset,
-                            admitted[2]*sizeof(std::uint32_t));
                     if(!pending.source_to_solver_row.empty())
                         for(auto& index:admitted_body_ordinals_) {
                             if(index>=pending.source_to_solver_row.size())
@@ -3302,7 +3297,7 @@ private:
         bool readback_body_ordinals=true;
         bool source_descriptors=false;
         std::size_t device_header_offset=0u,device_task_offset=0u,
-                    device_ordinal_offset=0u,device_error_offset=0u;
+                    device_error_offset=0u;
         std::size_t free_velocity_offset=0u,friction_count=0u;
         std::size_t uploaded_bytes=0u,cpu_gu_bytes=0u,reused_pcm_rows=0u;
         std::size_t compact_anchor_bytes=0u,prep_bytes=0u;

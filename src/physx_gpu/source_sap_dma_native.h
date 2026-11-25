@@ -22,7 +22,7 @@
 namespace fyzz::physx_gpu {
 
 // Source PxCudaContext::memcpyHtoDAsync arguments from one mStream.
-// Host memory is snapshotted by Context::submit_upload_batch before return.
+// Host bytes are snapshotted when the upload is enqueued.
 struct SourceSapUpload {
     CudaDeviceAddressMap::Address destination = 0;
     const void* data = nullptr;
@@ -95,8 +95,8 @@ public:
                 compute::UploadCommand command;
                 command.destination=span.destination;
                 command.destination_offset=span.destination_offset;
-                command.bytes.resize(span.bytes);
-                std::memcpy(command.bytes.data(),span.data,span.bytes);
+                const auto* first=static_cast<const std::uint8_t*>(span.data);
+                command.bytes.assign(first,first+span.bytes);
                 pending_.emplace_back(std::move(command));
             }
         } catch(...) {

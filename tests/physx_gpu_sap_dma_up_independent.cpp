@@ -164,9 +164,10 @@ void exercise(Context& context) {
             const auto probe=context.create_buffer(
                 32u,MemoryPlacement::DeviceLocal);
             const auto probe_address=addresses.register_allocation(probe,32u);
-            const std::array<std::uint32_t,8> first_values{{
+            const std::array<std::uint32_t,8> expected_first{{
                 11u,13u,17u,19u,23u,29u,31u,37u
             }};
+            auto first_values=expected_first;
             const std::array<std::uint32_t,8> next_values{{
                 41u,43u,47u,53u,59u,61u,67u,71u
             }};
@@ -177,6 +178,7 @@ void exercise(Context& context) {
             stream.queue_uploads({{
                 probe_address,first_values.data(),sizeof(first_values)
             }});
+            first_values.fill(0u);
             const auto fused_before=
                 stream.submission_stats().fused_readbacks;
             const auto separate_before=
@@ -192,8 +194,8 @@ void exercise(Context& context) {
             }});
             stream.submit();
             stream.finish_fetch();
-            require(read_values==first_values,
-                    "Source readback included a later queued GPU upload");
+            require(read_values==expected_first,
+                    "Source readback lost its enqueue-time upload snapshot");
             stream.fetch(probe_readback);
             require(read_values==next_values,
                     "Source fetch failed to retain later ordered GPU work");
