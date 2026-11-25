@@ -346,7 +346,8 @@ public:
         for(auto& input:integration) {
             if(input.active&16u)continue;
             const auto dy_flags=input.active&
-                (32u|native::gpu_dy_source_indexed_integration);
+                (32u|native::gpu_dy_source_indexed_integration|
+                 native::gpu_dy_conditional_integration);
             if(!input.active || input.source_element==0xffffffffu) {
                 input.active=(input.active&1u)|dy_flags;
                 continue;
