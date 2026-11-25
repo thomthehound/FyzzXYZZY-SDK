@@ -3078,7 +3078,8 @@ public:
         if(device_world_motion || device_unconstrained_preparation) {
             const auto mirror_actor=[&](std::size_t index,bool free_body) {
                 const auto& input=integration[index];
-                if(free_body ? !(input.active&1u) : !input.active)return;
+                if(!(input.active&1u) &&
+                   (free_body || !device_world_motion || !input.active))return;
                 const auto id=input.source_actor;
                 auto& resident=actor_local_host_[id];
                 auto& state=actor_state_[id];
