@@ -207,6 +207,9 @@ static_assert(sizeof(GpuDyDistanceBody)==52u);
 // Source-indexed dynamic bodies share one integration slot, regardless
 // of whether their accurate component admits a numerical solver task.
 inline constexpr std::uint32_t gpu_dy_source_indexed_integration=0x200u;
+// Sleep-ready integration depends on the accurate component's activity.
+inline constexpr std::uint32_t gpu_dy_conditional_integration=0x400u;
+inline constexpr std::uint32_t gpu_dy_integration_inactive=2u;
 // DyBodyCoreIntegrator::integrateCore inputs.
 struct GpuDyBodyIntegrationInput {
     float position[3]{},orientation[4]{};

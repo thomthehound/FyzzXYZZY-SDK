@@ -5595,7 +5595,11 @@ void Scene::update_contacts(bool defer_device_points,float step_seconds) {
        std::none_of(gpu_pcm_pairs_.begin(),gpu_pcm_pairs_.end(),
            [](const auto& pair){return pair.host_generated;}) &&
        std::all_of(gpu_dy_early_actor_ids_.begin(),gpu_dy_early_actor_ids_.end(),
-                   awake_source);
+           [&](BodyId id) {
+               const auto& actor=actors_[id];
+               return actor.alive && actor.motion==Motion::Dynamic &&
+                   !actor.sleeping && actor.angular_inertia_available;
+           });
     gpu_dy_free_ids_.clear();
     if(prewitness_ready &&
        gpu_dy_early_actor_ids_.size()!=live_dynamic_count_) {
@@ -5651,7 +5655,9 @@ void Scene::update_contacts(bool defer_device_points,float step_seconds) {
         gpu_dy_friction_impulses_.resize(gpu_dy_friction_anchors_.size());
         for(auto& input:gpu_dy_integration_inputs_)
             input.active=1u|32u|gpu_dy_source_indexed_integration|
-                (input.source_element!=invalid_shape?4u:0u);
+                (input.source_element!=invalid_shape?4u:0u)|
+                (actors_[input.source_actor].ready_for_sleep
+                    ?gpu_dy_conditional_integration:0u);
         gpu_dy_integration_inputs_.resize(integration_count);
         for(std::size_t i=0u;i<gpu_dy_free_ids_.size();++i)
             pack_gpu_dy_integration_input(gpu_dy_free_ids_[i],step_seconds,
@@ -10735,7 +10741,7 @@ void Scene::solve_gpu_distance_constraints(float seconds) {
     }else {
         // Consume submitted ordinals without rewriting borrowed storage.
         if(!gpu_dy_source_body_order_ ||
-           solver_active_ids_.size()+gpu_dy_free_ids_.size()!=
+           solver_active_ids_.size()+gpu_dy_free_ids_.size()>
                gpu_dy_integration_inputs_.size() ||
            gpu_dy_contact_forces_.size()!=prepared_contact_rows_ ||
            gpu_dy_friction_anchors_.size()!=prepared_friction_rows_/2u ||
@@ -10780,6 +10786,24 @@ void Scene::solve_gpu_distance_constraints(float seconds) {
     for(const BodyId id:solver_active_ids_)consume_preintegration(id);
     for(const BodyId id:gpu_dy_free_ids_)consume_preintegration(id);
     gpu_broadphase_->finish_gpu_dy_distance();
+    if(gpu_dy_prewitness_solve_) {
+        const auto integrated=std::count_if(gpu_dy_integrated_poses_.begin(),
+            gpu_dy_integrated_poses_.end(),
+            [](const auto& pose){return pose.valid==1u;});
+        if(static_cast<std::size_t>(integrated)!=
+            solver_active_ids_.size()+gpu_dy_free_ids_.size())
+            throw std::logic_error("Submitted Dy integration disagrees with Sc activity");
+        const auto verify_integration=[&](BodyId id,std::size_t ordinal) {
+            if(ordinal>=gpu_dy_integration_inputs_.size() ||
+               gpu_dy_integration_inputs_[ordinal].source_actor!=id ||
+               gpu_dy_integrated_poses_[ordinal].valid!=1u)
+                throw std::logic_error("Sc active actor lacks its submitted Dy integration");
+        };
+        for(const BodyId id:solver_active_ids_)
+            verify_integration(id,gpu_dy_body_index(id));
+        for(std::size_t i=0u;i<gpu_dy_free_ids_.size();++i)
+            verify_integration(gpu_dy_free_ids_[i],gpu_dy_free_ordinals_[i]);
+    }
     if(device_admission) {
         const auto admitted=gpu_broadphase_->gpu_dy_admitted_contact_sources();
         if(admitted.size()!=(gpu_dy_manifolds_.size()+31u)/32u)

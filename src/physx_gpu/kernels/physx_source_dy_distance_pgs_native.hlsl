@@ -2426,6 +2426,19 @@ void main(uint3 group:SV_GroupID,uint3 lane:SV_GroupThreadID) {
                 if((flags&1u)==0u ||
                    sourceDyRespondingSource(ordinal,sourceCounts,sourceHeaderBias))
                     continue;
+                // Sleep-ready sources require an active accurate component.
+                if((flags&0x8000u)!=0u) {
+                    const uint root=scIslandWork.Load(
+                        sourceHeaderBias+48u+ordinal*4u);
+                    if(root>=p.bodyCount ||
+                       scIslandWork.Load(sourceHeaderBias+sourceCounts+
+                                         root*24u+8u)==0u) {
+                        const uint destination=p.writebackBias+p.resultPatchOffset+
+                            p.patchCount*4u+ordinal*32u;
+                        arena.Store(destination+28u,root<p.bodyCount?2u:0u);
+                        continue;
+                    }
+                }
             }
             integrateBody(ordinal,freeBody);
         }

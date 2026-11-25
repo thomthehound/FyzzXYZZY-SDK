@@ -5310,6 +5310,11 @@ void verify_sleeping_new_touch_device_admission(
         ids[3]=scene.add_static_box({0.5f,0.5f,0.5f},{20.f,20.f,0.f});
         scene.create_center_distance_constraint(ids[0],ids[1],3.f);
         scene.create_center_distance_constraint(ids[1],ids[2],3.f);
+        // A zero-response PCM manager keeps the early numerical epoch live.
+        auto contact_dynamics=dynamics;
+        contact_dynamics.max_contact_impulse=0.f;
+        scene.set_dynamics(ids[2],contact_dynamics);
+        scene.add_static_box({0.5f,0.5f,0.5f},{6.f,0.003f,0.f});
         return ids;
     };
     const auto ready_c=make_ready_chain(ready_cpu);
@@ -5349,6 +5354,17 @@ void verify_sleeping_new_touch_device_admission(
         }
     }
     require(mixed_ready,"Joint component never reached mixed sleep readiness");
+    ready_cpu.set_velocity(ready_c[0],{});
+    ready_gpu.set_velocity(ready_g[0],{});
+    ready_cpu.step(seconds);
+    ready_gpu.step(seconds);
+    require(native::GpuPcmFrictionAnchorFixture::has_prewitness_solve(ready_gpu) &&
+            ready_producer->dy_gpu_integrated_body_count()==3u,
+        "Mixed-readiness component waited for Sc integration authorization");
+    for(unsigned i=0u;i<3u;++i)
+        test::compound_compare_state(
+            ready_gpu.body_state(ready_g[i]),ready_cpu.body_state(ready_c[i]),
+            0.003f,"Early mixed-readiness motion diverged");
     bool slept=false;
     for(unsigned frame=0u;frame<20u;++frame) {
         const Vec3 remote{21.f+0.01f*frame,20.f,0.f};
@@ -5364,6 +5380,10 @@ void verify_sleeping_new_touch_device_admission(
             require(ready_gpu.body_is_sleeping(ready_g[1]) &&
                     ready_gpu.body_is_sleeping(ready_g[2]),
                 "Ready component did not deactivate together");
+            require(native::GpuPcmFrictionAnchorFixture::has_prewitness_solve(ready_gpu) &&
+                    ready_producer->dy_gpu_integrated_body_count()==0u &&
+                    ready_producer->dy_launch_stats().device_admitted_tasks==0u,
+                "Inactive accurate component executed numerical integration");
             slept=true;
             break;
         }

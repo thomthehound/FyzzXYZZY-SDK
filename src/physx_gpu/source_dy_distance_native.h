@@ -64,7 +64,8 @@ static_assert(sizeof(SourceDyPackedIntegrationNative)==40u &&
               offsetof(SourceDyPackedIntegrationNative,force_offset)==32u &&
               offsetof(SourceDyPackedIntegrationNative,counted_interactions)==36u);
 inline constexpr std::uint32_t source_dy_device_inertia_flag=0x4000u;
-static_assert((source_dy_device_inertia_flag&
+inline constexpr std::uint32_t source_dy_conditional_integration_flag=0x8000u;
+static_assert(((source_dy_device_inertia_flag|source_dy_conditional_integration_flag)&
     ((63u<<8u)|(4095u<<16u)|1u|8u|16u|32u|64u|128u))==0u);
 struct SourceDyPreparedVelocityNative {
     float linear[3]{},angular[3]{};
@@ -1229,9 +1230,15 @@ public:
             record.seconds=input.seconds;
             record.active=(input.active&1u)|
                 (device_world_motion && (input.active&1u) ?(8u|128u):0u)|
-                (device_world_motion && (input.active&32u) ?source_dy_device_inertia_flag:0u);
+                (device_world_motion && (input.active&32u) ?source_dy_device_inertia_flag:0u)|
+                ((input.active&native::gpu_dy_conditional_integration)
+                    ?source_dy_conditional_integration_flag:0u);
+            if((record.active&source_dy_conditional_integration_flag) &&
+               (!source_indexed_integration || ordinal>=bodies.size() ||
+                !(input.active&1u)))
+                throw std::logic_error("Conditional Dy integration lacks a Sc source");
             // Bits [8:13] are exact authored velocity-change components;
-            // bit 14 is reserved for device inertia preparation.
+            // Bits 14 and 15 select device inertia and conditional integration.
             if((record.active&source_dy_device_inertia_flag)!=0u)
                 ++last_schedule_.device_world_inertia_bodies;
             record.source_element=input.source_element;
@@ -2653,11 +2660,14 @@ public:
             auto& pose=integrated_poses[index];
             std::memcpy(&pose,host_.data()+result_offsets[5]+
                 index*sizeof(pose),sizeof(pose));
+            if(pose.valid==native::gpu_dy_integration_inactive &&
+               (integration[index].active&native::gpu_dy_conditional_integration))
+                return;
             if(pose.valid!=1u)
                 throw std::overflow_error("Source Dy GPU integrateCore rejected a body");
             ++last_integrated_body_count_;
         };
-        const auto each_body_result=[&](auto&& visit) {
+        const auto each_body_source=[&](auto&& visit) {
             if(pending.source_indexed_integration) {
                 for(std::size_t index=0u;index<bodies.size();++index)
                     if(integration[index].active&1u)visit(index);
@@ -2667,11 +2677,22 @@ public:
                 visit(index);
             }
         };
-        each_body_result([&](std::size_t index) {
+        each_body_source([&](std::size_t index) {
             if(integration[index].active&1u)fetch_pose(index);
         });
         for(std::size_t index=bodies.size();index<integration.size();++index)
             fetch_pose(index);
+        const auto each_body_result=[&](auto&& visit) {
+            each_body_source([&](std::size_t index) {
+                if(!(integration[index].active&native::gpu_dy_conditional_integration) ||
+                   integrated_poses[index].valid==1u)
+                    visit(index);
+            });
+        };
+        if(device_unconstrained_preparation && pending.source_indexed_integration) {
+            last_schedule_.device_preintegrated_bodies=last_integrated_body_count_;
+            last_schedule_.device_sleep_bodies=last_integrated_body_count_;
+        }
         if(device_unconstrained_preparation)
             for(std::size_t index=bodies.size();index<integration.size();++index) {
                 auto& input=integration[index];
