@@ -1529,6 +1529,8 @@ struct Context::Impl {
         std::vector<bool> descriptor_table_written(descriptor_tables.size(),false);
         std::size_t dispatch_index=0u;
         std::size_t ordered_upload_offset=0u;
+        PipelineId bound_pipeline=0u;
+        std::size_t bound_table=std::numeric_limits<std::size_t>::max();
 #if defined(FYZZXYZZY_PROFILE_GPU)
         UINT hardware_query_index=1u;
 #endif
@@ -1658,21 +1660,28 @@ struct Context::Impl {
                     cached = next;
                 }
             }
-            submission.commands->SetComputeRootSignature(pipeline.signature.Get());
-            submission.commands->SetPipelineState(pipeline.state.Get());
-            UINT table_root = 0u;
-            if (pipeline.srv_count) {
-                submission.commands->SetComputeRootDescriptorTable(table_root++, {
-                    gpu_start.ptr + descriptor_index * increment
-                });
+            if(bound_pipeline!=cmd.pipeline) {
+                submission.commands->SetComputeRootSignature(pipeline.signature.Get());
+                submission.commands->SetPipelineState(pipeline.state.Get());
+                bound_pipeline=cmd.pipeline;
+                bound_table=std::numeric_limits<std::size_t>::max();
             }
-            if (pipeline.uav_count) {
-                submission.commands->SetComputeRootDescriptorTable(table_root++, {
-                    gpu_start.ptr + (descriptor_index + pipeline.srv_count) * increment
-                });
+            UINT table_root=0u;
+            if(pipeline.srv_count) {
+                if(bound_table!=table)
+                    submission.commands->SetComputeRootDescriptorTable(table_root,{
+                        gpu_start.ptr+descriptor_index*increment});
+                ++table_root;
             }
+            if(pipeline.uav_count) {
+                if(bound_table!=table)
+                    submission.commands->SetComputeRootDescriptorTable(table_root,{
+                        gpu_start.ptr+(descriptor_index+pipeline.srv_count)*increment});
+                ++table_root;
+            }
+            bound_table=table;
             submission.commands->SetComputeRoot32BitConstants(
-                table_root, pipeline.parameters / 4u, cmd.push_constants.data(), 0);
+                table_root,pipeline.parameters/4u,cmd.push_constants.data(),0);
             if(cmd.indirect) {
                 auto* arguments=get_buffer(cmd.indirect->buffer).resource.Get();
                 // The X group count also predicates the single indirect

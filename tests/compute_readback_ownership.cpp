@@ -146,15 +146,20 @@ int main() {
             throw std::runtime_error("Upload storage allowed GPU destination");
         std::vector<BatchCommand> batch{
             CopyCommand{staging,0u,gpu,0u,sizeof(first)},
+            CopyCommand{staging,sizeof(first),gpu,sizeof(first),4u},
             CopyCommand{staging,20u*sizeof(std::uint32_t),gpu,
-                        20u*sizeof(std::uint32_t),sizeof(second)}
+                        20u*sizeof(std::uint32_t),sizeof(second)},
+            // Overlapping destinations must retain last-writer order.
+            CopyCommand{staging,40u*sizeof(std::uint32_t),gpu,4u,4u}
         };
         context.finish_download_batch(
             context.submit_batch_with_readback(batch,peak_download),true);
         for(std::size_t i=0u;i<input.size();++i) {
-            const bool written=i<first.size() ||
+            const bool written=i<=first.size() ||
                 (i>=20u && i<20u+second.size());
-            if(peak[i]!=input[i]+(written?1000u:0u))
+            const auto expected=i==1u?input[40u]+1000u:
+                input[i]+(written?1000u:0u);
+            if(peak[i]!=expected)
                 throw std::runtime_error("Mapped upload lost ordered copy or untouched range");
         }
         context.destroy_buffer(staging);

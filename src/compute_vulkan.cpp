@@ -1876,6 +1876,8 @@ struct Context::Impl {
             // of allocating per copy, kernel, and barrier publication.
             std::vector<std::pair<BufferId, Access>> operation_uses;
             std::vector<VkBufferMemoryBarrier> barriers;
+            std::vector<VkBufferCopy> copy_regions;
+            VkPipeline bound_pipeline=VK_NULL_HANDLE;
             std::size_t dispatch_index=0;
             auto before_operation = [&](const std::vector<std::pair<BufferId, Access>>& uses) {
                 barriers.clear();
@@ -1920,7 +1922,9 @@ struct Context::Impl {
 #if defined(FYZZXYZZY_PROFILE_GPU)
             std::uint32_t hardware_query_index=1u;
 #endif
-            for (const BatchCommand& operation : operations) {
+            for(std::size_t operation_index=0u;
+                operation_index<operations.size();++operation_index) {
+                const auto& operation=operations[operation_index];
                 operation_uses.clear();
                 if (const auto* copy = std::get_if<CopyCommand>(&operation)) {
                     // A packed upload batch has only staging reads and
@@ -1943,11 +1947,40 @@ struct Context::Impl {
                         before_operation(operation_uses);
                     }
                     VkBufferCopy region{};
-                    region.srcOffset = copy->source_offset;
-                    region.dstOffset = copy->destination_offset;
-                    region.size = copy->bytes;
-                    vkCmdCopyBuffer(commands, get(copy->source).buffer,
-                                    get(copy->destination).buffer, 1, &region);
+                    region.srcOffset=copy->source_offset;
+                    region.dstOffset=copy->destination_offset;
+                    region.size=copy->bytes;
+                    copy_regions.clear();
+                    copy_regions.push_back(region);
+                    // Disjoint monotonic copies between the same resources
+                    // share one dependency and one native transfer command.
+                    // Self-copies and overlapping destinations retain order.
+                    bool combine=copy->source!=copy->destination;
+#if defined(FYZZXYZZY_PROFILE_GPU)
+                    combine=combine && !hardware_trace;
+#endif
+                    while(combine && operation_index+1u<operations.size() &&
+                          copy_regions.size()<std::numeric_limits<std::uint32_t>::max()) {
+                        const auto* next=std::get_if<CopyCommand>(
+                            &operations[operation_index+1u]);
+                        if(!next || next->source!=copy->source ||
+                           next->destination!=copy->destination)break;
+                        auto& previous=copy_regions.back();
+                        const auto source_end=previous.srcOffset+previous.size;
+                        const auto destination_end=previous.dstOffset+previous.size;
+                        if(next->source_offset<source_end ||
+                           next->destination_offset<destination_end)break;
+                        if(next->source_offset==source_end &&
+                           next->destination_offset==destination_end)
+                            previous.size+=next->bytes;
+                        else copy_regions.push_back({
+                            next->source_offset,next->destination_offset,next->bytes});
+                        ++operation_index;
+                    }
+                    vkCmdCopyBuffer(commands,get(copy->source).buffer,
+                                    get(copy->destination).buffer,
+                                    static_cast<std::uint32_t>(copy_regions.size()),
+                                    copy_regions.data());
 #if defined(FYZZXYZZY_PROFILE_GPU)
                     if(hardware_trace)
                         vkCmdWriteTimestamp(commands,VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
@@ -1989,7 +2022,10 @@ struct Context::Impl {
                 before_operation(operation_uses);
                 const VkDescriptorSet descriptor_set=descriptor_sets[dispatch_index++];
 
-                vkCmdBindPipeline(commands, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline.pipeline);
+                if(bound_pipeline!=pipeline.pipeline) {
+                    vkCmdBindPipeline(commands,VK_PIPELINE_BIND_POINT_COMPUTE,pipeline.pipeline);
+                    bound_pipeline=pipeline.pipeline;
+                }
                 vkCmdBindDescriptorSets(commands, VK_PIPELINE_BIND_POINT_COMPUTE,
                                         pipeline.layout, 0, 1, &descriptor_set, 0, nullptr);
                 if (!dispatch.push_constants.empty()) {
