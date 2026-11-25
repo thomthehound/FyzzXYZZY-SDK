@@ -386,7 +386,12 @@ Early device admission reserves bounded PCM normal-force and friction
 anchor windows by source candidate before witness publication. Non-touching
 candidates occupy no numerical task; the device assigns exact contact working
 rows from its admitted response prefixes. CPU Gu appends its correlated
-rows after the PCM source capacity. Joint numerical descriptors and their
+rows after the PCM source capacity. A mixed epoch with runnable Gu
+components prepares these rows and their friction anchors as soon as the
+CPU geometry producer completes. Both producers enter the same early Dy
+submission; Sc retains the correlated patches for publication without
+repeating preparation. Gu activation that is not established by an awake
+endpoint retains the accurate-island authorization dependency. Joint numerical descriptors and their
 kinematic endpoint slots are also prepared before the witness join.
 PCM numerical patch descriptors follow the original producer ordinal,
 independently of the compact public friction cache. CPU Gu appends its

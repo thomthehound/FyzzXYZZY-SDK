@@ -5589,8 +5589,8 @@ void Scene::update_contacts(bool defer_device_points,float step_seconds) {
             actor.angular_inertia_available;
     };
     bool prewitness_ready=gpu_results_pending && gpu_dy_early_islands_ &&
-       gpu_pcm_pairs_.size()==previous_pairs_.size() &&
-       (gpu_dy_prewitness_contact_rows_ || gpu_dy_prewitness_joint_rows_) &&
+       (gpu_dy_prewitness_contact_rows_ || gpu_dy_prewitness_joint_rows_ ||
+        gu_numerical_prepared) &&
        std::none_of(gpu_pcm_pairs_.begin(),gpu_pcm_pairs_.end(),
            [](const auto& pair){return pair.host_generated;}) &&
        std::all_of(gpu_dy_early_actor_ids_.begin(),gpu_dy_early_actor_ids_.end(),
@@ -5746,8 +5746,58 @@ void Scene::update_contacts(bool defer_device_points,float step_seconds) {
             }
         }
     }
+    const auto gu_manager=[&](std::size_t slot) -> ContactManifold& {
+        const auto source=gpu_dy_contact_prep_sources_[slot];
+        const auto edge=active_edge_handles_[source];
+        const auto& lookup=next_manifold_by_edge_[edge];
+        if(lookup.generation!=new_lookup_generation ||
+           lookup.index>=next_manifolds_.size())
+            throw std::logic_error("Early CPU Gu source has no contact manager");
+        auto& manager=next_manifolds_[lookup.index];
+        if(manager.pcm_result_index!=0xffffffffu || !manager.count ||
+           manager.candidate_ordinal!=source || manager.edge_handle!=edge)
+            throw std::logic_error("Early CPU Gu manager identity changed");
+        return manager;
+    };
+    // A touching Gu manager with an awake endpoint has a runnable component.
+    // Other Gu activation still depends on accurate island publication.
+    if(prewitness_ready)
+        for(std::size_t i=gpu_pcm_pairs_.size();
+            i<gpu_dy_contact_prep_sources_.size();++i) {
+            const auto& prep=gpu_dy_contact_prep_pairs_[i];
+            if(gpu_dy_candidate_sources_[i].material.max_contact_impulse!=0.f &&
+               !awake_source(prep.source_body0) && !awake_source(prep.source_body1)) {
+                prewitness_ready=false;
+                break;
+            }
+        }
     if(prewitness_ready) {
         FYZZ_PROFILE_SCOPE("dy.prewitness_submit");
+        // The Gu producer has completed; append its exact correlated rows
+        // after the resident PCM reservations, before either public join.
+        if(friction_cache_epoch_==std::numeric_limits<std::uint64_t>::max())
+            throw std::overflow_error("Native friction cache epoch exhausted");
+        const auto next_cache_epoch=friction_cache_epoch_+1u;
+        next_friction_patches_.clear();
+        next_friction_by_edge_.resize(island_edges_.size());
+        prepared_contact_rows_=gpu_dy_prewitness_contact_rows_;
+        prepared_friction_rows_=gpu_dy_prewitness_friction_rows_;
+        gpu_dy_gu_inputs_.clear();
+        gpu_dy_contact_order_.clear();
+        std::size_t explicit_order_cursor=0u;
+        for(std::size_t i=gpu_pcm_pairs_.size();
+            i<gpu_dy_contact_prep_sources_.size();++i) {
+            auto& manager=gu_manager(i);
+            manager.points={next_contact_points_.data()+manager.contact_offset,
+                            manager.count};
+            prepare_contact_constraints(manager,step_seconds,true,true,true,
+                next_cache_epoch);
+            pack_gpu_dy_contact_descriptor(manager,next_friction_patches_,
+                true,explicit_order_cursor);
+        }
+        if(explicit_order_cursor!=gpu_dy_contact_order_.size())
+            throw std::logic_error("Early CPU Gu order is incomplete");
+        gpu_dy_contact_forces_.resize(prepared_contact_rows_);
         const auto nodes=gpu_dy_early_actor_ids_.size();
         const auto body_count=nodes+gpu_dy_joint_kinematic_ids_.size();
         gpu_dy_bodies_.resize(body_count);
@@ -5787,8 +5837,8 @@ void Scene::update_contacts(bool defer_device_points,float step_seconds) {
                 gpu_dy_integration_inputs_[body_count+i]);
         gpu_broadphase_->enqueue_gpu_dy_distance(
             gpu_dy_bodies_,gpu_dy_rows_,{},{},gpu_dy_body_ordinals_,gpu_dy_tasks_,
-            gpu_dy_contact_forces_,{},{},gpu_dy_friction_anchors_,
-            gpu_dy_patches_,gpu_dy_manifolds_,{},{},
+            gpu_dy_contact_forces_,gpu_dy_gu_inputs_,{},gpu_dy_friction_anchors_,
+            gpu_dy_patches_,gpu_dy_manifolds_,gpu_dy_contact_order_,{},
             gpu_dy_integration_inputs_,gpu_dy_integrated_poses_,true,
             gpu_dy_friction_impulses_,true,true,true,gpu_dy_sleep_states_,
             gpu_dy_joint_inputs_,false,true,
@@ -9108,19 +9158,9 @@ void Scene::prepare_gpu_dy_joint_rows(std::span<const EdgeIndex> edges,
     }
 }
 
-void Scene::prepare_constraints(float seconds) {
-    FYZZ_PROFILE_SCOPE("dy.prepare_constraints");
-    // DyContactPrepShared.h::constructContactConstraint, rigid-body
-    // noncompliant branch. Every Gu contact is a distinct constraint row.
-    // Contiguous source Gu contact runs are correlated into the same
-    // friction-patch linked lists before normal/friction row preparation.
-    // Solver rows consume the patch order; Gu offsets remain writeback
-    // indices. Multi-material contact patches and packed block ABI remain
-    // separate source admission requirements.
-    // DyCpuGpuBiasCoefficient.h::BiasCoefficientCollection::set(false,
-    // false, ...): rigidContact = 0.8f for the CPU PGS solver. The same
-    // source coefficient is used by DyContactPrep for penetration bias
-    // and for friction-row impulse relaxation (not a 0.2 substitute).
+void Scene::prepare_contact_constraints(
+        ContactManifold& manifold,float seconds,bool gpu_normal_prep,
+        bool source_body_order,bool prewitness,std::uint64_t next_cache_epoch) {
     constexpr float rigid_contact_bias = 0.8f;
     // DyContactPrep uses max(body0.penBiasClamp,body1.penBiasClamp)
     // from authoritative PxsBodyCore. The default -1e32f remains
@@ -9146,12 +9186,831 @@ void Scene::prepare_constraints(float seconds) {
                     c[0].y*v.x+c[1].y*v.y+c[2].y*v.z,
                     c[0].z*v.x+c[1].z*v.y+c[2].z*v.z};
     };
+    constexpr float same_normal = 0.999f;
+    constexpr float friction_offset_threshold = 0.04f;
+    const auto local_point = [this](const Actor& actor, Vec3 world) {
+        const Quat q = mass_orientation(actor);
+        const Vec3 p=mass_position(actor);
+        return rotate(Quat{-q.x,-q.y,-q.z,q.w},
+            {world.x-p.x,world.y-p.y,world.z-p.z});
+    };
+    const auto local_normal = [this](const Actor& actor, Vec3 world_normal) {
+        const Quat q = mass_orientation(actor);
+        return rotate(Quat{-q.x,-q.y,-q.z,q.w}, world_normal);
+    };
+    const auto world_point = [this](const Actor& actor, Vec3 local) {
+        const Vec3 r=rotate(mass_orientation(actor),local);
+        const Vec3 p=mass_position(actor);
+        return Vec3{r.x+p.x,r.y+p.y,r.z+p.z};
+    };
+    const auto squared_length = [](Vec3 v) {
+        return v.x*v.x + v.y*v.y + v.z*v.z;
+    };
+    const EdgeIndex edge=manifold.edge_handle;
+    if(edge>=island_edges_.size() ||
+       !(island_edges_[edge].shapes==manifold.pair))
+        throw std::logic_error(
+            "Dy source manager preparation has a mismatched island edge");
+    manifold.prepared_friction_epoch=next_cache_epoch;
+    // An inactive accurate island retains its Gu contact manager
+    // but the source does not prepare or solve constraints for it.
+    // Keep the Gu-indexed zero-impulse result slots without paying
+    // for contact Jacobians, friction correlation or solver rows.
+    const Actor& actor_a=actors_[shapes_[manifold.pair.a].body];
+    const Actor& actor_b=actors_[shapes_[manifold.pair.b].body];
+    const bool active_dynamic=
+        (actor_a.motion==Motion::Dynamic && !actor_a.sleeping) ||
+        (actor_b.motion==Motion::Dynamic && !actor_b.sleeping);
+    if(!active_dynamic) {
+        manifold.solver_offset=prepared_contact_rows_;
+        manifold.friction_patch_offset=next_friction_patches_.size();
+        manifold.friction_patch_count=0;
+        // No Dy contact rows are admitted for dormant Gu managers.
+        // The independently Gu-indexed writeback provides zeros.
+        return;
+    }
+    // Only an admitted active manager can share writable kinematic
+    // solver state across otherwise independent Dy task groups.
+    // Dormant Gu history must not suppress concurrent solving.
+    if(!prewitness)
+        solver_kinematic_participant_ |=
+            actor_a.motion==Motion::Kinematic ||
+            actor_b.motion==Motion::Kinematic;
+    // Preserve ScShapeInteraction's actual ordered actor pair
+    // through DyContactPrep. A canonical pair key is only used
+    // for Gu arena identity, and must not reorder the two
+    // momentum/Jacobian inputs after the source Gu generator.
+    // PxcNpBatch sorts plane-box Gu geometry plane-first and
+    // flips its returned normal back to ScShapeInteraction order.
+    // ScNPhaseCore::shouldSwapBodies puts static shapes SECOND,
+    // even when the floor was created before its dynamic partner.
+    // The persistent source-order flag applies to every shape pair.
+    const bool reversed=island_edges_[edge].gu_order_reversed;
+    const Shape& shape0=shapes_[reversed?manifold.pair.b:manifold.pair.a];
+    const Shape& shape1=shapes_[reversed?manifold.pair.a:manifold.pair.b];
+    const BodyId id0=shape0.body,id1=shape1.body;
+    const auto& a = !prewitness && rigid_node(actors_[id0].motion)
+        ? prepared_solver_row(id0).data : world_solver_row_.data;
+    const auto& b = !prewitness && rigid_node(actors_[id1].motion)
+        ? prepared_solver_row(id1).data : world_solver_row_.data;
+    manifold.solver_offset = prepared_contact_rows_;
+    manifold.friction_patch_offset = next_friction_patches_.size();
+    manifold.friction_patch_count = 0;
+    const Actor& actor0 = actors_[id0];
+    const Actor& actor1 = actors_[id1];
+    const bool resident_pcm_material=gpu_normal_prep &&
+        manifold.pcm_result_index!=
+            std::numeric_limits<std::uint32_t>::max();
+    const auto source=manifold.candidate_ordinal;
+    const auto pending_slot=gpu_normal_prep &&
+        source<gpu_dy_contact_prep_indices_.size()
+        ?gpu_dy_contact_prep_indices_[source]:0xffffffffu;
+    const auto prep_slot=pending_slot&~unadmitted_dy_prep;
+    if(gpu_normal_prep &&
+       (source>=gpu_dy_contact_prep_indices_.size() ||
+        pending_slot==0xffffffffu ||
+        prep_slot>=gpu_dy_contact_prep_pairs_.size() ||
+        prep_slot>=gpu_dy_contact_prep_sources_.size() ||
+        prep_slot>=gpu_dy_candidate_sources_.size() ||
+        gpu_dy_contact_prep_sources_[prep_slot]!=source ||
+        !gpu_dy_candidate_sources_[prep_slot].material.prepared ||
+        gpu_dy_contact_prep_pairs_[prep_slot].source_body0!=id0 ||
+        gpu_dy_contact_prep_pairs_[prep_slot].source_body1!=id1))
+        throw std::logic_error(
+            "GPU Dy contact preparation lost its pre-witness source");
+    if(gpu_normal_prep) {
+        const auto pcm_index=
+            gpu_dy_contact_prep_pairs_[prep_slot].pcm_pair_index;
+        if((pcm_index!=std::numeric_limits<std::uint32_t>::max())!=
+               resident_pcm_material ||
+           (resident_pcm_material &&
+            (pcm_index!=manifold.pcm_result_index ||
+             pcm_index>=gpu_pcm_pairs_.size() ||
+             gpu_pcm_pairs_[pcm_index].edge!=edge)))
+            throw std::logic_error(
+                "GPU Dy source producer changed after PCM publication");
+    }
+    const auto numerical=gpu_normal_prep
+        ?gpu_dy_candidate_sources_[prep_slot].material
+        :prepare_contact_material(
+            reversed?manifold.pair.b:manifold.pair.a,
+            reversed?manifold.pair.a:manifold.pair.b);
+    const float pair_slop=numerical.pair_slop;
+    const float rest_distance=numerical.rest_distance;
+    if(!std::isfinite(rest_distance) ||
+       !std::isfinite(rest_distance+friction_offset_threshold))
+        throw std::overflow_error("Native Dy rest distance overflow");
+    const float pair_max_impulse=numerical.max_contact_impulse;
+    if(pair_max_impulse==0.0f)return;
+    if(source_body_order && resident_pcm_material) {
+        const auto& source=gpu_dy_candidate_sources_[prep_slot];
+        if(source.contact_begin>=gpu_dy_prewitness_contact_rows_)
+            throw std::logic_error("PCM manager lacks pre-witness row capacity");
+        manifold.solver_offset=source.contact_begin;
+    }
+    const float max_penetration_bias=numerical.max_penetration_bias;
+    const float restitution=numerical.restitution;
+    const float damping=numerical.damping;
+    const float static_friction=numerical.static_friction;
+    const float dynamic_friction=numerical.dynamic_friction;
+    const bool acceleration_spring=numerical.acceleration_spring;
+    const bool disable_friction=numerical.disable_friction;
+    const bool disable_strong_friction=numerical.disable_strong_friction;
+    if(!std::isfinite(restitution) || !std::isfinite(damping) ||
+       !std::isfinite(static_friction) ||
+       !std::isfinite(dynamic_friction))
+        throw std::overflow_error(
+            "Native Pxs material combination overflow");
+
+    // Original DyContactPrep::createContactPatches preserves
+    // CONTIGUOUS Gu runs of compatible normal/material contacts.
+    // DyFrictionCorrelation::correlatePatches then links each run
+    // onto an existing friction patch (new or strong-friction
+    // history), prepending to that patch's correlation list.
+    // Construct those original two passes before preparing normal
+    // rows; simply grouping individual normals loses linked-list
+    // order and fails to prioritize valid previous-frame anchors.
+    constexpr std::size_t max_source_patches=32;
+    const bool resident_pcm=gpu_normal_prep &&
+        manifold.pcm_result_index!=
+            std::numeric_limits<std::uint32_t>::max();
+    std::array<std::size_t,255> contact_patch_ids{};
+    std::array<Vec3,max_source_patches> header_normals{};
+    std::array<std::size_t,max_source_patches> used_heads{};
+    std::size_t kept=0u;
+    if(resident_pcm) {
+        if(manifold.count==0u)
+            throw std::logic_error("Resident PCM has no contact run");
+        const auto& candidate_source=gpu_dy_candidate_sources_[prep_slot];
+        const bool device_select=candidate_source.retained_count!=0u;
+        const auto& request=gpu_pcm_pairs_[manifold.pcm_result_index];
+        const FrictionPatch* retained=nullptr;
+        if(!disable_strong_friction &&
+           candidate_source.retained_single_patch!=0xffffffffu) {
+            if(device_select ||
+               candidate_source.retained_single_patch>=friction_patches_.size())
+                throw std::logic_error(
+                    "Pre-witness PCM retained patch is no longer available");
+            retained=&friction_patches_[candidate_source.retained_single_patch];
+        }
+        if(!retained && !device_select &&
+           std::popcount(request.friction_history_mask)==max_source_patches)
+            throw std::overflow_error(
+                "Native source friction correlation exceeds 32 patches");
+        FrictionPatch patch=retained?*retained:FrictionPatch{};
+        if(retained)
+            patch.normal=rotate(
+                mass_orientation(actor0),retained->body0_normal);
+        else {
+            patch.pair=manifold.pair;
+            patch.static_friction=static_friction;
+            patch.dynamic_friction=dynamic_friction;
+            patch.restitution=restitution;
+            patch.damping=damping;
+            patch.acceleration_spring=acceleration_spring;
+            patch.disable_friction=disable_friction;
+            patch.disable_strong_friction=disable_strong_friction;
+        }
+        const auto& source=gpu_pcm_pairs_[manifold.pcm_result_index];
+        patch.contact_count=static_cast<std::uint16_t>(
+            source.candidate_capacity==1u?1u:4u);
+        patch.contact_ids.fill(0xffff);
+        patch.bounds_min={};
+        patch.bounds_max={};
+        next_friction_patches_.push_back(patch);
+        manifold.friction_patch_count=1u;
+        next_friction_by_edge_[edge]={
+            manifold.pair,manifold.friction_patch_offset,1u,
+            next_cache_epoch};
+    } else {
+    contact_patch_scratch_.clear();
+    // GuPCMContactBoxBox publishes one common world normal for all
+    // selected witnesses of a source box pair. Its contiguous run
+    // is already known: build the original patch bounds once without
+    // repeating general Gu normal/material compatibility checks.
+    if(manifold.pcm_result_index!=
+       std::numeric_limits<std::uint32_t>::max()) {
+        ContactPatchData cp{};
+        cp.start=0u;
+        cp.count=manifold.count;
+        cp.normal=manifold.points.front().normal;
+        if(!gpu_normal_prep) {
+            // CPU Dy owns the exact contact bounds for correlation.
+            // Device Dy derives the extent from its resident PCM
+            // witnesses during friction-anchor preparation instead.
+            cp.bounds_min=cp.bounds_max=manifold.points.front().position;
+            for(std::size_t j=1;j<manifold.count;++j) {
+                const auto& p=manifold.points[j].position;
+                cp.bounds_min={
+                    std::min(cp.bounds_min.x,p.x),
+                    std::min(cp.bounds_min.y,p.y),
+                    std::min(cp.bounds_min.z,p.z)};
+                cp.bounds_max={
+                    std::max(cp.bounds_max.x,p.x),
+                    std::max(cp.bounds_max.y,p.y),
+                    std::max(cp.bounds_max.z,p.z)};
+            }
+        }
+        contact_patch_scratch_.push_back(cp);
+    }else {
+        contact_patch_scratch_.reserve(manifold.count);
+        for(std::size_t j=0;j<manifold.count;++j) {
+            const auto& point=manifold.points[j];
+            if(contact_patch_scratch_.empty() ||
+               dot(contact_patch_scratch_.back().normal,point.normal)<
+                   same_normal) {
+                ContactPatchData cp{};
+                cp.start=j;
+                cp.count=1;
+                cp.normal=point.normal;
+                cp.bounds_min=cp.bounds_max=point.position;
+                contact_patch_scratch_.push_back(cp);
+            } else {
+                auto& cp=contact_patch_scratch_.back();
+                ++cp.count;
+                cp.bounds_min={
+                    std::min(cp.bounds_min.x,point.position.x),
+                    std::min(cp.bounds_min.y,point.position.y),
+                    std::min(cp.bounds_min.z,point.position.z)};
+                cp.bounds_max={
+                    std::max(cp.bounds_max.x,point.position.x),
+                    std::max(cp.bounds_max.y,point.position.y),
+                    std::max(cp.bounds_max.z,point.position.z)};
+            }
+        }
+    }
+    std::array<std::size_t,max_source_patches> contact_heads{};
+    contact_heads.fill(invalid_instance);
+    // DyContactPrepShared::getFrictionPatches admits prior anchors
+    // FIRST, only with a valid relative normal, separation and
+    // strong-friction state. Fresh contact patches correlate against
+    // this source-ordered cache before creating any new patch.
+    if(!disable_strong_friction && edge<friction_by_edge_.size()) {
+        const auto& history=friction_by_edge_[edge];
+        if(history.epoch==friction_cache_epoch_ &&
+           history.count && history.pair==manifold.pair &&
+           history.offset<=friction_patches_.size() &&
+           history.count<=friction_patches_.size()-history.offset)
+        for(std::size_t previous=history.offset;
+            previous<history.offset+history.count;++previous) {
+            const auto& old=friction_patches_[previous];
+            const bool checked_before_gu=
+                manifold.pcm_result_index<gpu_pcm_pairs_.size();
+            const bool valid=checked_before_gu
+                ?(gpu_pcm_pairs_[manifold.pcm_result_index].
+                   friction_history_mask &
+                   (1u<<(previous-history.offset)))!=0u
+                :cached_friction_patch_valid(old,actor0,actor1);
+            if(!valid)continue;
+            if(manifold.friction_patch_count==max_source_patches)
+                throw std::overflow_error(
+                    "Native source cached friction exceeds 32 patches");
+            FrictionPatch copied=old;
+            copied.normal=rotate(mass_orientation(actor0),old.body0_normal);
+            copied.contact_count=0;
+            copied.contact_ids.fill(0xffff);
+            copied.bounds_min={
+                std::numeric_limits<float>::max(),
+                std::numeric_limits<float>::max(),
+                std::numeric_limits<float>::max()};
+            copied.bounds_max={
+                -std::numeric_limits<float>::max(),
+                -std::numeric_limits<float>::max(),
+                -std::numeric_limits<float>::max()};
+            next_friction_patches_.push_back(copied);
+            ++manifold.friction_patch_count;
+        }
+    }
+    for(std::size_t cp_index=0;
+        cp_index<contact_patch_scratch_.size();++cp_index) {
+        auto& cp=contact_patch_scratch_[cp_index];
+        std::size_t local_patch=0;
+        for(;local_patch<manifold.friction_patch_count;++local_patch) {
+            const auto& p=next_friction_patches_[
+                manifold.friction_patch_offset+local_patch];
+            if(dot(p.normal,cp.normal)>=same_normal &&
+               p.restitution==restitution &&
+               p.damping==damping &&
+               p.acceleration_spring==acceleration_spring &&
+               p.static_friction==static_friction &&
+               p.dynamic_friction==dynamic_friction)
+                break;
+        }
+        if(local_patch==manifold.friction_patch_count) {
+            if(manifold.friction_patch_count==max_source_patches)
+                throw std::overflow_error(
+                    "Native source friction correlation exceeds 32 patches");
+            FrictionPatch patch{};
+            patch.pair=manifold.pair;
+            patch.normal=cp.normal;
+            patch.static_friction=static_friction;
+            patch.dynamic_friction=dynamic_friction;
+            patch.restitution=restitution;
+            patch.damping=damping;
+            patch.acceleration_spring=acceleration_spring;
+            patch.disable_friction=disable_friction;
+            patch.disable_strong_friction=disable_strong_friction;
+            patch.body0_normal=local_normal(actor0,cp.normal);
+            patch.body1_normal=local_normal(actor1,cp.normal);
+            patch.contact_ids.fill(0xffff);
+            next_friction_patches_.push_back(patch);
+            ++manifold.friction_patch_count;
+        }
+        auto& patch=next_friction_patches_[
+            manifold.friction_patch_offset+local_patch];
+        if(patch.contact_count==0) {
+            patch.bounds_min=cp.bounds_min;
+            patch.bounds_max=cp.bounds_max;
+        } else {
+            patch.bounds_min={
+                std::min(patch.bounds_min.x,cp.bounds_min.x),
+                std::min(patch.bounds_min.y,cp.bounds_min.y),
+                std::min(patch.bounds_min.z,cp.bounds_min.z)};
+            patch.bounds_max={
+                std::max(patch.bounds_max.x,cp.bounds_max.x),
+                std::max(patch.bounds_max.y,cp.bounds_max.y),
+                std::max(patch.bounds_max.z,cp.bounds_max.z)};
+        }
+        patch.contact_count+=static_cast<std::uint16_t>(cp.count);
+        cp.next=contact_heads[local_patch];
+        contact_heads[local_patch]=cp_index;
+        for(std::size_t j=cp.start;j<cp.start+cp.count;++j)
+            contact_patch_ids[j]=manifold.friction_patch_offset+local_patch;
+    }
+    // Source writes only friction patches with correlated contacts;
+    // unused cached patches are never returned to the next frame.
+    // Compact the same cache arena and remap Gu point/linked-list
+    // indices together without allocating a second patch registry.
+    std::array<std::size_t,max_source_patches> remap{};
+
+    for(std::size_t j=0;j<manifold.friction_patch_count;++j) {
+        const std::size_t src=manifold.friction_patch_offset+j;
+        if(next_friction_patches_[src].contact_count==0)continue;
+        remap[j]=kept;
+        used_heads[kept]=contact_heads[j];
+        if(kept!=j)
+            next_friction_patches_[manifold.friction_patch_offset+kept]=
+                next_friction_patches_[src];
+        ++kept;
+    }
+    for(std::size_t j=0;j<manifold.count;++j)
+        contact_patch_ids[j]=manifold.friction_patch_offset+
+            remap[contact_patch_ids[j]-manifold.friction_patch_offset];
+    manifold.friction_patch_count=static_cast<std::uint8_t>(kept);
+    next_friction_patches_.resize(manifold.friction_patch_offset+kept);
+    next_friction_by_edge_[edge]={manifold.pair,
+        manifold.friction_patch_offset,manifold.friction_patch_count,
+        next_cache_epoch};
+    // DyContactPrep.cpp::setupFinalizeSolverConstraints selects the
+    // first Gu normal of each reverse correlation-list head ONCE for
+    // its SolverContactHeader. That one normal governs *all* contact
+    // Jacobians, effective masses, restitution projections and both
+    // friction tangents in the header. It is distinct from a cached
+    // FrictionPatch::body0Normal/body1Normal, which belong to the
+    // older strong-friction anchor correlation lifecycle.
+    for(std::size_t j=0;j<kept;++j) {
+        const auto head=used_heads[j];
+        if(head==invalid_instance)
+            throw std::logic_error(
+                "Source correlated friction patch has no contact head");
+        header_normals[j]=
+            manifold.points[contact_patch_scratch_[head].start].normal;
+    }
+    }
+    if(gpu_normal_prep) {
+        const auto source=manifold.candidate_ordinal;
+        const auto slot=source<gpu_dy_contact_prep_indices_.size()
+            ?gpu_dy_contact_prep_indices_[source]:0xffffffffu;
+        const auto dense=slot&~unadmitted_dy_prep;
+        if(slot==0xffffffffu ||
+           (slot&unadmitted_dy_prep)==0u ||
+           dense>=gpu_dy_contact_prep_pairs_.size() ||
+           dense>=gpu_dy_contact_prep_sources_.size() ||
+           gpu_dy_contact_prep_sources_[dense]!=source ||
+           !(previous_pairs_[source]==manifold.pair) ||
+           active_edge_handles_[source]!=edge)
+            throw std::logic_error(
+                "Source GPU contact prep lost its original Sc candidate");
+        auto& prep=gpu_dy_contact_prep_pairs_[dense];
+        const auto pcm_index=prep.pcm_pair_index;
+        if(prep.source_body0!=id0 || prep.source_body1!=id1 ||
+           prep.pcm_pair_index!=pcm_index ||
+           (pcm_index!=0xffffffffu && prep.pcm_edge!=edge) ||
+           prep.rest_distance!=rest_distance ||
+           prep.pair_slop!=pair_slop ||
+           prep.restitution!=restitution ||
+           prep.damping!=damping ||
+           prep.max_penetration_bias!=max_penetration_bias ||
+           prep.inv_dt!=inv_dt || prep.seconds!=seconds ||
+           prep.rigid_contact_bias!=rigid_contact_bias ||
+           prep.bounce_threshold!=bounce_threshold ||
+           prep.acceleration_spring!=(acceleration_spring?1u:0u) ||
+           prep.max_contact_impulse!=pair_max_impulse)
+            throw std::logic_error(
+                "Dy numerical source differs from pre-witness material");
+        const bool resident0=actor0.motion==Motion::Dynamic &&
+            !actor0.sleeping;
+        const bool resident1=actor1.motion==Motion::Dynamic &&
+            !actor1.sleeping;
+        if(!prewitness) {
+            prep.inverse_mass0=resident0?actor0.inverse_mass:a.inverse_mass;
+            prep.inverse_mass1=resident1?actor1.inverse_mass:b.inverse_mass;
+        }
+        // Early device graphs resolve responding endpoints from source admission.
+        if(!source_body_order &&
+           (!gpu_dy_early_islands_ || !gpu_dy_early_joint_edges_.empty())) {
+            const auto pack_ordinal=[&](const Actor& actor) {
+                if(!rigid_node(actor.motion))return invalid_solver_row;
+                if(actor.solver_row_generation!=solver_preparation_generation_ ||
+                   actor.solver_row_index>=solver_rows_.size() ||
+                   actor.solver_row_index>=invalid_solver_row)
+                    throw std::logic_error(
+                        "GPU Dy contact preparation lacks a solver row");
+                return static_cast<std::uint32_t>(actor.solver_row_index);
+            };
+            prep.solver_ordinal0=pack_ordinal(actor0);
+            prep.solver_ordinal1=pack_ordinal(actor1);
+        }
+        if(pcm_index==0xffffffffu) {
+            if(gpu_dy_gu_inputs_.size()>=
+               std::numeric_limits<std::uint32_t>::max())
+                throw std::overflow_error(
+                    "Source CPU Gu geometry exceeds 32-bit view");
+            prep.cpu_gu_offset=static_cast<std::uint32_t>(
+                gpu_dy_gu_inputs_.size());
+        }
+        gpu_dy_contact_prep_indices_[source]=dense;
+    }
+    // CPU PGS retains the complete correlated contact order.
+    // Device Dy needs explicit indices only for non-PCM Gu:
+    // PCM's source-ordered contact run is already resident.
+    const bool resident_order=resident_pcm;
+    const auto order_begin=gpu_normal_prep
+        ?gpu_dy_contact_order_.size():solver_contact_order_.size();
+    if(!resident_order)
+        for(std::size_t j=0;j<kept;++j)
+            for(std::size_t cp=used_heads[j];cp!=invalid_instance;
+                cp=contact_patch_scratch_[cp].next)
+                for(std::size_t c=contact_patch_scratch_[cp].start;
+                    c<contact_patch_scratch_[cp].start+
+                      contact_patch_scratch_[cp].count;++c) {
+                    const auto index=manifold.solver_offset+c;
+                    if(gpu_normal_prep) {
+                        if(index>=std::numeric_limits<std::uint32_t>::max())
+                            throw std::overflow_error(
+                                "GPU Dy contact order exceeds 32-bit rows");
+                        gpu_dy_contact_order_.push_back(
+                            static_cast<std::uint32_t>(index));
+                    } else solver_contact_order_.push_back(index);
+                }
+    const auto order_end=gpu_normal_prep
+        ?gpu_dy_contact_order_.size():solver_contact_order_.size();
+    if(order_end-order_begin!=(resident_order?0u:manifold.count))
+        throw std::logic_error(
+            "Source correlation omitted a Gu contact descriptor");
+    // Device PCM owns the emitted count. Sc reserves numerical rows
+    // from source pair capacity without inspecting Gu witnesses.
+    if(resident_order) {
+        const auto capacity=gpu_pcm_pairs_[
+            manifold.pcm_result_index].candidate_capacity==1u?1u:4u;
+        if(manifold.count>capacity)
+            throw std::overflow_error("Source PCM numerical capacity overflow");
+        if(source_body_order) {
+            if(manifold.solver_offset>gpu_dy_prewitness_contact_rows_ ||
+               capacity>gpu_dy_prewitness_contact_rows_-manifold.solver_offset)
+                throw std::logic_error("PCM contact exceeds pre-witness row range");
+        }else {
+            if(capacity>std::numeric_limits<std::size_t>::max()-
+                prepared_contact_rows_)
+                throw std::overflow_error("Source PCM numerical capacity overflow");
+            prepared_contact_rows_+=capacity;
+        }
+    } else for(std::size_t j=0;j<manifold.count;++j) {
+        const ContactPoint& contact=manifold.points[j];
+        const std::size_t patch_id=contact_patch_ids[j];
+        const Vec3 normal=header_normals[
+            patch_id-manifold.friction_patch_offset];
+        if(gpu_normal_prep) {
+            // Sc retains the Gu ordinal, not a shadow Jacobian.
+            // CPU Gu packs the correlated header normal while
+            // PCM geometry remains in the resident contact stream.
+            if(manifold.pcm_result_index==
+               std::numeric_limits<std::uint32_t>::max()) {
+                GpuDyGuContactInput gu{};
+                gu.normal[0]=normal.x;
+                gu.normal[1]=normal.y;
+                gu.normal[2]=normal.z;
+                gu.position[0]=contact.position.x;
+                gu.position[1]=contact.position.y;
+                gu.position[2]=contact.position.z;
+                gu.separation=contact.separation;
+                gpu_dy_gu_inputs_.push_back(gu);
+            }
+            ++prepared_contact_rows_;
+            continue;
+        }
+        Vec3 ra_x_n = cross(sub(contact.position,a.position),normal);
+        Vec3 rb_x_n = cross(sub(contact.position,b.position),normal);
+        const float linear_vrel =
+            dot(normal,sub(a.linear_velocity,b.linear_velocity));
+        // DyContactPrepShared scales the slop by
+        // max(vRelAngular/vRelLinear,1). A zero linear velocity uses
+        // PX_MAX_REAL as the source's ratio fallback.
+        if(pair_slop>0.0f) {
+            const float raw_angular_vrel=
+                dot(ra_x_n,a.angular_velocity)-
+                dot(rb_x_n,b.angular_velocity);
+            const float ratio=linear_vrel==0.0f
+                ? std::numeric_limits<float>::max()
+                : raw_angular_vrel/linear_vrel;
+            const float normal_slop=pair_slop*std::max(ratio,1.0f);
+            ra_x_n=suppress_slop(ra_x_n,normal_slop);
+            rb_x_n=suppress_slop(rb_x_n,normal_slop);
+        }
+        const Vec3 ra = transform(a,ra_x_n);
+        const Vec3 rb = transform(b,rb_x_n);
+        const float angular_vrel =
+            dot(ra_x_n,a.angular_velocity)-dot(rb_x_n,b.angular_velocity);
+        const float vrel = linear_vrel+angular_vrel;
+        const float response = (a.inverse_mass+dot(ra,ra)) +
+            (b.inverse_mass+dot(rb,rb));
+        const float vel_multiplier = response > 0.0f
+            ? 1.0f / response : 0.0f;
+        const float penetration = contact.separation-rest_distance;
+        const float penetration_inv_dt = penetration*inv_dt;
+        const bool separated = penetration >= 0.0f;
+        const bool closing = -vrel > penetration_inv_dt;
+        const bool bouncing = restitution > 0.0f &&
+            bounce_threshold > vrel && closing;
+        const float target_velocity = bouncing
+            ? -vrel*restitution : 0.0f;
+        SolverContactPoint row{};
+        row.normal=normal;
+        row.ra_x_n_sqrt_inertia=ra;
+        row.rb_x_n_sqrt_inertia=rb;
+        row.friction_patch=patch_id;
+        row.max_impulse=pair_max_impulse;
+        const float target=(target_velocity-vrel);
+        if(restitution<0.0f) {
+            // DyContactPrepShared::computeCompliantContactCoefficients
+            // disables damping for separated nonclosing contacts.
+            // Force springs use unitResponse; acceleration springs
+            // use the reciprocal response as a mass factor.
+            const float enabled_damping=
+                separated && !closing ? 0.0f : damping;
+            const float nrdt=seconds*restitution;
+            const float a_coeff=seconds*
+                (enabled_damping-nrdt);
+            const float mass_factor=acceleration_spring
+                ? vel_multiplier : 1.0f;
+            const float x=1.0f/(1.0f+a_coeff*
+                (acceleration_spring ? 1.0f : response));
+            const float bias=x*(-nrdt*penetration*mass_factor);
+            row.velocity_multiplier=x*a_coeff*mass_factor;
+            row.impulse_multiplier=1.0f-x;
+            row.biased_error=target*row.velocity_multiplier-bias;
+            row.unbiased_error=row.biased_error;
+        } else {
+            // Normal restitution keeps a distinct unbiased
+            // velocity-pass error after the biased position passes.
+            const float penetration_inv_dt_scaled=separated
+                ? penetration_inv_dt
+                : penetration*(inv_dt*rigid_contact_bias);
+            const float scaled_bias=bouncing ? 0.0f :
+                vel_multiplier*std::max(
+                    max_penetration_bias,penetration_inv_dt_scaled);
+            row.velocity_multiplier=vel_multiplier;
+            row.biased_error=target*vel_multiplier-scaled_bias;
+            row.unbiased_error=target*vel_multiplier-
+                (bouncing?0.0f:std::max(scaled_bias,0.0f));
+        }
+        if (!std::isfinite(response) ||
+            !std::isfinite(row.biased_error) ||
+            !std::isfinite(row.unbiased_error) ||
+            !std::isfinite(row.impulse_multiplier) ||
+            !std::isfinite(row.velocity_multiplier))
+            throw std::overflow_error("Native Dy contact preparation overflow");
+        solver_contact_points_.push_back(row);
+        ++prepared_contact_rows_;
+    }
+    // DyFrictionCorrelation::growPatches: retain up to two anchors
+    // spread across each friction patch's contact bounds; the anchors
+    // persist in the body-local frames, not as world-space contacts.
+    for (std::size_t patch_id=manifold.friction_patch_offset;
+         patch_id<next_friction_patches_.size(); ++patch_id) {
+        auto& patch = next_friction_patches_[patch_id];
+        // PxsCombineMaterials::eDISABLE_FRICTION produces zero
+        // tangent constraints. Do not grow anchors or compute
+        // local-to-world error/Jacobians for disabled patches.
+        if (patch.disable_friction) {
+            patch.anchor_count=0;
+            patch.row_offset=source_body_order && resident_pcm
+                ?gpu_dy_candidate_sources_[prep_slot].friction_begin
+                :prepared_friction_rows_;
+            continue;
+        }
+        if(gpu_normal_prep && manifold.pcm_result_index!=
+           std::numeric_limits<std::uint32_t>::max()) {
+            // A PCM box manager publishes one common Gu normal and
+            // therefore one correlated patch. Retain the source
+            // cached anchors as input; GPU Dy grows them directly
+            // from device Gu contacts before building tangent rows.
+            const auto& source=gpu_pcm_pairs_[manifold.pcm_result_index];
+            if(manifold.friction_patch_count!=1u ||
+               patch.contact_count!=
+                   (source.candidate_capacity==1u?1u:4u))
+                throw std::logic_error(
+                    "Source GPU PCM friction is not one correlated patch");
+            if(source_body_order) {
+                patch.row_offset=gpu_dy_candidate_sources_[prep_slot].friction_begin;
+                if(patch.row_offset>gpu_dy_prewitness_friction_rows_ ||
+                   4u>gpu_dy_prewitness_friction_rows_-patch.row_offset)
+                    throw std::logic_error("PCM friction exceeds pre-witness row range");
+            }else {
+                patch.row_offset=prepared_friction_rows_;
+                gpu_dy_friction_anchors_.resize(
+                    gpu_dy_friction_anchors_.size()+2u);
+                prepared_friction_rows_+=4u;
+            }
+            continue;
+        }
+        const Vec3 extent=sub(patch.bounds_max,patch.bounds_min);
+        const float diagonal_sq=squared_length(extent);
+        bool keep_pair=false;
+        if(patch.anchor_count==2) {
+            const Vec3 diff=sub(patch.body0_anchors[0],
+                                patch.body0_anchors[1]);
+            // DyFrictionCorrelation::growPatches retains a cached
+            // two-anchor pair only when its spacing still covers
+            // at least one-quarter of the current patch diagonal.
+            // The source skips the anchor search in this case.
+            keep_pair=squared_length(diff)*4.0f>=diagonal_sq;
+            if(!keep_pair)patch.anchor_count=0;
+        }
+        std::array<Vec3,2> anchors{};
+        // DyFrictionCorrelation::growPatches selects replacement
+        // anchors as well as newly appended ones. A retained slot
+        // must remain untouched unless the search replaces it.
+        // The upstream j=oldCount publication misses replacements
+        // of slot zero after a cached one-anchor patch grows.
+        std::array<bool,2> changed{};
+        std::uint8_t count=patch.anchor_count;
+        if(!keep_pair) {
+            if(count==1)
+                anchors[0]=world_point(actor0,patch.body0_anchors[0]);
+            float point_dist_sq=0.0f;
+            // The correlation linked list prepends each contact
+            // patch, so source growPatches sees its runs in reverse
+            // admission order, not in canonical Gu contact order.
+            const std::size_t local=patch_id-
+                manifold.friction_patch_offset;
+            for(std::size_t cp=used_heads[local];
+                cp!=invalid_instance;
+                cp=contact_patch_scratch_[cp].next) {
+                const auto& run=contact_patch_scratch_[cp];
+                for(std::size_t j=run.start;j<run.start+run.count;++j) {
+                    const auto& point=manifold.points[j];
+                    if(point.separation>=
+                       friction_offset_threshold+rest_distance)
+                        continue;
+                    const Vec3 w=point.position;
+                    if(count==0) {
+                        patch.contact_ids[0]=static_cast<std::uint16_t>(j);
+                        anchors[0]=w;
+                        changed[0]=true;
+                        ++count;
+                    } else if(count==1) {
+                        const float d=squared_length(sub(w,anchors[0]));
+                        if(d>1.0e-8f) {
+                            patch.contact_ids[1]=static_cast<std::uint16_t>(j);
+                            anchors[1]=w;
+                            changed[1]=true;
+                            point_dist_sq=d;
+                            ++count;
+                        }
+                    } else {
+                        const float d0=squared_length(sub(w,anchors[0]));
+                        const float d1=squared_length(sub(w,anchors[1]));
+                        if(d0>d1 && d0>point_dist_sq) {
+                            patch.contact_ids[1]=static_cast<std::uint16_t>(j);
+                            anchors[1]=w;
+                            changed[1]=true;
+                            point_dist_sq=d0;
+                        } else if(d1>=d0 && d1>point_dist_sq) {
+                            patch.contact_ids[0]=static_cast<std::uint16_t>(j);
+                            anchors[0]=w;
+                            changed[0]=true;
+                            point_dist_sq=d1;
+                        }
+                    }
+                }
+            }
+            for(std::size_t k=0;k<count;++k) {
+                if(!changed[k])continue;
+                patch.body0_anchors[k]=local_point(actor0,anchors[k]);
+                patch.body1_anchors[k]=local_point(actor1,anchors[k]);
+            }
+            if(count==0) {
+                patch.body0_anchors[0]={};
+                patch.body1_anchors[0]={};
+            }
+        }
+        patch.anchor_count=count;
+        patch.row_offset=prepared_friction_rows_;
+        if (count==0) continue;
+        // DyContactPrep.cpp constructs tangents from relative linear
+        // velocity, with the same 0.7071f normal-axis fallback and
+        // 1e-4 squared-tangent threshold as the source.
+        if(gpu_normal_prep) {
+            // Sc retains the body-local anchors; the device authors
+            // both tangent Jacobians without CPU row placeholders.
+            for(std::size_t k=0u;k<count;++k) {
+                GpuDyFrictionAnchorInput anchor{};
+                const Vec3 x=patch.body0_anchors[k];
+                const Vec3 y=patch.body1_anchors[k];
+                anchor.local_a[0]=x.x;anchor.local_a[1]=x.y;
+                anchor.local_a[2]=x.z;
+                anchor.local_b[0]=y.x;anchor.local_b[1]=y.y;
+                anchor.local_b[2]=y.z;
+                gpu_dy_friction_anchors_.push_back(anchor);
+            }
+            prepared_friction_rows_+=count*2u;
+            continue;
+        }
+        const Vec3 n=header_normals[
+            patch_id-manifold.friction_patch_offset];
+        const Vec3 rel=sub(a.linear_velocity,b.linear_velocity);
+        Vec3 t0=sub(rel,{n.x*dot(rel,n),
+                          n.y*dot(rel,n),n.z*dot(rel,n)});
+        if (squared_length(t0)<=0.0001f) {
+            t0=std::abs(n.x)<0.70710678f
+                ? Vec3{0.0f,-n.z,n.y}
+                : Vec3{-n.y,n.x,0.0f};
+        }
+        const float inv_l=1.0f/std::sqrt(squared_length(t0));
+        t0={t0.x*inv_l,t0.y*inv_l,t0.z*inv_l};
+        const Vec3 t1=cross(n,t0);
+        for (std::size_t k=0;k<count;++k) {
+            const Vec3 ra=rotate(mass_orientation(actor0),patch.body0_anchors[k]);
+            const Vec3 rb=rotate(mass_orientation(actor1),patch.body1_anchors[k]);
+            const Vec3 center0=mass_position(actor0),center1=mass_position(actor1);
+            const Vec3 error=suppress_slop(sub(
+                {ra.x+center0.x,ra.y+center0.y,ra.z+center0.z},
+                {rb.x+center1.x,rb.y+center1.y,rb.z+center1.z}),pair_slop);
+            for (const Vec3 tangent : {t0,t1}) {
+                const Vec3 ax0=suppress_slop(cross(ra,tangent),pair_slop);
+                const Vec3 ax1=suppress_slop(cross(rb,tangent),pair_slop);
+                const Vec3 j0=transform(a,ax0);
+                const Vec3 j1=transform(b,ax1);
+                const float response=(a.inverse_mass+dot(j0,j0))
+                    +(b.inverse_mass+dot(j1,j1));
+                SolverContactFriction fr{};
+                fr.tangent=tangent;
+                fr.ra_x_t_sqrt_inertia=j0;
+                fr.rb_x_t_sqrt_inertia=j1;
+                fr.velocity_multiplier=response>0.0f
+                    ? rigid_contact_bias/response : 0.0f;
+                fr.bias=dot(tangent,error)*inv_dt;
+                fr.target_velocity=-(dot(tangent,rel)
+                    +dot(ax0,a.angular_velocity)
+                    -dot(ax1,b.angular_velocity));
+                if (!std::isfinite(response) ||
+                    !std::isfinite(fr.velocity_multiplier) ||
+                    !std::isfinite(fr.bias) ||
+                    !std::isfinite(fr.target_velocity))
+                    throw std::overflow_error(
+                        "Native source friction row preparation overflow");
+                solver_friction_rows_.push_back(fr);
+            }
+        }
+        prepared_friction_rows_+=count*2u;
+    }
+}
+
+void Scene::prepare_constraints(float seconds) {
+    FYZZ_PROFILE_SCOPE("dy.prepare_constraints");
+    const float inv_dt = 1.0f / seconds;
+    const auto dot = [](Vec3 u, Vec3 v) {
+        return u.x*v.x + u.y*v.y + u.z*v.z;
+    };
+    const auto sub = [](Vec3 u, Vec3 v) {
+        return Vec3{u.x-v.x,u.y-v.y,u.z-v.z};
+    };
+    const auto transform = [](const SolverBodyData& d, Vec3 v) {
+        const auto& c = d.sqrt_inverse_inertia;
+        return Vec3{c[0].x*v.x+c[1].x*v.y+c[2].x*v.z,
+                    c[0].y*v.x+c[1].y*v.y+c[2].y*v.z,
+                    c[0].z*v.x+c[1].z*v.y+c[2].z*v.z};
+    };
     solver_contact_points_.clear();
-    prepared_contact_rows_=gpu_dy_source_body_order_
-        ?gpu_dy_prewitness_contact_rows_:0u;
-    gpu_dy_gu_inputs_.clear();
+    prepared_contact_rows_=gpu_dy_prewitness_solve_
+        ?gpu_dy_contact_forces_.size():gpu_dy_source_body_order_
+            ?gpu_dy_prewitness_contact_rows_:0u;
+    if(!gpu_dy_prewitness_solve_) {
+        gpu_dy_gu_inputs_.clear();
+        gpu_dy_contact_order_.clear();
+    }
     solver_contact_order_.clear();
-    gpu_dy_contact_order_.clear();
     joint_rows_.clear();
     const bool gpu_normal_prep=gpu_dy_active();
     if(!gpu_dy_source_body_order_)gpu_dy_rows_.clear();
@@ -9366,31 +10225,12 @@ void Scene::prepare_constraints(float seconds) {
         }
     }
     solver_friction_rows_.clear();
-    prepared_friction_rows_=gpu_dy_source_body_order_
-        ?gpu_dy_prewitness_friction_rows_:0u;
+    prepared_friction_rows_=gpu_dy_prewitness_solve_
+        ?gpu_dy_friction_anchors_.size()*2u:gpu_dy_source_body_order_
+            ?gpu_dy_prewitness_friction_rows_:0u;
     if(!gpu_dy_source_body_order_)gpu_dy_friction_anchors_.clear();
-    next_friction_patches_.clear();
+    if(!gpu_dy_prewitness_solve_)next_friction_patches_.clear();
     // PXC_SAME_NORMAL and DyCorrelationBuffer::MAX_FRICTION_PATCHES.
-    constexpr float same_normal = 0.999f;
-    constexpr float friction_offset_threshold = 0.04f;
-    const auto local_point = [this](const Actor& actor, Vec3 world) {
-        const Quat q = mass_orientation(actor);
-        const Vec3 p=mass_position(actor);
-        return rotate(Quat{-q.x,-q.y,-q.z,q.w},
-            {world.x-p.x,world.y-p.y,world.z-p.z});
-    };
-    const auto local_normal = [this](const Actor& actor, Vec3 world_normal) {
-        const Quat q = mass_orientation(actor);
-        return rotate(Quat{-q.x,-q.y,-q.z,q.w}, world_normal);
-    };
-    const auto world_point = [this](const Actor& actor, Vec3 local) {
-        const Vec3 r=rotate(mass_orientation(actor),local);
-        const Vec3 p=mass_position(actor);
-        return Vec3{r.x+p.x,r.y+p.y,r.z+p.z};
-    };
-    const auto squared_length = [](Vec3 v) {
-        return v.x*v.x + v.y*v.y + v.z*v.z;
-    };
     // Source DyContactPrep consumes each active island task's indexed
     // contact managers. Gu storage and its original point offsets remain
     // pair-sorted for collision and force writeback, but preparation
@@ -9401,783 +10241,59 @@ void Scene::prepare_constraints(float seconds) {
     next_friction_by_edge_.resize(island_edges_.size());
     for(std::size_t manager_index:indexed_managers_) {
         auto& manifold=manifolds_[manager_index];
-        const EdgeIndex edge=manifold.edge_handle;
-        if(edge>=island_edges_.size() ||
-           !(island_edges_[edge].shapes==manifold.pair))
-            throw std::logic_error(
-                "Dy source manager preparation has a mismatched island edge");
         step_checkpoint_.save_manifold_solver_metadata(*this,manager_index);
-        manifold.prepared_friction_epoch=next_cache_epoch;
-        // An inactive accurate island retains its Gu contact manager
-        // but the source does not prepare or solve constraints for it.
-        // Keep the Gu-indexed zero-impulse result slots without paying
-        // for contact Jacobians, friction correlation or solver rows.
-        const Actor& actor_a=actors_[shapes_[manifold.pair.a].body];
-        const Actor& actor_b=actors_[shapes_[manifold.pair.b].body];
-        const bool active_dynamic=
-            (actor_a.motion==Motion::Dynamic && !actor_a.sleeping) ||
-            (actor_b.motion==Motion::Dynamic && !actor_b.sleeping);
-        if(!active_dynamic) {
-            manifold.solver_offset=prepared_contact_rows_;
-            manifold.friction_patch_offset=next_friction_patches_.size();
-            manifold.friction_patch_count=0;
-            // No Dy contact rows are admitted for dormant Gu managers.
-            // The independently Gu-indexed writeback provides zeros.
+        if(gpu_dy_prewitness_solve_ &&
+           manifold.pcm_result_index==0xffffffffu) {
+            if(manifold.prepared_friction_epoch!=next_cache_epoch)
+                throw std::logic_error("Submitted Gu manager lacks correlated sources");
+            const auto& a=actors_[shapes_[manifold.pair.a].body];
+            const auto& b=actors_[shapes_[manifold.pair.b].body];
+            if(manifold.friction_patch_count &&
+               !((a.motion==Motion::Dynamic && !a.sleeping) ||
+                 (b.motion==Motion::Dynamic && !b.sleeping)))
+                throw std::logic_error("Submitted Gu manager lost activation");
+            solver_kinematic_participant_ |=
+                a.motion==Motion::Kinematic || b.motion==Motion::Kinematic;
             continue;
         }
-        // Only an admitted active manager can share writable kinematic
-        // solver state across otherwise independent Dy task groups.
-        // Dormant Gu history must not suppress concurrent solving.
-        solver_kinematic_participant_ |=
-            actor_a.motion==Motion::Kinematic ||
-            actor_b.motion==Motion::Kinematic;
-        // Preserve ScShapeInteraction's actual ordered actor pair
-        // through DyContactPrep. A canonical pair key is only used
-        // for Gu arena identity, and must not reorder the two
-        // momentum/Jacobian inputs after the source Gu generator.
-        // PxcNpBatch sorts plane-box Gu geometry plane-first and
-        // flips its returned normal back to ScShapeInteraction order.
-        // ScNPhaseCore::shouldSwapBodies puts static shapes SECOND,
-        // even when the floor was created before its dynamic partner.
-        // The persistent source-order flag applies to every shape pair.
-        const bool reversed=island_edges_[edge].gu_order_reversed;
-        const Shape& shape0=shapes_[reversed?manifold.pair.b:manifold.pair.a];
-        const Shape& shape1=shapes_[reversed?manifold.pair.a:manifold.pair.b];
-        const BodyId id0=shape0.body,id1=shape1.body;
-        const auto& a = rigid_node(actors_[id0].motion)
-            ? prepared_solver_row(id0).data : world_solver_row_.data;
-        const auto& b = rigid_node(actors_[id1].motion)
-            ? prepared_solver_row(id1).data : world_solver_row_.data;
-        manifold.solver_offset = prepared_contact_rows_;
-        manifold.friction_patch_offset = next_friction_patches_.size();
-        manifold.friction_patch_count = 0;
-        const Actor& actor0 = actors_[id0];
-        const Actor& actor1 = actors_[id1];
-        const bool resident_pcm_material=gpu_normal_prep &&
-            manifold.pcm_result_index!=
-                std::numeric_limits<std::uint32_t>::max();
-        const auto source=manifold.candidate_ordinal;
-        const auto pending_slot=gpu_normal_prep &&
-            source<gpu_dy_contact_prep_indices_.size()
-            ?gpu_dy_contact_prep_indices_[source]:0xffffffffu;
-        const auto prep_slot=pending_slot&~unadmitted_dy_prep;
-        if(gpu_normal_prep &&
-           (source>=gpu_dy_contact_prep_indices_.size() ||
-            pending_slot==0xffffffffu ||
-            prep_slot>=gpu_dy_contact_prep_pairs_.size() ||
-            prep_slot>=gpu_dy_contact_prep_sources_.size() ||
-            prep_slot>=gpu_dy_candidate_sources_.size() ||
-            gpu_dy_contact_prep_sources_[prep_slot]!=source ||
-            !gpu_dy_candidate_sources_[prep_slot].material.prepared ||
-            gpu_dy_contact_prep_pairs_[prep_slot].source_body0!=id0 ||
-            gpu_dy_contact_prep_pairs_[prep_slot].source_body1!=id1))
-            throw std::logic_error(
-                "GPU Dy contact preparation lost its pre-witness source");
-        if(gpu_normal_prep) {
-            const auto pcm_index=
-                gpu_dy_contact_prep_pairs_[prep_slot].pcm_pair_index;
-            if((pcm_index!=std::numeric_limits<std::uint32_t>::max())!=
-                   resident_pcm_material ||
-               (resident_pcm_material &&
-                (pcm_index!=manifold.pcm_result_index ||
-                 pcm_index>=gpu_pcm_pairs_.size() ||
-                 gpu_pcm_pairs_[pcm_index].edge!=edge)))
-                throw std::logic_error(
-                    "GPU Dy source producer changed after PCM publication");
-        }
-        const auto numerical=gpu_normal_prep
-            ?gpu_dy_candidate_sources_[prep_slot].material
-            :prepare_contact_material(
-                reversed?manifold.pair.b:manifold.pair.a,
-                reversed?manifold.pair.a:manifold.pair.b);
-        const float pair_slop=numerical.pair_slop;
-        const float rest_distance=numerical.rest_distance;
-        if(!std::isfinite(rest_distance) ||
-           !std::isfinite(rest_distance+friction_offset_threshold))
-            throw std::overflow_error("Native Dy rest distance overflow");
-        const float pair_max_impulse=numerical.max_contact_impulse;
-        if(pair_max_impulse==0.0f)continue;
-        if(gpu_dy_source_body_order_ && resident_pcm_material) {
-            const auto& source=gpu_dy_candidate_sources_[prep_slot];
-            if(source.contact_begin>=gpu_dy_prewitness_contact_rows_)
-                throw std::logic_error("PCM manager lacks pre-witness row capacity");
-            manifold.solver_offset=source.contact_begin;
-        }
-        const float max_penetration_bias=numerical.max_penetration_bias;
-        const float restitution=numerical.restitution;
-        const float damping=numerical.damping;
-        const float static_friction=numerical.static_friction;
-        const float dynamic_friction=numerical.dynamic_friction;
-        const bool acceleration_spring=numerical.acceleration_spring;
-        const bool disable_friction=numerical.disable_friction;
-        const bool disable_strong_friction=numerical.disable_strong_friction;
-        if(!std::isfinite(restitution) || !std::isfinite(damping) ||
-           !std::isfinite(static_friction) ||
-           !std::isfinite(dynamic_friction))
-            throw std::overflow_error(
-                "Native Pxs material combination overflow");
-
-        // Original DyContactPrep::createContactPatches preserves
-        // CONTIGUOUS Gu runs of compatible normal/material contacts.
-        // DyFrictionCorrelation::correlatePatches then links each run
-        // onto an existing friction patch (new or strong-friction
-        // history), prepending to that patch's correlation list.
-        // Construct those original two passes before preparing normal
-        // rows; simply grouping individual normals loses linked-list
-        // order and fails to prioritize valid previous-frame anchors.
-        constexpr std::size_t max_source_patches=32;
-        const bool resident_pcm=gpu_normal_prep &&
-            manifold.pcm_result_index!=
-                std::numeric_limits<std::uint32_t>::max();
-        std::array<std::size_t,255> contact_patch_ids{};
-        std::array<Vec3,max_source_patches> header_normals{};
-        std::array<std::size_t,max_source_patches> used_heads{};
-        std::size_t kept=0u;
-        if(resident_pcm) {
-            if(manifold.count==0u)
-                throw std::logic_error("Resident PCM has no contact run");
-            const auto& candidate_source=gpu_dy_candidate_sources_[prep_slot];
-            const bool device_select=candidate_source.retained_count!=0u;
-            const auto& request=gpu_pcm_pairs_[manifold.pcm_result_index];
-            const FrictionPatch* retained=nullptr;
-            if(!disable_strong_friction &&
-               candidate_source.retained_single_patch!=0xffffffffu) {
-                if(device_select ||
-                   candidate_source.retained_single_patch>=friction_patches_.size())
-                    throw std::logic_error(
-                        "Pre-witness PCM retained patch is no longer available");
-                retained=&friction_patches_[candidate_source.retained_single_patch];
+        prepare_contact_constraints(manifold,seconds,gpu_normal_prep,
+            gpu_dy_source_body_order_,false,next_cache_epoch);
+    }
+    // Preserve public island-task patch order independently of numerical
+    // source ordinals. Move correlated patches in place, without rebuilding them.
+    if(gpu_dy_prewitness_solve_ && !gpu_dy_gu_inputs_.empty()) {
+        auto& permutation=gpu_dy_public_patch_permutation_;
+        permutation.assign(next_friction_patches_.size(),invalid_instance);
+        std::size_t destination=0u;
+        for(const auto index:indexed_managers_) {
+            auto& manager=manifolds_[index];
+            const auto begin=manager.friction_patch_offset;
+            const auto count=manager.friction_patch_count;
+            if(begin>permutation.size() || count>permutation.size()-begin)
+                throw std::logic_error("Early Gu public patch range is invalid");
+            manager.friction_patch_offset=destination;
+            if(count) {
+                auto& history=next_friction_by_edge_[manager.edge_handle];
+                if(history.epoch!=next_cache_epoch || history.offset!=begin ||
+                   history.count!=count)
+                    throw std::logic_error("Early Gu patch history lost its manager");
+                history.offset=destination;
             }
-            if(!retained && !device_select &&
-               std::popcount(request.friction_history_mask)==max_source_patches)
-                throw std::overflow_error(
-                    "Native source friction correlation exceeds 32 patches");
-            FrictionPatch patch=retained?*retained:FrictionPatch{};
-            if(retained)
-                patch.normal=rotate(
-                    mass_orientation(actor0),retained->body0_normal);
-            else {
-                patch.pair=manifold.pair;
-                patch.static_friction=static_friction;
-                patch.dynamic_friction=dynamic_friction;
-                patch.restitution=restitution;
-                patch.damping=damping;
-                patch.acceleration_spring=acceleration_spring;
-                patch.disable_friction=disable_friction;
-                patch.disable_strong_friction=disable_strong_friction;
-            }
-            const auto& source=gpu_pcm_pairs_[manifold.pcm_result_index];
-            patch.contact_count=static_cast<std::uint16_t>(
-                source.candidate_capacity==1u?1u:4u);
-            patch.contact_ids.fill(0xffff);
-            patch.bounds_min={};
-            patch.bounds_max={};
-            next_friction_patches_.push_back(patch);
-            manifold.friction_patch_count=1u;
-            next_friction_by_edge_[edge]={
-                manifold.pair,manifold.friction_patch_offset,1u,
-                next_cache_epoch};
-        } else {
-        contact_patch_scratch_.clear();
-        // GuPCMContactBoxBox publishes one common world normal for all
-        // selected witnesses of a source box pair. Its contiguous run
-        // is already known: build the original patch bounds once without
-        // repeating general Gu normal/material compatibility checks.
-        if(manifold.pcm_result_index!=
-           std::numeric_limits<std::uint32_t>::max()) {
-            ContactPatchData cp{};
-            cp.start=0u;
-            cp.count=manifold.count;
-            cp.normal=manifold.points.front().normal;
-            if(!gpu_normal_prep) {
-                // CPU Dy owns the exact contact bounds for correlation.
-                // Device Dy derives the extent from its resident PCM
-                // witnesses during friction-anchor preparation instead.
-                cp.bounds_min=cp.bounds_max=manifold.points.front().position;
-                for(std::size_t j=1;j<manifold.count;++j) {
-                    const auto& p=manifold.points[j].position;
-                    cp.bounds_min={
-                        std::min(cp.bounds_min.x,p.x),
-                        std::min(cp.bounds_min.y,p.y),
-                        std::min(cp.bounds_min.z,p.z)};
-                    cp.bounds_max={
-                        std::max(cp.bounds_max.x,p.x),
-                        std::max(cp.bounds_max.y,p.y),
-                        std::max(cp.bounds_max.z,p.z)};
-                }
-            }
-            contact_patch_scratch_.push_back(cp);
-        }else {
-            contact_patch_scratch_.reserve(manifold.count);
-            for(std::size_t j=0;j<manifold.count;++j) {
-                const auto& point=manifold.points[j];
-                if(contact_patch_scratch_.empty() ||
-                   dot(contact_patch_scratch_.back().normal,point.normal)<
-                       same_normal) {
-                    ContactPatchData cp{};
-                    cp.start=j;
-                    cp.count=1;
-                    cp.normal=point.normal;
-                    cp.bounds_min=cp.bounds_max=point.position;
-                    contact_patch_scratch_.push_back(cp);
-                } else {
-                    auto& cp=contact_patch_scratch_.back();
-                    ++cp.count;
-                    cp.bounds_min={
-                        std::min(cp.bounds_min.x,point.position.x),
-                        std::min(cp.bounds_min.y,point.position.y),
-                        std::min(cp.bounds_min.z,point.position.z)};
-                    cp.bounds_max={
-                        std::max(cp.bounds_max.x,point.position.x),
-                        std::max(cp.bounds_max.y,point.position.y),
-                        std::max(cp.bounds_max.z,point.position.z)};
-                }
+            for(std::size_t i=0u;i<count;++i) {
+                auto& target=permutation[begin+i];
+                if(target!=invalid_instance)
+                    throw std::logic_error("Early Gu public patch is owned twice");
+                target=destination++;
             }
         }
-        std::array<std::size_t,max_source_patches> contact_heads{};
-        contact_heads.fill(invalid_instance);
-        // DyContactPrepShared::getFrictionPatches admits prior anchors
-        // FIRST, only with a valid relative normal, separation and
-        // strong-friction state. Fresh contact patches correlate against
-        // this source-ordered cache before creating any new patch.
-        if(!disable_strong_friction && edge<friction_by_edge_.size()) {
-            const auto& history=friction_by_edge_[edge];
-            if(history.epoch==friction_cache_epoch_ &&
-               history.count && history.pair==manifold.pair &&
-               history.offset<=friction_patches_.size() &&
-               history.count<=friction_patches_.size()-history.offset)
-            for(std::size_t previous=history.offset;
-                previous<history.offset+history.count;++previous) {
-                const auto& old=friction_patches_[previous];
-                const bool checked_before_gu=
-                    manifold.pcm_result_index<gpu_pcm_pairs_.size();
-                const bool valid=checked_before_gu
-                    ?(gpu_pcm_pairs_[manifold.pcm_result_index].
-                       friction_history_mask &
-                       (1u<<(previous-history.offset)))!=0u
-                    :cached_friction_patch_valid(old,actor0,actor1);
-                if(!valid)continue;
-                if(manifold.friction_patch_count==max_source_patches)
-                    throw std::overflow_error(
-                        "Native source cached friction exceeds 32 patches");
-                FrictionPatch copied=old;
-                copied.normal=rotate(mass_orientation(actor0),old.body0_normal);
-                copied.contact_count=0;
-                copied.contact_ids.fill(0xffff);
-                copied.bounds_min={
-                    std::numeric_limits<float>::max(),
-                    std::numeric_limits<float>::max(),
-                    std::numeric_limits<float>::max()};
-                copied.bounds_max={
-                    -std::numeric_limits<float>::max(),
-                    -std::numeric_limits<float>::max(),
-                    -std::numeric_limits<float>::max()};
-                next_friction_patches_.push_back(copied);
-                ++manifold.friction_patch_count;
+        if(destination!=permutation.size())
+            throw std::logic_error("Early Gu public patch has no active manager");
+        for(std::size_t i=0u;i<permutation.size();++i)
+            while(permutation[i]!=i) {
+                const auto j=permutation[i];
+                std::swap(next_friction_patches_[i],next_friction_patches_[j]);
+                std::swap(permutation[i],permutation[j]);
             }
-        }
-        for(std::size_t cp_index=0;
-            cp_index<contact_patch_scratch_.size();++cp_index) {
-            auto& cp=contact_patch_scratch_[cp_index];
-            std::size_t local_patch=0;
-            for(;local_patch<manifold.friction_patch_count;++local_patch) {
-                const auto& p=next_friction_patches_[
-                    manifold.friction_patch_offset+local_patch];
-                if(dot(p.normal,cp.normal)>=same_normal &&
-                   p.restitution==restitution &&
-                   p.damping==damping &&
-                   p.acceleration_spring==acceleration_spring &&
-                   p.static_friction==static_friction &&
-                   p.dynamic_friction==dynamic_friction)
-                    break;
-            }
-            if(local_patch==manifold.friction_patch_count) {
-                if(manifold.friction_patch_count==max_source_patches)
-                    throw std::overflow_error(
-                        "Native source friction correlation exceeds 32 patches");
-                FrictionPatch patch{};
-                patch.pair=manifold.pair;
-                patch.normal=cp.normal;
-                patch.static_friction=static_friction;
-                patch.dynamic_friction=dynamic_friction;
-                patch.restitution=restitution;
-                patch.damping=damping;
-                patch.acceleration_spring=acceleration_spring;
-                patch.disable_friction=disable_friction;
-                patch.disable_strong_friction=disable_strong_friction;
-                patch.body0_normal=local_normal(actor0,cp.normal);
-                patch.body1_normal=local_normal(actor1,cp.normal);
-                patch.contact_ids.fill(0xffff);
-                next_friction_patches_.push_back(patch);
-                ++manifold.friction_patch_count;
-            }
-            auto& patch=next_friction_patches_[
-                manifold.friction_patch_offset+local_patch];
-            if(patch.contact_count==0) {
-                patch.bounds_min=cp.bounds_min;
-                patch.bounds_max=cp.bounds_max;
-            } else {
-                patch.bounds_min={
-                    std::min(patch.bounds_min.x,cp.bounds_min.x),
-                    std::min(patch.bounds_min.y,cp.bounds_min.y),
-                    std::min(patch.bounds_min.z,cp.bounds_min.z)};
-                patch.bounds_max={
-                    std::max(patch.bounds_max.x,cp.bounds_max.x),
-                    std::max(patch.bounds_max.y,cp.bounds_max.y),
-                    std::max(patch.bounds_max.z,cp.bounds_max.z)};
-            }
-            patch.contact_count+=static_cast<std::uint16_t>(cp.count);
-            cp.next=contact_heads[local_patch];
-            contact_heads[local_patch]=cp_index;
-            for(std::size_t j=cp.start;j<cp.start+cp.count;++j)
-                contact_patch_ids[j]=manifold.friction_patch_offset+local_patch;
-        }
-        // Source writes only friction patches with correlated contacts;
-        // unused cached patches are never returned to the next frame.
-        // Compact the same cache arena and remap Gu point/linked-list
-        // indices together without allocating a second patch registry.
-        std::array<std::size_t,max_source_patches> remap{};
-
-        for(std::size_t j=0;j<manifold.friction_patch_count;++j) {
-            const std::size_t src=manifold.friction_patch_offset+j;
-            if(next_friction_patches_[src].contact_count==0)continue;
-            remap[j]=kept;
-            used_heads[kept]=contact_heads[j];
-            if(kept!=j)
-                next_friction_patches_[manifold.friction_patch_offset+kept]=
-                    next_friction_patches_[src];
-            ++kept;
-        }
-        for(std::size_t j=0;j<manifold.count;++j)
-            contact_patch_ids[j]=manifold.friction_patch_offset+
-                remap[contact_patch_ids[j]-manifold.friction_patch_offset];
-        manifold.friction_patch_count=static_cast<std::uint8_t>(kept);
-        next_friction_patches_.resize(manifold.friction_patch_offset+kept);
-        next_friction_by_edge_[edge]={manifold.pair,
-            manifold.friction_patch_offset,manifold.friction_patch_count,
-            next_cache_epoch};
-        // DyContactPrep.cpp::setupFinalizeSolverConstraints selects the
-        // first Gu normal of each reverse correlation-list head ONCE for
-        // its SolverContactHeader. That one normal governs *all* contact
-        // Jacobians, effective masses, restitution projections and both
-        // friction tangents in the header. It is distinct from a cached
-        // FrictionPatch::body0Normal/body1Normal, which belong to the
-        // older strong-friction anchor correlation lifecycle.
-        for(std::size_t j=0;j<kept;++j) {
-            const auto head=used_heads[j];
-            if(head==invalid_instance)
-                throw std::logic_error(
-                    "Source correlated friction patch has no contact head");
-            header_normals[j]=
-                manifold.points[contact_patch_scratch_[head].start].normal;
-        }
-        }
-        if(gpu_normal_prep) {
-            const auto source=manifold.candidate_ordinal;
-            const auto slot=source<gpu_dy_contact_prep_indices_.size()
-                ?gpu_dy_contact_prep_indices_[source]:0xffffffffu;
-            const auto dense=slot&~unadmitted_dy_prep;
-            if(slot==0xffffffffu ||
-               (slot&unadmitted_dy_prep)==0u ||
-               dense>=gpu_dy_contact_prep_pairs_.size() ||
-               dense>=gpu_dy_contact_prep_sources_.size() ||
-               gpu_dy_contact_prep_sources_[dense]!=source ||
-               !(previous_pairs_[source]==manifold.pair) ||
-               active_edge_handles_[source]!=edge)
-                throw std::logic_error(
-                    "Source GPU contact prep lost its original Sc candidate");
-            auto& prep=gpu_dy_contact_prep_pairs_[dense];
-            const auto pcm_index=prep.pcm_pair_index;
-            if(prep.source_body0!=id0 || prep.source_body1!=id1 ||
-               prep.pcm_pair_index!=pcm_index ||
-               (pcm_index!=0xffffffffu && prep.pcm_edge!=edge) ||
-               prep.rest_distance!=rest_distance ||
-               prep.pair_slop!=pair_slop ||
-               prep.restitution!=restitution ||
-               prep.damping!=damping ||
-               prep.max_penetration_bias!=max_penetration_bias ||
-               prep.inv_dt!=inv_dt || prep.seconds!=seconds ||
-               prep.rigid_contact_bias!=rigid_contact_bias ||
-               prep.bounce_threshold!=bounce_threshold ||
-               prep.acceleration_spring!=(acceleration_spring?1u:0u) ||
-               prep.max_contact_impulse!=pair_max_impulse)
-                throw std::logic_error(
-                    "Dy numerical source differs from pre-witness material");
-            const bool resident0=actor0.motion==Motion::Dynamic &&
-                !actor0.sleeping;
-            const bool resident1=actor1.motion==Motion::Dynamic &&
-                !actor1.sleeping;
-            prep.inverse_mass0=resident0?actor0.inverse_mass:a.inverse_mass;
-            prep.inverse_mass1=resident1?actor1.inverse_mass:b.inverse_mass;
-            // Early device graphs resolve responding endpoints from source admission.
-            if(!gpu_dy_source_body_order_ &&
-               (!gpu_dy_early_islands_ || !gpu_dy_early_joint_edges_.empty())) {
-                const auto pack_ordinal=[&](const Actor& actor) {
-                    if(!rigid_node(actor.motion))return invalid_solver_row;
-                    if(actor.solver_row_generation!=solver_preparation_generation_ ||
-                       actor.solver_row_index>=solver_rows_.size() ||
-                       actor.solver_row_index>=invalid_solver_row)
-                        throw std::logic_error(
-                            "GPU Dy contact preparation lacks a solver row");
-                    return static_cast<std::uint32_t>(actor.solver_row_index);
-                };
-                prep.solver_ordinal0=pack_ordinal(actor0);
-                prep.solver_ordinal1=pack_ordinal(actor1);
-            }
-            if(pcm_index==0xffffffffu) {
-                if(gpu_dy_gu_inputs_.size()>=
-                   std::numeric_limits<std::uint32_t>::max())
-                    throw std::overflow_error(
-                        "Source CPU Gu geometry exceeds 32-bit view");
-                prep.cpu_gu_offset=static_cast<std::uint32_t>(
-                    gpu_dy_gu_inputs_.size());
-            }
-            gpu_dy_contact_prep_indices_[source]=dense;
-        }
-        // CPU PGS retains the complete correlated contact order.
-        // Device Dy needs explicit indices only for non-PCM Gu:
-        // PCM's source-ordered contact run is already resident.
-        const bool resident_order=resident_pcm;
-        const auto order_begin=gpu_normal_prep
-            ?gpu_dy_contact_order_.size():solver_contact_order_.size();
-        if(!resident_order)
-            for(std::size_t j=0;j<kept;++j)
-                for(std::size_t cp=used_heads[j];cp!=invalid_instance;
-                    cp=contact_patch_scratch_[cp].next)
-                    for(std::size_t c=contact_patch_scratch_[cp].start;
-                        c<contact_patch_scratch_[cp].start+
-                          contact_patch_scratch_[cp].count;++c) {
-                        const auto index=manifold.solver_offset+c;
-                        if(gpu_normal_prep) {
-                            if(index>=std::numeric_limits<std::uint32_t>::max())
-                                throw std::overflow_error(
-                                    "GPU Dy contact order exceeds 32-bit rows");
-                            gpu_dy_contact_order_.push_back(
-                                static_cast<std::uint32_t>(index));
-                        } else solver_contact_order_.push_back(index);
-                    }
-        const auto order_end=gpu_normal_prep
-            ?gpu_dy_contact_order_.size():solver_contact_order_.size();
-        if(order_end-order_begin!=(resident_order?0u:manifold.count))
-            throw std::logic_error(
-                "Source correlation omitted a Gu contact descriptor");
-        // Device PCM owns the emitted count. Sc reserves numerical rows
-        // from source pair capacity without inspecting Gu witnesses.
-        if(resident_order) {
-            const auto capacity=gpu_pcm_pairs_[
-                manifold.pcm_result_index].candidate_capacity==1u?1u:4u;
-            if(manifold.count>capacity)
-                throw std::overflow_error("Source PCM numerical capacity overflow");
-            if(gpu_dy_source_body_order_) {
-                if(manifold.solver_offset>gpu_dy_prewitness_contact_rows_ ||
-                   capacity>gpu_dy_prewitness_contact_rows_-manifold.solver_offset)
-                    throw std::logic_error("PCM contact exceeds pre-witness row range");
-            }else {
-                if(capacity>std::numeric_limits<std::size_t>::max()-
-                    prepared_contact_rows_)
-                    throw std::overflow_error("Source PCM numerical capacity overflow");
-                prepared_contact_rows_+=capacity;
-            }
-        } else for(std::size_t j=0;j<manifold.count;++j) {
-            const ContactPoint& contact=manifold.points[j];
-            const std::size_t patch_id=contact_patch_ids[j];
-            const Vec3 normal=header_normals[
-                patch_id-manifold.friction_patch_offset];
-            if(gpu_normal_prep) {
-                // Sc retains the Gu ordinal, not a shadow Jacobian.
-                // CPU Gu packs the correlated header normal while
-                // PCM geometry remains in the resident contact stream.
-                if(manifold.pcm_result_index==
-                   std::numeric_limits<std::uint32_t>::max()) {
-                    GpuDyGuContactInput gu{};
-                    gu.normal[0]=normal.x;
-                    gu.normal[1]=normal.y;
-                    gu.normal[2]=normal.z;
-                    gu.position[0]=contact.position.x;
-                    gu.position[1]=contact.position.y;
-                    gu.position[2]=contact.position.z;
-                    gu.separation=contact.separation;
-                    gpu_dy_gu_inputs_.push_back(gu);
-                }
-                ++prepared_contact_rows_;
-                continue;
-            }
-            Vec3 ra_x_n = cross(sub(contact.position,a.position),normal);
-            Vec3 rb_x_n = cross(sub(contact.position,b.position),normal);
-            const float linear_vrel =
-                dot(normal,sub(a.linear_velocity,b.linear_velocity));
-            // DyContactPrepShared scales the slop by
-            // max(vRelAngular/vRelLinear,1). A zero linear velocity uses
-            // PX_MAX_REAL as the source's ratio fallback.
-            if(pair_slop>0.0f) {
-                const float raw_angular_vrel=
-                    dot(ra_x_n,a.angular_velocity)-
-                    dot(rb_x_n,b.angular_velocity);
-                const float ratio=linear_vrel==0.0f
-                    ? std::numeric_limits<float>::max()
-                    : raw_angular_vrel/linear_vrel;
-                const float normal_slop=pair_slop*std::max(ratio,1.0f);
-                ra_x_n=suppress_slop(ra_x_n,normal_slop);
-                rb_x_n=suppress_slop(rb_x_n,normal_slop);
-            }
-            const Vec3 ra = transform(a,ra_x_n);
-            const Vec3 rb = transform(b,rb_x_n);
-            const float angular_vrel =
-                dot(ra_x_n,a.angular_velocity)-dot(rb_x_n,b.angular_velocity);
-            const float vrel = linear_vrel+angular_vrel;
-            const float response = (a.inverse_mass+dot(ra,ra)) +
-                (b.inverse_mass+dot(rb,rb));
-            const float vel_multiplier = response > 0.0f
-                ? 1.0f / response : 0.0f;
-            const float penetration = contact.separation-rest_distance;
-            const float penetration_inv_dt = penetration*inv_dt;
-            const bool separated = penetration >= 0.0f;
-            const bool closing = -vrel > penetration_inv_dt;
-            const bool bouncing = restitution > 0.0f &&
-                bounce_threshold > vrel && closing;
-            const float target_velocity = bouncing
-                ? -vrel*restitution : 0.0f;
-            SolverContactPoint row{};
-            row.normal=normal;
-            row.ra_x_n_sqrt_inertia=ra;
-            row.rb_x_n_sqrt_inertia=rb;
-            row.friction_patch=patch_id;
-            row.max_impulse=pair_max_impulse;
-            const float target=(target_velocity-vrel);
-            if(restitution<0.0f) {
-                // DyContactPrepShared::computeCompliantContactCoefficients
-                // disables damping for separated nonclosing contacts.
-                // Force springs use unitResponse; acceleration springs
-                // use the reciprocal response as a mass factor.
-                const float enabled_damping=
-                    separated && !closing ? 0.0f : damping;
-                const float nrdt=seconds*restitution;
-                const float a_coeff=seconds*
-                    (enabled_damping-nrdt);
-                const float mass_factor=acceleration_spring
-                    ? vel_multiplier : 1.0f;
-                const float x=1.0f/(1.0f+a_coeff*
-                    (acceleration_spring ? 1.0f : response));
-                const float bias=x*(-nrdt*penetration*mass_factor);
-                row.velocity_multiplier=x*a_coeff*mass_factor;
-                row.impulse_multiplier=1.0f-x;
-                row.biased_error=target*row.velocity_multiplier-bias;
-                row.unbiased_error=row.biased_error;
-            } else {
-                // Normal restitution keeps a distinct unbiased
-                // velocity-pass error after the biased position passes.
-                const float penetration_inv_dt_scaled=separated
-                    ? penetration_inv_dt
-                    : penetration*(inv_dt*rigid_contact_bias);
-                const float scaled_bias=bouncing ? 0.0f :
-                    vel_multiplier*std::max(
-                        max_penetration_bias,penetration_inv_dt_scaled);
-                row.velocity_multiplier=vel_multiplier;
-                row.biased_error=target*vel_multiplier-scaled_bias;
-                row.unbiased_error=target*vel_multiplier-
-                    (bouncing?0.0f:std::max(scaled_bias,0.0f));
-            }
-            if (!std::isfinite(response) ||
-                !std::isfinite(row.biased_error) ||
-                !std::isfinite(row.unbiased_error) ||
-                !std::isfinite(row.impulse_multiplier) ||
-                !std::isfinite(row.velocity_multiplier))
-                throw std::overflow_error("Native Dy contact preparation overflow");
-            solver_contact_points_.push_back(row);
-            ++prepared_contact_rows_;
-        }
-        // DyFrictionCorrelation::growPatches: retain up to two anchors
-        // spread across each friction patch's contact bounds; the anchors
-        // persist in the body-local frames, not as world-space contacts.
-        for (std::size_t patch_id=manifold.friction_patch_offset;
-             patch_id<next_friction_patches_.size(); ++patch_id) {
-            auto& patch = next_friction_patches_[patch_id];
-            // PxsCombineMaterials::eDISABLE_FRICTION produces zero
-            // tangent constraints. Do not grow anchors or compute
-            // local-to-world error/Jacobians for disabled patches.
-            if (patch.disable_friction) {
-                patch.anchor_count=0;
-                patch.row_offset=gpu_dy_source_body_order_ && resident_pcm
-                    ?gpu_dy_candidate_sources_[prep_slot].friction_begin
-                    :prepared_friction_rows_;
-                continue;
-            }
-            if(gpu_normal_prep && manifold.pcm_result_index!=
-               std::numeric_limits<std::uint32_t>::max()) {
-                // A PCM box manager publishes one common Gu normal and
-                // therefore one correlated patch. Retain the source
-                // cached anchors as input; GPU Dy grows them directly
-                // from device Gu contacts before building tangent rows.
-                const auto& source=gpu_pcm_pairs_[manifold.pcm_result_index];
-                if(manifold.friction_patch_count!=1u ||
-                   patch.contact_count!=
-                       (source.candidate_capacity==1u?1u:4u))
-                    throw std::logic_error(
-                        "Source GPU PCM friction is not one correlated patch");
-                if(gpu_dy_source_body_order_) {
-                    patch.row_offset=gpu_dy_candidate_sources_[prep_slot].friction_begin;
-                    if(patch.row_offset>gpu_dy_prewitness_friction_rows_ ||
-                       4u>gpu_dy_prewitness_friction_rows_-patch.row_offset)
-                        throw std::logic_error("PCM friction exceeds pre-witness row range");
-                }else {
-                    patch.row_offset=prepared_friction_rows_;
-                    gpu_dy_friction_anchors_.resize(
-                        gpu_dy_friction_anchors_.size()+2u);
-                    prepared_friction_rows_+=4u;
-                }
-                continue;
-            }
-            const Vec3 extent=sub(patch.bounds_max,patch.bounds_min);
-            const float diagonal_sq=squared_length(extent);
-            bool keep_pair=false;
-            if(patch.anchor_count==2) {
-                const Vec3 diff=sub(patch.body0_anchors[0],
-                                    patch.body0_anchors[1]);
-                // DyFrictionCorrelation::growPatches retains a cached
-                // two-anchor pair only when its spacing still covers
-                // at least one-quarter of the current patch diagonal.
-                // The source skips the anchor search in this case.
-                keep_pair=squared_length(diff)*4.0f>=diagonal_sq;
-                if(!keep_pair)patch.anchor_count=0;
-            }
-            std::array<Vec3,2> anchors{};
-            // DyFrictionCorrelation::growPatches selects replacement
-            // anchors as well as newly appended ones. A retained slot
-            // must remain untouched unless the search replaces it.
-            // The upstream j=oldCount publication misses replacements
-            // of slot zero after a cached one-anchor patch grows.
-            std::array<bool,2> changed{};
-            std::uint8_t count=patch.anchor_count;
-            if(!keep_pair) {
-                if(count==1)
-                    anchors[0]=world_point(actor0,patch.body0_anchors[0]);
-                float point_dist_sq=0.0f;
-                // The correlation linked list prepends each contact
-                // patch, so source growPatches sees its runs in reverse
-                // admission order, not in canonical Gu contact order.
-                const std::size_t local=patch_id-
-                    manifold.friction_patch_offset;
-                for(std::size_t cp=used_heads[local];
-                    cp!=invalid_instance;
-                    cp=contact_patch_scratch_[cp].next) {
-                    const auto& run=contact_patch_scratch_[cp];
-                    for(std::size_t j=run.start;j<run.start+run.count;++j) {
-                        const auto& point=manifold.points[j];
-                        if(point.separation>=
-                           friction_offset_threshold+rest_distance)
-                            continue;
-                        const Vec3 w=point.position;
-                        if(count==0) {
-                            patch.contact_ids[0]=static_cast<std::uint16_t>(j);
-                            anchors[0]=w;
-                            changed[0]=true;
-                            ++count;
-                        } else if(count==1) {
-                            const float d=squared_length(sub(w,anchors[0]));
-                            if(d>1.0e-8f) {
-                                patch.contact_ids[1]=static_cast<std::uint16_t>(j);
-                                anchors[1]=w;
-                                changed[1]=true;
-                                point_dist_sq=d;
-                                ++count;
-                            }
-                        } else {
-                            const float d0=squared_length(sub(w,anchors[0]));
-                            const float d1=squared_length(sub(w,anchors[1]));
-                            if(d0>d1 && d0>point_dist_sq) {
-                                patch.contact_ids[1]=static_cast<std::uint16_t>(j);
-                                anchors[1]=w;
-                                changed[1]=true;
-                                point_dist_sq=d0;
-                            } else if(d1>=d0 && d1>point_dist_sq) {
-                                patch.contact_ids[0]=static_cast<std::uint16_t>(j);
-                                anchors[0]=w;
-                                changed[0]=true;
-                                point_dist_sq=d1;
-                            }
-                        }
-                    }
-                }
-                for(std::size_t k=0;k<count;++k) {
-                    if(!changed[k])continue;
-                    patch.body0_anchors[k]=local_point(actor0,anchors[k]);
-                    patch.body1_anchors[k]=local_point(actor1,anchors[k]);
-                }
-                if(count==0) {
-                    patch.body0_anchors[0]={};
-                    patch.body1_anchors[0]={};
-                }
-            }
-            patch.anchor_count=count;
-            patch.row_offset=prepared_friction_rows_;
-            if (count==0) continue;
-            // DyContactPrep.cpp constructs tangents from relative linear
-            // velocity, with the same 0.7071f normal-axis fallback and
-            // 1e-4 squared-tangent threshold as the source.
-            if(gpu_normal_prep) {
-                // Sc retains the body-local anchors; the device authors
-                // both tangent Jacobians without CPU row placeholders.
-                for(std::size_t k=0u;k<count;++k) {
-                    GpuDyFrictionAnchorInput anchor{};
-                    const Vec3 x=patch.body0_anchors[k];
-                    const Vec3 y=patch.body1_anchors[k];
-                    anchor.local_a[0]=x.x;anchor.local_a[1]=x.y;
-                    anchor.local_a[2]=x.z;
-                    anchor.local_b[0]=y.x;anchor.local_b[1]=y.y;
-                    anchor.local_b[2]=y.z;
-                    gpu_dy_friction_anchors_.push_back(anchor);
-                }
-                prepared_friction_rows_+=count*2u;
-                continue;
-            }
-            const Vec3 n=header_normals[
-                patch_id-manifold.friction_patch_offset];
-            const Vec3 rel=sub(a.linear_velocity,b.linear_velocity);
-            Vec3 t0=sub(rel,{n.x*dot(rel,n),
-                              n.y*dot(rel,n),n.z*dot(rel,n)});
-            if (squared_length(t0)<=0.0001f) {
-                t0=std::abs(n.x)<0.70710678f
-                    ? Vec3{0.0f,-n.z,n.y}
-                    : Vec3{-n.y,n.x,0.0f};
-            }
-            const float inv_l=1.0f/std::sqrt(squared_length(t0));
-            t0={t0.x*inv_l,t0.y*inv_l,t0.z*inv_l};
-            const Vec3 t1=cross(n,t0);
-            for (std::size_t k=0;k<count;++k) {
-                const Vec3 ra=rotate(mass_orientation(actor0),patch.body0_anchors[k]);
-                const Vec3 rb=rotate(mass_orientation(actor1),patch.body1_anchors[k]);
-                const Vec3 center0=mass_position(actor0),center1=mass_position(actor1);
-                const Vec3 error=suppress_slop(sub(
-                    {ra.x+center0.x,ra.y+center0.y,ra.z+center0.z},
-                    {rb.x+center1.x,rb.y+center1.y,rb.z+center1.z}),pair_slop);
-                for (const Vec3 tangent : {t0,t1}) {
-                    const Vec3 ax0=suppress_slop(cross(ra,tangent),pair_slop);
-                    const Vec3 ax1=suppress_slop(cross(rb,tangent),pair_slop);
-                    const Vec3 j0=transform(a,ax0);
-                    const Vec3 j1=transform(b,ax1);
-                    const float response=(a.inverse_mass+dot(j0,j0))
-                        +(b.inverse_mass+dot(j1,j1));
-                    SolverContactFriction fr{};
-                    fr.tangent=tangent;
-                    fr.ra_x_t_sqrt_inertia=j0;
-                    fr.rb_x_t_sqrt_inertia=j1;
-                    fr.velocity_multiplier=response>0.0f
-                        ? rigid_contact_bias/response : 0.0f;
-                    fr.bias=dot(tangent,error)*inv_dt;
-                    fr.target_velocity=-(dot(tangent,rel)
-                        +dot(ax0,a.angular_velocity)
-                        -dot(ax1,b.angular_velocity));
-                    if (!std::isfinite(response) ||
-                        !std::isfinite(fr.velocity_multiplier) ||
-                        !std::isfinite(fr.bias) ||
-                        !std::isfinite(fr.target_velocity))
-                        throw std::overflow_error(
-                            "Native source friction row preparation overflow");
-                    solver_friction_rows_.push_back(fr);
-                }
-            }
-            prepared_friction_rows_+=count*2u;
-        }
     }
     if(gpu_normal_prep && gpu_dy_source_body_order_) {
         // PCM keeps its original preparation and manager addresses.
@@ -10400,6 +10516,143 @@ std::size_t Scene::gpu_dy_source_body_index(BodyId id) const {
     return static_cast<std::size_t>(it-ids.begin())+
         (kinematic?gpu_dy_early_actor_ids_.size():0u);
 }
+void Scene::pack_gpu_dy_contact_descriptor(
+        const ContactManifold& m,std::span<const FrictionPatch> source_patches,
+        bool early_device_admission,std::size_t& explicit_order_cursor) {
+    const auto narrow=[](std::size_t value) {
+        if(value>=std::numeric_limits<std::uint32_t>::max())
+            throw std::overflow_error("Native GPU Dy row index exceeds 32 bits");
+        return static_cast<std::uint32_t>(value);
+    };
+    const auto pack=[](float(&out)[3],Vec3 v) {
+        out[0]=v.x;out[1]=v.y;out[2]=v.z;
+    };
+    constexpr std::uint32_t device_contact_order=0x80000000u;
+    if(m.friction_patch_offset>source_patches.size() ||
+       m.friction_patch_count>
+           source_patches.size()-m.friction_patch_offset)
+        throw std::logic_error("GPU Dy contact patch range invalid");
+    // A dormant Gu manager retains geometry but has no prepared
+    // normal rows; source CPU PGS skips its zero-patch descriptor.
+    if(!m.friction_patch_count)return;
+    const auto source=m.candidate_ordinal;
+    if(source>=gpu_dy_contact_prep_indices_.size())
+        throw std::logic_error("GPU Dy numerical source exceeds Sc candidates");
+    const auto prep_index=gpu_dy_contact_prep_indices_[source];
+    if(prep_index>=gpu_dy_contact_prep_pairs_.size() ||
+       prep_index>=gpu_dy_candidate_sources_.size())
+        throw std::logic_error("GPU Dy source lacks its compact numerical preparation");
+    const auto pcm_index=gpu_dy_contact_prep_pairs_[
+        prep_index].pcm_pair_index;
+    const bool resident_pcm=pcm_index!=
+        std::numeric_limits<std::uint32_t>::max();
+    if(resident_pcm &&
+       (pcm_index>=gpu_pcm_pairs_.size() ||
+        gpu_pcm_pairs_[pcm_index].edge!=m.edge_handle ||
+        m.pcm_result_index!=pcm_index))
+        throw std::logic_error("GPU Dy PCM source changed after witness");
+    const std::size_t numerical_count=resident_pcm
+        ?(gpu_pcm_pairs_[pcm_index].candidate_capacity==1u
+            ?1u:4u):m.count;
+    if(m.count>numerical_count ||
+       m.solver_offset>prepared_contact_rows_ ||
+       numerical_count>prepared_contact_rows_-m.solver_offset)
+        throw std::logic_error("GPU Dy contact row window invalid");
+    if(source>=gpu_dy_contact_prep_indices_.size() ||
+       gpu_dy_contact_prep_indices_[source]==0xffffffffu)
+        throw std::logic_error("Source GPU candidate has no contact preparation");
+    if(source!=m.candidate_ordinal ||
+       source>=gpu_dy_manifolds_.size() ||
+       !(previous_pairs_[source]==m.pair) ||
+       active_edge_handles_[source]!=m.edge_handle)
+        throw std::logic_error(
+            "GPU Dy contact source differs from Sc candidate identity");
+    if(early_device_admission && resident_pcm) {
+        const auto& manager=gpu_dy_manifolds_[source];
+        if(manager.patch_count!=1u || manager.patch_offset!=pcm_index ||
+           manager.prep_index!=prep_index ||
+           manager.source_order_offset!=m.solver_offset ||
+           gpu_dy_patches_[pcm_index].contact_count!=numerical_count)
+            throw std::logic_error("PCM publication changed numerical source descriptor");
+        return;
+    }
+    const auto patch_begin=early_device_admission
+        ?gpu_dy_patches_.size():m.friction_patch_offset;
+    if(early_device_admission)
+        gpu_dy_patches_.resize(patch_begin+m.friction_patch_count);
+    // PCM owns the active numerical count; Sc reserves the window.
+    gpu_dy_manifolds_[source]={
+        narrow(patch_begin),m.friction_patch_count,
+        resident_pcm?0xffffffffu:narrow(m.solver_offset),
+        resident_pcm?0u:narrow(numerical_count),
+        gpu_dy_contact_prep_indices_[source],narrow(m.solver_offset)};
+    std::size_t cursor=m.solver_offset;
+    for(std::size_t i=m.friction_patch_offset;
+        i<m.friction_patch_offset+m.friction_patch_count;++i) {
+        const auto& patch=source_patches[i];
+        if(patch.row_offset>prepared_friction_rows_ ||
+           patch.anchor_count>2u ||
+           patch.anchor_count*2u>
+               prepared_friction_rows_-patch.row_offset ||
+           cursor<m.solver_offset ||
+           cursor-m.solver_offset>numerical_count ||
+           patch.contact_count>
+               numerical_count-(cursor-m.solver_offset))
+            throw std::logic_error("GPU Dy friction patch rows invalid");
+        const bool pcm_growth=resident_pcm &&
+            !patch.disable_friction;
+        if(pcm_growth) {
+            if(patch.row_offset%2u || patch.row_offset/2u+2u>
+               gpu_dy_friction_anchors_.size())
+                throw std::logic_error(
+                    "Source GPU PCM has no room for two friction anchors");
+            for(std::size_t k=0u;k<patch.anchor_count;++k) {
+                auto& anchor=gpu_dy_friction_anchors_[patch.row_offset/2u+k];
+                pack(anchor.local_a,patch.body0_anchors[k]);
+                pack(anchor.local_b,patch.body1_anchors[k]);
+            }
+        }
+        std::uint32_t order_offset=0u;
+        if(resident_pcm) {
+            if(cursor>=device_contact_order ||
+               numerical_count>device_contact_order-cursor)
+                throw std::overflow_error(
+                    "GPU PCM direct contact order exceeds address space");
+        } else {
+            order_offset=narrow(explicit_order_cursor);
+            if(explicit_order_cursor>gpu_dy_contact_order_.size() ||
+               patch.contact_count>
+                   gpu_dy_contact_order_.size()-explicit_order_cursor)
+                throw std::logic_error(
+                    "CPU Gu contact correlation order is incomplete");
+            explicit_order_cursor+=patch.contact_count;
+        }
+        const bool cached_normal=pcm_growth && patch.anchor_count>0u;
+        const auto& source=gpu_dy_candidate_sources_[prep_index];
+        const bool select_history=pcm_growth && source.retained_count!=0u;
+        if(select_history && (patch.anchor_count!=0u ||
+           source.retained_count>32u))
+            throw std::logic_error(
+                "Device-retained PCM candidates require a fresh patch");
+        gpu_dy_patches_[patch_begin+i-m.friction_patch_offset]={
+            narrow(patch.row_offset),
+            narrow(resident_pcm?numerical_count:patch.contact_count),
+            patch.anchor_count,(patch.broken?1u:0u)|
+                (pcm_growth?0x80000000u:0u)|
+                (cached_normal?0x20000000u:0u)|
+                (select_history?0x10000000u|
+                    (source.retained_count<<8u)|
+                    (source.retained_full?0x04000000u:0u):0u),
+            patch.static_friction,patch.dynamic_friction,
+            order_offset,
+            select_history?source.retained_first:
+                cached_normal?encode_dy_cached_normal(patch.body0_normal):0u};
+        cursor+=patch.contact_count;
+    }
+    if(cursor!=m.solver_offset+numerical_count)
+        throw std::logic_error("GPU Dy source patch contact stream truncated");
+}
+
 void Scene::solve_gpu_distance_constraints(float seconds) {
     FYZZ_PROFILE_SCOPE("dy.gpu_enqueue_join");
     // Source Dy owns task, body and 1D row order; the device receives
@@ -10656,134 +10909,12 @@ void Scene::solve_gpu_distance_constraints(float seconds) {
              gpu_dy_manifolds_.size()!=previous_pairs_.size())
         throw std::logic_error("Early PCM numerical descriptors lost source capacity");
     std::size_t explicit_order_cursor=0u;
-    constexpr std::uint32_t device_contact_order=0x80000000u;
     for(const auto manager_index:indexed_managers_) {
         const auto& m=manifolds_[manager_index];
         if(m.prepared_friction_epoch!=friction_cache_epoch_)
             throw std::logic_error("GPU Dy contact manager is not prepared");
-        if(m.friction_patch_offset>friction_patches_.size() ||
-           m.friction_patch_count>
-               friction_patches_.size()-m.friction_patch_offset)
-            throw std::logic_error("GPU Dy contact patch range invalid");
-        // A dormant Gu manager retains geometry but has no prepared
-        // normal rows; source CPU PGS skips its zero-patch descriptor.
-        if(!m.friction_patch_count)continue;
-        const auto source=m.candidate_ordinal;
-        if(source>=gpu_dy_contact_prep_indices_.size())
-            throw std::logic_error("GPU Dy numerical source exceeds Sc candidates");
-        const auto prep_index=gpu_dy_contact_prep_indices_[source];
-        if(prep_index>=gpu_dy_contact_prep_pairs_.size() ||
-           prep_index>=gpu_dy_candidate_sources_.size())
-            throw std::logic_error("GPU Dy source lacks its compact numerical preparation");
-        const auto pcm_index=gpu_dy_contact_prep_pairs_[
-            prep_index].pcm_pair_index;
-        const bool resident_pcm=pcm_index!=
-            std::numeric_limits<std::uint32_t>::max();
-        if(resident_pcm &&
-           (pcm_index>=gpu_pcm_pairs_.size() ||
-            gpu_pcm_pairs_[pcm_index].edge!=m.edge_handle ||
-            m.pcm_result_index!=pcm_index))
-            throw std::logic_error("GPU Dy PCM source changed after witness");
-        const std::size_t numerical_count=resident_pcm
-            ?(gpu_pcm_pairs_[pcm_index].candidate_capacity==1u
-                ?1u:4u):m.count;
-        if(m.count>numerical_count ||
-           m.solver_offset>prepared_contact_rows_ ||
-           numerical_count>prepared_contact_rows_-m.solver_offset)
-            throw std::logic_error("GPU Dy contact row window invalid");
-        if(source>=gpu_dy_contact_prep_indices_.size() ||
-           gpu_dy_contact_prep_indices_[source]==0xffffffffu)
-            throw std::logic_error("Source GPU candidate has no contact preparation");
-        if(source!=m.candidate_ordinal ||
-           source>=gpu_dy_manifolds_.size() ||
-           !(previous_pairs_[source]==m.pair) ||
-           active_edge_handles_[source]!=m.edge_handle)
-            throw std::logic_error(
-                "GPU Dy contact source differs from Sc candidate identity");
-        if(early_device_admission && resident_pcm) {
-            const auto& manager=gpu_dy_manifolds_[source];
-            if(manager.patch_count!=1u || manager.patch_offset!=pcm_index ||
-               manager.prep_index!=prep_index ||
-               manager.source_order_offset!=m.solver_offset ||
-               gpu_dy_patches_[pcm_index].contact_count!=numerical_count)
-                throw std::logic_error("PCM publication changed numerical source descriptor");
-            continue;
-        }
-        const auto patch_begin=early_device_admission
-            ?gpu_dy_patches_.size():m.friction_patch_offset;
-        if(early_device_admission)
-            gpu_dy_patches_.resize(patch_begin+m.friction_patch_count);
-        // PCM owns the active numerical count; Sc reserves the window.
-        gpu_dy_manifolds_[source]={
-            narrow(patch_begin),m.friction_patch_count,
-            resident_pcm?0xffffffffu:narrow(m.solver_offset),
-            resident_pcm?0u:narrow(numerical_count),
-            gpu_dy_contact_prep_indices_[source],narrow(m.solver_offset)};
-        std::size_t cursor=m.solver_offset;
-        for(std::size_t i=m.friction_patch_offset;
-            i<m.friction_patch_offset+m.friction_patch_count;++i) {
-            const auto& patch=friction_patches_[i];
-            if(patch.row_offset>prepared_friction_rows_ ||
-               patch.anchor_count>2u ||
-               patch.anchor_count*2u>
-                   prepared_friction_rows_-patch.row_offset ||
-               cursor<m.solver_offset ||
-               cursor-m.solver_offset>numerical_count ||
-               patch.contact_count>
-                   numerical_count-(cursor-m.solver_offset))
-                throw std::logic_error("GPU Dy friction patch rows invalid");
-            const bool pcm_growth=resident_pcm &&
-                !patch.disable_friction;
-            if(pcm_growth) {
-                if(patch.row_offset%2u || patch.row_offset/2u+2u>
-                   gpu_dy_friction_anchors_.size())
-                    throw std::logic_error(
-                        "Source GPU PCM has no room for two friction anchors");
-                for(std::size_t k=0u;k<patch.anchor_count;++k) {
-                    auto& anchor=gpu_dy_friction_anchors_[patch.row_offset/2u+k];
-                    pack(anchor.local_a,patch.body0_anchors[k]);
-                    pack(anchor.local_b,patch.body1_anchors[k]);
-                }
-            }
-            std::uint32_t order_offset=0u;
-            if(resident_pcm) {
-                if(cursor>=device_contact_order ||
-                   numerical_count>device_contact_order-cursor)
-                    throw std::overflow_error(
-                        "GPU PCM direct contact order exceeds address space");
-            } else {
-                order_offset=narrow(explicit_order_cursor);
-                if(explicit_order_cursor>gpu_dy_contact_order_.size() ||
-                   patch.contact_count>
-                       gpu_dy_contact_order_.size()-explicit_order_cursor)
-                    throw std::logic_error(
-                        "CPU Gu contact correlation order is incomplete");
-                explicit_order_cursor+=patch.contact_count;
-            }
-            const bool cached_normal=pcm_growth && patch.anchor_count>0u;
-            const auto& source=gpu_dy_candidate_sources_[prep_index];
-            const bool select_history=pcm_growth && source.retained_count!=0u;
-            if(select_history && (patch.anchor_count!=0u ||
-               source.retained_count>32u))
-                throw std::logic_error(
-                    "Device-retained PCM candidates require a fresh patch");
-            gpu_dy_patches_[patch_begin+i-m.friction_patch_offset]={
-                narrow(patch.row_offset),
-                narrow(resident_pcm?numerical_count:patch.contact_count),
-                patch.anchor_count,(patch.broken?1u:0u)|
-                    (pcm_growth?0x80000000u:0u)|
-                    (cached_normal?0x20000000u:0u)|
-                    (select_history?0x10000000u|
-                        (source.retained_count<<8u)|
-                        (source.retained_full?0x04000000u:0u):0u),
-                patch.static_friction,patch.dynamic_friction,
-                order_offset,
-                select_history?source.retained_first:
-                    cached_normal?encode_dy_cached_normal(patch.body0_normal):0u};
-            cursor+=patch.contact_count;
-        }
-        if(cursor!=m.solver_offset+numerical_count)
-            throw std::logic_error("GPU Dy source patch contact stream truncated");
+        pack_gpu_dy_contact_descriptor(m,friction_patches_,
+            early_device_admission,explicit_order_cursor);
     }
     // Device-admitted responses exclude dormant managers. Host-authored
     // task descriptors still require their zero-response endpoint rows.
@@ -10868,7 +10999,7 @@ void Scene::solve_gpu_distance_constraints(float seconds) {
                gpu_dy_integration_inputs_.size() ||
            gpu_dy_contact_forces_.size()!=prepared_contact_rows_ ||
            gpu_dy_friction_anchors_.size()!=prepared_friction_rows_/2u ||
-           !gpu_dy_gu_inputs_.empty() || !gpu_dy_contact_order_.empty())
+           gpu_dy_gu_inputs_.size()!=gpu_dy_contact_order_.size())
             throw std::logic_error("Submitted Dy sources changed at Sc publication");
         gpu_dy_free_ordinals_.resize(gpu_dy_free_ids_.size());
         const auto first=gpu_dy_integration_inputs_.begin()+
@@ -12388,6 +12519,7 @@ void Scene::StepCheckpoint::rollback(Scene& scene) noexcept {
         scene.friction_by_edge_.swap(scene.next_friction_by_edge_);
     }
     scene.friction_cache_epoch_=friction_cache_epoch;
+    if(includes_solver_state)scene.next_friction_by_edge_.clear();
     scene.normal_impulse_writeback_.swap(normal_impulses);
     scene.friction_impulse_writeback_.swap(friction_impulses);
     // Previous exceeded-force pairs likewise remain in the reused

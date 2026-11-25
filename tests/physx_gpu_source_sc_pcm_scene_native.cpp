@@ -1028,7 +1028,14 @@ struct GpuPcmFrictionAnchorFixture {
         std::size_t pcm_count=0u,cpu_count=0u;
         std::size_t numerical_end=scene.gpu_dy_source_body_order_
             ?scene.gpu_dy_prewitness_contact_rows_:0u;
-        for(const auto index:scene.indexed_managers_) {
+        auto numerical_managers=scene.indexed_managers_;
+        if(scene.gpu_dy_prewitness_solve_)
+            std::sort(numerical_managers.begin(),numerical_managers.end(),
+                [&](auto a,auto b) {
+                    return scene.manifolds_[a].candidate_ordinal<
+                           scene.manifolds_[b].candidate_ordinal;
+                });
+        for(const auto index:numerical_managers) {
             const auto& manager=scene.manifolds_[index];
             if(!manager.friction_patch_count)continue;
             if((!scene.gpu_dy_source_body_order_ ||
@@ -7055,8 +7062,11 @@ void verify_mixed_gu_pcm_gpu_dy_solver(
             if(device_admission) {
                 if(frame==0u)
                     require(native::GpuPcmFrictionAnchorFixture::
-                            has_early_device_admission(gpu),
-                        "Mixed CPU Gu/PCM graph missed pre-witness admission");
+                            has_early_device_admission(gpu) &&
+                            native::GpuPcmFrictionAnchorFixture::
+                                has_prewitness_solve(gpu) &&
+                            producer->dy_launch_stats().host_descriptor_inputs==0u,
+                        "Mixed CPU Gu/PCM numerical execution waited for witnesses");
                 if(native::GpuPcmFrictionAnchorFixture::
                         has_early_device_admission(gpu))
                     native::GpuPcmFrictionAnchorFixture::

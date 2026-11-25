@@ -1585,6 +1585,12 @@ private:
     void prepare_solver_bodies();
     void partition_constraints();
     void prepare_constraints(float seconds);
+    void prepare_contact_constraints(ContactManifold& manifold,float seconds,
+        bool gpu_normal_prep,bool source_body_order,bool prewitness,
+        std::uint64_t next_cache_epoch);
+    void pack_gpu_dy_contact_descriptor(const ContactManifold& manifold,
+        std::span<const FrictionPatch> source_patches,bool early_device_admission,
+        std::size_t& explicit_order_cursor);
     void erase_shape_friction_history(ShapeId id);
     void erase_body_friction_history(BodyId id);
     void erase_friction_history(std::uint32_t id,bool body_scope);
@@ -2329,6 +2335,7 @@ private:
     std::vector<GpuDyContactPatch> gpu_dy_patches_;
     std::vector<GpuDyContactManifold> gpu_dy_manifolds_;
     std::vector<std::uint32_t> gpu_dy_contact_order_;
+    std::vector<std::size_t> gpu_dy_public_patch_permutation_;
     std::vector<GpuDyCompactContactPrep> gpu_dy_contact_prep_pairs_;
     std::vector<std::uint32_t> gpu_dy_contact_prep_sources_;
     std::vector<GpuDyRetainedFrictionCandidate> gpu_dy_history_candidates_;
