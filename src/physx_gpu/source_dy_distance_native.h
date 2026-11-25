@@ -123,6 +123,7 @@ struct SourceDyLaunchStats {
     std::size_t device_contact_admission_readback_bytes=0u;
     std::size_t tile_bytes=0u;
     std::size_t device_partition_tile_bytes=0u;
+    std::size_t host_staging_bytes=0u;
     std::size_t device_partition_indirect_dispatches=0u;
     bool resident_wide_schedule=false;
     // Device-written descriptors, partition ranges, tasks, and ordinals
@@ -1749,167 +1750,9 @@ public:
             total+=tasks.size()*4u;
         }
         narrow(total);
-        // Host staging contains only compact readback and real upload
-        // inputs. Writable GPU contact rows have no CPU mirror.
         // The contact shader addresses anchors backward from contactBias.
-        // Keep the compact anchor region immediately before contact rows.
+        // Host staging stops at the writable contact arena.
         const auto input_end=offsets[6];
-        host_.resize(std::max(input_end,host_result_bytes));
-        for(std::size_t i=0;i<count;++i)
-            if(i!=6u && i!=7u && i!=11u && i!=12u &&
-               i!=13u && i!=15u && i!=16u && bytes[i] &&
-               (!device_initial_bodies || i!=0u) &&
-               (!device_partitions || (i!=2u && i!=3u)) &&
-               (!device_admission || (i!=4u && i!=5u)))
-                std::memcpy(host_.data()+offsets[i],sources[i],bytes[i]);
-        if(device_admission)
-            for(std::size_t i=0u;i<manifolds.size();++i) {
-                const auto& manager=manifolds[i];
-                if(!manager.patch_count ||
-                   manager.prep_index>=prep_count ||
-                   contact_origin(manager.prep_index).pcm_pair_index!=invalid)
-                    continue;
-                const auto source=manager.order_offset;
-                std::memcpy(host_.data()+offsets[9]+
-                    i*sizeof(native::GpuDyContactManifold)+
-                    offsetof(native::GpuDyContactManifold,source_order_offset),
-                    &source,sizeof(source));
-            }
-        if(prep_bytes) {
-            std::memcpy(host_.data()+offsets[11],contact_frame.data(),
-                        source_dy_contact_frame_bytes);
-            std::memcpy(host_.data()+offsets[11]+source_dy_contact_frame_bytes,
-                        packed_.data(),
-                        packed_.size()*sizeof(SourceDyPackedContactPrepNative));
-        }
-        if(!cpu_gu.empty())
-            std::memcpy(host_.data()+offsets[11]+prep_bytes,
-                        cpu_gu.data(),cpu_gu.size_bytes());
-        if(!compact_anchors_.empty())
-            std::memcpy(host_.data()+offsets[13],
-                        compact_anchors_.data(),compact_anchor_bytes);
-        if(!inline_bodies_.empty())
-            std::memcpy(host_.data()+offsets[11]+static_begin,
-                        inline_bodies_.data(),inline_bodies_.size()*
-                            sizeof(native::GpuDyContactPrepBody));
-        last_schedule_.inline_contact_body_bytes=
-            inline_bodies_.size()*sizeof(native::GpuDyContactPrepBody);
-        if(device_partitions) {
-            const auto n=descriptor_capacity;
-            const std::size_t header_bytes=source_descriptors
-                ?(device_admission?64u:24u):20u;
-            const std::array<std::uint32_t,5> scratch_header{
-                narrow(header_bytes),narrow(header_bytes+n*16u),
-                narrow(header_bytes+n*20u),
-                narrow(header_bytes+n*24u),
-                tiles_.empty()?0u:narrow(offsets[14])};
-            std::memcpy(host_.data()+offsets[15],scratch_header.data(),
-                        sizeof(scratch_header));
-            if(source_descriptors) {
-                // Sc's response tokens follow its body ordinals in the
-                // same allocation; Dy writes only its own color scratch.
-                const auto token_offset=device_admission
-                    ?narrow(device_admission->layout.response_tokens-
-                            device_admission->layout.body_order):0u;
-                std::memcpy(host_.data()+offsets[15]+20u,
-                            &token_offset,sizeof(token_offset));
-                if(device_admission) {
-                    const auto task_offset=narrow(
-                        device_admission->layout.tasks);
-                    std::memcpy(host_.data()+offsets[15]+24u,
-                                &task_offset,sizeof(task_offset));
-                    const auto extent_offset=narrow(
-                        device_admission->layout.response_extents-
-                        device_admission->layout.body_order);
-                    std::memcpy(host_.data()+offsets[15]+28u,
-                                &extent_offset,sizeof(extent_offset));
-                    const std::uint32_t next_contact_row=0u;
-                    std::memcpy(host_.data()+offsets[15]+32u,
-                                &next_contact_row,sizeof(next_contact_row));
-                    const auto contact_prefix_offset=
-                        device_admission->layout.device_contact_prefix
-                        ?narrow(device_admission->layout.response_prefixes-
-                                device_admission->layout.body_order):0u;
-                    std::memcpy(host_.data()+offsets[15]+44u,
-                                &contact_prefix_offset,
-                                sizeof(contact_prefix_offset));
-                    const auto body_remap_offset=
-                        device_admission->deferred_body_remap
-                        ?narrow(device_admission->layout.body_remap-
-                                device_admission->layout.body_order):0u;
-                    std::memcpy(host_.data()+offsets[15]+48u,
-                                &body_remap_offset,
-                                sizeof(body_remap_offset));
-                    const auto joint_remap_offset=
-                        device_admission->deferred_joint_remap
-                        ?narrow(device_admission->layout.joint_remap-
-                                device_admission->layout.body_order):0u;
-                    std::memcpy(host_.data()+offsets[15]+52u,
-                                &joint_remap_offset,
-                                sizeof(joint_remap_offset));
-                    const auto joint_count=
-                        device_admission->joint_source_count;
-                    std::memcpy(host_.data()+offsets[15]+56u,
-                                &joint_count,sizeof(joint_count));
-                    const auto counts=source_indexed_integration
-                        ?narrow(device_admission->layout.counts):0u;
-                    std::memcpy(host_.data()+offsets[15]+60u,
-                                &counts,sizeof(counts));
-                    const std::array<std::uint32_t,2> epoch_errors{
-                        0u,std::numeric_limits<std::uint32_t>::max()};
-                    std::memcpy(host_.data()+offsets[15]+36u,
-                                epoch_errors.data(),sizeof(epoch_errors));
-                }
-                if(n && !device_admission)
-                    std::memcpy(host_.data()+offsets[15]+scratch_header[1],
-                                source_descriptor_tokens_.data(),
-                                n*sizeof(std::uint32_t));
-                const auto table=offsets[15]+scratch_header[3]+
-                    bodies.size()*12u;
-                const auto total=narrow(source_descriptor_full_.size());
-                if(table<offsets[15] ||
-                   table-offsets[15]>bytes[15] ||
-                   sizeof(total)+std::size_t(total)*
-                       sizeof(native::GpuDyDistanceDescriptor)>
-                       bytes[15]-(table-offsets[15]))
-                    throw std::logic_error(
-                        "Source Dy descriptor table exceeds scratch allocation");
-                std::memcpy(host_.data()+table,&total,sizeof(total));
-                if(total)
-                    std::memcpy(host_.data()+table+4u,
-                                source_descriptor_full_.data(),
-                                source_descriptor_full_.size()*
-                                    sizeof(native::GpuDyDistanceDescriptor));
-            }else if(n)
-                std::memcpy(host_.data()+offsets[15]+20u,
-                            descriptors.data(),descriptors.size_bytes());
-        }
-        if(!prepared_velocity_components_.empty())
-            std::memcpy(host_.data()+offsets[12]+packed_input_bytes,
-                        prepared_velocity_components_.data(),velocity_bytes);
-        if(!force_mod_components_.empty())
-            std::memcpy(host_.data()+offsets[12]+force_begin,
-                        force_mod_components_.data(),force_bytes);
-        if(!host_poses_.empty())
-            std::memcpy(host_.data()+offsets[12]+host_pose_begin,
-                        host_poses_.data(),last_host_pose_upload_bytes_);
-        if(upload_body_masses)
-            for(std::size_t i=0;i<bodies.size();++i)
-                std::memcpy(host_.data()+offsets[12]+mass_offset+i*4u,
-                            &bodies[i].inverse_mass,sizeof(float));
-        // Friction history and joint-source slots retain independent
-        // allocations. EdgeIndex growth leaves joint records resident.
-        arena_.allocateCopyPrefixAsync(
-            total,friction_history_capacity_*64u,stream_,PX_FL);
-        friction_history_capacity_=next_history_capacity_;
-        if(next_joint_capacity>joint_source_capacity_) {
-            joint_sources_.allocateCopyPrefixAsync(
-                next_joint_capacity*sizeof(native::GpuDyJointInput)+127u,
-                joint_source_capacity_*sizeof(native::GpuDyJointInput),
-                stream_,PX_FL);
-            joint_source_capacity_=next_joint_capacity;
-        }
-        const auto address=arena_.getDevicePtr();
         // Sc supplies the descriptor tokens and Dy computes the raw
         // descriptors, colors, cursors, and body partition state. None
         // of those scratch arrays has a host source in a device-owned
@@ -1926,6 +1769,174 @@ public:
                 "Source Sc numerical scratch upload window is invalid");
         const std::size_t uploaded_bytes=input_end-upload_begin-
             (device_admission?device_skip_end-device_skip_begin:0u);
+        // Pack only the upload spans. Queue submission owns their
+        // snapshots before this same storage receives numerical results.
+        host_.resize(std::max(uploaded_bytes,host_result_bytes));
+        last_schedule_.host_staging_bytes=host_.size();
+        const auto host_input=[&](std::size_t offset) {
+            if(offset<upload_begin || offset>input_end ||
+               (device_admission && offset>=device_skip_begin &&
+                offset<device_skip_end))
+                throw std::out_of_range("Dy host input has no upload span");
+            const auto skipped=device_admission && offset>=device_skip_end
+                ?device_skip_end-device_skip_begin:0u;
+            return host_.data()+(offset-upload_begin-skipped);
+        };
+        for(std::size_t i=0;i<count;++i)
+            if(i!=6u && i!=7u && i!=11u && i!=12u &&
+               i!=13u && i!=15u && i!=16u && bytes[i] &&
+               (!device_initial_bodies || i!=0u) &&
+               (!device_partitions || (i!=2u && i!=3u)) &&
+               (!device_admission || (i!=4u && i!=5u)))
+                std::memcpy(host_input(offsets[i]),sources[i],bytes[i]);
+        if(device_admission)
+            for(std::size_t i=0u;i<manifolds.size();++i) {
+                const auto& manager=manifolds[i];
+                if(!manager.patch_count ||
+                   manager.prep_index>=prep_count ||
+                   contact_origin(manager.prep_index).pcm_pair_index!=invalid)
+                    continue;
+                const auto source=manager.order_offset;
+                std::memcpy(host_input(offsets[9])+
+                    i*sizeof(native::GpuDyContactManifold)+
+                    offsetof(native::GpuDyContactManifold,source_order_offset),
+                    &source,sizeof(source));
+            }
+        if(prep_bytes) {
+            std::memcpy(host_input(offsets[11]),contact_frame.data(),
+                        source_dy_contact_frame_bytes);
+            std::memcpy(host_input(offsets[11])+source_dy_contact_frame_bytes,
+                        packed_.data(),
+                        packed_.size()*sizeof(SourceDyPackedContactPrepNative));
+        }
+        if(!cpu_gu.empty())
+            std::memcpy(host_input(offsets[11])+prep_bytes,
+                        cpu_gu.data(),cpu_gu.size_bytes());
+        if(!compact_anchors_.empty())
+            std::memcpy(host_input(offsets[13]),
+                        compact_anchors_.data(),compact_anchor_bytes);
+        if(!inline_bodies_.empty())
+            std::memcpy(host_input(offsets[11])+static_begin,
+                        inline_bodies_.data(),inline_bodies_.size()*
+                            sizeof(native::GpuDyContactPrepBody));
+        last_schedule_.inline_contact_body_bytes=
+            inline_bodies_.size()*sizeof(native::GpuDyContactPrepBody);
+        if(device_partitions) {
+            const auto n=descriptor_capacity;
+            const std::size_t header_bytes=source_descriptors
+                ?(device_admission?64u:24u):20u;
+            const std::array<std::uint32_t,5> scratch_header{
+                narrow(header_bytes),narrow(header_bytes+n*16u),
+                narrow(header_bytes+n*20u),
+                narrow(header_bytes+n*24u),
+                tiles_.empty()?0u:narrow(offsets[14])};
+            std::memcpy(host_input(offsets[15]),scratch_header.data(),
+                        sizeof(scratch_header));
+            if(source_descriptors) {
+                // Sc's response tokens follow its body ordinals in the
+                // same allocation; Dy writes only its own color scratch.
+                const auto token_offset=device_admission
+                    ?narrow(device_admission->layout.response_tokens-
+                            device_admission->layout.body_order):0u;
+                std::memcpy(host_input(offsets[15])+20u,
+                            &token_offset,sizeof(token_offset));
+                if(device_admission) {
+                    const auto task_offset=narrow(
+                        device_admission->layout.tasks);
+                    std::memcpy(host_input(offsets[15])+24u,
+                                &task_offset,sizeof(task_offset));
+                    const auto extent_offset=narrow(
+                        device_admission->layout.response_extents-
+                        device_admission->layout.body_order);
+                    std::memcpy(host_input(offsets[15])+28u,
+                                &extent_offset,sizeof(extent_offset));
+                    const std::uint32_t next_contact_row=0u;
+                    std::memcpy(host_input(offsets[15])+32u,
+                                &next_contact_row,sizeof(next_contact_row));
+                    const auto contact_prefix_offset=
+                        device_admission->layout.device_contact_prefix
+                        ?narrow(device_admission->layout.response_prefixes-
+                                device_admission->layout.body_order):0u;
+                    std::memcpy(host_input(offsets[15])+44u,
+                                &contact_prefix_offset,
+                                sizeof(contact_prefix_offset));
+                    const auto body_remap_offset=
+                        device_admission->deferred_body_remap
+                        ?narrow(device_admission->layout.body_remap-
+                                device_admission->layout.body_order):0u;
+                    std::memcpy(host_input(offsets[15])+48u,
+                                &body_remap_offset,
+                                sizeof(body_remap_offset));
+                    const auto joint_remap_offset=
+                        device_admission->deferred_joint_remap
+                        ?narrow(device_admission->layout.joint_remap-
+                                device_admission->layout.body_order):0u;
+                    std::memcpy(host_input(offsets[15])+52u,
+                                &joint_remap_offset,
+                                sizeof(joint_remap_offset));
+                    const auto joint_count=
+                        device_admission->joint_source_count;
+                    std::memcpy(host_input(offsets[15])+56u,
+                                &joint_count,sizeof(joint_count));
+                    const auto counts=source_indexed_integration
+                        ?narrow(device_admission->layout.counts):0u;
+                    std::memcpy(host_input(offsets[15])+60u,
+                                &counts,sizeof(counts));
+                    const std::array<std::uint32_t,2> epoch_errors{
+                        0u,std::numeric_limits<std::uint32_t>::max()};
+                    std::memcpy(host_input(offsets[15])+36u,
+                                epoch_errors.data(),sizeof(epoch_errors));
+                }
+                if(n && !device_admission)
+                    std::memcpy(host_input(offsets[15])+scratch_header[1],
+                                source_descriptor_tokens_.data(),
+                                n*sizeof(std::uint32_t));
+                const auto table=offsets[15]+scratch_header[3]+
+                    bodies.size()*12u;
+                const auto total=narrow(source_descriptor_full_.size());
+                if(table<offsets[15] ||
+                   table-offsets[15]>bytes[15] ||
+                   sizeof(total)+std::size_t(total)*
+                       sizeof(native::GpuDyDistanceDescriptor)>
+                       bytes[15]-(table-offsets[15]))
+                    throw std::logic_error(
+                        "Source Dy descriptor table exceeds scratch allocation");
+                std::memcpy(host_input(table),&total,sizeof(total));
+                if(total)
+                    std::memcpy(host_input(table)+4u,
+                                source_descriptor_full_.data(),
+                                source_descriptor_full_.size()*
+                                    sizeof(native::GpuDyDistanceDescriptor));
+            }else if(n)
+                std::memcpy(host_input(offsets[15])+20u,
+                            descriptors.data(),descriptors.size_bytes());
+        }
+        if(!prepared_velocity_components_.empty())
+            std::memcpy(host_input(offsets[12])+packed_input_bytes,
+                        prepared_velocity_components_.data(),velocity_bytes);
+        if(!force_mod_components_.empty())
+            std::memcpy(host_input(offsets[12])+force_begin,
+                        force_mod_components_.data(),force_bytes);
+        if(!host_poses_.empty())
+            std::memcpy(host_input(offsets[12])+host_pose_begin,
+                        host_poses_.data(),last_host_pose_upload_bytes_);
+        if(upload_body_masses)
+            for(std::size_t i=0;i<bodies.size();++i)
+                std::memcpy(host_input(offsets[12])+mass_offset+i*4u,
+                            &bodies[i].inverse_mass,sizeof(float));
+        // Friction history and joint-source slots retain independent
+        // allocations. EdgeIndex growth leaves joint records resident.
+        arena_.allocateCopyPrefixAsync(
+            total,friction_history_capacity_*64u,stream_,PX_FL);
+        friction_history_capacity_=next_history_capacity_;
+        if(next_joint_capacity>joint_source_capacity_) {
+            joint_sources_.allocateCopyPrefixAsync(
+                next_joint_capacity*sizeof(native::GpuDyJointInput)+127u,
+                joint_source_capacity_*sizeof(native::GpuDyJointInput),
+                stream_,PX_FL);
+            joint_source_capacity_=next_joint_capacity;
+        }
+        const auto address=arena_.getDevicePtr();
         // Adjacent Sc constraint slot edits share one DMA into the
         // resident Dy allocation, not the transient solver-row upload.
         joint_source_uploads_.clear();
@@ -2044,7 +2055,7 @@ public:
                     throw std::overflow_error(
                         "Dy immovable actor-local reference exceeds 32-bit view");
                 const auto tagged=static_cast<std::uint32_t>(address)|3u;
-                std::memcpy(host_.data()+offsets[11]+
+                std::memcpy(host_input(offsets[11])+
                     source_dy_contact_frame_bytes+
                     i*sizeof(SourceDyPackedContactPrepNative)+field,
                     &tagged,sizeof(tagged));
@@ -2105,7 +2116,7 @@ public:
                 patch.reserved=static_cast<std::uint32_t>(
                     std::size_t(retained_bias)+index*
                         sizeof(native::GpuDyRetainedFrictionCandidate));
-                std::memcpy(host_.data()+offsets[8]+
+                std::memcpy(host_input(offsets[8])+
                     i*sizeof(native::GpuDyContactPatch)+
                     offsetof(native::GpuDyContactPatch,reserved),
                     &patch.reserved,sizeof(patch.reserved));
@@ -2139,12 +2150,12 @@ public:
                         sizeof(SourceDyHostPoseNative));
         }
         if(!packed_integration_.empty())
-            std::memcpy(host_.data()+offsets[12]+integration_header_bytes,
+            std::memcpy(host_input(offsets[12])+integration_header_bytes,
                         packed_integration_.data(),
                         packed_integration_.size()*sizeof(SourceDyPackedIntegrationNative));
         if(!device_generated_inertia)
             for(std::size_t i=0u;i<bodies.size();++i)
-                std::memcpy(host_.data()+offsets[16]+i*9u*sizeof(float),
+                std::memcpy(host_input(offsets[16])+i*9u*sizeof(float),
                             integration[i].sqrt_inverse_inertia,
                             9u*sizeof(float));
         // Joint source slots are stable; Dy rows retain task order.
@@ -2174,7 +2185,7 @@ public:
                     "Source Dy joint input lacks its first-row descriptor");
             const auto address=narrow(std::size_t(joint_source_bias)+
                 std::size_t(input.source_slot)*sizeof(native::GpuDyJointInput));
-            std::memcpy(host_.data()+offsets[1]+
+            std::memcpy(host_input(offsets[1])+
                             joint_row_begin*sizeof(native::GpuDyJointRow)+
                             offsetof(native::GpuDyJointRow,applied_force),
                         &address,sizeof(address));
@@ -2188,7 +2199,7 @@ public:
         for(const auto& upload:actor_local_uploads_)
             last_schedule_.actor_local_upload_bytes+=upload.bytes;
         last_schedule_.actor_local_upload_spans=actor_local_uploads_.size();
-        std::memcpy(host_.data()+offsets[12],
+        std::memcpy(host_input(offsets[12]),
                     integration_header.data(),sizeof(integration_header));
         const auto previous_spans=stream_.submission_stats().upload_spans;
         const auto previous_batches=stream_.submission_stats().upload_batches;
@@ -2203,13 +2214,13 @@ public:
         if(device_admission) {
             // The device-generated scratch window has no host input.
             uploads.push_back({
-                address+upload_begin,host_.data()+upload_begin,
+                address+upload_begin,host_.data(),
                 device_skip_begin-upload_begin});
             uploads.push_back({
-                address+device_skip_end,host_.data()+device_skip_end,
+                address+device_skip_end,host_input(device_skip_end),
                 input_end-device_skip_end});
         }else uploads.push_back({
-            address+upload_begin,host_.data()+upload_begin,uploaded_bytes});
+            address+upload_begin,host_.data(),uploaded_bytes});
         // These disjoint source spans share one ordered DMA submission.
         stream_.queue_uploads(uploads);
         for(const auto id:prewitness_actor_slots_)

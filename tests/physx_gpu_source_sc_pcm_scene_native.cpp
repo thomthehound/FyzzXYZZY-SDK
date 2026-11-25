@@ -5949,6 +5949,10 @@ void verify_resident_wide_device_response(
     cpu.step(dt);
     gpu.step(dt);
     const auto schedule=producer->dy_launch_stats();
+    const auto [uploaded,downloaded]=producer->dy_distance_transfer_bytes();
+    require(schedule.host_staging_bytes>=uploaded &&
+            schedule.host_staging_bytes<=std::max(uploaded,downloaded),
+        "Resident Dy staging includes device-only arena storage");
     require(native::GpuPcmFrictionAnchorFixture::has_prewitness_solve(gpu) &&
             schedule.resident_wide_schedule &&
             schedule.wide_tasks==1u &&
