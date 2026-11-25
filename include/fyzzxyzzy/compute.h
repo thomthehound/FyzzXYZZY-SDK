@@ -26,7 +26,8 @@ enum class Backend { Vulkan, D3D12 };
 // DeviceLocal retains normal GPU-preferred storage with staging transfers.
 // SharedLocal requires a GPU-local, CPU-mappable resource with explicit host
 // visibility; it never selects nonlocal host memory.
-enum class MemoryPlacement { Auto, HostVisible, DeviceLocal, SharedLocal };
+// Upload is CPU-write-mapped, GPU-copy-source-only transfer storage.
+enum class MemoryPlacement { Auto, HostVisible, DeviceLocal, SharedLocal, Upload };
 
 // Only this explicit exception permits a higher-level source allocator to
 // fall back from direct mapped storage to staging. Allocation exhaustion,
@@ -239,8 +240,9 @@ public:
     // through their normal API. The Context owns the retired allocation.
     void retire_buffer(BufferId id);
 
-    // Direct CPU access to a GPU-writable HostVisible buffer; never
-    // implicitly synchronize. Callers must wait the existing source GPU
+    // Direct CPU access to HostVisible, SharedLocal or Upload storage;
+    // never implicitly synchronize. Upload requires Write access and
+    // cannot be a GPU destination or shader binding. Callers must wait the existing source GPU
     // fence BEFORE reading GPU writes; finish CPU accesses before GPU uses
     // the resource. map_buffer returns a pointer valid until unmap_buffer.
     // Unmap makes CPU writes visible per backend memory-coherency rules.

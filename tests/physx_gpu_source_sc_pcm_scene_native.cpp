@@ -5955,9 +5955,9 @@ void verify_resident_wide_device_response(
     const auto [uploaded,downloaded]=producer->dy_distance_transfer_bytes();
     require(!native::GpuPcmFrictionAnchorFixture::has_host_schedule(gpu),
         "Resident Dy allocated host task or ordinal records");
-    require(schedule.host_staging_bytes>=uploaded &&
-            schedule.host_staging_bytes<=std::max(uploaded,downloaded),
-        "Resident Dy staging includes device-only arena storage");
+    require(schedule.mapped_input_bytes==uploaded &&
+            schedule.host_staging_bytes<=downloaded,
+        "Resident Dy input or result staging includes redundant host storage");
     require(native::GpuPcmFrictionAnchorFixture::has_prewitness_solve(gpu) &&
             schedule.resident_wide_schedule &&
             schedule.wide_tasks==1u &&

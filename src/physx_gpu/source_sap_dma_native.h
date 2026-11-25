@@ -68,7 +68,9 @@ public:
                        const CudaDeviceAddressMap& addresses) noexcept
         : context_(context), addresses_(addresses) {}
 
-    void queue_uploads(const std::vector<SourceSapUpload>& uploads) {
+    // Staged copies borrow an unmapped transfer source through the solve fence.
+    void queue_uploads(const std::vector<SourceSapUpload>& uploads,
+                       std::span<const compute::CopyCommand> staged={}) {
         FYZZ_PROFILE_SCOPE("source.upload_enqueue");
         resolved_uploads_.clear();
         resolved_uploads_.reserve(uploads.size());
@@ -81,15 +83,20 @@ public:
             resolved_uploads_.push_back({target.buffer, target.offset,
                                          upload.data, upload.bytes});
         }
-        if (resolved_uploads_.empty()) return;
+        if (resolved_uploads_.empty() && staged.empty()) return;
         // Validate the whole group before appending owned snapshots to the
         // ordered source command stream. No intermediate command vector.
         for(const auto& span:resolved_uploads_)
             if(span.destination_offset%4u || span.bytes%4u)
                 throw std::invalid_argument(
                     "PhysX source upload requires aligned buffer bytes");
+        for(const auto& copy:staged)
+            if(!copy.source || !copy.destination || copy.source==copy.destination ||
+               !copy.bytes || copy.source_offset%4u || copy.destination_offset%4u ||
+               copy.bytes%4u)
+                throw std::invalid_argument("Invalid staged source upload");
         const auto original_size=pending_.size();
-        pending_.reserve(original_size+resolved_uploads_.size());
+        pending_.reserve(original_size+resolved_uploads_.size()+staged.size());
         try {
             for(const auto& span:resolved_uploads_) {
                 compute::UploadCommand command;
@@ -99,18 +106,20 @@ public:
                 command.bytes.assign(first,first+span.bytes);
                 pending_.emplace_back(std::move(command));
             }
+            for(const auto& copy:staged)pending_.emplace_back(copy);
         } catch(...) {
             pending_.erase(pending_.begin()+original_size,pending_.end());
             throw;
         }
         ++stats_.upload_batches;
-        stats_.upload_spans += resolved_uploads_.size();
+        stats_.upload_spans += resolved_uploads_.size()+staged.size();
 #if defined(FYZZXYZZY_PROFILE_GPU)
         const auto previous_bytes=stats_.upload_bytes;
 #endif
         for (const auto& span : resolved_uploads_) stats_.upload_bytes += span.bytes;
+        for(const auto& copy:staged)stats_.upload_bytes+=copy.bytes;
 #if defined(FYZZXYZZY_PROFILE_GPU)
-        FYZZ_PROFILE_COUNTER("source.upload_spans",resolved_uploads_.size());
+        FYZZ_PROFILE_COUNTER("source.upload_spans",resolved_uploads_.size()+staged.size());
         FYZZ_PROFILE_COUNTER("source.upload_bytes",
             stats_.upload_bytes-previous_bytes);
 #endif

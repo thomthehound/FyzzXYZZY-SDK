@@ -124,6 +124,7 @@ struct SourceDyLaunchStats {
     std::size_t tile_bytes=0u;
     std::size_t device_partition_tile_bytes=0u;
     std::size_t host_staging_bytes=0u;
+    std::size_t mapped_input_bytes=0u;
     std::size_t device_partition_indirect_dispatches=0u;
     bool resident_wide_schedule=false;
     // Device-written descriptors, partition ranges, tasks, and ordinals
@@ -256,6 +257,7 @@ public:
         if(pipeline_)context_.destroy_compute_pipeline(pipeline_);
         if(partition_dispatch_buffer_)
             context_.destroy_buffer(partition_dispatch_buffer_);
+        if(input_upload_buffer_)context_.retire_buffer(input_upload_buffer_);
         arena_.deallocate();
         actor_locals_.deallocate();
         joint_sources_.deallocate();
@@ -1782,10 +1784,40 @@ public:
                 "Source Sc numerical scratch upload window is invalid");
         const std::size_t uploaded_bytes=input_end-upload_begin-
             (device_admission?device_skip_end-device_skip_begin:0u);
-        // Pack only the upload spans. Queue submission owns their
-        // snapshots before this same storage receives numerical results.
-        host_.resize(std::max(uploaded_bytes,host_result_bytes));
+        // Numerical input is packed directly into transfer memory; host_
+        // owns only the unpublished numerical result.
+        host_.resize(host_result_bytes);
         last_schedule_.host_staging_bytes=host_.size();
+        last_schedule_.mapped_input_bytes=uploaded_bytes;
+        const bool undersized=uploaded_bytes<input_upload_capacity_/2u;
+        input_upload_small_frames_=undersized?input_upload_small_frames_+1u:0u;
+        if(uploaded_bytes>input_upload_capacity_ || input_upload_small_frames_==8u) {
+            const auto capacity=uploaded_bytes;
+            const auto replacement=context_.create_buffer(
+                capacity,compute::MemoryPlacement::Upload);
+            try {
+                if(input_upload_buffer_)context_.retire_buffer(input_upload_buffer_);
+            }catch(...) {
+                context_.retire_buffer(replacement);
+                throw;
+            }
+            input_upload_buffer_=replacement;
+            input_upload_capacity_=capacity;
+            input_upload_initialized_=0u;
+            input_upload_small_frames_=0u;
+        }
+        struct InputMap {
+            compute::Context& context;
+            compute::BufferId buffer;
+            std::uint8_t* data;
+            ~InputMap() { if(data)context.unmap_buffer(buffer); }
+            void close() { context.unmap_buffer(buffer); data=nullptr; }
+        } input_map{context_,input_upload_buffer_,static_cast<std::uint8_t*>(
+            context_.map_buffer(input_upload_buffer_,compute::HostMapAccess::Write))};
+        if(uploaded_bytes>input_upload_initialized_)
+            std::memset(input_map.data+input_upload_initialized_,0,
+                        uploaded_bytes-input_upload_initialized_);
+        input_upload_initialized_=uploaded_bytes;
         const auto host_input=[&](std::size_t offset) {
             if(offset<upload_begin || offset>input_end ||
                (device_admission && offset>=device_skip_begin &&
@@ -1793,7 +1825,7 @@ public:
                 throw std::out_of_range("Dy host input has no upload span");
             const auto skipped=device_admission && offset>=device_skip_end
                 ?device_skip_end-device_skip_begin:0u;
-            return host_.data()+(offset-upload_begin-skipped);
+            return input_map.data+(offset-upload_begin-skipped);
         };
         for(std::size_t i=0;i<count;++i)
             if(i!=6u && i!=7u && i!=11u && i!=12u &&
@@ -2217,25 +2249,28 @@ public:
         const auto previous_spans=stream_.submission_stats().upload_spans;
         const auto previous_batches=stream_.submission_stats().upload_batches;
         auto& uploads=stream_.upload_scratch();
-        uploads.reserve(joint_source_uploads_.size()+
-                        actor_local_uploads_.size()+
-                        (device_admission?2u:1u));
+        uploads.reserve(joint_source_uploads_.size()+actor_local_uploads_.size());
         uploads.insert(uploads.end(),joint_source_uploads_.begin(),
                        joint_source_uploads_.end());
         uploads.insert(uploads.end(),actor_local_uploads_.begin(),
                        actor_local_uploads_.end());
+        input_map.close();
+        std::array<compute::CopyCommand,2> staged{};
+        std::size_t staged_count=0u;
+        const auto append_input=[&](std::size_t destination,std::size_t source,
+                                    std::size_t bytes) {
+            if(!bytes)return;
+            const auto target=addresses_.resolve(address+destination,bytes);
+            staged[staged_count++]={input_upload_buffer_,source,
+                                    target.buffer,target.offset,bytes};
+        };
         if(device_admission) {
             // The device-generated scratch window has no host input.
-            uploads.push_back({
-                address+upload_begin,host_.data(),
-                device_skip_begin-upload_begin});
-            uploads.push_back({
-                address+device_skip_end,host_input(device_skip_end),
-                input_end-device_skip_end});
-        }else uploads.push_back({
-            address+upload_begin,host_.data(),uploaded_bytes});
-        // These disjoint source spans share one ordered DMA submission.
-        stream_.queue_uploads(uploads);
+            const auto prefix=device_skip_begin-upload_begin;
+            append_input(upload_begin,0u,prefix);
+            append_input(device_skip_end,prefix,input_end-device_skip_end);
+        }else append_input(upload_begin,0u,uploaded_bytes);
+        stream_.queue_uploads(uploads,std::span(staged.data(),staged_count));
         for(const auto id:prewitness_actor_slots_)
             prewitness_actor_changed_[id]=0u;
         prewitness_joint_source_slots_.clear();
@@ -3788,6 +3823,9 @@ private:
     compute::PipelineId convex_pipeline_=0;
     std::size_t alignment_=0u;
     std::uint64_t max_view_=0u;
+    compute::BufferId input_upload_buffer_=0u;
+    std::size_t input_upload_capacity_=0u,input_upload_initialized_=0u;
+    unsigned input_upload_small_frames_=0u;
     std::vector<std::uint8_t> host_;
     std::vector<std::uint32_t> admitted_body_ordinals_;
     std::vector<std::uint32_t> admitted_response_tokens_;

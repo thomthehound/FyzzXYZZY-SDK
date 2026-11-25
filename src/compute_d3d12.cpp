@@ -268,6 +268,7 @@ struct Context::Impl {
         bool host_visible = false;
         bool cpu_mapped = false;
         HostMapAccess map_access = HostMapAccess::ReadWrite;
+        bool upload_only = false;
     };
     struct Pipeline {
         ComPtr<ID3D12RootSignature> signature;
@@ -687,7 +688,12 @@ struct Context::Impl {
     BufferId create_buffer(std::size_t bytes, MemoryPlacement placement) {
         if (!bytes) throw std::invalid_argument("Compute buffer size must be positive");
         Buffer buffer;
-        if (placement == MemoryPlacement::HostVisible ||
+        if(placement==MemoryPlacement::Upload) {
+            buffer.resource=allocate_resource(device.Get(),bytes,D3D12_HEAP_TYPE_UPLOAD,
+                D3D12_RESOURCE_FLAG_NONE,D3D12_RESOURCE_STATE_GENERIC_READ);
+            buffer.host_visible=true;
+            buffer.upload_only=true;
+        }else if (placement == MemoryPlacement::HostVisible ||
             placement == MemoryPlacement::SharedLocal) {
             // The PhysX actor-pair report output is GPU-writable AND
             // CPU-readable; UPLOAD (GENERIC_READ) and READBACK (COPY_DEST)
@@ -740,6 +746,8 @@ struct Context::Impl {
 
     void* map_buffer(BufferId id, HostMapAccess access) {
         auto& buffer = get_buffer(id);
+        if(buffer.upload_only && access!=HostMapAccess::Write)
+            throw std::invalid_argument("D3D12 upload storage requires write mapping");
         if (!buffer.host_visible)
             throw std::invalid_argument("D3D12 buffer is not CPU-mappable GPU storage");
         if (buffer.cpu_mapped)
@@ -795,6 +803,8 @@ struct Context::Impl {
 
     void upload(BufferId id, std::size_t offset, const void* data, std::size_t bytes) {
         Buffer& buffer = get_buffer(id);
+        if(buffer.upload_only)
+            throw std::invalid_argument("Upload storage requires write mapping");
         validate_range(buffer.bytes, offset, bytes);
         if (!bytes) return;
         if (!data || offset % 4 || bytes % 4)
@@ -821,6 +831,8 @@ struct Context::Impl {
     SubmissionId submit_upload(BufferId id, std::size_t offset,
                                const void* data, std::size_t bytes) {
         Buffer& destination = get_buffer(id);
+        if(destination.upload_only)
+            throw std::invalid_argument("Upload storage cannot be a GPU destination");
         validate_range(destination.bytes, offset, bytes);
         if (!bytes || !data || (offset % 4) || (bytes % 4))
             throw std::invalid_argument("Async D3D12 upload requires nonempty aligned data");
@@ -860,6 +872,8 @@ struct Context::Impl {
         destinations.reserve(uploads.size());
         for (const auto& upload : uploads) {
             const auto& target = get_buffer(upload.destination);
+            if(target.upload_only)
+                throw std::invalid_argument("Upload storage cannot be a GPU destination");
             validate_range(target.bytes, upload.destination_offset, upload.bytes);
             if (!upload.data || !upload.bytes ||
                 (upload.destination_offset % 4) || (upload.bytes % 4) ||
@@ -911,6 +925,8 @@ struct Context::Impl {
 
     void download(BufferId id, std::size_t offset, void* data, std::size_t bytes) {
         Buffer& buffer = get_buffer(id);
+        if(buffer.upload_only)
+            throw std::invalid_argument("Upload storage requires write mapping");
         validate_range(buffer.bytes, offset, bytes);
         if (!bytes) return;
         if (!data || offset % 4 || bytes % 4)
@@ -961,6 +977,8 @@ struct Context::Impl {
         std::size_t bytes=0;
         for(const auto& item:downloads) {
             const auto& source=get_buffer(item.source);
+            if(source.upload_only && source.cpu_mapped)
+                throw std::invalid_argument("Mapped upload storage cannot be submitted");
             validate_range(source.bytes,item.source_offset,item.bytes);
             if(!item.data || !item.bytes ||
                (item.source_offset&3u) || (item.bytes&3u) ||
@@ -1185,6 +1203,8 @@ struct Context::Impl {
                 binding.access != BufferAccess::Read)
                 throw std::invalid_argument("D3D12 SRV cannot be declared writable");
             const auto& buf = get_buffer(binding.buffer);
+            if(buf.upload_only)
+                throw std::invalid_argument("Upload storage cannot be a shader binding");
             validate_range(buf.bytes, binding.offset, binding.bytes);
         }
         if(cmd.indirect) {
@@ -1192,6 +1212,8 @@ struct Context::Impl {
                cmd.indirect->offset%4u)
                 throw std::invalid_argument("Invalid D3D12 indirect dispatch arguments");
             const auto& args=get_buffer(cmd.indirect->buffer);
+            if(args.upload_only)
+                throw std::invalid_argument("Upload storage cannot supply indirect arguments");
             validate_range(args.bytes,cmd.indirect->offset,
                            sizeof(D3D12_DISPATCH_ARGUMENTS));
             for(const auto& binding:cmd.buffers)
@@ -1264,6 +1286,8 @@ struct Context::Impl {
             if (const auto* copy = std::get_if<CopyCommand>(&op)) {
                 const auto& source = get_buffer(copy->source);
                 const auto& dest = get_buffer(copy->destination);
+                if(dest.upload_only || (source.upload_only && source.cpu_mapped))
+                    throw std::invalid_argument("Invalid D3D12 upload storage copy");
                 validate_range(source.bytes, copy->source_offset, copy->bytes);
                 validate_range(dest.bytes, copy->destination_offset, copy->bytes);
                 const bool overlap = copy->source == copy->destination &&
@@ -1278,6 +1302,8 @@ struct Context::Impl {
                         std::max(same_resource_copy_scratch_bytes, copy->bytes);
             } else if(const auto* upload=std::get_if<UploadCommand>(&op)) {
                 const auto& target=get_buffer(upload->destination);
+                if(target.upload_only)
+                    throw std::invalid_argument("Upload storage cannot be a GPU destination");
                 validate_range(target.bytes,upload->destination_offset,
                                upload->bytes.size());
                 if(upload->bytes.empty() || upload->destination_offset%4u ||
@@ -1473,8 +1499,15 @@ struct Context::Impl {
         std::unordered_map<BufferId, Access> resource_access;
         resource_access.reserve(std::min<std::size_t>(commands.size() * 2, 512));
         auto require_state = [&](BufferId id, D3D12_RESOURCE_STATES target) {
+            const auto& buffer=get_buffer(id);
+            // Upload heaps stay in GENERIC_READ, which includes COPY_SOURCE.
+            if(buffer.upload_only) {
+                if(target!=D3D12_RESOURCE_STATE_COPY_SOURCE || buffer.cpu_mapped)
+                    throw std::invalid_argument("Invalid D3D12 upload storage state");
+                return;
+            }
             Access& access = resource_access[id];
-            auto* resource = get_buffer(id).resource.Get();
+            auto* resource = buffer.resource.Get();
             if (access.state != target) {
                 transition(submission.commands.Get(), resource, access.state, target);
                 access.state = target;

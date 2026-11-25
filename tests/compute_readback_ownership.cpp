@@ -126,6 +126,38 @@ int main() {
                     throw std::runtime_error(
                         "Reused large readback staging lost source data");
         }
+        const auto staging=context.create_buffer(
+            sizeof(input),MemoryPlacement::Upload);
+        bool rejected=false;
+        try {
+            context.map_buffer(staging,HostMapAccess::Read);
+        }catch(const std::invalid_argument&) { rejected=true; }
+        if(!rejected)
+            throw std::runtime_error("Upload storage allowed CPU read mapping");
+        auto* mapped=static_cast<std::uint32_t*>(
+            context.map_buffer(staging,HostMapAccess::Write));
+        for(std::size_t i=0u;i<input.size();++i)mapped[i]=input[i]+1000u;
+        context.unmap_buffer(staging);
+        rejected=false;
+        try {
+            context.submit_copy_buffer(gpu,0u,staging,0u,sizeof(input));
+        }catch(const std::invalid_argument&) { rejected=true; }
+        if(!rejected)
+            throw std::runtime_error("Upload storage allowed GPU destination");
+        std::vector<BatchCommand> batch{
+            CopyCommand{staging,0u,gpu,0u,sizeof(first)},
+            CopyCommand{staging,20u*sizeof(std::uint32_t),gpu,
+                        20u*sizeof(std::uint32_t),sizeof(second)}
+        };
+        context.finish_download_batch(
+            context.submit_batch_with_readback(batch,peak_download),true);
+        for(std::size_t i=0u;i<input.size();++i) {
+            const bool written=i<first.size() ||
+                (i>=20u && i<20u+second.size());
+            if(peak[i]!=input[i]+(written?1000u:0u))
+                throw std::runtime_error("Mapped upload lost ordered copy or untouched range");
+        }
+        context.destroy_buffer(staging);
         context.destroy_buffer(gpu);
         std::cout<<"Compute independent readback ownership PASS\n";
         return 0;

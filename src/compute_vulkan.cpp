@@ -706,7 +706,9 @@ struct Context::Impl {
             VkBufferCreateInfo create{};
             create.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
             create.size = static_cast<VkDeviceSize>(bytes);
-            create.usage = storage_eligible
+            create.usage = placement == MemoryPlacement::Upload
+                ? VK_BUFFER_USAGE_TRANSFER_SRC_BIT
+                : storage_eligible
                 ? (VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
                    VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT |
                    VK_BUFFER_USAGE_TRANSFER_SRC_BIT |
@@ -726,7 +728,8 @@ struct Context::Impl {
                     ? (VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT |
                        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
                        VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)
-                    : placement == MemoryPlacement::HostVisible
+                    : (placement == MemoryPlacement::HostVisible ||
+                       placement == MemoryPlacement::Upload)
                         ? (VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
                            VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)
                         : VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
@@ -774,6 +777,7 @@ struct Context::Impl {
 
     BufferId create_buffer(std::size_t bytes, MemoryPlacement placement,
                            bool storage_eligible = true) {
+        if(placement==MemoryPlacement::Upload)storage_eligible=false;
         if (!bytes || (storage_eligible && bytes > info.max_storage_buffer_range)) {
             throw std::invalid_argument("Compute buffer size is zero or exceeds device limits");
         }
@@ -834,13 +838,17 @@ struct Context::Impl {
 
     bool buffer_is_host_visible(BufferId id) const {
         return get(id).placement == MemoryPlacement::HostVisible ||
-            get(id).placement == MemoryPlacement::SharedLocal;
+            get(id).placement == MemoryPlacement::SharedLocal ||
+            get(id).placement == MemoryPlacement::Upload;
     }
 
-    void* map_buffer(BufferId id, HostMapAccess /*access*/) {
+    void* map_buffer(BufferId id, HostMapAccess access) {
         auto& buffer = get(id);
+        if(buffer.placement==MemoryPlacement::Upload && access!=HostMapAccess::Write)
+            throw std::invalid_argument("Vulkan upload storage requires write mapping");
         if (buffer.placement != MemoryPlacement::HostVisible &&
-            buffer.placement != MemoryPlacement::SharedLocal)
+            buffer.placement != MemoryPlacement::SharedLocal &&
+            buffer.placement != MemoryPlacement::Upload)
             throw std::invalid_argument("Vulkan buffer is not host-visible");
         if (buffer.cpu_mapped)
             throw std::logic_error("Vulkan buffer already CPU mapped");
@@ -879,6 +887,9 @@ struct Context::Impl {
     SubmissionId submit_copy(const Buffer& source, std::size_t source_offset,
                      const Buffer& destination, std::size_t destination_offset,
                      std::size_t bytes) {
+        if(destination.placement==MemoryPlacement::Upload ||
+           (source.placement==MemoryPlacement::Upload && source.cpu_mapped))
+            throw std::invalid_argument("Invalid Vulkan upload storage copy");
         if (source_offset % 4 != 0 || destination_offset % 4 != 0 || bytes % 4 != 0) {
             throw std::invalid_argument("Vulkan buffer copies require 4-byte alignment");
         }
@@ -939,6 +950,8 @@ struct Context::Impl {
         // recording GPU work or invalidating any public resource handle.
         for (const auto& upload : uploads) {
             const Buffer& destination = get(upload.destination);
+            if(destination.placement==MemoryPlacement::Upload)
+                throw std::invalid_argument("Upload storage cannot be a GPU destination");
             validate_range(destination.bytes, upload.destination_offset, upload.bytes);
             if (!upload.data || !upload.bytes ||
                 (upload.destination_offset % 4) || (upload.bytes % 4) ||
@@ -1013,6 +1026,8 @@ struct Context::Impl {
         // Snapshot into coherent pinned/mappable memory before submitting;
         // the user's pointer is never retained beyond this call.
         const Buffer& destination = get(destination_id);
+        if(destination.placement==MemoryPlacement::Upload)
+            throw std::invalid_argument("Upload storage cannot be a GPU destination");
         validate_range(destination.bytes, offset, bytes);
         if (!bytes || !data || (offset % 4) || (bytes % 4))
             throw std::invalid_argument("Async Vulkan upload requires nonempty aligned data");
@@ -1037,6 +1052,8 @@ struct Context::Impl {
     void transfer(BufferId id, std::size_t offset, void* data,
                   std::size_t bytes, bool upload) {
         const Buffer& buffer = get(id);
+        if(buffer.placement==MemoryPlacement::Upload)
+            throw std::invalid_argument("Upload storage requires write mapping");
         validate_range(buffer.bytes, offset, bytes);
         if (bytes == 0) {
             return;
@@ -1511,6 +1528,8 @@ struct Context::Impl {
             for(const auto& op:operations)
                 if(const auto* upload=std::get_if<UploadCommand>(&op)) {
                     const auto& destination=get(upload->destination);
+                    if(destination.placement==MemoryPlacement::Upload)
+                        throw std::invalid_argument("Upload storage cannot be a GPU destination");
                     validate_range(destination.bytes,
                                    upload->destination_offset,upload->bytes.size());
                     if(upload->bytes.empty() || upload->destination_offset%4u ||
@@ -1576,6 +1595,9 @@ struct Context::Impl {
             if (const auto* copy = std::get_if<CopyCommand>(&operation)) {
                 const Buffer& source = get(copy->source);
                 const Buffer& destination = get(copy->destination);
+                if(destination.placement==MemoryPlacement::Upload ||
+                   (source.placement==MemoryPlacement::Upload && source.cpu_mapped))
+                    throw std::invalid_argument("Invalid Vulkan upload storage copy");
                 validate_range(source.bytes, copy->source_offset, copy->bytes);
                 validate_range(destination.bytes, copy->destination_offset, copy->bytes);
                 // Vulkan permits disjoint copies within one VkBuffer.
