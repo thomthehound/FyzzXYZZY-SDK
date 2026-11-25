@@ -560,7 +560,7 @@ jobs:
           ctest --test-dir build-profile-d3d12 -C Release -R '^fyzzxyzzy_hardware_profile_stream$' --output-on-failure --no-tests=error --output-junit ctest-results.xml
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Validate qualified D3D12 shader artifact inventory
-        if: matrix.suite == 'source'
+        if: matrix.suite == 'profile'
         shell: pwsh
         run: |
           pwsh -NoProfile -File tools/hardware/qualify.ps1 -Backend D3D12 -ValidateArtifactsOnly
