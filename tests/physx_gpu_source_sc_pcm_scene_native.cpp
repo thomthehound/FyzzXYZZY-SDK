@@ -4755,23 +4755,6 @@ void verify_connected_pre_witness_island_admission(
     auto* producer=owner.get();
     gpu.set_gpu_broadphase(std::move(owner));
     gpu.set_gpu_dy_device_admission_enabled(true);
-    const auto dormant_cpu=cpu.add_dynamic_box(
-        {0.25f,0.25f,0.25f},{30.f,5.f,0.f},1.f);
-    const auto dormant_gpu=gpu.add_dynamic_box(
-        {0.25f,0.25f,0.25f},{30.f,5.f,0.f},1.f);
-    RigidBodyDynamics dormant_dynamics{};
-    dormant_dynamics.gravity_enabled=false;
-    cpu.set_dynamics(dormant_cpu,dormant_dynamics);
-    gpu.set_dynamics(dormant_gpu,dormant_dynamics);
-    for(unsigned i=0u;i<3u &&
-        (!cpu.body_is_sleeping(dormant_cpu) ||
-         !gpu.body_is_sleeping(dormant_gpu));++i) {
-        cpu.step(0.5f);
-        gpu.step(0.5f);
-    }
-    require(cpu.body_is_sleeping(dormant_cpu) &&
-            gpu.body_is_sleeping(dormant_gpu),
-        "Independent integration source did not enter sleep");
     cpu.add_static_box({0.5f,0.5f,0.5f},{0.f,0.f,0.f});
     gpu.add_static_box({0.5f,0.5f,0.5f},{0.f,0.f,0.f});
     std::array<BodyId,2> cpu_ids{},gpu_ids{};
@@ -4801,16 +4784,12 @@ void verify_connected_pre_witness_island_admission(
     };
     const auto bridge_cpu=add_bridge(cpu),bridge_gpu=add_bridge(gpu);
     BodyId free_cpu{},free_gpu{};
-    for(std::uint32_t frame=0u;frame<4u;++frame) {
+    for(std::uint32_t frame=0u;frame<3u;++frame) {
         if(frame==1u) {
             free_cpu=cpu.add_dynamic_box({0.25f,0.25f,0.25f},{20.f,5.f,0.f},1.f);
             free_gpu=gpu.add_dynamic_box({0.25f,0.25f,0.25f},{20.f,5.f,0.f},1.f);
             cpu.set_velocity(free_cpu,{1.f,0.f,0.f});
             gpu.set_velocity(free_gpu,{1.f,0.f,0.f});
-        }
-        if(frame==3u) {
-            cpu.set_velocity(dormant_cpu,{1.f,0.f,0.f});
-            gpu.set_velocity(dormant_gpu,{1.f,0.f,0.f});
         }
         cpu.step(1.f/120.f);
         gpu.step(1.f/120.f);
@@ -4823,26 +4802,29 @@ void verify_connected_pre_witness_island_admission(
         native::GpuPcmFrictionAnchorFixture::
             verify_device_numerical_response_ownership(gpu);
         const auto stats=producer->dy_launch_stats();
-        require(gpu.contacts().size()==cpu.contacts().size() &&
-                stats.device_island_indirect_dispatches==1u &&
-                stats.device_admitted_tasks==1u &&
-                stats.device_admitted_bodies==4u &&
-                stats.device_admitted_descriptors==4u &&
-                producer->dy_gpu_integrated_body_count()==
-                    (4u+(frame!=0u)+(frame==3u)) &&
-                gpu.accurate_island_id(gpu_ids[0])==
-                    gpu.accurate_island_id(gpu_ids[1]) &&
-                gpu.accurate_island_id(gpu_ids[0])==
-                    gpu.accurate_island_id(bridge_gpu[0]) &&
-                gpu.accurate_island_id(gpu_ids[0])==
-                    gpu.accurate_island_id(bridge_gpu[1]),
-            "Response-disabled bridge split resident numerical admission");
-        require(cpu.body_is_sleeping(dormant_cpu)==(frame!=3u) &&
-                gpu.body_is_sleeping(dormant_gpu)==(frame!=3u),
-            "Independent dormant actor changed activation incorrectly");
-        test::compound_compare_state(
-            gpu.body_state(dormant_gpu),cpu.body_state(dormant_cpu),0.003f,
-            "Independent dormant or reactivated source diverged");
+        const auto root=gpu.accurate_island_id(gpu_ids[0]);
+        if(gpu.contacts().size()!=cpu.contacts().size() ||
+           stats.device_island_indirect_dispatches!=1u ||
+           stats.device_admitted_tasks!=1u ||
+           stats.device_admitted_bodies!=4u ||
+           stats.device_admitted_descriptors!=4u ||
+           producer->dy_gpu_integrated_body_count()!=(frame==0u?4u:5u) ||
+           root!=gpu.accurate_island_id(gpu_ids[1]) ||
+           root!=gpu.accurate_island_id(bridge_gpu[0]) ||
+           root!=gpu.accurate_island_id(bridge_gpu[1]))
+            throw std::runtime_error(
+                "Connected bridge admission mismatch: frame="+std::to_string(frame)+
+                " cpu_contacts="+std::to_string(cpu.contacts().size())+
+                " gpu_contacts="+std::to_string(gpu.contacts().size())+
+                " launches="+std::to_string(stats.device_island_indirect_dispatches)+
+                " tasks="+std::to_string(stats.device_admitted_tasks)+
+                " bodies="+std::to_string(stats.device_admitted_bodies)+
+                " descriptors="+std::to_string(stats.device_admitted_descriptors)+
+                " integrated="+std::to_string(producer->dy_gpu_integrated_body_count())+
+                " roots="+std::to_string(root)+","+
+                    std::to_string(gpu.accurate_island_id(gpu_ids[1]))+","+
+                    std::to_string(gpu.accurate_island_id(bridge_gpu[0]))+","+
+                    std::to_string(gpu.accurate_island_id(bridge_gpu[1])));
         if(frame!=0u)
             test::compound_compare_state(
                 gpu.body_state(free_gpu),cpu.body_state(free_cpu),0.003f,
@@ -4916,6 +4898,23 @@ void verify_single_body_pre_witness_contact(
     auto* empty_producer=empty_owner.get();
     empty_gpu.set_gpu_broadphase(std::move(empty_owner));
     empty_gpu.set_gpu_dy_device_admission_enabled(true);
+    const auto dormant_cpu=empty_cpu.add_dynamic_box(
+        {0.25f,0.25f,0.25f},{30.f,5.f,0.f},1.f);
+    const auto dormant_gpu=empty_gpu.add_dynamic_box(
+        {0.25f,0.25f,0.25f},{30.f,5.f,0.f},1.f);
+    RigidBodyDynamics dormant_dynamics{};
+    dormant_dynamics.gravity_enabled=false;
+    empty_cpu.set_dynamics(dormant_cpu,dormant_dynamics);
+    empty_gpu.set_dynamics(dormant_gpu,dormant_dynamics);
+    for(unsigned i=0u;i<3u &&
+        (!empty_cpu.body_is_sleeping(dormant_cpu) ||
+         !empty_gpu.body_is_sleeping(dormant_gpu));++i) {
+        empty_cpu.step(0.5f);
+        empty_gpu.step(0.5f);
+    }
+    require(empty_cpu.body_is_sleeping(dormant_cpu) &&
+            empty_gpu.body_is_sleeping(dormant_gpu),
+        "Independent integration source did not enter sleep");
     const Vec3 center{10.f,1.f,0.f};
     const Vec3 other{11.08f,2.08f,0.f};
     const Quat tilt{0.f,0.f,0.382683432f,0.923879533f};
@@ -4945,6 +4944,50 @@ void verify_single_body_pre_witness_contact(
     test::compound_compare_state(
         empty_gpu.body_state(actual),empty_cpu.body_state(expected),0.003f,
         "Non-touching PCM candidate changed free-flight motion");
+
+    // An actual contact exercises early numerical admission without
+    // allocating an integration slot for the unrelated sleeping actor.
+    const Vec3 contact_pose{10.f,0.17f,0.f};
+    empty_cpu.set_pose(fixed_cpu,contact_pose,{});
+    empty_gpu.set_pose(fixed_gpu,contact_pose,{});
+    for(unsigned frame=0u;frame<2u;++frame) {
+        if(frame==1u) {
+            empty_cpu.set_velocity(dormant_cpu,{1.f,0.f,0.f});
+            empty_gpu.set_velocity(dormant_gpu,{1.f,0.f,0.f});
+        }
+        empty_cpu.step(1.f/120.f);
+        empty_gpu.step(1.f/120.f);
+        const auto admission=empty_producer->dy_launch_stats();
+        if(!native::GpuPcmFrictionAnchorFixture::has_prewitness_solve(empty_gpu) ||
+           empty_gpu.contacts().size()!=1u ||
+           empty_cpu.contacts().size()!=1u ||
+           admission.device_island_indirect_dispatches!=1u ||
+           admission.device_admitted_tasks!=1u ||
+           admission.device_admitted_bodies!=1u ||
+           admission.device_admitted_descriptors!=1u ||
+           empty_producer->dy_gpu_integrated_body_count()!=1u+frame)
+            throw std::runtime_error(
+                "Independent dormant admission mismatch: frame="+
+                std::to_string(frame)+
+                " early="+std::to_string(native::GpuPcmFrictionAnchorFixture::
+                    has_prewitness_solve(empty_gpu))+
+                " cpu_contacts="+std::to_string(empty_cpu.contacts().size())+
+                " gpu_contacts="+std::to_string(empty_gpu.contacts().size())+
+                " launches="+std::to_string(admission.device_island_indirect_dispatches)+
+                " tasks="+std::to_string(admission.device_admitted_tasks)+
+                " bodies="+std::to_string(admission.device_admitted_bodies)+
+                " descriptors="+std::to_string(admission.device_admitted_descriptors)+
+                " integrated="+std::to_string(empty_producer->dy_gpu_integrated_body_count()));
+        require(empty_cpu.body_is_sleeping(dormant_cpu)==(frame==0u) &&
+                empty_gpu.body_is_sleeping(dormant_gpu)==(frame==0u),
+            "Independent dormant actor changed activation incorrectly");
+        test::compound_compare_state(
+            empty_gpu.body_state(dormant_gpu),empty_cpu.body_state(dormant_cpu),
+            0.003f,"Independent dormant or reactivated source diverged");
+        test::compound_compare_state(
+            empty_gpu.body_state(actual),empty_cpu.body_state(expected),
+            0.03f,"Contact motion diverged alongside independent dormant source");
+    }
 }
 // One PCM manager and two disconnected joint-only islands admit
 // three independent numerical tasks before Sc joins contact witnesses.
