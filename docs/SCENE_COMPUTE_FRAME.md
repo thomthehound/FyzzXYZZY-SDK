@@ -25,17 +25,16 @@ GPU dynamics.
 | --- | --- | --- | --- |
 | Admit | Validate authored edits and sparse identities | Consume compact input changes | None |
 | Broadphase | Own actor/shape/filter identities and explicit CPU SAP when selected | GPU SAP tracks bounds and overlap history when selected | Current GPU SAP fetches report deltas before Sc admission; target: only topology changes require Sc reconciliation |
-| Contact | Resolve new managers, mixed Gu contacts, callbacks and CPU correlation consumers | PCM witnesses, touch history, numerical contact stream | Current: CPU correlation joins GPU witnesses; target: device consumers use resident records directly |
+| Contact | Resolve new managers, mixed Gu contacts, callbacks and CPU correlation consumers | PCM witnesses, touch history, numerical contact stream | Sc joins witness publication; resident Dy can execute before the join |
 | Island and constraint preparation | Own stable graph and admit required task/identity changes | Build transient numerical components, partitions and rows where useful | CPU-prepared tasks or device admission, not both without a consumer |
 | Dynamics | Own timestep, requested outputs and commit policy | PGS, integration, sleep and force/impulse reductions | Final publication |
 | Publish | Validate the completed transaction; update required public CPU views | Write status, deltas and requested results | One completion join on the uninterrupted path; earlier joins only for actual CPU dependencies |
 
 A GPU-generated topology delta cannot become an unadmitted contact manager.
-Sc currently fetches SAP reports and joins GPU contact witnesses when CPU
-correlation needs them. The production Scene has not yet removed that general
-PCM-to-Sc join. Stable admitted identities permit device-dependent numerical
-work to continue without a host stop once the required source inputs are
-ready. A device gate must reject or suppress work needing new identities
+Sc fetches SAP report deltas to admit identities and joins PCM witnesses
+for accurate island and contact publication. Device numerical admission
+and execution can proceed before the witness join once the required
+source inputs are ready. A device gate must reject or suppress work needing new identities
 until Sc reconciles the delta in the same transaction. Contact touch, not
 speculative broadphase overlap, determines accurate connectivity.
 

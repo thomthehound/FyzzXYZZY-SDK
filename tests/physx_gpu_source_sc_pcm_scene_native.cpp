@@ -778,8 +778,7 @@ struct GpuPcmFrictionAnchorFixture {
             throw std::runtime_error(
                 "Early device Sc joint graph omitted Dy source membership");
         if(source_body_order) {
-            if(joint_row!=scene.gpu_dy_rows_.size() ||
-               joint_row!=scene.gpu_dy_prewitness_joint_rows_)
+            if(joint_row!=scene.gpu_dy_rows_.size())
                 throw std::runtime_error("Early Sc joint rows were not prepared before witnesses");
             for(std::size_t i=0u;i<joints;++i) {
                 const auto& edge=scene.gpu_dy_island_edges_[i];
@@ -5215,6 +5214,22 @@ void verify_sleeping_new_touch_device_admission(
     test::compound_compare_state(
         gpu.body_state(moving_gpu),cpu.body_state(moving_cpu),0.04f,
         "Sleeping first-touch device admission diverged from CPU PGS");
+
+    // Retired contact endpoints must not be staged from stale Gu history.
+    cpu.set_position(fixed_cpu,{0.f,-20.f,0.f});
+    gpu.set_position(fixed_gpu,{0.f,-20.f,0.f});
+    cpu.step(seconds);
+    gpu.step(seconds);
+    require(cpu.contacts().empty() && gpu.contacts().empty() &&
+            gpu.pairs().empty() &&
+            !native::GpuPcmFrictionAnchorFixture::
+                actor_has_staged_source(gpu,fixed_gpu) &&
+            native::GpuPcmFrictionAnchorFixture::
+                actor_has_staged_source(gpu,moving_gpu),
+        "Retired Gu endpoint consumed an actor-local staging slot");
+    test::compound_compare_state(
+        gpu.body_state(moving_gpu),cpu.body_state(moving_cpu),0.04f,
+        "Retired contact changed free-flight motion");
 
     native::Scene speculative_cpu,speculative_gpu;
     auto speculative_owner=std::make_unique<

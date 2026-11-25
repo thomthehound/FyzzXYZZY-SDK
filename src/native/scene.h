@@ -2324,11 +2324,9 @@ private:
     std::vector<EdgeIndex> gpu_dy_early_joint_edges_;
     bool gpu_dy_early_islands_=false;
     bool gpu_dy_prewitness_solve_=false;
-    std::size_t gpu_dy_prewitness_body_count_=0u;
-    std::size_t gpu_dy_prewitness_joint_rows_=0u;
     std::size_t gpu_dy_prewitness_contact_rows_=0u;
     std::size_t gpu_dy_prewitness_friction_rows_=0u;
-     std::vector<float> gpu_dy_contact_forces_;
+    std::vector<float> gpu_dy_contact_forces_;
     std::vector<GpuDyGuContactInput> gpu_dy_gu_inputs_;
     std::vector<GpuDyFrictionAnchorImpulse> gpu_dy_friction_impulses_;
     std::vector<GpuDyFrictionAnchorInput> gpu_dy_friction_anchors_;

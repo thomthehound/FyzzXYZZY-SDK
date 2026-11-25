@@ -5039,7 +5039,6 @@ void Scene::update_contacts(bool defer_device_points,float step_seconds) {
             prepare_gpu_dy_joint_rows(gpu_dy_early_joint_edges_,true,true);
             if(gpu_dy_rows_.size()!=early_joint_rows)
                 throw std::logic_error("Early Sc joint row capacity changed");
-            gpu_dy_prewitness_joint_rows_=gpu_dy_rows_.size();
             reserve_gpu_dy_pcm_source_rows();
         }else {
             gpu_dy_early_actor_ids_.clear();
@@ -5601,9 +5600,8 @@ void Scene::update_contacts(bool defer_device_points,float step_seconds) {
     // Candidate body inputs occupy their final numerical ordinals.
     // Source state is available independently of integration eligibility.
     if(gpu_dy_early_islands_) {
-        gpu_dy_prewitness_body_count_=gpu_dy_early_actor_ids_.size();
-        gpu_dy_integration_inputs_.assign(gpu_dy_prewitness_body_count_,{});
-        for(std::size_t i=0u;i<gpu_dy_prewitness_body_count_;++i) {
+        gpu_dy_integration_inputs_.assign(gpu_dy_early_actor_ids_.size(),{});
+        for(std::size_t i=0u;i<gpu_dy_early_actor_ids_.size();++i) {
             auto& input=gpu_dy_integration_inputs_[i];
             pack_gpu_dy_integration_input(gpu_dy_early_actor_ids_[i],
                                           step_seconds,input);
@@ -5611,7 +5609,7 @@ void Scene::update_contacts(bool defer_device_points,float step_seconds) {
         }
     }
     FYZZ_PROFILE_COUNTER("pcm.prewitness_body_inputs",
-        gpu_dy_prewitness_body_count_);
+        gpu_dy_early_islands_?gpu_dy_early_actor_ids_.size():0u);
     // Independent awake bodies use the existing free-integration suffix.
     // Retired edges have no numerical source; Sc has already removed
     // their counted interactions and queued their touch losses.
@@ -5622,7 +5620,7 @@ void Scene::update_contacts(bool defer_device_points,float step_seconds) {
             actor.angular_inertia_available;
     };
     bool prewitness_ready=gpu_results_pending && gpu_dy_early_islands_ &&
-       (gpu_dy_prewitness_contact_rows_ || gpu_dy_prewitness_joint_rows_ ||
+       (gpu_dy_prewitness_contact_rows_ || !gpu_dy_rows_.empty() ||
         gu_numerical_prepared) &&
        std::none_of(gpu_pcm_pairs_.begin(),gpu_pcm_pairs_.end(),
            [](const auto& pair){return pair.host_generated;}) &&
@@ -6020,31 +6018,9 @@ void Scene::update_contacts(bool defer_device_points,float step_seconds) {
     if(!early_gu_history)
         publish_cpu_gu_touch_history(lost_contacts_,next_manifolds_);
 }
-// IG::SimpleIslandManager::firstPassIslandGen/secondPassIslandGen:
-// speculative edges come from the scene's published SAP candidates,
-// whereas accurate edges come only from the resolved physical touches.
-// The admitted all-awake rigid island owner now preserves source-style
-// persistent handles, node membership and per-graph static-touch counts.
-// Topology rebuild is skipped for unchanged dynamic connectivity; source
-// sleep/deactivation, task continuations and local split budgets remain
-// N1 requirements. Static touch transitions alter counters but do not
-// manufacture dynamic-island topology changes.
-// IslandSim::processLostEdges calls findRoute on dirty endpoints before
-// splitting an island. For the admitted all-awake dynamic contact subset,
-// a lost edge can only split its component if its endpoints are no longer
-// connected in the *surviving* graph. Traverse the persistent source
-// EdgeInstance adjacency owned by the corresponding contact-manager
-// handles. Root-directed fast-route and hop hints are cached in the
-// all-awake subset; stable island identities and deactivation remain open.
-// IslandSim::findRoute traverses per-node mFirstEdgeIndex and the
-// paired EdgeInstance indices, rather than rebuilding an adjacency
-// graph every time a contact disappears. The persistent source slot
-// lists and static-touch counters follow independent SAP/Gu publications.
-// IslandSim::processLostEdges processes nodes dirtied by removed graph
-// links. Its findRoute first tries mFastRoute to the island root and
-// otherwise traverses surviving mFirstEdgeIndex adjacency, rebuilding
-// hop/route estimates. The all-awake rigid subset has no sleeping or
-// deferred dirty-work budget; a failed root route proves a real split.
+// SAP owns speculative edges; Gu touch owns accurate edges. Validate
+// cached root routes against surviving intrusive links before splitting
+// dirty components in the selected IslandSim.
 bool Scene::lost_island_edges_retain_routes(bool accurate) {
     auto& route=accurate?accurate_route_scratch_:speculative_route_scratch_;
     auto& dirty=accurate?accurate_dirty_nodes_:speculative_dirty_nodes_;
@@ -8664,9 +8640,8 @@ void Scene::partition_constraints() {
         gpu_dy_island_edges_.clear();
         gpu_dy_island_node_flags_.clear();
     }
-    // The GPU owns early numerical responses for independent compact
-    // components regardless of their aggregate count. A genuinely wide
-    // connected task retains host-authored descriptors for GPU tiling.
+    // Early submitted tasks already own wide and compact scheduling.
+    // A late resident graph can still use compact numerical admission.
     bool compact_source_tasks=true;
     if(gpu_integration && gpu_dy_early_islands_ &&
        !gpu_dy_prewitness_solve_ && gpu_dy_responding_island_count_!=0u) {
@@ -10019,8 +9994,7 @@ void Scene::prepare_constraints(float seconds) {
         gpu_normal_prep && !gpu_dy_joint_inputs_.empty();
     if(gpu_dy_source_body_order_) {
         if(gpu_dy_early_joint_edges_.size()<indexed_joints_.size() ||
-           gpu_dy_joint_inputs_.size()!=gpu_dy_early_joint_edges_.size() ||
-           gpu_dy_prewitness_joint_rows_!=gpu_dy_rows_.size())
+           gpu_dy_joint_inputs_.size()!=gpu_dy_early_joint_edges_.size())
             throw std::logic_error("Early Sc joint admission changed before Dy");
     }else if(prewitness_joint_sources) {
         // Keep only responding joints. The staged authored records remain
@@ -10720,9 +10694,7 @@ void Scene::solve_gpu_distance_constraints(float seconds) {
     std::size_t responding_tasks=0u;
     std::size_t previous_bodies=0u,previous_descriptors=0u;
     bool compact_tasks=true;
-    // A large source graph may contain only independent, compact
-    // islands. Keep the connected-task width gate until the device
-    // launch owns wide-component tiling as well as task admission.
+    // Late admission has no precomputed wide-stage reservation.
     for(const auto& task:solver_tasks_) {
         if(task.solver_body_end<previous_bodies ||
            task.constraint_end<previous_descriptors)
@@ -10789,8 +10761,7 @@ void Scene::solve_gpu_distance_constraints(float seconds) {
         gpu_dy_free_ordinals_[i]=integration_count++;
     }
     if(early_device_admission) {
-        if(gpu_dy_prewitness_body_count_!=gpu_dy_early_actor_ids_.size() ||
-           gpu_dy_integration_inputs_.size()!=gpu_dy_prewitness_body_count_)
+        if(gpu_dy_integration_inputs_.size()!=gpu_dy_early_actor_ids_.size())
             throw std::logic_error("Early Sc integration source range missing");
         gpu_dy_integration_inputs_.resize(integration_count);
     }else
@@ -10799,7 +10770,7 @@ void Scene::solve_gpu_distance_constraints(float seconds) {
         auto& input=gpu_dy_integration_inputs_[ordinal];
         if(input.active)
             throw std::logic_error("Sc actor duplicates a numerical body source");
-        if(early_device_admission && ordinal<gpu_dy_prewitness_body_count_) {
+        if(early_device_admission && ordinal<gpu_dy_early_actor_ids_.size()) {
             const auto& actor=actors_[id];
             if(input.source_actor!=id ||
                input.counted_interactions!=actor.num_counted_interactions)
@@ -10863,7 +10834,7 @@ void Scene::solve_gpu_distance_constraints(float seconds) {
         pack(input.angular_velocity,actor.angular_velocity);
     }
     if(early_device_admission)
-        for(std::size_t i=0u;i<gpu_dy_prewitness_body_count_;++i)
+        for(std::size_t i=0u;i<gpu_dy_early_actor_ids_.size();++i)
             if(!gpu_dy_integration_inputs_[i].active)
                 gpu_dy_integration_inputs_[i]={};
     if(!joint_rows_.empty() ||
@@ -11090,7 +11061,7 @@ void Scene::solve_gpu_distance_constraints(float seconds) {
                 " integrated="+std::to_string(integrated)+
                 " solver="+std::to_string(solver_active_ids_.size())+
                 " free="+std::to_string(gpu_dy_free_ids_.size())+
-                " candidates="+std::to_string(gpu_dy_prewitness_body_count_)+
+                " candidates="+std::to_string(gpu_dy_early_actor_ids_.size())+
                 " found="+std::to_string(found_contacts_.size())+
                 " lost="+std::to_string(lost_contacts_.size());
             for(std::size_t ordinal=0u;ordinal<gpu_dy_integration_inputs_.size();++ordinal) {
@@ -11106,7 +11077,7 @@ void Scene::solve_gpu_distance_constraints(float seconds) {
                 message+=" [actor="+std::to_string(id)+
                     " ordinal="+std::to_string(ordinal)+
                     " input="+std::to_string(input.active)+
-                    " node="+std::to_string(ordinal<gpu_dy_prewitness_body_count_
+                    " node="+std::to_string(ordinal<gpu_dy_early_actor_ids_.size()
                         ?gpu_dy_island_node_flags_[ordinal]:0u)+
                     " pose="+std::to_string(valid)+
                     " sleeping="+std::to_string(actor.sleeping)+
@@ -13587,8 +13558,6 @@ void Scene::advance_collision_internal(
         gpu_dy_joint_inputs_.clear();
         gpu_dy_joint_source_slots_.clear();
         gpu_dy_joint_kinematic_ids_.clear();
-        gpu_dy_prewitness_body_count_=0u;
-        gpu_dy_prewitness_joint_rows_=0u;
         gpu_dy_prewitness_contact_rows_=0u;
         gpu_dy_prewitness_friction_rows_=0u;
         gpu_dy_early_islands_=false;
@@ -13613,44 +13582,17 @@ void Scene::advance_collision_internal(
         if(defer_device_points && step_seconds>0.f &&
            gpu_broadphase_ && gpu_dy_active()) {
             gpu_broadphase_->begin_gpu_dy_actor_sources();
-            // Awake accurate-island actors, including free-flight bodies,
-            // stage during SAP. Later contact admission adds new-touch actors.
-            gpu_dy_early_actor_ids_.reserve(
-                accurate_islands_.active_nodes.size()+
-                2u*(manifolds_.size()+active_constraint_handles_.size()));
-            gpu_dy_early_actor_ids_.insert(
-                gpu_dy_early_actor_ids_.end(),
+            // Sc activity streams own early rigid inputs. Current
+            // PCM/Gu sources stage their immovable endpoints after SAP.
+            gpu_dy_early_actor_ids_.assign(
                 accurate_islands_.active_nodes.begin(),
                 accurate_islands_.active_nodes.end());
-            gpu_dy_immovable_source_ids_.clear();
-            const auto stage_actor=[&](BodyId id) {
-                gpu_dy_early_actor_ids_.push_back(id);
-            };
-            for(const auto& manager:manifolds_) {
-                if(manager.pair.a>=shapes_.size() ||
-                   manager.pair.b>=shapes_.size())continue;
-                const auto& a=shapes_[manager.pair.a];
-                const auto& b=shapes_[manager.pair.b];
-                if(a.alive)stage_actor(a.body);
-                if(b.alive)stage_actor(b.body);
-                if(!manager.count || !a.alive || !b.alive ||
-                   std::min(actors_[a.body].dynamics.max_contact_impulse,
-                            actors_[b.body].dynamics.max_contact_impulse)==0.f)
-                    continue;
-                for(const BodyId id:{a.body,b.body})
-                    if(actors_[id].motion!=Motion::Dynamic)
-                        gpu_dy_immovable_source_ids_.push_back(id);
-            }
-            for(const EdgeIndex edge:active_constraint_handles_) {
-                const auto endpoints=island_edges_[edge].pair;
-                stage_actor(endpoints.a);
-                stage_actor(endpoints.b);
-            }
+            gpu_dy_early_actor_ids_.insert(
+                gpu_dy_early_actor_ids_.end(),
+                speculative_islands_.activating_nodes.begin(),
+                speculative_islands_.activating_nodes.end());
             stage_gpu_dy_actor_sources(gpu_dy_early_actor_ids_,step_seconds);
-            stage_gpu_dy_actor_sources(
-                gpu_dy_immovable_source_ids_,step_seconds,true);
             gpu_dy_early_actor_ids_.clear();
-            gpu_dy_immovable_source_ids_.clear();
         }
         // Authored joint sources are independent of SAP and Gu results.
         // Queue them during the SAP fetch rather than after PCM begins.
