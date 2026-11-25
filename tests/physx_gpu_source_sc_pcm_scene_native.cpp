@@ -5687,6 +5687,71 @@ void verify_sparse_large_device_response_graph(
              <<" host_descriptors="<<schedule.host_descriptor_inputs<<'\n';
 }
 
+void verify_resident_wide_device_response(
+    fyzz::compute::Backend backend,const char* sap,
+    const char* pcm,const char* dy_shader) {
+    using namespace fyzz;
+    std::ifstream input(dy_shader,std::ios::binary);
+    require(bool(input),"Resident wide Dy shader unavailable");
+    compute::ShaderBinary shader{};
+    shader.format=backend==compute::Backend::Vulkan
+        ?compute::ShaderFormat::Spirv:compute::ShaderFormat::Dxil;
+    shader.bytes.assign(std::istreambuf_iterator<char>{input},
+                        std::istreambuf_iterator<char>{});
+    native::Scene cpu,gpu;
+    auto owner=std::make_unique<
+        physx_gpu::SourceScOwnedGpuBroadphaseNative>(
+            backend,load_native_gpu_sap_shaders(backend,sap),
+            2048u,128u,std::nullopt,
+            load_native_gpu_pcm_shaders(backend,pcm),std::move(shader));
+    auto* producer=owner.get();
+    gpu.set_gpu_broadphase(std::move(owner));
+    gpu.set_gpu_dy_device_admission_enabled(true);
+    constexpr auto count=native::gpu_dy_wide_task_threshold;
+    const auto assemble=[&](native::Scene& scene) {
+        std::array<BodyId,count+1u> ids{};
+        for(std::uint32_t i=0u;i<ids.size();++i) {
+            const float x=i==count?-8.f:1.25f*float(i);
+            scene.add_static_box({0.5f,0.5f,0.5f},{x,0.f,0.f});
+            ids[i]=scene.add_dynamic_box(
+                {0.5f,0.5f,0.5f},{x,0.83f,0.f},1.f);
+            if(i && i<count)
+                scene.create_center_distance_constraint(ids[i-1u],ids[i],1.25f);
+            scene.set_velocity(ids[i],{i%2u?0.02f:-0.02f,0.f,0.01f});
+        }
+        return ids;
+    };
+    const auto a=assemble(cpu),b=assemble(gpu);
+    constexpr float dt=1.f/120.f;
+    cpu.step(dt);
+    gpu.step(dt);
+    const auto schedule=producer->dy_launch_stats();
+    require(native::GpuPcmFrictionAnchorFixture::has_prewitness_solve(gpu) &&
+            schedule.resident_wide_schedule &&
+            schedule.wide_tasks==1u &&
+            schedule.device_admitted_tasks==2u &&
+            schedule.device_admitted_bodies==b.size() &&
+            schedule.device_admitted_descriptors==2u*count &&
+            schedule.host_descriptor_inputs==0u &&
+            schedule.host_degree_scanned_descriptors==0u &&
+            schedule.device_task_readback_bytes==0u &&
+            schedule.device_partition_indirect_dispatches>0u &&
+            producer->dy_gpu_integrated_body_count()==b.size(),
+        "Resident wide component lost device-authored numerical scheduling");
+    require(cpu.contacts().size()==b.size() &&
+            gpu.contacts().size()==cpu.contacts().size(),
+        "Resident wide execution changed contact publication");
+    for(std::size_t i=0u;i<b.size();++i)
+        test::compound_compare_state(gpu.body_state(b[i]),cpu.body_state(a[i]),
+            0.03f,"Resident wide device schedule changed body motion");
+    std::cout<<"FYZZXYZZY_METRIC resident_wide tasks="
+             <<schedule.device_admitted_tasks
+             <<" tiled="<<schedule.wide_tasks
+             <<" host_descriptors="<<schedule.host_descriptor_inputs
+             <<" indirect_partitions="<<schedule.device_partition_indirect_dispatches
+             <<'\n';
+}
+
 // Source Gu PCM rows, friction patches, and 1D joints share the same
 // production Dy task partitions and device execution on both backends.
 void verify_gpu_coupled_solver(
@@ -9742,6 +9807,8 @@ int main(int argc,char** argv) {
                     verify_single_pcm_joint_island_admission(
                         backend,argv[1],argv[2],argv[3]);
                     verify_sparse_large_device_response_graph(
+                        backend,argv[1],argv[2],argv[3]);
+                    verify_resident_wide_device_response(
                         backend,argv[1],argv[2],argv[3]);
                     verify_early_pcm_island_pipeline(
                         backend,argv[1],argv[2],argv[3],

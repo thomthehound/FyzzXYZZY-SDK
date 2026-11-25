@@ -124,6 +124,7 @@ struct SourceDyLaunchStats {
     std::size_t tile_bytes=0u;
     std::size_t device_partition_tile_bytes=0u;
     std::size_t device_partition_indirect_dispatches=0u;
+    bool resident_wide_schedule=false;
     // Device-written descriptors, partition ranges, tasks, and ordinals
     // omitted from the host numerical input packet.
     std::size_t device_generated_bytes=0u;
@@ -580,7 +581,8 @@ public:
                bool compact_contact_admission=false,
                std::span<const native::GpuDyCompactContactPrep> compact_contact_prep={},
         std::span<const native::GpuDyRetainedFrictionCandidate> retained_candidates={},
-        bool defer_result_dma=false) {
+        bool defer_result_dma=false,
+        native::GpuDyWideScheduleBounds wide_bounds={}) {
         if(pending_solve_)
             throw std::logic_error("Source Dy numerical epoch already queued");
         if(!contact_prep.empty() && !compact_contact_prep.empty())
@@ -685,6 +687,14 @@ public:
         } else {
             build_launch_plan(tasks,partition_ends,narrow(descriptors.size()),
                               narrow(body_ordinals.size()));
+        }
+        const bool resident_wide=wide_bounds.colors!=0u;
+        if(resident_wide) {
+            if(!source_indexed_integration || !device_admission ||
+               !device_partitions || !descriptors.empty())
+                throw std::logic_error("Resident wide Dy requires source-indexed admission");
+            build_resident_launch_plan(wide_bounds,bodies.size(),
+                                       descriptor_capacity,tasks.size());
         }
         last_schedule_.host_descriptor_inputs=descriptors.size();
         last_schedule_.host_contact_source_bytes=compact_contact_prep.empty()
@@ -1638,6 +1648,7 @@ public:
             throw std::overflow_error(
                 "Source GPU free-body velocity writeback exceeds 32-bit view");
         output_bytes+=free_velocity_bytes+free_sleep_bytes;
+        if(resident_wide)output_bytes+=sizeof(std::uint32_t);
         // Source-indexed integration publishes by numerical address;
         // only remapped or diagnostic consumers need the ordinal list.
         const bool readback_body_ordinals=device_admission &&
@@ -1730,6 +1741,13 @@ public:
            (std::numeric_limits<std::uint32_t>::max()-total)/sizeof(WorkTile))
             throw std::overflow_error("Device Dy partition tiles exceed arena");
         total+=partition_output_count_*sizeof(WorkTile);
+        const auto mode_output_offset=total;
+        if(resident_wide) {
+            if(total>std::numeric_limits<std::uint32_t>::max() ||
+               tasks.size()>(std::numeric_limits<std::uint32_t>::max()-total)/4u)
+                throw std::overflow_error("Resident Dy task modes exceed arena");
+            total+=tasks.size()*4u;
+        }
         narrow(total);
         // Host staging contains only compact readback and real upload
         // inputs. Writable GPU contact rows have no CPU mirror.
@@ -2254,8 +2272,10 @@ public:
         const auto max_groups=context_.device_info().max_workgroup_count[0];
         const auto partition_output_bias=narrow(
             std::size_t(params[28])+partition_output_offset);
+        if(resident_wide)
+            params[23]=narrow(std::size_t(params[28])+mode_output_offset);
         if(partition_dispatch_count_) {
-            if(device_admission ||
+            if((device_admission && !resident_wide) ||
                partition_dispatch_count_>max_view_/16u ||
                partition_dispatch_count_>std::numeric_limits<std::uint32_t>::max()/16u)
                 throw std::out_of_range("Device Dy partition dispatch extent exceeds view");
@@ -2320,14 +2340,15 @@ public:
                 (device_partitions?0x80000000u:0u)|
                 (device_admission && phase!=Launch::FreeBodies
                     ?0x08000000u:0u)|
-                (device_partitions && !wide_tasks_.empty() &&
-                 phase!=Launch::Color ?0x40000000u:0u);
+                (device_partitions && (!wide_tasks_.empty() || resident_wide) &&
+                 phase!=Launch::Color ?0x40000000u:0u)|
+                (resident_wide && phase!=Launch::FreeBodies?0x04000000u:0u);
             // Compact tasks have no cross-workgroup dependencies. Their
             // workgroup count is published by the Sc device prefix, so
             // dispatch directly from that result instead of recopying a
             // host task count into the launch command.
             if(device_admission && phase==Launch::Fused &&
-               wide_tasks_.empty()) {
+               wide_tasks_.empty() && !resident_wide) {
                 if(range.begin!=0u || range.count!=tasks.size() ||
                    range.count>source_sc_indirect_task_limit(context_.device_info()))
                     throw std::out_of_range(
@@ -2342,8 +2363,13 @@ public:
                 ++last_schedule_.device_island_indirect_dispatches;
                 return;
             }
-            if(phase==Launch::Partition && partition_dispatch_count_) {
-                params[10]|=0x10000000u;
+            const bool resident_tiles=resident_wide &&
+                (phase==Launch::Fused || phase==Launch::Normals ||
+                 phase==Launch::Friction || phase==Launch::Motion ||
+                 phase==Launch::Integrate);
+            if(resident_tiles ||
+               (phase==Launch::Partition && partition_dispatch_count_)) {
+                if(phase==Launch::Partition)params[10]|=0x10000000u;
                 for(std::size_t group=0u;group<range.count;group+=max_groups) {
                     params[8]=narrow(std::size_t(partition_output_bias)+
                         (range.begin+group)*sizeof(WorkTile));
@@ -2354,7 +2380,10 @@ public:
                     std::memcpy(dispatch.push_constants.data(),params.data(),sizeof(params));
                     stream_.commands().emplace_back(dispatch);
                     ++last_schedule_.dispatches;
-                    ++last_schedule_.device_partition_indirect_dispatches;
+                    if(phase==Launch::Partition)
+                        ++last_schedule_.device_partition_indirect_dispatches;
+                    if(phase==Launch::Fused)
+                        ++last_schedule_.device_island_indirect_dispatches;
                 }
                 dispatch.indirect.reset();
                 return;
@@ -2405,13 +2434,14 @@ public:
             last_schedule_.device_initialization_dispatches=
                 last_schedule_.dispatches-before;
         }
-        if(device_partitions && !wide_tasks_.empty())
+        if(device_partitions && (!wide_tasks_.empty() || resident_wide))
             launch(Launch::Color,{0u,tasks.size()+
-                (device_initial_bodies ? (bodies.size()+127u)/128u : 0u)});
+                (device_initial_bodies && !resident_wide
+                    ? (bodies.size()+127u)/128u : 0u)});
         if(partition_dispatch_count_) {
             // Color ends now own the exact cross-workgroup tile ranges.
             auto build=dispatch;
-            const auto slot=convex_vertex_count?7u:6u;
+            const auto slot=convex_vertex_count?9u:8u;
             build.buffers[slot]={slot,partition_dispatch_buffer_,0u,
                 partition_dispatch_count_*16u,compute::BufferAccess::Write};
             build.indirect.reset();
@@ -2425,10 +2455,18 @@ public:
             arguments[17]=narrow(partition_header_begin_);
             arguments[18]=narrow(partition_task_begin_);
             arguments[19]=narrow(wide_tasks_.size());
-            for(std::size_t first=0u;first<partition_tiles_.size();first+=max_groups) {
+            const auto reservations=partition_tiles_.size()+(resident_wide?3u:0u);
+            if(resident_wide) {
+                arguments[10]|=0x0c000000u;
+                arguments[18]=wide_bounds.colors;
+                arguments[19]=narrow(tasks.size());
+                arguments[21]=narrow(descriptor_capacity);
+                arguments[24]=narrow(history_bytes+output_bytes-4u);
+            }
+            for(std::size_t first=0u;first<reservations;first+=max_groups) {
                 arguments[8]=narrow(first);
                 build.groups={narrow(std::min<std::size_t>(
-                    max_groups,partition_tiles_.size()-first)),1u,1u};
+                    max_groups,reservations-first)),1u,1u};
                 std::memcpy(build.push_constants.data(),arguments.data(),sizeof(arguments));
                 stream_.commands().emplace_back(build);
                 ++last_schedule_.dispatches;
@@ -2445,7 +2483,7 @@ public:
                 first=end;
             }
         }else launch(Launch::Fused,fused_tiles_);
-        if(!wide_tasks_.empty()) {
+        if(!wide_tasks_.empty() || resident_wide) {
             // The existing arena write dependencies order each dispatch
             // across workgroups. A relative partition from every wide
             // task can execute together because their body writes are disjoint.
@@ -2682,6 +2720,13 @@ public:
                 last_schedule_.device_admitted_tasks=admitted[1];
                 last_schedule_.device_admitted_bodies=admitted[2];
                 last_schedule_.device_admitted_descriptors=admitted[3];
+                if(last_schedule_.resident_wide_schedule) {
+                    std::uint32_t wide=0u;
+                    std::memcpy(&wide,host_.data()+output_bytes-4u,4u);
+                    if(wide>admitted[1])
+                        throw std::logic_error("Resident Dy wide task count is invalid");
+                    last_schedule_.wide_tasks=wide;
+                }
                 if(pending.readback_device_task_records && admitted[1])
                     std::memcpy(tasks.data(),
                         host_.data()+pending.device_task_offset,
@@ -3519,6 +3564,45 @@ private:
         last_schedule_.tile_bytes=tiles_.size()*sizeof(WorkTile);
         last_schedule_.device_partition_tile_bytes=
             partition_output_count_*sizeof(WorkTile);
+    }
+
+    void build_resident_launch_plan(native::GpuDyWideScheduleBounds bounds,
+            std::size_t nodes,std::size_t responses,std::size_t task_capacity) {
+        const auto max_groups=context_.device_info().max_workgroup_count[0];
+        const auto wide_capacity=nodes/native::gpu_dy_wide_task_threshold;
+        const auto body_groups=(nodes+127u)/128u+wide_capacity;
+        if(!wide_capacity || !bounds.colors || !bounds.iterations ||
+           bounds.iterations>510u || bounds.colors>responses/body_groups ||
+           !task_capacity)
+            throw std::logic_error("Resident Dy wide reservation is invalid");
+        const auto narrow=[](std::size_t value) {
+            if(value>std::numeric_limits<std::uint32_t>::max())
+                throw std::overflow_error("Resident Dy schedule exceeds address space");
+            return static_cast<std::uint32_t>(value);
+        };
+        const auto reserve=[&](TileRange& range,std::size_t count) {
+            range={partition_output_count_,count,bounds.iterations,
+                   partition_dispatch_count_};
+            const auto chunks=(count-1u)/max_groups+1u;
+            partition_output_count_+=count;
+            partition_dispatch_count_+=chunks;
+            tiles_.push_back({narrow(range.begin),narrow(count),
+                              narrow(range.dispatch_begin),narrow(chunks)});
+        };
+        partition_header_begin_=0u;
+        reserve(fused_tiles_,task_capacity);
+        reserve(prep_tiles_,(responses+31u)/32u+wide_capacity);
+        reserve(body_tiles_,body_groups);
+        partition_tiles_.resize(bounds.colors);
+        for(auto& range:partition_tiles_)reserve(range,body_groups);
+        wide_iterations_=bounds.iterations;
+        for(std::size_t i=0u;i<position_ends_.size();++i)
+            position_ends_[i]=(bounds.position_ends[i/32u]&(1u<<(i%32u)))!=0u;
+        last_schedule_.resident_wide_schedule=true;
+        last_schedule_.max_partition_groups=body_groups;
+        last_schedule_.tile_bytes=tiles_.size()*sizeof(WorkTile);
+        last_schedule_.device_partition_tile_bytes=
+            std::size_t(bounds.colors)*body_groups*sizeof(WorkTile);
     }
 
     void build_launch_plan(std::span<const native::GpuDyDistanceTask> tasks,

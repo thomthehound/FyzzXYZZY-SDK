@@ -332,7 +332,8 @@ public:
         bool readback_device_task_records=true,
         bool compact_contact_admission=false,
         std::span<const native::GpuDyCompactContactPrep> compact_contact_prep={},
-        std::span<const native::GpuDyRetainedFrictionCandidate> retained_candidates={}) override {
+        std::span<const native::GpuDyRetainedFrictionCandidate> retained_candidates={},
+        native::GpuDyWideScheduleBounds wide_bounds={}) override {
         FYZZ_PROFILE_SCOPE("dy.device_enqueue");
         if(!dy_distance_)
             throw std::logic_error("Source GPU Dy shader not installed");
@@ -397,7 +398,8 @@ public:
                             deferred_points,readback_device_task_records,
                             compact_contact_admission,compact_contact_prep,
                             retained_candidates,
-                            pcm_ && pcm_->needs_witness_before_point_dma());
+                            pcm_ && pcm_->needs_witness_before_point_dma(),
+                            wide_bounds);
         if(!deferred_points.empty())
             pcm_->mark_deferred_points_in_numerical();
         ++dy_distance_dispatch_count_;

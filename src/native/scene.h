@@ -333,6 +333,11 @@ struct GpuDyIslandSources {
 // Both Sc endpoint admission and Dy wide-task scheduling use this gate.
 // Compact tasks never require host endpoint-degree analysis.
 inline constexpr std::uint32_t gpu_dy_wide_task_threshold=4u*128u;
+// Candidate topology bounds the portable indirect command envelope.
+struct GpuDyWideScheduleBounds {
+    std::uint32_t colors=0u,iterations=0u;
+    std::array<std::uint32_t,8> position_ends{};
+};
 
 // DyContactPrep normal and friction rows use source PxReal arithmetic
 // with separate Gu-indexed contact-force writeback.
@@ -592,7 +597,8 @@ public:
         bool /*readback_device_task_records*/=true,
         bool /*compact_contact_admission*/=false,
         std::span<const GpuDyCompactContactPrep> /*compact_contact_prep*/={},
-        std::span<const GpuDyRetainedFrictionCandidate> /*retained_candidates*/={}) {
+        std::span<const GpuDyRetainedFrictionCandidate> /*retained_candidates*/={},
+        GpuDyWideScheduleBounds /*wide_bounds*/={}) {
         throw std::logic_error("Source GPU Dy shader is not installed");
     }
     virtual void finish_gpu_dy_distance() {
@@ -2298,6 +2304,7 @@ private:
     std::vector<GpuDyDistanceTask> gpu_dy_tasks_;
     std::vector<GpuDyIslandEdge> gpu_dy_island_edges_;
     std::vector<std::uint32_t> gpu_dy_island_node_flags_;
+    std::vector<std::uint32_t> gpu_dy_candidate_degrees_;
     std::vector<BodyId> gpu_dy_early_actor_ids_;
     std::vector<BodyId> gpu_dy_joint_kinematic_ids_;
     std::vector<std::uint32_t> gpu_dy_actor_stage_epochs_;

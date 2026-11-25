@@ -2161,22 +2161,99 @@ void sourceDyBuildPartitionTiles(uint color,uint lane) {
     for(uint chunk=lane;chunk<reservation.w;chunk+=128u) {
         const uint begin=chunk*p.partitionCount;
         const uint groups=begin<count?min(p.partitionCount,count-begin):0u;
-        scIslandWork.Store3((reservation.z+chunk)*16u,uint3(groups,1u,1u));
+        retainedSources.Store3((reservation.z+chunk)*16u,uint3(groups,1u,1u));
+    }
+}
+
+// The resident task list and color ranges are the only numerical
+// schedule inputs. Each reservation compacts one disjoint tile stream.
+void sourceDyBuildResidentTiles(uint kind,uint lane) {
+    const uint scratch=arena.Load(p.integrationBias+28u);
+    const uint metadata=p.writebackBias+arena.Load(scratch+16u);
+    const uint4 reservation=arena.Load4(metadata+(p.contactCount+kind)*16u);
+    const uint sourceHeader=p.taskBias-arena.Load(scratch+24u);
+    const uint4 header=scIslandWork.Load4(sourceHeader);
+    const bool valid=header.x==0u && header.y<=p.patchCount &&
+        header.z<=p.bodyCount && header.w<=p.orderCount;
+    if(lane==0u)dyPartitionTileCount=0u;
+    GroupMemoryBarrierWithGroupSync();
+    for(uint task=lane;task<(valid?header.y:0u);task+=128u) {
+        const uint address=p.taskBias+task*36u;
+        if(sourceDyTaskLoad(address+32u)!=0u)continue;
+        const bool wide=arena.Load(p.resultTaskOffset+task*4u)!=0u;
+        if(wide==(kind==0u))continue;
+        const uint4 ranges=sourceDyTaskLoad4(address);
+        const uint2 bodies=sourceDyTaskLoad2(address+16u);
+        uint begin=0u,end=1u,step=1u,color=0u;
+        if(kind==1u) {
+            begin=ranges.x;end=ranges.y;step=32u;
+        }else if(kind==2u) {
+            begin=bodies.x;end=bodies.y;step=128u;
+        }else if(kind>=3u) {
+            color=kind-3u;
+            if(ranges.w<ranges.z || ranges.w-ranges.z>p.frictionCount) {
+                sourceDyTaskErrorOr(address+32u,0x02000000u);
+                continue;
+            }
+            if(color>=ranges.w-ranges.z)continue;
+            const uint partition=ranges.z+color;
+            const uint first=color==0u?ranges.x:
+                arena.Load(p.partitionBias+(partition-1u)*4u);
+            const uint last=arena.Load(p.partitionBias+partition*4u);
+            if(last<first || last>ranges.y) {
+                sourceDyTaskErrorOr(address+32u,0x02000000u);
+                continue;
+            }
+            end=last-first;step=128u;
+        }
+        if(end<begin) {
+            sourceDyTaskErrorOr(address+32u,0x02000000u);
+            continue;
+        }
+        const uint width=end-begin;
+        const uint groups=width/step+uint(width%step!=0u);
+        uint offset;
+        InterlockedAdd(dyPartitionTileCount,groups,offset);
+        if(offset>reservation.y || groups>reservation.y-offset) {
+            sourceDyTaskErrorOr(address+32u,0x02000000u);
+            continue;
+        }
+        for(uint tile=0u;tile<groups;++tile) {
+            const uint first=begin+tile*step;
+            arena.Store4(p.rowCount+(reservation.x+offset+tile)*16u,
+                uint4(task,first,first+min(step,end-first),color));
+        }
+    }
+    AllMemoryBarrierWithGroupSync();
+    const uint count=dyPartitionTileCount<=reservation.y?dyPartitionTileCount:0u;
+    if(kind==0u && lane==0u)
+        arena.Store(p.writebackBias+p.resultContactOffset,
+                    valid && count<=header.y?header.y-count:0u);
+    for(uint chunk=lane;chunk<reservation.w;chunk+=128u) {
+        const uint begin=chunk*p.partitionCount;
+        const uint groups=begin<count?min(p.partitionCount,count-begin):0u;
+        retainedSources.Store3((reservation.z+chunk)*16u,uint3(groups,1u,1u));
     }
 }
 
 [numthreads(128,1,1)]
 void main(uint3 group:SV_GroupID,uint3 lane:SV_GroupThreadID) {
     const uint phase=p.launchControl&15u;
+    const bool residentWide=phase!=freeBodyTile &&
+        (p.launchControl&0x0c000000u)==0x0c000000u;
     if(phase==buildPartitionTiles) {
-        sourceDyBuildPartitionTiles(p.launchBegin+group.x,lane.x);
+        if(residentWide)
+            sourceDyBuildResidentTiles(p.launchBegin+group.x,lane.x);
+        else
+            sourceDyBuildPartitionTiles(p.launchBegin+group.x,lane.x);
         return;
     }
     const bool devicePartitions=(p.launchControl&0x80000000u)!=0u;
     const bool precolored=(p.launchControl&0x40000000u)!=0u;
     const bool indirectPartition=phase==partitionTile &&
         (p.launchControl&0x10000000u)!=0u;
-    const uint iter=(p.launchControl&(indirectPartition?0x0fffffffu:0x1fffffffu))>>4u;
+    const uint iter=phase==partitionTile || phase==motionTile
+        ?(p.launchControl>>4u)&511u:(p.launchControl&0x1fffffffu)>>4u;
     uint index=p.launchBegin+group.x;
     uint admittedTasks=0xffffffffu;
     uint admittedBodies=0xffffffffu;
@@ -2302,14 +2379,15 @@ void main(uint3 group:SV_GroupID,uint3 lane:SV_GroupThreadID) {
                     ?sourceDyTaskLoad(p.taskBias+task*36u+32u):0u);
             return;
         }
-        if(index>=admittedTasks)return;
+        const bool residentTile=residentWide && phase!=colorTile;
+        if(!residentTile && index>=admittedTasks)return;
 
         // A frame containing only compact tasks uses direct task indices.
         uint4 tile=uint4(index,0u,0u,0u);
         [branch]
         if(devicePartitions) {
             const uint tileOffset=arena.Load(schedule.w+16u);
-            if(indirectPartition)
+            if(indirectPartition || residentTile)
                 tile=arena.Load4(p.launchBegin+group.x*16u);
             else if(phase!=colorTile && tileOffset!=0u)
                 tile=arena.Load4(p.writebackBias+tileOffset+index*16u);
@@ -2327,7 +2405,27 @@ void main(uint3 group:SV_GroupID,uint3 lane:SV_GroupThreadID) {
                     publishTaskError(taskId,sourceDyTaskLoad(endError));
                 return;
             }
-            if(phase==colorTile)return;
+            if(phase==colorTile) {
+                if(residentWide && lane.x==0u) {
+                    const uint4 ranges=sourceDyTaskLoad4(t);
+                    const uint2 bodyRange=sourceDyTaskLoad2(t+16u);
+                    bool wide=false;
+                    if(ranges.y-ranges.x>=512u &&
+                       bodyRange.y-bodyRange.x>=512u) {
+                        uint first=ranges.x;
+                        for(uint color=ranges.z;color<ranges.w;++color) {
+                            const uint last=arena.Load(p.partitionBias+color*4u);
+                            if(last-first>=128u) {
+                                wide=true;
+                                break;
+                            }
+                            first=last;
+                        }
+                    }
+                    arena.Store(p.resultTaskOffset+taskId*4u,uint(wide));
+                }
+                return;
+            }
         }
         const uint2 iters=sourceDyTaskLoad2(t+24u);
         uint2 descriptors=tile.yz;

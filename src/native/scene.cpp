@@ -5600,19 +5600,59 @@ void Scene::update_contacts(bool defer_device_points,float step_seconds) {
                return actor.alive && actor.motion==Motion::Dynamic &&
                    actor.angular_inertia_available;
            });
+    GpuDyWideScheduleBounds wide_bounds{};
     if(prewitness_ready &&
        gpu_dy_early_actor_ids_.size()>=gpu_dy_wide_task_threshold &&
        gpu_dy_island_edges_.size()>=gpu_dy_wide_task_threshold) {
-        // SAP connectivity bounds every accurate component without
-        // predicting physical touch or constructing numerical tasks.
-        prewitness_ready=std::all_of(gpu_dy_early_actor_ids_.begin(),
-            gpu_dy_early_actor_ids_.end(),[&](BodyId id) {
-                if(id>=speculative.node_island.size())return false;
-                const auto owner=speculative.node_island[id];
-                return owner<speculative.islands.size() &&
-                    speculative.islands[owner].live &&
-                    speculative.islands[owner].count<gpu_dy_wide_task_threshold;
-            });
+        const auto nodes=gpu_dy_early_actor_ids_.size();
+        bool may_be_wide=false;
+        for(const auto id:gpu_dy_early_actor_ids_) {
+            if(id>=speculative.node_island.size()) {
+                prewitness_ready=false;
+                break;
+            }
+            const auto owner=speculative.node_island[id];
+            if(owner>=speculative.islands.size() ||
+               !speculative.islands[owner].live) {
+                prewitness_ready=false;
+                break;
+            }
+            may_be_wide|=speculative.islands[owner].count>=
+                gpu_dy_wide_task_threshold;
+        }
+        if(prewitness_ready && may_be_wide) {
+            // All candidate incidences bound first-fit dynamic colors
+            // and subsequent static reservations without Gu witnesses.
+            gpu_dy_candidate_degrees_.assign(nodes,0u);
+            std::uint32_t degree=0u;
+            for(const auto& edge:gpu_dy_island_edges_)
+                for(const auto node:{edge.node_a,edge.node_b})
+                    if(node!=0xffffffffu) {
+                        if(node>=nodes)
+                            throw std::logic_error("Sc candidate endpoint is invalid");
+                        degree=std::max(degree,++gpu_dy_candidate_degrees_[node]);
+                    }
+            const auto colors=degree?std::uint64_t(degree)*2u-1u:0u;
+            const auto groups=(nodes+127u)/128u+
+                nodes/gpu_dy_wide_task_threshold;
+            // The cross-workgroup command envelope must remain linear
+            // in the candidate workload, including high-degree graphs.
+            prewitness_ready=colors && colors<=gpu_dy_island_edges_.size()/groups;
+            if(prewitness_ready) {
+                wide_bounds.colors=static_cast<std::uint32_t>(colors);
+                std::uint32_t position=0u,velocity=0u;
+                for(const auto id:gpu_dy_early_actor_ids_) {
+                    const auto& dynamics=actors_[id].dynamics;
+                    const std::uint32_t pos=dynamics.position_iterations;
+                    position=std::max(position,pos);
+                    velocity=std::max(velocity,
+                        std::uint32_t(dynamics.velocity_iterations));
+                    wide_bounds.position_ends[(pos-1u)/32u]|=
+                        1u<<((pos-1u)%32u);
+                }
+                wide_bounds.iterations=position+std::max(velocity,1u);
+            }
+        }
     }
     gpu_dy_free_ids_.clear();
     if(prewitness_ready &&
@@ -5686,7 +5726,7 @@ void Scene::update_contacts(bool defer_device_points,float step_seconds) {
             gpu_dy_integration_inputs_,gpu_dy_integrated_poses_,true,
             gpu_dy_friction_impulses_,true,true,true,gpu_dy_sleep_states_,
             gpu_dy_joint_inputs_,false,true,
-            gpu_dy_contact_prep_pairs_,gpu_dy_history_candidates_);
+            gpu_dy_contact_prep_pairs_,gpu_dy_history_candidates_,wide_bounds);
         gpu_dy_prewitness_solve_=true;
     }
     FYZZ_PROFILE_COUNTER("dy.prewitness_solve",gpu_dy_prewitness_solve_?1u:0u);
