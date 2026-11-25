@@ -2272,8 +2272,9 @@ public:
         const auto max_groups=context_.device_info().max_workgroup_count[0];
         const auto partition_output_bias=narrow(
             std::size_t(params[28])+partition_output_offset);
-        if(resident_wide)
-            params[23]=narrow(std::size_t(params[28])+mode_output_offset);
+        const auto resident_mode_bias=resident_wide
+            ?narrow(std::size_t(params[28])+mode_output_offset):params[23];
+        if(resident_wide)params[23]=resident_mode_bias;
         if(partition_dispatch_count_) {
             if((device_admission && !resident_wide) ||
                partition_dispatch_count_>max_view_/16u ||
@@ -2323,6 +2324,7 @@ public:
             }
         }
         const auto launch=[&](Launch phase,TileRange range,std::uint32_t iteration=0u) {
+            if(resident_wide)params[23]=resident_mode_bias;
             const bool integrates=phase==Launch::Fused || phase==Launch::Integrate ||
                                   phase==Launch::FreeBodies;
             dispatch.buffers[2].access=integrates ? compute::BufferAccess::ReadWrite
@@ -2371,7 +2373,13 @@ public:
                (phase==Launch::Partition && partition_dispatch_count_)) {
                 if(phase==Launch::Partition)params[10]|=0x10000000u;
                 for(std::size_t group=0u;group<range.count;group+=max_groups) {
-                    params[8]=narrow(std::size_t(partition_output_bias)+
+                    if(resident_wide && phase==Launch::Partition) {
+                        // The device assigns the color's tile base;
+                        // each indirect chunk supplies its local offset.
+                        params[8]=narrow(std::size_t(params[28])+offsets[14]+
+                            range.begin*sizeof(WorkTile));
+                        params[23]=narrow(group*sizeof(WorkTile));
+                    }else params[8]=narrow(std::size_t(partition_output_bias)+
                         (range.begin+group)*sizeof(WorkTile));
                     dispatch.groups={1u,1u,1u};
                     dispatch.indirect=compute::DispatchIndirectArgs{
@@ -3572,7 +3580,7 @@ private:
         const auto wide_capacity=bounds.nodes/native::gpu_dy_wide_task_threshold;
         const auto body_groups=(std::size_t(bounds.nodes)+127u)/128u+wide_capacity;
         if(bounds.nodes>nodes || !wide_capacity || !bounds.colors || !bounds.iterations ||
-           bounds.iterations>510u || bounds.colors>responses/body_groups ||
+           bounds.iterations>510u || bounds.colors>responses ||
            !task_capacity)
             throw std::logic_error("Resident Dy wide reservation is invalid");
         const auto narrow=[](std::size_t value) {
@@ -3593,8 +3601,23 @@ private:
         reserve(fused_tiles_,task_capacity);
         reserve(prep_tiles_,(responses+31u)/32u+wide_capacity);
         reserve(body_tiles_,body_groups);
+        // Each color reserves commands, but consumes only its actual
+        // tiles from a shared response-bounded pool.
         partition_tiles_.resize(bounds.colors);
-        for(auto& range:partition_tiles_)reserve(range,body_groups);
+        for(auto& range:partition_tiles_) {
+            range={tiles_.size(),body_groups,bounds.iterations,
+                   partition_dispatch_count_};
+            const auto chunks=(body_groups-1u)/max_groups+1u;
+            partition_dispatch_count_+=chunks;
+            tiles_.push_back({0u,narrow(body_groups),
+                              narrow(range.dispatch_begin),narrow(chunks)});
+        }
+        const auto pool_capacity=static_cast<std::size_t>(
+            std::min<std::uint64_t>(responses,
+                std::uint64_t(bounds.colors)*body_groups));
+        tiles_.push_back({narrow(partition_output_count_),narrow(pool_capacity),
+                          0u,0u});
+        partition_output_count_+=pool_capacity;
         wide_iterations_=bounds.iterations;
         for(std::size_t i=0u;i<position_ends_.size();++i)
             position_ends_[i]=(bounds.position_ends[i/32u]&(1u<<(i%32u)))!=0u;
@@ -3602,7 +3625,7 @@ private:
         last_schedule_.max_partition_groups=body_groups;
         last_schedule_.tile_bytes=tiles_.size()*sizeof(WorkTile);
         last_schedule_.device_partition_tile_bytes=
-            std::size_t(bounds.colors)*body_groups*sizeof(WorkTile);
+            pool_capacity*sizeof(WorkTile);
     }
 
     void build_launch_plan(std::span<const native::GpuDyDistanceTask> tasks,

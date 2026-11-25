@@ -5893,6 +5893,10 @@ void verify_resident_wide_device_response(
     gpu.set_gpu_broadphase(std::move(owner));
     gpu.set_gpu_dy_device_admission_enabled(true);
     constexpr auto count=native::gpu_dy_wide_task_threshold;
+    constexpr std::uint32_t spokes=192u;
+    RigidBodyDynamics dynamics{};
+    dynamics.position_iterations=1u;
+    dynamics.velocity_iterations=0u;
     const auto assemble=[&](native::Scene& scene) {
         std::array<BodyId,2u*count+1u> ids{};
         for(std::uint32_t i=0u;i<=count;++i) {
@@ -5902,20 +5906,25 @@ void verify_resident_wide_device_response(
                 {0.5f,0.5f,0.5f},{x,0.83f,0.f},1.f);
             if(i && i<count)
                 scene.create_center_distance_constraint(ids[i-1u],ids[i],1.25f);
+            scene.set_dynamics(ids[i],dynamics);
             scene.set_velocity(ids[i],{i%2u?0.02f:-0.02f,0.f,0.01f});
         }
+        for(std::uint32_t i=2u;i<2u+spokes;++i)
+            scene.create_center_distance_constraint(ids[0],ids[i],1.25f*i);
         // A hub with a static contact and hundreds of spokes has
         // only one useful lane per color, regardless of its degree.
         scene.add_static_box({0.5f,0.5f,0.5f},{0.f,0.f,8.f});
         const auto hub=scene.add_dynamic_box(
             {0.5f,0.5f,0.5f},{0.f,0.83f,8.f},1.f);
         ids[count+1u]=hub;
+        scene.set_dynamics(hub,dynamics);
         for(std::uint32_t i=1u;i<count;++i) {
             const float x=1.5f*float(i);
             const auto leaf=scene.add_dynamic_box(
                 {0.3f,0.3f,0.3f},{x,0.83f,8.f},1.f);
             ids[count+1u+i]=leaf;
             scene.create_center_distance_constraint(hub,leaf,x);
+            scene.set_dynamics(leaf,dynamics);
             scene.set_velocity(leaf,{0.f,0.f,0.01f});
         }
         return ids;
@@ -5930,8 +5939,12 @@ void verify_resident_wide_device_response(
             schedule.wide_tasks==1u &&
             schedule.device_admitted_tasks==3u &&
             schedule.device_admitted_bodies==b.size() &&
-            schedule.device_admitted_descriptors==3u*count &&
+            schedule.device_admitted_descriptors==3u*count+spokes &&
             schedule.max_partition_groups==(count+127u)/128u+1u &&
+            schedule.device_partition_tile_bytes<=
+                (3u*count+spokes)*16u &&
+            (2u*(spokes+2u)-1u)*schedule.max_partition_groups>
+                schedule.device_admitted_descriptors &&
             schedule.host_descriptor_inputs==0u &&
             schedule.host_degree_scanned_descriptors==0u &&
             schedule.device_task_readback_bytes==0u &&

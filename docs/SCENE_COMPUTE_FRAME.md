@@ -443,14 +443,13 @@ they do not add artificial accurate edges or solver tasks.
 Sc publishes the witnesses and queues sparse PCM point DMA with numerical
 results, then consumes the submitted source ordinals. The speculative
 island sizes bound accurate component width independently of aggregate
-candidate count. Wide candidate graphs with a bounded cross-workgroup
-command envelope submit before witness publication. A candidate vertex
+candidate count. Wide candidate graphs submit before witness publication. A candidate vertex
 cover bounds conflict-free partition width for each speculative component.
 Components whose cover is narrower than a workgroup need no tiled
-reservation. Candidate degrees of the remaining components reserve storage
-and indirect commands; device coloring selects fused or tiled execution
-and generates exact tile streams. Graphs exceeding the linear reservation
-bound retain later authorization. Dormant and
+reservation. Candidate degrees of the remaining components bound the
+indirect command count. Device coloring selects fused or tiled execution
+and packs each color's exact tiles into a shared pool bounded by the
+response count, independently of the maximum color depth. Dormant and
 sleep-ready candidate bodies
 use the accurate component's device activity count:
 runnable tasks integrate their members; active components without response

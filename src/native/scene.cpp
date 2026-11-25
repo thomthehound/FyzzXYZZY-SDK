@@ -5714,26 +5714,22 @@ void Scene::update_contacts(bool defer_device_points,float step_seconds) {
                 width.nodes=0u;
             }
             if(wide_bounds.nodes) {
-                const auto colors=std::uint64_t(degree)*2u-1u;
-                const auto groups=(std::size_t(wide_bounds.nodes)+127u)/128u+
-                    wide_bounds.nodes/gpu_dy_wide_task_threshold;
-                // Only potentially tiled components reserve cross-group
-                // commands. Narrow high-degree components stay fused.
-                prewitness_ready=colors<=gpu_dy_island_edges_.size()/groups;
-                if(prewitness_ready) {
-                    wide_bounds.colors=static_cast<std::uint32_t>(colors);
-                    std::uint32_t position=0u,velocity=0u;
-                    for(const auto id:gpu_dy_early_actor_ids_) {
-                        const auto& dynamics=actors_[id].dynamics;
-                        const std::uint32_t pos=dynamics.position_iterations;
-                        position=std::max(position,pos);
-                        velocity=std::max(velocity,
-                            std::uint32_t(dynamics.velocity_iterations));
-                        wide_bounds.position_ends[(pos-1u)/32u]|=
-                            1u<<((pos-1u)%32u);
-                    }
-                    wide_bounds.iterations=position+std::max(velocity,1u);
+                // Color depth bounds command count, not tile storage.
+                // Each actual tile consumes at least one response.
+                const auto colors=std::min<std::uint64_t>(
+                    std::uint64_t(degree)*2u-1u,gpu_dy_island_edges_.size());
+                wide_bounds.colors=static_cast<std::uint32_t>(colors);
+                std::uint32_t position=0u,velocity=0u;
+                for(const auto id:gpu_dy_early_actor_ids_) {
+                    const auto& dynamics=actors_[id].dynamics;
+                    const std::uint32_t pos=dynamics.position_iterations;
+                    position=std::max(position,pos);
+                    velocity=std::max(velocity,
+                        std::uint32_t(dynamics.velocity_iterations));
+                    wide_bounds.position_ends[(pos-1u)/32u]|=
+                        1u<<((pos-1u)%32u);
                 }
+                wide_bounds.iterations=position+std::max(velocity,1u);
             }
         }
     }
