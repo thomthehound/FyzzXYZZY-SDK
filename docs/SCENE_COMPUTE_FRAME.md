@@ -419,10 +419,13 @@ source words. Accurate components reduce published sleep readiness,
 new touch activation and connected active-kinematic vetoes to decide
 runnable numerical tasks. A ready member does not suppress the admission
 of its still-active component. Compact candidate graphs with a complete
-resident PCM source range submit Dy before the witness join. Independent
-awake bodies, including newly admitted nodes in Sc's speculative activation
-stream, occupy the existing free-integration suffix without entering the
-accurate candidate graph. Unrelated dormant actors need neither solver
+resident PCM source range submit Dy before the witness join. Kinematic
+joint endpoints occupy read-only numerical body slots after the dynamic
+candidate range and supply their target-derived velocities without entering
+the responding graph or Dy integration. Independent awake bodies, including
+newly admitted nodes in Sc's speculative activation stream, occupy the
+free-integration suffix after those slots without entering the accurate
+candidate graph. Unrelated dormant actors need neither solver
 ordinals nor integration slots. Early integration covers the accurate
 active and pending activation streams, not the live actor watermark.
 Retired edges have no numerical source once Sc removes their counted

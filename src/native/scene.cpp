@@ -5589,7 +5589,6 @@ void Scene::update_contacts(bool defer_device_points,float step_seconds) {
             actor.angular_inertia_available;
     };
     bool prewitness_ready=gpu_results_pending && gpu_dy_early_islands_ &&
-       gpu_dy_joint_kinematic_ids_.empty() &&
        gpu_pcm_pairs_.size()==previous_pairs_.size() &&
        (gpu_dy_prewitness_contact_rows_ || gpu_dy_prewitness_joint_rows_) &&
        std::none_of(gpu_pcm_pairs_.begin(),gpu_pcm_pairs_.end(),
@@ -5750,11 +5749,12 @@ void Scene::update_contacts(bool defer_device_points,float step_seconds) {
     if(prewitness_ready) {
         FYZZ_PROFILE_SCOPE("dy.prewitness_submit");
         const auto nodes=gpu_dy_early_actor_ids_.size();
-        gpu_dy_bodies_.resize(nodes);
+        const auto body_count=nodes+gpu_dy_joint_kinematic_ids_.size();
+        gpu_dy_bodies_.resize(body_count);
         gpu_dy_body_ordinals_.resize(nodes);
         gpu_dy_tasks_.clear();
         gpu_dy_tasks_.resize(std::min(nodes,gpu_dy_island_edges_.size()));
-        const auto integration_count=nodes+gpu_dy_free_ids_.size();
+        const auto integration_count=body_count+gpu_dy_free_ids_.size();
         gpu_dy_integrated_poses_.resize(integration_count);
         gpu_dy_sleep_states_.resize(integration_count);
         gpu_dy_friction_impulses_.resize(gpu_dy_friction_anchors_.size());
@@ -5767,9 +5767,24 @@ void Scene::update_contacts(bool defer_device_points,float step_seconds) {
                 (actor.sleeping?gpu_dy_wake_integration:0u);
         }
         gpu_dy_integration_inputs_.resize(integration_count);
+        // Kinematic joint rows supply velocity but never own integration.
+        for(std::size_t i=0u;i<gpu_dy_joint_kinematic_ids_.size();++i) {
+            const auto id=gpu_dy_joint_kinematic_ids_[i];
+            const auto& actor=actors_[id];
+            auto& input=gpu_dy_integration_inputs_[nodes+i];
+            input.source_actor=id;
+            input.active=16u;
+            input.linear_velocity[0]=actor.velocity.x;
+            input.linear_velocity[1]=actor.velocity.y;
+            input.linear_velocity[2]=actor.velocity.z;
+            input.angular_velocity[0]=actor.angular_velocity.x;
+            input.angular_velocity[1]=actor.angular_velocity.y;
+            input.angular_velocity[2]=actor.angular_velocity.z;
+            gpu_dy_integrated_poses_[nodes+i]={};
+        }
         for(std::size_t i=0u;i<gpu_dy_free_ids_.size();++i)
             pack_gpu_dy_integration_input(gpu_dy_free_ids_[i],step_seconds,
-                gpu_dy_integration_inputs_[nodes+i]);
+                gpu_dy_integration_inputs_[body_count+i]);
         gpu_broadphase_->enqueue_gpu_dy_distance(
             gpu_dy_bodies_,gpu_dy_rows_,{},{},gpu_dy_body_ordinals_,gpu_dy_tasks_,
             gpu_dy_contact_forces_,{},{},gpu_dy_friction_anchors_,
@@ -10857,7 +10872,7 @@ void Scene::solve_gpu_distance_constraints(float seconds) {
             throw std::logic_error("Submitted Dy sources changed at Sc publication");
         gpu_dy_free_ordinals_.resize(gpu_dy_free_ids_.size());
         const auto first=gpu_dy_integration_inputs_.begin()+
-            gpu_dy_prewitness_body_count_;
+            gpu_dy_bodies_.size();
         const auto end=gpu_dy_integration_inputs_.end();
         for(std::size_t i=0u;i<gpu_dy_free_ids_.size();++i) {
             const auto id=gpu_dy_free_ids_[i];

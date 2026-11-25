@@ -717,6 +717,16 @@ struct GpuPcmFrictionAnchorFixture {
                 scene.gpu_dy_joint_kinematic_ids_.size())
                 throw std::runtime_error(
                     "Device numerical storage lost its pre-witness body capacity");
+            if(scene.gpu_dy_prewitness_solve_)
+                for(std::size_t i=0u;i<scene.gpu_dy_joint_kinematic_ids_.size();++i) {
+                    const auto ordinal=scene.gpu_dy_early_actor_ids_.size()+i;
+                    const auto& input=scene.gpu_dy_integration_inputs_[ordinal];
+                    if(input.active!=16u ||
+                       input.source_actor!=scene.gpu_dy_joint_kinematic_ids_[i] ||
+                       scene.gpu_dy_integrated_poses_[ordinal].valid!=0u)
+                        throw std::runtime_error(
+                            "Early Dy kinematic endpoint acquired integration ownership");
+                }
             constexpr auto invalid=std::numeric_limits<std::uint32_t>::max();
             for(std::size_t i=0u;i<scene.gpu_dy_contact_prep_pairs_.size();++i) {
                 const auto source=scene.gpu_dy_contact_prep_sources_[i];
@@ -7562,8 +7572,10 @@ void verify_joint_only_device_admission(
         dynamics.gravity_enabled=false;
         cpu.set_dynamics(followers_cpu[i],dynamics);
         gpu.set_dynamics(followers_gpu[i],dynamics);
-        cpu.create_center_distance_constraint(kcpu,followers_cpu[i],3.f);
-        gpu.create_center_distance_constraint(kgpu,followers_gpu[i],3.f);
+        cpu.create_anchored_distance_constraint(
+            kcpu,followers_cpu[i],{0.f,0.2f,0.f},{0.f,0.2f,0.f},3.f);
+        gpu.create_anchored_distance_constraint(
+            kgpu,followers_gpu[i],{0.f,0.2f,0.f},{0.f,0.2f,0.f},3.f);
     }
     for(unsigned frame=0u;frame<2u;++frame) {
         const Vec3 target{80.f+0.05f*float(frame+1u),3.f,0.f};
@@ -7587,6 +7599,54 @@ void verify_joint_only_device_admission(
                 gpu.body_state(followers_gpu[i]),
                 cpu.body_state(followers_cpu[i]),0.003f,
                 "Shared kinematic joint motion diverged from CPU PGS");
+    }
+
+    // Independent PCM and free motion share the early joint submission.
+    cpu.add_static_box({0.5f,0.5f,0.5f},{100.f,0.f,0.f});
+    gpu.add_static_box({0.5f,0.5f,0.5f},{100.f,0.f,0.f});
+    const auto contact_cpu=cpu.add_dynamic_box(
+        {0.5f,0.5f,0.5f},{100.f,0.83f,0.f},1.f);
+    const auto contact_gpu=gpu.add_dynamic_box(
+        {0.5f,0.5f,0.5f},{100.f,0.83f,0.f},1.f);
+    const auto free_cpu=cpu.add_dynamic_box(
+        {0.25f,0.25f,0.25f},{110.f,3.f,0.f},1.f);
+    const auto free_gpu=gpu.add_dynamic_box(
+        {0.25f,0.25f,0.25f},{110.f,3.f,0.f},1.f);
+    for(unsigned frame=0u;frame<2u;++frame) {
+        const Vec3 target{80.15f+0.05f*float(frame),3.f,0.f};
+        const float half_angle=0.005f*float(frame+1u);
+        const Quat orientation{0.f,0.f,std::sin(half_angle),std::cos(half_angle)};
+        cpu.set_kinematic_target(kcpu,target,orientation);
+        gpu.set_kinematic_target(kgpu,target,orientation);
+        cpu.step(dt);
+        gpu.step(dt);
+        native::GpuPcmFrictionAnchorFixture::
+            verify_pre_witness_device_admission(gpu);
+        const auto stats=producer->dy_launch_stats();
+        require(native::GpuPcmFrictionAnchorFixture::has_prewitness_solve(gpu) &&
+                stats.device_admitted_tasks==3u &&
+                stats.device_admitted_bodies==3u &&
+                stats.device_admitted_descriptors==3u &&
+                stats.host_descriptor_inputs==0u &&
+                stats.device_task_readback_bytes==0u &&
+                gpu.contacts().size()==1u && cpu.contacts().size()==1u &&
+                gpu.accurate_island_id(followers_gpu[0])!=
+                    gpu.accurate_island_id(followers_gpu[1]),
+            "Mixed PCM and kinematic joints lost early numerical admission");
+        for(std::size_t i=0u;i<2u;++i)
+            test::compound_compare_state(
+                gpu.body_state(followers_gpu[i]),
+                cpu.body_state(followers_cpu[i]),0.003f,
+                "Early moving kinematic joint diverged from CPU PGS");
+        test::compound_compare_state(
+            gpu.body_state(kgpu),cpu.body_state(kcpu),0.003f,
+            "Early Dy changed the authored kinematic target");
+        test::compound_compare_state(
+            gpu.body_state(contact_gpu),cpu.body_state(contact_cpu),0.04f,
+            "Early kinematic joint admission changed PCM contact motion");
+        test::compound_compare_state(
+            gpu.body_state(free_gpu),cpu.body_state(free_cpu),0.003f,
+            "Kinematic endpoint displaced an independent integration ordinal");
     }
 }
 
