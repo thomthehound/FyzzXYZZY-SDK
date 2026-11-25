@@ -1073,9 +1073,10 @@ public:
         // in patch order; each patch records its own position relative
         // to the next contact-row arena. Ordinary PCM patches read their
         // already-resident EdgeIndex history instead.
-        compact_anchors_.clear();
-        patch_anchor_starts_.assign(patches.size(),
-            std::numeric_limits<std::size_t>::max());
+        std::size_t compact_anchor_count=0u;
+        constexpr auto anchor_stride=sizeof(native::GpuDyFrictionAnchorInput);
+        constexpr auto max_anchor_count=
+            std::numeric_limits<std::uint32_t>::max()/anchor_stride;
         for(const auto& manager:manifolds) {
             if(!manager.patch_count)continue;
             const auto pair=contact_origin(manager.prep_index);
@@ -1089,40 +1090,18 @@ public:
                     throw std::logic_error(
                         "Source GPU friction patch has invalid anchor rows");
                 if(pcm && (patch.broken&0x40000000u)==0u)continue;
-                if(!patch.anchor_count)continue;
-                patch_anchor_starts_[j]=compact_anchors_.size();
-                const auto begin=anchors.begin()+patch.row_offset/2u;
-                compact_anchors_.insert(compact_anchors_.end(),begin,
-                                        begin+patch.anchor_count);
+                if(patch.anchor_count>max_anchor_count-compact_anchor_count)
+                    throw std::overflow_error(
+                        "Source GPU compact friction input count exceeds address space");
+                compact_anchor_count+=patch.anchor_count;
             }
         }
-        const auto compact_anchor_bytes=compact_anchors_.size()*
-            sizeof(native::GpuDyFrictionAnchorInput);
+        const auto compact_anchor_bytes=compact_anchor_count*anchor_stride;
         if(compact_anchor_bytes>
            std::numeric_limits<std::uint32_t>::max()-prep_bytes-
                cpu_gu.size_bytes())
             throw std::overflow_error(
                 "Source GPU compact friction inputs exceed address space");
-        for(const auto& manager:manifolds) {
-            if(!manager.patch_count)continue;
-            const auto pair=contact_origin(manager.prep_index);
-            const bool pcm=pair.pcm_pair_index!=invalid;
-            for(std::size_t j=manager.patch_offset;
-                j<manager.patch_offset+manager.patch_count;++j) {
-                auto& patch=patches[j];
-                const auto start=patch_anchor_starts_[j];
-                if(start==std::numeric_limits<std::size_t>::max())continue;
-                const auto distance=narrow((compact_anchors_.size()-start)*
-                    sizeof(native::GpuDyFrictionAnchorInput));
-                if(pcm) {
-                    // The GPU source descriptor uses the CPU-Gu offset
-                    // slot for recovery anchors only when PCM is resident.
-                    auto& target=packed_[manager.prep_index];
-                    std::memcpy(target.constants.data()+36u,
-                                &distance,sizeof(distance));
-                }else patch.reserved=distance;
-            }
-        }
         // A manager excluded by the source island/partition pass has no
         // GPU reader; only scheduled descriptors require body references.
         const std::size_t inline_body_bytes=
@@ -1137,11 +1116,10 @@ public:
             retained_candidates.size()!=prewitness_retained_source_count_))
             throw std::logic_error(
                 "Pre-witness retained friction source changed before Dy admission");
-        packed_patches_.clear();
+        retained_patch_inputs_.clear();
         packed_retained_candidates_.clear();
         std::size_t selected_retained=0u;
         if(!retained_candidates.empty()) {
-            packed_patches_.assign(patches.begin(),patches.end());
             for(const auto& manager:manifolds) {
                 if(!manager.patch_count)continue;
                 if(manager.patch_offset>patches.size() ||
@@ -1150,7 +1128,7 @@ public:
                         "Retained friction source has invalid patch bounds");
                 for(std::size_t i=manager.patch_offset;
                     i<manager.patch_offset+manager.patch_count;++i) {
-                    auto& patch=packed_patches_[i];
+                    const auto& patch=patches[i];
                     if((patch.broken&0x10000000u)==0u)continue;
                     const auto count=(patch.broken>>8u)&63u;
                     const auto first=patch.reserved;
@@ -1177,7 +1155,7 @@ public:
                             packed_retained_candidates_.push_back(candidate);
                     }
                     selected_retained+=count;
-                    patch.reserved=narrow(packed_first);
+                    retained_patch_inputs_.push_back({i,narrow(packed_first)});
                 }
             }
         }
@@ -1612,14 +1590,14 @@ public:
             bodies.size(),rows.size(),descriptor_capacity,partition_count,
             ordinal_capacity,task_capacity,contact_forces.size(),friction_count,
             patches.size(),manifolds.size(),contact_order.size(),
-            prep_count,integration.size(),compact_anchors_.size(),
+            prep_count,integration.size(),compact_anchor_count,
             tiles_.size(),device_partitions?1u:0u,bodies.size()};
         const std::array<const void*,count> sources{
             bodies.data(),rows.data(),
             device_partitions?nullptr:descriptors.data(),
             device_partitions?nullptr:partition_ends.data(),
             body_ordinals.data(),tasks.data(),nullptr,nullptr,
-            packed_patches_.empty()?patches.data():packed_patches_.data(),
+            patches.data(),
             manifolds.data(),contact_order.data(),
             contact_prep.data(),integration.data(),nullptr,tiles_.data(),
             nullptr,nullptr};
@@ -1821,6 +1799,30 @@ public:
                 ?device_skip_end-device_skip_begin:0u;
             return input_map.data+(offset-upload_begin-skipped);
         };
+        // Pack only host-owned anchors directly into the mapped input.
+        // Their backward offsets address the adjacent contact-row arena.
+        std::size_t anchor_cursor=0u;
+        for(const auto& manager:manifolds) {
+            if(!manager.patch_count)continue;
+            const auto pair=contact_origin(manager.prep_index);
+            const bool pcm=pair.pcm_pair_index!=invalid;
+            for(std::size_t j=manager.patch_offset;
+                j<manager.patch_offset+manager.patch_count;++j) {
+                auto& patch=patches[j];
+                if(!patch.anchor_count ||
+                   (pcm && (patch.broken&0x40000000u)==0u))continue;
+                const auto distance=narrow(
+                    (compact_anchor_count-anchor_cursor)*anchor_stride);
+                std::memcpy(host_input(offsets[13])+anchor_cursor*anchor_stride,
+                            anchors.data()+patch.row_offset/2u,
+                            patch.anchor_count*anchor_stride);
+                anchor_cursor+=patch.anchor_count;
+                if(pcm)
+                    std::memcpy(packed_[manager.prep_index].constants.data()+36u,
+                                &distance,sizeof(distance));
+                else patch.reserved=distance;
+            }
+        }
         for(std::size_t i=0;i<count;++i)
             if(i!=6u && i!=7u && i!=11u && i!=12u &&
                i!=13u && i!=15u && i!=16u && bytes[i] &&
@@ -1851,9 +1853,6 @@ public:
         if(!cpu_gu.empty())
             std::memcpy(host_input(offsets[11])+prep_bytes,
                         cpu_gu.data(),cpu_gu.size_bytes());
-        if(!compact_anchors_.empty())
-            std::memcpy(host_input(offsets[13]),
-                        compact_anchors_.data(),compact_anchor_bytes);
         if(!inline_bodies_.empty())
             std::memcpy(host_input(offsets[11])+static_begin,
                         inline_bodies_.data(),inline_bodies_.size()*
@@ -2150,23 +2149,21 @@ public:
                 alignment_,convex_vertex_count?9u:8u,
                 compute::BufferAccess::Read,retained_bias,max_view_);
             dispatch.buffers.push_back(retained_view);
-            for(std::size_t i=0u;i<packed_patches_.size();++i) {
-                auto& patch=packed_patches_[i];
-                if((patch.broken&0x10000000u)==0u)continue;
-                const auto index=std::size_t(patch.reserved);
-                if(index>retained_source_count ||
+            for(const auto& input:retained_patch_inputs_) {
+                const auto index=std::size_t(input.candidate);
+                if(index>=retained_source_count ||
                    std::size_t(retained_bias)+index*
                        sizeof(native::GpuDyRetainedFrictionCandidate)>
                        std::numeric_limits<std::uint32_t>::max())
                     throw std::out_of_range(
                         "Retained friction device source offset is invalid");
-                patch.reserved=static_cast<std::uint32_t>(
+                const auto offset=static_cast<std::uint32_t>(
                     std::size_t(retained_bias)+index*
                         sizeof(native::GpuDyRetainedFrictionCandidate));
                 std::memcpy(host_input(offsets[8])+
-                    i*sizeof(native::GpuDyContactPatch)+
+                    input.patch*sizeof(native::GpuDyContactPatch)+
                     offsetof(native::GpuDyContactPatch,reserved),
-                    &patch.reserved,sizeof(patch.reserved));
+                    &offset,sizeof(offset));
             }
         }else {
             std::uint32_t dummy_bias=0u;
@@ -3833,7 +3830,11 @@ private:
         return {source.pcm_pair_index,source.pcm_edge,source.cpu_gu_offset};
     }
     std::vector<SourceDyPackedContactPrepNative> packed_;
-    std::vector<native::GpuDyContactPatch> packed_patches_;
+    struct RetainedPatchInput {
+        std::size_t patch;
+        std::uint32_t candidate;
+    };
+    std::vector<RetainedPatchInput> retained_patch_inputs_;
     std::vector<native::GpuDyRetainedFrictionCandidate> packed_retained_candidates_;
     const native::GpuDyRetainedFrictionCandidate* prewitness_retained_source_data_=nullptr;
     std::size_t prewitness_retained_source_count_=0u;
@@ -3874,8 +3875,6 @@ private:
     std::vector<native::GpuDyContactPrepBody> inline_bodies_;
     std::vector<InlineBodySlot> inline_body_slots_;
     std::uint32_t inline_body_epoch_=0u;
-    std::vector<native::GpuDyFrictionAnchorInput> compact_anchors_;
-    std::vector<std::size_t> patch_anchor_starts_;
     std::vector<std::uint8_t> assigned_;
     std::vector<std::uint32_t> wide_tasks_;
     std::vector<std::uint32_t> degree_dynamic_,degree_static_,color_bounds_;
