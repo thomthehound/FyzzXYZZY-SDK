@@ -419,8 +419,13 @@ of its still-active component. Compact all-awake scenes with a complete
 resident PCM source range submit Dy before the witness join. Independent
 awake bodies, including newly admitted nodes in Sc's speculative activation
 stream, occupy the existing free-integration suffix without entering the
-accurate candidate graph. Retired edges have no numerical source once Sc
-has removed their counted interactions and submitted touch losses.
+accurate candidate graph. Unrelated dormant actors need neither solver
+ordinals nor integration slots. Early integration covers the accurate
+active and pending activation streams, not the live actor watermark.
+Retired edges have no numerical source once Sc removes their counted
+interactions and submits touch losses, but a retired speculative bridge
+can still propagate a wake before the island splits. A reachable dormant
+endpoint outside the submitted graph requires later authorization.
 Sc publishes the witnesses and queues sparse PCM point DMA with numerical
 results, then consumes the submitted source ordinals. Conditional
 activation and wide components retain later authorization.

@@ -5587,26 +5587,7 @@ void Scene::update_contacts(bool defer_device_points,float step_seconds) {
             !actor.sleeping && !actor.ready_for_sleep &&
             actor.angular_inertia_available;
     };
-    gpu_dy_free_ids_.clear();
-    if(gpu_results_pending && gpu_dy_early_islands_ &&
-       gpu_dy_early_actor_ids_.size()!=live_dynamic_count_) {
-        const auto append_free=[&](BodyId id) {
-            if(awake_source(id) &&
-               !std::binary_search(gpu_dy_early_actor_ids_.begin(),
-                                   gpu_dy_early_actor_ids_.end(),id))
-                gpu_dy_free_ids_.push_back(id);
-        };
-        for(const BodyId id:accurate_islands_.active_nodes)append_free(id);
-        // Newly admitted awake actors are already in the speculative
-        // activation stream; their accurate active slots publish later.
-        for(const BodyId id:speculative_islands_.activating_nodes)append_free(id);
-        std::sort(gpu_dy_free_ids_.begin(),gpu_dy_free_ids_.end());
-        gpu_dy_free_ids_.erase(
-            std::unique(gpu_dy_free_ids_.begin(),gpu_dy_free_ids_.end()),
-            gpu_dy_free_ids_.end());
-    }
-    if(gpu_results_pending && gpu_dy_early_islands_ &&
-       gpu_dy_early_actor_ids_.size()+gpu_dy_free_ids_.size()==live_dynamic_count_ &&
+    bool prewitness_ready=gpu_results_pending && gpu_dy_early_islands_ &&
        gpu_dy_early_actor_ids_.size()<gpu_dy_wide_task_threshold &&
        gpu_dy_joint_kinematic_ids_.empty() &&
        gpu_pcm_pairs_.size()==previous_pairs_.size() &&
@@ -5614,7 +5595,50 @@ void Scene::update_contacts(bool defer_device_points,float step_seconds) {
        std::none_of(gpu_pcm_pairs_.begin(),gpu_pcm_pairs_.end(),
            [](const auto& pair){return pair.host_generated;}) &&
        std::all_of(gpu_dy_early_actor_ids_.begin(),gpu_dy_early_actor_ids_.end(),
-                   awake_source)) {
+                   awake_source);
+    gpu_dy_free_ids_.clear();
+    if(prewitness_ready &&
+       gpu_dy_early_actor_ids_.size()!=live_dynamic_count_) {
+        const auto in_graph=[&](BodyId id) {
+            return std::binary_search(gpu_dy_early_actor_ids_.begin(),
+                                      gpu_dy_early_actor_ids_.end(),id);
+        };
+        const auto append_free=[&](BodyId id) {
+            const auto& actor=actors_[id];
+            if(!actor.alive || actor.motion!=Motion::Dynamic || in_graph(id))
+                return true;
+            if(actor.sleeping)
+                return !speculative_wake(id) && !possible_wake(id);
+            if(!awake_source(id))return false;
+            gpu_dy_free_ids_.push_back(id);
+            return true;
+        };
+        // Accurate active nodes and pending speculative admissions cover
+        // awake sources without traversing the dormant actor inventory.
+        prewitness_ready=std::all_of(accurate_islands_.active_nodes.begin(),
+            accurate_islands_.active_nodes.end(),append_free) &&
+            std::all_of(speculative_islands_.activating_nodes.begin(),
+                speculative_islands_.activating_nodes.end(),append_free);
+        if(prewitness_ready) {
+            std::sort(gpu_dy_free_ids_.begin(),gpu_dy_free_ids_.end());
+            gpu_dy_free_ids_.erase(
+                std::unique(gpu_dy_free_ids_.begin(),gpu_dy_free_ids_.end()),
+                gpu_dy_free_ids_.end());
+            // A retired bridge can still propagate a wake before Sc splits
+            // its speculative island. Its dormant endpoint needs admission.
+            for(const EdgeIndex edge:retired_edge_handles_) {
+                const auto pair=island_edges_[edge].pair;
+                for(const BodyId id:{pair.a,pair.b}) {
+                    const auto& actor=actors_[id];
+                    if(actor.alive && actor.motion==Motion::Dynamic &&
+                       actor.sleeping && !in_graph(id) &&
+                       (speculative_wake(id) || possible_wake(id)))
+                        prewitness_ready=false;
+                }
+            }
+        }
+    }
+    if(prewitness_ready) {
         FYZZ_PROFILE_SCOPE("dy.prewitness_submit");
         const auto nodes=gpu_dy_early_actor_ids_.size();
         gpu_dy_bodies_.resize(nodes);

@@ -4755,6 +4755,23 @@ void verify_connected_pre_witness_island_admission(
     auto* producer=owner.get();
     gpu.set_gpu_broadphase(std::move(owner));
     gpu.set_gpu_dy_device_admission_enabled(true);
+    const auto dormant_cpu=cpu.add_dynamic_box(
+        {0.25f,0.25f,0.25f},{30.f,5.f,0.f},1.f);
+    const auto dormant_gpu=gpu.add_dynamic_box(
+        {0.25f,0.25f,0.25f},{30.f,5.f,0.f},1.f);
+    RigidBodyDynamics dormant_dynamics{};
+    dormant_dynamics.gravity_enabled=false;
+    cpu.set_dynamics(dormant_cpu,dormant_dynamics);
+    gpu.set_dynamics(dormant_gpu,dormant_dynamics);
+    for(unsigned i=0u;i<3u &&
+        (!cpu.body_is_sleeping(dormant_cpu) ||
+         !gpu.body_is_sleeping(dormant_gpu));++i) {
+        cpu.step(0.5f);
+        gpu.step(0.5f);
+    }
+    require(cpu.body_is_sleeping(dormant_cpu) &&
+            gpu.body_is_sleeping(dormant_gpu),
+        "Independent integration source did not enter sleep");
     cpu.add_static_box({0.5f,0.5f,0.5f},{0.f,0.f,0.f});
     gpu.add_static_box({0.5f,0.5f,0.5f},{0.f,0.f,0.f});
     std::array<BodyId,2> cpu_ids{},gpu_ids{};
@@ -4784,12 +4801,16 @@ void verify_connected_pre_witness_island_admission(
     };
     const auto bridge_cpu=add_bridge(cpu),bridge_gpu=add_bridge(gpu);
     BodyId free_cpu{},free_gpu{};
-    for(std::uint32_t frame=0u;frame<3u;++frame) {
+    for(std::uint32_t frame=0u;frame<4u;++frame) {
         if(frame==1u) {
             free_cpu=cpu.add_dynamic_box({0.25f,0.25f,0.25f},{20.f,5.f,0.f},1.f);
             free_gpu=gpu.add_dynamic_box({0.25f,0.25f,0.25f},{20.f,5.f,0.f},1.f);
             cpu.set_velocity(free_cpu,{1.f,0.f,0.f});
             gpu.set_velocity(free_gpu,{1.f,0.f,0.f});
+        }
+        if(frame==3u) {
+            cpu.set_velocity(dormant_cpu,{1.f,0.f,0.f});
+            gpu.set_velocity(dormant_gpu,{1.f,0.f,0.f});
         }
         cpu.step(1.f/120.f);
         gpu.step(1.f/120.f);
@@ -4807,7 +4828,8 @@ void verify_connected_pre_witness_island_admission(
                 stats.device_admitted_tasks==1u &&
                 stats.device_admitted_bodies==4u &&
                 stats.device_admitted_descriptors==4u &&
-                producer->dy_gpu_integrated_body_count()==(frame==0u?4u:5u) &&
+                producer->dy_gpu_integrated_body_count()==
+                    (4u+(frame!=0u)+(frame==3u)) &&
                 gpu.accurate_island_id(gpu_ids[0])==
                     gpu.accurate_island_id(gpu_ids[1]) &&
                 gpu.accurate_island_id(gpu_ids[0])==
@@ -4815,6 +4837,12 @@ void verify_connected_pre_witness_island_admission(
                 gpu.accurate_island_id(gpu_ids[0])==
                     gpu.accurate_island_id(bridge_gpu[1]),
             "Response-disabled bridge split resident numerical admission");
+        require(cpu.body_is_sleeping(dormant_cpu)==(frame!=3u) &&
+                gpu.body_is_sleeping(dormant_gpu)==(frame!=3u),
+            "Independent dormant actor changed activation incorrectly");
+        test::compound_compare_state(
+            gpu.body_state(dormant_gpu),cpu.body_state(dormant_cpu),0.003f,
+            "Independent dormant or reactivated source diverged");
         if(frame!=0u)
             test::compound_compare_state(
                 gpu.body_state(free_gpu),cpu.body_state(free_cpu),0.003f,
