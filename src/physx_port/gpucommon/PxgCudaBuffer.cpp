@@ -89,7 +89,17 @@ void PxgCudaBuffer::allocateCopyPrefixAsync(
     if (size <= mSize) return;
     if (mSize > std::numeric_limits<PxU64>::max() / 2u)
         throw std::overflow_error("PhysX GPU prefix growth overflows");
-    const PxU64 capacity = PxMax(size, mSize * 2u);
+    resizeCopyPrefixAsync(PxMax(size,mSize*2u),livePrefixBytes,
+                          stream,filename,line);
+}
+
+void PxgCudaBuffer::resizeCopyPrefixAsync(
+    PxU64 capacity, PxU64 livePrefixBytes,
+    fyzz::physx_gpu::SourceSapDmaNative& stream,
+    const char* filename, PxI32 line) {
+    if(!capacity || livePrefixBytes>mSize || livePrefixBytes>capacity)
+        throw std::out_of_range("PhysX GPU retained prefix exceeds resize capacity");
+    if(capacity==mSize)return;
     if (capacity > std::numeric_limits<std::size_t>::max())
         throw std::overflow_error("PhysX GPU buffer exceeds native address range");
 
@@ -115,8 +125,7 @@ void PxgCudaBuffer::allocateCopyPrefixAsync(
         mDeviceAlloc.deallocate(next);
         throw;
     }
-    // Only published source history survives. The remaining Dy arena
-    // contains disposable, frame-local solver inputs and writeback.
+    // Deferred ownership keeps the old block alive through the prefix copy.
     if (mPtr && mSize)
         mDeviceAlloc.deallocateDeferred(reinterpret_cast<void*>(
             static_cast<std::uintptr_t>(mPtr)));

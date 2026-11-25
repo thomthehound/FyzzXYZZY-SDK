@@ -433,6 +433,7 @@ public:
             schedule.late_retained_friction_direct_bytes);
         FYZZ_PROFILE_COUNTER("dy.upload_batches",schedule.device_upload_batches);
         FYZZ_PROFILE_COUNTER("dy.mapped_input_bytes",schedule.mapped_input_bytes);
+        FYZZ_PROFILE_COUNTER("dy.numerical_arena_capacity",schedule.numerical_arena_capacity);
         FYZZ_PROFILE_COUNTER("dy.resident_poses_reused",schedule.reused_actor_local_poses);
         FYZZ_PROFILE_COUNTER("dy.resident_velocities_reused",schedule.resident_velocity_reuses);
         FYZZ_PROFILE_COUNTER("dy.sleep_readback_bytes",schedule.sleep_readback_bytes);

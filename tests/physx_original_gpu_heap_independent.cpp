@@ -6,6 +6,7 @@
 #include "physx_gpu/source_physx_root_callback.h"
 #include "physx_gpu/source_physx_mapped_report_roots.h"
 #include "physx_gpu/source_sap_dma_native.h"
+#include "physx_gpu/frame_working_set.h"
 
 #include "extensions/PxDefaultAllocator.h"
 #include "foundation/PxFoundation.h"
@@ -125,6 +126,44 @@ void exercise(Context& context) {
         require(observed==contents && buffer.getDevicePtr()!=previous,
                 "Source GPU prefix growth failed to preserve retained history");
         heap.flushDeferredDeallocs();
+
+        // An exceptional numerical allocation must return its root once
+        // smaller frames no longer need the transient capacity.
+        buffer.resizeCopyPrefixAsync(16384u,sizeof(contents),stream,PX_FL);
+        stream.wait_at_fetch();
+        heap.flushDeferredDeallocs();
+        require(roots.live_roots()==2u,
+                "Exceptional numerical storage lacks a dedicated root");
+        FrameWorkingSet working_set;
+        for(unsigned frame=1u;frame<FrameWorkingSet::contraction_frames;++frame)
+            require(!working_set.should_contract(256u,buffer.getSize()),
+                    "Transient numerical capacity contracted prematurely");
+        require(!working_set.should_contract(16384u,buffer.getSize()),
+                "Full demand did not cancel pending contraction");
+        for(unsigned frame=1u;frame<FrameWorkingSet::contraction_frames;++frame)
+            require(!working_set.should_contract(256u,buffer.getSize()),
+                    "Transient numerical capacity contracted prematurely");
+        require(working_set.should_contract(256u,buffer.getSize()),
+                "Sustained smaller frames did not contract numerical storage");
+        const auto peak=buffer.getDevicePtr();
+        bool invalid_shrink=false;
+        try {
+            buffer.resizeCopyPrefixAsync(16u,sizeof(contents),stream,PX_FL);
+        }catch(const std::out_of_range&) { invalid_shrink=true; }
+        require(invalid_shrink && buffer.getDevicePtr()==peak,
+                "Numerical contraction discarded live history");
+        buffer.resizeCopyPrefixAsync(256u,sizeof(contents),stream,PX_FL);
+        require(buffer.getSize()==256u && roots.live_roots()==2u &&
+                stream.commands().size()==1u &&
+                std::get<CopyCommand>(stream.commands().front()).bytes==sizeof(contents),
+                "Numerical contraction did not retain exactly its live history");
+        stream.wait_at_fetch();
+        const auto contracted=addresses.resolve(buffer.getDevicePtr(),sizeof(observed));
+        context.download(contracted.buffer,contracted.offset,
+                         observed.data(),sizeof(observed));
+        heap.flushDeferredDeallocs();
+        require(observed==contents && roots.live_roots()==1u,
+                "Numerical contraction lost history or retained the peak root");
         companion.deallocate();
         buffer.deallocate();
         reused.deallocate();

@@ -5,6 +5,7 @@
 #include "native/scene.h"
 #include "physx_gpu/source_native_view.h"
 #include "physx_gpu/source_frame_input_arena_native.h"
+#include "physx_gpu/frame_working_set.h"
 #include "physx_gpu/source_sap_dma_native.h"
 #include "physx_gpu/source_sc_device_islands_native.h"
 #include "physx_port/gpucommon/PxgCudaBuffer.h"
@@ -125,6 +126,7 @@ struct SourceDyLaunchStats {
     std::size_t device_partition_tile_bytes=0u;
     std::size_t host_staging_bytes=0u;
     std::size_t mapped_input_bytes=0u;
+    std::size_t numerical_arena_capacity=0u;
     std::size_t device_partition_indirect_dispatches=0u;
     bool resident_wide_schedule=false;
     // Device-written descriptors, partition ranges, tasks, and ordinals
@@ -1789,9 +1791,9 @@ public:
         host_.resize(host_result_bytes);
         last_schedule_.host_staging_bytes=host_.size();
         last_schedule_.mapped_input_bytes=uploaded_bytes;
-        const bool undersized=uploaded_bytes<input_upload_capacity_/2u;
-        input_upload_small_frames_=undersized?input_upload_small_frames_+1u:0u;
-        if(uploaded_bytes>input_upload_capacity_ || input_upload_small_frames_==8u) {
+        const bool contract_input=input_working_set_.should_contract(
+            uploaded_bytes,input_upload_capacity_);
+        if(uploaded_bytes>input_upload_capacity_ || contract_input) {
             const auto capacity=uploaded_bytes;
             const auto replacement=context_.create_buffer(
                 capacity,compute::MemoryPlacement::Upload);
@@ -1804,7 +1806,7 @@ public:
             input_upload_buffer_=replacement;
             input_upload_capacity_=capacity;
             input_upload_initialized_=0u;
-            input_upload_small_frames_=0u;
+            input_working_set_.reset();
         }
         struct InputMap {
             compute::Context& context;
@@ -1969,10 +1971,18 @@ public:
             for(std::size_t i=0;i<bodies.size();++i)
                 std::memcpy(host_input(offsets[12])+mass_offset+i*4u,
                             &bodies[i].inverse_mass,sizeof(float));
-        // Friction history and joint-source slots retain independent
-        // allocations. EdgeIndex growth leaves joint records resident.
-        arena_.allocateCopyPrefixAsync(
-            total,friction_history_capacity_*64u,stream_,PX_FL);
+        // Preserve the EdgeIndex history prefix when replacing the
+        // transient numerical working set.
+        const auto live_history=friction_history_capacity_*64u;
+        if(arena_working_set_.should_contract(total,arena_.getSize())) {
+            arena_.resizeCopyPrefixAsync(total,live_history,stream_,PX_FL);
+            arena_working_set_.reset();
+        }else {
+            const auto previous_capacity=arena_.getSize();
+            arena_.allocateCopyPrefixAsync(total,live_history,stream_,PX_FL);
+            if(arena_.getSize()!=previous_capacity)arena_working_set_.reset();
+        }
+        last_schedule_.numerical_arena_capacity=arena_.getSize();
         friction_history_capacity_=next_history_capacity_;
         if(next_joint_capacity>joint_source_capacity_) {
             joint_sources_.allocateCopyPrefixAsync(
@@ -3825,7 +3835,7 @@ private:
     std::uint64_t max_view_=0u;
     compute::BufferId input_upload_buffer_=0u;
     std::size_t input_upload_capacity_=0u,input_upload_initialized_=0u;
-    unsigned input_upload_small_frames_=0u;
+    FrameWorkingSet input_working_set_,arena_working_set_;
     std::vector<std::uint8_t> host_;
     std::vector<std::uint32_t> admitted_body_ordinals_;
     std::vector<std::uint32_t> admitted_response_tokens_;

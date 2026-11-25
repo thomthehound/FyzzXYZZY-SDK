@@ -3,6 +3,7 @@
 #pragma once
 
 #include "physx_gpu/cuda_device_address_map.h"
+#include "physx_gpu/frame_working_set.h"
 
 #include <algorithm>
 #include <cstddef>
@@ -60,12 +61,13 @@ public:
                 std::memcpy(mapped+second_offset,second,second_bytes);
             context_.unmap_buffer(buffer);
         };
-        if(bytes>capacity_) {
+        const bool contract=working_set_.should_contract(bytes,capacity_);
+        if(bytes>capacity_ || contract) {
             const auto limit=static_cast<std::size_t>(
                 context_.device_info().max_storage_buffer_range);
             const auto growth=capacity_<=limit/2u
                 ? capacity_*2u : limit;
-            const auto next_capacity=std::max(bytes,growth);
+            const auto next_capacity=contract?bytes:std::max(bytes,growth);
             const auto next=context_.create_buffer(
                 next_capacity,compute::MemoryPlacement::SharedLocal);
             CudaDeviceAddressMap::Address next_address=0;
@@ -85,6 +87,7 @@ public:
             buffer_=next;
             address_=next_address;
             capacity_=next_capacity;
+            working_set_.reset();
         }else write_parts(buffer_);
         return address_;
     }
@@ -96,6 +99,7 @@ public:
         buffer_=0;
         address_=0;
         capacity_=0;
+        working_set_.reset();
     }
 
 private:
@@ -105,5 +109,6 @@ private:
     compute::BufferId buffer_=0;
     CudaDeviceAddressMap::Address address_=0;
     std::size_t capacity_=0;
+    FrameWorkingSet working_set_;
 };
 } // namespace fyzz::physx_gpu
