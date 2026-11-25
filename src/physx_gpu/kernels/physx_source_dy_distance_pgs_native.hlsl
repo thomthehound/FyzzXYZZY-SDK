@@ -2169,7 +2169,9 @@ bool sourceDyResidentTileRange(uint task,uint kind,
         out uint begin,out uint end,out uint step,out uint color) {
     begin=0u;end=0u;step=1u;color=0u;
     const uint address=p.taskBias+task*36u;
-    if(sourceDyTaskLoad(address+32u)!=0u)return false;
+    // Color mode is immutable across the count and fill passes.
+    // Errors from other color builders cannot remove a reserved tile.
+    if(kind<3u && sourceDyTaskLoad(address+32u)!=0u)return false;
     const bool wide=arena.Load(p.resultTaskOffset+task*4u)!=0u;
     if(wide==(kind==0u))return false;
     const uint4 ranges=sourceDyTaskLoad4(address);
@@ -2455,8 +2457,11 @@ void main(uint3 group:SV_GroupID,uint3 lane:SV_GroupThreadID) {
             sourceDyPartitionTask(taskId,schedule.w,endError,lane.x);
             AllMemoryBarrierWithGroupSync();
             if(sourceDyTaskLoad(endError)!=0u) {
-                if(lane.x==0u)
+                if(lane.x==0u) {
+                    if(residentWide && phase==colorTile)
+                        arena.Store(p.resultTaskOffset+taskId*4u,0u);
                     publishTaskError(taskId,sourceDyTaskLoad(endError));
+                }
                 return;
             }
             if(phase==colorTile) {
