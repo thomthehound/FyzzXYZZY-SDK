@@ -8869,6 +8869,8 @@ void verify_gpu_wide_island_solver(
                 schedule.tile_bytes<=schedule.device_colored_descriptors*
                     sizeof(native::GpuDyDistanceDescriptor) &&
                 schedule.dispatches>7u &&
+                schedule.device_partition_tile_bytes>0u &&
+                schedule.device_partition_indirect_dispatches>0u &&
                 schedule.device_initialization_dispatches==0u,
                 "Connected Dy islands did not execute tiled conflict partitions");
         require(schedule.device_generated_bytes==
@@ -9165,6 +9167,8 @@ void verify_gpu_zero_response_wide_island(
                 (joint_bodies+zero_contact_bodies+127u)/128u,
         "Device Dy partition tiles omit zero-response contact endpoints");
     require(schedule.tile_bytes>0u &&
+            schedule.device_partition_tile_bytes>0u &&
+            schedule.device_partition_indirect_dispatches>0u &&
             schedule.tile_bytes<=schedule.device_colored_descriptors*
                 sizeof(native::GpuDyDistanceDescriptor),
         "Device Dy partition tile metadata exceeds its source workload");
@@ -9281,6 +9285,8 @@ void verify_gpu_high_degree_coloring(
                 schedule.wide_tasks==0u &&
                 schedule.max_partition_groups==1u &&
                 schedule.tile_bytes==0u &&
+                schedule.device_partition_tile_bytes==0u &&
+                schedule.device_partition_indirect_dispatches==0u &&
                 schedule.dispatches==
                     (b.size()<=128u?1u:2u)+
                         schedule.device_island_indirect_dispatches &&

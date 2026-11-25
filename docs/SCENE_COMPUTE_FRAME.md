@@ -132,6 +132,9 @@ device-owned contact points; CPU Gu retains its general multi-patch correlation.
 Pre-witness Sc graphs retain device-authored tasks for eligible compact
 islands. Late admission is selected when Sc task batching hides independent
 responding islands; wide numerical groups use device partitioning instead.
+For wide tasks, host endpoint degrees reserve bounded storage and command
+counts. Device color ends generate exact partition tiles and indirect
+dispatch dimensions, without uploading individual partition tiles.
 Selected admission passes stable contact and joint identities, reads resident
 physical touch, and supplies task/body ranges without host task/ordinal
 uploads. Every Scene-authored GPU contact descriptor and device response token

@@ -534,6 +534,7 @@ bool sourceDyRelocateSingletonContact(uint4 desc,uint scratch,
 groupshared uint dyNeeded,dyAssigned,dyWave,dyProgress,dyHighest;
 groupshared uint dyNextWave,dySerial;
 groupshared uint dySingletonPartitions;
+groupshared uint dyPartitionTileCount;
 groupshared uint dyHubA,dyHubB,dyHubMask;
 groupshared uint dyContactManagers,dySourceFirst,dySourceLast;
 groupshared uint dySourceCapacity,dyExactContacts;
@@ -1898,7 +1899,7 @@ void integrateBody(uint ordinal,bool freeSource) {
 static const uint fusedTask=0u, normalTile=1u, frictionTile=2u;
 static const uint partitionTile=3u, motionTile=4u, integrationTile=5u;
 static const uint publishErrors=6u, freeBodyTile=7u, colorTile=8u;
-static const uint initializeBodiesTile=9u;
+static const uint initializeBodiesTile=9u, buildPartitionTiles=10u;
 
 // Native Sc resolves inverse mass through the persistent actor-local
 // pool. Standalone Dy callers retain their explicit inverse-mass stream.
@@ -2110,12 +2111,72 @@ bool sourceDyRespondingSource(uint ordinal,uint counts,uint header) {
         scIslandWork.Load(header+counts+root*24u+20u)!=invalidBody;
 }
 
+// A color owns disjoint task intervals. Emit only tiles that contain
+// actual descriptors and publish one indirect count per reserved chunk.
+void sourceDyBuildPartitionTiles(uint color,uint lane) {
+    const uint scratch=arena.Load(p.integrationBias+28u);
+    const uint metadata=p.writebackBias+arena.Load(scratch+16u);
+    const uint4 reservation=arena.Load4(metadata+(p.contactCount+color)*16u);
+    if(lane==0u)dyPartitionTileCount=0u;
+    GroupMemoryBarrierWithGroupSync();
+    for(uint item=lane;item<p.patchCount;item+=128u) {
+        const uint4 bound=arena.Load4(metadata+(p.frictionCount+item)*16u);
+        const uint task=bound.x;
+        const uint address=p.taskBias+task*36u;
+        if(sourceDyTaskLoad(address+32u)!=0u)continue;
+        const uint4 ranges=sourceDyTaskLoad4(address);
+        if(ranges.w<ranges.z || ranges.w-ranges.z>bound.y) {
+            sourceDyTaskErrorOr(address+32u,0x02000000u);
+            continue;
+        }
+        if(color>=ranges.w-ranges.z)continue;
+        const uint partition=ranges.z+color;
+        const uint first=color==0u?ranges.x:
+            arena.Load(p.partitionBias+(partition-1u)*4u);
+        const uint last=arena.Load(p.partitionBias+partition*4u);
+        if(last<first || last>ranges.y) {
+            sourceDyTaskErrorOr(address+32u,0x02000000u);
+            continue;
+        }
+        const uint width=last-first;
+        const uint groups=(width>>7u)+uint((width&127u)!=0u);
+        if(groups>bound.z) {
+            sourceDyTaskErrorOr(address+32u,0x02000000u);
+            continue;
+        }
+        uint offset;
+        InterlockedAdd(dyPartitionTileCount,groups,offset);
+        if(offset>reservation.y || groups>reservation.y-offset) {
+            sourceDyTaskErrorOr(address+32u,0x02000000u);
+            continue;
+        }
+        for(uint tile=0u;tile<groups;++tile) {
+            const uint begin=tile*128u;
+            arena.Store4(p.rowCount+(reservation.x+offset+tile)*16u,
+                uint4(task,begin,begin+min(128u,width-begin),color));
+        }
+    }
+    AllMemoryBarrierWithGroupSync();
+    const uint count=dyPartitionTileCount<=reservation.y?dyPartitionTileCount:0u;
+    for(uint chunk=lane;chunk<reservation.w;chunk+=128u) {
+        const uint begin=chunk*p.partitionCount;
+        const uint groups=begin<count?min(p.partitionCount,count-begin):0u;
+        scIslandWork.Store3((reservation.z+chunk)*16u,uint3(groups,1u,1u));
+    }
+}
+
 [numthreads(128,1,1)]
 void main(uint3 group:SV_GroupID,uint3 lane:SV_GroupThreadID) {
     const uint phase=p.launchControl&15u;
+    if(phase==buildPartitionTiles) {
+        sourceDyBuildPartitionTiles(p.launchBegin+group.x,lane.x);
+        return;
+    }
     const bool devicePartitions=(p.launchControl&0x80000000u)!=0u;
     const bool precolored=(p.launchControl&0x40000000u)!=0u;
-    const uint iter=(p.launchControl&0x1fffffffu)>>4u;
+    const bool indirectPartition=phase==partitionTile &&
+        (p.launchControl&0x10000000u)!=0u;
+    const uint iter=(p.launchControl&(indirectPartition?0x0fffffffu:0x1fffffffu))>>4u;
     uint index=p.launchBegin+group.x;
     uint admittedTasks=0xffffffffu;
     uint admittedBodies=0xffffffffu;
@@ -2248,7 +2309,9 @@ void main(uint3 group:SV_GroupID,uint3 lane:SV_GroupThreadID) {
         [branch]
         if(devicePartitions) {
             const uint tileOffset=arena.Load(schedule.w+16u);
-            if(phase!=colorTile && tileOffset!=0u)
+            if(indirectPartition)
+                tile=arena.Load4(p.launchBegin+group.x*16u);
+            else if(phase!=colorTile && tileOffset!=0u)
                 tile=arena.Load4(p.writebackBias+tileOffset+index*16u);
         } else if(schedule.w!=0u)
             tile=arena.Load4(schedule.w+index*16u);

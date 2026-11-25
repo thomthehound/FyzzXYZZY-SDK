@@ -122,6 +122,8 @@ struct SourceDyLaunchStats {
     std::size_t device_epoch_error_readback_bytes=0u;
     std::size_t device_contact_admission_readback_bytes=0u;
     std::size_t tile_bytes=0u;
+    std::size_t device_partition_tile_bytes=0u;
+    std::size_t device_partition_indirect_dispatches=0u;
     // Device-written descriptors, partition ranges, tasks, and ordinals
     // omitted from the host numerical input packet.
     std::size_t device_generated_bytes=0u;
@@ -250,6 +252,8 @@ public:
             context_.destroy_compute_pipeline(contact_endpoints_pipeline_);
         if(convex_pipeline_)context_.destroy_compute_pipeline(convex_pipeline_);
         if(pipeline_)context_.destroy_compute_pipeline(pipeline_);
+        if(partition_dispatch_buffer_)
+            context_.destroy_buffer(partition_dispatch_buffer_);
         arena_.deallocate();
         actor_locals_.deallocate();
         joint_sources_.deallocate();
@@ -1721,6 +1725,12 @@ public:
                 (total+view_bytes+127u)&~std::size_t(127u);
         }
         narrow(total);
+        const auto partition_output_offset=total;
+        if(partition_output_count_>
+           (std::numeric_limits<std::uint32_t>::max()-total)/sizeof(WorkTile))
+            throw std::overflow_error("Device Dy partition tiles exceed arena");
+        total+=partition_output_count_*sizeof(WorkTile);
+        narrow(total);
         // Host staging contains only compact readback and real upload
         // inputs. Writable GPU contact rows have no CPU mirror.
         // The contact shader addresses anchors backward from contactBias.
@@ -2242,6 +2252,23 @@ public:
             static_cast<std::size_t>(params[28])+offsets[12]);
         dispatch.push_constants.resize(sizeof(params));
         const auto max_groups=context_.device_info().max_workgroup_count[0];
+        const auto partition_output_bias=narrow(
+            std::size_t(params[28])+partition_output_offset);
+        if(partition_dispatch_count_) {
+            if(device_admission ||
+               partition_dispatch_count_>max_view_/16u ||
+               partition_dispatch_count_>std::numeric_limits<std::uint32_t>::max()/16u)
+                throw std::out_of_range("Device Dy partition dispatch extent exceeds view");
+            const auto dispatch_bytes=partition_dispatch_count_*16u;
+            if(dispatch_bytes>partition_dispatch_capacity_) {
+                const auto next=context_.create_buffer(
+                    dispatch_bytes,compute::MemoryPlacement::DeviceLocal);
+                if(partition_dispatch_buffer_)
+                    context_.retire_buffer(partition_dispatch_buffer_);
+                partition_dispatch_buffer_=next;
+                partition_dispatch_capacity_=dispatch_bytes;
+            }
+        }
         if(pending_device_contact_references) {
             if(!contact_endpoints_pipeline_ ||
                device_admission->contact_manager_capacity!=manifolds.size())
@@ -2315,6 +2342,23 @@ public:
                 ++last_schedule_.device_island_indirect_dispatches;
                 return;
             }
+            if(phase==Launch::Partition && partition_dispatch_count_) {
+                params[10]|=0x10000000u;
+                for(std::size_t group=0u;group<range.count;group+=max_groups) {
+                    params[8]=narrow(std::size_t(partition_output_bias)+
+                        (range.begin+group)*sizeof(WorkTile));
+                    dispatch.groups={1u,1u,1u};
+                    dispatch.indirect=compute::DispatchIndirectArgs{
+                        partition_dispatch_buffer_,
+                        (range.dispatch_begin+group/max_groups)*16u};
+                    std::memcpy(dispatch.push_constants.data(),params.data(),sizeof(params));
+                    stream_.commands().emplace_back(dispatch);
+                    ++last_schedule_.dispatches;
+                    ++last_schedule_.device_partition_indirect_dispatches;
+                }
+                dispatch.indirect.reset();
+                return;
+            }
             dispatch.indirect.reset();
             for(std::size_t group=0;group<range.count;) {
                 const auto count=std::min<std::size_t>(max_groups,range.count-group);
@@ -2364,6 +2408,32 @@ public:
         if(device_partitions && !wide_tasks_.empty())
             launch(Launch::Color,{0u,tasks.size()+
                 (device_initial_bodies ? (bodies.size()+127u)/128u : 0u)});
+        if(partition_dispatch_count_) {
+            // Color ends now own the exact cross-workgroup tile ranges.
+            auto build=dispatch;
+            const auto slot=convex_vertex_count?7u:6u;
+            build.buffers[slot]={slot,partition_dispatch_buffer_,0u,
+                partition_dispatch_count_*16u,compute::BufferAccess::Write};
+            build.indirect.reset();
+            build.buffers[2].access=compute::BufferAccess::Read;
+            build.buffers[3].access=compute::BufferAccess::Read;
+            build.buffers[5].access=compute::BufferAccess::Read;
+            auto arguments=params;
+            arguments[7]=partition_output_bias;
+            arguments[9]=max_groups;
+            arguments[10]=static_cast<std::uint32_t>(Launch::BuildPartitionTiles);
+            arguments[17]=narrow(partition_header_begin_);
+            arguments[18]=narrow(partition_task_begin_);
+            arguments[19]=narrow(wide_tasks_.size());
+            for(std::size_t first=0u;first<partition_tiles_.size();first+=max_groups) {
+                arguments[8]=narrow(first);
+                build.groups={narrow(std::min<std::size_t>(
+                    max_groups,partition_tiles_.size()-first)),1u,1u};
+                std::memcpy(build.push_constants.data(),arguments.data(),sizeof(arguments));
+                stream_.commands().emplace_back(build);
+                ++last_schedule_.dispatches;
+            }
+        }
         if(last_schedule_.host_lane_packed_tasks) {
             for(std::size_t first=0u;first<tasks.size();) {
                 const bool packed=lane_task(tasks[first]);
@@ -3164,7 +3234,7 @@ private:
     std::vector<compute::DownloadSpan> deferred_result_downloads_;
     enum class Launch : std::uint32_t {
         Fused, Normals, Friction, Partition, Motion, Integrate, PublishErrors,
-        FreeBodies, Color, InitializeBodies
+        FreeBodies, Color, InitializeBodies, BuildPartitionTiles
     };
     struct WorkTile {
         std::uint32_t task,begin,end,reserved=0u;
@@ -3173,6 +3243,7 @@ private:
     struct TileRange {
         std::size_t begin=0u,count=0u;
         std::uint32_t iterations=0u;
+        std::size_t dispatch_begin=0u;
     };
 
     void build_device_launch_plan(
@@ -3187,6 +3258,7 @@ private:
         wide_tasks_.clear();
         tiles_.clear();
         partition_tiles_.clear();
+        partition_output_count_=partition_dispatch_count_=0u;
         position_ends_.fill(false);
         wide_iterations_=0u;
         last_schedule_={};
@@ -3408,9 +3480,8 @@ private:
             append_tiles(id,task.body_begin,task.body_end,threads);
         }
         body_tiles_.count=tiles_.size()-body_tiles_.begin;
-        // Device colors have not been computed yet. Upper bounds come
-        // from endpoint degrees, not a host conflict-colored schedule.
-        // Each tile resolves its actual color interval in the shader.
+        // Endpoint degrees bound storage and command count. The GPU
+        // generates exact tiles and dispatch arguments from color ends.
         partition_tiles_.resize(partition_levels);
         for(const auto id:wide_tasks_) {
             const auto& task=tasks[id];
@@ -3424,26 +3495,30 @@ private:
                         std::max(task.velocity_iterations,1u));
             }
         }
-        std::size_t end=tiles_.size();
+        const auto max_groups=context_.device_info().max_workgroup_count[0];
+        const auto narrow_tile=[](std::size_t value) {
+            if(value>std::numeric_limits<std::uint32_t>::max())
+                throw std::overflow_error("Device Dy partition reservation exceeds range");
+            return static_cast<std::uint32_t>(value);
+        };
+        partition_header_begin_=tiles_.size();
         for(auto& range:partition_tiles_) {
-            range.begin=end;
-            end+=range.count;
-            range.count=0u;
+            range.begin=partition_output_count_;
+            range.dispatch_begin=partition_dispatch_count_;
+            const auto chunks=(range.count-1u)/max_groups+1u;
+            partition_output_count_+=range.count;
+            partition_dispatch_count_+=chunks;
+            tiles_.push_back({narrow_tile(range.begin),narrow_tile(range.count),
+                              narrow_tile(range.dispatch_begin),narrow_tile(chunks)});
         }
-        tiles_.resize(end);
-        for(const auto id:wide_tasks_) {
-            const auto& task=tasks[id];
-            const auto endpoints=partition_endpoint_counts_[id];
-            for(std::uint32_t color=0u;color<color_bounds_[id];++color) {
-                auto& range=partition_tiles_[color];
-                for(std::uint32_t offset=0u;offset<endpoints;) {
-                    const auto next=offset+std::min(threads,endpoints-offset);
-                    tiles_[range.begin+range.count++]={id,offset,next,color};
-                    offset=next;
-                }
-            }
-        }
+        partition_task_begin_=tiles_.size();
+        for(const auto task:wide_tasks_)
+            tiles_.push_back({task,color_bounds_[task],
+                narrow_tile((std::size_t(partition_endpoint_counts_[task])+
+                             threads-1u)/threads),0u});
         last_schedule_.tile_bytes=tiles_.size()*sizeof(WorkTile);
+        last_schedule_.device_partition_tile_bytes=
+            partition_output_count_*sizeof(WorkTile);
     }
 
     void build_launch_plan(std::span<const native::GpuDyDistanceTask> tasks,
@@ -3457,6 +3532,7 @@ private:
         wide_tasks_.clear();
         tiles_.clear();
         partition_tiles_.clear();
+        partition_output_count_=partition_dispatch_count_=0u;
         position_ends_.fill(false);
         wide_iterations_=0u;
         last_schedule_={};
@@ -3650,6 +3726,10 @@ private:
     std::vector<WorkTile> tiles_;
     std::vector<TileRange> partition_tiles_;
     TileRange fused_tiles_,prep_tiles_,body_tiles_;
+    std::size_t partition_output_count_=0u,partition_dispatch_count_=0u;
+    std::size_t partition_header_begin_=0u,partition_task_begin_=0u;
+    compute::BufferId partition_dispatch_buffer_=0u;
+    std::size_t partition_dispatch_capacity_=0u;
     std::array<bool,255> position_ends_{};
     std::uint32_t wide_iterations_=0u;
     SourceDyLaunchStats last_schedule_{};
