@@ -13697,13 +13697,12 @@ void Scene::advance_collision_internal(
             }
             prepare_gpu_dy_candidate_contact_preps(step_seconds);
             prepare_gpu_dy_pcm_friction_history();
-            // A quiet step retains Sc's touching Gu managers. They still
-            // need this timestep's numerical coefficients even though
-            // no new Gu geometry or PCM witness is published.
+            // Retained physical contacts supply numerical inputs without
+            // a new geometry publication. Stage their immovable sources
+            // alongside the quiet Gu preparation.
+            gpu_dy_immovable_source_ids_.clear();
             for(const auto& manifold:manifolds_) {
-                if(!manifold.count ||
-                   manifold.pcm_result_index!=0xffffffffu)
-                    continue;
+                if(!manifold.count)continue;
                 const auto source=manifold.candidate_ordinal;
                 if(source>=previous_pairs_.size() ||
                    source>=active_edge_handles_.size() ||
@@ -13711,8 +13710,22 @@ void Scene::advance_collision_internal(
                    active_edge_handles_[source]!=manifold.edge_handle)
                     throw std::logic_error(
                         "Quiet Gu numerical source lost its Sc candidate");
-                prepare_gpu_dy_contact_prep(source,step_seconds);
+                if(manifold.pcm_result_index==0xffffffffu)
+                    prepare_gpu_dy_contact_prep(source,step_seconds);
+                const auto slot=gpu_dy_contact_prep_indices_[source]&
+                    ~unadmitted_dy_prep;
+                if(slot>=gpu_dy_candidate_sources_.size())
+                    throw std::logic_error("Quiet contact lacks a numerical source");
+                if(gpu_dy_candidate_sources_[slot].material.max_contact_impulse==0.f)
+                    continue;
+                for(const auto shape:{manifold.pair.a,manifold.pair.b}) {
+                    const auto id=shapes_[shape].body;
+                    if(actors_[id].motion!=Motion::Dynamic)
+                        gpu_dy_immovable_source_ids_.push_back(id);
+                }
             }
+            stage_gpu_dy_actor_sources(
+                gpu_dy_immovable_source_ids_,step_seconds,true);
         }
     }
     // Source first speculative and second accurate pass: edge insertion
