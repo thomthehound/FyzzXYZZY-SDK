@@ -5796,8 +5796,9 @@ void Scene::update_contacts(bool defer_device_points,float step_seconds) {
             pack_gpu_dy_contact_descriptor(manager,next_friction_patches_,
                 true,explicit_order_cursor);
         }
-        if(explicit_order_cursor!=gpu_dy_contact_order_.size())
-            throw std::logic_error("Early CPU Gu order is incomplete");
+        if(explicit_order_cursor!=gpu_dy_contact_order_.size() ||
+           explicit_order_cursor!=gpu_dy_gu_inputs_.size())
+            throw std::logic_error("Early CPU Gu geometry/order is incomplete");
         gpu_dy_contact_forces_.resize(prepared_contact_rows_);
         const auto nodes=gpu_dy_early_actor_ids_.size();
         const auto body_count=nodes+gpu_dy_joint_kinematic_ids_.size();
@@ -8586,10 +8587,11 @@ void Scene::partition_constraints() {
     // Emit selected device numerical identities during the same source
     // task traversal that constructs Dy descriptors.
     std::size_t responding_task_count=0u,prior_task_bodies=0u;
-    for(const auto& task:solver_tasks_) {
-        if(task.solver_body_end>prior_task_bodies)++responding_task_count;
-        prior_task_bodies=task.solver_body_end;
-    }
+    if(device_sc_grouping && !gpu_dy_early_islands_)
+        for(const auto& task:solver_tasks_) {
+            if(task.solver_body_end>prior_task_bodies)++responding_task_count;
+            prior_task_bodies=task.solver_body_end;
+        }
     bool prepare_device_graph=device_sc_grouping &&
         !gpu_dy_early_islands_ &&
         gpu_dy_responding_island_count_>responding_task_count &&
@@ -8835,12 +8837,6 @@ void Scene::partition_constraints() {
                     "GPU Dy contact descriptor lost Sc candidate identity");
             const bool admitted=admit(source,first,second,0u);
             if(prepare_device_graph) {
-                if(manifold.candidate_ordinal>=previous_pairs_.size() ||
-                   !(previous_pairs_[manifold.candidate_ordinal]==manifold.pair) ||
-                   active_edge_handles_[manifold.candidate_ordinal]!=
-                       manifold.edge_handle)
-                    throw std::logic_error(
-                        "Device Sc contact source lost its admitted candidate");
                 const bool responding=admitted &&
                     std::min(actors_[first].dynamics.max_contact_impulse,
                              actors_[second].dynamics.max_contact_impulse)!=0.0f;
@@ -10014,17 +10010,22 @@ void Scene::prepare_constraints(float seconds) {
                              gpu_dy_joint_source_slots_.end())!=
            gpu_dy_joint_source_slots_.end())
             throw std::logic_error("Dy indexed one joint source twice");
-        const auto last=std::remove_if(
-            gpu_dy_joint_inputs_.begin(),gpu_dy_joint_inputs_.end(),
-            [this](const GpuDyJointInput& input) {
-                return !std::binary_search(
-                    gpu_dy_joint_source_slots_.begin(),
-                    gpu_dy_joint_source_slots_.end(),input.source_slot);
-            });
-        gpu_dy_joint_inputs_.erase(last,gpu_dy_joint_inputs_.end());
-        if(gpu_dy_joint_inputs_.size()!=gpu_dy_joint_source_slots_.size())
-            throw std::logic_error(
-                "Pre-witness joint snapshot omitted a responding source");
+        // Both source streams are sorted by stable joint slot.
+        std::size_t read=0u,write=0u;
+        for(const auto slot:gpu_dy_joint_source_slots_) {
+            while(read<gpu_dy_joint_inputs_.size() &&
+                  gpu_dy_joint_inputs_[read].source_slot<slot)
+                ++read;
+            if(read==gpu_dy_joint_inputs_.size() ||
+               gpu_dy_joint_inputs_[read].source_slot!=slot)
+                throw std::logic_error(
+                    "Pre-witness joint snapshot omitted a responding source");
+            if(write!=read)
+                gpu_dy_joint_inputs_[write]=gpu_dy_joint_inputs_[read];
+            ++read;
+            ++write;
+        }
+        gpu_dy_joint_inputs_.resize(write);
     }else gpu_dy_joint_inputs_.clear();
     if(gpu_normal_prep) {
         if(gpu_dy_contact_prep_indices_.size()!=previous_pairs_.size() ||
@@ -10572,15 +10573,22 @@ void Scene::pack_gpu_dy_contact_descriptor(
        m.solver_offset>prepared_contact_rows_ ||
        numerical_count>prepared_contact_rows_-m.solver_offset)
         throw std::logic_error("GPU Dy contact row window invalid");
-    if(source>=gpu_dy_contact_prep_indices_.size() ||
-       gpu_dy_contact_prep_indices_[source]==0xffffffffu)
-        throw std::logic_error("Source GPU candidate has no contact preparation");
-    if(source!=m.candidate_ordinal ||
-       source>=gpu_dy_manifolds_.size() ||
+    if(source>=gpu_dy_manifolds_.size() ||
+       source>=previous_pairs_.size() ||
+       source>=active_edge_handles_.size() ||
        !(previous_pairs_[source]==m.pair) ||
        active_edge_handles_[source]!=m.edge_handle)
         throw std::logic_error(
             "GPU Dy contact source differs from Sc candidate identity");
+    const auto gu_offset=gpu_dy_contact_prep_pairs_[prep_index].cpu_gu_offset;
+    if(resident_pcm) {
+        if(gu_offset!=0xffffffffu)
+            throw std::logic_error("Resident PCM acquired CPU Gu geometry");
+    }else if(gu_offset!=explicit_order_cursor ||
+             explicit_order_cursor>gpu_dy_gu_inputs_.size() ||
+             m.count>gpu_dy_gu_inputs_.size()-explicit_order_cursor) {
+        throw std::logic_error("Source CPU Gu geometry lost numerical contact order");
+    }
     if(early_device_admission && resident_pcm) {
         const auto& manager=gpu_dy_manifolds_[source];
         if(manager.patch_count!=1u || manager.patch_offset!=pcm_index ||
@@ -10688,28 +10696,6 @@ void Scene::solve_gpu_distance_constraints(float seconds) {
         out[0]=v.x;out[1]=v.y;out[2]=v.z;
     };
     gpu_dy_tasks_.clear();
-    // A pre-witness Sc graph is already resident and owns admission.
-    // Late graphs still require more responding islands than host tasks.
-    // Wide islands retain their separate numerical partitioning path.
-    std::size_t responding_tasks=0u;
-    std::size_t previous_bodies=0u,previous_descriptors=0u;
-    bool compact_tasks=true;
-    // Late admission has no precomputed wide-stage reservation.
-    for(const auto& task:solver_tasks_) {
-        if(task.solver_body_end<previous_bodies ||
-           task.constraint_end<previous_descriptors)
-            throw std::logic_error("Source Dy task range regressed");
-        if(task.solver_body_end>previous_bodies)++responding_tasks;
-        if(task.solver_body_end-previous_bodies>=gpu_dy_wide_task_threshold &&
-           task.constraint_end-previous_descriptors>=gpu_dy_wide_task_threshold)
-            compact_tasks=false;
-        previous_bodies=task.solver_body_end;
-        previous_descriptors=task.constraint_end;
-    }
-    const bool has_device_numerical_sources=
-        gpu_broadphase_->has_gpu_pcm_box() &&
-        (!gpu_pcm_pairs_.empty() || !previous_pairs_.empty() ||
-         !active_constraint_handles_.empty());
     // An early Sc graph owns its task count on the GPU. Allocate a
     // source-derived upper bound, not the CPU's post-witness island count.
     // Each device task requires at least one admitted node and edge.
@@ -10724,14 +10710,11 @@ void Scene::solve_gpu_distance_constraints(float seconds) {
     if(early_device_admission &&
        (!early_task_capacity || early_task_capacity>direct_task_limit))
         throw std::logic_error("Early Sc numerical task capacity is invalid");
+    // Partition preparation emits a late graph only when it selects
+    // device admission. Do not select a second owner at enqueue.
     const bool late_device_admission=!gpu_dy_early_islands_ &&
-        gpu_dy_responding_island_count_!=0u &&
-        !gpu_dy_island_edges_.empty() &&
-        gpu_dy_responding_island_count_>responding_tasks &&
-        gpu_dy_responding_island_count_<=direct_task_limit;
-    device_admission=early_device_admission ||
-        (gpu_dy_device_admission_enabled_ && has_device_numerical_sources &&
-         compact_tasks && late_device_admission);
+        !gpu_dy_island_edges_.empty();
+    device_admission=early_device_admission || late_device_admission;
     FYZZ_PROFILE_COUNTER("dy.device_island_selected",device_admission?1u:0u);
     if(gpu_dy_early_islands_ && gpu_dy_early_joint_edges_.empty() &&
        !gpu_dy_source_body_order_)
@@ -10871,37 +10854,6 @@ void Scene::solve_gpu_distance_constraints(float seconds) {
     if(!solver_contact_points_.empty())
         throw std::logic_error("GPU Dy materialized CPU numerical contact rows");
     gpu_dy_contact_forces_.resize(prepared_contact_rows_);
-    // Contact correlation already packed the Gu header normals in
-    // source order. Validate that every CPU-origin manager owns its
-    // exact range without traversing shadow solver contacts again.
-    std::size_t cpu_gu_cursor=0u;
-    for(const auto manager_index:indexed_managers_) {
-        const auto& m=manifolds_[manager_index];
-        if(!m.friction_patch_count)continue;
-        if(m.solver_offset>gpu_dy_contact_forces_.size() ||
-           m.count>gpu_dy_contact_forces_.size()-m.solver_offset)
-            throw std::logic_error("Source GPU contact preparation range invalid");
-        const auto source=m.candidate_ordinal;
-        if(source>=gpu_dy_contact_prep_indices_.size())
-            throw std::logic_error(
-                "GPU Dy contact source exceeds original candidate table");
-        const auto prep_index=gpu_dy_contact_prep_indices_[source];
-        if(prep_index>=gpu_dy_contact_prep_pairs_.size())
-            throw std::logic_error("Source GPU Dy contact pair index invalid");
-        const auto& prep=gpu_dy_contact_prep_pairs_[prep_index];
-        if(prep.pcm_pair_index!=0xffffffffu) {
-            if(prep.cpu_gu_offset!=0xffffffffu)
-                throw std::logic_error("Resident PCM acquired CPU Gu geometry");
-            continue;
-        }
-        if(prep.cpu_gu_offset!=cpu_gu_cursor ||
-           cpu_gu_cursor>gpu_dy_gu_inputs_.size() ||
-           m.count>gpu_dy_gu_inputs_.size()-cpu_gu_cursor)
-            throw std::logic_error("Source CPU Gu geometry lost numerical contact order");
-        cpu_gu_cursor+=m.count;
-    }
-    if(cpu_gu_cursor!=gpu_dy_gu_inputs_.size())
-        throw std::logic_error("Source CPU Gu geometry has trailing records");
     // One source friction anchor generates the two correlated tangents.
     // The device constructs both 56-byte tangent rows and returns one
     // combined world impulse per source friction anchor.
@@ -10976,9 +10928,10 @@ void Scene::solve_gpu_distance_constraints(float seconds) {
         manager.order_offset=row1;
         manager.prep_index=desc.row_count;
     }
-    if(explicit_order_cursor!=gpu_dy_contact_order_.size())
+    if(explicit_order_cursor!=gpu_dy_contact_order_.size() ||
+       explicit_order_cursor!=gpu_dy_gu_inputs_.size())
         throw std::logic_error(
-            "GPU Dy explicit Gu contact order was not fully consumed");
+            "GPU Dy explicit Gu geometry/order was not fully consumed");
     // Sc owns persistent island identities. Device admission consumes
     // physical EdgeIndex touch history and authors only numerical ranges.
     // Its resident response tokens replace the host numerical descriptors.
