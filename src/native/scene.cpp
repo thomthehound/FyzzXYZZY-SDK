@@ -4553,6 +4553,7 @@ void Scene::update_contacts(bool defer_device_points,float step_seconds) {
     // graph. Project their wake reach without publishing actor motion.
     auto& speculative=speculative_islands_;
     std::uint32_t speculative_wake_stamp=0u,possible_wake_stamp=0u;
+    std::vector<IslandGraph::IslandId> projected_wake_groups;
     const auto sap_wake_seed=[&](Pair shapes) {
         const auto pair=body_pair(shapes);
         return actors_[pair.a].motion==Motion::Dynamic &&
@@ -4579,8 +4580,12 @@ void Scene::update_contacts(bool defer_device_points,float step_seconds) {
             if(id>=speculative.node_island.size())return;
             const auto owner=speculative.node_island[id];
             if(owner<speculative.islands.size() &&
-               speculative.islands[owner].live)
+               speculative.islands[owner].live &&
+               speculative.active_island_seen[owner]!=speculative_wake_stamp) {
                 speculative.active_island_seen[owner]=speculative_wake_stamp;
+                if(may_have_dormant && speculative.islands[owner].count>1u)
+                    projected_wake_groups.push_back(owner);
+            }
         };
         for(BodyId id:speculative.activating_nodes)mark(id);
         for(Pair shapes:found_) {
@@ -4628,8 +4633,12 @@ void Scene::update_contacts(bool defer_device_points,float step_seconds) {
                    id>=speculative.node_island.size())continue;
                 const auto owner=speculative.node_island[id];
                 if(owner<speculative.active_island_seen.size() &&
-                   speculative.active_island_seen[owner]!=speculative_wake_stamp)
+                   speculative.active_island_seen[owner]!=speculative_wake_stamp &&
+                   speculative.active_island_seen[owner]!=possible_wake_stamp) {
                     speculative.active_island_seen[owner]=possible_wake_stamp;
+                    if(speculative.islands[owner].count>1u)
+                        projected_wake_groups.push_back(owner);
+                }
             }
         }
     }
@@ -4928,7 +4937,31 @@ void Scene::update_contacts(bool defer_device_points,float step_seconds) {
                 std::unique(gpu_dy_early_actor_ids_.begin(),
                             gpu_dy_early_actor_ids_.end()),
                 gpu_dy_early_actor_ids_.end());
-            admitted=!gpu_dy_early_actor_ids_.empty() &&
+            // Wake membership can outlive a retired speculative bridge.
+            // Admit missing dormant members as isolated integration sources,
+            // not as artificial accurate contact or joint edges.
+            const auto candidate_count=gpu_dy_early_actor_ids_.size();
+            for(const auto owner:projected_wake_groups) {
+                const auto& group=speculative.islands[owner];
+                for(BodyId id=group.root;id!=invalid;id=speculative.node_next[id]) {
+                    const auto& actor=actors_[id];
+                    if(!actor.alive || actor.motion!=Motion::Dynamic ||
+                       !actor.sleeping ||
+                       std::binary_search(gpu_dy_early_actor_ids_.begin(),
+                           gpu_dy_early_actor_ids_.begin()+candidate_count,id))
+                        continue;
+                    if(!actor.dynamics.position_iterations) {
+                        admitted=false;
+                        break;
+                    }
+                    gpu_dy_early_actor_ids_.push_back(id);
+                }
+                if(!admitted)break;
+            }
+            if(gpu_dy_early_actor_ids_.size()!=candidate_count)
+                std::sort(gpu_dy_early_actor_ids_.begin(),
+                          gpu_dy_early_actor_ids_.end());
+            admitted=admitted && !gpu_dy_early_actor_ids_.empty() &&
                      gpu_dy_early_actor_ids_.size()<=
                          gpu_broadphase_->gpu_dy_direct_task_limit();
         }
@@ -5732,18 +5765,6 @@ void Scene::update_contacts(bool defer_device_points,float step_seconds) {
             gpu_dy_free_ids_.erase(
                 std::unique(gpu_dy_free_ids_.begin(),gpu_dy_free_ids_.end()),
                 gpu_dy_free_ids_.end());
-            // A retired bridge can still propagate a wake before Sc splits
-            // its speculative island. Its dormant endpoint needs admission.
-            for(const EdgeIndex edge:retired_edge_handles_) {
-                const auto pair=island_edges_[edge].pair;
-                for(const BodyId id:{pair.a,pair.b}) {
-                    const auto& actor=actors_[id];
-                    if(actor.alive && actor.motion==Motion::Dynamic &&
-                       actor.sleeping && !in_graph(id) &&
-                       (speculative_wake(id) || possible_wake(id)))
-                        prewitness_ready=false;
-                }
-            }
         }
     }
     const auto gu_manager=[&](std::size_t slot) -> ContactManifold& {

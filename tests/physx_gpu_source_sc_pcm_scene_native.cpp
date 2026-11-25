@@ -5342,6 +5342,88 @@ void verify_sleeping_new_touch_device_admission(
         speculative_cpu.body_state(candidate_cpu),0.04f,
         "Physical-touch speculative wake changed contact motion");
 
+    // A removed speculative bridge preserves wake reach until the
+    // third pass, even though its detached actor has no numerical edge.
+    native::Scene bridge_cpu,bridge_gpu;
+    auto bridge_owner=std::make_unique<
+        physx_gpu::SourceScOwnedGpuBroadphaseNative>(
+        backend,load_native_gpu_sap_shaders(backend,sap),
+        128u,128u,std::nullopt,
+        load_native_gpu_pcm_shaders(backend,pcm),shader);
+    auto* bridge_producer=bridge_owner.get();
+    bridge_gpu.set_gpu_broadphase(std::move(bridge_owner));
+    bridge_gpu.set_gpu_dy_device_admission_enabled(true);
+    const auto make_bridge=[&](native::Scene& scene,float x) {
+        const auto seed=scene.add_dynamic_sphere(0.5f,{x,1.f,0.f},1.f);
+        const auto detached=scene.add_dynamic_sphere(
+            0.5f,{x+0.85f,1.85f,0.f},1.f);
+        const auto fixed=scene.add_static_sphere(0.5f,{x,8.f,0.f});
+        scene.set_dynamics(seed,dynamics);
+        scene.set_dynamics(detached,dynamics);
+        return std::array<BodyId,3>{seed,detached,fixed};
+    };
+    const std::array bridges_cpu{make_bridge(bridge_cpu,0.f),
+                                 make_bridge(bridge_cpu,20.f)};
+    const std::array bridges_gpu{make_bridge(bridge_gpu,0.f),
+                                 make_bridge(bridge_gpu,20.f)};
+    for(unsigned frame=0u;frame<40u;++frame) {
+        bridge_cpu.step(seconds);
+        bridge_gpu.step(seconds);
+        bool sleeping=true;
+        for(std::size_t i=0u;i<2u;++i)
+            for(std::size_t j=0u;j<2u;++j)
+                sleeping &= bridge_cpu.body_is_sleeping(bridges_cpu[i][j]) &&
+                            bridge_gpu.body_is_sleeping(bridges_gpu[i][j]);
+        if(sleeping)break;
+    }
+    require(bridge_cpu.contacts().empty() && bridge_gpu.contacts().empty() &&
+            bridge_gpu.pairs().size()==2u,
+        "Retired bridge fixture lacks separated speculative pairs");
+    for(std::size_t i=0u;i<2u;++i) {
+        const auto& a=bridges_cpu[i];
+        const auto& b=bridges_gpu[i];
+        require(bridge_cpu.body_is_sleeping(a[0]) &&
+                bridge_cpu.body_is_sleeping(a[1]) &&
+                bridge_gpu.body_is_sleeping(b[0]) &&
+                bridge_gpu.body_is_sleeping(b[1]) &&
+                bridge_gpu.speculative_island_id(b[0])==
+                    bridge_gpu.speculative_island_id(b[1]) &&
+                bridge_gpu.accurate_island_id(b[0])!=
+                    bridge_gpu.accurate_island_id(b[1]),
+            "Retired bridge fixture lost dormant speculative membership");
+        bridge_cpu.set_shape_simulation_enabled(a[1],false);
+        bridge_gpu.set_shape_simulation_enabled(b[1],false);
+        const Vec3 position=i==0u?Vec3{-0.85f,1.f,0.f}:
+                                  Vec3{19.15f,1.85f,0.f};
+        bridge_cpu.set_position(a[2],position);
+        bridge_gpu.set_position(b[2],position);
+    }
+    bridge_cpu.step(seconds);
+    bridge_gpu.step(seconds);
+    const auto bridge_schedule=bridge_producer->dy_launch_stats();
+    require(bridge_cpu.contacts().size()==1u &&
+            bridge_gpu.contacts().size()==1u &&
+            bridge_gpu.pairs().size()==2u &&
+            native::GpuPcmFrictionAnchorFixture::has_prewitness_solve(bridge_gpu) &&
+            bridge_schedule.device_admitted_tasks==1u &&
+            bridge_schedule.device_admitted_bodies==1u &&
+            bridge_schedule.device_admitted_descriptors==1u &&
+            bridge_schedule.host_descriptor_inputs==0u &&
+            bridge_producer->dy_gpu_integrated_body_count()==2u,
+        "Retired speculative bridge did not admit conditional free motion");
+    for(std::size_t i=0u;i<2u;++i)
+        for(std::size_t j=0u;j<2u;++j) {
+            const auto a=bridges_cpu[i][j],b=bridges_gpu[i][j];
+            require(bridge_cpu.body_is_sleeping(a)==(i!=0u) &&
+                    bridge_gpu.body_is_sleeping(b)==(i!=0u) &&
+                    std::fabs(bridge_cpu.body_wake_counter(a)-
+                              bridge_gpu.body_wake_counter(b))<1.e-5f,
+                "Retired bridge wake propagated without a physical touch or lost a member");
+            test::compound_compare_state(
+                bridge_gpu.body_state(b),bridge_cpu.body_state(a),0.04f,
+                "Retired bridge conditional integration diverged from CPU PGS");
+        }
+
     native::Scene ready_cpu,ready_gpu;
     auto ready_owner=std::make_unique<
         physx_gpu::SourceScOwnedGpuBroadphaseNative>(

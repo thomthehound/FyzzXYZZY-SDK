@@ -435,8 +435,11 @@ ordinals nor integration slots. Early integration covers the accurate
 active and pending activation streams, not the live actor watermark.
 Retired edges have no numerical source once Sc removes their counted
 interactions and submits touch losses, but a retired speculative bridge
-can still propagate a wake before the island splits. A reachable dormant
-endpoint outside the submitted graph requires later authorization.
+can still propagate a wake before the island splits. Sc enumerates the
+existing membership of marked wake groups and admits missing dormant
+members as isolated numerical sources. They consume the same conditional
+wake bit as the connected candidates and integrate only when authorized;
+they do not add artificial accurate edges or solver tasks.
 Sc publishes the witnesses and queues sparse PCM point DMA with numerical
 results, then consumes the submitted source ordinals. The speculative
 island sizes bound accurate component width independently of aggregate
