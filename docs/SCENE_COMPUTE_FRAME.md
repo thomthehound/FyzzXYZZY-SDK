@@ -427,8 +427,10 @@ interactions and submits touch losses, but a retired speculative bridge
 can still propagate a wake before the island splits. A reachable dormant
 endpoint outside the submitted graph requires later authorization.
 Sc publishes the witnesses and queues sparse PCM point DMA with numerical
-results, then consumes the submitted source ordinals. Wide components
-retain later authorization. Dormant and sleep-ready candidate bodies
+results, then consumes the submitted source ordinals. The speculative
+island sizes bound accurate component width independently of aggregate
+candidate count. Only potentially wide components retain later
+authorization. Dormant and sleep-ready candidate bodies
 use the accurate component's device activity count:
 runnable tasks integrate their members; active components without response
 rows integrate through the free-body pass. Inactive components publish an

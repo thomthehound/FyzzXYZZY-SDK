@@ -5635,6 +5635,7 @@ void verify_sparse_large_device_response_graph(
     }
     constexpr auto inactive=native::gpu_dy_wide_task_threshold+8u;
     const auto add_candidates=[&](native::Scene& scene) {
+        std::array<BodyId,inactive> ids{};
         for(std::uint32_t i=0u;i<inactive;++i) {
             const float x=20.f+5.f*float(i);
             const auto moving=scene.add_dynamic_sphere(
@@ -5644,10 +5645,12 @@ void verify_sparse_large_device_response_graph(
             RigidBodyDynamics dynamics{};
             dynamics.gravity_enabled=false;
             scene.set_dynamics(moving,dynamics);
+            ids[i]=moving;
         }
+        return ids;
     };
-    add_candidates(cpu);
-    add_candidates(gpu);
+    const auto cpu_candidates=add_candidates(cpu);
+    const auto gpu_candidates=add_candidates(gpu);
     constexpr float dt=1.f/120.f;
     cpu.step(dt);
     gpu.step(dt);
@@ -5663,13 +5666,20 @@ void verify_sparse_large_device_response_graph(
             schedule.host_descriptor_inputs==0u &&
             schedule.device_task_readback_bytes==0u &&
             schedule.device_epoch_error_readback_bytes==8u &&
-            schedule.device_island_indirect_dispatches==1u,
-        "Independent PCM candidates crossed into host numerical tasks");
+            schedule.device_island_indirect_dispatches==1u &&
+            schedule.wide_tasks==0u &&
+            native::GpuPcmFrictionAnchorFixture::has_prewitness_solve(gpu) &&
+            device->dy_gpu_integrated_body_count()==inactive+2u,
+        "Large independent PCM graph waited for host numerical admission");
     for(std::size_t i=0u;i<cpu_responders.size();++i)
         test::compound_compare_state(
             gpu.body_state(gpu_responders[i]),
             cpu.body_state(cpu_responders[i]),0.03f,
             "Large sparse device response changed rigid contact dynamics");
+    for(std::size_t i=0u;i<cpu_candidates.size();++i)
+        test::compound_compare_state(
+            gpu.body_state(gpu_candidates[i]),cpu.body_state(cpu_candidates[i]),
+            0.003f,"Large sparse candidate changed free-flight motion");
     std::cout<<"FYZZXYZZY_METRIC sparse_device_response candidates="
              <<gpu.pairs().size()
              <<" admitted_tasks="<<schedule.device_admitted_tasks

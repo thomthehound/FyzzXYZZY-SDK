@@ -5589,7 +5589,6 @@ void Scene::update_contacts(bool defer_device_points,float step_seconds) {
             actor.angular_inertia_available;
     };
     bool prewitness_ready=gpu_results_pending && gpu_dy_early_islands_ &&
-       gpu_dy_early_actor_ids_.size()<gpu_dy_wide_task_threshold &&
        gpu_dy_joint_kinematic_ids_.empty() &&
        gpu_pcm_pairs_.size()==previous_pairs_.size() &&
        (gpu_dy_prewitness_contact_rows_ || gpu_dy_prewitness_joint_rows_) &&
@@ -5601,6 +5600,20 @@ void Scene::update_contacts(bool defer_device_points,float step_seconds) {
                return actor.alive && actor.motion==Motion::Dynamic &&
                    actor.angular_inertia_available;
            });
+    if(prewitness_ready &&
+       gpu_dy_early_actor_ids_.size()>=gpu_dy_wide_task_threshold &&
+       gpu_dy_island_edges_.size()>=gpu_dy_wide_task_threshold) {
+        // SAP connectivity bounds every accurate component without
+        // predicting physical touch or constructing numerical tasks.
+        prewitness_ready=std::all_of(gpu_dy_early_actor_ids_.begin(),
+            gpu_dy_early_actor_ids_.end(),[&](BodyId id) {
+                if(id>=speculative.node_island.size())return false;
+                const auto owner=speculative.node_island[id];
+                return owner<speculative.islands.size() &&
+                    speculative.islands[owner].live &&
+                    speculative.islands[owner].count<gpu_dy_wide_task_threshold;
+            });
+    }
     gpu_dy_free_ids_.clear();
     if(prewitness_ready &&
        gpu_dy_early_actor_ids_.size()!=live_dynamic_count_) {
@@ -8497,7 +8510,7 @@ void Scene::partition_constraints() {
     // connected task retains host-authored descriptors for GPU tiling.
     bool compact_source_tasks=true;
     if(gpu_integration && gpu_dy_early_islands_ &&
-       gpu_dy_responding_island_count_!=0u) {
+       !gpu_dy_prewitness_solve_ && gpu_dy_responding_island_count_!=0u) {
         std::size_t prior_bodies=0u,prior_managers=0u,prior_joints=0u;
         for(const auto& task:solver_tasks_) {
             if(task.solver_body_end<prior_bodies ||
