@@ -8,6 +8,7 @@
 
 #include "fyzzxyzzy/compute.h"
 #include "compute_readback_cache.h"
+#include "compute_range_hazards.h"
 #if defined(FYZZXYZZY_PROFILE_GPU)
 #include "hardware_profile.h"
 #endif
@@ -1487,44 +1488,38 @@ struct Context::Impl {
             submission.commands->SetDescriptorHeaps(1, heaps);
         }
 
-        // Track states for the entire batch instead of returning each buffer
-        // to COMMON after every operation. Keep real RAW/WAW ordering: a
-        // transition orders different uses and a UAV barrier orders
-        // consecutive dependent UAV writes. Legacy copy operations have
-        // implicit ordering. End at COMMON for the next submission.
+        // Legacy resource transitions cover the entire buffer. Within UAV
+        // state, only conflicting byte ranges require resource-wide ordering.
         struct Access {
-            D3D12_RESOURCE_STATES state = D3D12_RESOURCE_STATE_COMMON;
-            bool pending_write = false;
+            D3D12_RESOURCE_STATES state=D3D12_RESOURCE_STATE_COMMON;
+            PendingUavRanges uav;
         };
         std::unordered_map<BufferId, Access> resource_access;
-        resource_access.reserve(std::min<std::size_t>(commands.size() * 2, 512));
-        auto require_state = [&](BufferId id, D3D12_RESOURCE_STATES target) {
+        resource_access.reserve(std::min<std::size_t>(commands.size()*2u,512u));
+        auto require_state=[&](BufferId id,D3D12_RESOURCE_STATES target) {
             const auto& buffer=get_buffer(id);
-            // Upload heaps stay in GENERIC_READ, which includes COPY_SOURCE.
             if(buffer.upload_only) {
                 if(target!=D3D12_RESOURCE_STATE_COPY_SOURCE || buffer.cpu_mapped)
                     throw std::invalid_argument("Invalid D3D12 upload storage state");
                 return;
             }
-            Access& access = resource_access[id];
-            auto* resource = buffer.resource.Get();
-            if (access.state != target) {
-                transition(submission.commands.Get(), resource, access.state, target);
-                access.state = target;
-                access.pending_write = false;
-            } else if (access.pending_write) {
-                if (target == D3D12_RESOURCE_STATE_UNORDERED_ACCESS) {
-                    D3D12_RESOURCE_BARRIER barrier{};
-                    barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_UAV;
-                    barrier.UAV.pResource = resource;
-                    submission.commands->ResourceBarrier(1, &barrier);
-                }
-                // Legacy D3D12 CopyBufferRegion commands are synchronous
-                // with an implicit copy/resolve flush. Successive COPY_DEST
-                // writes therefore need no fabricated COMMON round-trip
-                // (DirectX Enhanced Barriers specification, legacy section).
-                access.pending_write = false;
+            auto& access=resource_access[id];
+            if(access.state!=target) {
+                transition(submission.commands.Get(),buffer.resource.Get(),
+                           access.state,target);
+                access.state=target;
+                access.uav.clear();
             }
+        };
+        const auto order_uav=[&](const BufferBinding& binding) {
+            auto& pending=resource_access.at(binding.buffer).uav;
+            if(!pending.conflicts(binding.offset,binding.offset+binding.bytes,
+                                  binding.access!=BufferAccess::Read))return;
+            D3D12_RESOURCE_BARRIER barrier{};
+            barrier.Type=D3D12_RESOURCE_BARRIER_TYPE_UAV;
+            barrier.UAV.pResource=get_buffer(binding.buffer).resource.Get();
+            submission.commands->ResourceBarrier(1,&barrier);
+            pending.clear();
         };
         std::vector<bool> descriptor_table_written(descriptor_tables.size(),false);
         std::size_t dispatch_index=0u;
@@ -1567,7 +1562,6 @@ struct Context::Impl {
                         copy->destination_offset, src.resource.Get(),
                         copy->source_offset, copy->bytes);
                 }
-                resource_access[copy->destination].pending_write = true;
 #if defined(FYZZXYZZY_PROFILE_GPU)
                 if(hardware_trace)
                     submission.commands->EndQuery(submission.query_heap.Get(),
@@ -1583,7 +1577,6 @@ struct Context::Impl {
                     submission.owned_upload.Get(),ordered_upload_offset,
                     upload->bytes.size());
                 ordered_upload_offset+=upload->bytes.size();
-                resource_access[upload->destination].pending_write=true;
 #if defined(FYZZXYZZY_PROFILE_GPU)
                 if(hardware_trace)
                     submission.commands->EndQuery(submission.query_heap.Get(),
@@ -1604,7 +1597,8 @@ struct Context::Impl {
                 const auto desired = read_only
                     ? D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE
                     : D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
-                require_state(binding.buffer, desired);
+                require_state(binding.buffer,desired);
+                if(!read_only)order_uav(binding);
             }
 
             const auto table=dispatch_table_indices[dispatch_index++];
@@ -1698,12 +1692,15 @@ struct Context::Impl {
                 submission.commands->EndQuery(submission.query_heap.Get(),
                     D3D12_QUERY_TYPE_TIMESTAMP,hardware_query_index++);
 #endif
-            for (std::size_t slot = 0; slot < cmd.buffers.size(); ++slot) {
-                const auto kind = pipeline.view_kinds[slot];
-                const bool writable = kind == StorageBufferViewKind::RawReadWrite ||
-                                      kind == StorageBufferViewKind::Structured32ReadWrite;
-                if (writable && cmd.buffers[slot].access != BufferAccess::Read)
-                    resource_access[cmd.buffers[slot].buffer].pending_write = true;
+            // Publish all aliases after the dispatch's dependency checks.
+            for(std::size_t slot=0u;slot<cmd.buffers.size();++slot) {
+                const auto kind=pipeline.view_kinds[slot];
+                if(kind!=StorageBufferViewKind::RawReadWrite &&
+                   kind!=StorageBufferViewKind::Structured32ReadWrite)continue;
+                const auto& binding=cmd.buffers[slot];
+                resource_access.at(binding.buffer).uav.record(
+                    binding.offset,binding.offset+binding.bytes,
+                    binding.access!=BufferAccess::Read);
             }
         }
         if(readback_tail) {

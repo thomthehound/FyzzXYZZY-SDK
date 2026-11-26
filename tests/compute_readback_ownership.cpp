@@ -68,6 +68,43 @@ void verify_range_hazards() {
     expect({{0u,1024u,upload,download}});
 }
 
+void verify_uav_ranges() {
+    using fyzz::compute::PendingUavRanges;
+    PendingUavRanges pending;
+    const auto expect=[&](std::size_t begin,std::size_t end,
+                          bool writes,bool conflict) {
+        if(pending.conflicts(begin,end,writes)!=conflict)
+            throw std::runtime_error("Incorrect UAV ordering dependency");
+    };
+    pending.record(0u,32u,false);
+    expect(16u,48u,false,false);
+    expect(16u,48u,true,true);
+    expect(32u,64u,true,false);
+    pending.record(64u,96u,true);
+    expect(80u,112u,false,true);
+    expect(80u,112u,true,true);
+    expect(32u,64u,true,false);
+    // One resource barrier orders all preceding accesses.
+    pending.clear();
+    expect(0u,128u,true,false);
+    // Aliased views of a single dispatch contribute all their ranges.
+    pending.record(64u,128u,false);
+    pending.record(0u,64u,true);
+    pending.record(32u,96u,true);
+    expect(92u,96u,false,true);
+    expect(96u,128u,false,false);
+    expect(96u,128u,true,true);
+    expect(128u,160u,true,false);
+    pending.clear();
+    for(std::size_t i=128u;i>0u;--i) {
+        const auto begin=(i-1u)*4u;
+        expect(begin,begin+4u,true,false);
+        pending.record(begin,begin+4u,true);
+    }
+    expect(0u,512u,false,true);
+    expect(512u,516u,false,false);
+}
+
 void verify_cache_working_set() {
     fyzz::compute::CompletedReadbackCache<unsigned> cache;
     unsigned released=0u;
@@ -104,6 +141,7 @@ void verify_cache_working_set() {
 int main() {
     try {
         verify_range_hazards();
+        verify_uav_ranges();
         verify_cache_working_set();
         using namespace fyzz::compute;
 #if defined(FYZZXYZZY_TEST_D3D12)
