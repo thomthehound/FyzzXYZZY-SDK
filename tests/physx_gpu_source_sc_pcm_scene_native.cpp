@@ -2061,6 +2061,24 @@ void verify(fyzz::compute::Backend backend,const char* sap,
         no_pcm_pairs,no_pcm_results,gu_edge+1u);
     producer->enqueue_cpu_gu_touch_history(gu_only_touch);
     producer->commit_gpu_step();
+    const auto committed_history=producer->device_pcm_touch_history();
+    const auto committed_capacity=producer->device_pcm_touch_capacity();
+    const auto before_growth=producer->stream_submission_stats().command_batches;
+    const auto expanded_capacity=committed_capacity*8u+32u;
+    producer->enqueue_gpu_pcm_box_contacts(
+        no_pcm_pairs,no_pcm_results,expanded_capacity);
+    require(producer->device_pcm_touch_history()!=committed_history &&
+            producer->stream_submission_stats().command_batches==before_growth &&
+            producer->pcm_edge_history_copy_bytes()==committed_capacity*240u,
+            "PCM history growth submitted a standalone preservation copy");
+    producer->invalidate_after_rollback();
+    producer->enqueue_gpu_pcm_box_contacts(
+        no_pcm_pairs,no_pcm_results,committed_capacity);
+    require(producer->device_pcm_touch_history()==committed_history &&
+            physx_gpu::SourceScDeviceIslandFixture::touch(*producer,gu_edge)[0]
+                ==gu_only_extent,
+            "Rejected PCM growth lost committed allocation identity or touch history");
+    producer->commit_gpu_step();
     const std::array<native::GpuGuTouchRecord,1> staged_loss{{
         {gu_edge,0u}
     }};

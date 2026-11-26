@@ -107,7 +107,10 @@ submission. Vulkan rejected recording releases unused staging without
 waiting for unrelated submissions. Source heap root retirement invalidates
 virtual addresses immediately. Recorded consumers retain native storage
 until their batch is accepted or discarded; accepted GPU uses retain it
-through their completion fence. Do not infer performance gains from
+through their completion fence. PCM EdgeIndex growth retains the committed
+allocation until the replacement copy is accepted. Rejected recording
+restores the committed allocation identity without a preservation-copy
+submission. Do not infer performance gains from
 software Vulkan or WARP CI.
 
 ### Nonblocking upload staging

@@ -76,6 +76,7 @@ public:
           results_(allocator,physx::PxsHeapStats::eNARROWPHASE),
           candidates_(allocator,physx::PxsHeapStats::eNARROWPHASE),
           edges_(allocator,physx::PxsHeapStats::eNARROWPHASE),
+          previous_edges_(allocator,physx::PxsHeapStats::eNARROWPHASE),
           work_(allocator,physx::PxsHeapStats::eNARROWPHASE),
           dense_contacts_(allocator,physx::PxsHeapStats::eNARROWPHASE),
           journal_(allocator,physx::PxsHeapStats::eNARROWPHASE),
@@ -127,6 +128,11 @@ public:
         // A rejected Sc transaction must not publish its outstanding
         // asynchronous witness DMA into the borrowed Gu result arena.
         stream_.abandon_fetch();
+        if(edge_relocation_pending_) {
+            if(stream_.command_batch_generation()==edge_relocation_generation_)
+                physx::PxgCudaBuffer::swapBuffer(edges_,previous_edges_);
+            edge_relocation_pending_=false;
+        }
         host_snapshot_unsubmitted_=false;
         host_upload_pending_=false;
         result_pending_=false;
@@ -178,9 +184,17 @@ public:
         // A collision-only publication has no Dy device consumer to
         // retire the primitive upload. Complete it at the existing Sc
         // transaction commit, after independent island publication.
-        if(host_upload_pending_ || gu_touch_count_!=0u) {
+        if(host_upload_pending_ || gu_touch_count_!=0u ||
+           (journal_pair_count_==0u &&
+            pending_edge_span_bytes_>published_edge_span_bytes_)) {
             stream_.wait_at_fetch();
             host_upload_pending_=false;
+        }
+        if(edge_relocation_pending_) {
+            if(stream_.command_batch_generation()==edge_relocation_generation_)
+                throw std::logic_error("PCM history relocation committed before submission");
+            previous_edges_.deallocateDeferred();
+            edge_relocation_pending_=false;
         }
         published_edge_span_bytes_=std::max(
             published_edge_span_bytes_,pending_edge_span_bytes_);
@@ -220,12 +234,8 @@ public:
         dense_contacts_.allocate(bytes,PX_FL);
         const auto requested_edge_bytes=source_allocation_bytes(
             edge_capacity,240u);
-        const bool edge_grew=requested_edge_bytes>edges_.getSize();
-        last_edge_history_copy_bytes_=edge_grew
-            ?published_edge_span_bytes_:0u;
-        edges_.allocateCopyPrefixAsync(requested_edge_bytes,
-            published_edge_span_bytes_,stream_,PX_FL);
-        if(edge_grew && published_edge_span_bytes_)stream_.submit();
+        last_edge_history_copy_bytes_=0u;
+        grow_edge_history(requested_edge_bytes);
         journal_.allocate(source_allocation_bytes(pair_count,8u),PX_FL);
 
         // The host Gu stream already contains every EdgeIndex and touch
@@ -321,12 +331,7 @@ public:
                 // pair. Its touch records use the same resident journal.
                 const auto bytes=source_allocation_bytes(
                     minimum_edge_capacity,240u);
-                const bool grew=bytes>edges_.getSize();
-                if(grew)
-                    last_edge_history_copy_bytes_=published_edge_span_bytes_;
-                edges_.allocateCopyPrefixAsync(
-                    bytes,published_edge_span_bytes_,stream_,PX_FL);
-                if(grew && published_edge_span_bytes_)stream_.submit();
+                grow_edge_history(bytes);
                 const auto initialized=static_cast<std::uint32_t>(
                     std::min<std::size_t>(
                         minimum_edge_capacity,published_edge_span_bytes_/240u));
@@ -461,16 +466,7 @@ public:
         // slots may be needed when their rigid actors wake again.
         const auto requested_edge_bytes=source_allocation_bytes(
             edge_capacity,240u);
-        const bool edge_grew=requested_edge_bytes>edges_.getSize();
-        if(edge_grew)
-            last_edge_history_copy_bytes_=published_edge_span_bytes_;
-        edges_.allocateCopyPrefixAsync(requested_edge_bytes,
-            published_edge_span_bytes_,stream_,PX_FL);
-        // A grown EdgeIndex pool must retain its last committed prefix
-        // even if later frame preparation fails before PCM submission.
-        // Submit the source device copy without a host fence. Failed
-        // steps can then discard only the unsubmitted PCM commands.
-        if(edge_grew && published_edge_span_bytes_)stream_.submit();
+        grow_edge_history(requested_edge_bytes);
         if(pair_count) {
             journal_.allocate(source_allocation_bytes(pair_count,240u),PX_FL);
         }
@@ -1163,7 +1159,33 @@ private:
                 throw std::overflow_error("Nonfinite Sc primitive PCM witness");
         }
     }
+    // The provisional address is used by recorded producers; the committed
+    // allocation remains owned until the copy enters the native queue.
+    void grow_edge_history(std::size_t bytes) {
+        if(bytes<=edges_.getSize())return;
+        if(edge_relocation_pending_ || previous_edges_.getSize())
+            throw std::logic_error("PCM history relocation already pending");
+        if(edges_.getSize()>std::numeric_limits<std::size_t>::max()/2u)
+            throw std::overflow_error("PCM history capacity overflow");
+        const auto capacity=std::max<std::size_t>(bytes,edges_.getSize()*2u);
+        previous_edges_.allocate(capacity,PX_FL);
+        try {
+            if(published_edge_span_bytes_)
+                stream_.queue_device_copy(previous_edges_.getDevicePtr(),
+                    edges_.getDevicePtr(),published_edge_span_bytes_);
+        }catch(...) {
+            previous_edges_.deallocate();
+            throw;
+        }
+        physx::PxgCudaBuffer::swapBuffer(edges_,previous_edges_);
+        edge_relocation_generation_=stream_.command_batch_generation();
+        edge_relocation_pending_=true;
+        last_edge_history_copy_bytes_=published_edge_span_bytes_;
+    }
     void restore_rejected_epoch() {
+        // Rollback has retired submitted users of the inactive allocation.
+        if(previous_edges_.getSize() && !edge_relocation_pending_)
+            previous_edges_.deallocate();
         if(!restore_pending_)return;
         // Undo CPU-only Gu transitions first, then restore the preceding
         // PCM snapshot. Both affect one authoritative device history.
@@ -1211,7 +1233,8 @@ private:
         primitive_gjk_stage_,gjk_reduce_stage_,gjk_publish_stage_;
     SourceScContactHistoryNativeStage journal_stage_;
     SourceScDeviceIslandsNativeStage island_stage_;
-    physx::PxgCudaBuffer pairs_,results_,candidates_,edges_,work_,dense_contacts_,journal_;
+    physx::PxgCudaBuffer pairs_,results_,candidates_,edges_,previous_edges_,
+                         work_,dense_contacts_,journal_;
     physx::PxgCudaBuffer gu_touch_records_,gu_touch_journal_;
     physx::PxgCudaBuffer island_edges_,island_nodes_,island_work_;
     SourceFrameInputArenaNative island_frame_input_;
@@ -1264,5 +1287,7 @@ private:
     std::size_t last_island_source_direct_bytes_=0u;
     std::size_t last_island_source_upload_bytes_=0u;
     std::size_t published_edge_span_bytes_=0u;
+    std::size_t edge_relocation_generation_=0u;
+    bool edge_relocation_pending_=false;
 };
 } // namespace fyzz::physx_gpu
