@@ -38,7 +38,7 @@ uint sourceDyContactOrderPoint(uint order,uint relative) {
     return (order&sourceDyDirectContactOrder)!=0u
         ?index:arena.Load(p.orderBias+index*4u);
 }
-bool contactImpulse(uint a,uint b,uint ao,uint bo,
+bool contactImpulse(uint a,uint b,
                     float3 n,float3 ja,float3 jb,
                     inout float3 va,inout float3 vb,
                     inout float3 aa,inout float3 ab,
@@ -55,62 +55,61 @@ bool contactImpulse(uint a,uint b,uint ao,uint bo,
         return false;
     }
     if(a!=invalidBody && ma>0.f) {
-        arena.Store3(ao,asuint(v0));
-        arena.Store3(ao+12u,asuint(w0));
         va=v0;
         aa=w0;
     }
     if(b!=invalidBody && mb>0.f) {
-        arena.Store3(bo,asuint(v1));
-        arena.Store3(bo+12u,asuint(w1));
         vb=v1;
         ab=w1;
     }
     return true;
 }
-void solveContact(uint4 descriptor,uint errorAddress,bool biased,
-                  bool frictionEnabled,bool finalPass) {
+struct SourceDyContactSpan {
+    uint4 manager;
+    uint sourceBegin;
+};
+
+bool sourceDyLoadContactSpan(uint4 descriptor,uint errorAddress,
+                            out SourceDyContactSpan span) {
+    span=(SourceDyContactSpan)0;
     if(descriptor.x>=p.manifoldCount ||
        (descriptor.y!=invalidBody && descriptor.y>=p.bodyCount) ||
        (descriptor.z!=invalidBody && descriptor.z>=p.bodyCount)) {
         sourceDyTaskErrorOr(errorAddress,32u);
-        return;
+        return false;
     }
     const uint managerAddress=p.manifoldBias+descriptor.x*24u;
-    uint4 manager=arena.Load4(managerAddress);
+    span.manager=arena.Load4(managerAddress);
+    const uint4 manager=span.manager;
     // Zero-response descriptors carry source endpoint ordinals in the
     // otherwise unused patch offsets. They have no contact rows to read.
-    if(manager.y==0u)return;
+    if(manager.y==0u)return true;
     if(manager.x>p.patchCount || manager.y>p.patchCount-manager.x ||
        manager.z>p.contactCount ||
        manager.w>p.contactCount-manager.z) {
         sourceDyTaskErrorOr(errorAddress,64u);
-        return;
+        return false;
     }
     const uint prepIndex=arena.Load(managerAddress+16u);
     const bool pcm=prepIndex<p.prepCount &&
         arena.Load(sourceDyPrepAddress(prepIndex)+32u)!=invalidBody;
-    const uint sourceBegin=pcm ||
+    span.sourceBegin=pcm ||
         (p.launchControl&0x08000000u)!=0u
         ?arena.Load(managerAddress+20u):manager.z;
-    uint a=descriptor.y,b=descriptor.z;
-    uint ao=p.bodyBias+a*52u,bo=p.bodyBias+b*52u;
-    float ma=0.f,mb=0.f;
-    float3 va=float3(0,0,0),vb=float3(0,0,0);
-    float3 aa=float3(0,0,0),ab=float3(0,0,0);
-    // A source conflict partition gives this descriptor exclusive writes
-    // to its dynamic bodies. Reuse committed velocities through all
-    // correlated normal and friction rows; static participants stay fixed.
-    if(a!=invalidBody) {
-        ma=asfloat(arena.Load(ao+48u));
-        va=asfloat(arena.Load3(ao));
-        aa=asfloat(arena.Load3(ao+12u));
-    }
-    if(b!=invalidBody) {
-        mb=asfloat(arena.Load(bo+48u));
-        vb=asfloat(arena.Load3(bo));
-        ab=asfloat(arena.Load3(bo+12u));
-    }
+    return true;
+}
+
+bool solveContactRows(uint4 descriptor,SourceDyContactSpan span,
+                      uint errorAddress,bool biased,
+                      bool frictionEnabled,bool finalPass,
+                      inout SourceDySolverPair state) {
+    const uint4 manager=span.manager;
+    if(manager.y==0u)return true;
+    const uint sourceBegin=span.sourceBegin;
+    const uint a=descriptor.y,b=descriptor.z;
+    const float ma=state.ma,mb=state.mb;
+    float3 va=state.va,vb=state.vb;
+    float3 aa=state.aa,ab=state.ab;
     uint contactCursor=0u;
     for(uint patchIndex=manager.x;patchIndex<manager.x+manager.y;++patchIndex) {
         uint po=p.patchBias+patchIndex*32u;
@@ -122,14 +121,14 @@ void solveContact(uint4 descriptor,uint errorAddress,bool biased,
            patch.y>manager.w-contactCursor ||
            !sourceDyContactOrderValid(settings.z,patch.y)) {
             sourceDyTaskErrorOr(errorAddress,128u);
-            return;
+            return false;
         }
         precise float normalImpulse=0.0;
         for(uint i=0;i<patch.y;++i) {
             uint pointIndex=sourceDyContactOrderPoint(settings.z,i);
             if(pointIndex>=p.contactCount) {
                 sourceDyTaskErrorOr(errorAddress,256u);
-                return;
+                return false;
             }
             uint co=p.contactBias+pointIndex*64u;
             float3 n=asfloat(arena.Load3(co));
@@ -145,18 +144,18 @@ void solveContact(uint4 descriptor,uint errorAddress,bool biased,
                 -normalVelocity*contactScalar(co+40u)+error;
             if(!isfinite(proposed) || !isfinite(oldForce)) {
                 sourceDyTaskErrorOr(errorAddress,1024u);
-                return;
+                return false;
             }
             precise float candidate=max(proposed,-oldForce);
             precise float nextForce=min(contactScalar(co+60u),
                 contactScalar(co+44u)*oldForce+candidate);
             if(!isfinite(nextForce)) {
                 sourceDyTaskErrorOr(errorAddress,1024u);
-                return;
+                return false;
             }
-            if(!contactImpulse(a,b,ao,bo,n,ja,jb,
+            if(!contactImpulse(a,b,n,ja,jb,
                                va,vb,aa,ab,nextForce-oldForce,
-                               ma,mb,errorAddress))return;
+                               ma,mb,errorAddress))return false;
             uint outputIndex=pointIndex;
             if(finalPass) {
                 const uint local=pointIndex-manager.z;
@@ -164,7 +163,7 @@ void solveContact(uint4 descriptor,uint errorAddress,bool biased,
                    sourceBegin>p.contactCount ||
                    local>=p.contactCount-sourceBegin) {
                     sourceDyTaskErrorOr(errorAddress,256u);
-                    return;
+                    return false;
                 }
                 outputIndex=sourceBegin+local;
             }
@@ -193,7 +192,7 @@ void solveContact(uint4 descriptor,uint errorAddress,bool biased,
             if(!isfinite(candidate) || !isfinite(maxStatic) ||
                !isfinite(maxDynamic)) {
                 sourceDyTaskErrorOr(errorAddress,2048u);
-                return;
+                return false;
             }
             bool saturated=abs(candidate)>maxStatic;
             // Source signed FMin/FMax also handles negative compliant bounds.
@@ -201,11 +200,11 @@ void solveContact(uint4 descriptor,uint errorAddress,bool biased,
                 ? min(maxDynamic,max(-maxDynamic,candidate)):candidate;
             if(!isfinite(nextForce)) {
                 sourceDyTaskErrorOr(errorAddress,2048u);
-                return;
+                return false;
             }
-            if(!contactImpulse(a,b,ao,bo,n,ja,jb,
+            if(!contactImpulse(a,b,n,ja,jb,
                                va,vb,aa,ab,nextForce-oldForce,
-                               ma,mb,errorAddress))return;
+                               ma,mb,errorAddress))return false;
             storeFrictionScalar(fo+52u,nextForce,k,finalPass);
             broken=broken||saturated;
         }
@@ -224,7 +223,7 @@ void solveContact(uint4 descriptor,uint errorAddress,bool biased,
                     precise float3 impulse=fx+fy;
                     if(!all(isfinite(impulse))) {
                         sourceDyTaskErrorOr(errorAddress,2048u);
-                        return;
+                        return false;
                     }
                     arena.Store3(p.writebackBias+p.resultFrictionOffset+
                         (row/2u)*12u,asuint(impulse));
@@ -240,8 +239,27 @@ void solveContact(uint4 descriptor,uint errorAddress,bool biased,
             arena.Store(reportAddress,(report&~1u)|(broken?1u:0u));
         }
     }
-    if(contactCursor!=manager.w)
+    if(contactCursor!=manager.w) {
         sourceDyTaskErrorOr(errorAddress,512u);
+        return false;
+    }
+    state.va=va;
+    state.vb=vb;
+    state.aa=aa;
+    state.ab=ab;
+    return true;
+}
+
+void solveContact(uint4 descriptor,uint errorAddress,bool biased,
+                  bool frictionEnabled,bool finalPass) {
+    SourceDyContactSpan span;
+    SourceDySolverPair state;
+    if(sourceDyLoadContactSpan(descriptor,errorAddress,span) &&
+       span.manager.y!=0u &&
+       sourceDyLoadSolverPair(descriptor,errorAddress,true,state) &&
+       solveContactRows(descriptor,span,errorAddress,biased,
+                        frictionEnabled,finalPass,state))
+        sourceDyStoreSolverPair(descriptor,state);
 }
 
 float3 prepSlop(float3 value,float slop) {

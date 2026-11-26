@@ -9988,6 +9988,11 @@ void verify_host_lane_packed_islands(
         gpu.add_static_box({0.6f,0.5f,0.6f},floor);
         cpu_bodies[i]=cpu.add_dynamic_box({0.5f,0.5f,0.5f},position,1.f);
         gpu_bodies[i]=gpu.add_dynamic_box({0.5f,0.5f,0.5f},position,1.f);
+        if(i==0u || i+1u==cpu_bodies.size()) {
+            const Vec3 slide{0.15f,0.f,-0.1f};
+            cpu.set_velocity(cpu_bodies[i],slide);
+            gpu.set_velocity(gpu_bodies[i],slide);
+        }
     }
     const Vec3 first{-16.f,1.0f,0.f};
     const Vec3 second{-16.f,1.82f,0.f};

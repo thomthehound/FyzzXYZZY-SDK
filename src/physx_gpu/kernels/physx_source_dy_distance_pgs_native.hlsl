@@ -162,27 +162,63 @@ void sourceDyTaskErrorOr(uint address,uint value) {
         scIslandWork.InterlockedOr(address,value);
     else arena.InterlockedOr(address,value);
 }
-void solveJoint(uint4 desc,uint errorAddress,bool biased) {
-    if(desc.x>=p.rowCount || desc.w>p.rowCount-desc.x ||
-       (desc.y!=invalidBody && desc.y>=p.bodyCount) ||
-       (desc.z!=invalidBody && desc.z>=p.bodyCount)) {
-        sourceDyTaskErrorOr(errorAddress,1u);
-        return;
+struct SourceDySolverPair {
+    float3 va,vb,aa,ab;
+    float ma,mb;
+};
+
+// Nonresponding endpoints are read-only, including shared kinematics.
+bool sourceDyLoadSolverPair(uint4 desc,uint errorAddress,bool response,
+                            out SourceDySolverPair state) {
+    state=(SourceDySolverPair)0;
+    const bool joint=desc.w!=0u;
+    if((desc.y!=invalidBody && desc.y>=p.bodyCount) ||
+       (desc.z!=invalidBody && desc.z>=p.bodyCount) ||
+       (joint && (desc.x>=p.rowCount || desc.w>p.rowCount-desc.x)) ||
+       (!joint && desc.x>=p.manifoldCount)) {
+        sourceDyTaskErrorOr(errorAddress,joint?1u:32u);
+        return false;
     }
+    if(!response)return true;
     const uint ao=p.bodyBias+desc.y*52u;
     const uint bo=p.bodyBias+desc.z*52u;
-    precise float3 va=0.0f,vb=0.0f,aa=0.0f,ab=0.0f;
     if(desc.y!=invalidBody) {
-        va=asfloat(arena.Load3(ao));
-        aa=asfloat(arena.Load3(ao+12u));
+        state.va=asfloat(arena.Load3(ao));
+        state.aa=asfloat(arena.Load3(ao+12u));
     }
     if(desc.z!=invalidBody) {
-        vb=asfloat(arena.Load3(bo));
-        ab=asfloat(arena.Load3(bo+12u));
+        state.vb=asfloat(arena.Load3(bo));
+        state.ab=asfloat(arena.Load3(bo+12u));
     }
+    if(joint) {
+        const uint first=p.distanceBias+desc.x*64u;
+        state.ma=loadScalar(first+36u);
+        state.mb=loadScalar(first+40u);
+    } else {
+        if(desc.y!=invalidBody)state.ma=loadScalar(ao+48u);
+        if(desc.z!=invalidBody)state.mb=loadScalar(bo+48u);
+    }
+    return true;
+}
+
+void sourceDyStoreSolverPair(uint4 desc,SourceDySolverPair state) {
+    if(desc.y!=invalidBody && state.ma>0.0f) {
+        const uint ao=p.bodyBias+desc.y*52u;
+        arena.Store3(ao,asuint(state.va));
+        arena.Store3(ao+12u,asuint(state.aa));
+    }
+    if(desc.z!=invalidBody && state.mb>0.0f) {
+        const uint bo=p.bodyBias+desc.z*52u;
+        arena.Store3(bo,asuint(state.vb));
+        arena.Store3(bo+12u,asuint(state.ab));
+    }
+}
+
+bool solveJointRows(uint4 desc,uint errorAddress,bool biased,
+                    inout SourceDySolverPair state) {
+    precise float3 va=state.va,vb=state.vb,aa=state.aa,ab=state.ab;
     const uint first=p.distanceBias+desc.x*64u;
-    const float massA=loadScalar(first+36u);
-    const float massB=loadScalar(first+40u);
+    const float massA=state.ma,massB=state.mb;
     // One lane owns both endpoints for every row of this joint.
     for(uint row=0u;row<desc.w;++row) {
         const uint offset=first+row*64u;
@@ -196,7 +232,7 @@ void solveJoint(uint4 desc,uint errorAddress,bool biased) {
         const uint coefficient=arena.Load(offset+(biased?48u:52u));
         if((coefficient&0x7f800000u)==0x7f800000u) {
             sourceDyTaskErrorOr(errorAddress,2u);
-            return;
+            return false;
         }
         precise float velocityTerm=normalDelta*loadScalar(offset+56u);
         precise float force=previous+velocityTerm;
@@ -204,7 +240,7 @@ void solveJoint(uint4 desc,uint errorAddress,bool biased) {
         if(!isfinite(candidate) || !isfinite(normalDelta) ||
            !isfinite(previous)) {
             sourceDyTaskErrorOr(errorAddress,2u);
-            return;
+            return false;
         }
         precise float next=clamp(candidate,-maxImpulse,maxImpulse);
         precise float impulse=next-previous;
@@ -215,19 +251,26 @@ void solveJoint(uint4 desc,uint errorAddress,bool biased) {
         if(!isfinite(next) || !all(isfinite(va)) || !all(isfinite(vb)) ||
            !all(isfinite(aa)) || !all(isfinite(ab))) {
             sourceDyTaskErrorOr(errorAddress,2u);
-            return;
+            return false;
         }
         arena.Store(offset+60u,asuint(next));
     }
-    // Kinematic rows are shared read-only by disjoint solver tasks.
-    if(desc.y!=invalidBody && massA>0.f) {
-        arena.Store3(ao,asuint(va));
-        arena.Store3(ao+12u,asuint(aa));
+    if(desc.y!=invalidBody && massA>0.0f) {
+        state.va=va;
+        state.aa=aa;
     }
-    if(desc.z!=invalidBody && massB>0.f) {
-        arena.Store3(bo,asuint(vb));
-        arena.Store3(bo+12u,asuint(ab));
+    if(desc.z!=invalidBody && massB>0.0f) {
+        state.vb=vb;
+        state.ab=ab;
     }
+    return true;
+}
+
+void solveJoint(uint4 desc,uint errorAddress,bool biased) {
+    SourceDySolverPair state;
+    if(sourceDyLoadSolverPair(desc,errorAddress,true,state) &&
+       solveJointRows(desc,errorAddress,biased,state))
+        sourceDyStoreSolverPair(desc,state);
 }
 
 // Native Dy reconstructs the mass frame from resident actor motion.
@@ -2160,17 +2203,64 @@ void sourceDySolvePackedTask(uint taskId) {
         return;
     }
 
+    SourceDyContactSpan span=(SourceDyContactSpan)0;
+    SourceDySolverPair state;
+    const bool joint=desc.w!=0u;
+    if((!joint && !sourceDyLoadContactSpan(desc,errorAddress,span)) ||
+       !sourceDyLoadSolverPair(desc,errorAddress,joint || span.manager.y!=0u,
+                              state)) {
+        publishTaskError(taskId,sourceDyTaskLoad(errorAddress));
+        return;
+    }
     const uint total=iters.x+max(iters.y,1u);
     for(uint iteration=0u;iteration<total;++iteration) {
-        solvePartition(ranges.x,ranges.y,0u,iters,iteration,errorAddress);
-        if(iteration+1u==iters.x)
-            for(uint body=bodies.x;body<bodies.y;++body)
-                saveMotion(body,errorAddress);
+        const bool biased=iteration<iters.x;
+        const bool friction=!biased || iters.x-iteration<=3u;
+        const bool finalPass=iteration+1u==total;
+        bool solved;
+        if(joint)
+            solved=solveJointRows(desc,errorAddress,biased,state);
+        else
+            solved=solveContactRows(desc,span,errorAddress,biased,friction,
+                                    finalPass,state);
+        if(!solved)break;
+        if(iteration+1u==iters.x) {
+            // Position integration consumes the biased-phase snapshot,
+            // without publishing the live velocity deltas.
+            for(uint body=bodies.x;body<bodies.y;++body) {
+                const uint ordinal=sourceDyBodyOrdinal(body);
+                if(ordinal>=p.bodyCount) {
+                    sourceDyTaskErrorOr(errorAddress,8u);
+                    continue;
+                }
+                const uint base=p.bodyBias+ordinal*52u;
+                if(ordinal==desc.z && state.mb>0.0f) {
+                    arena.Store3(base+24u,asuint(state.vb));
+                    arena.Store3(base+36u,asuint(state.ab));
+                } else if(ordinal==desc.y && state.ma>0.0f) {
+                    arena.Store3(base+24u,asuint(state.va));
+                    arena.Store3(base+36u,asuint(state.aa));
+                } else {
+                    arena.Store3(base+24u,arena.Load3(base));
+                    arena.Store3(base+36u,arena.Load3(base+12u));
+                }
+            }
+        }
+        if(desc.y==desc.z && desc.y!=invalidBody) {
+            if(state.mb>0.0f) {
+                state.va=state.vb;
+                state.aa=state.ab;
+            } else if(state.ma>0.0f) {
+                state.vb=state.va;
+                state.ab=state.aa;
+            }
+        }
     }
     if(sourceDyTaskLoad(errorAddress)!=0u) {
         publishTaskError(taskId,sourceDyTaskLoad(errorAddress));
         return;
     }
+    sourceDyStoreSolverPair(desc,state);
     for(uint body=bodies.x;body<bodies.y;++body) {
         const uint ordinal=sourceDyBodyOrdinal(body);
         if(ordinal>=p.bodyCount)
