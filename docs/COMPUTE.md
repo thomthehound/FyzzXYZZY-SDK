@@ -135,6 +135,9 @@ hubs prefix dynamic encounter ranks across the workgroup and compact
 static reservations into the existing cursor range. General coloring
 resets rollover masks with election priorities; elected edges own
 disjoint endpoints and update their masks and maxima directly.
+Normal and friction preparation consume the same authored contact
+geometry without a dependency on materialized normal rows. Each patch
+shares body data and transformed anchors across its tangent rows.
 Do not infer performance gains from software Vulkan or WARP CI.
 
 ### Nonblocking upload staging

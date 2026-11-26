@@ -308,20 +308,15 @@ float3 prepInertia(uint source,float3 v) {
 void prepStoreScalar(uint address,float value) {
     arena.Store(address,asuint(value));
 }
-void prepareContactRow(uint index,uint pairIndex,uint contactBegin,
-                       uint contactCount,uint errorAddress) {
-    if(index>=p.contactCount || pairIndex>=p.prepCount) {
+// Both normal and friction preparation consume the original geometry.
+bool sourceDyContactGeometry(uint index,uint pair,uint contactBegin,
+                             uint contactCount,uint errorAddress,
+                             out float3 n,out float3 pos,out float separation) {
+    n=0.0f;pos=0.0f;separation=0.0f;
+    if(index>=p.contactCount) {
         sourceDyTaskErrorOr(errorAddress,4096u);
-        return;
+        return false;
     }
-    uint co=p.contactBias+index*64u;
-    uint pair=sourceDyPrepAddress(pairIndex);
-    uint b0=arena.Load(pair),b1=arena.Load(pair+4u);
-    // The source correlation fixes patch order and body inputs. The GPU
-    // reconstructs PCM normal rows without uploading a placeholder row.
-    float3 n;
-    float3 pos;
-    float separation;
     uint pcmIndex=arena.Load(pair+32u);
     if(pcmIndex!=0xffffffffu) {
         uint local=index-contactBegin;
@@ -333,27 +328,40 @@ void prepareContactRow(uint index,uint pairIndex,uint contactBegin,
            ((packed>>3u)&7u)!=0u ||
            contactCount!=((packed>>10u)&7u)) {
             sourceDyTaskErrorOr(errorAddress,65536u);
-            return;
+            return false;
         }
         n=asfloat(pcmContacts.Load3(source+8u));
         uint contact=source+20u+local*16u;
         pos=asfloat(pcmContacts.Load3(contact));
         separation=asfloat(pcmContacts.Load(contact+12u));
-        arena.Store3(co,asuint(n));
     } else {
         uint cpuOffset=arena.Load(pair+44u);
         if(cpuOffset==0xffffffffu || index<contactBegin ||
            index-contactBegin>=contactCount) {
             sourceDyTaskErrorOr(errorAddress,131072u);
-            return;
+            return false;
         }
         uint raw=p.prepBias+16u+p.prepCount*48u+
             (cpuOffset+index-contactBegin)*28u;
         n=asfloat(arena.Load3(raw));
         pos=asfloat(arena.Load3(raw+12u));
         separation=asfloat(arena.Load(raw+24u));
-        arena.Store3(co,asuint(n));
     }
+    return true;
+}
+void prepareContactRow(uint index,uint pairIndex,uint contactBegin,
+                       uint contactCount,uint errorAddress) {
+    if(pairIndex>=p.prepCount) {
+        sourceDyTaskErrorOr(errorAddress,4096u);
+        return;
+    }
+    uint pair=sourceDyPrepAddress(pairIndex);
+    float3 n,pos;
+    float separation;
+    if(!sourceDyContactGeometry(index,pair,contactBegin,contactCount,
+                                errorAddress,n,pos,separation))return;
+    uint co=p.contactBias+index*64u;
+    uint b0=arena.Load(pair),b1=arena.Load(pair+4u);
     float3 p0,p1;
     float4 q0,q1;
     if(!prepBodyPose(b0,p0,q0) || !prepBodyPose(b1,p1,q1)) {
@@ -431,8 +439,9 @@ void prepareContactRow(uint index,uint pairIndex,uint contactBegin,
         sourceDyTaskErrorOr(errorAddress,8192u);
         return;
     }
-    // A freshly prepared source Gu normal row begins with zero impulse.
+    // A freshly prepared normal row begins with zero impulse.
     // Its limit is common to the entire contact-manager pair.
+    arena.Store3(co,asuint(n));
     arena.Store(co+36u,0u);
     arena.Store(co+56u,0u);
     arena.Store(co+60u,arena.Load(pair+40u));
@@ -444,73 +453,43 @@ void prepareContactRow(uint index,uint pairIndex,uint contactBegin,
     prepStoreScalar(co+52u,unbiasedError);
 }
 
-void prepareFrictionRow(uint index,uint patchIndex,uint pairIndex,
-                        uint errorAddress) {
-    if(index>=p.frictionCount || pairIndex>=p.prepCount) {
-        sourceDyTaskErrorOr(errorAddress,16384u);
-        return;
-    }
+struct SourceDyFrictionBody {
+    float3 position,velocity,angular;
+    float4 orientation;
+    float mass;
+    float3 inertia0,inertia1,inertia2;
+    bool immovable;
+};
+bool sourceDyLoadFrictionBody(uint source,out SourceDyFrictionBody body) {
+    if(!prepBodyPose(source,body.position,body.orientation))return false;
+    body.velocity=prepBody3(source,12u);
+    body.angular=prepBody3(source,24u);
+    body.mass=prepBodyFloat(source,72u);
+    body.immovable=(source&3u)==3u;
+    body.inertia0=prepBody3(source,36u);
+    body.inertia1=prepBody3(source,48u);
+    body.inertia2=prepBody3(source,60u);
+    return true;
+}
+float3 sourceDyFrictionInertia(SourceDyFrictionBody body,float3 v) {
+    if(body.immovable)return 0.0f;
+    return body.inertia0*v.x+body.inertia1*v.y+body.inertia2*v.z;
+}
+void prepareFrictionRow(uint index,float3 tangent,float3 r0,float3 r1,
+                        float3 error,SourceDyFrictionBody a,SourceDyFrictionBody b,
+                        float slop,float invDt,float rigidBias,uint errorAddress) {
     uint fo=p.frictionBias+index*56u;
-    uint pair=sourceDyPrepAddress(pairIndex);
-    uint b0=arena.Load(pair),b1=arena.Load(pair+4u);
-    // Source DyFrictionCorrelation selected these body-local anchors.
-    // Source DyContactPrep selected the two tangents and their order.
-    float3 tangent=asfloat(arena.Load3(fo));
-    // The original Gu correlation owns one body-local anchor for both
-    // tangent rows. PCM retrieves its resident EdgeIndex history;
-    // CPU Gu reads its compact patch-local upload without PCM padding.
-    uint po=p.patchBias+patchIndex*32u;
-    uint first=arena.Load(po);
-    if(index<first || ((index-first)>>1u)>=2u) {
-        sourceDyTaskErrorOr(errorAddress,16384u);
-        return;
-    }
-    uint slot=(index-first)>>1u;
-    uint anchor;
-    if(arena.Load(pair+32u)!=0xffffffffu) {
-        uint history=p.writebackBias+arena.Load(pair+36u)*64u;
-        if(arena.Load(history)<=slot) {
-            sourceDyTaskErrorOr(errorAddress,262144u);
-            return;
-        }
-        anchor=history+8u+slot*24u;
-    }else {
-        uint backward=arena.Load(po+28u);
-        if(backward==0u || backward>p.contactBias-p.writebackBias) {
-            sourceDyTaskErrorOr(errorAddress,16384u);
-            return;
-        }
-        anchor=p.contactBias-backward+slot*24u;
-    }
-    float3 p0,p1;
-    float4 q0,q1;
-    if(!prepBodyPose(b0,p0,q0) || !prepBodyPose(b1,p1,q1)) {
-        sourceDyTaskErrorOr(errorAddress,524288u);
-        return;
-    }
-    float3 r0=sourceRigidRotate(q0,asfloat(arena.Load3(anchor)));
-    float3 r1=sourceRigidRotate(q1,asfloat(arena.Load3(anchor+12u)));
-    float3 v0=prepBody3(b0,12u);
-    float3 v1=prepBody3(b1,12u);
-    float3 w0=prepBody3(b0,24u);
-    float3 w1=prepBody3(b1,24u);
-    float m0=prepBodyFloat(b0,72u);
-    float m1=prepBodyFloat(b1,72u);
-    float slop=asfloat(arena.Load(pair+12u));
-    float invDt=asfloat(arena.Load(p.prepBias));
-    float rigidBias=asfloat(arena.Load(p.prepBias+8u));
-    float3 error=prepSlop((r0+p0)-(r1+p1),slop);
     float3 ax0=prepSlop(cross(r0,tangent),slop);
     float3 ax1=prepSlop(cross(r1,tangent),slop);
-    float3 ja=prepInertia(b0,ax0);
-    float3 jb=prepInertia(b1,ax1);
-    precise float response=(m0+sourceDyDot3(ja,ja))+(m1+sourceDyDot3(jb,jb));
+    float3 ja=sourceDyFrictionInertia(a,ax0);
+    float3 jb=sourceDyFrictionInertia(b,ax1);
+    precise float response=(a.mass+sourceDyDot3(ja,ja))+(b.mass+sourceDyDot3(jb,jb));
     precise float velocityMultiplier=response>0.0
         ? rigidBias/response:0.0;
     precise float bias=(sourceDyDot3(tangent,error)*invDt);
-    float3 relative=v0-v1;
+    float3 relative=a.velocity-b.velocity;
     precise float targetVelocity=(-(sourceDyDot3(tangent,relative)+
-        sourceDyDot3(ax0,w0)-sourceDyDot3(ax1,w1)));
+        sourceDyDot3(ax0,a.angular)-sourceDyDot3(ax1,b.angular)));
     if(!isfinite(response) || !isfinite(velocityMultiplier) ||
        !isfinite(bias) ||
        !isfinite(targetVelocity) || !all(isfinite(ja)) ||
@@ -518,6 +497,7 @@ void prepareFrictionRow(uint index,uint patchIndex,uint pairIndex,
         sourceDyTaskErrorOr(errorAddress,32768u);
         return;
     }
+    arena.Store3(fo,asuint(tangent));
     arena.Store3(fo+12u,asuint(ja));
     arena.Store3(fo+24u,asuint(jb));
     arena.Store(fo+36u,0u);
@@ -788,7 +768,8 @@ void growPcmFrictionAnchors(uint patchIndex,uint pairIndex,
     arena.Store(reportAddress,report);
 }
 
-void prepareFrictionPatch(uint patchIndex,uint pairIndex,uint errorAddress) {
+void prepareFrictionPatch(uint patchIndex,uint pairIndex,uint contactBegin,
+                          uint contactCount,uint errorAddress) {
     if(patchIndex>=p.patchCount || pairIndex>=p.prepCount) {
         sourceDyTaskErrorOr(errorAddress,16384u);
         return;
@@ -814,11 +795,18 @@ void prepareFrictionPatch(uint patchIndex,uint pairIndex,uint errorAddress) {
         sourceDyTaskErrorOr(errorAddress,16384u);
         return;
     }
-    float3 n=asfloat(arena.Load3(p.contactBias+first*64u));
     uint pair=sourceDyPrepAddress(pairIndex);
-    float3 a=prepBody3(arena.Load(pair),12u);
-    float3 b=prepBody3(arena.Load(pair+4u),12u);
-    float3 relative=a-b;
+    float3 n,pos;
+    float separation;
+    if(!sourceDyContactGeometry(first,pair,contactBegin,contactCount,
+                                errorAddress,n,pos,separation))return;
+    SourceDyFrictionBody a,b;
+    if(!sourceDyLoadFrictionBody(arena.Load(pair),a) ||
+       !sourceDyLoadFrictionBody(arena.Load(pair+4u),b)) {
+        sourceDyTaskErrorOr(errorAddress,524288u);
+        return;
+    }
+    float3 relative=a.velocity-b.velocity;
     float projection=sourceDyDot3(relative,n);
     float3 tangent0=relative-float3(
         n.x*projection,n.y*projection,n.z*projection);
@@ -837,11 +825,32 @@ void prepareFrictionPatch(uint patchIndex,uint pairIndex,uint errorAddress) {
         sourceDyTaskErrorOr(errorAddress,32768u);
         return;
     }
+    uint anchorBase;
+    if(arena.Load(pair+32u)!=invalidBody) {
+        uint history=p.writebackBias+arena.Load(pair+36u)*64u;
+        if(arena.Load(history)<patch.z) {
+            sourceDyTaskErrorOr(errorAddress,262144u);
+            return;
+        }
+        anchorBase=history+8u;
+    }else {
+        uint backward=arena.Load(po+28u);
+        if(backward==0u || backward>p.contactBias-p.writebackBias) {
+            sourceDyTaskErrorOr(errorAddress,16384u);
+            return;
+        }
+        anchorBase=p.contactBias-backward;
+    }
+    const float slop=asfloat(arena.Load(pair+12u));
+    const float invDt=asfloat(arena.Load(p.prepBias));
+    const float rigidBias=asfloat(arena.Load(p.prepBias+8u));
     for(uint anchor=0u;anchor<patch.z;++anchor) {
-        uint row=patch.x+anchor*2u;
-        arena.Store3(p.frictionBias+row*56u,asuint(tangent0));
-        arena.Store3(p.frictionBias+(row+1u)*56u,asuint(tangent1));
-        prepareFrictionRow(row,patchIndex,pairIndex,errorAddress);
-        prepareFrictionRow(row+1u,patchIndex,pairIndex,errorAddress);
+        const uint address=anchorBase+anchor*24u;
+        const float3 r0=sourceRigidRotate(a.orientation,asfloat(arena.Load3(address)));
+        const float3 r1=sourceRigidRotate(b.orientation,asfloat(arena.Load3(address+12u)));
+        const float3 error=prepSlop((r0+a.position)-(r1+b.position),slop);
+        const uint row=patch.x+anchor*2u;
+        prepareFrictionRow(row,tangent0,r0,r1,error,a,b,slop,invDt,rigidBias,errorAddress);
+        prepareFrictionRow(row+1u,tangent1,r0,r1,error,a,b,slop,invDt,rigidBias,errorAddress);
     }
 }

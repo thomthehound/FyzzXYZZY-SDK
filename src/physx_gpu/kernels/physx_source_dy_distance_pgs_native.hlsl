@@ -1664,7 +1664,7 @@ void admitPcmContactExtents(uint begin,uint end,uint lane,uint endError) {
     }
 }
 
-void prepareNormals(uint begin,uint end,uint lane,uint endError) {
+void prepareConstraints(uint begin,uint end,uint lane,uint endError) {
     for(uint i=begin+(lane>>2u);i<end;i+=32u) {
         uint4 desc=arena.Load4(p.descriptorBias+i*16u);
         if(desc.w!=0u) {
@@ -1702,38 +1702,21 @@ void prepareNormals(uint begin,uint end,uint lane,uint endError) {
                 const uint index=sourceDyContactOrderPoint(order,c);
                 prepareContactRow(index,pairIndex,manager.z,manager.w,endError);
             }
+            // Each patch has one friction writer. Its source geometry
+            // is independent of the normal rows written by other lanes.
+            if(((patchIndex-manager.x)&3u)==(lane&3u)) {
+                const uint4 patch=arena.Load4(po);
+                if(patch.x>p.frictionCount || patch.z>2u ||
+                   patch.z*2u>p.frictionCount-patch.x)
+                    sourceDyTaskErrorOr(endError,16384u);
+                else
+                    prepareFrictionPatch(patchIndex,pairIndex,
+                                         manager.z,manager.w,endError);
+            }
             covered+=count;
         }
         if(covered!=manager.w)
             sourceDyTaskErrorOr(endError,4096u);
-    }
-}
-
-void prepareFriction(uint begin,uint end,uint lane,uint endError) {
-    for(uint i=begin+(lane>>2u);i<end;i+=32u) {
-        uint4 desc=arena.Load4(p.descriptorBias+i*16u);
-        if(desc.w!=0u)continue;
-        if(desc.x>=p.manifoldCount)continue;
-        uint mo=p.manifoldBias+desc.x*24u;
-        uint4 manager=arena.Load4(mo);
-        if(manager.y==0u)continue;
-        uint pairIndex=arena.Load(mo+16u);
-        if(pairIndex>=p.prepCount ||
-           manager.x>p.patchCount ||
-           manager.y>p.patchCount-manager.x ||
-           manager.z>p.contactCount ||
-           manager.w>p.contactCount-manager.z)
-            continue;
-        for(uint patchIndex=manager.x+(lane&3u);
-            patchIndex<manager.x+manager.y;patchIndex+=4u) {
-            uint4 patch=arena.Load4(p.patchBias+patchIndex*32u);
-            if(patch.x>p.frictionCount || patch.z>2u ||
-               patch.z*2u>p.frictionCount-patch.x) {
-                sourceDyTaskErrorOr(endError,16384u);
-                continue;
-            }
-            prepareFrictionPatch(patchIndex,pairIndex,endError);
-        }
     }
 }
 
@@ -2166,14 +2149,7 @@ void sourceDySolvePackedTask(uint taskId) {
     // assignment of the existing four lanes per descriptor.
     [unroll]
     for(uint lane=0u;lane<4u;++lane)
-        prepareNormals(ranges.x,ranges.y,lane,errorAddress);
-    if(sourceDyTaskLoad(errorAddress)!=0u) {
-        publishTaskError(taskId,sourceDyTaskLoad(errorAddress));
-        return;
-    }
-    [unroll]
-    for(uint lane=0u;lane<4u;++lane)
-        prepareFriction(ranges.x,ranges.y,lane,errorAddress);
+        prepareConstraints(ranges.x,ranges.y,lane,errorAddress);
     if(sourceDyTaskLoad(errorAddress)!=0u) {
         publishTaskError(taskId,sourceDyTaskLoad(errorAddress));
         return;
@@ -2680,8 +2656,8 @@ void main(uint3 group:SV_GroupID,uint3 lane:SV_GroupThreadID) {
                 return;
             }
         }
-        // A preparation tile owns complete contact managers. Its
-        // normal rows feed friction locally before the global solve.
+        // A preparation tile owns complete contact managers. Normal
+        // and friction rows consume their shared source geometry.
         if(!fused) {
             if(phase==prepareTile) {
                 if(preparationError(endError,lane.x)!=0u)return;
@@ -2703,14 +2679,7 @@ void main(uint3 group:SV_GroupID,uint3 lane:SV_GroupThreadID) {
                     return;
                 }
             }
-            prepareNormals(descriptors.x,descriptors.y,lane.x,endError);
-            AllMemoryBarrierWithGroupSync();
-            const uint error=preparationError(endError,lane.x);
-            if(error!=0u) {
-                if(fused && lane.x==0u)publishTaskError(taskId,error);
-                return;
-            }
-            prepareFriction(descriptors.x,descriptors.y,lane.x,endError);
+            prepareConstraints(descriptors.x,descriptors.y,lane.x,endError);
             if(!fused)return;
             AllMemoryBarrierWithGroupSync();
         }
