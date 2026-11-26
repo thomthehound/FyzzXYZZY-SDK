@@ -154,6 +154,8 @@ void verify(Context& context,const char* filename) {
             require(stream.commands().size()>1u,
                 "Large Sc device graph bypassed parallel admission");
             std::array<bool,5> prefix_phases{};
+            bool first_histogram=false,final_scatter=false;
+            const auto passes=SourceScDeviceIslandLayout::radix_passes(node_count);
             for(const auto& command:stream.commands()) {
                 const auto* dispatch=std::get_if<DispatchCommand>(&command);
                 if(!dispatch || dispatch->push_constants.size()<13u*4u)
@@ -163,19 +165,29 @@ void verify(Context& context,const char* filename) {
                             sizeof(phase));
                 require(!dispatch->accesses.empty(),
                         "Large Sc admission has no phase access declaration");
-                std::size_t work_bytes=0u;
-                dispatch->for_each_access([&](const BufferBinding& binding,
-                                              BufferAccessExtent extent,BufferAccess) {
-                    if(binding.slot==3u)work_bytes+=extent.bytes;
-                });
-                if(phase==7u)
-                    require(dispatch->accesses.size()==1u &&
-                            work_bytes==(node_count+edges.size())*4u &&
-                            dispatch->accesses.front().access==BufferAccess::Write,
-                            "Radix initialization accesses unrelated island data");
+                require(phase!=7u,"Radix ordering materializes identity indices");
+                if(phase==8u || phase==10u+3u*(passes-1u)) {
+                    const auto sort_begin=layout.response_primary;
+                    const auto sort_end=layout.radix_histogram;
+                    dispatch->for_each_access([&](const BufferBinding& binding,
+                                                  BufferAccessExtent extent,
+                                                  BufferAccess access) {
+                        if(binding.slot!=3u)return;
+                        const auto begin=extent.offset-binding.accessed_extent().offset;
+                        if(begin>=sort_end || begin+extent.bytes<=sort_begin)return;
+                        if(phase==8u)
+                            throw std::runtime_error("First radix histogram reads identity storage");
+                        require(access==BufferAccess::Read,
+                                "Final radix scatter materializes sorted indices");
+                    });
+                    if(phase==8u)first_histogram=true;
+                    else final_scatter=true;
+                }
                 if(phase>=34u && phase<=38u)
                     prefix_phases[phase-34u]=true;
             }
+            require(first_histogram && final_scatter,
+                    "Missing radix producer or final scatter");
             const bool contact_rows=sources.contact_managers!=0u;
             const std::size_t blocks=(edges.size()+127u)/128u;
             require(prefix_phases==std::array<bool,5>{

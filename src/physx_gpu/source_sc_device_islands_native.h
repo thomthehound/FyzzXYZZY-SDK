@@ -394,15 +394,13 @@ public:
         // A single root/type sort generates both body and response spans.
         const auto combined=static_cast<std::uint32_t>(
             std::uint64_t(node_count)+edge_count);
-        launch(7u,combined<=256u?128u:combined);
-        if(combined>256u)
-            for(std::uint32_t pass=0u;
-                pass<SourceScDeviceIslandLayout::radix_passes(node_count);
-                ++pass) {
-                launch(8u+pass*3u,combined);
-                launch(9u+pass*3u,1u);
-                launch(10u+pass*3u,combined);
-            }
+        for(std::uint32_t pass=0u;
+            pass<SourceScDeviceIslandLayout::radix_passes(node_count);
+            ++pass) {
+            launch(8u+pass*3u,combined);
+            launch(9u+pass*3u,1u);
+            launch(10u+pass*3u,combined);
+        }
         // Response extents already belong to the device. Scan their
         // exact counts in bounded workgroups and retain the global
         // source-ordered row prefix for Dy's numerical submission.
@@ -594,10 +592,6 @@ private:
                 block_tiles(A::Write);
             }else block_tiles(A::ReadWrite);
             if(phase==5u || blocks<=128u)header(A::ReadWrite);
-        }else if(phase==7u) {
-            if(nodes+edges>256u)
-                work(layout.response_primary,(nodes+edges)*4u,A::Write);
-            else {keys();scatter();}
         }else if(phase==33u) {
             header(A::ReadWrite);input(2u);
             work(layout.body_order,nodes*4u,A::ReadWrite);
@@ -631,13 +625,13 @@ private:
                 work(layout.radix_histogram,histogram,A::ReadWrite);
             }else {
                 keys();
-                work(source,items*4u,A::Read);
+                if(pass!=0u)work(source,items*4u,A::Read);
                 work(layout.radix_histogram,histogram,
                      operation==0u?A::Write:A::Read);
                 if(operation==2u) {
-                    work(target,items*4u,A::Write);
                     if(pass+1u==SourceScDeviceIslandLayout::radix_passes(
                             static_cast<std::uint32_t>(nodes)))scatter();
+                    else work(target,items*4u,A::Write);
                 }
             }
         }else throw std::logic_error("Unknown Sc admission phase access");

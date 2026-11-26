@@ -1005,49 +1005,6 @@ void main(uint3 thread:SV_DispatchThreadID,
         work.Store(dst+32u,0u);
         return;
     }
-    if(p.phase==7u) {
-        if(p.combinedCount>256u) {
-            if(index<p.combinedCount)
-                work.Store(p.responseBiasA+index*4u,index);
-            return;
-        }
-        // One workgroup sorts all body and response identities.
-        // The lower nine bits preserve source order among equal keys.
-        const uint first=lane.x;
-        const uint second=first+128u;
-        const uint firstKey=first<p.combinedCount?itemKey(first):invalid;
-        const uint secondKey=second<p.combinedCount?itemKey(second):invalid;
-        radixBuckets[first]=firstKey==invalid
-            ?invalid:(firstKey<<9u)|first;
-        radixBuckets[second]=secondKey==invalid
-            ?invalid:(secondKey<<9u)|second;
-        GroupMemoryBarrierWithGroupSync();
-        [loop]
-        for(uint width=2u;width<=256u;width<<=1u) {
-            [loop]
-            for(uint stride=width>>1u;stride!=0u;stride>>=1u) {
-                const uint a=radixBuckets[first];
-                const uint b=radixBuckets[second];
-                const uint otherA=radixBuckets[first^stride];
-                const uint otherB=radixBuckets[second^stride];
-                const bool upA=((first&width)==0u)==
-                    ((first&stride)==0u);
-                const bool upB=((second&width)==0u)==
-                    ((second&stride)==0u);
-                const uint nextA=upA?min(a,otherA):max(a,otherA);
-                const uint nextB=upB?min(b,otherB):max(b,otherB);
-                GroupMemoryBarrierWithGroupSync();
-                radixBuckets[first]=nextA;
-                radixBuckets[second]=nextB;
-                GroupMemoryBarrierWithGroupSync();
-            }
-        }
-        const uint sortedA=radixBuckets[first];
-        const uint sortedB=radixBuckets[second];
-        if(sortedA!=invalid)scatterItem(first,sortedA&511u);
-        if(sortedB!=invalid)scatterItem(second,sortedB&511u);
-        return;
-    }
     if(p.phase<8u)return;
     const uint pass=(p.phase-8u)/3u;
     const uint operation=(p.phase-8u)%3u;
@@ -1061,7 +1018,7 @@ void main(uint3 thread:SV_DispatchThreadID,
         radixBuckets[lane.x+128u]=0u;
         GroupMemoryBarrierWithGroupSync();
         if(index<p.combinedCount) {
-            const uint item=work.Load(source+index*4u);
+            const uint item=pass==0u?index:work.Load(source+index*4u);
             const uint digit=(itemKey(item)>>shift)&255u;
             uint previous;
             InterlockedAdd(radixBuckets[digit],1u,previous);
@@ -1111,7 +1068,7 @@ void main(uint3 thread:SV_DispatchThreadID,
     if(operation==2u) {
         radixDigits[lane.x]=invalid;
         if(index<p.combinedCount) {
-            const uint item=work.Load(source+index*4u);
+            const uint item=pass==0u?index:work.Load(source+index*4u);
             radixDigits[lane.x]=(itemKey(item)>>shift)&255u;
         }
         GroupMemoryBarrierWithGroupSync();
@@ -1128,9 +1085,9 @@ void main(uint3 thread:SV_DispatchThreadID,
             const uint digit=radixDigits[lane.x];
             const uint position=work.Load(
                 p.histBias+block*1024u+digit*4u)+radixRanks[lane.x];
-            const uint item=work.Load(source+index*4u);
-            work.Store(target+position*4u,item);
+            const uint item=pass==0u?index:work.Load(source+index*4u);
             if(pass+1u==p.radixPasses)scatterItem(position,item);
+            else work.Store(target+position*4u,item);
         }
     }
 }
