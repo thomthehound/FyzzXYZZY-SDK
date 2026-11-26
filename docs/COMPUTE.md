@@ -132,7 +132,9 @@ actor-slot bounds share one source traversal. Dy initializes conflict
 state during descriptor expansion when retained colors are not candidates
 for reuse. Pure dynamic hubs emit singleton partitions directly; mixed
 hubs prefix dynamic encounter ranks across the workgroup and compact
-static reservations into the existing cursor range.
+static reservations into the existing cursor range. General coloring
+resets rollover masks with election priorities; elected edges own
+disjoint endpoints and update their masks and maxima directly.
 Do not infer performance gains from software Vulkan or WARP CI.
 
 ### Nonblocking upload staging

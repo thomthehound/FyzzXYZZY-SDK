@@ -1195,26 +1195,10 @@ void sourceDyPartitionTask(uint taskId,uint scratch,uint errorAddress,
     }
     AllMemoryBarrierWithGroupSync();
     while(dyAssigned<dyNeeded) {
-        // Masks are wave-local. A 32-color overflow retires the prior
-        // mask before new absolute partition indices are assigned.
-        if(dyNextWave!=0u) {
-            for(uint i=first+lane;i<last;i+=128u) {
-                if(arena.Load(colors+i*4u)!=0xffffffffu)continue;
-                const uint4 desc=arena.Load4(raw+i*16u);
-                if((desc.w&0x300u)!=0x300u)continue;
-                uint unused;
-                arena.InterlockedExchange(
-                    bodyState+desc.y*12u,0u,unused);
-                arena.InterlockedExchange(
-                    bodyState+desc.z*12u,0u,unused);
-            }
-            AllMemoryBarrierWithGroupSync();
-            if(lane==0u)dyNextWave=0u;
-            AllMemoryBarrierWithGroupSync();
-        }
-        // A source-index priority preserves the original greedy PGS
-        // partition order wherever two edges share a dynamic body.
-        // Independent source edges can still color concurrently.
+        // Rollover retires the old masks during priority initialization.
+        const bool resetMask=dyNextWave!=0u;
+        if(lane==0u)dyProgress=0u;
+        // A source-index priority preserves greedy partition ordering.
         for(uint i=first+lane;i<last;i+=128u) {
             if(arena.Load(colors+i*4u)!=0xffffffffu)continue;
             const uint4 desc=arena.Load4(raw+i*16u);
@@ -1224,6 +1208,10 @@ void sourceDyPartitionTask(uint taskId,uint scratch,uint errorAddress,
                                        0xffffffffu,unused);
             arena.InterlockedExchange(bodyState+desc.z*12u+8u,
                                        0xffffffffu,unused);
+            if(resetMask) {
+                arena.InterlockedExchange(bodyState+desc.y*12u,0u,unused);
+                arena.InterlockedExchange(bodyState+desc.z*12u,0u,unused);
+            }
         }
         AllMemoryBarrierWithGroupSync();
         for(uint i=first+lane;i<last;i+=128u) {
@@ -1239,8 +1227,7 @@ void sourceDyPartitionTask(uint taskId,uint scratch,uint errorAddress,
             arena.InterlockedMin(b+8u,priority,unused);
         }
         AllMemoryBarrierWithGroupSync();
-        if(lane==0u)dyProgress=0u;
-        AllMemoryBarrierWithGroupSync();
+        uint progress=0u,highest=0u;
         for(uint i=first+lane;i<last;i+=128u) {
             if(arena.Load(colors+i*4u)!=0xffffffffu)continue;
             const uint4 desc=arena.Load4(raw+i*16u);
@@ -1250,7 +1237,8 @@ void sourceDyPartitionTask(uint taskId,uint scratch,uint errorAddress,
             const uint priority=i;
             if(arena.Load(a+8u)!=priority ||
                arena.Load(b+8u)!=priority)continue;
-            const uint available=~(arena.Load(a)|arena.Load(b));
+            const uint maskA=arena.Load(a),maskB=arena.Load(b);
+            const uint available=~(maskA|maskB);
             if(available==0u)continue;
             const uint bit=firstbitlow(available);
             const uint value=dyWave+bit;
@@ -1259,14 +1247,19 @@ void sourceDyPartitionTask(uint taskId,uint scratch,uint errorAddress,
                 continue;
             }
             const uint mask=1u<<bit;
-            uint unused;
-            arena.InterlockedOr(a,mask,unused);
-            arena.InterlockedOr(b,mask,unused);
-            arena.InterlockedMax(a+4u,value+1u,unused);
-            arena.InterlockedMax(b+4u,value+1u,unused);
+            // Both priorities name this edge; no other winner owns
+            // either endpoint during this round.
+            arena.Store(a,maskA|mask);
+            arena.Store(b,maskB|mask);
+            arena.Store(a+4u,max(arena.Load(a+4u),value+1u));
+            arena.Store(b+4u,max(arena.Load(b+4u),value+1u));
             arena.Store(colors+i*4u,value);
-            InterlockedMax(dyHighest,value+1u);
-            InterlockedAdd(dyProgress,1u);
+            highest=max(highest,value+1u);
+            ++progress;
+        }
+        if(progress!=0u) {
+            InterlockedMax(dyHighest,highest);
+            InterlockedAdd(dyProgress,progress);
         }
         AllMemoryBarrierWithGroupSync();
         if(lane==0u) {
@@ -1274,6 +1267,7 @@ void sourceDyPartitionTask(uint taskId,uint scratch,uint errorAddress,
                 dyWave+=32u;
                 dyNextWave=1u;
             } else {
+                dyNextWave=0u;
                 dyAssigned+=dyProgress;
                 // A source-ordered chain exposes little independent
                 // work. Continue its exact greedy prefix in one lane
