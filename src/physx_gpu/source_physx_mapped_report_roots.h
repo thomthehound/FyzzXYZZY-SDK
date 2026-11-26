@@ -120,9 +120,7 @@ public:
                 if (entry.cpu_mapped) {
                     try { context_.unmap_buffer(entry.device); } catch (...) {}
                 }
-                // The resource was never submitted to mStream before
-                // allocation returned; synchronous destroy is safe here.
-                try { context_.destroy_buffer(entry.device); } catch (...) {}
+                try { context_.retire_buffer(entry.device); } catch (...) {}
             }
             if (entry.host && !entry.direct)
                 ::operator delete(entry.host, std::align_val_t{256});

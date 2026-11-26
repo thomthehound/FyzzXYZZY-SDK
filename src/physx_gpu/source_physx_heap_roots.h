@@ -67,7 +67,7 @@ public:
             roots_.emplace(root, buffer);
         } catch (...) {
             if (root) addresses_.unregister_allocation(root);
-            context_.destroy_buffer(buffer);
+            context_.retire_buffer(buffer);
             throw;
         }
         return root;
@@ -104,11 +104,7 @@ private:
             try {
                 context_.retire_buffer(buffer);
             } catch (...) {
-                // Rare host-side retirement failure (e.g. allocation of
-                // retirement bookkeeping): fall back to blocking destroy.
-                // Normal teardown uses nonblocking native retirement.
-                try { context_.destroy_buffer(buffer); }
-                catch (...) { /* Unrecoverable context failure during unwind. */ }
+                // Context retains native ownership if retirement fails.
             }
             try { (void)addresses_.unregister_allocation(root); }
             catch (...) { /* Mapping may already have been invalidated. */ }

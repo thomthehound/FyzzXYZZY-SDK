@@ -1191,7 +1191,8 @@ private:
                 SourceScContactHistoryNativeStage::Phase::RestoreGuTouch,
                 gu_touch_records_.getDevicePtr(),edges_.getDevicePtr(),
                 gu_touch_journal_.getDevicePtr(),gu_touch_count_,
-                journal_edge_capacity_);
+                std::max(journal_edge_capacity_,static_cast<std::uint32_t>(
+                    published_edge_span_bytes_/240u)));
         // A rejected GPU Gu journal must be restored before another
         // producer can touch the same persistent EdgeIndex history.
         if(journal_pair_count_)

@@ -2101,6 +2101,19 @@ void verify(fyzz::compute::Backend backend,const char* sap,
     const std::array<native::GpuGuTouchRecord,1> staged_loss{{
         {gu_edge,0u}
     }};
+    // The current epoch can cover fewer edges than committed history.
+    producer->enqueue_gpu_pcm_box_contacts(
+        no_pcm_pairs,no_pcm_results,gu_edge);
+    producer->enqueue_cpu_gu_touch_history(staged_loss);
+    require(physx_gpu::SourceScDeviceIslandFixture::touch(*producer,gu_edge)[0]==0u,
+            "Sparse Gu epoch did not update a retained high EdgeIndex");
+    producer->invalidate_after_rollback();
+    producer->enqueue_gpu_pcm_box_contacts(
+        no_pcm_pairs,no_pcm_results,gu_edge);
+    require(physx_gpu::SourceScDeviceIslandFixture::touch(*producer,gu_edge)[0]
+                ==gu_only_extent,
+            "Sparse Gu rollback omitted a retained high EdgeIndex");
+    producer->commit_gpu_step();
     producer->enqueue_gpu_pcm_box_contacts(
         no_pcm_pairs,no_pcm_results,gu_edge+1u);
     producer->enqueue_cpu_gu_touch_history(staged_loss);
