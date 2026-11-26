@@ -667,19 +667,49 @@ public:
             return static_cast<std::uint32_t>(value);
         };
         const auto free_bodies=integration.size()-bodies.size();
-        const bool source_indexed_integration=std::any_of(
-            integration.begin(),integration.begin()+bodies.size(),
-            [](const auto& input) {
-                return (input.active&native::gpu_dy_source_indexed_integration)!=0u;
-            });
+        bool source_indexed_integration=false;
+        bool device_generated_inertia=device_world_motion;
+        bool has_shape_targets=false;
+        std::size_t active_bodies=0u,needed_actor_slots=0u;
+        constexpr auto invalid=std::numeric_limits<std::uint32_t>::max();
+        for(std::size_t ordinal=0u;ordinal<integration.size();++ordinal) {
+            const auto& input=integration[ordinal];
+            const bool active=(input.active&1u)!=0u;
+            if(ordinal<bodies.size()) {
+                source_indexed_integration|=
+                    (input.active&native::gpu_dy_source_indexed_integration)!=0u;
+                if(device_initial_bodies && device_world_motion &&
+                   !active && input.source_inverse_mass!=0.0f)
+                    throw std::logic_error(
+                        "Native Dy inactive solver row has nonzero inverse mass");
+                if(active && (input.active&32u)==0u)
+                    device_generated_inertia=false;
+            }
+            if(input.active && input.source_shape_count) {
+                if(input.source_element==invalid ||
+                   input.source_element>=shape_capacity ||
+                   input.source_shape_count>shape_capacity)
+                    throw std::out_of_range(
+                        "Source Dy attached shape span exceeds AABB capacity");
+                has_shape_targets=true;
+            }
+            if(!active)continue;
+            ++active_bodies;
+            const auto id=device_world_motion?input.source_actor:narrow(ordinal);
+            if(id==invalid ||
+               id>(invalid-128u)/sizeof(SourceDyActorLocalNative))
+                throw std::overflow_error(
+                    "Source Dy rigid actor local-pose index exceeds GPU address space");
+            needed_actor_slots=std::max(needed_actor_slots,std::size_t(id)+1u);
+        }
+        if(has_shape_targets && (!shape_cache || !shape_bounds || !shape_geometry))
+            throw std::logic_error("Source Sc GPU integration shape buffers are missing");
         if(source_indexed_integration &&
            (!device_admission || device_admission->deferred_body_remap ||
             !compact_contact_admission || !device_unconstrained_preparation))
             throw std::logic_error("Source-indexed integration requires resident Sc admission");
         const auto active_integration_count=source_indexed_integration
-            ?static_cast<std::size_t>(std::count_if(integration.begin(),integration.end(),
-                [](const auto& input){return (input.active&1u)!=0u;}))
-            :ordinal_capacity+free_bodies;
+            ?active_bodies:ordinal_capacity+free_bodies;
         const auto descriptor_capacity=device_admission
             ?std::size_t(device_admission->response_capacity)
             :descriptors.size();
@@ -692,12 +722,6 @@ public:
            sleep_states.size()!=integration.size())
             throw std::invalid_argument(
                 "Source GPU Dy sleep-state outputs do not match body ordinals");
-        if(device_initial_bodies && device_world_motion)
-            for(std::size_t i=0u;i<bodies.size();++i)
-                if(!(integration[i].active&1u) &&
-                   integration[i].source_inverse_mass!=0.0f)
-                    throw std::logic_error(
-                        "Native Dy inactive solver row has nonzero inverse mass");
         const auto partition_count=device_admission
             ? descriptor_capacity
             : device_partitions
@@ -852,30 +876,27 @@ public:
                               joint_source_dirty_.end())!=joint_source_dirty_.end())
             throw std::logic_error("Native Dy joint slot admitted more than once");
         history_epochs_.resize(next_history_capacity_,0u);
+        // Validate source ownership and determine host friction inputs together.
+        std::size_t compact_anchor_count=0u;
+        constexpr auto anchor_stride=sizeof(native::GpuDyFrictionAnchorInput);
+        constexpr auto max_anchor_count=
+            std::numeric_limits<std::uint32_t>::max()/anchor_stride;
+        const bool early_retained=prewitness_retained_source_data_!=nullptr;
+        if(early_retained &&
+           (retained_candidates.data()!=prewitness_retained_source_data_ ||
+            retained_candidates.size()!=prewitness_retained_source_count_))
+            throw std::logic_error(
+                "Pre-witness retained friction source changed before Dy admission");
+        retained_patch_inputs_.clear();
+        packed_retained_candidates_.clear();
+        std::size_t selected_retained=0u;
         for(const auto& manager:manifolds) {
             if(!manager.patch_count)continue;
             if(manager.prep_index>=prep_count ||
                manager.patch_offset>patches.size() ||
                manager.patch_count>patches.size()-manager.patch_offset)
                 throw std::logic_error(
-                    "Source friction history has an invalid Sc patch");
-            const auto pair=contact_origin(manager.prep_index);
-            if(pair.pcm_pair_index==0xffffffffu)continue;
-            for(std::size_t j=manager.patch_offset;
-                j<manager.patch_offset+manager.patch_count;++j) {
-                auto& patch=patches[j];
-                if((patch.broken&0x80000000u)==0u ||
-                   patch.anchor_count==0u)continue;
-                if(history_epochs_[pair.pcm_edge]!=history_epoch_) {
-                    patch.broken|=0x40000000u;
-                }
-            }
-        }
-        for(const auto& manager:manifolds) {
-            if(!manager.patch_count)continue;
-            if(manager.prep_index>=prep_count)
-                throw std::logic_error(
-                    "Source Dy contact preparation has no source pair");
+                    "Source Dy contact preparation has invalid source bounds");
             const auto pair=contact_origin(manager.prep_index);
             const bool pcm=pair.pcm_pair_index!=0xffffffffu;
             if(pcm && (manager.patch_count!=1u ||
@@ -906,6 +927,53 @@ public:
                         "Source CPU Gu contact inputs are incomplete");
                 cpu_gu_rows+=capacity;
             }
+            for(std::size_t i=manager.patch_offset;
+                i<manager.patch_offset+manager.patch_count;++i) {
+                auto& patch=patches[i];
+                if(pcm && (patch.broken&0x80000000u)!=0u &&
+                   patch.anchor_count!=0u &&
+                   history_epochs_[pair.pcm_edge]!=history_epoch_)
+                    patch.broken|=0x40000000u;
+                if(patch.anchor_count>2u || patch.row_offset%2u ||
+                   patch.row_offset/2u>anchors.size() ||
+                   patch.anchor_count>anchors.size()-patch.row_offset/2u)
+                    throw std::logic_error(
+                        "Source GPU friction patch has invalid anchor rows");
+                if(!pcm || (patch.broken&0x40000000u)!=0u) {
+                    if(patch.anchor_count>max_anchor_count-compact_anchor_count)
+                        throw std::overflow_error(
+                            "Source GPU compact friction input count exceeds address space");
+                    compact_anchor_count+=patch.anchor_count;
+                }
+                if(!retained_candidates.empty() && (patch.broken&0x10000000u)!=0u) {
+                    const auto count=(patch.broken>>8u)&63u;
+                    const auto first=patch.reserved;
+                    if((patch.broken&0x80000000u)==0u ||
+                       count==0u || count>32u ||
+                       first>retained_candidates.size() ||
+                       count>retained_candidates.size()-first)
+                        throw std::logic_error(
+                            "Device PCM retained candidates have invalid bounds");
+                    const auto packed_first=early_retained
+                        ?std::size_t(first):packed_retained_candidates_.size();
+                    std::uint32_t prior=0xffffffffu;
+                    for(std::size_t j=first;j<first+count;++j) {
+                        const auto& candidate=retained_candidates[j];
+                        if(candidate.source_ordinal>=32u ||
+                           (prior!=0xffffffffu &&
+                            candidate.source_ordinal<=prior) ||
+                           candidate.anchor_count==0u ||
+                           candidate.anchor_count>2u)
+                            throw std::logic_error(
+                                "Device PCM retained candidate is invalid");
+                        prior=candidate.source_ordinal;
+                        if(!early_retained)
+                            packed_retained_candidates_.push_back(candidate);
+                    }
+                    selected_retained+=count;
+                    retained_patch_inputs_.push_back({i,narrow(packed_first)});
+                }
+            }
         }
         // Device-admitted PCM source windows may contain non-touching
         // candidates. Only admitted responses use working rows.
@@ -918,7 +986,6 @@ public:
                 "Source Gu contact preparation exceeds numerical row capacity");
         // Reuse resident Dy body inputs and share identical timestep
         // coefficients across the source contact-preparation records.
-        constexpr auto invalid=std::numeric_limits<std::uint32_t>::max();
         if(prep_count>
            std::numeric_limits<std::uint32_t>::max()/
                sizeof(SourceDyPackedContactPrepNative))
@@ -1086,34 +1153,6 @@ public:
         if(device_admission)
             for(std::size_t i=0u;i<packed_.size();++i)
                 if(!assigned_[i])packed_[i]={};
-        // Only CPU Gu friction patches and invalidated GPU PCM history
-        // require host anchor input. Compact those source-owned anchors
-        // in patch order; each patch records its own position relative
-        // to the next contact-row arena. Ordinary PCM patches read their
-        // already-resident EdgeIndex history instead.
-        std::size_t compact_anchor_count=0u;
-        constexpr auto anchor_stride=sizeof(native::GpuDyFrictionAnchorInput);
-        constexpr auto max_anchor_count=
-            std::numeric_limits<std::uint32_t>::max()/anchor_stride;
-        for(const auto& manager:manifolds) {
-            if(!manager.patch_count)continue;
-            const auto pair=contact_origin(manager.prep_index);
-            const bool pcm=pair.pcm_pair_index!=invalid;
-            for(std::size_t j=manager.patch_offset;
-                j<manager.patch_offset+manager.patch_count;++j) {
-                auto& patch=patches[j];
-                if(patch.anchor_count>2u || patch.row_offset%2u ||
-                   patch.row_offset/2u>anchors.size() ||
-                   patch.anchor_count>anchors.size()-patch.row_offset/2u)
-                    throw std::logic_error(
-                        "Source GPU friction patch has invalid anchor rows");
-                if(pcm && (patch.broken&0x40000000u)==0u)continue;
-                if(patch.anchor_count>max_anchor_count-compact_anchor_count)
-                    throw std::overflow_error(
-                        "Source GPU compact friction input count exceeds address space");
-                compact_anchor_count+=patch.anchor_count;
-            }
-        }
         const auto compact_anchor_bytes=compact_anchor_count*anchor_stride;
         if(compact_anchor_bytes>
            std::numeric_limits<std::uint32_t>::max()-prep_bytes-
@@ -1128,55 +1167,6 @@ public:
         if(retained_begin>std::numeric_limits<std::uint32_t>::max())
             throw std::overflow_error(
                 "Retained GPU friction input exceeds address space");
-        const bool early_retained=prewitness_retained_source_data_!=nullptr;
-        if(early_retained &&
-           (retained_candidates.data()!=prewitness_retained_source_data_ ||
-            retained_candidates.size()!=prewitness_retained_source_count_))
-            throw std::logic_error(
-                "Pre-witness retained friction source changed before Dy admission");
-        retained_patch_inputs_.clear();
-        packed_retained_candidates_.clear();
-        std::size_t selected_retained=0u;
-        if(!retained_candidates.empty()) {
-            for(const auto& manager:manifolds) {
-                if(!manager.patch_count)continue;
-                if(manager.patch_offset>patches.size() ||
-                   manager.patch_count>patches.size()-manager.patch_offset)
-                    throw std::logic_error(
-                        "Retained friction source has invalid patch bounds");
-                for(std::size_t i=manager.patch_offset;
-                    i<manager.patch_offset+manager.patch_count;++i) {
-                    const auto& patch=patches[i];
-                    if((patch.broken&0x10000000u)==0u)continue;
-                    const auto count=(patch.broken>>8u)&63u;
-                    const auto first=patch.reserved;
-                    if((patch.broken&0x80000000u)==0u ||
-                       count==0u || count>32u ||
-                       first>retained_candidates.size() ||
-                       count>retained_candidates.size()-first)
-                        throw std::logic_error(
-                            "Device PCM retained candidates have invalid bounds");
-                    const auto packed_first=early_retained
-                        ?std::size_t(first):packed_retained_candidates_.size();
-                    std::uint32_t prior=0xffffffffu;
-                    for(std::size_t j=first;j<first+count;++j) {
-                        const auto& candidate=retained_candidates[j];
-                        if(candidate.source_ordinal>=32u ||
-                           (prior!=0xffffffffu &&
-                            candidate.source_ordinal<=prior) ||
-                           candidate.anchor_count==0u ||
-                           candidate.anchor_count>2u)
-                            throw std::logic_error(
-                                "Device PCM retained candidate is invalid");
-                        prior=candidate.source_ordinal;
-                        if(!early_retained)
-                            packed_retained_candidates_.push_back(candidate);
-                    }
-                    selected_retained+=count;
-                    retained_patch_inputs_.push_back({i,narrow(packed_first)});
-                }
-            }
-        }
         const auto stride=sizeof(native::GpuDyRetainedFrictionCandidate);
         const std::size_t retained_bytes=selected_retained*stride;
         const std::size_t retained_source_count=early_retained
@@ -1230,19 +1220,6 @@ public:
         prepared_velocity_components_.reserve(integration.size()*6u);
         force_mod_components_.reserve(integration.size()*12u);
         host_poses_.reserve(integration.size());
-        std::size_t needed_actor_slots=0u;
-        for(std::size_t ordinal=0u;ordinal<integration.size();++ordinal) {
-            const auto& input=integration[ordinal];
-            if(!(input.active&1u))continue;
-            const auto id=device_world_motion
-                ?input.source_actor:narrow(ordinal);
-            if(id==invalid ||
-               id>(std::numeric_limits<std::uint32_t>::max()-128u)/
-                      sizeof(SourceDyActorLocalNative))
-                throw std::overflow_error(
-                    "Source Dy rigid actor local-pose index exceeds GPU address space");
-            needed_actor_slots=std::max(needed_actor_slots,std::size_t(id)+1u);
-        }
         reserve_actor_local_slots(needed_actor_slots);
         for(std::size_t ordinal=0u;ordinal<integration.size();++ordinal) {
             const auto& input=integration[ordinal];
@@ -1467,11 +1444,6 @@ public:
         // Contact-only native rigid bodies derive their world inertia from
         // resident actor mass properties. Separate that GPU-written matrix
         // from the compact authored input without adding a dispatch.
-        const bool device_generated_inertia=device_world_motion &&
-            std::all_of(integration.begin(),integration.begin()+bodies.size(),
-                [](const auto& input) {
-                    return (input.active&1u)==0u || (input.active&32u)!=0u;
-                });
         if(bodies.size()>
            std::numeric_limits<std::uint32_t>::max()/(9u*sizeof(float)))
             throw std::overflow_error("Source Dy inertia work exceeds address space");
@@ -2114,18 +2086,6 @@ public:
                 ? source_allocation_bytes(pcm_pair_count,84u):total,
             alignment_,1u,compute::BufferAccess::Read,
             params[31],max_view_));
-        const auto empty_shape=std::numeric_limits<std::uint32_t>::max();
-        bool has_shape_targets=false;
-        for(const auto& input:integration) {
-            if(!input.active || !input.source_shape_count)continue;
-            if(input.source_element==empty_shape ||
-               input.source_element>=shape_capacity ||
-               input.source_shape_count>shape_capacity)
-                throw std::out_of_range("Source Dy attached shape span exceeds AABB capacity");
-            has_shape_targets=true;
-        }
-        if(has_shape_targets && (!shape_cache || !shape_bounds || !shape_geometry))
-            throw std::logic_error("Source Sc GPU integration shape buffers are missing");
         std::array<std::uint32_t,11> integration_header{
             0u,0u,0u,shape_capacity,narrow(ordinal_capacity),
             narrow(descriptor_capacity),narrow(task_capacity),

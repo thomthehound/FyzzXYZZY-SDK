@@ -126,6 +126,9 @@ the packed input upload while retaining authored descriptor tokens.
 Internal Dy arena tables use 16-byte alignment within the native raw
 buffer view. Host result storage is allocated without initialization or
 preservation copies; it receives the completed readback before publication.
+Dy validates contact ownership, friction history, anchor extents and
+retained candidates in one manager traversal. Integration metadata and
+actor-slot bounds share one source traversal.
 Do not infer performance gains from software Vulkan or WARP CI.
 
 ### Nonblocking upload staging
