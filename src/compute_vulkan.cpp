@@ -1438,6 +1438,17 @@ struct Context::Impl {
                     std::span<VkDescriptorBufferInfo>(validated_dispatches)
                         .subspan(offset,pipeline.binding_count),
                     assigned_slots);
+                dispatch.for_each_access([&](const BufferBinding& binding,
+                                             BufferAccessExtent,BufferAccess access) {
+                    if(!pipeline.view_kinds.empty() &&
+                       access!=BufferAccess::Read &&
+                       access!=BufferAccess::Unspecified) {
+                        const auto kind=pipeline.view_kinds[binding.slot];
+                        if(kind==StorageBufferViewKind::RawRead ||
+                           kind==StorageBufferViewKind::Structured32Read)
+                            throw std::invalid_argument("Dispatch access writes read-only view");
+                    }
+                });
                 validated_buffer_ids.resize(offset+pipeline.binding_count);
                 for(const auto& binding:dispatch.buffers)
                     validated_buffer_ids[offset+binding.slot]=binding.buffer;
@@ -1799,19 +1810,19 @@ struct Context::Impl {
 
                 const auto& dispatch = std::get<DispatchCommand>(operation);
                 const Pipeline& pipeline = get_pipeline(dispatch.pipeline);
-                operation_uses.reserve(dispatch.buffers.size()+1u);
-                for(const auto& binding:dispatch.buffers) {
-                    const bool reads=binding.access!=BufferAccess::Write;
-                    const bool writes=binding.access!=BufferAccess::Read;
+                operation_uses.reserve(
+                    std::max(dispatch.buffers.size(),dispatch.accesses.size())+1u);
+                dispatch.for_each_access([&](const BufferBinding& binding,
+                                             BufferAccessExtent extent,BufferAccess access) {
+                    const bool reads=access!=BufferAccess::Write;
+                    const bool writes=access!=BufferAccess::Read;
                     const VkAccessFlags mask=
                         (reads?VkAccessFlags(VK_ACCESS_SHADER_READ_BIT):0u) |
                         (writes?VkAccessFlags(VK_ACCESS_SHADER_WRITE_BIT):0u);
-                    const auto extent=binding.accessed_extent();
                     const auto begin=binding.offset+extent.offset;
-                    merge_use({binding.buffer,begin,
-                        begin+extent.bytes,
+                    merge_use({binding.buffer,begin,begin+extent.bytes,
                         {VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,mask},writes});
-                }
+                });
                 if(dispatch.indirect)
                     operation_uses.push_back({dispatch.indirect->buffer,
                         dispatch.indirect->offset,dispatch.indirect->offset+12u,

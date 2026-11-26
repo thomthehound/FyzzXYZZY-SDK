@@ -358,7 +358,10 @@ public:
         const auto original_command_count=ordered.size();
         try {
         const auto launch=[&](std::uint32_t phase,std::uint32_t count) {
+            if(!count)return;
             args[12]=phase;
+            declare_phase_accesses(dispatch,layout,node_count,edge_count,
+                                   sources.contact_managers,edge_capacity,phase);
             for(std::uint32_t first=0u;first<count;) {
                 const auto groups=std::min<std::uint64_t>(
                     max_groups,(std::uint64_t(count-first)+127u)/128u);
@@ -487,6 +490,8 @@ public:
         if(!max_groups)
             throw std::logic_error("Device Sc remap has no compute groups");
         dispatch.push_constants.resize(sizeof(args));
+        declare_phase_accesses(dispatch,layout,node_count,edge_count,
+                               contact_manager_count,0u,33u,joint_source_count);
         // Contact and full-descriptor tokens are already final. Only
         // device-joint tokens can require a numerical source remap.
         const auto total=joint_source_count
@@ -505,6 +510,139 @@ public:
     }
 
 private:
+    static void declare_phase_accesses(
+            compute::DispatchCommand& dispatch,const SourceScDeviceIslandLayout& layout,
+            std::size_t nodes,std::size_t edges,std::size_t contacts,
+            std::size_t edge_capacity,std::uint32_t phase,
+            std::size_t joint_sources=0u) {
+        using A=compute::BufferAccess;
+        auto& accesses=dispatch.accesses;
+        accesses.clear();
+        const auto input=[&](std::uint32_t slot) {
+            accesses.push_back({slot,dispatch.buffers[slot].accessed_extent(),A::Read});
+        };
+        const auto work=[&](std::size_t offset,std::size_t bytes,A access) {
+            if(bytes)
+                accesses.push_back({3u,{dispatch.buffers[3].accessed_extent().offset+
+                                        offset,bytes},access});
+        };
+        const auto header=[&](A access) {
+            work(0u,sizeof(SourceScDeviceIslandHeader),access);
+        };
+        const auto roots=[&](A access) {work(layout.roots,nodes*4u,access);};
+        const auto counts=[&](A access) {
+            work(layout.counts,nodes*sizeof(SourceScDeviceIslandCount),access);
+        };
+        const auto admissions=[&](A access) {
+            work(layout.admissions,edges*sizeof(SourceScDeviceIslandAdmission),access);
+        };
+        const auto tasks=[&](A access) {
+            work(layout.tasks,nodes*sizeof(SourceScDeviceIslandTask),access);
+        };
+        const auto blocks=(nodes+127u)/128u;
+        const auto tiles=(blocks+127u)/128u;
+        const auto block_ranges=[&](A access) {
+            work(layout.block_offsets,blocks*16u,access);
+        };
+        const auto block_tiles=[&](A access) {
+            if(layout.block_tiles)work(layout.block_tiles,tiles*16u,access);
+        };
+        const auto wake_bits=[&](A access) {
+            work(layout.response_primary,nodes*4u,access);
+        };
+        const auto contact_bits=[&](A access) {
+            work(layout.contact_admissions,((contacts+31u)/32u)*4u,access);
+        };
+        const auto keys=[&]() {
+            header(A::Read);roots(A::Read);counts(A::Read);admissions(A::Read);
+            if(nodes)input(2u);
+        };
+        const auto scatter=[&]() {
+            header(A::ReadWrite);tasks(A::Read);
+            if(edge_capacity)input(1u);
+            work(layout.body_order,nodes*4u,A::Write);
+            work(layout.response_order,edges*4u,A::Write);
+            work(layout.response_tokens,edges*4u,A::Write);
+            work(layout.response_extents,edges*4u,A::Write);
+            work(layout.contact_endpoints,contacts*8u,A::Write);
+            contact_bits(A::ReadWrite);
+        };
+        if(phase==0u || phase==42u) {
+            header(A::Write);roots(A::Write);counts(A::Write);contact_bits(A::Write);
+            if(phase==42u)wake_bits(A::Write);
+        }else if(phase==1u || phase==2u || phase==40u) {
+            header(A::ReadWrite);roots(A::ReadWrite);
+            if(edges)input(0u);
+            if(edge_capacity)input(1u);
+            if(nodes)input(2u);
+            if(phase!=1u) {
+                counts(A::ReadWrite);admissions(A::Write);
+                if(phase==40u)wake_bits(A::ReadWrite);
+            }
+        }else if(phase==41u) {
+            header(A::ReadWrite);roots(A::Read);counts(A::ReadWrite);
+            wake_bits(A::Read);input(2u);
+        }else if(phase==3u || phase==6u) {
+            header(phase==3u?A::ReadWrite:A::Read);
+            roots(A::Read);counts(phase==3u?A::Read:A::ReadWrite);
+            if(nodes)input(2u);
+            block_ranges(phase==3u?A::Write:A::Read);
+            if(phase==6u) {block_tiles(A::Read);tasks(A::Write);}
+        }else if(phase==4u || phase==5u) {
+            if(phase==4u) {
+                block_ranges(A::ReadWrite);
+                block_tiles(A::Write);
+            }else block_tiles(A::ReadWrite);
+            if(phase==5u || blocks<=128u)header(A::ReadWrite);
+        }else if(phase==7u) {
+            if(nodes+edges>256u)
+                work(layout.response_primary,(nodes+edges)*4u,A::Write);
+            else {keys();scatter();}
+        }else if(phase==33u) {
+            header(A::ReadWrite);input(2u);
+            work(layout.body_order,nodes*4u,A::ReadWrite);
+            if(joint_sources)work(layout.response_tokens,edges*4u,A::ReadWrite);
+        }else if(phase>=34u && phase<=38u) {
+            const auto contact_blocks=(edges+127u)/128u;
+            const auto contact_groups=(contact_blocks+127u)/128u;
+            header(phase==38u?A::ReadWrite:A::Read);
+            if(phase==34u || phase==38u) {
+                work(layout.response_extents,edges*4u,A::Read);
+                work(layout.response_prefixes,edges*4u,A::Write);
+                if(phase==34u)work(layout.radix_histogram,contact_blocks*4u,A::Write);
+            }else if(phase==35u) {
+                work(layout.radix_histogram,contact_blocks*4u,A::ReadWrite);
+                work(layout.radix_histogram+contact_blocks*4u,contact_groups*4u,A::Write);
+            }else if(phase==36u) {
+                work(layout.radix_histogram+contact_blocks*4u,contact_groups*4u,A::ReadWrite);
+            }else {
+                work(layout.radix_histogram,(contact_blocks+contact_groups)*4u,A::Read);
+                work(layout.response_prefixes,edges*4u,A::ReadWrite);
+            }
+        }else if(phase>=8u && phase<20u) {
+            const auto pass=(phase-8u)/3u;
+            const auto operation=(phase-8u)%3u;
+            const auto source=pass&1u?layout.response_scratch:layout.response_primary;
+            const auto target=pass&1u?layout.response_primary:layout.response_scratch;
+            const auto items=nodes+edges;
+            const auto histogram=((items+127u)/128u)*1024u;
+            if(operation==1u) {
+                header(A::ReadWrite);
+                work(layout.radix_histogram,histogram,A::ReadWrite);
+            }else {
+                keys();
+                work(source,items*4u,A::Read);
+                work(layout.radix_histogram,histogram,
+                     operation==0u?A::Write:A::Read);
+                if(operation==2u) {
+                    work(target,items*4u,A::Write);
+                    if(pass+1u==SourceScDeviceIslandLayout::radix_passes(
+                            static_cast<std::uint32_t>(nodes)))scatter();
+                }
+            }
+        }else throw std::logic_error("Unknown Sc admission phase access");
+    }
+
     compute::Context& context_;
     compute::PipelineId pipeline_=0u;
     std::size_t alignment_=0u;

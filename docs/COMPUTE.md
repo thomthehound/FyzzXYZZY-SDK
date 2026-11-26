@@ -82,7 +82,11 @@ ranges while retaining whole-resource state transitions. A binding's
 optional `access_extent` describes a contiguous interval relative to its
 descriptor base. Native source views exclude descriptor alignment padding.
 The descriptor itself is unchanged, and the declared interval must cover
-all actual shader accesses.
+all actual shader accesses. A dispatch may declare a complete set of
+disjoint slot-relative accesses with `DispatchCommand::accesses`. Each
+range must lie within its binding's declared extent and agree with its
+access intent. The descriptor layout and resource-state requirements are
+unchanged.
 
 The current D3D12 proof retains its **fixed** SRV/UAV pipeline layouts,
 not a general descriptor allocator. It checks that a bound SRV is not

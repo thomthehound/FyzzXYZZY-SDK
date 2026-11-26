@@ -1212,6 +1212,14 @@ struct Context::Impl {
                extent.bytes>binding.bytes-extent.offset)
                 throw std::invalid_argument("D3D12 access extent exceeds descriptor");
         }
+        cmd.for_each_access([&](const BufferBinding& binding,
+                                BufferAccessExtent,BufferAccess access) {
+            const auto kind=pipe.view_kinds[binding.slot];
+            if(access!=BufferAccess::Read && access!=BufferAccess::Unspecified &&
+               (kind==StorageBufferViewKind::RawRead ||
+                kind==StorageBufferViewKind::Structured32Read))
+                throw std::invalid_argument("Dispatch access writes SRV");
+        });
         if(cmd.indirect) {
             if(cmd.groups.x!=1u || cmd.groups.y!=1u || cmd.groups.z!=1u ||
                cmd.indirect->offset%4u)
@@ -1515,12 +1523,12 @@ struct Context::Impl {
                 access.uav.clear();
             }
         };
-        const auto order_uav=[&](const BufferBinding& binding) {
+        const auto order_uav=[&](const BufferBinding& binding,
+                                 BufferAccessExtent extent,BufferAccess access) {
             auto& pending=resource_access.at(binding.buffer).uav;
-            const auto extent=binding.accessed_extent();
             const auto begin=binding.offset+extent.offset;
             if(!pending.conflicts(begin,begin+extent.bytes,
-                                  binding.access!=BufferAccess::Read))return;
+                                  access!=BufferAccess::Read))return;
             D3D12_RESOURCE_BARRIER barrier{};
             barrier.Type=D3D12_RESOURCE_BARRIER_TYPE_UAV;
             barrier.UAV.pResource=get_buffer(binding.buffer).resource.Get();
@@ -1604,8 +1612,14 @@ struct Context::Impl {
                     ? D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE
                     : D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
                 require_state(binding.buffer,desired);
-                if(!read_only)order_uav(binding);
             }
+            cmd.for_each_access([&](const BufferBinding& binding,
+                                    BufferAccessExtent extent,BufferAccess access) {
+                const auto kind=pipeline.view_kinds[binding.slot];
+                if(kind==StorageBufferViewKind::RawReadWrite ||
+                   kind==StorageBufferViewKind::Structured32ReadWrite)
+                    order_uav(binding,extent,access);
+            });
 
             const auto table=dispatch_table_indices[dispatch_index++];
             const auto descriptor_index=descriptor_tables[table].first_descriptor;
@@ -1699,17 +1713,15 @@ struct Context::Impl {
                     D3D12_QUERY_TYPE_TIMESTAMP,hardware_query_index++);
 #endif
             // Publish all aliases after the dispatch's dependency checks.
-            for(std::size_t slot=0u;slot<cmd.buffers.size();++slot) {
-                const auto kind=pipeline.view_kinds[slot];
+            cmd.for_each_access([&](const BufferBinding& binding,
+                                    BufferAccessExtent extent,BufferAccess access) {
+                const auto kind=pipeline.view_kinds[binding.slot];
                 if(kind!=StorageBufferViewKind::RawReadWrite &&
-                   kind!=StorageBufferViewKind::Structured32ReadWrite)continue;
-                const auto& binding=cmd.buffers[slot];
-                const auto extent=binding.accessed_extent();
+                   kind!=StorageBufferViewKind::Structured32ReadWrite)return;
                 const auto begin=binding.offset+extent.offset;
                 resource_access.at(binding.buffer).uav.record(
-                    begin,begin+extent.bytes,
-                    binding.access!=BufferAccess::Read);
-            }
+                    begin,begin+extent.bytes,access!=BufferAccess::Read);
+            });
         }
         if(readback_tail) {
             std::size_t offset=0u;

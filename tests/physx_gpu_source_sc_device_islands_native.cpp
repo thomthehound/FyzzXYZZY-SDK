@@ -161,6 +161,18 @@ void verify(Context& context,const char* filename) {
                 std::uint32_t phase=0u;
                 std::memcpy(&phase,dispatch->push_constants.data()+12u*4u,
                             sizeof(phase));
+                require(!dispatch->accesses.empty(),
+                        "Large Sc admission has no phase access declaration");
+                std::size_t work_bytes=0u;
+                dispatch->for_each_access([&](const BufferBinding& binding,
+                                              BufferAccessExtent extent,BufferAccess) {
+                    if(binding.slot==3u)work_bytes+=extent.bytes;
+                });
+                if(phase==7u)
+                    require(dispatch->accesses.size()==1u &&
+                            work_bytes==(node_count+edges.size())*4u &&
+                            dispatch->accesses.front().access==BufferAccess::Write,
+                            "Radix initialization accesses unrelated island data");
                 if(phase>=34u && phase<=38u)
                     prefix_phases[phase-34u]=true;
             }

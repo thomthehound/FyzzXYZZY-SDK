@@ -211,6 +211,13 @@ struct UploadCommand {
     std::vector<std::uint8_t> bytes;
 };
 
+// A phase can declare disjoint intervals of its existing descriptor slots.
+struct DispatchAccess {
+    std::uint32_t slot=0u;
+    BufferAccessExtent extent;
+    BufferAccess access=BufferAccess::ReadWrite;
+};
+
 struct DispatchCommand {
     PipelineId pipeline = 0;
     DispatchSize groups;
@@ -218,6 +225,39 @@ struct DispatchCommand {
     std::vector<std::uint8_t> push_constants;
     // GPU-generated dimensions replace direct groups; leave groups {1,1,1}.
     std::optional<DispatchIndirectArgs> indirect;
+    // Nonempty declares every shader access for this dispatch.
+    std::vector<DispatchAccess> accesses{};
+
+    template<class Visit>
+    void for_each_access(Visit visit) const {
+        if(accesses.empty()) {
+            for(const auto& binding:buffers)
+                visit(binding,binding.accessed_extent(),binding.access);
+            return;
+        }
+        for(const auto& item:accesses) {
+            const BufferBinding* binding=nullptr;
+            for(const auto& candidate:buffers)
+                if(candidate.slot==item.slot) {
+                    binding=&candidate;
+                    break;
+                }
+            if(!binding)
+                throw std::invalid_argument("Dispatch access has no descriptor");
+            const auto extent=binding->accessed_extent();
+            if(!item.extent.bytes || item.extent.offset<extent.offset ||
+               item.extent.offset-extent.offset>extent.bytes ||
+               item.extent.bytes>extent.bytes-(item.extent.offset-extent.offset))
+                throw std::invalid_argument("Dispatch access exceeds binding extent");
+            if((item.access!=BufferAccess::Read &&
+                item.access!=BufferAccess::Write &&
+                item.access!=BufferAccess::ReadWrite) ||
+               (binding->access==BufferAccess::Read && item.access!=BufferAccess::Read) ||
+               (binding->access==BufferAccess::Write && item.access!=BufferAccess::Write))
+                throw std::invalid_argument("Dispatch access contradicts binding intent");
+            visit(*binding,item.extent,item.access);
+        }
+    }
 };
 
 using BatchCommand = std::variant<CopyCommand, UploadCommand, DispatchCommand>;
