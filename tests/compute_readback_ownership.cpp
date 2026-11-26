@@ -332,6 +332,21 @@ int main() {
         context.download(gpu,0u,first.data(),sizeof(first));
         if(first[0]!=first[1])
             throw std::runtime_error("Small relocation after peak lost source data");
+        // Dependent relocations consume earlier writes within and across submissions.
+        const std::vector<BatchCommand> relocations{
+            CopyCommand{gpu,9u*4u,gpu,11u*4u,4u},
+            CopyCommand{gpu,11u*4u,gpu,12u*4u,4u}
+        };
+        context.finish_download_batch(
+            context.submit_batch_with_readback(relocations,peak_download),true);
+        if(peak[11u]!=replacement || peak[12u]!=replacement)
+            throw std::runtime_error("Dependent relocations lost intra-batch ordering");
+        const auto reused_copy=context.submit_copy_buffer(gpu,12u*4u,gpu,13u*4u,4u);
+        context.finish_download_batch(
+            context.submit_download_batch(peak_download),true);
+        if(peak[13u]!=replacement)
+            throw std::runtime_error("Reused relocation scratch lost submission ordering");
+        context.wait_submission(reused_copy);
         context.destroy_buffer(staging);
         context.destroy_buffer(gpu);
         std::cout<<"Compute independent readback ownership PASS\n";

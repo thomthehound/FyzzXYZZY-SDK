@@ -94,6 +94,11 @@ incorrectly declared writable; access declarations do not change the
 DXIL resource type or make arbitrary shaders writable. Eventually shader
 reflection or source-derived manifests should cross-check intent so
 incorrect declarations cannot silently remove necessary barriers.
+D3D12 mutable buffers begin each separate queue execution in COMMON,
+promote on first access and decay when that execution completes. State
+tracking is submission-local; changes between incompatible access states
+and conflicting UAV accesses retain explicit barriers. Upload and readback
+heaps retain their fixed states. Each submission executes one command list.
 The PhysX task graph, cross-submission dependencies, and actual lifetime
 rules remain authoritative. Do not infer performance gains from software
 Vulkan or WARP CI.
@@ -139,8 +144,8 @@ be bound as shader storage. The temporary HostVisible GPU buffer is retired
 against the final submission fence. D3D12 records
 `CopyBufferRegion` operations against a single upload heap and attaches
 that heap directly to the submission's lifetime, releasing it on GPU
-completion. Each destination transitions into COPY_DEST once and returns
-to COMMON after the batch. Invalid destination IDs, null pointers,
+completion. Destinations promote to COPY_DEST on first use and decay to
+COMMON at execution completion. Invalid destination IDs, null pointers,
 misalignment and out-of-bounds ranges are rejected before submission.
 
 **Current limitations:** This is a first *batching and ownership* path,

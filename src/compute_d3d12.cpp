@@ -841,25 +841,14 @@ struct Context::Impl {
         std::vector<Buffer*> referenced;
         referenced.reserve(destinations.size());
         Submission submission = new_commands();
-        // A target enters COPY_DEST once for the whole batch; repeated
-        // CopyBufferRegion writes are ordered under the legacy D3D12
-        // copy contract. Restore COMMON once at the end.
-        for (const auto id : destinations) {
-            auto& buffer=get_buffer(id);
-            referenced.push_back(&buffer);
-            transition(submission.commands.Get(),buffer.resource.Get(),
-                       D3D12_RESOURCE_STATE_COMMON,D3D12_RESOURCE_STATE_COPY_DEST);
-        }
+        for (const auto id : destinations)
+            referenced.push_back(&get_buffer(id));
         position = 0;
         for (const auto& upload : uploads) {
             submission.commands->CopyBufferRegion(
                 get_buffer(upload.destination).resource.Get(),
                 upload.destination_offset, staging.Get(), position, upload.bytes);
             position += upload.bytes;
-        }
-        for (const auto id : destinations) {
-            transition(submission.commands.Get(), get_buffer(id).resource.Get(),
-                       D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_COMMON);
         }
         // Ownership is attached BEFORE queue submission. A later allocation
         // failure cannot free the memory while the GPU still reads it.
@@ -1361,7 +1350,7 @@ struct Context::Impl {
                 scratch=allocate_resource(
                     device.Get(),same_resource_copy_scratch_bytes,
                     D3D12_HEAP_TYPE_DEFAULT,D3D12_RESOURCE_FLAG_NONE,
-                    D3D12_RESOURCE_STATE_COPY_DEST);
+                    D3D12_RESOURCE_STATE_COMMON);
             submission.owned_copy_scratch=std::move(scratch);
         }
         bool scratch_in_source_state = false;
@@ -1434,8 +1423,9 @@ struct Context::Impl {
             submission.commands->SetDescriptorHeaps(1, heaps);
         }
 
-        // Legacy resource transitions cover the entire buffer. Within UAV
-        // state, only conflicting byte ranges require resource-wide ordering.
+        // Mutable buffers promote on first use and decay after each separate
+        // ExecuteCommandLists call. Track states only within this submission.
+        // Within UAV state, only conflicting ranges require ordering.
         struct Access {
             D3D12_RESOURCE_STATES state=D3D12_RESOURCE_STATE_COMMON;
             PendingUavRanges uav;
@@ -1454,8 +1444,9 @@ struct Context::Impl {
             }
             auto& access=entry->second;
             if(access.state!=target) {
-                transition(submission.commands.Get(),buffer.resource.Get(),
-                           access.state,target);
+                if(access.state!=D3D12_RESOURCE_STATE_COMMON)
+                    transition(submission.commands.Get(),buffer.resource.Get(),
+                               access.state,target);
                 access.state=target;
                 access.uav.clear();
             }
@@ -1671,16 +1662,6 @@ struct Context::Impl {
                 offset+=item.bytes;
             }
         }
-        for(const auto& entry:resource_access) {
-            if(entry.second.state==D3D12_RESOURCE_STATE_COMMON)continue;
-            transition(submission.commands.Get(),get_buffer(entry.first).resource.Get(),
-                       entry.second.state,D3D12_RESOURCE_STATE_COMMON);
-        }
-        if (scratch_in_source_state)
-            transition(submission.commands.Get(),
-                       submission.owned_copy_scratch.Get(),
-                       D3D12_RESOURCE_STATE_COPY_SOURCE,
-                       D3D12_RESOURCE_STATE_COPY_DEST);
         if (profile) {
 #if defined(FYZZXYZZY_PROFILE_GPU)
             if(!hardware_trace)

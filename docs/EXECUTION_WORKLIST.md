@@ -25,6 +25,8 @@ quality rather than individual dispatch or barrier counts.
 - [x] Track Vulkan byte-range hazards and producer visibility; detect
   conflicting D3D12 UAV reader/writer ranges.
 - [x] Use one Vulkan device command recorder for copies and dispatches.
+- [x] Use D3D12 buffer promotion and decay at submission boundaries,
+  retaining intra-submission transition and UAV dependencies.
 - [x] Skip unused LFS payloads during CI configuration.
 
 These are implementation milestones, not hardware-performance acceptance.
@@ -42,8 +44,7 @@ These are implementation milestones, not hardware-performance acceptance.
 - [ ] Extend Vulkan dependency ownership across submissions. Eliminate
   blanket dependencies where exact producer/consumer ordering suffices.
   Preserve host visibility, fence retirement, deferred frees, resource
-  reuse and failed-submission behavior. Review D3D12 state promotion,
-  decay and transitions under its own resource-state contract.
+  reuse and failed-submission behavior.
 - [ ] Audit transient arena peaks, initialization, scratch reuse and
   placement. Keep persistent histories separate in lifetime from frame
   scratch where useful; avoid unnecessary CPU mirrors, staging, copies,
