@@ -298,15 +298,62 @@ float prepBodyFloat(uint source,uint offset) {
     if((source&3u)==3u)return 0.0f;
     return asfloat(arena.Load(prepBodyOffset(source,offset)));
 }
-float3 prepInertia(uint source,float3 v) {
-    if((source&3u)==3u)return 0.0f;
-    float3 c0=prepBody3(source,36u);
-    float3 c1=prepBody3(source,48u);
-    float3 c2=prepBody3(source,60u);
-    return c0*v.x+c1*v.y+c2*v.z;
-}
 void prepStoreScalar(uint address,float value) {
     arena.Store(address,asuint(value));
+}
+struct SourceDyContactBody {
+    float3 position,velocity,angular;
+    float4 orientation;
+    float mass;
+    float3 inertia0,inertia1,inertia2;
+    bool immovable;
+};
+bool sourceDyLoadContactBody(uint source,out SourceDyContactBody body) {
+    if(!prepBodyPose(source,body.position,body.orientation))return false;
+    body.velocity=prepBody3(source,12u);
+    body.angular=prepBody3(source,24u);
+    body.mass=prepBodyFloat(source,72u);
+    body.immovable=(source&3u)==3u;
+    body.inertia0=prepBody3(source,36u);
+    body.inertia1=prepBody3(source,48u);
+    body.inertia2=prepBody3(source,60u);
+    return true;
+}
+float3 sourceDyContactInertia(SourceDyContactBody body,float3 v) {
+    if(body.immovable)return 0.0f;
+    return body.inertia0*v.x+body.inertia1*v.y+body.inertia2*v.z;
+}
+struct SourceDyContactFrame {
+    SourceDyContactBody a,b;
+    float restDistance,slop,restitution,damping,maxPenBias;
+    float invDt,seconds,rigidBias,bounceThreshold;
+    uint impulseLimit;
+    bool acceleration;
+};
+bool sourceDyEnsureContactFrame(uint pair,uint errorAddress,
+                                inout SourceDyContactFrame frame,inout bool ready) {
+    if(ready)return true;
+    if(!sourceDyLoadContactBody(arena.Load(pair),frame.a) ||
+       !sourceDyLoadContactBody(arena.Load(pair+4u),frame.b)) {
+        sourceDyTaskErrorOr(errorAddress,524288u);
+        return false;
+    }
+    const float4 coefficients=asfloat(arena.Load4(pair+8u));
+    const uint4 settings=arena.Load4(pair+24u);
+    const float4 timing=asfloat(arena.Load4(p.prepBias));
+    frame.restDistance=coefficients.x;
+    frame.slop=coefficients.y;
+    frame.restitution=coefficients.z;
+    frame.damping=coefficients.w;
+    frame.maxPenBias=asfloat(settings.x);
+    frame.acceleration=settings.y!=0u;
+    frame.impulseLimit=arena.Load(pair+40u);
+    frame.invDt=timing.x;
+    frame.seconds=timing.y;
+    frame.rigidBias=timing.z;
+    frame.bounceThreshold=timing.w;
+    ready=true;
+    return true;
 }
 // Both normal and friction preparation consume the original geometry.
 bool sourceDyContactGeometry(uint index,uint pair,uint contactBegin,
@@ -349,35 +396,18 @@ bool sourceDyContactGeometry(uint index,uint pair,uint contactBegin,
     }
     return true;
 }
-void prepareContactRow(uint index,uint pairIndex,uint contactBegin,
-                       uint contactCount,uint errorAddress) {
-    if(pairIndex>=p.prepCount) {
-        sourceDyTaskErrorOr(errorAddress,4096u);
-        return;
-    }
-    uint pair=sourceDyPrepAddress(pairIndex);
+void prepareContactRow(uint index,uint pair,uint contactBegin,
+                       uint contactCount,SourceDyContactFrame frame,uint errorAddress) {
     float3 n,pos;
     float separation;
     if(!sourceDyContactGeometry(index,pair,contactBegin,contactCount,
                                 errorAddress,n,pos,separation))return;
     uint co=p.contactBias+index*64u;
-    uint b0=arena.Load(pair),b1=arena.Load(pair+4u);
-    float3 p0,p1;
-    float4 q0,q1;
-    if(!prepBodyPose(b0,p0,q0) || !prepBodyPose(b1,p1,q1)) {
-        sourceDyTaskErrorOr(errorAddress,524288u);
-        return;
-    }
-    float3 v0=prepBody3(b0,12u);
-    float3 v1=prepBody3(b1,12u);
-    float3 w0=prepBody3(b0,24u);
-    float3 w1=prepBody3(b1,24u);
-    float m0=prepBodyFloat(b0,72u);
-    float m1=prepBodyFloat(b1,72u);
-    float3 r0=cross(pos-p0,n);
-    float3 r1=cross(pos-p1,n);
-    float linearRel=sourceDyDot3(n,v0-v1);
-    float pairSlop=asfloat(arena.Load(pair+12u));
+    float3 w0=frame.a.angular,w1=frame.b.angular;
+    float3 r0=cross(pos-frame.a.position,n);
+    float3 r1=cross(pos-frame.b.position,n);
+    float linearRel=sourceDyDot3(n,frame.a.velocity-frame.b.velocity);
+    float pairSlop=frame.slop;
     if(pairSlop>0.0f) {
         float angularRel=sourceDyDot3(r0,w0)-sourceDyDot3(r1,w1);
         float ratio=linearRel==0.0f
@@ -386,21 +416,22 @@ void prepareContactRow(uint index,uint pairIndex,uint contactBegin,
         r0=prepSlop(r0,slop);
         r1=prepSlop(r1,slop);
     }
-    float3 ja=prepInertia(b0,r0);
-    float3 jb=prepInertia(b1,r1);
+    float3 ja=sourceDyContactInertia(frame.a,r0);
+    float3 jb=sourceDyContactInertia(frame.b,r1);
     float angularRel=sourceDyDot3(r0,w0)-sourceDyDot3(r1,w1);
     float vrel=linearRel+angularRel;
-    precise float response=(m0+sourceDyDot3(ja,ja))+(m1+sourceDyDot3(jb,jb));
+    precise float response=(frame.a.mass+sourceDyDot3(ja,ja))+
+        (frame.b.mass+sourceDyDot3(jb,jb));
     precise float multiplier=response>0.0?1.0/response:0.0;
-    float restDistance=asfloat(arena.Load(pair+8u));
-    float restitution=asfloat(arena.Load(pair+16u));
-    float damping=asfloat(arena.Load(pair+20u));
-    float maxPenBias=asfloat(arena.Load(pair+24u));
-    float invDt=asfloat(arena.Load(p.prepBias));
-    float seconds=asfloat(arena.Load(p.prepBias+4u));
-    float rigidBias=asfloat(arena.Load(p.prepBias+8u));
-    float bounceThreshold=asfloat(arena.Load(p.prepBias+12u));
-    bool acceleration=arena.Load(pair+28u)!=0u;
+    float restDistance=frame.restDistance;
+    float restitution=frame.restitution;
+    float damping=frame.damping;
+    float maxPenBias=frame.maxPenBias;
+    float invDt=frame.invDt;
+    float seconds=frame.seconds;
+    float rigidBias=frame.rigidBias;
+    float bounceThreshold=frame.bounceThreshold;
+    bool acceleration=frame.acceleration;
     float penetration=separation-restDistance;
     float penetrationInvDt=penetration*invDt;
     bool separated=penetration>=0.0f;
@@ -444,7 +475,7 @@ void prepareContactRow(uint index,uint pairIndex,uint contactBegin,
     arena.Store3(co,asuint(n));
     arena.Store(co+36u,0u);
     arena.Store(co+56u,0u);
-    arena.Store(co+60u,arena.Load(pair+40u));
+    arena.Store(co+60u,frame.impulseLimit);
     arena.Store3(co+12u,asuint(ja));
     arena.Store3(co+24u,asuint(jb));
     prepStoreScalar(co+40u,multiplier);
@@ -453,36 +484,14 @@ void prepareContactRow(uint index,uint pairIndex,uint contactBegin,
     prepStoreScalar(co+52u,unbiasedError);
 }
 
-struct SourceDyFrictionBody {
-    float3 position,velocity,angular;
-    float4 orientation;
-    float mass;
-    float3 inertia0,inertia1,inertia2;
-    bool immovable;
-};
-bool sourceDyLoadFrictionBody(uint source,out SourceDyFrictionBody body) {
-    if(!prepBodyPose(source,body.position,body.orientation))return false;
-    body.velocity=prepBody3(source,12u);
-    body.angular=prepBody3(source,24u);
-    body.mass=prepBodyFloat(source,72u);
-    body.immovable=(source&3u)==3u;
-    body.inertia0=prepBody3(source,36u);
-    body.inertia1=prepBody3(source,48u);
-    body.inertia2=prepBody3(source,60u);
-    return true;
-}
-float3 sourceDyFrictionInertia(SourceDyFrictionBody body,float3 v) {
-    if(body.immovable)return 0.0f;
-    return body.inertia0*v.x+body.inertia1*v.y+body.inertia2*v.z;
-}
 void prepareFrictionRow(uint index,float3 tangent,float3 r0,float3 r1,
-                        float3 error,SourceDyFrictionBody a,SourceDyFrictionBody b,
+                        float3 error,SourceDyContactBody a,SourceDyContactBody b,
                         float slop,float invDt,float rigidBias,uint errorAddress) {
     uint fo=p.frictionBias+index*56u;
     float3 ax0=prepSlop(cross(r0,tangent),slop);
     float3 ax1=prepSlop(cross(r1,tangent),slop);
-    float3 ja=sourceDyFrictionInertia(a,ax0);
-    float3 jb=sourceDyFrictionInertia(b,ax1);
+    float3 ja=sourceDyContactInertia(a,ax0);
+    float3 jb=sourceDyContactInertia(b,ax1);
     precise float response=(a.mass+sourceDyDot3(ja,ja))+(b.mass+sourceDyDot3(jb,jb));
     precise float velocityMultiplier=response>0.0
         ? rigidBias/response:0.0;
@@ -769,7 +778,8 @@ void growPcmFrictionAnchors(uint patchIndex,uint pairIndex,
 }
 
 void prepareFrictionPatch(uint patchIndex,uint pairIndex,uint contactBegin,
-                          uint contactCount,uint errorAddress) {
+                          uint contactCount,uint errorAddress,
+                          inout SourceDyContactFrame frame,inout bool ready) {
     if(patchIndex>=p.patchCount || pairIndex>=p.prepCount) {
         sourceDyTaskErrorOr(errorAddress,16384u);
         return;
@@ -800,12 +810,8 @@ void prepareFrictionPatch(uint patchIndex,uint pairIndex,uint contactBegin,
     float separation;
     if(!sourceDyContactGeometry(first,pair,contactBegin,contactCount,
                                 errorAddress,n,pos,separation))return;
-    SourceDyFrictionBody a,b;
-    if(!sourceDyLoadFrictionBody(arena.Load(pair),a) ||
-       !sourceDyLoadFrictionBody(arena.Load(pair+4u),b)) {
-        sourceDyTaskErrorOr(errorAddress,524288u);
-        return;
-    }
+    if(!sourceDyEnsureContactFrame(pair,errorAddress,frame,ready))return;
+    const SourceDyContactBody a=frame.a,b=frame.b;
     float3 relative=a.velocity-b.velocity;
     float projection=sourceDyDot3(relative,n);
     float3 tangent0=relative-float3(
@@ -841,9 +847,9 @@ void prepareFrictionPatch(uint patchIndex,uint pairIndex,uint contactBegin,
         }
         anchorBase=p.contactBias-backward;
     }
-    const float slop=asfloat(arena.Load(pair+12u));
-    const float invDt=asfloat(arena.Load(p.prepBias));
-    const float rigidBias=asfloat(arena.Load(p.prepBias+8u));
+    const float slop=frame.slop;
+    const float invDt=frame.invDt;
+    const float rigidBias=frame.rigidBias;
     for(uint anchor=0u;anchor<patch.z;++anchor) {
         const uint address=anchorBase+anchor*24u;
         const float3 r0=sourceRigidRotate(a.orientation,asfloat(arena.Load3(address)));

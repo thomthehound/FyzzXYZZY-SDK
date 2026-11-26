@@ -1580,7 +1580,7 @@ bool sourceDyPrepareJointGeometry(uint4 desc,uint endError) {
 
 // Host-geometry rows are retained for standalone conformance. Native Sc
 // joint rows instead use the source-authored frame payload above.
-void prepareJointRows(uint4 desc,uint lane,uint endError) {
+void prepareJointRows(uint4 desc,uint lane,uint lanes,uint endError) {
     if(desc.x>=p.rowCount || desc.w>p.rowCount-desc.x ||
        (desc.y!=invalidBody && desc.y>=p.bodyCount) ||
        (desc.z!=invalidBody && desc.z>=p.bodyCount)) {
@@ -1605,7 +1605,7 @@ void prepareJointRows(uint4 desc,uint lane,uint endError) {
         vb=sourceDyPreparedVelocity(inputB,false);
         wb=sourceDyPreparedVelocity(inputB,true);
     }
-    for(uint i=lane;i<desc.w;i+=4u) {
+    for(uint i=lane;i<desc.w;i+=lanes) {
         const uint row=p.distanceBias+(desc.x+i)*64u;
         if(arena.Load(row+44u)!=1u)continue;
         const float3 axis=asfloat(arena.Load3(row));
@@ -1664,60 +1664,68 @@ void admitPcmContactExtents(uint begin,uint end,uint lane,uint endError) {
     }
 }
 
-void prepareConstraints(uint begin,uint end,uint lane,uint endError) {
-    for(uint i=begin+(lane>>2u);i<end;i+=32u) {
-        uint4 desc=arena.Load4(p.descriptorBias+i*16u);
-        if(desc.w!=0u) {
-            prepareJointRows(desc,lane&3u,endError);
-            continue;
-        }
-        if(desc.x>=p.manifoldCount) {
-            sourceDyTaskErrorOr(endError,4096u);
-            continue;
-        }
-        uint mo=p.manifoldBias+desc.x*24u;
-        uint4 manager=arena.Load4(mo);
-        if(manager.y==0u)continue;
-        uint pairIndex=arena.Load(mo+16u);
-        if(pairIndex>=p.prepCount ||
-           manager.x>p.patchCount ||
-           manager.y>p.patchCount-manager.x ||
-           manager.z>p.contactCount ||
-           manager.w>p.contactCount-manager.z) {
-            sourceDyTaskErrorOr(endError,4096u);
-            continue;
-        }
-        uint covered=0u;
-        for(uint patchIndex=manager.x;patchIndex<manager.x+manager.y;
-            ++patchIndex) {
-            const uint po=p.patchBias+patchIndex*32u;
-            const uint count=arena.Load(po+4u);
-            const uint order=arena.Load(po+24u);
-            if(covered>manager.w || count>manager.w-covered ||
-               !sourceDyContactOrderValid(order,count)) {
-                sourceDyTaskErrorOr(endError,4096u);
-                break;
-            }
-            for(uint c=lane&3u;c<count;c+=4u) {
-                const uint index=sourceDyContactOrderPoint(order,c);
-                prepareContactRow(index,pairIndex,manager.z,manager.w,endError);
-            }
-            // Each patch has one friction writer. Its source geometry
-            // is independent of the normal rows written by other lanes.
-            if(((patchIndex-manager.x)&3u)==(lane&3u)) {
-                const uint4 patch=arena.Load4(po);
-                if(patch.x>p.frictionCount || patch.z>2u ||
-                   patch.z*2u>p.frictionCount-patch.x)
-                    sourceDyTaskErrorOr(endError,16384u);
-                else
-                    prepareFrictionPatch(patchIndex,pairIndex,
-                                         manager.z,manager.w,endError);
-            }
-            covered+=count;
-        }
-        if(covered!=manager.w)
-            sourceDyTaskErrorOr(endError,4096u);
+void prepareConstraint(uint4 desc,uint lane,uint lanes,uint endError) {
+    if(desc.w!=0u) {
+        prepareJointRows(desc,lane,lanes,endError);
+        return;
     }
+    if(desc.x>=p.manifoldCount) {
+        sourceDyTaskErrorOr(endError,4096u);
+        return;
+    }
+    uint mo=p.manifoldBias+desc.x*24u;
+    uint4 manager=arena.Load4(mo);
+    if(manager.y==0u)return;
+    uint pairIndex=arena.Load(mo+16u);
+    if(pairIndex>=p.prepCount ||
+       manager.x>p.patchCount ||
+       manager.y>p.patchCount-manager.x ||
+       manager.z>p.contactCount ||
+       manager.w>p.contactCount-manager.z) {
+        sourceDyTaskErrorOr(endError,4096u);
+        return;
+    }
+    const uint pair=sourceDyPrepAddress(pairIndex);
+    SourceDyContactFrame frame=(SourceDyContactFrame)0;
+    bool ready=false;
+    uint covered=0u;
+    for(uint patchIndex=manager.x;patchIndex<manager.x+manager.y;
+        ++patchIndex) {
+        const uint po=p.patchBias+patchIndex*32u;
+        const uint count=arena.Load(po+4u);
+        const uint order=arena.Load(po+24u);
+        if(covered>manager.w || count>manager.w-covered ||
+           !sourceDyContactOrderValid(order,count)) {
+            sourceDyTaskErrorOr(endError,4096u);
+            break;
+        }
+        if(lane<count) {
+            if(!sourceDyEnsureContactFrame(pair,endError,frame,ready))return;
+            for(uint c=lane;c<count;c+=lanes) {
+                const uint index=sourceDyContactOrderPoint(order,c);
+                prepareContactRow(index,pair,manager.z,manager.w,frame,endError);
+            }
+        }
+        // Each patch has one friction writer. Its source geometry
+        // is independent of the normal rows written by other lanes.
+        if((patchIndex-manager.x)%lanes==lane) {
+            const uint4 patch=arena.Load4(po);
+            if(patch.x>p.frictionCount || patch.z>2u ||
+               patch.z*2u>p.frictionCount-patch.x)
+                sourceDyTaskErrorOr(endError,16384u);
+            else
+                prepareFrictionPatch(patchIndex,pairIndex,
+                                     manager.z,manager.w,endError,frame,ready);
+        }
+        covered+=count;
+    }
+    if(covered!=manager.w)
+        sourceDyTaskErrorOr(endError,4096u);
+}
+
+void prepareConstraints(uint begin,uint end,uint lane,uint endError) {
+    for(uint i=begin+(lane>>2u);i<end;i+=32u)
+        prepareConstraint(arena.Load4(p.descriptorBias+i*16u),lane&3u,4u,endError);
 }
 
 void solvePartition(uint begin,uint end,uint lane,uint2 iters,
@@ -2145,11 +2153,8 @@ void sourceDySolvePackedTask(uint taskId) {
     desc.w&=255u;
     arena.Store4(p.descriptorBias+ranges.x*16u,desc);
 
-    // Four scalar visits preserve the source contact/joint row
-    // assignment of the existing four lanes per descriptor.
-    [unroll]
-    for(uint lane=0u;lane<4u;++lane)
-        prepareConstraints(ranges.x,ranges.y,lane,errorAddress);
+    // This invocation owns the complete singleton constraint.
+    prepareConstraint(desc,0u,1u,errorAddress);
     if(sourceDyTaskLoad(errorAddress)!=0u) {
         publishTaskError(taskId,sourceDyTaskLoad(errorAddress));
         return;

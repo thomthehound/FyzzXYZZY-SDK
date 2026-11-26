@@ -138,6 +138,8 @@ disjoint endpoints and update their masks and maxima directly.
 Normal and friction preparation consume the same authored contact
 geometry without a dependency on materialized normal rows. Each patch
 shares body data and transformed anchors across its tangent rows.
+Normal and friction preparation reuse invocation-local contact frames;
+packed singleton tasks prepare the complete constraint in one visit.
 Do not infer performance gains from software Vulkan or WARP CI.
 
 ### Nonblocking upload staging
