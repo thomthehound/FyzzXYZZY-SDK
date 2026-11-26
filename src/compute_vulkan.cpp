@@ -1276,6 +1276,10 @@ struct Context::Impl {
             if (!buffer.storage_eligible)
                 throw std::invalid_argument("Transfer-only Vulkan staging cannot bind as shader storage");
             validate_range(buffer.bytes, binding.offset, binding.bytes);
+            const auto extent=binding.accessed_extent();
+            if(!extent.bytes || extent.offset>binding.bytes ||
+               extent.bytes>binding.bytes-extent.offset)
+                throw std::invalid_argument("Vulkan access extent exceeds descriptor");
             if (binding.bytes == 0 || binding.bytes > limits.maxStorageBufferRange) {
                 throw std::invalid_argument("Invalid compute descriptor range");
             }
@@ -1802,8 +1806,10 @@ struct Context::Impl {
                     const VkAccessFlags mask=
                         (reads?VkAccessFlags(VK_ACCESS_SHADER_READ_BIT):0u) |
                         (writes?VkAccessFlags(VK_ACCESS_SHADER_WRITE_BIT):0u);
-                    merge_use({binding.buffer,binding.offset,
-                        binding.offset+binding.bytes,
+                    const auto extent=binding.accessed_extent();
+                    const auto begin=binding.offset+extent.offset;
+                    merge_use({binding.buffer,begin,
+                        begin+extent.bytes,
                         {VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,mask},writes});
                 }
                 if(dispatch.indirect)

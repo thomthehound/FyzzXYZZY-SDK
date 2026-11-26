@@ -143,12 +143,24 @@ struct ComputePipelineDesc {
 // these declarations against shader reflection/source manifests.
 enum class BufferAccess { Unspecified, Read, Write, ReadWrite };
 
+// A contiguous accessed interval relative to the descriptor base.
+// Absence means the entire descriptor extent participates in dependencies.
+struct BufferAccessExtent {
+    std::size_t offset=0u;
+    std::size_t bytes=0u;
+};
+
 struct BufferBinding {
     std::uint32_t slot = 0;
     BufferId buffer = 0;
     std::size_t offset = 0;
     std::size_t bytes = 0;
     BufferAccess access = BufferAccess::Unspecified;
+    std::optional<BufferAccessExtent> access_extent;
+
+    BufferAccessExtent accessed_extent() const noexcept {
+        return access_extent.value_or(BufferAccessExtent{0u,bytes});
+    }
 };
 
 struct DispatchSize {

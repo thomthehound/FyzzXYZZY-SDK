@@ -77,10 +77,12 @@ correctness but does not establish AMD GPU compatibility or performance.
 The default `Unspecified` means conservatively read/write, preserving
 existing API callers. The source-derived AABB stage marks its three input
 bindings read-only and encoded output write-only; the incremental SAP
-single-arena stage declares read/write. Vulkan merges all bindings for
-the same allocation before placing barriers, so overlapping read/write
-aliases are treated as writes. For now the dependency granularity is the
-**whole resource**, not the declared byte subranges.
+single-arena stage declares read/write. Vulkan tracks overlapping access intervals; D3D12 tracks conflicting UAV
+ranges while retaining whole-resource state transitions. A binding's
+optional `access_extent` describes a contiguous interval relative to its
+descriptor base. Native source views exclude descriptor alignment padding.
+The descriptor itself is unchanged, and the declared interval must cover
+all actual shader accesses.
 
 The current D3D12 proof retains its **fixed** SRV/UAV pipeline layouts,
 not a general descriptor allocator. It checks that a bound SRV is not

@@ -1207,6 +1207,10 @@ struct Context::Impl {
             if(buf.upload_only)
                 throw std::invalid_argument("Upload storage cannot be a shader binding");
             validate_range(buf.bytes, binding.offset, binding.bytes);
+            const auto extent=binding.accessed_extent();
+            if(!extent.bytes || extent.offset>binding.bytes ||
+               extent.bytes>binding.bytes-extent.offset)
+                throw std::invalid_argument("D3D12 access extent exceeds descriptor");
         }
         if(cmd.indirect) {
             if(cmd.groups.x!=1u || cmd.groups.y!=1u || cmd.groups.z!=1u ||
@@ -1513,7 +1517,9 @@ struct Context::Impl {
         };
         const auto order_uav=[&](const BufferBinding& binding) {
             auto& pending=resource_access.at(binding.buffer).uav;
-            if(!pending.conflicts(binding.offset,binding.offset+binding.bytes,
+            const auto extent=binding.accessed_extent();
+            const auto begin=binding.offset+extent.offset;
+            if(!pending.conflicts(begin,begin+extent.bytes,
                                   binding.access!=BufferAccess::Read))return;
             D3D12_RESOURCE_BARRIER barrier{};
             barrier.Type=D3D12_RESOURCE_BARRIER_TYPE_UAV;
@@ -1698,8 +1704,10 @@ struct Context::Impl {
                 if(kind!=StorageBufferViewKind::RawReadWrite &&
                    kind!=StorageBufferViewKind::Structured32ReadWrite)continue;
                 const auto& binding=cmd.buffers[slot];
+                const auto extent=binding.accessed_extent();
+                const auto begin=binding.offset+extent.offset;
                 resource_access.at(binding.buffer).uav.record(
-                    binding.offset,binding.offset+binding.bytes,
+                    begin,begin+extent.bytes,
                     binding.access!=BufferAccess::Read);
             }
         }

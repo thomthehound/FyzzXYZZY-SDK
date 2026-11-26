@@ -125,6 +125,33 @@ int main(int argc, char** argv) {
             throw std::runtime_error("Mismatched push constant size was accepted");
         }
 
+        // The shader consumes only the logical prefix of each larger view.
+        auto narrow_bindings=bindings;
+        for(auto& binding:narrow_bindings)
+            binding.access_extent=BufferAccessExtent{0u,size*sizeof(std::uint32_t)};
+        context.dispatch(pipeline,{(size+63u)/64u,1u,1u},
+                         narrow_bindings,&parameters,sizeof(parameters));
+        context.download(dst,0u,output.data(),sizeof(output));
+        for(std::uint32_t i=0u;i<array_size;++i) {
+            const auto expected=i<size
+                ?input[i]*parameters.multiplier+parameters.addend:sentinel;
+            if(output[i]!=expected)
+                throw std::runtime_error("Access extent changed descriptor addressing");
+        }
+        for(const auto extent:{BufferAccessExtent{0u,0u},
+                               BufferAccessExtent{sizeof(output),4u},
+                               BufferAccessExtent{4u,sizeof(output)}}) {
+            auto invalid=narrow_bindings;
+            invalid[0].access_extent=extent;
+            rejected=false;
+            try {
+                context.dispatch(pipeline,{1u,1u,1u},invalid,
+                                 &parameters,sizeof(parameters));
+            }catch(const std::invalid_argument&) { rejected=true; }
+            if(!rejected)
+                throw std::runtime_error("Invalid access extent was accepted");
+        }
+
         // A compute dispatch and its dependent transfer are both enqueued
         // before waiting. The shader writes must be visible to the copy.
         const BufferId mirror = context.create_buffer(

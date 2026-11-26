@@ -45,7 +45,8 @@ inline compute::BufferBinding source_native_view(
     if (view_bytes % 4u)
         throw std::invalid_argument("PhysX native RAW storage view is not word-aligned");
     local_offset = static_cast<std::uint32_t>(delta);
-    return {slot, physical.buffer, base, view_bytes, access};
+    return {slot,physical.buffer,base,view_bytes,access,
+            compute::BufferAccessExtent{delta,bytes}};
 }
 
 inline std::size_t source_allocation_bytes(std::uint64_t count, std::uint64_t stride) {
