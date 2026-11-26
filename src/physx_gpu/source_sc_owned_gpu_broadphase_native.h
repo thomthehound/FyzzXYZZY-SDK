@@ -407,6 +407,8 @@ public:
 #if defined(FYZZXYZZY_PROFILE_GPU)
         const auto& schedule=dy_distance_->last_schedule();
         FYZZ_PROFILE_COUNTER("dy.dispatches",schedule.dispatches);
+        FYZZ_PROFILE_COUNTER("dy.constraint_preparation_dispatches",
+                             schedule.constraint_preparation_dispatches);
         FYZZ_PROFILE_COUNTER("dy.indirect_dispatches",schedule.device_island_indirect_dispatches);
         FYZZ_PROFILE_COUNTER("dy.host_lane_packed_tasks",schedule.host_lane_packed_tasks);
         FYZZ_PROFILE_COUNTER("dy.wide_tasks",schedule.wide_tasks);

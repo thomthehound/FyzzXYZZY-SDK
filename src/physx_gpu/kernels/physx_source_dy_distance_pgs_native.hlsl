@@ -533,7 +533,7 @@ bool sourceDyRelocateSingletonContact(uint4 desc,uint scratch,
 // Static reservations follow the source descriptor encounter order.
 groupshared uint dyNeeded,dyAssigned,dyWave,dyProgress,dyHighest;
 groupshared uint dyNextWave,dySerial;
-groupshared uint dySingletonPartitions;
+groupshared uint dySingletonPartitions,dyPreparationError;
 groupshared uint dyPartitionTileCount,dyPartitionTileBase;
 groupshared uint dyHubA,dyHubB,dyHubMask;
 groupshared uint dyContactManagers,dySourceFirst,dySourceLast;
@@ -1896,7 +1896,7 @@ void integrateBody(uint ordinal,bool freeSource) {
     }
 }
 
-static const uint fusedTask=0u, normalTile=1u, frictionTile=2u;
+static const uint fusedTask=0u, prepareTile=1u;
 static const uint partitionTile=3u, motionTile=4u, integrationTile=5u;
 static const uint publishErrors=6u, freeBodyTile=7u, colorTile=8u;
 static const uint initializeBodiesTile=9u, buildPartitionTiles=10u;
@@ -2314,6 +2314,14 @@ void sourceDyBuildResidentTiles(uint kind,uint lane) {
     }
 }
 
+// Other tiles of a wide task may report errors concurrently. All lanes
+// must take the same preparation branch around workgroup barriers.
+uint preparationError(uint errorAddress,uint lane) {
+    if(lane==0u)dyPreparationError=sourceDyTaskLoad(errorAddress);
+    GroupMemoryBarrierWithGroupSync();
+    return dyPreparationError;
+}
+
 [numthreads(128,1,1)]
 void main(uint3 group:SV_GroupID,uint3 lane:SV_GroupThreadID) {
     const uint phase=p.launchControl&15u;
@@ -2554,13 +2562,14 @@ void main(uint3 group:SV_GroupID,uint3 lane:SV_GroupThreadID) {
                 return;
             }
         }
-        // Tiled stages cannot consume a task rejected by an earlier
-        // preparation or coloring phase.
-        if(!fused && sourceDyTaskLoad(endError)!=0u)return;
-        // Each phase has one shader call site. Fused groups use workgroup
-        // dependencies, while tiled launches use the command stream's
-        // device-wide dependencies between the same phases.
-        if(fused || phase==normalTile) {
+        // A preparation tile owns complete contact managers. Its
+        // normal rows feed friction locally before the global solve.
+        if(!fused) {
+            if(phase==prepareTile) {
+                if(preparationError(endError,lane.x)!=0u)return;
+            }else if(sourceDyTaskLoad(endError)!=0u)return;
+        }
+        if(fused || phase==prepareTile) {
             // Source response-token expansion already applies the PCM
             // extent before coloring. Other Dy callers use this path.
             const uint scratch=arena.Load(p.integrationBias+28u);
@@ -2570,22 +2579,19 @@ void main(uint3 group:SV_GroupID,uint3 lane:SV_GroupThreadID) {
                 admitPcmContactExtents(
                     descriptors.x,descriptors.y,lane.x,endError);
                 AllMemoryBarrierWithGroupSync();
-                if(sourceDyTaskLoad(endError)!=0u) {
-                    if(fused && lane.x==0u)
-                        publishTaskError(taskId,sourceDyTaskLoad(endError));
+                const uint error=preparationError(endError,lane.x);
+                if(error!=0u) {
+                    if(fused && lane.x==0u)publishTaskError(taskId,error);
                     return;
                 }
             }
             prepareNormals(descriptors.x,descriptors.y,lane.x,endError);
-            if(!fused)return;
             AllMemoryBarrierWithGroupSync();
-            if(sourceDyTaskLoad(endError)!=0u) {
-                if(lane.x==0u)
-                    publishTaskError(taskId,sourceDyTaskLoad(endError));
+            const uint error=preparationError(endError,lane.x);
+            if(error!=0u) {
+                if(fused && lane.x==0u)publishTaskError(taskId,error);
                 return;
             }
-        }
-        if(fused || phase==frictionTile) {
             prepareFriction(descriptors.x,descriptors.y,lane.x,endError);
             if(!fused)return;
             AllMemoryBarrierWithGroupSync();

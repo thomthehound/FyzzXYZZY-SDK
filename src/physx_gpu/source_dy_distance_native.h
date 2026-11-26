@@ -114,6 +114,7 @@ struct SourceDyLaunchStats {
     std::size_t wide_tasks=0u;
     std::size_t max_partition_groups=0u;
     std::size_t dispatches=0u;
+    std::size_t constraint_preparation_dispatches=0u;
     std::size_t device_island_indirect_dispatches=0u;
     std::size_t host_lane_packed_tasks=0u;
     std::size_t device_admitted_tasks=0u;
@@ -2515,8 +2516,8 @@ public:
                 return;
             }
             const bool resident_tiles=resident_wide &&
-                (phase==Launch::Fused || phase==Launch::Normals ||
-                 phase==Launch::Friction || phase==Launch::Motion ||
+                (phase==Launch::Fused || phase==Launch::Prepare ||
+                 phase==Launch::Motion ||
                  phase==Launch::Integrate);
             if(resident_tiles ||
                (phase==Launch::Partition && partition_dispatch_count_)) {
@@ -2646,8 +2647,10 @@ public:
             // The existing arena write dependencies order each dispatch
             // across workgroups. A relative partition from every wide
             // task can execute together because their body writes are disjoint.
-            launch(Launch::Normals,prep_tiles_);
-            launch(Launch::Friction,prep_tiles_);
+            const auto before_preparation=last_schedule_.dispatches;
+            launch(Launch::Prepare,prep_tiles_);
+            last_schedule_.constraint_preparation_dispatches=
+                last_schedule_.dispatches-before_preparation;
             for(std::uint32_t iteration=0u;iteration<wide_iterations_;++iteration) {
                 for(const auto range:partition_tiles_)
                     if(iteration<range.iterations)
@@ -3416,7 +3419,7 @@ private:
     std::optional<PendingSolve> pending_solve_{};
     std::vector<compute::DownloadSpan> deferred_result_downloads_;
     enum class Launch : std::uint32_t {
-        Fused, Normals, Friction, Partition, Motion, Integrate, PublishErrors,
+        Fused, Prepare, Partition=3u, Motion, Integrate, PublishErrors,
         FreeBodies, Color, InitializeBodies, BuildPartitionTiles
     };
     struct WorkTile {

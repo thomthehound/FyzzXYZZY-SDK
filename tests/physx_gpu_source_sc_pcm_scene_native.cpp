@@ -5972,6 +5972,7 @@ void verify_resident_wide_device_response(
             schedule.host_descriptor_inputs==0u &&
             schedule.host_degree_scanned_descriptors==0u &&
             schedule.device_task_readback_bytes==0u &&
+            schedule.constraint_preparation_dispatches==1u &&
             schedule.device_partition_indirect_dispatches>0u &&
             schedule.device_partition_indirect_dispatches<=
                 2u*(2u*((2u*count-1u+spokes)/128u)+1u) &&
@@ -9225,7 +9226,8 @@ void verify_gpu_wide_island_solver(
                     (connected_bodies+127u)/128u &&
                 schedule.tile_bytes<=schedule.device_colored_descriptors*
                     sizeof(native::GpuDyDistanceDescriptor) &&
-                schedule.dispatches>7u &&
+                schedule.dispatches>6u &&
+                schedule.constraint_preparation_dispatches==1u &&
                 schedule.device_partition_tile_bytes>0u &&
                 schedule.device_partition_indirect_dispatches>0u &&
                 schedule.device_initialization_dispatches==0u,
