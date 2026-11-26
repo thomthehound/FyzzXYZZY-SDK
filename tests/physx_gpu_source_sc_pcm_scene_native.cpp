@@ -2055,8 +2055,20 @@ void verify(fyzz::compute::Backend backend,const char* sap,
                 std::array<std::uint32_t,2>{gu_only_extent,0u},
         "Gu-only device epoch lost its exact numerical extent");
     producer->invalidate_after_rollback();
+    const auto before_restore=producer->stream_submission_stats().command_batches;
     producer->enqueue_gpu_pcm_box_contacts(
         no_pcm_pairs,no_pcm_results,gu_edge+1u);
+    require(producer->stream_submission_stats().command_batches==before_restore+1u &&
+            physx_gpu::SourceScDeviceIslandFixture::source_submissions(*producer)==1u,
+        "PCM journal restoration joined the queue before retry preparation");
+    // Reject the retry before publishing another touch. Its discarded
+    // commands must not undo or cancel the accepted history repair.
+    producer->enqueue_cpu_gu_touch_history(gu_only_touch);
+    producer->invalidate_after_rollback();
+    producer->enqueue_gpu_pcm_box_contacts(
+        no_pcm_pairs,no_pcm_results,gu_edge+1u);
+    require(producer->stream_submission_stats().command_batches==before_restore+1u,
+        "Rejected retry replayed an accepted PCM history repair");
     const auto gu_only_restored=
         physx_gpu::SourceScDeviceIslandFixture::touch(*producer,gu_edge);
     require(gu_only_restored==std::array<std::uint32_t,2>{0u,0u},

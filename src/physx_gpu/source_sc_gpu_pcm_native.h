@@ -1206,8 +1206,9 @@ private:
                                    pairs_.getDevicePtr(),
                 edges_.getDevicePtr(),journal_.getDevicePtr(),
                 journal_pair_count_,journal_edge_capacity_);
+        // Commit the repair independently of the next speculative batch.
+        // Subsequent device-local consumers are ordered on this queue.
         stream_.submit();
-        stream_.wait_at_fetch();
         restore_pending_=false;
         journal_pair_count_=0u;
         gu_touch_count_=0u;
