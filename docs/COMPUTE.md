@@ -121,6 +121,8 @@ work and join accepted source tokens together before host-visible heap
 reuse. Mapped frame inputs and packed numerical upload storage retain
 immutable snapshots through recorded and submitted readers. Replacement
 does not force a submission; completed allocations remain reusable.
+Wide host-scheduled Dy tasks omit GPU-generated coloring scratch from
+the packed input upload while retaining authored descriptor tokens.
 Do not infer performance gains from software Vulkan or WARP CI.
 
 ### Nonblocking upload staging

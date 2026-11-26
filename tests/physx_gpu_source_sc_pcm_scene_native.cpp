@@ -9365,7 +9365,10 @@ void verify_gpu_wide_island_solver(
                         sizeof(std::uint32_t),
                 "Source Sc did not materialize Dy descriptors on the device");
         require(schedule.device_upload_batches==1u &&
-                producer->dy_upload_span_count()==1u &&
+                producer->dy_upload_span_count()==3u &&
+                schedule.omitted_partition_scratch_bytes==
+                    schedule.device_colored_descriptors*20u+
+                    schedule.device_initialized_bodies*12u &&
                 producer->dy_gpu_integrated_body_count()==actual.bodies.size() &&
                 producer->dy_pcm_device_contact_rows()>=actual.bodies.size() &&
                 producer->dy_cpu_gu_geometry_bytes()==0u,

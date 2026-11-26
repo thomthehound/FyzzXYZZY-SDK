@@ -135,6 +135,7 @@ struct SourceDyLaunchStats {
     // Device-written descriptors, partition ranges, tasks, and ordinals
     // omitted from the host numerical input packet.
     std::size_t device_generated_bytes=0u;
+    std::size_t omitted_partition_scratch_bytes=0u;
     std::size_t device_source_copy_bytes=0u;
     std::size_t device_source_descriptors=0u;
     std::size_t host_descriptor_inputs=0u;
@@ -1761,18 +1762,34 @@ public:
         // descriptors, colors, cursors, and body partition state. None
         // of those scratch arrays has a host source in a device-owned
         // island epoch. Skip their entire contiguous upload window.
-        const auto device_skip_begin=device_admission
-            ?offsets[15]+64u:0u;
-        const auto device_skip_end=device_admission
-            ?device_skip_begin+descriptor_capacity*24u+bodies.size()*12u:0u;
-        if(device_admission &&
-           (device_skip_begin<upload_begin ||
-            device_skip_end<device_skip_begin ||
-            device_skip_end>input_end))
-            throw std::out_of_range(
-                "Source Sc numerical scratch upload window is invalid");
-        const std::size_t uploaded_bytes=input_end-upload_begin-
-            (device_admission?device_skip_end-device_skip_begin:0u);
+        struct DeviceScratchRange { std::size_t begin,end; };
+        std::array<DeviceScratchRange,2> scratch_ranges{};
+        std::size_t scratch_count=0u,omitted_bytes=0u;
+        const auto omit_scratch=[&](std::size_t begin,std::size_t end) {
+            if(begin==end)return;
+            if(begin<upload_begin || end<begin || end>input_end ||
+               scratch_count==scratch_ranges.size() ||
+               (scratch_count && begin<scratch_ranges[scratch_count-1u].end))
+                throw std::out_of_range("Dy device scratch upload range is invalid");
+            scratch_ranges[scratch_count++]={begin,end};
+            omitted_bytes+=end-begin;
+        };
+        if(device_admission) {
+            const auto raw=offsets[15]+64u;
+            omit_scratch(raw,raw+descriptor_capacity*24u+bodies.size()*12u);
+        }else if(device_partitions && !wide_tasks_.empty()) {
+            // Wide tasks initialize coloring scratch on the GPU. Keep
+            // compact tasks in one transfer; wide tasks omit the large
+            // output-only ranges while preserving authored tokens.
+            const auto raw=offsets[15]+(source_descriptors?24u:20u);
+            const auto colors=raw+descriptor_capacity*16u;
+            const auto cursors=colors+descriptor_capacity*4u;
+            if(source_descriptors)omit_scratch(raw,colors);
+            const auto state_end=cursors+descriptor_capacity*4u+bodies.size()*12u;
+            omit_scratch(source_descriptors?cursors:colors,state_end);
+        }
+        last_schedule_.omitted_partition_scratch_bytes=omitted_bytes;
+        const std::size_t uploaded_bytes=input_end-upload_begin-omitted_bytes;
         // Numerical input is packed directly into transfer memory; host_
         // owns only the unpublished numerical result.
         host_.resize(host_result_bytes);
@@ -1810,12 +1827,16 @@ public:
                         uploaded_bytes-input_upload_initialized_);
         input_upload_initialized_=uploaded_bytes;
         const auto host_input=[&](std::size_t offset) {
-            if(offset<upload_begin || offset>input_end ||
-               (device_admission && offset>=device_skip_begin &&
-                offset<device_skip_end))
+            if(offset<upload_begin || offset>input_end)
                 throw std::out_of_range("Dy host input has no upload span");
-            const auto skipped=device_admission && offset>=device_skip_end
-                ?device_skip_end-device_skip_begin:0u;
+            std::size_t skipped=0u;
+            for(std::size_t i=0u;i<scratch_count;++i) {
+                const auto range=scratch_ranges[i];
+                if(offset<range.begin)break;
+                if(offset<range.end)
+                    throw std::out_of_range("Dy host input targets device scratch");
+                skipped+=range.end-range.begin;
+            }
             return input_map.data+(offset-upload_begin-skipped);
         };
         // Pack only host-owned anchors directly into the mapped input.
@@ -2291,7 +2312,7 @@ public:
         uploads.insert(uploads.end(),actor_local_uploads_.begin(),
                        actor_local_uploads_.end());
         input_map.close();
-        std::array<compute::CopyCommand,2> staged{};
+        std::array<compute::CopyCommand,3> staged{};
         std::size_t staged_count=0u;
         const auto append_input=[&](std::size_t destination,std::size_t source,
                                     std::size_t bytes) {
@@ -2300,12 +2321,15 @@ public:
             staged[staged_count++]={input_upload_buffer_,source,
                                     target.buffer,target.offset,bytes};
         };
-        if(device_admission) {
-            // The device-generated scratch window has no host input.
-            const auto prefix=device_skip_begin-upload_begin;
-            append_input(upload_begin,0u,prefix);
-            append_input(device_skip_end,prefix,input_end-device_skip_end);
-        }else append_input(upload_begin,0u,uploaded_bytes);
+        std::size_t destination=upload_begin,source=0u;
+        for(std::size_t i=0u;i<scratch_count;++i) {
+            const auto range=scratch_ranges[i];
+            const auto bytes=range.begin-destination;
+            append_input(destination,source,bytes);
+            source+=bytes;
+            destination=range.end;
+        }
+        append_input(destination,source,input_end-destination);
         stream_.queue_uploads(uploads,std::span(staged.data(),staged_count));
         actor_local_live_slots_=std::max(actor_local_live_slots_,needed_actor_slots);
         if(!joint_source_dirty_.empty())
