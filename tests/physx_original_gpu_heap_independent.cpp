@@ -188,17 +188,42 @@ void exercise(Context& context) {
                 "Unrelated root retirement submitted pending work");
 
         exceptional.allocate(5000u,PX_FL);
+        const auto copied_root=addresses.resolve(exceptional.getDevicePtr(),sizeof(contents)).buffer;
         stream.queue_uploads({{exceptional.getDevicePtr(),contents.data(),sizeof(contents)}});
         stream.queue_device_copy(destination.getDevicePtr(),
                                  exceptional.getDevicePtr(),sizeof(contents));
         exceptional.deallocate();
         require(roots.live_roots()==1u &&
-                stream.command_batch_generation()==batches+1u &&
-                stream.commands().empty(),
-                "Referenced root retirement lost recorded consumers");
-        stream.wait_submitted();
-        context.download(dst.buffer,dst.offset,observed.data(),sizeof(observed));
-        require(observed==contents,"Retired root lost its ordered copy");
+                stream.command_batch_generation()==batches &&
+                !stream.commands().empty(),
+                "Referenced root retirement forced a submission");
+        const std::array<DownloadSpan,1> output{{
+            {dst.buffer,dst.offset,observed.data(),sizeof(observed)}
+        }};
+        stream.fetch(output);
+        require(observed==contents &&
+                stream.command_batch_generation()==batches+1u,
+                "Retired root lost its fused ordered copy");
+        const auto native_retired=[&](BufferId id) {
+            try { (void)context.buffer_is_host_visible(id); }
+            catch(const std::logic_error&) { return true; }
+            return false;
+        };
+        require(native_retired(copied_root),
+                "Submitted root retained its native handle");
+
+        exceptional.allocate(5000u,PX_FL);
+        const auto discarded_root=addresses.resolve(exceptional.getDevicePtr(),sizeof(initial)).buffer;
+        stream.queue_uploads({{exceptional.getDevicePtr(),initial.data(),sizeof(initial)}});
+        stream.queue_device_copy(destination.getDevicePtr(),
+                                 exceptional.getDevicePtr(),sizeof(initial));
+        exceptional.deallocate();
+        stream.discard_unsubmitted_commands();
+        require(native_retired(discarded_root) &&
+                stream.command_batch_generation()==batches+1u,
+                "Discarded root retained native storage or submitted work");
+        stream.fetch(output);
+        require(observed==contents,"Discarded root copy modified resident data");
         destination.deallocate();
         require(heap.getHeapStats().stats[group]==0u,
                 "Original PhysX exceptional root did not retire");

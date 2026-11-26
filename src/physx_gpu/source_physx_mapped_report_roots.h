@@ -137,15 +137,13 @@ public:
         if (it == roots_.end())
             throw std::out_of_range("PhysX mapped report free requires the exact host root");
 
-        // Submit recorded consumers of this root without a host fence.
-        source_.submit_if_referencing(it->second.device);
         if (it->second.cpu_mapped) {
             context_.unmap_buffer(it->second.device);
             it->second.cpu_mapped = false;
         }
         // May throw without losing ownership: the entry and CUDA address
         // remain available for teardown retry, even if Map() was released.
-        context_.retire_buffer(it->second.device);
+        source_.retire_root(it->second.device);
         addresses_.unregister_allocation(it->second.virtual_root);
         if (!it->second.direct)
             ::operator delete(it->second.host, std::align_val_t{256});
@@ -230,20 +228,13 @@ private:
     }
 
     void cleanup_noexcept() noexcept {
-        try { source_.submit(); } catch (...) {}
         while (!roots_.empty()) {
             const auto it = roots_.begin();
             if (it->second.cpu_mapped) {
                 try { context_.unmap_buffer(it->second.device); } catch (...) {}
             }
-            try {
-                context_.retire_buffer(it->second.device);
-            } catch (...) {
-                // Rare retirement bookkeeping failure during scene unwind:
-                // use the existing blocking destroy fallback rather than
-                // dropping the only reference to a GPU allocation.
-                try { context_.destroy_buffer(it->second.device); } catch (...) {}
-            }
+            try { source_.retire_root(it->second.device); }
+            catch (...) { /* Context retains the native allocation. */ }
             try { (void)addresses_.unregister_allocation(it->second.virtual_root); }
             catch (...) {}
             if (!it->second.direct)

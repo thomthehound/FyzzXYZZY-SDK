@@ -44,7 +44,7 @@ public:
     // Context and CudaDeviceAddressMap MUST outlive this owner.
     ~SourcePhysxHeapRoots() noexcept { cleanup_noexcept(); }
 
-    // Retire each root after submitting its recorded consumers, if any.
+    // Transfer roots with recorded consumers to the source stream.
     void close(SourceSapDmaNative* stream = nullptr) {
         if (stream && !stream->bound_to(context_, addresses_))
             throw std::invalid_argument(
@@ -75,8 +75,7 @@ public:
 
     // Called for EXACT ROOT identities returned to the original allocator,
     // not the buddy suballocation pointers passed to PxgCudaBuffer::deallocate.
-    // Submit recorded consumers before retiring their native buffer.
-    // Unrelated recorded work remains pending.
+    // Recorded consumers retain native storage after address invalidation.
     void release_root(Address root, SourceSapDmaNative* stream = nullptr) {
         const auto it = roots_.find(root);
         if (it == roots_.end())
@@ -84,10 +83,8 @@ public:
         if (stream && !stream->bound_to(context_, addresses_))
             throw std::invalid_argument(
                 "PhysX heap root retirement uses an unrelated source GPU stream");
-        if (stream) stream->submit_if_referencing(it->second);
-        // Do the potentially failing retirement BEFORE invalidating the
-        // original CUDA address; no stale mapping after successful retire.
-        context_.retire_buffer(it->second);
+        if (stream) stream->retire_root(it->second);
+        else context_.retire_buffer(it->second);
         addresses_.unregister_allocation(root);
         roots_.erase(it);
     }

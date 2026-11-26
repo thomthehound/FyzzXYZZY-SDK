@@ -72,8 +72,7 @@ public:
     Resolved resolve(Address address, std::size_t access_bytes) const;
 
     // Removes an EXACT allocation base immediately from the host lookup.
-    // Caller must retire_buffer() on the returned compute handle so work
-    // submitted before removal can complete before physical reclamation.
+    // The owner retains native storage through recorded and submitted uses.
     compute::BufferId unregister_allocation(Address base);
 
     std::size_t live_allocations() const noexcept;

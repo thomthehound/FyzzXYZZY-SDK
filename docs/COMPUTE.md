@@ -104,7 +104,10 @@ rules remain authoritative. Context teardown releases in-flight native
 resources only after queue completion or device loss; a failed D3D12
 queue signal prohibits further work and result publication for that
 submission. Vulkan rejected recording releases unused staging without
-waiting for unrelated submissions. Do not infer performance gains from
+waiting for unrelated submissions. Source heap root retirement invalidates
+virtual addresses immediately. Recorded consumers retain native storage
+until their batch is accepted or discarded; accepted GPU uses retain it
+through their completion fence. Do not infer performance gains from
 software Vulkan or WARP CI.
 
 ### Nonblocking upload staging

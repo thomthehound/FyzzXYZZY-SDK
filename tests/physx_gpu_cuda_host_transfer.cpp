@@ -615,8 +615,7 @@ void exercise_source_virtual_device_allocator(Context& context) {
                              newAddress+1024u,initial.size());
     // Original PxgCudaDeviceMemoryAllocatorCallback::deallocate(ptr)
     // receives the EXACT heap root from PxgHeapMemoryAllocator.
-    // This submits queued stream commands and retires the old native
-    // allocation, without blocking the CPU at a scene setup boundary.
+    // The recorded copies retain the old native allocation.
     callback.deallocate(old);
     invalid=false;
     try {(void)addresses.resolve(oldAddress+256u,1u);}
@@ -684,8 +683,7 @@ void exercise_original_source_physx_buddy_heap(Context& context) {
         source.queue_device_copy(exceptionRaw,aRaw,payload.size());
         source.queue_device_copy(bRaw,exceptionRaw,payload.size());
         // Source exceptional free is a ROOT release through the exact
-        // Cm::VirtualAllocatorCallback; submits the original GPU stream
-        // but never waits on the CPU.
+        // Cm::VirtualAllocatorCallback; recorded consumers retain the root.
         heap.deallocate(exception);
         if(roots.live_roots()!=1u)
             throw std::runtime_error("Original PhysX exceptional free did not retire its root");

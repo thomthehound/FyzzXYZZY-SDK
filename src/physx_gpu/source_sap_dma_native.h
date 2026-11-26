@@ -14,6 +14,7 @@
 #include <cstring>
 #include <iterator>
 #include <limits>
+#include <new>
 #include <span>
 #include <stdexcept>
 #include <utility>
@@ -74,6 +75,7 @@ public:
     SourceSapDmaNative(const SourceSapDmaNative&)=delete;
     SourceSapDmaNative& operator=(const SourceSapDmaNative&)=delete;
     ~SourceSapDmaNative() noexcept {
+        discard_unsubmitted_commands();
         for(const auto& page:upload_pages_)
             try { context_.retire_buffer(page.buffer); } catch(...) {}
     }
@@ -170,8 +172,7 @@ public:
             destination.buffer, destination.offset, bytes});
     }
 
-    // Prevent PhysX heap root retirement from accidentally submitting a
-    // different scene/context's source commands before releasing memory.
+    // Root retirement belongs to the same context and address map.
     bool bound_to(const compute::Context& context,
                   const CudaDeviceAddressMap& addresses) const noexcept {
         return &context_ == &context && &addresses_ == &addresses;
@@ -201,6 +202,7 @@ public:
     // submitted source copy/upload tokens remain owned by Context.
     void discard_unsubmitted_commands() noexcept {
         pending_.clear();
+        release_recorded_roots();
         for(auto& page:upload_pages_)
             if(!page.ticket)page.used=0u;
     }
@@ -208,8 +210,8 @@ public:
     // Submit existing source-ordered device commands without a host wait.
     compute::SubmissionId submit() { return flush_gpu_commands(); }
 
-    // Root retirement requires submission only when recorded work uses it.
-    void submit_if_referencing(compute::BufferId buffer) {
+    // Recorded consumers retain the native buffer until submission or discard.
+    void retire_root(compute::BufferId buffer) {
         for(const auto& command:pending_) {
             bool referenced=false;
             if(const auto* copy=std::get_if<compute::CopyCommand>(&command))
@@ -221,10 +223,11 @@ public:
                     std::any_of(dispatch->buffers.begin(),dispatch->buffers.end(),
                         [buffer](const auto& binding){return binding.buffer==buffer;});
             if(referenced) {
-                flush_gpu_commands();
+                recorded_roots_.push_back(buffer);
                 return;
             }
         }
+        context_.retire_buffer(buffer);
     }
 
     // Append the readback to pending producer commands when possible.
@@ -249,8 +252,7 @@ public:
         }else {
             FYZZ_PROFILE_COUNTER("source.batch_ops",pending_.size());
             pending_fetch_=context_.submit_batch_with_readback(pending_,outputs);
-            mark_upload_pages_submitted(pending_fetch_);
-            pending_.clear();
+            accept_recorded_commands(pending_fetch_);
             ++stats_.command_batches;
             ++stats_.fused_readbacks;
         }
@@ -355,8 +357,7 @@ public:
         }else {
             FYZZ_PROFILE_COUNTER("source.batch_ops",pending_.size());
             ticket=context_.submit_batch_with_readback(pending_,outputs);
-            mark_upload_pages_submitted(ticket);
-            pending_.clear();
+            accept_recorded_commands(ticket);
             ++stats_.command_batches;
             ++stats_.fused_readbacks;
         }
@@ -512,12 +513,27 @@ private:
         return upload_pages_.back();
     }
 
-    void mark_upload_pages_submitted(compute::SubmissionId ticket) noexcept {
+    void accept_recorded_commands(compute::SubmissionId ticket) noexcept {
         for(auto& page:upload_pages_)
             if(!page.ticket && page.used)page.ticket=ticket;
+        pending_.clear();
+        release_recorded_roots();
+    }
+
+    void release_recorded_roots() noexcept {
+        // Native retirement follows the last accepted GPU reference.
+        // Retain ownership if retirement bookkeeping cannot allocate.
+        std::erase_if(recorded_roots_,[this](compute::BufferId buffer) noexcept {
+            try {
+                context_.retire_buffer(buffer);
+                return true;
+            }catch(const std::bad_alloc&) { return false; }
+        });
     }
 
     void reclaim_upload_pages(compute::SubmissionId completed) noexcept {
+        if(pending_.empty() && !recorded_roots_.empty())
+            release_recorded_roots();
         for(auto& page:upload_pages_)
             if(page.ticket && page.ticket<=completed) {
                 page.ticket=0u;
@@ -542,8 +558,7 @@ private:
         tokens_.reserve(tokens_.size() + 1u);
         FYZZ_PROFILE_COUNTER("source.batch_ops",pending_.size());
         const auto token = context_.submit_batch(pending_);
-        mark_upload_pages_submitted(token);
-        pending_.clear();
+        accept_recorded_commands(token);
         tokens_.push_back(token);
         ++stats_.command_batches;
         return token;
@@ -556,6 +571,7 @@ private:
     std::vector<SourceSapUpload> upload_scratch_;
     std::vector<compute::UploadSpan> resolved_uploads_;
     std::vector<UploadPage> upload_pages_;
+    std::vector<compute::BufferId> recorded_roots_;
     std::vector<compute::SubmissionId> tokens_,fetch_wait_tokens_;
     compute::SubmissionId pending_fetch_=0;
     compute::SubmissionId pending_numerical_fetch_=0;
