@@ -2381,7 +2381,80 @@ public:
                 first+=groups*128u;
             }
         }
+        const auto declare_body_phase_accesses=[&](Launch phase) {
+            using A=compute::BufferAccess;
+            auto& accesses=dispatch.accesses;
+            accesses.clear();
+            if(phase!=Launch::InitializeBodies && phase!=Launch::Motion &&
+               phase!=Launch::PublishErrors)return;
+            const auto region=[&](std::uint32_t slot,std::size_t offset,
+                                  std::size_t size,A access) {
+                if(size)
+                    accesses.push_back({slot,
+                        {dispatch.buffers[slot].accessed_extent().offset+offset,size},
+                        access});
+            };
+            const auto arena_region=[&](std::size_t offset,std::size_t size,A access) {
+                region(0u,offset,size,access);
+            };
+            const auto table=[&](std::size_t index,A access) {
+                arena_region(offsets[index],bytes[index],access);
+            };
+            const auto binding=[&](std::uint32_t slot,A access) {
+                accesses.push_back({slot,dispatch.buffers[slot].accessed_extent(),access});
+            };
+            const std::uint32_t island_slot=convex_vertex_count?7u:6u;
+            const auto sc_region=[&](std::size_t offset,std::size_t size,A access) {
+                region(island_slot,offset,size,access);
+            };
+            // All three phases consume the schedule header. Only body
+            // initialization reads the variable authored integration inputs.
+            arena_region(offsets[12],
+                phase==Launch::InitializeBodies?bytes[12]:integration_header_bytes,A::Read);
+            if(device_partitions)
+                arena_region(offsets[15],
+                    source_descriptors?(device_admission?64u:24u):20u,A::Read);
+            if(device_admission) {
+                const auto& layout=device_admission->layout;
+                sc_region(0u,sizeof(SourceScDeviceIslandHeader),A::Read);
+                if(phase==Launch::InitializeBodies) {
+                    sc_region(layout.roots,layout.counts-layout.roots,A::Read);
+                    sc_region(layout.counts,layout.admissions-layout.counts,A::Read);
+                }else
+                    sc_region(layout.tasks,layout.block_offsets-layout.tasks,
+                        phase==Launch::Motion?A::ReadWrite:A::Read);
+                if(phase!=Launch::PublishErrors) {
+                    sc_region(layout.body_order,
+                              layout.contact_endpoints-layout.body_order,A::Read);
+                    if(device_admission->deferred_body_remap)
+                        sc_region(layout.body_remap,
+                                  layout.joint_remap-layout.body_remap,A::Read);
+                }
+            }else if(phase!=Launch::InitializeBodies) {
+                table(5u,phase==Launch::Motion?A::ReadWrite:A::Read);
+                if(phase==Launch::Motion)table(4u,A::Read);
+            }
+            if(phase==Launch::InitializeBodies) {
+                table(0u,A::Write);
+                table(16u,A::Write);
+                binding(2u,A::Read);
+                binding(4u,A::Read);
+                binding(5u,A::ReadWrite);
+            }else if(phase==Launch::Motion) {
+                table(0u,A::ReadWrite);
+                table(14u,A::Read);
+                arena_region(partition_output_offset,
+                    partition_output_count_*sizeof(WorkTile),A::Read);
+            }else {
+                if(device_admission)
+                    arena_region(offsets[15]+36u,8u,A::ReadWrite);
+                else
+                    arena_region(history_bytes+result_offsets[1],
+                                 task_capacity*sizeof(std::uint32_t),A::Write);
+            }
+        };
         const auto launch=[&](Launch phase,TileRange range,std::uint32_t iteration=0u) {
+            if(!range.count)return;
             if(resident_wide)params[23]=resident_mode_bias;
             const bool integrates=phase==Launch::Fused || phase==Launch::Integrate ||
                                   phase==Launch::FreeBodies;
@@ -2390,8 +2463,8 @@ public:
             dispatch.buffers[3].access=integrates ? compute::BufferAccess::Write
                                                  : compute::BufferAccess::Read;
             const bool writes_actor_velocities=integrates ||
-                (device_unconstrained_preparation &&
-                 (phase==Launch::Color || phase==Launch::InitializeBodies));
+                phase==Launch::InitializeBodies ||
+                (phase==Launch::Color && device_initial_bodies && !resident_wide);
             dispatch.buffers[5].access=writes_actor_velocities
                 ?compute::BufferAccess::ReadWrite
                 :compute::BufferAccess::Read;
@@ -2403,6 +2476,7 @@ public:
                 (device_partitions && (!wide_tasks_.empty() || resident_wide) &&
                  phase!=Launch::Color ?0x40000000u:0u)|
                 (resident_wide && phase!=Launch::FreeBodies?0x04000000u:0u);
+            declare_body_phase_accesses(phase);
             // Compact tasks have no cross-workgroup dependencies. Their
             // workgroup count is published by the Sc device prefix, so
             // dispatch directly from that result instead of recopying a
@@ -2466,6 +2540,7 @@ public:
             }
         };
         const auto launch_packed=[&](std::size_t first,std::size_t count) {
+            dispatch.accesses.clear();
             dispatch.buffers[2].access=compute::BufferAccess::ReadWrite;
             dispatch.buffers[3].access=compute::BufferAccess::Write;
             dispatch.buffers[5].access=compute::BufferAccess::ReadWrite;
@@ -2507,6 +2582,7 @@ public:
         if(partition_dispatch_count_) {
             // Color ends now own the exact cross-workgroup tile ranges.
             auto build=dispatch;
+            build.accesses.clear();
             const auto slot=convex_vertex_count?9u:8u;
             build.buffers[slot]={slot,partition_dispatch_buffer_,0u,
                 partition_dispatch_count_*16u,compute::BufferAccess::Write};

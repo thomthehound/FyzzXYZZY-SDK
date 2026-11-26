@@ -186,8 +186,16 @@ int main(int argc, char** argv) {
             return bytes;
         };
         const DispatchSize groups{(size + 63u) / 64u, 1, 1};
+        // Descriptor slot order is independent of the access declaration.
+        DispatchCommand precise{pipeline,groups,bindings,push_bytes(first_pass)};
+        constexpr std::size_t half=128u*sizeof(std::uint32_t);
+        constexpr std::size_t used=size*sizeof(std::uint32_t);
+        precise.accesses={
+            {0u,{0u,half},BufferAccess::Read},
+            {0u,{half,used-half},BufferAccess::Read},
+            {1u,{0u,used},BufferAccess::Write}};
         const std::vector<BatchCommand> batch = {
-            DispatchCommand{pipeline, groups, bindings, push_bytes(first_pass)},
+            precise,
             CopyCommand{dst, 0, mirror, 0, sizeof(output)},
             DispatchCommand{pipeline, groups,
                             {{0, mirror, 0, sizeof(output), BufferAccess::Read},
@@ -207,6 +215,18 @@ int main(int argc, char** argv) {
             }
         }
 
+        for(const auto access:{
+                DispatchAccess{2u,{0u,4u},BufferAccess::Read},
+                DispatchAccess{0u,{0u,4u},BufferAccess::Write},
+                DispatchAccess{1u,{sizeof(output),4u},BufferAccess::Write}}) {
+            auto invalid=precise;
+            invalid.accesses.push_back(access);
+            rejected=false;
+            try {context.wait_submission(context.submit_batch({invalid}));}
+            catch(const std::invalid_argument&) {rejected=true;}
+            if(!rejected)
+                throw std::runtime_error("Invalid phase access declaration was accepted");
+        }
         bool rejected_batch = false;
         try {
             context.submit_batch({});
