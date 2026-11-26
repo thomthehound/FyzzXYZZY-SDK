@@ -67,7 +67,8 @@ void verify(Context& context,const char* filename) {
                             std::vector<std::uint32_t> remap={},
                             std::optional<std::uint32_t> remap_capacity=std::nullopt,
                             std::vector<std::uint32_t> joint_remap={},
-                            std::uint32_t joint_row_capacity=0u) {
+                            std::uint32_t joint_row_capacity=0u,
+                            const DeviceResult* previous=nullptr) {
         constexpr std::size_t record_bytes=240u;
         // Joint-only scenes have no physical-touch arena. Active seeds
         // and authored iteration limits remain separate from connectivity.
@@ -143,10 +144,19 @@ void verify(Context& context,const char* filename) {
         if(!history.empty())
             context.upload(touch_buffer,0u,history.data(),
                            history.size()*sizeof(history[0]));
+        if(previous) {
+            require(previous->node_count==node_count &&
+                    previous->edge_count==edges.size() &&
+                    previous->contact_count==sources.contact_managers &&
+                    previous->second.size()==layout.bytes,
+                    "Retained Sc fixture layout changed");
+            context.upload(output_buffer,0u,previous->second.data(),layout.bytes);
+        }
         SourceSapDmaNative stream(context,addresses);
         stage.append(stream,addresses,edge_addr,touch_addr,node_addr,output_addr,
                      node_count,static_cast<std::uint32_t>(edges.size()),
-                     static_cast<std::uint32_t>(touches.size()),sources);
+                     static_cast<std::uint32_t>(touches.size()),sources,
+                     previous!=nullptr);
         if(node_count<=256u && edges.size()<=256u)
             require(stream.commands().size()==1u,
                 "Compact Sc device graph dispatched more than once");
@@ -405,6 +415,57 @@ void verify(Context& context,const char* filename) {
                 "Device accurate island rejected valid source topology: error=" +
                     std::to_string(errors));
     };
+
+    {
+        const std::vector<SourceScDeviceIslandEdge> edges{
+            {0u,0u,1u,0u,0u},
+            {1u,1u,2u,1u,0u}};
+        constexpr auto active=source_sc_device_island_active_bit;
+        const std::vector<std::uint32_t> flags(3u,4u|active);
+        const auto next=[&](const DeviceResult* previous,
+                const std::vector<SourceScDeviceIslandEdge>& input,
+                std::vector<std::uint32_t> touches,
+                std::vector<std::uint32_t> words) {
+            return evaluate(3u,input,std::move(touches),std::move(words),
+                            {},std::nullopt,{},std::nullopt,{},0u,previous);
+        };
+        const auto initial=next(nullptr,edges,{0x10101u,0x10101u},flags);
+        no_errors(initial);
+        auto changed_iterations=flags;
+        changed_iterations[0]=8u|active;
+        const auto stable=next(&initial,edges,{0x10201u,0x10101u},
+                               changed_iterations);
+        no_errors(stable);
+        check_task_mapping(stable);
+        require(header(stable).connectivity_reused==1u &&
+                root(stable,2u)==0u && task(stable,0u).position_iterations==8u,
+                "Stable roots did not retain current numerical admission");
+        const auto split=next(&stable,edges,{0x10201u,0x10000u},flags);
+        no_errors(split);
+        check_task_mapping(split);
+        require(header(split).connectivity_reused==0u && root(split,2u)==2u,
+                "Lost physical bridge retained a stale component");
+        const auto joined=next(&split,edges,{0x10101u,0x10101u},flags);
+        no_errors(joined);
+        require(header(joined).connectivity_reused==0u && root(joined,2u)==0u,
+                "New physical bridge retained separate roots");
+        auto changed_edges=edges;
+        changed_edges[1].node_a=0u;
+        changed_edges[1].node_b=1u;
+        const auto replaced=next(&joined,changed_edges,{0x10101u,0x10101u},flags);
+        no_errors(replaced);
+        require(header(replaced).connectivity_reused==0u &&
+                root(replaced,2u)==2u,
+                "Endpoint replacement retained a stale root");
+        auto nonresponding=flags;
+        nonresponding[1]|=source_sc_device_island_nonresponding_bit;
+        const auto changed_body=next(&joined,edges,{0x10101u,0x10101u},
+                                     nonresponding);
+        no_errors(changed_body);
+        require(header(changed_body).connectivity_reused==0u &&
+                root(changed_body,2u)==2u,
+                "Nonresponding endpoint bridged retained components");
+    }
 
     // PCM and CPU Gu share one source-ordered numerical extent stream.
     // The compact and parallel schedules preserve counts up to 255 without

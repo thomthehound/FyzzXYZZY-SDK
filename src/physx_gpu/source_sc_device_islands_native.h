@@ -94,7 +94,8 @@ struct SourceScDeviceIslandHeader {
     std::uint32_t source_edges=0u;
     // Sc owns the decision to pack all one-body/one-constraint tasks.
     std::uint32_t has_non_singleton_task=0u;
-    std::uint32_t reserved[3]{};
+    std::uint32_t connectivity_reused=0u;
+    std::uint32_t reserved[2]{};
 };
 static_assert(sizeof(SourceScDeviceIslandHeader)==48u &&
               offsetof(SourceScDeviceIslandHeader,dispatch_x)==16u &&
@@ -266,7 +267,8 @@ public:
                 CudaDeviceAddressMap::Address output,
                 std::uint32_t node_count,std::uint32_t edge_count,
                 std::uint32_t edge_capacity,
-                SourceScDeviceIslandSources sources) const {
+                SourceScDeviceIslandSources sources,
+                bool retain_compact_roots=false) const {
         // Even a frame without responding nodes must clear the device
         // runnable-task header. Reused output storage may contain a
         // preceding frame's nonzero task admission.
@@ -353,7 +355,7 @@ public:
         // union, prefix and response-ordering schedule.
         if(node_count<=256u && edge_count<=256u) {
             args[12]=sources.speculative_wake_groups?39u:32u;
-            args[13]=0u;
+            args[13]=retain_compact_roots?1u:0u;
             dispatch.groups={1u,1u,1u};
             std::memcpy(dispatch.push_constants.data(),
                         args.data(),sizeof(args));

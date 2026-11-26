@@ -132,6 +132,7 @@ public:
         host_upload_pending_=false;
         result_pending_=false;
         island_work_ready_=false;
+        island_roots_committed_=false;
         island_deferred_body_remap_=false;
         island_deferred_joint_remap_=false;
         island_body_remap_={};
@@ -165,6 +166,8 @@ public:
         if(island_work_ready_ && !stream_.commands().empty())
             throw std::logic_error(
                 "Source Sc island admission committed before numerical submission");
+        island_roots_committed_=island_work_ready_ &&
+            island_node_count_<=256u && island_edge_count_<=256u;
         if(!pcm_transaction_pending_) {
             island_work_ready_=false;
             island_body_remap_={};
@@ -814,6 +817,10 @@ public:
         for(const auto group:node_flags.subspan(node_count))
             if(group!=invalid && group>=node_count)
                 throw std::invalid_argument("Device Sc wake group ordinal invalid");
+        const bool retain_compact_roots=island_roots_committed_ &&
+            node_count==island_node_count_ && edge_count==island_edge_count_ &&
+            sources.contact_managers==island_contact_count_;
+        island_roots_committed_=false;
         island_layout_=SourceScDeviceIslandLayout::for_counts(
             node_count,edge_count,sources.contact_managers);
         island_deferred_body_remap_=false;
@@ -868,7 +875,7 @@ public:
         island_stage_.append(stream_,addresses_,
             source_edges,device_edge_history_address(),source_nodes,
             island_work_.getDevicePtr(),
-            node_count,edge_count,edge_capacity,sources);
+            node_count,edge_count,edge_capacity,sources,retain_compact_roots);
         last_island_dispatches_=stream_.commands().size()-before_islands;
         // The device-authored task count is final at admission. Dy
         // resolves body and joint rows while consuming the stream.
@@ -885,6 +892,7 @@ public:
     }
     void discard_device_islands() noexcept {
         island_work_ready_=false;
+        island_roots_committed_=false;
         island_deferred_body_remap_=false;
         island_deferred_joint_remap_=false;
         island_body_remap_={};
@@ -1221,6 +1229,7 @@ private:
     bool result_pending_=false,host_upload_pending_=false;
     bool pending_host_inputs_=false,host_snapshot_unsubmitted_=false;
     bool island_work_ready_=false;
+    bool island_roots_committed_=false;
     bool island_deferred_body_remap_=false;
     bool island_deferred_joint_remap_=false;
     std::span<const std::uint32_t> island_body_remap_{};

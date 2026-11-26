@@ -164,6 +164,7 @@ groupshared uint compactContactScan[256];
 groupshared uint contactGroupCarry;
 groupshared uint compactBodyKeys[256],compactBodyStarts[256];
 groupshared uint compactEdgeKeys[256],compactEdgeStarts[256];
+groupshared uint compactRetained,compactTopologyChanged;
 
 uint responseRoot(uint edgeIndex) {
     if(work.Load(p.workBias)!=0u)return p.nodeCount;
@@ -329,6 +330,12 @@ void propagateSpeculativeWake(uint node) {
 // Small graphs complete accurate admission in one ordered dispatch.
 void admitCompact(uint lane,bool speculativeWake) {
     if(lane==0u) {
+        compactRetained=uint(p.first!=0u && work.Load(p.workBias)==0u);
+        compactTopologyChanged=1u-compactRetained;
+    }
+    GroupMemoryBarrierWithGroupSync();
+    const bool retained=compactRetained!=0u;
+    if(lane==0u) {
         work.Store4(p.workBias,uint4(0u,0u,0u,0u));
         work.Store4(p.workBias+16u,uint4(0u,1u,1u,p.edgeCount));
         work.Store4(p.workBias+32u,uint4(0u,0u,0u,0u));
@@ -337,7 +344,11 @@ void admitCompact(uint lane,bool speculativeWake) {
             uint((p.primaryCapacity&31u)!=0u));word+=128u)
         work.Store(p.contactAdmissionBias+word*4u,0u);
     for(uint node=lane;node<p.nodeCount;node+=128u) {
-        work.Store(p.rootBias+node*4u,node);
+        if(!retained)work.Store(p.rootBias+node*4u,node);
+        else if(work.Load(p.responseBiasA+node*4u)!=uint(respondingNode(node))) {
+            uint previous;
+            InterlockedOr(compactTopologyChanged,1u,previous);
+        }
         const uint count=p.countBias+node*24u;
         work.Store4(count,uint4(0u,0u,0u,0u));
         work.Store2(count+16u,uint2(0u,invalid));
@@ -345,16 +356,46 @@ void admitCompact(uint lane,bool speculativeWake) {
     }
     AllMemoryBarrierWithGroupSync();
 
-    for(uint item=lane;item<p.edgeCount;item+=128u) {
-        const uint input=p.edgeBias+item*20u;
-        const uint4 edge=scEdges.Load4(input);
-        const uint kind=scEdges.Load(input+16u);
-        if(validNode(edge.y) && validNode(edge.z) &&
-           edgeConnected(edge.x,kind) && validSource(edge.w,kind) &&
-           respondingNode(edge.y) && respondingNode(edge.z))
-            connectNodes(edge.y,edge.z);
+    if(retained) {
+        // Compare union eligibility and endpoint ordinals against the
+        // retained admission. Activity and numerical tokens are independent.
+        for(uint item=lane;item<p.edgeCount;item+=128u) {
+            const uint input=p.edgeBias+item*20u;
+            const uint4 edge=scEdges.Load4(input);
+            const uint kind=scEdges.Load(input+16u);
+            const bool connected=validNode(edge.y) && validNode(edge.z) &&
+                edgeConnected(edge.x,kind) && validSource(edge.w,kind) &&
+                respondingNode(edge.y) && respondingNode(edge.z);
+            const uint address=p.admissionBias+item*24u;
+            const uint2 oldNodes=work.Load2(address+8u);
+            const bool oldConnected=work.Load(address+16u)!=invalid &&
+                respondingNode(oldNodes.x) && respondingNode(oldNodes.y);
+            if(connected!=oldConnected ||
+               (connected && any(oldNodes!=edge.yz))) {
+                uint previous;
+                InterlockedOr(compactTopologyChanged,1u,previous);
+            }
+        }
+        GroupMemoryBarrierWithGroupSync();
+        if(compactTopologyChanged!=0u) {
+            for(uint node=lane;node<p.nodeCount;node+=128u)
+                work.Store(p.rootBias+node*4u,node);
+            AllMemoryBarrierWithGroupSync();
+        }
     }
-    AllMemoryBarrierWithGroupSync();
+    if(compactTopologyChanged!=0u) {
+        for(uint item=lane;item<p.edgeCount;item+=128u) {
+            const uint input=p.edgeBias+item*20u;
+            const uint4 edge=scEdges.Load4(input);
+            const uint kind=scEdges.Load(input+16u);
+            if(validNode(edge.y) && validNode(edge.z) &&
+               edgeConnected(edge.x,kind) && validSource(edge.w,kind) &&
+               respondingNode(edge.y) && respondingNode(edge.z))
+                connectNodes(edge.y,edge.z);
+        }
+        AllMemoryBarrierWithGroupSync();
+    }
+    if(lane==0u)work.Store(p.workBias+36u,uint(compactTopologyChanged==0u));
 
     for(uint node=lane;node<p.nodeCount;node+=128u) {
         const uint root=findRoot(node);
@@ -419,6 +460,9 @@ void admitCompact(uint lane,bool speculativeWake) {
             propagateSpeculativeWake(node);
         AllMemoryBarrierWithGroupSync();
     }
+    // Wake propagation has released its temporary node words.
+    for(uint node=lane;node<p.nodeCount;node+=128u)
+        work.Store(p.responseBiasA+node*4u,uint(respondingNode(node)));
     if(lane==0u && work.Load(p.workBias)==0u) {
         uint taskCount=0u,bodyCount=0u,responseCount=0u;
         uint nonSingleton=0u;
@@ -757,7 +801,7 @@ void main(uint3 thread:SV_DispatchThreadID,
         if(index==0u) {
             work.Store4(p.workBias,uint4(0u,0u,0u,0u));
             work.Store4(p.workBias+16u,uint4(0u,1u,1u,p.edgeCount));
-            work.Store(p.workBias+32u,0u);
+            work.Store2(p.workBias+32u,uint2(0u,0u));
         }
         if(index<(p.primaryCapacity/32u+
             uint((p.primaryCapacity&31u)!=0u)))
