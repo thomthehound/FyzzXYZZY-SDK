@@ -127,7 +127,6 @@ public:
         // A rejected Sc transaction must not publish its outstanding
         // asynchronous witness DMA into the borrowed Gu result arena.
         stream_.abandon_fetch();
-        const bool unsubmitted_snapshot=host_snapshot_unsubmitted_;
         host_snapshot_unsubmitted_=false;
         host_upload_pending_=false;
         result_pending_=false;
@@ -147,13 +146,17 @@ public:
         if(pcm_transaction_pending_) {
             // A submitted PCM epoch may have changed Gu witnesses even
             // when Sc/Dy later rejected the complete simulation frame.
-            restore_pending_=!unsubmitted_snapshot &&
-                (journal_pair_count_!=0u || gu_touch_count_!=0u);
+            const auto submitted=stream_.command_batch_generation();
+            if(journal_pair_count_ && submitted==journal_batch_generation_)
+                journal_pair_count_=0u;
+            if(gu_touch_count_ && submitted==gu_touch_batch_generation_)
+                gu_touch_count_=0u;
+            restore_pending_=journal_pair_count_!=0u || gu_touch_count_!=0u;
             pcm_transaction_pending_=false;
             published_pair_count_=0u;
             // Refreshed PCM epochs restore their journal before the next submission.
             reset_manifolds_=false;
-        } else reset_manifolds_=true;
+        } else if(!restore_pending_)reset_manifolds_=true;
     }
 
     bool needs_contact_rebuild() const noexcept {
@@ -247,6 +250,7 @@ public:
         // Submit the snapshot before Sc can reject this epoch.
         pcm_transaction_pending_=true;
         journal_host_only_=true;
+        journal_batch_generation_=stream_.command_batch_generation();
         journal_pair_count_=pair_count;
         journal_edge_capacity_=edge_capacity;
         pending_edge_span_bytes_=std::size_t(edge_capacity)*240u;
@@ -666,6 +670,7 @@ public:
         pending_requests_=requests;
         pending_output_=output;
         deferred_points_pending_=defer_points && !gpu_downloads_.empty();
+        journal_batch_generation_=stream_.command_batch_generation();
         journal_pair_count_=pair_count;
         journal_edge_capacity_=edge_capacity;
         journal_host_only_=false;
@@ -763,6 +768,7 @@ public:
             SourceScContactHistoryNativeStage::Phase::PublishGuTouch,
             gu_touch_records_.getDevicePtr(),edges_.getDevicePtr(),
             gu_touch_journal_.getDevicePtr(),count,capacity);
+        gu_touch_batch_generation_=stream_.command_batch_generation();
         gu_touch_count_=count;
         if(result_pending_)last_early_gu_touch_bytes_=bytes;
     }
@@ -1169,14 +1175,15 @@ private:
                 journal_edge_capacity_);
         // A rejected GPU Gu journal must be restored before another
         // producer can touch the same persistent EdgeIndex history.
-        journal_stage_.append(stream_,addresses_,
-            journal_host_only_
-                ?SourceScContactHistoryNativeStage::Phase::RestoreHost
-                :SourceScContactHistoryNativeStage::Phase::Restore,
-            journal_host_only_?dense_contacts_.getDevicePtr():
-                               pairs_.getDevicePtr(),
-            edges_.getDevicePtr(),journal_.getDevicePtr(),
-            journal_pair_count_,journal_edge_capacity_);
+        if(journal_pair_count_)
+            journal_stage_.append(stream_,addresses_,
+                journal_host_only_
+                    ?SourceScContactHistoryNativeStage::Phase::RestoreHost
+                    :SourceScContactHistoryNativeStage::Phase::Restore,
+                journal_host_only_?dense_contacts_.getDevicePtr():
+                                   pairs_.getDevicePtr(),
+                edges_.getDevicePtr(),journal_.getDevicePtr(),
+                journal_pair_count_,journal_edge_capacity_);
         stream_.submit();
         stream_.wait_at_fetch();
         restore_pending_=false;
@@ -1239,6 +1246,7 @@ private:
     std::span<native::GpuPcmBoxResult> pending_output_{};
     std::uint32_t journal_pair_count_=0u,journal_edge_capacity_=0u;
     std::uint32_t gu_touch_count_=0u;
+    std::size_t journal_batch_generation_=0u,gu_touch_batch_generation_=0u;
     std::size_t pending_edge_span_bytes_=0u;
     std::uint32_t published_pair_count_=0u;
     std::size_t last_pair_upload_bytes_=0u;

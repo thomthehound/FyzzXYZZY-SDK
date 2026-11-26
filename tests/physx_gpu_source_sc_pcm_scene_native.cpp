@@ -2055,6 +2055,26 @@ void verify(fyzz::compute::Backend backend,const char* sap,
     require(gu_only_restored==std::array<std::uint32_t,2>{0u,0u},
         "Gu-only device epoch failed to restore its contact journal");
     producer->commit_gpu_step();
+    // A rejected, unsubmitted Gu update has no journal to restore.
+    // Preserve a nonzero committed word rather than replaying stale scratch.
+    producer->enqueue_gpu_pcm_box_contacts(
+        no_pcm_pairs,no_pcm_results,gu_edge+1u);
+    producer->enqueue_cpu_gu_touch_history(gu_only_touch);
+    producer->commit_gpu_step();
+    const std::array<native::GpuGuTouchRecord,1> staged_loss{{
+        {gu_edge,0u}
+    }};
+    producer->enqueue_gpu_pcm_box_contacts(
+        no_pcm_pairs,no_pcm_results,gu_edge+1u);
+    producer->enqueue_cpu_gu_touch_history(staged_loss);
+    producer->invalidate_after_rollback();
+    producer->enqueue_gpu_pcm_box_contacts(
+        no_pcm_pairs,no_pcm_results,gu_edge+1u);
+    require(physx_gpu::SourceScDeviceIslandFixture::touch(*producer,gu_edge)[0]
+                ==gu_only_extent,
+        "Unsubmitted Gu rollback replayed a stale device journal");
+    producer->enqueue_cpu_gu_touch_history(staged_loss);
+    producer->commit_gpu_step();
     check(true,true);
     require(gpu.contact_edge_index({gpu_a,gpu_b})==edge,
             "AABB capacity growth discarded an unchanged GPU PCM manifold");

@@ -230,6 +230,19 @@ void exercise(Context& context) {
             stream.fetch(probe_readback);
             require(read_values==next_values,
                     "Discarded source upload reached the GPU");
+            read_values.fill(0u);
+            stream.begin_fetch(probe_readback);
+            stream.queue_uploads({{
+                probe_address,expected_first.data(),sizeof(expected_first)
+            }});
+            stream.abandon_fetch();
+            require(!stream.commands().empty() &&
+                    read_values==std::array<std::uint32_t,8>{},
+                    "Abandoned source fetch submitted or published pending work");
+            stream.discard_unsubmitted_commands();
+            stream.fetch(probe_readback);
+            require(read_values==next_values,
+                    "Abandoned source fetch changed resident data");
             require(addresses.unregister_allocation(probe_address)==probe,
                     "Source probe allocation lost its owner");
             context.retire_buffer(probe);

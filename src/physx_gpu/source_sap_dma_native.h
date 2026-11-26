@@ -62,6 +62,10 @@ public:
         return pending_fetch_!=0u && pending_fetch_reaped_;
     }
     std::size_t submitted_token_count() const noexcept { return tokens_.size(); }
+    // Advances only when the pending command batch enters the native queue.
+    std::size_t command_batch_generation() const noexcept {
+        return stats_.command_batches;
+    }
 
     SourceSapDmaNative(compute::Context& context,
                        const CudaDeviceAddressMap& addresses) noexcept
@@ -256,6 +260,7 @@ public:
             context_.wait_submissions(fetch_wait_tokens_);
             reclaim_upload_pages(pending_fetch_);
             retire_source_tokens(preceding);
+            pending_fetch_reaped_=true;
         }else if(preceding!=0u)
             throw std::logic_error(
                 "Numerical fence retained preceding PCM source tokens");
@@ -289,7 +294,6 @@ public:
         pending_fetch_token_count_=0;
         pending_fetch_spans_=0;
         pending_fetch_bytes_=0;
-        try {wait_at_fetch();} catch (...) {}
     }
 
     // Existing synchronous fetches use the same staging/transfer path.
@@ -423,10 +427,11 @@ public:
     // resources and drop only commands that never entered the native queue.
     // This is not a recovery path: the source scene is being destroyed.
     bool finish_shutdown() noexcept {
+        discard_unsubmitted_commands();
         abandon_numerical_fetch();
         abandon_fetch();
         try {
-            wait_at_fetch();
+            wait_submitted();
             return true;
         } catch (...) {
             discard_unsubmitted_commands();
@@ -437,6 +442,10 @@ public:
     void wait_at_fetch() {
         FYZZ_PROFILE_SCOPE("source.queue_wait");
         flush_gpu_commands();
+        wait_submitted();
+    }
+
+    void wait_submitted() {
         if(tokens_.empty())return;
         // One fence on the last ordered submission completes every earlier
         // GPU upload, copy and kernel. Retire their staging and descriptors

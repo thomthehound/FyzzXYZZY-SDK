@@ -747,15 +747,11 @@ public:
         stream_.abandon_numerical_fetch();
         producer_->invalidate_after_rollback();
         if(pcm_)pcm_->invalidate_after_rollback();
-        if(dy_distance_) {
-            // The GPU may still own a Dy output transfer even if its
-            // result join threw after consuming the pending task token.
-            // Retire that transfer and its ordered solver commands before
-            // the next scene transaction can reuse their allocations.
-            stream_.abandon_fetch();
-            try { stream_.wait_at_fetch(); } catch (...) {}
-            dy_distance_->invalidate_after_rollback();
-        }
+        stream_.abandon_fetch();
+        // Mapped frame inputs and resident scratch cannot be reused until
+        // submitted work retires. Never submit rejected recorded commands.
+        try { stream_.wait_submitted(); } catch (...) {}
+        if(dy_distance_)dy_distance_->invalidate_after_rollback();
     }
     const SourceSapSceneFrameNativeResult& last_frame() const {
         return producer_->last_frame();
