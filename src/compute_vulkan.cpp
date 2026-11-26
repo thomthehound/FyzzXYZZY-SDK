@@ -885,64 +885,6 @@ struct Context::Impl {
         vkUnmapMemory(device, buffer.memory);
     }
 
-    SubmissionId submit_copy(const Buffer& source, std::size_t source_offset,
-                     const Buffer& destination, std::size_t destination_offset,
-                     std::size_t bytes) {
-        if(destination.placement==MemoryPlacement::Upload ||
-           (source.placement==MemoryPlacement::Upload && source.cpu_mapped))
-            throw std::invalid_argument("Invalid Vulkan upload storage copy");
-        if (source_offset % 4 != 0 || destination_offset % 4 != 0 || bytes % 4 != 0) {
-            throw std::invalid_argument("Vulkan buffer copies require 4-byte alignment");
-        }
-        VkCommandBufferAllocateInfo allocation{};
-        allocation.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
-        allocation.commandPool = command_pool;
-        allocation.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
-        allocation.commandBufferCount = 1;
-        VkCommandBuffer commands = VK_NULL_HANDLE;
-        require(vkAllocateCommandBuffers(device, &allocation, &commands),
-                "vkAllocateCommandBuffers");
-        try {
-            VkCommandBufferBeginInfo begin{};
-            begin.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
-            begin.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-            require(vkBeginCommandBuffer(commands, &begin), "vkBeginCommandBuffer");
-
-            // Make prior shader/transfer writes visible to the transfer read.
-            VkMemoryBarrier before{};
-            before.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
-            before.srcAccessMask = VK_ACCESS_MEMORY_WRITE_BIT;
-            before.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
-            vkCmdPipelineBarrier(commands, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
-                                 VK_PIPELINE_STAGE_TRANSFER_BIT, 0,
-                                 1, &before, 0, nullptr, 0, nullptr);
-
-            VkBufferCopy region{};
-            region.srcOffset = source_offset;
-            region.dstOffset = destination_offset;
-            region.size = bytes;
-            vkCmdCopyBuffer(commands, source.buffer, destination.buffer, 1, &region);
-
-            // The destination may next be accessed by the host or a shader.
-            VkMemoryBarrier after{};
-            after.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
-            after.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-            after.dstAccessMask = VK_ACCESS_HOST_READ_BIT |
-                                  VK_ACCESS_SHADER_READ_BIT |
-                                  VK_ACCESS_SHADER_WRITE_BIT;
-            vkCmdPipelineBarrier(commands, VK_PIPELINE_STAGE_TRANSFER_BIT,
-                                 VK_PIPELINE_STAGE_HOST_BIT |
-                                 VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0,
-                                 1, &after, 0, nullptr, 0, nullptr);
-            require(vkEndCommandBuffer(commands), "vkEndCommandBuffer");
-
-            return enqueue(commands, VK_NULL_HANDLE);
-        } catch (...) {
-            vkFreeCommandBuffers(device, command_pool, 1, &commands);
-            throw;
-        }
-    }
-
     SubmissionId submit_uploads(const std::vector<UploadSpan>& uploads) {
         if (uploads.empty())
             throw std::invalid_argument("Async Vulkan upload batch cannot be empty");
@@ -1006,32 +948,9 @@ struct Context::Impl {
         }
     }
 
-    SubmissionId submit_upload(BufferId destination_id, std::size_t offset,
-                               const void* data, std::size_t bytes) {
-        // Snapshot into coherent pinned/mappable memory before submitting;
-        // the user's pointer is never retained beyond this call.
-        const Buffer& destination = get(destination_id);
-        if(destination.placement==MemoryPlacement::Upload)
-            throw std::invalid_argument("Upload storage cannot be a GPU destination");
-        validate_range(destination.bytes, offset, bytes);
-        if (!bytes || !data || (offset % 4) || (bytes % 4))
-            throw std::invalid_argument("Async Vulkan upload requires nonempty aligned data");
-        // Reserve the retirement slot BEFORE queue submission. Otherwise a
-        // bad_alloc while retaining staging after submit could free memory
-        // that a live GPU copy still references.
-        retired_buffers.reserve(retired_buffers.size() + 1);
-        const Buffer staging = make_buffer(bytes, MemoryPlacement::HostVisible);
-        try {
-            map_transfer(staging, 0, const_cast<void*>(data), bytes, true);
-            const SubmissionId id = submit_copy(staging, 0, destination, offset, bytes);
-            // Buffer is trivially copyable; reserved capacity prevents
-            // vector relocation/allocation after the GPU is submitted.
-            retired_buffers.push_back({id, staging});
-            return id;
-        } catch (...) {
-            release_buffer(staging);
-            throw;
-        }
+    SubmissionId submit_upload(BufferId destination_id,std::size_t offset,
+                               const void* data,std::size_t bytes) {
+        return submit_uploads({{destination_id,offset,data,bytes}});
     }
 
     void transfer(BufferId id, std::size_t offset, void* data,
@@ -1055,20 +974,14 @@ struct Context::Impl {
         if (offset % 4 != 0 || bytes % 4 != 0) {
             throw std::invalid_argument("Device-local transfers require 4-byte alignment");
         }
-        const Buffer staging = make_buffer(bytes, MemoryPlacement::HostVisible);
-        try {
-            if (upload) {
-                map_transfer(staging, 0, data, bytes, true);
-                wait_submission(submit_copy(staging, 0, buffer, offset, bytes));
-            } else {
-                wait_submission(submit_copy(buffer, offset, staging, 0, bytes));
-                map_transfer(staging, 0, data, bytes, false);
-            }
-        } catch (...) {
-            release_buffer(staging);
-            throw;
+        if(upload)
+            wait_submission(submit_upload(id,offset,data,bytes));
+        else {
+            const std::array<DownloadSpan,1u> outputs{{
+                {id,offset,data,bytes}
+            }};
+            finish_download_batch(submit_download_batch(outputs),true);
         }
-        release_buffer(staging);
     }
 
     // Cache entries have no in-flight users or externally visible handles.
@@ -1374,115 +1287,23 @@ struct Context::Impl {
         }
     }
 
-    std::vector<VkDescriptorBufferInfo> validate_dispatch(
-            PipelineId id, DispatchSize groups,
-            const std::vector<BufferBinding>& bindings,
-            const void* push_constants, std::size_t push_bytes) const {
-        const auto count=get_pipeline(id).binding_count;
-        std::vector<VkDescriptorBufferInfo> descriptors(count);
-        std::vector<std::uint8_t> assigned(count);
-        validate_dispatch_into(id,groups,bindings,push_constants,push_bytes,
-                               descriptors,assigned);
-        return descriptors;
-    }
-
-    SubmissionId dispatch(PipelineId id, DispatchSize groups,
+    SubmissionId dispatch(PipelineId id,DispatchSize groups,
                   const std::vector<BufferBinding>& bindings,
-                  const void* push_constants, std::size_t push_bytes) {
-        const Pipeline& pipeline = get_pipeline(id);
-        std::vector<VkDescriptorBufferInfo> descriptors =
-            validate_dispatch(id, groups, bindings, push_constants, push_bytes);
-
-        VkDescriptorPool pool = VK_NULL_HANDLE;
-        VkCommandBuffer commands = VK_NULL_HANDLE;
-        try {
-            VkDescriptorPoolSize pool_size{};
-            pool_size.type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-            pool_size.descriptorCount = std::max(1u, pipeline.binding_count);
-            VkDescriptorPoolCreateInfo pool_create{};
-            pool_create.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
-            pool_create.maxSets = 1;
-            pool_create.poolSizeCount = 1;
-            pool_create.pPoolSizes = &pool_size;
-            require(vkCreateDescriptorPool(device, &pool_create, nullptr, &pool),
-                    "vkCreateDescriptorPool");
-
-            VkDescriptorSetAllocateInfo set_allocate{};
-            set_allocate.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
-            set_allocate.descriptorPool = pool;
-            set_allocate.descriptorSetCount = 1;
-            set_allocate.pSetLayouts = &pipeline.descriptors;
-            VkDescriptorSet set = VK_NULL_HANDLE;
-            require(vkAllocateDescriptorSets(device, &set_allocate, &set),
-                    "vkAllocateDescriptorSets");
-
-            std::vector<VkWriteDescriptorSet> writes(pipeline.binding_count);
-            for (std::uint32_t i = 0; i < writes.size(); ++i) {
-                writes[i].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-                writes[i].dstSet = set;
-                writes[i].dstBinding = i;
-                writes[i].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-                writes[i].descriptorCount = 1;
-                writes[i].pBufferInfo = &descriptors[i];
-            }
-            if (!writes.empty()) {
-                vkUpdateDescriptorSets(device, static_cast<std::uint32_t>(writes.size()),
-                                       writes.data(), 0, nullptr);
-            }
-
-            VkCommandBufferAllocateInfo allocate{};
-            allocate.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
-            allocate.commandPool = command_pool;
-            allocate.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
-            allocate.commandBufferCount = 1;
-            require(vkAllocateCommandBuffers(device, &allocate, &commands),
-                    "vkAllocateCommandBuffers");
-
-            VkCommandBufferBeginInfo begin{};
-            begin.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
-            begin.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-            require(vkBeginCommandBuffer(commands, &begin), "vkBeginCommandBuffer");
-            // Order prior GPU writes before reading or updating shader buffers.
-            VkMemoryBarrier before{};
-            before.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
-            before.srcAccessMask = VK_ACCESS_MEMORY_WRITE_BIT;
-            before.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
-            vkCmdPipelineBarrier(commands, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
-                                 VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0,
-                                 1, &before, 0, nullptr, 0, nullptr);
-            vkCmdBindPipeline(commands, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline.pipeline);
-            vkCmdBindDescriptorSets(commands, VK_PIPELINE_BIND_POINT_COMPUTE,
-                                    pipeline.layout, 0, 1, &set, 0, nullptr);
-            if (push_bytes) {
-                vkCmdPushConstants(commands, pipeline.layout, VK_SHADER_STAGE_COMPUTE_BIT,
-                                   0, static_cast<std::uint32_t>(push_bytes), push_constants);
-            }
-            vkCmdDispatch(commands, groups.x, groups.y, groups.z);
-
-            VkMemoryBarrier barrier{};
-            barrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
-            barrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
-            barrier.dstAccessMask = VK_ACCESS_HOST_READ_BIT |
-                                    VK_ACCESS_TRANSFER_READ_BIT |
-                                    VK_ACCESS_SHADER_READ_BIT |
-                                    VK_ACCESS_SHADER_WRITE_BIT;
-            vkCmdPipelineBarrier(commands, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-                                 VK_PIPELINE_STAGE_HOST_BIT |
-                                 VK_PIPELINE_STAGE_TRANSFER_BIT |
-                                 VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0,
-                                 1, &barrier, 0, nullptr, 0, nullptr);
-            require(vkEndCommandBuffer(commands), "vkEndCommandBuffer");
-
-            return enqueue(commands, pool);
-        } catch (...) {
-            if (commands != VK_NULL_HANDLE) {
-                vkFreeCommandBuffers(device, command_pool, 1, &commands);
-            }
-            if (pool != VK_NULL_HANDLE) {
-                vkDestroyDescriptorPool(device, pool, nullptr);
-            }
-            throw;
+                  const void* push_constants,std::size_t push_bytes) {
+        const auto& pipeline=get_pipeline(id);
+        if(push_bytes!=pipeline.push_bytes || (push_bytes && !push_constants))
+            throw std::invalid_argument("Push constants do not match pipeline layout");
+        std::vector<BatchCommand> commands;
+        auto& command=commands.emplace_back(DispatchCommand{});
+        auto& dispatch=std::get<DispatchCommand>(command);
+        dispatch.pipeline=id;
+        dispatch.groups=groups;
+        dispatch.buffers=bindings;
+        if(push_bytes) {
+            const auto* first=static_cast<const std::uint8_t*>(push_constants);
+            dispatch.push_constants.assign(first,first+push_bytes);
         }
+        return submit_batch(commands);
     }
 
     SubmissionId submit_batch(const std::vector<BatchCommand>& operations,
@@ -2123,7 +1944,8 @@ struct Context::Impl {
             destination_offset < source_offset + bytes)
             throw std::invalid_argument(
                 "Overlapping GPU buffer copy source and destination");
-        return submit_copy(source, source_offset, destination, destination_offset, bytes);
+        return submit_batch({CopyCommand{
+            source_id,source_offset,destination_id,destination_offset,bytes}});
     }
 };
 

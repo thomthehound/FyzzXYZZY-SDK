@@ -258,6 +258,25 @@ int main() {
             if(peak[i]!=expected)
                 throw std::runtime_error("Mapped upload lost ordered copy or untouched range");
         }
+        // Standalone and batched transfers share one ordered queue.
+        // Read the later result first while the earlier ticket is live.
+        const auto replacement=input[9u]+2000u;
+        const auto single=context.submit_upload_buffer(
+            gpu,9u*sizeof(std::uint32_t),&replacement,sizeof(replacement));
+        const auto copied=context.submit_copy_buffer(
+            gpu,9u*sizeof(std::uint32_t),gpu,10u*sizeof(std::uint32_t),4u);
+        context.finish_download_batch(
+            context.submit_download_batch(peak_download),true);
+        if(peak[9u]!=replacement || peak[10u]!=replacement)
+            throw std::runtime_error("Standalone transfer lost ordered dependency");
+        const std::array<SubmissionId,2u> ordered{{single,copied}};
+        context.wait_submissions(ordered);
+        // Synchronous transfer observes the same destination and preserves
+        // neighboring data; no independently recorded copy path is needed.
+        std::uint32_t observed=0u;
+        context.download(gpu,10u*sizeof(std::uint32_t),&observed,sizeof(observed));
+        if(observed!=replacement)
+            throw std::runtime_error("Synchronous transfer lost ordered result");
         context.destroy_buffer(staging);
         context.destroy_buffer(gpu);
         std::cout<<"Compute independent readback ownership PASS\n";
