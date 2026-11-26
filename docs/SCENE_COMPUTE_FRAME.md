@@ -1,5 +1,8 @@
 # Scene-owned compute frame
 
+The [execution architecture worklist](EXECUTION_WORKLIST.md) tracks
+remaining scheduling, memory and qualification work.
+
 ## Execution authority
 
 The native Scene owns one simulation transaction. CPU code owns persistent
