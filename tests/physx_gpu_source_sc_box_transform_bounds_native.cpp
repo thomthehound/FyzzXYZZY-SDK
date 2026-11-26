@@ -258,7 +258,7 @@ void verify_direct_frame_input(Context& context,const char* shader) {
     using namespace fyzz::physx_gpu;
     CudaDeviceAddressMap addresses;
     SourceSapDmaNative stream(context,addresses);
-    SourceFrameInputArenaNative input(context,addresses);
+    SourceFrameInputArenaNative input(context,addresses,stream);
     if(!input.direct())return;
 
     constexpr std::uint32_t count=8u;
@@ -297,7 +297,14 @@ void verify_direct_frame_input(Context& context,const char* shader) {
                 std::abs(result.maximum[0]-1.f)<1.0e-5f,
                 "Mapped frame input failed first GPU transform");
 
+        // Two recorded readers must see different immutable snapshots.
+        const auto recorded=input.write(shapes.data(),sizeof(shapes[0]));
+        stage.append(stream,addresses,recorded,bounds,cache,geometry,recorded,
+                     0u,1u,count);
+        const auto before_growth=stream.command_batch_generation();
         const auto grown=input.write(shapes.data(),sizeof(shapes));
+        require(stream.command_batch_generation()==before_growth,
+                "Mapped input replacement forced submission");
         require(grown!=first && input.capacity()>=sizeof(shapes),
                 "Frame input growth reused an invalid previous device address");
         stage.append(stream,addresses,grown,bounds,cache,geometry,grown,
@@ -310,9 +317,22 @@ void verify_direct_frame_input(Context& context,const char* shader) {
                     std::abs(results[i].maximum[0]-(float(i*3u)+1.f))<1.0e-5f,
                     "Mapped frame input lost source order during growth");
 
+        const auto unchanged=input.write(shapes.data(),sizeof(shapes));
+        require(unchanged==grown,"Completed mapped input was not reusable");
+        stage.append(stream,addresses,unchanged,bounds,cache,geometry,unchanged,
+                     0u,1u,count);
+        stream.submit();
         shapes[0].position[0]=42.f;
+        const auto busy_replacement=input.write(shapes.data(),sizeof(shapes));
+        require(busy_replacement!=unchanged && input.capacity()>=sizeof(shapes),
+                "Mapped input overwrote an outstanding reader");
+        stream.wait_submitted();
+        context.download(bounds_buffer,0u,&result,sizeof(result));
+        require(std::abs(result.minimum[0]+1.f)<1.0e-5f,
+                "Mapped input replacement changed a submitted snapshot");
         const auto reused=input.write(shapes.data(),sizeof(shapes));
-        require(reused==grown,"Stable mapped frame input changed its allocation");
+        require(reused==busy_replacement,
+                "Stable mapped frame input changed its allocation");
         stage.append(stream,addresses,reused,bounds,cache,geometry,reused,
                      0u,count,count);
         stream.wait_at_fetch();

@@ -623,6 +623,7 @@ struct Context::Impl {
 #endif
         retire_submission(it->second);
         submissions.erase(it);
+        recycle_cancelled_readback(id);
     }
 
     void wait_submissions(std::span<const SubmissionId> ordered) {
@@ -644,6 +645,7 @@ struct Context::Impl {
 #endif
             retire_submission(it->second);
             submissions.erase(it);
+            recycle_cancelled_readback(id);
         }
     }
 
@@ -1042,10 +1044,31 @@ struct Context::Impl {
         return id;
     }
 
+    // A cancelled readback keeps its staging until the submission retires.
+    bool cancel_download_batch(SubmissionId id) {
+        const auto it=pending_readbacks_.find(id);
+        if(it==pending_readbacks_.end())
+            throw std::logic_error("Unknown GPU readback batch");
+        it->second.outputs.clear();
+        if(submissions.find(id)!=submissions.end())return true;
+        recycle_cancelled_readback(id);
+        return false;
+    }
+
+    void recycle_cancelled_readback(SubmissionId id) noexcept {
+        const auto it=pending_readbacks_.find(id);
+        if(it==pending_readbacks_.end() || !it->second.outputs.empty())return;
+        const ReadbackStaging staging{it->second.staging,it->second.bytes};
+        pending_readbacks_.erase(it);
+        recycle_readback(staging);
+    }
+
     void finish_download_batch(SubmissionId id,bool publish) {
         const auto it=pending_readbacks_.find(id);
         if(it==pending_readbacks_.end())
             throw std::logic_error("Unknown Vulkan GPU readback batch");
+        if(it->second.outputs.empty())
+            throw std::logic_error("Cancelled GPU readback cannot be finished");
         if(publish && device_lost)
             throw std::runtime_error("Cannot publish readback from a lost Vulkan device");
         if(submissions.find(id)!=submissions.end())
@@ -2041,6 +2064,9 @@ void Context::retire_buffer(BufferId id) {
 bool Context::buffer_is_host_visible(BufferId id) const {
     return impl_->buffer_is_host_visible(id);
 }
+bool Context::buffer_in_use(BufferId id) const {
+    return impl_->get(id).last_reference>impl_->completed_submission;
+}
 void* Context::map_buffer(BufferId id, HostMapAccess access) {
     return impl_->map_buffer(id, access);
 }
@@ -2074,6 +2100,9 @@ SubmissionId Context::submit_batch_with_readback(
 }
 void Context::finish_download_batch(SubmissionId id,bool publish) {
     impl_->finish_download_batch(id,publish);
+}
+bool Context::cancel_download_batch(SubmissionId id) {
+    return impl_->cancel_download_batch(id);
 }
 void Context::download_batch(std::span<const DownloadSpan> downloads) const {
     impl_->download_batch(downloads);

@@ -183,7 +183,6 @@ SourceSapSceneFrameNativeResult fetch_source_sap_scene_frame_native(
     std::optional<PxgAabbSourceMembersNative::AggregateFetchSnapshot>
         aggregate_snapshot;
     physx::PxgBroadPhaseDesc descriptor_snapshot{};
-    bool descriptor_fetch_pending=false;
     compute::DownloadSpan readback{};
     if(members.aabb_manager.has_aggregates && !members.abort_mode) {
         aggregate_snapshot.emplace();
@@ -200,7 +199,6 @@ SourceSapSceneFrameNativeResult fetch_source_sap_scene_frame_native(
         FYZZ_PROFILE_SCOPE("sap.descriptor_fetch_enqueue");
         stream.begin_fetch({&readback,1u});
     }
-    descriptor_fetch_pending=true;
     // Stage the existing source bitmap retirement before joining the
     // descriptor readback. The prepared commands enter the source stream
     // only after validated Sc report publication.
@@ -210,7 +208,6 @@ SourceSapSceneFrameNativeResult fetch_source_sap_scene_frame_native(
                 FYZZ_PROFILE_SCOPE("sap.overlap_sc_prepare");
                 independent_sc_work();
             }
-            if(!descriptor_fetch_pending)stream.wait_at_fetch();
             const auto added_bitmap=members.aabb_owner
                 ? members.aabb_owner->added_report_bitmap()
                 : members.added_bitmap;
@@ -222,13 +219,13 @@ SourceSapSceneFrameNativeResult fetch_source_sap_scene_frame_native(
                 added_bitmap,removed_bitmap);
             auto& pending=stream.commands();
             pending.reserve(pending.size()+prepared.commands.size());
-            if(descriptor_fetch_pending) {
+            {
                 FYZZ_PROFILE_SCOPE("sap.descriptor_fetch_join");
                 stream.finish_fetch();
             }
             return prepared;
         } catch(...) {
-            if(descriptor_fetch_pending && stream.has_pending_fetch())
+            if(stream.has_pending_fetch())
                 stream.abandon_fetch();
             throw;
         }

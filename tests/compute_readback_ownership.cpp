@@ -221,6 +221,26 @@ int main() {
             if(second[i]!=input[20u+i])
                 throw std::runtime_error(
                     "Abandoning one readback lost an independent result");
+        first.fill(sentinel);
+        second.fill(sentinel);
+        const auto cancelled=context.submit_download_batch(small);
+        if(!context.cancel_download_batch(cancelled))
+            throw std::runtime_error("Readback cancellation retired its native token");
+        const auto successor=context.submit_download_batch(large);
+        const std::array<SubmissionId,2> cancelled_join{{cancelled,successor}};
+        context.wait_submissions(cancelled_join);
+        context.finish_download_batch(successor,true);
+        for(std::size_t i=0u;i<second.size();++i)
+            if(second[i]!=input[20u+i])
+                throw std::runtime_error("Cancelled readback contaminated successor");
+        if(first[0]!=sentinel || first[2]!=sentinel)
+            throw std::runtime_error("Cancelled native readback published results");
+        const auto reaped=context.submit_download_batch(small);
+        context.wait_submission(reaped);
+        if(context.cancel_download_batch(reaped) ||
+           first[0]!=sentinel || first[2]!=sentinel)
+            throw std::runtime_error("Cancelling reaped readback lost publication ownership");
+
         std::array<std::uint32_t,64u> peak{};
         const std::array<DownloadSpan,1u> peak_download{{
             {gpu,0u,peak.data(),sizeof(peak)}

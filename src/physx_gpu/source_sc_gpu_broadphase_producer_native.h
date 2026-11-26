@@ -98,7 +98,7 @@ public:
         // handles on the ordinary create-only GPU path.
         bool rebuilt=false;
         if(invalidated_) {
-            stream_.wait_at_fetch();
+            stream_.wait_submitted();
             aabb_.reset_for_source_rebuild();
             sap_.reset_for_source_rebuild();
             handles_dirty_=true;

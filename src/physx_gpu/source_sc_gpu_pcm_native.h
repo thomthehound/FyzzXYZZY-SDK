@@ -85,7 +85,7 @@ public:
           island_edges_(allocator,physx::PxsHeapStats::eNARROWPHASE),
           island_nodes_(allocator,physx::PxsHeapStats::eNARROWPHASE),
           island_work_(allocator,physx::PxsHeapStats::eNARROWPHASE),
-          island_frame_input_(context,addresses) {
+          island_frame_input_(context,addresses,stream) {
         if(!stream_.bound_to(context_,addresses_))
             throw std::invalid_argument("Source Sc GPU PCM has another device stream");
         if(staged_gjk_) {
@@ -121,13 +121,10 @@ public:
     }
     ~SourceScGpuPcmNative() {
         if(indirect_address_)addresses_.unregister_slice(indirect_address_);
-        if(indirect_buffer_)context_.destroy_buffer(indirect_buffer_);
+        if(indirect_buffer_)context_.retire_buffer(indirect_buffer_);
     }
 
     void invalidate_after_rollback() noexcept {
-        // A rejected Sc transaction must not publish its outstanding
-        // asynchronous witness DMA into the borrowed Gu result arena.
-        stream_.abandon_fetch();
         if(edge_relocation_pending_) {
             if(stream_.command_batch_generation()==edge_relocation_generation_)
                 physx::PxgCudaBuffer::swapBuffer(edges_,previous_edges_);

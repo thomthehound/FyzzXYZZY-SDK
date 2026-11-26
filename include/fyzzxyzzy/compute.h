@@ -301,6 +301,8 @@ public:
     // Neither API stages a transfer or takes ownership of the buffer.
     // Mapping twice or freeing/retiring a mapped buffer is invalid.
     bool buffer_is_host_visible(BufferId id) const;
+    // Conservative reference check against already observed completion.
+    bool buffer_in_use(BufferId id) const;
     void* map_buffer(BufferId id,
                      HostMapAccess access = HostMapAccess::ReadWrite);
     void unmap_buffer(BufferId id);
@@ -336,6 +338,9 @@ public:
         std::vector<BatchCommand>& commands,
         std::span<const DownloadSpan> downloads);
     void finish_download_batch(SubmissionId id, bool publish = true);
+    // Detach borrowed destinations without waiting. Returns true if the
+    // submission token still needs retirement by the caller.
+    bool cancel_download_batch(SubmissionId id);
     // Synchronous wrapper for callers with an immediate host dependency.
     void download_batch(std::span<const DownloadSpan> downloads) const;
 

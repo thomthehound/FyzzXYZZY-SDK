@@ -76,6 +76,8 @@ public:
     SourceSapDmaNative& operator=(const SourceSapDmaNative&)=delete;
     ~SourceSapDmaNative() noexcept {
         discard_unsubmitted_commands();
+        abandon_numerical_fetch();
+        abandon_fetch();
         for(const auto& page:upload_pages_)
             try { context_.retire_buffer(page.buffer); } catch(...) {}
     }
@@ -210,8 +212,7 @@ public:
     // Submit existing source-ordered device commands without a host wait.
     compute::SubmissionId submit() { return flush_gpu_commands(); }
 
-    // Recorded consumers retain the native buffer until submission or discard.
-    void retire_root(compute::BufferId buffer) {
+    bool references_recorded(compute::BufferId buffer) const noexcept {
         for(const auto& command:pending_) {
             bool referenced=false;
             if(const auto* copy=std::get_if<compute::CopyCommand>(&command))
@@ -222,12 +223,19 @@ public:
                 referenced=(dispatch->indirect && dispatch->indirect->buffer==buffer) ||
                     std::any_of(dispatch->buffers.begin(),dispatch->buffers.end(),
                         [buffer](const auto& binding){return binding.buffer==buffer;});
-            if(referenced) {
-                recorded_roots_.push_back(buffer);
-                return;
-            }
+            if(referenced)return true;
         }
-        context_.retire_buffer(buffer);
+        return false;
+    }
+
+    bool buffer_in_use(compute::BufferId buffer) const {
+        return context_.buffer_in_use(buffer) || references_recorded(buffer);
+    }
+
+    // Recorded consumers retain the native buffer until submission or discard.
+    void retire_root(compute::BufferId buffer) {
+        if(references_recorded(buffer))recorded_roots_.push_back(buffer);
+        else context_.retire_buffer(buffer);
     }
 
     // Append the readback to pending producer commands when possible.
@@ -245,7 +253,7 @@ public:
                 throw std::overflow_error("Source GPU fetch size overflow");
             bytes+=output.bytes;
         }
-        const auto prior_token_count=tokens_.size();
+        tokens_.reserve(tokens_.size()+2u);
         if(pending_.empty()) {
             pending_fetch_=context_.submit_download_batch(outputs);
             ++stats_.readback_submissions;
@@ -256,7 +264,6 @@ public:
             ++stats_.command_batches;
             ++stats_.fused_readbacks;
         }
-        pending_fetch_token_count_=prior_token_count;
         pending_fetch_reaped_=false;
         pending_fetch_bytes_=bytes;
         pending_fetch_spans_=outputs.size();
@@ -271,20 +278,7 @@ public:
         if(!pending_fetch_)
             throw std::logic_error("Source GPU readback was not armed");
         const auto start=std::chrono::steady_clock::now();
-        const auto preceding=pending_fetch_token_count_;
-        if(!pending_fetch_reaped_) {
-            fetch_wait_tokens_.clear();
-            fetch_wait_tokens_.reserve(preceding+1u);
-            fetch_wait_tokens_.insert(fetch_wait_tokens_.end(),
-                tokens_.begin(),tokens_.begin()+preceding);
-            fetch_wait_tokens_.push_back(pending_fetch_);
-            context_.wait_submissions(fetch_wait_tokens_);
-            reclaim_upload_pages(pending_fetch_);
-            retire_source_tokens(preceding);
-            pending_fetch_reaped_=true;
-        }else if(preceding!=0u)
-            throw std::logic_error(
-                "Numerical fence retained preceding PCM source tokens");
+        join_readback(pending_fetch_);
         // Retiring the GPU ticket does not publish Sc's borrowed witnesses.
         context_.finish_download_batch(pending_fetch_,true);
         pending_fetch_=0u;
@@ -303,16 +297,9 @@ public:
 
     void abandon_fetch() noexcept {
         if(!pending_fetch_)return;
-        try {
-            context_.finish_download_batch(pending_fetch_,false);
-            reclaim_upload_pages(pending_fetch_);
-        } catch (...) {
-            // A lost GPU cannot publish rejected source data; Context
-            // retains any unretired submission until final teardown.
-        }
+        cancel_readback(pending_fetch_);
         pending_fetch_=0;
         pending_fetch_reaped_=false;
-        pending_fetch_token_count_=0;
         pending_fetch_spans_=0;
         pending_fetch_bytes_=0;
     }
@@ -350,6 +337,7 @@ public:
                     "Source numerical readback size overflow");
             bytes+=output.bytes;
         }
+        tokens_.reserve(tokens_.size()+2u);
         compute::SubmissionId ticket=0u;
         if(pending_.empty()) {
             ticket=context_.submit_download_batch(outputs);
@@ -362,8 +350,7 @@ public:
             ++stats_.fused_readbacks;
         }
         pending_numerical_fetch_=ticket;
-        pending_numerical_token_count_=tokens_.size();
-        pending_numerical_prior_fetch_=pending_fetch_;
+        pending_numerical_reaped_=false;
         pending_numerical_bytes_=bytes;
         pending_numerical_spans_=outputs.size();
         FYZZ_PROFILE_COUNTER("source.download_bytes",bytes);
@@ -374,30 +361,10 @@ public:
         if(!pending_numerical_fetch_)
             throw std::logic_error("Source numerical readback was not armed");
         const auto start=std::chrono::steady_clock::now();
-        // The numerical fence completes every earlier source submission
-        // on the ordered queue. Retire those tokens in the same join.
-        const auto preceding=pending_numerical_token_count_;
-        const bool retire_witness=pending_numerical_prior_fetch_!=0u &&
-            pending_fetch_==pending_numerical_prior_fetch_ &&
-            !pending_fetch_reaped_;
-        fetch_wait_tokens_.clear();
-        fetch_wait_tokens_.reserve(preceding+1u+(retire_witness?1u:0u));
-        fetch_wait_tokens_.insert(fetch_wait_tokens_.end(),
-            tokens_.begin(),tokens_.begin()+preceding);
-        if(retire_witness) {
-            const auto where=std::lower_bound(
-                fetch_wait_tokens_.begin(),fetch_wait_tokens_.end(),
-                pending_fetch_);
-            fetch_wait_tokens_.insert(where,pending_fetch_);
-        }
-        fetch_wait_tokens_.push_back(pending_numerical_fetch_);
-        context_.wait_submissions(fetch_wait_tokens_);
-        reclaim_upload_pages(pending_numerical_fetch_);
-        retire_source_tokens(preceding);
-        if(retire_witness)pending_fetch_reaped_=true;
+        join_readback(pending_numerical_fetch_);
         context_.finish_download_batch(pending_numerical_fetch_,true);
         pending_numerical_fetch_=0u;
-        pending_numerical_prior_fetch_=0u;
+        pending_numerical_reaped_=false;
         const auto elapsed=std::chrono::steady_clock::now()-start;
         ++stats_.fetch_batches;
         stats_.fetch_spans+=pending_numerical_spans_;
@@ -411,13 +378,9 @@ public:
 
     void abandon_numerical_fetch() noexcept {
         if(!pending_numerical_fetch_)return;
-        try {
-            context_.finish_download_batch(pending_numerical_fetch_,false);
-            reclaim_upload_pages(pending_numerical_fetch_);
-        }catch(...) {}
+        cancel_readback(pending_numerical_fetch_);
         pending_numerical_fetch_=0u;
-        pending_numerical_prior_fetch_=0u;
-        pending_numerical_token_count_=0u;
+        pending_numerical_reaped_=false;
         pending_numerical_bytes_=0u;
         pending_numerical_spans_=0u;
     }
@@ -428,25 +391,18 @@ public:
     bool gpu_complete() const {
         if (!pending_.empty())
             throw std::logic_error("PhysX source GPU commands not submitted");
-        // The readback is itself the newest ordered queue submission.
-        // Do not announce Sc completion while its witness DMA is pending.
-        if(pending_numerical_fetch_ &&
-           !context_.submission_complete(pending_numerical_fetch_))
-            return false;
-        if(pending_fetch_ && !pending_fetch_reaped_)
-            return context_.submission_complete(pending_fetch_);
-        return tokens_.empty() || context_.submission_complete(tokens_.back());
+        // Any outstanding readback or command may own the newest fence.
+        auto newest=tokens_.empty()?0u:tokens_.back();
+        if(!pending_numerical_reaped_)
+            newest=std::max(newest,pending_numerical_fetch_);
+        if(!pending_fetch_reaped_)
+            newest=std::max(newest,pending_fetch_);
+        return !newest || context_.submission_complete(newest);
     }
 
-    // Called at the original GPU fetch/publication boundary, before
-    // PxgAABBManager releases found/lost tasks. Reap all staging/command
-    // tokens; waiting the last ordered submission implies GPU visibility
-    // of the preceding submissions on the same Context queue.
-    // At scene teardown there is no caller to propagate a failed source
-    // completion to. Keep the Context responsible for already-submitted
-    // resources and drop only commands that never entered the native queue.
-    // This is not a recovery path: the source scene is being destroyed.
-    bool finish_shutdown() noexcept {
+    // Reject recorded work and borrowed outputs, then retire accepted
+    // work once before host-visible storage can be reused or destroyed.
+    bool discard_and_wait() noexcept {
         discard_unsubmitted_commands();
         abandon_numerical_fetch();
         abandon_fetch();
@@ -467,12 +423,10 @@ public:
 
     void wait_submitted() {
         if(tokens_.empty())return;
-        // One fence on the last ordered submission completes every earlier
-        // GPU upload, copy and kernel. Retire their staging and descriptors
-        // together without issuing an OS fence wait for each older token.
+        const auto newest=tokens_.back();
         context_.wait_submissions(tokens_);
-        reclaim_upload_pages(tokens_.back());
-        retire_source_tokens(tokens_.size());
+        reclaim_upload_pages(newest);
+        tokens_.clear();
     }
 
 private:
@@ -542,20 +496,36 @@ private:
             }
     }
 
-    void retire_source_tokens(std::size_t count) {
-        if(count>tokens_.size())
-            throw std::logic_error("Source stream retired an unsubmitted token");
-        tokens_.erase(tokens_.begin(),tokens_.begin()+count);
-        pending_fetch_token_count_-=
-            std::min(pending_fetch_token_count_,count);
-        pending_numerical_token_count_-=
-            std::min(pending_numerical_token_count_,count);
+    // Cancelled readbacks become ordinary ordered retirement tokens.
+    // Submission reserves space for both outstanding readbacks.
+    void cancel_readback(compute::SubmissionId ticket) noexcept {
+        if(context_.cancel_download_batch(ticket))
+            tokens_.insert(std::lower_bound(tokens_.begin(),tokens_.end(),ticket),ticket);
+    }
+
+    void join_readback(compute::SubmissionId ticket) {
+        const auto end=std::upper_bound(tokens_.begin(),tokens_.end(),ticket);
+        fetch_wait_tokens_.assign(tokens_.begin(),end);
+        const bool witness=pending_fetch_ && pending_fetch_<=ticket &&
+            !pending_fetch_reaped_;
+        const bool numerical=pending_numerical_fetch_ &&
+            pending_numerical_fetch_<=ticket && !pending_numerical_reaped_;
+        if(witness)fetch_wait_tokens_.push_back(pending_fetch_);
+        if(numerical)fetch_wait_tokens_.push_back(pending_numerical_fetch_);
+        if(fetch_wait_tokens_.empty())return;
+        if(witness || numerical)
+            std::sort(fetch_wait_tokens_.begin(),fetch_wait_tokens_.end());
+        context_.wait_submissions(fetch_wait_tokens_);
+        tokens_.erase(tokens_.begin(),end);
+        if(witness)pending_fetch_reaped_=true;
+        if(numerical)pending_numerical_reaped_=true;
+        reclaim_upload_pages(ticket);
     }
 
     compute::SubmissionId flush_gpu_commands() {
         FYZZ_PROFILE_SCOPE("source.command_submit");
         if (pending_.empty()) return tokens_.empty() ? 0 : tokens_.back();
-        tokens_.reserve(tokens_.size() + 1u);
+        tokens_.reserve(tokens_.size()+3u);
         FYZZ_PROFILE_COUNTER("source.batch_ops",pending_.size());
         const auto token = context_.submit_batch(pending_);
         accept_recorded_commands(token);
@@ -575,11 +545,8 @@ private:
     std::vector<compute::SubmissionId> tokens_,fetch_wait_tokens_;
     compute::SubmissionId pending_fetch_=0;
     compute::SubmissionId pending_numerical_fetch_=0;
-    compute::SubmissionId pending_numerical_prior_fetch_=0u;
-    bool pending_fetch_reaped_=false;
+    bool pending_fetch_reaped_=false,pending_numerical_reaped_=false;
     std::size_t pending_numerical_bytes_=0u,pending_numerical_spans_=0u;
-    std::size_t pending_numerical_token_count_=0u;
-    std::size_t pending_fetch_token_count_=0;
     std::size_t pending_fetch_bytes_=0,pending_fetch_spans_=0;
     SubmissionStats stats_;
 };

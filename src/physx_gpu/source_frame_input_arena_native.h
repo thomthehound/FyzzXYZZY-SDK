@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 #pragma once
 
-#include "physx_gpu/cuda_device_address_map.h"
+#include "physx_gpu/source_sap_dma_native.h"
 #include "physx_gpu/frame_working_set.h"
 
 #include <algorithm>
@@ -19,8 +19,9 @@ namespace fyzz::physx_gpu {
 class SourceFrameInputArenaNative final {
 public:
     SourceFrameInputArenaNative(
-        compute::Context& context,CudaDeviceAddressMap& addresses) noexcept
-        : context_(context),addresses_(addresses) {
+        compute::Context& context,CudaDeviceAddressMap& addresses,
+        SourceSapDmaNative& stream) noexcept
+        : context_(context),addresses_(addresses),stream_(stream) {
         direct_=context_.device_info().supports_shared_frame_input;
     }
 
@@ -62,21 +63,23 @@ public:
             context_.unmap_buffer(buffer);
         };
         const bool contract=working_set_.should_contract(bytes,capacity_);
-        if(bytes>capacity_ || contract) {
+        const bool busy=buffer_ && stream_.buffer_in_use(buffer_);
+        if(bytes>capacity_ || contract || busy) {
             const auto limit=static_cast<std::size_t>(
                 context_.device_info().max_storage_buffer_range);
             const auto growth=capacity_<=limit/2u
                 ? capacity_*2u : limit;
-            const auto next_capacity=contract?bytes:std::max(bytes,growth);
+            const auto next_capacity=contract?bytes:
+                (bytes>capacity_?std::max(bytes,growth):capacity_);
             const auto next=context_.create_buffer(
                 next_capacity,compute::MemoryPlacement::SharedLocal);
             CudaDeviceAddressMap::Address next_address=0;
             try {
                 next_address=addresses_.register_allocation(next,next_capacity);
                 write_parts(next);
-                // Recorded consumers own the retired allocation until their fence.
+                // Retain immutable input for recorded and submitted readers.
                 if(buffer_) {
-                    context_.retire_buffer(buffer_);
+                    stream_.retire_root(buffer_);
                     addresses_.unregister_allocation(address_);
                 }
             }catch(...) {
@@ -94,7 +97,7 @@ public:
 
     void close() {
         if(!buffer_)return;
-        context_.retire_buffer(buffer_);
+        stream_.retire_root(buffer_);
         addresses_.unregister_allocation(address_);
         buffer_=0;
         address_=0;
@@ -105,6 +108,7 @@ public:
 private:
     compute::Context& context_;
     CudaDeviceAddressMap& addresses_;
+    SourceSapDmaNative& stream_;
     bool direct_=false;
     compute::BufferId buffer_=0;
     CudaDeviceAddressMap::Address address_=0;

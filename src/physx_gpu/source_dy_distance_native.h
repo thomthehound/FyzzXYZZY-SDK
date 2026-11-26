@@ -195,7 +195,7 @@ public:
           actor_locals_(allocator,physx::PxsHeapStats::eSOLVER),
           joint_sources_(allocator,physx::PxsHeapStats::eSOLVER),
           retained_sources_(allocator,physx::PxsHeapStats::eSOLVER),
-          retained_frame_input_(context,addresses) {
+          retained_frame_input_(context,addresses,stream) {
         const auto& info=context_.device_info();
         if(info.max_workgroup_invocations<128u ||
            info.max_workgroup_size[0]<128u ||
@@ -261,7 +261,7 @@ public:
         if(convex_pipeline_)context_.destroy_compute_pipeline(convex_pipeline_);
         if(pipeline_)context_.destroy_compute_pipeline(pipeline_);
         if(partition_dispatch_buffer_)
-            context_.destroy_buffer(partition_dispatch_buffer_);
+            context_.retire_buffer(partition_dispatch_buffer_);
         if(input_upload_buffer_)context_.retire_buffer(input_upload_buffer_);
         arena_.deallocate();
         actor_locals_.deallocate();
@@ -1780,12 +1780,14 @@ public:
         last_schedule_.mapped_input_bytes=uploaded_bytes;
         const bool contract_input=input_working_set_.should_contract(
             uploaded_bytes,input_upload_capacity_);
-        if(uploaded_bytes>input_upload_capacity_ || contract_input) {
-            const auto capacity=uploaded_bytes;
+        if(uploaded_bytes>input_upload_capacity_ || contract_input ||
+           (input_upload_buffer_ && stream_.buffer_in_use(input_upload_buffer_))) {
+            const auto capacity=contract_input?uploaded_bytes:
+                std::max(uploaded_bytes,input_upload_capacity_);
             const auto replacement=context_.create_buffer(
                 capacity,compute::MemoryPlacement::Upload);
             try {
-                if(input_upload_buffer_)context_.retire_buffer(input_upload_buffer_);
+                if(input_upload_buffer_)stream_.retire_root(input_upload_buffer_);
             }catch(...) {
                 context_.retire_buffer(replacement);
                 throw;

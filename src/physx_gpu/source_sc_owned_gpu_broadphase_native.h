@@ -90,7 +90,7 @@ public:
           encoding_(context_,take_shader(shaders,NativeGpuSapStage::TranslateAabbs)),
           box_transforms_(context_,take_shader(shaders,NativeGpuSapStage::BoxTransformBounds)),
           box_input_(allocators_.deviceAlloc,physx::PxsHeapStats::eBROADPHASE),
-          frame_input_(context_,addresses_),
+          frame_input_(context_,addresses_,stream_),
           box_cache_(allocators_.deviceAlloc,physx::PxsHeapStats::eBROADPHASE),
           box_geometry_(allocators_.deviceAlloc,physx::PxsHeapStats::eBROADPHASE),
           convex_vertices_(allocators_.deviceAlloc,physx::PxsHeapStats::eBROADPHASE),
@@ -181,7 +181,7 @@ public:
         // Drain every source launch before retiring the PCM indirect
         // argument resource, source SAP pipelines or the original heap.
         // Failed submissions stay owned by Context through teardown.
-        (void)stream_.finish_shutdown();
+        (void)stream_.discard_and_wait();
         dy_distance_.reset();
         pcm_.reset();
         producer_.reset();
@@ -743,14 +743,10 @@ public:
         return pcm_ && pcm_->needs_contact_rebuild();
     }
     void invalidate_after_rollback() noexcept override {
-        stream_.discard_unsubmitted_commands();
-        stream_.abandon_numerical_fetch();
+        // One ordered completion protects mapped input and buddy-block reuse.
+        if(!stream_.discard_and_wait())aborted_=true;
         producer_->invalidate_after_rollback();
         if(pcm_)pcm_->invalidate_after_rollback();
-        stream_.abandon_fetch();
-        // Mapped frame inputs and resident scratch cannot be reused until
-        // submitted work retires. Never submit rejected recorded commands.
-        try { stream_.wait_submitted(); } catch (...) {}
         if(dy_distance_)dy_distance_->invalidate_after_rollback();
     }
     const SourceSapSceneFrameNativeResult& last_frame() const {

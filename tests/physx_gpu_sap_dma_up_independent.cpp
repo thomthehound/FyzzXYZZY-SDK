@@ -237,9 +237,30 @@ void exercise(Context& context) {
             }});
             stream.abandon_fetch();
             require(!stream.commands().empty() &&
+                    stream.submitted_token_count()==1u &&
                     read_values==std::array<std::uint32_t,8>{},
-                    "Abandoned source fetch submitted or published pending work");
+                    "Abandoned source fetch did not retain its accepted token");
             stream.discard_unsubmitted_commands();
+            stream.fetch(probe_readback);
+            require(stream.submitted_token_count()==0u,
+                    "Later source fetch did not retire cancelled readback");
+
+            read_values.fill(0u);
+            std::array<std::uint32_t,8> numerical{};
+            const std::array<DownloadSpan,1> numerical_readback{{
+                {probe,0u,numerical.data(),sizeof(numerical)}
+            }};
+            stream.begin_fetch(probe_readback);
+            stream.begin_numerical_fetch(numerical_readback);
+            stream.abandon_numerical_fetch();
+            stream.abandon_fetch();
+            require(stream.submitted_token_count()==2u,
+                    "Cancelled witness and numerical tokens were not retained");
+            require(stream.discard_and_wait() &&
+                    stream.submitted_token_count()==0u &&
+                    read_values==std::array<std::uint32_t,8>{} &&
+                    numerical==std::array<std::uint32_t,8>{},
+                    "Combined source cancellation published or lost a token");
             stream.fetch(probe_readback);
             require(read_values==next_values,
                     "Abandoned source fetch changed resident data");

@@ -28,6 +28,10 @@ quality rather than individual dispatch or barrier counts.
 - [x] Use D3D12 buffer promotion and decay at submission boundaries,
   retaining intra-submission transition and UAV dependencies.
 - [x] Skip unused LFS payloads during CI configuration.
+- [x] Separate recorded and submitted resource lifetime, provisional PCM
+  history relocation, nonblocking journal repair, and readback cancellation.
+  Join rejected source tokens at one completion boundary and preserve
+  immutable mapped inputs across replacement.
 
 These are implementation milestones, not hardware-performance acceptance.
 

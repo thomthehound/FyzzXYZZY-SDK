@@ -114,8 +114,14 @@ submission. PCM journal repair enters the ordered queue independently of
 the next speculative batch and requires no host completion wait before
 device-local retry preparation. Dy arena relocation retains only the live
 source and friction history prefixes; rollback invalidates those prefixes
-without discarding reserved capacity. Do not infer performance gains from
-software Vulkan or WARP CI.
+without discarding reserved capacity. Cancelling a readback detaches its
+host destinations without waiting; the accepted submission retains its
+staging until ordered retirement. Rollback and teardown discard recorded
+work and join accepted source tokens together before host-visible heap
+reuse. Mapped frame inputs and packed numerical upload storage retain
+immutable snapshots through recorded and submitted readers. Replacement
+does not force a submission; completed allocations remain reusable.
+Do not infer performance gains from software Vulkan or WARP CI.
 
 ### Nonblocking upload staging
 
