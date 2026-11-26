@@ -272,15 +272,21 @@ int main() {
         };
         // Rejected producers neither execute earlier operations nor
         // publish a readback; the same output can be submitted again.
+        const auto prior_upload=context.submit_upload_buffer(
+            gpu,17u*4u,&input[17u],4u);
         auto invalid_batch=batch;
+        invalid_batch.emplace_back(UploadCommand{gpu,16u*4u,{0u,0u,0u,0u}});
         invalid_batch.emplace_back(CopyCommand{gpu,0u,gpu,0u,4u});
+        const auto invalid_size=invalid_batch.size();
         peak.fill(sentinel);
         rejected=false;
         try {
             context.submit_batch_with_readback(invalid_batch,peak_download);
         }catch(const std::invalid_argument&) {rejected=true;}
-        if(!rejected || peak[0]!=sentinel || peak.back()!=sentinel)
-            throw std::runtime_error("Rejected producer published a readback");
+        if(!rejected || peak[0]!=sentinel || peak.back()!=sentinel ||
+           invalid_batch.size()!=invalid_size)
+            throw std::runtime_error("Rejected producer published or modified its command batch");
+        context.wait_submission(prior_upload);
         context.finish_download_batch(
             context.submit_batch_with_readback(batch,peak_download),true);
         for(std::size_t i=0u;i<input.size();++i) {

@@ -14,6 +14,7 @@
 
 #include <cstring>
 #include <cstdlib>
+#include <exception>
 #if defined(FYZZXYZZY_PROFILE_GPU)
 #include <cstdio>
 #endif
@@ -428,15 +429,20 @@ struct Context::Impl {
         }
     }
 
+    void drain_device() noexcept {
+        const auto status=vkDeviceWaitIdle(device);
+        if(status!=VK_SUCCESS && status!=VK_ERROR_DEVICE_LOST)
+            std::terminate();
+    }
+
     void cleanup() noexcept {
         if (device != VK_NULL_HANDLE) {
-            vkDeviceWaitIdle(device);
+            drain_device();
             for (const auto& item : submissions) {
                 release_submission(item.second);
             }
             submissions.clear();
-            // vkDeviceWaitIdle above guarantees the last submission has
-            // completed; no retired GPU allocation may survive device teardown.
+            // Device execution has completed or the device is lost.
             for (const auto& retired : retired_buffers)
                 release_buffer(retired.buffer);
             retired_buffers.clear();
@@ -525,7 +531,11 @@ struct Context::Impl {
             submit.pCommandBuffers = &commands;
             const VkResult status = vkQueueSubmit(queue, 1, &submit, fence);
             if (status != VK_SUCCESS) {
-                if(status==VK_ERROR_DEVICE_LOST)device_lost=true;
+                if(status==VK_ERROR_DEVICE_LOST) {
+                    device_lost=true;
+                    // A lost-device submission can still own pending resources.
+                    drain_device();
+                }
                 submissions.erase(id);
                 require(status, "vkQueueSubmit");
             }
@@ -927,7 +937,7 @@ struct Context::Impl {
             // If a GPU command was actually enqueued, the staging handle
             // remains live until its fence; never release backing memory.
             if (!submitted)
-                destroy_buffer(staging_id);
+                release_unused_buffer(staging_id);
             throw;
         }
     }
@@ -968,15 +978,15 @@ struct Context::Impl {
         }
     }
 
-    // Cache entries have no in-flight users or externally visible handles.
-    void release_completed_readback(BufferId id) noexcept {
+    // Internal staging with no in-flight users or public handles.
+    void release_unused_buffer(BufferId id) noexcept {
         const auto it=buffers.find(id);
         release_buffer(it->second);
         buffers.erase(it);
     }
     ReadbackStaging acquire_readback(std::size_t bytes) {
         const auto cached=readback_cache_.acquire(bytes,[this](BufferId id) noexcept {
-            release_completed_readback(id);
+            release_unused_buffer(id);
         });
         if(!cached.capacity)
             return {create_buffer(bytes,MemoryPlacement::HostVisible,false),bytes};
@@ -984,7 +994,7 @@ struct Context::Impl {
     }
     void recycle_readback(ReadbackStaging staging) noexcept {
         readback_cache_.recycle(staging.buffer,staging.capacity,[this](BufferId id) noexcept {
-            release_completed_readback(id);
+            release_unused_buffer(id);
         });
     }
     SubmissionId submit_download_batch(
@@ -1036,6 +1046,8 @@ struct Context::Impl {
         const auto it=pending_readbacks_.find(id);
         if(it==pending_readbacks_.end())
             throw std::logic_error("Unknown Vulkan GPU readback batch");
+        if(publish && device_lost)
+            throw std::runtime_error("Cannot publish readback from a lost Vulkan device");
         if(submissions.find(id)!=submissions.end())
             wait_submission(id);
         const auto& pending=it->second;
@@ -1299,6 +1311,8 @@ struct Context::Impl {
 
     SubmissionId submit_batch(const std::vector<BatchCommand>& operations,
                               bool profile = false) {
+        if(device_lost)
+            throw std::runtime_error("Cannot submit work to a lost Vulkan device");
         const bool explicit_profile=profile;
 #if defined(FYZZXYZZY_PROFILE_GPU)
         const bool hardware_trace=!profile && timestamp_valid_bits>0u &&
@@ -1365,7 +1379,7 @@ struct Context::Impl {
                 retire_buffer(staging_id);
                 return id;
             } catch(...) {
-                if(!submitted)destroy_buffer(staging_id);
+                if(!submitted)release_unused_buffer(staging_id);
                 throw;
             }
         }

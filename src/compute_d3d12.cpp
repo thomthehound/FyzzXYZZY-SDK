@@ -30,6 +30,7 @@
 #include <array>
 #include <cstdlib>
 #include <cstring>
+#include <exception>
 #include <functional>
 #if defined(FYZZXYZZY_PROFILE_GPU)
 #include <cstdio>
@@ -422,8 +423,20 @@ struct Context::Impl {
     }
 
     ~Impl() {
-        if (queue && fence) {
-            try { wait_all(); } catch (...) {}
+        if (!submissions.empty() && SUCCEEDED(device->GetDeviceRemovedReason())) {
+            const auto last=next_fence-1u;
+            try {
+                if(first_unsignaled_fence) {
+                    // A teardown-only signal drains the poisoned queue without
+                    // publishing the failed submission or admitting more work.
+                    check(queue->Signal(fence.Get(),last),"Signal D3D12 teardown fence");
+                    first_unsignaled_fence=0;
+                    wait_value(last);
+                }else wait_all();
+            }catch(...) {
+                if(completed_fence<last && SUCCEEDED(device->GetDeviceRemovedReason()))
+                    std::terminate();
+            }
         }
         if (completion_event) CloseHandle(completion_event);
     }
@@ -577,8 +590,11 @@ struct Context::Impl {
               "SetEventOnCompletion");
         for (;;) {
             const DWORD result=WaitForSingleObject(completion_event,1000u);
-            if(result==WAIT_OBJECT_0)break;
-            if(result!=WAIT_TIMEOUT)
+            if(result==WAIT_OBJECT_0) {
+                // An event can retain a signal from an interrupted wait.
+                const auto observed=fence->GetCompletedValue();
+                if(observed>=value)break;
+            }else if(result!=WAIT_TIMEOUT)
                 throw std::runtime_error("D3D12 fence wait failed");
             // Device removal does not guarantee that an outstanding queue
             // fence signals. Check the device while the event is pending.

@@ -100,8 +100,12 @@ tracking is submission-local; changes between incompatible access states
 and conflicting UAV accesses retain explicit barriers. Upload and readback
 heaps retain their fixed states. Each submission executes one command list.
 The PhysX task graph, cross-submission dependencies, and actual lifetime
-rules remain authoritative. Do not infer performance gains from software
-Vulkan or WARP CI.
+rules remain authoritative. Context teardown releases in-flight native
+resources only after queue completion or device loss; a failed D3D12
+queue signal prohibits further work and result publication for that
+submission. Vulkan rejected recording releases unused staging without
+waiting for unrelated submissions. Do not infer performance gains from
+software Vulkan or WARP CI.
 
 ### Nonblocking upload staging
 
