@@ -1966,7 +1966,7 @@ public:
                                 epoch_errors.data(),sizeof(epoch_errors));
                 }
                 if(n && !device_admission)
-                    std::memcpy(host_input(offsets[15])+scratch_header[1],
+                    std::memcpy(host_input(offsets[15]+scratch_header[1]),
                                 source_descriptor_tokens_.data(),
                                 n*sizeof(std::uint32_t));
                 const auto table=offsets[15]+scratch_header[3]+
