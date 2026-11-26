@@ -438,12 +438,14 @@ void verify(Context& context,const char* filename) {
         no_errors(stable);
         check_task_mapping(stable);
         require(header(stable).connectivity_reused==1u &&
+                header(stable).ordering_reused==1u &&
                 root(stable,2u)==0u && task(stable,0u).position_iterations==8u,
                 "Stable roots did not retain current numerical admission");
         const auto split=next(&stable,edges,{0x10201u,0x10000u},flags);
         no_errors(split);
         check_task_mapping(split);
-        require(header(split).connectivity_reused==0u && root(split,2u)==2u,
+        require(header(split).connectivity_reused==0u &&
+                header(split).ordering_reused==0u && root(split,2u)==2u,
                 "Lost physical bridge retained a stale component");
         const auto joined=next(&split,edges,{0x10101u,0x10101u},flags);
         no_errors(joined);
@@ -465,6 +467,21 @@ void verify(Context& context,const char* filename) {
         require(header(changed_body).connectivity_reused==0u &&
                 root(changed_body,2u)==2u,
                 "Nonresponding endpoint bridged retained components");
+        // Equal body counts do not establish equal membership.
+        std::vector<std::uint32_t> one_active(nodes,4u);
+        one_active[0u]|=active;
+        const auto first_body=next(nullptr,edges,{0x10000u,0x10000u},one_active);
+        no_errors(first_body);
+        one_active[0u]=4u;
+        one_active[2u]|=active;
+        const auto moved=next(&first_body,edges,{0x10000u,0x10000u},one_active);
+        no_errors(moved);
+        check_task_mapping(moved);
+        require(header(moved).connectivity_reused==1u &&
+                header(moved).ordering_reused==0u &&
+                header(moved).responding_nodes==1u &&
+                load<std::uint32_t>(moved.second,moved.first.body_order)==2u,
+                "Equal counts retained the wrong active source body");
     }
 
     {
@@ -499,6 +516,7 @@ void verify(Context& context,const char* filename) {
         no_errors(stable_split);
         check_task_mapping(stable_split);
         require(header(stable_split).connectivity_reused==1u &&
+                header(stable_split).ordering_reused==1u &&
                 header(stable_split).runnable_components==2u,
                 "Parallel connectivity did not retain split components");
         touches[192u]=0x10101u;

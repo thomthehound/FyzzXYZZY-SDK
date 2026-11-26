@@ -95,7 +95,7 @@ struct SourceScDeviceIslandHeader {
     // Sc owns the decision to pack all one-body/one-constraint tasks.
     std::uint32_t has_non_singleton_task=0u;
     std::uint32_t connectivity_reused=0u;
-    std::uint32_t connectivity_dirty=0u,reserved=0u;
+    std::uint32_t connectivity_dirty=0u,ordering_reused=0u;
 };
 static_assert(sizeof(SourceScDeviceIslandHeader)==48u &&
               offsetof(SourceScDeviceIslandHeader,dispatch_x)==16u &&
@@ -368,7 +368,8 @@ public:
             if(!count)return;
             args[12]=phase;
             declare_phase_accesses(dispatch,layout,node_count,edge_count,
-                                   sources.contact_managers,edge_capacity,phase);
+                                   sources.contact_managers,edge_capacity,phase,
+                                   0u,retain_roots);
             for(std::uint32_t first=0u;first<count;) {
                 const auto groups=std::min<std::uint64_t>(
                     max_groups,(std::uint64_t(count-first)+127u)/128u);
@@ -395,7 +396,8 @@ public:
         // Stable task ordinals are the exclusive prefix of runnable
         // roots. The compact block scan avoids atomic task ordering,
         // and the final scatter preserves the canonical root order.
-        launch(3u,std::max(1u,node_count));
+        launch(3u,std::max(std::max(1u,node_count),
+                          retain_roots?edge_count:0u));
         const auto blocks=static_cast<std::uint32_t>(
             (std::uint64_t(node_count)+127u)/128u);
         launch(4u,blocks>128u?blocks:1u);
@@ -522,7 +524,7 @@ private:
             compute::DispatchCommand& dispatch,const SourceScDeviceIslandLayout& layout,
             std::size_t nodes,std::size_t edges,std::size_t contacts,
             std::size_t edge_capacity,std::uint32_t phase,
-            std::size_t joint_sources=0u) {
+            std::size_t joint_sources=0u,bool retain_roots=false) {
         using A=compute::BufferAccess;
         auto& accesses=dispatch.accesses;
         accesses.clear();
@@ -569,7 +571,8 @@ private:
             header(A::ReadWrite);tasks(A::Read);
             if(edge_capacity)input(1u);
             work(layout.body_order,nodes*4u,A::Write);
-            work(layout.response_order,edges*4u,A::Write);
+            work(layout.response_order,edges*4u,
+                 retain_roots?A::ReadWrite:A::Write);
             work(layout.response_tokens,edges*4u,A::Write);
             work(layout.response_extents,edges*4u,A::Write);
             work(layout.contact_endpoints,contacts*8u,A::Write);
@@ -606,6 +609,11 @@ private:
             roots(A::Read);counts(phase==3u?A::Read:A::ReadWrite);
             if(nodes)input(2u);
             block_ranges(phase==3u?A::Write:A::Read);
+            if(phase==3u && retain_roots) {
+                admissions(A::Read);
+                work(layout.body_order,nodes*4u,A::Read);
+                work(layout.response_order,edges*4u,A::Read);
+            }
             if(phase==6u) {block_tiles(A::Read);tasks(A::Write);}
         }else if(phase==4u || phase==5u) {
             if(phase==4u) {

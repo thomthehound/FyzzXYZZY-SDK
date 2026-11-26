@@ -189,7 +189,8 @@ groupshared uint compactContactScan[256];
 groupshared uint contactGroupCarry;
 groupshared uint compactBodyKeys[256],compactBodyStarts[256];
 groupshared uint compactEdgeKeys[256],compactEdgeStarts[256];
-groupshared uint compactRetained,compactTopologyChanged;
+groupshared uint compactRetained,compactTopologyChanged,compactOrderingChanged;
+groupshared uint2 compactPreviousCounts;
 
 uint responseRoot(uint edgeIndex) {
     if(work.Load(p.workBias)!=0u)return p.nodeCount;
@@ -317,6 +318,39 @@ bool runnableRoot(uint index) {
         ((nodeFlags.Load(p.nodeBias+index*4u)&requireContactTask)==0u ||
          work.Load(count+4u)!=0u);
 }
+// A strictly ordered stream of current eligible identities is complete
+// when its cardinality agrees with the current admission count.
+uint orderedKey(uint item,bool response) {
+    if(response) {
+        if(item>=p.edgeCount)return invalid;
+        const uint address=p.admissionBias+item*24u;
+        const uint root=work.Load(address+16u);
+        const uint kind=work.Load(address+20u);
+        if((kind&noResponse)!=0u || !runnableRoot(root))return invalid;
+        return root*3u+((kind&jointEdge)!=0u?1u:2u);
+    }
+    if(!respondingNode(item))return invalid;
+    const uint root=work.Load(p.rootBias+item*4u);
+    return runnableRoot(root)?root:invalid;
+}
+bool orderedEntryValid(uint index,uint bias,bool response) {
+    const uint item=work.Load(bias+index*4u);
+    const uint key=orderedKey(item,response);
+    if(key==invalid)return false;
+    if(index==0u)return true;
+    const uint previous=work.Load(bias+(index-1u)*4u);
+    const uint previousKey=orderedKey(previous,response);
+    return previousKey<key || (previousKey==key && previous<item);
+}
+bool retainedOrderValid(uint index,uint2 counts) {
+    return (index>=counts.x || orderedEntryValid(index,p.bodyOrderBias,false)) &&
+           (index>=counts.y || orderedEntryValid(index,p.responseOrderBias,true));
+}
+void publishResponse(uint position,uint edge) {
+    work.Store(p.tokenBias+position*4u,responseToken(edge));
+    work.Store(p.extentBias+position*4u,responseExtent(edge));
+    publishContactSource(edge);
+}
 void inclusiveTaskScan(uint lane) {
     [unroll]
     for(uint step=1u;step<128u;step<<=1u) {
@@ -357,6 +391,9 @@ void admitCompact(uint lane,bool speculativeWake) {
     if(lane==0u) {
         compactRetained=uint(p.first!=0u && work.Load(p.workBias)==0u);
         compactTopologyChanged=1u-compactRetained;
+        compactOrderingChanged=1u-compactRetained;
+        compactPreviousCounts=compactRetained!=0u
+            ?work.Load2(p.workBias+8u):uint2(invalid,invalid);
     }
     GroupMemoryBarrierWithGroupSync();
     const bool retained=compactRetained!=0u;
@@ -520,6 +557,22 @@ void admitCompact(uint lane,bool speculativeWake) {
     AllMemoryBarrierWithGroupSync();
     if(work.Load(p.workBias)!=0u)return;
 
+    const uint2 currentCounts=work.Load2(p.workBias+8u);
+    if(all(currentCounts==compactPreviousCounts) && compactRetained!=0u) {
+        for(uint item=lane;item<max(currentCounts.x,currentCounts.y);item+=128u) {
+            if(!retainedOrderValid(item,currentCounts)) {
+                uint unused;
+                InterlockedOr(compactOrderingChanged,1u,unused);
+            }
+        }
+    }else if(lane==0u)compactOrderingChanged=1u;
+    GroupMemoryBarrierWithGroupSync();
+    const bool reuseOrder=compactOrderingChanged==0u;
+    if(lane==0u)work.Store(p.workBias+44u,uint(reuseOrder));
+    if(reuseOrder) {
+        for(uint item=lane;item<currentCounts.y;item+=128u)
+            publishResponse(item,work.Load(p.responseOrderBias+item*4u));
+    }else {
     // Two source entries per lane stay in one workgroup and retain
     // the canonical root, kind and source order.
     const uint bodyShift=p.nodeCount<=128u?7u:8u;
@@ -627,11 +680,10 @@ void admitCompact(uint lane,bool speculativeWake) {
             else {
                 const uint position=begin+rank;
                 work.Store(p.responseOrderBias+position*4u,edge);
-                work.Store(p.tokenBias+position*4u,responseToken(edge));
-                work.Store(p.extentBias+position*4u,responseExtent(edge));
-                publishContactSource(edge);
+                publishResponse(position,edge);
             }
         }
+    }
     }
     // The resident response stream owns exact contact-row offsets.
     // Compact graphs compute their global prefix inside admission.
@@ -825,11 +877,18 @@ void main(uint3 thread:SV_DispatchThreadID,
     if(p.phase==0u || p.phase==42u || p.phase==43u || p.phase==44u) {
         const bool retained=p.phase==43u || p.phase==44u;
         if(index==0u) {
-            work.Store4(p.workBias,uint4(0u,0u,0u,0u));
+            const bool previousValid=retained && work.Load(p.workBias)==0u;
+            work.Store2(p.workBias,uint2(0u,0u));
+            if(!previousValid)work.Store2(p.workBias+8u,uint2(invalid,invalid));
             work.Store4(p.workBias+16u,uint4(0u,1u,1u,p.edgeCount));
             work.Store2(p.workBias+32u,uint2(0u,0u));
+            work.Store(p.workBias+44u,uint(previousValid));
             // A committed parallel admission leaves the dirty word clear.
             if(!retained)work.Store(p.workBias+40u,1u);
+            else if(!previousValid) {
+                uint unused;
+                work.InterlockedOr(p.workBias+40u,1u,unused);
+            }
         }
         if(index<(p.primaryCapacity/32u+
             uint((p.primaryCapacity&31u)!=0u)))
@@ -945,6 +1004,13 @@ void main(uint3 thread:SV_DispatchThreadID,
             const uint reused=uint(work.Load(p.workBias+40u)==0u);
             work.Store2(p.workBias+36u,uint2(reused,0u));
         }
+        const uint2 priorCounts=work.Load2(p.workBias+8u);
+        if(priorCounts.x<=p.nodeCount && priorCounts.y<=p.edgeCount &&
+           !retainedOrderValid(index,priorCounts)) {
+            uint unused;
+            work.InterlockedAnd(p.workBias+44u,0u,unused);
+        }
+        if(index/128u>=max(p.blockCount,1u))return;
         const uint active=runnableRoot(index)?1u:0u;
         taskScan[lane.x]=active;
         responseScan[lane.x]=active!=0u
@@ -1001,6 +1067,8 @@ void main(uint3 thread:SV_DispatchThreadID,
                 GroupMemoryBarrierWithGroupSync();
             }
             if(lane.x==0u) {
+                if(any(work.Load2(p.workBias+8u)!=uint2(bodyCarry,responseCarry)))
+                    work.Store(p.workBias+44u,0u);
                 work.Store(p.workBias+4u,taskCarry);
                 work.Store(p.workBias+8u,bodyCarry);
                 work.Store(p.workBias+12u,responseCarry);
@@ -1060,6 +1128,8 @@ void main(uint3 thread:SV_DispatchThreadID,
             GroupMemoryBarrierWithGroupSync();
         }
         if(lane.x==0u) {
+            if(any(work.Load2(p.workBias+8u)!=uint2(bodyCarry,responseCarry)))
+                work.Store(p.workBias+44u,0u);
             work.Store(p.workBias+4u,taskCarry);
             work.Store(p.workBias+8u,bodyCarry);
             work.Store(p.workBias+12u,responseCarry);
@@ -1100,6 +1170,12 @@ void main(uint3 thread:SV_DispatchThreadID,
     if(p.phase<8u)return;
     const uint pass=(p.phase-8u)/3u;
     const uint operation=(p.phase-8u)%3u;
+    if(work.Load(p.workBias+44u)!=0u) {
+        if(operation==2u && pass+1u==p.radixPasses &&
+           index<work.Load(p.workBias+12u))
+            publishResponse(index,work.Load(p.responseOrderBias+index*4u));
+        return;
+    }
     const uint shift=pass*8u;
     const uint source=(pass&1u)!=0u?p.responseBiasB:p.responseBiasA;
     const uint target=(pass&1u)!=0u?p.responseBiasA:p.responseBiasB;
