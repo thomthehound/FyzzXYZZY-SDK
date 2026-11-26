@@ -130,6 +130,8 @@ struct SourceDyLaunchStats {
     std::size_t numerical_arena_capacity=0u;
     std::size_t device_partition_indirect_dispatches=0u;
     bool resident_wide_schedule=false;
+    bool resident_schedule_reuse_candidate=false;
+    bool resident_schedule_reused=false;
     // Device-written descriptors, partition ranges, tasks, and ordinals
     // omitted from the host numerical input packet.
     std::size_t device_generated_bytes=0u;
@@ -270,6 +272,7 @@ public:
         if(id<actor_state_.size())actor_state_[id]=0u;
     }
     void invalidate_after_rollback() noexcept {
+        resident_schedule_committed_=false;
         pending_solve_.reset();
         deferred_result_downloads_.clear();
         std::fill(actor_state_.begin(),actor_state_.end(),0u);
@@ -583,6 +586,8 @@ public:
         native::GpuDyResidentScheduleCapacity resident_capacity={}) {
         if(pending_solve_)
             throw std::logic_error("Source Dy numerical epoch already queued");
+        const bool prior_schedule=std::exchange(resident_schedule_committed_,false);
+        const auto prior_tasks=last_schedule_.device_admitted_tasks;
         if(!contact_prep.empty() && !compact_contact_prep.empty())
             throw std::invalid_argument(
                 "Native Dy contact preparation has multiple source representations");
@@ -1732,10 +1737,14 @@ public:
         total+=partition_output_count_*sizeof(WorkTile);
         const auto mode_output_offset=total;
         if(resident_wide) {
+            // Per task: current mode, retained descriptor/body ranges,
+            // and the exact end of the conflict partition stream.
+            constexpr std::size_t schedule_stride=24u;
             if(total>std::numeric_limits<std::uint32_t>::max() ||
-               task_capacity>(std::numeric_limits<std::uint32_t>::max()-total)/4u)
-                throw std::overflow_error("Resident Dy task modes exceed arena");
-            total+=task_capacity*4u;
+               task_capacity>(std::numeric_limits<std::uint32_t>::max()-total)/
+                    schedule_stride)
+                throw std::overflow_error("Resident Dy task schedule exceeds arena");
+            total+=task_capacity*schedule_stride;
         }
         narrow(total);
         // The contact shader addresses anchors backward from contactBias.
@@ -1889,9 +1898,9 @@ public:
                         device_admission->layout.body_order);
                     std::memcpy(host_input(offsets[15])+28u,
                                 &extent_offset,sizeof(extent_offset));
-                    const std::uint32_t next_contact_row=0u;
+                    const std::uint32_t retained_task_count=invalid;
                     std::memcpy(host_input(offsets[15])+32u,
-                                &next_contact_row,sizeof(next_contact_row));
+                                &retained_task_count,sizeof(retained_task_count));
                     const auto contact_prefix_offset=
                         device_admission->layout.device_contact_prefix
                         ?narrow(device_admission->layout.response_prefixes-
@@ -1984,6 +1993,24 @@ public:
             joint_source_capacity_=next_joint_capacity;
         }
         const auto address=arena_.getDevicePtr();
+        if(resident_wide) {
+            // Retained endpoints, scatter positions, partition ends
+            // and tiles occupy device-only ranges of this exact layout.
+            const std::array<std::uint64_t,14> layout{
+                address,offsets[15],offsets[3],offsets[14],
+                partition_output_offset,mode_output_offset,task_capacity,
+                descriptor_capacity,bodies.size(),wide_bounds.nodes,
+                wide_bounds.stages,partition_output_count_,
+                partition_dispatch_count_,total};
+            const bool reuse=prior_schedule && layout==resident_schedule_layout_ &&
+                partition_dispatch_buffer_ &&
+                partition_dispatch_count_<=partition_dispatch_capacity_/16u;
+            resident_schedule_layout_=layout;
+            last_schedule_.resident_schedule_reuse_candidate=reuse;
+            const auto retained_task_count=reuse?narrow(prior_tasks):invalid;
+            std::memcpy(host_input(offsets[15])+32u,
+                        &retained_task_count,sizeof(retained_task_count));
+        }
         // Adjacent Sc constraint slot edits share one DMA into the
         // resident Dy allocation, not the transient solver-row upload.
         joint_source_uploads_.clear();
@@ -2603,7 +2630,7 @@ public:
             build.accesses.clear();
             const auto slot=convex_vertex_count?9u:8u;
             build.buffers[slot]={slot,partition_dispatch_buffer_,0u,
-                partition_dispatch_count_*16u,compute::BufferAccess::Write};
+                partition_dispatch_count_*16u,compute::BufferAccess::ReadWrite};
             build.indirect.reset();
             build.buffers[2].access=compute::BufferAccess::Read;
             build.buffers[3].access=compute::BufferAccess::Read;
@@ -2885,6 +2912,8 @@ public:
                 if(last_schedule_.resident_wide_schedule) {
                     std::uint32_t wide=0u;
                     std::memcpy(&wide,host_.data()+output_bytes-4u,4u);
+                    last_schedule_.resident_schedule_reused=(wide&0x80000000u)!=0u;
+                    wide&=0x7fffffffu;
                     if(wide>admitted[1])
                         throw std::logic_error("Resident Dy wide task count is invalid");
                     last_schedule_.wide_tasks=wide;
@@ -3270,6 +3299,7 @@ public:
             static_cast<std::int64_t>(
                 prep_bytes+inline_body_bytes+
                 last_schedule_.retained_friction_source_bytes);
+        resident_schedule_committed_=last_schedule_.resident_wide_schedule;
     }
     std::size_t last_resident_pose_count() const noexcept {
         return last_resident_pose_count_;
@@ -3982,6 +4012,8 @@ private:
     std::size_t partition_header_begin_=0u,partition_task_begin_=0u;
     compute::BufferId partition_dispatch_buffer_=0u;
     std::size_t partition_dispatch_capacity_=0u;
+    std::array<std::uint64_t,14> resident_schedule_layout_{};
+    bool resident_schedule_committed_=false;
     std::array<bool,255> position_ends_{};
     std::uint32_t wide_iterations_=0u;
     SourceDyLaunchStats last_schedule_{};

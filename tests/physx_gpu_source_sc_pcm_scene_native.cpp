@@ -5984,6 +5984,42 @@ void verify_resident_wide_device_response(
     for(std::size_t i=0u;i<b.size();++i)
         test::compound_compare_state(gpu.body_state(b[i]),cpu.body_state(a[i]),
             0.03f,"Resident wide device schedule changed body motion");
+    const auto reset=[&](native::Scene& scene,const auto& ids) {
+        for(std::uint32_t i=0u;i<=count;++i) {
+            const float x=i==count?-8.f:1.25f*float(i);
+            scene.set_pose(ids[i],{x,0.83f,0.f},{});
+            scene.set_velocity(ids[i],{i%2u?0.02f:-0.02f,0.f,0.01f});
+            scene.set_angular_velocity(ids[i],{});
+        }
+        scene.set_pose(ids[count+1u],{0.f,0.83f,8.f},{});
+        scene.set_velocity(ids[count+1u],{});
+        scene.set_angular_velocity(ids[count+1u],{});
+        for(std::uint32_t i=1u;i<count;++i) {
+            scene.set_pose(ids[count+1u+i],{1.5f*float(i),0.83f,8.f},{});
+            scene.set_velocity(ids[count+1u+i],{0.f,0.f,0.01f});
+            scene.set_angular_velocity(ids[count+1u+i],{});
+        }
+    };
+    bool reused=false;
+    for(std::size_t frame=0u;frame<2u;++frame) {
+        reset(cpu,a);
+        reset(gpu,b);
+        cpu.step(dt);
+        gpu.step(dt);
+        const auto next=producer->dy_launch_stats();
+        require(next.resident_wide_schedule &&
+                next.device_admitted_tasks==schedule.device_admitted_tasks &&
+                next.device_admitted_descriptors==schedule.device_admitted_descriptors,
+                "Repeated resident frame changed numerical membership");
+        if(next.resident_schedule_reuse_candidate)
+            require(next.resident_schedule_reused,
+                    "Stable resident endpoints rebuilt their retained schedule");
+        reused|=next.resident_schedule_reused;
+        for(std::size_t i=0u;i<b.size();++i)
+            test::compound_compare_state(gpu.body_state(b[i]),cpu.body_state(a[i]),
+                0.03f,"Retained wide schedule changed body motion");
+    }
+    require(reused,"Repeated resident frames did not retain coloring and tiles");
     std::cout<<"FYZZXYZZY_METRIC resident_wide tasks="
              <<schedule.device_admitted_tasks
              <<" tiled="<<schedule.wide_tasks
