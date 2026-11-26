@@ -990,13 +990,17 @@ struct Context::Impl {
         std::vector<DownloadSpan> outputs(downloads.begin(),downloads.end());
         auto staging=acquire_readback(bytes);
         const ReadbackTail tail{staging.Get(),downloads};
-        const SubmissionId id=submit_batch(producer,false,&tail);
+        const auto id=next_submission;
+        const auto [entry,inserted]=pending_readbacks_.emplace(
+            id,PendingReadback{bytes,staging,std::move(outputs)});
+        if(!inserted)
+            throw std::logic_error("D3D12 readback ID already registered");
         try {
-            pending_readbacks_.emplace(id,PendingReadback{
-                bytes,std::move(staging),std::move(outputs)});
+            submit_batch(producer,false,&tail);
         }catch(...) {
-            // The submitted copy may still reference its staging.
-            wait_submission(id);
+            pending_readbacks_.erase(entry);
+            // Submission owns its staging if execution has begun.
+            if(!first_unsignaled_fence)recycle_readback(std::move(staging));
             throw;
         }
         return id;

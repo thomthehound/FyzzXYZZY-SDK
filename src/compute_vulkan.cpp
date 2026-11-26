@@ -257,6 +257,7 @@ struct Context::Impl {
         // constrains a bound shader descriptor, not a transfer source.
         bool storage_eligible = true;
         bool cpu_mapped = false;
+        BufferRangeHazards queue_hazards;
     };
     struct Pipeline {
         VkDescriptorSetLayout descriptors = VK_NULL_HANDLE;
@@ -832,7 +833,9 @@ struct Context::Impl {
                 last = std::max(last, pending.first);
             // Queue-retirement record must be secured *before* invalidating
             // the public BufferId, preserving ownership on allocation failure.
-            retired_buffers.push_back({last, it->second});
+            retired_buffers.reserve(retired_buffers.size()+1u);
+            it->second.queue_hazards=BufferRangeHazards{};
+            retired_buffers.push_back({last, std::move(it->second)});
         }
         buffers.erase(it);
     }
@@ -1024,7 +1027,8 @@ struct Context::Impl {
         auto& batch=producer?*producer:local;
         const auto original=batch.size();
         std::size_t offset=0;
-        SubmissionId id=0u;
+        const auto id=next_submission;
+        bool registered=false;
         try {
             batch.reserve(original+downloads.size());
             for(const auto& item:downloads) {
@@ -1032,14 +1036,16 @@ struct Context::Impl {
                     item.source,item.source_offset,staging.buffer,offset,item.bytes});
                 offset+=item.bytes;
             }
-            id=submit_batch(batch);
+            registered=pending_readbacks_.emplace(
+                id,PendingReadback{staging.buffer,staging.capacity,std::move(outputs)}).second;
+            if(!registered)
+                throw std::logic_error("Vulkan readback ID already registered");
+            submit_batch(batch);
             batch.erase(batch.begin()+original,batch.end());
-            pending_readbacks_.emplace(id,PendingReadback{
-                staging.buffer,staging.capacity,std::move(outputs)});
         } catch(...) {
             batch.erase(batch.begin()+original,batch.end());
-            if(id)retire_buffer(staging.buffer);
-            else recycle_readback(staging);
+            if(registered)pending_readbacks_.erase(id);
+            recycle_readback(staging);
             throw;
         }
         return id;
@@ -1658,29 +1664,14 @@ struct Context::Impl {
                 vkCmdWriteTimestamp(commands, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, timestamps, 0);
             }
 
-            // A single inter-submission dependency preserves the original
-            // queue contract. Vulkan queue ordering alone does not publish
-            // shader writes as memory dependencies between submissions.
-            VkMemoryBarrier from_previous{};
-            from_previous.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
-            from_previous.srcAccessMask = VK_ACCESS_MEMORY_WRITE_BIT;
-            from_previous.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT |
-                                          VK_ACCESS_TRANSFER_WRITE_BIT |
-                                          VK_ACCESS_SHADER_READ_BIT |
-                                          VK_ACCESS_SHADER_WRITE_BIT |
-                                          VK_ACCESS_INDIRECT_COMMAND_READ_BIT;
-            vkCmdPipelineBarrier(commands, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
-                                 VK_PIPELINE_STAGE_TRANSFER_BIT |
-                                 VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT |
-                                 VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT, 0,
-                                 1, &from_previous, 0, nullptr, 0, nullptr);
-
             struct RangeUse {
                 BufferId buffer;
                 std::size_t begin,end;
                 RangeAccessScope scope;
                 bool writes;
             };
+            // Recording owns tentative changes for touched buffers only.
+            // A failed recording or submission leaves queue state intact.
             std::unordered_map<BufferId,BufferRangeHazards> hazards;
             std::vector<RangeUse> operation_uses;
             std::vector<VkBufferMemoryBarrier> barriers;
@@ -1713,7 +1704,11 @@ struct Context::Impl {
                 for(const auto& use:operation_uses) {
                     if(get(use.buffer).placement==MemoryPlacement::Upload)
                         continue;
-                    hazards[use.buffer].use(use.begin,use.end,use.scope,use.writes,
+                    auto pending=hazards.find(use.buffer);
+                    if(pending==hazards.end())
+                        pending=hazards.emplace(use.buffer,
+                            get(use.buffer).queue_hazards).first;
+                    pending->second.use(use.begin,use.end,use.scope,use.writes,
                         [&](std::size_t begin,std::size_t end,
                             RangeAccessScope source,RangeAccessScope target) {
                             VkBufferMemoryBarrier barrier{};
@@ -1888,6 +1883,9 @@ struct Context::Impl {
             }
 #endif
             const SubmissionId id = enqueue(commands, pool);
+            // Commit recorded queue dependencies without allocation.
+            for(auto& [buffer,state]:hazards)
+                std::swap(buffers.find(buffer)->second.queue_hazards,state);
             auto& submitted = submissions.at(id);
             submitted.timestamps = timestamps;
 #if defined(FYZZXYZZY_PROFILE_GPU)

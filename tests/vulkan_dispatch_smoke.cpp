@@ -337,6 +337,33 @@ int main(int argc, char** argv) {
                 throw std::runtime_error(
                     "Ordered host uploads did not preserve GPU copy/dispatch dependencies");
         }
+        // Preserve RAW, WAR and WAW dependencies across submissions,
+        // including a completed intermediate token and a rejected batch.
+        context.upload(dst,0,initial.data(),sizeof(initial));
+        std::vector<SubmissionId> split;
+        for(const auto& operation:ordered_uploads)
+            split.push_back(context.submit_batch({operation}));
+        context.wait_submission(split[2]);
+        rejected_batch=false;
+        try {
+            context.submit_batch({
+                CopyCommand{mirror,0,dst,0,sizeof(output)},
+                CopyCommand{src,0,dst,0,sizeof(output)+4u}});
+        }catch(const std::out_of_range&) {rejected_batch=true;}
+        if(!rejected_batch)
+            throw std::runtime_error("Invalid split batch was accepted");
+        context.download(mirror,0,earlier_result.data(),sizeof(earlier_result));
+        context.download(dst,0,output.data(),sizeof(output));
+        for(std::uint32_t i=0;i<array_size;++i) {
+            const auto first_expected=i<size
+                ?input[i]*first_pass.multiplier+first_pass.addend:sentinel;
+            const auto second_expected=i<size
+                ?later_input[i]*second_pass.multiplier+second_pass.addend:sentinel;
+            if(earlier_result[i]!=first_expected || output[i]!=second_expected)
+                throw std::runtime_error("Cross-submission range dependency was lost");
+        }
+        for(std::size_t i=0u;i<split.size();++i)
+            if(i!=2u)context.wait_submission(split[i]);
         context.destroy_buffer(independent_copy);
         context.destroy_buffer(independent_output);
         context.destroy_buffer(independent_input);

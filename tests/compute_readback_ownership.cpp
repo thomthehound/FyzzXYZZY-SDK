@@ -248,6 +248,17 @@ int main() {
             // Overlapping destinations must retain last-writer order.
             CopyCommand{staging,40u*sizeof(std::uint32_t),gpu,4u,4u}
         };
+        // Rejected producers neither execute earlier operations nor
+        // publish a readback; the same output can be submitted again.
+        auto invalid_batch=batch;
+        invalid_batch.emplace_back(CopyCommand{gpu,0u,gpu,0u,4u});
+        peak.fill(sentinel);
+        rejected=false;
+        try {
+            context.submit_batch_with_readback(invalid_batch,peak_download);
+        }catch(const std::invalid_argument&) {rejected=true;}
+        if(!rejected || peak[0]!=sentinel || peak.back()!=sentinel)
+            throw std::runtime_error("Rejected producer published a readback");
         context.finish_download_batch(
             context.submit_batch_with_readback(batch,peak_download),true);
         for(std::size_t i=0u;i<input.size();++i) {
