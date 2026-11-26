@@ -1304,12 +1304,13 @@ void verify(Context& context,const char* filename) {
         std::vector<std::uint32_t>(517u,0x10101u),radix_flags);
     no_errors(radix);
     check_task_mapping(radix);
-    require(header(radix).runnable_components==3u &&
+    require(radix.first.response_scratch-radix.first.response_primary==
+                ((radix_nodes*4u+15u)&~15u) &&
+            header(radix).runnable_components==3u &&
             header(radix).admitted_edges>300u,
             "Device Sc multi-tile response scatter missed runnable components");
 
-    // An odd number of radix passes must publish the scratch output
-    // as the final response stream.
+    // A single radix pass publishes directly without an index stream.
     std::vector<std::uint32_t> short_flags(5u,4u|0x100u);
     short_flags[0u]|=source_sc_device_island_active_bit;
     short_flags[4u]|=source_sc_device_island_active_bit;
@@ -1322,9 +1323,9 @@ void verify(Context& context,const char* filename) {
     no_errors(short_radix);
     check_task_mapping(short_radix);
     require(header(short_radix).runnable_components==2u &&
-            short_radix.first.response_order!=
-                short_radix.first.response_scratch,
-            "Device Sc single-pass radix output did not select scratch");
+            short_radix.first.response_scratch==0u &&
+            short_radix.first.radix_histogram-short_radix.first.response_primary==32u,
+            "Device Sc single-pass radix reserves unused index storage");
 
     // An adversarial source order forces multiple simultaneous root
     // changes. Concurrent CAS unions must resolve one canonical root,

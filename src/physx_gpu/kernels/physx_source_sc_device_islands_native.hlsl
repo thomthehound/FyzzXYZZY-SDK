@@ -159,8 +159,7 @@ void connectNodes(uint a,uint b) {
 // The same prefix owns runnable task, response and body ranges.
 groupshared uint taskScan[128],responseScan[128],bodyScan[128];
 groupshared uint taskCarry,responseCarry,bodyCarry;
-groupshared uint radixBuckets[256],radixOffsets[256],radixTotals[256];
-groupshared uint radixDigits[128],radixRanks[128];
+groupshared uint radixMasks[1024],radixOffsets[256],radixTotals[256];
 groupshared uint compactContactScan[256];
 groupshared uint contactGroupCarry;
 groupshared uint compactBodyKeys[256],compactBodyStarts[256];
@@ -1014,19 +1013,19 @@ void main(uint3 thread:SV_DispatchThreadID,
     const uint blocks=(p.combinedCount+127u)/128u;
     const uint block=index/128u;
     if(operation==0u) {
-        radixBuckets[lane.x]=0u;
-        radixBuckets[lane.x+128u]=0u;
+        radixMasks[lane.x]=0u;
+        radixMasks[lane.x+128u]=0u;
         GroupMemoryBarrierWithGroupSync();
         if(index<p.combinedCount) {
             const uint item=pass==0u?index:work.Load(source+index*4u);
             const uint digit=(itemKey(item)>>shift)&255u;
             uint previous;
-            InterlockedAdd(radixBuckets[digit],1u,previous);
+            InterlockedAdd(radixMasks[digit],1u,previous);
         }
         GroupMemoryBarrierWithGroupSync();
         const uint base=p.histBias+block*1024u;
-        work.Store(base+lane.x*4u,radixBuckets[lane.x]);
-        work.Store(base+(lane.x+128u)*4u,radixBuckets[lane.x+128u]);
+        work.Store(base+lane.x*4u,radixMasks[lane.x]);
+        work.Store(base+(lane.x+128u)*4u,radixMasks[lane.x+128u]);
         return;
     }
     if(operation==1u) {
@@ -1066,26 +1065,29 @@ void main(uint3 thread:SV_DispatchThreadID,
         return;
     }
     if(operation==2u) {
-        radixDigits[lane.x]=invalid;
-        if(index<p.combinedCount) {
-            const uint item=pass==0u?index:work.Load(source+index*4u);
-            radixDigits[lane.x]=(itemKey(item)>>shift)&255u;
-        }
-        GroupMemoryBarrierWithGroupSync();
-        if(lane.x==0u) {
-            for(uint i=0u;i<256u;++i)radixBuckets[i]=0u;
-            for(uint i=0u;i<128u;++i) {
-                const uint digit=radixDigits[i];
-                if(digit==invalid)continue;
-                radixRanks[i]=radixBuckets[digit]++;
-            }
-        }
+        // Four membership words per digit encode stable source order
+        // independently of the hardware's subgroup width.
+        [unroll]
+        for(uint i=0u;i<8u;++i)radixMasks[i*128u+lane.x]=0u;
+        uint item=invalid,digit=0u;
+        const uint word=lane.x>>5u;
+        const uint bit=1u<<(lane.x&31u);
         GroupMemoryBarrierWithGroupSync();
         if(index<p.combinedCount) {
-            const uint digit=radixDigits[lane.x];
+            item=pass==0u?index:work.Load(source+index*4u);
+            digit=(itemKey(item)>>shift)&255u;
+            uint previous;
+            InterlockedOr(radixMasks[digit*4u+word],bit,previous);
+        }
+        GroupMemoryBarrierWithGroupSync();
+        if(index<p.combinedCount) {
+            const uint base=digit*4u;
+            uint rank=countbits(radixMasks[base+word]&(bit-1u));
+            [unroll]
+            for(uint i=0u;i<3u;++i)
+                if(i<word)rank+=countbits(radixMasks[base+i]);
             const uint position=work.Load(
-                p.histBias+block*1024u+digit*4u)+radixRanks[lane.x];
-            const uint item=pass==0u?index:work.Load(source+index*4u);
+                p.histBias+block*1024u+digit*4u)+rank;
             if(pass+1u==p.radixPasses)scatterItem(position,item);
             else work.Store(target+position*4u,item);
         }

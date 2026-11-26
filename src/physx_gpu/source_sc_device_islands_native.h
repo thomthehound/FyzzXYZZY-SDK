@@ -157,13 +157,19 @@ struct SourceScDeviceIslandLayout {
         } else {
             result.response_primary=static_cast<std::size_t>(block_end);
         }
-        auto bytes=align(std::uint64_t(result.response_primary)+combined*4u);
-        if(combined>256u) {
-            result.response_scratch=static_cast<std::size_t>(bytes);
-            result.radix_histogram=static_cast<std::size_t>(
-                align(bytes+combined*4u));
-            bytes=align(std::uint64_t(result.radix_histogram)+
-                        ((combined+127u)/128u)*256u*4u);
+        const bool parallel=node_count>256u || edge_count>256u;
+        const auto passes=radix_passes(node_count);
+        // The primary range also holds speculative wake bits. Only
+        // intermediate radix passes need complete index streams.
+        auto bytes=align(std::uint64_t(result.response_primary)+
+                         (parallel && passes>2u?combined:node_count)*4u);
+        if(parallel) {
+            if(passes>1u) {
+                result.response_scratch=static_cast<std::size_t>(bytes);
+                bytes=align(bytes+combined*4u);
+            }
+            result.radix_histogram=static_cast<std::size_t>(bytes);
+            bytes=align(bytes+((combined+127u)/128u)*256u*4u);
         }
         result.response_order=static_cast<std::size_t>(align(bytes));
         result.body_order=static_cast<std::size_t>(
