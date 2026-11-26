@@ -2381,11 +2381,13 @@ public:
                 first+=groups*128u;
             }
         }
-        const auto declare_body_phase_accesses=[&](Launch phase) {
+        const auto declare_phase_accesses=[&](Launch phase) {
             using A=compute::BufferAccess;
             auto& accesses=dispatch.accesses;
             accesses.clear();
-            if(phase!=Launch::InitializeBodies && phase!=Launch::Motion &&
+            const bool solves=phase==Launch::Partition;
+            const bool snapshots=phase==Launch::Motion;
+            if(phase!=Launch::InitializeBodies && !snapshots && !solves &&
                phase!=Launch::PublishErrors)return;
             const auto region=[&](std::uint32_t slot,std::size_t offset,
                                   std::size_t size,A access) {
@@ -2407,8 +2409,8 @@ public:
             const auto sc_region=[&](std::size_t offset,std::size_t size,A access) {
                 region(island_slot,offset,size,access);
             };
-            // All three phases consume the schedule header. Only body
-            // initialization reads the variable authored integration inputs.
+            // Body initialization consumes the variable integration
+            // inputs; subsequent solver phases consume the schedule header.
             arena_region(offsets[12],
                 phase==Launch::InitializeBodies?bytes[12]:integration_header_bytes,A::Read);
             if(device_partitions)
@@ -2422,8 +2424,8 @@ public:
                     sc_region(layout.counts,layout.admissions-layout.counts,A::Read);
                 }else
                     sc_region(layout.tasks,layout.block_offsets-layout.tasks,
-                        phase==Launch::Motion?A::ReadWrite:A::Read);
-                if(phase!=Launch::PublishErrors) {
+                        snapshots || solves?A::ReadWrite:A::Read);
+                if(phase==Launch::InitializeBodies || snapshots) {
                     sc_region(layout.body_order,
                               layout.contact_endpoints-layout.body_order,A::Read);
                     if(device_admission->deferred_body_remap)
@@ -2431,8 +2433,8 @@ public:
                                   layout.joint_remap-layout.body_remap,A::Read);
                 }
             }else if(phase!=Launch::InitializeBodies) {
-                table(5u,phase==Launch::Motion?A::ReadWrite:A::Read);
-                if(phase==Launch::Motion)table(4u,A::Read);
+                table(5u,snapshots || solves?A::ReadWrite:A::Read);
+                if(snapshots)table(4u,A::Read);
             }
             if(phase==Launch::InitializeBodies) {
                 table(0u,A::Write);
@@ -2440,11 +2442,26 @@ public:
                 binding(2u,A::Read);
                 binding(4u,A::Read);
                 binding(5u,A::ReadWrite);
-            }else if(phase==Launch::Motion) {
+            }else if(snapshots || solves) {
                 table(0u,A::ReadWrite);
                 table(14u,A::Read);
                 arena_region(partition_output_offset,
                     partition_output_count_*sizeof(WorkTile),A::Read);
+                if(solves) {
+                    table(1u,A::ReadWrite);
+                    table(2u,A::Read);
+                    table(3u,A::Read);
+                    table(6u,A::ReadWrite);
+                    table(7u,A::ReadWrite);
+                    table(8u,A::ReadWrite);
+                    table(9u,A::Read);
+                    table(10u,A::Read);
+                    table(11u,A::Read);
+                    // Final passes publish contact/friction impulses and
+                    // patch status in the compact source result stream.
+                    arena_region(history_bytes+result_offsets[2],
+                        result_offsets[5]-result_offsets[2],A::ReadWrite);
+                }
             }else {
                 if(device_admission)
                     arena_region(offsets[15]+36u,8u,A::ReadWrite);
@@ -2476,7 +2493,7 @@ public:
                 (device_partitions && (!wide_tasks_.empty() || resident_wide) &&
                  phase!=Launch::Color ?0x40000000u:0u)|
                 (resident_wide && phase!=Launch::FreeBodies?0x04000000u:0u);
-            declare_body_phase_accesses(phase);
+            declare_phase_accesses(phase);
             // Compact tasks have no cross-workgroup dependencies. Their
             // workgroup count is published by the Sc device prefix, so
             // dispatch directly from that result instead of recopying a
