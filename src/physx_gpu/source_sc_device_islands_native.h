@@ -95,16 +95,15 @@ struct SourceScDeviceIslandHeader {
     // Sc owns the decision to pack all one-body/one-constraint tasks.
     std::uint32_t has_non_singleton_task=0u;
     std::uint32_t connectivity_reused=0u;
-    std::uint32_t reserved[2]{};
+    std::uint32_t connectivity_dirty=0u,reserved=0u;
 };
 static_assert(sizeof(SourceScDeviceIslandHeader)==48u &&
               offsetof(SourceScDeviceIslandHeader,dispatch_x)==16u &&
               offsetof(SourceScDeviceIslandHeader,has_non_singleton_task)==32u);
 
-// One source-owned transient allocation holds union parents (finally
-// canonical island roots), per-root admission counts and source-ordered
-// edge records, stable body/response index streams and typed source
-// tokens. No CPU readback is required between these phases.
+// Canonical roots and source admission records survive committed frames.
+// Counts, ordering, and typed numerical tokens are rebuilt for each frame.
+// Body-remap storage serves as union-parent scratch before Dy remapping.
 struct SourceScDeviceIslandLayout {
     std::size_t roots=sizeof(SourceScDeviceIslandHeader);
     std::size_t counts=0u,admissions=0u,tasks=0u;
@@ -268,7 +267,7 @@ public:
                 std::uint32_t node_count,std::uint32_t edge_count,
                 std::uint32_t edge_capacity,
                 SourceScDeviceIslandSources sources,
-                bool retain_compact_roots=false) const {
+                bool retain_roots=false) const {
         // Even a frame without responding nodes must clear the device
         // runnable-task header. Reused output storage may contain a
         // preceding frame's nonzero task admission.
@@ -355,7 +354,7 @@ public:
         // union, prefix and response-ordering schedule.
         if(node_count<=256u && edge_count<=256u) {
             args[12]=sources.speculative_wake_groups?39u:32u;
-            args[13]=retain_compact_roots?1u:0u;
+            args[13]=retain_roots?1u:0u;
             dispatch.groups={1u,1u,1u};
             std::memcpy(dispatch.push_constants.data(),
                         args.data(),sizeof(args));
@@ -382,8 +381,11 @@ public:
                     count-first,groups*128u));
             }
         };
-        launch(sources.speculative_wake_groups?42u:0u,std::max(
-            std::max(1u,node_count),
+        const auto initialize=retain_roots
+            ?(sources.speculative_wake_groups?44u:43u)
+            :(sources.speculative_wake_groups?42u:0u);
+        launch(initialize,std::max(
+            std::max(std::max(1u,node_count),retain_roots?edge_count:0u),
             static_cast<std::uint32_t>(
                 (std::uint64_t(sources.contact_managers)+31u)/32u)));
         launch(1u,edge_count);
@@ -573,11 +575,22 @@ private:
             work(layout.contact_endpoints,contacts*8u,A::Write);
             contact_bits(A::ReadWrite);
         };
-        if(phase==0u || phase==42u) {
-            header(A::Write);roots(A::Write);counts(A::Write);contact_bits(A::Write);
-            if(phase==42u)wake_bits(A::Write);
+        if(phase==0u || phase==42u || phase==43u || phase==44u) {
+            const bool retained=phase==43u || phase==44u;
+            header(retained?A::ReadWrite:A::Write);
+            counts(A::Write);contact_bits(A::Write);
+            work(layout.body_remap,nodes*4u,A::Write);
+            if(retained) {
+                roots(A::Read);admissions(A::Read);
+                if(edges)input(0u);
+                if(edge_capacity)input(1u);
+                if(nodes)input(2u);
+            }
+            if(phase==42u || phase==44u)wake_bits(A::Write);
         }else if(phase==1u || phase==2u || phase==40u) {
-            header(A::ReadWrite);roots(A::ReadWrite);
+            header(A::ReadWrite);
+            work(layout.body_remap,nodes*4u,A::ReadWrite);
+            if(phase!=1u)roots(A::ReadWrite);
             if(edges)input(0u);
             if(edge_capacity)input(1u);
             if(nodes)input(2u);

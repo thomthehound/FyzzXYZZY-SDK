@@ -166,8 +166,7 @@ public:
         if(island_work_ready_ && !stream_.commands().empty())
             throw std::logic_error(
                 "Source Sc island admission committed before numerical submission");
-        island_roots_committed_=island_work_ready_ &&
-            island_node_count_<=256u && island_edge_count_<=256u;
+        island_roots_committed_=island_work_ready_;
         if(!pcm_transaction_pending_) {
             island_work_ready_=false;
             island_body_remap_={};
@@ -817,7 +816,7 @@ public:
         for(const auto group:node_flags.subspan(node_count))
             if(group!=invalid && group>=node_count)
                 throw std::invalid_argument("Device Sc wake group ordinal invalid");
-        const bool retain_compact_roots=island_roots_committed_ &&
+        const bool retain_roots=island_roots_committed_ &&
             node_count==island_node_count_ && edge_count==island_edge_count_ &&
             sources.contact_managers==island_contact_count_;
         island_roots_committed_=false;
@@ -875,7 +874,7 @@ public:
         island_stage_.append(stream_,addresses_,
             source_edges,device_edge_history_address(),source_nodes,
             island_work_.getDevicePtr(),
-            node_count,edge_count,edge_capacity,sources,retain_compact_roots);
+            node_count,edge_count,edge_capacity,sources,retain_roots);
         last_island_dispatches_=stream_.commands().size()-before_islands;
         // The device-authored task count is final at admission. Dy
         // resolves body and joint rows while consuming the stream.

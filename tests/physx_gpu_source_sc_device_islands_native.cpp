@@ -416,17 +416,17 @@ void verify(Context& context,const char* filename) {
                     std::to_string(errors));
     };
 
-    {
+    for(const std::uint32_t nodes:{3u,257u}) {
         const std::vector<SourceScDeviceIslandEdge> edges{
             {0u,0u,1u,0u,0u},
             {1u,1u,2u,1u,0u}};
         constexpr auto active=source_sc_device_island_active_bit;
-        const std::vector<std::uint32_t> flags(3u,4u|active);
+        const std::vector<std::uint32_t> flags(nodes,4u|active);
         const auto next=[&](const DeviceResult* previous,
                 const std::vector<SourceScDeviceIslandEdge>& input,
                 std::vector<std::uint32_t> touches,
                 std::vector<std::uint32_t> words) {
-            return evaluate(3u,input,std::move(touches),std::move(words),
+            return evaluate(nodes,input,std::move(touches),std::move(words),
                             {},std::nullopt,{},std::nullopt,{},0u,previous);
         };
         const auto initial=next(nullptr,edges,{0x10101u,0x10101u},flags);
@@ -465,6 +465,50 @@ void verify(Context& context,const char* filename) {
         require(header(changed_body).connectivity_reused==0u &&
                 root(changed_body,2u)==2u,
                 "Nonresponding endpoint bridged retained components");
+    }
+
+    {
+        constexpr std::uint32_t nodes=385u;
+        std::vector<SourceScDeviceIslandEdge> edges;
+        std::vector<std::uint32_t> touches(nodes-1u,0x10101u);
+        const std::vector<std::uint32_t> flags(nodes,
+            4u|source_sc_device_island_active_bit);
+        for(std::uint32_t i=0u;i<nodes-1u;++i)
+            edges.push_back({i,i,i+1u,i,0u});
+        const auto next=[&](const DeviceResult* previous) {
+            return evaluate(nodes,edges,touches,flags,{},std::nullopt,{},
+                            std::nullopt,{},0u,previous);
+        };
+        const auto initial=next(nullptr);
+        no_errors(initial);
+        const auto stable=next(&initial);
+        no_errors(stable);
+        check_task_mapping(stable);
+        require(header(stable).connectivity_reused==1u &&
+                header(stable).runnable_components==1u,
+                "Parallel connectivity did not retain a stable chain");
+        touches[192u]=0x10000u;
+        const auto split=next(&stable);
+        no_errors(split);
+        check_task_mapping(split);
+        require(header(split).connectivity_reused==0u &&
+                header(split).runnable_components==2u &&
+                root(split,384u)==193u,
+                "Parallel connectivity did not split a retired bridge");
+        const auto stable_split=next(&split);
+        no_errors(stable_split);
+        check_task_mapping(stable_split);
+        require(header(stable_split).connectivity_reused==1u &&
+                header(stable_split).runnable_components==2u,
+                "Parallel connectivity did not retain split components");
+        touches[192u]=0x10101u;
+        const auto joined=next(&stable_split);
+        no_errors(joined);
+        check_task_mapping(joined);
+        require(header(joined).connectivity_reused==0u &&
+                root(joined,384u)==0u &&
+                header(joined).runnable_components==1u,
+                "Parallel connectivity did not reconnect a physical bridge");
     }
 
     // PCM and CPU Gu share one source-ordered numerical extent stream.

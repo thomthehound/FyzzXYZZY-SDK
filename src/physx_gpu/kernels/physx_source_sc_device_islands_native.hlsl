@@ -114,22 +114,22 @@ bool edgeConnected(uint edge,uint kind) {
 // Every successful union links a current root to a strictly smaller
 // root. Concurrent unions cannot form cycles. Halving preserves the
 // monotone parent invariant while other workgroups attach roots.
-uint findRoot(uint node) {
+uint findRoot(uint node,uint parentBias) {
     for(uint step=0u;step<p.nodeCount;++step) {
-        const uint parent=work.Load(p.rootBias+node*4u);
+        const uint parent=work.Load(parentBias+node*4u);
         if(parent==node)return node;
         if(parent>=node) {
             reject(4u);
             return invalid;
         }
-        const uint grand=work.Load(p.rootBias+parent*4u);
+        const uint grand=work.Load(parentBias+parent*4u);
         if(grand>parent) {
             reject(4u);
             return invalid;
         }
         if(grand!=parent) {
             uint previous;
-            work.InterlockedMin(p.rootBias+node*4u,grand,previous);
+            work.InterlockedMin(parentBias+node*4u,grand,previous);
         }
         node=grand;
     }
@@ -140,20 +140,45 @@ bool respondingNode(uint node) {
     return node!=invalid && node<p.nodeCount &&
         (nodeFlags.Load(p.nodeBias+node*4u)&nonrespondingNode)==0u;
 }
-void connectNodes(uint a,uint b) {
+void connectNodes(uint a,uint b,uint parentBias) {
     if(a==b)return;
     for(uint attempt=0u;attempt<p.nodeCount;++attempt) {
-        const uint rootA=findRoot(a);
-        const uint rootB=findRoot(b);
+        const uint rootA=findRoot(a,parentBias);
+        const uint rootB=findRoot(b,parentBias);
         if(rootA==invalid || rootB==invalid || rootA==rootB)return;
         const uint high=max(rootA,rootB);
         const uint low=min(rootA,rootB);
         uint prior;
-        work.InterlockedCompareExchange(p.rootBias+high*4u,
+        work.InterlockedCompareExchange(parentBias+high*4u,
                                         high,low,prior);
         if(prior==high)return;
     }
     reject(8u);
+}
+
+// Body-remap storage becomes live only after admission. During the
+// parallel union it holds temporary parents, separate from canonical roots.
+uint unionParentBias() {
+    const uint words=(p.primaryCapacity>>5u)+uint((p.primaryCapacity&31u)!=0u);
+    return p.contactAdmissionBias+((words*4u+15u)&~15u);
+}
+bool retainedUnion(uint item) {
+    const uint address=p.admissionBias+item*24u;
+    const uint2 nodes=work.Load2(address+8u);
+    // Distinct nodes share a canonical root only if both previously
+    // responded. The admission owner also establishes physical touch.
+    return nodes.x<p.nodeCount && nodes.y<p.nodeCount && nodes.x!=nodes.y &&
+        work.Load(address+16u)!=invalid &&
+        work.Load(p.rootBias+nodes.x*4u)==work.Load(p.rootBias+nodes.y*4u);
+}
+bool currentUnion(uint4 edge,uint kind) {
+    if(edge.y==edge.z || !respondingNode(edge.y) || !respondingNode(edge.z))
+        return false;
+    if((kind&jointEdge)!=0u)return true;
+    if(edge.x>=p.edgeCapacity)return false;
+    // Full source and history validation belongs to admission after
+    // initialization has finished publishing the current error word.
+    return (edgeHistory.Load(p.touchBias+edge.x*240u+72u)&1u)!=0u;
 }
 
 // The same prefix owns runnable task, response and body ranges.
@@ -391,14 +416,14 @@ void admitCompact(uint lane,bool speculativeWake) {
             if(validNode(edge.y) && validNode(edge.z) &&
                edgeConnected(edge.x,kind) && validSource(edge.w,kind) &&
                respondingNode(edge.y) && respondingNode(edge.z))
-                connectNodes(edge.y,edge.z);
+                connectNodes(edge.y,edge.z,p.rootBias);
         }
         AllMemoryBarrierWithGroupSync();
     }
     if(lane==0u)work.Store(p.workBias+36u,uint(compactTopologyChanged==0u));
 
     for(uint node=lane;node<p.nodeCount;node+=128u) {
-        const uint root=findRoot(node);
+        const uint root=findRoot(node,p.rootBias);
         if(root!=invalid) {
             work.Store(p.rootBias+node*4u,root);
             const uint flags=nodeFlags.Load(p.nodeBias+node*4u);
@@ -430,7 +455,7 @@ void admitCompact(uint lane,bool speculativeWake) {
             const uint node=respondingNode(edge.y)?edge.y:
                 respondingNode(edge.z)?edge.z:invalid;
             if(node!=invalid) {
-                owner=findRoot(node);
+                owner=findRoot(node,p.rootBias);
                 if(owner!=invalid) {
                     const uint count=p.countBias+owner*24u;
                     uint previous;
@@ -797,26 +822,43 @@ void main(uint3 thread:SV_DispatchThreadID,
         if(index<p.nodeCount)propagateSpeculativeWake(index);
         return;
     }
-    if(p.phase==0u || p.phase==42u) {
+    if(p.phase==0u || p.phase==42u || p.phase==43u || p.phase==44u) {
+        const bool retained=p.phase==43u || p.phase==44u;
         if(index==0u) {
             work.Store4(p.workBias,uint4(0u,0u,0u,0u));
             work.Store4(p.workBias+16u,uint4(0u,1u,1u,p.edgeCount));
             work.Store2(p.workBias+32u,uint2(0u,0u));
+            // A committed parallel admission leaves the dirty word clear.
+            if(!retained)work.Store(p.workBias+40u,1u);
         }
         if(index<(p.primaryCapacity/32u+
             uint((p.primaryCapacity&31u)!=0u)))
             work.Store(p.contactAdmissionBias+index*4u,0u);
         if(index<p.nodeCount) {
-            work.Store(p.rootBias+index*4u,index);
+            work.Store(unionParentBias()+index*4u,index);
             const uint count=p.countBias+index*24u;
             work.Store4(count,uint4(0u,0u,0u,0u));
             work.Store2(count+16u,uint2(0u,invalid));
-            if(p.phase==42u)work.Store(p.responseBiasA+index*4u,0u);
+            if(p.phase==42u || p.phase==44u)
+                work.Store(p.responseBiasA+index*4u,0u);
+        }
+        if(retained && index<p.edgeCount) {
+            const uint input=p.edgeBias+index*20u;
+            const uint4 edge=scEdges.Load4(input);
+            const uint kind=scEdges.Load(input+16u);
+            const bool connected=currentUnion(edge,kind);
+            const bool previous=retainedUnion(index);
+            if(connected!=previous ||
+               (connected && any(edge.yz!=work.Load2(
+                   p.admissionBias+index*24u+8u)))) {
+                uint unused;
+                work.InterlockedOr(p.workBias+40u,1u,unused);
+            }
         }
         return;
     }
     if(p.phase==1u) {
-        if(index>=p.edgeCount)return;
+        if(index>=p.edgeCount || work.Load(p.workBias+40u)==0u)return;
         const uint input=p.edgeBias+index*20u;
         const uint4 edge=scEdges.Load4(input);
         const uint kind=scEdges.Load(input+16u);
@@ -826,14 +868,16 @@ void main(uint3 thread:SV_DispatchThreadID,
         // Static/kinematic endpoints do not connect two dynamic
         // components through a shared nonresponding body.
         if(respondingNode(edge.y) && respondingNode(edge.z))
-            connectNodes(edge.y,edge.z);
+            connectNodes(edge.y,edge.z,unionParentBias());
         return;
     }
     if(p.phase==2u || p.phase==40u) {
+        const bool rebuild=work.Load(p.workBias+40u)!=0u;
         if(index<p.nodeCount) {
-            const uint root=findRoot(index);
-            if(root!=invalid) {
-                work.Store(p.rootBias+index*4u,root);
+            const uint root=rebuild?findRoot(index,unionParentBias()):
+                work.Load(p.rootBias+index*4u);
+            if(root<p.nodeCount) {
+                if(rebuild)work.Store(p.rootBias+index*4u,root);
                 const uint flags=nodeFlags.Load(p.nodeBias+index*4u);
                 const uint position=flags&255u;
                 const uint velocity=(flags>>8u)&255u;
@@ -861,8 +905,9 @@ void main(uint3 thread:SV_DispatchThreadID,
             const uint node=respondingNode(edge.y)?edge.y:
                 respondingNode(edge.z)?edge.z:invalid;
             if(node!=invalid) {
-                owner=findRoot(node);
-                if(owner!=invalid) {
+                owner=rebuild?findRoot(node,unionParentBias()):
+                    work.Load(p.rootBias+node*4u);
+                if(owner<p.nodeCount) {
                     uint previous;
                     if((kind&noResponse)==0u)
                         work.InterlockedAdd(p.countBias+owner*24u+4u,
@@ -896,6 +941,10 @@ void main(uint3 thread:SV_DispatchThreadID,
         return;
     }
     if(p.phase==3u) {
+        if(index==0u) {
+            const uint reused=uint(work.Load(p.workBias+40u)==0u);
+            work.Store2(p.workBias+36u,uint2(reused,0u));
+        }
         const uint active=runnableRoot(index)?1u:0u;
         taskScan[lane.x]=active;
         responseScan[lane.x]=active!=0u
