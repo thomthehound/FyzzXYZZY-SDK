@@ -48,6 +48,7 @@ static const uint deviceJoint=16u;
 static const uint nonrespondingNode=0x20000u;
 static const uint requireContactTask=0x40000u;
 static const uint kinematicAwake=32u;
+static const uint reuseOrdering=1u,reuseTaskRanges=2u;
 static const uint permittedKinds=jointEdge|noResponse|deviceJoint|reverseContact|
     kinematicAwake;
 
@@ -345,6 +346,23 @@ bool orderedEntryValid(uint index,uint bias,bool response) {
 bool retainedOrderValid(uint index,uint2 counts) {
     return (index>=counts.x || orderedEntryValid(index,p.bodyOrderBias,false)) &&
            (index>=counts.y || orderedEntryValid(index,p.responseOrderBias,true));
+}
+// Root order is canonical. Unchanged runnable roots and per-root
+// cardinalities preserve task ordinals and exclusive range prefixes.
+bool retainedTaskRangeValid(uint root,bool runnable,uint nodes,uint edges) {
+    const uint ordinal=work.Load(p.countBias+root*24u+20u);
+    if(!runnable)return ordinal==invalid;
+    if(ordinal>=work.Load(p.workBias+4u) || ordinal>=p.nodeCount)return false;
+    const uint task=p.taskBias+ordinal*36u;
+    const uint2 response=work.Load2(task);
+    const uint2 body=work.Load2(task+16u);
+    return response.y>=response.x && response.y-response.x==edges &&
+           body.y>=body.x && body.y-body.x==nodes;
+}
+void publishRetainedTaskDispatch() {
+    const uint count=work.Load(p.workBias+4u);
+    publishDispatch(work.Load(p.workBias+32u)==0u && count>1u
+        ?(count>>7u)+uint((count&127u)!=0u):count);
 }
 void publishResponse(uint position,uint edge) {
     work.Store(p.tokenBias+position*4u,responseToken(edge));
@@ -878,11 +896,15 @@ void main(uint3 thread:SV_DispatchThreadID,
         const bool retained=p.phase==43u || p.phase==44u;
         if(index==0u) {
             const bool previousValid=retained && work.Load(p.workBias)==0u;
-            work.Store2(p.workBias,uint2(0u,0u));
-            if(!previousValid)work.Store2(p.workBias+8u,uint2(invalid,invalid));
+            work.Store(p.workBias,0u);
+            if(!previousValid) {
+                work.Store(p.workBias+4u,0u);
+                work.Store2(p.workBias+8u,uint2(invalid,invalid));
+            }
             work.Store4(p.workBias+16u,uint4(0u,1u,1u,p.edgeCount));
             work.Store2(p.workBias+32u,uint2(0u,0u));
-            work.Store(p.workBias+44u,uint(previousValid));
+            work.Store(p.workBias+44u,previousValid
+                ?reuseOrdering|reuseTaskRanges:0u);
             // A committed parallel admission leaves the dirty word clear.
             if(!retained)work.Store(p.workBias+40u,1u);
             else if(!previousValid) {
@@ -897,7 +919,8 @@ void main(uint3 thread:SV_DispatchThreadID,
             work.Store(unionParentBias()+index*4u,index);
             const uint count=p.countBias+index*24u;
             work.Store4(count,uint4(0u,0u,0u,0u));
-            work.Store2(count+16u,uint2(0u,invalid));
+            work.Store(count+16u,0u);
+            if(!retained)work.Store(count+20u,invalid);
             if(p.phase==42u || p.phase==44u)
                 work.Store(p.responseBiasA+index*4u,0u);
         }
@@ -1008,7 +1031,7 @@ void main(uint3 thread:SV_DispatchThreadID,
         if(priorCounts.x<=p.nodeCount && priorCounts.y<=p.edgeCount &&
            !retainedOrderValid(index,priorCounts)) {
             uint unused;
-            work.InterlockedAnd(p.workBias+44u,0u,unused);
+            work.InterlockedAnd(p.workBias+44u,~reuseOrdering,unused);
         }
         if(index/128u>=max(p.blockCount,1u))return;
         const uint active=runnableRoot(index)?1u:0u;
@@ -1017,6 +1040,13 @@ void main(uint3 thread:SV_DispatchThreadID,
             ?work.Load(p.countBias+index*24u+4u):0u;
         bodyScan[lane.x]=active!=0u
             ?work.Load(p.countBias+index*24u):0u;
+        if(index<p.nodeCount && priorCounts.x<=p.nodeCount &&
+           priorCounts.y<=p.edgeCount &&
+           !retainedTaskRangeValid(index,active!=0u,
+                                   bodyScan[lane.x],responseScan[lane.x])) {
+            uint unused;
+            work.InterlockedAnd(p.workBias+44u,~reuseTaskRanges,unused);
+        }
         if(active!=0u &&
            (responseScan[lane.x]!=1u || bodyScan[lane.x]!=1u)) {
             uint previous;
@@ -1037,6 +1067,10 @@ void main(uint3 thread:SV_DispatchThreadID,
         return;
     }
     if(p.phase==4u) {
+        if((work.Load(p.workBias+44u)&reuseTaskRanges)!=0u) {
+            if(p.blockCount<=128u && index==0u)publishRetainedTaskDispatch();
+            return;
+        }
         // Small root sets use one workgroup and no tile carry.
         if(p.blockCount<=128u) {
             if(group.x!=0u)return;
@@ -1099,6 +1133,10 @@ void main(uint3 thread:SV_DispatchThreadID,
     }
     if(p.phase==5u) {
         if(group.x!=0u)return;
+        if((work.Load(p.workBias+44u)&reuseTaskRanges)!=0u) {
+            if(index==0u)publishRetainedTaskDispatch();
+            return;
+        }
         if(lane.x==0u) {
             taskCarry=0u;responseCarry=0u;bodyCarry=0u;
         }
@@ -1142,6 +1180,18 @@ void main(uint3 thread:SV_DispatchThreadID,
     if(p.phase==6u) {
         const uint active=runnableRoot(index)?1u:0u;
         const uint count=p.countBias+index*24u;
+        if((work.Load(p.workBias+44u)&reuseTaskRanges)!=0u) {
+            if(active!=0u) {
+                const uint ordinal=work.Load(count+20u);
+                const uint task=p.taskBias+ordinal*36u;
+                // Dy consumes the same descriptor/body ranges, but its
+                // partition end and numerical error are epoch-local.
+                work.Store2(task+8u,work.Load2(task));
+                work.Store3(task+24u,uint3(work.Load(count+12u),
+                                          work.Load(count+16u),0u));
+            }
+            return;
+        }
         const uint edges=active!=0u?work.Load(count+4u):0u;
         const uint nodes=active!=0u?work.Load(count):0u;
         taskScan[lane.x]=active;
@@ -1149,7 +1199,10 @@ void main(uint3 thread:SV_DispatchThreadID,
         bodyScan[lane.x]=nodes;
         GroupMemoryBarrierWithGroupSync();
         inclusiveTaskScan(lane.x);
-        if(active==0u)return;
+        if(active==0u) {
+            if(index<p.nodeCount)work.Store(count+20u,invalid);
+            return;
+        }
         uint3 base=work.Load3(p.blockBias+(index/128u)*16u);
         if(p.blockCount>128u)
             base+=work.Load3(p.blockTilesBias+(index/16384u)*16u);
@@ -1170,7 +1223,7 @@ void main(uint3 thread:SV_DispatchThreadID,
     if(p.phase<8u)return;
     const uint pass=(p.phase-8u)/3u;
     const uint operation=(p.phase-8u)%3u;
-    if(work.Load(p.workBias+44u)!=0u) {
+    if((work.Load(p.workBias+44u)&reuseOrdering)!=0u) {
         if(operation==2u && pass+1u==p.radixPasses &&
            index<work.Load(p.workBias+12u))
             publishResponse(index,work.Load(p.responseOrderBias+index*4u));

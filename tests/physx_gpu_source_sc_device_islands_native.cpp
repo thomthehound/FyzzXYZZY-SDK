@@ -438,14 +438,16 @@ void verify(Context& context,const char* filename) {
         no_errors(stable);
         check_task_mapping(stable);
         require(header(stable).connectivity_reused==1u &&
-                header(stable).ordering_reused==1u &&
+                header(stable).ordering_reused() &&
+                header(stable).task_ranges_reused()==(nodes>256u) &&
                 root(stable,2u)==0u && task(stable,0u).position_iterations==8u,
                 "Stable roots did not retain current numerical admission");
         const auto split=next(&stable,edges,{0x10201u,0x10000u},flags);
         no_errors(split);
         check_task_mapping(split);
         require(header(split).connectivity_reused==0u &&
-                header(split).ordering_reused==0u && root(split,2u)==2u,
+                !header(split).ordering_reused() &&
+                !header(split).task_ranges_reused() && root(split,2u)==2u,
                 "Lost physical bridge retained a stale component");
         const auto joined=next(&split,edges,{0x10101u,0x10101u},flags);
         no_errors(joined);
@@ -478,7 +480,8 @@ void verify(Context& context,const char* filename) {
         no_errors(moved);
         check_task_mapping(moved);
         require(header(moved).connectivity_reused==1u &&
-                header(moved).ordering_reused==0u &&
+                !header(moved).ordering_reused() &&
+                !header(moved).task_ranges_reused() &&
                 header(moved).responding_nodes==1u &&
                 load<std::uint32_t>(moved.second,moved.first.body_order)==2u,
                 "Equal counts retained the wrong active source body");
@@ -496,12 +499,20 @@ void verify(Context& context,const char* filename) {
             return evaluate(nodes,edges,touches,flags,{},std::nullopt,{},
                             std::nullopt,{},0u,previous);
         };
-        const auto initial=next(nullptr);
+        auto initial=next(nullptr);
         no_errors(initial);
+        // Dy replaces the reserved partition end with its exact color
+        // count. Reused admission must restore the numerical reservation.
+        const std::uint32_t consumed_partition_end=2u;
+        std::memcpy(initial.second.data()+initial.first.tasks+
+                        offsetof(SourceScDeviceIslandTask,partition_end),
+                    &consumed_partition_end,sizeof(consumed_partition_end));
         const auto stable=next(&initial);
         no_errors(stable);
         check_task_mapping(stable);
         require(header(stable).connectivity_reused==1u &&
+                header(stable).ordering_reused() &&
+                header(stable).task_ranges_reused() &&
                 header(stable).runnable_components==1u,
                 "Parallel connectivity did not retain a stable chain");
         touches[192u]=0x10000u;
@@ -509,6 +520,7 @@ void verify(Context& context,const char* filename) {
         no_errors(split);
         check_task_mapping(split);
         require(header(split).connectivity_reused==0u &&
+                !header(split).task_ranges_reused() &&
                 header(split).runnable_components==2u &&
                 root(split,384u)==193u,
                 "Parallel connectivity did not split a retired bridge");
@@ -516,7 +528,8 @@ void verify(Context& context,const char* filename) {
         no_errors(stable_split);
         check_task_mapping(stable_split);
         require(header(stable_split).connectivity_reused==1u &&
-                header(stable_split).ordering_reused==1u &&
+                header(stable_split).ordering_reused() &&
+                header(stable_split).task_ranges_reused() &&
                 header(stable_split).runnable_components==2u,
                 "Parallel connectivity did not retain split components");
         touches[192u]=0x10101u;

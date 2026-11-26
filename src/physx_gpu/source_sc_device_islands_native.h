@@ -95,7 +95,9 @@ struct SourceScDeviceIslandHeader {
     // Sc owns the decision to pack all one-body/one-constraint tasks.
     std::uint32_t has_non_singleton_task=0u;
     std::uint32_t connectivity_reused=0u;
-    std::uint32_t connectivity_dirty=0u,ordering_reused=0u;
+    std::uint32_t connectivity_dirty=0u,reuse_flags=0u;
+    bool ordering_reused() const noexcept {return (reuse_flags&1u)!=0u;}
+    bool task_ranges_reused() const noexcept {return (reuse_flags&2u)!=0u;}
 };
 static_assert(sizeof(SourceScDeviceIslandHeader)==48u &&
               offsetof(SourceScDeviceIslandHeader,dispatch_x)==16u &&
@@ -581,7 +583,7 @@ private:
         if(phase==0u || phase==42u || phase==43u || phase==44u) {
             const bool retained=phase==43u || phase==44u;
             header(retained?A::ReadWrite:A::Write);
-            counts(A::Write);contact_bits(A::Write);
+            counts(retained?A::ReadWrite:A::Write);contact_bits(A::Write);
             work(layout.body_remap,nodes*4u,A::Write);
             if(retained) {
                 roots(A::Read);admissions(A::Read);
@@ -610,17 +612,19 @@ private:
             if(nodes)input(2u);
             block_ranges(phase==3u?A::Write:A::Read);
             if(phase==3u && retain_roots) {
-                admissions(A::Read);
+                admissions(A::Read);tasks(A::Read);
                 work(layout.body_order,nodes*4u,A::Read);
                 work(layout.response_order,edges*4u,A::Read);
             }
-            if(phase==6u) {block_tiles(A::Read);tasks(A::Write);}
+            if(phase==6u) {
+                block_tiles(A::Read);tasks(retain_roots?A::ReadWrite:A::Write);
+            }
         }else if(phase==4u || phase==5u) {
             if(phase==4u) {
                 block_ranges(A::ReadWrite);
                 block_tiles(A::Write);
             }else block_tiles(A::ReadWrite);
-            if(phase==5u || blocks<=128u)header(A::ReadWrite);
+            header(phase==5u || blocks<=128u?A::ReadWrite:A::Read);
         }else if(phase==33u) {
             header(A::ReadWrite);input(2u);
             work(layout.body_order,nodes*4u,A::ReadWrite);
