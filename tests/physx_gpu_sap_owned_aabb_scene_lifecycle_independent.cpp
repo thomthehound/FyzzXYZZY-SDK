@@ -1673,13 +1673,30 @@ void verify_source_shutdown_after_failed_submission(Backend backend) {
     SourceSapDmaNative stream(context,addresses);
     require(stream.finish_shutdown(),
             "Clean source GPU stream failed shutdown");
-    // A rejected source batch leaves its commands queued. Destruction must
-    // not resubmit that same invalid work after the first backend failure.
+    const std::array<std::uint32_t,2> initial{{17u,29u}};
+    const auto buffer=context.create_buffer(sizeof(initial),MemoryPlacement::DeviceLocal);
+    context.upload(buffer,0u,initial.data(),sizeof(initial));
+    stream.commands().emplace_back(CopyCommand{buffer,0u,buffer,4u,4u});
     stream.commands().emplace_back(CopyCommand{0,0,0,0,4});
-    require(!stream.finish_shutdown(),
-                "Failed source stream could not abandon unsubmitted work");
-    require(stream.submit()==0 && stream.finish_shutdown(),
-            "Source stream retried failed commands during retirement");
+    bool rejected=false;
+    try {
+        stream.submit();
+    }catch(const std::logic_error&) { rejected=true; }
+    require(rejected && !stream.commands().empty(),
+            "Invalid source batch was not rejected before submission");
+    require(stream.finish_shutdown() && stream.commands().empty() &&
+            stream.submit()==0,
+            "Source shutdown did not discard rejected commands");
+
+    // Even valid pending commands must not execute during shutdown.
+    stream.commands().emplace_back(CopyCommand{buffer,0u,buffer,4u,4u});
+    require(stream.finish_shutdown() && stream.commands().empty() &&
+            stream.submit()==0,
+            "Source shutdown submitted pending work");
+    std::array<std::uint32_t,2> observed{};
+    context.download(buffer,0u,observed.data(),sizeof(observed));
+    require(observed==initial,"Source shutdown changed resident data");
+    context.destroy_buffer(buffer);
 }
 
 void verify_owned_source_world(
