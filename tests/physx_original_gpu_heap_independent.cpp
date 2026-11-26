@@ -175,9 +175,32 @@ void exercise(Context& context) {
         require(roots.live_roots() == 2u &&
                 heap.getHeapStats().stats[group] == 5000u,
                 "Original PhysX exceptional allocation did not use its own root");
+        physx::PxgCudaBuffer destination(heap, group);
+        destination.allocate(256u,PX_FL);
+        const auto dst=addresses.resolve(destination.getDevicePtr(),sizeof(contents));
+        const std::array<std::uint32_t,8> initial{};
+        stream.queue_uploads({{destination.getDevicePtr(),initial.data(),sizeof(initial)}});
+        const auto batches=stream.command_batch_generation();
         exceptional.deallocate();
-        require(roots.live_roots() == 1u &&
-                heap.getHeapStats().stats[group] == 0u,
+        require(roots.live_roots()==1u &&
+                stream.command_batch_generation()==batches &&
+                !stream.commands().empty(),
+                "Unrelated root retirement submitted pending work");
+
+        exceptional.allocate(5000u,PX_FL);
+        stream.queue_uploads({{exceptional.getDevicePtr(),contents.data(),sizeof(contents)}});
+        stream.queue_device_copy(destination.getDevicePtr(),
+                                 exceptional.getDevicePtr(),sizeof(contents));
+        exceptional.deallocate();
+        require(roots.live_roots()==1u &&
+                stream.command_batch_generation()==batches+1u &&
+                stream.commands().empty(),
+                "Referenced root retirement lost recorded consumers");
+        stream.wait_submitted();
+        context.download(dst.buffer,dst.offset,observed.data(),sizeof(observed));
+        require(observed==contents,"Retired root lost its ordered copy");
+        destination.deallocate();
+        require(heap.getHeapStats().stats[group]==0u,
                 "Original PhysX exceptional root did not retire");
         require(!aborted && !foundation.errors.reported,
                 "Original PhysX source heap reported a corrupted allocation");

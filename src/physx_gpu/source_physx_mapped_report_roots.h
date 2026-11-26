@@ -137,9 +137,8 @@ public:
         if (it == roots_.end())
             throw std::out_of_range("PhysX mapped report free requires the exact host root");
 
-        // Submit all source commands referencing this root before retirement.
-        // This does not block on a GPU fence.
-        source_.submit();
+        // Submit recorded consumers of this root without a host fence.
+        source_.submit_if_referencing(it->second.device);
         if (it->second.cpu_mapped) {
             context_.unmap_buffer(it->second.device);
             it->second.cpu_mapped = false;

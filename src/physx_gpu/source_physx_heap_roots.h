@@ -44,17 +44,13 @@ public:
     // Context and CudaDeviceAddressMap MUST outlive this owner.
     ~SourcePhysxHeapRoots() noexcept { cleanup_noexcept(); }
 
-    // Explicit normal shutdown. Submit any remaining ORIGINAL source stream
-    // commands first, without waiting, then retire the native heap roots.
-    // On failure, unretired roots remain owned by this object so teardown can
-    // retry; the noexcept destructor remains the final safety net.
+    // Retire each root after submitting its recorded consumers, if any.
     void close(SourceSapDmaNative* stream = nullptr) {
         if (stream && !stream->bound_to(context_, addresses_))
             throw std::invalid_argument(
                 "PhysX heap shutdown uses an unrelated source GPU stream");
-        if (stream) stream->submit();
         while (!roots_.empty())
-            release_root(roots_.begin()->first);
+            release_root(roots_.begin()->first,stream);
     }
 
     // One PhysX heap page or exceptional root, not one PxgCudaBuffer block.
@@ -79,9 +75,8 @@ public:
 
     // Called for EXACT ROOT identities returned to the original allocator,
     // not the buddy suballocation pointers passed to PxgCudaBuffer::deallocate.
-    // If the original source has queued native commands, submit (not wait)
-    // before retirement so they retain their original GPU buffer identity.
-    // The Context retains in-flight memory until its queue fence completes.
+    // Submit recorded consumers before retiring their native buffer.
+    // Unrelated recorded work remains pending.
     void release_root(Address root, SourceSapDmaNative* stream = nullptr) {
         const auto it = roots_.find(root);
         if (it == roots_.end())
@@ -89,7 +84,7 @@ public:
         if (stream && !stream->bound_to(context_, addresses_))
             throw std::invalid_argument(
                 "PhysX heap root retirement uses an unrelated source GPU stream");
-        if (stream) stream->submit();
+        if (stream) stream->submit_if_referencing(it->second);
         // Do the potentially failing retirement BEFORE invalidating the
         // original CUDA address; no stale mapping after successful retire.
         context_.retire_buffer(it->second);

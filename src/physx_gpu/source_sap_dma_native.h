@@ -208,6 +208,25 @@ public:
     // Submit existing source-ordered device commands without a host wait.
     compute::SubmissionId submit() { return flush_gpu_commands(); }
 
+    // Root retirement requires submission only when recorded work uses it.
+    void submit_if_referencing(compute::BufferId buffer) {
+        for(const auto& command:pending_) {
+            bool referenced=false;
+            if(const auto* copy=std::get_if<compute::CopyCommand>(&command))
+                referenced=copy->source==buffer || copy->destination==buffer;
+            else if(const auto* upload=std::get_if<compute::UploadCommand>(&command))
+                referenced=upload->destination==buffer;
+            else if(const auto* dispatch=std::get_if<compute::DispatchCommand>(&command))
+                referenced=(dispatch->indirect && dispatch->indirect->buffer==buffer) ||
+                    std::any_of(dispatch->buffers.begin(),dispatch->buffers.end(),
+                        [buffer](const auto& binding){return binding.buffer==buffer;});
+            if(referenced) {
+                flush_gpu_commands();
+                return;
+            }
+        }
+    }
+
     // Append the readback to pending producer commands when possible.
     // Context owns the staging and fence until Sc publishes the results;
     // later GPU continuations can remain queued independently.
