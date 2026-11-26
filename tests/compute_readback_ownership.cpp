@@ -66,6 +66,28 @@ void verify_range_hazards() {
             dependencies.push_back({a,b,src,dst});
         });
     expect({{0u,1024u,upload,download}});
+
+    BufferRangeHazards host;
+    const auto ignore=[](auto,auto,auto,auto) {};
+    host.use(0u,64u,upload,true,ignore,true);
+    host.use(16u,32u,shader_write,true,ignore,true);
+    host.use(32u,48u,shader_read,false,ignore);
+    host.use(128u,192u,upload,true,ignore);
+    dependencies.clear();
+    const auto publish=[&] {
+        host.publish_host_writes([&](auto begin,auto end,auto writer) {
+            dependencies.push_back({begin,end,writer,{}});
+        });
+    };
+    publish();
+    expect({{0u,16u,upload,{}},{16u,32u,shader_write,{}},
+            {32u,48u,upload,{}},{48u,64u,upload,{}}});
+    dependencies.clear();
+    publish();
+    expect({});
+    host.use(48u,80u,shader_write,true,ignore,true);
+    publish();
+    expect({{48u,80u,shader_write,{}}});
 }
 
 void verify_uav_ranges() {

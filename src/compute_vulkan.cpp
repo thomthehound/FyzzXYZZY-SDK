@@ -258,6 +258,7 @@ struct Context::Impl {
         bool storage_eligible = true;
         bool cpu_mapped = false;
         BufferRangeHazards queue_hazards;
+        SubmissionId last_reference=0u;
     };
     struct Pipeline {
         VkDescriptorSetLayout descriptors = VK_NULL_HANDLE;
@@ -341,6 +342,7 @@ struct Context::Impl {
     BufferId next_buffer = 1;
     PipelineId next_pipeline = 1;
     SubmissionId next_submission = 1;
+    SubmissionId completed_submission = 0;
     mutable bool device_lost = false;
     VkPhysicalDeviceLimits limits{};
     std::uint32_t timestamp_valid_bits = 0;
@@ -539,15 +541,11 @@ struct Context::Impl {
         // The Context uses one ordered Vulkan queue. Completion of N
         // therefore makes every submission <= N safe to release, even if a
         // caller waits on N before earlier submission IDs.
-        auto it = retired_buffers.begin();
-        while (it != retired_buffers.end()) {
-            if (it->release_after <= completed_id) {
-                release_buffer(it->buffer);
-                it = retired_buffers.erase(it);
-            } else {
-                ++it;
-            }
-        }
+        std::erase_if(retired_buffers,[&](const RetiredBuffer& retired) {
+            if(retired.release_after>completed_id)return false;
+            release_buffer(retired.buffer);
+            return true;
+        });
     }
 
 #if defined(FYZZXYZZY_PROFILE_GPU)
@@ -581,6 +579,7 @@ struct Context::Impl {
         if (it == submissions.end()) {
             throw std::out_of_range("Unknown compute submission ID");
         }
+        if(id<=completed_submission)return true;
         const VkResult status = vkGetFenceStatus(device, it->second.fence);
         if (status == VK_NOT_READY) {
             return false;
@@ -590,22 +589,30 @@ struct Context::Impl {
         return true;
     }
 
+    // Completion and token retirement have independent lifetimes.
+    // A completed fence covers every earlier submission on this queue.
+    void wait_for_completion(SubmissionId id) {
+        if(id<=completed_submission)return;
+        const VkFence fence=submissions.at(id).fence;
+        const VkResult result=vkWaitForFences(
+            device,1,&fence,VK_TRUE,UINT64_MAX);
+        if(result==VK_ERROR_DEVICE_LOST)device_lost=true;
+        require(result,"vkWaitForFences");
+        completed_submission=id;
+        release_retired_through(completed_submission);
+    }
+
     void wait_submission(SubmissionId id) {
         auto it = submissions.find(id);
         if (it == submissions.end()) {
             throw std::out_of_range("Unknown compute submission ID");
         }
-        const VkFence fence = it->second.fence;
-        const VkResult result=vkWaitForFences(
-            device,1,&fence,VK_TRUE,UINT64_MAX);
-        if(result==VK_ERROR_DEVICE_LOST)device_lost=true;
-        require(result,"vkWaitForFences");
+        wait_for_completion(id);
 #if defined(FYZZXYZZY_PROFILE_GPU)
         report_gpu_profile(id,it->second);
 #endif
         retire_submission(it->second);
         submissions.erase(it);
-        release_retired_through(id);
     }
 
     void wait_submissions(std::span<const SubmissionId> ordered) {
@@ -617,11 +624,7 @@ struct Context::Impl {
                     "Vulkan GPU retire batch requires live ordered submissions");
             previous=id;
         }
-        const VkFence fence=submissions.find(ordered.back())->second.fence;
-        const VkResult status=vkWaitForFences(
-            device,1,&fence,VK_TRUE,UINT64_MAX);
-        if(status==VK_ERROR_DEVICE_LOST)device_lost=true;
-        require(status,"vkWaitForFences source batch");
+        wait_for_completion(ordered.back());
         // One ordered queue: the newest completed fence covers every
         // earlier source upload and kernel allocation.
         for(const auto id:ordered) {
@@ -632,31 +635,12 @@ struct Context::Impl {
             retire_submission(it->second);
             submissions.erase(it);
         }
-        release_retired_through(ordered.back());
     }
 
     void wait_all() {
-        while (!submissions.empty()) {
+        wait_for_completion(next_submission-1u);
+        while (!submissions.empty())
             wait_submission(submissions.begin()->first);
-        }
-    }
-
-    // Direct CPU mapping must observe the newest ordered GPU submission,
-    // but its token stays with the stream that submitted it.
-    void wait_for_host_access() {
-        if(submissions.empty())return;
-        const Submission* newest=nullptr;
-        SubmissionId newest_id=0u;
-        for(const auto& [id,submission]:submissions)
-            if(!newest || id>newest_id) {
-                newest=&submission;
-                newest_id=id;
-            }
-        const VkFence fence=newest->fence;
-        const VkResult result=vkWaitForFences(
-            device,1,&fence,VK_TRUE,UINT64_MAX);
-        if(result==VK_ERROR_DEVICE_LOST)device_lost=true;
-        require(result,"vkWaitForFences host transfer");
     }
 
     void destroy_pipeline_handles(Pipeline& pipeline) noexcept {
@@ -823,19 +807,16 @@ struct Context::Impl {
             throw std::out_of_range("Unknown compute buffer ID");
         if (it->second.cpu_mapped)
             throw std::logic_error("Cannot retire a mapped Vulkan buffer");
-        if (submissions.empty()) {
-            // No tracked in-flight work. Any earlier submitted work was
-            // already waited on the ordered queue.
-            release_buffer(it->second);
-        } else {
-            SubmissionId last = 0;
-            for (const auto& pending : submissions)
-                last = std::max(last, pending.first);
-            // Queue-retirement record must be secured *before* invalidating
-            // the public BufferId, preserving ownership on allocation failure.
-            retired_buffers.reserve(retired_buffers.size()+1u);
-            it->second.queue_hazards=BufferRangeHazards{};
-            retired_buffers.push_back({last, std::move(it->second)});
+        const auto& buffer=it->second;
+        if(buffer.last_reference<=completed_submission)
+            release_buffer(buffer);
+        else {
+            // Only native allocation ownership survives handle retirement.
+            // No dependency history or unrelated submission is retained.
+            Buffer retired{};
+            retired.buffer=buffer.buffer;
+            retired.memory=buffer.memory;
+            retired_buffers.push_back({buffer.last_reference,std::move(retired)});
         }
         buffers.erase(it);
     }
@@ -969,7 +950,7 @@ struct Context::Impl {
             throw std::invalid_argument("Null compute transfer data");
         }
         if (buffer.placement == MemoryPlacement::HostVisible) {
-            wait_for_host_access();
+            wait_for_completion(buffer.last_reference);
             map_transfer(buffer, offset, data, bytes, upload);
             return;
         }
@@ -1397,10 +1378,24 @@ struct Context::Impl {
         std::vector<VkDescriptorBufferInfo> validated_dispatches;
         std::vector<BufferId> validated_buffer_ids;
         std::vector<std::uint8_t> assigned_slots;
+        struct PendingBuffer {
+            Buffer* buffer;
+            std::optional<BufferRangeHazards> hazards;
+        };
+        // Native descriptors own references even when a phase declares
+        // no access through that binding.
+        std::unordered_map<BufferId,PendingBuffer> referenced;
+        const auto reference=[&](BufferId id) -> Buffer& {
+            const auto existing=referenced.find(id);
+            if(existing!=referenced.end())return *existing->second.buffer;
+            auto& buffer=get(id);
+            referenced.emplace(id,PendingBuffer{&buffer,{}});
+            return buffer;
+        };
         for (const BatchCommand& operation : operations) {
             if (const auto* copy = std::get_if<CopyCommand>(&operation)) {
-                const Buffer& source = get(copy->source);
-                const Buffer& destination = get(copy->destination);
+                const Buffer& source = reference(copy->source);
+                const Buffer& destination = reference(copy->destination);
                 if(destination.placement==MemoryPlacement::Upload ||
                    (source.placement==MemoryPlacement::Upload && source.cpu_mapped))
                     throw std::invalid_argument("Invalid Vulkan upload storage copy");
@@ -1425,7 +1420,7 @@ struct Context::Impl {
                 assigned_slots.resize(pipeline.binding_count);
                 if(dispatch.indirect) {
                     const auto& indirect=*dispatch.indirect;
-                    const auto& argument=get(indirect.buffer);
+                    const auto& argument=reference(indirect.buffer);
                     if(!argument.storage_eligible || indirect.offset%4u)
                         throw std::invalid_argument("Invalid Vulkan indirect dispatch arguments");
                     validate_range(argument.bytes,indirect.offset,12u);
@@ -1456,8 +1451,10 @@ struct Context::Impl {
                     }
                 });
                 validated_buffer_ids.resize(offset+pipeline.binding_count);
-                for(const auto& binding:dispatch.buffers)
+                for(const auto& binding:dispatch.buffers) {
+                    reference(binding.buffer);
                     validated_buffer_ids[offset+binding.slot]=binding.buffer;
+                }
                 ++dispatch_count;
                 descriptor_count += pipeline.binding_count;
             }
@@ -1670,9 +1667,6 @@ struct Context::Impl {
                 RangeAccessScope scope;
                 bool writes;
             };
-            // Recording owns tentative changes for touched buffers only.
-            // A failed recording or submission leaves queue state intact.
-            std::unordered_map<BufferId,BufferRangeHazards> hazards;
             std::vector<RangeUse> operation_uses;
             std::vector<VkBufferMemoryBarrier> barriers;
             std::vector<VkBufferCopy> copy_regions;
@@ -1702,13 +1696,13 @@ struct Context::Impl {
                 barriers.clear();
                 VkPipelineStageFlags sources=0u,targets=0u;
                 for(const auto& use:operation_uses) {
-                    if(get(use.buffer).placement==MemoryPlacement::Upload)
-                        continue;
-                    auto pending=hazards.find(use.buffer);
-                    if(pending==hazards.end())
-                        pending=hazards.emplace(use.buffer,
-                            get(use.buffer).queue_hazards).first;
-                    pending->second.use(use.begin,use.end,use.scope,use.writes,
+                    auto& pending=referenced.find(use.buffer)->second;
+                    const auto& buffer=*pending.buffer;
+                    if(buffer.placement==MemoryPlacement::Upload)continue;
+                    if(!pending.hazards)pending.hazards.emplace(buffer.queue_hazards);
+                    const bool mappable=buffer.placement==MemoryPlacement::HostVisible ||
+                                        buffer.placement==MemoryPlacement::SharedLocal;
+                    pending.hazards->use(use.begin,use.end,use.scope,use.writes,
                         [&](std::size_t begin,std::size_t end,
                             RangeAccessScope source,RangeAccessScope target) {
                             VkBufferMemoryBarrier barrier{};
@@ -1717,7 +1711,7 @@ struct Context::Impl {
                             barrier.dstAccessMask=target.access;
                             barrier.srcQueueFamilyIndex=VK_QUEUE_FAMILY_IGNORED;
                             barrier.dstQueueFamilyIndex=VK_QUEUE_FAMILY_IGNORED;
-                            barrier.buffer=get(use.buffer).buffer;
+                            barrier.buffer=buffer.buffer;
                             barrier.offset=begin;
                             barrier.size=end-begin;
                             if(!barriers.empty()) {
@@ -1731,7 +1725,7 @@ struct Context::Impl {
                             }else barriers.push_back(barrier);
                             sources|=source.stages;
                             targets|=target.stages;
-                        });
+                        },mappable);
                 }
                 if(!barriers.empty())
                     vkCmdPipelineBarrier(commands,sources,targets,0,
@@ -1852,13 +1846,39 @@ struct Context::Impl {
 #endif
             }
 
-            VkMemoryBarrier to_host{};
-            to_host.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
-            to_host.srcAccessMask = VK_ACCESS_MEMORY_WRITE_BIT;
-            to_host.dstAccessMask = VK_ACCESS_HOST_READ_BIT;
-            vkCmdPipelineBarrier(commands, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
-                                 VK_PIPELINE_STAGE_HOST_BIT, 0, 1, &to_host,
-                                 0, nullptr, 0, nullptr);
+            // Only written mappable ranges require a device-to-host
+            // dependency. Device-local writes retain their GPU scopes.
+            barriers.clear();
+            VkPipelineStageFlags host_sources=0u;
+            for(auto& [id,pending]:referenced) {
+                const auto& buffer=*pending.buffer;
+                if(!pending.hazards ||
+                   (buffer.placement!=MemoryPlacement::HostVisible &&
+                    buffer.placement!=MemoryPlacement::SharedLocal))continue;
+                pending.hazards->publish_host_writes(
+                    [&](std::size_t begin,std::size_t end,RangeAccessScope writer) {
+                        VkBufferMemoryBarrier barrier{};
+                        barrier.sType=VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER;
+                        barrier.srcAccessMask=writer.access &
+                            (VK_ACCESS_TRANSFER_WRITE_BIT|VK_ACCESS_SHADER_WRITE_BIT);
+                        barrier.dstAccessMask=VK_ACCESS_HOST_READ_BIT;
+                        barrier.srcQueueFamilyIndex=VK_QUEUE_FAMILY_IGNORED;
+                        barrier.dstQueueFamilyIndex=VK_QUEUE_FAMILY_IGNORED;
+                        barrier.buffer=buffer.buffer;
+                        barrier.offset=begin;
+                        barrier.size=end-begin;
+                        if(!barriers.empty() && barriers.back().buffer==barrier.buffer &&
+                           barriers.back().offset+barriers.back().size==barrier.offset &&
+                           barriers.back().srcAccessMask==barrier.srcAccessMask)
+                            barriers.back().size+=barrier.size;
+                        else barriers.push_back(barrier);
+                        host_sources|=writer.stages;
+                    });
+            }
+            if(!barriers.empty())
+                vkCmdPipelineBarrier(commands,host_sources,VK_PIPELINE_STAGE_HOST_BIT,
+                    0,0,nullptr,static_cast<std::uint32_t>(barriers.size()),
+                    barriers.data(),0,nullptr);
             if (timestamps != VK_NULL_HANDLE) {
 #if defined(FYZZXYZZY_PROFILE_GPU)
                 if(!hardware_trace)
@@ -1884,8 +1904,11 @@ struct Context::Impl {
 #endif
             const SubmissionId id = enqueue(commands, pool);
             // Commit recorded queue dependencies without allocation.
-            for(auto& [buffer,state]:hazards)
-                std::swap(buffers.find(buffer)->second.queue_hazards,state);
+            for(auto& [buffer,pending]:referenced) {
+                pending.buffer->last_reference=id;
+                if(pending.hazards)
+                    std::swap(pending.buffer->queue_hazards,*pending.hazards);
+            }
             auto& submitted = submissions.at(id);
             submitted.timestamps = timestamps;
 #if defined(FYZZXYZZY_PROFILE_GPU)
@@ -1919,9 +1942,7 @@ struct Context::Impl {
             return std::nullopt;
         const auto id = submit_batch(operations, true);
         auto it = submissions.find(id);
-        const auto fence = it->second.fence;
-        require(vkWaitForFences(device, 1, &fence, VK_TRUE, UINT64_MAX),
-                "vkWaitForFences timestamp batch");
+        wait_for_completion(id);
         std::uint64_t ticks[2]{};
         const VkResult result = vkGetQueryPoolResults(
             device, it->second.timestamps, 0, 2, sizeof(ticks),
@@ -1929,7 +1950,6 @@ struct Context::Impl {
         if (result != VK_SUCCESS) {
             retire_submission(it->second);
             submissions.erase(it);
-            release_retired_through(id);
             require(result, "vkGetQueryPoolResults");
         }
         const auto mask = timestamp_valid_bits == 64 ? ~std::uint64_t{0} :
@@ -1937,7 +1957,6 @@ struct Context::Impl {
         const std::uint64_t delta = (ticks[1] - ticks[0]) & mask;
         retire_submission(it->second);
         submissions.erase(it);
-        release_retired_through(id);
         return static_cast<double>(delta) * limits.timestampPeriod;
     }
 

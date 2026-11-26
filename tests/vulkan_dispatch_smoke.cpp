@@ -364,6 +364,36 @@ int main(int argc, char** argv) {
         }
         for(std::size_t i=0u;i<split.size();++i)
             if(i!=2u)context.wait_submission(split[i]);
+        // Publish only the written host-visible prefix, and retain
+        // native resources through their own last referencing fence.
+        const auto host_output=context.create_buffer(sizeof(output),
+                                                     MemoryPlacement::HostVisible);
+        context.upload(host_output,0u,initial.data(),sizeof(initial));
+        auto host_bindings=narrow_bindings;
+        host_bindings[0].buffer=host_output;
+        const auto host_dispatch=context.submit_batch({
+            DispatchCommand{pipeline,groups,host_bindings,push_bytes(first_pass)}});
+        const auto tail_copy=context.submit_copy_buffer(
+            src,size*4u,host_output,size*4u,4u);
+        const auto unrelated=context.submit_batch(independent_batch);
+        context.wait_submission(tail_copy);
+        if(!context.submission_complete(host_dispatch))
+            throw std::runtime_error("Completed queue prefix lost its live token");
+        const auto* host_values=static_cast<const std::uint32_t*>(
+            context.map_buffer(host_output,HostMapAccess::Read));
+        bool correct=true;
+        for(std::uint32_t i=0u;i<array_size;++i) {
+            const auto expected=i<size
+                ?later_input[i]*first_pass.multiplier+first_pass.addend
+                :i==size?later_input[i]:sentinel;
+            correct&=host_values[i]==expected;
+        }
+        context.unmap_buffer(host_output);
+        if(!correct)
+            throw std::runtime_error("Host-visible shader or transfer publication failed");
+        context.retire_buffer(host_output);
+        context.wait_submission(host_dispatch);
+        context.wait_submission(unrelated);
         context.destroy_buffer(independent_copy);
         context.destroy_buffer(independent_output);
         context.destroy_buffer(independent_input);

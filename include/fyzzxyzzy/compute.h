@@ -285,8 +285,8 @@ public:
     void destroy_buffer(BufferId id);
 
     // Invalidates the handle immediately without waiting for the GPU.
-    // Its physical allocation remains alive until all GPU commands already
-    // submitted on this Context's ordered queue have completed. No future
+    // Its physical allocation remains alive at least until all submitted
+    // GPU uses of the allocation have completed. No future
     // command may use id; this is a precursor to PhysX's deferred free on
     // async grow/copy. Pending submissions must still be waited or retired
     // through their normal API. The Context owns the retired allocation.

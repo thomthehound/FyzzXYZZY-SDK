@@ -27,6 +27,7 @@ struct RangeAccessScope {
 class BufferRangeHazards {
     struct State {
         RangeAccessScope writer{},readers{};
+        bool host_write_pending=false;
         bool operator==(const State&) const=default;
     };
     struct Interval {
@@ -38,7 +39,7 @@ public:
     // The caller validates ranges and merges overlapping uses of one operation.
     template<class Emit>
     void use(std::size_t begin,std::size_t end,RangeAccessScope scope,
-             bool writes,Emit emit) {
+             bool writes,Emit emit,bool publish_to_host=false) {
         auto i=static_cast<std::size_t>(std::lower_bound(
             intervals_.begin(),intervals_.end(),begin,
             [](const Interval& interval,std::size_t offset) {
@@ -69,7 +70,7 @@ public:
             if(writes) {
                 dependency=state.writer;
                 dependency.stages|=state.readers.stages;
-                state={scope,{}};
+                state={scope,{},publish_to_host};
             }else {
                 if(!state.readers.covers(scope))
                     dependency=state.writer;
@@ -91,6 +92,24 @@ public:
                 --i;
             }else ++j;
         }
+    }
+
+    // Publish only current-batch writes to mappable storage. Host
+    // observation is fence-owned, not a GPU reader dependency.
+    template<class Emit>
+    void publish_host_writes(Emit emit) {
+        std::size_t count=0u;
+        for(auto& interval:intervals_) {
+            if(interval.state.host_write_pending) {
+                emit(interval.begin,interval.end,interval.state.writer);
+                interval.state.host_write_pending=false;
+            }
+            if(count && intervals_[count-1u].end==interval.begin &&
+               intervals_[count-1u].state==interval.state)
+                intervals_[count-1u].end=interval.end;
+            else intervals_[count++]=interval;
+        }
+        intervals_.resize(count);
     }
 };
 
