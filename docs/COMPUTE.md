@@ -123,6 +123,9 @@ immutable snapshots through recorded and submitted readers. Replacement
 does not force a submission; completed allocations remain reusable.
 Wide host-scheduled Dy tasks omit GPU-generated coloring scratch from
 the packed input upload while retaining authored descriptor tokens.
+Internal Dy arena tables use 16-byte alignment within the native raw
+buffer view. Host result storage is allocated without initialization or
+preservation copies; it receives the completed readback before publication.
 Do not infer performance gains from software Vulkan or WARP CI.
 
 ### Nonblocking upload staging

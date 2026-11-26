@@ -6042,7 +6042,10 @@ void verify_resident_wide_device_response(
     require(!native::GpuPcmFrictionAnchorFixture::has_host_schedule(gpu),
         "Resident Dy allocated host task or ordinal records");
     require(schedule.mapped_input_bytes==uploaded &&
-            schedule.host_staging_bytes<=downloaded,
+            schedule.host_staging_bytes<=downloaded &&
+            schedule.host_result_capacity>=schedule.host_staging_bytes &&
+            schedule.numerical_arena_bytes<=schedule.numerical_arena_capacity &&
+            schedule.numerical_arena_padding_bytes<=18u*16u,
         "Resident Dy input or result staging includes redundant host storage");
     require(native::GpuPcmFrictionAnchorFixture::has_prewitness_solve(gpu) &&
             schedule.resident_wide_schedule &&

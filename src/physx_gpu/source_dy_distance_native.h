@@ -18,6 +18,7 @@
 #include <cstdint>
 #include <cstring>
 #include <limits>
+#include <memory>
 #include <optional>
 #include <span>
 #include <stdexcept>
@@ -128,6 +129,9 @@ struct SourceDyLaunchStats {
     std::size_t host_staging_bytes=0u;
     std::size_t mapped_input_bytes=0u;
     std::size_t numerical_arena_capacity=0u;
+    std::size_t numerical_arena_bytes=0u;
+    std::size_t numerical_arena_padding_bytes=0u;
+    std::size_t host_result_capacity=0u;
     std::size_t device_partition_indirect_dispatches=0u;
     bool resident_wide_schedule=false;
     bool resident_schedule_reuse_candidate=false;
@@ -1721,21 +1725,28 @@ public:
         // The original Dy heap retains an EdgeIndex-keyed Sc anchor
         // prefix. Solver output follows it and remains the sole readback;
         // transient input and output locations may grow independently.
-        const std::size_t upload_begin=history_bytes+
-            ((output_bytes+127u)&~std::size_t(127u));
+        // Internal raw-buffer tables need only 16-byte alignment.
+        constexpr std::size_t table_alignment=16u;
+        const auto align_table=[](std::size_t bytes) {
+            return (bytes+table_alignment-1u)&~(table_alignment-1u);
+        };
+        const std::size_t upload_begin=history_bytes+align_table(output_bytes);
+        std::size_t padding_bytes=upload_begin-history_bytes-output_bytes;
         std::size_t total=upload_begin;
         for(const auto i:order) {
             if((i==14u || i==15u) && !bytes[i])continue;
             const auto view_bytes=std::max<std::size_t>(bytes[i],4u);
-            if(total>std::numeric_limits<std::uint32_t>::max()-128u ||
+            if(total>std::numeric_limits<std::uint32_t>::max()-table_alignment ||
                view_bytes>std::numeric_limits<std::uint32_t>::max()-total)
                 throw std::overflow_error("Source Dy solver arena too large");
             offsets[i]=total;
             // Anchor input ends exactly at the writable contact arena.
             // GPU-only PCM can omit that trailing region while retaining
             // one contiguous source upload and the original dispatch.
-            total=i==13u?total+view_bytes:
-                (total+view_bytes+127u)&~std::size_t(127u);
+            const auto next=i==13u?total+view_bytes:
+                align_table(total+view_bytes);
+            padding_bytes+=next-total-bytes[i];
+            total=next;
         }
         narrow(total);
         const auto partition_output_offset=total;
@@ -1755,6 +1766,8 @@ public:
             total+=task_capacity*schedule_stride;
         }
         narrow(total);
+        last_schedule_.numerical_arena_bytes=total;
+        last_schedule_.numerical_arena_padding_bytes=padding_bytes;
         // The contact shader addresses anchors backward from contactBias.
         // Host staging stops at the writable contact arena.
         const auto input_end=offsets[6];
@@ -1792,8 +1805,19 @@ public:
         const std::size_t uploaded_bytes=input_end-upload_begin-omitted_bytes;
         // Numerical input is packed directly into transfer memory; host_
         // owns only the unpublished numerical result.
-        host_.resize(host_result_bytes);
-        last_schedule_.host_staging_bytes=host_.size();
+        const bool contract_result=result_working_set_.should_contract(
+            host_result_bytes,host_result_capacity_);
+        if(host_result_bytes>host_result_capacity_ || contract_result) {
+            const auto capacity=contract_result?host_result_bytes:
+                std::max(host_result_bytes,std::min(
+                    host_result_capacity_*2u,
+                    std::size_t(std::numeric_limits<std::uint32_t>::max())));
+            host_=std::make_unique_for_overwrite<std::uint8_t[]>(capacity);
+            host_result_capacity_=capacity;
+            result_working_set_.reset();
+        }
+        last_schedule_.host_staging_bytes=host_result_bytes;
+        last_schedule_.host_result_capacity=host_result_capacity_;
         last_schedule_.mapped_input_bytes=uploaded_bytes;
         const bool contract_input=input_working_set_.should_contract(
             uploaded_bytes,input_upload_capacity_);
@@ -1826,18 +1850,20 @@ public:
             std::memset(input_map.data+input_upload_initialized_,0,
                         uploaded_bytes-input_upload_initialized_);
         input_upload_initialized_=uploaded_bytes;
-        const auto host_input=[&](std::size_t offset) {
-            if(offset<upload_begin || offset>input_end)
+        const auto write_input=[&](std::size_t offset,const void* data,
+                                   std::size_t size) {
+            if(!size)return;
+            if(offset<upload_begin || offset>input_end || size>input_end-offset)
                 throw std::out_of_range("Dy host input has no upload span");
             std::size_t skipped=0u;
             for(std::size_t i=0u;i<scratch_count;++i) {
                 const auto range=scratch_ranges[i];
-                if(offset<range.begin)break;
+                if(offset+size<=range.begin)break;
                 if(offset<range.end)
-                    throw std::out_of_range("Dy host input targets device scratch");
+                    throw std::out_of_range("Dy host input overlaps device scratch");
                 skipped+=range.end-range.begin;
             }
-            return input_map.data+(offset-upload_begin-skipped);
+            std::memcpy(input_map.data+(offset-upload_begin-skipped),data,size);
         };
         // Pack only host-owned anchors directly into the mapped input.
         // Their backward offsets address the adjacent contact-row arena.
@@ -1853,7 +1879,7 @@ public:
                    (pcm && (patch.broken&0x40000000u)==0u))continue;
                 const auto distance=narrow(
                     (compact_anchor_count-anchor_cursor)*anchor_stride);
-                std::memcpy(host_input(offsets[13])+anchor_cursor*anchor_stride,
+                write_input(offsets[13]+anchor_cursor*anchor_stride,
                             anchors.data()+patch.row_offset/2u,
                             patch.anchor_count*anchor_stride);
                 anchor_cursor+=patch.anchor_count;
@@ -1869,7 +1895,7 @@ public:
                (!device_initial_bodies || i!=0u) &&
                (!device_partitions || (i!=2u && i!=3u)) &&
                (!device_admission || (i!=4u && i!=5u)))
-                std::memcpy(host_input(offsets[i]),sources[i],bytes[i]);
+                write_input(offsets[i],sources[i],bytes[i]);
         if(device_admission)
             for(std::size_t i=0u;i<manifolds.size();++i) {
                 const auto& manager=manifolds[i];
@@ -1878,23 +1904,23 @@ public:
                    contact_origin(manager.prep_index).pcm_pair_index!=invalid)
                     continue;
                 const auto source=manager.order_offset;
-                std::memcpy(host_input(offsets[9])+
+                write_input(offsets[9]+
                     i*sizeof(native::GpuDyContactManifold)+
                     offsetof(native::GpuDyContactManifold,source_order_offset),
                     &source,sizeof(source));
             }
         if(prep_bytes) {
-            std::memcpy(host_input(offsets[11]),contact_frame.data(),
+            write_input(offsets[11],contact_frame.data(),
                         source_dy_contact_frame_bytes);
-            std::memcpy(host_input(offsets[11])+source_dy_contact_frame_bytes,
+            write_input(offsets[11]+source_dy_contact_frame_bytes,
                         packed_.data(),
                         packed_.size()*sizeof(SourceDyPackedContactPrepNative));
         }
         if(!cpu_gu.empty())
-            std::memcpy(host_input(offsets[11])+prep_bytes,
+            write_input(offsets[11]+prep_bytes,
                         cpu_gu.data(),cpu_gu.size_bytes());
         if(!inline_bodies_.empty())
-            std::memcpy(host_input(offsets[11])+static_begin,
+            write_input(offsets[11]+static_begin,
                         inline_bodies_.data(),inline_bodies_.size()*
                             sizeof(native::GpuDyContactPrepBody));
         last_schedule_.inline_contact_body_bytes=
@@ -1908,7 +1934,7 @@ public:
                 narrow(header_bytes+n*20u),
                 narrow(header_bytes+n*24u),
                 tiles_.empty()?0u:narrow(offsets[14])};
-            std::memcpy(host_input(offsets[15]),scratch_header.data(),
+            write_input(offsets[15],scratch_header.data(),
                         sizeof(scratch_header));
             if(source_descriptors) {
                 // Sc's response tokens follow its body ordinals in the
@@ -1916,57 +1942,57 @@ public:
                 const auto token_offset=device_admission
                     ?narrow(device_admission->layout.response_tokens-
                             device_admission->layout.body_order):0u;
-                std::memcpy(host_input(offsets[15])+20u,
+                write_input(offsets[15]+20u,
                             &token_offset,sizeof(token_offset));
                 if(device_admission) {
                     const auto task_offset=narrow(
                         device_admission->layout.tasks);
-                    std::memcpy(host_input(offsets[15])+24u,
+                    write_input(offsets[15]+24u,
                                 &task_offset,sizeof(task_offset));
                     const auto extent_offset=narrow(
                         device_admission->layout.response_extents-
                         device_admission->layout.body_order);
-                    std::memcpy(host_input(offsets[15])+28u,
+                    write_input(offsets[15]+28u,
                                 &extent_offset,sizeof(extent_offset));
                     const std::uint32_t retained_task_count=invalid;
-                    std::memcpy(host_input(offsets[15])+32u,
+                    write_input(offsets[15]+32u,
                                 &retained_task_count,sizeof(retained_task_count));
                     const auto contact_prefix_offset=
                         device_admission->layout.device_contact_prefix
                         ?narrow(device_admission->layout.response_prefixes-
                                 device_admission->layout.body_order):0u;
-                    std::memcpy(host_input(offsets[15])+44u,
+                    write_input(offsets[15]+44u,
                                 &contact_prefix_offset,
                                 sizeof(contact_prefix_offset));
                     const auto body_remap_offset=
                         device_admission->deferred_body_remap
                         ?narrow(device_admission->layout.body_remap-
                                 device_admission->layout.body_order):0u;
-                    std::memcpy(host_input(offsets[15])+48u,
+                    write_input(offsets[15]+48u,
                                 &body_remap_offset,
                                 sizeof(body_remap_offset));
                     const auto joint_remap_offset=
                         device_admission->deferred_joint_remap
                         ?narrow(device_admission->layout.joint_remap-
                                 device_admission->layout.body_order):0u;
-                    std::memcpy(host_input(offsets[15])+52u,
+                    write_input(offsets[15]+52u,
                                 &joint_remap_offset,
                                 sizeof(joint_remap_offset));
                     const auto joint_count=
                         device_admission->joint_source_count;
-                    std::memcpy(host_input(offsets[15])+56u,
+                    write_input(offsets[15]+56u,
                                 &joint_count,sizeof(joint_count));
                     const auto counts=source_indexed_integration
                         ?narrow(device_admission->layout.counts):0u;
-                    std::memcpy(host_input(offsets[15])+60u,
+                    write_input(offsets[15]+60u,
                                 &counts,sizeof(counts));
                     const std::array<std::uint32_t,2> epoch_errors{
                         0u,std::numeric_limits<std::uint32_t>::max()};
-                    std::memcpy(host_input(offsets[15])+36u,
+                    write_input(offsets[15]+36u,
                                 epoch_errors.data(),sizeof(epoch_errors));
                 }
                 if(n && !device_admission)
-                    std::memcpy(host_input(offsets[15]+scratch_header[1]),
+                    write_input(offsets[15]+scratch_header[1],
                                 source_descriptor_tokens_.data(),
                                 n*sizeof(std::uint32_t));
                 const auto table=offsets[15]+scratch_header[3]+
@@ -1979,28 +2005,28 @@ public:
                        bytes[15]-(table-offsets[15]))
                     throw std::logic_error(
                         "Source Dy descriptor table exceeds scratch allocation");
-                std::memcpy(host_input(table),&total,sizeof(total));
+                write_input(table,&total,sizeof(total));
                 if(total)
-                    std::memcpy(host_input(table)+4u,
+                    write_input(table+4u,
                                 source_descriptor_full_.data(),
                                 source_descriptor_full_.size()*
                                     sizeof(native::GpuDyDistanceDescriptor));
             }else if(n)
-                std::memcpy(host_input(offsets[15])+20u,
+                write_input(offsets[15]+20u,
                             descriptors.data(),descriptors.size_bytes());
         }
         if(!prepared_velocity_components_.empty())
-            std::memcpy(host_input(offsets[12])+packed_input_bytes,
+            write_input(offsets[12]+packed_input_bytes,
                         prepared_velocity_components_.data(),velocity_bytes);
         if(!force_mod_components_.empty())
-            std::memcpy(host_input(offsets[12])+force_begin,
+            write_input(offsets[12]+force_begin,
                         force_mod_components_.data(),force_bytes);
         if(!host_poses_.empty())
-            std::memcpy(host_input(offsets[12])+host_pose_begin,
+            write_input(offsets[12]+host_pose_begin,
                         host_poses_.data(),last_host_pose_upload_bytes_);
         if(upload_body_masses)
             for(std::size_t i=0;i<bodies.size();++i)
-                std::memcpy(host_input(offsets[12])+mass_offset+i*4u,
+                write_input(offsets[12]+mass_offset+i*4u,
                             &bodies[i].inverse_mass,sizeof(float));
         // Preserve the EdgeIndex history prefix when replacing the
         // transient numerical working set.
@@ -2038,7 +2064,7 @@ public:
             resident_schedule_layout_=layout;
             last_schedule_.resident_schedule_reuse_candidate=reuse;
             const auto retained_task_count=reuse?narrow(prior_tasks):invalid;
-            std::memcpy(host_input(offsets[15])+32u,
+            write_input(offsets[15]+32u,
                         &retained_task_count,sizeof(retained_task_count));
         }
         // Adjacent Sc constraint slot edits share one DMA into the
@@ -2159,7 +2185,7 @@ public:
                     throw std::overflow_error(
                         "Dy immovable actor-local reference exceeds 32-bit view");
                 const auto tagged=static_cast<std::uint32_t>(address)|3u;
-                std::memcpy(host_input(offsets[11])+
+                write_input(offsets[11]+
                     source_dy_contact_frame_bytes+
                     i*sizeof(SourceDyPackedContactPrepNative)+field,
                     &tagged,sizeof(tagged));
@@ -2218,7 +2244,7 @@ public:
                 const auto offset=static_cast<std::uint32_t>(
                     std::size_t(retained_bias)+index*
                         sizeof(native::GpuDyRetainedFrictionCandidate));
-                std::memcpy(host_input(offsets[8])+
+                write_input(offsets[8]+
                     input.patch*sizeof(native::GpuDyContactPatch)+
                     offsetof(native::GpuDyContactPatch,reserved),
                     &offset,sizeof(offset));
@@ -2252,12 +2278,12 @@ public:
                         sizeof(SourceDyHostPoseNative));
         }
         if(!packed_integration_.empty())
-            std::memcpy(host_input(offsets[12])+integration_header_bytes,
+            write_input(offsets[12]+integration_header_bytes,
                         packed_integration_.data(),
                         packed_integration_.size()*sizeof(SourceDyPackedIntegrationNative));
         if(!device_generated_inertia)
             for(std::size_t i=0u;i<bodies.size();++i)
-                std::memcpy(host_input(offsets[16])+i*9u*sizeof(float),
+                write_input(offsets[16]+i*9u*sizeof(float),
                             integration[i].sqrt_inverse_inertia,
                             9u*sizeof(float));
         // Joint source slots are stable; Dy rows retain task order.
@@ -2287,7 +2313,7 @@ public:
                     "Source Dy joint input lacks its first-row descriptor");
             const auto address=narrow(std::size_t(joint_source_bias)+
                 std::size_t(input.source_slot)*sizeof(native::GpuDyJointInput));
-            std::memcpy(host_input(offsets[1])+
+            write_input(offsets[1]+
                             joint_row_begin*sizeof(native::GpuDyJointRow)+
                             offsetof(native::GpuDyJointRow,applied_force),
                         &address,sizeof(address));
@@ -2301,7 +2327,7 @@ public:
         for(const auto& upload:actor_local_uploads_)
             last_schedule_.actor_local_upload_bytes+=upload.bytes;
         last_schedule_.actor_local_upload_spans=actor_local_uploads_.size();
-        std::memcpy(host_input(offsets[12]),
+        write_input(offsets[12],
                     integration_header.data(),sizeof(integration_header));
         const auto previous_spans=stream_.submission_stats().upload_spans;
         const auto previous_batches=stream_.submission_stats().upload_batches;
@@ -2825,15 +2851,15 @@ public:
         std::array<compute::DownloadSpan,6u> downloads{};
         std::size_t download_count=0u;
         downloads[download_count++]={
-            mapped.buffer,mapped.offset,host_.data(),output_bytes};
+            mapped.buffer,mapped.offset,host_.get(),output_bytes};
         if(device_admission) {
             downloads[download_count++]={
                 device_meta_buffer,device_meta_offset,
-                host_.data()+device_header_offset,16u};
+                host_.get()+device_header_offset,16u};
             if(device_task_bytes)
                 downloads[download_count++]={
                     device_task_buffer,device_task_source,
-                    host_.data()+device_task_offset,device_task_bytes};
+                    host_.get()+device_task_offset,device_task_bytes};
             if(readback_body_ordinals && ordinal_capacity!=0u)
                 downloads[download_count++]={
                     device_ordinal_buffer,device_ordinal_source,
@@ -2842,7 +2868,7 @@ public:
                 address+offsets[15]+36u,8u);
             downloads[download_count++]={
                 errors.buffer,errors.offset,
-                host_.data()+device_error_offset,8u};
+                host_.get()+device_error_offset,8u};
         }
         if(!admitted_contact_sources_.empty())
             downloads[download_count++]={
@@ -2937,7 +2963,7 @@ public:
         if(pending.device_admission) {
             std::array<std::uint32_t,4> admitted{};
             std::memcpy(admitted.data(),
-                host_.data()+pending.device_header_offset,sizeof(admitted));
+                host_.get()+pending.device_header_offset,sizeof(admitted));
             invalid_device_admission=
                 admitted[0]!=0u || admitted[1]>pending.task_capacity ||
                 admitted[2]>pending.ordinal_capacity ||
@@ -2948,7 +2974,7 @@ public:
                 last_schedule_.device_admitted_descriptors=admitted[3];
                 if(last_schedule_.resident_wide_schedule) {
                     std::uint32_t wide=0u;
-                    std::memcpy(&wide,host_.data()+output_bytes-4u,4u);
+                    std::memcpy(&wide,host_.get()+output_bytes-4u,4u);
                     last_schedule_.resident_schedule_reused=(wide&0x80000000u)!=0u;
                     wide&=0x7fffffffu;
                     if(wide>admitted[1])
@@ -2958,7 +2984,7 @@ public:
                 if(pending.readback_device_task_records) {
                     if(admitted[1])
                         std::memcpy(tasks.data(),
-                            host_.data()+pending.device_task_offset,
+                            host_.get()+pending.device_task_offset,
                             admitted[1]*sizeof(native::GpuDyDistanceTask));
                     for(std::size_t i=admitted[1];i<tasks.size();++i)
                         tasks[i].error=0u;
@@ -2984,7 +3010,7 @@ public:
         if(pending.device_admission) {
             std::array<std::uint32_t,2> errors{};
             std::memcpy(errors.data(),
-                host_.data()+pending.device_error_offset,sizeof(errors));
+                host_.get()+pending.device_error_offset,sizeof(errors));
             if(errors[0]!=0u)
                 throw std::overflow_error(
                     "Source Dy GPU solver task "+std::to_string(errors[1])+
@@ -2992,7 +3018,7 @@ public:
         }else {
             for(std::size_t i=0;i<tasks.size();++i)
                 std::memcpy(&tasks[i].error,
-                    host_.data()+result_offsets[1]+i*4u,4u);
+                    host_.get()+result_offsets[1]+i*4u,4u);
             for(std::size_t i=0u;i<tasks.size();++i)
                 if(tasks[i].error!=0u)
                     throw std::overflow_error(
@@ -3004,7 +3030,7 @@ public:
                 "Resident Sc Dy scheduling result exceeds declared capacities");
         const auto fetch_pose=[&](std::size_t index) {
             auto& pose=integrated_poses[index];
-            std::memcpy(&pose,host_.data()+result_offsets[5]+
+            std::memcpy(&pose,host_.get()+result_offsets[5]+
                 index*sizeof(pose),sizeof(pose));
             if(pose.valid==native::gpu_dy_integration_inactive &&
                (integration[index].active&native::gpu_dy_conditional_integration))
@@ -3042,7 +3068,7 @@ public:
         if(device_unconstrained_preparation)
             for(std::size_t index=bodies.size();index<integration.size();++index) {
                 auto& input=integration[index];
-                const auto* output=host_.data()+free_velocity_offset+
+                const auto* output=host_.get()+free_velocity_offset+
                     (index-bodies.size())*52u;
                 std::memcpy(input.linear_velocity,output,12u);
                 std::memcpy(input.angular_velocity,output+12u,12u);
@@ -3081,7 +3107,7 @@ public:
             if(resident_extent) {
                 admitted_pcm_rows+=capacity;
                 std::uint32_t report=0u;
-                std::memcpy(&report,host_.data()+result_offsets[4]+
+                std::memcpy(&report,host_.get()+result_offsets[4]+
                             manager.patch_offset*4u,sizeof(report));
                 if((report&source_dy_pcm_extent_valid_bit)==0u)
                     throw std::logic_error(
@@ -3123,7 +3149,7 @@ public:
                         throw std::logic_error(
                             "Source Dy contact writeback index invalid");
                     std::memcpy(&contact_forces[index],
-                        host_.data()+result_offsets[2]+index*4u,4u);
+                        host_.get()+result_offsets[2]+index*4u,4u);
                 }
                 if(resident_extent)
                     patch.contact_count=static_cast<std::uint32_t>(count);
@@ -3143,7 +3169,7 @@ public:
                 std::uint32_t report=0u;
                 if(pcm_growth || patch.anchor_count)
                     std::memcpy(&report,
-                        host_.data()+result_offsets[4]+j*4u,4u);
+                        host_.get()+result_offsets[4]+j*4u,4u);
                 const auto count=pcm_growth?(report>>1u)&3u:
                     patch.anchor_count;
                 if(count>2u || patch.row_offset>friction_count ||
@@ -3157,12 +3183,12 @@ public:
                     for(std::size_t k=patch.row_offset/2u;
                         k<patch.row_offset/2u+count;++k)
                         std::memcpy(&anchor_impulses[k],
-                            host_.data()+result_offsets[3]+k*12u,12u);
+                            host_.get()+result_offsets[3]+k*12u,12u);
                 }else {
                     for(std::size_t k=patch.row_offset;
                         k<patch.row_offset+count*2u;++k) {
                         const auto* result=
-                            host_.data()+result_offsets[3]+k*16u;
+                            host_.get()+result_offsets[3]+k*16u;
                         std::memcpy(&friction[k].tangent,result,12u);
                         std::memcpy(&friction[k].applied_force,result+12u,4u);
                     }
@@ -3176,13 +3202,13 @@ public:
         };
         each_body_result([&](std::size_t index) {
             if(device_unconstrained_preparation) {
-                const auto* output=host_.data()+result_offsets[0]+index*52u;
+                const auto* output=host_.get()+result_offsets[0]+index*52u;
                 std::memcpy(&bodies[index],output,24u);
                 std::memcpy(&sleep_states[index],output+24u,
                             sizeof(native::GpuDySleepState));
             }else
                 std::memcpy(&bodies[index],
-                    host_.data()+result_offsets[0]+index*48u,48u);
+                    host_.get()+result_offsets[0]+index*48u,48u);
         });
         if(pending.device_admission) {
             if(pending.compact_contact_admission) {
@@ -3969,8 +3995,9 @@ private:
     std::uint64_t max_view_=0u;
     compute::BufferId input_upload_buffer_=0u;
     std::size_t input_upload_capacity_=0u,input_upload_initialized_=0u;
-    FrameWorkingSet input_working_set_,arena_working_set_;
-    std::vector<std::uint8_t> host_;
+    FrameWorkingSet input_working_set_,arena_working_set_,result_working_set_;
+    std::unique_ptr<std::uint8_t[]> host_;
+    std::size_t host_result_capacity_=0u;
     std::vector<std::uint32_t> admitted_body_ordinals_;
     std::vector<std::uint32_t> admitted_response_tokens_;
     std::vector<std::uint32_t> admitted_contact_sources_;
