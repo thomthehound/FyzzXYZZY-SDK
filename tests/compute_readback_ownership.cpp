@@ -333,7 +333,7 @@ int main() {
         if(first[0]!=first[1])
             throw std::runtime_error("Small relocation after peak lost source data");
         // Dependent relocations consume earlier writes within and across submissions.
-        const std::vector<BatchCommand> relocations{
+        std::vector<BatchCommand> relocations{
             CopyCommand{gpu,9u*4u,gpu,11u*4u,4u},
             CopyCommand{gpu,11u*4u,gpu,12u*4u,4u}
         };
