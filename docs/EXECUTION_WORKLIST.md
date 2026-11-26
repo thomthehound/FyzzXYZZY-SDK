@@ -32,6 +32,12 @@ quality rather than individual dispatch or barrier counts.
   history relocation, nonblocking journal repair, and readback cancellation.
   Join rejected source tokens at one completion boundary and preserve
   immutable mapped inputs across replacement.
+- [x] Retain descriptor and endpoint state across packed singleton PGS
+  iterations; publish contact body deltas at descriptor boundaries.
+  Keep the biased motion snapshot distinct from final velocity state.
+- [x] Synchronize serial singleton partition runs only at cooperative
+  motion capture and integration; retain dependencies between concurrent
+  conflict partitions.
 
 These are implementation milestones, not hardware-performance acceptance.
 

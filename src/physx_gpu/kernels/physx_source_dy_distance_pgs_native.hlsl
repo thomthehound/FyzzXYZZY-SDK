@@ -2789,7 +2789,7 @@ void main(uint3 group:SV_GroupID,uint3 lane:SV_GroupThreadID) {
         const bool singleLaneTask=fused &&
             descriptors.y-descriptors.x==1u &&
             partitions.y-partitions.x==1u &&
-            bodies.y-bodies.x==1u;
+            bodies.y-bodies.x<=2u;
         bool serialPartitions=false;
         if((fused || localRun) && partitions.y-partitions.x>=32u) {
             // A narrow, deeply dependent island may have thousands of
@@ -2828,7 +2828,10 @@ void main(uint3 group:SV_GroupID,uint3 lane:SV_GroupThreadID) {
                                 begin=end;
                             }
                         }
-                        AllMemoryBarrierWithGroupSync();
+                        // Lane zero owns the complete serial run. Only
+                        // cooperative motion capture needs its live state.
+                        if(fused && iteration+1u==iters.x)
+                            AllMemoryBarrierWithGroupSync();
                     } else {
                         uint begin=descriptors.x;
                         for(uint partition=partitions.x;
@@ -2838,17 +2841,29 @@ void main(uint3 group:SV_GroupID,uint3 lane:SV_GroupThreadID) {
                                 end=arena.Load(p.partitionBias+partition*4u);
                             solvePartition(begin,end,lane.x,iters,
                                            iteration,endError);
-                            if((fused && !singleLaneTask) || localRun)
+                            // The final partition hands off at the
+                            // integration barrier or the dispatch boundary.
+                            const bool nextPartition=partition+1u<partitions.y;
+                            const bool nextIteration=fused &&
+                                iteration+1u<endIteration;
+                            if(!singleLaneTask && (fused || localRun) &&
+                               (nextPartition || nextIteration))
                                 AllMemoryBarrierWithGroupSync();
                             begin=end;
                         }
                     }
                 }
                 if((fused || phase==motionTile) && iteration+1u==iters.x) {
-                    for(uint i=bodies.x+lane.x;i<bodies.y;i+=128u)
-                        saveMotion(i,endError);
-                    if(fused && !singleLaneTask)
-                        AllMemoryBarrierWithGroupSync();
+                    if(singleLaneTask) {
+                        // Keep both snapshots with the numerical writer.
+                        if(lane.x==0u)
+                            for(uint i=bodies.x;i<bodies.y;++i)
+                                saveMotion(i,endError);
+                    } else {
+                        for(uint i=bodies.x+lane.x;i<bodies.y;i+=128u)
+                            saveMotion(i,endError);
+                        if(fused)AllMemoryBarrierWithGroupSync();
+                    }
                 }
             }
             if(!fused)return;
