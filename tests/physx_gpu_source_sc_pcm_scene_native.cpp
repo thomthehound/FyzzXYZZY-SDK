@@ -9673,7 +9673,7 @@ void verify_gpu_zero_response_wide_island(
 void verify_gpu_high_degree_coloring(
     fyzz::compute::Backend backend,const char* sap,const char* pcm,
     const char* dy_shader,unsigned leaves=36u,
-    bool dual_hub=false,unsigned frames_override=0u) {
+    bool dual_hub=false,unsigned frames_override=0u,bool pure_hub=false) {
     using namespace fyzz;
     std::ifstream input(dy_shader,std::ios::binary);
     require(bool(input),"High-degree GPU Dy shader unavailable");
@@ -9693,10 +9693,10 @@ void verify_gpu_high_degree_coloring(
         std::move(shader));
     auto* producer=owner.get();
     gpu.set_gpu_broadphase(std::move(owner));
-    const auto assemble=[leaves,dual_hub](native::Scene& scene) {
+    const auto assemble=[leaves,dual_hub,pure_hub](native::Scene& scene) {
         std::vector<BodyId> ids;
         ids.reserve(leaves+1u+(dual_hub?1u:0u));
-        const auto fixed=scene.add_static_box(
+        const auto fixed=pure_hub?BodyId{}:scene.add_static_box(
             {0.4f,0.4f,0.4f},{-0.72f,3.f,0.f});
         const auto center=scene.add_dynamic_box(
             {0.4f,0.4f,0.4f},{0.f,3.f,0.f},1.f);
@@ -9707,7 +9707,7 @@ void verify_gpu_high_degree_coloring(
         dynamics.velocity_iterations=1u;
         scene.set_dynamics(center,dynamics);
         scene.set_velocity(center,{0.05f,0.f,0.07f});
-        scene.create_center_distance_constraint(fixed,center,0.72f);
+        if(!pure_hub)scene.create_center_distance_constraint(fixed,center,0.72f);
         BodyId second_center=0u;
         if(dual_hub) {
             second_center=scene.add_dynamic_box(
@@ -9768,7 +9768,7 @@ void verify_gpu_high_degree_coloring(
                           gpu_done-cpu_done).count()<<'\n';
         const auto schedule=producer->dy_launch_stats();
         require(schedule.device_colored_tasks>0u &&
-                schedule.device_colored_descriptors>=leaves+1u &&
+                schedule.device_colored_descriptors>=leaves+(pure_hub?0u:1u) &&
                 schedule.wide_tasks==0u &&
                 schedule.max_partition_groups==1u &&
                 schedule.tile_bytes==0u &&
@@ -9781,7 +9781,7 @@ void verify_gpu_high_degree_coloring(
                     (b.size()<=128u?0u:1u) &&
                 producer->dy_gpu_integrated_body_count()==b.size() &&
                 gpu.contacts().size()==cpu.contacts().size() &&
-                !gpu.contacts().empty() &&
+                (pure_hub?gpu.contacts().empty():!gpu.contacts().empty()) &&
                 (!dual_hub ||
                  (gpu.largest_accurate_island_size()>=b.size() &&
                   cpu.largest_accurate_island_size()>=a.size())),
@@ -10329,6 +10329,10 @@ int main(int argc,char** argv) {
             fyzz::tests::measure_gpu_case("sc_pcm","multiwave_coloring",
                 [&]{verify_gpu_high_degree_coloring(
                     backend,argv[1],argv[2],argv[3]);});
+        if(scenario=="all" || scenario=="wide_islands")
+            fyzz::tests::measure_gpu_case("sc_pcm","pure_dynamic_hub",
+                [&]{verify_gpu_high_degree_coloring(
+                    backend,argv[1],argv[2],argv[3],36u,false,2u,true);});
         if(scenario=="all" || scenario=="wide_islands" ||
            scenario=="star_island")
             fyzz::tests::measure_gpu_case("sc_pcm","star_island",

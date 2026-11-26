@@ -718,6 +718,26 @@ void sourceDyRejectScheduleReuse(uint scratch) {
     uint unused;
     arena.InterlockedExchange(scratch+32u,invalidBody,unused);
 }
+void sourceDyInitializeColorState(uint4 desc,uint bodyState,uint colors,uint i) {
+    const bool da=(desc.w&0x100u)!=0u;
+    const bool db=(desc.w&0x200u)!=0u;
+    // Constraint endpoints are authoritative even when a solver
+    // task omits a body from its integration writeback ordinal list.
+    uint unused;
+    if(da) {
+        const uint state=bodyState+desc.y*12u;
+        arena.InterlockedExchange(state,0u,unused);
+        arena.InterlockedExchange(state+4u,0u,unused);
+        arena.InterlockedExchange(state+8u,0xffffffffu,unused);
+    }
+    if(db) {
+        const uint state=bodyState+desc.z*12u;
+        arena.InterlockedExchange(state,0u,unused);
+        arena.InterlockedExchange(state+4u,0u,unused);
+        arena.InterlockedExchange(state+8u,0xffffffffu,unused);
+    }
+    arena.Store(colors+i*4u,0xffffffffu);
+}
 void sourceDyPartitionTask(uint taskId,uint scratch,uint errorAddress,
                            uint lane) {
     const uint4 views=arena.Load4(scratch);
@@ -786,6 +806,7 @@ void sourceDyPartitionTask(uint taskId,uint scratch,uint errorAddress,
     const uint sourceCount=sourceDescriptors?arena.Load(sourceTable):0u;
     const bool compareEndpoints=dyReuseColors!=0u;
     if(residentColor)GroupMemoryBarrierWithGroupSync();
+    uint needed=0u,contactManagers=0u;
     for(uint i=first+lane;i<last;i+=128u) {
         uint4 desc;
         if(sourceDescriptors) {
@@ -805,7 +826,7 @@ void sourceDyPartitionTask(uint taskId,uint scratch,uint errorAddress,
                                 capacity=pcm
                                     ?arena.Load(p.patchBias+patchIndex*32u+4u)
                                     :arena.Load(mo+12u);
-                                InterlockedAdd(dyContactManagers,1u);
+                                ++contactManagers;
                             }
                         }
                     }
@@ -860,7 +881,13 @@ void sourceDyPartitionTask(uint taskId,uint scratch,uint errorAddress,
                 continue;
             }
         }
+        if(!compareEndpoints && count>1u) {
+            sourceDyInitializeColorState(desc,bodyState,colors,i);
+            needed+=uint(da && db);
+        }
     }
+    if(needed!=0u)InterlockedAdd(dyNeeded,needed);
+    if(contactManagers!=0u)InterlockedAdd(dyContactManagers,contactManagers);
     AllMemoryBarrierWithGroupSync();
     if(sourceDyTaskLoad(errorAddress)!=0u)return;
     const bool deviceAdmission=(p.launchControl&0x08000000u)!=0u;
@@ -1069,29 +1096,17 @@ void sourceDyPartitionTask(uint taskId,uint scratch,uint errorAddress,
         return;
     }
 
-    for(uint i=first+lane;i<last;i+=128u) {
-        const uint4 desc=arena.Load4(raw+i*16u);
-        const bool da=(desc.w&0x100u)!=0u;
-        const bool db=(desc.w&0x200u)!=0u;
-        // Constraint endpoints are authoritative even when a solver
-        // task omits a body from its integration writeback ordinal list.
-        uint unused;
-        if(da) {
-            const uint state=bodyState+desc.y*12u;
-            arena.InterlockedExchange(state,0u,unused);
-            arena.InterlockedExchange(state+4u,0u,unused);
-            arena.InterlockedExchange(state+8u,0xffffffffu,unused);
+    // Only a rejected retained schedule still needs an initialization pass.
+    if(compareEndpoints) {
+        uint needed=0u;
+        for(uint i=first+lane;i<last;i+=128u) {
+            const uint4 desc=arena.Load4(raw+i*16u);
+            sourceDyInitializeColorState(desc,bodyState,colors,i);
+            needed+=uint((desc.w&0x300u)==0x300u);
         }
-        if(db) {
-            const uint state=bodyState+desc.z*12u;
-            arena.InterlockedExchange(state,0u,unused);
-            arena.InterlockedExchange(state+4u,0u,unused);
-            arena.InterlockedExchange(state+8u,0xffffffffu,unused);
-        }
-        arena.Store(colors+i*4u,0xffffffffu);
-        if(da && db)InterlockedAdd(dyNeeded,1u);
+        if(needed!=0u)InterlockedAdd(dyNeeded,needed);
+        AllMemoryBarrierWithGroupSync();
     }
-    AllMemoryBarrierWithGroupSync();
 
     // A hub's dynamic/dynamic color is its encounter rank. Recognize
     // the common endpoint in parallel; when every descriptor is dynamic,
@@ -1122,23 +1137,18 @@ void sourceDyPartitionTask(uint taskId,uint scratch,uint errorAddress,
         AllMemoryBarrierWithGroupSync();
         if(dyHubMask!=0u) {
             if(dyNeeded==count) {
-                // Every source ordinal is one conflicting dynamic edge.
-                // Each writes a unique color; body maxima are atomic
-                // because the hub and spokes can be shared across lanes.
+                // All edges conflict at the common endpoint. Encounter
+                // order already gives the final singleton partitions.
                 for(uint i=first+lane;i<last;i+=128u) {
-                    const uint4 desc=arena.Load4(raw+i*16u);
-                    const uint color=i-first;
-                    arena.Store(colors+i*4u,color);
-                    uint unused;
-                    arena.InterlockedMax(bodyState+desc.y*12u+4u,
-                                         color+1u,unused);
-                    arena.InterlockedMax(bodyState+desc.z*12u+4u,
-                                         color+1u,unused);
+                    uint4 desc=arena.Load4(raw+i*16u);
+                    desc.w&=255u;
+                    arena.Store4(p.descriptorBias+i*16u,desc);
+                    arena.Store(p.partitionBias+(partitionFirst+i-first)*4u,i+1u);
+                    if(residentColor)arena.Store(colors+i*4u,i);
                 }
-                if(lane==0u) {
-                    dyHighest=count;
-                    dyAssigned=count;
-                }
+                if(lane==0u)
+                    sourceDyTaskStore(task+12u,partitionCapacity);
+                return;
             } else if(lane==0u) {
                 // Static reservations follow the dynamic colors. Mixed
                 // hubs retain their exact dynamic encounter ranks.
