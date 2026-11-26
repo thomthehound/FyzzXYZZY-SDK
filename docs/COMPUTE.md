@@ -130,7 +130,9 @@ Dy validates contact ownership, friction history, anchor extents and
 retained candidates in one manager traversal. Integration metadata and
 actor-slot bounds share one source traversal. Dy initializes conflict
 state during descriptor expansion when retained colors are not candidates
-for reuse. Pure dynamic hubs emit singleton partitions directly.
+for reuse. Pure dynamic hubs emit singleton partitions directly; mixed
+hubs prefix dynamic encounter ranks across the workgroup and compact
+static reservations into the existing cursor range.
 Do not infer performance gains from software Vulkan or WARP CI.
 
 ### Nonblocking upload staging

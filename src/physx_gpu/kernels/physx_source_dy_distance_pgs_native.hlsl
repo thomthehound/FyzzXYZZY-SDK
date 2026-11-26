@@ -1108,9 +1108,8 @@ void sourceDyPartitionTask(uint taskId,uint scratch,uint errorAddress,
         AllMemoryBarrierWithGroupSync();
     }
 
-    // A hub's dynamic/dynamic color is its encounter rank. Recognize
-    // the common endpoint in parallel; when every descriptor is dynamic,
-    // the rank is simply its source ordinal and needs no serial scan.
+    // A hub's dynamic/dynamic color is its encounter rank.
+    bool mixedHub=false;
     if(dyNeeded>=32u) {
         if(lane==0u) {
             dyHubA=0xffffffffu;
@@ -1126,13 +1125,20 @@ void sourceDyPartitionTask(uint taskId,uint scratch,uint errorAddress,
             }
         }
         AllMemoryBarrierWithGroupSync();
-        uint common=3u;
-        for(uint i=first+lane;i<last && common!=0u;i+=128u) {
+        // Contiguous lane ranges admit one encounter-order prefix per
+        // lane, independent of the native subgroup width.
+        const uint chunk=(count+127u)/128u;
+        const uint begin=first+min(count,lane*chunk);
+        const uint end=begin+min(chunk,last-begin);
+        uint common=3u,dynamicCount=0u;
+        for(uint i=begin;i<end && common!=0u;++i) {
             const uint4 desc=arena.Load4(raw+i*16u);
             if((desc.w&0x300u)!=0x300u)continue;
+            ++dynamicCount;
             if(desc.y!=dyHubA && desc.z!=dyHubA)common&=~1u;
             if(desc.y!=dyHubB && desc.z!=dyHubB)common&=~2u;
         }
+        dyCapacityScan[lane]=dynamicCount;
         InterlockedAnd(dyHubMask,common);
         AllMemoryBarrierWithGroupSync();
         if(dyHubMask!=0u) {
@@ -1149,22 +1155,41 @@ void sourceDyPartitionTask(uint taskId,uint scratch,uint errorAddress,
                 if(lane==0u)
                     sourceDyTaskStore(task+12u,partitionCapacity);
                 return;
-            } else if(lane==0u) {
-                // Static reservations follow the dynamic colors. Mixed
-                // hubs retain their exact dynamic encounter ranks.
-                uint color=0u;
-                for(uint i=first;i<last;++i) {
+            } else {
+                mixedHub=true;
+                // Prefix dynamic ranks; the complement is the static
+                // encounter rank. Reuse the dead contact-capacity cursors.
+                [unroll]
+                for(uint step=1u;step<128u;step<<=1u) {
+                    const uint prior=lane>=step?dyCapacityScan[lane-step]:0u;
+                    GroupMemoryBarrierWithGroupSync();
+                    dyCapacityScan[lane]+=prior;
+                    GroupMemoryBarrierWithGroupSync();
+                }
+                uint color=dyCapacityScan[lane]-dynamicCount;
+                uint staticRank=begin-first-color;
+                const uint hub=(dyHubMask&1u)!=0u?dyHubA:dyHubB;
+                for(uint i=begin;i<end;++i) {
                     const uint4 desc=arena.Load4(raw+i*16u);
-                    if((desc.w&0x300u)!=0x300u)continue;
-                    const uint a=bodyState+desc.y*12u;
-                    const uint b=bodyState+desc.z*12u;
+                    if((desc.w&0x300u)!=0x300u) {
+                        arena.Store(cursors+(first+staticRank)*4u,i);
+                        ++staticRank;
+                        continue;
+                    }
                     arena.Store(colors+i*4u,color);
-                    arena.Store(a+4u,max(arena.Load(a+4u),color+1u));
-                    arena.Store(b+4u,max(arena.Load(b+4u),color+1u));
+                    const uint spoke=desc.y==hub?desc.z:desc.y;
+                    if(spoke!=hub) {
+                        uint unused;
+                        arena.InterlockedMax(bodyState+spoke*12u+4u,
+                                              color+1u,unused);
+                    }
                     ++color;
                 }
-                dyHighest=color;
-                dyAssigned=color;
+                if(lane==0u) {
+                    arena.Store(bodyState+hub*12u+4u,dyNeeded);
+                    dyHighest=dyNeeded;
+                    dyAssigned=dyNeeded;
+                }
             }
         }
     }
@@ -1308,37 +1333,42 @@ void sourceDyPartitionTask(uint taskId,uint scratch,uint errorAddress,
         AllMemoryBarrierWithGroupSync();
         if(sourceDyTaskLoad(errorAddress)!=0u)return;
     }
-    for(uint i=first+lane;i<last;i+=128u) {
-        const uint4 desc=arena.Load4(raw+i*16u);
-        uint unused;
-        if((desc.w&0x100u)!=0u)
-            arena.InterlockedExchange(bodyState+desc.y*12u+8u,0u,unused);
-        if((desc.w&0x200u)!=0u)
-            arena.InterlockedExchange(bodyState+desc.z*12u+8u,0u,unused);
-    }
-    AllMemoryBarrierWithGroupSync();
-    if(lane==0u) {
-        uint highest=dyHighest;
-        // Static/kinematic reservations retain source encounter order
-        // after all dynamic/dynamic partitions have been committed.
-        for(uint i=first;i<last;++i) {
-            if(arena.Load(colors+i*4u)!=0xffffffffu)continue;
+    if(dyNeeded!=count) {
+        const uint staticCount=count-dyNeeded;
+        // Only static endpoints consume reservation counters.
+        const uint scanCount=mixedHub?staticCount:count;
+        for(uint j=lane;j<scanCount;j+=128u) {
+            const uint i=mixedHub?arena.Load(cursors+(first+j)*4u):first+j;
+            if(!mixedHub && arena.Load(colors+i*4u)!=0xffffffffu)continue;
             const uint4 desc=arena.Load4(raw+i*16u);
-            const uint state=bodyState+
-                (((desc.w&0x100u)!=0u)?desc.y:desc.z)*12u;
-            const uint value=arena.Load(state+4u)+arena.Load(state+8u);
-            if(value>=count) {
-                sourceDyTaskErrorOr(errorAddress,1048576u);
-                break;
-            }
-            arena.Store(state+8u,arena.Load(state+8u)+1u);
-            arena.Store(colors+i*4u,value);
-            highest=max(highest,value+1u);
+            const uint body=(desc.w&0x100u)!=0u?desc.y:desc.z;
+            uint unused;
+            arena.InterlockedExchange(bodyState+body*12u+8u,0u,unused);
         }
-        dyHighest=highest;
+        AllMemoryBarrierWithGroupSync();
+        if(lane==0u) {
+            uint highest=dyHighest;
+            // Static/kinematic reservations retain source encounter order.
+            for(uint j=0u;j<scanCount;++j) {
+                const uint i=mixedHub?arena.Load(cursors+(first+j)*4u):first+j;
+                if(!mixedHub && arena.Load(colors+i*4u)!=0xffffffffu)continue;
+                const uint4 desc=arena.Load4(raw+i*16u);
+                const uint state=bodyState+
+                    (((desc.w&0x100u)!=0u)?desc.y:desc.z)*12u;
+                const uint value=arena.Load(state+4u)+arena.Load(state+8u);
+                if(value>=count) {
+                    sourceDyTaskErrorOr(errorAddress,1048576u);
+                    break;
+                }
+                arena.Store(state+8u,arena.Load(state+8u)+1u);
+                arena.Store(colors+i*4u,value);
+                highest=max(highest,value+1u);
+            }
+            dyHighest=highest;
+        }
+        AllMemoryBarrierWithGroupSync();
+        if(sourceDyTaskLoad(errorAddress)!=0u)return;
     }
-    AllMemoryBarrierWithGroupSync();
-    if(sourceDyTaskLoad(errorAddress)!=0u)return;
     for(uint i=partitionFirst+lane;i<partitionCapacity;i+=128u)
         arena.Store(cursors+i*4u,0u);
     AllMemoryBarrierWithGroupSync();
