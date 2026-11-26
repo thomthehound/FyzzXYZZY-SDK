@@ -3,6 +3,7 @@
 
 #include "fyzzxyzzy/compute.h"
 #include "compute_readback_cache.h"
+#include "compute_range_hazards.h"
 
 #include <array>
 #include <cstdint>
@@ -10,6 +11,62 @@
 #include <stdexcept>
 
 namespace {
+
+void verify_range_hazards() {
+    using namespace fyzz::compute;
+    constexpr RangeAccessScope upload{1u,1u},shader_read{2u,2u},
+        shader_write{2u,4u},download{1u,8u},indirect{4u,16u};
+    BufferRangeHazards hazards;
+    struct Dependency {
+        std::size_t begin,end;
+        RangeAccessScope source,target;
+        bool operator==(const Dependency&) const=default;
+    };
+    std::vector<Dependency> dependencies;
+    const auto use=[&](std::size_t begin,std::size_t end,
+                       RangeAccessScope scope,bool writes) {
+        dependencies.clear();
+        hazards.use(begin,end,scope,writes,
+            [&](std::size_t a,std::size_t b,RangeAccessScope src,RangeAccessScope dst) {
+                dependencies.push_back({a,b,src,dst});
+            });
+    };
+    const auto expect=[&](std::initializer_list<Dependency> expected) {
+        if(dependencies!=std::vector<Dependency>(expected))
+            throw std::runtime_error("Incorrect byte-range dependency");
+    };
+    use(0u,64u,upload,true); expect({});
+    use(128u,192u,upload,true); expect({});
+    use(32u,96u,shader_read,false);
+    expect({{32u,64u,upload,shader_read}});
+    use(32u,96u,shader_read,false); expect({});
+    use(48u,80u,download,false);
+    expect({{48u,64u,upload,download}});
+    use(48u,80u,indirect,false);
+    expect({{48u,64u,upload,indirect}});
+    use(48u,64u,shader_write,true);
+    expect({{48u,64u,{7u,1u},shader_write}});
+    use(32u,64u,download,false);
+    expect({{32u,48u,upload,download},{48u,64u,shader_write,download}});
+    use(64u,80u,upload,true);
+    expect({{64u,80u,{7u,0u},upload}});
+    use(0u,32u,download,false);
+    expect({{0u,32u,upload,download}});
+    use(128u,192u,shader_read,false);
+    expect({{128u,192u,upload,shader_read}});
+    BufferRangeHazards contiguous;
+    for(std::size_t i=0u;i<256u;++i)
+        contiguous.use(i*4u,(i+1u)*4u,upload,true,
+            [](auto,auto,auto,auto) {
+                throw std::runtime_error("Disjoint writes synchronized");
+            });
+    dependencies.clear();
+    contiguous.use(0u,1024u,download,false,
+        [&](std::size_t a,std::size_t b,RangeAccessScope src,RangeAccessScope dst) {
+            dependencies.push_back({a,b,src,dst});
+        });
+    expect({{0u,1024u,upload,download}});
+}
 
 void verify_cache_working_set() {
     fyzz::compute::CompletedReadbackCache<unsigned> cache;
@@ -46,6 +103,7 @@ void verify_cache_working_set() {
 
 int main() {
     try {
+        verify_range_hazards();
         verify_cache_working_set();
         using namespace fyzz::compute;
 #if defined(FYZZXYZZY_TEST_D3D12)

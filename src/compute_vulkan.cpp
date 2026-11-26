@@ -3,6 +3,7 @@
 
 #include "fyzzxyzzy/compute.h"
 #include "compute_readback_cache.h"
+#include "compute_range_hazards.h"
 #if defined(FYZZXYZZY_PROFILE_GPU)
 #include "hardware_profile.h"
 #endif
@@ -959,21 +960,6 @@ struct Context::Impl {
                 throw std::invalid_argument("Invalid Vulkan upload span or staging capacity");
             total += upload.bytes;
         }
-        // Native source uploads often target disjoint allocations within a
-        // single PhysX heap root. Avoid redundant intra-batch barriers
-        // for these independent ranges, while preserving transfer order
-        // when two uploads overwrite the same destination bytes.
-        bool independent_destinations=true;
-        for(std::size_t i=0;i<uploads.size() && independent_destinations;++i)
-            for(std::size_t j=0;j<i;++j)
-                if(uploads[i].destination==uploads[j].destination &&
-                   uploads[i].destination_offset<
-                       uploads[j].destination_offset+uploads[j].bytes &&
-                   uploads[j].destination_offset<
-                       uploads[i].destination_offset+uploads[i].bytes) {
-                    independent_destinations=false;
-                    break;
-                }
         // Prevent post-submit allocation failure during deferred staging
         // ownership transfer. In the single-queue model, the last submitted
         // fence captures the lifetime of this entire upload batch.
@@ -981,7 +967,7 @@ struct Context::Impl {
         // The packed staging buffer is never bound to a shader. It is legal
         // for its aggregate size to exceed maxStorageBufferRange even when
         // every public destination remains within that descriptor limit.
-        const BufferId staging_id = create_buffer(total, MemoryPlacement::HostVisible, false);
+        const BufferId staging_id = create_buffer(total, MemoryPlacement::Upload, false);
         bool submitted = false;
         try {
             const Buffer& staging = get(staging_id);
@@ -1005,8 +991,7 @@ struct Context::Impl {
                     upload.destination_offset, upload.bytes});
                 position += upload.bytes;
             }
-            const SubmissionId id = submit_batch(
-                copies,false,independent_destinations);
+            const SubmissionId id=submit_batch(copies);
             submitted = true;
             // Guaranteed room in retired_buffers. Retires only the public
             // staging ID, not the memory still referenced by the GPU.
@@ -1501,8 +1486,7 @@ struct Context::Impl {
     }
 
     SubmissionId submit_batch(const std::vector<BatchCommand>& operations,
-                              bool profile = false,
-                              bool independent_uploads = false) {
+                              bool profile = false) {
         const bool explicit_profile=profile;
 #if defined(FYZZXYZZY_PROFILE_GPU)
         const bool hardware_trace=!profile && timestamp_valid_bits>0u &&
@@ -1521,9 +1505,6 @@ struct Context::Impl {
                 return std::holds_alternative<UploadCommand>(op);
             });
         if(has_upload) {
-            if(independent_uploads)
-                throw std::invalid_argument(
-                    "Independent Vulkan transfer batch cannot contain owned uploads");
             std::size_t total=0;
             for(const auto& op:operations)
                 if(const auto* upload=std::get_if<UploadCommand>(&op)) {
@@ -1541,7 +1522,7 @@ struct Context::Impl {
                 }
             retired_buffers.reserve(retired_buffers.size()+1u);
             const BufferId staging_id=create_buffer(
-                total,MemoryPlacement::HostVisible,false);
+                total,MemoryPlacement::Upload,false);
             bool submitted=false;
             try {
                 std::vector<BatchCommand> expanded;
@@ -1567,7 +1548,7 @@ struct Context::Impl {
                         offset+=upload->bytes.size();
                     }
                 vkUnmapMemory(device,staging.memory);
-                const auto id=submit_batch(expanded,explicit_profile,false);
+                const auto id=submit_batch(expanded,explicit_profile);
                 submitted=true;
                 retire_buffer(staging_id);
                 return id;
@@ -1576,12 +1557,6 @@ struct Context::Impl {
                 throw;
             }
         }
-        if(independent_uploads)
-            for(const auto& operation:operations)
-                if(!std::holds_alternative<CopyCommand>(operation))
-                    throw std::invalid_argument(
-                        "Independent upload batch may not contain GPU dispatches");
-
         // Validate the complete batch before recording any GPU commands.
         // This prevents a malformed later operation from partially executing.
         std::uint64_t dispatch_count = 0;
@@ -1864,59 +1839,73 @@ struct Context::Impl {
                                  VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT, 0,
                                  1, &from_previous, 0, nullptr, 0, nullptr);
 
-            struct Access {
-                VkPipelineStageFlags stage = 0;
-                VkAccessFlags mask = 0;
-                bool writes = false;
+            struct RangeUse {
+                BufferId buffer;
+                std::size_t begin,end;
+                RangeAccessScope scope;
+                bool writes;
             };
-            std::unordered_map<BufferId, Access> last_access;
-            if(!independent_uploads)
-                last_access.reserve(std::min<std::size_t>(operations.size() * 2, 512));
-            // Reuse CPU-side command scratch throughout this batch instead
-            // of allocating per copy, kernel, and barrier publication.
-            std::vector<std::pair<BufferId, Access>> operation_uses;
+            std::unordered_map<BufferId,BufferRangeHazards> hazards;
+            std::vector<RangeUse> operation_uses;
             std::vector<VkBufferMemoryBarrier> barriers;
             std::vector<VkBufferCopy> copy_regions;
             VkPipeline bound_pipeline=VK_NULL_HANDLE;
             std::size_t dispatch_index=0;
-            auto before_operation = [&](const std::vector<std::pair<BufferId, Access>>& uses) {
-                barriers.clear();
-                VkPipelineStageFlags sources = 0;
-                VkPipelineStageFlags targets = 0;
-                for (const auto& use : uses) {
-                    const auto prev = last_access.find(use.first);
-                    if (prev == last_access.end()) continue;
-                    if (!prev->second.writes && !use.second.writes) continue;
-                    VkBufferMemoryBarrier barrier{};
-                    barrier.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER;
-                    barrier.srcAccessMask = prev->second.mask;
-                    barrier.dstAccessMask = use.second.mask;
-                    barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-                    barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-                    barrier.buffer = get(use.first).buffer;
-                    barrier.offset = 0;
-                    barrier.size = VK_WHOLE_SIZE;
-                    barriers.push_back(barrier);
-                    sources |= prev->second.stage;
-                    targets |= use.second.stage;
-                }
-                if (!barriers.empty()) {
-                    vkCmdPipelineBarrier(commands, sources, targets, 0,
-                                         0, nullptr,
-                                         static_cast<std::uint32_t>(barriers.size()),
-                                         barriers.data(), 0, nullptr);
-                }
-                for (const auto& use : uses) {
-                    auto& current = last_access[use.first];
-                    if (!current.stage || current.writes || use.second.writes) {
-                        current = use.second;
-                    } else {
-                        // Read after read is unordered: retain both source
-                        // stages in case a later operation writes the buffer.
-                        current.stage |= use.second.stage;
-                        current.mask |= use.second.mask;
+            // Merge overlapping aliases before updating dependencies.
+            // Disjoint views retain independent access intent.
+            const auto merge_use=[&](RangeUse use) {
+                for(std::size_t i=0u;i<operation_uses.size();) {
+                    const auto& other=operation_uses[i];
+                    if(other.buffer!=use.buffer ||
+                       other.end<=use.begin || use.end<=other.begin) {
+                        ++i;
+                        continue;
                     }
+                    use.begin=std::min(use.begin,other.begin);
+                    use.end=std::max(use.end,other.end);
+                    use.scope.include(other.scope);
+                    use.writes|=other.writes;
+                    operation_uses[i]=operation_uses.back();
+                    operation_uses.pop_back();
+                    i=0u;
                 }
+                operation_uses.push_back(use);
+            };
+            const auto before_operation=[&]() {
+                barriers.clear();
+                VkPipelineStageFlags sources=0u,targets=0u;
+                for(const auto& use:operation_uses) {
+                    if(get(use.buffer).placement==MemoryPlacement::Upload)
+                        continue;
+                    hazards[use.buffer].use(use.begin,use.end,use.scope,use.writes,
+                        [&](std::size_t begin,std::size_t end,
+                            RangeAccessScope source,RangeAccessScope target) {
+                            VkBufferMemoryBarrier barrier{};
+                            barrier.sType=VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER;
+                            barrier.srcAccessMask=source.access;
+                            barrier.dstAccessMask=target.access;
+                            barrier.srcQueueFamilyIndex=VK_QUEUE_FAMILY_IGNORED;
+                            barrier.dstQueueFamilyIndex=VK_QUEUE_FAMILY_IGNORED;
+                            barrier.buffer=get(use.buffer).buffer;
+                            barrier.offset=begin;
+                            barrier.size=end-begin;
+                            if(!barriers.empty()) {
+                                auto& prior=barriers.back();
+                                if(prior.buffer==barrier.buffer &&
+                                   prior.offset+prior.size==barrier.offset &&
+                                   prior.srcAccessMask==barrier.srcAccessMask &&
+                                   prior.dstAccessMask==barrier.dstAccessMask) {
+                                    prior.size+=barrier.size;
+                                }else barriers.push_back(barrier);
+                            }else barriers.push_back(barrier);
+                            sources|=source.stages;
+                            targets|=target.stages;
+                        });
+                }
+                if(!barriers.empty())
+                    vkCmdPipelineBarrier(commands,sources,targets,0,
+                        0,nullptr,static_cast<std::uint32_t>(barriers.size()),
+                        barriers.data(),0,nullptr);
             };
 
 #if defined(FYZZXYZZY_PROFILE_GPU)
@@ -1927,25 +1916,6 @@ struct Context::Impl {
                 const auto& operation=operations[operation_index];
                 operation_uses.clear();
                 if (const auto* copy = std::get_if<CopyCommand>(&operation)) {
-                    // A packed upload batch has only staging reads and
-                    // validated nonoverlapping destination writes.
-                    if(!independent_uploads) {
-                        if (copy->source == copy->destination) {
-                            // One buffer, one combined dependency entry.
-                            operation_uses.push_back(
-                                {copy->source, {VK_PIPELINE_STAGE_TRANSFER_BIT,
-                                    VK_ACCESS_TRANSFER_READ_BIT |
-                                    VK_ACCESS_TRANSFER_WRITE_BIT, true}});
-                        } else {
-                            operation_uses.push_back(
-                                {copy->source, {VK_PIPELINE_STAGE_TRANSFER_BIT,
-                                    VK_ACCESS_TRANSFER_READ_BIT, false}});
-                            operation_uses.push_back(
-                                {copy->destination, {VK_PIPELINE_STAGE_TRANSFER_BIT,
-                                    VK_ACCESS_TRANSFER_WRITE_BIT, true}});
-                        }
-                        before_operation(operation_uses);
-                    }
                     VkBufferCopy region{};
                     region.srcOffset=copy->source_offset;
                     region.dstOffset=copy->destination_offset;
@@ -1977,6 +1947,19 @@ struct Context::Impl {
                             next->source_offset,next->destination_offset,next->bytes});
                         ++operation_index;
                     }
+                    for(const auto& part:copy_regions) {
+                        operation_uses.push_back({copy->source,
+                            static_cast<std::size_t>(part.srcOffset),
+                            static_cast<std::size_t>(part.srcOffset+part.size),
+                            {VK_PIPELINE_STAGE_TRANSFER_BIT,
+                             VK_ACCESS_TRANSFER_READ_BIT},false});
+                        operation_uses.push_back({copy->destination,
+                            static_cast<std::size_t>(part.dstOffset),
+                            static_cast<std::size_t>(part.dstOffset+part.size),
+                            {VK_PIPELINE_STAGE_TRANSFER_BIT,
+                             VK_ACCESS_TRANSFER_WRITE_BIT},true});
+                    }
+                    before_operation();
                     vkCmdCopyBuffer(commands,get(copy->source).buffer,
                                     get(copy->destination).buffer,
                                     static_cast<std::uint32_t>(copy_regions.size()),
@@ -1991,35 +1974,23 @@ struct Context::Impl {
 
                 const auto& dispatch = std::get<DispatchCommand>(operation);
                 const Pipeline& pipeline = get_pipeline(dispatch.pipeline);
-                // Access intent comes from the PhysX launch contract, not
-                // an assumption that each storage buffer is writable. The
-                // conservative Unspecified default remains read/write.
-                // Multiple slots aliasing one allocation are merged before
-                // the dependency graph is updated, regardless of view ranges.
-                operation_uses.reserve(dispatch.buffers.size());
-                for (const auto& binding : dispatch.buffers) {
-                    const bool reads = binding.access != BufferAccess::Write;
-                    const bool writes = binding.access != BufferAccess::Read;
-                    const VkAccessFlags mask =
-                        (reads ? VkAccessFlags(VK_ACCESS_SHADER_READ_BIT) : 0u) |
-                        (writes ? VkAccessFlags(VK_ACCESS_SHADER_WRITE_BIT) : 0u);
-                    auto found = std::find_if(operation_uses.begin(), operation_uses.end(),
-                        [&](const auto& entry) { return entry.first == binding.buffer; });
-                    if (found == operation_uses.end()) {
-                        operation_uses.push_back({
-                            binding.buffer,
-                            {VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, mask, writes}});
-                    } else {
-                        found->second.mask |= mask;
-                        found->second.writes |= writes;
-                    }
+                operation_uses.reserve(dispatch.buffers.size()+1u);
+                for(const auto& binding:dispatch.buffers) {
+                    const bool reads=binding.access!=BufferAccess::Write;
+                    const bool writes=binding.access!=BufferAccess::Read;
+                    const VkAccessFlags mask=
+                        (reads?VkAccessFlags(VK_ACCESS_SHADER_READ_BIT):0u) |
+                        (writes?VkAccessFlags(VK_ACCESS_SHADER_WRITE_BIT):0u);
+                    merge_use({binding.buffer,binding.offset,
+                        binding.offset+binding.bytes,
+                        {VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,mask},writes});
                 }
                 if(dispatch.indirect)
-                    operation_uses.push_back({
-                        dispatch.indirect->buffer,
+                    operation_uses.push_back({dispatch.indirect->buffer,
+                        dispatch.indirect->offset,dispatch.indirect->offset+12u,
                         {VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT,
-                         VK_ACCESS_INDIRECT_COMMAND_READ_BIT,false}});
-                before_operation(operation_uses);
+                         VK_ACCESS_INDIRECT_COMMAND_READ_BIT},false});
+                before_operation();
                 const VkDescriptorSet descriptor_set=descriptor_sets[dispatch_index++];
 
                 if(bound_pipeline!=pipeline.pipeline) {
