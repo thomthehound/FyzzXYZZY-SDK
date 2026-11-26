@@ -270,6 +270,7 @@ struct Context::Impl {
         bool cpu_mapped = false;
         HostMapAccess map_access = HostMapAccess::ReadWrite;
         bool upload_only = false;
+        std::uint64_t last_reference_fence=0u;
     };
     struct Pipeline {
         ComPtr<ID3D12RootSignature> signature;
@@ -314,7 +315,7 @@ struct Context::Impl {
         // uses an all-device-local scratch resource, fence-owned by this
         // submission. Enhanced-barrier native self-copy remains an
         // optional future performance optimization.
-        std::vector<ComPtr<ID3D12Resource>> owned_copy_scratch;
+        ComPtr<ID3D12Resource> owned_copy_scratch;
         std::uint64_t fence_value = 0;
 #if defined(FYZZXYZZY_PROFILE_GPU)
         std::vector<ProfileOp> profile_ops;
@@ -346,8 +347,8 @@ struct Context::Impl {
     // Completed command allocator/list and descriptor heap reuse. Never
     // recycle an in-flight allocation: D3D12 Reset requires GPU completion.
     std::vector<Submission> recycled;
-    // The largest completed source relocation scratch can serve later
-    // submissions. In-flight command lists retain their own allocation.
+    // Retain one completed, near-sized relocation scratch resource.
+    // In-flight command lists own their scratch independently.
     ComPtr<ID3D12Resource> completed_copy_scratch;
     CompletedReadbackCache<ComPtr<ID3D12Resource>> completed_readbacks_;
     struct PendingReadback {
@@ -361,6 +362,7 @@ struct Context::Impl {
     PipelineId next_pipeline = 1;
     SubmissionId next_submission = 1;
     std::uint64_t next_fence = 1;
+    std::uint64_t completed_fence = 0;
 #if defined(FYZZXYZZY_PROFILE_GPU)
     std::uint64_t trace_frequency = 0;
 #endif
@@ -413,6 +415,7 @@ struct Context::Impl {
 #endif
         check(device->CreateFence(0, D3D12_FENCE_FLAG_NONE,
                                   IID_PPV_ARGS(&fence)), "CreateFence");
+        recycled.reserve(kMaxRecycled);
         completion_event = CreateEventW(nullptr, FALSE, FALSE, nullptr);
         if (!completion_event)
             throw std::runtime_error("CreateEvent failed for D3D12 fence");
@@ -486,21 +489,16 @@ struct Context::Impl {
     void recycle_completed(Submission&& submission) {
         submission.owned_upload.Reset(); // GPU completed; staging no longer referenced.
         submission.owned_readback.Reset();
-        if (!submission.owned_copy_scratch.empty()) {
-            auto& candidate = submission.owned_copy_scratch.front();
-            if (candidate &&
-                (!completed_copy_scratch ||
-                 candidate->GetDesc().Width > completed_copy_scratch->GetDesc().Width))
-                completed_copy_scratch = std::move(candidate);
-            submission.owned_copy_scratch.clear();
-        }
+        if(submission.owned_copy_scratch)
+            completed_copy_scratch=std::move(submission.owned_copy_scratch);
         // The caller must first wait for the submission fence. A cached heap
         // keeps its descriptors only until the next recording overwrites them.
         if (recycled.size() < kMaxRecycled)
             recycled.push_back(std::move(submission));
     }
 
-    SubmissionId enqueue(Submission&& submission) {
+    SubmissionId enqueue(Submission&& submission,
+                         std::span<Buffer* const> referenced) {
         if (first_unsignaled_fence)
             throw std::runtime_error(
                 "D3D12 queue cannot submit after a failed completion signal");
@@ -520,6 +518,7 @@ struct Context::Impl {
             throw std::logic_error("D3D12 submission ID already registered");
         ++next_submission;
         ++next_fence;
+        for(auto* buffer:referenced)buffer->last_reference_fence=signal;
         ID3D12CommandList* lists[] = {it->second.commands.Get()};
         queue->ExecuteCommandLists(1, lists);
         // The command list has executed even if the signal fails. Keep
@@ -570,7 +569,10 @@ struct Context::Impl {
         if (first_unsignaled_fence && value >= first_unsignaled_fence)
             throw std::runtime_error(
                 "D3D12 submission has no completion fence after queue signal failure");
-        if (completed >= value) return;
+        if (completed >= value) {
+            observe_completion(completed);
+            return;
+        }
         check(fence->SetEventOnCompletion(value, completion_event),
               "SetEventOnCompletion");
         for (;;) {
@@ -588,24 +590,23 @@ struct Context::Impl {
                     std::to_string(static_cast<unsigned long>(reason))+")");
             }
         }
-        if (fence->GetCompletedValue() == std::numeric_limits<std::uint64_t>::max()) {
+        const auto observed=fence->GetCompletedValue();
+        if (observed == std::numeric_limits<std::uint64_t>::max()) {
             const auto reason = device->GetDeviceRemovedReason();
             print_debug_messages();
             throw std::runtime_error(
                 "D3D12 device removed during GPU submission (HRESULT " +
                 std::to_string(static_cast<unsigned long>(reason)) + ")");
         }
+        observe_completion(observed);
     }
 
-    void release_retired_through(std::uint64_t completed_fence) noexcept {
-        auto it = retired_buffers.begin();
-        while (it != retired_buffers.end()) {
-            if (it->release_after_fence <= completed_fence) {
-                it = retired_buffers.erase(it); // ComPtr releases GPU allocation
-            } else {
-                ++it;
-            }
-        }
+    void observe_completion(std::uint64_t value) noexcept {
+        if(value<=completed_fence)return;
+        completed_fence=value;
+        std::erase_if(retired_buffers,[&](const RetiredBuffer& retired) {
+            return retired.release_after_fence<=completed_fence;
+        });
     }
 
 #if defined(FYZZXYZZY_PROFILE_GPU)
@@ -614,9 +615,9 @@ struct Context::Impl {
         const auto count=submission.profile_ops.size()+1u;
         void* mapped=nullptr;
         const D3D12_RANGE read{0,count*sizeof(std::uint64_t)};
+        std::vector<std::uint64_t> ticks(count);
         check(submission.query_readback->Map(0,&read,&mapped),
               "Map hardware GPU timestamp query");
-        std::vector<std::uint64_t> ticks(count);
         std::memcpy(ticks.data(),mapped,read.End);
         const D3D12_RANGE written{0,0};
         submission.query_readback->Unmap(0,&written);
@@ -644,7 +645,6 @@ struct Context::Impl {
 #endif
         recycle_completed(std::move(it->second));
         submissions.erase(it);
-        release_retired_through(completed);
     }
 
     void wait_submissions(std::span<const SubmissionId> ordered) {
@@ -656,9 +656,6 @@ struct Context::Impl {
                     "D3D12 GPU retire batch requires live ordered submissions");
             previous=id;
         }
-        // Reserve the completed resource pool before mutating submission
-        // ownership, then wait only for the newest queue fence.
-        if(recycled.capacity()<kMaxRecycled)recycled.reserve(kMaxRecycled);
         const auto last_fence=submissions.at(ordered.back()).fence_value;
         wait_value(last_fence);
         for(const auto id:ordered) {
@@ -669,21 +666,20 @@ struct Context::Impl {
             recycle_completed(std::move(it->second));
             submissions.erase(it);
         }
-        release_retired_through(last_fence);
     }
 
     void wait_all() {
         if (submissions.empty()) return;
         const auto completed = next_fence - 1;
         wait_value(completed);
-        for (auto& entry : submissions) {
+        while(!submissions.empty()) {
+            auto it=submissions.begin();
 #if defined(FYZZXYZZY_PROFILE_GPU)
-            report_gpu_profile(entry.first,entry.second);
+            report_gpu_profile(it->first,it->second);
 #endif
-            recycle_completed(std::move(entry.second));
+            recycle_completed(std::move(it->second));
+            submissions.erase(it);
         }
-        submissions.clear();
-        release_retired_through(completed);
     }
 
     BufferId create_buffer(std::size_t bytes, MemoryPlacement placement) {
@@ -788,81 +784,24 @@ struct Context::Impl {
             throw std::invalid_argument("Unknown D3D12 buffer");
         if (it->second.cpu_mapped)
             throw std::logic_error("Cannot retire mapped D3D12 GPU storage");
-        if (!submissions.empty()) {
-            std::uint64_t last_fence = 0;
-            for (const auto& pending : submissions)
-                last_fence = std::max(last_fence, pending.second.fence_value);
-            // Copy the owning ComPtr into the retirement record *before*
-            // erasing the ID. On host allocation failure the original ID
-            // still owns the live resource.
-            retired_buffers.push_back({last_fence, it->second});
-        }
+        if(it->second.last_reference_fence>completed_fence)
+            retired_buffers.push_back({it->second.last_reference_fence,it->second});
         // The handle becomes unusable immediately. Its backing resource
         // lives in retired_buffers until the last dependent queue fence.
         buffers.erase(it);
     }
 
     void upload(BufferId id, std::size_t offset, const void* data, std::size_t bytes) {
-        Buffer& buffer = get_buffer(id);
+        const auto& buffer=get_buffer(id);
         if(buffer.upload_only)
             throw std::invalid_argument("Upload storage requires write mapping");
-        validate_range(buffer.bytes, offset, bytes);
-        if (!bytes) return;
-        if (!data || offset % 4 || bytes % 4)
-            throw std::invalid_argument("D3D12 upload requires aligned range and data");
-        auto staging = allocate_resource(device.Get(), bytes, D3D12_HEAP_TYPE_UPLOAD,
-                                         D3D12_RESOURCE_FLAG_NONE,
-                                         D3D12_RESOURCE_STATE_GENERIC_READ);
-        void* mapped = nullptr;
-        D3D12_RANGE read{0, 0};
-        check(staging->Map(0, &read, &mapped), "Map upload");
-        std::memcpy(mapped, data, bytes);
-        D3D12_RANGE written{0, bytes};
-        staging->Unmap(0, &written);
-        Submission cmd = new_commands();
-        transition(cmd.commands.Get(), buffer.resource.Get(),
-                   D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_COPY_DEST);
-        cmd.commands->CopyBufferRegion(buffer.resource.Get(), offset,
-                                       staging.Get(), 0, bytes);
-        transition(cmd.commands.Get(), buffer.resource.Get(),
-                   D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_COMMON);
-        wait_submission(enqueue(std::move(cmd))); // staging remains alive to completion
+        validate_range(buffer.bytes,offset,bytes);
+        if(bytes)wait_submission(submit_upload(id,offset,data,bytes));
     }
 
-    SubmissionId submit_upload(BufferId id, std::size_t offset,
-                               const void* data, std::size_t bytes) {
-        Buffer& destination = get_buffer(id);
-        if(destination.upload_only)
-            throw std::invalid_argument("Upload storage cannot be a GPU destination");
-        validate_range(destination.bytes, offset, bytes);
-        if (!bytes || !data || (offset % 4) || (bytes % 4))
-            throw std::invalid_argument("Async D3D12 upload requires nonempty aligned data");
-        // The staging allocation must be owned before submitting the queue
-        // work; reserve its retirement entry before enqueue can succeed.
-        retired_buffers.reserve(retired_buffers.size() + 1);
-        auto staging = allocate_resource(device.Get(), bytes, D3D12_HEAP_TYPE_UPLOAD,
-                                         D3D12_RESOURCE_FLAG_NONE,
-                                         D3D12_RESOURCE_STATE_GENERIC_READ);
-        void* mapped = nullptr;
-        const D3D12_RANGE read{0, 0};
-        check(staging->Map(0, &read, &mapped), "Map async upload");
-        std::memcpy(mapped, data, bytes);
-        const D3D12_RANGE written{0, bytes};
-        staging->Unmap(0, &written);
-
-        Submission cmd = new_commands();
-        transition(cmd.commands.Get(), destination.resource.Get(),
-                   D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_COPY_DEST);
-        cmd.commands->CopyBufferRegion(destination.resource.Get(), offset,
-                                       staging.Get(), 0, bytes);
-        transition(cmd.commands.Get(), destination.resource.Get(),
-                   D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_COMMON);
-        const SubmissionId submission = enqueue(std::move(cmd));
-        const auto fence_value = submissions.at(submission).fence_value;
-        // No allocation after enqueue; ComPtr move retains upload heap
-        // until wait_submission or a later completed queue-fence releases it.
-        retired_buffers.push_back({fence_value, {std::move(staging), bytes}});
-        return submission;
+    SubmissionId submit_upload(BufferId id,std::size_t offset,
+                               const void* data,std::size_t bytes) {
+        return submit_uploads({{id,offset,data,bytes}});
     }
 
     SubmissionId submit_uploads(const std::vector<UploadSpan>& uploads) {
@@ -899,13 +838,17 @@ struct Context::Impl {
         const D3D12_RANGE written{0, total};
         staging->Unmap(0, &written);
 
+        std::vector<Buffer*> referenced;
+        referenced.reserve(destinations.size());
         Submission submission = new_commands();
         // A target enters COPY_DEST once for the whole batch; repeated
         // CopyBufferRegion writes are ordered under the legacy D3D12
         // copy contract. Restore COMMON once at the end.
         for (const auto id : destinations) {
-            transition(submission.commands.Get(), get_buffer(id).resource.Get(),
-                       D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_COPY_DEST);
+            auto& buffer=get_buffer(id);
+            referenced.push_back(&buffer);
+            transition(submission.commands.Get(),buffer.resource.Get(),
+                       D3D12_RESOURCE_STATE_COMMON,D3D12_RESOURCE_STATE_COPY_DEST);
         }
         position = 0;
         for (const auto& upload : uploads) {
@@ -921,34 +864,17 @@ struct Context::Impl {
         // Ownership is attached BEFORE queue submission. A later allocation
         // failure cannot free the memory while the GPU still reads it.
         submission.owned_upload = std::move(staging);
-        return enqueue(std::move(submission));
+        return enqueue(std::move(submission),referenced);
     }
 
-    void download(BufferId id, std::size_t offset, void* data, std::size_t bytes) {
-        Buffer& buffer = get_buffer(id);
+    void download(BufferId id,std::size_t offset,void* data,std::size_t bytes) {
+        const auto& buffer=get_buffer(id);
         if(buffer.upload_only)
             throw std::invalid_argument("Upload storage requires write mapping");
-        validate_range(buffer.bytes, offset, bytes);
-        if (!bytes) return;
-        if (!data || offset % 4 || bytes % 4)
-            throw std::invalid_argument("D3D12 download requires aligned range and data");
-        auto staging = allocate_resource(device.Get(), bytes, D3D12_HEAP_TYPE_READBACK,
-                                         D3D12_RESOURCE_FLAG_NONE,
-                                         D3D12_RESOURCE_STATE_COPY_DEST);
-        Submission cmd = new_commands();
-        transition(cmd.commands.Get(), buffer.resource.Get(),
-                   D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_COPY_SOURCE);
-        cmd.commands->CopyBufferRegion(staging.Get(), 0,
-                                       buffer.resource.Get(), offset, bytes);
-        transition(cmd.commands.Get(), buffer.resource.Get(),
-                   D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_COMMON);
-        wait_submission(enqueue(std::move(cmd)));
-        void* mapped = nullptr;
-        D3D12_RANGE read{0, bytes};
-        check(staging->Map(0, &read, &mapped), "Map readback");
-        std::memcpy(data, mapped, bytes);
-        D3D12_RANGE written{0, 0};
-        staging->Unmap(0, &written);
+        validate_range(buffer.bytes,offset,bytes);
+        if(!bytes)return;
+        const std::array<DownloadSpan,1u> spans{{{id,offset,data,bytes}}};
+        finish_download_batch(submit_download_batch(spans),true);
     }
 
     struct ReadbackTail {
@@ -1423,16 +1349,20 @@ struct Context::Impl {
         // between uses. Keep it fence-owned by the original submission.
         if (same_resource_copy_scratch_bytes) {
             ComPtr<ID3D12Resource> scratch;
-            if (completed_copy_scratch &&
-                completed_copy_scratch->GetDesc().Width >=
-                    same_resource_copy_scratch_bytes)
-                scratch = std::move(completed_copy_scratch);
-            else
-                scratch = allocate_resource(
-                    device.Get(), same_resource_copy_scratch_bytes,
-                    D3D12_HEAP_TYPE_DEFAULT, D3D12_RESOURCE_FLAG_NONE,
+            if(completed_copy_scratch) {
+                const auto capacity=completed_copy_scratch->GetDesc().Width;
+                if(capacity>=same_resource_copy_scratch_bytes &&
+                   capacity-same_resource_copy_scratch_bytes<=
+                       same_resource_copy_scratch_bytes)
+                    scratch=std::move(completed_copy_scratch);
+                else completed_copy_scratch.Reset();
+            }
+            if(!scratch)
+                scratch=allocate_resource(
+                    device.Get(),same_resource_copy_scratch_bytes,
+                    D3D12_HEAP_TYPE_DEFAULT,D3D12_RESOURCE_FLAG_NONE,
                     D3D12_RESOURCE_STATE_COPY_DEST);
-            submission.owned_copy_scratch.push_back(std::move(scratch));
+            submission.owned_copy_scratch=std::move(scratch);
         }
         bool scratch_in_source_state = false;
         if (profile) {
@@ -1512,14 +1442,17 @@ struct Context::Impl {
         };
         std::unordered_map<BufferId, Access> resource_access;
         resource_access.reserve(std::min<std::size_t>(commands.size()*2u,512u));
+        std::vector<Buffer*> referenced;
         auto require_state=[&](BufferId id,D3D12_RESOURCE_STATES target) {
-            const auto& buffer=get_buffer(id);
+            auto& buffer=get_buffer(id);
+            const auto [entry,inserted]=resource_access.try_emplace(id);
+            if(inserted)referenced.push_back(&buffer);
             if(buffer.upload_only) {
                 if(target!=D3D12_RESOURCE_STATE_COPY_SOURCE || buffer.cpu_mapped)
                     throw std::invalid_argument("Invalid D3D12 upload storage state");
                 return;
             }
-            auto& access=resource_access[id];
+            auto& access=entry->second;
             if(access.state!=target) {
                 transition(submission.commands.Get(),buffer.resource.Get(),
                            access.state,target);
@@ -1557,7 +1490,7 @@ struct Context::Impl {
                     // fence-owned device-local staging allocation. Each
                     // transition enforces the original copy order before
                     // the scratch bytes are overwritten by the next copy.
-                    auto* scratch = submission.owned_copy_scratch.front().Get();
+                    auto* scratch = submission.owned_copy_scratch.Get();
                     if (scratch_in_source_state)
                         transition(submission.commands.Get(), scratch,
                             D3D12_RESOURCE_STATE_COPY_SOURCE,
@@ -1738,13 +1671,14 @@ struct Context::Impl {
                 offset+=item.bytes;
             }
         }
-        for (const auto& entry : resource_access) {
-            transition(submission.commands.Get(), get_buffer(entry.first).resource.Get(),
-                       entry.second.state, D3D12_RESOURCE_STATE_COMMON);
+        for(const auto& entry:resource_access) {
+            if(entry.second.state==D3D12_RESOURCE_STATE_COMMON)continue;
+            transition(submission.commands.Get(),get_buffer(entry.first).resource.Get(),
+                       entry.second.state,D3D12_RESOURCE_STATE_COMMON);
         }
         if (scratch_in_source_state)
             transition(submission.commands.Get(),
-                       submission.owned_copy_scratch.front().Get(),
+                       submission.owned_copy_scratch.Get(),
                        D3D12_RESOURCE_STATE_COPY_SOURCE,
                        D3D12_RESOURCE_STATE_COPY_DEST);
         if (profile) {
@@ -1782,7 +1716,7 @@ struct Context::Impl {
             }
         }
 #endif
-        return enqueue(std::move(submission));
+        return enqueue(std::move(submission),referenced);
     }
 
     std::optional<double> profile_batch_gpu_nanoseconds(
@@ -1801,10 +1735,8 @@ struct Context::Impl {
         std::memcpy(ticks, mapped, sizeof(ticks));
         const D3D12_RANGE written{0, 0};
         it->second.query_readback->Unmap(0, &written);
-        const auto completed = it->second.fence_value;
         recycle_completed(std::move(it->second));
         submissions.erase(it);
-        release_retired_through(completed);
         if (ticks[1] < ticks[0])
             throw std::runtime_error("D3D12 GPU timestamp counter regressed");
         return static_cast<double>(ticks[1] - ticks[0]) *
@@ -1928,7 +1860,14 @@ bool Context::submission_complete(SubmissionId id) const {
     auto it = impl_->submissions.find(id);
     if (it == impl_->submissions.end())
         throw std::invalid_argument("Unknown D3D12 submission");
-    return impl_->fence->GetCompletedValue() >= it->second.fence_value;
+    const auto completed=impl_->fence->GetCompletedValue();
+    if(completed==std::numeric_limits<std::uint64_t>::max())
+        throw std::runtime_error("D3D12 device removed during completion query");
+    if(impl_->first_unsignaled_fence &&
+       it->second.fence_value>=impl_->first_unsignaled_fence)
+        throw std::runtime_error("D3D12 submission has no completion fence");
+    impl_->observe_completion(completed);
+    return completed>=it->second.fence_value;
 }
 void Context::wait_submission(SubmissionId id) { impl_->wait_submission(id); }
 void Context::wait_submissions(std::span<const SubmissionId> ordered) {

@@ -310,6 +310,28 @@ int main() {
         context.download(gpu,10u*sizeof(std::uint32_t),&observed,sizeof(observed));
         if(observed!=replacement)
             throw std::runtime_error("Synchronous transfer lost ordered result");
+        // Retired handles must preserve pending GPU transfer resources.
+        const auto retired=context.create_buffer(sizeof(input),MemoryPlacement::DeviceLocal);
+        const auto retired_upload=context.submit_upload_buffer(
+            retired,0u,input.data(),sizeof(input));
+        const auto retired_copy=context.submit_copy_buffer(
+            retired,0u,retired,32u*4u,32u*4u);
+        const std::array<DownloadSpan,1u> retired_download{{
+            {retired,0u,peak.data(),sizeof(peak)}
+        }};
+        const auto retired_readback=context.submit_download_batch(retired_download);
+        context.retire_buffer(retired);
+        context.finish_download_batch(retired_readback,true);
+        for(std::size_t i=0u;i<peak.size();++i)
+            if(peak[i]!=input[i%32u])
+                throw std::runtime_error("Retired buffer lost a pending transfer");
+        const std::array<SubmissionId,2u> retired_tokens{{retired_upload,retired_copy}};
+        context.wait_submissions(retired_tokens);
+        const auto small_copy=context.submit_copy_buffer(gpu,0u,gpu,4u,4u);
+        context.wait_submission(small_copy);
+        context.download(gpu,0u,first.data(),sizeof(first));
+        if(first[0]!=first[1])
+            throw std::runtime_error("Small relocation after peak lost source data");
         context.destroy_buffer(staging);
         context.destroy_buffer(gpu);
         std::cout<<"Compute independent readback ownership PASS\n";
