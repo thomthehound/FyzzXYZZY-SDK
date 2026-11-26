@@ -277,6 +277,9 @@ public:
         deferred_result_downloads_.clear();
         std::fill(actor_state_.begin(),actor_state_.end(),0u);
         std::fill(joint_source_valid_.begin(),joint_source_valid_.end(),0u);
+        actor_local_live_slots_=0u;
+        joint_source_live_slots_=0u;
+        friction_history_live_slots_=0u;
         prewitness_joint_source_slots_.clear();
         prewitness_joint_source_upload_bytes_=0u;
         prewitness_joint_source_upload_spans_=0u;
@@ -348,7 +351,7 @@ public:
         if(capacity>joint_source_capacity_) {
             joint_sources_.allocateCopyPrefixAsync(
                 capacity*sizeof(native::GpuDyJointInput)+127u,
-                joint_source_capacity_*sizeof(native::GpuDyJointInput),
+                joint_source_live_slots_*sizeof(native::GpuDyJointInput),
                 stream_,PX_FL);
             joint_source_capacity_=capacity;
         }
@@ -388,6 +391,9 @@ public:
         }
         prewitness_joint_source_upload_spans_=uploads.size();
         stream_.queue_uploads(uploads);
+        if(!prewitness_joint_source_slots_.empty())
+            joint_source_live_slots_=std::max(joint_source_live_slots_,
+                std::size_t(prewitness_joint_source_slots_.back())+1u);
     }
 
     void discard_unconsumed_actor_sources() noexcept {
@@ -498,6 +504,7 @@ public:
             prewitness_actor_local_upload_bytes_+=upload.bytes;
         prewitness_actor_local_upload_spans_+=uploads.size();
         stream_.queue_uploads(uploads);
+        actor_local_live_slots_=std::max(actor_local_live_slots_,needed_actor_slots);
         for(std::size_t i=first_dirty_slot;i<prewitness_actor_slots_.size();++i) {
             const auto id=prewitness_actor_slots_[i];
             actor_state_[id]|=actor_metadata_valid|actor_pose_valid;
@@ -1974,7 +1981,7 @@ public:
                             &bodies[i].inverse_mass,sizeof(float));
         // Preserve the EdgeIndex history prefix when replacing the
         // transient numerical working set.
-        const auto live_history=friction_history_capacity_*64u;
+        const auto live_history=friction_history_live_slots_*64u;
         if(arena_working_set_.should_contract(total,arena_.getSize())) {
             arena_.resizeCopyPrefixAsync(total,live_history,stream_,PX_FL);
             arena_working_set_.reset();
@@ -1988,7 +1995,7 @@ public:
         if(next_joint_capacity>joint_source_capacity_) {
             joint_sources_.allocateCopyPrefixAsync(
                 next_joint_capacity*sizeof(native::GpuDyJointInput)+127u,
-                joint_source_capacity_*sizeof(native::GpuDyJointInput),
+                joint_source_live_slots_*sizeof(native::GpuDyJointInput),
                 stream_,PX_FL);
             joint_source_capacity_=next_joint_capacity;
         }
@@ -2298,6 +2305,10 @@ public:
             append_input(device_skip_end,prefix,input_end-device_skip_end);
         }else append_input(upload_begin,0u,uploaded_bytes);
         stream_.queue_uploads(uploads,std::span(staged.data(),staged_count));
+        actor_local_live_slots_=std::max(actor_local_live_slots_,needed_actor_slots);
+        if(!joint_source_dirty_.empty())
+            joint_source_live_slots_=std::max(joint_source_live_slots_,
+                std::size_t(joint_source_dirty_.back())+1u);
         for(const auto id:prewitness_actor_slots_)
             actor_state_[id]&=~actor_prewitness_mask;
         prewitness_joint_source_slots_.clear();
@@ -3287,6 +3298,8 @@ public:
                 continue;
             }
             history_epochs_[pair.pcm_edge]=history_epoch_;
+            friction_history_live_slots_=std::max(friction_history_live_slots_,
+                std::size_t(pair.pcm_edge)+1u);
         }
         last_friction_prepared_rows_=friction_count;
         // The device accepted each changed joint only after all source
@@ -3403,7 +3416,7 @@ private:
             actor_state_.resize(capacity,0u);
             actor_locals_.allocateCopyPrefixAsync(
                 capacity*sizeof(SourceDyActorLocalNative)+127u,
-                actor_local_capacity_*sizeof(SourceDyActorLocalNative),
+                actor_local_live_slots_*sizeof(SourceDyActorLocalNative),
                 stream_,PX_FL);
             actor_local_capacity_=capacity;
         }
@@ -3982,7 +3995,7 @@ private:
     std::vector<float> prepared_velocity_components_,force_mod_components_;
     std::vector<std::pair<std::uint32_t,std::uint8_t>> pending_actor_locals_;
     std::vector<SourceSapUpload> actor_local_uploads_;
-    std::size_t actor_local_capacity_=0u;
+    std::size_t actor_local_capacity_=0u,actor_local_live_slots_=0u;
     std::vector<native::GpuDyJointInput> joint_source_host_;
     std::vector<std::uint8_t> joint_source_valid_,joint_row_source_seen_;
     std::vector<std::uint32_t> joint_source_dirty_;
@@ -3994,7 +4007,7 @@ private:
     std::size_t prewitness_joint_source_upload_bytes_=0u;
     std::size_t prewitness_joint_source_upload_spans_=0u;
     std::vector<SourceSapUpload> joint_source_uploads_;
-    std::size_t joint_source_capacity_=0u;
+    std::size_t joint_source_capacity_=0u,joint_source_live_slots_=0u;
     struct InlineBodySlot {
         std::uint32_t epoch=0u,index=0u;
     };
@@ -4028,7 +4041,7 @@ private:
     std::size_t last_cpu_gu_geometry_bytes_=0u;
     std::size_t last_upload_spans_=0u;
     std::size_t last_friction_anchor_upload_bytes_=0u;
-    std::size_t friction_history_capacity_=0u;
+    std::size_t friction_history_capacity_=0u,friction_history_live_slots_=0u;
     std::vector<std::uint32_t> history_epochs_;
     std::uint32_t history_epoch_=1u;
     std::size_t last_friction_prepared_rows_=0u;

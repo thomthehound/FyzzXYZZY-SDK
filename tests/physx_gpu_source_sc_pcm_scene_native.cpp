@@ -47,6 +47,13 @@ struct SourceScDeviceIslandFixture {
             const SourceScOwnedGpuBroadphaseNative& owner) {
         return owner.stream_.submitted_token_count();
     }
+    static std::size_t recorded_copy_bytes(SourceScOwnedGpuBroadphaseNative& owner) {
+        std::size_t bytes=0u;
+        for(const auto& command:owner.stream_.commands())
+            if(const auto* copy=std::get_if<compute::CopyCommand>(&command))
+                bytes+=copy->bytes;
+        return bytes;
+    }
     static bool pcm_fence_retired(
             const SourceScOwnedGpuBroadphaseNative& owner) {
         return owner.stream_.fetch_fence_retired();
@@ -3949,6 +3956,22 @@ void verify_queued_pcm_dy(fyzz::compute::Backend backend,const char* sap,
             producer->device_pcm_contact_count()==0u &&
             !producer->has_queued_gpu_dy_distance(),
         "Rollback after Dy completion retained rejected PCM publication");
+    // Rejected resident caches do not own history to preserve on growth.
+    std::array<native::GpuDyJointInput,1> staged_joint{};
+    staged_joint[0].source_slot=0u;
+    producer->enqueue_gpu_dy_joint_sources(staged_joint);
+    producer->invalidate_after_rollback();
+    auto high_actor=inputs;
+    high_actor[0].source_actor=64u;
+    staged_joint[0].source_slot=64u;
+    producer->begin_gpu_dy_actor_sources();
+    producer->enqueue_gpu_dy_actor_sources(high_actor);
+    producer->enqueue_gpu_dy_joint_sources(staged_joint);
+    require(physx_gpu::SourceScDeviceIslandFixture::recorded_copy_bytes(*producer)==
+                sizeof(physx_gpu::SourceDyActorLocalNative)+
+                sizeof(native::GpuDyJointInput),
+        "Dy source growth copied invalidated actor or joint storage");
+    producer->invalidate_after_rollback();
     std::array<native::GpuPcmBoxResult,1> numerical_retry{};
     launch(numerical_retry,inputs,poses);
     producer->finish_gpu_dy_distance();

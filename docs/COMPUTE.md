@@ -110,8 +110,9 @@ until their batch is accepted or discarded; accepted GPU uses retain it
 through their completion fence. PCM EdgeIndex growth retains the committed
 allocation until the replacement copy is accepted. Rejected recording
 restores the committed allocation identity without a preservation-copy
-submission. Do not infer performance gains from
-software Vulkan or WARP CI.
+submission. Dy arena relocation retains only the live source and friction
+history prefixes; rollback invalidates those prefixes without discarding
+reserved capacity. Do not infer performance gains from software Vulkan or WARP CI.
 
 ### Nonblocking upload staging
 
