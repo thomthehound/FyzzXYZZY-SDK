@@ -105,8 +105,11 @@ submission-local; their barriers order the actual producer and consumer
 pipeline stages. Whole-buffer visibility is retained across access
 classes. Non-overlapping same-buffer copies execute directly without
 relocation staging. Each submission executes one command list.
-Within a batch, descriptor tables also retain the latest matching logical
-access declaration. Repeated dispatches reuse validated, backend-ordered
+Within a batch, physical descriptor validation and resource resolution
+belong to the unique descriptor table. Native recording consumes the
+resolved views and pipelines. D3D12 completion-cache identity follows
+the unique table layout rather than the sequence of dispatches.
+Descriptor tables also retain the latest matching logical access declaration. Repeated dispatches reuse validated, backend-ordered
 range lists independent of constants and launch dimensions. Access intent,
 extent, explicit phase accesses and indirect argument changes require a
 new range list. Every operation still advances native dependency history.

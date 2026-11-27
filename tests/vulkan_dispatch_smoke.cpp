@@ -227,6 +227,23 @@ int main(int argc, char** argv) {
             if(!rejected)
                 throw std::runtime_error("Invalid phase access declaration was accepted");
         }
+        // Reused physical views must not bypass logical or launch validation.
+        for(unsigned defect=0u;defect<5u;++defect) {
+            auto invalid=precise;
+            switch(defect) {
+                case 0u: invalid.buffers[0].access=static_cast<BufferAccess>(123); break;
+                case 1u: invalid.buffers[0].access_extent=BufferAccessExtent{0u,0u}; break;
+                case 2u: invalid.buffers[0].slot=invalid.buffers[1].slot; break;
+                case 3u: invalid.groups.x=0u; break;
+                case 4u: invalid.push_constants.clear(); break;
+            }
+            rejected=false;
+            try {context.execute_batch({precise,invalid});}
+            catch(const std::invalid_argument&) {rejected=true;}
+            catch(const std::out_of_range&) {rejected=true;}
+            if(!rejected)
+                throw std::runtime_error("Reused Vulkan table accepted malformed dispatch");
+        }
         bool rejected_batch = false;
         try {
             context.submit_batch({});

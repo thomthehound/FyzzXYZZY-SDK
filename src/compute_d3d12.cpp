@@ -1128,79 +1128,15 @@ struct Context::Impl {
         pipelines.erase(id);
     }
 
-    void validate_dispatch(const DispatchCommand& cmd) {
-        const Pipeline& pipe = get_pipeline(cmd.pipeline);
-        if (!cmd.groups.x || !cmd.groups.y || !cmd.groups.z ||
-            cmd.groups.x > info.max_workgroup_count[0] ||
-            cmd.groups.y > info.max_workgroup_count[1] ||
-            cmd.groups.z > info.max_workgroup_count[2] ||
-            cmd.buffers.size() != pipe.bindings ||
-            cmd.push_constants.size() != pipe.parameters)
-            throw std::invalid_argument("Invalid D3D12 dispatch shape or bindings");
-        for (std::size_t i = 0; i < cmd.buffers.size(); ++i) {
-            const auto& binding = cmd.buffers[i];
-            if (binding.slot != i || !binding.bytes ||
-                binding.offset % 4 || binding.bytes % 4 ||
-                binding.bytes / 4 > std::numeric_limits<UINT>::max())
-                throw std::invalid_argument("Invalid D3D12 structured buffer view");
-            const auto kind = pipe.view_kinds[i];
-            // D3D12 requires RAW buffer UAV/SRV FirstElement to start
-            // on a 16-byte boundary. Reject an invalid descriptor before
-            // the debug layer removes the device on command execution.
-            if ((kind == StorageBufferViewKind::RawRead ||
-                 kind == StorageBufferViewKind::RawReadWrite) &&
-                binding.offset % 16u != 0u)
-                throw std::invalid_argument(
-                    "D3D12 RAW buffer view base must be 16-byte aligned");
-            const bool srv_slot = kind == StorageBufferViewKind::RawRead ||
-                                  kind == StorageBufferViewKind::Structured32Read;
-            if (binding.access != BufferAccess::Unspecified &&
-                binding.access != BufferAccess::Read &&
-                binding.access != BufferAccess::Write &&
-                binding.access != BufferAccess::ReadWrite)
-                throw std::invalid_argument("Invalid D3D12 compute buffer access intent");
-            if (srv_slot && binding.access != BufferAccess::Unspecified &&
-                binding.access != BufferAccess::Read)
-                throw std::invalid_argument("D3D12 SRV cannot be declared writable");
-            const auto& buf = get_buffer(binding.buffer);
-            if(buf.upload_only)
-                throw std::invalid_argument("Upload storage cannot be a shader binding");
-            validate_range(buf.bytes, binding.offset, binding.bytes);
-            const auto extent=binding.accessed_extent();
-            if(!extent.bytes || extent.offset>binding.bytes ||
-               extent.bytes>binding.bytes-extent.offset)
-                throw std::invalid_argument("D3D12 access extent exceeds descriptor");
-        }
-        if(cmd.indirect) {
-            if(cmd.groups.x!=1u || cmd.groups.y!=1u || cmd.groups.z!=1u ||
-               cmd.indirect->offset%4u)
-                throw std::invalid_argument("Invalid D3D12 indirect dispatch arguments");
-            const auto& args=get_buffer(cmd.indirect->buffer);
-            if(args.upload_only)
-                throw std::invalid_argument("Upload storage cannot supply indirect arguments");
-            validate_range(args.bytes,cmd.indirect->offset,
-                           sizeof(D3D12_DISPATCH_ARGUMENTS));
-            for(const auto& binding:cmd.buffers)
-                if(binding.buffer==cmd.indirect->buffer)
-                    throw std::invalid_argument(
-                        "D3D12 indirect arguments cannot alias shader bindings");
-        }
-        // Native pipelines use a single view class per resource.
-        // Several UAV views may alias within one dispatch.
-        for (std::size_t a = 0; a < cmd.buffers.size(); ++a) {
-            const auto a_kind = pipe.view_kinds[a];
-            const bool a_read = a_kind == StorageBufferViewKind::RawRead ||
-                                a_kind == StorageBufferViewKind::Structured32Read;
-            for (std::size_t b = a + 1u; b < cmd.buffers.size(); ++b) {
-                const auto b_kind = pipe.view_kinds[b];
-                const bool b_read = b_kind == StorageBufferViewKind::RawRead ||
-                                    b_kind == StorageBufferViewKind::Structured32Read;
-                if (a_read != b_read &&
-                    cmd.buffers[a].buffer == cmd.buffers[b].buffer)
-                    throw std::invalid_argument(
-                        "D3D12 cannot bind one resource as SRV and UAV simultaneously");
-            }
-        }
+    void validate_dispatch_shape(const Pipeline& pipe,const DispatchCommand& cmd) const {
+        if(!cmd.groups.x || !cmd.groups.y || !cmd.groups.z ||
+           cmd.groups.x>info.max_workgroup_count[0] ||
+           cmd.groups.y>info.max_workgroup_count[1] ||
+           cmd.groups.z>info.max_workgroup_count[2] ||
+           cmd.push_constants.size()!=pipe.parameters)
+            throw std::invalid_argument("Invalid D3D12 dispatch shape or parameters");
+        if(cmd.indirect && (cmd.groups.x!=1u || cmd.groups.y!=1u || cmd.groups.z!=1u))
+            throw std::invalid_argument("Invalid D3D12 indirect dispatch groups");
     }
 
     SubmissionId submit_batch(const std::vector<BatchCommand>& commands,
@@ -1217,7 +1153,8 @@ struct Context::Impl {
         // execution dimensions without duplicating identical descriptors.
         struct DescriptorTable {
             PipelineId pipeline;
-            std::vector<BufferBinding> buffers;
+            const Pipeline* native_pipeline;
+            std::vector<DescriptorView> views;
             UINT first_descriptor;
         };
         std::vector<DescriptorTable> descriptor_tables;
@@ -1232,12 +1169,28 @@ struct Context::Impl {
             hash^=std::hash<std::size_t>{}(word)+0x9e3779b9u+
                   (hash<<6u)+(hash>>2u);
         };
+        struct Access {
+            Buffer* buffer;
+            PendingBufferRanges ranges;
+            RangeAccessScope scope{};
+            std::size_t incoming=std::numeric_limits<std::size_t>::max();
+        };
+        std::unordered_map<BufferId,Access> resource_access;
+        resource_access.reserve(std::min<std::size_t>(commands.size()*2u,512u));
+        std::vector<Buffer*> referenced;
+        const auto reference=[&](BufferId id) -> Access& {
+            const auto found=resource_access.find(id);
+            if(found!=resource_access.end())return found->second;
+            auto& buffer=get_buffer(id);
+            referenced.push_back(&buffer);
+            return resource_access.try_emplace(id,Access{&buffer,{},{}}).first->second;
+        };
         const auto same_bindings=[](
-                const std::vector<BufferBinding>& a,
+                const std::vector<DescriptorView>& a,
                 const std::vector<BufferBinding>& b) {
             if(a.size()!=b.size())return false;
             for(std::size_t i=0u;i<a.size();++i)
-                if(a[i].slot!=b[i].slot ||
+                if(b[i].slot!=i ||
                    a[i].buffer!=b[i].buffer ||
                    a[i].offset!=b[i].offset ||
                    a[i].bytes!=b[i].bytes)
@@ -1247,8 +1200,8 @@ struct Context::Impl {
         };
         for (const BatchCommand& op : commands) {
             if (const auto* copy = std::get_if<CopyCommand>(&op)) {
-                const auto& source = get_buffer(copy->source);
-                const auto& dest = get_buffer(copy->destination);
+                const auto& source=*reference(copy->source).buffer;
+                const auto& dest=*reference(copy->destination).buffer;
                 if(dest.upload_only || (source.upload_only && source.cpu_mapped))
                     throw std::invalid_argument("Invalid D3D12 upload storage copy");
                 validate_range(source.bytes, copy->source_offset, copy->bytes);
@@ -1261,7 +1214,7 @@ struct Context::Impl {
                     copy->bytes % 4)
                     throw std::invalid_argument("Invalid D3D12 buffer copy");
             } else if(const auto* upload=std::get_if<UploadCommand>(&op)) {
-                const auto& target=get_buffer(upload->destination);
+                const auto& target=*reference(upload->destination).buffer;
                 if(target.upload_only)
                     throw std::invalid_argument("Upload storage cannot be a GPU destination");
                 validate_range(target.bytes,upload->destination_offset,
@@ -1274,9 +1227,7 @@ struct Context::Impl {
                 upload_total_bytes+=upload->bytes.size();
             } else {
                 const auto& dispatch = std::get<DispatchCommand>(op);
-                validate_dispatch(dispatch);
                 uses_indirect |= dispatch.indirect.has_value();
-                const auto binding_count=get_pipeline(dispatch.pipeline).bindings;
                 std::size_t key=std::hash<PipelineId>{}(dispatch.pipeline);
                 for(const auto& binding:dispatch.buffers) {
                     mix_key(key,binding.slot);
@@ -1289,32 +1240,73 @@ struct Context::Impl {
                 for(const auto candidate:candidates) {
                     const auto& existing=descriptor_tables[candidate];
                     if(existing.pipeline==dispatch.pipeline &&
-                       same_bindings(existing.buffers,dispatch.buffers)) {
+                       same_bindings(existing.views,dispatch.buffers)) {
                         table=candidate;
                         break;
                     }
                 }
                 if(table==descriptor_tables.size()) {
+                    const auto& pipeline=get_pipeline(dispatch.pipeline);
+                    const auto binding_count=pipeline.bindings;
+                    if(dispatch.buffers.size()!=binding_count)
+                        throw std::invalid_argument("Incorrect number of D3D12 compute bindings");
                     if(binding_count>
                        std::numeric_limits<UINT>::max()-descriptor_count)
-                        throw std::out_of_range(
-                            "D3D12 descriptor heap capacity exceeded");
-                    descriptor_tables.push_back({
-                        dispatch.pipeline,dispatch.buffers,
-                        static_cast<UINT>(descriptor_count)});
+                        throw std::out_of_range("D3D12 descriptor heap capacity exceeded");
+                    DescriptorTable prepared{dispatch.pipeline,&pipeline,{},
+                                             static_cast<UINT>(descriptor_count)};
+                    prepared.views.reserve(binding_count);
+                    for(std::size_t i=0u;i<binding_count;++i) {
+                        const auto& binding=dispatch.buffers[i];
+                        if(binding.slot!=i || !binding.bytes ||
+                           binding.offset%4u || binding.bytes%4u ||
+                           binding.bytes/4u>std::numeric_limits<UINT>::max())
+                            throw std::invalid_argument("Invalid D3D12 structured buffer view");
+                        const auto kind=pipeline.view_kinds[i];
+                        if((kind==StorageBufferViewKind::RawRead ||
+                            kind==StorageBufferViewKind::RawReadWrite) &&
+                           binding.offset%16u)
+                            throw std::invalid_argument("D3D12 RAW buffer view base must be 16-byte aligned");
+                        const auto& buffer=*reference(binding.buffer).buffer;
+                        if(buffer.upload_only)
+                            throw std::invalid_argument("Upload storage cannot be a shader binding");
+                        validate_range(buffer.bytes,binding.offset,binding.bytes);
+                        // One native resource cannot mix SRV and UAV views.
+                        for(std::size_t prior=0u;prior<i;++prior)
+                            if(prepared.views[prior].buffer==binding.buffer &&
+                               read_only_view(pipeline.view_kinds[prior])!=read_only_view(kind))
+                                throw std::invalid_argument("D3D12 cannot bind one resource as SRV and UAV simultaneously");
+                        prepared.views.push_back({binding.buffer,binding.offset,binding.bytes,
+                                                  buffer.resource.Get()});
+                    }
+                    descriptor_tables.push_back(std::move(prepared));
                     candidates.push_back(table);
+                    pipeline_sequence.push_back(dispatch.pipeline);
                     descriptor_count+=binding_count;
                 }
+                const auto& pipeline=*descriptor_tables[table].native_pipeline;
+                validate_dispatch_shape(pipeline,dispatch);
                 dispatch_table_indices.push_back(table);
                 dispatch_range_plans.push_back(range_plans.prepare(table,dispatch,
                     [&](std::vector<OperationRangeUse>& ranges) {
-                        const auto& pipeline=get_pipeline(dispatch.pipeline);
-                        if(dispatch.indirect)
+                        for(const auto& binding:dispatch.buffers)
+                            validate_binding_access(binding,
+                                read_only_view(pipeline.view_kinds[binding.slot]));
+                        if(dispatch.indirect) {
+                            const auto& indirect=*dispatch.indirect;
+                            const auto& args=*reference(indirect.buffer).buffer;
+                            if(indirect.offset%4u || args.upload_only)
+                                throw std::invalid_argument("Invalid D3D12 indirect dispatch arguments");
+                            validate_range(args.bytes,indirect.offset,sizeof(D3D12_DISPATCH_ARGUMENTS));
+                            for(const auto& binding:dispatch.buffers)
+                                if(binding.buffer==indirect.buffer)
+                                    throw std::invalid_argument("D3D12 indirect arguments cannot alias shader bindings");
                             ranges.push_back({dispatch.indirect->buffer,
                                 dispatch.indirect->offset,
                                 dispatch.indirect->offset+sizeof(D3D12_DISPATCH_ARGUMENTS),
                                 {D3D12_BARRIER_SYNC_EXECUTE_INDIRECT,
                                  D3D12_BARRIER_ACCESS_INDIRECT_ARGUMENT},false});
+                        }
                         dispatch.for_each_access([&](const BufferBinding& binding,
                                                 BufferAccessExtent extent,BufferAccess access) {
                             const auto kind=pipeline.view_kinds[binding.slot];
@@ -1335,7 +1327,6 @@ struct Context::Impl {
                             return a.buffer<b.buffer;
                         });
                     }));
-                pipeline_sequence.push_back(dispatch.pipeline);
             }
         }
         if (descriptor_count > std::numeric_limits<UINT>::max())
@@ -1462,25 +1453,9 @@ struct Context::Impl {
 
         // Whole-buffer barriers separate conflicting access epochs.
         // Each barrier's destination stages cover the complete next epoch.
-        struct Access {
-            Buffer* buffer;
-            PendingBufferRanges ranges;
-            RangeAccessScope scope{};
-            std::size_t incoming=std::numeric_limits<std::size_t>::max();
-        };
-        std::unordered_map<BufferId,Access> resource_access;
-        resource_access.reserve(std::min<std::size_t>(commands.size()*2u,512u));
-        std::vector<Buffer*> referenced;
         std::vector<OperationRangeUse> uses;
         std::vector<D3D12_BUFFER_BARRIER> barriers;
         std::vector<std::size_t> barrier_offsets;
-        const auto reference=[&](BufferId id) -> Access& {
-            const auto found=resource_access.find(id);
-            if(found!=resource_access.end())return found->second;
-            auto& buffer=get_buffer(id);
-            referenced.push_back(&buffer);
-            return resource_access.try_emplace(id,Access{&buffer,{},{}}).first->second;
-        };
         constexpr RangeAccessScope copy_read{D3D12_BARRIER_SYNC_COPY,
             D3D12_BARRIER_ACCESS_COPY_SOURCE},copy_write{D3D12_BARRIER_SYNC_COPY,
             D3D12_BARRIER_ACCESS_COPY_DEST};
@@ -1537,9 +1512,6 @@ struct Context::Impl {
             }else if(const auto* upload=std::get_if<UploadCommand>(&op)) {
                 use(upload->destination,upload->destination_offset,upload->bytes.size(),copy_write,true);
             }else {
-                const auto& cmd=std::get<DispatchCommand>(op);
-                for(const auto& binding:cmd.buffers)reference(binding.buffer);
-                if(cmd.indirect)reference(cmd.indirect->buffer);
                 plan_operation(range_plans.ranges(dispatch_range_plans[planned_dispatch++]));
                 continue;
             }
@@ -1573,8 +1545,8 @@ struct Context::Impl {
         for (const BatchCommand& op : commands) {
             before_operation();
             if (const auto* copy = std::get_if<CopyCommand>(&op)) {
-                auto& src = get_buffer(copy->source);
-                auto& dst = get_buffer(copy->destination);
+                auto& src=*resource_access.at(copy->source).buffer;
+                auto& dst=*resource_access.at(copy->destination).buffer;
                 submission.commands->CopyBufferRegion(dst.resource.Get(),
                     copy->destination_offset,src.resource.Get(),
                     copy->source_offset,copy->bytes);
@@ -1586,7 +1558,7 @@ struct Context::Impl {
                 continue;
             }
             if(const auto* upload=std::get_if<UploadCommand>(&op)) {
-                auto& dst=get_buffer(upload->destination);
+                auto& dst=*resource_access.at(upload->destination).buffer;
                 submission.commands->CopyBufferRegion(
                     dst.resource.Get(),upload->destination_offset,
                     submission.owned_upload.Get(),ordered_upload_offset,
@@ -1600,16 +1572,16 @@ struct Context::Impl {
                 continue;
             }
             const auto& cmd = std::get<DispatchCommand>(op);
-            Pipeline& pipeline = get_pipeline(cmd.pipeline);
             const auto table=dispatch_table_indices[dispatch_index++];
-            const auto descriptor_index=descriptor_tables[table].first_descriptor;
+            const auto& prepared=descriptor_tables[table];
+            const auto& pipeline=*prepared.native_pipeline;
+            const auto descriptor_index=prepared.first_descriptor;
             const auto gpu_start=submission.heap->GetGPUDescriptorHandleForHeapStart();
             if(!descriptor_table_written[table]) {
                 descriptor_table_written[table]=true;
                 const auto cpu_start=submission.heap->GetCPUDescriptorHandleForHeapStart();
                 for (UINT slot = 0; slot < pipeline.bindings; ++slot) {
-                    const auto& binding = cmd.buffers[slot];
-                    auto& buffer = get_buffer(binding.buffer);
+                    const auto& next=prepared.views[slot];
                     const auto kind = pipeline.view_kinds[slot];
                     const bool read_only = kind == StorageBufferViewKind::RawRead ||
                                            kind == StorageBufferViewKind::Structured32Read;
@@ -1618,9 +1590,6 @@ struct Context::Impl {
                     const auto physical_slot = descriptor_index +
                         pipeline.descriptor_slots[slot];
                     DescriptorView& cached = submission.cached_views[physical_slot];
-                    const DescriptorView next{
-                        binding.buffer, binding.offset, binding.bytes,
-                        buffer.resource.Get()};
                     if (cached.buffer == next.buffer &&
                         cached.offset == next.offset &&
                         cached.bytes == next.bytes &&
@@ -1633,23 +1602,23 @@ struct Context::Impl {
                         D3D12_UNORDERED_ACCESS_VIEW_DESC view{};
                         view.Format = raw ? DXGI_FORMAT_R32_TYPELESS : DXGI_FORMAT_UNKNOWN;
                         view.ViewDimension = D3D12_UAV_DIMENSION_BUFFER;
-                        view.Buffer.FirstElement = binding.offset / 4;
-                        view.Buffer.NumElements = static_cast<UINT>(binding.bytes / 4);
+                        view.Buffer.FirstElement = next.offset / 4;
+                        view.Buffer.NumElements = static_cast<UINT>(next.bytes / 4);
                         view.Buffer.StructureByteStride = raw ? 0u : 4u;
                         view.Buffer.Flags = raw ? D3D12_BUFFER_UAV_FLAG_RAW :
                                                    D3D12_BUFFER_UAV_FLAG_NONE;
-                        device->CreateUnorderedAccessView(buffer.resource.Get(), nullptr, &view, cpu);
+                        device->CreateUnorderedAccessView(next.resource, nullptr, &view, cpu);
                     } else {
                         D3D12_SHADER_RESOURCE_VIEW_DESC view{};
                         view.Format = raw ? DXGI_FORMAT_R32_TYPELESS : DXGI_FORMAT_UNKNOWN;
                         view.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
                         view.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-                        view.Buffer.FirstElement = binding.offset / 4;
-                        view.Buffer.NumElements = static_cast<UINT>(binding.bytes / 4);
+                        view.Buffer.FirstElement = next.offset / 4;
+                        view.Buffer.NumElements = static_cast<UINT>(next.bytes / 4);
                         view.Buffer.StructureByteStride = raw ? 0u : 4u;
                         view.Buffer.Flags = raw ? D3D12_BUFFER_SRV_FLAG_RAW :
                                                   D3D12_BUFFER_SRV_FLAG_NONE;
-                        device->CreateShaderResourceView(buffer.resource.Get(), &view, cpu);
+                        device->CreateShaderResourceView(next.resource, &view, cpu);
                     }
                     cached = next;
                 }
@@ -1677,7 +1646,7 @@ struct Context::Impl {
             submission.commands->SetComputeRoot32BitConstants(
                 table_root,pipeline.parameters/4u,cmd.push_constants.data(),0);
             if(cmd.indirect) {
-                auto* arguments=get_buffer(cmd.indirect->buffer).resource.Get();
+                auto* arguments=resource_access.at(cmd.indirect->buffer).buffer->resource.Get();
                 // The X group count also predicates the single indirect
                 // command, so an empty GPU worklist launches no dispatch.
                 submission.commands->ExecuteIndirect(
@@ -1701,7 +1670,7 @@ struct Context::Impl {
                     order_copy_writes(submission.commands.Get(),readback_tail->staging);
                 submission.commands->CopyBufferRegion(
                     readback_tail->staging,offset,
-                    get_buffer(item.source).resource.Get(),item.source_offset,
+                    resource_access.at(item.source).buffer->resource.Get(),item.source_offset,
                     item.bytes);
                 offset+=item.bytes;
             }

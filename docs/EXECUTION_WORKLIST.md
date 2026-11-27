@@ -117,6 +117,10 @@ quality rather than individual dispatch or barrier counts.
   Normalize Vulkan aliases and group D3D12 buffer ranges once per
   matching descriptor/access declaration; retain per-operation hazards.
 
+- [x] Resolve and validate physical views once per distinct native
+  descriptor table. Retain dispatch-local shape and access validation;
+  key D3D12 heap reuse by the actual unique table layout.
+
 These are implementation milestones, not hardware-performance acceptance.
 
 ## Execution and lifetime work

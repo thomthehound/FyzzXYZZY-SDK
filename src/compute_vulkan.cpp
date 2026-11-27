@@ -1227,64 +1227,17 @@ struct Context::Impl {
         pipelines.erase(it);
     }
 
-    void validate_dispatch_into(
-            PipelineId id, DispatchSize groups,
-            const std::vector<BufferBinding>& bindings,
-            const void* push_constants, std::size_t push_bytes,
-            std::span<VkDescriptorBufferInfo> descriptors,
-            std::span<std::uint8_t> assigned) const {
-        const Pipeline& pipeline = get_pipeline(id);
-        const std::uint32_t counts[3] = {groups.x, groups.y, groups.z};
-        for (std::uint32_t i = 0; i < 3; ++i) {
-            if (counts[i] == 0 || counts[i] > info.max_workgroup_count[i]) {
+    void validate_dispatch_shape(const Pipeline& pipeline,
+                                 const DispatchCommand& command) const {
+        const auto groups=command.groups;
+        const std::uint32_t counts[3]={groups.x,groups.y,groups.z};
+        for(std::uint32_t i=0u;i<3u;++i)
+            if(!counts[i] || counts[i]>info.max_workgroup_count[i])
                 throw std::out_of_range("Compute workgroup count exceeds device limits");
-            }
-        }
-        if (bindings.size() != pipeline.binding_count) {
-            throw std::invalid_argument("Incorrect number of compute buffer bindings");
-        }
-        if (push_bytes != pipeline.push_bytes || (push_bytes && !push_constants)) {
+        if(command.push_constants.size()!=pipeline.push_bytes)
             throw std::invalid_argument("Push constants do not match pipeline layout");
-        }
-
-        if(descriptors.size()!=pipeline.binding_count ||
-           assigned.size()!=pipeline.binding_count)
-            throw std::logic_error("Compute descriptor validation scratch size mismatch");
-        std::fill(assigned.begin(),assigned.end(),0u);
-        for (const auto& binding : bindings) {
-            if (binding.slot >= pipeline.binding_count || assigned[binding.slot]) {
-                throw std::invalid_argument("Invalid or duplicate compute binding slot");
-            }
-            if (binding.access != BufferAccess::Unspecified &&
-                binding.access != BufferAccess::Read &&
-                binding.access != BufferAccess::Write &&
-                binding.access != BufferAccess::ReadWrite)
-                throw std::invalid_argument("Invalid compute buffer access intent");
-            if (!pipeline.view_kinds.empty()) {
-                const auto kind = pipeline.view_kinds[binding.slot];
-                const bool read_only = kind == StorageBufferViewKind::RawRead ||
-                                       kind == StorageBufferViewKind::Structured32Read;
-                if (read_only && binding.access != BufferAccess::Unspecified &&
-                    binding.access != BufferAccess::Read)
-                    throw std::invalid_argument("Read-only Vulkan view declared writable");
-            }
-            const Buffer& buffer = get(binding.buffer);
-            if (!buffer.storage_eligible)
-                throw std::invalid_argument("Transfer-only Vulkan staging cannot bind as shader storage");
-            validate_range(buffer.bytes, binding.offset, binding.bytes);
-            const auto extent=binding.accessed_extent();
-            if(!extent.bytes || extent.offset>binding.bytes ||
-               extent.bytes>binding.bytes-extent.offset)
-                throw std::invalid_argument("Vulkan access extent exceeds descriptor");
-            if (binding.bytes == 0 || binding.bytes > limits.maxStorageBufferRange) {
-                throw std::invalid_argument("Invalid compute descriptor range");
-            }
-            if (binding.offset % limits.minStorageBufferOffsetAlignment != 0) {
-                throw std::invalid_argument("Compute descriptor offset is misaligned");
-            }
-            assigned[binding.slot] = true;
-            descriptors[binding.slot] = {buffer.buffer, binding.offset, binding.bytes};
-        }
+        if(command.indirect && (groups.x!=1u || groups.y!=1u || groups.z!=1u))
+            throw std::invalid_argument("Indirect dispatch cannot specify direct groups");
     }
 
     SubmissionId dispatch(PipelineId id,DispatchSize groups,
@@ -1388,8 +1341,9 @@ struct Context::Impl {
         // recorded. Keep the slot-ordered views for actual recording.
         std::vector<VkDescriptorBufferInfo> validated_dispatches;
         std::vector<BufferId> validated_buffer_ids;
-        std::vector<std::uint8_t> assigned_slots;
+        std::vector<const BufferBinding*> slots;
         std::vector<PipelineId> table_pipelines;
+        std::vector<const Pipeline*> table_native_pipelines;
         std::vector<std::size_t> table_offsets,dispatch_tables,dispatch_range_plans;
         DispatchRangePlans range_plans;
         std::vector<OperationRangeUse> range_scratch;
@@ -1433,56 +1387,33 @@ struct Context::Impl {
                 }
             } else {
                 const auto& dispatch = std::get<DispatchCommand>(operation);
-                const Pipeline& pipeline = get_pipeline(dispatch.pipeline);
-                const auto offset=validated_dispatches.size();
-                validated_dispatches.resize(offset+pipeline.binding_count);
-                assigned_slots.resize(pipeline.binding_count);
-                if(dispatch.indirect) {
-                    const auto& indirect=*dispatch.indirect;
-                    const auto& argument=reference(indirect.buffer);
-                    if(!argument.storage_eligible || indirect.offset%4u)
-                        throw std::invalid_argument("Invalid Vulkan indirect dispatch arguments");
-                    validate_range(argument.bytes,indirect.offset,12u);
-                    if(dispatch.groups.x!=1u || dispatch.groups.y!=1u ||
-                       dispatch.groups.z!=1u)
-                        throw std::invalid_argument("Indirect dispatch cannot specify direct groups");
-                    for(const auto& binding:dispatch.buffers)
-                        if(binding.buffer==indirect.buffer)
-                            throw std::invalid_argument(
-                                "Indirect arguments cannot alias shader bindings");
-                }
-                validate_dispatch_into(
-                    dispatch.pipeline, dispatch.groups,
-                    dispatch.buffers, dispatch.push_constants.data(),
-                    dispatch.push_constants.size(),
-                    std::span<VkDescriptorBufferInfo>(validated_dispatches)
-                        .subspan(offset,pipeline.binding_count),
-                    assigned_slots);
-                validated_buffer_ids.resize(offset+pipeline.binding_count);
+                // Canonical slot order preserves identity for unordered Vulkan bindings.
+                slots.assign(dispatch.buffers.size(),nullptr);
                 for(const auto& binding:dispatch.buffers) {
-                    reference(binding.buffer);
-                    validated_buffer_ids[offset+binding.slot]=binding.buffer;
+                    if(binding.slot>=slots.size() || slots[binding.slot])
+                        throw std::invalid_argument("Invalid or duplicate compute binding slot");
+                    slots[binding.slot]=&binding;
                 }
-                // Physical descriptor identity excludes access intent,
-                // push constants and dispatch dimensions.
                 std::size_t key=dispatch.pipeline;
-                for(std::size_t i=offset;i<validated_dispatches.size();++i) {
-                    mix_key(key,validated_buffer_ids[i]);
-                    mix_key(key,validated_dispatches[i].offset);
-                    mix_key(key,validated_dispatches[i].range);
+                mix_key(key,slots.size());
+                for(const auto* binding:slots) {
+                    mix_key(key,binding->buffer);
+                    mix_key(key,binding->offset);
+                    mix_key(key,binding->bytes);
                 }
                 auto& candidates=table_lookup[key];
                 auto table=table_pipelines.size();
                 for(const auto candidate:candidates) {
-                    if(table_pipelines[candidate]!=dispatch.pipeline)continue;
+                    if(table_pipelines[candidate]!=dispatch.pipeline ||
+                       table_native_pipelines[candidate]->binding_count!=slots.size())
+                        continue;
                     const auto prior=table_offsets[candidate];
                     bool same=true;
-                    for(std::uint32_t slot=0u;slot<pipeline.binding_count;++slot) {
+                    for(std::size_t slot=0u;slot<slots.size();++slot) {
                         const auto& old=validated_dispatches[prior+slot];
-                        const auto& next=validated_dispatches[offset+slot];
-                        if(validated_buffer_ids[prior+slot]!=validated_buffer_ids[offset+slot] ||
-                           old.buffer!=next.buffer || old.offset!=next.offset ||
-                           old.range!=next.range) {
+                        const auto& next=*slots[slot];
+                        if(validated_buffer_ids[prior+slot]!=next.buffer ||
+                           old.offset!=next.offset || old.range!=next.bytes) {
                             same=false;
                             break;
                         }
@@ -1493,18 +1424,46 @@ struct Context::Impl {
                     }
                 }
                 if(table==table_pipelines.size()) {
+                    const auto& pipeline=get_pipeline(dispatch.pipeline);
+                    if(slots.size()!=pipeline.binding_count)
+                        throw std::invalid_argument("Incorrect number of compute buffer bindings");
+                    table_offsets.push_back(validated_dispatches.size());
+                    for(const auto* binding:slots) {
+                        const auto& buffer=reference(binding->buffer);
+                        if(!buffer.storage_eligible)
+                            throw std::invalid_argument("Transfer-only Vulkan staging cannot bind as shader storage");
+                        validate_range(buffer.bytes,binding->offset,binding->bytes);
+                        if(!binding->bytes || binding->bytes>limits.maxStorageBufferRange)
+                            throw std::invalid_argument("Invalid compute descriptor range");
+                        if(binding->offset%limits.minStorageBufferOffsetAlignment)
+                            throw std::invalid_argument("Compute descriptor offset is misaligned");
+                        validated_dispatches.push_back({buffer.buffer,binding->offset,binding->bytes});
+                        validated_buffer_ids.push_back(binding->buffer);
+                    }
                     table_pipelines.push_back(dispatch.pipeline);
-                    table_offsets.push_back(offset);
+                    table_native_pipelines.push_back(&pipeline);
                     candidates.push_back(table);
                     descriptor_count+=pipeline.binding_count;
-                }else {
-                    validated_dispatches.resize(offset);
-                    validated_buffer_ids.resize(offset);
                 }
+                const auto& pipeline=*table_native_pipelines[table];
+                validate_dispatch_shape(pipeline,dispatch);
                 dispatch_tables.push_back(table);
                 dispatch_range_plans.push_back(range_plans.prepare(table,dispatch,
                     [&](std::vector<OperationRangeUse>& ranges) {
                         range_scratch.clear();
+                        for(const auto& binding:dispatch.buffers)
+                            validate_binding_access(binding,!pipeline.view_kinds.empty() &&
+                                read_only_view(pipeline.view_kinds[binding.slot]));
+                        if(dispatch.indirect) {
+                            const auto& indirect=*dispatch.indirect;
+                            const auto& argument=reference(indirect.buffer);
+                            if(!argument.storage_eligible || indirect.offset%4u)
+                                throw std::invalid_argument("Invalid Vulkan indirect dispatch arguments");
+                            validate_range(argument.bytes,indirect.offset,12u);
+                            for(const auto& binding:dispatch.buffers)
+                                if(binding.buffer==indirect.buffer)
+                                    throw std::invalid_argument("Indirect arguments cannot alias shader bindings");
+                        }
                         dispatch.for_each_access([&](const BufferBinding& binding,
                                                 BufferAccessExtent extent,BufferAccess access) {
                             if(!pipeline.view_kinds.empty() &&
@@ -1645,8 +1604,8 @@ struct Context::Impl {
                 if(!reuse_sets) {
                     std::vector<VkDescriptorSetLayout> layouts;
                     layouts.reserve(set_count);
-                    for(const auto pipeline:table_pipelines)
-                        layouts.push_back(get_pipeline(pipeline).descriptors);
+                    for(const auto* pipeline:table_native_pipelines)
+                        layouts.push_back(pipeline->descriptors);
                     descriptor_reuse.pipelines=table_pipelines;
                     descriptor_sets.resize(layouts.size(),VK_NULL_HANDLE);
                     VkDescriptorSetAllocateInfo allocate{};
@@ -1666,7 +1625,7 @@ struct Context::Impl {
                 std::vector<VkWriteDescriptorSet> writes;
                 for(std::size_t table=0u;table<set_count;++table) {
                     const auto descriptor_offset=table_offsets[table];
-                    const auto count=get_pipeline(table_pipelines[table]).binding_count;
+                    const auto count=table_native_pipelines[table]->binding_count;
                     for(std::uint32_t slot=0;slot<count;++slot) {
                         const auto index=descriptor_offset+slot;
                         const auto& next=validated_dispatches[index];
@@ -1833,8 +1792,8 @@ struct Context::Impl {
                     }
                     normalize_operation_ranges(operation_uses,normalized_uses);
                     before_operation(normalized_uses);
-                    vkCmdCopyBuffer(commands,get(copy->source).buffer,
-                                    get(copy->destination).buffer,
+                    vkCmdCopyBuffer(commands,referenced.at(copy->source).buffer->buffer,
+                                    referenced.at(copy->destination).buffer->buffer,
                                     static_cast<std::uint32_t>(copy_regions.size()),
                                     copy_regions.data());
 #if defined(FYZZXYZZY_PROFILE_GPU)
@@ -1846,10 +1805,10 @@ struct Context::Impl {
                 }
 
                 const auto& dispatch = std::get<DispatchCommand>(operation);
-                const Pipeline& pipeline = get_pipeline(dispatch.pipeline);
-                before_operation(range_plans.ranges(dispatch_range_plans[dispatch_index]));
-                const VkDescriptorSet descriptor_set=
-                    descriptor_sets[dispatch_tables[dispatch_index++]];
+                const auto table=dispatch_tables[dispatch_index];
+                const auto& pipeline=*table_native_pipelines[table];
+                before_operation(range_plans.ranges(dispatch_range_plans[dispatch_index++]));
+                const VkDescriptorSet descriptor_set=descriptor_sets[table];
 
                 if(bound_pipeline!=pipeline.pipeline) {
                     vkCmdBindPipeline(commands,VK_PIPELINE_BIND_POINT_COMPUTE,pipeline.pipeline);
@@ -1869,7 +1828,7 @@ struct Context::Impl {
                 }
                 if(dispatch.indirect)
                     vkCmdDispatchIndirect(commands,
-                        get(dispatch.indirect->buffer).buffer,
+                        referenced.at(dispatch.indirect->buffer).buffer->buffer,
                         static_cast<VkDeviceSize>(dispatch.indirect->offset));
                 else
                     vkCmdDispatch(commands, dispatch.groups.x, dispatch.groups.y,

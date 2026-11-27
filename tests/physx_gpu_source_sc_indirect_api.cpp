@@ -97,7 +97,7 @@ void verify(const char* source_shader,const char* consumer_shader) {
         dispatch.push_constants.resize(sizeof(task_offset));
         std::memcpy(dispatch.push_constants.data(),&task_offset,
                     sizeof(task_offset));
-        stream.commands().emplace_back(std::move(dispatch));
+        stream.commands().emplace_back(dispatch);
         stream.wait_at_fetch();
 
         SourceScDeviceIslandHeader header{};
@@ -120,6 +120,31 @@ void verify(const char* source_shader,const char* consumer_shader) {
                     output[first+2u]==4u+(i&1u) &&
                     output[first+3u]==1u+(i&1u),
                     "Indirect consumer lost a device-authored task ordinal");
+        }
+
+        if(node_count==2u) {
+            std::vector<std::uint32_t> untouched(output.size(),0xffffffffu);
+            context.upload(result_buffer,0u,untouched.data(),result_bytes);
+            for(unsigned defect=0u;defect<5u;++defect) {
+                auto invalid=dispatch;
+                switch(defect) {
+                    case 0u: invalid.buffers[0].access=BufferAccess::Write; break;
+                    case 1u: invalid.buffers[1].access_extent=BufferAccessExtent{0u,0u}; break;
+                    case 2u: invalid.buffers[1].slot=0u; break;
+                    case 3u: invalid.groups.x=2u; break;
+                    case 4u: invalid.indirect=DispatchIndirectArgs{result_buffer,0u}; break;
+                }
+                bool rejected=false;
+                try {context.execute_batch({dispatch,invalid});}
+                catch(const std::invalid_argument&) {rejected=true;}
+                require(rejected,"Reused D3D12 table accepted malformed dispatch");
+            }
+            std::vector<std::uint32_t> observed(output.size());
+            context.download(result_buffer,0u,observed.data(),result_bytes);
+            require(observed==untouched,"Rejected D3D12 batch executed a valid prefix");
+            context.execute_batch({dispatch,dispatch});
+            context.download(result_buffer,0u,observed.data(),result_bytes);
+            require(observed==output,"Reused D3D12 table lost indirect results");
         }
 
         addresses.unregister_slice(indirect_address);

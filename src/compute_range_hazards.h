@@ -94,6 +94,26 @@ inline void normalize_operation_ranges(std::vector<OperationRangeUse>& uses,
     result.resize(count);
 }
 
+inline bool read_only_view(StorageBufferViewKind kind) noexcept {
+    return kind==StorageBufferViewKind::RawRead ||
+           kind==StorageBufferViewKind::Structured32Read;
+}
+
+inline void validate_binding_access(const BufferBinding& binding,bool read_only) {
+    if(binding.access!=BufferAccess::Unspecified &&
+       binding.access!=BufferAccess::Read &&
+       binding.access!=BufferAccess::Write &&
+       binding.access!=BufferAccess::ReadWrite)
+        throw std::invalid_argument("Invalid compute buffer access intent");
+    if(read_only && binding.access!=BufferAccess::Unspecified &&
+       binding.access!=BufferAccess::Read)
+        throw std::invalid_argument("Read-only compute view declared writable");
+    const auto extent=binding.accessed_extent();
+    if(!extent.bytes || extent.offset>binding.bytes ||
+       extent.bytes>binding.bytes-extent.offset)
+        throw std::invalid_argument("Compute access extent exceeds descriptor");
+}
+
 // A descriptor table can serve several distinct logical access declarations.
 inline bool same_dispatch_accesses(const DispatchCommand& a,
                                    const DispatchCommand& b) noexcept {
