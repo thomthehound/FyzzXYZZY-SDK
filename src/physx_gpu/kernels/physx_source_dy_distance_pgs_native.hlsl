@@ -168,19 +168,19 @@ struct SourceDySolverPair {
 };
 
 void sourceDyLoadEndpoint(uint ordinal,uint2 retained,SourceDySolverPair prior,
-                          out float3 linear,out float3 angular) {
-    linear=0.0f;
+                          out float3 linearDelta,out float3 angular) {
+    linearDelta=0.0f;
     angular=0.0f;
     if(ordinal==invalidBody)return;
     if(ordinal==retained.y) {
-        linear=prior.vb;
+        linearDelta=prior.vb;
         angular=prior.ab;
     } else if(ordinal==retained.x) {
-        linear=prior.va;
+        linearDelta=prior.va;
         angular=prior.aa;
     } else {
         const uint address=p.bodyBias+ordinal*52u;
-        linear=asfloat(arena.Load3(address));
+        linearDelta=asfloat(arena.Load3(address));
         angular=asfloat(arena.Load3(address+12u));
     }
 }
