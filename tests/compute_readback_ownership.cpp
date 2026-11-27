@@ -90,6 +90,47 @@ void verify_range_hazards() {
     expect({{48u,80u,shader_write,{}}});
 }
 
+void verify_operation_ranges() {
+    using namespace fyzz::compute;
+    constexpr RangeAccessScope read{2u,2u},write{2u,4u},both{2u,6u},
+        upload{1u,1u},download{1u,8u};
+    std::vector<OperationRangeUse> uses{
+        {1u,32u,64u,write,true},
+        {2u,0u,16u,write,true},
+        {1u,0u,96u,read,false},
+        {1u,48u,80u,write,true},
+        {1u,100u,112u,read,false},
+        {1u,112u,128u,read,false},
+        {1u,40u,44u,read,false}};
+    std::vector<OperationRangeUse> normalized;
+    normalize_operation_ranges(uses,normalized);
+    const std::vector<OperationRangeUse> expected{
+        {1u,0u,32u,read,false},
+        {1u,32u,80u,both,true},
+        {1u,80u,96u,read,false},
+        {1u,100u,128u,read,false},
+        {2u,0u,16u,write,true}};
+    if(normalized!=expected)
+        throw std::runtime_error("Overlapping accesses lost exact byte-range intent");
+
+    BufferRangeHazards hazards;
+    hazards.use(0u,128u,upload,true,[](auto,auto,auto,auto) {});
+    for(const auto& use:normalized)
+        if(use.buffer==1u)
+            hazards.use(use.begin,use.end,use.scope,use.writes,
+                [](auto,auto,auto,auto) {});
+    std::vector<OperationRangeUse> producers;
+    hazards.use(0u,96u,download,false,
+        [&](auto begin,auto end,auto source,auto) {
+            producers.push_back({1u,begin,end,source,true});
+        });
+    if(producers!=std::vector<OperationRangeUse>{
+        {1u,0u,32u,upload,true},
+        {1u,32u,80u,both,true},
+        {1u,80u,96u,upload,true}})
+        throw std::runtime_error("Read-only aliases replaced the original producer");
+}
+
 void verify_uav_ranges() {
     using fyzz::compute::PendingUavRanges;
     PendingUavRanges pending;
@@ -163,6 +204,7 @@ void verify_cache_working_set() {
 int main() {
     try {
         verify_range_hazards();
+        verify_operation_ranges();
         verify_uav_ranges();
         verify_cache_working_set();
         using namespace fyzz::compute;

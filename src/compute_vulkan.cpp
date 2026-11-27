@@ -1721,42 +1721,17 @@ struct Context::Impl {
                 vkCmdWriteTimestamp(commands, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, timestamps, 0);
             }
 
-            struct RangeUse {
-                BufferId buffer;
-                std::size_t begin,end;
-                RangeAccessScope scope;
-                bool writes;
-            };
-            std::vector<RangeUse> operation_uses;
+            std::vector<OperationRangeUse> operation_uses,normalized_uses;
             std::vector<VkBufferMemoryBarrier> barriers;
             std::vector<VkBufferCopy> copy_regions;
             VkPipeline bound_pipeline=VK_NULL_HANDLE;
             VkDescriptorSet bound_set=VK_NULL_HANDLE;
             std::size_t dispatch_index=0;
-            // Merge overlapping aliases before updating dependencies.
-            // Disjoint views retain independent access intent.
-            const auto merge_use=[&](RangeUse use) {
-                for(std::size_t i=0u;i<operation_uses.size();) {
-                    const auto& other=operation_uses[i];
-                    if(other.buffer!=use.buffer ||
-                       other.end<=use.begin || use.end<=other.begin) {
-                        ++i;
-                        continue;
-                    }
-                    use.begin=std::min(use.begin,other.begin);
-                    use.end=std::max(use.end,other.end);
-                    use.scope.include(other.scope);
-                    use.writes|=other.writes;
-                    operation_uses[i]=operation_uses.back();
-                    operation_uses.pop_back();
-                    i=0u;
-                }
-                operation_uses.push_back(use);
-            };
             const auto before_operation=[&]() {
                 barriers.clear();
                 VkPipelineStageFlags sources=0u,targets=0u;
-                for(const auto& use:operation_uses) {
+                normalize_operation_ranges(operation_uses,normalized_uses);
+                for(const auto& use:normalized_uses) {
                     auto& pending=referenced.find(use.buffer)->second;
                     const auto& buffer=*pending.buffer;
                     if(buffer.placement==MemoryPlacement::Upload)continue;
@@ -1870,7 +1845,7 @@ struct Context::Impl {
                         (reads?VkAccessFlags(VK_ACCESS_SHADER_READ_BIT):0u) |
                         (writes?VkAccessFlags(VK_ACCESS_SHADER_WRITE_BIT):0u);
                     const auto begin=binding.offset+extent.offset;
-                    merge_use({binding.buffer,begin,begin+extent.bytes,
+                    operation_uses.push_back({binding.buffer,begin,begin+extent.bytes,
                         {VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,mask},writes});
                 });
                 if(dispatch.indirect)

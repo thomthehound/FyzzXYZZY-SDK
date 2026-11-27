@@ -22,6 +22,74 @@ struct RangeAccessScope {
     }
 };
 
+struct OperationRangeUse {
+    std::uint64_t buffer;
+    std::size_t begin,end;
+    RangeAccessScope scope;
+    bool writes;
+    bool operator==(const OperationRangeUse&) const=default;
+};
+
+// Normalize simultaneous accesses before updating queue history. Only
+// overlapping bytes inherit the combined access scope.
+inline void normalize_operation_ranges(std::vector<OperationRangeUse>& uses,
+                                       std::vector<OperationRangeUse>& result) {
+    std::sort(uses.begin(),uses.end(),[](const auto& a,const auto& b) {
+        if(a.buffer!=b.buffer)return a.buffer<b.buffer;
+        if(a.begin!=b.begin)return a.begin<b.begin;
+        return a.end<b.end;
+    });
+    result.clear();
+    for(auto use:uses) {
+        if(result.empty() || result.back().buffer!=use.buffer ||
+           result.back().end<=use.begin) {
+            result.push_back(use);
+            continue;
+        }
+        auto i=static_cast<std::size_t>(std::lower_bound(
+            result.begin(),result.end(),use,
+            [](const auto& prior,const auto& next) {
+                return prior.buffer<next.buffer ||
+                    (prior.buffer==next.buffer && prior.end<=next.begin);
+            })-result.begin());
+        while(use.begin<use.end) {
+            if(i==result.size()) {
+                result.push_back(use);
+                break;
+            }
+            // Earlier inputs start no later than this input, so the
+            // overlapping suffix is contiguous within this buffer.
+            if(result[i].begin<use.begin) {
+                auto right=result[i];
+                right.begin=use.begin;
+                result[i].end=use.begin;
+                result.insert(result.begin()+ ++i,right);
+            }
+            if(result[i].end>use.end) {
+                auto right=result[i];
+                right.begin=use.end;
+                result[i].end=use.end;
+                result.insert(result.begin()+i+1u,right);
+            }
+            auto& current=result[i];
+            current.scope.include(use.scope);
+            current.writes|=use.writes;
+            use.begin=current.end;
+            ++i;
+        }
+    }
+    std::size_t count=0u;
+    for(const auto& use:result) {
+        if(count && result[count-1u].buffer==use.buffer &&
+           result[count-1u].end==use.begin &&
+           result[count-1u].scope==use.scope &&
+           result[count-1u].writes==use.writes)
+            result[count-1u].end=use.end;
+        else result[count++]=use;
+    }
+    result.resize(count);
+}
+
 // Each interval retains its last producer and subsequent reader scopes.
 // A read's visibility dependency does not replace the producer.
 class BufferRangeHazards {
@@ -36,7 +104,7 @@ class BufferRangeHazards {
     };
     std::vector<Interval> intervals_;
 public:
-    // The caller validates ranges and merges overlapping uses of one operation.
+    // The caller supplies validated, nonoverlapping operation intervals.
     template<class Emit>
     void use(std::size_t begin,std::size_t end,RangeAccessScope scope,
              bool writes,Emit emit,bool publish_to_host=false) {

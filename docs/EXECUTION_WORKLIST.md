@@ -103,6 +103,9 @@ quality rather than individual dispatch or barrier counts.
 - [x] Share Vulkan descriptor sets across dispatches with identical
   physical bindings. Preserve dispatch-local access tracking and push
   constants, and skip redundant native descriptor binds.
+- [x] Normalize Vulkan operation aliases into exact disjoint access
+  intervals before updating queue hazard history. Coalesce only
+  adjacent intervals with identical scope and write intent.
 
 These are implementation milestones, not hardware-performance acceptance.
 
