@@ -91,6 +91,9 @@ quality rather than individual dispatch or barrier counts.
   newly colored tasks without rescanning unchanged partitions.
 - [x] Bound the shared resident partition tile pool by wide-color
   widths and intervening narrow runs, rather than response count.
+- [x] Declare endpoint remapping and tiled numerical preparation
+  accesses by their actual arena tables and source bindings, including
+  friction history, contact extents and task error publication.
 
 These are implementation milestones, not hardware-performance acceptance.
 

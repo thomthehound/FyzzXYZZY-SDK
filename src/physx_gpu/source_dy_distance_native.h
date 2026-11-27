@@ -2392,6 +2392,25 @@ public:
                 narrow(manifolds.size()),narrow(prep_count),narrow(bodies.size()),
                 0u,params[11]};
             refs.push_constants.resize(sizeof(arguments));
+            const auto ref_access=[&](std::uint32_t slot,std::size_t offset,
+                                      std::size_t size,compute::BufferAccess access) {
+                if(size)
+                    refs.accesses.push_back({slot,
+                        {refs.buffers[slot].accessed_extent().offset+offset,size},
+                        access});
+            };
+            using A=compute::BufferAccess;
+            ref_access(0u,offsets[9],bytes[9],A::Read);
+            ref_access(0u,offsets[11]+source_dy_contact_frame_bytes,
+                prep_count*sizeof(SourceDyPackedContactPrepNative),A::ReadWrite);
+            ref_access(0u,offsets[12]+integration_header_bytes,
+                packed_integration_.size()*sizeof(SourceDyPackedIntegrationNative),
+                A::Read);
+            ref_access(1u,0u,sizeof(std::uint32_t),A::ReadWrite);
+            ref_access(1u,layout.contact_endpoints,
+                manifolds.size()*2u*sizeof(std::uint32_t),A::Read);
+            ref_access(1u,layout.contact_admissions,
+                ((manifolds.size()+31u)/32u)*sizeof(std::uint32_t),A::Read);
             for(std::size_t first=0u;first<manifolds.size();) {
                 const auto groups=std::min<std::size_t>(
                     max_groups,(manifolds.size()-first+127u)/128u);
@@ -2410,8 +2429,9 @@ public:
             accesses.clear();
             const bool solves=phase==Launch::Partition;
             const bool snapshots=phase==Launch::Motion;
+            const bool prepares=phase==Launch::Prepare;
             if(phase!=Launch::InitializeBodies && !snapshots && !solves &&
-               phase!=Launch::PublishErrors)return;
+               !prepares && phase!=Launch::PublishErrors)return;
             const auto region=[&](std::uint32_t slot,std::size_t offset,
                                   std::size_t size,A access) {
                 if(size)
@@ -2435,7 +2455,8 @@ public:
             // Body initialization consumes the variable integration
             // inputs; subsequent solver phases consume the schedule header.
             arena_region(offsets[12],
-                phase==Launch::InitializeBodies?bytes[12]:integration_header_bytes,A::Read);
+                phase==Launch::InitializeBodies || prepares
+                    ?bytes[12]:integration_header_bytes,A::Read);
             if(device_partitions)
                 arena_region(offsets[15],
                     source_descriptors?(device_admission?64u:24u):20u,A::Read);
@@ -2447,7 +2468,7 @@ public:
                     sc_region(layout.counts,layout.admissions-layout.counts,A::Read);
                 }else
                     sc_region(layout.tasks,layout.block_offsets-layout.tasks,
-                        snapshots || solves?A::ReadWrite:A::Read);
+                        snapshots || solves || prepares?A::ReadWrite:A::Read);
                 if(phase==Launch::InitializeBodies || snapshots) {
                     sc_region(layout.body_order,
                               layout.contact_endpoints-layout.body_order,A::Read);
@@ -2456,7 +2477,7 @@ public:
                                   layout.joint_remap-layout.body_remap,A::Read);
                 }
             }else if(phase!=Launch::InitializeBodies) {
-                table(5u,snapshots || solves?A::ReadWrite:A::Read);
+                table(5u,snapshots || solves || prepares?A::ReadWrite:A::Read);
                 if(snapshots)table(4u,A::Read);
             }
             if(phase==Launch::InitializeBodies) {
@@ -2465,6 +2486,39 @@ public:
                 binding(2u,A::Read);
                 binding(4u,A::Read);
                 binding(5u,A::ReadWrite);
+            }else if(prepares) {
+                // Numerical preparation reads geometry and prepared body
+                // state, and owns the complete rows and friction history.
+                table(0u,A::Read);
+                table(1u,A::ReadWrite);
+                table(2u,A::Read);
+                table(6u,A::Write);
+                table(7u,A::Write);
+                table(8u,A::ReadWrite);
+                table(9u,source_descriptors?A::Read:A::ReadWrite);
+                table(10u,A::Read);
+                table(11u,A::Read);
+                table(13u,A::Read);
+                table(14u,A::Read);
+                table(16u,A::Read);
+                arena_region(partition_output_offset,
+                    partition_output_count_*sizeof(WorkTile),A::Read);
+                if(pcm_pair_count) {
+                    arena_region(0u,next_history_capacity_*64u,A::ReadWrite);
+                    arena_region(history_bytes+result_offsets[4],
+                        result_offsets[5]-result_offsets[4],A::ReadWrite);
+                    if(!source_descriptors)
+                        arena_region(history_bytes+result_offsets[2],
+                            result_offsets[3]-result_offsets[2],A::Write);
+                    binding(1u,A::Read);
+                }
+                if(has_shape_targets) {
+                    binding(2u,A::Read);
+                    binding(4u,A::Read);
+                }
+                if(actor_local_capacity_)binding(5u,A::Read);
+                if(!joint_inputs.empty())binding(island_slot+1u,A::Read);
+                if(retained_source_count)binding(island_slot+2u,A::Read);
             }else if(snapshots || solves) {
                 table(0u,A::ReadWrite);
                 table(14u,A::Read);
