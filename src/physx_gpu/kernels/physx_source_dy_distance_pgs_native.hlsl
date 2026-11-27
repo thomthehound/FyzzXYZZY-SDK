@@ -220,16 +220,26 @@ bool sourceDyLoadSolverPair(uint4 desc,uint errorAddress,bool response,
         uint2(invalidBody,invalidBody),(SourceDySolverPair)0,state);
 }
 
-void sourceDyStoreSolverPair(uint4 desc,SourceDySolverPair state) {
+// Ordered biased-phase writers also own the motion snapshot in resident
+// wide tasks. Untouched bodies retain their initialized zero deltas.
+void sourceDyStoreSolverPair(uint4 desc,SourceDySolverPair state,bool captureMotion) {
     if(desc.y!=invalidBody && state.ma>0.0f) {
         const uint ao=p.bodyBias+desc.y*52u;
         arena.Store3(ao,asuint(state.va));
         arena.Store3(ao+12u,asuint(state.aa));
+        if(captureMotion) {
+            arena.Store3(ao+24u,asuint(state.va));
+            arena.Store3(ao+36u,asuint(state.aa));
+        }
     }
     if(desc.z!=invalidBody && state.mb>0.0f) {
         const uint bo=p.bodyBias+desc.z*52u;
         arena.Store3(bo,asuint(state.vb));
         arena.Store3(bo+12u,asuint(state.ab));
+        if(captureMotion) {
+            arena.Store3(bo+24u,asuint(state.vb));
+            arena.Store3(bo+36u,asuint(state.ab));
+        }
     }
 }
 
@@ -1646,7 +1656,7 @@ bool sourceDySolveDescriptor(uint4 desc,uint errorAddress,bool biased,
 }
 
 void solvePartition(uint begin,uint end,uint lane,uint2 iters,
-                    uint iter,uint endError) {
+                    uint iter,uint endError,bool captureMotion) {
     const uint total=iters.x+max(iters.y,1u);
     const bool biased=iter<iters.x;
     const bool finalPass=iter+1u==total;
@@ -1656,14 +1666,14 @@ void solvePartition(uint begin,uint end,uint lane,uint2 iters,
         SourceDySolverPair state;
         if(sourceDySolveDescriptor(desc,endError,biased,friction,finalPass,
                 uint2(invalidBody,invalidBody),(SourceDySolverPair)0,state))
-            sourceDyStoreSolverPair(desc,state);
+            sourceDyStoreSolverPair(desc,state,captureMotion);
     }
 }
 
 // The serial owner retains responding endpoints until eviction or the
 // numerical phase boundary, including across consecutive iterations.
 void solveSerialRun(uint begin,uint end,uint2 iters,uint2 iterations,
-                    uint endError) {
+                    uint endError,bool captureMotion) {
     const uint total=iters.x+max(iters.y,1u);
     uint2 retained=uint2(invalidBody,invalidBody);
     SourceDySolverPair prior=(SourceDySolverPair)0;
@@ -1676,7 +1686,7 @@ void solveSerialRun(uint begin,uint end,uint2 iters,uint2 iterations,
             SourceDySolverPair state;
             if(!sourceDySolveDescriptor(desc,endError,biased,friction,finalPass,
                                         retained,prior,state)) {
-                sourceDyStoreSolverPair(uint4(0u,retained,0u),prior);
+                sourceDyStoreSolverPair(uint4(0u,retained,0u),prior,captureMotion);
                 return;
             }
             const uint2 next=uint2(state.ma>0.0f?desc.y:invalidBody,
@@ -1684,12 +1694,12 @@ void solveSerialRun(uint begin,uint end,uint2 iters,uint2 iterations,
             uint2 evicted=retained;
             if(any(next==retained.x))evicted.x=invalidBody;
             if(any(next==retained.y))evicted.y=invalidBody;
-            sourceDyStoreSolverPair(uint4(0u,evicted,0u),prior);
+            sourceDyStoreSolverPair(uint4(0u,evicted,0u),prior,captureMotion);
             retained=next;
             prior=state;
         }
     }
-    sourceDyStoreSolverPair(uint4(0u,retained,0u),prior);
+    sourceDyStoreSolverPair(uint4(0u,retained,0u),prior,captureMotion);
 }
 
 void saveMotion(uint index,uint endError) {
@@ -2116,7 +2126,7 @@ void sourceDySolveExclusive(uint4 desc,uint2 iters,uint2 iterations,
         }
     }
     if(localJoint)arena.Store(jointOffset+60u,asuint(jointImpulse));
-    sourceDyStoreSolverPair(desc,state);
+    sourceDyStoreSolverPair(desc,state,false);
 }
 
 bool sourceDyPackedTaskShape(uint4 ranges,uint2 bodies) {
@@ -2565,20 +2575,35 @@ void main(uint3 group:SV_GroupID,uint3 lane:SV_GroupThreadID) {
     }
     if(phase==fusedTask && admittedTasks!=0xffffffffu)
         index+=group.y*admittedDispatchX;
-    // Sc partitions independent compact tasks into packed lane ranges.
-    if(phase==fusedTask && devicePartitions && !precolored &&
-       (p.launchControl&0x10000000u)!=0u) {
-        const uint within=group.x*128u+lane.x;
-        const uint count=(p.launchControl&0x0ffffff0u)>>4u;
-        if(within<count)sourceDySolvePackedTask(p.launchBegin+within,false);
-        return;
-    }
-    if(phase==fusedTask && devicePartitions && !precolored &&
-       admittedTasks!=0xffffffffu &&
-       admittedTasks>1u && admittedDispatch<admittedTasks) {
-        const uint task=index*128u+lane.x;
-        if(task<admittedTasks)sourceDySolvePackedTask(task,false);
-        return;
+    // All lane-owned task launches enter the same numerical routine.
+    uint4 residentFusedTile=uint4(0u,0u,0u,0u);
+    if(phase==fusedTask && devicePartitions) {
+        bool packed=false,eligible=false;
+        uint task=0u;
+        if(residentWide) {
+            residentFusedTile=arena.Load4(p.launchBegin+group.x*16u);
+            packed=(residentFusedTile.w&0x80000000u)!=0u;
+            if(packed) {
+                task=residentFusedTile.y+lane.x;
+                eligible=task<residentFusedTile.z && sourceDyResidentPackedTask(task);
+            }
+        }else if(!precolored && (p.launchControl&0x10000000u)!=0u) {
+            packed=true;
+            const uint within=group.x*128u+lane.x;
+            const uint count=(p.launchControl&0x0ffffff0u)>>4u;
+            task=p.launchBegin+within;
+            eligible=within<count;
+        }else if(!precolored && admittedTasks!=0xffffffffu &&
+                 admittedTasks>1u && admittedDispatch<admittedTasks) {
+            packed=true;
+            task=index*128u+lane.x;
+            eligible=task<admittedTasks;
+        }
+        [branch]
+        if(packed) {
+            if(eligible)sourceDySolvePackedTask(task,residentWide);
+            return;
+        }
     }
     if(phase==initializeBodiesTile) {
         // Device Sc has already selected the responding body ordinals.
@@ -2663,18 +2688,14 @@ void main(uint3 group:SV_GroupID,uint3 lane:SV_GroupThreadID) {
             if(residentWide && indirectPartition)
                 tile=arena.Load4(arena.Load(p.launchBegin)+
                                  p.resultTaskOffset+group.x*16u);
+            else if(residentTile && fused)
+                tile=residentFusedTile;
             else if(indirectPartition || residentTile)
                 tile=arena.Load4(p.launchBegin+group.x*16u);
             else if(phase!=colorTile && tileOffset!=0u)
                 tile=arena.Load4(p.writebackBias+tileOffset+index*16u);
         } else if(schedule.w!=0u)
             tile=arena.Load4(schedule.w+index*16u);
-        if(fused && residentWide && (tile.w&0x80000000u)!=0u) {
-            const uint task=tile.y+lane.x;
-            if(task<tile.z && sourceDyResidentPackedTask(task))
-                sourceDySolvePackedTask(task,true);
-            return;
-        }
         const uint t=p.taskBias+tile.x*36u;
         taskId=tile.x;
         endError=t+32u;
@@ -2860,7 +2881,7 @@ void main(uint3 group:SV_GroupID,uint3 lane:SV_GroupThreadID) {
                 if(serialPartitions) {
                     if(lane.x==0u)
                         solveSerialRun(descriptors.x,descriptors.y,iters,
-                                       iterations,endError);
+                                       iterations,endError,false);
                 } else {
                     for(uint i=descriptors.x+lane.x;i<descriptors.y;i+=128u)
                         sourceDySolveExclusive(
@@ -2880,10 +2901,12 @@ void main(uint3 group:SV_GroupID,uint3 lane:SV_GroupThreadID) {
             const uint endIteration=fused ? total : min(iter+1u,total);
             for(uint iteration=fused?0u:iter;iteration<endIteration;++iteration) {
                 if(fused || phase==partitionTile) {
+                    const bool captureMotion=residentWide && phase==partitionTile &&
+                        iteration+1u==iters.x;
                     if(serialPartitions) {
                         if(lane.x==0u)
                             solveSerialRun(descriptors.x,descriptors.y,iters,
-                                           uint2(iteration,iteration+1u),endError);
+                                           uint2(iteration,iteration+1u),endError,captureMotion);
                     } else {
                         uint begin=descriptors.x;
                         uint partition=partitions.x;
@@ -2909,10 +2932,10 @@ void main(uint3 group:SV_GroupID,uint3 lane:SV_GroupThreadID) {
                                 if(lane.x==0u)
                                     solveSerialRun(begin,end,iters,
                                                    uint2(iteration,iteration+1u),
-                                                   endError);
+                                                   endError,captureMotion);
                             } else {
                                 solvePartition(begin,end,lane.x,iters,
-                                               iteration,endError);
+                                               iteration,endError,captureMotion);
                             }
                             // The final range hands off at integration
                             // or the dispatch boundary.

@@ -116,6 +116,7 @@ struct SourceDyLaunchStats {
     std::size_t max_partition_groups=0u;
     std::size_t dispatches=0u;
     std::size_t constraint_preparation_dispatches=0u;
+    std::size_t motion_capture_dispatches=0u;
     std::size_t device_island_indirect_dispatches=0u;
     std::size_t host_lane_packed_tasks=0u;
     std::size_t device_admitted_tasks=0u;
@@ -743,7 +744,7 @@ public:
         const bool resident_wide=wide_bounds.stages!=0u;
         if(resident_wide) {
             if(!source_indexed_integration || !device_admission ||
-               !device_partitions || !descriptors.empty())
+               !device_partitions || !device_initial_bodies || !descriptors.empty())
                 throw std::logic_error("Resident wide Dy requires source-indexed admission");
             build_resident_launch_plan(wide_bounds,bodies.size(),
                                        descriptor_capacity,task_capacity);
@@ -2824,8 +2825,12 @@ public:
                 for(const auto range:partition_tiles_)
                     if(iteration<range.iterations)
                         launch(Launch::Partition,range,iteration);
-                if(iteration<position_ends_.size() && position_ends_[iteration])
+                if(!resident_wide && iteration<position_ends_.size() &&
+                   position_ends_[iteration]) {
+                    const auto before=last_schedule_.dispatches;
                     launch(Launch::Motion,body_tiles_,iteration);
+                    last_schedule_.motion_capture_dispatches+=last_schedule_.dispatches-before;
+                }
             }
             launch(Launch::Integrate,body_tiles_);
             launch(Launch::PublishErrors,{0u,(task_capacity+127u)/128u});

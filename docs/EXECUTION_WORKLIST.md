@@ -141,6 +141,10 @@ quality rather than individual dispatch or barrier counts.
   fused tiles within resident mixed schedules. Retain the wide-task
   count independently of the compact tile count and preserve tile reuse.
 
+- [x] Capture resident wide-task motion at the ordered numerical writers
+  of the final biased iteration. Zero-initialized untouched endpoints
+  retain their motion state; the separate motion traversal is unnecessary.
+
 These are implementation milestones, not hardware-performance acceptance.
 
 ## Execution and lifetime work
