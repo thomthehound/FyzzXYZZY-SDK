@@ -281,7 +281,11 @@ int main(int argc, char** argv) {
                 {{0, independent_input, 0, sizeof(input), BufferAccess::Read},
                  {1, independent_output, 0, sizeof(output), BufferAccess::Write}},
                 push_bytes(alternate)},
-            CopyCommand{independent_output, 0, independent_copy, 0, sizeof(output)}
+            CopyCommand{independent_output, 0, independent_copy, 0, sizeof(output)},
+            DispatchCommand{pipeline,groups,
+                {{0,src,0,sizeof(input),BufferAccess::Read},
+                 {1,dst,0,sizeof(output),BufferAccess::Write}},
+                push_bytes(second_pass)}
         };
         for (int iteration = 0; iteration < 12; ++iteration) {
             const SubmissionId id = context.submit_batch(independent_batch);
@@ -294,6 +298,10 @@ int main(int argc, char** argv) {
             if (output[i] != expected)
                 throw std::runtime_error("Independent dispatch/copy or recycled Vulkan resources failed");
         }
+        context.download(dst,0u,output.data(),sizeof(output));
+        for(std::uint32_t i=0u;i<size;++i)
+            if(output[i]!=input[i]*second_pass.multiplier+second_pass.addend)
+                throw std::runtime_error("Reused descriptor table lost dispatch parameters");
         // Simultaneously in-flight submissions must not reuse one another's
         // command buffer or descriptor pool before the corresponding fence.
         const SubmissionId first_in_flight = context.submit_batch(independent_batch);

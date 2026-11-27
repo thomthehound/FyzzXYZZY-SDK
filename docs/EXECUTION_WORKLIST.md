@@ -100,6 +100,9 @@ quality rather than individual dispatch or barrier counts.
 - [x] Compose fused and packed dependencies from their numerical phases.
   Declare integration result streams and external shape and actor state
   explicitly; free flight excludes constraint rows and solver inertia.
+- [x] Share Vulkan descriptor sets across dispatches with identical
+  physical bindings. Preserve dispatch-local access tracking and push
+  constants, and skip redundant native descriptor binds.
 
 These are implementation milestones, not hardware-performance acceptance.
 

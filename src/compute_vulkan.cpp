@@ -1415,6 +1415,12 @@ struct Context::Impl {
         std::vector<VkDescriptorBufferInfo> validated_dispatches;
         std::vector<BufferId> validated_buffer_ids;
         std::vector<std::uint8_t> assigned_slots;
+        std::vector<PipelineId> table_pipelines;
+        std::vector<std::size_t> table_offsets,dispatch_tables;
+        std::unordered_map<std::size_t,std::vector<std::size_t>> table_lookup;
+        const auto mix_key=[](std::size_t& key,std::size_t value) {
+            key^=value+0x9e3779b9u+(key<<6u)+(key>>2u);
+        };
         struct PendingBuffer {
             Buffer* buffer;
             std::optional<BufferRangeHazards> hazards;
@@ -1492,8 +1498,46 @@ struct Context::Impl {
                     reference(binding.buffer);
                     validated_buffer_ids[offset+binding.slot]=binding.buffer;
                 }
+                // Physical descriptor identity excludes access intent,
+                // push constants and dispatch dimensions.
+                std::size_t key=dispatch.pipeline;
+                for(std::size_t i=offset;i<validated_dispatches.size();++i) {
+                    mix_key(key,validated_buffer_ids[i]);
+                    mix_key(key,validated_dispatches[i].offset);
+                    mix_key(key,validated_dispatches[i].range);
+                }
+                auto& candidates=table_lookup[key];
+                auto table=table_pipelines.size();
+                for(const auto candidate:candidates) {
+                    if(table_pipelines[candidate]!=dispatch.pipeline)continue;
+                    const auto prior=table_offsets[candidate];
+                    bool same=true;
+                    for(std::uint32_t slot=0u;slot<pipeline.binding_count;++slot) {
+                        const auto& old=validated_dispatches[prior+slot];
+                        const auto& next=validated_dispatches[offset+slot];
+                        if(validated_buffer_ids[prior+slot]!=validated_buffer_ids[offset+slot] ||
+                           old.buffer!=next.buffer || old.offset!=next.offset ||
+                           old.range!=next.range) {
+                            same=false;
+                            break;
+                        }
+                    }
+                    if(same) {
+                        table=candidate;
+                        break;
+                    }
+                }
+                if(table==table_pipelines.size()) {
+                    table_pipelines.push_back(dispatch.pipeline);
+                    table_offsets.push_back(offset);
+                    candidates.push_back(table);
+                    descriptor_count+=pipeline.binding_count;
+                }else {
+                    validated_dispatches.resize(offset);
+                    validated_buffer_ids.resize(offset);
+                }
+                dispatch_tables.push_back(table);
                 ++dispatch_count;
-                descriptor_count += pipeline.binding_count;
             }
         }
         if (dispatch_count > std::numeric_limits<std::uint32_t>::max() ||
@@ -1501,6 +1545,14 @@ struct Context::Impl {
             throw std::out_of_range("Compute batch descriptor capacity exceeded");
         }
 
+        const auto set_count=table_pipelines.size();
+#if defined(FYZZXYZZY_PROFILE_GPU)
+        if(hardware_trace) {
+            FYZZ_PROFILE_COUNTER("vulkan.descriptor_tables",set_count);
+            FYZZ_PROFILE_COUNTER("vulkan.descriptor_table_reuses",dispatch_count-set_count);
+            FYZZ_PROFILE_COUNTER("vulkan.descriptor_slots",descriptor_count);
+        }
+#endif
         VkDescriptorPool pool = VK_NULL_HANDLE;
         VkCommandBuffer commands = VK_NULL_HANDLE;
         VkQueryPool timestamps = VK_NULL_HANDLE;
@@ -1518,16 +1570,10 @@ struct Context::Impl {
                     return cached.descriptors.pipelines.empty();
                 if(cached.descriptor_pool==VK_NULL_HANDLE ||
                    cached.descriptor_capacity<descriptor_count ||
-                   cached.set_capacity<dispatch_count ||
-                   cached.descriptors.sets.size()!=dispatch_count ||
-                   cached.descriptors.pipelines.size()!=dispatch_count)
+                   cached.set_capacity<set_count ||
+                   cached.descriptors.sets.size()!=set_count)
                     return false;
-                std::size_t index=0;
-                for(const auto& operation:operations)
-                    if(const auto* dispatch=std::get_if<DispatchCommand>(&operation))
-                        if(cached.descriptors.pipelines[index++]!=dispatch->pipeline)
-                            return false;
-                return true;
+                return cached.descriptors.pipelines==table_pipelines;
             };
             std::size_t cached_index=cached_batch_count;
             for(std::size_t i=cached_batch_count;i>0;--i)
@@ -1556,7 +1602,7 @@ struct Context::Impl {
             if (dispatch_count != 0) {
                 if (pool == VK_NULL_HANDLE ||
                     descriptor_capacity < descriptor_count ||
-                    set_capacity < dispatch_count) {
+                    set_capacity < set_count) {
                     if (pool != VK_NULL_HANDLE)
                         vkDestroyDescriptorPool(device, pool, nullptr);
                     pool = VK_NULL_HANDLE;
@@ -1567,7 +1613,7 @@ struct Context::Impl {
                         std::max<std::uint64_t>(1, descriptor_count));
                     VkDescriptorPoolCreateInfo create{};
                     create.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
-                    create.maxSets = static_cast<std::uint32_t>(dispatch_count);
+                    create.maxSets = static_cast<std::uint32_t>(set_count);
                     create.poolSizeCount = 1;
                     create.pPoolSizes = &pool_size;
                     require(vkCreateDescriptorPool(device, &create, nullptr, &pool),
@@ -1575,19 +1621,8 @@ struct Context::Impl {
                     descriptor_capacity = pool_size.descriptorCount;
                     set_capacity = create.maxSets;
                 } else {
-                    reuse_sets=descriptor_reuse.sets.size()==dispatch_count &&
-                        descriptor_reuse.pipelines.size()==dispatch_count;
-                    if(reuse_sets) {
-                        std::size_t i=0;
-                        for(const auto& operation:operations) {
-                            if(const auto* dispatch=
-                                    std::get_if<DispatchCommand>(&operation))
-                                if(descriptor_reuse.pipelines[i++]!=dispatch->pipeline) {
-                                    reuse_sets=false;
-                                    break;
-                                }
-                        }
-                    }
+                    reuse_sets=descriptor_reuse.sets.size()==set_count &&
+                        descriptor_reuse.pipelines==table_pipelines;
                     if(!reuse_sets) {
                         require(vkResetDescriptorPool(device, pool, 0),
                                 "vkResetDescriptorPool");
@@ -1607,23 +1642,16 @@ struct Context::Impl {
                         "vkAllocateCommandBuffers");
             }
 
-            // Every dispatch was validated in the preflight pass. Allocate
-            // all of its native sets at once and publish the prevalidated
-            // descriptors in one update instead of calling the Vulkan driver
-            // twice for every small SAP kernel.
+            // Allocate one immutable set per distinct physical binding table
+            // in this batch. All dispatches sharing that table bind the same set.
             auto& descriptor_sets=descriptor_reuse.sets;
             if (dispatch_count != 0) {
                 if(!reuse_sets) {
                     std::vector<VkDescriptorSetLayout> layouts;
-                    layouts.reserve(static_cast<std::size_t>(dispatch_count));
-                    descriptor_reuse.pipelines.reserve(layouts.capacity());
-                    for(const auto& operation:operations) {
-                        if(const auto* dispatch=
-                                std::get_if<DispatchCommand>(&operation)) {
-                            layouts.push_back(get_pipeline(dispatch->pipeline).descriptors);
-                            descriptor_reuse.pipelines.push_back(dispatch->pipeline);
-                        }
-                    }
+                    layouts.reserve(set_count);
+                    for(const auto pipeline:table_pipelines)
+                        layouts.push_back(get_pipeline(pipeline).descriptors);
+                    descriptor_reuse.pipelines=table_pipelines;
                     descriptor_sets.resize(layouts.size(),VK_NULL_HANDLE);
                     VkDescriptorSetAllocateInfo allocate{};
                     allocate.sType=VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
@@ -1640,12 +1668,9 @@ struct Context::Impl {
                     descriptor_reuse.views.size()==validated_dispatches.size() &&
                     descriptor_reuse.buffer_ids.size()==validated_buffer_ids.size();
                 std::vector<VkWriteDescriptorSet> writes;
-                std::size_t descriptor_offset=0;
-                std::size_t dispatch_index=0;
-                for(const auto& operation:operations) {
-                    const auto* dispatch=std::get_if<DispatchCommand>(&operation);
-                    if(!dispatch)continue;
-                    const auto count=get_pipeline(dispatch->pipeline).binding_count;
+                for(std::size_t table=0u;table<set_count;++table) {
+                    const auto descriptor_offset=table_offsets[table];
+                    const auto count=get_pipeline(table_pipelines[table]).binding_count;
                     for(std::uint32_t slot=0;slot<count;++slot) {
                         const auto index=descriptor_offset+slot;
                         const auto& next=validated_dispatches[index];
@@ -1658,15 +1683,13 @@ struct Context::Impl {
                         }
                         VkWriteDescriptorSet write{};
                         write.sType=VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-                        write.dstSet=descriptor_sets[dispatch_index];
+                        write.dstSet=descriptor_sets[table];
                         write.dstBinding=slot;
                         write.descriptorType=VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
                         write.descriptorCount=1;
                         write.pBufferInfo=&next;
                         writes.push_back(write);
                     }
-                    descriptor_offset+=count;
-                    ++dispatch_index;
                 }
                 if(!writes.empty())
                     vkUpdateDescriptorSets(device,
@@ -1708,6 +1731,7 @@ struct Context::Impl {
             std::vector<VkBufferMemoryBarrier> barriers;
             std::vector<VkBufferCopy> copy_regions;
             VkPipeline bound_pipeline=VK_NULL_HANDLE;
+            VkDescriptorSet bound_set=VK_NULL_HANDLE;
             std::size_t dispatch_index=0;
             // Merge overlapping aliases before updating dependencies.
             // Disjoint views retain independent access intent.
@@ -1855,14 +1879,19 @@ struct Context::Impl {
                         {VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT,
                          VK_ACCESS_INDIRECT_COMMAND_READ_BIT},false});
                 before_operation();
-                const VkDescriptorSet descriptor_set=descriptor_sets[dispatch_index++];
+                const VkDescriptorSet descriptor_set=
+                    descriptor_sets[dispatch_tables[dispatch_index++]];
 
                 if(bound_pipeline!=pipeline.pipeline) {
                     vkCmdBindPipeline(commands,VK_PIPELINE_BIND_POINT_COMPUTE,pipeline.pipeline);
                     bound_pipeline=pipeline.pipeline;
+                    bound_set=VK_NULL_HANDLE;
                 }
-                vkCmdBindDescriptorSets(commands, VK_PIPELINE_BIND_POINT_COMPUTE,
-                                        pipeline.layout, 0, 1, &descriptor_set, 0, nullptr);
+                if(bound_set!=descriptor_set) {
+                    vkCmdBindDescriptorSets(commands,VK_PIPELINE_BIND_POINT_COMPUTE,
+                        pipeline.layout,0,1,&descriptor_set,0,nullptr);
+                    bound_set=descriptor_set;
+                }
                 if (!dispatch.push_constants.empty()) {
                     vkCmdPushConstants(commands, pipeline.layout,
                                        VK_SHADER_STAGE_COMPUTE_BIT, 0,

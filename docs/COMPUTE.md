@@ -86,7 +86,10 @@ all actual shader accesses. A dispatch may declare a complete set of
 disjoint slot-relative accesses with `DispatchCommand::accesses`. Each
 range must lie within its binding's declared extent and agree with its
 access intent. The descriptor layout and resource-state requirements are
-unchanged.
+unchanged. Vulkan shares immutable descriptor sets within a batch by
+pipeline and physical binding identity; access declarations and push
+constants remain dispatch-local. Completed batches retain their sets
+until reuse or eviction.
 
 The current D3D12 proof retains its **fixed** SRV/UAV pipeline layouts,
 not a general descriptor allocator. It checks that a bound SRV is not
