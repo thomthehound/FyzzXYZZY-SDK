@@ -2310,8 +2310,10 @@ void sourceDyBuildPartitionTiles(uint color,uint lane) {
 
 // Only colors spanning multiple workgroups need a global stage.
 static const uint dyCrossGroupColorMin=129u;
-uint sourceDyWideColorList(uint scratch,uint first) {
-    return scratch+arena.Load(scratch+8u)+(first/dyCrossGroupColorMin)*4u;
+// Each cross-group color bounds at most three stage ends, including
+// neighboring nonempty local runs. Task intervals own disjoint storage.
+uint sourceDyResidentStageList(uint scratch,uint first) {
+    return scratch+arena.Load(scratch+8u)+(first/dyCrossGroupColorMin)*12u;
 }
 
 bool sourceDyResidentTileRange(uint task,uint kind,
@@ -2321,8 +2323,8 @@ bool sourceDyResidentTileRange(uint task,uint kind,
     // Color mode is immutable across the count and fill passes.
     // Errors from other color builders cannot remove a reserved tile.
     if(kind<3u && sourceDyTaskLoad(address+32u)!=0u)return false;
-    const uint wideCount=arena.Load(p.resultTaskOffset+task*4u);
-    if((wideCount!=0u)==(kind==0u))return false;
+    const uint stageCount=arena.Load(p.resultTaskOffset+task*4u);
+    if((stageCount!=0u)==(kind==0u))return false;
     const uint4 ranges=sourceDyTaskLoad4(address);
     const uint2 bodies=sourceDyTaskLoad2(address+16u);
     begin=0u;end=1u;step=1u;color=0u;
@@ -2332,41 +2334,40 @@ bool sourceDyResidentTileRange(uint task,uint kind,
         begin=bodies.x;end=bodies.y;step=128u;
     }else if(kind>=3u) {
         const uint stage=kind-3u;
-        const uint ordinal=stage/2u;
         if(ranges.w<ranges.z || ranges.y<ranges.x ||
            ranges.y>arena.Load(p.integrationBias+20u) ||
-           wideCount>(ranges.y-ranges.x)/dyCrossGroupColorMin ||
-           wideCount>(p.frictionCount-1u)/2u) {
+           stageCount>2u*((ranges.y-ranges.x)/dyCrossGroupColorMin)+1u ||
+           stageCount>p.frictionCount) {
             sourceDyTaskErrorOr(address+32u,0x02000000u);
             return false;
         }
-        if(ordinal>wideCount || ((stage&1u)!=0u && ordinal==wideCount))
-            return false;
-        // The retained task window lists its wide partition indices.
+        if(stage>=stageCount)return false;
         const uint scratch=arena.Load(p.integrationBias+28u);
-        const uint list=sourceDyWideColorList(scratch,ranges.x);
-        if((stage&1u)==0u) {
-            begin=ordinal==0u?ranges.z:arena.Load(list+(ordinal-1u)*4u)+1u;
-            end=ordinal==wideCount?ranges.w:arena.Load(list+ordinal*4u);
-            if(begin<ranges.z || end>ranges.w || end<begin) {
-                sourceDyTaskErrorOr(address+32u,0x02000000u);
-                return false;
-            }
-            if(end==begin)return false;
-            // One workgroup executes the complete narrow color run.
+        const uint list=sourceDyResidentStageList(scratch,ranges.x);
+        const uint entry=arena.Load(list+stage*4u);
+        const uint firstPartition=stage==0u?ranges.z:
+            arena.Load(list+(stage-1u)*4u)&0x7fffffffu;
+        const uint endPartition=entry&0x7fffffffu;
+        if(firstPartition<ranges.z || endPartition>ranges.w ||
+           firstPartition>=endPartition) {
+            sourceDyTaskErrorOr(address+32u,0x02000000u);
+            return false;
+        }
+        if((entry&0x80000000u)!=0u) {
+            begin=firstPartition;end=endPartition;
             step=end-begin;
             color=0x80000000u;
         }else {
-            const uint partition=arena.Load(list+ordinal*4u);
-            if(partition<ranges.z || partition>=ranges.w) {
+            if(endPartition-firstPartition!=1u) {
                 sourceDyTaskErrorOr(address+32u,0x02000000u);
                 return false;
             }
-            color=partition-ranges.z;
+            color=firstPartition-ranges.z;
             const uint first=color==0u?ranges.x:
-                arena.Load(p.partitionBias+(partition-1u)*4u);
-            const uint last=arena.Load(p.partitionBias+partition*4u);
-            if(last<first || last>ranges.y) {
+                arena.Load(p.partitionBias+(firstPartition-1u)*4u);
+            const uint last=arena.Load(p.partitionBias+firstPartition*4u);
+            if(last<first || last>ranges.y ||
+               last-first<dyCrossGroupColorMin) {
                 sourceDyTaskErrorOr(address+32u,0x02000000u);
                 return false;
             }
@@ -2748,7 +2749,7 @@ void main(uint3 group:SV_GroupID,uint3 lane:SV_GroupThreadID) {
             }
             if(phase==colorTile) {
                 // A retained task already owns its exact partition ends,
-                // wide-color list and execution mode, even if another
+                // compact stage list and execution mode, even if another
                 // task requires the global tile pool to be rebuilt.
                 if(residentWide && lane.x==0u && dyReuseColors==0u) {
                     const uint4 ranges=sourceDyTaskLoad4(t);
@@ -2756,13 +2757,14 @@ void main(uint3 group:SV_GroupID,uint3 lane:SV_GroupThreadID) {
                     const uint record=sourceDyRetainedTask(taskId);
                     arena.Store4(record,uint4(ranges.xy,bodyRange));
                     arena.Store(record+16u,ranges.w);
-                    uint wideCount=0u;
+                    uint stageCount=0u;
                     if(ranges.y-ranges.x>=512u &&
                        bodyRange.y-bodyRange.x>=512u) {
                         const uint scratch=schedule.w;
-                        const uint list=sourceDyWideColorList(scratch,ranges.x);
-                        const uint capacity=(ranges.y-ranges.x)/dyCrossGroupColorMin;
+                        const uint list=sourceDyResidentStageList(scratch,ranges.x);
+                        const uint capacity=3u*((ranges.y-ranges.x)/dyCrossGroupColorMin);
                         uint first=ranges.x;
+                        uint runBegin=ranges.z;
                         for(uint color=ranges.z;color<ranges.w;++color) {
                             const uint last=arena.Load(p.partitionBias+color*4u);
                             if(last<first || last>ranges.y) {
@@ -2770,23 +2772,32 @@ void main(uint3 group:SV_GroupID,uint3 lane:SV_GroupThreadID) {
                                 break;
                             }
                             if(last-first>=dyCrossGroupColorMin) {
-                                if(wideCount>=capacity) {
+                                const uint needed=1u+uint(color>runBegin);
+                                if(stageCount>capacity || needed>capacity-stageCount) {
                                     sourceDyTaskErrorOr(endError,0x02000000u);
                                     break;
                                 }
-                                arena.Store(list+4u*wideCount++,color);
+                                if(color>runBegin)
+                                    arena.Store(list+4u*stageCount++,color|0x80000000u);
+                                arena.Store(list+4u*stageCount++,color+1u);
+                                runBegin=color+1u;
                             }
                             first=last;
                         }
                         if(first!=ranges.y)
                             sourceDyTaskErrorOr(endError,0x02000000u);
+                        if(stageCount!=0u && runBegin<ranges.w) {
+                            if(stageCount>=capacity)
+                                sourceDyTaskErrorOr(endError,0x02000000u);
+                            else arena.Store(list+4u*stageCount++,ranges.w|0x80000000u);
+                        }
                         if(sourceDyTaskLoad(endError)!=0u) {
                             sourceDyRejectScheduleReuse(scratch);
                             publishTaskError(taskId,sourceDyTaskLoad(endError));
-                            wideCount=0u;
+                            stageCount=0u;
                         }
                     }
-                    arena.Store(p.resultTaskOffset+taskId*4u,wideCount);
+                    arena.Store(p.resultTaskOffset+taskId*4u,stageCount);
                 }
                 return;
             }

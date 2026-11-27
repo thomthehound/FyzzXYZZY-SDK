@@ -157,6 +157,10 @@ quality rather than individual dispatch or barrier counts.
   Bound wide-stage iterations by candidate wide components rather than
   unrelated compact islands or independent component iteration maxima.
 
+- [x] Retain nonempty resident stage ends in numerical order. Independent
+  components advance through occupied stages without alternating empty
+  local runs; the portable indirect command envelope stays bounded.
+
 These are implementation milestones, not hardware-performance acceptance.
 
 ## Execution and lifetime work
