@@ -1642,10 +1642,10 @@ void prepareConstraint(uint4 desc,uint lane,uint lanes,uint endError,
             break;
         }
         if(lane<count) {
-            if(!sourceDyEnsureContactFrame(pair,endError,frame,ready))return;
+            if(!sourceDyEnsureContactFrame(pair,manager.w,endError,frame,ready))return;
             for(uint c=lane;c<count;c+=lanes) {
                 const uint index=sourceDyContactOrderPoint(order,c);
-                prepareContactRow(index,pair,manager.z,manager.w,frame,endError);
+                prepareContactRow(index,manager.z,manager.w,frame,endError);
             }
         }
         // Each patch has one friction writer. Its source geometry

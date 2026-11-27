@@ -10069,6 +10069,19 @@ void verify_host_lane_packed_islands(
     gpu.set_velocity(joint_gpu_a,{0.2f,0.1f,-0.05f});
     cpu.set_velocity(joint_cpu_b,{-0.15f,0.f,0.05f});
     gpu.set_velocity(joint_gpu_b,{-0.15f,0.f,0.05f});
+    // Three joint-connected bodies require a cooperative numerical task.
+    std::array<BodyId,3> chain_cpu{},chain_gpu{};
+    for(std::size_t i=0u;i<chain_cpu.size();++i) {
+        const Vec3 position{-48.f+2.f*float(i),4.f,0.f};
+        chain_cpu[i]=cpu.add_dynamic_box({0.3f,0.3f,0.3f},position,1.f);
+        chain_gpu[i]=gpu.add_dynamic_box({0.3f,0.3f,0.3f},position,1.f);
+        cpu.set_dynamics(chain_cpu[i],joint_dynamics);
+        gpu.set_dynamics(chain_gpu[i],joint_dynamics);
+        if(i) {
+            cpu.create_center_distance_constraint(chain_cpu[i-1u],chain_cpu[i],1.8f);
+            gpu.create_center_distance_constraint(chain_gpu[i-1u],chain_gpu[i],1.8f);
+        }
+    }
     bool saw_dependent_task=false;
     for(unsigned frame=0;frame<3u;++frame) {
         cpu.step(1.f/120.f);
@@ -10107,7 +10120,7 @@ void verify_host_lane_packed_islands(
             require(schedule.device_generated_bytes==0u,
                 "Packed-only Dy allocated unused sorted descriptors or partitions");
         saw_dependent_task |= device_admission
-            ?gpu.largest_accurate_island_size()>=2u
+            ?gpu.largest_accurate_island_size()>=3u
             :schedule.host_lane_packed_tasks<
                 schedule.device_colored_tasks;
         require(cpu.contacts().size()>=cpu_bodies.size() &&
@@ -10131,6 +10144,10 @@ void verify_host_lane_packed_islands(
         test::compound_compare_state(
             gpu.body_state(joint_gpu_b),cpu.body_state(joint_cpu_b),
             0.03f,"Packed GPU two-body joint changed the second response");
+        for(std::size_t i=0u;i<chain_cpu.size();++i)
+            test::compound_compare_state(
+                gpu.body_state(chain_gpu[i]),cpu.body_state(chain_cpu[i]),
+                0.03f,"Cooperative joint chain changed body motion");
     }
     require(saw_dependent_task,
             "Mixed Sc contact/joint island did not exercise general GPU Dy");

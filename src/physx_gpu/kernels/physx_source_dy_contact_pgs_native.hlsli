@@ -3,17 +3,12 @@
 
 // Source DySolverConstraintsShared.h contact and friction PGS, executing
 // correlated Gu contact runs in source DyConstraintPartition order.
-float contactScalar(uint addr) {
-    return asfloat(arena.Load(addr));
-}
 void storeContactScalar(uint addr,float value,uint pointIndex,bool finalPass) {
-    arena.Store(addr,asuint(value));
     if(finalPass)
         arena.Store(p.writebackBias+p.resultContactOffset+pointIndex*4u,
                     asuint(value));
-}
-float frictionScalar(uint addr) {
-    return asfloat(arena.Load(addr));
+    else
+        arena.Store(addr,asuint(value));
 }
 // The source PCM producer already writes contact points in Gu order.
 // The high bit selects that resident range; CPU Gu patches retain
@@ -148,18 +143,17 @@ bool solveContactRows(uint4 descriptor,SourceDyContactSpan span,
             precise float normalVelocity=
                 sourceDyDot3(n,va)-sourceDyDot3(n,vb)+
                 sourceDyDot3(aa,ja)-sourceDyDot3(ab,jb);
-            float oldForce=contactScalar(co+52u);
-            float error=biased?contactScalar(co+44u):
-                                contactScalar(co+48u);
-            precise float proposed=
-                -normalVelocity*contactScalar(co+36u)+error;
+            const float4 coefficients=asfloat(arena.Load4(co+36u));
+            float oldForce=asfloat(arena.Load(co+52u));
+            float error=biased?coefficients.z:coefficients.w;
+            precise float proposed=-normalVelocity*coefficients.x+error;
             if(!isfinite(proposed) || !isfinite(oldForce)) {
                 sourceDyTaskErrorOr(errorAddress,1024u);
                 return false;
             }
             precise float candidate=max(proposed,-oldForce);
             precise float nextForce=min(span.impulseLimit,
-                contactScalar(co+40u)*oldForce+candidate);
+                coefficients.y*oldForce+candidate);
             if(!isfinite(nextForce)) {
                 sourceDyTaskErrorOr(errorAddress,1024u);
                 return false;
@@ -198,11 +192,11 @@ bool solveContactRows(uint4 descriptor,SourceDyContactSpan span,
             precise float tangentDelta=
                 sourceDyDot3(n,va)-sourceDyDot3(n,vb)+
                 sourceDyDot3(aa,ja)-sourceDyDot3(ab,jb);
-            float oldForce=frictionScalar(fo+48u);
-            float bias=biased?frictionScalar(fo+40u):0.0;
+            const float4 coefficients=asfloat(arena.Load4(fo+36u));
+            float oldForce=coefficients.w;
+            float bias=biased?coefficients.y:0.0;
             precise float candidate=oldForce+
-                (frictionScalar(fo+44u)-bias-tangentDelta)*
-                frictionScalar(fo+36u);
+                (coefficients.z-bias-tangentDelta)*coefficients.x;
             if(!isfinite(candidate) || !isfinite(maxStatic) ||
                !isfinite(maxDynamic)) {
                 sourceDyTaskErrorOr(errorAddress,2048u);
@@ -219,7 +213,7 @@ bool solveContactRows(uint4 descriptor,SourceDyContactSpan span,
             if(!contactImpulse(a,b,n,ja,jb,
                                va,vb,aa,ab,nextForce-oldForce,
                                ma,mb,errorAddress))return false;
-            arena.Store(fo+48u,asuint(nextForce));
+            if(!finalPass)arena.Store(fo+48u,asuint(nextForce));
             broken=broken||saturated;
             if(publishAnchors) {
                 // Consecutive tangent rows form one world-space anchor.
@@ -344,8 +338,11 @@ struct SourceDyContactFrame {
     float restDistance,slop,restitution,damping,maxPenBias;
     float invDt,seconds,rigidBias,bounceThreshold;
     bool acceleration;
+    uint geometryBase;
+    bool pcmGeometry;
+    float3 pcmNormal;
 };
-bool sourceDyEnsureContactFrame(uint pair,uint errorAddress,
+bool sourceDyEnsureContactFrame(uint pair,uint contactCount,uint errorAddress,
                                 inout SourceDyContactFrame frame,inout bool ready) {
     if(ready)return true;
     if(!sourceDyLoadContactBody(arena.Load(pair),frame.a) ||
@@ -366,55 +363,64 @@ bool sourceDyEnsureContactFrame(uint pair,uint errorAddress,
     frame.seconds=timing.y;
     frame.rigidBias=timing.z;
     frame.bounceThreshold=timing.w;
-    ready=true;
-    return true;
-}
-// Both normal and friction preparation consume the original geometry.
-bool sourceDyContactGeometry(uint index,uint pair,uint contactBegin,
-                             uint contactCount,uint errorAddress,
-                             out float3 n,out float3 pos,out float separation) {
-    n=0.0f;pos=0.0f;separation=0.0f;
-    if(index>=p.contactCount) {
-        sourceDyTaskErrorOr(errorAddress,4096u);
-        return false;
-    }
-    uint pcmIndex=arena.Load(pair+32u);
-    if(pcmIndex!=0xffffffffu) {
-        uint local=index-contactBegin;
-        uint source=p.pcmBias+pcmIndex*84u;
-        uint packed=pcmContacts.Load(source+4u);
-        if(index<contactBegin || local>=contactCount ||
-           local>=4u ||
+    const uint pcmIndex=arena.Load(pair+32u);
+    frame.pcmGeometry=pcmIndex!=invalidBody;
+    if(frame.pcmGeometry) {
+        const uint source=p.pcmBias+pcmIndex*84u;
+        const uint packed=pcmContacts.Load(source+4u);
+        if(contactCount>4u ||
            pcmContacts.Load(source)!=arena.Load(pair+36u) ||
            ((packed>>3u)&7u)!=0u ||
            contactCount!=((packed>>10u)&7u)) {
             sourceDyTaskErrorOr(errorAddress,65536u);
             return false;
         }
-        n=asfloat(pcmContacts.Load3(source+8u));
-        uint contact=source+20u+local*16u;
-        pos=asfloat(pcmContacts.Load3(contact));
-        separation=asfloat(pcmContacts.Load(contact+12u));
-    } else {
-        uint cpuOffset=arena.Load(pair+44u);
-        if(cpuOffset==0xffffffffu || index<contactBegin ||
-           index-contactBegin>=contactCount) {
+        frame.geometryBase=source+20u;
+        frame.pcmNormal=asfloat(pcmContacts.Load3(source+8u));
+    }else {
+        const uint cpuOffset=arena.Load(pair+44u);
+        if(cpuOffset==invalidBody) {
             sourceDyTaskErrorOr(errorAddress,131072u);
             return false;
         }
-        uint raw=p.prepBias+16u+p.prepCount*48u+
-            (cpuOffset+index-contactBegin)*28u;
+        frame.geometryBase=p.prepBias+16u+p.prepCount*48u+cpuOffset*28u;
+    }
+    ready=true;
+    return true;
+}
+// Each preparation owner resolves the manager's geometry once.
+bool sourceDyContactGeometry(uint index,uint contactBegin,uint contactCount,
+                             SourceDyContactFrame frame,uint errorAddress,
+                             out float3 n,out float3 pos,out float separation) {
+    n=0.0f;pos=0.0f;separation=0.0f;
+    if(index>=p.contactCount) {
+        sourceDyTaskErrorOr(errorAddress,4096u);
+        return false;
+    }
+    const uint local=index-contactBegin;
+    if(index<contactBegin || local>=contactCount) {
+        sourceDyTaskErrorOr(errorAddress,frame.pcmGeometry?65536u:131072u);
+        return false;
+    }
+    if(frame.pcmGeometry) {
+        n=frame.pcmNormal;
+        const float4 point=asfloat(pcmContacts.Load4(frame.geometryBase+local*16u));
+        pos=point.xyz;
+        separation=point.w;
+    }else {
+        const uint raw=frame.geometryBase+local*28u;
         n=asfloat(arena.Load3(raw));
-        pos=asfloat(arena.Load3(raw+12u));
-        separation=asfloat(arena.Load(raw+24u));
+        const float4 point=asfloat(arena.Load4(raw+12u));
+        pos=point.xyz;
+        separation=point.w;
     }
     return true;
 }
-void prepareContactRow(uint index,uint pair,uint contactBegin,
+void prepareContactRow(uint index,uint contactBegin,
                        uint contactCount,SourceDyContactFrame frame,uint errorAddress) {
     float3 n,pos;
     float separation;
-    if(!sourceDyContactGeometry(index,pair,contactBegin,contactCount,
+    if(!sourceDyContactGeometry(index,contactBegin,contactCount,frame,
                                 errorAddress,n,pos,separation))return;
     uint co=p.contactBias+index*56u;
     float3 w0=frame.a.angular,w1=frame.b.angular;
@@ -813,9 +819,9 @@ void prepareFrictionPatch(uint patchIndex,uint pairIndex,uint contactBegin,
     uint pair=sourceDyPrepAddress(pairIndex);
     float3 n,pos;
     float separation;
-    if(!sourceDyContactGeometry(first,pair,contactBegin,contactCount,
+    if(!sourceDyEnsureContactFrame(pair,contactCount,errorAddress,frame,ready))return;
+    if(!sourceDyContactGeometry(first,contactBegin,contactCount,frame,
                                 errorAddress,n,pos,separation))return;
-    if(!sourceDyEnsureContactFrame(pair,errorAddress,frame,ready))return;
     const SourceDyContactBody a=frame.a,b=frame.b;
     float3 relative=a.velocity-b.velocity;
     float projection=sourceDyDot3(relative,n);

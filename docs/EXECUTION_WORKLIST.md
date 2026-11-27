@@ -149,6 +149,10 @@ quality rather than individual dispatch or barrier counts.
   packed solve. Materialize rows only when another numerical phase
   consumes them; retain the final accumulated impulse publication.
 
+- [x] Resolve contact geometry identity and shared PCM normals once per
+  preparation owner. Stream point and tangent rows with grouped coefficient
+  loads; publish final impulses directly without rewriting dead scratch.
+
 These are implementation milestones, not hardware-performance acceptance.
 
 ## Execution and lifetime work
