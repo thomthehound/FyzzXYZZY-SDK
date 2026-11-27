@@ -145,6 +145,10 @@ quality rather than individual dispatch or barrier counts.
   of the final biased iteration. Zero-initialized untouched endpoints
   retain their motion state; the separate motion traversal is unnecessary.
 
+- [x] Retain exclusively owned single-row joint preparation through its
+  packed solve. Materialize rows only when another numerical phase
+  consumes them; retain the final accumulated impulse publication.
+
 These are implementation milestones, not hardware-performance acceptance.
 
 ## Execution and lifetime work

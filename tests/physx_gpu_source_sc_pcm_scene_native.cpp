@@ -10052,8 +10052,12 @@ void verify_host_lane_packed_islands(
         {0.5f,0.5f,0.5f},joint_first,1.f);
     const BodyId joint_gpu_b=gpu.add_dynamic_box(
         {0.5f,0.5f,0.5f},joint_second,1.f);
-    cpu.create_center_distance_constraint(joint_cpu_a,joint_cpu_b,1.f);
-    gpu.create_center_distance_constraint(joint_gpu_a,joint_gpu_b,1.f);
+    const Vec3 joint_anchor_a{0.12f,0.2f,-0.1f};
+    const Vec3 joint_anchor_b{-0.08f,-0.15f,0.05f};
+    cpu.create_anchored_distance_constraint(
+        joint_cpu_a,joint_cpu_b,joint_anchor_a,joint_anchor_b,1.f);
+    gpu.create_anchored_distance_constraint(
+        joint_gpu_a,joint_gpu_b,joint_anchor_a,joint_anchor_b,1.f);
     RigidBodyDynamics joint_dynamics{};
     joint_dynamics.position_iterations=6u;
     joint_dynamics.velocity_iterations=3u;

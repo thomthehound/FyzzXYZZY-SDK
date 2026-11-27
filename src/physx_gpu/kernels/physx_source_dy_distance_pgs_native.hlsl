@@ -248,6 +248,13 @@ struct SourceDyJointRow {
     float multiplier;
 };
 
+struct SourceDyPreparedJoint {
+    SourceDyJointRow row;
+    uint2 coefficients;
+    float impulse;
+    bool local;
+};
+
 SourceDyJointRow sourceDyLoadJointRow(uint offset) {
     SourceDyJointRow row;
     row.axis=asfloat(arena.Load3(offset));
@@ -1345,7 +1352,9 @@ float3 sourceDyJointInertia(uint ordinal,float3 angular) {
            asfloat(arena.Load3(inertia+12u))*angular.y+
            asfloat(arena.Load3(inertia+24u))*angular.z;
 }
-bool sourceDyPrepareJointGeometry(uint4 desc,uint endError) {
+bool sourceDyPrepareJointGeometry(uint4 desc,uint endError,
+                                  bool retainSingle,
+                                  inout SourceDyPreparedJoint prepared) {
     const uint first=p.distanceBias+desc.x*64u;
     const uint source=arena.Load(first+60u);
     if(jointSources.Load(source+144u)!=arena.Load(first+48u) ||
@@ -1475,24 +1484,33 @@ bool sourceDyPrepareJointGeometry(uint4 desc,uint endError) {
             sourceDyTaskErrorOr(endError,8192u);
             return false;
         }
-        const uint row=first+i*64u;
-        arena.Store3(row,asuint(axis));
-        arena.Store3(row+12u,asuint(ja));
-        arena.Store3(row+24u,asuint(jb));
-        arena.Store(row+48u,asuint(constant));
-        arena.Store(row+52u,asuint(unbiased));
-        arena.Store(row+56u,asuint(multiplier));
-        arena.Store(row+60u,asuint(0.0f));
-        // Reserved 2 distinguishes device geometry admission. All rows
-        // remain unavailable to the ordinary host-geometry branch.
-        arena.Store(row+44u,0u);
+        if(retainSingle && count==1u) {
+            prepared.row.axis=axis;
+            prepared.row.ja=ja;
+            prepared.row.jb=jb;
+            prepared.row.multiplier=multiplier;
+            prepared.coefficients=uint2(asuint(constant),asuint(unbiased));
+            prepared.impulse=0.0f;
+            prepared.local=true;
+        }else {
+            const uint row=first+i*64u;
+            arena.Store3(row,asuint(axis));
+            arena.Store3(row+12u,asuint(ja));
+            arena.Store3(row+24u,asuint(jb));
+            arena.Store(row+48u,asuint(constant));
+            arena.Store(row+52u,asuint(unbiased));
+            arena.Store(row+56u,asuint(multiplier));
+            arena.Store(row+60u,asuint(0.0f));
+            arena.Store(row+44u,0u);
+        }
     }
     return true;
 }
 
 // Host-geometry rows are retained for standalone conformance. Native Sc
 // joint rows instead use the source-authored frame payload above.
-void prepareJointRows(uint4 desc,uint lane,uint lanes,uint endError) {
+void prepareJointRows(uint4 desc,uint lane,uint lanes,uint endError,
+                      bool retainSingle,inout SourceDyPreparedJoint prepared) {
     if(desc.x>=p.rowCount || desc.w>p.rowCount-desc.x ||
        (desc.y!=invalidBody && desc.y>=p.bodyCount) ||
        (desc.z!=invalidBody && desc.z>=p.bodyCount)) {
@@ -1501,7 +1519,7 @@ void prepareJointRows(uint4 desc,uint lane,uint lanes,uint endError) {
     }
     const uint massRow=p.distanceBias+desc.x*64u;
     if(arena.Load(massRow+44u)==2u) {
-        if(lane==0u)sourceDyPrepareJointGeometry(desc,endError);
+        if(lane==0u)sourceDyPrepareJointGeometry(desc,endError,retainSingle,prepared);
         return;
     }
     const float inverseMassA=asfloat(arena.Load(massRow+36u));
@@ -1547,11 +1565,21 @@ void prepareJointRows(uint4 desc,uint lane,uint lanes,uint endError) {
             sourceDyTaskErrorOr(endError,8192u);
             continue;
         }
-        arena.Store3(row+12u,asuint(ja));
-        arena.Store3(row+24u,asuint(jb));
-        arena.Store(row+48u,asuint(constant));
-        arena.Store(row+52u,asuint(unbiased));
-        arena.Store(row+44u,0u);
+        if(retainSingle && desc.w==1u) {
+            prepared.row.axis=axis;
+            prepared.row.ja=ja;
+            prepared.row.jb=jb;
+            prepared.row.multiplier=multiplier;
+            prepared.coefficients=uint2(asuint(constant),asuint(unbiased));
+            prepared.impulse=loadScalar(row+60u);
+            prepared.local=true;
+        }else {
+            arena.Store3(row+12u,asuint(ja));
+            arena.Store3(row+24u,asuint(jb));
+            arena.Store(row+48u,asuint(constant));
+            arena.Store(row+52u,asuint(unbiased));
+            arena.Store(row+44u,0u);
+        }
     }
 }
 
@@ -1576,9 +1604,11 @@ void admitPcmContactExtents(uint begin,uint end,uint lane,uint endError) {
     }
 }
 
-void prepareConstraint(uint4 desc,uint lane,uint lanes,uint endError) {
+void prepareConstraint(uint4 desc,uint lane,uint lanes,uint endError,
+                       bool retainSingle,out SourceDyPreparedJoint prepared) {
+    prepared=(SourceDyPreparedJoint)0;
     if(desc.w!=0u) {
-        prepareJointRows(desc,lane,lanes,endError);
+        prepareJointRows(desc,lane,lanes,endError,retainSingle,prepared);
         return;
     }
     if(desc.x>=p.manifoldCount) {
@@ -1636,8 +1666,11 @@ void prepareConstraint(uint4 desc,uint lane,uint lanes,uint endError) {
 }
 
 void prepareConstraints(uint begin,uint end,uint lane,uint endError) {
-    for(uint i=begin+(lane>>2u);i<end;i+=32u)
-        prepareConstraint(arena.Load4(p.descriptorBias+i*16u),lane&3u,4u,endError);
+    for(uint i=begin+(lane>>2u);i<end;i+=32u) {
+        SourceDyPreparedJoint unused;
+        prepareConstraint(arena.Load4(p.descriptorBias+i*16u),lane&3u,4u,
+                          endError,false,unused);
+    }
 }
 
 bool sourceDySolveDescriptor(uint4 desc,uint errorAddress,bool biased,
@@ -2055,7 +2088,8 @@ void publishTaskError(uint task,uint error) {
 // Each lane owns one independent constraint and up to two integrated bodies.
 // The descriptor owns its responding endpoints for this iteration range.
 void sourceDySolveExclusive(uint4 desc,uint2 iters,uint2 iterations,
-                            uint2 bodies,uint errorAddress) {
+                            uint2 bodies,uint errorAddress,
+                            SourceDyPreparedJoint prepared) {
     SourceDyContactSpan span=(SourceDyContactSpan)0;
     SourceDySolverPair state;
     const bool joint=desc.w!=0u;
@@ -2067,13 +2101,10 @@ void sourceDySolveExclusive(uint4 desc,uint2 iters,uint2 iterations,
     // One exclusively owned joint row has a bounded live working set.
     const bool localJoint=desc.w==1u;
     const uint jointOffset=p.distanceBias+desc.x*64u;
-    SourceDyJointRow jointRow=(SourceDyJointRow)0;
-    uint2 jointCoefficients=uint2(0u,0u);
-    float jointImpulse=0.0f;
-    if(localJoint) {
-        jointRow=sourceDyLoadJointRow(jointOffset);
-        jointCoefficients=arena.Load2(jointOffset+48u);
-        jointImpulse=loadScalar(jointOffset+60u);
+    if(localJoint && !prepared.local) {
+        prepared.row=sourceDyLoadJointRow(jointOffset);
+        prepared.coefficients=arena.Load2(jointOffset+48u);
+        prepared.impulse=loadScalar(jointOffset+60u);
     }
     const uint total=iters.x+max(iters.y,1u);
     for(uint iteration=iterations.x;iteration<iterations.y;++iteration) {
@@ -2083,9 +2114,9 @@ void sourceDySolveExclusive(uint4 desc,uint2 iters,uint2 iterations,
         bool solved;
         if(localJoint) {
             SourceDySolverPair local=state;
-            solved=sourceDySolveJointRow(jointRow,
-                biased?jointCoefficients.x:jointCoefficients.y,
-                errorAddress,local,jointImpulse);
+            solved=sourceDySolveJointRow(prepared.row,
+                biased?prepared.coefficients.x:prepared.coefficients.y,
+                errorAddress,local,prepared.impulse);
             if(solved)sourceDyCommitJointPair(desc,local,state);
         } else if(joint)
             solved=solveJointRows(desc,errorAddress,biased,state);
@@ -2125,7 +2156,7 @@ void sourceDySolveExclusive(uint4 desc,uint2 iters,uint2 iterations,
             }
         }
     }
-    if(localJoint)arena.Store(jointOffset+60u,asuint(jointImpulse));
+    if(localJoint)arena.Store(jointOffset+60u,asuint(prepared.impulse));
     sourceDyStoreSolverPair(desc,state,false);
 }
 
@@ -2193,14 +2224,15 @@ void sourceDySolvePackedTask(uint taskId,bool precolored) {
     }
     // This invocation owns the descriptor and its complete numerical solve.
     desc.w&=255u;
-    prepareConstraint(desc,0u,1u,errorAddress);
+    SourceDyPreparedJoint prepared;
+    prepareConstraint(desc,0u,1u,errorAddress,true,prepared);
     if(sourceDyTaskLoad(errorAddress)!=0u) {
         publishTaskError(taskId,sourceDyTaskLoad(errorAddress));
         return;
     }
 
     const uint total=iters.x+max(iters.y,1u);
-    sourceDySolveExclusive(desc,iters,uint2(0u,total),bodies,errorAddress);
+    sourceDySolveExclusive(desc,iters,uint2(0u,total),bodies,errorAddress,prepared);
     if(sourceDyTaskLoad(errorAddress)!=0u) {
         publishTaskError(taskId,sourceDyTaskLoad(errorAddress));
         return;
@@ -2886,7 +2918,7 @@ void main(uint3 group:SV_GroupID,uint3 lane:SV_GroupThreadID) {
                     for(uint i=descriptors.x+lane.x;i<descriptors.y;i+=128u)
                         sourceDySolveExclusive(
                             arena.Load4(p.descriptorBias+i*16u),iters,iterations,
-                            uint2(0u,0u),endError);
+                            uint2(0u,0u),endError,(SourceDyPreparedJoint)0);
                 }
                 if(pass==0u) {
                     AllMemoryBarrierWithGroupSync();
