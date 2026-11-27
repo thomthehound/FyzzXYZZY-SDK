@@ -83,7 +83,7 @@ quality rather than individual dispatch or barrier counts.
   counts and scatter offsets. Atomic scatter leaves exact partition
   ends in place; reserve separate wide-color lists only for resident
   tiled scheduling.
-- [x] Bound resident wide-color lists by full 128-descriptor groups
+- [x] Bound resident wide-color lists by cross-workgroup colors
   and derive list offsets from disjoint task descriptor ranges.
   Initialize endpoint priorities only at their consuming phases.
 - [x] Preserve unchanged sorted descriptors and retained task mode and
@@ -152,6 +152,10 @@ quality rather than individual dispatch or barrier counts.
 - [x] Resolve contact geometry identity and shared PCM normals once per
   preparation owner. Stream point and tangent rows with grouped coefficient
   loads; publish final impulses directly without rewriting dead scratch.
+
+- [x] Keep full single-workgroup colors inside local numerical runs.
+  Bound wide-stage iterations by candidate wide components rather than
+  unrelated compact islands or independent component iteration maxima.
 
 These are implementation milestones, not hardware-performance acceptance.
 

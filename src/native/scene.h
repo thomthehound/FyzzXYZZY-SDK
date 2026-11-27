@@ -333,6 +333,7 @@ struct GpuDyIslandSources {
 // Both Sc endpoint admission and Dy wide-task scheduling use this gate.
 // Compact tasks never require host endpoint-degree analysis.
 inline constexpr std::uint32_t gpu_dy_wide_task_threshold=4u*128u;
+inline constexpr std::uint32_t gpu_dy_cross_group_color_min=129u;
 // Device-owned schedule ranges have no host records.
 struct GpuDyResidentScheduleCapacity {
     std::size_t tasks=0u,body_ordinals=0u;
@@ -2315,6 +2316,7 @@ private:
     std::vector<std::uint32_t> gpu_dy_island_node_flags_;
     struct GpuDyCandidateWidth {
         std::uint32_t nodes=0u,responses=0u,cover=0u;
+        std::uint32_t position=0u,velocity=0u;
     };
     std::vector<GpuDyCandidateWidth> gpu_dy_candidate_widths_;
     std::vector<std::uint8_t> gpu_dy_candidate_covered_;

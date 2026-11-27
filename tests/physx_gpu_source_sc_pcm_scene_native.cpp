@@ -6007,6 +6007,7 @@ void verify_resident_wide_device_response(
     constexpr auto count=native::gpu_dy_wide_task_threshold;
     constexpr std::uint32_t spokes=192u;
     constexpr std::uint32_t extra_singletons=128u;
+    constexpr auto cross_group=native::gpu_dy_cross_group_color_min;
     RigidBodyDynamics dynamics{};
     dynamics.position_iterations=1u;
     dynamics.velocity_iterations=0u;
@@ -6046,7 +6047,10 @@ void verify_resident_wide_device_response(
             const auto body=scene.add_dynamic_box(
                 {0.5f,0.5f,0.5f},{x,0.83f,0.f},1.f);
             ids[2u*count+1u+i]=body;
-            scene.set_dynamics(body,dynamics);
+            auto compact_dynamics=dynamics;
+            compact_dynamics.position_iterations=8u;
+            compact_dynamics.velocity_iterations=4u;
+            scene.set_dynamics(body,compact_dynamics);
             scene.set_velocity(body,{i%2u?0.02f:-0.02f,0.f,0.01f});
         }
         return ids;
@@ -6066,7 +6070,7 @@ void verify_resident_wide_device_response(
             schedule.numerical_arena_padding_bytes<=18u*16u &&
             schedule.omitted_partition_scratch_bytes==
                 schedule.device_source_descriptors*20u+
-                (schedule.device_source_descriptors/128u)*4u+
+                (schedule.device_source_descriptors/cross_group)*4u+
                 schedule.device_initialized_bodies*12u,
         "Resident Dy input or result staging includes redundant host storage");
     require(native::GpuPcmFrictionAnchorFixture::has_prewitness_solve(gpu) &&
@@ -6089,7 +6093,7 @@ void verify_resident_wide_device_response(
             schedule.constraint_preparation_dispatches==1u &&
             schedule.device_partition_indirect_dispatches>0u &&
             schedule.device_partition_indirect_dispatches<=
-                2u*(2u*((2u*count-1u+spokes)/128u)+1u) &&
+                2u*(2u*((2u*count-1u+spokes)/cross_group)+1u) &&
             producer->dy_gpu_integrated_body_count()==b.size(),
         "Resident wide component lost bounded device-authored scheduling");
     require(cpu.contacts().size()==count+2u+extra_singletons &&

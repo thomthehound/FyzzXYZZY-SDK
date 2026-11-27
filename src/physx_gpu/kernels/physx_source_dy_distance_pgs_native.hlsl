@@ -2308,9 +2308,10 @@ void sourceDyBuildPartitionTiles(uint color,uint lane) {
     }
 }
 
-// Disjoint descriptor intervals own disjoint lists of full 128-row colors.
+// Only colors spanning multiple workgroups need a global stage.
+static const uint dyCrossGroupColorMin=129u;
 uint sourceDyWideColorList(uint scratch,uint first) {
-    return scratch+arena.Load(scratch+8u)+(first/128u)*4u;
+    return scratch+arena.Load(scratch+8u)+(first/dyCrossGroupColorMin)*4u;
 }
 
 bool sourceDyResidentTileRange(uint task,uint kind,
@@ -2334,7 +2335,7 @@ bool sourceDyResidentTileRange(uint task,uint kind,
         const uint ordinal=stage/2u;
         if(ranges.w<ranges.z || ranges.y<ranges.x ||
            ranges.y>arena.Load(p.integrationBias+20u) ||
-           wideCount>(ranges.y-ranges.x)/128u ||
+           wideCount>(ranges.y-ranges.x)/dyCrossGroupColorMin ||
            wideCount>(p.frictionCount-1u)/2u) {
             sourceDyTaskErrorOr(address+32u,0x02000000u);
             return false;
@@ -2760,7 +2761,7 @@ void main(uint3 group:SV_GroupID,uint3 lane:SV_GroupThreadID) {
                        bodyRange.y-bodyRange.x>=512u) {
                         const uint scratch=schedule.w;
                         const uint list=sourceDyWideColorList(scratch,ranges.x);
-                        const uint capacity=(ranges.y-ranges.x)/128u;
+                        const uint capacity=(ranges.y-ranges.x)/dyCrossGroupColorMin;
                         uint first=ranges.x;
                         for(uint color=ranges.z;color<ranges.w;++color) {
                             const uint last=arena.Load(p.partitionBias+color*4u);
@@ -2768,7 +2769,7 @@ void main(uint3 group:SV_GroupID,uint3 lane:SV_GroupThreadID) {
                                 sourceDyTaskErrorOr(endError,0x02000000u);
                                 break;
                             }
-                            if(last-first>=128u) {
+                            if(last-first>=dyCrossGroupColorMin) {
                                 if(wideCount>=capacity) {
                                     sourceDyTaskErrorOr(endError,0x02000000u);
                                     break;

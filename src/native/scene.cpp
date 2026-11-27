@@ -5660,8 +5660,15 @@ void Scene::update_contacts(bool defer_device_points,float step_seconds) {
             widths.resize(speculative.islands.size());
             for(const auto id:gpu_dy_early_actor_ids_)
                 widths[speculative.node_island[id]]={};
-            for(const auto id:gpu_dy_early_actor_ids_)
-                ++widths[speculative.node_island[id]].nodes;
+            for(const auto id:gpu_dy_early_actor_ids_) {
+                auto& width=widths[speculative.node_island[id]];
+                ++width.nodes;
+                const auto& dynamics=actors_[id].dynamics;
+                width.position=std::max(width.position,
+                    std::uint32_t(dynamics.position_iterations));
+                width.velocity=std::max(width.velocity,
+                    std::uint32_t(dynamics.velocity_iterations));
+            }
             auto& covered=gpu_dy_candidate_covered_;
             covered.assign(nodes,0u);
             const auto component=[&](std::uint32_t node)
@@ -5704,28 +5711,19 @@ void Scene::update_contacts(bool defer_device_points,float step_seconds) {
             for(const auto id:gpu_dy_early_actor_ids_) {
                 auto& width=widths[speculative.node_island[id]];
                 if(width.nodes>=gpu_dy_wide_task_threshold &&
-                   width.cover>=128u) {
+                   width.cover>=gpu_dy_cross_group_color_min) {
                     wide_bounds.nodes+=width.nodes;
                     max_wide_colors=std::max(max_wide_colors,
-                        width.responses/128u);
+                        width.responses/gpu_dy_cross_group_color_min);
+                    wide_bounds.iterations=std::max(wide_bounds.iterations,
+                        width.position+std::max(width.velocity,1u));
                 }
                 width.nodes=0u;
             }
             if(wide_bounds.nodes) {
-                // Each tiled color consumes at least 128 responses.
-                // Intervening narrow runs each occupy one local stage.
+                // Only colors spanning multiple workgroups need a
+                // separate stage. Intervening runs share one workgroup.
                 wide_bounds.stages=2u*max_wide_colors+1u;
-                std::uint32_t position=0u,velocity=0u;
-                for(const auto id:gpu_dy_early_actor_ids_) {
-                    const auto& dynamics=actors_[id].dynamics;
-                    const std::uint32_t pos=dynamics.position_iterations;
-                    position=std::max(position,pos);
-                    velocity=std::max(velocity,
-                        std::uint32_t(dynamics.velocity_iterations));
-                    wide_bounds.position_ends[(pos-1u)/32u]|=
-                        1u<<((pos-1u)%32u);
-                }
-                wide_bounds.iterations=position+std::max(velocity,1u);
             }
         }
     }

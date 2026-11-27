@@ -1476,8 +1476,8 @@ public:
             ?descriptor_capacity:0u;
         const auto device_color_count=device_admission || !source_descriptors
             ?descriptor_capacity:0u;
-        // Every listed wide color consumes at least 128 descriptors.
-        const auto wide_color_count=resident_wide?descriptor_capacity/128u:0u;
+        const auto wide_color_count=resident_wide
+            ?descriptor_capacity/native::gpu_dy_cross_group_color_min:0u;
         const auto color_body_count=packed_only?0u:bodies.size();
         const auto host_token_count=source_descriptors && !device_admission
             ?descriptor_capacity:0u;
@@ -3934,8 +3934,6 @@ private:
                           0u,0u});
         partition_output_count_+=pool_capacity;
         wide_iterations_=bounds.iterations;
-        for(std::size_t i=0u;i<position_ends_.size();++i)
-            position_ends_[i]=(bounds.position_ends[i/32u]&(1u<<(i%32u)))!=0u;
         last_schedule_.resident_wide_schedule=true;
         last_schedule_.max_partition_groups=body_groups;
         last_schedule_.tile_bytes=tiles_.size()*sizeof(WorkTile);
