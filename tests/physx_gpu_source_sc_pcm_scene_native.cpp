@@ -9704,7 +9704,7 @@ void verify_gpu_high_degree_coloring(
         RigidBodyDynamics dynamics{};
         dynamics.gravity_enabled=false;
         dynamics.position_iterations=4u;
-        dynamics.velocity_iterations=pure_hub?3u:1u;
+        dynamics.velocity_iterations=(pure_hub || dual_hub)?3u:1u;
         scene.set_dynamics(center,dynamics);
         scene.set_velocity(center,{0.05f,0.f,0.07f});
         if(!pure_hub)scene.create_center_distance_constraint(fixed,center,0.72f);
@@ -9718,10 +9718,12 @@ void verify_gpu_high_degree_coloring(
             scene.create_center_distance_constraint(
                 center,second_center,3.f);
         }
+        // Unequal hub degrees produce concurrent colors and a serial tail.
+        const unsigned split=leaves-leaves/4u;
         for(unsigned i=0u;i<leaves;++i) {
-            const bool second=dual_hub && i>=leaves/2u;
+            const bool second=dual_hub && i>=split;
             const float x=second
-                ?-6.f-1.5f*static_cast<float>(i-leaves/2u)
+                ?-6.f-1.5f*static_cast<float>(i-split)
                 :3.f+1.5f*static_cast<float>(i);
             const auto anchor=second?second_center:center;
             const float rest=second?(-3.f-x):x;

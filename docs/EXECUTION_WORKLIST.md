@@ -47,6 +47,10 @@ quality rather than individual dispatch or barrier counts.
 - [x] Pack normal and tangent numerical rows to 56 and 52 bytes.
   Resolve the shared contact impulse limit from its preparation record
   once per descriptor span rather than duplicating it per normal row.
+- [x] Stream serial singleton colors as contiguous descriptor runs.
+  Preserve ordering and synchronize only at run boundaries, cooperative
+  motion capture, and integration. All-singleton tasks require no
+  per-iteration color-boundary loads.
 
 These are implementation milestones, not hardware-performance acceptance.
 

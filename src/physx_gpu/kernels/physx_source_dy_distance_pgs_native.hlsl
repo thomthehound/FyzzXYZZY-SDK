@@ -1800,13 +1800,13 @@ void prepareConstraints(uint begin,uint end,uint lane,uint endError) {
         prepareConstraint(arena.Load4(p.descriptorBias+i*16u),lane&3u,4u,endError);
 }
 
-void solvePartition(uint begin,uint end,uint lane,uint2 iters,
+void solvePartition(uint begin,uint end,uint lane,uint stride,uint2 iters,
                     uint iter,uint endError) {
     const uint total=iters.x+max(iters.y,1u);
     const bool biased=iter<iters.x;
     const bool finalPass=iter+1u==total;
     const bool friction=!biased || iters.x-iter<=3u;
-    for(uint i=begin+lane;i<end;i+=128u) {
+    for(uint i=begin+lane;i<end;i+=stride) {
         const uint4 desc=arena.Load4(p.descriptorBias+i*16u);
         if(desc.w!=0u)
             solveJoint(desc,endError,biased);
@@ -2864,39 +2864,52 @@ void main(uint3 group:SV_GroupID,uint3 lane:SV_GroupThreadID) {
             for(uint iteration=fused?0u:iter;iteration<endIteration;++iteration) {
                 if(fused || phase==partitionTile) {
                     if(serialPartitions) {
-                        if(lane.x==0u) {
-                            uint begin=descriptors.x;
-                            for(uint partition=partitions.x;
-                                partition<partitions.y;++partition) {
-                                const uint end=arena.Load(
-                                    p.partitionBias+partition*4u);
-                                solvePartition(begin,end,0u,iters,
-                                               iteration,endError);
-                                begin=end;
-                            }
-                        }
+                        if(lane.x==0u)
+                            solvePartition(descriptors.x,descriptors.y,0u,1u,
+                                           iters,iteration,endError);
                         // Lane zero owns the complete serial run. Only
                         // cooperative motion capture needs its live state.
                         if(fused && iteration+1u==iters.x)
                             AllMemoryBarrierWithGroupSync();
                     } else {
                         uint begin=descriptors.x;
-                        for(uint partition=partitions.x;
-                            partition<partitions.y;++partition) {
-                            uint end=descriptors.y;
-                            if(fused || localRun)
-                                end=arena.Load(p.partitionBias+partition*4u);
-                            solvePartition(begin,end,lane.x,iters,
-                                           iteration,endError);
-                            // The final partition hands off at the
-                            // integration barrier or the dispatch boundary.
-                            const bool nextPartition=partition+1u<partitions.y;
+                        uint partition=partitions.x;
+                        uint end=descriptors.y;
+                        if((fused || localRun) && partition<partitions.y)
+                            end=arena.Load(p.partitionBias+partition*4u);
+                        while(partition<partitions.y) {
+                            // Consecutive singleton colors have the same
+                            // lane owner and can stream in source order.
+                            const bool singleton=end-begin==1u;
+                            uint nextEnd=end;
+                            ++partition;
+                            if(fused || localRun) {
+                                while(partition<partitions.y) {
+                                    nextEnd=arena.Load(
+                                        p.partitionBias+partition*4u);
+                                    if(!singleton || nextEnd-end!=1u)break;
+                                    end=nextEnd;
+                                    ++partition;
+                                }
+                            }
+                            if(singleton) {
+                                if(lane.x==0u)
+                                    solvePartition(begin,end,0u,1u,iters,
+                                                   iteration,endError);
+                            } else {
+                                solvePartition(begin,end,lane.x,128u,iters,
+                                               iteration,endError);
+                            }
+                            // The final range hands off at integration
+                            // or the dispatch boundary.
+                            const bool nextPartition=partition<partitions.y;
                             const bool nextIteration=fused &&
                                 iteration+1u<endIteration;
                             if(!singleLaneTask && (fused || localRun) &&
                                (nextPartition || nextIteration))
                                 AllMemoryBarrierWithGroupSync();
                             begin=end;
+                            end=nextEnd;
                         }
                     }
                 }
