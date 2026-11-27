@@ -79,6 +79,10 @@ quality rather than individual dispatch or barrier counts.
 - [x] Initialize only admitted color histogram entries. Include sorted
   descriptor and coloring workspace locations in retained schedule
   identity; validate the compact result extent independently of uploads.
+- [x] Reuse partition slots for static reservation lists, histogram
+  counts and scatter offsets. Atomic scatter leaves exact partition
+  ends in place; reserve separate wide-color lists only for resident
+  tiled scheduling.
 
 These are implementation milestones, not hardware-performance acceptance.
 

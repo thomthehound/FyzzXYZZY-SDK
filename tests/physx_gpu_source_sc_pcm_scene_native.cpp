@@ -9373,7 +9373,7 @@ void verify_gpu_wide_island_solver(
         require(schedule.device_upload_batches==1u &&
                 producer->dy_upload_span_count()==1u &&
                 schedule.omitted_partition_scratch_bytes==
-                    schedule.device_colored_descriptors*20u+
+                    schedule.device_colored_descriptors*16u+
                     schedule.device_initialized_bodies*12u &&
                 producer->dy_gpu_integrated_body_count()==actual.bodies.size() &&
                 producer->dy_pcm_device_contact_rows()>=actual.bodies.size() &&

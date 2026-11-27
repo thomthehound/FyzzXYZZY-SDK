@@ -775,10 +775,9 @@ void sourceDyPartitionTask(uint taskId,uint scratch,uint errorAddress,
     const bool sourceDescriptors=views.x==24u || views.x==64u;
     const uint descriptorCapacity=arena.Load(p.integrationBias+20u);
     const uint colors=scratch+views.y;
-    const uint cursors=scratch+views.z;
-    const uint raw=sourceDescriptors
-        ?cursors-descriptorCapacity*16u:scratch+views.x;
     const uint bodyState=scratch+views.w;
+    const uint raw=sourceDescriptors
+        ?bodyState-descriptorCapacity*16u:scratch+views.x;
     const uint task=p.taskBias+taskId*36u;
     const uint4 ranges=sourceDyTaskLoad4(task);
     const uint first=ranges.x,last=ranges.y;
@@ -927,7 +926,6 @@ void sourceDyPartitionTask(uint taskId,uint scratch,uint errorAddress,
             arena.Store4(p.descriptorBias+first*16u,desc);
             arena.Store(p.partitionBias+partitionFirst*4u,last);
             arena.Store(colors+first*4u,residentColor?first:0u);
-            arena.Store(cursors+partitionFirst*4u,last);
             sourceDyTaskStore(task+12u,partitionFirst+1u);
         }
         return;
@@ -995,7 +993,8 @@ void sourceDyPartitionTask(uint taskId,uint scratch,uint errorAddress,
             } else {
                 mixedHub=true;
                 // Prefix dynamic ranks; the complement is the static
-                // encounter rank. Reuse the dead contact-capacity cursors.
+                // encounter rank. Partition slots hold the static list
+                // until reservations have been assigned.
                 [unroll]
                 for(uint step=1u;step<128u;step<<=1u) {
                     const uint prior=lane>=step?dyCapacityScan[lane-step]:0u;
@@ -1009,7 +1008,7 @@ void sourceDyPartitionTask(uint taskId,uint scratch,uint errorAddress,
                 for(uint i=begin;i<end;++i) {
                     const uint4 desc=arena.Load4(raw+i*16u);
                     if((desc.w&0x300u)!=0x300u) {
-                        arena.Store(cursors+(first+staticRank)*4u,i);
+                        arena.Store(p.partitionBias+(partitionFirst+staticRank)*4u,i);
                         ++staticRank;
                         continue;
                     }
@@ -1172,7 +1171,7 @@ void sourceDyPartitionTask(uint taskId,uint scratch,uint errorAddress,
         // The dynamic masks are dead; count static reservations per body
         // without disturbing its highest dynamic color.
         for(uint j=lane;j<scanCount;j+=128u) {
-            const uint i=mixedHub?arena.Load(cursors+(first+j)*4u):first+j;
+            const uint i=mixedHub?arena.Load(p.partitionBias+(partitionFirst+j)*4u):first+j;
             if(arena.Load(colors+i*4u)!=invalidBody)continue;
             const uint4 desc=arena.Load4(raw+i*16u);
             const uint body=(desc.w&0x100u)!=0u?desc.y:desc.z;
@@ -1186,7 +1185,7 @@ void sourceDyPartitionTask(uint taskId,uint scratch,uint errorAddress,
         if(parallelReservations) {
             uint repeated=0u;
             for(uint j=lane;j<scanCount;j+=128u) {
-                const uint i=mixedHub?arena.Load(cursors+(first+j)*4u):first+j;
+                const uint i=mixedHub?arena.Load(p.partitionBias+(partitionFirst+j)*4u):first+j;
                 if(arena.Load(colors+i*4u)!=invalidBody)continue;
                 const uint4 desc=arena.Load4(raw+i*16u);
                 const uint body=(desc.w&0x100u)!=0u?desc.y:desc.z;
@@ -1198,7 +1197,7 @@ void sourceDyPartitionTask(uint taskId,uint scratch,uint errorAddress,
             AllMemoryBarrierWithGroupSync();
             uint highest=0u;
             for(uint j=lane;j<scanCount;j+=128u) {
-                const uint i=mixedHub?arena.Load(cursors+(first+j)*4u):first+j;
+                const uint i=mixedHub?arena.Load(p.partitionBias+(partitionFirst+j)*4u):first+j;
                 if(arena.Load(colors+i*4u)!=invalidBody)continue;
                 const uint4 desc=arena.Load4(raw+i*16u);
                 const uint body=(desc.w&0x100u)!=0u?desc.y:desc.z;
@@ -1221,7 +1220,7 @@ void sourceDyPartitionTask(uint taskId,uint scratch,uint errorAddress,
                 uint highest=dyHighest;
                 // Repeated endpoints reserve colors in encounter order.
                 for(uint j=0u;j<scanCount;++j) {
-                    const uint i=mixedHub?arena.Load(cursors+(first+j)*4u):first+j;
+                    const uint i=mixedHub?arena.Load(p.partitionBias+(partitionFirst+j)*4u):first+j;
                     if(arena.Load(colors+i*4u)!=invalidBody)continue;
                     const uint4 desc=arena.Load4(raw+i*16u);
                     const uint state=bodyState+
@@ -1252,7 +1251,6 @@ void sourceDyPartitionTask(uint taskId,uint scratch,uint errorAddress,
         }
         if(lane==0u) {
             arena.Store(p.partitionBias+partitionFirst*4u,last);
-            arena.Store(cursors+partitionFirst*4u,last);
             sourceDyTaskStore(task+12u,partitionFirst+1u);
         }
         return;
@@ -1263,7 +1261,7 @@ void sourceDyPartitionTask(uint taskId,uint scratch,uint errorAddress,
         return;
     }
     for(uint i=lane;i<dyHighest;i+=128u)
-        arena.Store(cursors+(partitionFirst+i)*4u,0u);
+        arena.Store(p.partitionBias+(partitionFirst+i)*4u,0u);
     AllMemoryBarrierWithGroupSync();
     for(uint i=first+lane;i<last;i+=128u) {
         const uint color=arena.Load(colors+i*4u);
@@ -1271,7 +1269,7 @@ void sourceDyPartitionTask(uint taskId,uint scratch,uint errorAddress,
             sourceDyTaskErrorOr(errorAddress,1048576u);
             continue;
         }
-        const uint target=cursors+(partitionFirst+color)*4u;
+        const uint target=p.partitionBias+(partitionFirst+color)*4u;
         uint unused;
         arena.InterlockedAdd(target,1u,unused);
     }
@@ -1279,11 +1277,12 @@ void sourceDyPartitionTask(uint taskId,uint scratch,uint errorAddress,
     if(sourceDyTaskLoad(errorAddress)!=0u)return;
     if(lane==0u) {
         uint end=first;
+        // Convert counts into scatter starts in the same partition slots.
         for(uint i=partitionFirst;i<partitionFirst+dyHighest;++i) {
-            const uint n=arena.Load(cursors+i*4u);
-            arena.Store(cursors+i*4u,end);
+            const uint address=p.partitionBias+i*4u;
+            const uint n=arena.Load(address);
+            arena.Store(address,end);
             end+=n;
-            arena.Store(p.partitionBias+i*4u,end);
         }
         if(end!=last)
             sourceDyTaskErrorOr(errorAddress,1048576u);
@@ -1292,11 +1291,11 @@ void sourceDyPartitionTask(uint taskId,uint scratch,uint errorAddress,
     }
     AllMemoryBarrierWithGroupSync();
     if(sourceDyTaskLoad(errorAddress)!=0u)return;
-    // Within a color every descriptor owns distinct writable bodies.
-    // Atomic scatter does not change solver dependencies or Gu indices.
+    // Each scatter counter finishes at its partition's exact end.
+    // Descriptors within a color own distinct responding bodies.
     for(uint i=first+lane;i<last;i+=128u) {
         uint4 desc=arena.Load4(raw+i*16u);
-        const uint target=cursors+
+        const uint target=p.partitionBias+
             (partitionFirst+arena.Load(colors+i*4u))*4u;
         uint offset;
         arena.InterlockedAdd(target,1u,offset);
@@ -2286,8 +2285,7 @@ bool sourceDyResidentTileRange(uint task,uint kind,
         }
         if(ordinal>wideCount || ((stage&1u)!=0u && ordinal==wideCount))
             return false;
-        // Scatter cursors are dead after coloring; their task window
-        // holds the compact list of wide partition indices.
+        // The retained task window lists its wide partition indices.
         const uint scratch=arena.Load(p.integrationBias+28u);
         const uint list=scratch+arena.Load(scratch+8u)+ranges.x*4u;
         if((stage&1u)==0u) {

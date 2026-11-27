@@ -1474,7 +1474,7 @@ public:
             ?descriptor_capacity:0u;
         const auto device_color_count=device_admission || !source_descriptors
             ?descriptor_capacity:0u;
-        const auto color_cursor_count=packed_only?0u:descriptor_capacity;
+        const auto wide_color_count=resident_wide?descriptor_capacity:0u;
         const auto color_body_count=packed_only?0u:bodies.size();
         const auto host_token_count=source_descriptors && !device_admission
             ?descriptor_capacity:0u;
@@ -1563,7 +1563,7 @@ public:
         const std::uint64_t partition_workspace_bytes=device_partitions
             ?std::uint64_t(device_color_count)*4ull+
                 std::uint64_t(raw_descriptor_count)*16ull+
-                std::uint64_t(color_cursor_count)*4ull+
+                std::uint64_t(wide_color_count)*4ull+
                 std::uint64_t(color_body_count)*12ull
             :0ull;
         if(partition_input_bytes+partition_workspace_bytes>
@@ -1883,14 +1883,14 @@ public:
             const auto workspace=bytes[17]?offsets[17]-offsets[15]:0u;
             const auto color_begin=source_descriptors && !device_admission
                 ?partition_header_bytes:workspace;
-            const auto cursor_begin=workspace+device_color_count*4u+
+            const auto body_state_begin=workspace+device_color_count*4u+
                 raw_descriptor_count*16u;
-            const auto body_state_begin=cursor_begin+color_cursor_count*4u;
-            // Host tokens alias their color slots; device-only raw
-            // descriptors immediately precede the workspace cursors.
+            const auto wide_color_begin=body_state_begin+color_body_count*12u;
+            // Host tokens alias color slots. Raw descriptors precede
+            // endpoint coloring state; resident tiles retain wide colors.
             const std::array<std::uint32_t,5> scratch_header{
                 narrow(partition_header_bytes),narrow(color_begin),
-                narrow(cursor_begin),narrow(body_state_begin),
+                narrow(wide_color_begin),narrow(body_state_begin),
                 tiles_.empty()?0u:narrow(offsets[14])};
             write_input(offsets[15],scratch_header.data(),
                         sizeof(scratch_header));
