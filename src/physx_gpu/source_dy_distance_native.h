@@ -1474,7 +1474,8 @@ public:
             ?descriptor_capacity:0u;
         const auto device_color_count=device_admission || !source_descriptors
             ?descriptor_capacity:0u;
-        const auto wide_color_count=resident_wide?descriptor_capacity:0u;
+        // Every listed wide color consumes at least 128 descriptors.
+        const auto wide_color_count=resident_wide?descriptor_capacity/128u:0u;
         const auto color_body_count=packed_only?0u:bodies.size();
         const auto host_token_count=source_descriptors && !device_admission
             ?descriptor_capacity:0u;

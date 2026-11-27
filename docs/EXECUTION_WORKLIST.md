@@ -83,6 +83,9 @@ quality rather than individual dispatch or barrier counts.
   counts and scatter offsets. Atomic scatter leaves exact partition
   ends in place; reserve separate wide-color lists only for resident
   tiled scheduling.
+- [x] Bound resident wide-color lists by full 128-descriptor groups
+  and derive list offsets from disjoint task descriptor ranges.
+  Initialize endpoint priorities only at their consuming phases.
 
 These are implementation milestones, not hardware-performance acceptance.
 

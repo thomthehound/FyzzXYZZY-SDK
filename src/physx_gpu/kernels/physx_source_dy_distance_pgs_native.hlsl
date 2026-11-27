@@ -759,13 +759,11 @@ void sourceDyInitializeColorState(uint4 desc,uint bodyState,uint colors,uint i) 
         const uint state=bodyState+desc.y*12u;
         arena.InterlockedExchange(state,0u,unused);
         arena.InterlockedExchange(state+4u,0u,unused);
-        arena.InterlockedExchange(state+8u,0xffffffffu,unused);
     }
     if(db) {
         const uint state=bodyState+desc.z*12u;
         arena.InterlockedExchange(state,0u,unused);
         arena.InterlockedExchange(state+4u,0u,unused);
-        arena.InterlockedExchange(state+8u,0xffffffffu,unused);
     }
     arena.Store(colors+i*4u,0xffffffffu);
 }
@@ -1178,7 +1176,7 @@ void sourceDyPartitionTask(uint taskId,uint scratch,uint errorAddress,
             const uint state=bodyState+body*12u;
             uint unused;
             arena.InterlockedExchange(state+8u,0u,unused);
-            if(parallelReservations)
+            if(parallelReservations && dyNeeded!=0u)
                 arena.InterlockedExchange(state,0u,unused);
         }
         AllMemoryBarrierWithGroupSync();
@@ -2259,6 +2257,11 @@ void sourceDyBuildPartitionTiles(uint color,uint lane) {
     }
 }
 
+// Disjoint descriptor intervals own disjoint lists of full 128-row colors.
+uint sourceDyWideColorList(uint scratch,uint first) {
+    return scratch+arena.Load(scratch+8u)+(first/128u)*4u;
+}
+
 bool sourceDyResidentTileRange(uint task,uint kind,
         out uint begin,out uint end,out uint step,out uint color) {
     begin=0u;end=0u;step=1u;color=0u;
@@ -2278,7 +2281,9 @@ bool sourceDyResidentTileRange(uint task,uint kind,
     }else if(kind>=3u) {
         const uint stage=kind-3u;
         const uint ordinal=stage/2u;
-        if(ranges.w<ranges.z || wideCount>(ranges.y-ranges.x)/128u ||
+        if(ranges.w<ranges.z || ranges.y<ranges.x ||
+           ranges.y>arena.Load(p.integrationBias+20u) ||
+           wideCount>(ranges.y-ranges.x)/128u ||
            wideCount>(p.frictionCount-1u)/2u) {
             sourceDyTaskErrorOr(address+32u,0x02000000u);
             return false;
@@ -2287,7 +2292,7 @@ bool sourceDyResidentTileRange(uint task,uint kind,
             return false;
         // The retained task window lists its wide partition indices.
         const uint scratch=arena.Load(p.integrationBias+28u);
-        const uint list=scratch+arena.Load(scratch+8u)+ranges.x*4u;
+        const uint list=sourceDyWideColorList(scratch,ranges.x);
         if((stage&1u)==0u) {
             begin=ordinal==0u?ranges.z:arena.Load(list+(ordinal-1u)*4u)+1u;
             end=ordinal==wideCount?ranges.w:arena.Load(list+ordinal*4u);
@@ -2620,13 +2625,30 @@ void main(uint3 group:SV_GroupID,uint3 lane:SV_GroupThreadID) {
                     if(ranges.y-ranges.x>=512u &&
                        bodyRange.y-bodyRange.x>=512u) {
                         const uint scratch=schedule.w;
-                        const uint list=scratch+arena.Load(scratch+8u)+ranges.x*4u;
+                        const uint list=sourceDyWideColorList(scratch,ranges.x);
+                        const uint capacity=(ranges.y-ranges.x)/128u;
                         uint first=ranges.x;
                         for(uint color=ranges.z;color<ranges.w;++color) {
                             const uint last=arena.Load(p.partitionBias+color*4u);
-                            if(last-first>=128u)
+                            if(last<first || last>ranges.y) {
+                                sourceDyTaskErrorOr(endError,0x02000000u);
+                                break;
+                            }
+                            if(last-first>=128u) {
+                                if(wideCount>=capacity) {
+                                    sourceDyTaskErrorOr(endError,0x02000000u);
+                                    break;
+                                }
                                 arena.Store(list+4u*wideCount++,color);
+                            }
                             first=last;
+                        }
+                        if(first!=ranges.y)
+                            sourceDyTaskErrorOr(endError,0x02000000u);
+                        if(sourceDyTaskLoad(endError)!=0u) {
+                            sourceDyRejectScheduleReuse(scratch);
+                            publishTaskError(taskId,sourceDyTaskLoad(endError));
+                            wideCount=0u;
                         }
                     }
                     arena.Store(p.resultTaskOffset+taskId*4u,wideCount);

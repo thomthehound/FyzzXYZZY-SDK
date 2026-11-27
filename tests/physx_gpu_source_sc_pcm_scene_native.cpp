@@ -6053,7 +6053,11 @@ void verify_resident_wide_device_response(
             schedule.host_staging_bytes<=downloaded &&
             schedule.host_result_capacity>=schedule.host_staging_bytes &&
             schedule.numerical_arena_bytes<=schedule.numerical_arena_capacity &&
-            schedule.numerical_arena_padding_bytes<=18u*16u,
+            schedule.numerical_arena_padding_bytes<=18u*16u &&
+            schedule.omitted_partition_scratch_bytes==
+                schedule.device_source_descriptors*20u+
+                (schedule.device_source_descriptors/128u)*4u+
+                schedule.device_initialized_bodies*12u,
         "Resident Dy input or result staging includes redundant host storage");
     require(native::GpuPcmFrictionAnchorFixture::has_prewitness_solve(gpu) &&
             schedule.resident_wide_schedule &&
