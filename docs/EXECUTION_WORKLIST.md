@@ -76,6 +76,9 @@ quality rather than individual dispatch or barrier counts.
 - [x] Place device-only coloring workspace beyond the input packet.
   Upload source tokens, authored descriptors and schedule inputs in
   one contiguous copy, without staging GPU-owned scratch.
+- [x] Initialize only admitted color histogram entries. Include sorted
+  descriptor and coloring workspace locations in retained schedule
+  identity; validate the compact result extent independently of uploads.
 
 These are implementation milestones, not hardware-performance acceptance.
 

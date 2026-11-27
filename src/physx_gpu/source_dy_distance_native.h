@@ -2010,8 +2010,8 @@ public:
         if(resident_wide) {
             // Retained endpoints, scatter positions, partition ends
             // and tiles occupy device-only ranges of this exact layout.
-            const std::array<std::uint64_t,14> layout{
-                address,offsets[15],offsets[3],offsets[14],
+            const std::array<std::uint64_t,16> layout{
+                address,offsets[15],offsets[17],offsets[2],offsets[3],offsets[14],
                 partition_output_offset,mode_output_offset,task_capacity,
                 descriptor_capacity,bodies.size(),wide_bounds.nodes,
                 wide_bounds.stages,partition_output_count_,
@@ -4009,7 +4009,7 @@ private:
     std::size_t partition_header_begin_=0u,partition_task_begin_=0u;
     compute::BufferId partition_dispatch_buffer_=0u;
     std::size_t partition_dispatch_capacity_=0u;
-    std::array<std::uint64_t,14> resident_schedule_layout_{};
+    std::array<std::uint64_t,16> resident_schedule_layout_{};
     bool resident_schedule_committed_=false;
     std::array<bool,255> position_ends_{};
     std::uint32_t wide_iterations_=0u;

@@ -279,6 +279,14 @@ struct GpuPcmFrictionAnchorFixture {
     static bool has_host_schedule(const Scene& scene) {
         return !scene.gpu_dy_tasks_.empty() || !scene.gpu_dy_body_ordinals_.empty();
     }
+    static std::size_t compact_host_schedule_result_bytes(const Scene& scene) {
+        const auto integrated=scene.gpu_dy_integration_inputs_.size();
+        return integrated*(52u+32u)+
+            scene.gpu_dy_tasks_.size()*sizeof(std::uint32_t)+
+            scene.gpu_dy_contact_forces_.size()*sizeof(float)+
+            scene.gpu_dy_friction_impulses_.size()*sizeof(GpuDyFrictionAnchorImpulse)+
+            scene.gpu_dy_patches_.size()*sizeof(std::uint32_t);
+    }
     static bool actor_has_staged_source(const Scene& scene,BodyId id) {
         return id<scene.gpu_dy_actor_stage_epochs_.size() &&
             scene.gpu_dy_actor_stage_epochs_[id]==scene.gpu_dy_actor_stage_epoch_;
@@ -6304,11 +6312,9 @@ void verify_gpu_coupled_solver(
                     schedule.device_initialized_bodies*9u*sizeof(float),
             "Coupled Dy failed device-resident motion and inertia publication");
         const auto prep_saving=producer->dy_contact_prep_upload_saving();
-        // Compare writeback with the source-sized upload baseline. The
-        // GPU contact-prep payload is intentionally smaller now.
         require(downloaded>0u &&
-                static_cast<std::int64_t>(downloaded)*2<
-                    static_cast<std::int64_t>(uploaded)+prep_saving,
+                downloaded==native::GpuPcmFrictionAnchorFixture::
+                    compact_host_schedule_result_bytes(gpu),
             "Source coupled GPU Dy writeback did not use compact output");
         uploaded_bytes+=uploaded;
         downloaded_bytes+=downloaded;

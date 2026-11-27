@@ -1257,16 +1257,26 @@ void sourceDyPartitionTask(uint taskId,uint scratch,uint errorAddress,
         }
         return;
     }
-    for(uint i=partitionFirst+lane;i<partitionCapacity;i+=128u)
-        arena.Store(cursors+i*4u,0u);
+    // Only the admitted colors have histogram entries.
+    if(dyHighest>partitionCapacity-partitionFirst) {
+        if(lane==0u)sourceDyTaskErrorOr(errorAddress,1048576u);
+        return;
+    }
+    for(uint i=lane;i<dyHighest;i+=128u)
+        arena.Store(cursors+(partitionFirst+i)*4u,0u);
     AllMemoryBarrierWithGroupSync();
     for(uint i=first+lane;i<last;i+=128u) {
         const uint color=arena.Load(colors+i*4u);
+        if(color>=dyHighest) {
+            sourceDyTaskErrorOr(errorAddress,1048576u);
+            continue;
+        }
         const uint target=cursors+(partitionFirst+color)*4u;
         uint unused;
         arena.InterlockedAdd(target,1u,unused);
     }
     AllMemoryBarrierWithGroupSync();
+    if(sourceDyTaskLoad(errorAddress)!=0u)return;
     if(lane==0u) {
         uint end=first;
         for(uint i=partitionFirst;i<partitionFirst+dyHighest;++i) {
