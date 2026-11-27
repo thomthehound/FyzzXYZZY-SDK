@@ -144,7 +144,31 @@ void verify(const char* source_shader,const char* consumer_shader) {
             require(observed==untouched,"Rejected D3D12 batch executed a valid prefix");
             auto shared=dispatch;
             shared.share_resources();
+            shared.push_constants.clear();
+            auto parameters=std::make_shared<DispatchParameterStorage>();
+            shared.append_parameters(parameters,std::span(&task_offset,1u));
             auto shared_repeat=shared;
+            DispatchCommand unused{};
+            std::vector<std::uint32_t> padding(4096u,0u);
+            unused.append_parameters(parameters,padding);
+            shared_repeat.append_parameters(parameters,std::span(&task_offset,1u));
+            unused={};
+            parameters.reset();
+            for(unsigned defect=0u;defect<4u;++defect) {
+                auto invalid=shared_repeat;
+                switch(defect) {
+                    case 0u: invalid.parameter_slice.first=static_cast<std::size_t>(-1); break;
+                    case 1u: invalid.parameter_slice.count=0u; break;
+                    case 2u: invalid.push_constants=dispatch.push_constants; break;
+                    case 3u: invalid.parameter_slice.storage.reset(); break;
+                }
+                bool rejected=false;
+                try {context.execute_batch({shared,invalid});}
+                catch(const std::invalid_argument&) {rejected=true;}
+                require(rejected,"Malformed D3D12 parameter slice was accepted");
+            }
+            context.download(result_buffer,0u,observed.data(),result_bytes);
+            require(observed==untouched,"Rejected D3D12 parameter batch executed its prefix");
             context.execute_batch({shared,shared_repeat});
             context.download(result_buffer,0u,observed.data(),result_bytes);
             require(observed==output,"Reused D3D12 table lost indirect results");

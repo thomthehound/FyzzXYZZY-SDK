@@ -225,6 +225,32 @@ struct DispatchResources {
     std::vector<DispatchAccess> accesses;
 };
 
+// Appending parameters cannot alter the words owned by earlier launches.
+class DispatchParameterStorage {
+    friend struct DispatchCommand;
+    std::vector<std::uint32_t> words_;
+
+    std::size_t append(std::span<const std::uint32_t> words) {
+        const auto first=words_.size();
+        words_.insert(words_.end(),words.begin(),words.end());
+        return first;
+    }
+    std::span<const std::byte> bytes(std::size_t first,std::size_t count) const {
+        if(first>words_.size() || count>words_.size()-first)
+            throw std::invalid_argument("Dispatch parameter slice exceeds storage");
+        return std::as_bytes(std::span<const std::uint32_t>(words_).subspan(first,count));
+    }
+public:
+    DispatchParameterStorage()=default;
+    DispatchParameterStorage(const DispatchParameterStorage&)=delete;
+    DispatchParameterStorage& operator=(const DispatchParameterStorage&)=delete;
+};
+
+struct DispatchParameterSlice {
+    std::shared_ptr<const DispatchParameterStorage> storage;
+    std::size_t first=0u,count=0u;
+};
+
 struct DispatchCommand {
     PipelineId pipeline = 0;
     DispatchSize groups;
@@ -236,6 +262,25 @@ struct DispatchCommand {
     std::vector<DispatchAccess> accesses{};
     // Shared declarations replace, rather than supplement, the owned vectors.
     std::shared_ptr<const DispatchResources> resources{};
+    DispatchParameterSlice parameter_slice{};
+
+    void append_parameters(const std::shared_ptr<DispatchParameterStorage>& storage,
+                           std::span<const std::uint32_t> words) {
+        if(!storage || !push_constants.empty())
+            throw std::invalid_argument("Invalid shared dispatch parameter ownership");
+        const auto first=storage->append(words);
+        parameter_slice={storage,first,words.size()};
+    }
+    std::span<const std::byte> parameter_bytes() const {
+        if(parameter_slice.storage) {
+            if(!push_constants.empty())
+                throw std::invalid_argument("Dispatch mixes owned and shared parameter bytes");
+            return parameter_slice.storage->bytes(parameter_slice.first,parameter_slice.count);
+        }
+        if(parameter_slice.first || parameter_slice.count)
+            throw std::invalid_argument("Dispatch parameter slice has no storage");
+        return std::as_bytes(std::span<const std::uint8_t>(push_constants));
+    }
 
     std::span<const BufferBinding> bindings() const noexcept {
         return resources?std::span<const BufferBinding>(resources->buffers):

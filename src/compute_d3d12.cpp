@@ -1133,7 +1133,7 @@ struct Context::Impl {
            cmd.groups.x>info.max_workgroup_count[0] ||
            cmd.groups.y>info.max_workgroup_count[1] ||
            cmd.groups.z>info.max_workgroup_count[2] ||
-           cmd.push_constants.size()!=pipe.parameters)
+           cmd.parameter_bytes().size()!=pipe.parameters)
             throw std::invalid_argument("Invalid D3D12 dispatch shape or parameters");
         if(cmd.indirect && (cmd.groups.x!=1u || cmd.groups.y!=1u || cmd.groups.z!=1u))
             throw std::invalid_argument("Invalid D3D12 indirect dispatch groups");
@@ -1652,7 +1652,7 @@ struct Context::Impl {
             }
             bound_table=table;
             submission.commands->SetComputeRoot32BitConstants(
-                table_root,pipeline.parameters/4u,cmd.push_constants.data(),0);
+                table_root,pipeline.parameters/4u,cmd.parameter_bytes().data(),0);
             if(cmd.indirect) {
                 auto* arguments=resource_access[resource_ordinals.at(cmd.indirect->buffer)].buffer->resource.Get();
                 // The X group count also predicates the single indirect

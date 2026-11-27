@@ -354,12 +354,28 @@ int main(int argc, char** argv) {
             return bytes;
         };
         context.upload(dst,0,initial.data(),sizeof(initial));
+        auto parameter_storage=std::make_shared<DispatchParameterStorage>();
+        DispatchCommand first_launch{pipeline,groups,bindings,{}};
+        first_launch.share_resources();
+        std::array<std::uint32_t,3> words{
+            first_pass.count,first_pass.multiplier,first_pass.addend};
+        first_launch.append_parameters(parameter_storage,words);
+        auto second_launch=first_launch;
+        // Grow the parameter store after recording the first slice.
+        DispatchCommand unused{};
+        std::vector<std::uint32_t> padding(4096u,0u);
+        unused.append_parameters(parameter_storage,padding);
+        words={second_pass.count,second_pass.multiplier,second_pass.addend};
+        second_launch.append_parameters(parameter_storage,words);
+        words.fill(0u);
+        unused={};
+        parameter_storage.reset();
         const std::vector<BatchCommand> ordered_uploads{
             UploadCommand{src,0,owned_bytes(input)},
-            DispatchCommand{pipeline,groups,bindings,push_bytes(first_pass)},
+            first_launch,
             CopyCommand{dst,0,mirror,0,sizeof(output)},
             UploadCommand{src,0,owned_bytes(later_input)},
-            DispatchCommand{pipeline,groups,bindings,push_bytes(second_pass)}
+            second_launch
         };
         const auto ordered_id=context.submit_batch(ordered_uploads);
         context.wait_submission(ordered_id);
@@ -376,6 +392,25 @@ int main(int argc, char** argv) {
                 throw std::runtime_error(
                     "Ordered host uploads did not preserve GPU copy/dispatch dependencies");
         }
+        // Invalid parameter slices must reject the entire producer batch.
+        for(unsigned defect=0u;defect<4u;++defect) {
+            auto invalid=second_launch;
+            switch(defect) {
+                case 0u: invalid.parameter_slice.first=static_cast<std::size_t>(-1); break;
+                case 1u: --invalid.parameter_slice.count; break;
+                case 2u: invalid.push_constants=push_bytes(second_pass); break;
+                case 3u: invalid.parameter_slice.storage.reset(); break;
+            }
+            rejected_batch=false;
+            try {context.execute_batch({first_launch,invalid});}
+            catch(const std::invalid_argument&) {rejected_batch=true;}
+            if(!rejected_batch)
+                throw std::runtime_error("Malformed Vulkan parameter slice was accepted");
+        }
+        std::array<std::uint32_t,array_size> after_rejection{};
+        context.download(dst,0,after_rejection.data(),sizeof(after_rejection));
+        if(after_rejection!=output)
+            throw std::runtime_error("Rejected parameter batch executed its prefix");
         // Preserve RAW, WAR and WAW dependencies across submissions,
         // including a completed intermediate token and a rejected batch.
         context.upload(dst,0,initial.data(),sizeof(initial));

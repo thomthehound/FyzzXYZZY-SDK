@@ -2349,7 +2349,7 @@ public:
             static_cast<std::size_t>(params[28])+offsets[11]);
         params[11]=narrow(
             static_cast<std::size_t>(params[28])+offsets[12]);
-        dispatch.push_constants.resize(sizeof(params));
+        const auto parameter_storage=std::make_shared<compute::DispatchParameterStorage>();
         const auto max_groups=context_.device_info().max_workgroup_count[0];
         const auto partition_output_bias=narrow(
             std::size_t(params[28])+partition_output_offset);
@@ -2391,7 +2391,6 @@ public:
                 narrow(std::size_t(work_base)+layout.contact_admissions),
                 narrow(manifolds.size()),narrow(prep_count),narrow(bodies.size()),
                 0u,params[11]};
-            refs.push_constants.resize(sizeof(arguments));
             const auto ref_access=[&](std::uint32_t slot,std::size_t offset,
                                       std::size_t size,compute::BufferAccess access) {
                 if(size)
@@ -2417,8 +2416,7 @@ public:
                     max_groups,(manifolds.size()-first+127u)/128u);
                 arguments[8]=narrow(first);
                 refs.groups={narrow(groups),1u,1u};
-                std::memcpy(refs.push_constants.data(),
-                            arguments.data(),sizeof(arguments));
+                refs.append_parameters(parameter_storage,arguments);
                 stream_.commands().emplace_back(refs);
                 ++last_schedule_.dispatches;
                 first+=groups*128u;
@@ -2618,7 +2616,6 @@ public:
         };
         compute::DispatchCommand launch_command{};
         launch_command.pipeline=dispatch.pipeline;
-        launch_command.push_constants.resize(sizeof(params));
         const auto launch=[&](Launch phase,TileRange range,std::uint32_t iteration=0u) {
             if(!range.count)return;
             if(resident_wide)params[23]=resident_mode_bias;
@@ -2644,7 +2641,7 @@ public:
                 params[8]=0u;
                 launch_command.groups={1u,1u,1u};
                 launch_command.indirect=device_admission->task_dispatch;
-                std::memcpy(launch_command.push_constants.data(),params.data(),sizeof(params));
+                launch_command.append_parameters(parameter_storage,params);
                 stream_.commands().emplace_back(launch_command);
                 launch_command.indirect.reset();
                 ++last_schedule_.dispatches;
@@ -2671,7 +2668,7 @@ public:
                     launch_command.indirect=compute::DispatchIndirectArgs{
                         partition_dispatch_buffer_,
                         (range.dispatch_begin+group/max_groups)*16u};
-                    std::memcpy(launch_command.push_constants.data(),params.data(),sizeof(params));
+                    launch_command.append_parameters(parameter_storage,params);
                     stream_.commands().emplace_back(launch_command);
                     ++last_schedule_.dispatches;
                     if(phase==Launch::Partition)
@@ -2687,7 +2684,7 @@ public:
                 const auto count=std::min<std::size_t>(max_groups,range.count-group);
                 params[8]=narrow(range.begin+group);
                 launch_command.groups={narrow(count),1u,1u};
-                std::memcpy(launch_command.push_constants.data(),params.data(),sizeof(params));
+                launch_command.append_parameters(parameter_storage,params);
                 stream_.commands().emplace_back(launch_command);
                 ++last_schedule_.dispatches;
                 group+=count;
@@ -2706,7 +2703,7 @@ public:
                     0x10000000u|0x80000000u|
                     (compact_friction?0x20000000u:0u);
                 launch_command.groups={narrow((task_count+127u)/128u),1u,1u};
-                std::memcpy(launch_command.push_constants.data(),params.data(),sizeof(params));
+                launch_command.append_parameters(parameter_storage,params);
                 stream_.commands().emplace_back(launch_command);
                 ++last_schedule_.dispatches;
                 offset+=task_count;
@@ -2791,7 +2788,7 @@ public:
                 arguments[8]=narrow(first);
                 build.groups={narrow(std::min<std::size_t>(
                     max_groups,reservations-first)),1u,1u};
-                std::memcpy(build.push_constants.data(),arguments.data(),sizeof(arguments));
+                build.append_parameters(parameter_storage,arguments);
                 stream_.commands().emplace_back(build);
                 ++last_schedule_.dispatches;
             }

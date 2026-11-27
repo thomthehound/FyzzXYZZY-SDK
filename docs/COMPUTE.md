@@ -110,9 +110,13 @@ belong to the unique descriptor table. Native recording consumes the
 resolved views and pipelines. D3D12 completion-cache identity follows
 the unique table layout rather than the sequence of dispatches.
 Dy shares immutable, frame-local resource declarations between launches
-of the same numerical phase. Launch dimensions, indirect arguments and
-parameter bytes remain command-owned. Recorded source consumers retain
-every resource in the shared declaration through submission or discard.
+of the same numerical phase. Launch dimensions and indirect arguments
+remain command-owned. Dy snapshots parameter words into an append-only
+frame store; each launch retains its own offset, count and storage
+ownership. Native recording validates the slice and parameter size.
+Storage growth cannot invalidate a recorded slice. Recorded source
+consumers retain every resource in the shared declaration through
+submission or discard.
 Each shared declaration and pipeline resolves its physical table once per
 batch. Its direct and distinct indirect argument ranges retain separate
 validated access plans across alternating launches. Owned declarations

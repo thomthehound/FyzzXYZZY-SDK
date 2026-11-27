@@ -133,6 +133,10 @@ quality rather than individual dispatch or barrier counts.
   Alternating numerical phases and indirect chunks reuse their distinct
   plans without repeating physical table matching or range normalization.
 
+- [x] Store Dy launch parameters in a contiguous frame-local word store.
+  Launches retain immutable slices through recording, upload expansion
+  and submission; validate their extents independently of access-plan reuse.
+
 These are implementation milestones, not hardware-performance acceptance.
 
 ## Execution and lifetime work

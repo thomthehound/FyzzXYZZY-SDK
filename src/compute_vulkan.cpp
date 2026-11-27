@@ -1234,7 +1234,7 @@ struct Context::Impl {
         for(std::uint32_t i=0u;i<3u;++i)
             if(!counts[i] || counts[i]>info.max_workgroup_count[i])
                 throw std::out_of_range("Compute workgroup count exceeds device limits");
-        if(command.push_constants.size()!=pipeline.push_bytes)
+        if(command.parameter_bytes().size()!=pipeline.push_bytes)
             throw std::invalid_argument("Push constants do not match pipeline layout");
         if(command.indirect && (groups.x!=1u || groups.y!=1u || groups.z!=1u))
             throw std::invalid_argument("Indirect dispatch cannot specify direct groups");
@@ -1831,11 +1831,12 @@ struct Context::Impl {
                         pipeline.layout,0,1,&descriptor_set,0,nullptr);
                     bound_set=descriptor_set;
                 }
-                if (!dispatch.push_constants.empty()) {
-                    vkCmdPushConstants(commands, pipeline.layout,
-                                       VK_SHADER_STAGE_COMPUTE_BIT, 0,
-                                       static_cast<std::uint32_t>(dispatch.push_constants.size()),
-                                       dispatch.push_constants.data());
+                const auto parameters=dispatch.parameter_bytes();
+                if(!parameters.empty()) {
+                    vkCmdPushConstants(commands,pipeline.layout,
+                                       VK_SHADER_STAGE_COMPUTE_BIT,0,
+                                       static_cast<std::uint32_t>(parameters.size()),
+                                       parameters.data());
                 }
                 if(dispatch.indirect)
                     vkCmdDispatchIndirect(commands,
