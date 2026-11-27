@@ -73,6 +73,9 @@ quality rather than individual dispatch or barrier counts.
   endpoint coloring storage for host-admitted packed-only frames.
   Keep source tokens and the authored descriptor table; mixed and
   device-admitted frames retain their required coloring capacity.
+- [x] Place device-only coloring workspace beyond the input packet.
+  Upload source tokens, authored descriptors and schedule inputs in
+  one contiguous copy, without staging GPU-owned scratch.
 
 These are implementation milestones, not hardware-performance acceptance.
 

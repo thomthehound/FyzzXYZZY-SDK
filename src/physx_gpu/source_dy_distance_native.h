@@ -1470,9 +1470,16 @@ public:
             ?std::count_if(tasks.begin(),tasks.end(),lane_task):0u;
         const bool packed_only=host_lane_packing &&
             last_schedule_.host_lane_packed_tasks==task_capacity;
-        const auto raw_descriptor_count=packed_only?0u:descriptor_capacity;
+        const auto raw_descriptor_count=source_descriptors && !packed_only
+            ?descriptor_capacity:0u;
+        const auto device_color_count=device_admission || !source_descriptors
+            ?descriptor_capacity:0u;
         const auto color_cursor_count=packed_only?0u:descriptor_capacity;
         const auto color_body_count=packed_only?0u:bodies.size();
+        const auto host_token_count=source_descriptors && !device_admission
+            ?descriptor_capacity:0u;
+        const std::size_t partition_header_bytes=source_descriptors
+            ?(device_admission?64u:24u):20u;
         if(device_admission &&
            (!source_descriptors || !device_admission->work ||
             !device_admission->task_dispatch.buffer || task_capacity==0u))
@@ -1546,20 +1553,23 @@ public:
                 }
             }
         }
-        const std::uint64_t scratch_bytes=device_partitions
-            ?(source_descriptors?(device_admission?64ull:24ull):20ull)+
-                std::uint64_t(raw_descriptor_count)*16ull+
-                std::uint64_t(descriptor_capacity)*4ull+
-                std::uint64_t(color_cursor_count)*4ull+
-                std::uint64_t(color_body_count)*12ull+
-                (source_descriptors?sizeof(std::uint32_t):0u)+
-                std::uint64_t(source_descriptor_full_.size())*16ull
+        const std::uint64_t partition_input_bytes=device_partitions
+            ?partition_header_bytes+
+                std::uint64_t(host_token_count)*4ull+
+                (source_descriptors
+                    ?4ull+std::uint64_t(source_descriptor_full_.size())*16ull
+                    :std::uint64_t(descriptor_capacity)*16ull)
             :0ull;
-        if(scratch_bytes>std::numeric_limits<std::uint32_t>::max())
+        const std::uint64_t partition_workspace_bytes=device_partitions
+            ?std::uint64_t(device_color_count)*4ull+
+                std::uint64_t(raw_descriptor_count)*16ull+
+                std::uint64_t(color_cursor_count)*4ull+
+                std::uint64_t(color_body_count)*12ull
+            :0ull;
+        if(partition_input_bytes+partition_workspace_bytes>
+           std::numeric_limits<std::uint32_t>::max())
             throw std::overflow_error(
-                "Device Dy partition scratch exceeds address space");
-        const auto partition_scratch_bytes=
-            static_cast<std::size_t>(scratch_bytes);
+                "Device Dy partition storage exceeds address space");
         last_schedule_.device_source_descriptors=
             source_descriptors?descriptor_capacity:0u;
         last_schedule_.source_descriptor_upload_bytes=source_descriptors
@@ -1568,7 +1578,7 @@ public:
             :descriptors.size_bytes();
         if(rows.size_bytes()>std::numeric_limits<std::uint32_t>::max())
             throw std::overflow_error("Device Dy joint rows exceed 32-bit view");
-        constexpr std::size_t count=17u;
+        constexpr std::size_t count=18u;
         // The integration prefix describes Sc/SAP views and the launch
         // table. Solver-body ordinals precede the free-body suffix.
         const std::array<std::size_t,count> bytes{
@@ -1581,14 +1591,15 @@ public:
             patches.size_bytes(),manifolds.size_bytes(),contact_order.size_bytes(),
             compact_prep_bytes,
             integration_bytes,compact_anchor_bytes,
-            tiles_.size()*sizeof(WorkTile),partition_scratch_bytes,
-            inertia_bytes};
+            tiles_.size()*sizeof(WorkTile),
+            static_cast<std::size_t>(partition_input_bytes),inertia_bytes,
+            static_cast<std::size_t>(partition_workspace_bytes)};
         const std::array<std::size_t,count> elements{
             bodies.size(),rows.size(),descriptor_capacity,partition_count,
             ordinal_capacity,task_capacity,contact_forces.size(),friction_count,
             patches.size(),manifolds.size(),contact_order.size(),
             prep_count,integration.size(),compact_anchor_count,
-            tiles_.size(),device_partitions?1u:0u,bodies.size()};
+            tiles_.size(),device_partitions?1u:0u,bodies.size(),0u};
         const std::array<const void*,count> sources{
             bodies.data(),rows.data(),
             device_partitions?nullptr:descriptors.data(),
@@ -1597,7 +1608,7 @@ public:
             patches.data(),
             manifolds.data(),contact_order.data(),
             contact_prep.data(),integration.data(),nullptr,tiles_.data(),
-            nullptr,nullptr};
+            nullptr,nullptr,nullptr};
         // Both full contact and friction solver rows live on device.
         // Sc returns normal impulses and compact per-anchor friction;
         // standalone conformance may return complete tangent/force rows.
@@ -1668,23 +1679,22 @@ public:
                 ?active_integration_count*28u:0u;
         // Both writable contact and friction arenas follow all source
         // inputs. The existing GPU preparation owns the complete rows.
-        // Device coloring consumes raw descriptors in the scratch input
-        // and writes both sorted descriptors and partition ends itself.
-        // Place those output-only ranges after the contact/friction rows;
-        // compact anchors must remain adjacent to contact rows.
+        // Device coloring owns its workspace and sorted descriptors.
+        // Place those ranges after the upload cutoff; compact anchors
+        // must remain adjacent to contact rows.
         // Resident Sc tasks and body ordinals are GPU copy destinations,
         // not CPU packet inputs. Keep them beyond the host upload cutoff,
         // alongside Dy's other device-written numerical ranges.
-        const std::array<std::size_t,count-1u> source_order=device_admission
-            ? std::array<std::size_t,count-1u>{
+        const std::array<std::size_t,count-2u> source_order=device_admission
+            ? std::array<std::size_t,count-2u>{
                 1u,8u,9u,10u,11u,12u,14u,15u,13u,6u,7u,0u,2u,3u,4u,5u}
             : device_initial_bodies
-                ? std::array<std::size_t,count-1u>{
+                ? std::array<std::size_t,count-2u>{
                 1u,5u,8u,4u,9u,10u,11u,12u,14u,15u,13u,6u,7u,0u,2u,3u}
             : device_partitions
-                ? std::array<std::size_t,count-1u>{
+                ? std::array<std::size_t,count-2u>{
                     0u,1u,5u,8u,4u,9u,10u,11u,12u,14u,15u,13u,6u,7u,2u,3u}
-                : std::array<std::size_t,count-1u>{
+                : std::array<std::size_t,count-2u>{
                     0u,1u,5u,8u,2u,3u,4u,9u,10u,11u,12u,14u,15u,13u,6u,7u};
         std::array<std::size_t,count> order{};
         std::size_t order_count=0u;
@@ -1694,8 +1704,9 @@ public:
             order[order_count++]=slot;
         }
         if(device_generated_inertia)order[order_count++]=16u;
+        order[order_count++]=17u;
         if(order_count!=count)
-            throw std::logic_error("Source Dy inertia placement omitted a view");
+            throw std::logic_error("Source Dy arena placement omitted a view");
         last_schedule_.device_generated_bytes=device_partitions
             ? bytes[2]+bytes[3]+
                 (device_admission
@@ -1713,7 +1724,7 @@ public:
         std::size_t padding_bytes=upload_begin-history_bytes-output_bytes;
         std::size_t total=upload_begin;
         for(const auto i:order) {
-            if((i==14u || i==15u) && !bytes[i])continue;
+            if((i==14u || i==15u || i==17u) && !bytes[i])continue;
             if(packed_only && (i==2u || i==3u))continue;
             const auto view_bytes=std::max<std::size_t>(bytes[i],4u);
             if(total>std::numeric_limits<std::uint32_t>::max()-table_alignment ||
@@ -1751,38 +1762,8 @@ public:
         // The contact shader addresses anchors backward from contactBias.
         // Host staging stops at the writable contact arena.
         const auto input_end=offsets[6];
-        // Sc supplies the descriptor tokens and Dy computes the raw
-        // descriptors, colors, cursors, and body partition state. None
-        // of those scratch arrays has a host source in a device-owned
-        // island epoch. Skip their entire contiguous upload window.
-        struct DeviceScratchRange { std::size_t begin,end; };
-        std::array<DeviceScratchRange,2> scratch_ranges{};
-        std::size_t scratch_count=0u,omitted_bytes=0u;
-        const auto omit_scratch=[&](std::size_t begin,std::size_t end) {
-            if(begin==end)return;
-            if(begin<upload_begin || end<begin || end>input_end ||
-               scratch_count==scratch_ranges.size() ||
-               (scratch_count && begin<scratch_ranges[scratch_count-1u].end))
-                throw std::out_of_range("Dy device scratch upload range is invalid");
-            scratch_ranges[scratch_count++]={begin,end};
-            omitted_bytes+=end-begin;
-        };
-        if(device_admission) {
-            const auto raw=offsets[15]+64u;
-            omit_scratch(raw,raw+descriptor_capacity*24u+bodies.size()*12u);
-        }else if(device_partitions && !wide_tasks_.empty()) {
-            // Wide tasks initialize coloring scratch on the GPU. Keep
-            // compact tasks in one transfer; wide tasks omit the large
-            // output-only ranges while preserving authored tokens.
-            const auto raw=offsets[15]+(source_descriptors?24u:20u);
-            const auto colors=raw+descriptor_capacity*16u;
-            const auto cursors=colors+descriptor_capacity*4u;
-            if(source_descriptors)omit_scratch(raw,colors);
-            const auto state_end=cursors+descriptor_capacity*4u+bodies.size()*12u;
-            omit_scratch(source_descriptors?cursors:colors,state_end);
-        }
-        last_schedule_.omitted_partition_scratch_bytes=omitted_bytes;
-        const std::size_t uploaded_bytes=input_end-upload_begin-omitted_bytes;
+        last_schedule_.omitted_partition_scratch_bytes=bytes[17];
+        const std::size_t uploaded_bytes=input_end-upload_begin;
         // Numerical input is packed directly into transfer memory; host_
         // owns only the unpublished numerical result.
         const bool contract_result=result_working_set_.should_contract(
@@ -1835,15 +1816,7 @@ public:
             if(!size)return;
             if(offset<upload_begin || offset>input_end || size>input_end-offset)
                 throw std::out_of_range("Dy host input has no upload span");
-            std::size_t skipped=0u;
-            for(std::size_t i=0u;i<scratch_count;++i) {
-                const auto range=scratch_ranges[i];
-                if(offset+size<=range.begin)break;
-                if(offset<range.end)
-                    throw std::out_of_range("Dy host input overlaps device scratch");
-                skipped+=range.end-range.begin;
-            }
-            std::memcpy(input_map.data+(offset-upload_begin-skipped),data,size);
+            std::memcpy(input_map.data+(offset-upload_begin),data,size);
         };
         // Pack only host-owned anchors directly into the mapped input.
         // Their backward offsets address the adjacent contact-row arena.
@@ -1871,7 +1844,7 @@ public:
         }
         for(std::size_t i=0;i<count;++i)
             if(i!=6u && i!=7u && i!=11u && i!=12u &&
-               i!=13u && i!=15u && i!=16u && bytes[i] &&
+               i!=13u && i!=15u && i!=16u && i!=17u && bytes[i] &&
                (!device_initial_bodies || i!=0u) &&
                (!device_partitions || (i!=2u && i!=3u)) &&
                (!device_admission || (i!=4u && i!=5u)))
@@ -1907,15 +1880,16 @@ public:
             inline_bodies_.size()*sizeof(native::GpuDyContactPrepBody);
         if(device_partitions) {
             const auto n=descriptor_capacity;
-            const std::size_t header_bytes=source_descriptors
-                ?(device_admission?64u:24u):20u;
-            const auto token_begin=header_bytes+raw_descriptor_count*16u;
-            const auto cursor_begin=token_begin+n*4u;
+            const auto workspace=bytes[17]?offsets[17]-offsets[15]:0u;
+            const auto color_begin=source_descriptors && !device_admission
+                ?partition_header_bytes:workspace;
+            const auto cursor_begin=workspace+device_color_count*4u+
+                raw_descriptor_count*16u;
             const auto body_state_begin=cursor_begin+color_cursor_count*4u;
-            // With no raw descriptors, the token range starts at the header.
-            // Packed tasks consume tokens and the full-row table directly.
+            // Host tokens alias their color slots; device-only raw
+            // descriptors immediately precede the workspace cursors.
             const std::array<std::uint32_t,5> scratch_header{
-                narrow(header_bytes),narrow(token_begin),
+                narrow(partition_header_bytes),narrow(color_begin),
                 narrow(cursor_begin),narrow(body_state_begin),
                 tiles_.empty()?0u:narrow(offsets[14])};
             write_input(offsets[15],scratch_header.data(),
@@ -1979,8 +1953,8 @@ public:
                     write_input(offsets[15]+scratch_header[1],
                                 source_descriptor_tokens_.data(),
                                 n*sizeof(std::uint32_t));
-                const auto table=offsets[15]+scratch_header[3]+
-                    color_body_count*12u;
+                const auto table=offsets[15]+partition_header_bytes+
+                    host_token_count*4u;
                 const auto total=narrow(source_descriptor_full_.size());
                 if(table<offsets[15] ||
                    table-offsets[15]>bytes[15] ||
@@ -1996,7 +1970,7 @@ public:
                                 source_descriptor_full_.size()*
                                     sizeof(native::GpuDyDistanceDescriptor));
             }else if(n)
-                write_input(offsets[15]+20u,
+                write_input(offsets[15]+partition_header_bytes,
                             descriptors.data(),descriptors.size_bytes());
         }
         if(!prepared_velocity_components_.empty())
@@ -2310,25 +2284,10 @@ public:
         uploads.insert(uploads.end(),actor_local_uploads_.begin(),
                        actor_local_uploads_.end());
         input_map.close();
-        std::array<compute::CopyCommand,3> staged{};
-        std::size_t staged_count=0u;
-        const auto append_input=[&](std::size_t destination,std::size_t source,
-                                    std::size_t bytes) {
-            if(!bytes)return;
-            const auto target=addresses_.resolve(address+destination,bytes);
-            staged[staged_count++]={input_upload_buffer_,source,
-                                    target.buffer,target.offset,bytes};
-        };
-        std::size_t destination=upload_begin,source=0u;
-        for(std::size_t i=0u;i<scratch_count;++i) {
-            const auto range=scratch_ranges[i];
-            const auto bytes=range.begin-destination;
-            append_input(destination,source,bytes);
-            source+=bytes;
-            destination=range.end;
-        }
-        append_input(destination,source,input_end-destination);
-        stream_.queue_uploads(uploads,std::span(staged.data(),staged_count));
+        const auto target=addresses_.resolve(address+upload_begin,uploaded_bytes);
+        const compute::CopyCommand staged{input_upload_buffer_,0u,
+            target.buffer,target.offset,uploaded_bytes};
+        stream_.queue_uploads(uploads,std::span(&staged,1u));
         actor_local_live_slots_=std::max(actor_local_live_slots_,needed_actor_slots);
         if(!joint_source_dirty_.empty())
             joint_source_live_slots_=std::max(joint_source_live_slots_,

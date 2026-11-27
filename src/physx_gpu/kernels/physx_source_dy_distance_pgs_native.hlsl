@@ -772,16 +772,19 @@ void sourceDyInitializeColorState(uint4 desc,uint bodyState,uint colors,uint i) 
 void sourceDyPartitionTask(uint taskId,uint scratch,uint errorAddress,
                            uint lane) {
     const uint4 views=arena.Load4(scratch);
-    const uint raw=scratch+views.x;
+    const bool sourceDescriptors=views.x==24u || views.x==64u;
+    const uint descriptorCapacity=arena.Load(p.integrationBias+20u);
     const uint colors=scratch+views.y;
     const uint cursors=scratch+views.z;
+    const uint raw=sourceDescriptors
+        ?cursors-descriptorCapacity*16u:scratch+views.x;
     const uint bodyState=scratch+views.w;
     const uint task=p.taskBias+taskId*36u;
     const uint4 ranges=sourceDyTaskLoad4(task);
     const uint first=ranges.x,last=ranges.y;
     const uint partitionFirst=ranges.z,partitionCapacity=ranges.w;
     if(lane==0u &&
-       (last<first || last>arena.Load(p.integrationBias+20u) ||
+       (last<first || last>descriptorCapacity ||
         partitionCapacity<partitionFirst ||
         partitionCapacity-partitionFirst!=last-first ||
         partitionCapacity>p.partitionCount))
@@ -830,8 +833,8 @@ void sourceDyPartitionTask(uint taskId,uint scratch,uint errorAddress,
     // The native Sc path transfers only encounter-order manager/joint
     // identities. Expand source descriptors from the existing resident
     // contact prep and joint-row records before partition coloring.
-    const bool sourceDescriptors=views.x==24u || views.x==64u;
-    const uint sourceTable=bodyState+p.bodyCount*12u;
+    const uint sourceTable=scratch+views.x+
+        (views.x==64u?0u:descriptorCapacity*4u);
     const uint sourceCount=sourceDescriptors?arena.Load(sourceTable):0u;
     const bool compareEndpoints=dyReuseColors!=0u;
     if(residentColor)GroupMemoryBarrierWithGroupSync();
@@ -2136,10 +2139,8 @@ void sourceDySolvePackedTask(uint taskId) {
     }
     const uint4 views=arena.Load4(scratch);
     const uint colors=scratch+views.y;
-    const uint bodyState=scratch+views.w;
-    // Coincident raw/token offsets denote an empty coloring workspace.
-    const uint sourceTable=bodyState+
-        (views.x==views.y?0u:p.bodyCount*12u);
+    const uint sourceTable=scratch+views.x+
+        (views.x==64u?0u:schedule.y*4u);
     uint4 desc;
     if(!sourceDyExpandDescriptor(
             sourceDyResponseToken(scratch,colors,ranges.x),
