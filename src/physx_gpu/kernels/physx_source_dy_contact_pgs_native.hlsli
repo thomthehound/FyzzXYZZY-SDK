@@ -59,6 +59,7 @@ bool contactImpulse(uint a,uint b,
 struct SourceDyContactSpan {
     uint4 manager;
     uint sourceBegin;
+    float impulseLimit;
     uint4 singlePatch,singleSettings;
 };
 
@@ -84,8 +85,13 @@ bool sourceDyLoadContactSpan(uint4 descriptor,uint errorAddress,
         return false;
     }
     const uint prepIndex=arena.Load(managerAddress+16u);
-    const bool pcm=prepIndex<p.prepCount &&
-        arena.Load(sourceDyPrepAddress(prepIndex)+32u)!=invalidBody;
+    if(prepIndex>=p.prepCount) {
+        sourceDyTaskErrorOr(errorAddress,64u);
+        return false;
+    }
+    const uint pair=sourceDyPrepAddress(prepIndex);
+    const bool pcm=arena.Load(pair+32u)!=invalidBody;
+    span.impulseLimit=asfloat(arena.Load(pair+40u));
     span.sourceBegin=pcm ||
         (p.launchControl&0x08000000u)!=0u
         ?arena.Load(managerAddress+20u):manager.z;
@@ -135,25 +141,25 @@ bool solveContactRows(uint4 descriptor,SourceDyContactSpan span,
                 sourceDyTaskErrorOr(errorAddress,256u);
                 return false;
             }
-            uint co=p.contactBias+pointIndex*64u;
+            uint co=p.contactBias+pointIndex*56u;
             float3 n=asfloat(arena.Load3(co));
             float3 ja=asfloat(arena.Load3(co+12u));
             float3 jb=asfloat(arena.Load3(co+24u));
             precise float normalVelocity=
                 sourceDyDot3(n,va)-sourceDyDot3(n,vb)+
                 sourceDyDot3(aa,ja)-sourceDyDot3(ab,jb);
-            float oldForce=contactScalar(co+56u);
-            float error=biased?contactScalar(co+48u):
-                                contactScalar(co+52u);
+            float oldForce=contactScalar(co+52u);
+            float error=biased?contactScalar(co+44u):
+                                contactScalar(co+48u);
             precise float proposed=
-                -normalVelocity*contactScalar(co+40u)+error;
+                -normalVelocity*contactScalar(co+36u)+error;
             if(!isfinite(proposed) || !isfinite(oldForce)) {
                 sourceDyTaskErrorOr(errorAddress,1024u);
                 return false;
             }
             precise float candidate=max(proposed,-oldForce);
-            precise float nextForce=min(contactScalar(co+60u),
-                contactScalar(co+44u)*oldForce+candidate);
+            precise float nextForce=min(span.impulseLimit,
+                contactScalar(co+40u)*oldForce+candidate);
             if(!isfinite(nextForce)) {
                 sourceDyTaskErrorOr(errorAddress,1024u);
                 return false;
@@ -172,7 +178,7 @@ bool solveContactRows(uint4 descriptor,SourceDyContactSpan span,
                 }
                 outputIndex=sourceBegin+local;
             }
-            storeContactScalar(co+56u,nextForce,outputIndex,finalPass);
+            storeContactScalar(co+52u,nextForce,outputIndex,finalPass);
             normalImpulse+=nextForce;
         }
         contactCursor+=patch.y;
@@ -185,18 +191,18 @@ bool solveContactRows(uint4 descriptor,SourceDyContactSpan span,
             (p.launchControl&0x20000000u)!=0u;
         precise float3 firstImpulse=0.0f;
         for(uint k=patch.x;k<patch.x+patch.z*2u;++k) {
-            uint fo=p.frictionBias+k*56u;
+            uint fo=p.frictionBias+k*52u;
             float3 n=asfloat(arena.Load3(fo));
             float3 ja=asfloat(arena.Load3(fo+12u));
             float3 jb=asfloat(arena.Load3(fo+24u));
             precise float tangentDelta=
                 sourceDyDot3(n,va)-sourceDyDot3(n,vb)+
                 sourceDyDot3(aa,ja)-sourceDyDot3(ab,jb);
-            float oldForce=frictionScalar(fo+52u);
-            float bias=biased?frictionScalar(fo+44u):0.0;
+            float oldForce=frictionScalar(fo+48u);
+            float bias=biased?frictionScalar(fo+40u):0.0;
             precise float candidate=oldForce+
-                (frictionScalar(fo+48u)-bias-tangentDelta)*
-                frictionScalar(fo+40u);
+                (frictionScalar(fo+44u)-bias-tangentDelta)*
+                frictionScalar(fo+36u);
             if(!isfinite(candidate) || !isfinite(maxStatic) ||
                !isfinite(maxDynamic)) {
                 sourceDyTaskErrorOr(errorAddress,2048u);
@@ -213,7 +219,7 @@ bool solveContactRows(uint4 descriptor,SourceDyContactSpan span,
             if(!contactImpulse(a,b,n,ja,jb,
                                va,vb,aa,ab,nextForce-oldForce,
                                ma,mb,errorAddress))return false;
-            arena.Store(fo+52u,asuint(nextForce));
+            arena.Store(fo+48u,asuint(nextForce));
             broken=broken||saturated;
             if(publishAnchors) {
                 // Consecutive tangent rows form one world-space anchor.
@@ -323,9 +329,6 @@ float prepBodyFloat(uint source,uint offset) {
     if((source&3u)==3u)return 0.0f;
     return asfloat(arena.Load(prepBodyOffset(source,offset)));
 }
-void prepStoreScalar(uint address,float value) {
-    arena.Store(address,asuint(value));
-}
 struct SourceDyContactBody {
     float3 position,velocity,angular;
     float4 orientation;
@@ -352,7 +355,6 @@ struct SourceDyContactFrame {
     SourceDyContactBody a,b;
     float restDistance,slop,restitution,damping,maxPenBias;
     float invDt,seconds,rigidBias,bounceThreshold;
-    uint impulseLimit;
     bool acceleration;
 };
 bool sourceDyEnsureContactFrame(uint pair,uint errorAddress,
@@ -372,7 +374,6 @@ bool sourceDyEnsureContactFrame(uint pair,uint errorAddress,
     frame.damping=coefficients.w;
     frame.maxPenBias=asfloat(settings.x);
     frame.acceleration=settings.y!=0u;
-    frame.impulseLimit=arena.Load(pair+40u);
     frame.invDt=timing.x;
     frame.seconds=timing.y;
     frame.rigidBias=timing.z;
@@ -427,7 +428,7 @@ void prepareContactRow(uint index,uint pair,uint contactBegin,
     float separation;
     if(!sourceDyContactGeometry(index,pair,contactBegin,contactCount,
                                 errorAddress,n,pos,separation))return;
-    uint co=p.contactBias+index*64u;
+    uint co=p.contactBias+index*56u;
     float3 w0=frame.a.angular,w1=frame.b.angular;
     float3 r0=cross(pos-frame.a.position,n);
     float3 r1=cross(pos-frame.b.position,n);
@@ -495,24 +496,18 @@ void prepareContactRow(uint index,uint pair,uint contactBegin,
         sourceDyTaskErrorOr(errorAddress,8192u);
         return;
     }
-    // A freshly prepared normal row begins with zero impulse.
-    // Its limit is common to the entire contact-manager pair.
     arena.Store3(co,asuint(n));
-    arena.Store(co+36u,0u);
-    arena.Store(co+56u,0u);
-    arena.Store(co+60u,frame.impulseLimit);
     arena.Store3(co+12u,asuint(ja));
     arena.Store3(co+24u,asuint(jb));
-    prepStoreScalar(co+40u,multiplier);
-    prepStoreScalar(co+44u,impulseMultiplier);
-    prepStoreScalar(co+48u,biasedError);
-    prepStoreScalar(co+52u,unbiasedError);
+    arena.Store4(co+36u,asuint(float4(multiplier,impulseMultiplier,
+                                       biasedError,unbiasedError)));
+    arena.Store(co+52u,0u);
 }
 
 void prepareFrictionRow(uint index,float3 tangent,float3 r0,float3 r1,
                         float3 error,SourceDyContactBody a,SourceDyContactBody b,
                         float slop,float invDt,float rigidBias,uint errorAddress) {
-    uint fo=p.frictionBias+index*56u;
+    uint fo=p.frictionBias+index*52u;
     float3 ax0=prepSlop(cross(r0,tangent),slop);
     float3 ax1=prepSlop(cross(r1,tangent),slop);
     float3 ja=sourceDyContactInertia(a,ax0);
@@ -534,11 +529,8 @@ void prepareFrictionRow(uint index,float3 tangent,float3 r0,float3 r1,
     arena.Store3(fo,asuint(tangent));
     arena.Store3(fo+12u,asuint(ja));
     arena.Store3(fo+24u,asuint(jb));
-    arena.Store(fo+36u,0u);
-    arena.Store(fo+52u,0u);
-    prepStoreScalar(fo+40u,velocityMultiplier);
-    prepStoreScalar(fo+44u,bias);
-    prepStoreScalar(fo+48u,targetVelocity);
+    arena.Store4(fo+36u,asuint(float4(velocityMultiplier,bias,
+                                       targetVelocity,0.0f)));
 }
 
 // GPU PCM supplies exactly one Gu normal/contact patch for each active

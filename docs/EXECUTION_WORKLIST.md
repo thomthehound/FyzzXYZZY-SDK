@@ -44,6 +44,9 @@ quality rather than individual dispatch or barrier counts.
 - [x] Retain single-patch contact metadata across packed iterations and
   publish final friction anchors directly from solved tangent rows.
   Stream variable-size manifolds without per-lane row arrays.
+- [x] Pack normal and tangent numerical rows to 56 and 52 bytes.
+  Resolve the shared contact impulse limit from its preparation record
+  once per descriptor span rather than duplicating it per normal row.
 
 These are implementation milestones, not hardware-performance acceptance.
 

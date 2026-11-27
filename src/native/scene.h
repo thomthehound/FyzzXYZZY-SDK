@@ -354,14 +354,13 @@ struct GpuDyGuContactInput {
 static_assert(sizeof(GpuDyGuContactInput)==28u);
 struct GpuDyContactPoint {
     float normal[3]{},angular_a[3]{},angular_b[3]{};
-    std::uint32_t reserved=0u;
     float velocity_multiplier=0.0f,impulse_multiplier=1.0f;
     float biased_error=0.0f,unbiased_error=0.0f;
-    float applied_force=0.0f,max_impulse=0.0f;
+    float applied_force=0.0f;
 };
-static_assert(sizeof(GpuDyContactPoint)==64u &&
-              offsetof(GpuDyContactPoint,velocity_multiplier)==40u &&
-              offsetof(GpuDyContactPoint,applied_force)==56u);
+static_assert(sizeof(GpuDyContactPoint)==56u &&
+              offsetof(GpuDyContactPoint,velocity_multiplier)==36u &&
+              offsetof(GpuDyContactPoint,applied_force)==52u);
 // The GPU constructs two tangent rows from each Sc-owned, body-local
 // friction anchor. Standalone conformance may retrieve the solved rows.
 struct GpuDyFrictionAnchorInput {
@@ -391,13 +390,12 @@ static_assert(sizeof(GpuDyFrictionAnchorImpulse)==12u);
 // The GPU friction row retains source PxReal coefficients and impulses.
 struct GpuDyFrictionRow {
     float tangent[3]{},angular_a[3]{},angular_b[3]{};
-    std::uint32_t reserved=0u;
     float velocity_multiplier=0.0f,bias=0.0f;
     float target_velocity=0.0f,applied_force=0.0f;
 };
-static_assert(sizeof(GpuDyFrictionRow)==56u &&
-              offsetof(GpuDyFrictionRow,velocity_multiplier)==40u &&
-              offsetof(GpuDyFrictionRow,applied_force)==52u);
+static_assert(sizeof(GpuDyFrictionRow)==52u &&
+              offsetof(GpuDyFrictionRow,velocity_multiplier)==36u &&
+              offsetof(GpuDyFrictionRow,applied_force)==48u);
 struct GpuDyContactPatch {
     std::uint32_t row_offset=0,contact_count=0,anchor_count=0,broken=0;
     float static_friction=0.0f,dynamic_friction=0.0f;

@@ -1601,8 +1601,8 @@ public:
             4u,4u,compact_friction?12u:16u,4u,32u};
         static_assert(offsetof(native::GpuDyJointRow,applied_force)==60u &&
                       offsetof(native::GpuDyDistanceTask,error)==32u &&
-                      offsetof(native::GpuDyContactPoint,applied_force)==56u &&
-                      offsetof(native::GpuDyFrictionRow,applied_force)==52u &&
+                      offsetof(native::GpuDyContactPoint,applied_force)==52u &&
+                      offsetof(native::GpuDyFrictionRow,applied_force)==48u &&
                       offsetof(native::GpuDyContactPatch,broken)==12u);
         std::array<std::size_t,6> result_offsets{};
         std::size_t output_bytes=0u;
