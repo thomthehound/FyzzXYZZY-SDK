@@ -853,7 +853,7 @@ void sourceDyPartitionTask(uint taskId,uint scratch,uint errorAddress,
                    destination<first || destination>=last) {
                     uint unused;
                     InterlockedAnd(dyReuseColors,0u,unused);
-                } else {
+                } else if(any(prior!=desc)) {
                     retainedDestination=destination;
                 }
                 if(any(prior!=desc))arena.Store4(raw+i*16u,desc);
@@ -897,8 +897,8 @@ void sourceDyPartitionTask(uint taskId,uint scratch,uint errorAddress,
         if(deviceAdmission &&
            !sourceDyRelocateContact(desc,scratch,i,errorAddress))
             continue;
-        // The retained permutation has disjoint descriptor destinations.
-        // Recoloring replaces these records if any endpoint changed.
+        // Unchanged descriptors retain their numerical slots. Changed
+        // topology triggers a complete recolor of the task.
         if(retainedDestination!=invalidBody)
             arena.Store4(p.descriptorBias+retainedDestination*16u,
                          uint4(desc.xyz,rowCount));
@@ -2615,7 +2615,10 @@ void main(uint3 group:SV_GroupID,uint3 lane:SV_GroupThreadID) {
                 return;
             }
             if(phase==colorTile) {
-                if(residentWide && lane.x==0u) {
+                // A retained task already owns its exact partition ends,
+                // wide-color list and execution mode, even if another
+                // task requires the global tile pool to be rebuilt.
+                if(residentWide && lane.x==0u && dyReuseColors==0u) {
                     const uint4 ranges=sourceDyTaskLoad4(t);
                     const uint2 bodyRange=sourceDyTaskLoad2(t+16u);
                     const uint record=sourceDyRetainedTask(taskId);

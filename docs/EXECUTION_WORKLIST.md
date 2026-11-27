@@ -86,6 +86,9 @@ quality rather than individual dispatch or barrier counts.
 - [x] Bound resident wide-color lists by full 128-descriptor groups
   and derive list offsets from disjoint task descriptor ranges.
   Initialize endpoint priorities only at their consuming phases.
+- [x] Preserve unchanged sorted descriptors and retained task mode and
+  wide-color lists. Rebuild global tiles from locally retained or
+  newly colored tasks without rescanning unchanged partitions.
 
 These are implementation milestones, not hardware-performance acceptance.
 
