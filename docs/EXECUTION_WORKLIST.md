@@ -54,6 +54,9 @@ quality rather than individual dispatch or barrier counts.
 - [x] Retain responding endpoints across consecutive serial descriptors
   by solver-body ordinal. Publish evicted endpoints and flush retained
   state at the run boundary; preserve per-descriptor inverse masses.
+- [x] Execute each phase of single-color fused tasks under exclusive
+  descriptor ownership. Retain numerical state within the phase and
+  synchronize only for cooperative motion capture and integration.
 
 These are implementation milestones, not hardware-performance acceptance.
 

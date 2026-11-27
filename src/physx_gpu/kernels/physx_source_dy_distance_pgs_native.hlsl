@@ -2220,6 +2220,82 @@ void publishTaskError(uint task,uint error) {
 }
 
 // Each lane owns one independent constraint and up to two integrated bodies.
+// The descriptor owns its responding endpoints for this iteration range.
+void sourceDySolveExclusive(uint4 desc,uint2 iters,uint2 iterations,
+                            uint2 bodies,uint errorAddress) {
+    SourceDyContactSpan span=(SourceDyContactSpan)0;
+    SourceDySolverPair state;
+    const bool joint=desc.w!=0u;
+    if((!joint && !sourceDyLoadContactSpan(desc,errorAddress,span)) ||
+       !sourceDyLoadSolverPair(desc,errorAddress,joint || span.manager.y!=0u,
+                              state)) {
+        return;
+    }
+    // One exclusively owned joint row has a bounded live working set.
+    const bool localJoint=desc.w==1u;
+    const uint jointOffset=p.distanceBias+desc.x*64u;
+    SourceDyJointRow jointRow=(SourceDyJointRow)0;
+    uint2 jointCoefficients=uint2(0u,0u);
+    float jointImpulse=0.0f;
+    if(localJoint) {
+        jointRow=sourceDyLoadJointRow(jointOffset);
+        jointCoefficients=arena.Load2(jointOffset+48u);
+        jointImpulse=loadScalar(jointOffset+60u);
+    }
+    const uint total=iters.x+max(iters.y,1u);
+    for(uint iteration=iterations.x;iteration<iterations.y;++iteration) {
+        const bool biased=iteration<iters.x;
+        const bool friction=!biased || iters.x-iteration<=3u;
+        const bool finalPass=iteration+1u==total;
+        bool solved;
+        if(localJoint) {
+            SourceDySolverPair local=state;
+            solved=sourceDySolveJointRow(jointRow,
+                biased?jointCoefficients.x:jointCoefficients.y,
+                errorAddress,local,jointImpulse);
+            if(solved)sourceDyCommitJointPair(desc,local,state);
+        } else if(joint)
+            solved=solveJointRows(desc,errorAddress,biased,state);
+        else
+            solved=solveContactRows(desc,span,errorAddress,biased,friction,
+                                    finalPass,state);
+        if(!solved)return;
+        if(iteration+1u==iters.x) {
+            // Position integration consumes the biased-phase snapshot,
+            // without publishing the live velocity deltas.
+            for(uint body=bodies.x;body<bodies.y;++body) {
+                const uint ordinal=sourceDyBodyOrdinal(body);
+                if(ordinal>=p.bodyCount) {
+                    sourceDyTaskErrorOr(errorAddress,8u);
+                    continue;
+                }
+                const uint base=p.bodyBias+ordinal*52u;
+                if(ordinal==desc.z && state.mb>0.0f) {
+                    arena.Store3(base+24u,asuint(state.vb));
+                    arena.Store3(base+36u,asuint(state.ab));
+                } else if(ordinal==desc.y && state.ma>0.0f) {
+                    arena.Store3(base+24u,asuint(state.va));
+                    arena.Store3(base+36u,asuint(state.aa));
+                } else {
+                    arena.Store3(base+24u,arena.Load3(base));
+                    arena.Store3(base+36u,arena.Load3(base+12u));
+                }
+            }
+        }
+        if(desc.y==desc.z && desc.y!=invalidBody) {
+            if(state.mb>0.0f) {
+                state.va=state.vb;
+                state.aa=state.ab;
+            } else if(state.ma>0.0f) {
+                state.vb=state.va;
+                state.ab=state.aa;
+            }
+        }
+    }
+    if(localJoint)arena.Store(jointOffset+60u,asuint(jointImpulse));
+    sourceDyStoreSolverPair(desc,state);
+}
+
 void sourceDySolvePackedTask(uint taskId) {
     const uint task=p.taskBias+taskId*36u;
     const uint4 ranges=sourceDyTaskLoad4(task);
@@ -2286,82 +2362,12 @@ void sourceDySolvePackedTask(uint taskId) {
         return;
     }
 
-    SourceDyContactSpan span=(SourceDyContactSpan)0;
-    SourceDySolverPair state;
-    const bool joint=desc.w!=0u;
-    if((!joint && !sourceDyLoadContactSpan(desc,errorAddress,span)) ||
-       !sourceDyLoadSolverPair(desc,errorAddress,joint || span.manager.y!=0u,
-                              state)) {
-        publishTaskError(taskId,sourceDyTaskLoad(errorAddress));
-        return;
-    }
-    // One exclusively owned joint row has a bounded live working set.
-    const bool localJoint=desc.w==1u;
-    const uint jointOffset=p.distanceBias+desc.x*64u;
-    SourceDyJointRow jointRow=(SourceDyJointRow)0;
-    uint2 jointCoefficients=uint2(0u,0u);
-    float jointImpulse=0.0f;
-    if(localJoint) {
-        jointRow=sourceDyLoadJointRow(jointOffset);
-        jointCoefficients=arena.Load2(jointOffset+48u);
-        jointImpulse=loadScalar(jointOffset+60u);
-    }
     const uint total=iters.x+max(iters.y,1u);
-    for(uint iteration=0u;iteration<total;++iteration) {
-        const bool biased=iteration<iters.x;
-        const bool friction=!biased || iters.x-iteration<=3u;
-        const bool finalPass=iteration+1u==total;
-        bool solved;
-        if(localJoint) {
-            SourceDySolverPair local=state;
-            solved=sourceDySolveJointRow(jointRow,
-                biased?jointCoefficients.x:jointCoefficients.y,
-                errorAddress,local,jointImpulse);
-            if(solved)sourceDyCommitJointPair(desc,local,state);
-        } else if(joint)
-            solved=solveJointRows(desc,errorAddress,biased,state);
-        else
-            solved=solveContactRows(desc,span,errorAddress,biased,friction,
-                                    finalPass,state);
-        if(!solved)break;
-        if(iteration+1u==iters.x) {
-            // Position integration consumes the biased-phase snapshot,
-            // without publishing the live velocity deltas.
-            for(uint body=bodies.x;body<bodies.y;++body) {
-                const uint ordinal=sourceDyBodyOrdinal(body);
-                if(ordinal>=p.bodyCount) {
-                    sourceDyTaskErrorOr(errorAddress,8u);
-                    continue;
-                }
-                const uint base=p.bodyBias+ordinal*52u;
-                if(ordinal==desc.z && state.mb>0.0f) {
-                    arena.Store3(base+24u,asuint(state.vb));
-                    arena.Store3(base+36u,asuint(state.ab));
-                } else if(ordinal==desc.y && state.ma>0.0f) {
-                    arena.Store3(base+24u,asuint(state.va));
-                    arena.Store3(base+36u,asuint(state.aa));
-                } else {
-                    arena.Store3(base+24u,arena.Load3(base));
-                    arena.Store3(base+36u,arena.Load3(base+12u));
-                }
-            }
-        }
-        if(desc.y==desc.z && desc.y!=invalidBody) {
-            if(state.mb>0.0f) {
-                state.va=state.vb;
-                state.aa=state.ab;
-            } else if(state.ma>0.0f) {
-                state.vb=state.va;
-                state.ab=state.aa;
-            }
-        }
-    }
+    sourceDySolveExclusive(desc,iters,uint2(0u,total),bodies,errorAddress);
     if(sourceDyTaskLoad(errorAddress)!=0u) {
         publishTaskError(taskId,sourceDyTaskLoad(errorAddress));
         return;
     }
-    if(localJoint)arena.Store(jointOffset+60u,asuint(jointImpulse));
-    sourceDyStoreSolverPair(desc,state);
     for(uint body=bodies.x;body<bodies.y;++body) {
         const uint ordinal=sourceDyBodyOrdinal(body);
         if(ordinal>=p.bodyCount)
@@ -2911,7 +2917,34 @@ void main(uint3 group:SV_GroupID,uint3 lane:SV_GroupThreadID) {
             AllMemoryBarrierWithGroupSync();
             serialPartitions=dySingletonPartitions!=0u;
         }
-        if(fused || phase==partitionTile || phase==motionTile) {
+        const bool independent=fused && devicePartitions &&
+            partitions.y-partitions.x==1u && descriptors.y>descriptors.x;
+        if(independent) {
+            if(arena.Load(p.partitionBias+partitions.x*4u)!=descriptors.y) {
+                if(lane.x==0u) {
+                    sourceDyTaskErrorOr(endError,4u);
+                    publishTaskError(taskId,4u);
+                }
+                return;
+            }
+            // A single conflict partition has disjoint responding bodies.
+            // Each lane can finish a numerical phase before motion capture.
+            const uint total=iters.x+max(iters.y,1u);
+            for(uint pass=0u;pass<2u;++pass) {
+                const uint2 iterations=pass==0u?uint2(0u,iters.x):
+                    uint2(iters.x,total);
+                for(uint i=descriptors.x+lane.x;i<descriptors.y;i+=128u)
+                    sourceDySolveExclusive(
+                        arena.Load4(p.descriptorBias+i*16u),iters,iterations,
+                        uint2(0u,0u),endError);
+                if(pass==0u) {
+                    AllMemoryBarrierWithGroupSync();
+                    for(uint i=bodies.x+lane.x;i<bodies.y;i+=128u)
+                        saveMotion(i,endError);
+                    AllMemoryBarrierWithGroupSync();
+                }
+            }
+        } else if(fused || phase==partitionTile || phase==motionTile) {
             const uint total=iters.x+max(iters.y,1u);
             if(!fused && iter>=total)return;
             const uint endIteration=fused ? total : min(iter+1u,total);
