@@ -129,6 +129,10 @@ quality rather than individual dispatch or barrier counts.
   launches. Keep per-launch parameters and indirect arguments independent,
   and retain source-root lifetime checks for shared declarations.
 
+- [x] Retain prepared table and range identities for shared declarations.
+  Alternating numerical phases and indirect chunks reuse their distinct
+  plans without repeating physical table matching or range normalization.
+
 These are implementation milestones, not hardware-performance acceptance.
 
 ## Execution and lifetime work

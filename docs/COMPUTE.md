@@ -113,10 +113,12 @@ Dy shares immutable, frame-local resource declarations between launches
 of the same numerical phase. Launch dimensions, indirect arguments and
 parameter bytes remain command-owned. Recorded source consumers retain
 every resource in the shared declaration through submission or discard.
-Descriptor tables also retain the latest matching logical access declaration. Repeated dispatches reuse validated, backend-ordered
-range lists independent of constants and launch dimensions. Access intent,
-extent, explicit phase accesses and indirect argument changes require a
-new range list. Range lists resolve resources to dense batch-local
+Each shared declaration and pipeline resolves its physical table once per
+batch. Its direct and distinct indirect argument ranges retain separate
+validated access plans across alternating launches. Owned declarations
+reuse the latest matching plan per table. Constants and launch dimensions
+do not affect range identity; launch shape is validated independently.
+Range lists resolve resources to dense batch-local
 ordinals; dependency processing does not look up resource handles per
 interval. Vulkan leaves unchanged interval states intact while retaining
 write-after-write barriers. D3D12 retains reader ranges only until the

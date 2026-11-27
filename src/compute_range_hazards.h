@@ -9,6 +9,7 @@
 #include <cstdint>
 #include <limits>
 #include <span>
+#include <unordered_map>
 #include <vector>
 
 namespace fyzz::compute {
@@ -146,6 +147,10 @@ inline bool same_dispatch_accesses(const DispatchCommand& a,
     return true;
 }
 
+struct PreparedDispatch {
+    std::size_t table,range_plan;
+};
+
 // Batch-local immutable ranges; queue dependency history is not cached.
 class DispatchRangePlans {
     static constexpr auto missing=std::numeric_limits<std::size_t>::max();
@@ -153,24 +158,79 @@ class DispatchRangePlans {
         const DispatchCommand* command;
         std::size_t begin,count;
     };
+    struct DeclarationKey {
+        const DispatchResources* resources;
+        PipelineId pipeline;
+        bool operator==(const DeclarationKey&) const=default;
+    };
+    struct IndirectKey {
+        BufferId buffer;
+        std::size_t offset;
+        bool operator==(const IndirectKey&) const=default;
+    };
+    struct DeclarationHash {
+        std::size_t operator()(DeclarationKey key) const noexcept {
+            const auto hash=std::hash<const DispatchResources*>{}(key.resources);
+            return hash^(std::hash<PipelineId>{}(key.pipeline)+0x9e3779b9u+
+                         (hash<<6u)+(hash>>2u));
+        }
+    };
+    struct IndirectHash {
+        std::size_t operator()(IndirectKey key) const noexcept {
+            const auto hash=std::hash<BufferId>{}(key.buffer);
+            return hash^(std::hash<std::size_t>{}(key.offset)+0x9e3779b9u+
+                         (hash<<6u)+(hash>>2u));
+        }
+    };
+    struct SharedTable {
+        std::size_t table;
+        std::size_t direct=missing;
+        std::unordered_map<IndirectKey,std::size_t,IndirectHash> indirect;
+    };
+    std::unordered_map<DeclarationKey,SharedTable,DeclarationHash> shared_;
     std::vector<Plan> plans_;
     std::vector<std::size_t> latest_;
     std::vector<OperationRangeUse> ranges_,scratch_;
-public:
+
     template<class Prepare>
-    std::size_t prepare(std::size_t table,const DispatchCommand& command,
-                        Prepare prepare_ranges) {
-        if(table>=latest_.size())latest_.resize(table+1u,missing);
-        auto& latest=latest_[table];
-        if(latest!=missing && same_dispatch_accesses(*plans_[latest].command,command))
-            return latest;
+    std::size_t append(std::size_t table,const DispatchCommand& command,
+                       Prepare& prepare_ranges) {
         scratch_.clear();
-        prepare_ranges(scratch_);
+        prepare_ranges(table,scratch_);
         const auto begin=ranges_.size();
         ranges_.insert(ranges_.end(),scratch_.begin(),scratch_.end());
-        latest=plans_.size();
         plans_.push_back({&command,begin,scratch_.size()});
-        return latest;
+        return plans_.size()-1u;
+    }
+public:
+    template<class Resolve,class Prepare>
+    PreparedDispatch prepare(const DispatchCommand& command,
+                             Resolve resolve_table,Prepare prepare_ranges) {
+        command.validate_resource_ownership();
+        if(command.resources) {
+            const DeclarationKey key{command.resources.get(),command.pipeline};
+            auto found=shared_.find(key);
+            if(found==shared_.end())
+                found=shared_.emplace(key,SharedTable{resolve_table()}).first;
+            auto& entry=found->second;
+            if(!command.indirect) {
+                if(entry.direct==missing)
+                    entry.direct=append(entry.table,command,prepare_ranges);
+                return {entry.table,entry.direct};
+            }
+            const IndirectKey args{command.indirect->buffer,command.indirect->offset};
+            const auto prior=entry.indirect.find(args);
+            if(prior!=entry.indirect.end())return {entry.table,prior->second};
+            const auto plan=append(entry.table,command,prepare_ranges);
+            entry.indirect.emplace(args,plan);
+            return {entry.table,plan};
+        }
+        const auto table=resolve_table();
+        if(table>=latest_.size())latest_.resize(table+1u,missing);
+        auto& latest=latest_[table];
+        if(latest==missing || !same_dispatch_accesses(*plans_[latest].command,command))
+            latest=append(table,command,prepare_ranges);
+        return {table,latest};
     }
     std::span<const OperationRangeUse> ranges(std::size_t plan) const {
         const auto& p=plans_[plan];

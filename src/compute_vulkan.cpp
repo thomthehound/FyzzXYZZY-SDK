@@ -1344,7 +1344,8 @@ struct Context::Impl {
         std::vector<const BufferBinding*> slots;
         std::vector<PipelineId> table_pipelines;
         std::vector<const Pipeline*> table_native_pipelines;
-        std::vector<std::size_t> table_offsets,dispatch_tables,dispatch_range_plans;
+        std::vector<std::size_t> table_offsets;
+        std::vector<PreparedDispatch> prepared_dispatches;
         DispatchRangePlans range_plans;
         std::vector<OperationRangeUse> range_scratch;
         std::unordered_map<std::size_t,std::vector<std::size_t>> table_lookup;
@@ -1391,112 +1392,112 @@ struct Context::Impl {
                 }
             } else {
                 const auto& dispatch = std::get<DispatchCommand>(operation);
-                dispatch.validate_resource_ownership();
                 const auto bindings=dispatch.bindings();
-                // Canonical slot order preserves identity for unordered Vulkan bindings.
-                slots.assign(bindings.size(),nullptr);
-                for(const auto& binding:bindings) {
-                    if(binding.slot>=slots.size() || slots[binding.slot])
-                        throw std::invalid_argument("Invalid or duplicate compute binding slot");
-                    slots[binding.slot]=&binding;
-                }
-                std::size_t key=dispatch.pipeline;
-                mix_key(key,slots.size());
-                for(const auto* binding:slots) {
-                    mix_key(key,binding->buffer);
-                    mix_key(key,binding->offset);
-                    mix_key(key,binding->bytes);
-                }
-                auto& candidates=table_lookup[key];
-                auto table=table_pipelines.size();
-                for(const auto candidate:candidates) {
-                    if(table_pipelines[candidate]!=dispatch.pipeline ||
-                       table_native_pipelines[candidate]->binding_count!=slots.size())
-                        continue;
-                    const auto prior=table_offsets[candidate];
-                    bool same=true;
-                    for(std::size_t slot=0u;slot<slots.size();++slot) {
-                        const auto& old=validated_dispatches[prior+slot];
-                        const auto& next=*slots[slot];
-                        if(validated_buffer_ids[prior+slot]!=next.buffer ||
-                           old.offset!=next.offset || old.range!=next.bytes) {
-                            same=false;
+                const auto prepared=range_plans.prepare(dispatch,[&]() {
+                    // Canonical slot order preserves identity for unordered Vulkan bindings.
+                    slots.assign(bindings.size(),nullptr);
+                    for(const auto& binding:bindings) {
+                        if(binding.slot>=slots.size() || slots[binding.slot])
+                            throw std::invalid_argument("Invalid or duplicate compute binding slot");
+                        slots[binding.slot]=&binding;
+                    }
+                    std::size_t key=dispatch.pipeline;
+                    mix_key(key,slots.size());
+                    for(const auto* binding:slots) {
+                        mix_key(key,binding->buffer);
+                        mix_key(key,binding->offset);
+                        mix_key(key,binding->bytes);
+                    }
+                    auto& candidates=table_lookup[key];
+                    auto table=table_pipelines.size();
+                    for(const auto candidate:candidates) {
+                        if(table_pipelines[candidate]!=dispatch.pipeline ||
+                           table_native_pipelines[candidate]->binding_count!=slots.size())
+                            continue;
+                        const auto prior=table_offsets[candidate];
+                        bool same=true;
+                        for(std::size_t slot=0u;slot<slots.size();++slot) {
+                            const auto& old=validated_dispatches[prior+slot];
+                            const auto& next=*slots[slot];
+                            if(validated_buffer_ids[prior+slot]!=next.buffer ||
+                               old.offset!=next.offset || old.range!=next.bytes) {
+                                same=false;
+                                break;
+                            }
+                        }
+                        if(same) {
+                            table=candidate;
                             break;
                         }
                     }
-                    if(same) {
-                        table=candidate;
-                        break;
-                    }
-                }
-                if(table==table_pipelines.size()) {
-                    const auto& pipeline=get_pipeline(dispatch.pipeline);
-                    if(slots.size()!=pipeline.binding_count)
-                        throw std::invalid_argument("Incorrect number of compute buffer bindings");
-                    table_offsets.push_back(validated_dispatches.size());
-                    for(const auto* binding:slots) {
-                        const auto& buffer=reference(binding->buffer);
-                        if(!buffer.storage_eligible)
-                            throw std::invalid_argument("Transfer-only Vulkan staging cannot bind as shader storage");
-                        validate_range(buffer.bytes,binding->offset,binding->bytes);
-                        if(!binding->bytes || binding->bytes>limits.maxStorageBufferRange)
-                            throw std::invalid_argument("Invalid compute descriptor range");
-                        if(binding->offset%limits.minStorageBufferOffsetAlignment)
-                            throw std::invalid_argument("Compute descriptor offset is misaligned");
-                        validated_dispatches.push_back({buffer.buffer,binding->offset,binding->bytes});
-                        validated_buffer_ids.push_back(binding->buffer);
-                    }
-                    table_pipelines.push_back(dispatch.pipeline);
-                    table_native_pipelines.push_back(&pipeline);
-                    candidates.push_back(table);
-                    descriptor_count+=pipeline.binding_count;
-                }
-                const auto& pipeline=*table_native_pipelines[table];
-                validate_dispatch_shape(pipeline,dispatch);
-                dispatch_tables.push_back(table);
-                dispatch_range_plans.push_back(range_plans.prepare(table,dispatch,
-                    [&](std::vector<OperationRangeUse>& ranges) {
-                        range_scratch.clear();
-                        for(const auto& binding:bindings)
-                            validate_binding_access(binding,!pipeline.view_kinds.empty() &&
-                                read_only_view(pipeline.view_kinds[binding.slot]));
-                        if(dispatch.indirect) {
-                            const auto& indirect=*dispatch.indirect;
-                            const auto& argument=reference(indirect.buffer);
-                            if(!argument.storage_eligible || indirect.offset%4u)
-                                throw std::invalid_argument("Invalid Vulkan indirect dispatch arguments");
-                            validate_range(argument.bytes,indirect.offset,12u);
-                            for(const auto& binding:bindings)
-                                if(binding.buffer==indirect.buffer)
-                                    throw std::invalid_argument("Indirect arguments cannot alias shader bindings");
+                    if(table==table_pipelines.size()) {
+                        const auto& pipeline=get_pipeline(dispatch.pipeline);
+                        if(slots.size()!=pipeline.binding_count)
+                            throw std::invalid_argument("Incorrect number of compute buffer bindings");
+                        table_offsets.push_back(validated_dispatches.size());
+                        for(const auto* binding:slots) {
+                            const auto& buffer=reference(binding->buffer);
+                            if(!buffer.storage_eligible)
+                                throw std::invalid_argument("Transfer-only Vulkan staging cannot bind as shader storage");
+                            validate_range(buffer.bytes,binding->offset,binding->bytes);
+                            if(!binding->bytes || binding->bytes>limits.maxStorageBufferRange)
+                                throw std::invalid_argument("Invalid compute descriptor range");
+                            if(binding->offset%limits.minStorageBufferOffsetAlignment)
+                                throw std::invalid_argument("Compute descriptor offset is misaligned");
+                            validated_dispatches.push_back({buffer.buffer,binding->offset,binding->bytes});
+                            validated_buffer_ids.push_back(binding->buffer);
                         }
-                        dispatch.for_each_access([&](const BufferBinding& binding,
-                                                BufferAccessExtent extent,BufferAccess access) {
-                            if(!pipeline.view_kinds.empty() &&
-                               access!=BufferAccess::Read &&
-                               access!=BufferAccess::Unspecified) {
-                                const auto kind=pipeline.view_kinds[binding.slot];
-                                if(kind==StorageBufferViewKind::RawRead ||
-                                   kind==StorageBufferViewKind::Structured32Read)
-                                    throw std::invalid_argument("Dispatch access writes read-only view");
-                            }
-                            const bool reads=access!=BufferAccess::Write;
-                            const bool writes=access!=BufferAccess::Read;
-                            const VkAccessFlags2 mask=
-                                (reads?VK_ACCESS_2_SHADER_STORAGE_READ_BIT:0u) |
-                                (writes?VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT:0u);
-                            const auto begin=binding.offset+extent.offset;
-                            range_scratch.push_back({resource_ordinals.at(binding.buffer),
-                                begin,begin+extent.bytes,
-                                {VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,mask},writes});
-                        });
-                        if(dispatch.indirect)
-                            range_scratch.push_back({resource_ordinals.at(dispatch.indirect->buffer),
-                                dispatch.indirect->offset,dispatch.indirect->offset+12u,
-                                {VK_PIPELINE_STAGE_2_DRAW_INDIRECT_BIT,
-                                 VK_ACCESS_2_INDIRECT_COMMAND_READ_BIT},false});
-                        normalize_operation_ranges(range_scratch,ranges);
-                    }));
+                        table_pipelines.push_back(dispatch.pipeline);
+                        table_native_pipelines.push_back(&pipeline);
+                        candidates.push_back(table);
+                        descriptor_count+=pipeline.binding_count;
+                    }
+                    return table;
+                },[&](std::size_t table,std::vector<OperationRangeUse>& ranges) {
+                    const auto& pipeline=*table_native_pipelines[table];
+                    range_scratch.clear();
+                    for(const auto& binding:bindings)
+                        validate_binding_access(binding,!pipeline.view_kinds.empty() &&
+                            read_only_view(pipeline.view_kinds[binding.slot]));
+                    if(dispatch.indirect) {
+                        const auto& indirect=*dispatch.indirect;
+                        const auto& argument=reference(indirect.buffer);
+                        if(!argument.storage_eligible || indirect.offset%4u)
+                            throw std::invalid_argument("Invalid Vulkan indirect dispatch arguments");
+                        validate_range(argument.bytes,indirect.offset,12u);
+                        for(const auto& binding:bindings)
+                            if(binding.buffer==indirect.buffer)
+                                throw std::invalid_argument("Indirect arguments cannot alias shader bindings");
+                    }
+                    dispatch.for_each_access([&](const BufferBinding& binding,
+                                            BufferAccessExtent extent,BufferAccess access) {
+                        if(!pipeline.view_kinds.empty() &&
+                           access!=BufferAccess::Read &&
+                           access!=BufferAccess::Unspecified) {
+                            const auto kind=pipeline.view_kinds[binding.slot];
+                            if(kind==StorageBufferViewKind::RawRead ||
+                               kind==StorageBufferViewKind::Structured32Read)
+                                throw std::invalid_argument("Dispatch access writes read-only view");
+                        }
+                        const bool reads=access!=BufferAccess::Write;
+                        const bool writes=access!=BufferAccess::Read;
+                        const VkAccessFlags2 mask=
+                            (reads?VK_ACCESS_2_SHADER_STORAGE_READ_BIT:0u) |
+                            (writes?VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT:0u);
+                        const auto begin=binding.offset+extent.offset;
+                        range_scratch.push_back({resource_ordinals.at(binding.buffer),
+                            begin,begin+extent.bytes,
+                            {VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,mask},writes});
+                    });
+                    if(dispatch.indirect)
+                        range_scratch.push_back({resource_ordinals.at(dispatch.indirect->buffer),
+                            dispatch.indirect->offset,dispatch.indirect->offset+12u,
+                            {VK_PIPELINE_STAGE_2_DRAW_INDIRECT_BIT,
+                             VK_ACCESS_2_INDIRECT_COMMAND_READ_BIT},false});
+                    normalize_operation_ranges(range_scratch,ranges);
+                });
+                validate_dispatch_shape(*table_native_pipelines[prepared.table],dispatch);
+                prepared_dispatches.push_back(prepared);
                 ++dispatch_count;
             }
         }
@@ -1814,9 +1815,10 @@ struct Context::Impl {
                 }
 
                 const auto& dispatch = std::get<DispatchCommand>(operation);
-                const auto table=dispatch_tables[dispatch_index];
+                const auto prepared=prepared_dispatches[dispatch_index++];
+                const auto table=prepared.table;
                 const auto& pipeline=*table_native_pipelines[table];
-                before_operation(range_plans.ranges(dispatch_range_plans[dispatch_index++]));
+                before_operation(range_plans.ranges(prepared.range_plan));
                 const VkDescriptorSet descriptor_set=descriptor_sets[table];
 
                 if(bound_pipeline!=pipeline.pipeline) {

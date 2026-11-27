@@ -166,9 +166,14 @@ void verify_dispatch_range_plans() {
     indirect.indirect=DispatchIndirectArgs{8u,0u};
     auto invalid=reader;
     invalid.accesses[0].extent.bytes=65u;
-    std::size_t builds=0u;
+    std::size_t builds=0u,resolutions=0u;
     const auto prepare=[&](std::size_t table,const DispatchCommand& cmd) {
-        return plans.prepare(table,cmd,[&](auto& ranges) {
+        const auto prepared=plans.prepare(cmd,[&] {
+            ++resolutions;
+            return table;
+        },[&](std::size_t resolved,auto& ranges) {
+            if(resolved!=table)
+                throw std::runtime_error("Dispatch reused the wrong physical table");
             ++builds;
             cmd.for_each_access([&](const auto& binding,auto extent,auto access) {
                 const auto begin=binding.offset+extent.offset;
@@ -179,6 +184,9 @@ void verify_dispatch_range_plans() {
                 ranges.push_back({cmd.indirect->buffer,cmd.indirect->offset,
                                   cmd.indirect->offset+12u,{4u,8u},false});
         });
+        if(prepared.table!=table)
+            throw std::runtime_error("Dispatch reused the wrong physical table");
+        return prepared.range_plan;
     };
     const auto a=prepare(0u,first);
     const auto b=prepare(1u,other);
@@ -195,6 +203,50 @@ void verify_dispatch_range_plans() {
     catch(const std::invalid_argument&) { rejected=true; }
     if(!rejected || prepare(1u,indirect)!=e)
         throw std::runtime_error("Malformed access reused or invalidated a valid range plan");
+
+    auto phase=first;
+    phase.share_resources();
+    auto alternate=reader;
+    alternate.share_resources();
+    auto chunk0=phase;
+    chunk0.indirect=DispatchIndirectArgs{8u,0u};
+    auto chunk1=chunk0;
+    chunk1.indirect->offset=16u;
+    auto other_buffer=chunk0;
+    other_buffer.indirect->buffer=9u;
+    auto other_pipeline=phase;
+    other_pipeline.pipeline=2u;
+    const auto direct_plan=prepare(0u,phase);
+    const auto alt_plan=prepare(0u,alternate);
+    const auto chunk0_plan=prepare(0u,chunk0);
+    const auto chunk1_plan=prepare(0u,chunk1);
+    const auto other_buffer_plan=prepare(0u,other_buffer);
+    const auto pipeline_plan=prepare(2u,other_pipeline);
+    const auto initial_builds=builds,initial_resolutions=resolutions;
+    for(unsigned iteration=0u;iteration<64u;++iteration) {
+        chunk0.push_constants={static_cast<std::uint8_t>(iteration)};
+        if(prepare(0u,chunk0)!=chunk0_plan ||
+           prepare(0u,chunk1)!=chunk1_plan ||
+           prepare(0u,alternate)!=alt_plan ||
+           prepare(0u,phase)!=direct_plan ||
+           prepare(0u,other_buffer)!=other_buffer_plan ||
+           prepare(2u,other_pipeline)!=pipeline_plan)
+            throw std::runtime_error("Alternating launches rebuilt a shared range plan");
+    }
+    if(builds!=initial_builds || resolutions!=initial_resolutions ||
+       plans.ranges(direct_plan).size()!=1u ||
+       plans.ranges(chunk0_plan)[1].begin!=0u ||
+       plans.ranges(chunk1_plan)[1].begin!=16u ||
+       plans.ranges(other_buffer_plan)[1].buffer!=9u ||
+       plans.ranges(alt_plan)[0].writes)
+        throw std::runtime_error("Shared resource identity lost physical or indirect dependencies");
+    auto mixed=phase;
+    mixed.buffers=first.buffers;
+    rejected=false;
+    try { prepare(0u,mixed); }
+    catch(const std::invalid_argument&) { rejected=true; }
+    if(!rejected)
+        throw std::runtime_error("Shared preparation accepted mixed resource ownership");
 }
 
 void verify_buffer_ranges() {

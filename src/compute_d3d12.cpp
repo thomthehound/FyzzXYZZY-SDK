@@ -1159,7 +1159,7 @@ struct Context::Impl {
         };
         std::vector<DescriptorTable> descriptor_tables;
         std::unordered_map<std::size_t,std::vector<std::size_t>> descriptor_lookup;
-        std::vector<std::size_t> dispatch_table_indices,dispatch_range_plans;
+        std::vector<PreparedDispatch> prepared_dispatches;
         DispatchRangePlans range_plans;
         std::size_t descriptor_count = 0;
         bool uses_indirect = false;
@@ -1231,109 +1231,109 @@ struct Context::Impl {
                 upload_total_bytes+=upload->bytes.size();
             } else {
                 const auto& dispatch = std::get<DispatchCommand>(op);
-                dispatch.validate_resource_ownership();
                 const auto bindings=dispatch.bindings();
                 uses_indirect |= dispatch.indirect.has_value();
-                std::size_t key=std::hash<PipelineId>{}(dispatch.pipeline);
-                for(const auto& binding:bindings) {
-                    mix_key(key,binding.slot);
-                    mix_key(key,binding.buffer);
-                    mix_key(key,binding.offset);
-                    mix_key(key,binding.bytes);
-                }
-                auto& candidates=descriptor_lookup[key];
-                std::size_t table=descriptor_tables.size();
-                for(const auto candidate:candidates) {
-                    const auto& existing=descriptor_tables[candidate];
-                    if(existing.pipeline==dispatch.pipeline &&
-                       same_bindings(existing.views,bindings)) {
-                        table=candidate;
-                        break;
+                const auto prepared=range_plans.prepare(dispatch,[&]() {
+                    std::size_t key=std::hash<PipelineId>{}(dispatch.pipeline);
+                    for(const auto& binding:bindings) {
+                        mix_key(key,binding.slot);
+                        mix_key(key,binding.buffer);
+                        mix_key(key,binding.offset);
+                        mix_key(key,binding.bytes);
                     }
-                }
-                if(table==descriptor_tables.size()) {
-                    const auto& pipeline=get_pipeline(dispatch.pipeline);
-                    const auto binding_count=pipeline.bindings;
-                    if(bindings.size()!=binding_count)
-                        throw std::invalid_argument("Incorrect number of D3D12 compute bindings");
-                    if(binding_count>
-                       std::numeric_limits<UINT>::max()-descriptor_count)
-                        throw std::out_of_range("D3D12 descriptor heap capacity exceeded");
-                    DescriptorTable prepared{dispatch.pipeline,&pipeline,{},
-                                             static_cast<UINT>(descriptor_count)};
-                    prepared.views.reserve(binding_count);
-                    for(std::size_t i=0u;i<binding_count;++i) {
-                        const auto& binding=bindings[i];
-                        if(binding.slot!=i || !binding.bytes ||
-                           binding.offset%4u || binding.bytes%4u ||
-                           binding.bytes/4u>std::numeric_limits<UINT>::max())
-                            throw std::invalid_argument("Invalid D3D12 structured buffer view");
-                        const auto kind=pipeline.view_kinds[i];
-                        if((kind==StorageBufferViewKind::RawRead ||
-                            kind==StorageBufferViewKind::RawReadWrite) &&
-                           binding.offset%16u)
-                            throw std::invalid_argument("D3D12 RAW buffer view base must be 16-byte aligned");
-                        const auto& buffer=*reference(binding.buffer).buffer;
-                        if(buffer.upload_only)
-                            throw std::invalid_argument("Upload storage cannot be a shader binding");
-                        validate_range(buffer.bytes,binding.offset,binding.bytes);
-                        // One native resource cannot mix SRV and UAV views.
-                        for(std::size_t prior=0u;prior<i;++prior)
-                            if(prepared.views[prior].buffer==binding.buffer &&
-                               read_only_view(pipeline.view_kinds[prior])!=read_only_view(kind))
-                                throw std::invalid_argument("D3D12 cannot bind one resource as SRV and UAV simultaneously");
-                        prepared.views.push_back({binding.buffer,binding.offset,binding.bytes,
-                                                  buffer.resource.Get()});
-                    }
-                    descriptor_tables.push_back(std::move(prepared));
-                    candidates.push_back(table);
-                    pipeline_sequence.push_back(dispatch.pipeline);
-                    descriptor_count+=binding_count;
-                }
-                const auto& pipeline=*descriptor_tables[table].native_pipeline;
-                validate_dispatch_shape(pipeline,dispatch);
-                dispatch_table_indices.push_back(table);
-                dispatch_range_plans.push_back(range_plans.prepare(table,dispatch,
-                    [&](std::vector<OperationRangeUse>& ranges) {
-                        for(const auto& binding:bindings)
-                            validate_binding_access(binding,
-                                read_only_view(pipeline.view_kinds[binding.slot]));
-                        if(dispatch.indirect) {
-                            const auto& indirect=*dispatch.indirect;
-                            const auto& args=*reference(indirect.buffer).buffer;
-                            if(indirect.offset%4u || args.upload_only)
-                                throw std::invalid_argument("Invalid D3D12 indirect dispatch arguments");
-                            validate_range(args.bytes,indirect.offset,sizeof(D3D12_DISPATCH_ARGUMENTS));
-                            for(const auto& binding:bindings)
-                                if(binding.buffer==indirect.buffer)
-                                    throw std::invalid_argument("D3D12 indirect arguments cannot alias shader bindings");
-                            ranges.push_back({resource_ordinals.at(dispatch.indirect->buffer),
-                                dispatch.indirect->offset,
-                                dispatch.indirect->offset+sizeof(D3D12_DISPATCH_ARGUMENTS),
-                                {D3D12_BARRIER_SYNC_EXECUTE_INDIRECT,
-                                 D3D12_BARRIER_ACCESS_INDIRECT_ARGUMENT},false});
+                    auto& candidates=descriptor_lookup[key];
+                    std::size_t table=descriptor_tables.size();
+                    for(const auto candidate:candidates) {
+                        const auto& existing=descriptor_tables[candidate];
+                        if(existing.pipeline==dispatch.pipeline &&
+                           same_bindings(existing.views,bindings)) {
+                            table=candidate;
+                            break;
                         }
-                        dispatch.for_each_access([&](const BufferBinding& binding,
-                                                BufferAccessExtent extent,BufferAccess access) {
-                            const auto kind=pipeline.view_kinds[binding.slot];
-                            const bool srv=kind==StorageBufferViewKind::RawRead ||
-                                           kind==StorageBufferViewKind::Structured32Read;
-                            if(srv && access!=BufferAccess::Read &&
-                               access!=BufferAccess::Unspecified)
-                                throw std::invalid_argument("Dispatch access writes SRV");
-                            const auto begin=binding.offset+extent.offset;
-                            ranges.push_back({resource_ordinals.at(binding.buffer),
-                                begin,begin+extent.bytes,
-                                {D3D12_BARRIER_SYNC_COMPUTE_SHADING,
-                                 static_cast<std::uint64_t>(srv
-                                    ?D3D12_BARRIER_ACCESS_SHADER_RESOURCE
-                                    :D3D12_BARRIER_ACCESS_UNORDERED_ACCESS)},
-                                !srv && access!=BufferAccess::Read});
-                        });
-                        std::sort(ranges.begin(),ranges.end(),[](const auto& a,const auto& b) {
-                            return a.buffer<b.buffer;
-                        });
-                    }));
+                    }
+                    if(table==descriptor_tables.size()) {
+                        const auto& pipeline=get_pipeline(dispatch.pipeline);
+                        const auto binding_count=pipeline.bindings;
+                        if(bindings.size()!=binding_count)
+                            throw std::invalid_argument("Incorrect number of D3D12 compute bindings");
+                        if(binding_count>
+                           std::numeric_limits<UINT>::max()-descriptor_count)
+                            throw std::out_of_range("D3D12 descriptor heap capacity exceeded");
+                        DescriptorTable prepared{dispatch.pipeline,&pipeline,{},
+                                                 static_cast<UINT>(descriptor_count)};
+                        prepared.views.reserve(binding_count);
+                        for(std::size_t i=0u;i<binding_count;++i) {
+                            const auto& binding=bindings[i];
+                            if(binding.slot!=i || !binding.bytes ||
+                               binding.offset%4u || binding.bytes%4u ||
+                               binding.bytes/4u>std::numeric_limits<UINT>::max())
+                                throw std::invalid_argument("Invalid D3D12 structured buffer view");
+                            const auto kind=pipeline.view_kinds[i];
+                            if((kind==StorageBufferViewKind::RawRead ||
+                                kind==StorageBufferViewKind::RawReadWrite) &&
+                               binding.offset%16u)
+                                throw std::invalid_argument("D3D12 RAW buffer view base must be 16-byte aligned");
+                            const auto& buffer=*reference(binding.buffer).buffer;
+                            if(buffer.upload_only)
+                                throw std::invalid_argument("Upload storage cannot be a shader binding");
+                            validate_range(buffer.bytes,binding.offset,binding.bytes);
+                            // One native resource cannot mix SRV and UAV views.
+                            for(std::size_t prior=0u;prior<i;++prior)
+                                if(prepared.views[prior].buffer==binding.buffer &&
+                                   read_only_view(pipeline.view_kinds[prior])!=read_only_view(kind))
+                                    throw std::invalid_argument("D3D12 cannot bind one resource as SRV and UAV simultaneously");
+                            prepared.views.push_back({binding.buffer,binding.offset,binding.bytes,
+                                                      buffer.resource.Get()});
+                        }
+                        descriptor_tables.push_back(std::move(prepared));
+                        candidates.push_back(table);
+                        pipeline_sequence.push_back(dispatch.pipeline);
+                        descriptor_count+=binding_count;
+                    }
+                    return table;
+                },[&](std::size_t table,std::vector<OperationRangeUse>& ranges) {
+                    const auto& pipeline=*descriptor_tables[table].native_pipeline;
+                    for(const auto& binding:bindings)
+                        validate_binding_access(binding,
+                            read_only_view(pipeline.view_kinds[binding.slot]));
+                    if(dispatch.indirect) {
+                        const auto& indirect=*dispatch.indirect;
+                        const auto& args=*reference(indirect.buffer).buffer;
+                        if(indirect.offset%4u || args.upload_only)
+                            throw std::invalid_argument("Invalid D3D12 indirect dispatch arguments");
+                        validate_range(args.bytes,indirect.offset,sizeof(D3D12_DISPATCH_ARGUMENTS));
+                        for(const auto& binding:bindings)
+                            if(binding.buffer==indirect.buffer)
+                                throw std::invalid_argument("D3D12 indirect arguments cannot alias shader bindings");
+                        ranges.push_back({resource_ordinals.at(dispatch.indirect->buffer),
+                            dispatch.indirect->offset,
+                            dispatch.indirect->offset+sizeof(D3D12_DISPATCH_ARGUMENTS),
+                            {D3D12_BARRIER_SYNC_EXECUTE_INDIRECT,
+                             D3D12_BARRIER_ACCESS_INDIRECT_ARGUMENT},false});
+                    }
+                    dispatch.for_each_access([&](const BufferBinding& binding,
+                                            BufferAccessExtent extent,BufferAccess access) {
+                        const auto kind=pipeline.view_kinds[binding.slot];
+                        const bool srv=kind==StorageBufferViewKind::RawRead ||
+                                       kind==StorageBufferViewKind::Structured32Read;
+                        if(srv && access!=BufferAccess::Read &&
+                           access!=BufferAccess::Unspecified)
+                            throw std::invalid_argument("Dispatch access writes SRV");
+                        const auto begin=binding.offset+extent.offset;
+                        ranges.push_back({resource_ordinals.at(binding.buffer),
+                            begin,begin+extent.bytes,
+                            {D3D12_BARRIER_SYNC_COMPUTE_SHADING,
+                             static_cast<std::uint64_t>(srv
+                                ?D3D12_BARRIER_ACCESS_SHADER_RESOURCE
+                                :D3D12_BARRIER_ACCESS_UNORDERED_ACCESS)},
+                            !srv && access!=BufferAccess::Read});
+                    });
+                    std::sort(ranges.begin(),ranges.end(),[](const auto& a,const auto& b) {
+                        return a.buffer<b.buffer;
+                    });
+                });
+                validate_dispatch_shape(*descriptor_tables[prepared.table].native_pipeline,dispatch);
+                prepared_dispatches.push_back(prepared);
             }
         }
         if (descriptor_count > std::numeric_limits<UINT>::max())
@@ -1343,12 +1343,12 @@ struct Context::Impl {
             FYZZ_PROFILE_COUNTER("d3d12.descriptor_tables",
                                  descriptor_tables.size());
             FYZZ_PROFILE_COUNTER("d3d12.descriptor_table_reuses",
-                                 dispatch_table_indices.size()-
+                                 prepared_dispatches.size()-
                                  descriptor_tables.size());
             FYZZ_PROFILE_COUNTER("d3d12.descriptor_slots",descriptor_count);
             FYZZ_PROFILE_COUNTER("d3d12.range_plans",range_plans.size());
             FYZZ_PROFILE_COUNTER("d3d12.range_plan_reuses",
-                                 dispatch_table_indices.size()-range_plans.size());
+                                 prepared_dispatches.size()-range_plans.size());
         }
 #endif
         if(uses_indirect && !dispatch_signature) {
@@ -1520,7 +1520,7 @@ struct Context::Impl {
             }else if(const auto* upload=std::get_if<UploadCommand>(&op)) {
                 use(upload->destination,upload->destination_offset,upload->bytes.size(),copy_write,true);
             }else {
-                plan_operation(range_plans.ranges(dispatch_range_plans[planned_dispatch++]));
+                plan_operation(range_plans.ranges(prepared_dispatches[planned_dispatch++].range_plan));
                 continue;
             }
             plan_operation(uses);
@@ -1580,7 +1580,7 @@ struct Context::Impl {
                 continue;
             }
             const auto& cmd = std::get<DispatchCommand>(op);
-            const auto table=dispatch_table_indices[dispatch_index++];
+            const auto table=prepared_dispatches[dispatch_index++].table;
             const auto& prepared=descriptor_tables[table];
             const auto& pipeline=*prepared.native_pipeline;
             const auto descriptor_index=prepared.first_descriptor;
