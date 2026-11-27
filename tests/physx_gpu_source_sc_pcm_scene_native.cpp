@@ -9703,8 +9703,8 @@ void verify_gpu_high_degree_coloring(
         ids.push_back(center);
         RigidBodyDynamics dynamics{};
         dynamics.gravity_enabled=false;
-        dynamics.position_iterations=4u;
-        dynamics.velocity_iterations=(pure_hub || dual_hub)?3u:1u;
+        dynamics.position_iterations=pure_hub?7u:4u;
+        dynamics.velocity_iterations=pure_hub?4u:dual_hub?3u:1u;
         scene.set_dynamics(center,dynamics);
         scene.set_velocity(center,{0.05f,0.f,0.07f});
         if(!pure_hub)scene.create_center_distance_constraint(fixed,center,0.72f);

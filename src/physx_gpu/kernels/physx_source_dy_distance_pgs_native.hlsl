@@ -1899,29 +1899,34 @@ void solvePartition(uint begin,uint end,uint lane,uint2 iters,
     }
 }
 
-// The serial owner retains responding endpoints until their last use
-// in the current run or replacement by another descriptor.
-void solveSerialRun(uint begin,uint end,uint2 iters,uint iter,uint endError) {
+// The serial owner retains responding endpoints until eviction or the
+// numerical phase boundary, including across consecutive iterations.
+void solveSerialRun(uint begin,uint end,uint2 iters,uint2 iterations,
+                    uint endError) {
     const uint total=iters.x+max(iters.y,1u);
-    const bool biased=iter<iters.x;
-    const bool finalPass=iter+1u==total;
-    const bool friction=!biased || iters.x-iter<=3u;
     uint2 retained=uint2(invalidBody,invalidBody);
     SourceDySolverPair prior=(SourceDySolverPair)0;
-    for(uint i=begin;i<end;++i) {
-        const uint4 desc=arena.Load4(p.descriptorBias+i*16u);
-        SourceDySolverPair state;
-        if(!sourceDySolveDescriptor(desc,endError,biased,friction,finalPass,
-                                    retained,prior,state))
-            break;
-        const uint2 next=uint2(state.ma>0.0f?desc.y:invalidBody,
-                               state.mb>0.0f?desc.z:invalidBody);
-        uint2 evicted=retained;
-        if(any(next==retained.x))evicted.x=invalidBody;
-        if(any(next==retained.y))evicted.y=invalidBody;
-        sourceDyStoreSolverPair(uint4(0u,evicted,0u),prior);
-        retained=next;
-        prior=state;
+    for(uint iter=iterations.x;iter<iterations.y;++iter) {
+        const bool biased=iter<iters.x;
+        const bool finalPass=iter+1u==total;
+        const bool friction=!biased || iters.x-iter<=3u;
+        for(uint i=begin;i<end;++i) {
+            const uint4 desc=arena.Load4(p.descriptorBias+i*16u);
+            SourceDySolverPair state;
+            if(!sourceDySolveDescriptor(desc,endError,biased,friction,finalPass,
+                                        retained,prior,state)) {
+                sourceDyStoreSolverPair(uint4(0u,retained,0u),prior);
+                return;
+            }
+            const uint2 next=uint2(state.ma>0.0f?desc.y:invalidBody,
+                                   state.mb>0.0f?desc.z:invalidBody);
+            uint2 evicted=retained;
+            if(any(next==retained.x))evicted.x=invalidBody;
+            if(any(next==retained.y))evicted.y=invalidBody;
+            sourceDyStoreSolverPair(uint4(0u,evicted,0u),prior);
+            retained=next;
+            prior=state;
+        }
     }
     sourceDyStoreSolverPair(uint4(0u,retained,0u),prior);
 }
@@ -2976,24 +2981,32 @@ void main(uint3 group:SV_GroupID,uint3 lane:SV_GroupThreadID) {
         }
         const bool independent=fused && devicePartitions &&
             partitions.y-partitions.x==1u && descriptors.y>descriptors.x;
-        if(independent) {
-            if(arena.Load(p.partitionBias+partitions.x*4u)!=descriptors.y) {
+        if(independent || (fused && serialPartitions)) {
+            if(independent &&
+               arena.Load(p.partitionBias+partitions.x*4u)!=descriptors.y) {
                 if(lane.x==0u) {
                     sourceDyTaskErrorOr(endError,4u);
                     publishTaskError(taskId,4u);
                 }
                 return;
             }
-            // A single conflict partition has disjoint responding bodies.
-            // Each lane can finish a numerical phase before motion capture.
+            // A fixed owner can finish a numerical phase before the
+            // cooperative motion capture. Single colors own disjoint
+            // endpoints per lane; singleton colors share lane zero.
             const uint total=iters.x+max(iters.y,1u);
             for(uint pass=0u;pass<2u;++pass) {
                 const uint2 iterations=pass==0u?uint2(0u,iters.x):
                     uint2(iters.x,total);
-                for(uint i=descriptors.x+lane.x;i<descriptors.y;i+=128u)
-                    sourceDySolveExclusive(
-                        arena.Load4(p.descriptorBias+i*16u),iters,iterations,
-                        uint2(0u,0u),endError);
+                if(serialPartitions) {
+                    if(lane.x==0u)
+                        solveSerialRun(descriptors.x,descriptors.y,iters,
+                                       iterations,endError);
+                } else {
+                    for(uint i=descriptors.x+lane.x;i<descriptors.y;i+=128u)
+                        sourceDySolveExclusive(
+                            arena.Load4(p.descriptorBias+i*16u),iters,iterations,
+                            uint2(0u,0u),endError);
+                }
                 if(pass==0u) {
                     AllMemoryBarrierWithGroupSync();
                     for(uint i=bodies.x+lane.x;i<bodies.y;i+=128u)
@@ -3009,12 +3022,8 @@ void main(uint3 group:SV_GroupID,uint3 lane:SV_GroupThreadID) {
                 if(fused || phase==partitionTile) {
                     if(serialPartitions) {
                         if(lane.x==0u)
-                            solveSerialRun(descriptors.x,descriptors.y,
-                                           iters,iteration,endError);
-                        // Lane zero owns the complete serial run. Only
-                        // cooperative motion capture needs its live state.
-                        if(fused && iteration+1u==iters.x)
-                            AllMemoryBarrierWithGroupSync();
+                            solveSerialRun(descriptors.x,descriptors.y,iters,
+                                           uint2(iteration,iteration+1u),endError);
                     } else {
                         uint begin=descriptors.x;
                         uint partition=partitions.x;
@@ -3039,7 +3048,8 @@ void main(uint3 group:SV_GroupID,uint3 lane:SV_GroupThreadID) {
                             if(singleton) {
                                 if(lane.x==0u)
                                     solveSerialRun(begin,end,iters,
-                                                   iteration,endError);
+                                                   uint2(iteration,iteration+1u),
+                                                   endError);
                             } else {
                                 solvePartition(begin,end,lane.x,iters,
                                                iteration,endError);
