@@ -15,14 +15,6 @@ void storeContactScalar(uint addr,float value,uint pointIndex,bool finalPass) {
 float frictionScalar(uint addr) {
     return asfloat(arena.Load(addr));
 }
-void storeFrictionScalar(uint addr,float value,uint rowIndex,bool finalPass) {
-    arena.Store(addr,asuint(value));
-    if(finalPass && (p.launchControl&0x20000000u)==0u) {
-        uint target=p.writebackBias+p.resultFrictionOffset+rowIndex*16u;
-        arena.Store3(target,arena.Load3(p.frictionBias+rowIndex*56u));
-        arena.Store(target+12u,asuint(value));
-    }
-}
 // The source PCM producer already writes contact points in Gu order.
 // The high bit selects that resident range; CPU Gu patches retain
 // their explicit correlated-order upload.
@@ -67,6 +59,7 @@ bool contactImpulse(uint a,uint b,
 struct SourceDyContactSpan {
     uint4 manager;
     uint sourceBegin;
+    uint4 singlePatch,singleSettings;
 };
 
 bool sourceDyLoadContactSpan(uint4 descriptor,uint errorAddress,
@@ -96,6 +89,12 @@ bool sourceDyLoadContactSpan(uint4 descriptor,uint errorAddress,
     span.sourceBegin=pcm ||
         (p.launchControl&0x08000000u)!=0u
         ?arena.Load(managerAddress+20u):manager.z;
+    // Patch ranges and coefficients are immutable during PGS.
+    if(manager.y==1u) {
+        const uint po=p.patchBias+manager.x*32u;
+        span.singlePatch=arena.Load4(po);
+        span.singleSettings=arena.Load4(po+16u);
+    }
     return true;
 }
 
@@ -113,8 +112,14 @@ bool solveContactRows(uint4 descriptor,SourceDyContactSpan span,
     uint contactCursor=0u;
     for(uint patchIndex=manager.x;patchIndex<manager.x+manager.y;++patchIndex) {
         uint po=p.patchBias+patchIndex*32u;
-        uint4 patch=arena.Load4(po);
-        uint4 settings=arena.Load4(po+16u);
+        uint4 patch,settings;
+        if(manager.y==1u) {
+            patch=span.singlePatch;
+            settings=span.singleSettings;
+        } else {
+            patch=arena.Load4(po);
+            settings=arena.Load4(po+16u);
+        }
         if(patch.x>p.frictionCount || patch.z>2u ||
            patch.z*2u>p.frictionCount-patch.x ||
            contactCursor>manager.w ||
@@ -176,6 +181,9 @@ bool solveContactRows(uint4 descriptor,SourceDyContactSpan span,
         precise float maxStatic=asfloat(settings.x)*coeff*normalImpulse;
         precise float maxDynamic=asfloat(settings.y)*coeff*normalImpulse;
         bool broken=false;
+        const bool publishAnchors=finalPass &&
+            (p.launchControl&0x20000000u)!=0u;
+        precise float3 firstImpulse=0.0f;
         for(uint k=patch.x;k<patch.x+patch.z*2u;++k) {
             uint fo=p.frictionBias+k*56u;
             float3 n=asfloat(arena.Load3(fo));
@@ -205,30 +213,29 @@ bool solveContactRows(uint4 descriptor,SourceDyContactSpan span,
             if(!contactImpulse(a,b,n,ja,jb,
                                va,vb,aa,ab,nextForce-oldForce,
                                ma,mb,errorAddress))return false;
-            storeFrictionScalar(fo+52u,nextForce,k,finalPass);
+            arena.Store(fo+52u,asuint(nextForce));
             broken=broken||saturated;
-        }
-        if(finalPass) {
-            if((p.launchControl&0x20000000u)!=0u) {
-                // Report one world impulse per source friction anchor.
-                // The full solved tangent rows remain device-resident.
-                for(uint anchor=0u;anchor<patch.z;++anchor) {
-                    const uint row=patch.x+anchor*2u;
-                    const uint x=p.frictionBias+row*56u;
-                    const uint y=x+56u;
-                    precise float3 fx=asfloat(arena.Load3(x))*
-                        frictionScalar(x+52u);
-                    precise float3 fy=asfloat(arena.Load3(y))*
-                        frictionScalar(y+52u);
-                    precise float3 impulse=fx+fy;
+            if(publishAnchors) {
+                // Consecutive tangent rows form one world-space anchor.
+                precise float3 tangentImpulse=n*nextForce;
+                if(((k-patch.x)&1u)==0u) {
+                    firstImpulse=tangentImpulse;
+                } else {
+                    precise float3 impulse=firstImpulse+tangentImpulse;
                     if(!all(isfinite(impulse))) {
                         sourceDyTaskErrorOr(errorAddress,2048u);
                         return false;
                     }
                     arena.Store3(p.writebackBias+p.resultFrictionOffset+
-                        (row/2u)*12u,asuint(impulse));
+                        ((k-1u)/2u)*12u,asuint(impulse));
                 }
+            } else if(finalPass) {
+                const uint target=p.writebackBias+p.resultFrictionOffset+k*16u;
+                arena.Store3(target,asuint(n));
+                arena.Store(target+12u,asuint(nextForce));
             }
+        }
+        if(finalPass) {
             bool gpuGrowth=(patch.w&0x80000000u)!=0u;
             arena.Store(po+12u,broken?1u:0u);
             uint reportAddress=p.writebackBias+p.resultPatchOffset+

@@ -41,6 +41,9 @@ quality rather than individual dispatch or barrier counts.
 - [x] Retain single-row packed joint Jacobians, phase coefficients and
   accumulated impulse across the solve. Use the same row operation as
   streamed multi-row joints and publish the final impulse once.
+- [x] Retain single-patch contact metadata across packed iterations and
+  publish final friction anchors directly from solved tangent rows.
+  Stream variable-size manifolds without per-lane row arrays.
 
 These are implementation milestones, not hardware-performance acceptance.
 
