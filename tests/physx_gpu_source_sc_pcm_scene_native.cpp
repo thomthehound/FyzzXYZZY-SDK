@@ -10016,6 +10016,17 @@ void verify_host_lane_packed_islands(
         {0.5f,0.5f,0.5f},joint_second,1.f);
     cpu.create_center_distance_constraint(joint_cpu_a,joint_cpu_b,1.f);
     gpu.create_center_distance_constraint(joint_gpu_a,joint_gpu_b,1.f);
+    RigidBodyDynamics joint_dynamics{};
+    joint_dynamics.position_iterations=6u;
+    joint_dynamics.velocity_iterations=3u;
+    cpu.set_dynamics(joint_cpu_a,joint_dynamics);
+    cpu.set_dynamics(joint_cpu_b,joint_dynamics);
+    gpu.set_dynamics(joint_gpu_a,joint_dynamics);
+    gpu.set_dynamics(joint_gpu_b,joint_dynamics);
+    cpu.set_velocity(joint_cpu_a,{0.2f,0.1f,-0.05f});
+    gpu.set_velocity(joint_gpu_a,{0.2f,0.1f,-0.05f});
+    cpu.set_velocity(joint_cpu_b,{-0.15f,0.f,0.05f});
+    gpu.set_velocity(joint_gpu_b,{-0.15f,0.f,0.05f});
     bool saw_dependent_task=false;
     for(unsigned frame=0;frame<3u;++frame) {
         cpu.step(1.f/120.f);

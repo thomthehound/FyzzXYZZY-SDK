@@ -214,55 +214,84 @@ void sourceDyStoreSolverPair(uint4 desc,SourceDySolverPair state) {
     }
 }
 
+struct SourceDyJointRow {
+    float3 axis,ja,jb;
+    float multiplier;
+};
+
+SourceDyJointRow sourceDyLoadJointRow(uint offset) {
+    SourceDyJointRow row;
+    row.axis=asfloat(arena.Load3(offset));
+    row.ja=asfloat(arena.Load3(offset+12u));
+    row.jb=asfloat(arena.Load3(offset+24u));
+    row.multiplier=loadScalar(offset+56u);
+    return row;
+}
+
+bool sourceDySolveJointRow(SourceDyJointRow row,uint coefficient,
+                          uint errorAddress,inout SourceDySolverPair local,
+                          inout float previous) {
+    precise float normalDelta=
+        sourceDyDot3(row.axis,local.va-local.vb)+
+        sourceDyDot3(row.ja,local.aa)-sourceDyDot3(row.jb,local.ab);
+    if((coefficient&0x7f800000u)==0x7f800000u) {
+        sourceDyTaskErrorOr(errorAddress,2u);
+        return false;
+    }
+    precise float velocityTerm=normalDelta*row.multiplier;
+    precise float force=previous+velocityTerm;
+    precise float candidate=force+asfloat(coefficient);
+    if(!isfinite(candidate) || !isfinite(normalDelta) ||
+       !isfinite(previous)) {
+        sourceDyTaskErrorOr(errorAddress,2u);
+        return false;
+    }
+    precise float next=clamp(candidate,-maxImpulse,maxImpulse);
+    precise float impulse=next-previous;
+    precise float3 va=local.va+row.axis*(impulse*local.ma);
+    precise float3 vb=local.vb-row.axis*(impulse*local.mb);
+    precise float3 aa=local.aa+row.ja*impulse;
+    precise float3 ab=local.ab-row.jb*impulse;
+    if(!isfinite(next) || !all(isfinite(va)) || !all(isfinite(vb)) ||
+       !all(isfinite(aa)) || !all(isfinite(ab))) {
+        sourceDyTaskErrorOr(errorAddress,2u);
+        return false;
+    }
+    local.va=va;
+    local.vb=vb;
+    local.aa=aa;
+    local.ab=ab;
+    previous=next;
+    return true;
+}
+
+// Only responding endpoints carry joint deltas into the next descriptor pass.
+void sourceDyCommitJointPair(uint4 desc,SourceDySolverPair local,
+                             inout SourceDySolverPair state) {
+    if(desc.y!=invalidBody && local.ma>0.0f) {
+        state.va=local.va;
+        state.aa=local.aa;
+    }
+    if(desc.z!=invalidBody && local.mb>0.0f) {
+        state.vb=local.vb;
+        state.ab=local.ab;
+    }
+}
+
 bool solveJointRows(uint4 desc,uint errorAddress,bool biased,
                     inout SourceDySolverPair state) {
-    precise float3 va=state.va,vb=state.vb,aa=state.aa,ab=state.ab;
+    SourceDySolverPair local=state;
     const uint first=p.distanceBias+desc.x*64u;
-    const float massA=state.ma,massB=state.mb;
-    // One lane owns both endpoints for every row of this joint.
     for(uint row=0u;row<desc.w;++row) {
         const uint offset=first+row*64u;
-        const float3 axis=asfloat(arena.Load3(offset));
-        const float3 ja=asfloat(arena.Load3(offset+12u));
-        const float3 jb=asfloat(arena.Load3(offset+24u));
-        precise float normalDelta=
-            sourceDyDot3(axis,va-vb)+sourceDyDot3(ja,aa)-
-            sourceDyDot3(jb,ab);
-        const float previous=loadScalar(offset+60u);
+        const SourceDyJointRow data=sourceDyLoadJointRow(offset);
         const uint coefficient=arena.Load(offset+(biased?48u:52u));
-        if((coefficient&0x7f800000u)==0x7f800000u) {
-            sourceDyTaskErrorOr(errorAddress,2u);
+        float previous=loadScalar(offset+60u);
+        if(!sourceDySolveJointRow(data,coefficient,errorAddress,local,previous))
             return false;
-        }
-        precise float velocityTerm=normalDelta*loadScalar(offset+56u);
-        precise float force=previous+velocityTerm;
-        precise float candidate=force+asfloat(coefficient);
-        if(!isfinite(candidate) || !isfinite(normalDelta) ||
-           !isfinite(previous)) {
-            sourceDyTaskErrorOr(errorAddress,2u);
-            return false;
-        }
-        precise float next=clamp(candidate,-maxImpulse,maxImpulse);
-        precise float impulse=next-previous;
-        va+=axis*(impulse*massA);
-        vb-=axis*(impulse*massB);
-        aa+=ja*impulse;
-        ab-=jb*impulse;
-        if(!isfinite(next) || !all(isfinite(va)) || !all(isfinite(vb)) ||
-           !all(isfinite(aa)) || !all(isfinite(ab))) {
-            sourceDyTaskErrorOr(errorAddress,2u);
-            return false;
-        }
-        arena.Store(offset+60u,asuint(next));
+        arena.Store(offset+60u,asuint(previous));
     }
-    if(desc.y!=invalidBody && massA>0.0f) {
-        state.va=va;
-        state.aa=aa;
-    }
-    if(desc.z!=invalidBody && massB>0.0f) {
-        state.vb=vb;
-        state.ab=ab;
-    }
+    sourceDyCommitJointPair(desc,local,state);
     return true;
 }
 
@@ -2212,13 +2241,30 @@ void sourceDySolvePackedTask(uint taskId) {
         publishTaskError(taskId,sourceDyTaskLoad(errorAddress));
         return;
     }
+    // One exclusively owned joint row has a bounded live working set.
+    const bool localJoint=desc.w==1u;
+    const uint jointOffset=p.distanceBias+desc.x*64u;
+    SourceDyJointRow jointRow=(SourceDyJointRow)0;
+    uint2 jointCoefficients=uint2(0u,0u);
+    float jointImpulse=0.0f;
+    if(localJoint) {
+        jointRow=sourceDyLoadJointRow(jointOffset);
+        jointCoefficients=arena.Load2(jointOffset+48u);
+        jointImpulse=loadScalar(jointOffset+60u);
+    }
     const uint total=iters.x+max(iters.y,1u);
     for(uint iteration=0u;iteration<total;++iteration) {
         const bool biased=iteration<iters.x;
         const bool friction=!biased || iters.x-iteration<=3u;
         const bool finalPass=iteration+1u==total;
         bool solved;
-        if(joint)
+        if(localJoint) {
+            SourceDySolverPair local=state;
+            solved=sourceDySolveJointRow(jointRow,
+                biased?jointCoefficients.x:jointCoefficients.y,
+                errorAddress,local,jointImpulse);
+            if(solved)sourceDyCommitJointPair(desc,local,state);
+        } else if(joint)
             solved=solveJointRows(desc,errorAddress,biased,state);
         else
             solved=solveContactRows(desc,span,errorAddress,biased,friction,
@@ -2260,6 +2306,7 @@ void sourceDySolvePackedTask(uint taskId) {
         publishTaskError(taskId,sourceDyTaskLoad(errorAddress));
         return;
     }
+    if(localJoint)arena.Store(jointOffset+60u,asuint(jointImpulse));
     sourceDyStoreSolverPair(desc,state);
     for(uint body=bodies.x;body<bodies.y;++body) {
         const uint ordinal=sourceDyBodyOrdinal(body);

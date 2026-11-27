@@ -38,6 +38,9 @@ quality rather than individual dispatch or barrier counts.
 - [x] Synchronize serial singleton partition runs only at cooperative
   motion capture and integration; retain dependencies between concurrent
   conflict partitions.
+- [x] Retain single-row packed joint Jacobians, phase coefficients and
+  accumulated impulse across the solve. Use the same row operation as
+  streamed multi-row joints and publish the final impulse once.
 
 These are implementation milestones, not hardware-performance acceptance.
 
