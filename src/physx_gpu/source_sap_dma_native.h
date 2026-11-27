@@ -221,7 +221,7 @@ public:
                 referenced=upload->destination==buffer;
             else if(const auto* dispatch=std::get_if<compute::DispatchCommand>(&command))
                 referenced=(dispatch->indirect && dispatch->indirect->buffer==buffer) ||
-                    std::any_of(dispatch->buffers.begin(),dispatch->buffers.end(),
+                    std::any_of(dispatch->bindings().begin(),dispatch->bindings().end(),
                         [buffer](const auto& binding){return binding.buffer==buffer;});
             if(referenced)return true;
         }

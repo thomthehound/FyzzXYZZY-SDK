@@ -125,6 +125,10 @@ quality rather than individual dispatch or barrier counts.
   Avoid unchanged Vulkan interval mutations and D3D12 reader-range
   maintenance after an epoch admits its first writer.
 
+- [x] Share frame-local Dy phase resource declarations between numerical
+  launches. Keep per-launch parameters and indirect arguments independent,
+  and retain source-root lifetime checks for shared declarations.
+
 These are implementation milestones, not hardware-performance acceptance.
 
 ## Execution and lifetime work

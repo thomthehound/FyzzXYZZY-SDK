@@ -2411,6 +2411,7 @@ public:
                 manifolds.size()*2u*sizeof(std::uint32_t),A::Read);
             ref_access(1u,layout.contact_admissions,
                 ((manifolds.size()+31u)/32u)*sizeof(std::uint32_t),A::Read);
+            refs.share_resources();
             for(std::size_t first=0u;first<manifolds.size();) {
                 const auto groups=std::min<std::size_t>(
                     max_groups,(manifolds.size()-first+127u)/128u);
@@ -2423,10 +2424,10 @@ public:
                 first+=groups*128u;
             }
         }
-        const auto declare_phase_accesses=[&](Launch phase,bool packed=false) {
+        const auto declare_phase_accesses=[&](compute::DispatchResources& declaration,
+                                              Launch phase,bool packed) {
             using A=compute::BufferAccess;
-            auto& accesses=dispatch.accesses;
-            accesses.clear();
+            auto& accesses=declaration.accesses;
             const bool fused=phase==Launch::Fused;
             const bool free=phase==Launch::FreeBodies;
             const bool integrates=fused || free || phase==Launch::Integrate;
@@ -2448,7 +2449,7 @@ public:
                                   std::size_t size,A access) {
                 if(size)
                     accesses.push_back({slot,
-                        {dispatch.buffers[slot].accessed_extent().offset+offset,size},
+                        {declaration.buffers[slot].accessed_extent().offset+offset,size},
                         access});
             };
             const auto arena_region=[&](std::size_t offset,std::size_t size,A access) {
@@ -2458,7 +2459,7 @@ public:
                 arena_region(offsets[index],bytes[index],access);
             };
             const auto binding=[&](std::uint32_t slot,A access) {
-                accesses.push_back({slot,dispatch.buffers[slot].accessed_extent(),access});
+                accesses.push_back({slot,declaration.buffers[slot].accessed_extent(),access});
             };
             const std::uint32_t island_slot=convex_vertex_count?7u:6u;
             const auto sc_region=[&](std::size_t offset,std::size_t size,A access) {
@@ -2591,21 +2592,37 @@ public:
             if(prepares && !joint_inputs.empty())binding(island_slot+1u,A::Read);
             if(prepares && retained_source_count)binding(island_slot+2u,A::Read);
         };
+        // Phase declarations are frame-local; launches own only their parameters.
+        constexpr auto packed_phase=static_cast<std::size_t>(Launch::BuildPartitionTiles)+1u;
+        std::array<std::shared_ptr<const compute::DispatchResources>,packed_phase+1u> phases{};
+        const auto phase_resources=[&](Launch phase,bool packed) {
+            auto& entry=phases[packed?packed_phase:static_cast<std::size_t>(phase)];
+            if(!entry) {
+                compute::DispatchResources declaration{dispatch.buffers,{}};
+                const bool integrates=phase==Launch::Fused || phase==Launch::Integrate ||
+                                      phase==Launch::FreeBodies;
+                declaration.buffers[2].access=integrates ? compute::BufferAccess::ReadWrite
+                                                     : compute::BufferAccess::Read;
+                declaration.buffers[3].access=integrates ? compute::BufferAccess::Write
+                                                     : compute::BufferAccess::Read;
+                const bool writes_actor_velocities=integrates ||
+                    phase==Launch::InitializeBodies ||
+                    (phase==Launch::Color && device_initial_bodies && !resident_wide);
+                declaration.buffers[5].access=writes_actor_velocities
+                    ?compute::BufferAccess::ReadWrite
+                    :compute::BufferAccess::Read;
+                declare_phase_accesses(declaration,phase,packed);
+                entry=std::make_shared<const compute::DispatchResources>(std::move(declaration));
+            }
+            return entry;
+        };
+        compute::DispatchCommand launch_command{};
+        launch_command.pipeline=dispatch.pipeline;
+        launch_command.push_constants.resize(sizeof(params));
         const auto launch=[&](Launch phase,TileRange range,std::uint32_t iteration=0u) {
             if(!range.count)return;
             if(resident_wide)params[23]=resident_mode_bias;
-            const bool integrates=phase==Launch::Fused || phase==Launch::Integrate ||
-                                  phase==Launch::FreeBodies;
-            dispatch.buffers[2].access=integrates ? compute::BufferAccess::ReadWrite
-                                                 : compute::BufferAccess::Read;
-            dispatch.buffers[3].access=integrates ? compute::BufferAccess::Write
-                                                 : compute::BufferAccess::Read;
-            const bool writes_actor_velocities=integrates ||
-                phase==Launch::InitializeBodies ||
-                (phase==Launch::Color && device_initial_bodies && !resident_wide);
-            dispatch.buffers[5].access=writes_actor_velocities
-                ?compute::BufferAccess::ReadWrite
-                :compute::BufferAccess::Read;
+            launch_command.resources=phase_resources(phase,false);
             params[10]=(iteration<<4u)|static_cast<std::uint32_t>(phase)|
                 (compact_friction?0x20000000u:0u)|
                 (device_partitions?0x80000000u:0u)|
@@ -2614,7 +2631,6 @@ public:
                 (device_partitions && (!wide_tasks_.empty() || resident_wide) &&
                  phase!=Launch::Color ?0x40000000u:0u)|
                 (resident_wide && phase!=Launch::FreeBodies?0x04000000u:0u);
-            declare_phase_accesses(phase);
             // Compact tasks have no cross-workgroup dependencies. Their
             // workgroup count is published by the Sc device prefix, so
             // dispatch directly from that result instead of recopying a
@@ -2626,11 +2642,11 @@ public:
                     throw std::out_of_range(
                         "Source device Sc task launch exceeds compact dispatch bounds");
                 params[8]=0u;
-                dispatch.groups={1u,1u,1u};
-                dispatch.indirect=device_admission->task_dispatch;
-                std::memcpy(dispatch.push_constants.data(),params.data(),sizeof(params));
-                stream_.commands().emplace_back(dispatch);
-                dispatch.indirect.reset();
+                launch_command.groups={1u,1u,1u};
+                launch_command.indirect=device_admission->task_dispatch;
+                std::memcpy(launch_command.push_constants.data(),params.data(),sizeof(params));
+                stream_.commands().emplace_back(launch_command);
+                launch_command.indirect.reset();
                 ++last_schedule_.dispatches;
                 ++last_schedule_.device_island_indirect_dispatches;
                 return;
@@ -2651,38 +2667,35 @@ public:
                         params[23]=narrow(group*sizeof(WorkTile));
                     }else params[8]=narrow(std::size_t(partition_output_bias)+
                         (range.begin+group)*sizeof(WorkTile));
-                    dispatch.groups={1u,1u,1u};
-                    dispatch.indirect=compute::DispatchIndirectArgs{
+                    launch_command.groups={1u,1u,1u};
+                    launch_command.indirect=compute::DispatchIndirectArgs{
                         partition_dispatch_buffer_,
                         (range.dispatch_begin+group/max_groups)*16u};
-                    std::memcpy(dispatch.push_constants.data(),params.data(),sizeof(params));
-                    stream_.commands().emplace_back(dispatch);
+                    std::memcpy(launch_command.push_constants.data(),params.data(),sizeof(params));
+                    stream_.commands().emplace_back(launch_command);
                     ++last_schedule_.dispatches;
                     if(phase==Launch::Partition)
                         ++last_schedule_.device_partition_indirect_dispatches;
                     if(phase==Launch::Fused)
                         ++last_schedule_.device_island_indirect_dispatches;
                 }
-                dispatch.indirect.reset();
+                launch_command.indirect.reset();
                 return;
             }
-            dispatch.indirect.reset();
+            launch_command.indirect.reset();
             for(std::size_t group=0;group<range.count;) {
                 const auto count=std::min<std::size_t>(max_groups,range.count-group);
                 params[8]=narrow(range.begin+group);
-                dispatch.groups={narrow(count),1u,1u};
-                std::memcpy(dispatch.push_constants.data(),params.data(),sizeof(params));
-                stream_.commands().emplace_back(dispatch);
+                launch_command.groups={narrow(count),1u,1u};
+                std::memcpy(launch_command.push_constants.data(),params.data(),sizeof(params));
+                stream_.commands().emplace_back(launch_command);
                 ++last_schedule_.dispatches;
                 group+=count;
             }
         };
         const auto launch_packed=[&](std::size_t first,std::size_t count) {
-            dispatch.buffers[2].access=compute::BufferAccess::ReadWrite;
-            dispatch.buffers[3].access=compute::BufferAccess::Write;
-            dispatch.buffers[5].access=compute::BufferAccess::ReadWrite;
-            dispatch.indirect.reset();
-            declare_phase_accesses(Launch::Fused,true);
+            launch_command.resources=phase_resources(Launch::Fused,true);
+            launch_command.indirect.reset();
             const auto maximum=std::min<std::size_t>(
                 std::size_t(max_groups)*128u,0x00ffffffu);
             for(std::size_t offset=0u;offset<count;) {
@@ -2692,9 +2705,9 @@ public:
                     static_cast<std::uint32_t>(Launch::Fused)|
                     0x10000000u|0x80000000u|
                     (compact_friction?0x20000000u:0u);
-                dispatch.groups={narrow((task_count+127u)/128u),1u,1u};
-                std::memcpy(dispatch.push_constants.data(),params.data(),sizeof(params));
-                stream_.commands().emplace_back(dispatch);
+                launch_command.groups={narrow((task_count+127u)/128u),1u,1u};
+                std::memcpy(launch_command.push_constants.data(),params.data(),sizeof(params));
+                stream_.commands().emplace_back(launch_command);
                 ++last_schedule_.dispatches;
                 offset+=task_count;
             }
@@ -2773,6 +2786,7 @@ public:
                 arguments[21]=narrow(descriptor_capacity);
                 arguments[24]=narrow(history_bytes+output_bytes-4u);
             }
+            build.share_resources();
             for(std::size_t first=0u;first<reservations;first+=max_groups) {
                 arguments[8]=narrow(first);
                 build.groups={narrow(std::min<std::size_t>(

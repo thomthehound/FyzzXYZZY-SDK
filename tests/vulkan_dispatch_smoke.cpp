@@ -202,7 +202,14 @@ int main(int argc, char** argv) {
                              {1, dst, 0, sizeof(output), BufferAccess::Write}},
                             push_bytes(second_pass)}
         };
-        const SubmissionId batch_id = context.submit_batch(batch);
+        auto shared=precise;
+        shared.share_resources();
+        auto shared_repeat=shared;
+        shared_repeat.push_constants=push_bytes(second_pass);
+        auto shared_batch=batch;
+        shared_batch[0]=shared;
+        shared_batch.insert(shared_batch.begin(),shared_repeat);
+        const SubmissionId batch_id = context.submit_batch(shared_batch);
         context.wait_submission(batch_id);
         context.download(dst, 0, output.data(), sizeof(output));
         for (std::uint32_t i = 0; i < array_size; ++i) {
@@ -227,6 +234,13 @@ int main(int argc, char** argv) {
             if(!rejected)
                 throw std::runtime_error("Invalid phase access declaration was accepted");
         }
+        auto mixed=shared;
+        mixed.buffers=precise.buffers;
+        rejected=false;
+        try {context.execute_batch({shared,mixed});}
+        catch(const std::invalid_argument&) {rejected=true;}
+        if(!rejected)
+            throw std::runtime_error("Mixed dispatch resource ownership was accepted");
         // Reused physical views must not bypass logical or launch validation.
         for(unsigned defect=0u;defect<5u;++defect) {
             auto invalid=precise;

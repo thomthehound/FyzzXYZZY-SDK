@@ -12,6 +12,7 @@
 #include <string>
 #include <vector>
 #include <variant>
+#include <utility>
 
 namespace fyzz::compute {
 
@@ -218,6 +219,12 @@ struct DispatchAccess {
     BufferAccess access=BufferAccess::ReadWrite;
 };
 
+// Immutable shader resource declarations can be shared by ordered launches.
+struct DispatchResources {
+    std::vector<BufferBinding> buffers;
+    std::vector<DispatchAccess> accesses;
+};
+
 struct DispatchCommand {
     PipelineId pipeline = 0;
     DispatchSize groups;
@@ -227,17 +234,44 @@ struct DispatchCommand {
     std::optional<DispatchIndirectArgs> indirect;
     // Nonempty declares every shader access for this dispatch.
     std::vector<DispatchAccess> accesses{};
+    // Shared declarations replace, rather than supplement, the owned vectors.
+    std::shared_ptr<const DispatchResources> resources{};
+
+    std::span<const BufferBinding> bindings() const noexcept {
+        return resources?std::span<const BufferBinding>(resources->buffers):
+                         std::span<const BufferBinding>(buffers);
+    }
+    std::span<const DispatchAccess> phase_accesses() const noexcept {
+        return resources?std::span<const DispatchAccess>(resources->accesses):
+                         std::span<const DispatchAccess>(accesses);
+    }
+    void validate_resource_ownership() const {
+        if(resources && (!buffers.empty() || !accesses.empty()))
+            throw std::invalid_argument("Dispatch mixes owned and shared resource declarations");
+    }
+    void share_resources() {
+        validate_resource_ownership();
+        if(resources)return;
+        auto declaration=std::make_shared<const DispatchResources>(
+            DispatchResources{std::move(buffers),std::move(accesses)});
+        buffers.clear();
+        accesses.clear();
+        resources=std::move(declaration);
+    }
 
     template<class Visit>
     void for_each_access(Visit visit) const {
-        if(accesses.empty()) {
-            for(const auto& binding:buffers)
+        validate_resource_ownership();
+        const auto views=bindings();
+        const auto declared=phase_accesses();
+        if(declared.empty()) {
+            for(const auto& binding:views)
                 visit(binding,binding.accessed_extent(),binding.access);
             return;
         }
-        for(const auto& item:accesses) {
+        for(const auto& item:declared) {
             const BufferBinding* binding=nullptr;
-            for(const auto& candidate:buffers)
+            for(const auto& candidate:views)
                 if(candidate.slot==item.slot) {
                     binding=&candidate;
                     break;

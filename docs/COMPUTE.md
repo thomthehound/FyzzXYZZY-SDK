@@ -109,6 +109,10 @@ Within a batch, physical descriptor validation and resource resolution
 belong to the unique descriptor table. Native recording consumes the
 resolved views and pipelines. D3D12 completion-cache identity follows
 the unique table layout rather than the sequence of dispatches.
+Dy shares immutable, frame-local resource declarations between launches
+of the same numerical phase. Launch dimensions, indirect arguments and
+parameter bytes remain command-owned. Recorded source consumers retain
+every resource in the shared declaration through submission or discard.
 Descriptor tables also retain the latest matching logical access declaration. Repeated dispatches reuse validated, backend-ordered
 range lists independent of constants and launch dimensions. Access intent,
 extent, explicit phase accesses and indirect argument changes require a

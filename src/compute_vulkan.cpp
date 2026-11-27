@@ -1391,9 +1391,11 @@ struct Context::Impl {
                 }
             } else {
                 const auto& dispatch = std::get<DispatchCommand>(operation);
+                dispatch.validate_resource_ownership();
+                const auto bindings=dispatch.bindings();
                 // Canonical slot order preserves identity for unordered Vulkan bindings.
-                slots.assign(dispatch.buffers.size(),nullptr);
-                for(const auto& binding:dispatch.buffers) {
+                slots.assign(bindings.size(),nullptr);
+                for(const auto& binding:bindings) {
                     if(binding.slot>=slots.size() || slots[binding.slot])
                         throw std::invalid_argument("Invalid or duplicate compute binding slot");
                     slots[binding.slot]=&binding;
@@ -1455,7 +1457,7 @@ struct Context::Impl {
                 dispatch_range_plans.push_back(range_plans.prepare(table,dispatch,
                     [&](std::vector<OperationRangeUse>& ranges) {
                         range_scratch.clear();
-                        for(const auto& binding:dispatch.buffers)
+                        for(const auto& binding:bindings)
                             validate_binding_access(binding,!pipeline.view_kinds.empty() &&
                                 read_only_view(pipeline.view_kinds[binding.slot]));
                         if(dispatch.indirect) {
@@ -1464,7 +1466,7 @@ struct Context::Impl {
                             if(!argument.storage_eligible || indirect.offset%4u)
                                 throw std::invalid_argument("Invalid Vulkan indirect dispatch arguments");
                             validate_range(argument.bytes,indirect.offset,12u);
-                            for(const auto& binding:dispatch.buffers)
+                            for(const auto& binding:bindings)
                                 if(binding.buffer==indirect.buffer)
                                     throw std::invalid_argument("Indirect arguments cannot alias shader bindings");
                         }

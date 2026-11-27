@@ -1191,7 +1191,7 @@ struct Context::Impl {
         };
         const auto same_bindings=[](
                 const std::vector<DescriptorView>& a,
-                const std::vector<BufferBinding>& b) {
+                std::span<const BufferBinding> b) {
             if(a.size()!=b.size())return false;
             for(std::size_t i=0u;i<a.size();++i)
                 if(b[i].slot!=i ||
@@ -1231,9 +1231,11 @@ struct Context::Impl {
                 upload_total_bytes+=upload->bytes.size();
             } else {
                 const auto& dispatch = std::get<DispatchCommand>(op);
+                dispatch.validate_resource_ownership();
+                const auto bindings=dispatch.bindings();
                 uses_indirect |= dispatch.indirect.has_value();
                 std::size_t key=std::hash<PipelineId>{}(dispatch.pipeline);
-                for(const auto& binding:dispatch.buffers) {
+                for(const auto& binding:bindings) {
                     mix_key(key,binding.slot);
                     mix_key(key,binding.buffer);
                     mix_key(key,binding.offset);
@@ -1244,7 +1246,7 @@ struct Context::Impl {
                 for(const auto candidate:candidates) {
                     const auto& existing=descriptor_tables[candidate];
                     if(existing.pipeline==dispatch.pipeline &&
-                       same_bindings(existing.views,dispatch.buffers)) {
+                       same_bindings(existing.views,bindings)) {
                         table=candidate;
                         break;
                     }
@@ -1252,7 +1254,7 @@ struct Context::Impl {
                 if(table==descriptor_tables.size()) {
                     const auto& pipeline=get_pipeline(dispatch.pipeline);
                     const auto binding_count=pipeline.bindings;
-                    if(dispatch.buffers.size()!=binding_count)
+                    if(bindings.size()!=binding_count)
                         throw std::invalid_argument("Incorrect number of D3D12 compute bindings");
                     if(binding_count>
                        std::numeric_limits<UINT>::max()-descriptor_count)
@@ -1261,7 +1263,7 @@ struct Context::Impl {
                                              static_cast<UINT>(descriptor_count)};
                     prepared.views.reserve(binding_count);
                     for(std::size_t i=0u;i<binding_count;++i) {
-                        const auto& binding=dispatch.buffers[i];
+                        const auto& binding=bindings[i];
                         if(binding.slot!=i || !binding.bytes ||
                            binding.offset%4u || binding.bytes%4u ||
                            binding.bytes/4u>std::numeric_limits<UINT>::max())
@@ -1293,7 +1295,7 @@ struct Context::Impl {
                 dispatch_table_indices.push_back(table);
                 dispatch_range_plans.push_back(range_plans.prepare(table,dispatch,
                     [&](std::vector<OperationRangeUse>& ranges) {
-                        for(const auto& binding:dispatch.buffers)
+                        for(const auto& binding:bindings)
                             validate_binding_access(binding,
                                 read_only_view(pipeline.view_kinds[binding.slot]));
                         if(dispatch.indirect) {
@@ -1302,7 +1304,7 @@ struct Context::Impl {
                             if(indirect.offset%4u || args.upload_only)
                                 throw std::invalid_argument("Invalid D3D12 indirect dispatch arguments");
                             validate_range(args.bytes,indirect.offset,sizeof(D3D12_DISPATCH_ARGUMENTS));
-                            for(const auto& binding:dispatch.buffers)
+                            for(const auto& binding:bindings)
                                 if(binding.buffer==indirect.buffer)
                                     throw std::invalid_argument("D3D12 indirect arguments cannot alias shader bindings");
                             ranges.push_back({resource_ordinals.at(dispatch.indirect->buffer),

@@ -142,7 +142,10 @@ void verify(const char* source_shader,const char* consumer_shader) {
             std::vector<std::uint32_t> observed(output.size());
             context.download(result_buffer,0u,observed.data(),result_bytes);
             require(observed==untouched,"Rejected D3D12 batch executed a valid prefix");
-            context.execute_batch({dispatch,dispatch});
+            auto shared=dispatch;
+            shared.share_resources();
+            auto shared_repeat=shared;
+            context.execute_batch({shared,shared_repeat});
             context.download(result_buffer,0u,observed.data(),result_bytes);
             require(observed==output,"Reused D3D12 table lost indirect results");
         }

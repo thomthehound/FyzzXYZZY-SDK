@@ -117,25 +117,28 @@ inline void validate_binding_access(const BufferBinding& binding,bool read_only)
 // A descriptor table can serve several distinct logical access declarations.
 inline bool same_dispatch_accesses(const DispatchCommand& a,
                                    const DispatchCommand& b) noexcept {
-    if(a.pipeline!=b.pipeline || a.buffers.size()!=b.buffers.size() ||
-       a.accesses.size()!=b.accesses.size() ||
+    if(a.pipeline!=b.pipeline ||
        a.indirect.has_value()!=b.indirect.has_value())
         return false;
     if(a.indirect && (a.indirect->buffer!=b.indirect->buffer ||
                       a.indirect->offset!=b.indirect->offset))
         return false;
-    for(std::size_t i=0u;i<a.buffers.size();++i) {
-        const auto& x=a.buffers[i];
-        const auto& y=b.buffers[i];
+    if(a.resources && a.resources==b.resources)return true;
+    const auto ab=a.bindings(),bb=b.bindings();
+    const auto aa=a.phase_accesses(),ba=b.phase_accesses();
+    if(ab.size()!=bb.size() || aa.size()!=ba.size())return false;
+    for(std::size_t i=0u;i<ab.size();++i) {
+        const auto& x=ab[i];
+        const auto& y=bb[i];
         const auto xe=x.accessed_extent(),ye=y.accessed_extent();
         if(x.slot!=y.slot || x.buffer!=y.buffer || x.offset!=y.offset ||
            x.bytes!=y.bytes || x.access!=y.access ||
            xe.offset!=ye.offset || xe.bytes!=ye.bytes)
             return false;
     }
-    for(std::size_t i=0u;i<a.accesses.size();++i) {
-        const auto& x=a.accesses[i];
-        const auto& y=b.accesses[i];
+    for(std::size_t i=0u;i<aa.size();++i) {
+        const auto& x=aa[i];
+        const auto& y=ba[i];
         if(x.slot!=y.slot || x.access!=y.access ||
            x.extent.offset!=y.extent.offset || x.extent.bytes!=y.extent.bytes)
             return false;
