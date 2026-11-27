@@ -6066,8 +6066,9 @@ void verify_resident_wide_device_response(
             schedule.device_admitted_bodies==b.size() &&
             schedule.device_admitted_descriptors==3u*count+spokes &&
             schedule.max_partition_groups==(count+127u)/128u+1u &&
+            schedule.device_partition_tile_bytes>0u &&
             schedule.device_partition_tile_bytes<=
-                (3u*count+spokes)*16u &&
+                4u*(schedule.device_source_descriptors/128u)*16u &&
             (2u*(spokes+2u)-1u)*schedule.max_partition_groups>
                 schedule.device_admitted_descriptors &&
             schedule.host_descriptor_inputs==0u &&

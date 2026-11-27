@@ -3772,8 +3772,10 @@ private:
             tiles_.push_back({0u,narrow(body_groups),
                               narrow(range.dispatch_begin),narrow(chunks)});
         }
+        // A wide color of width w emits at most 2*floor(w/128) tiles.
+        // Narrow runs contribute at most two tiles per wide color.
         const auto pool_capacity=static_cast<std::size_t>(
-            std::min<std::uint64_t>(responses,
+            std::min<std::uint64_t>(4ull*(responses/128u),
                 std::uint64_t(bounds.stages)*body_groups));
         tiles_.push_back({narrow(partition_output_count_),narrow(pool_capacity),
                           0u,0u});

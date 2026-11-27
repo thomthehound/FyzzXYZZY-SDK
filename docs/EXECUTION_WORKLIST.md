@@ -89,6 +89,8 @@ quality rather than individual dispatch or barrier counts.
 - [x] Preserve unchanged sorted descriptors and retained task mode and
   wide-color lists. Rebuild global tiles from locally retained or
   newly colored tasks without rescanning unchanged partitions.
+- [x] Bound the shared resident partition tile pool by wide-color
+  widths and intervening narrow runs, rather than response count.
 
 These are implementation milestones, not hardware-performance acceptance.
 
