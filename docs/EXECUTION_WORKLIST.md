@@ -69,6 +69,10 @@ quality rather than individual dispatch or barrier counts.
 - [x] Emit retained-color descriptors during expansion and preserve
   unchanged raw records. Keep packed descriptors local through
   preparation, solve, and integration.
+- [x] Omit sorted descriptor, partition, raw descriptor, cursor and
+  endpoint coloring storage for host-admitted packed-only frames.
+  Keep source tokens and the authored descriptor table; mixed and
+  device-admitted frames retain their required coloring capacity.
 
 These are implementation milestones, not hardware-performance acceptance.
 

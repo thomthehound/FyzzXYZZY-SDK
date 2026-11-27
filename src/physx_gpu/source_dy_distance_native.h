@@ -1468,6 +1468,11 @@ public:
             task_capacity>1u && wide_tasks_.empty();
         last_schedule_.host_lane_packed_tasks=host_lane_packing
             ?std::count_if(tasks.begin(),tasks.end(),lane_task):0u;
+        const bool packed_only=host_lane_packing &&
+            last_schedule_.host_lane_packed_tasks==task_capacity;
+        const auto raw_descriptor_count=packed_only?0u:descriptor_capacity;
+        const auto color_cursor_count=packed_only?0u:descriptor_capacity;
+        const auto color_body_count=packed_only?0u:bodies.size();
         if(device_admission &&
            (!source_descriptors || !device_admission->work ||
             !device_admission->task_dispatch.buffer || task_capacity==0u))
@@ -1543,8 +1548,10 @@ public:
         }
         const std::uint64_t scratch_bytes=device_partitions
             ?(source_descriptors?(device_admission?64ull:24ull):20ull)+
-                std::uint64_t(descriptor_capacity)*24ull+
-                std::uint64_t(bodies.size())*12ull+
+                std::uint64_t(raw_descriptor_count)*16ull+
+                std::uint64_t(descriptor_capacity)*4ull+
+                std::uint64_t(color_cursor_count)*4ull+
+                std::uint64_t(color_body_count)*12ull+
                 (source_descriptors?sizeof(std::uint32_t):0u)+
                 std::uint64_t(source_descriptor_full_.size())*16ull
             :0ull;
@@ -1566,8 +1573,8 @@ public:
         // table. Solver-body ordinals precede the free-body suffix.
         const std::array<std::size_t,count> bytes{
             bodies.size_bytes(),rows.size_bytes(),
-            descriptor_capacity*sizeof(native::GpuDyDistanceDescriptor),
-            partition_count*sizeof(std::uint32_t),
+            (packed_only?0u:descriptor_capacity)*sizeof(native::GpuDyDistanceDescriptor),
+            (packed_only?0u:partition_count)*sizeof(std::uint32_t),
             device_admission?0u:ordinal_bytes,
             device_admission?0u:task_bytes,
             contact_bytes,friction_bytes,
@@ -1707,6 +1714,7 @@ public:
         std::size_t total=upload_begin;
         for(const auto i:order) {
             if((i==14u || i==15u) && !bytes[i])continue;
+            if(packed_only && (i==2u || i==3u))continue;
             const auto view_bytes=std::max<std::size_t>(bytes[i],4u);
             if(total>std::numeric_limits<std::uint32_t>::max()-table_alignment ||
                view_bytes>std::numeric_limits<std::uint32_t>::max()-total)
@@ -1901,10 +1909,14 @@ public:
             const auto n=descriptor_capacity;
             const std::size_t header_bytes=source_descriptors
                 ?(device_admission?64u:24u):20u;
+            const auto token_begin=header_bytes+raw_descriptor_count*16u;
+            const auto cursor_begin=token_begin+n*4u;
+            const auto body_state_begin=cursor_begin+color_cursor_count*4u;
+            // With no raw descriptors, the token range starts at the header.
+            // Packed tasks consume tokens and the full-row table directly.
             const std::array<std::uint32_t,5> scratch_header{
-                narrow(header_bytes),narrow(header_bytes+n*16u),
-                narrow(header_bytes+n*20u),
-                narrow(header_bytes+n*24u),
+                narrow(header_bytes),narrow(token_begin),
+                narrow(cursor_begin),narrow(body_state_begin),
                 tiles_.empty()?0u:narrow(offsets[14])};
             write_input(offsets[15],scratch_header.data(),
                         sizeof(scratch_header));
@@ -1968,7 +1980,7 @@ public:
                                 source_descriptor_tokens_.data(),
                                 n*sizeof(std::uint32_t));
                 const auto table=offsets[15]+scratch_header[3]+
-                    bodies.size()*12u;
+                    color_body_count*12u;
                 const auto total=narrow(source_descriptor_full_.size());
                 if(table<offsets[15] ||
                    table-offsets[15]>bytes[15] ||

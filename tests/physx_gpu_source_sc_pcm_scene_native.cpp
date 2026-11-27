@@ -10068,6 +10068,10 @@ void verify_host_lane_packed_islands(
                 " contacts="+std::to_string(gpu.contacts().size())+
                 " largest_island="+
                     std::to_string(gpu.largest_accurate_island_size()));
+        if(!device_admission &&
+           schedule.host_lane_packed_tasks==schedule.device_colored_tasks)
+            require(schedule.device_generated_bytes==0u,
+                "Packed-only Dy allocated unused sorted descriptors or partitions");
         saw_dependent_task |= device_admission
             ?gpu.largest_accurate_island_size()>=2u
             :schedule.host_lane_packed_tasks<

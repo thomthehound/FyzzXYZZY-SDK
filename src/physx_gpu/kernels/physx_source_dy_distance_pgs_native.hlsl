@@ -2137,7 +2137,9 @@ void sourceDySolvePackedTask(uint taskId) {
     const uint4 views=arena.Load4(scratch);
     const uint colors=scratch+views.y;
     const uint bodyState=scratch+views.w;
-    const uint sourceTable=bodyState+p.bodyCount*12u;
+    // Coincident raw/token offsets denote an empty coloring workspace.
+    const uint sourceTable=bodyState+
+        (views.x==views.y?0u:p.bodyCount*12u);
     uint4 desc;
     if(!sourceDyExpandDescriptor(
             sourceDyResponseToken(scratch,colors,ranges.x),
