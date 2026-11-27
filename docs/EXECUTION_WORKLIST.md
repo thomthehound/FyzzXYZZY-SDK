@@ -94,6 +94,9 @@ quality rather than individual dispatch or barrier counts.
 - [x] Declare endpoint remapping and tiled numerical preparation
   accesses by their actual arena tables and source bindings, including
   friction history, contact extents and task error publication.
+- [x] Declare coloring and tile construction access ranges separately
+  from numerical solver rows. Preserve combined body initialization,
+  resident schedule reuse, task errors and indirect argument writes.
 
 These are implementation milestones, not hardware-performance acceptance.
 

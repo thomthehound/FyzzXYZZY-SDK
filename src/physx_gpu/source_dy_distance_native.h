@@ -2430,7 +2430,10 @@ public:
             const bool solves=phase==Launch::Partition;
             const bool snapshots=phase==Launch::Motion;
             const bool prepares=phase==Launch::Prepare;
-            if(phase!=Launch::InitializeBodies && !snapshots && !solves &&
+            const bool colors=phase==Launch::Color;
+            const bool initializes=phase==Launch::InitializeBodies ||
+                (colors && device_initial_bodies && !resident_wide);
+            if(!initializes && !colors && !snapshots && !solves &&
                !prepares && phase!=Launch::PublishErrors)return;
             const auto region=[&](std::uint32_t slot,std::size_t offset,
                                   std::size_t size,A access) {
@@ -2455,9 +2458,9 @@ public:
             // Body initialization consumes the variable integration
             // inputs; subsequent solver phases consume the schedule header.
             arena_region(offsets[12],
-                phase==Launch::InitializeBodies || prepares
+                initializes || prepares
                     ?bytes[12]:integration_header_bytes,A::Read);
-            if(device_partitions)
+            if(device_partitions && !colors)
                 arena_region(offsets[15],
                     source_descriptors?(device_admission?64u:24u):20u,A::Read);
             if(device_admission) {
@@ -2468,8 +2471,16 @@ public:
                     sc_region(layout.counts,layout.admissions-layout.counts,A::Read);
                 }else
                     sc_region(layout.tasks,layout.block_offsets-layout.tasks,
-                        snapshots || solves || prepares?A::ReadWrite:A::Read);
-                if(phase==Launch::InitializeBodies || snapshots) {
+                        snapshots || solves || prepares || colors?A::ReadWrite:A::Read);
+                if(colors) {
+                    sc_region(layout.body_order,
+                              layout.contact_admissions-layout.body_order,A::Read);
+                    if(device_admission->deferred_joint_remap)
+                        sc_region(layout.joint_remap,
+                            device_admission->joint_source_count*sizeof(std::uint32_t),
+                            A::Read);
+                }
+                if(phase==Launch::InitializeBodies || snapshots || colors) {
                     sc_region(layout.body_order,
                               layout.contact_endpoints-layout.body_order,A::Read);
                     if(device_admission->deferred_body_remap)
@@ -2477,15 +2488,42 @@ public:
                                   layout.joint_remap-layout.body_remap,A::Read);
                 }
             }else if(phase!=Launch::InitializeBodies) {
-                table(5u,snapshots || solves || prepares?A::ReadWrite:A::Read);
+                table(5u,snapshots || solves || prepares || colors?A::ReadWrite:A::Read);
                 if(snapshots)table(4u,A::Read);
             }
-            if(phase==Launch::InitializeBodies) {
+            if(initializes) {
                 table(0u,A::Write);
                 table(16u,A::Write);
-                binding(2u,A::Read);
-                binding(4u,A::Read);
-                binding(5u,A::ReadWrite);
+                if(has_shape_targets) {
+                    binding(2u,A::Read);
+                    binding(4u,A::Read);
+                }
+                if(actor_local_capacity_)binding(5u,A::ReadWrite);
+            }
+            if(colors) {
+                // Coloring admits source extents and produces the schedule,
+                // without preparing contact or friction solver rows.
+                table(1u,A::Read);
+                table(2u,A::ReadWrite);
+                table(3u,A::ReadWrite);
+                table(15u,A::ReadWrite);
+                table(17u,A::ReadWrite);
+                if(source_descriptors) {
+                    table(8u,A::ReadWrite);
+                    table(9u,A::ReadWrite);
+                    table(10u,device_admission?A::ReadWrite:A::Read);
+                    table(11u,A::Read);
+                    arena_region(history_bytes+result_offsets[2],
+                        result_offsets[3]-result_offsets[2],A::Write);
+                    arena_region(history_bytes+result_offsets[4],
+                        result_offsets[5]-result_offsets[4],A::ReadWrite);
+                    if(pcm_pair_count)binding(1u,A::Read);
+                }
+                if(resident_wide)
+                    arena_region(mode_output_offset,task_capacity*24u,A::ReadWrite);
+                if(!device_admission)
+                    arena_region(history_bytes+result_offsets[1],
+                        task_capacity*sizeof(std::uint32_t),A::Write);
             }else if(prepares) {
                 // Numerical preparation reads geometry and prepared body
                 // state, and owns the complete rows and friction history.
@@ -2539,7 +2577,7 @@ public:
                     arena_region(history_bytes+result_offsets[2],
                         result_offsets[5]-result_offsets[2],A::ReadWrite);
                 }
-            }else {
+            }else if(phase==Launch::PublishErrors) {
                 if(device_admission)
                     arena_region(offsets[15]+36u,8u,A::ReadWrite);
                 else
@@ -2684,6 +2722,36 @@ public:
             build.buffers[2].access=compute::BufferAccess::Read;
             build.buffers[3].access=compute::BufferAccess::Read;
             build.buffers[5].access=compute::BufferAccess::Read;
+            using A=compute::BufferAccess;
+            const auto build_region=[&](std::uint32_t binding,std::size_t offset,
+                                        std::size_t size,A access) {
+                if(size)
+                    build.accesses.push_back({binding,
+                        {build.buffers[binding].accessed_extent().offset+offset,size},
+                        access});
+            };
+            build_region(0u,offsets[12],integration_header_bytes,A::Read);
+            build_region(0u,offsets[15],
+                source_descriptors?(device_admission?64u:24u):20u,
+                resident_wide?A::ReadWrite:A::Read);
+            build_region(0u,offsets[3],bytes[3],A::Read);
+            build_region(0u,offsets[14],bytes[14],
+                resident_wide?A::ReadWrite:A::Read);
+            build_region(0u,partition_output_offset,
+                partition_output_count_*sizeof(WorkTile),A::Write);
+            build_region(slot,0u,partition_dispatch_count_*16u,
+                resident_wide?A::ReadWrite:A::Write);
+            if(resident_wide) {
+                const auto& layout=device_admission->layout;
+                const auto island_slot=convex_vertex_count?7u:6u;
+                build_region(island_slot,0u,sizeof(SourceScDeviceIslandHeader),A::Read);
+                build_region(island_slot,layout.tasks,task_bytes,A::ReadWrite);
+                build_region(0u,mode_output_offset,task_capacity*24u,A::Read);
+                const auto wide_bytes=wide_color_count*sizeof(std::uint32_t);
+                build_region(0u,offsets[17]+bytes[17]-wide_bytes,wide_bytes,A::Read);
+                build_region(0u,history_bytes+output_bytes-4u,4u,A::Write);
+            }else
+                build_region(0u,offsets[5],bytes[5],A::ReadWrite);
             auto arguments=params;
             arguments[7]=partition_output_bias;
             arguments[9]=max_groups;
