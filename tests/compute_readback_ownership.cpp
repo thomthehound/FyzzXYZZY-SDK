@@ -131,13 +131,13 @@ void verify_operation_ranges() {
         throw std::runtime_error("Read-only aliases replaced the original producer");
 }
 
-void verify_uav_ranges() {
-    using fyzz::compute::PendingUavRanges;
-    PendingUavRanges pending;
+void verify_buffer_ranges() {
+    using fyzz::compute::PendingBufferRanges;
+    PendingBufferRanges pending;
     const auto expect=[&](std::size_t begin,std::size_t end,
                           bool writes,bool conflict) {
         if(pending.conflicts(begin,end,writes)!=conflict)
-            throw std::runtime_error("Incorrect UAV ordering dependency");
+            throw std::runtime_error("Incorrect D3D12 buffer ordering dependency");
     };
     pending.record(0u,32u,false);
     expect(16u,48u,false,false);
@@ -146,7 +146,7 @@ void verify_uav_ranges() {
     pending.record(64u,96u,true);
     expect(80u,112u,false,true);
     expect(80u,112u,true,true);
-    expect(32u,64u,true,false);
+    expect(32u,64u,true,true);
     // One resource barrier orders all preceding accesses.
     pending.clear();
     expect(0u,128u,true,false);
@@ -157,11 +157,13 @@ void verify_uav_ranges() {
     expect(92u,96u,false,true);
     expect(96u,128u,false,false);
     expect(96u,128u,true,true);
-    expect(128u,160u,true,false);
+    expect(128u,160u,true,true);
+    expect(128u,160u,false,false);
     pending.clear();
     for(std::size_t i=128u;i>0u;--i) {
         const auto begin=(i-1u)*4u;
-        expect(begin,begin+4u,true,false);
+        expect(begin,begin+4u,true,i!=128u);
+        expect(begin,begin+4u,false,false);
         pending.record(begin,begin+4u,true);
     }
     expect(0u,512u,false,true);
@@ -205,7 +207,7 @@ int main() {
     try {
         verify_range_hazards();
         verify_operation_ranges();
-        verify_uav_ranges();
+        verify_buffer_ranges();
         verify_cache_working_set();
         using namespace fyzz::compute;
 #if defined(FYZZXYZZY_TEST_D3D12)
@@ -413,7 +415,7 @@ int main() {
         context.finish_download_batch(
             context.submit_download_batch(peak_download),true);
         if(peak[13u]!=replacement)
-            throw std::runtime_error("Reused relocation scratch lost submission ordering");
+            throw std::runtime_error("Direct relocation lost submission ordering");
         context.wait_submission(reused_copy);
         context.destroy_buffer(staging);
         context.destroy_buffer(gpu);

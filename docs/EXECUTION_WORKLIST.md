@@ -109,6 +109,9 @@ quality rather than individual dispatch or barrier counts.
 - [x] Use Vulkan Synchronization2 with individual barrier stage and
   access scopes, exact copy and storage access masks, and 64-bit
   dependency history across submissions.
+- [x] Use D3D12 enhanced buffer barriers and access epochs for compute,
+  copy and indirect dispatch dependencies. Copy non-overlapping buffer
+  regions directly, without relocation staging.
 
 These are implementation milestones, not hardware-performance acceptance.
 

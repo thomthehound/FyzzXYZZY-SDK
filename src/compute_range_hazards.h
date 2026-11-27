@@ -181,9 +181,9 @@ public:
     }
 };
 
-// A D3D12 UAV barrier orders every pending access to the resource.
-// Track only ranges accessed since its last transition or UAV barrier.
-class PendingUavRanges {
+// Enhanced buffer barriers cover the entire resource. Readers can
+// overlap one disjoint writer, but sequential writers require ordering.
+class PendingBufferRanges {
     struct Range {
         std::size_t begin,end;
     };
@@ -215,13 +215,14 @@ class PendingUavRanges {
                 ranges_.erase(first+1,last);
             }
         }
+        bool empty() const noexcept { return ranges_.empty(); }
         void clear() noexcept { ranges_.clear(); }
     };
     RangeSet readers_,writers_;
 public:
     bool conflicts(std::size_t begin,std::size_t end,bool writes) const noexcept {
         return writers_.overlaps(begin,end) ||
-               (writes && readers_.overlaps(begin,end));
+               (writes && (!writers_.empty() || readers_.overlaps(begin,end)));
     }
     void record(std::size_t begin,std::size_t end,bool writes) {
         (writes?writers_:readers_).add(begin,end);

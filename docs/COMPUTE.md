@@ -78,8 +78,10 @@ The default `Unspecified` means conservatively read/write, preserving
 existing API callers. The source-derived AABB stage marks its three input
 bindings read-only and encoded output write-only; the incremental SAP
 single-arena stage declares read/write. Vulkan requires core 1.3 Synchronization2 support and tracks overlapping
-access intervals with per-buffer-barrier stage and access scopes. D3D12 tracks conflicting UAV
-ranges while retaining whole-resource state transitions. A binding's
+access intervals with per-buffer-barrier stage and access scopes. D3D12
+requires enhanced barriers and tracks read/write ranges to identify
+conflicting access epochs. Native buffer barriers cover the entire
+resource; sequential writers remain ordered. A binding's
 optional `access_extent` describes a contiguous interval relative to its
 descriptor base. Native source views exclude descriptor alignment padding.
 The descriptor itself is unchanged, and the declared interval must cover
@@ -98,11 +100,11 @@ incorrectly declared writable; access declarations do not change the
 DXIL resource type or make arbitrary shaders writable. Eventually shader
 reflection or source-derived manifests should cross-check intent so
 incorrect declarations cannot silently remove necessary barriers.
-D3D12 mutable buffers begin each separate queue execution in COMMON,
-promote on first access and decay when that execution completes. State
-tracking is submission-local; changes between incompatible access states
-and conflicting UAV accesses retain explicit barriers. Upload and readback
-heaps retain their fixed states. Each submission executes one command list.
+D3D12 buffers have no layout transitions. Access epochs are
+submission-local; their barriers order the actual producer and consumer
+pipeline stages. Whole-buffer visibility is retained across access
+classes. Non-overlapping same-buffer copies execute directly without
+relocation staging. Each submission executes one command list.
 The PhysX task graph, cross-submission dependencies, and actual lifetime
 rules remain authoritative. Context teardown releases in-flight native
 resources only after queue completion or device loss; a failed D3D12
