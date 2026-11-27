@@ -66,6 +66,9 @@ quality rather than individual dispatch or barrier counts.
 - [x] Relocate device-admitted contact windows during descriptor
   expansion using Sc's exact prefix. Share relocation between colored
   and packed tasks without capacity staging or a separate traversal.
+- [x] Emit retained-color descriptors during expansion and preserve
+  unchanged raw records. Keep packed descriptors local through
+  preparation, solve, and integration.
 
 These are implementation milestones, not hardware-performance acceptance.
 

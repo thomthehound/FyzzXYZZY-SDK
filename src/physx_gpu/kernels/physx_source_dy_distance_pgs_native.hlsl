@@ -839,6 +839,7 @@ void sourceDyPartitionTask(uint taskId,uint scratch,uint errorAddress,
     uint needed=0u;
     for(uint i=first+lane;i<last;i+=128u) {
         uint4 desc;
+        uint retainedDestination=invalidBody;
         if(sourceDescriptors) {
             const uint token=sourceDyResponseToken(scratch,colors,i);
             if(!sourceDyExpandDescriptor(
@@ -852,9 +853,13 @@ void sourceDyPartitionTask(uint taskId,uint scratch,uint errorAddress,
                    destination<first || destination>=last) {
                     uint unused;
                     InterlockedAnd(dyReuseColors,0u,unused);
+                } else {
+                    retainedDestination=destination;
                 }
+                if(any(prior!=desc))arena.Store4(raw+i*16u,desc);
+            } else {
+                arena.Store4(raw+i*16u,desc);
             }
-            arena.Store4(raw+i*16u,desc);
         }else desc=arena.Load4(raw+i*16u);
         const bool da=(desc.w&0x100u)!=0u;
         const bool db=(desc.w&0x200u)!=0u;
@@ -892,6 +897,11 @@ void sourceDyPartitionTask(uint taskId,uint scratch,uint errorAddress,
         if(deviceAdmission &&
            !sourceDyRelocateContact(desc,scratch,i,errorAddress))
             continue;
+        // The retained permutation has disjoint descriptor destinations.
+        // Recoloring replaces these records if any endpoint changed.
+        if(retainedDestination!=invalidBody)
+            arena.Store4(p.descriptorBias+retainedDestination*16u,
+                         uint4(desc.xyz,rowCount));
         if(!compareEndpoints && count>1u) {
             sourceDyInitializeColorState(desc,bodyState,colors,i);
             needed+=uint(da && db);
@@ -901,11 +911,6 @@ void sourceDyPartitionTask(uint taskId,uint scratch,uint errorAddress,
     AllMemoryBarrierWithGroupSync();
     if(sourceDyTaskLoad(errorAddress)!=0u)return;
     if(dyReuseColors!=0u) {
-        for(uint i=first+lane;i<last;i+=128u) {
-            uint4 desc=arena.Load4(raw+i*16u);
-            desc.w&=255u;
-            arena.Store4(p.descriptorBias+arena.Load(colors+i*4u)*16u,desc);
-        }
         if(lane==0u)sourceDyTaskStore(task+12u,dyRetainedPartitionEnd);
         return;
     }
@@ -2157,12 +2162,8 @@ void sourceDySolvePackedTask(uint taskId) {
         publishTaskError(taskId,sourceDyTaskLoad(errorAddress));
         return;
     }
-    // The singleton's ranges already define its only partition.
-    // No conflict-color state is needed for its exclusive solver row.
+    // This invocation owns the descriptor and its complete numerical solve.
     desc.w&=255u;
-    arena.Store4(p.descriptorBias+ranges.x*16u,desc);
-
-    // This invocation owns the complete singleton constraint.
     prepareConstraint(desc,0u,1u,errorAddress);
     if(sourceDyTaskLoad(errorAddress)!=0u) {
         publishTaskError(taskId,sourceDyTaskLoad(errorAddress));
