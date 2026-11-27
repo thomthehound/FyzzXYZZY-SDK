@@ -137,6 +137,10 @@ quality rather than individual dispatch or barrier counts.
   Launches retain immutable slices through recording, upload expansion
   and submission; validate their extents independently of access-plan reuse.
 
+- [x] Pack independent one-descriptor compact islands into lane-owned
+  fused tiles within resident mixed schedules. Retain the wide-task
+  count independently of the compact tile count and preserve tile reuse.
+
 These are implementation milestones, not hardware-performance acceptance.
 
 ## Execution and lifetime work

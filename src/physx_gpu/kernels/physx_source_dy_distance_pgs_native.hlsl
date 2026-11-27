@@ -618,6 +618,7 @@ groupshared uint dyNextWave,dySerial;
 groupshared uint dyReuseColors,dyRetainedPartitionEnd;
 groupshared uint dySingletonPartitions,dyPreparationError;
 groupshared uint dyPartitionTileCount,dyPartitionTileBase;
+groupshared uint dyPackedTaskCount,dyCompactTaskCount;
 groupshared uint dyHubA,dyHubB,dyHubMask;
 groupshared uint dyCapacityScan[128];
 
@@ -2118,15 +2119,19 @@ void sourceDySolveExclusive(uint4 desc,uint2 iters,uint2 iterations,
     sourceDyStoreSolverPair(desc,state);
 }
 
-void sourceDySolvePackedTask(uint taskId) {
+bool sourceDyPackedTaskShape(uint4 ranges,uint2 bodies) {
+    return ranges.y==ranges.x+1u && ranges.w==ranges.z+1u &&
+           bodies.y>bodies.x && bodies.y-bodies.x<=2u;
+}
+
+void sourceDySolvePackedTask(uint taskId,bool precolored) {
     const uint task=p.taskBias+taskId*36u;
     const uint4 ranges=sourceDyTaskLoad4(task);
     const uint2 bodies=sourceDyTaskLoad2(task+16u);
     const uint2 iters=sourceDyTaskLoad2(task+24u);
     const uint errorAddress=task+32u;
     const uint4 schedule=arena.Load4(p.integrationBias+16u);
-    if(ranges.y!=ranges.x+1u || ranges.w!=ranges.z+1u ||
-       bodies.y<=bodies.x || bodies.y-bodies.x>2u ||
+    if(!sourceDyPackedTaskShape(ranges,bodies) ||
        ranges.y>schedule.y || ranges.w>p.partitionCount ||
        bodies.y>schedule.x ||
        !iters.x || iters.x>255u || iters.y>255u) {
@@ -2144,33 +2149,37 @@ void sourceDySolvePackedTask(uint taskId) {
             return;
         }
     }
-    const uint4 views=arena.Load4(scratch);
-    const uint colors=scratch+views.y;
-    const uint sourceTable=scratch+views.x+
-        (views.x==64u?0u:schedule.y*4u);
     uint4 desc;
-    if(!sourceDyExpandDescriptor(
-            sourceDyResponseToken(scratch,colors,ranges.x),
-            sourceDyResponseExtent(scratch,ranges.x),
-            arena.Load(sourceTable),sourceTable,
-                                 errorAddress,desc)) {
-        publishTaskError(taskId,sourceDyTaskLoad(errorAddress));
-        return;
-    }
-    const bool da=(desc.w&0x100u)!=0u;
-    const bool db=(desc.w&0x200u)!=0u;
-    if((desc.w&~0x3ffu)!=0u || (!da && !db) ||
-       (da && desc.y>=p.bodyCount) ||
-       (db && desc.z>=p.bodyCount)) {
-        sourceDyTaskErrorOr(errorAddress,1048576u);
-        publishTaskError(taskId,sourceDyTaskLoad(errorAddress));
-        return;
-    }
-    if((p.launchControl&0x08000000u)!=0u &&
-       !sourceDyRelocateContact(
-            desc,scratch,ranges.x,errorAddress)) {
-        publishTaskError(taskId,sourceDyTaskLoad(errorAddress));
-        return;
+    if(precolored) {
+        desc=arena.Load4(p.descriptorBias+ranges.x*16u);
+    }else {
+        const uint4 views=arena.Load4(scratch);
+        const uint colors=scratch+views.y;
+        const uint sourceTable=scratch+views.x+
+            (views.x==64u?0u:schedule.y*4u);
+        if(!sourceDyExpandDescriptor(
+                sourceDyResponseToken(scratch,colors,ranges.x),
+                sourceDyResponseExtent(scratch,ranges.x),
+                arena.Load(sourceTable),sourceTable,
+                                     errorAddress,desc)) {
+            publishTaskError(taskId,sourceDyTaskLoad(errorAddress));
+            return;
+        }
+        const bool da=(desc.w&0x100u)!=0u;
+        const bool db=(desc.w&0x200u)!=0u;
+        if((desc.w&~0x3ffu)!=0u || (!da && !db) ||
+           (da && desc.y>=p.bodyCount) ||
+           (db && desc.z>=p.bodyCount)) {
+            sourceDyTaskErrorOr(errorAddress,1048576u);
+            publishTaskError(taskId,sourceDyTaskLoad(errorAddress));
+            return;
+        }
+        if((p.launchControl&0x08000000u)!=0u &&
+           !sourceDyRelocateContact(
+                desc,scratch,ranges.x,errorAddress)) {
+            publishTaskError(taskId,sourceDyTaskLoad(errorAddress));
+            return;
+        }
     }
     // This invocation owns the descriptor and its complete numerical solve.
     desc.w&=255u;
@@ -2328,6 +2337,68 @@ bool sourceDyResidentTileRange(uint task,uint kind,
     return true;
 }
 
+// A packed tile covers a block of independent one-descriptor tasks.
+bool sourceDyResidentPackedTask(uint task) {
+    const uint address=p.taskBias+task*36u;
+    return sourceDyTaskLoad(address+32u)==0u &&
+           arena.Load(p.resultTaskOffset+task*4u)==0u &&
+           sourceDyPackedTaskShape(sourceDyTaskLoad4(address),
+                                  sourceDyTaskLoad2(address+16u));
+}
+
+void sourceDyBuildResidentFusedTiles(uint4 reservation,uint taskCount,uint lane) {
+    if(lane==0u) {
+        dyPartitionTileCount=0u;
+        dyCompactTaskCount=0u;
+    }
+    GroupMemoryBarrierWithGroupSync();
+    uint compact=0u;
+    for(uint first=0u;first<taskCount;first+=128u) {
+        if(lane==0u)dyPackedTaskCount=0u;
+        GroupMemoryBarrierWithGroupSync();
+        const uint task=first+lane;
+        if(task<taskCount) {
+            uint begin,end,step,color;
+            if(sourceDyResidentTileRange(task,0u,begin,end,step,color)) {
+                ++compact;
+                if(sourceDyResidentPackedTask(task)) {
+                    InterlockedAdd(dyPackedTaskCount,1u);
+                }else {
+                    uint offset;
+                    InterlockedAdd(dyPartitionTileCount,1u,offset);
+                    if(offset<reservation.y)
+                        arena.Store4(p.rowCount+(reservation.x+offset)*16u,
+                                    uint4(task,0u,1u,0u));
+                    else sourceDyTaskErrorOr(p.taskBias+task*36u+32u,0x02000000u);
+                }
+            }
+        }
+        GroupMemoryBarrierWithGroupSync();
+        if(lane==0u && dyPackedTaskCount!=0u) {
+            uint offset;
+            InterlockedAdd(dyPartitionTileCount,1u,offset);
+            if(offset<reservation.y)
+                arena.Store4(p.rowCount+(reservation.x+offset)*16u,
+                            uint4(first,first,first+min(128u,taskCount-first),
+                                  0x80000000u));
+            else sourceDyTaskErrorOr(p.taskBias+first*36u+32u,0x02000000u);
+        }
+    }
+    if(compact!=0u)InterlockedAdd(dyCompactTaskCount,compact);
+    AllMemoryBarrierWithGroupSync();
+    const uint count=dyPartitionTileCount<=reservation.y?dyPartitionTileCount:0u;
+    for(uint chunk=lane;chunk<reservation.w;chunk+=128u) {
+        const uint begin=chunk*p.partitionCount;
+        const uint groups=begin<count?min(p.partitionCount,count-begin):0u;
+        retainedSources.Store3((reservation.z+chunk)*16u,uint3(groups,1u,1u));
+    }
+    if(lane==0u) {
+        const uint wide=taskCount-dyCompactTaskCount;
+        retainedSources.Store(reservation.z*16u+12u,wide);
+        arena.Store(p.writebackBias+p.resultContactOffset,wide);
+    }
+}
+
 // Wide colors and narrow runs consume a shared response-bounded tile pool.
 void sourceDyBuildResidentTiles(uint kind,uint lane) {
     const uint scratch=arena.Load(p.integrationBias+28u);
@@ -2342,19 +2413,19 @@ void sourceDyBuildResidentTiles(uint kind,uint lane) {
             if(kind>=3u)
                 arena.Store(metadata+(p.contactCount+kind)*16u,
                             retainedSources.Load(reservation.z*16u+12u));
-            if(kind==0u) {
-                uint count=0u;
-                for(uint chunk=0u;chunk<reservation.w;++chunk)
-                    count+=retainedSources.Load((reservation.z+chunk)*16u);
+            if(kind==0u)
                 arena.Store(p.writebackBias+p.resultContactOffset,
-                            0x80000000u|(header.y-count));
-            }
+                            0x80000000u|retainedSources.Load(reservation.z*16u+12u));
         }
+        return;
+    }
+    const uint taskCount=valid?header.y:0u;
+    if(kind==0u) {
+        sourceDyBuildResidentFusedTiles(reservation,taskCount,lane);
         return;
     }
     if(lane==0u)dyPartitionTileCount=0u;
     GroupMemoryBarrierWithGroupSync();
-    const uint taskCount=valid?header.y:0u;
     uint laneGroups=0u;
     for(uint task=lane;task<taskCount;task+=128u) {
         uint begin,end,step,color;
@@ -2419,9 +2490,6 @@ void sourceDyBuildResidentTiles(uint kind,uint lane) {
     }
     AllMemoryBarrierWithGroupSync();
     const uint count=dyPartitionTileCount<=reservation.y?dyPartitionTileCount:0u;
-    if(kind==0u && lane==0u)
-        arena.Store(p.writebackBias+p.resultContactOffset,
-                    valid && count<=header.y?header.y-count:0u);
     for(uint chunk=lane;chunk<reservation.w;chunk+=128u) {
         const uint begin=chunk*p.partitionCount;
         const uint groups=begin<count?min(p.partitionCount,count-begin):0u;
@@ -2498,14 +2566,14 @@ void main(uint3 group:SV_GroupID,uint3 lane:SV_GroupThreadID) {
        (p.launchControl&0x10000000u)!=0u) {
         const uint within=group.x*128u+lane.x;
         const uint count=(p.launchControl&0x0ffffff0u)>>4u;
-        if(within<count)sourceDySolvePackedTask(p.launchBegin+within);
+        if(within<count)sourceDySolvePackedTask(p.launchBegin+within,false);
         return;
     }
     if(phase==fusedTask && devicePartitions && !precolored &&
        admittedTasks!=0xffffffffu &&
        admittedTasks>1u && admittedDispatch<admittedTasks) {
         const uint task=index*128u+lane.x;
-        if(task<admittedTasks)sourceDySolvePackedTask(task);
+        if(task<admittedTasks)sourceDySolvePackedTask(task,false);
         return;
     }
     if(phase==initializeBodiesTile) {
@@ -2597,6 +2665,12 @@ void main(uint3 group:SV_GroupID,uint3 lane:SV_GroupThreadID) {
                 tile=arena.Load4(p.writebackBias+tileOffset+index*16u);
         } else if(schedule.w!=0u)
             tile=arena.Load4(schedule.w+index*16u);
+        if(fused && residentWide && (tile.w&0x80000000u)!=0u) {
+            const uint task=tile.y+lane.x;
+            if(task<tile.z && sourceDyResidentPackedTask(task))
+                sourceDySolvePackedTask(task,true);
+            return;
+        }
         const uint t=p.taskBias+tile.x*36u;
         taskId=tile.x;
         endError=t+32u;

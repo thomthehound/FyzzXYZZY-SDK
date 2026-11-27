@@ -6006,11 +6006,12 @@ void verify_resident_wide_device_response(
     gpu.set_gpu_dy_device_admission_enabled(true);
     constexpr auto count=native::gpu_dy_wide_task_threshold;
     constexpr std::uint32_t spokes=192u;
+    constexpr std::uint32_t extra_singletons=128u;
     RigidBodyDynamics dynamics{};
     dynamics.position_iterations=1u;
     dynamics.velocity_iterations=0u;
     const auto assemble=[&](native::Scene& scene) {
-        std::array<BodyId,2u*count+1u> ids{};
+        std::array<BodyId,2u*count+1u+extra_singletons> ids{};
         for(std::uint32_t i=0u;i<=count;++i) {
             const float x=i==count?-8.f:1.25f*float(i);
             scene.add_static_box({0.5f,0.5f,0.5f},{x,0.f,0.f});
@@ -6039,6 +6040,15 @@ void verify_resident_wide_device_response(
             scene.set_dynamics(leaf,dynamics);
             scene.set_velocity(leaf,{0.f,0.f,0.01f});
         }
+        for(std::uint32_t i=0u;i<extra_singletons;++i) {
+            const float x=-10.f-2.f*float(i);
+            scene.add_static_box({0.5f,0.5f,0.5f},{x,0.f,0.f});
+            const auto body=scene.add_dynamic_box(
+                {0.5f,0.5f,0.5f},{x,0.83f,0.f},1.f);
+            ids[2u*count+1u+i]=body;
+            scene.set_dynamics(body,dynamics);
+            scene.set_velocity(body,{i%2u?0.02f:-0.02f,0.f,0.01f});
+        }
         return ids;
     };
     const auto a=assemble(cpu),b=assemble(gpu);
@@ -6062,9 +6072,9 @@ void verify_resident_wide_device_response(
     require(native::GpuPcmFrictionAnchorFixture::has_prewitness_solve(gpu) &&
             schedule.resident_wide_schedule &&
             schedule.wide_tasks==1u &&
-            schedule.device_admitted_tasks==3u &&
+            schedule.device_admitted_tasks==3u+extra_singletons &&
             schedule.device_admitted_bodies==b.size() &&
-            schedule.device_admitted_descriptors==3u*count+spokes &&
+            schedule.device_admitted_descriptors==3u*count+spokes+extra_singletons &&
             schedule.max_partition_groups==(count+127u)/128u+1u &&
             schedule.device_partition_tile_bytes>0u &&
             schedule.device_partition_tile_bytes<=
@@ -6080,7 +6090,7 @@ void verify_resident_wide_device_response(
                 2u*(2u*((2u*count-1u+spokes)/128u)+1u) &&
             producer->dy_gpu_integrated_body_count()==b.size(),
         "Resident wide component lost bounded device-authored scheduling");
-    require(cpu.contacts().size()==count+2u &&
+    require(cpu.contacts().size()==count+2u+extra_singletons &&
             gpu.contacts().size()==cpu.contacts().size(),
         "Resident wide execution changed contact publication");
     for(std::size_t i=0u;i<b.size();++i)
@@ -6100,6 +6110,12 @@ void verify_resident_wide_device_response(
             scene.set_pose(ids[count+1u+i],{1.5f*float(i),0.83f,8.f},{});
             scene.set_velocity(ids[count+1u+i],{0.f,0.f,0.01f});
             scene.set_angular_velocity(ids[count+1u+i],{});
+        }
+        for(std::uint32_t i=0u;i<extra_singletons;++i) {
+            const auto body=ids[2u*count+1u+i];
+            scene.set_pose(body,{-10.f-2.f*float(i),0.83f,0.f},{});
+            scene.set_velocity(body,{i%2u?0.02f:-0.02f,0.f,0.01f});
+            scene.set_angular_velocity(body,{});
         }
     };
     bool reused=false;
