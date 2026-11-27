@@ -131,6 +131,55 @@ void verify_operation_ranges() {
         throw std::runtime_error("Read-only aliases replaced the original producer");
 }
 
+void verify_dispatch_range_plans() {
+    using namespace fyzz::compute;
+    DispatchRangePlans plans;
+    DispatchCommand first{};
+    first.pipeline=1u;
+    first.buffers={{0u,7u,0u,64u,BufferAccess::ReadWrite,{}}};
+    first.accesses={{0u,{0u,16u},BufferAccess::Write}};
+    auto repeat=first;
+    repeat.groups.x=4u;
+    repeat.push_constants={1u,2u,3u,4u};
+    auto other=first;
+    other.accesses[0].extent.offset=16u;
+    auto reader=other;
+    reader.accesses[0].access=BufferAccess::Read;
+    auto indirect=reader;
+    indirect.indirect=DispatchIndirectArgs{8u,0u};
+    auto invalid=reader;
+    invalid.accesses[0].extent.bytes=65u;
+    std::size_t builds=0u;
+    const auto prepare=[&](std::size_t table,const DispatchCommand& cmd) {
+        return plans.prepare(table,cmd,[&](auto& ranges) {
+            ++builds;
+            cmd.for_each_access([&](const auto& binding,auto extent,auto access) {
+                const auto begin=binding.offset+extent.offset;
+                ranges.push_back({binding.buffer,begin,begin+extent.bytes,
+                                  {2u,4u},access!=BufferAccess::Read});
+            });
+            if(cmd.indirect)
+                ranges.push_back({cmd.indirect->buffer,cmd.indirect->offset,
+                                  cmd.indirect->offset+12u,{4u,8u},false});
+        });
+    };
+    const auto a=prepare(0u,first);
+    const auto b=prepare(1u,other);
+    if(prepare(0u,repeat)!=a || builds!=2u)
+        throw std::runtime_error("Repeated dispatch rebuilt invariant access ranges");
+    const auto c=prepare(1u,reader);
+    const auto e=prepare(1u,indirect);
+    if(b==c || c==e || plans.ranges(b)[0].begin!=16u ||
+       !plans.ranges(b)[0].writes || plans.ranges(c)[0].writes ||
+       plans.ranges(e).size()!=2u || plans.ranges(a)[0].begin!=0u)
+        throw std::runtime_error("Distinct dispatch declarations lost their access ranges");
+    bool rejected=false;
+    try { prepare(1u,invalid); }
+    catch(const std::invalid_argument&) { rejected=true; }
+    if(!rejected || prepare(1u,indirect)!=e)
+        throw std::runtime_error("Malformed access reused or invalidated a valid range plan");
+}
+
 void verify_buffer_ranges() {
     using fyzz::compute::PendingBufferRanges;
     PendingBufferRanges pending;
@@ -207,6 +256,7 @@ int main() {
     try {
         verify_range_hazards();
         verify_operation_ranges();
+        verify_dispatch_range_plans();
         verify_buffer_ranges();
         verify_cache_working_set();
         using namespace fyzz::compute;

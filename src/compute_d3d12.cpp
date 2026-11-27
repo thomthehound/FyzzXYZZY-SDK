@@ -1171,14 +1171,6 @@ struct Context::Impl {
                extent.bytes>binding.bytes-extent.offset)
                 throw std::invalid_argument("D3D12 access extent exceeds descriptor");
         }
-        cmd.for_each_access([&](const BufferBinding& binding,
-                                BufferAccessExtent,BufferAccess access) {
-            const auto kind=pipe.view_kinds[binding.slot];
-            if(access!=BufferAccess::Read && access!=BufferAccess::Unspecified &&
-               (kind==StorageBufferViewKind::RawRead ||
-                kind==StorageBufferViewKind::Structured32Read))
-                throw std::invalid_argument("Dispatch access writes SRV");
-        });
         if(cmd.indirect) {
             if(cmd.groups.x!=1u || cmd.groups.y!=1u || cmd.groups.z!=1u ||
                cmd.indirect->offset%4u)
@@ -1230,7 +1222,8 @@ struct Context::Impl {
         };
         std::vector<DescriptorTable> descriptor_tables;
         std::unordered_map<std::size_t,std::vector<std::size_t>> descriptor_lookup;
-        std::vector<std::size_t> dispatch_table_indices;
+        std::vector<std::size_t> dispatch_table_indices,dispatch_range_plans;
+        DispatchRangePlans range_plans;
         std::size_t descriptor_count = 0;
         bool uses_indirect = false;
         std::size_t upload_total_bytes = 0;
@@ -1313,6 +1306,35 @@ struct Context::Impl {
                     descriptor_count+=binding_count;
                 }
                 dispatch_table_indices.push_back(table);
+                dispatch_range_plans.push_back(range_plans.prepare(table,dispatch,
+                    [&](std::vector<OperationRangeUse>& ranges) {
+                        const auto& pipeline=get_pipeline(dispatch.pipeline);
+                        if(dispatch.indirect)
+                            ranges.push_back({dispatch.indirect->buffer,
+                                dispatch.indirect->offset,
+                                dispatch.indirect->offset+sizeof(D3D12_DISPATCH_ARGUMENTS),
+                                {D3D12_BARRIER_SYNC_EXECUTE_INDIRECT,
+                                 D3D12_BARRIER_ACCESS_INDIRECT_ARGUMENT},false});
+                        dispatch.for_each_access([&](const BufferBinding& binding,
+                                                BufferAccessExtent extent,BufferAccess access) {
+                            const auto kind=pipeline.view_kinds[binding.slot];
+                            const bool srv=kind==StorageBufferViewKind::RawRead ||
+                                           kind==StorageBufferViewKind::Structured32Read;
+                            if(srv && access!=BufferAccess::Read &&
+                               access!=BufferAccess::Unspecified)
+                                throw std::invalid_argument("Dispatch access writes SRV");
+                            const auto begin=binding.offset+extent.offset;
+                            ranges.push_back({binding.buffer,begin,begin+extent.bytes,
+                                {D3D12_BARRIER_SYNC_COMPUTE_SHADING,
+                                 static_cast<std::uint64_t>(srv
+                                    ?D3D12_BARRIER_ACCESS_SHADER_RESOURCE
+                                    :D3D12_BARRIER_ACCESS_UNORDERED_ACCESS)},
+                                !srv && access!=BufferAccess::Read});
+                        });
+                        std::sort(ranges.begin(),ranges.end(),[](const auto& a,const auto& b) {
+                            return a.buffer<b.buffer;
+                        });
+                    }));
                 pipeline_sequence.push_back(dispatch.pipeline);
             }
         }
@@ -1326,6 +1348,9 @@ struct Context::Impl {
                                  dispatch_table_indices.size()-
                                  descriptor_tables.size());
             FYZZ_PROFILE_COUNTER("d3d12.descriptor_slots",descriptor_count);
+            FYZZ_PROFILE_COUNTER("d3d12.range_plans",range_plans.size());
+            FYZZ_PROFILE_COUNTER("d3d12.range_plan_reuses",
+                                 dispatch_table_indices.size()-range_plans.size());
         }
 #endif
         if(uses_indirect && !dispatch_signature) {
@@ -1464,11 +1489,8 @@ struct Context::Impl {
             if(!reference(id).buffer->upload_only)
                 uses.push_back({id,offset,offset+size,scope,writes});
         };
-        const auto plan_operation=[&]() {
+        const auto plan_operation=[&](std::span<const OperationRangeUse> uses) {
             barrier_offsets.push_back(barriers.size());
-            std::sort(uses.begin(),uses.end(),[](const auto& a,const auto& b) {
-                return a.buffer<b.buffer;
-            });
             for(std::size_t first=0u;first<uses.size();) {
                 auto& state=resource_access.at(uses[first].buffer);
                 auto last=first;
@@ -1503,42 +1525,31 @@ struct Context::Impl {
                     state.ranges.record(uses[i].begin,uses[i].end,uses[i].writes);
                 first=last;
             }
-            uses.clear();
         };
+        std::size_t planned_dispatch=0u;
         for(const auto& op:commands) {
+            uses.clear();
             if(const auto* copy=std::get_if<CopyCommand>(&op)) {
                 use(copy->source,copy->source_offset,copy->bytes,copy_read,false);
                 use(copy->destination,copy->destination_offset,copy->bytes,copy_write,true);
+                if(uses.size()==2u && uses[0].buffer>uses[1].buffer)
+                    std::swap(uses[0],uses[1]);
             }else if(const auto* upload=std::get_if<UploadCommand>(&op)) {
                 use(upload->destination,upload->destination_offset,upload->bytes.size(),copy_write,true);
             }else {
                 const auto& cmd=std::get<DispatchCommand>(op);
-                const auto& pipeline=get_pipeline(cmd.pipeline);
                 for(const auto& binding:cmd.buffers)reference(binding.buffer);
-                if(cmd.indirect)
-                    use(cmd.indirect->buffer,cmd.indirect->offset,
-                        sizeof(D3D12_DISPATCH_ARGUMENTS),
-                        {D3D12_BARRIER_SYNC_EXECUTE_INDIRECT,
-                         D3D12_BARRIER_ACCESS_INDIRECT_ARGUMENT},false);
-                cmd.for_each_access([&](const BufferBinding& binding,
-                                        BufferAccessExtent extent,BufferAccess access) {
-                    const auto kind=pipeline.view_kinds[binding.slot];
-                    const bool srv=kind==StorageBufferViewKind::RawRead ||
-                                   kind==StorageBufferViewKind::Structured32Read;
-                    use(binding.buffer,binding.offset+extent.offset,extent.bytes,
-                        {D3D12_BARRIER_SYNC_COMPUTE_SHADING,
-                         static_cast<std::uint64_t>(srv
-                            ?D3D12_BARRIER_ACCESS_SHADER_RESOURCE
-                            :D3D12_BARRIER_ACCESS_UNORDERED_ACCESS)},
-                        !srv && access!=BufferAccess::Read);
-                });
+                if(cmd.indirect)reference(cmd.indirect->buffer);
+                plan_operation(range_plans.ranges(dispatch_range_plans[planned_dispatch++]));
+                continue;
             }
-            plan_operation();
+            plan_operation(uses);
         }
         if(readback_tail)
             for(const auto& item:readback_tail->sources) {
+                uses.clear();
                 use(item.source,item.source_offset,item.bytes,copy_read,false);
-                plan_operation();
+                plan_operation(uses);
             }
         barrier_offsets.push_back(barriers.size());
         std::size_t operation_index=0u,barrier_calls=0u;

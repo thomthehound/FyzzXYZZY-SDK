@@ -2,9 +2,13 @@
 // SPDX-License-Identifier: Apache-2.0
 #pragma once
 
+#include "fyzzxyzzy/compute.h"
+
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
+#include <limits>
+#include <span>
 #include <vector>
 
 namespace fyzz::compute {
@@ -89,6 +93,68 @@ inline void normalize_operation_ranges(std::vector<OperationRangeUse>& uses,
     }
     result.resize(count);
 }
+
+// A descriptor table can serve several distinct logical access declarations.
+inline bool same_dispatch_accesses(const DispatchCommand& a,
+                                   const DispatchCommand& b) noexcept {
+    if(a.pipeline!=b.pipeline || a.buffers.size()!=b.buffers.size() ||
+       a.accesses.size()!=b.accesses.size() ||
+       a.indirect.has_value()!=b.indirect.has_value())
+        return false;
+    if(a.indirect && (a.indirect->buffer!=b.indirect->buffer ||
+                      a.indirect->offset!=b.indirect->offset))
+        return false;
+    for(std::size_t i=0u;i<a.buffers.size();++i) {
+        const auto& x=a.buffers[i];
+        const auto& y=b.buffers[i];
+        const auto xe=x.accessed_extent(),ye=y.accessed_extent();
+        if(x.slot!=y.slot || x.buffer!=y.buffer || x.offset!=y.offset ||
+           x.bytes!=y.bytes || x.access!=y.access ||
+           xe.offset!=ye.offset || xe.bytes!=ye.bytes)
+            return false;
+    }
+    for(std::size_t i=0u;i<a.accesses.size();++i) {
+        const auto& x=a.accesses[i];
+        const auto& y=b.accesses[i];
+        if(x.slot!=y.slot || x.access!=y.access ||
+           x.extent.offset!=y.extent.offset || x.extent.bytes!=y.extent.bytes)
+            return false;
+    }
+    return true;
+}
+
+// Batch-local immutable ranges; queue dependency history is not cached.
+class DispatchRangePlans {
+    static constexpr auto missing=std::numeric_limits<std::size_t>::max();
+    struct Plan {
+        const DispatchCommand* command;
+        std::size_t begin,count;
+    };
+    std::vector<Plan> plans_;
+    std::vector<std::size_t> latest_;
+    std::vector<OperationRangeUse> ranges_,scratch_;
+public:
+    template<class Prepare>
+    std::size_t prepare(std::size_t table,const DispatchCommand& command,
+                        Prepare prepare_ranges) {
+        if(table>=latest_.size())latest_.resize(table+1u,missing);
+        auto& latest=latest_[table];
+        if(latest!=missing && same_dispatch_accesses(*plans_[latest].command,command))
+            return latest;
+        scratch_.clear();
+        prepare_ranges(scratch_);
+        const auto begin=ranges_.size();
+        ranges_.insert(ranges_.end(),scratch_.begin(),scratch_.end());
+        latest=plans_.size();
+        plans_.push_back({&command,begin,scratch_.size()});
+        return latest;
+    }
+    std::span<const OperationRangeUse> ranges(std::size_t plan) const {
+        const auto& p=plans_[plan];
+        return std::span<const OperationRangeUse>(ranges_).subspan(p.begin,p.count);
+    }
+    std::size_t size() const noexcept { return plans_.size(); }
+};
 
 // Each interval retains its last producer and subsequent reader scopes.
 // A read's visibility dependency does not replace the producer.

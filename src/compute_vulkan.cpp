@@ -1390,7 +1390,9 @@ struct Context::Impl {
         std::vector<BufferId> validated_buffer_ids;
         std::vector<std::uint8_t> assigned_slots;
         std::vector<PipelineId> table_pipelines;
-        std::vector<std::size_t> table_offsets,dispatch_tables;
+        std::vector<std::size_t> table_offsets,dispatch_tables,dispatch_range_plans;
+        DispatchRangePlans range_plans;
+        std::vector<OperationRangeUse> range_scratch;
         std::unordered_map<std::size_t,std::vector<std::size_t>> table_lookup;
         const auto mix_key=[](std::size_t& key,std::size_t value) {
             key^=value+0x9e3779b9u+(key<<6u)+(key>>2u);
@@ -1456,17 +1458,6 @@ struct Context::Impl {
                     std::span<VkDescriptorBufferInfo>(validated_dispatches)
                         .subspan(offset,pipeline.binding_count),
                     assigned_slots);
-                dispatch.for_each_access([&](const BufferBinding& binding,
-                                             BufferAccessExtent,BufferAccess access) {
-                    if(!pipeline.view_kinds.empty() &&
-                       access!=BufferAccess::Read &&
-                       access!=BufferAccess::Unspecified) {
-                        const auto kind=pipeline.view_kinds[binding.slot];
-                        if(kind==StorageBufferViewKind::RawRead ||
-                           kind==StorageBufferViewKind::Structured32Read)
-                            throw std::invalid_argument("Dispatch access writes read-only view");
-                    }
-                });
                 validated_buffer_ids.resize(offset+pipeline.binding_count);
                 for(const auto& binding:dispatch.buffers) {
                     reference(binding.buffer);
@@ -1511,6 +1502,35 @@ struct Context::Impl {
                     validated_buffer_ids.resize(offset);
                 }
                 dispatch_tables.push_back(table);
+                dispatch_range_plans.push_back(range_plans.prepare(table,dispatch,
+                    [&](std::vector<OperationRangeUse>& ranges) {
+                        range_scratch.clear();
+                        dispatch.for_each_access([&](const BufferBinding& binding,
+                                                BufferAccessExtent extent,BufferAccess access) {
+                            if(!pipeline.view_kinds.empty() &&
+                               access!=BufferAccess::Read &&
+                               access!=BufferAccess::Unspecified) {
+                                const auto kind=pipeline.view_kinds[binding.slot];
+                                if(kind==StorageBufferViewKind::RawRead ||
+                                   kind==StorageBufferViewKind::Structured32Read)
+                                    throw std::invalid_argument("Dispatch access writes read-only view");
+                            }
+                            const bool reads=access!=BufferAccess::Write;
+                            const bool writes=access!=BufferAccess::Read;
+                            const VkAccessFlags2 mask=
+                                (reads?VK_ACCESS_2_SHADER_STORAGE_READ_BIT:0u) |
+                                (writes?VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT:0u);
+                            const auto begin=binding.offset+extent.offset;
+                            range_scratch.push_back({binding.buffer,begin,begin+extent.bytes,
+                                {VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,mask},writes});
+                        });
+                        if(dispatch.indirect)
+                            range_scratch.push_back({dispatch.indirect->buffer,
+                                dispatch.indirect->offset,dispatch.indirect->offset+12u,
+                                {VK_PIPELINE_STAGE_2_DRAW_INDIRECT_BIT,
+                                 VK_ACCESS_2_INDIRECT_COMMAND_READ_BIT},false});
+                        normalize_operation_ranges(range_scratch,ranges);
+                    }));
                 ++dispatch_count;
             }
         }
@@ -1525,6 +1545,8 @@ struct Context::Impl {
             FYZZ_PROFILE_COUNTER("vulkan.descriptor_tables",set_count);
             FYZZ_PROFILE_COUNTER("vulkan.descriptor_table_reuses",dispatch_count-set_count);
             FYZZ_PROFILE_COUNTER("vulkan.descriptor_slots",descriptor_count);
+            FYZZ_PROFILE_COUNTER("vulkan.range_plans",range_plans.size());
+            FYZZ_PROFILE_COUNTER("vulkan.range_plan_reuses",dispatch_count-range_plans.size());
         }
 #endif
         VkDescriptorPool pool = VK_NULL_HANDLE;
@@ -1741,9 +1763,8 @@ struct Context::Impl {
                 buffer_barriers+=barriers.size();
                 barriers.clear();
             };
-            const auto before_operation=[&]() {
-                normalize_operation_ranges(operation_uses,normalized_uses);
-                for(const auto& use:normalized_uses) {
+            const auto before_operation=[&](std::span<const OperationRangeUse> uses) {
+                for(const auto& use:uses) {
                     auto& pending=referenced.find(use.buffer)->second;
                     const auto& buffer=*pending.buffer;
                     if(buffer.placement==MemoryPlacement::Upload)continue;
@@ -1810,7 +1831,8 @@ struct Context::Impl {
                             {VK_PIPELINE_STAGE_2_COPY_BIT,
                              VK_ACCESS_2_TRANSFER_WRITE_BIT},true});
                     }
-                    before_operation();
+                    normalize_operation_ranges(operation_uses,normalized_uses);
+                    before_operation(normalized_uses);
                     vkCmdCopyBuffer(commands,get(copy->source).buffer,
                                     get(copy->destination).buffer,
                                     static_cast<std::uint32_t>(copy_regions.size()),
@@ -1825,25 +1847,7 @@ struct Context::Impl {
 
                 const auto& dispatch = std::get<DispatchCommand>(operation);
                 const Pipeline& pipeline = get_pipeline(dispatch.pipeline);
-                operation_uses.reserve(
-                    std::max(dispatch.buffers.size(),dispatch.accesses.size())+1u);
-                dispatch.for_each_access([&](const BufferBinding& binding,
-                                             BufferAccessExtent extent,BufferAccess access) {
-                    const bool reads=access!=BufferAccess::Write;
-                    const bool writes=access!=BufferAccess::Read;
-                    const VkAccessFlags2 mask=
-                        (reads?VK_ACCESS_2_SHADER_STORAGE_READ_BIT:0u) |
-                        (writes?VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT:0u);
-                    const auto begin=binding.offset+extent.offset;
-                    operation_uses.push_back({binding.buffer,begin,begin+extent.bytes,
-                        {VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,mask},writes});
-                });
-                if(dispatch.indirect)
-                    operation_uses.push_back({dispatch.indirect->buffer,
-                        dispatch.indirect->offset,dispatch.indirect->offset+12u,
-                        {VK_PIPELINE_STAGE_2_DRAW_INDIRECT_BIT,
-                         VK_ACCESS_2_INDIRECT_COMMAND_READ_BIT},false});
-                before_operation();
+                before_operation(range_plans.ranges(dispatch_range_plans[dispatch_index]));
                 const VkDescriptorSet descriptor_set=
                     descriptor_sets[dispatch_tables[dispatch_index++]];
 

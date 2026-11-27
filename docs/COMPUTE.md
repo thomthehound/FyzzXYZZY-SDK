@@ -105,6 +105,11 @@ submission-local; their barriers order the actual producer and consumer
 pipeline stages. Whole-buffer visibility is retained across access
 classes. Non-overlapping same-buffer copies execute directly without
 relocation staging. Each submission executes one command list.
+Within a batch, descriptor tables also retain the latest matching logical
+access declaration. Repeated dispatches reuse validated, backend-ordered
+range lists independent of constants and launch dimensions. Access intent,
+extent, explicit phase accesses and indirect argument changes require a
+new range list. Every operation still advances native dependency history.
 The PhysX task graph, cross-submission dependencies, and actual lifetime
 rules remain authoritative. Context teardown releases in-flight native
 resources only after queue completion or device loss; a failed D3D12

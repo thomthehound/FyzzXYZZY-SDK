@@ -113,6 +113,10 @@ quality rather than individual dispatch or barrier counts.
   copy and indirect dispatch dependencies. Copy non-overlapping buffer
   regions directly, without relocation staging.
 
+- [x] Reuse validated dispatch access ranges within each native batch.
+  Normalize Vulkan aliases and group D3D12 buffer ranges once per
+  matching descriptor/access declaration; retain per-operation hazards.
+
 These are implementation milestones, not hardware-performance acceptance.
 
 ## Execution and lifetime work
