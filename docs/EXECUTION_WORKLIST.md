@@ -63,6 +63,9 @@ quality rather than individual dispatch or barrier counts.
 - [x] Retain serial-run endpoint state across iteration boundaries in
   fully serial fused tasks. Flush at motion capture and integration
   rather than at each iteration; retain tiled run boundaries.
+- [x] Relocate device-admitted contact windows during descriptor
+  expansion using Sc's exact prefix. Share relocation between colored
+  and packed tasks without capacity staging or a separate traversal.
 
 These are implementation milestones, not hardware-performance acceptance.
 
