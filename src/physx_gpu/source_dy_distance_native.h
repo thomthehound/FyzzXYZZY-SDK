@@ -133,6 +133,7 @@ struct SourceDyLaunchStats {
     std::size_t numerical_arena_padding_bytes=0u;
     std::size_t host_result_capacity=0u;
     std::size_t device_partition_indirect_dispatches=0u;
+    std::size_t resident_fused_workgroups=0u;
     bool resident_wide_schedule=false;
     bool resident_schedule_reuse_candidate=false;
     bool resident_schedule_reused=false;
@@ -1645,7 +1646,12 @@ public:
             throw std::overflow_error(
                 "Source GPU free-body velocity writeback exceeds 32-bit view");
         output_bytes+=free_velocity_bytes+free_sleep_bytes;
-        if(resident_wide)output_bytes+=sizeof(std::uint32_t);
+        if(resident_wide) {
+            constexpr auto schedule_bytes=2u*sizeof(std::uint32_t);
+            if(output_bytes>std::numeric_limits<std::uint32_t>::max()-schedule_bytes)
+                throw std::overflow_error("Resident Dy schedule output exceeds view");
+            output_bytes+=schedule_bytes;
+        }
         // Source-indexed integration publishes by numerical address;
         // only remapped or diagnostic consumers need the ordinal list.
         const bool readback_body_ordinals=device_admission &&
@@ -2550,6 +2556,8 @@ public:
             else if(prepares || (integrates && !free))table(16u,A::Read);
             if(colors && resident_wide)
                 arena_region(mode_output_offset,task_capacity*24u,A::ReadWrite);
+            else if(fused && resident_wide)
+                arena_region(mode_output_offset,task_capacity*4u,A::Read);
 
             // Solver impulse and integration results occupy disjoint
             // streams. Free flight never accesses numerical solver rows.
@@ -2765,7 +2773,7 @@ public:
                 build_region(0u,mode_output_offset,task_capacity*24u,A::Read);
                 const auto wide_bytes=wide_color_count*sizeof(std::uint32_t);
                 build_region(0u,offsets[17]+bytes[17]-wide_bytes,wide_bytes,A::Read);
-                build_region(0u,history_bytes+output_bytes-4u,4u,A::Write);
+                build_region(0u,history_bytes+output_bytes-8u,8u,A::Write);
             }else
                 build_region(0u,offsets[5],bytes[5],A::ReadWrite);
             auto arguments=params;
@@ -2781,7 +2789,7 @@ public:
                 arguments[18]=wide_bounds.stages;
                 arguments[19]=narrow(task_capacity);
                 arguments[21]=narrow(descriptor_capacity);
-                arguments[24]=narrow(history_bytes+output_bytes-4u);
+                arguments[24]=narrow(history_bytes+output_bytes-8u);
             }
             build.share_resources();
             for(std::size_t first=0u;first<reservations;first+=max_groups) {
@@ -3044,13 +3052,14 @@ public:
                 last_schedule_.device_admitted_bodies=admitted[2];
                 last_schedule_.device_admitted_descriptors=admitted[3];
                 if(last_schedule_.resident_wide_schedule) {
-                    std::uint32_t wide=0u;
-                    std::memcpy(&wide,host_.get()+output_bytes-4u,4u);
-                    last_schedule_.resident_schedule_reused=(wide&0x80000000u)!=0u;
-                    wide&=0x7fffffffu;
-                    if(wide>admitted[1])
-                        throw std::logic_error("Resident Dy wide task count is invalid");
+                    std::array<std::uint32_t,2> schedule{};
+                    std::memcpy(schedule.data(),host_.get()+output_bytes-8u,8u);
+                    const auto wide=schedule[0]&0x7fffffffu;
+                    last_schedule_.resident_schedule_reused=(schedule[0]&0x80000000u)!=0u;
+                    if(wide>admitted[1] || schedule[1]>admitted[1]-wide)
+                        throw std::logic_error("Resident Dy task or tile count is invalid");
                     last_schedule_.wide_tasks=wide;
+                    last_schedule_.resident_fused_workgroups=schedule[1];
                 }
                 if(pending.readback_device_task_records) {
                     if(admitted[1])

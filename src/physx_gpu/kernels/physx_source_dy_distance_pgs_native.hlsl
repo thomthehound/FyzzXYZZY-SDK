@@ -2395,7 +2395,7 @@ void sourceDyBuildResidentFusedTiles(uint4 reservation,uint taskCount,uint lane)
     if(lane==0u) {
         const uint wide=taskCount-dyCompactTaskCount;
         retainedSources.Store(reservation.z*16u+12u,wide);
-        arena.Store(p.writebackBias+p.resultContactOffset,wide);
+        arena.Store2(p.writebackBias+p.resultContactOffset,uint2(wide,count));
     }
 }
 
@@ -2413,9 +2413,13 @@ void sourceDyBuildResidentTiles(uint kind,uint lane) {
             if(kind>=3u)
                 arena.Store(metadata+(p.contactCount+kind)*16u,
                             retainedSources.Load(reservation.z*16u+12u));
-            if(kind==0u)
-                arena.Store(p.writebackBias+p.resultContactOffset,
-                            0x80000000u|retainedSources.Load(reservation.z*16u+12u));
+            if(kind==0u) {
+                uint count=0u;
+                for(uint chunk=0u;chunk<reservation.w;++chunk)
+                    count+=retainedSources.Load((reservation.z+chunk)*16u);
+                arena.Store2(p.writebackBias+p.resultContactOffset,
+                    uint2(0x80000000u|retainedSources.Load(reservation.z*16u+12u),count));
+            }
         }
         return;
     }

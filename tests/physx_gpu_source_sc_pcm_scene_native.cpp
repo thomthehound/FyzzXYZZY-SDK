@@ -6073,6 +6073,7 @@ void verify_resident_wide_device_response(
             schedule.resident_wide_schedule &&
             schedule.wide_tasks==1u &&
             schedule.device_admitted_tasks==3u+extra_singletons &&
+            schedule.resident_fused_workgroups==3u &&
             schedule.device_admitted_bodies==b.size() &&
             schedule.device_admitted_descriptors==3u*count+spokes+extra_singletons &&
             schedule.max_partition_groups==(count+127u)/128u+1u &&
@@ -6127,6 +6128,7 @@ void verify_resident_wide_device_response(
         const auto next=producer->dy_launch_stats();
         require(next.resident_wide_schedule &&
                 next.device_admitted_tasks==schedule.device_admitted_tasks &&
+                next.resident_fused_workgroups==schedule.resident_fused_workgroups &&
                 next.device_admitted_descriptors==schedule.device_admitted_descriptors,
                 "Repeated resident frame changed numerical membership");
         if(next.resident_schedule_reuse_candidate)
@@ -6141,6 +6143,7 @@ void verify_resident_wide_device_response(
     std::cout<<"FYZZXYZZY_METRIC resident_wide tasks="
              <<schedule.device_admitted_tasks
              <<" tiled="<<schedule.wide_tasks
+             <<" fused_workgroups="<<schedule.resident_fused_workgroups
              <<" host_descriptors="<<schedule.host_descriptor_inputs
              <<" indirect_partitions="<<schedule.device_partition_indirect_dispatches
              <<'\n';
