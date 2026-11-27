@@ -14,8 +14,8 @@ namespace {
 
 void verify_range_hazards() {
     using namespace fyzz::compute;
-    constexpr RangeAccessScope upload{1u,1u},shader_read{2u,2u},
-        shader_write{2u,4u},download{1u,8u},indirect{4u,16u};
+    constexpr RangeAccessScope upload{1ull<<32u,1u},shader_read{2u,1ull<<33u},
+        shader_write{2u,1ull<<34u},download{1ull<<32u,8u},indirect{4u,16u};
     BufferRangeHazards hazards;
     struct Dependency {
         std::size_t begin,end;
@@ -45,11 +45,11 @@ void verify_range_hazards() {
     use(48u,80u,indirect,false);
     expect({{48u,64u,upload,indirect}});
     use(48u,64u,shader_write,true);
-    expect({{48u,64u,{7u,1u},shader_write}});
+    expect({{48u,64u,{(1ull<<32u)|6u,1u},shader_write}});
     use(32u,64u,download,false);
     expect({{32u,48u,upload,download},{48u,64u,shader_write,download}});
     use(64u,80u,upload,true);
-    expect({{64u,80u,{7u,0u},upload}});
+    expect({{64u,80u,{(1ull<<32u)|6u,0u},upload}});
     use(0u,32u,download,false);
     expect({{0u,32u,upload,download}});
     use(128u,192u,shader_read,false);

@@ -41,20 +41,12 @@ VkInstance create_instance() {
     VkApplicationInfo application{};
     application.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO;
     application.pApplicationName = "FyzzXYZZY";
-    // The SPIR-V wave path uses Vulkan 1.1 subgroup properties and SPIR-V 1.3.
-    // The generic Vulkan compute API still works with Vulkan 1.0.
-    // Subgroup arithmetic is an OPTIONAL optimized shader path, not a
-    // reason to fail vkCreateInstance on a 1.0 loader.
-    std::uint32_t runtimeVersion = VK_API_VERSION_1_0;
-    auto getVersion = reinterpret_cast<PFN_vkEnumerateInstanceVersion>(
-        vkGetInstanceProcAddr(VK_NULL_HANDLE, "vkEnumerateInstanceVersion"));
-    if (getVersion)
-        require(getVersion(&runtimeVersion), "vkEnumerateInstanceVersion");
-    application.apiVersion = runtimeVersion >= VK_API_VERSION_1_4
-        ? VK_API_VERSION_1_4 : (runtimeVersion >= VK_API_VERSION_1_3
-            ? VK_API_VERSION_1_3 : (runtimeVersion >= VK_API_VERSION_1_2
-                ? VK_API_VERSION_1_2 : (runtimeVersion >= VK_API_VERSION_1_1
-                    ? VK_API_VERSION_1_1 : VK_API_VERSION_1_0)));
+    std::uint32_t runtimeVersion=VK_API_VERSION_1_0;
+    require(vkEnumerateInstanceVersion(&runtimeVersion),
+            "vkEnumerateInstanceVersion");
+    if(runtimeVersion<VK_API_VERSION_1_3)
+        throw std::runtime_error("Vulkan compute requires Vulkan 1.3");
+    application.apiVersion=std::min(runtimeVersion,VK_API_VERSION_1_4);
 
     VkInstanceCreateInfo create{};
     create.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO;
@@ -97,6 +89,14 @@ std::vector<DeviceCandidate> find_compute_devices(VkInstance instance) {
             }
             VkPhysicalDeviceProperties properties{};
             vkGetPhysicalDeviceProperties(physical, &properties);
+            if(properties.apiVersion<VK_API_VERSION_1_3)break;
+            VkPhysicalDeviceSynchronization2Features sync{};
+            sync.sType=VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SYNCHRONIZATION_2_FEATURES;
+            VkPhysicalDeviceFeatures2 required{};
+            required.sType=VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
+            required.pNext=&sync;
+            vkGetPhysicalDeviceFeatures2(physical,&required);
+            if(!sync.synchronization2)break;
             const auto& limits = properties.limits;
             DeviceInfo info;
             info.ordinal = static_cast<std::uint32_t>(result.size());
@@ -138,77 +138,46 @@ std::vector<DeviceCandidate> find_compute_devices(VkInstance instance) {
             info.max_storage_buffer_range = limits.maxStorageBufferRange;
             info.storage_buffer_offset_alignment = limits.minStorageBufferOffsetAlignment;
             info.max_workgroup_invocations = limits.maxComputeWorkGroupInvocations;
-            bool has_compute_required_size = false;
-            // Vulkan 1.0 loader/device pairs have no core subgroup
-            // properties. Keep their old compute path and disable the
-            // native-wave optimization instead of rejecting the context.
-            auto getProperties2 = reinterpret_cast<PFN_vkGetPhysicalDeviceProperties2>(
-                vkGetInstanceProcAddr(instance, "vkGetPhysicalDeviceProperties2"));
-            if (getProperties2 && properties.apiVersion >= VK_API_VERSION_1_1) {
-                VkPhysicalDeviceSubgroupProperties subgroup{};
-                subgroup.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SUBGROUP_PROPERTIES;
-                VkPhysicalDeviceSubgroupSizeControlProperties size_properties{};
-                if (properties.apiVersion >= VK_API_VERSION_1_3) {
-                    size_properties.sType =
-                        VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SUBGROUP_SIZE_CONTROL_PROPERTIES;
-                    subgroup.pNext = &size_properties;
-                }
-                VkPhysicalDeviceProperties2 queried{};
-                queried.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2;
-                queried.pNext = &subgroup;
-                getProperties2(physical, &queried);
-                info.subgroup_size = subgroup.subgroupSize;
-                info.min_subgroup_size = subgroup.subgroupSize;
-                info.max_subgroup_size = subgroup.subgroupSize;
-                info.supports_wave_arithmetic =
-                    (subgroup.supportedStages & VK_SHADER_STAGE_COMPUTE_BIT) != 0 &&
-                    (subgroup.supportedOperations & VK_SUBGROUP_FEATURE_ARITHMETIC_BIT) != 0;
-                has_compute_required_size =
-                    properties.apiVersion >= VK_API_VERSION_1_3 &&
-                    (size_properties.requiredSubgroupSizeStages &
-                     VK_SHADER_STAGE_COMPUTE_BIT) != 0;
-                if (has_compute_required_size) {
-                    info.min_subgroup_size = size_properties.minSubgroupSize;
-                    info.max_subgroup_size = size_properties.maxSubgroupSize;
-                }
+            VkPhysicalDeviceSubgroupProperties subgroup{};
+            subgroup.sType=VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SUBGROUP_PROPERTIES;
+            VkPhysicalDeviceSubgroupSizeControlProperties size_properties{};
+            size_properties.sType=
+                VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SUBGROUP_SIZE_CONTROL_PROPERTIES;
+            subgroup.pNext=&size_properties;
+            VkPhysicalDeviceProperties2 queried{};
+            queried.sType=VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2;
+            queried.pNext=&subgroup;
+            vkGetPhysicalDeviceProperties2(physical,&queried);
+            info.subgroup_size=subgroup.subgroupSize;
+            info.min_subgroup_size=subgroup.subgroupSize;
+            info.max_subgroup_size=subgroup.subgroupSize;
+            info.supports_wave_arithmetic=
+                (subgroup.supportedStages&VK_SHADER_STAGE_COMPUTE_BIT)!=0u &&
+                (subgroup.supportedOperations&VK_SUBGROUP_FEATURE_ARITHMETIC_BIT)!=0u;
+            const bool has_compute_required_size=
+                (size_properties.requiredSubgroupSizeStages&VK_SHADER_STAGE_COMPUTE_BIT)!=0u;
+            if(has_compute_required_size) {
+                info.min_subgroup_size=size_properties.minSubgroupSize;
+                info.max_subgroup_size=size_properties.maxSubgroupSize;
             }
-            // Query shader integer and extended subgroup types once per
-            // physical device. Only Vulkan >=1.2 offers the core 64-bit
-            // subgroup feature; legacy compute contexts remain usable.
-            VkPhysicalDeviceFeatures basic{};
-            vkGetPhysicalDeviceFeatures(physical, &basic);
-            info.supports_int64_shader = basic.shaderInt64 == VK_TRUE;
-            info.supports_float64_shader = basic.shaderFloat64 == VK_TRUE;
-            if (properties.apiVersion >= VK_API_VERSION_1_2) {
-                auto getFeatures2 = reinterpret_cast<PFN_vkGetPhysicalDeviceFeatures2>(
-                    vkGetInstanceProcAddr(instance, "vkGetPhysicalDeviceFeatures2"));
-                if (getFeatures2) {
-                    VkPhysicalDeviceShaderSubgroupExtendedTypesFeatures extended{};
-                    extended.sType =
-                        VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_SUBGROUP_EXTENDED_TYPES_FEATURES;
-                    VkPhysicalDeviceSubgroupSizeControlFeatures size_features{};
-                    if (properties.apiVersion >= VK_API_VERSION_1_3) {
-                        size_features.sType =
-                            VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SUBGROUP_SIZE_CONTROL_FEATURES;
-                        extended.pNext = &size_features;
-                    }
-                    VkPhysicalDeviceFeatures2 features{};
-                    features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
-                    features.pNext = &extended;
-                    getFeatures2(physical, &features);
-                    info.supports_int64_shader = features.features.shaderInt64 == VK_TRUE;
-                    info.supports_float64_shader = features.features.shaderFloat64 == VK_TRUE;
-                    info.supports_int64_wave = info.supports_int64_shader &&
-                        info.supports_wave_arithmetic &&
-                        extended.shaderSubgroupExtendedTypes == VK_TRUE;
-                    info.supports_required_subgroup_size =
-                        properties.apiVersion >= VK_API_VERSION_1_3 &&
-                        size_features.subgroupSizeControl == VK_TRUE &&
-                        has_compute_required_size &&
-                        info.min_subgroup_size != 0u &&
-                        info.min_subgroup_size <= info.max_subgroup_size;
-                }
-            }
+            VkPhysicalDeviceShaderSubgroupExtendedTypesFeatures extended{};
+            extended.sType=
+                VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_SUBGROUP_EXTENDED_TYPES_FEATURES;
+            VkPhysicalDeviceSubgroupSizeControlFeatures size_features{};
+            size_features.sType=
+                VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SUBGROUP_SIZE_CONTROL_FEATURES;
+            required.pNext=&extended;
+            extended.pNext=&size_features;
+            vkGetPhysicalDeviceFeatures2(physical,&required);
+            info.supports_int64_shader=required.features.shaderInt64==VK_TRUE;
+            info.supports_float64_shader=required.features.shaderFloat64==VK_TRUE;
+            info.supports_int64_wave=info.supports_int64_shader &&
+                info.supports_wave_arithmetic &&
+                extended.shaderSubgroupExtendedTypes==VK_TRUE;
+            info.supports_required_subgroup_size=
+                size_features.subgroupSizeControl==VK_TRUE &&
+                has_compute_required_size && info.min_subgroup_size!=0u &&
+                info.min_subgroup_size<=info.max_subgroup_size;
             for (std::size_t j = 0; j < 3; ++j) {
                 info.max_workgroup_count[j] = limits.maxComputeWorkGroupCount[j];
                 info.max_workgroup_size[j] = limits.maxComputeWorkGroupSize[j];
@@ -413,6 +382,11 @@ struct Context::Impl {
                 else
                     create.pNext = &size_control;
             }
+            VkPhysicalDeviceSynchronization2Features sync{};
+            sync.sType=VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SYNCHRONIZATION_2_FEATURES;
+            sync.synchronization2=VK_TRUE;
+            sync.pNext=const_cast<void*>(create.pNext);
+            create.pNext=&sync;
             require(vkCreateDevice(physical, &create, nullptr, &device), "vkCreateDevice");
             vkGetDeviceQueue(device, selected.queue_family, 0, &queue);
 
@@ -1722,14 +1696,52 @@ struct Context::Impl {
             }
 
             std::vector<OperationRangeUse> operation_uses,normalized_uses;
-            std::vector<VkBufferMemoryBarrier> barriers;
+            std::vector<VkBufferMemoryBarrier2> barriers;
             std::vector<VkBufferCopy> copy_regions;
             VkPipeline bound_pipeline=VK_NULL_HANDLE;
             VkDescriptorSet bound_set=VK_NULL_HANDLE;
             std::size_t dispatch_index=0;
-            const auto before_operation=[&]() {
+            const auto append_barrier=[&](VkBuffer buffer,std::size_t begin,
+                                          std::size_t end,RangeAccessScope source,
+                                          RangeAccessScope target) {
+                if(!barriers.empty()) {
+                    auto& prior=barriers.back();
+                    if(prior.buffer==buffer && prior.offset+prior.size==begin &&
+                       prior.srcStageMask==source.stages &&
+                       prior.srcAccessMask==source.access &&
+                       prior.dstStageMask==target.stages &&
+                       prior.dstAccessMask==target.access) {
+                        prior.size+=end-begin;
+                        return;
+                    }
+                }
+                VkBufferMemoryBarrier2 barrier{};
+                barrier.sType=VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2;
+                barrier.srcStageMask=source.stages;
+                barrier.srcAccessMask=source.access;
+                barrier.dstStageMask=target.stages;
+                barrier.dstAccessMask=target.access;
+                barrier.srcQueueFamilyIndex=VK_QUEUE_FAMILY_IGNORED;
+                barrier.dstQueueFamilyIndex=VK_QUEUE_FAMILY_IGNORED;
+                barrier.buffer=buffer;
+                barrier.offset=begin;
+                barrier.size=end-begin;
+                barriers.push_back(barrier);
+            };
+            std::size_t barrier_calls=0u,buffer_barriers=0u;
+            const auto emit_barriers=[&]() {
+                if(barriers.empty())return;
+                VkDependencyInfo dependency{};
+                dependency.sType=VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
+                dependency.bufferMemoryBarrierCount=
+                    static_cast<std::uint32_t>(barriers.size());
+                dependency.pBufferMemoryBarriers=barriers.data();
+                vkCmdPipelineBarrier2(commands,&dependency);
+                ++barrier_calls;
+                buffer_barriers+=barriers.size();
                 barriers.clear();
-                VkPipelineStageFlags sources=0u,targets=0u;
+            };
+            const auto before_operation=[&]() {
                 normalize_operation_ranges(operation_uses,normalized_uses);
                 for(const auto& use:normalized_uses) {
                     auto& pending=referenced.find(use.buffer)->second;
@@ -1741,32 +1753,10 @@ struct Context::Impl {
                     pending.hazards->use(use.begin,use.end,use.scope,use.writes,
                         [&](std::size_t begin,std::size_t end,
                             RangeAccessScope source,RangeAccessScope target) {
-                            VkBufferMemoryBarrier barrier{};
-                            barrier.sType=VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER;
-                            barrier.srcAccessMask=source.access;
-                            barrier.dstAccessMask=target.access;
-                            barrier.srcQueueFamilyIndex=VK_QUEUE_FAMILY_IGNORED;
-                            barrier.dstQueueFamilyIndex=VK_QUEUE_FAMILY_IGNORED;
-                            barrier.buffer=buffer.buffer;
-                            barrier.offset=begin;
-                            barrier.size=end-begin;
-                            if(!barriers.empty()) {
-                                auto& prior=barriers.back();
-                                if(prior.buffer==barrier.buffer &&
-                                   prior.offset+prior.size==barrier.offset &&
-                                   prior.srcAccessMask==barrier.srcAccessMask &&
-                                   prior.dstAccessMask==barrier.dstAccessMask) {
-                                    prior.size+=barrier.size;
-                                }else barriers.push_back(barrier);
-                            }else barriers.push_back(barrier);
-                            sources|=source.stages;
-                            targets|=target.stages;
+                            append_barrier(buffer.buffer,begin,end,source,target);
                         },mappable);
                 }
-                if(!barriers.empty())
-                    vkCmdPipelineBarrier(commands,sources,targets,0,
-                        0,nullptr,static_cast<std::uint32_t>(barriers.size()),
-                        barriers.data(),0,nullptr);
+                emit_barriers();
             };
 
 #if defined(FYZZXYZZY_PROFILE_GPU)
@@ -1812,13 +1802,13 @@ struct Context::Impl {
                         operation_uses.push_back({copy->source,
                             static_cast<std::size_t>(part.srcOffset),
                             static_cast<std::size_t>(part.srcOffset+part.size),
-                            {VK_PIPELINE_STAGE_TRANSFER_BIT,
-                             VK_ACCESS_TRANSFER_READ_BIT},false});
+                            {VK_PIPELINE_STAGE_2_COPY_BIT,
+                             VK_ACCESS_2_TRANSFER_READ_BIT},false});
                         operation_uses.push_back({copy->destination,
                             static_cast<std::size_t>(part.dstOffset),
                             static_cast<std::size_t>(part.dstOffset+part.size),
-                            {VK_PIPELINE_STAGE_TRANSFER_BIT,
-                             VK_ACCESS_TRANSFER_WRITE_BIT},true});
+                            {VK_PIPELINE_STAGE_2_COPY_BIT,
+                             VK_ACCESS_2_TRANSFER_WRITE_BIT},true});
                     }
                     before_operation();
                     vkCmdCopyBuffer(commands,get(copy->source).buffer,
@@ -1841,18 +1831,18 @@ struct Context::Impl {
                                              BufferAccessExtent extent,BufferAccess access) {
                     const bool reads=access!=BufferAccess::Write;
                     const bool writes=access!=BufferAccess::Read;
-                    const VkAccessFlags mask=
-                        (reads?VkAccessFlags(VK_ACCESS_SHADER_READ_BIT):0u) |
-                        (writes?VkAccessFlags(VK_ACCESS_SHADER_WRITE_BIT):0u);
+                    const VkAccessFlags2 mask=
+                        (reads?VK_ACCESS_2_SHADER_STORAGE_READ_BIT:0u) |
+                        (writes?VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT:0u);
                     const auto begin=binding.offset+extent.offset;
                     operation_uses.push_back({binding.buffer,begin,begin+extent.bytes,
-                        {VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,mask},writes});
+                        {VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,mask},writes});
                 });
                 if(dispatch.indirect)
                     operation_uses.push_back({dispatch.indirect->buffer,
                         dispatch.indirect->offset,dispatch.indirect->offset+12u,
-                        {VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT,
-                         VK_ACCESS_INDIRECT_COMMAND_READ_BIT},false});
+                        {VK_PIPELINE_STAGE_2_DRAW_INDIRECT_BIT,
+                         VK_ACCESS_2_INDIRECT_COMMAND_READ_BIT},false});
                 before_operation();
                 const VkDescriptorSet descriptor_set=
                     descriptor_sets[dispatch_tables[dispatch_index++]];
@@ -1889,8 +1879,6 @@ struct Context::Impl {
 
             // Only written mappable ranges require a device-to-host
             // dependency. Device-local writes retain their GPU scopes.
-            barriers.clear();
-            VkPipelineStageFlags host_sources=0u;
             for(auto& [id,pending]:referenced) {
                 const auto& buffer=*pending.buffer;
                 if(!pending.hazards ||
@@ -1898,28 +1886,19 @@ struct Context::Impl {
                     buffer.placement!=MemoryPlacement::SharedLocal))continue;
                 pending.hazards->publish_host_writes(
                     [&](std::size_t begin,std::size_t end,RangeAccessScope writer) {
-                        VkBufferMemoryBarrier barrier{};
-                        barrier.sType=VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER;
-                        barrier.srcAccessMask=writer.access &
-                            (VK_ACCESS_TRANSFER_WRITE_BIT|VK_ACCESS_SHADER_WRITE_BIT);
-                        barrier.dstAccessMask=VK_ACCESS_HOST_READ_BIT;
-                        barrier.srcQueueFamilyIndex=VK_QUEUE_FAMILY_IGNORED;
-                        barrier.dstQueueFamilyIndex=VK_QUEUE_FAMILY_IGNORED;
-                        barrier.buffer=buffer.buffer;
-                        barrier.offset=begin;
-                        barrier.size=end-begin;
-                        if(!barriers.empty() && barriers.back().buffer==barrier.buffer &&
-                           barriers.back().offset+barriers.back().size==barrier.offset &&
-                           barriers.back().srcAccessMask==barrier.srcAccessMask)
-                            barriers.back().size+=barrier.size;
-                        else barriers.push_back(barrier);
-                        host_sources|=writer.stages;
+                        writer.access&=VK_ACCESS_2_TRANSFER_WRITE_BIT |
+                            VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT;
+                        append_barrier(buffer.buffer,begin,end,writer,
+                            {VK_PIPELINE_STAGE_2_HOST_BIT,VK_ACCESS_2_HOST_READ_BIT});
                     });
             }
-            if(!barriers.empty())
-                vkCmdPipelineBarrier(commands,host_sources,VK_PIPELINE_STAGE_HOST_BIT,
-                    0,0,nullptr,static_cast<std::uint32_t>(barriers.size()),
-                    barriers.data(),0,nullptr);
+            emit_barriers();
+#if defined(FYZZXYZZY_PROFILE_GPU)
+            if(hardware_trace) {
+                FYZZ_PROFILE_COUNTER("vulkan.barrier_calls",barrier_calls);
+                FYZZ_PROFILE_COUNTER("vulkan.buffer_barriers",buffer_barriers);
+            }
+#endif
             if (timestamps != VK_NULL_HANDLE) {
 #if defined(FYZZXYZZY_PROFILE_GPU)
                 if(!hardware_trace)

@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 if(FYZZXYZZY_BUILD_VULKAN)
-  find_package(Vulkan REQUIRED)
+  find_package(Vulkan 1.3 REQUIRED)
 
   # The Vulkan SDK DXC emits SPIR-V; another DXC in PATH may not.
   function(fyzzxyzzy_require_spirv_dxc)

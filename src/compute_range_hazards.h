@@ -10,7 +10,7 @@
 namespace fyzz::compute {
 
 struct RangeAccessScope {
-    std::uint32_t stages=0u,access=0u;
+    std::uint64_t stages=0u,access=0u;
     bool operator==(const RangeAccessScope&) const=default;
     void include(RangeAccessScope other) noexcept {
         stages|=other.stages;

@@ -77,7 +77,8 @@ correctness but does not establish AMD GPU compatibility or performance.
 The default `Unspecified` means conservatively read/write, preserving
 existing API callers. The source-derived AABB stage marks its three input
 bindings read-only and encoded output write-only; the incremental SAP
-single-arena stage declares read/write. Vulkan tracks overlapping access intervals; D3D12 tracks conflicting UAV
+single-arena stage declares read/write. Vulkan requires core 1.3 Synchronization2 support and tracks overlapping
+access intervals with per-buffer-barrier stage and access scopes. D3D12 tracks conflicting UAV
 ranges while retaining whole-resource state transitions. A binding's
 optional `access_extent` describes a contiguous interval relative to its
 descriptor base. Native source views exclude descriptor alignment padding.

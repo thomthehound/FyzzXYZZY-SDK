@@ -106,6 +106,9 @@ quality rather than individual dispatch or barrier counts.
 - [x] Normalize Vulkan operation aliases into exact disjoint access
   intervals before updating queue hazard history. Coalesce only
   adjacent intervals with identical scope and write intent.
+- [x] Use Vulkan Synchronization2 with individual barrier stage and
+  access scopes, exact copy and storage access masks, and 64-bit
+  dependency history across submissions.
 
 These are implementation milestones, not hardware-performance acceptance.
 
