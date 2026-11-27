@@ -97,6 +97,9 @@ quality rather than individual dispatch or barrier counts.
 - [x] Declare coloring and tile construction access ranges separately
   from numerical solver rows. Preserve combined body initialization,
   resident schedule reuse, task errors and indirect argument writes.
+- [x] Compose fused and packed dependencies from their numerical phases.
+  Declare integration result streams and external shape and actor state
+  explicitly; free flight excludes constraint rows and solver inertia.
 
 These are implementation milestones, not hardware-performance acceptance.
 
