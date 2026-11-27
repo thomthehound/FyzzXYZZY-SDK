@@ -1175,15 +1175,19 @@ struct Context::Impl {
             RangeAccessScope scope{};
             std::size_t incoming=std::numeric_limits<std::size_t>::max();
         };
-        std::unordered_map<BufferId,Access> resource_access;
-        resource_access.reserve(std::min<std::size_t>(commands.size()*2u,512u));
+        // Range plans refer to dense batch-local resource ordinals.
+        std::unordered_map<BufferId,std::size_t> resource_ordinals;
+        resource_ordinals.reserve(std::min<std::size_t>(commands.size()*2u,512u));
+        std::vector<Access> resource_access;
         std::vector<Buffer*> referenced;
         const auto reference=[&](BufferId id) -> Access& {
-            const auto found=resource_access.find(id);
-            if(found!=resource_access.end())return found->second;
+            const auto found=resource_ordinals.find(id);
+            if(found!=resource_ordinals.end())return resource_access[found->second];
             auto& buffer=get_buffer(id);
+            resource_ordinals.emplace(id,resource_access.size());
             referenced.push_back(&buffer);
-            return resource_access.try_emplace(id,Access{&buffer,{},{}}).first->second;
+            resource_access.push_back(Access{&buffer,{},{}});
+            return resource_access.back();
         };
         const auto same_bindings=[](
                 const std::vector<DescriptorView>& a,
@@ -1301,7 +1305,7 @@ struct Context::Impl {
                             for(const auto& binding:dispatch.buffers)
                                 if(binding.buffer==indirect.buffer)
                                     throw std::invalid_argument("D3D12 indirect arguments cannot alias shader bindings");
-                            ranges.push_back({dispatch.indirect->buffer,
+                            ranges.push_back({resource_ordinals.at(dispatch.indirect->buffer),
                                 dispatch.indirect->offset,
                                 dispatch.indirect->offset+sizeof(D3D12_DISPATCH_ARGUMENTS),
                                 {D3D12_BARRIER_SYNC_EXECUTE_INDIRECT,
@@ -1316,7 +1320,8 @@ struct Context::Impl {
                                access!=BufferAccess::Unspecified)
                                 throw std::invalid_argument("Dispatch access writes SRV");
                             const auto begin=binding.offset+extent.offset;
-                            ranges.push_back({binding.buffer,begin,begin+extent.bytes,
+                            ranges.push_back({resource_ordinals.at(binding.buffer),
+                                begin,begin+extent.bytes,
                                 {D3D12_BARRIER_SYNC_COMPUTE_SHADING,
                                  static_cast<std::uint64_t>(srv
                                     ?D3D12_BARRIER_ACCESS_SHADER_RESOURCE
@@ -1462,19 +1467,20 @@ struct Context::Impl {
         const auto use=[&](BufferId id,std::size_t offset,std::size_t size,
                            RangeAccessScope scope,bool writes) {
             if(!reference(id).buffer->upload_only)
-                uses.push_back({id,offset,offset+size,scope,writes});
+                uses.push_back({resource_ordinals.at(id),offset,offset+size,scope,writes});
         };
         const auto plan_operation=[&](std::span<const OperationRangeUse> uses) {
             barrier_offsets.push_back(barriers.size());
             for(std::size_t first=0u;first<uses.size();) {
-                auto& state=resource_access.at(uses[first].buffer);
+                auto& state=resource_access[uses[first].buffer];
                 auto last=first;
                 RangeAccessScope scope{};
                 bool conflict=false;
                 for(;last<uses.size() && uses[last].buffer==uses[first].buffer;++last) {
                     const auto& item=uses[last];
                     scope.include(item.scope);
-                    conflict|=state.ranges.conflicts(item.begin,item.end,item.writes);
+                    if(!conflict)
+                        conflict=state.ranges.conflicts(item.begin,item.end,item.writes);
                 }
                 // UAV and copy destinations are distinct write access classes.
                 constexpr auto write_classes=std::uint64_t(D3D12_BARRIER_ACCESS_UNORDERED_ACCESS) |
@@ -1545,8 +1551,8 @@ struct Context::Impl {
         for (const BatchCommand& op : commands) {
             before_operation();
             if (const auto* copy = std::get_if<CopyCommand>(&op)) {
-                auto& src=*resource_access.at(copy->source).buffer;
-                auto& dst=*resource_access.at(copy->destination).buffer;
+                auto& src=*resource_access[resource_ordinals.at(copy->source)].buffer;
+                auto& dst=*resource_access[resource_ordinals.at(copy->destination)].buffer;
                 submission.commands->CopyBufferRegion(dst.resource.Get(),
                     copy->destination_offset,src.resource.Get(),
                     copy->source_offset,copy->bytes);
@@ -1558,7 +1564,7 @@ struct Context::Impl {
                 continue;
             }
             if(const auto* upload=std::get_if<UploadCommand>(&op)) {
-                auto& dst=*resource_access.at(upload->destination).buffer;
+                auto& dst=*resource_access[resource_ordinals.at(upload->destination)].buffer;
                 submission.commands->CopyBufferRegion(
                     dst.resource.Get(),upload->destination_offset,
                     submission.owned_upload.Get(),ordered_upload_offset,
@@ -1646,7 +1652,7 @@ struct Context::Impl {
             submission.commands->SetComputeRoot32BitConstants(
                 table_root,pipeline.parameters/4u,cmd.push_constants.data(),0);
             if(cmd.indirect) {
-                auto* arguments=resource_access.at(cmd.indirect->buffer).buffer->resource.Get();
+                auto* arguments=resource_access[resource_ordinals.at(cmd.indirect->buffer)].buffer->resource.Get();
                 // The X group count also predicates the single indirect
                 // command, so an empty GPU worklist launches no dispatch.
                 submission.commands->ExecuteIndirect(
@@ -1670,7 +1676,7 @@ struct Context::Impl {
                     order_copy_writes(submission.commands.Get(),readback_tail->staging);
                 submission.commands->CopyBufferRegion(
                     readback_tail->staging,offset,
-                    resource_access.at(item.source).buffer->resource.Get(),item.source_offset,
+                    resource_access[resource_ordinals.at(item.source)].buffer->resource.Get(),item.source_offset,
                     item.bytes);
                 offset+=item.bytes;
             }

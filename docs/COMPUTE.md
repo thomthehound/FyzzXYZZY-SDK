@@ -112,7 +112,13 @@ the unique table layout rather than the sequence of dispatches.
 Descriptor tables also retain the latest matching logical access declaration. Repeated dispatches reuse validated, backend-ordered
 range lists independent of constants and launch dimensions. Access intent,
 extent, explicit phase accesses and indirect argument changes require a
-new range list. Every operation still advances native dependency history.
+new range list. Range lists resolve resources to dense batch-local
+ordinals; dependency processing does not look up resource handles per
+interval. Vulkan leaves unchanged interval states intact while retaining
+write-after-write barriers. D3D12 retains reader ranges only until the
+first writer in an access epoch; subsequent writes already require a
+whole-buffer barrier. Every operation still advances native dependency
+history.
 The PhysX task graph, cross-submission dependencies, and actual lifetime
 rules remain authoritative. Context teardown releases in-flight native
 resources only after queue completion or device loss; a failed D3D12

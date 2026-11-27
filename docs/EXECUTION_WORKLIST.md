@@ -121,6 +121,10 @@ quality rather than individual dispatch or barrier counts.
   descriptor table. Retain dispatch-local shape and access validation;
   key D3D12 heap reuse by the actual unique table layout.
 
+- [x] Resolve dependency ranges to dense batch resource ordinals.
+  Avoid unchanged Vulkan interval mutations and D3D12 reader-range
+  maintenance after an epoch admits its first writer.
+
 These are implementation milestones, not hardware-performance acceptance.
 
 ## Execution and lifetime work

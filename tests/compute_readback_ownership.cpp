@@ -54,6 +54,18 @@ void verify_range_hazards() {
     expect({{0u,32u,upload,download}});
     use(128u,192u,shader_read,false);
     expect({{128u,192u,upload,shader_read}});
+    // Stable subranges retain the producer and do not broaden dependencies.
+    use(144u,160u,shader_read,false); expect({});
+    use(144u,160u,download,false);
+    expect({{144u,160u,upload,download}});
+    use(0u,32u,shader_write,true);
+    expect({{0u,32u,upload,shader_write}});
+    for(unsigned i=0u;i<64u;++i) {
+        use(8u,24u,shader_write,true);
+        expect({{8u,24u,shader_write,shader_write}});
+    }
+    use(0u,32u,download,false);
+    expect({{0u,32u,shader_write,download}});
     BufferRangeHazards contiguous;
     for(std::size_t i=0u;i<256u;++i)
         contiguous.use(i*4u,(i+1u)*4u,upload,true,
@@ -86,8 +98,13 @@ void verify_range_hazards() {
     publish();
     expect({});
     host.use(48u,80u,shader_write,true,ignore,true);
+    host.use(56u,64u,shader_write,true,ignore,true);
     publish();
     expect({{48u,80u,shader_write,{}}});
+    dependencies.clear();
+    host.use(56u,64u,shader_write,true,ignore,true);
+    publish();
+    expect({{56u,64u,shader_write,{}}});
 }
 
 void verify_operation_ranges() {
@@ -217,6 +234,22 @@ void verify_buffer_ranges() {
     }
     expect(0u,512u,false,true);
     expect(512u,516u,false,false);
+    // Reader intervals are needed only until the first writer in an epoch.
+    pending.clear();
+    for(std::size_t i=0u;i<64u;++i)
+        pending.record(i*8u,i*8u+4u,false);
+    expect(16u,20u,true,true);
+    expect(20u,24u,true,false);
+    pending.record(20u,24u,true);
+    for(std::size_t i=0u;i<64u;++i)
+        pending.record(i*8u,i*8u+4u,false);
+    expect(16u,20u,false,false);
+    expect(20u,24u,false,true);
+    expect(24u,28u,true,true);
+    pending.clear();
+    expect(16u,20u,true,false);
+    pending.record(16u,20u,false);
+    expect(16u,20u,true,true);
 }
 
 void verify_cache_working_set() {

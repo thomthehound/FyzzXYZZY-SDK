@@ -199,6 +199,17 @@ public:
             [](const Interval& interval,std::size_t offset) {
                 return interval.end<=offset;
             })-intervals_.begin());
+        // A contained access that leaves the state unchanged needs no
+        // interval split, insertion or coalescing.
+        if(i<intervals_.size() && intervals_[i].begin<=begin &&
+           intervals_[i].end>=end) {
+            const auto& state=intervals_[i].state;
+            if(!writes && state.readers.covers(scope))return;
+            if(writes && state==State{scope,{},publish_to_host}) {
+                if(state.writer.stages)emit(begin,end,state.writer,scope);
+                return;
+            }
+        }
         const auto first=i;
         while(begin<end) {
             if(i==intervals_.size() || intervals_[i].begin>begin) {
@@ -288,6 +299,8 @@ class PendingBufferRanges {
                 [](const Range& range,std::size_t offset) {
                     return range.end<offset;
                 });
+            if(first!=ranges_.end() && first->begin<=begin && first->end>=end)
+                return;
             auto last=first;
             while(last!=ranges_.end() && last->begin<=end) {
                 begin=std::min(begin,last->begin);
@@ -307,11 +320,17 @@ class PendingBufferRanges {
     RangeSet readers_,writers_;
 public:
     bool conflicts(std::size_t begin,std::size_t end,bool writes) const noexcept {
-        return writers_.overlaps(begin,end) ||
-               (writes && (!writers_.empty() || readers_.overlaps(begin,end)));
+        if(writes)
+            return !writers_.empty() || readers_.overlaps(begin,end);
+        return writers_.overlaps(begin,end);
     }
     void record(std::size_t begin,std::size_t end,bool writes) {
-        (writes?writers_:readers_).add(begin,end);
+        // Once a writer exists, every subsequent write ends the epoch;
+        // only its written intervals can conflict with later readers.
+        if(writes) {
+            if(writers_.empty())readers_.clear();
+            writers_.add(begin,end);
+        }else if(writers_.empty())readers_.add(begin,end);
     }
     void clear() noexcept {
         readers_.clear();

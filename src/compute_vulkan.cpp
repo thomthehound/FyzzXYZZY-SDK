@@ -1357,12 +1357,16 @@ struct Context::Impl {
         };
         // Native descriptors own references even when a phase declares
         // no access through that binding.
-        std::unordered_map<BufferId,PendingBuffer> referenced;
+        // Range plans refer to dense batch-local resource ordinals.
+        std::unordered_map<BufferId,std::size_t> resource_ordinals;
+        std::vector<PendingBuffer> referenced;
         const auto reference=[&](BufferId id) -> Buffer& {
-            const auto existing=referenced.find(id);
-            if(existing!=referenced.end())return *existing->second.buffer;
+            const auto existing=resource_ordinals.find(id);
+            if(existing!=resource_ordinals.end())
+                return *referenced[existing->second].buffer;
             auto& buffer=get(id);
-            referenced.emplace(id,PendingBuffer{&buffer,{}});
+            resource_ordinals.emplace(id,referenced.size());
+            referenced.push_back({&buffer,{}});
             return buffer;
         };
         for (const BatchCommand& operation : operations) {
@@ -1480,11 +1484,12 @@ struct Context::Impl {
                                 (reads?VK_ACCESS_2_SHADER_STORAGE_READ_BIT:0u) |
                                 (writes?VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT:0u);
                             const auto begin=binding.offset+extent.offset;
-                            range_scratch.push_back({binding.buffer,begin,begin+extent.bytes,
+                            range_scratch.push_back({resource_ordinals.at(binding.buffer),
+                                begin,begin+extent.bytes,
                                 {VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,mask},writes});
                         });
                         if(dispatch.indirect)
-                            range_scratch.push_back({dispatch.indirect->buffer,
+                            range_scratch.push_back({resource_ordinals.at(dispatch.indirect->buffer),
                                 dispatch.indirect->offset,dispatch.indirect->offset+12u,
                                 {VK_PIPELINE_STAGE_2_DRAW_INDIRECT_BIT,
                                  VK_ACCESS_2_INDIRECT_COMMAND_READ_BIT},false});
@@ -1724,7 +1729,7 @@ struct Context::Impl {
             };
             const auto before_operation=[&](std::span<const OperationRangeUse> uses) {
                 for(const auto& use:uses) {
-                    auto& pending=referenced.find(use.buffer)->second;
+                    auto& pending=referenced[use.buffer];
                     const auto& buffer=*pending.buffer;
                     if(buffer.placement==MemoryPlacement::Upload)continue;
                     if(!pending.hazards)pending.hazards.emplace(buffer.queue_hazards);
@@ -1778,13 +1783,15 @@ struct Context::Impl {
                             next->source_offset,next->destination_offset,next->bytes});
                         ++operation_index;
                     }
+                    const auto source=resource_ordinals.at(copy->source);
+                    const auto destination=resource_ordinals.at(copy->destination);
                     for(const auto& part:copy_regions) {
-                        operation_uses.push_back({copy->source,
+                        operation_uses.push_back({source,
                             static_cast<std::size_t>(part.srcOffset),
                             static_cast<std::size_t>(part.srcOffset+part.size),
                             {VK_PIPELINE_STAGE_2_COPY_BIT,
                              VK_ACCESS_2_TRANSFER_READ_BIT},false});
-                        operation_uses.push_back({copy->destination,
+                        operation_uses.push_back({destination,
                             static_cast<std::size_t>(part.dstOffset),
                             static_cast<std::size_t>(part.dstOffset+part.size),
                             {VK_PIPELINE_STAGE_2_COPY_BIT,
@@ -1792,8 +1799,8 @@ struct Context::Impl {
                     }
                     normalize_operation_ranges(operation_uses,normalized_uses);
                     before_operation(normalized_uses);
-                    vkCmdCopyBuffer(commands,referenced.at(copy->source).buffer->buffer,
-                                    referenced.at(copy->destination).buffer->buffer,
+                    vkCmdCopyBuffer(commands,referenced[source].buffer->buffer,
+                                    referenced[destination].buffer->buffer,
                                     static_cast<std::uint32_t>(copy_regions.size()),
                                     copy_regions.data());
 #if defined(FYZZXYZZY_PROFILE_GPU)
@@ -1828,7 +1835,7 @@ struct Context::Impl {
                 }
                 if(dispatch.indirect)
                     vkCmdDispatchIndirect(commands,
-                        referenced.at(dispatch.indirect->buffer).buffer->buffer,
+                        referenced[resource_ordinals.at(dispatch.indirect->buffer)].buffer->buffer,
                         static_cast<VkDeviceSize>(dispatch.indirect->offset));
                 else
                     vkCmdDispatch(commands, dispatch.groups.x, dispatch.groups.y,
@@ -1842,7 +1849,7 @@ struct Context::Impl {
 
             // Only written mappable ranges require a device-to-host
             // dependency. Device-local writes retain their GPU scopes.
-            for(auto& [id,pending]:referenced) {
+            for(auto& pending:referenced) {
                 const auto& buffer=*pending.buffer;
                 if(!pending.hazards ||
                    (buffer.placement!=MemoryPlacement::HostVisible &&
@@ -1887,7 +1894,7 @@ struct Context::Impl {
 #endif
             const SubmissionId id = enqueue(commands, pool);
             // Commit recorded queue dependencies without allocation.
-            for(auto& [buffer,pending]:referenced) {
+            for(auto& pending:referenced) {
                 pending.buffer->last_reference=id;
                 if(pending.hazards)
                     std::swap(pending.buffer->queue_hazards,*pending.hazards);
