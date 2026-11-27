@@ -1413,39 +1413,96 @@ void sourceDyPartitionTask(uint taskId,uint scratch,uint errorAddress,
     }
     if(dyNeeded!=count) {
         const uint staticCount=count-dyNeeded;
-        // Only static endpoints consume reservation counters.
         const uint scanCount=mixedHub?staticCount:count;
+        const bool parallelReservations=staticCount>=128u;
+        if(lane==0u)dyProgress=0u;
+        // The dynamic masks are dead; count static reservations per body
+        // without disturbing its highest dynamic color.
         for(uint j=lane;j<scanCount;j+=128u) {
             const uint i=mixedHub?arena.Load(cursors+(first+j)*4u):first+j;
-            if(!mixedHub && arena.Load(colors+i*4u)!=0xffffffffu)continue;
+            if(arena.Load(colors+i*4u)!=invalidBody)continue;
             const uint4 desc=arena.Load4(raw+i*16u);
             const uint body=(desc.w&0x100u)!=0u?desc.y:desc.z;
+            const uint state=bodyState+body*12u;
             uint unused;
-            arena.InterlockedExchange(bodyState+body*12u+8u,0u,unused);
+            arena.InterlockedExchange(state+8u,0u,unused);
+            if(parallelReservations)
+                arena.InterlockedExchange(state,0u,unused);
         }
         AllMemoryBarrierWithGroupSync();
-        if(lane==0u) {
-            uint highest=dyHighest;
-            // Static/kinematic reservations retain source encounter order.
-            for(uint j=0u;j<scanCount;++j) {
+        if(parallelReservations) {
+            uint repeated=0u;
+            for(uint j=lane;j<scanCount;j+=128u) {
                 const uint i=mixedHub?arena.Load(cursors+(first+j)*4u):first+j;
-                if(!mixedHub && arena.Load(colors+i*4u)!=0xffffffffu)continue;
+                if(arena.Load(colors+i*4u)!=invalidBody)continue;
                 const uint4 desc=arena.Load4(raw+i*16u);
-                const uint state=bodyState+
-                    (((desc.w&0x100u)!=0u)?desc.y:desc.z)*12u;
-                const uint value=arena.Load(state+4u)+arena.Load(state+8u);
+                const uint body=(desc.w&0x100u)!=0u?desc.y:desc.z;
+                uint prior;
+                arena.InterlockedAdd(bodyState+body*12u,1u,prior);
+                repeated+=uint(prior==1u);
+            }
+            if(repeated!=0u)InterlockedAdd(dyProgress,repeated);
+            AllMemoryBarrierWithGroupSync();
+            uint highest=0u;
+            for(uint j=lane;j<scanCount;j+=128u) {
+                const uint i=mixedHub?arena.Load(cursors+(first+j)*4u):first+j;
+                if(arena.Load(colors+i*4u)!=invalidBody)continue;
+                const uint4 desc=arena.Load4(raw+i*16u);
+                const uint body=(desc.w&0x100u)!=0u?desc.y:desc.z;
+                const uint state=bodyState+body*12u;
+                if(arena.Load(state)!=1u)continue;
+                const uint value=arena.Load(state+4u);
                 if(value>=count) {
                     sourceDyTaskErrorOr(errorAddress,1048576u);
-                    break;
+                    continue;
                 }
-                arena.Store(state+8u,arena.Load(state+8u)+1u);
                 arena.Store(colors+i*4u,value);
                 highest=max(highest,value+1u);
             }
-            dyHighest=highest;
+            if(highest!=0u)InterlockedMax(dyHighest,highest);
+            AllMemoryBarrierWithGroupSync();
+            if(sourceDyTaskLoad(errorAddress)!=0u)return;
         }
-        AllMemoryBarrierWithGroupSync();
-        if(sourceDyTaskLoad(errorAddress)!=0u)return;
+        if(!parallelReservations || dyProgress!=0u) {
+            if(lane==0u) {
+                uint highest=dyHighest;
+                // Repeated endpoints reserve colors in encounter order.
+                for(uint j=0u;j<scanCount;++j) {
+                    const uint i=mixedHub?arena.Load(cursors+(first+j)*4u):first+j;
+                    if(arena.Load(colors+i*4u)!=invalidBody)continue;
+                    const uint4 desc=arena.Load4(raw+i*16u);
+                    const uint state=bodyState+
+                        (((desc.w&0x100u)!=0u)?desc.y:desc.z)*12u;
+                    const uint rank=arena.Load(state+8u);
+                    const uint value=arena.Load(state+4u)+rank;
+                    if(value>=count) {
+                        sourceDyTaskErrorOr(errorAddress,1048576u);
+                        break;
+                    }
+                    arena.Store(state+8u,rank+1u);
+                    arena.Store(colors+i*4u,value);
+                    highest=max(highest,value+1u);
+                }
+                dyHighest=highest;
+            }
+            AllMemoryBarrierWithGroupSync();
+            if(sourceDyTaskLoad(errorAddress)!=0u)return;
+        }
+    }
+    if(dyHighest==1u) {
+        // A single color is already conflict-free in encounter order.
+        for(uint i=first+lane;i<last;i+=128u) {
+            uint4 desc=arena.Load4(raw+i*16u);
+            desc.w&=255u;
+            arena.Store4(p.descriptorBias+i*16u,desc);
+            if(residentColor)arena.Store(colors+i*4u,i);
+        }
+        if(lane==0u) {
+            arena.Store(p.partitionBias+partitionFirst*4u,last);
+            arena.Store(cursors+partitionFirst*4u,last);
+            sourceDyTaskStore(task+12u,partitionFirst+1u);
+        }
+        return;
     }
     for(uint i=partitionFirst+lane;i<partitionCapacity;i+=128u)
         arena.Store(cursors+i*4u,0u);

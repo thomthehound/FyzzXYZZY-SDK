@@ -57,6 +57,9 @@ quality rather than individual dispatch or barrier counts.
 - [x] Execute each phase of single-color fused tasks under exclusive
   descriptor ownership. Retain numerical state within the phase and
   synchronize only for cooperative motion capture and integration.
+- [x] Parallelize uncontended static endpoint reservations in large
+  color tasks. Preserve encounter rank for repeated endpoints and emit
+  single-color descriptors directly without histogram or atomic scatter.
 
 These are implementation milestones, not hardware-performance acceptance.
 
