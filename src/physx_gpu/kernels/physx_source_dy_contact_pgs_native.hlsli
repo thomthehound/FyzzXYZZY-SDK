@@ -404,15 +404,15 @@ bool sourceDyContactGeometry(uint index,uint contactBegin,uint contactCount,
     }
     if(frame.pcmGeometry) {
         n=frame.pcmNormal;
-        const float4 point=asfloat(pcmContacts.Load4(frame.geometryBase+local*16u));
-        pos=point.xyz;
-        separation=point.w;
+        const float4 pointData=asfloat(pcmContacts.Load4(frame.geometryBase+local*16u));
+        pos=pointData.xyz;
+        separation=pointData.w;
     }else {
         const uint raw=frame.geometryBase+local*28u;
         n=asfloat(arena.Load3(raw));
-        const float4 point=asfloat(arena.Load4(raw+12u));
-        pos=point.xyz;
-        separation=point.w;
+        const float4 pointData=asfloat(arena.Load4(raw+12u));
+        pos=pointData.xyz;
+        separation=pointData.w;
     }
     return true;
 }
