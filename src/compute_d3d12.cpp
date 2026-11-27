@@ -1510,7 +1510,7 @@ struct Context::Impl {
                 use(copy->source,copy->source_offset,copy->bytes,copy_read,false);
                 use(copy->destination,copy->destination_offset,copy->bytes,copy_write,true);
             }else if(const auto* upload=std::get_if<UploadCommand>(&op)) {
-                use(upload->destination,upload->destination_offset,upload->bytes,copy_write,true);
+                use(upload->destination,upload->destination_offset,upload->bytes.size(),copy_write,true);
             }else {
                 const auto& cmd=std::get<DispatchCommand>(op);
                 const auto& pipeline=get_pipeline(cmd.pipeline);
@@ -1526,9 +1526,10 @@ struct Context::Impl {
                     const bool srv=kind==StorageBufferViewKind::RawRead ||
                                    kind==StorageBufferViewKind::Structured32Read;
                     use(binding.buffer,binding.offset+extent.offset,extent.bytes,
-                        {D3D12_BARRIER_SYNC_COMPUTE_SHADING,srv
+                        {D3D12_BARRIER_SYNC_COMPUTE_SHADING,
+                         static_cast<std::uint64_t>(srv
                             ?D3D12_BARRIER_ACCESS_SHADER_RESOURCE
-                            :D3D12_BARRIER_ACCESS_UNORDERED_ACCESS},
+                            :D3D12_BARRIER_ACCESS_UNORDERED_ACCESS)},
                         !srv && access!=BufferAccess::Read);
                 });
             }
