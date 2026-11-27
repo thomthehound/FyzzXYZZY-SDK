@@ -167,8 +167,27 @@ struct SourceDySolverPair {
     float ma,mb;
 };
 
+void sourceDyLoadEndpoint(uint ordinal,uint2 retained,SourceDySolverPair prior,
+                          out float3 linear,out float3 angular) {
+    linear=0.0f;
+    angular=0.0f;
+    if(ordinal==invalidBody)return;
+    if(ordinal==retained.y) {
+        linear=prior.vb;
+        angular=prior.ab;
+    } else if(ordinal==retained.x) {
+        linear=prior.va;
+        angular=prior.aa;
+    } else {
+        const uint address=p.bodyBias+ordinal*52u;
+        linear=asfloat(arena.Load3(address));
+        angular=asfloat(arena.Load3(address+12u));
+    }
+}
+
 // Nonresponding endpoints are read-only, including shared kinematics.
 bool sourceDyLoadSolverPair(uint4 desc,uint errorAddress,bool response,
+                            uint2 retained,SourceDySolverPair prior,
                             out SourceDySolverPair state) {
     state=(SourceDySolverPair)0;
     const bool joint=desc.w!=0u;
@@ -182,14 +201,8 @@ bool sourceDyLoadSolverPair(uint4 desc,uint errorAddress,bool response,
     if(!response)return true;
     const uint ao=p.bodyBias+desc.y*52u;
     const uint bo=p.bodyBias+desc.z*52u;
-    if(desc.y!=invalidBody) {
-        state.va=asfloat(arena.Load3(ao));
-        state.aa=asfloat(arena.Load3(ao+12u));
-    }
-    if(desc.z!=invalidBody) {
-        state.vb=asfloat(arena.Load3(bo));
-        state.ab=asfloat(arena.Load3(bo+12u));
-    }
+    sourceDyLoadEndpoint(desc.y,retained,prior,state.va,state.aa);
+    sourceDyLoadEndpoint(desc.z,retained,prior,state.vb,state.ab);
     if(joint) {
         const uint first=p.distanceBias+desc.x*64u;
         state.ma=loadScalar(first+36u);
@@ -199,6 +212,12 @@ bool sourceDyLoadSolverPair(uint4 desc,uint errorAddress,bool response,
         if(desc.z!=invalidBody)state.mb=loadScalar(bo+48u);
     }
     return true;
+}
+
+bool sourceDyLoadSolverPair(uint4 desc,uint errorAddress,bool response,
+                            out SourceDySolverPair state) {
+    return sourceDyLoadSolverPair(desc,errorAddress,response,
+        uint2(invalidBody,invalidBody),(SourceDySolverPair)0,state);
 }
 
 void sourceDyStoreSolverPair(uint4 desc,SourceDySolverPair state) {
@@ -293,13 +312,6 @@ bool solveJointRows(uint4 desc,uint errorAddress,bool biased,
     }
     sourceDyCommitJointPair(desc,local,state);
     return true;
-}
-
-void solveJoint(uint4 desc,uint errorAddress,bool biased) {
-    SourceDySolverPair state;
-    if(sourceDyLoadSolverPair(desc,errorAddress,true,state) &&
-       solveJointRows(desc,errorAddress,biased,state))
-        sourceDyStoreSolverPair(desc,state);
 }
 
 // Native Dy reconstructs the mass frame from resident actor motion.
@@ -1800,19 +1812,61 @@ void prepareConstraints(uint begin,uint end,uint lane,uint endError) {
         prepareConstraint(arena.Load4(p.descriptorBias+i*16u),lane&3u,4u,endError);
 }
 
-void solvePartition(uint begin,uint end,uint lane,uint stride,uint2 iters,
+bool sourceDySolveDescriptor(uint4 desc,uint errorAddress,bool biased,
+                             bool friction,bool finalPass,uint2 retained,
+                             SourceDySolverPair prior,
+                             out SourceDySolverPair state) {
+    state=(SourceDySolverPair)0;
+    if(desc.w!=0u)
+        return sourceDyLoadSolverPair(desc,errorAddress,true,retained,prior,state) &&
+               solveJointRows(desc,errorAddress,biased,state);
+    SourceDyContactSpan span;
+    if(!sourceDyLoadContactSpan(desc,errorAddress,span))return false;
+    if(span.manager.y==0u)return true;
+    return sourceDyLoadSolverPair(desc,errorAddress,true,retained,prior,state) &&
+           solveContactRows(desc,span,errorAddress,biased,friction,finalPass,state);
+}
+
+void solvePartition(uint begin,uint end,uint lane,uint2 iters,
                     uint iter,uint endError) {
     const uint total=iters.x+max(iters.y,1u);
     const bool biased=iter<iters.x;
     const bool finalPass=iter+1u==total;
     const bool friction=!biased || iters.x-iter<=3u;
-    for(uint i=begin+lane;i<end;i+=stride) {
+    for(uint i=begin+lane;i<end;i+=128u) {
         const uint4 desc=arena.Load4(p.descriptorBias+i*16u);
-        if(desc.w!=0u)
-            solveJoint(desc,endError,biased);
-        else
-            solveContact(desc,endError,biased,friction,finalPass);
+        SourceDySolverPair state;
+        if(sourceDySolveDescriptor(desc,endError,biased,friction,finalPass,
+                uint2(invalidBody,invalidBody),(SourceDySolverPair)0,state))
+            sourceDyStoreSolverPair(desc,state);
     }
+}
+
+// The serial owner retains responding endpoints until their last use
+// in the current run or replacement by another descriptor.
+void solveSerialRun(uint begin,uint end,uint2 iters,uint iter,uint endError) {
+    const uint total=iters.x+max(iters.y,1u);
+    const bool biased=iter<iters.x;
+    const bool finalPass=iter+1u==total;
+    const bool friction=!biased || iters.x-iter<=3u;
+    uint2 retained=uint2(invalidBody,invalidBody);
+    SourceDySolverPair prior=(SourceDySolverPair)0;
+    for(uint i=begin;i<end;++i) {
+        const uint4 desc=arena.Load4(p.descriptorBias+i*16u);
+        SourceDySolverPair state;
+        if(!sourceDySolveDescriptor(desc,endError,biased,friction,finalPass,
+                                    retained,prior,state))
+            break;
+        const uint2 next=uint2(state.ma>0.0f?desc.y:invalidBody,
+                               state.mb>0.0f?desc.z:invalidBody);
+        uint2 evicted=retained;
+        if(any(next==retained.x))evicted.x=invalidBody;
+        if(any(next==retained.y))evicted.y=invalidBody;
+        sourceDyStoreSolverPair(uint4(0u,evicted,0u),prior);
+        retained=next;
+        prior=state;
+    }
+    sourceDyStoreSolverPair(uint4(0u,retained,0u),prior);
 }
 
 void saveMotion(uint index,uint endError) {
@@ -2865,7 +2919,7 @@ void main(uint3 group:SV_GroupID,uint3 lane:SV_GroupThreadID) {
                 if(fused || phase==partitionTile) {
                     if(serialPartitions) {
                         if(lane.x==0u)
-                            solvePartition(descriptors.x,descriptors.y,0u,1u,
+                            solveSerialRun(descriptors.x,descriptors.y,
                                            iters,iteration,endError);
                         // Lane zero owns the complete serial run. Only
                         // cooperative motion capture needs its live state.
@@ -2894,10 +2948,10 @@ void main(uint3 group:SV_GroupID,uint3 lane:SV_GroupThreadID) {
                             }
                             if(singleton) {
                                 if(lane.x==0u)
-                                    solvePartition(begin,end,0u,1u,iters,
+                                    solveSerialRun(begin,end,iters,
                                                    iteration,endError);
                             } else {
-                                solvePartition(begin,end,lane.x,128u,iters,
+                                solvePartition(begin,end,lane.x,iters,
                                                iteration,endError);
                             }
                             // The final range hands off at integration

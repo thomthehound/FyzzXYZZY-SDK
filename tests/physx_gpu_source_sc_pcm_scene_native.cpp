@@ -9733,7 +9733,11 @@ void verify_gpu_high_degree_coloring(
             scene.set_dynamics(body,dynamics);
             scene.set_velocity(body,
                 {-0.03f,0.f,i%2u ? 0.02f:-0.02f});
-            scene.create_center_distance_constraint(anchor,body,rest);
+            // Alternate endpoint order while preserving the distance row.
+            if(i%2u)
+                scene.create_center_distance_constraint(body,anchor,rest);
+            else
+                scene.create_center_distance_constraint(anchor,body,rest);
         }
         return ids;
     };

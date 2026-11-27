@@ -51,6 +51,9 @@ quality rather than individual dispatch or barrier counts.
   Preserve ordering and synchronize only at run boundaries, cooperative
   motion capture, and integration. All-singleton tasks require no
   per-iteration color-boundary loads.
+- [x] Retain responding endpoints across consecutive serial descriptors
+  by solver-body ordinal. Publish evicted endpoints and flush retained
+  state at the run boundary; preserve per-descriptor inverse masses.
 
 These are implementation milestones, not hardware-performance acceptance.
 

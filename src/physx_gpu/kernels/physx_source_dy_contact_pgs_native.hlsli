@@ -263,18 +263,6 @@ bool solveContactRows(uint4 descriptor,SourceDyContactSpan span,
     return true;
 }
 
-void solveContact(uint4 descriptor,uint errorAddress,bool biased,
-                  bool frictionEnabled,bool finalPass) {
-    SourceDyContactSpan span;
-    SourceDySolverPair state;
-    if(sourceDyLoadContactSpan(descriptor,errorAddress,span) &&
-       span.manager.y!=0u &&
-       sourceDyLoadSolverPair(descriptor,errorAddress,true,state) &&
-       solveContactRows(descriptor,span,errorAddress,biased,
-                        frictionEnabled,finalPass,state))
-        sourceDyStoreSolverPair(descriptor,state);
-}
-
 float3 prepSlop(float3 value,float slop) {
     return float3(abs(value.x)<slop?0.0f:value.x,
                   abs(value.y)<slop?0.0f:value.y,
