@@ -1867,45 +1867,43 @@ bool sourceDyAdvanceOwnedDescriptor(uint4 desc,uint errorAddress,bool biased,
         sourceDyStoreSolverPair(uint4(0u,retained,0u),prior,snapshot);
         return false;
     }
-    const uint2 next=uint2(state.ma>0.0f?desc.y:invalidBody,
-                           state.mb>0.0f?desc.z:invalidBody);
+    uint2 next=uint2(state.ma>0.0f?desc.y:invalidBody,
+                     state.mb>0.0f?desc.z:invalidBody);
     uint2 evicted=retained;
     if(any(next==retained.x))evicted.x=invalidBody;
     if(any(next==retained.y))evicted.y=invalidBody;
+    // A nonresponding slot does not consume the lane's endpoint cache.
+    if(all(next==invalidBody))return true;
+    if(any(next==invalidBody)) {
+        const bool keepA=evicted.x!=invalidBody;
+        const uint keep=keepA?evicted.x:evicted.y;
+        if(keep!=invalidBody) {
+            if(next.x==invalidBody) {
+                next.x=keep;
+                state.va=keepA?prior.va:prior.vb;
+                state.aa=keepA?prior.aa:prior.ab;
+                state.ma=keepA?prior.ma:prior.mb;
+            }else {
+                next.y=keep;
+                state.vb=keepA?prior.va:prior.vb;
+                state.ab=keepA?prior.aa:prior.ab;
+                state.mb=keepA?prior.ma:prior.mb;
+            }
+            if(keepA)evicted.x=invalidBody;
+            else evicted.y=invalidBody;
+        }
+    }
     sourceDyStoreSolverPair(uint4(0u,evicted,0u),prior,snapshot);
     retained=next;
     prior=state;
     return true;
 }
 
-// The serial owner retains responding endpoints until eviction or the
-// numerical phase boundary, including across consecutive iterations.
-void solveSerialRun(uint begin,uint end,uint2 iters,uint2 iterations,
-                    uint endError,bool captureMotion) {
-    const uint total=iters.x+max(iters.y,1u);
-    uint2 retained=uint2(invalidBody,invalidBody);
-    SourceDySolverPair prior=(SourceDySolverPair)0;
-    for(uint iter=iterations.x;iter<iterations.y;++iter) {
-        const bool biased=iter<iters.x;
-        const bool finalPass=iter+1u==total;
-        const bool friction=!biased || iters.x-iter<=3u;
-        const bool snapshot=captureMotion && iter+1u==iters.x;
-        for(uint i=begin;i<end;++i) {
-            if(!sourceDyAdvanceOwnedDescriptor(sourceDyNumericalDescriptor(i),
-                    endError,biased,friction,finalPass,snapshot,retained,prior))
-                return;
-        }
-        if(snapshot)
-            sourceDyStoreMotionPair(uint4(0u,retained,0u),prior);
-    }
-    sourceDyStoreSolverPair(uint4(0u,retained,0u),prior,false);
-}
-
-// Inactive lanes retain their endpoints until their next numerical visit.
-void solveOwnedRun(uint begin,uint length,uint lane,uint2 iters,
+// A run retains its responding endpoints across descriptors, inactive
+// colors and iterations. A zero lane mask denotes a contiguous serial run.
+void solveOwnedRun(uint begin,uint length,uint laneBit,uint2 iters,
                    uint2 iterations,uint endError,bool captureMotion) {
     const uint total=iters.x+max(iters.y,1u);
-    const uint laneBit=1u<<lane;
     uint2 retained=uint2(invalidBody,invalidBody);
     SourceDySolverPair prior=(SourceDySolverPair)0;
     for(uint iteration=iterations.x;iteration<iterations.y;++iteration) {
@@ -1913,17 +1911,24 @@ void solveOwnedRun(uint begin,uint length,uint lane,uint2 iters,
         const bool finalPass=iteration+1u==total;
         const bool friction=!biased || iters.x-iteration<=3u;
         const bool snapshot=captureMotion && iteration+1u==iters.x;
-        uint first=begin;
-        for(uint color=0u;color<length;++color) {
-            const uint head=arena.Load(p.descriptorBias+first*16u+12u);
-            const uint active=(head>>10u)&dyOwnedMask;
-            if((active&laneBit)!=0u) {
-                const uint rank=countbits(active&(laneBit-1u));
-                const uint4 desc=sourceDyNumericalDescriptor(first+rank);
-                if(!sourceDyAdvanceOwnedDescriptor(desc,endError,biased,friction,
-                        finalPass,snapshot,retained,prior))return;
+        if(laneBit==0u) {
+            for(uint i=begin;i<begin+length;++i)
+                if(!sourceDyAdvanceOwnedDescriptor(sourceDyNumericalDescriptor(i),
+                        endError,biased,friction,finalPass,snapshot,retained,prior))
+                    return;
+        }else {
+            uint first=begin;
+            for(uint color=0u;color<length;++color) {
+                const uint head=arena.Load(p.descriptorBias+first*16u+12u);
+                const uint active=(head>>10u)&dyOwnedMask;
+                if((active&laneBit)!=0u) {
+                    const uint rank=countbits(active&(laneBit-1u));
+                    const uint4 desc=sourceDyNumericalDescriptor(first+rank);
+                    if(!sourceDyAdvanceOwnedDescriptor(desc,endError,biased,friction,
+                            finalPass,snapshot,retained,prior))return;
+                }
+                first+=countbits(active);
             }
-            first+=countbits(active);
         }
         if(snapshot)
             sourceDyStoreMotionPair(uint4(0u,retained,0u),prior);
@@ -3086,7 +3091,8 @@ void main(uint3 group:SV_GroupID,uint3 lane:SV_GroupThreadID) {
             partitions.y-partitions.x==1u &&
             bodies.y-bodies.x<=2u;
         bool serialPartitions=false;
-        if((fused || localRun) && partitions.y-partitions.x>=32u) {
+        if((fused || localRun) && partitions.y-partitions.x>=32u &&
+           descriptors.y-descriptors.x==partitions.y-partitions.x) {
             // A narrow, deeply dependent island may have thousands of
             // singleton colors. All of those writes occur in the same
             // lane, so per-color group barriers have no consumer.
@@ -3130,11 +3136,11 @@ void main(uint3 group:SV_GroupID,uint3 lane:SV_GroupThreadID) {
                     pass==0u?uint2(0u,iters.x):uint2(iters.x,total);
                 if(serialPartitions) {
                     if(lane.x==0u)
-                        solveSerialRun(descriptors.x,descriptors.y,iters,
-                                       iterations,endError,initializedMotion);
+                        solveOwnedRun(descriptors.x,descriptors.y-descriptors.x,0u,
+                                      iters,iterations,endError,initializedMotion);
                 } else if(ownedTask) {
                     if(lane.x<dyOwnedWidth)
-                        solveOwnedRun(descriptors.x,ownedTaskLength,lane.x,
+                        solveOwnedRun(descriptors.x,ownedTaskLength,1u<<lane.x,
                                       iters,iterations,endError,initializedMotion);
                 } else {
                     for(uint i=descriptors.x+lane.x;i<descriptors.y;i+=128u)
@@ -3161,8 +3167,8 @@ void main(uint3 group:SV_GroupID,uint3 lane:SV_GroupThreadID) {
                         iteration+1u==iters.x;
                     if(serialPartitions) {
                         if(lane.x==0u)
-                            solveSerialRun(descriptors.x,descriptors.y,iters,
-                                           uint2(iteration,iteration+1u),endError,captureMotion);
+                            solveOwnedRun(descriptors.x,descriptors.y-descriptors.x,0u,
+                                iters,uint2(iteration,iteration+1u),endError,captureMotion);
                     } else {
                         uint begin=descriptors.x;
                         uint partition=partitions.x;
@@ -3187,7 +3193,7 @@ void main(uint3 group:SV_GroupID,uint3 lane:SV_GroupThreadID) {
                                     break;
                                 }
                                 if(lane.x<dyOwnedWidth)
-                                    solveOwnedRun(begin,ownedLength,lane.x,iters,
+                                    solveOwnedRun(begin,ownedLength,1u<<lane.x,iters,
                                         uint2(iteration,iteration+1u),
                                         endError,captureMotion);
                                 partition+=ownedLength;
@@ -3207,7 +3213,7 @@ void main(uint3 group:SV_GroupID,uint3 lane:SV_GroupThreadID) {
                                 }
                                 if(singleton) {
                                     if(lane.x==0u)
-                                        solveSerialRun(begin,end,iters,
+                                        solveOwnedRun(begin,end-begin,0u,iters,
                                             uint2(iteration,iteration+1u),
                                             endError,captureMotion);
                                 } else {
