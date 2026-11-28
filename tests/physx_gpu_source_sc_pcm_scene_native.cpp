@@ -834,20 +834,34 @@ struct GpuPcmFrictionAnchorFixture {
         }
     }
     static void verify_resident_joint_rows(const Scene& scene) {
+        const auto& edges=scene.gpu_dy_source_body_order_
+            ?scene.gpu_dy_early_joint_edges_:scene.indexed_joints_;
+        if(!scene.joint_rows_.empty() ||
+           scene.gpu_dy_joint_inputs_.size()!=edges.size() ||
+           scene.gpu_dy_joint_sources_.size()!=edges.size())
+            throw std::runtime_error(
+                "GPU joint preparation retained CPU rows or omitted compact sources");
         std::size_t expected_rows=0u;
-        for(const auto edge:scene.indexed_joints_) {
-            const auto& joint=scene.constraint_records_[
-                scene.island_edges_[edge].constraint_id];
-            expected_rows+=joint.kind==Scene::JointKind::Distance?1u:
+        for(std::size_t i=0u;i<edges.size();++i) {
+            const auto& edge=scene.island_edges_[edges[i]];
+            const auto& joint=scene.constraint_records_[edge.constraint_id];
+            const auto& source=scene.gpu_dy_joint_sources_[i];
+            if(source.source_index>=scene.gpu_dy_joint_inputs_.size())
+                throw std::runtime_error("GPU joint source index exceeds authored inputs");
+            const auto& input=scene.gpu_dy_joint_inputs_[source.source_index];
+            const auto count=joint.kind==Scene::JointKind::Distance?1u:
                 joint.kind==Scene::JointKind::Spherical?3u:
                 joint.kind==Scene::JointKind::Fixed?6u:5u;
+            if(source.descriptor.index!=expected_rows ||
+               (source.descriptor.row_count&255u)!=count ||
+               input.source_slot!=edge.constraint_id ||
+               input.source_generation!=joint.generation)
+                throw std::runtime_error(
+                    "Compact GPU joint source changed logical row or constraint identity");
+            expected_rows+=count;
         }
-        if(!scene.joint_rows_.empty() ||
-           scene.gpu_dy_joint_inputs_.size()!=scene.indexed_joints_.size() ||
-           scene.gpu_dy_joint_row_count_!=expected_rows ||
-           scene.gpu_dy_joint_sources_.size()!=scene.indexed_joints_.size())
-            throw std::runtime_error(
-                "GPU joint preparation retained CPU solver rows or lost device geometry");
+        if(scene.gpu_dy_joint_row_count_!=expected_rows)
+            throw std::runtime_error("GPU joint source extent differs from numerical rows");
     }
     static void verify_device_partition_source(const Scene& scene) {
         const auto& edges=scene.gpu_dy_island_edges_;

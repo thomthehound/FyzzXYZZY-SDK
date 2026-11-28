@@ -1637,7 +1637,7 @@ private:
     std::size_t rigid_shape_count_=0;
     using EdgeIndex=std::uint32_t;
     GpuDyJointInput pack_gpu_dy_joint_input(EdgeIndex edge) const;
-    void prepare_gpu_dy_joint_rows(std::span<const EdgeIndex> edges,
+    void prepare_gpu_dy_joint_sources(std::span<const EdgeIndex> edges,
                                    bool source_order,bool staged_sources);
     void pack_gpu_dy_integration_input(
         BodyId id,float seconds,GpuDyBodyIntegrationInput& input) const;

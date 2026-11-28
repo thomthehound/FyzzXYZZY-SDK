@@ -5034,7 +5034,7 @@ void Scene::update_contacts(bool defer_device_points,float step_seconds) {
                     true);
                 gpu_dy_early_islands_=true;
             }
-            prepare_gpu_dy_joint_rows(gpu_dy_early_joint_edges_,true,true);
+            prepare_gpu_dy_joint_sources(gpu_dy_early_joint_edges_,true,true);
             if(gpu_dy_joint_row_count_!=early_joint_rows)
                 throw std::logic_error("Early Sc joint row capacity changed");
             reserve_gpu_dy_pcm_source_rows();
@@ -9043,7 +9043,7 @@ GpuDyJointInput Scene::pack_gpu_dy_joint_input(EdgeIndex edge_id) const {
     return input;
 }
 
-void Scene::prepare_gpu_dy_joint_rows(std::span<const EdgeIndex> edges,
+void Scene::prepare_gpu_dy_joint_sources(std::span<const EdgeIndex> edges,
                                       bool source_order,bool staged_sources) {
     gpu_dy_joint_sources_.clear();
     gpu_dy_joint_row_count_=0u;
@@ -10031,7 +10031,7 @@ void Scene::prepare_constraints(float seconds) {
     }
     solver_kinematic_participant_=false;
     if(gpu_normal_prep && !gpu_dy_source_body_order_)
-        prepare_gpu_dy_joint_rows(indexed_joints_,false,prewitness_joint_sources);
+        prepare_gpu_dy_joint_sources(indexed_joints_,false,prewitness_joint_sources);
     if(!gpu_normal_prep)for(EdgeIndex edge_id:indexed_joints_) {
         const auto& edge=island_edges_[edge_id];
         const auto& joint=constraint_records_[edge.constraint_id];
