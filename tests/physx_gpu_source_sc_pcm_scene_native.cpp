@@ -8641,6 +8641,62 @@ void verify_sphere_gpu_solver(
         "GPU embedded sphere did not preserve source PCM exit-face witness");
 }
 
+void verify_exclusive_resident_normals(
+    fyzz::compute::Backend backend,const char* sap,
+    const char* pcm,const char* dy_shader) {
+    using namespace fyzz;
+    for(const std::size_t count:{1u,2u}) {
+        std::ifstream input(dy_shader,std::ios::binary);
+        require(bool(input),"Resident normal shader unavailable");
+        compute::ShaderBinary shader{};
+        shader.format=backend==compute::Backend::Vulkan
+            ?compute::ShaderFormat::Spirv:compute::ShaderFormat::Dxil;
+        shader.bytes.assign(std::istreambuf_iterator<char>{input},
+                            std::istreambuf_iterator<char>{});
+        native::Scene cpu,gpu;
+        auto owner=std::make_unique<physx_gpu::SourceScOwnedGpuBroadphaseNative>(
+            backend,load_native_gpu_sap_shaders(backend,sap),128u,128u,
+            std::nullopt,load_native_gpu_pcm_shaders(backend,pcm),std::move(shader));
+        auto* producer=owner.get();
+        gpu.set_gpu_broadphase(std::move(owner));
+        gpu.set_gpu_dy_device_admission_enabled(true);
+        std::array<BodyId,2> reference{},actual{};
+        const auto add=[](native::Scene& scene,std::size_t i) {
+            const float x=8.f*static_cast<float>(i);
+            scene.add_static_sphere(0.5f,{x,4.f,0.f});
+            const auto id=scene.add_dynamic_sphere(0.5f,{x,4.9f,0.f},1.f);
+            RigidBodyDynamics dynamics{};
+            dynamics.gravity_enabled=false;
+            scene.set_dynamics(id,dynamics);
+            scene.set_velocity(id,{0.2f,-1.f,0.1f});
+            return id;
+        };
+        for(std::size_t i=0u;i<count;++i) {
+            reference[i]=add(cpu,i);
+            actual[i]=add(gpu,i);
+        }
+        cpu.step(1.f/120.f);
+        gpu.step(1.f/120.f);
+        const auto schedule=producer->dy_launch_stats();
+        require(schedule.device_island_indirect_dispatches==1u &&
+                schedule.device_admitted_tasks==count &&
+                schedule.device_admitted_descriptors==count &&
+                schedule.local_normal_rows==count &&
+                schedule.normal_numerical_bytes==0u &&
+                cpu.contacts().size()==count && gpu.contacts().size()==count,
+            "Exclusive resident normal solve allocated global numerical rows");
+        for(std::size_t i=0u;i<count;++i) {
+            test::compound_compare_state(gpu.body_state(actual[i]),
+                cpu.body_state(reference[i]),0.03f,
+                "Exclusive resident normal changed rigid contact motion");
+            const auto expected=cpu.solved_normal_impulses()[cpu.contacts()[i].contact_offset];
+            const auto force=gpu.solved_normal_impulses()[gpu.contacts()[i].contact_offset];
+            require(expected>0.001f && std::fabs(expected-force)<0.05f,
+                "Exclusive resident normal lost source force publication");
+        }
+    }
+}
+
 void verify_scene_normal_only_multi_patch(
     fyzz::compute::Backend backend,const char* sap,
     const char* pcm,const char* dy_shader) {
@@ -10529,6 +10585,8 @@ int main(int argc,char** argv) {
             fyzz::tests::measure_gpu_case("sc_pcm","sphere_solver",
                 [&]{
                     verify_sphere_gpu_solver(
+                        backend,argv[1],argv[2],argv[3]);
+                    verify_exclusive_resident_normals(
                         backend,argv[1],argv[2],argv[3]);
                     verify_host_primitive_pcm_solver(
                         backend,argv[1],argv[2],argv[3]);

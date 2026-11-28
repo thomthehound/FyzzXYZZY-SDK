@@ -180,6 +180,7 @@ struct SourceDyLaunchStats {
     std::size_t joint_numerical_bytes=0u;
     std::size_t single_anchor_pcm_patches=0u;
     std::size_t normal_numerical_bytes=0u;
+    // Normal capacity omitted before submission.
     std::size_t local_normal_rows=0u;
     std::size_t local_joint_rows=0u;
     std::size_t device_joint_metadata_upload_bytes=0u;
