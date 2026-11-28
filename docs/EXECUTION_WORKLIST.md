@@ -190,6 +190,11 @@ These are implementation milestones, not hardware-performance acceptance.
   placement. Keep persistent histories separate in lifetime from frame
   scratch where useful; avoid unnecessary CPU mirrors, staging, copies,
   and host/device transfers. Keep hot numerical data local.
+  - Joined PCM contact preparation uses the exact normal-row extent.
+    Pre-witness Dy submission still reserves candidate-sized backing
+    storage despite compact device row indices. Separate source-indexed
+    publication windows from numerical working storage without adding
+    a host observation or changing source identity.
 - [ ] Audit shader work and binding granularity. Keep pair- or group-local
   intermediates in registers/shared memory where practical; reduce
   redundant dispatch, compaction, scan and publication work.

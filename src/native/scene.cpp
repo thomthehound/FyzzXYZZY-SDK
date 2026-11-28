@@ -9337,8 +9337,8 @@ void Scene::prepare_contact_constraints(
             patch.disable_strong_friction=disable_strong_friction;
         }
         const auto& source=gpu_pcm_pairs_[manifold.pcm_result_index];
-        patch.contact_count=static_cast<std::uint16_t>(
-            source.candidate_capacity==1u?1u:4u);
+        patch.contact_count=static_cast<std::uint16_t>(source_body_order
+            ?(source.candidate_capacity==1u?1u:4u):manifold.count);
         patch.contact_ids.fill(0xffff);
         patch.bounds_min={};
         patch.bounds_max={};
@@ -9633,8 +9633,8 @@ void Scene::prepare_contact_constraints(
     if(order_end-order_begin!=(resident_order?0u:manifold.count))
         throw std::logic_error(
             "Source correlation omitted a Gu contact descriptor");
-    // Device PCM owns the emitted count. Sc reserves numerical rows
-    // from source pair capacity without inspecting Gu witnesses.
+    // Pre-witness admission reserves source windows; joined PCM uses
+    // the published contact extent without materializing Gu geometry.
     if(resident_order) {
         const auto capacity=gpu_pcm_pairs_[
             manifold.pcm_result_index].candidate_capacity==1u?1u:4u;
@@ -9645,10 +9645,10 @@ void Scene::prepare_contact_constraints(
                capacity>gpu_dy_prewitness_contact_rows_-manifold.solver_offset)
                 throw std::logic_error("PCM contact exceeds pre-witness row range");
         }else {
-            if(capacity>std::numeric_limits<std::size_t>::max()-
+            if(manifold.count>std::numeric_limits<std::size_t>::max()-
                 prepared_contact_rows_)
                 throw std::overflow_error("Source PCM numerical capacity overflow");
-            prepared_contact_rows_+=capacity;
+            prepared_contact_rows_+=manifold.count;
         }
     } else for(std::size_t j=0;j<manifold.count;++j) {
         const ContactPoint& contact=manifold.points[j];
@@ -9782,8 +9782,8 @@ void Scene::prepare_contact_constraints(
             // from device Gu contacts before building tangent rows.
             const auto& source=gpu_pcm_pairs_[manifold.pcm_result_index];
             if(manifold.friction_patch_count!=1u ||
-               patch.contact_count!=
-                   (source.candidate_capacity==1u?1u:4u))
+               patch.contact_count!=(source_body_order
+                   ?(source.candidate_capacity==1u?1u:4u):manifold.count))
                 throw std::logic_error(
                     "Source GPU PCM friction is not one correlated patch");
             const auto row_capacity=pcm_friction_row_capacity(
@@ -10564,7 +10564,7 @@ void Scene::pack_gpu_dy_contact_descriptor(
         gpu_pcm_pairs_[pcm_index].edge!=m.edge_handle ||
         m.pcm_result_index!=pcm_index))
         throw std::logic_error("GPU Dy PCM source changed after witness");
-    const std::size_t numerical_count=resident_pcm
+    const std::size_t numerical_count=resident_pcm && early_device_admission
         ?(gpu_pcm_pairs_[pcm_index].candidate_capacity==1u
             ?1u:4u):m.count;
     if(m.count>numerical_count ||
@@ -10600,7 +10600,7 @@ void Scene::pack_gpu_dy_contact_descriptor(
         ?gpu_dy_patches_.size():m.friction_patch_offset;
     if(early_device_admission)
         gpu_dy_patches_.resize(patch_begin+m.friction_patch_count);
-    // PCM owns the active numerical count; Sc reserves the window.
+    // PCM owns the active count; the source window bounds device writes.
     gpu_dy_manifolds_[source]={
         narrow(patch_begin),m.friction_patch_count,
         resident_pcm?0xffffffffu:narrow(m.solver_offset),

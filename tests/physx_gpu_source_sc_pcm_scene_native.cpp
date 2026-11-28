@@ -1103,7 +1103,7 @@ struct GpuPcmFrictionAnchorFixture {
                         4u>scene.gpu_dy_prewitness_friction_rows_-patch.row_offset))
                         throw std::runtime_error(
                             "PCM friction lost its pre-witness numerical range");
-                }else numerical_end+=capacity;
+                }else numerical_end+=manager.count;
                 const auto patchIndex=scene.gpu_dy_manifolds_[
                     manager.candidate_ordinal].patch_offset;
                 if(scene.gpu_dy_source_body_order_ &&
@@ -1127,7 +1127,7 @@ struct GpuPcmFrictionAnchorFixture {
         }
         if(numerical_end!=scene.prepared_contact_rows_)
             throw std::runtime_error(
-                "GPU Dy numerical layout still depends on emitted PCM counts");
+                "GPU Dy numerical layout differs from its admitted source windows");
         if((require_pcm && !pcm_count) ||
            (require_cpu && !cpu_count) ||
            scene.gpu_dy_contact_order_.size()!=cpu_count ||
@@ -7066,6 +7066,8 @@ void verify_pcm_friction_normal_revalidation(
                 producer->pcm_host_contact_upload_bytes()==0u &&
                 producer->dy_launch_stats().device_island_indirect_dispatches==0u &&
                 gpu.contacts()[0].count!=0u &&
+                producer->dy_launch_stats().normal_numerical_bytes==
+                    gpu.contacts()[0].count*44u &&
                 cpu.contacts()[0].count==gpu.contacts()[0].count &&
                 gpu.solved_normal_impulses().size()==
                     cpu.solved_normal_impulses().size(),
