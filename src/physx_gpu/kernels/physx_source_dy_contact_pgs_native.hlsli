@@ -99,10 +99,27 @@ bool sourceDyLoadContactSpan(uint4 descriptor,uint errorAddress,
     return true;
 }
 
+struct SourceDyNormalRow {
+    float3 normal,ja,jb;
+    float4 coefficients;
+    float impulse;
+};
+
+SourceDyNormalRow sourceDyLoadNormalRow(uint address) {
+    SourceDyNormalRow row;
+    row.normal=asfloat(arena.Load3(address));
+    row.ja=asfloat(arena.Load3(address+12u));
+    row.jb=asfloat(arena.Load3(address+24u));
+    row.coefficients=asfloat(arena.Load4(address+36u));
+    row.impulse=asfloat(arena.Load(address+52u));
+    return row;
+}
+
 bool solveContactRows(uint4 descriptor,SourceDyContactSpan span,
                       uint errorAddress,bool biased,
                       bool frictionEnabled,bool finalPass,
-                      inout SourceDySolverPair state) {
+                      inout SourceDySolverPair state,
+                      bool retainNormal,inout SourceDyNormalRow retainedNormal) {
     const uint4 manager=span.manager;
     if(manager.y==0u)return true;
     const uint sourceBegin=span.sourceBegin;
@@ -137,14 +154,15 @@ bool solveContactRows(uint4 descriptor,SourceDyContactSpan span,
                 return false;
             }
             uint co=p.contactBias+pointIndex*56u;
-            float3 n=asfloat(arena.Load3(co));
-            float3 ja=asfloat(arena.Load3(co+12u));
-            float3 jb=asfloat(arena.Load3(co+24u));
+            SourceDyNormalRow row;
+            if(retainNormal)row=retainedNormal;
+            else row=sourceDyLoadNormalRow(co);
+            const float3 n=row.normal,ja=row.ja,jb=row.jb;
             precise float normalVelocity=
                 sourceDyDot3(n,va)-sourceDyDot3(n,vb)+
                 sourceDyDot3(aa,ja)-sourceDyDot3(ab,jb);
-            const float4 coefficients=asfloat(arena.Load4(co+36u));
-            float oldForce=asfloat(arena.Load(co+52u));
+            const float4 coefficients=row.coefficients;
+            const float oldForce=row.impulse;
             float error=biased?coefficients.z:coefficients.w;
             precise float proposed=-normalVelocity*coefficients.x+error;
             if(!isfinite(proposed) || !isfinite(oldForce)) {
@@ -172,7 +190,9 @@ bool solveContactRows(uint4 descriptor,SourceDyContactSpan span,
                 }
                 outputIndex=sourceBegin+local;
             }
-            storeContactScalar(co+52u,nextForce,outputIndex,finalPass);
+            if(retainNormal)retainedNormal.impulse=nextForce;
+            if(finalPass || !retainNormal)
+                storeContactScalar(co+52u,nextForce,outputIndex,finalPass);
             normalImpulse+=nextForce;
         }
         contactCursor+=patch.y;
@@ -255,6 +275,15 @@ bool solveContactRows(uint4 descriptor,SourceDyContactSpan span,
     state.aa=aa;
     state.ab=ab;
     return true;
+}
+
+bool solveContactRows(uint4 descriptor,SourceDyContactSpan span,
+                      uint errorAddress,bool biased,
+                      bool frictionEnabled,bool finalPass,
+                      inout SourceDySolverPair state) {
+    SourceDyNormalRow unused=(SourceDyNormalRow)0;
+    return solveContactRows(descriptor,span,errorAddress,biased,
+                            frictionEnabled,finalPass,state,false,unused);
 }
 
 float3 prepSlop(float3 value,float slop) {

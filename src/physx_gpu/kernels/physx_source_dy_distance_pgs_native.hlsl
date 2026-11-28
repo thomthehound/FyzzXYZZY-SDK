@@ -2307,6 +2307,26 @@ void sourceDySolveExclusive(uint4 desc,uint2 iters,uint2 iterations,
         prepared.coefficients=arena.Load2(jointOffset+48u);
         prepared.impulse=loadScalar(jointOffset+60u);
     }
+    // The normal impulse is private to an exclusive one-point manifold.
+    // Friction still consumes the current iteration's normal force.
+    const bool localNormal=!joint && span.manager.y==1u &&
+        span.manager.w==1u && span.singlePatch.y==1u;
+    SourceDyNormalRow normal=(SourceDyNormalRow)0;
+    uint normalAddress=0u;
+    if(localNormal) {
+        const uint order=span.singleSettings.z;
+        if(!sourceDyContactOrderValid(order,1u)) {
+            sourceDyTaskErrorOr(errorAddress,128u);
+            return;
+        }
+        const uint point=sourceDyContactOrderPoint(order,0u);
+        if(point>=p.contactCount) {
+            sourceDyTaskErrorOr(errorAddress,256u);
+            return;
+        }
+        normalAddress=p.contactBias+point*56u;
+        normal=sourceDyLoadNormalRow(normalAddress);
+    }
     const uint total=iters.x+max(iters.y,1u);
     for(uint iteration=iterations.x;iteration<iterations.y;++iteration) {
         const bool biased=iteration<iters.x;
@@ -2323,7 +2343,7 @@ void sourceDySolveExclusive(uint4 desc,uint2 iters,uint2 iterations,
             solved=solveJointRows(desc,errorAddress,biased,state);
         else
             solved=solveContactRows(desc,span,errorAddress,biased,friction,
-                                    finalPass,state);
+                                    finalPass,state,localNormal,normal);
         if(!solved)return;
         if(iteration+1u==iters.x) {
             // Position integration consumes the biased-phase snapshot,
@@ -2358,7 +2378,10 @@ void sourceDySolveExclusive(uint4 desc,uint2 iters,uint2 iterations,
             }
         }
     }
-    if(localJoint)arena.Store(jointOffset+60u,asuint(prepared.impulse));
+    if(iterations.y<total) {
+        if(localJoint)arena.Store(jointOffset+60u,asuint(prepared.impulse));
+        if(localNormal)arena.Store(normalAddress+52u,asuint(normal.impulse));
+    }
     sourceDyStoreSolverPair(desc,state,false);
 }
 
