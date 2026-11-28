@@ -21,7 +21,8 @@ class SourceScContactHistoryNativeStage final {
 public:
     enum class Phase:std::uint32_t {
         Initialize=0u,Snapshot=1u,Restore=2u,
-        PublishHostTouch=3u,PublishHostWithSnapshot=4u,RestoreHost=5u
+        PublishHostTouch=3u,PublishHostWithSnapshot=4u,RestoreHost=5u,
+        PublishGuTouch=6u,RestoreGuTouch=7u
     };
     SourceScContactHistoryNativeStage(
         compute::Context& context,compute::ShaderBinary shader)
@@ -42,6 +43,9 @@ public:
             3u,compute::StorageBufferViewKind::RawReadWrite);
         desc.push_constant_bytes=32u;
         pipeline_=context_.create_compute_pipeline(desc);
+#if defined(FYZZXYZZY_PROFILE_GPU)
+        context_.set_pipeline_profile_label(pipeline_,"sc.contact_history");
+#endif
     }
     SourceScContactHistoryNativeStage(const SourceScContactHistoryNativeStage&)=delete;
     SourceScContactHistoryNativeStage& operator=(const SourceScContactHistoryNativeStage&)=delete;
@@ -60,7 +64,10 @@ public:
         const auto records=phase==Phase::Initialize
             ?edgeCapacity-clearBegin:pairCount;
         if(!records)return;
-        const bool host_stream=phase==Phase::PublishHostTouch ||
+        const bool compact_gu=phase==Phase::PublishGuTouch ||
+            phase==Phase::RestoreGuTouch;
+        const bool host_stream=compact_gu ||
+            phase==Phase::PublishHostTouch ||
             phase==Phase::PublishHostWithSnapshot ||
             phase==Phase::RestoreHost;
         const std::uint64_t word_count=host_stream
@@ -72,7 +79,7 @@ public:
         const auto edgeBytes=source_allocation_bytes(edgeCapacity,240u);
         const auto pairBytes=phase==Phase::Initialize
             ?edgeBytes:source_allocation_bytes(pairCount,
-                host_stream?84u:20u);
+                compact_gu?8u:(host_stream?84u:20u));
         const auto journalBytes=phase==Phase::Initialize
             ?edgeBytes:source_allocation_bytes(pairCount,
                 host_stream?8u:240u);
@@ -88,6 +95,7 @@ public:
                 phase==Phase::Initialize?edges:journal,journalBytes,
                 alignment_,2u,
                     phase==Phase::Restore || phase==Phase::RestoreHost ||
+                        phase==Phase::RestoreGuTouch ||
                         phase==Phase::PublishHostTouch
                         ?compute::BufferAccess::Read
                         :compute::BufferAccess::ReadWrite,args[2],max_view_)};

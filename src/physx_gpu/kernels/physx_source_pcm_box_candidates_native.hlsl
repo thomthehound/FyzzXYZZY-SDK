@@ -56,6 +56,7 @@ struct Parameters {
     uint outputBias;
     uint hullBias;
     uint hullCount;
+    uint headerBias;
 };
 #ifdef __spirv__
 [[vk::push_constant]] Parameters p;
@@ -485,7 +486,7 @@ void main(uint3 thread : SV_DispatchThreadID) {
         if(edgeCaches.Load(edgeBase+12u)>4u ||
            edgeCaches.Load(edgeBase+64u)>1u) {
             publishPair(result,0u,0u,1u,edge,first,0u,0u,0u);
-            publishScContacts(i,a,b,edge,result,p.outputBias,
+            publishScContacts(i,a,b,edge,result,p.outputBias,p.headerBias,
                 p.transformBias,p.geometryBias,p.edgeCacheBias,
                 p.shapeCapacity,p.edgeCapacity);
             return;
@@ -512,7 +513,7 @@ void main(uint3 thread : SV_DispatchThreadID) {
             if((kindA>2u || kindB>2u) || !validA || !validB ||
                !(marginA>0.f) || !(marginB>0.f)) {
                 publishPair(result,0u,0u,1u,edge,first,0u,0u,0u);
-                publishScContacts(i,a,b,edge,result,p.outputBias,
+                publishScContacts(i,a,b,edge,result,p.outputBias,p.headerBias,
                     p.transformBias,p.geometryBias,p.edgeCacheBias,
                     p.shapeCapacity,p.edgeCapacity);
                 return;
@@ -523,7 +524,7 @@ void main(uint3 thread : SV_DispatchThreadID) {
                 const uint cached=edgeCaches.Load(edgeBase+12u);
                 if(cached>4u) {
                     publishPair(result,0u,0u,1u,edge,first,0u,0u,0u);
-                    publishScContacts(i,a,b,edge,result,p.outputBias,
+                    publishScContacts(i,a,b,edge,result,p.outputBias,p.headerBias,
                         p.transformBias,p.geometryBias,p.edgeCacheBias,
                         p.shapeCapacity,p.edgeCapacity);
                     return;
@@ -545,7 +546,7 @@ void main(uint3 thread : SV_DispatchThreadID) {
                 count=min(count,limit);
                 publishPair(result,count,overlap,status,edge,first,
                     count,packed,0u);
-                publishScContacts(i,a,b,edge,result,p.outputBias,
+                publishScContacts(i,a,b,edge,result,p.outputBias,p.headerBias,
                     p.transformBias,p.geometryBias,p.edgeCacheBias,
                     p.shapeCapacity,p.edgeCapacity);
                 return;
@@ -553,7 +554,7 @@ void main(uint3 thread : SV_DispatchThreadID) {
             edgeCaches.Store(edgeBase+12u,0u);
             edgeCaches.Store(edgeBase+68u,1u);
             publishPair(result,0u,1u,3u,edge,first,0u,0u,1u);
-            publishScContacts(i,a,b,edge,result,p.outputBias,
+            publishScContacts(i,a,b,edge,result,p.outputBias,p.headerBias,
                 p.transformBias,p.geometryBias,p.edgeCacheBias,
                 p.shapeCapacity,p.edgeCapacity);
             return;
@@ -585,7 +586,7 @@ void main(uint3 thread : SV_DispatchThreadID) {
                 0u|(1u<<8u)|(2u<<16u)|(3u<<24u);
             publishPair(result,count,overlap,status,edge,first,
                         min(count,4u),selection,0u);
-            publishScContacts(i,a,b,edge,result,p.outputBias,
+            publishScContacts(i,a,b,edge,result,p.outputBias,p.headerBias,
                 p.transformBias,p.geometryBias,p.edgeCacheBias,
                 p.shapeCapacity,p.edgeCapacity);
             return;
@@ -743,7 +744,7 @@ void main(uint3 thread : SV_DispatchThreadID) {
     }
     publishPair(result,count,overlap,status,edge,first,selectedCount,
                 packed,regenerated);
-    publishScContacts(i,a,b,edge,result,p.outputBias,
+    publishScContacts(i,a,b,edge,result,p.outputBias,p.headerBias,
                 p.transformBias,p.geometryBias,p.edgeCacheBias,
                 p.shapeCapacity,p.edgeCapacity);
 }

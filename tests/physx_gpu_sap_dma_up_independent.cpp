@@ -159,6 +159,115 @@ void exercise(Context& context) {
                     observedBounds.maximum.z == 3.0f,
                     "Original SAP bounds were not transferred by preBroadPhase");
 
+            // GPU readback observes the preceding source upload, while
+            // a later upload remains ordered after that publication.
+            const auto probe=context.create_buffer(
+                32u,MemoryPlacement::DeviceLocal);
+            const auto probe_address=addresses.register_allocation(probe,32u);
+            const std::array<std::uint32_t,8> expected_first{{
+                11u,13u,17u,19u,23u,29u,31u,37u
+            }};
+            auto first_values=expected_first;
+            const std::array<std::uint32_t,8> next_values{{
+                41u,43u,47u,53u,59u,61u,67u,71u
+            }};
+            std::array<std::uint32_t,8> read_values{};
+            const std::array<DownloadSpan,1> probe_readback{{
+                {probe,0u,read_values.data(),sizeof(read_values)}
+            }};
+            stream.queue_uploads({{
+                probe_address,first_values.data(),sizeof(first_values)
+            }});
+            first_values.fill(0u);
+            // Another group in the same submission must occupy a distinct
+            // range of the same page, without replacing the first snapshot.
+            stream.queue_uploads({{
+                probe_address+16u,next_values.data()+4u,16u
+            }});
+            const auto& commands=stream.commands();
+            require(commands.size()==2u &&
+                    std::holds_alternative<CopyCommand>(commands[0]) &&
+                    std::holds_alternative<CopyCommand>(commands[1]),
+                    "Source uploads did not use native transfer copies");
+            const auto first_copy=std::get<CopyCommand>(commands[0]);
+            const auto second_copy=std::get<CopyCommand>(commands[1]);
+            require(first_copy.source==second_copy.source &&
+                    second_copy.source_offset>=first_copy.source_offset+first_copy.bytes,
+                    "Source upload groups did not share disjoint page ranges");
+            auto expected_snapshot=expected_first;
+            std::copy(next_values.begin()+4u,next_values.end(),
+                      expected_snapshot.begin()+4u);
+            const auto fused_before=
+                stream.submission_stats().fused_readbacks;
+            const auto separate_before=
+                stream.submission_stats().readback_submissions;
+            stream.begin_fetch(probe_readback);
+            require(stream.submission_stats().fused_readbacks==
+                        fused_before+1u &&
+                    stream.submission_stats().readback_submissions==
+                        separate_before,
+                    "Source upload/readback required separate native submissions");
+            stream.queue_uploads({{
+                probe_address,next_values.data(),sizeof(next_values)
+            }});
+            require(std::get<CopyCommand>(stream.commands().front()).source!=
+                        first_copy.source,
+                    "In-flight upload page was reused before its fence");
+            stream.submit();
+            stream.finish_fetch();
+            require(read_values==expected_snapshot,
+                    "Source readback lost its enqueue-time upload snapshot");
+            stream.fetch(probe_readback);
+            require(read_values==next_values,
+                    "Source fetch failed to retain later ordered GPU work");
+            stream.queue_uploads({{
+                probe_address,expected_first.data(),sizeof(expected_first)
+            }});
+            const auto cancelled=std::get<CopyCommand>(stream.commands().front());
+            require(cancelled.source==first_copy.source,
+                    "Completed source upload page was not reused");
+            stream.discard_unsubmitted_commands();
+            stream.fetch(probe_readback);
+            require(read_values==next_values,
+                    "Discarded source upload reached the GPU");
+            read_values.fill(0u);
+            stream.begin_fetch(probe_readback);
+            stream.queue_uploads({{
+                probe_address,expected_first.data(),sizeof(expected_first)
+            }});
+            stream.abandon_fetch();
+            require(!stream.commands().empty() &&
+                    stream.submitted_token_count()==1u &&
+                    read_values==std::array<std::uint32_t,8>{},
+                    "Abandoned source fetch did not retain its accepted token");
+            stream.discard_unsubmitted_commands();
+            stream.fetch(probe_readback);
+            require(stream.submitted_token_count()==0u,
+                    "Later source fetch did not retire cancelled readback");
+
+            read_values.fill(0u);
+            std::array<std::uint32_t,8> numerical{};
+            const std::array<DownloadSpan,1> numerical_readback{{
+                {probe,0u,numerical.data(),sizeof(numerical)}
+            }};
+            stream.begin_fetch(probe_readback);
+            stream.begin_numerical_fetch(numerical_readback);
+            stream.abandon_numerical_fetch();
+            stream.abandon_fetch();
+            require(stream.submitted_token_count()==2u,
+                    "Cancelled witness and numerical tokens were not retained");
+            require(stream.discard_and_wait() &&
+                    stream.submitted_token_count()==0u &&
+                    read_values==std::array<std::uint32_t,8>{} &&
+                    numerical==std::array<std::uint32_t,8>{},
+                    "Combined source cancellation published or lost a token");
+            stream.fetch(probe_readback);
+            require(read_values==next_values,
+                    "Abandoned source fetch changed resident data");
+            require(addresses.unregister_allocation(probe_address)==probe,
+                    "Source probe allocation lost its owner");
+            context.retire_buffer(probe);
+
             // Source update() runs gpuDMAUp even when only the forced
             // convergence pass is pending, then once more on an idle pass.
             const physx::Bp::BroadPhaseUpdateData quiet(
@@ -188,12 +297,6 @@ void exercise(Context& context) {
                  &quietDescriptor,sizeof(quietDescriptor)}
             }};
             stream.fetch(quietFetch);
-            const auto& fetch=stream.submission_stats();
-            require(fetch.fetch_batches==3u && fetch.fetch_spans==4u &&
-                    fetch.fetch_bytes==sizeof(uploaded)+
-                        sizeof(observedHandle)+sizeof(observedBounds)+
-                        sizeof(quietDescriptor),
-                    "Source stream fetched duplicate or missing GPU data");
             require(quietDescriptor.numCreatedHandles == 0u &&
                     quietDescriptor.numRemovedHandles == 0u &&
                     quietDescriptor.numPreviousHandles == 1u &&

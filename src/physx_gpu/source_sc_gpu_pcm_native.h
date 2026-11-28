@@ -9,18 +9,23 @@
 #include "physx_gpu/source_pcm_epa_native.h"
 #include "physx_gpu/source_pcm_sc_contact_stream_native.h"
 #include "physx_gpu/source_sc_contact_history_native.h"
+#include "physx_gpu/source_sc_device_islands_native.h"
+#include "physx_gpu/source_frame_input_arena_native.h"
 #include "physx_port/gpucommon/PxgCudaBuffer.h"
 
 #include <algorithm>
 #include <array>
 #include <bit>
 #include <cmath>
+#include <cstddef>
 #include <cstdint>
 #include <cstring>
 #include <limits>
 #include <optional>
 #include <span>
 #include <stdexcept>
+#include <string>
+#include <utility>
 #include <vector>
 
 namespace fyzz::physx_gpu {
@@ -46,7 +51,8 @@ public:
         compute::ShaderBinary gjk_publish,
         compute::ShaderBinary epa_args_reset,compute::ShaderBinary epa,
         compute::ShaderBinary face_contacts,
-        compute::ShaderBinary contact_journal)
+        compute::ShaderBinary contact_journal,
+        compute::ShaderBinary device_islands)
         : context_(context),addresses_(addresses),stream_(stream),sc_(sc),
           transforms_(transforms),geometry_(geometry),
           convex_vertices_(convex_vertices),
@@ -59,25 +65,48 @@ public:
           sparse_stage_(context,compact,3u,epa_args_reset),
           epa_pending_stage_(context,std::move(compact),4u,
                              std::move(epa_args_reset)),
-          staged_gjk_(gjk.format==compute::ShaderFormat::Dxil),
+          staged_gjk_(gjk.format==compute::ShaderFormat::Dxil &&
+                      context.device_info().software_adapter),
           gjk_stage_(context,std::move(gjk),false,true,false,staged_gjk_),
-          gjk_reduce_stage_(context,std::move(gjk_reduce),false,true,false,staged_gjk_),
-          gjk_publish_stage_(context,std::move(gjk_publish),false,true,false,staged_gjk_),
           epa_stage_(context,std::move(epa)),
           face_stage_(context,std::move(face_contacts),true),
           journal_stage_(context,std::move(contact_journal)),
+          island_stage_(context,std::move(device_islands)),
           pairs_(allocator,physx::PxsHeapStats::eNARROWPHASE),
           results_(allocator,physx::PxsHeapStats::eNARROWPHASE),
           candidates_(allocator,physx::PxsHeapStats::eNARROWPHASE),
           edges_(allocator,physx::PxsHeapStats::eNARROWPHASE),
+          previous_edges_(allocator,physx::PxsHeapStats::eNARROWPHASE),
           work_(allocator,physx::PxsHeapStats::eNARROWPHASE),
           dense_contacts_(allocator,physx::PxsHeapStats::eNARROWPHASE),
-          journal_(allocator,physx::PxsHeapStats::eNARROWPHASE) {
+          journal_(allocator,physx::PxsHeapStats::eNARROWPHASE),
+          gu_touch_records_(allocator,physx::PxsHeapStats::eNARROWPHASE),
+          gu_touch_journal_(allocator,physx::PxsHeapStats::eNARROWPHASE),
+          island_edges_(allocator,physx::PxsHeapStats::eNARROWPHASE),
+          island_nodes_(allocator,physx::PxsHeapStats::eNARROWPHASE),
+          island_work_(allocator,physx::PxsHeapStats::eNARROWPHASE),
+          island_frame_input_(context,addresses,stream) {
         if(!stream_.bound_to(context_,addresses_))
             throw std::invalid_argument("Source Sc GPU PCM has another device stream");
-        if(staged_gjk_)
+        if(staged_gjk_) {
             primitive_gjk_stage_.emplace(
                 context_,std::move(gjk_primitive),false,true,false,true);
+            gjk_reduce_stage_.emplace(
+                context_,std::move(gjk_reduce),false,true,false,true);
+            gjk_publish_stage_.emplace(
+                context_,std::move(gjk_publish),false,true,false,true);
+        }
+#if defined(FYZZXYZZY_PROFILE_GPU)
+        gjk_stage_.set_profile_label("pcm.gjk_initial");
+        if(gjk_reduce_stage_)
+            gjk_reduce_stage_->set_profile_label("pcm.gjk_reduce");
+        if(gjk_publish_stage_)
+            gjk_publish_stage_->set_profile_label("pcm.gjk_publish");
+        if(primitive_gjk_stage_)
+            primitive_gjk_stage_->set_profile_label("pcm.gjk_primitive");
+#endif
+        // PCM GJK/EPA and Sc island admission share one physical
+        // indirect-argument resource.
         // D3D12 indirect arguments require their own physical resource.
         // Separate source buddy-heap allocations can share one root UAV.
         indirect_buffer_=context_.create_buffer(
@@ -92,28 +121,45 @@ public:
     }
     ~SourceScGpuPcmNative() {
         if(indirect_address_)addresses_.unregister_slice(indirect_address_);
-        if(indirect_buffer_)context_.destroy_buffer(indirect_buffer_);
+        if(indirect_buffer_)context_.retire_buffer(indirect_buffer_);
     }
 
     void invalidate_after_rollback() noexcept {
-        // A rejected Sc transaction must not publish its outstanding
-        // asynchronous witness DMA into the borrowed Gu result arena.
-        stream_.abandon_fetch();
+        if(edge_relocation_pending_) {
+            if(stream_.command_batch_generation()==edge_relocation_generation_)
+                physx::PxgCudaBuffer::swapBuffer(edges_,previous_edges_);
+            edge_relocation_pending_=false;
+        }
+        host_snapshot_unsubmitted_=false;
         host_upload_pending_=false;
         result_pending_=false;
+        island_work_ready_=false;
+        island_roots_committed_=false;
+        island_deferred_body_remap_=false;
+        island_deferred_joint_remap_=false;
+        island_body_remap_={};
+        pending_host_inputs_=false;
         pending_requests_={};
         pending_output_={};
+        deferred_points_pending_=false;
+        deferred_points_in_numerical_=false;
+        deferred_point_downloads_.clear();
         published_pair_count_=0u;
         rebuild_required_=true;
         if(pcm_transaction_pending_) {
             // A submitted PCM epoch may have changed Gu witnesses even
             // when Sc/Dy later rejected the complete simulation frame.
-            restore_pending_=journal_pair_count_!=0u;
+            const auto submitted=stream_.command_batch_generation();
+            if(journal_pair_count_ && submitted==journal_batch_generation_)
+                journal_pair_count_=0u;
+            if(gu_touch_count_ && submitted==gu_touch_batch_generation_)
+                gu_touch_count_=0u;
+            restore_pending_=journal_pair_count_!=0u || gu_touch_count_!=0u;
             pcm_transaction_pending_=false;
             published_pair_count_=0u;
             // Refreshed PCM epochs restore their journal before the next submission.
             reset_manifolds_=false;
-        } else reset_manifolds_=true;
+        } else if(!restore_pending_)reset_manifolds_=true;
     }
 
     bool needs_contact_rebuild() const noexcept {
@@ -121,20 +167,39 @@ public:
     }
 
     void commit_step() {
-        if(result_pending_)
+        if(result_pending_ || deferred_points_pending_)
             throw std::logic_error("Source PCM epoch committed before Sc publication");
-        if(!pcm_transaction_pending_)return;
+        if(island_work_ready_ && !stream_.commands().empty())
+            throw std::logic_error(
+                "Source Sc island admission committed before numerical submission");
+        island_roots_committed_=island_work_ready_;
+        if(!pcm_transaction_pending_) {
+            island_work_ready_=false;
+            island_body_remap_={};
+            return;
+        }
         // A collision-only publication has no Dy device consumer to
         // retire the primitive upload. Complete it at the existing Sc
         // transaction commit, after independent island publication.
-        if(host_upload_pending_) {
+        if(host_upload_pending_ || gu_touch_count_!=0u ||
+           (journal_pair_count_==0u &&
+            pending_edge_span_bytes_>published_edge_span_bytes_)) {
             stream_.wait_at_fetch();
             host_upload_pending_=false;
+        }
+        if(edge_relocation_pending_) {
+            if(stream_.command_batch_generation()==edge_relocation_generation_)
+                throw std::logic_error("PCM history relocation committed before submission");
+            previous_edges_.deallocateDeferred();
+            edge_relocation_pending_=false;
         }
         published_edge_span_bytes_=std::max(
             published_edge_span_bytes_,pending_edge_span_bytes_);
         pcm_transaction_pending_=false;
         journal_pair_count_=0u;
+        gu_touch_count_=0u;
+        island_work_ready_=false;
+        island_body_remap_={};
         journal_host_only_=false;
     }
 
@@ -143,7 +208,8 @@ public:
     // downloading a duplicate numerical manifold for verification.
     void upload_host_contacts(
             std::span<const native::GpuPcmBoxPair> requests,
-            std::span<const native::GpuPcmBoxResult> results) {
+            std::span<const native::GpuPcmBoxResult> results,
+            std::uint32_t minimum_edge_capacity=0u) {
         if(requests.empty() || requests.size()!=results.size() ||
            requests.size()>std::numeric_limits<std::uint32_t>::max())
             throw std::invalid_argument("Invalid Sc primitive PCM upload");
@@ -158,18 +224,15 @@ public:
             largest_edge=std::max(largest_edge,requests[i].edge);
         }
         const auto pair_count=static_cast<std::uint32_t>(requests.size());
-        const auto edge_capacity=largest_edge+1u;
+        const auto edge_capacity=std::max(
+            largest_edge+1u,minimum_edge_capacity);
         const auto bytes=source_allocation_bytes(
             pair_count,sizeof(SourcePcmGpuContactStreamNative));
         dense_contacts_.allocate(bytes,PX_FL);
         const auto requested_edge_bytes=source_allocation_bytes(
             edge_capacity,240u);
-        const bool edge_grew=requested_edge_bytes>edges_.getSize();
-        last_edge_history_copy_bytes_=edge_grew
-            ?published_edge_span_bytes_:0u;
-        edges_.allocateCopyPrefixAsync(requested_edge_bytes,
-            published_edge_span_bytes_,stream_,PX_FL);
-        if(edge_grew && published_edge_span_bytes_)stream_.submit();
+        last_edge_history_copy_bytes_=0u;
+        grow_edge_history(requested_edge_bytes);
         journal_.allocate(source_allocation_bytes(pair_count,8u),PX_FL);
 
         // The host Gu stream already contains every EdgeIndex and touch
@@ -194,23 +257,37 @@ public:
         // Submit the snapshot before Sc can reject this epoch.
         pcm_transaction_pending_=true;
         journal_host_only_=true;
+        journal_batch_generation_=stream_.command_batch_generation();
         journal_pair_count_=pair_count;
         journal_edge_capacity_=edge_capacity;
         pending_edge_span_bytes_=std::size_t(edge_capacity)*240u;
         published_pair_count_=pair_count;
+        pending_host_inputs_=false;
         host_upload_pending_=true;
         stream_.submit();
         last_pair_upload_bytes_=0u;
+        last_pair_upload_spans_=0u;
         last_contact_download_bytes_=0u;
+        last_header_join_bytes_=0u;
+        last_deferred_point_download_bytes_=0u;
         last_host_contact_upload_bytes_=results.size_bytes();
+        last_early_gu_touch_bytes_=0u;
         last_continuation_commands_=0u;
+        last_candidate_dispatches_=0u;
         last_face_pair_scan_count_=0u;
+        last_island_dispatches_=0u;
+        last_remap_dispatches_=0u;
+        island_deferred_body_remap_=false;
+        island_deferred_joint_remap_=false;
+        island_body_remap_={};
         rebuild_required_=false;
     }
 
     void enqueue(std::span<const native::GpuPcmBoxPair> requests,
                   std::span<native::GpuPcmBoxResult> output,
-                  std::uint32_t shape_capacity) {
+                  std::uint32_t shape_capacity,
+                  std::uint32_t minimum_edge_capacity=0u,
+                  bool defer_points=false) {
         if(requests.size()!=output.size())
             throw std::invalid_argument("Source Sc GPU PCM result count mismatch");
         if(pcm_transaction_pending_)
@@ -221,14 +298,52 @@ public:
         const auto previous_count=published_pair_count_;
         published_pair_count_=0u;
         last_pair_upload_bytes_=0u;
+        last_pair_upload_spans_=0u;
         last_contact_download_bytes_=0u;
+        last_header_join_bytes_=0u;
+        last_deferred_point_download_bytes_=0u;
         last_host_contact_upload_bytes_=0u;
+        last_early_gu_touch_bytes_=0u;
         host_upload_pending_=false;
+        host_snapshot_unsubmitted_=false;
+        island_work_ready_=false;
+        island_deferred_body_remap_=false;
+        island_deferred_joint_remap_=false;
+        island_body_remap_={};
+        pending_host_inputs_=false;
+        deferred_points_pending_=false;
+        deferred_points_in_numerical_=false;
+        deferred_point_downloads_.clear();
         last_edge_history_copy_bytes_=0u;
         last_continuation_commands_=0u;
+        last_candidate_dispatches_=0u;
         last_face_pair_scan_count_=0u;
+        last_island_dispatches_=0u;
+        last_remap_dispatches_=0u;
+        FYZZ_PROFILE_COUNTER("pcm.gjk_staged",staged_gjk_?1u:0u);
         if(requests.empty()) {
             rebuild_required_=false;
+            if(minimum_edge_capacity) {
+                // CPU Gu can own the current contact epoch without a PCM
+                // pair. Its touch records use the same resident journal.
+                const auto bytes=source_allocation_bytes(
+                    minimum_edge_capacity,240u);
+                grow_edge_history(bytes);
+                const auto initialized=static_cast<std::uint32_t>(
+                    std::min<std::size_t>(
+                        minimum_edge_capacity,published_edge_span_bytes_/240u));
+                if(initialized<minimum_edge_capacity)
+                    journal_stage_.append(stream_,addresses_,
+                        SourceScContactHistoryNativeStage::Phase::Initialize,
+                        edges_.getDevicePtr(),edges_.getDevicePtr(),
+                        edges_.getDevicePtr(),0u,minimum_edge_capacity,
+                        initialized);
+                pcm_transaction_pending_=true;
+                journal_pair_count_=0u;
+                journal_edge_capacity_=minimum_edge_capacity;
+                pending_edge_span_bytes_=
+                    std::size_t(minimum_edge_capacity)*240u;
+            }
             return;
         }
         if((!shape_capacity && !requests.empty()) ||
@@ -238,14 +353,19 @@ public:
         std::uint32_t candidate_count=0u;
         std::uint32_t largest_edge=0u;
         bool needs_continuation=false;
+        bool has_device_witnesses=false;
         std::uint32_t first_face_pair=pair_count,face_pair_end=0u;
         bool full_upload=reset_manifolds_ ||
             previous_count!=pair_count || pair_host_.size()!=pair_count;
         std::uint32_t first_dirty=pair_count,last_dirty=0u;
+        std::array<std::pair<std::uint32_t,std::uint32_t>,8> dirty_runs{};
+        std::size_t dirty_run_count=0u;
+        bool dirty_runs_exceeded=false;
         pair_host_.resize(pair_count);
         for(std::uint32_t i=0u;i<pair_count;++i) {
             const auto& request=requests[i];
             needs_continuation|=!request.candidate_complete;
+            has_device_witnesses|=!request.host_generated;
             if(request.host_generated && !request.candidate_complete)
                 throw std::logic_error(
                     "CPU source Gu cannot own GPU continuation pair");
@@ -303,18 +423,23 @@ public:
                     request.candidate_capacity | reset | prior |
                         (request.host_generated?source_pcm_host_gu_bit:0u)};
             candidate_count+=reservation;
-            // Sc's previous pair records are the transfer baseline.
-            // Preserve a single ordered upload by widening one dirty
-            // interval over changed descriptors, never creating per-pair
-            // submissions or another pair registry.
+            // Track bounded dirty runs during the existing source walk.
+            // More than eight runs use one containing transfer interval.
             if(!full_upload &&
                std::memcmp(&pair_host_[i],&next,sizeof(next))!=0) {
+                if(dirty_run_count &&
+                   dirty_runs[dirty_run_count-1u].second==i)
+                    dirty_runs[dirty_run_count-1u].second=i+1u;
+                else if(dirty_run_count<dirty_runs.size())
+                    dirty_runs[dirty_run_count++]={i,i+1u};
+                else dirty_runs_exceeded=true;
                 first_dirty=std::min(first_dirty,i);
                 last_dirty=i+1u;
             }
             pair_host_[i]=next;
         }
-        const auto edge_capacity=largest_edge+1u;
+        const auto edge_capacity=std::max(
+            largest_edge+1u,minimum_edge_capacity);
         if(pair_count) {
             const auto requested_pair_bytes=source_allocation_bytes(pair_count,20u);
             const auto previous_pair_capacity=pairs_.getSize();
@@ -322,13 +447,14 @@ public:
             pairs_.allocate(requested_pair_bytes,PX_FL);
             full_upload |= requested_pair_bytes>previous_pair_capacity ||
                            pairs_.getDevicePtr()!=previous_pair_address;
-            results_.allocate(source_allocation_bytes(pair_count,32u),PX_FL);
+            if(has_device_witnesses)
+                results_.allocate(source_allocation_bytes(pair_count,32u),PX_FL);
         }
         // Plane-only PCM frames need no candidate storage; retain the
         // source stages' nonzero view contract without 16 unused slots
         // per plane pair.
         const auto candidate_capacity=std::max(candidate_count,1u);
-        if(pair_count)
+        if(has_device_witnesses)
             candidates_.allocate(source_allocation_bytes(candidate_capacity,40u),PX_FL);
         // Only previously published EdgeIndex records belong to the
         // persistent Gu manifold. Capacity slack and the alignment pad
@@ -337,24 +463,17 @@ public:
         // slots may be needed when their rigid actors wake again.
         const auto requested_edge_bytes=source_allocation_bytes(
             edge_capacity,240u);
-        const bool edge_grew=requested_edge_bytes>edges_.getSize();
-        if(edge_grew)
-            last_edge_history_copy_bytes_=published_edge_span_bytes_;
-        edges_.allocateCopyPrefixAsync(requested_edge_bytes,
-            published_edge_span_bytes_,stream_,PX_FL);
-        // A grown EdgeIndex pool must retain its last committed prefix
-        // even if later frame preparation fails before PCM submission.
-        // Submit the source device copy without a host fence. Failed
-        // steps can then discard only the unsubmitted PCM commands.
-        if(edge_grew && published_edge_span_bytes_)stream_.submit();
+        grow_edge_history(requested_edge_bytes);
         if(pair_count) {
             journal_.allocate(source_allocation_bytes(pair_count,240u),PX_FL);
         }
-        if(pair_count) {
+        if(needs_continuation)
             work_.allocate(source_allocation_bytes(
                 std::size_t(pair_count)+1u,4u),PX_FL);
+        if(pair_count) {
             dense_contacts_.allocate(source_allocation_bytes(
-                pair_count,sizeof(SourcePcmGpuContactStreamNative)),PX_FL);
+                pair_count,sizeof(SourcePcmGpuContactStreamNative)+
+                    (defer_points?8u:0u)),PX_FL);
         }
         // Sc's reset intent travels with the source pair. The GPU
         // candidate owner initializes its own EdgeIndex record before
@@ -364,13 +483,23 @@ public:
             last_dirty=pair_count;
         }
         auto& uploads=stream_.upload_scratch();
-        if(first_dirty<last_dirty) {
+        const auto queue_pair_range=[&](std::uint32_t first,
+                                        std::uint32_t end) {
             const auto stride=sizeof(pair_host_[0]);
-            const auto bytes=std::size_t(last_dirty-first_dirty)*stride;
+            const auto bytes=std::size_t(end-first)*stride;
             uploads.push_back({
-                pairs_.getDevicePtr()+std::size_t(first_dirty)*stride,
-                pair_host_.data()+first_dirty,bytes});
-            last_pair_upload_bytes_=bytes;
+                pairs_.getDevicePtr()+std::size_t(first)*stride,
+                pair_host_.data()+first,bytes});
+            last_pair_upload_bytes_+=bytes;
+            ++last_pair_upload_spans_;
+        };
+        if(first_dirty<last_dirty) {
+            if(full_upload || dirty_runs_exceeded)
+                queue_pair_range(first_dirty,last_dirty);
+            else
+                for(std::size_t i=0u;i<dirty_run_count;++i)
+                    queue_pair_range(dirty_runs[i].first,
+                                     dirty_runs[i].second);
         }
         if(!uploads.empty())stream_.queue_uploads(uploads);
         reset_manifolds_=false;
@@ -391,13 +520,17 @@ public:
                 pairs_.getDevicePtr(),edges_.getDevicePtr(),
                 journal_.getDevicePtr(),pair_count,edge_capacity);
 
-        candidates_stage_.append(stream_,addresses_,
-            transforms_.getDevicePtr(),geometry_.getDevicePtr(),
-            pairs_.getDevicePtr(),results_.getDevicePtr(),
-            candidates_.getDevicePtr(),edges_.getDevicePtr(),
-            indirect_address_,dense_contacts_.getDevicePtr(),
-            convex_vertices_.getDevicePtr(),convex_vertex_count_,
-            pair_count,shape_capacity,candidate_capacity,edge_capacity);
+        if(has_device_witnesses) {
+            candidates_stage_.append(stream_,addresses_,
+                transforms_.getDevicePtr(),geometry_.getDevicePtr(),
+                pairs_.getDevicePtr(),results_.getDevicePtr(),
+                candidates_.getDevicePtr(),edges_.getDevicePtr(),
+                indirect_address_,dense_contacts_.getDevicePtr(),
+                convex_vertices_.getDevicePtr(),convex_vertex_count_,
+                pair_count,shape_capacity,candidate_capacity,edge_capacity,
+                defer_points);
+            last_candidate_dispatches_=1u;
+        }
         const auto before_continuation=stream_.commands().size();
         if(needs_continuation) {
             const auto append_gjk=[&](const SourcePcmEpaNativeStage& stage,
@@ -410,7 +543,8 @@ public:
                     dense_contacts_.getDevicePtr(),
                     convex_vertices_.getDevicePtr(),convex_vertex_count_,
                     pair_count,shape_capacity,candidate_capacity,edge_capacity,
-                    0u,0u,0u,0u,pass);
+                    0u,0u,0u,0u,pass,
+                    defer_points?pair_count:0u);
             };
             if(staged_gjk_) {
                 // Direct Vulkan GJK scans source pair status in one pass;
@@ -424,10 +558,10 @@ public:
                     ?*primitive_gjk_stage_:gjk_stage_;
                 for(std::uint32_t pass=0u;pass<32u;++pass) {
                     append_gjk(advance,pass);
-                    append_gjk(gjk_reduce_stage_,pass);
+                    append_gjk(*gjk_reduce_stage_,pass);
                 }
                 append_gjk(advance,32u);
-                append_gjk(gjk_publish_stage_,32u);
+                append_gjk(*gjk_publish_stage_,32u);
             }else append_gjk(gjk_stage_,0u);
             epa_pending_stage_.append(stream_,addresses_,
                 results_.getDevicePtr(),work_.getDevicePtr(),
@@ -441,7 +575,8 @@ public:
                 convex_vertices_.getDevicePtr(),convex_vertex_count_,
                 pair_count,shape_capacity,candidate_capacity,edge_capacity,
                 convex_surface_.getDevicePtr(),convex_surface_bytes_,
-                convex_faces_base_,convex_indices_base_);
+                convex_faces_base_,convex_indices_base_,0u,
+                defer_points?pair_count:0u);
             // Sc has already classified which finite pairs contain
             // convex geometry. Shift source pair/result/contact views
             // to that interval without a separate index upload, GPU
@@ -462,7 +597,8 @@ public:
                     convex_vertices_.getDevicePtr(),convex_vertex_count_,
                     span,shape_capacity,candidate_capacity,edge_capacity,
                     convex_surface_.getDevicePtr(),convex_surface_bytes_,
-                    convex_faces_base_,convex_indices_base_);
+                    convex_faces_base_,convex_indices_base_,0u,
+                    defer_points?pair_count:0u,first_face_pair);
             }
         }
         last_continuation_commands_=
@@ -473,6 +609,8 @@ public:
         // unchanged 84-byte PCM stream used by Dy. All readback spans
         // share one GPU completion boundary.
         gpu_downloads_.clear();
+        deferred_point_downloads_.clear();
+        if(defer_points)header_records_.resize(pair_count);
         for(std::size_t i=0u;i<pair_count;) {
             if(requests[i].host_generated) {
                 ++i;
@@ -484,22 +622,367 @@ public:
             const auto bytes=(i-first)*stride;
             const auto mapped=addresses_.resolve(
                 dense_contacts_.getDevicePtr()+first*stride,bytes);
-            gpu_downloads_.push_back({
+            if(defer_points) {
+                const auto metadata_bytes=(i-first)*sizeof(PcmHeader);
+                const auto headers=addresses_.resolve(
+                    dense_contacts_.getDevicePtr()+
+                        std::size_t(pair_count)*stride+
+                        first*sizeof(PcmHeader),metadata_bytes);
+                gpu_downloads_.push_back({
+                    headers.buffer,headers.offset,
+                    header_records_.data()+first,metadata_bytes});
+            }else gpu_downloads_.push_back({
                 mapped.buffer,mapped.offset,output.data()+first,bytes});
         }
+        if(defer_points)
+            for(std::size_t i=0u;i<pair_count;) {
+                if(requests[i].host_generated ||
+                   !requests[i].early_host_normal) {
+                    ++i;
+                    continue;
+                }
+                const auto first=i;
+                do {++i;}while(i<pair_count &&
+                    !requests[i].host_generated &&
+                    requests[i].early_host_normal);
+                constexpr auto normal_offset=
+                    offsetof(native::GpuPcmBoxResult,normal);
+                const auto stride=sizeof(native::GpuPcmBoxResult);
+                for(std::size_t j=first;j<i;++j) {
+                    const auto mapped=addresses_.resolve(
+                        dense_contacts_.getDevicePtr()+j*stride+
+                            normal_offset,
+                        sizeof(output[j].normal));
+                    gpu_downloads_.push_back({
+                        mapped.buffer,mapped.offset,
+                        &output[j].normal,sizeof(output[j].normal)});
+                }
+            }
         pcm_transaction_pending_=true;
         result_pending_=true;
         pending_requests_=requests;
         pending_output_=output;
+        deferred_points_pending_=defer_points && !gpu_downloads_.empty();
+        journal_batch_generation_=stream_.command_batch_generation();
         journal_pair_count_=pair_count;
         journal_edge_capacity_=edge_capacity;
         journal_host_only_=false;
+        pending_host_inputs_=std::any_of(requests.begin(),requests.end(),
+            [](const auto& request){return request.host_generated;});
+        host_snapshot_unsubmitted_=!has_device_witnesses;
         pending_edge_span_bytes_=std::size_t(edge_capacity)*240u;
         // The DMA follows the last PCM shader immediately, while Sc
         // independently admits speculative topology and CPU Gu.
         // No host wait occurs until the first GPU witness consumer.
-        if(gpu_downloads_.empty())stream_.submit();
-        else stream_.begin_fetch(gpu_downloads_);
+        if(!gpu_downloads_.empty())stream_.begin_fetch(gpu_downloads_);
+        // Host-only PCM has no witness consumer before its Gu upload.
+        // Keep the snapshot and its publication in one submission.
+    }
+    // Source Sc produces bounded primitive witnesses independently of
+    // general GPU PCM. Snapshot their uploads before the Sc witness join;
+    // the Context owns both staging and the borrowed result buffers.
+    // GPU Gu ordinals are not inspected until their readback completes.
+    void enqueue_host_contacts(
+            std::span<const native::GpuPcmBoxPair> requests,
+            std::span<const native::GpuPcmBoxResult> output) {
+        if(!result_pending_ || !pcm_transaction_pending_ ||
+           host_upload_pending_ ||
+           requests.data()!=pending_requests_.data() ||
+           requests.size()!=pending_requests_.size() ||
+           output.data()!=pending_output_.data() ||
+           output.size()!=pending_output_.size())
+            throw std::logic_error("Mixed source Gu admission is not the pending PCM epoch");
+        auto& uploads=stream_.upload_scratch();
+        std::size_t bytes=0u;
+        for(std::size_t i=0u;i<requests.size();) {
+            if(!requests[i].host_generated) {
+                ++i;
+                continue;
+            }
+            const auto first=i;
+            while(i<requests.size() && requests[i].host_generated) {
+                validate_host_contact(requests[i],output[i]);
+                ++i;
+            }
+            const auto stride=sizeof(native::GpuPcmBoxResult);
+            const auto size=(i-first)*stride;
+            uploads.push_back({
+                dense_contacts_.getDevicePtr()+first*stride,
+                output.data()+first,size});
+            bytes+=size;
+        }
+        if(uploads.empty())
+            throw std::logic_error("Mixed PCM epoch has no bounded CPU Gu records");
+        stream_.queue_uploads(uploads);
+        // This updates both GPU PCM and CPU Gu physical-touch words in
+        // source order. It executes after the independent GPU contact
+        // producer and the CPU Gu upload, without blocking Sc's readback.
+        journal_stage_.append(stream_,addresses_,
+            SourceScContactHistoryNativeStage::Phase::PublishHostTouch,
+            dense_contacts_.getDevicePtr(),edges_.getDevicePtr(),
+            journal_.getDevicePtr(),journal_pair_count_,
+            journal_edge_capacity_);
+        last_host_contact_upload_bytes_=bytes;
+        host_upload_pending_=true;
+        if(host_snapshot_unsubmitted_) {
+            stream_.submit();
+            host_snapshot_unsubmitted_=false;
+        }
+    }
+
+    // Legacy CPU Gu publishes only its existing EdgeIndex and physical
+    // transition, never a second contact-manager or PCM witness. The
+    // resident touch journal remains authoritative for both producers.
+    void enqueue_cpu_gu_touches(
+            std::span<const native::GpuGuTouchRecord> touches) {
+        if(touches.empty())return;
+        if(!pcm_transaction_pending_ || !device_contact_ready() ||
+           gu_touch_count_ || touches.size()>std::numeric_limits<std::uint32_t>::max())
+            throw std::logic_error("CPU Gu touch journal has no active PCM epoch");
+        const auto capacity=device_edge_history_capacity();
+        for(const auto& record:touches) {
+            const auto bits=record.touch_bits;
+            if(record.edge_index>=capacity ||
+               (bits&~0x2ff03u)!=0u ||
+               ((bits&0xff00u)!=0u && (bits&0x20000u)==0u) ||
+               ((bits&0x20000u)!=0u &&
+                ((bits&1u)!=0u)!=(((bits>>8u)&255u)!=0u)))
+                throw std::out_of_range("CPU Gu touch exceeds resident EdgeIndex history");
+        }
+        const auto count=static_cast<std::uint32_t>(touches.size());
+        const auto bytes=touches.size_bytes();
+        gu_touch_records_.allocate(bytes,PX_FL);
+        gu_touch_journal_.allocate(bytes,PX_FL);
+        auto& uploads=stream_.upload_scratch();
+        uploads.push_back({
+            gu_touch_records_.getDevicePtr(),touches.data(),bytes});
+        stream_.queue_uploads(uploads);
+        journal_stage_.append(stream_,addresses_,
+            SourceScContactHistoryNativeStage::Phase::PublishGuTouch,
+            gu_touch_records_.getDevicePtr(),edges_.getDevicePtr(),
+            gu_touch_journal_.getDevicePtr(),count,capacity);
+        gu_touch_batch_generation_=stream_.command_batch_generation();
+        gu_touch_count_=count;
+        if(result_pending_)last_early_gu_touch_bytes_=bytes;
+    }
+
+    // Sc supplies only stable, typed endpoints and authored iteration
+    // metadata. GPU PCM publishes actual touch on the same queue; the
+    // accurate island stage consumes its resident history without a
+    // host witness join or another contact-manager registry.
+    void enqueue_device_islands(
+            std::span<const SourceScDeviceIslandEdge> edges,
+            std::span<const std::uint32_t> node_flags,
+            SourceScDeviceIslandSources sources,bool early=false) {
+        if(island_work_ready_ || !device_contact_ready())
+            throw std::logic_error(
+                "Device island admission requires one complete queued Gu epoch");
+        if(edges.size()>std::numeric_limits<std::uint32_t>::max() ||
+           node_flags.size()>std::numeric_limits<std::uint32_t>::max())
+            throw std::overflow_error("Device Sc island input exceeds 32-bit view");
+        const auto node_stride=sources.speculative_wake_groups?2u:1u;
+        if(node_flags.size()%node_stride)
+            throw std::invalid_argument("Device Sc wake group input is truncated");
+        const auto node_count=static_cast<std::uint32_t>(
+            node_flags.size()/node_stride);
+        const auto edge_count=static_cast<std::uint32_t>(edges.size());
+        const auto edge_capacity=device_edge_history_capacity();
+        constexpr std::uint32_t invalid=0xffffffffu;
+        std::uint32_t response_capacity=0u;
+        island_node_degree_.assign(node_count,0u);
+        island_exclusive_contacts_.assign(sources.contact_managers,0u);
+        for(const auto& edge:edges) {
+            if(edge.edge_index==invalid ||
+               (edge.kind&~(source_sc_device_island_joint_bit|
+                             source_sc_device_island_no_response_bit|
+                             source_sc_device_island_reverse_contact_bit|
+                             source_sc_device_island_device_joint_bit|
+                             source_sc_device_island_kinematic_awake_bit))!=0u ||
+               ((edge.kind&source_sc_device_island_kinematic_awake_bit)!=0u &&
+                ((edge.node_a==invalid)==(edge.node_b==invalid))) ||
+               ((edge.kind&source_sc_device_island_device_joint_bit)!=0u &&
+                (edge.kind&source_sc_device_island_joint_bit)==0u) ||
+               ((edge.kind&source_sc_device_island_reverse_contact_bit)!=0u &&
+                (edge.kind&source_sc_device_island_joint_bit)!=0u) ||
+               ((edge.kind&source_sc_device_island_joint_bit)==0u &&
+                edge.edge_index>=edge_capacity) ||
+               (edge.node_a!=invalid && edge.node_a>=node_count) ||
+               (edge.node_b!=invalid && edge.node_b>=node_count))
+                throw std::invalid_argument("Device Sc island edge is not admitted");
+            if((edge.kind&source_sc_device_island_no_response_bit)==0u)
+                ++response_capacity;
+            if(edge.node_a!=invalid && island_node_degree_[edge.node_a]<2u)
+                ++island_node_degree_[edge.node_a];
+            if(edge.node_b!=invalid && edge.node_b!=edge.node_a &&
+               island_node_degree_[edge.node_b]<2u)
+                ++island_node_degree_[edge.node_b];
+        }
+        // Even nonresponding edges can connect otherwise independent tasks.
+        for(const auto& edge:edges) {
+            if((edge.kind&(source_sc_device_island_joint_bit|
+                           source_sc_device_island_no_response_bit))!=0u ||
+               edge.source_index>=sources.contact_managers ||
+               (edge.node_a==invalid && edge.node_b==invalid))continue;
+            if((edge.node_a==invalid || island_node_degree_[edge.node_a]==1u) &&
+               (edge.node_b==invalid || island_node_degree_[edge.node_b]==1u))
+                island_exclusive_contacts_[edge.source_index]=1u;
+        }
+        for(const auto word:node_flags.first(node_count))
+            if((word&0xfff80000u)!=0u ||
+               ((word&source_sc_device_island_nonresponding_bit)==0u &&
+                (word&0xffu)==0u))
+                throw std::invalid_argument("Device Sc node iterations invalid");
+        for(const auto group:node_flags.subspan(node_count))
+            if(group!=invalid && group>=node_count)
+                throw std::invalid_argument("Device Sc wake group ordinal invalid");
+        const bool retain_roots=island_roots_committed_ &&
+            node_count==island_node_count_ && edge_count==island_edge_count_ &&
+            sources.contact_managers==island_contact_count_;
+        island_roots_committed_=false;
+        island_layout_=SourceScDeviceIslandLayout::for_counts(
+            node_count,edge_count,sources.contact_managers);
+        island_deferred_body_remap_=false;
+        island_deferred_joint_remap_=false;
+        island_body_remap_={};
+        island_node_count_=node_count;
+        island_edge_count_=edge_count;
+        island_response_capacity_=response_capacity;
+        island_contact_count_=sources.contact_managers;
+        island_joint_count_=early?sources.joint_rows:0u;
+        island_work_.allocate(island_layout_.bytes,PX_FL);
+        CudaDeviceAddressMap::Address source_edges=0u,source_nodes=0u;
+        last_island_source_direct_bytes_=0u;
+        last_island_source_upload_bytes_=0u;
+        if(island_frame_input_.direct() && (edge_count || node_count)) {
+            const auto edge_bytes=edges.size_bytes();
+            const auto node_bytes=node_flags.size_bytes();
+            if(edge_bytes>std::numeric_limits<std::size_t>::max()-15u)
+                throw std::out_of_range("Device Sc island source alignment overflow");
+            const auto node_offset=(edge_bytes+15u)&~std::size_t{15u};
+            if(node_bytes>std::numeric_limits<std::size_t>::max()-node_offset)
+                throw std::out_of_range("Device Sc island source size overflow");
+            const auto source=island_frame_input_.write_pair(
+                edges.data(),edge_bytes,node_flags.data(),
+                node_bytes,node_offset);
+            if(edge_count)source_edges=source;
+            if(node_count)source_nodes=source+node_offset;
+            last_island_source_direct_bytes_=edge_bytes+node_bytes;
+        }else {
+            if(edge_count) {
+                island_edges_.allocate(source_allocation_bytes(
+                    edge_count,sizeof(SourceScDeviceIslandEdge)),PX_FL);
+                source_edges=island_edges_.getDevicePtr();
+            }
+            if(node_count) {
+                island_nodes_.allocate(source_allocation_bytes(
+                    node_count,
+                    node_stride*sizeof(std::uint32_t)),PX_FL);
+                source_nodes=island_nodes_.getDevicePtr();
+            }
+            auto& uploads=stream_.upload_scratch();
+            if(edge_count)
+                uploads.push_back({
+                    source_edges,edges.data(),edges.size_bytes()});
+            if(node_count)
+                uploads.push_back({
+                    source_nodes,node_flags.data(),node_flags.size_bytes()});
+            if(!uploads.empty())stream_.queue_uploads(uploads);
+            last_island_source_upload_bytes_=
+                edges.size_bytes()+node_flags.size_bytes();
+        }
+        const auto before_islands=stream_.commands().size();
+        island_stage_.append(stream_,addresses_,
+            source_edges,device_edge_history_address(),source_nodes,
+            island_work_.getDevicePtr(),
+            node_count,edge_count,edge_capacity,sources,retain_roots);
+        last_island_dispatches_=stream_.commands().size()-before_islands;
+        // The device-authored task count is final at admission. Dy
+        // resolves body and joint rows while consuming the stream.
+        stream_.queue_device_copy(
+            indirect_address_,
+            island_work_.getDevicePtr()+
+                offsetof(SourceScDeviceIslandHeader,dispatch_x),
+            sizeof(compute::DispatchSize));
+        // Early admission starts before Sc's GPU witness join. Its
+        // submission remains ordered with PCM and later Dy remapping,
+        // without creating another CPU observation or host fence.
+        island_work_ready_=true;
+        if(early)stream_.submit();
+    }
+    void discard_device_islands() noexcept {
+        island_work_ready_=false;
+        island_roots_committed_=false;
+        island_deferred_body_remap_=false;
+        island_deferred_joint_remap_=false;
+        island_body_remap_={};
+    }
+    std::span<const std::uint32_t> device_island_body_remap() const noexcept {
+        return island_work_ready_?island_body_remap_:
+            std::span<const std::uint32_t>{};
+    }
+    bool device_island_deferred_body_remap() const noexcept {
+        return island_work_ready_ && island_deferred_body_remap_;
+    }
+    bool device_island_deferred_joint_remap() const noexcept {
+        return island_work_ready_ && island_deferred_joint_remap_;
+    }
+    std::uint32_t device_island_joint_source_count() const noexcept {
+        return island_work_ready_?island_joint_count_:0u;
+    }
+    bool last_deferred_body_remap() const noexcept {
+        return island_deferred_body_remap_;
+    }
+    bool last_deferred_joint_remap() const noexcept {
+        return island_deferred_joint_remap_;
+    }
+    CudaDeviceAddressMap::Address device_island_work_address() const noexcept {
+        return island_work_ready_?island_work_.getDevicePtr():0u;
+    }
+    SourceScDeviceIslandLayout device_island_layout() const noexcept {
+        return island_work_ready_?island_layout_:SourceScDeviceIslandLayout{};
+    }
+    std::uint32_t device_island_response_capacity() const noexcept {
+        return island_work_ready_?island_response_capacity_:0u;
+    }
+    std::span<const std::uint8_t> device_island_exclusive_contacts() const noexcept {
+        return island_work_ready_?std::span<const std::uint8_t>{island_exclusive_contacts_}:
+            std::span<const std::uint8_t>{};
+    }
+    std::uint32_t device_island_contact_capacity() const noexcept {
+        return island_work_ready_?island_contact_count_:0u;
+    }
+    std::optional<compute::DispatchIndirectArgs>
+    device_island_indirect_args() const noexcept {
+        if(!island_work_ready_)return std::nullopt;
+        return compute::DispatchIndirectArgs{indirect_buffer_,0u};
+    }
+
+    bool needs_witness_before_point_dma() const noexcept {
+        return result_pending_ && deferred_points_pending_;
+    }
+    std::span<const compute::DownloadSpan> deferred_point_downloads() const noexcept {
+        return deferred_points_pending_ ?
+            std::span<const compute::DownloadSpan>(deferred_point_downloads_) :
+            std::span<const compute::DownloadSpan>{};
+    }
+    void mark_deferred_points_in_numerical() {
+        if(!deferred_points_pending_ || deferred_points_in_numerical_)
+            throw std::logic_error("Source PCM point fetch has no pending numerical consumer");
+        deferred_points_in_numerical_=true;
+    }
+    void finish_deferred_points(bool numerical_complete=false) {
+        if(!deferred_points_pending_)return;
+        if(deferred_points_in_numerical_) {
+            if(!numerical_complete)
+                throw std::logic_error("Source PCM point publication precedes Dy completion");
+        }else stream_.fetch(deferred_point_downloads_);
+        for(const auto& span:deferred_point_downloads_) {
+            last_contact_download_bytes_+=span.bytes;
+            last_deferred_point_download_bytes_+=span.bytes;
+        }
+        deferred_point_downloads_.clear();
+        deferred_points_in_numerical_=false;
+        deferred_points_pending_=false;
     }
     void finish() {
         if(!result_pending_)
@@ -508,12 +991,23 @@ public:
         const auto output=pending_output_;
         // General GPU PCM and host Gu occupy disjoint source ordinals.
         // Sc needs the GPU witnesses now, not the CPU Gu device upload.
-        // Fetch/validate the former before scheduling the latter so
-        // the independent upload does not extend Sc's host join.
+        // The independent CPU Gu upload was already queued after the
+        // witness DMA; only the earlier GPU result is a host dependency.
+        // CPU-origin witnesses are already available to Sc. Their
+        // device upload and touch journal remain ordered for Dy and commit.
         if(!gpu_downloads_.empty())stream_.finish_fetch();
-        else stream_.wait_at_fetch();
-        for(const auto& span:gpu_downloads_)
+        if(deferred_points_pending_)
+            for(std::uint32_t i=0u;i<journal_pair_count_;++i)
+                if(!requests[i].host_generated) {
+                    std::memcpy(&output[i],&header_records_[i],
+                                sizeof(PcmHeader));
+                    if(!requests[i].early_host_normal)output[i].normal={};
+                }
+        for(const auto& span:gpu_downloads_) {
             last_contact_download_bytes_+=span.bytes;
+            if(deferred_points_pending_)
+                last_header_join_bytes_+=span.bytes;
+        }
         for(std::uint32_t i=0u;i<journal_pair_count_;++i) {
             const auto& stored=output[i];
             const auto& request=requests[i];
@@ -530,61 +1024,109 @@ public:
                  stored.touch_transition()==native::GpuPcmTouchTransition::Persists)
                   != (stored.count()>0u)))
                 throw std::logic_error(
-                    "Source GPU PCM publication disagrees with original Sc manager");
+                    "Source GPU PCM publication disagrees with original Sc manager"
+                    " pair=" + std::to_string(i) +
+                    " edge=" + std::to_string(stored.edge) +
+                    " expected=" + std::to_string(request.edge) +
+                    " status=" + std::to_string(stored.status()) +
+                    " count=" + std::to_string(stored.count()) +
+                    " cached=" + std::to_string(stored.cached_count()) +
+                    " selected=" + std::to_string(selected_count) +
+                    " regenerated=" + std::to_string(regenerated) +
+                    " transition=" + std::to_string(
+                        static_cast<std::uint32_t>(stored.touch_transition())));
         }
-        // CPU Gu is already published to Sc's host result arena.
-        // Snapshot its device upload on this same ordered queue while
-        // Sc begins accurate-island and friction preparation.
-        auto& uploads=stream_.upload_scratch();
-        for(std::size_t i=0u;i<requests.size();) {
-            if(!requests[i].host_generated) {
-                ++i;
-                continue;
+        if(deferred_points_pending_) {
+            // Sc has admitted the contact counts. Only physically touching
+            // GPU managers own world points that need late public transfer.
+            // Contiguous touching runs stay one DMA span each.
+            for(std::size_t i=0u;i<journal_pair_count_;) {
+                if(requests[i].host_generated || output[i].count()==0u) {
+                    ++i;
+                    continue;
+                }
+                const auto first=i;
+                const bool early_normal=requests[first].early_host_normal;
+                do {++i;}while(i<journal_pair_count_ &&
+                    !requests[i].host_generated &&
+                    requests[i].early_host_normal==early_normal &&
+                    output[i].count()!=0u);
+                const auto touch_bytes=early_normal
+                    ?offsetof(native::GpuPcmBoxResult,points)
+                    :offsetof(native::GpuPcmBoxResult,normal);
+                const auto bytes=(i-first)*sizeof(native::GpuPcmBoxResult)-
+                    touch_bytes;
+                const auto mapped=addresses_.resolve(
+                    dense_contacts_.getDevicePtr()+
+                        first*sizeof(native::GpuPcmBoxResult)+touch_bytes,
+                    bytes);
+                deferred_point_downloads_.push_back({
+                    mapped.buffer,mapped.offset,
+                    reinterpret_cast<std::uint8_t*>(output.data()+first)+
+                        touch_bytes,bytes});
             }
-            const auto first=i;
-            while(i<requests.size() && requests[i].host_generated) {
-                validate_host_contact(requests[i],output[i]);
-                ++i;
-            }
-            const auto stride=sizeof(native::GpuPcmBoxResult);
-            const auto bytes=(i-first)*stride;
-            uploads.push_back({
-                dense_contacts_.getDevicePtr()+first*stride,
-                output.data()+first,bytes});
-            last_host_contact_upload_bytes_+=bytes;
+            deferred_points_pending_=!deferred_point_downloads_.empty();
         }
-        if(!uploads.empty()) {
-            stream_.queue_uploads(uploads);
-            // The final source contact stream carries both CPU Gu and
-            // GPU PCM touch transitions. The same device EdgeIndex is
-            // visible to downstream accurate-connectivity consumers.
-            journal_stage_.append(stream_,addresses_,
-                SourceScContactHistoryNativeStage::Phase::PublishHostTouch,
-                dense_contacts_.getDevicePtr(),edges_.getDevicePtr(),
-                journal_.getDevicePtr(),journal_pair_count_,
-                journal_edge_capacity_);
-            host_upload_pending_=true;
-        }
+        // CPU Gu was submitted before this host witness join. No later
+        // device continuation can extend the readback dependency.
+        if(pending_host_inputs_ && !host_upload_pending_)
+            throw std::logic_error("Mixed PCM host Gu was not admitted before fetch");
         published_pair_count_=journal_pair_count_;
         result_pending_=false;
+        pending_host_inputs_=false;
         pending_requests_={};
         pending_output_={};
         rebuild_required_=false;
     }
-    CudaDeviceAddressMap::Address contact_stream_address() const noexcept {
-        return published_pair_count_?dense_contacts_.getDevicePtr():0u;
+    // GPU task admission consumes the queued numerical stream without
+    // joining its host witness DMA. Mixed epochs become complete only
+    // after their bounded CPU Gu upload enters the same ordered queue.
+    // A rejected transaction invalidates the view immediately.
+    bool device_contact_ready() const noexcept {
+        return !restore_pending_ &&
+            (!rebuild_required_ || pcm_transaction_pending_) &&
+            (!result_pending_ || !pending_host_inputs_ || host_upload_pending_);
     }
-    std::uint32_t contact_stream_pair_count() const noexcept {
-        return published_pair_count_;
+    std::uint32_t device_contact_pair_count() const noexcept {
+        if(!device_contact_ready())return 0u;
+        return result_pending_?journal_pair_count_:published_pair_count_;
+    }
+    CudaDeviceAddressMap::Address device_contact_stream_address() const noexcept {
+        return device_contact_pair_count()?dense_contacts_.getDevicePtr():0u;
+    }
+    // Dormant managers can retain their last committed physical touch
+    // even when no new PCM pair is admitted this frame. The journal
+    // high-watermark and the last published EdgeIndex prefix coexist.
+    std::uint32_t device_edge_history_capacity() const noexcept {
+        if(!device_contact_ready())return 0u;
+        const auto published=static_cast<std::uint32_t>(
+            published_edge_span_bytes_/240u);
+        return pcm_transaction_pending_
+            ?std::max(published,journal_edge_capacity_):published;
+    }
+    CudaDeviceAddressMap::Address device_edge_history_address() const noexcept {
+        return device_edge_history_capacity()?edges_.getDevicePtr():0u;
     }
     std::size_t last_pair_upload_bytes() const noexcept {
         return last_pair_upload_bytes_;
     }
+    std::size_t last_pair_upload_spans() const noexcept {
+        return last_pair_upload_spans_;
+    }
     std::size_t last_contact_download_bytes() const noexcept {
         return last_contact_download_bytes_;
     }
+    std::size_t last_header_join_bytes() const noexcept {
+        return last_header_join_bytes_;
+    }
+    std::size_t last_deferred_point_download_bytes() const noexcept {
+        return last_deferred_point_download_bytes_;
+    }
     std::size_t last_host_contact_upload_bytes() const noexcept {
         return last_host_contact_upload_bytes_;
+    }
+    std::size_t last_early_gu_touch_bytes() const noexcept {
+        return last_early_gu_touch_bytes_;
     }
     std::size_t last_edge_history_copy_bytes() const noexcept {
         return last_edge_history_copy_bytes_;
@@ -592,8 +1134,23 @@ public:
     std::size_t last_continuation_commands() const noexcept {
         return last_continuation_commands_;
     }
+    std::size_t last_candidate_dispatches() const noexcept {
+        return last_candidate_dispatches_;
+    }
     std::size_t last_face_pair_scan_count() const noexcept {
         return last_face_pair_scan_count_;
+    }
+    std::size_t last_island_dispatches() const noexcept {
+        return last_island_dispatches_;
+    }
+    std::size_t last_island_source_direct_bytes() const noexcept {
+        return last_island_source_direct_bytes_;
+    }
+    std::size_t last_island_source_upload_bytes() const noexcept {
+        return last_island_source_upload_bytes_;
+    }
+    std::size_t last_remap_dispatches() const noexcept {
+        return last_remap_dispatches_;
     }
 private:
     static void validate_host_contact(
@@ -624,22 +1181,60 @@ private:
                 throw std::overflow_error("Nonfinite Sc primitive PCM witness");
         }
     }
+    // The provisional address is used by recorded producers; the committed
+    // allocation remains owned until the copy enters the native queue.
+    void grow_edge_history(std::size_t bytes) {
+        if(bytes<=edges_.getSize())return;
+        if(edge_relocation_pending_ || previous_edges_.getSize())
+            throw std::logic_error("PCM history relocation already pending");
+        if(edges_.getSize()>std::numeric_limits<std::size_t>::max()/2u)
+            throw std::overflow_error("PCM history capacity overflow");
+        const auto capacity=std::max<std::size_t>(bytes,edges_.getSize()*2u);
+        previous_edges_.allocate(capacity,PX_FL);
+        try {
+            if(published_edge_span_bytes_)
+                stream_.queue_device_copy(previous_edges_.getDevicePtr(),
+                    edges_.getDevicePtr(),published_edge_span_bytes_);
+        }catch(...) {
+            previous_edges_.deallocate();
+            throw;
+        }
+        physx::PxgCudaBuffer::swapBuffer(edges_,previous_edges_);
+        edge_relocation_generation_=stream_.command_batch_generation();
+        edge_relocation_pending_=true;
+        last_edge_history_copy_bytes_=published_edge_span_bytes_;
+    }
     void restore_rejected_epoch() {
+        // Rollback has retired submitted users of the inactive allocation.
+        if(previous_edges_.getSize() && !edge_relocation_pending_)
+            previous_edges_.deallocate();
         if(!restore_pending_)return;
+        // Undo CPU-only Gu transitions first, then restore the preceding
+        // PCM snapshot. Both affect one authoritative device history.
+        if(gu_touch_count_)
+            journal_stage_.append(stream_,addresses_,
+                SourceScContactHistoryNativeStage::Phase::RestoreGuTouch,
+                gu_touch_records_.getDevicePtr(),edges_.getDevicePtr(),
+                gu_touch_journal_.getDevicePtr(),gu_touch_count_,
+                std::max(journal_edge_capacity_,static_cast<std::uint32_t>(
+                    published_edge_span_bytes_/240u)));
         // A rejected GPU Gu journal must be restored before another
         // producer can touch the same persistent EdgeIndex history.
-        journal_stage_.append(stream_,addresses_,
-            journal_host_only_
-                ?SourceScContactHistoryNativeStage::Phase::RestoreHost
-                :SourceScContactHistoryNativeStage::Phase::Restore,
-            journal_host_only_?dense_contacts_.getDevicePtr():
-                               pairs_.getDevicePtr(),
-            edges_.getDevicePtr(),journal_.getDevicePtr(),
-            journal_pair_count_,journal_edge_capacity_);
+        if(journal_pair_count_)
+            journal_stage_.append(stream_,addresses_,
+                journal_host_only_
+                    ?SourceScContactHistoryNativeStage::Phase::RestoreHost
+                    :SourceScContactHistoryNativeStage::Phase::Restore,
+                journal_host_only_?dense_contacts_.getDevicePtr():
+                                   pairs_.getDevicePtr(),
+                edges_.getDevicePtr(),journal_.getDevicePtr(),
+                journal_pair_count_,journal_edge_capacity_);
+        // Commit the repair independently of the next speculative batch.
+        // Subsequent device-local consumers are ordered on this queue.
         stream_.submit();
-        stream_.wait_at_fetch();
         restore_pending_=false;
         journal_pair_count_=0u;
+        gu_touch_count_=0u;
         journal_host_only_=false;
     }
     compute::Context& context_;
@@ -657,32 +1252,67 @@ private:
     SourcePcmBoxCandidatesNativeStage candidates_stage_;
     SourcePcmSparseEpaNativeStage sparse_stage_,epa_pending_stage_;
     bool staged_gjk_=false;
-    SourcePcmEpaNativeStage gjk_stage_,gjk_reduce_stage_,gjk_publish_stage_,epa_stage_,face_stage_;
-    std::optional<SourcePcmEpaNativeStage> primitive_gjk_stage_;
+    SourcePcmEpaNativeStage gjk_stage_,epa_stage_,face_stage_;
+    std::optional<SourcePcmEpaNativeStage>
+        primitive_gjk_stage_,gjk_reduce_stage_,gjk_publish_stage_;
     SourceScContactHistoryNativeStage journal_stage_;
-    physx::PxgCudaBuffer pairs_,results_,candidates_,edges_,work_,dense_contacts_,journal_;
+    SourceScDeviceIslandsNativeStage island_stage_;
+    physx::PxgCudaBuffer pairs_,results_,candidates_,edges_,previous_edges_,
+                         work_,dense_contacts_,journal_;
+    physx::PxgCudaBuffer gu_touch_records_,gu_touch_journal_;
+    physx::PxgCudaBuffer island_edges_,island_nodes_,island_work_;
+    SourceFrameInputArenaNative island_frame_input_;
+    SourceScDeviceIslandLayout island_layout_{};
+    std::uint32_t island_node_count_=0u,island_edge_count_=0u,
+                  island_contact_count_=0u,island_response_capacity_=0u;
+    std::uint32_t island_joint_count_=0u;
+    std::vector<std::uint8_t> island_node_degree_,island_exclusive_contacts_;
     compute::BufferId indirect_buffer_=0u;
     CudaDeviceAddressMap::Address indirect_address_=0u;
     std::vector<SourcePcmBoxPairNative> pair_host_;
-    std::vector<compute::DownloadSpan> gpu_downloads_;
+    struct PcmHeader {
+        std::uint32_t edge=0u,packed_counts=0u;
+    };
+    static_assert(sizeof(PcmHeader)==8u);
+    std::vector<PcmHeader> header_records_;
+    std::vector<compute::DownloadSpan> gpu_downloads_,deferred_point_downloads_;
+    bool deferred_points_pending_=false,deferred_points_in_numerical_=false;
     bool reset_manifolds_=false;
     bool rebuild_required_=false;
     bool pcm_transaction_pending_=false,restore_pending_=false;
     bool result_pending_=false,host_upload_pending_=false;
+    bool pending_host_inputs_=false,host_snapshot_unsubmitted_=false;
+    bool island_work_ready_=false;
+    bool island_roots_committed_=false;
+    bool island_deferred_body_remap_=false;
+    bool island_deferred_joint_remap_=false;
+    std::span<const std::uint32_t> island_body_remap_{};
     bool journal_host_only_=false;
     // Borrowed Sc views survive until finish() or rollback; GPU output
     // is written directly into the enqueued Sc result arena at the join.
     std::span<const native::GpuPcmBoxPair> pending_requests_{};
     std::span<native::GpuPcmBoxResult> pending_output_{};
     std::uint32_t journal_pair_count_=0u,journal_edge_capacity_=0u;
+    std::uint32_t gu_touch_count_=0u;
+    std::size_t journal_batch_generation_=0u,gu_touch_batch_generation_=0u;
     std::size_t pending_edge_span_bytes_=0u;
     std::uint32_t published_pair_count_=0u;
     std::size_t last_pair_upload_bytes_=0u;
+    std::size_t last_pair_upload_spans_=0u;
     std::size_t last_contact_download_bytes_=0u;
+    std::size_t last_header_join_bytes_=0u;
+    std::size_t last_deferred_point_download_bytes_=0u;
     std::size_t last_host_contact_upload_bytes_=0u;
+    std::size_t last_early_gu_touch_bytes_=0u;
     std::size_t last_edge_history_copy_bytes_=0u;
     std::size_t last_continuation_commands_=0u;
+    std::size_t last_candidate_dispatches_=0u;
     std::size_t last_face_pair_scan_count_=0u;
+    std::size_t last_island_dispatches_=0u,last_remap_dispatches_=0u;
+    std::size_t last_island_source_direct_bytes_=0u;
+    std::size_t last_island_source_upload_bytes_=0u;
     std::size_t published_edge_span_bytes_=0u;
+    std::size_t edge_relocation_generation_=0u;
+    bool edge_relocation_pending_=false;
 };
 } // namespace fyzz::physx_gpu

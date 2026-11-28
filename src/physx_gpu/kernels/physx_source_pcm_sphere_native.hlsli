@@ -97,7 +97,7 @@ bool sourcePcmSpherePair(uint i,uint a,uint b,uint edge,uint first,
     }
     publishPair(result,touching?1u:0u,touching?1u:0u,status,
                 edge,first,touching?1u:0u,0u,1u);
-    publishScContacts(i,a,b,edge,result,p.outputBias,
+    publishScContacts(i,a,b,edge,result,p.outputBias,p.headerBias,
                       p.transformBias,p.geometryBias,p.edgeCacheBias,
                       p.shapeCapacity,p.edgeCapacity);
     return true;

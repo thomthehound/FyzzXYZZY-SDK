@@ -3,25 +3,12 @@
 
 // Source DySolverConstraintsShared.h contact and friction PGS, executing
 // correlated Gu contact runs in source DyConstraintPartition order.
-float contactScalar(uint addr) {
-    return asfloat(arena.Load(addr));
-}
 void storeContactScalar(uint addr,float value,uint pointIndex,bool finalPass) {
-    arena.Store(addr,asuint(value));
     if(finalPass)
         arena.Store(p.writebackBias+p.resultContactOffset+pointIndex*4u,
                     asuint(value));
-}
-float frictionScalar(uint addr) {
-    return asfloat(arena.Load(addr));
-}
-void storeFrictionScalar(uint addr,float value,uint rowIndex,bool finalPass) {
-    arena.Store(addr,asuint(value));
-    if(finalPass && (p.launchControl&0x20000000u)==0u) {
-        uint target=p.writebackBias+p.resultFrictionOffset+rowIndex*16u;
-        arena.Store3(target,arena.Load3(p.frictionBias+rowIndex*56u));
-        arena.Store(target+12u,asuint(value));
-    }
+    else
+        arena.Store(addr,asuint(value));
 }
 // The source PCM producer already writes contact points in Gu order.
 // The high bit selects that resident range; CPU Gu patches retain
@@ -30,7 +17,7 @@ static const uint sourceDyDirectContactOrder=0x80000000u;
 bool sourceDyContactOrderValid(uint order,uint count) {
     const uint begin=order&~sourceDyDirectContactOrder;
     const uint limit=(order&sourceDyDirectContactOrder)!=0u
-        ?p.contactCount:p.orderCount;
+        ?sourceDyContactLogicalCount():p.orderCount;
     return begin<=limit && count<=limit-begin;
 }
 uint sourceDyContactOrderPoint(uint order,uint relative) {
@@ -38,7 +25,7 @@ uint sourceDyContactOrderPoint(uint order,uint relative) {
     return (order&sourceDyDirectContactOrder)!=0u
         ?index:arena.Load(p.orderBias+index*4u);
 }
-bool contactImpulse(uint a,uint b,uint ao,uint bo,
+bool contactImpulse(uint a,uint b,
                     float3 n,float3 ja,float3 jb,
                     inout float3 va,inout float3 vb,
                     inout float3 aa,inout float3 ab,
@@ -51,103 +38,219 @@ bool contactImpulse(uint a,uint b,uint ao,uint bo,
     precise float3 w1=ab-jb*delta;
     if(!all(isfinite(v0)) || !all(isfinite(v1)) ||
        !all(isfinite(w0)) || !all(isfinite(w1))) {
-        arena.InterlockedOr(errorAddress,16u);
+        sourceDyTaskErrorOr(errorAddress,16u);
         return false;
     }
     if(a!=invalidBody && ma>0.f) {
-        arena.Store3(ao,asuint(v0));
-        arena.Store3(ao+12u,asuint(w0));
         va=v0;
         aa=w0;
     }
     if(b!=invalidBody && mb>0.f) {
-        arena.Store3(bo,asuint(v1));
-        arena.Store3(bo+12u,asuint(w1));
         vb=v1;
         ab=w1;
     }
     return true;
 }
-void solveContact(uint4 descriptor,uint errorAddress,bool biased,
-                  bool frictionEnabled,bool finalPass) {
+struct SourceDyContactSpan {
+    uint4 manager;
+    uint sourceBegin,normalBegin;
+    float impulseLimit;
+    uint guNormalBase;
+    float3 pcmNormal;
+    uint4 singlePatch,singleSettings;
+};
+
+bool sourceDyLoadContactSpan(uint4 descriptor,uint errorAddress,
+                            out SourceDyContactSpan span) {
+    span=(SourceDyContactSpan)0;
     if(descriptor.x>=p.manifoldCount ||
        (descriptor.y!=invalidBody && descriptor.y>=p.bodyCount) ||
        (descriptor.z!=invalidBody && descriptor.z>=p.bodyCount)) {
-        arena.InterlockedOr(errorAddress,32u);
-        return;
+        sourceDyTaskErrorOr(errorAddress,32u);
+        return false;
     }
-    uint4 manager=arena.Load4(
-        p.manifoldBias+descriptor.x*20u);
+    const uint managerAddress=p.manifoldBias+descriptor.x*24u;
+    span.manager=arena.Load4(managerAddress);
     // Zero-response descriptors carry source endpoint ordinals in the
     // otherwise unused patch offsets. They have no contact rows to read.
-    if(manager.y==0u)return;
+    if(span.manager.y==0u)return true;
+    span.sourceBegin=arena.Load(managerAddress+20u);
+    span.normalBegin=span.manager.z;
+    if((p.launchControl&0x08000000u)==0u || span.normalBegin==sourceDyLocalNormalRow)
+        span.manager.z=span.sourceBegin;
+    const uint4 manager=span.manager;
+    const uint logicalCount=sourceDyContactLogicalCount();
     if(manager.x>p.patchCount || manager.y>p.patchCount-manager.x ||
-       manager.z>p.contactCount ||
-       manager.w>p.contactCount-manager.z) {
-        arena.InterlockedOr(errorAddress,64u);
-        return;
+       manager.z>logicalCount || manager.w>logicalCount-manager.z ||
+       !sourceDyNormalStorageValid(span.normalBegin,manager.w)) {
+        sourceDyTaskErrorOr(errorAddress,64u);
+        return false;
     }
-    uint a=descriptor.y,b=descriptor.z;
-    uint ao=p.bodyBias+a*52u,bo=p.bodyBias+b*52u;
-    float ma=0.f,mb=0.f;
-    float3 va=float3(0,0,0),vb=float3(0,0,0);
-    float3 aa=float3(0,0,0),ab=float3(0,0,0);
-    // A source conflict partition gives this descriptor exclusive writes
-    // to its dynamic bodies. Reuse committed velocities through all
-    // correlated normal and friction rows; static participants stay fixed.
-    if(a!=invalidBody) {
-        ma=asfloat(arena.Load(ao+48u));
-        va=asfloat(arena.Load3(ao));
-        aa=asfloat(arena.Load3(ao+12u));
+    const uint prepIndex=arena.Load(managerAddress+16u);
+    if(prepIndex>=p.prepCount) {
+        sourceDyTaskErrorOr(errorAddress,64u);
+        return false;
     }
-    if(b!=invalidBody) {
-        mb=asfloat(arena.Load(bo+48u));
-        vb=asfloat(arena.Load3(bo));
-        ab=asfloat(arena.Load3(bo+12u));
+    const uint pair=sourceDyPrepAddress(prepIndex);
+    const uint pcmIndex=arena.Load(pair+32u);
+    const bool pcm=pcmIndex!=invalidBody;
+    if(pcm)
+        span.pcmNormal=asfloat(pcmContacts.Load3(p.pcmBias+pcmIndex*84u+8u));
+    else {
+        const uint cpuOffset=arena.Load(pair+44u);
+        if(cpuOffset==invalidBody) {
+            sourceDyTaskErrorOr(errorAddress,64u);
+            return false;
+        }
+        span.guNormalBase=p.prepBias+16u+p.prepCount*48u+cpuOffset*28u;
     }
+    span.impulseLimit=asfloat(arena.Load(pair+40u));
+    // Patch ranges and coefficients are immutable during PGS.
+    if(manager.y==1u) {
+        const uint po=p.patchBias+manager.x*32u;
+        span.singlePatch=arena.Load4(po);
+        span.singleSettings=arena.Load4(po+16u);
+    }
+    return true;
+}
+
+struct SourceDyNormalRow {
+    float3 normal,ja,jb;
+    float4 coefficients;
+    float impulse;
+};
+
+struct SourceDyPreparedNormal {
+    SourceDyNormalRow row;
+    bool local;
+};
+
+struct SourceDyFrictionRow {
+    float3 tangent,ja,jb,coefficients;
+};
+struct SourceDyPreparedFriction {
+    SourceDyFrictionRow first,second;
+    bool local;
+};
+static const uint sourceDyLocalFrictionRow=0xfffffffeu;
+bool sourceDyFrictionStorage(uint4 patch,out uint physical) {
+    physical=patch.x;
+    const uint rows=patch.z*2u;
+    if(patch.x>p.frictionCount || patch.z>2u ||
+       rows>p.frictionCount-patch.x || (patch.x&1u)!=0u)return false;
+    if(rows==0u)return true;
+    if((patch.w&0x02000000u)==0u)return true;
+    const uint map=p.patchBias+p.patchCount*32u;
+    const uint capacity=arena.Load(map);
+    physical=arena.Load(map+4u+patch.x/2u*4u);
+    if(physical==sourceDyLocalFrictionRow)return rows==2u;
+    if(physical>capacity || rows>capacity-physical)return false;
+    if(rows==4u && arena.Load(map+8u+patch.x/2u*4u)!=physical+2u)return false;
+    return true;
+}
+static const uint sourceDyNormalRowBytes=44u;
+static const uint sourceDyNormalImpulseOffset=40u;
+
+SourceDyNormalRow sourceDyLoadNormalRow(uint address,SourceDyContactSpan span,
+                                       uint pointIndex) {
+    SourceDyNormalRow row;
+    row.normal=span.guNormalBase!=0u
+        ?asfloat(arena.Load3(span.guNormalBase+(pointIndex-span.manager.z)*28u))
+        :span.pcmNormal;
+    row.ja=asfloat(arena.Load3(address));
+    row.jb=asfloat(arena.Load3(address+12u));
+    row.coefficients=asfloat(arena.Load4(address+24u));
+    row.impulse=asfloat(arena.Load(address+sourceDyNormalImpulseOffset));
+    return row;
+}
+
+bool solveContactRows(uint4 descriptor,SourceDyContactSpan span,
+                      uint errorAddress,bool biased,
+                      bool frictionEnabled,bool finalPass,
+                      inout SourceDySolverPair state,
+                      bool retainNormal,inout SourceDyNormalRow retainedNormal,
+                      uint localCount,inout float4 impulses,
+                      SourceDyPreparedFriction preparedFriction) {
+    const uint4 manager=span.manager;
+    if(manager.y==0u)return true;
+    const uint sourceBegin=span.sourceBegin;
+    const uint a=descriptor.y,b=descriptor.z;
+    const float ma=state.ma,mb=state.mb;
+    float3 va=state.va,vb=state.vb;
+    float3 aa=state.aa,ab=state.ab;
     uint contactCursor=0u;
     for(uint patchIndex=manager.x;patchIndex<manager.x+manager.y;++patchIndex) {
         uint po=p.patchBias+patchIndex*32u;
-        uint4 patch=arena.Load4(po);
-        uint4 settings=arena.Load4(po+16u);
-        if(patch.x>p.frictionCount || patch.z>2u ||
-           patch.z*2u>p.frictionCount-patch.x ||
+        uint4 patch,settings;
+        if(manager.y==1u) {
+            patch=span.singlePatch;
+            settings=span.singleSettings;
+        } else {
+            patch=arena.Load4(po);
+            settings=arena.Load4(po+16u);
+        }
+        uint frictionBase;
+        if(!sourceDyFrictionStorage(patch,frictionBase) ||
+           (patch.z!=0u && frictionBase==sourceDyLocalFrictionRow &&
+            (!preparedFriction.local || manager.y!=1u || localCount!=2u)) ||
            contactCursor>manager.w ||
            patch.y>manager.w-contactCursor ||
            !sourceDyContactOrderValid(settings.z,patch.y)) {
-            arena.InterlockedOr(errorAddress,128u);
-            return;
+            sourceDyTaskErrorOr(errorAddress,128u);
+            return false;
         }
         precise float normalImpulse=0.0;
         for(uint i=0;i<patch.y;++i) {
             uint pointIndex=sourceDyContactOrderPoint(settings.z,i);
-            if(pointIndex>=p.contactCount) {
-                arena.InterlockedOr(errorAddress,256u);
-                return;
+            if(pointIndex>=sourceDyContactLogicalCount() || pointIndex<manager.z ||
+               pointIndex-manager.z>=manager.w ||
+               (!retainNormal && span.normalBegin==sourceDyLocalNormalRow)) {
+                sourceDyTaskErrorOr(errorAddress,256u);
+                return false;
             }
-            uint co=p.contactBias+pointIndex*64u;
-            float3 n=asfloat(arena.Load3(co));
-            float3 ja=asfloat(arena.Load3(co+12u));
-            float3 jb=asfloat(arena.Load3(co+24u));
+            uint co=span.normalBegin==sourceDyLocalNormalRow?0u:
+                p.contactBias+(span.normalBegin+pointIndex-manager.z)*sourceDyNormalRowBytes;
+            SourceDyNormalRow row;
+            if(retainNormal)row=retainedNormal;
+            else row=sourceDyLoadNormalRow(co,span,pointIndex);
+            const float3 n=row.normal,ja=row.ja,jb=row.jb;
             precise float normalVelocity=
                 sourceDyDot3(n,va)-sourceDyDot3(n,vb)+
                 sourceDyDot3(aa,ja)-sourceDyDot3(ab,jb);
-            float oldForce=contactScalar(co+56u);
-            float error=biased?contactScalar(co+48u):
-                                contactScalar(co+52u);
-            precise float candidate=max(
-                -normalVelocity*contactScalar(co+40u)+error,
-                -oldForce);
-            precise float nextForce=min(contactScalar(co+60u),
-                contactScalar(co+44u)*oldForce+candidate);
-            if(!isfinite(nextForce)) {
-                arena.InterlockedOr(errorAddress,1024u);
-                return;
+            const float4 coefficients=row.coefficients;
+            const float oldForce=row.impulse;
+            float error=biased?coefficients.z:coefficients.w;
+            precise float proposed=-normalVelocity*coefficients.x+error;
+            if(!isfinite(proposed) || !isfinite(oldForce)) {
+                sourceDyTaskErrorOr(errorAddress,1024u);
+                return false;
             }
-            if(!contactImpulse(a,b,ao,bo,n,ja,jb,
+            precise float candidate=max(proposed,-oldForce);
+            precise float nextForce=min(span.impulseLimit,
+                coefficients.y*oldForce+candidate);
+            if(!isfinite(nextForce)) {
+                sourceDyTaskErrorOr(errorAddress,1024u);
+                return false;
+            }
+            if(!contactImpulse(a,b,n,ja,jb,
                                va,vb,aa,ab,nextForce-oldForce,
-                               ma,mb,errorAddress))return;
-            storeContactScalar(co+56u,nextForce,pointIndex,finalPass);
+                               ma,mb,errorAddress))return false;
+            uint outputIndex=pointIndex;
+            if(finalPass) {
+                const uint local=pointIndex-manager.z;
+                const uint publicationCount=sourceDyContactPublicationCount();
+                if(pointIndex<manager.z || local>=manager.w ||
+                   sourceBegin>publicationCount ||
+                   local>=publicationCount-sourceBegin) {
+                    sourceDyTaskErrorOr(errorAddress,256u);
+                    return false;
+                }
+                outputIndex=sourceBegin+local;
+            }
+            if(retainNormal)retainedNormal.impulse=nextForce;
+            if(finalPass || !retainNormal)
+                storeContactScalar(co+sourceDyNormalImpulseOffset,nextForce,
+                                   outputIndex,finalPass);
             normalImpulse+=nextForce;
         }
         contactCursor+=patch.y;
@@ -156,64 +259,103 @@ void solveContact(uint4 descriptor,uint errorAddress,bool biased,
         precise float maxStatic=asfloat(settings.x)*coeff*normalImpulse;
         precise float maxDynamic=asfloat(settings.y)*coeff*normalImpulse;
         bool broken=false;
+        const bool publishAnchors=finalPass &&
+            (p.launchControl&0x20000000u)!=0u;
+        precise float3 firstImpulse=0.0f;
         for(uint k=patch.x;k<patch.x+patch.z*2u;++k) {
-            uint fo=p.frictionBias+k*56u;
-            float3 n=asfloat(arena.Load3(fo));
-            float3 ja=asfloat(arena.Load3(fo+12u));
-            float3 jb=asfloat(arena.Load3(fo+24u));
+            const bool localFriction=frictionBase==sourceDyLocalFrictionRow;
+            const uint fo=localFriction?0u:p.frictionBias+(frictionBase+k-patch.x)*52u;
+            float3 n,ja,jb,coefficients;
+            if(localFriction) {
+                SourceDyFrictionRow row;
+                if(k==patch.x)row=preparedFriction.first;
+                else row=preparedFriction.second;
+                n=row.tangent;ja=row.ja;jb=row.jb;coefficients=row.coefficients;
+            }else {
+                n=asfloat(arena.Load3(fo));
+                ja=asfloat(arena.Load3(fo+12u));
+                jb=asfloat(arena.Load3(fo+24u));
+                coefficients=asfloat(arena.Load3(fo+36u));
+            }
             precise float tangentDelta=
                 sourceDyDot3(n,va)-sourceDyDot3(n,vb)+
                 sourceDyDot3(aa,ja)-sourceDyDot3(ab,jb);
-            float oldForce=frictionScalar(fo+52u);
-            float bias=biased?frictionScalar(fo+44u):0.0;
+            float oldForce;
+            if(localCount!=0u)oldForce=impulses[k-patch.x];
+            else oldForce=asfloat(arena.Load(fo+48u));
+            float bias=biased?coefficients.y:0.0;
             precise float candidate=oldForce+
-                (frictionScalar(fo+48u)-bias-tangentDelta)*
-                frictionScalar(fo+40u);
+                (coefficients.z-bias-tangentDelta)*coefficients.x;
+            if(!isfinite(candidate) || !isfinite(maxStatic) ||
+               !isfinite(maxDynamic)) {
+                sourceDyTaskErrorOr(errorAddress,2048u);
+                return false;
+            }
             bool saturated=abs(candidate)>maxStatic;
             // Source signed FMin/FMax also handles negative compliant bounds.
             precise float nextForce=saturated
                 ? min(maxDynamic,max(-maxDynamic,candidate)):candidate;
             if(!isfinite(nextForce)) {
-                arena.InterlockedOr(errorAddress,2048u);
-                return;
+                sourceDyTaskErrorOr(errorAddress,2048u);
+                return false;
             }
-            if(!contactImpulse(a,b,ao,bo,n,ja,jb,
+            if(!contactImpulse(a,b,n,ja,jb,
                                va,vb,aa,ab,nextForce-oldForce,
-                               ma,mb,errorAddress))return;
-            storeFrictionScalar(fo+52u,nextForce,k,finalPass);
+                               ma,mb,errorAddress))return false;
+            if(localCount!=0u)impulses[k-patch.x]=nextForce;
+            else if(!finalPass)arena.Store(fo+48u,asuint(nextForce));
             broken=broken||saturated;
-        }
-        if(finalPass) {
-            if((p.launchControl&0x20000000u)!=0u) {
-                // Report one world impulse per source friction anchor.
-                // The full solved tangent rows remain device-resident.
-                for(uint anchor=0u;anchor<patch.z;++anchor) {
-                    const uint row=patch.x+anchor*2u;
-                    const uint x=p.frictionBias+row*56u;
-                    const uint y=x+56u;
-                    precise float3 fx=asfloat(arena.Load3(x))*
-                        frictionScalar(x+52u);
-                    precise float3 fy=asfloat(arena.Load3(y))*
-                        frictionScalar(y+52u);
-                    precise float3 impulse=fx+fy;
+            if(publishAnchors) {
+                // Consecutive tangent rows form one world-space anchor.
+                precise float3 tangentImpulse=n*nextForce;
+                if(((k-patch.x)&1u)==0u) {
+                    firstImpulse=tangentImpulse;
+                } else {
+                    precise float3 impulse=firstImpulse+tangentImpulse;
                     if(!all(isfinite(impulse))) {
-                        arena.InterlockedOr(errorAddress,2048u);
-                        return;
+                        sourceDyTaskErrorOr(errorAddress,2048u);
+                        return false;
                     }
                     arena.Store3(p.writebackBias+p.resultFrictionOffset+
-                        (row/2u)*12u,asuint(impulse));
+                        ((k-1u)/2u)*12u,asuint(impulse));
                 }
+            } else if(finalPass) {
+                const uint target=p.writebackBias+p.resultFrictionOffset+k*16u;
+                arena.Store3(target,asuint(n));
+                arena.Store(target+12u,asuint(nextForce));
             }
+        }
+        if(finalPass) {
             bool gpuGrowth=(patch.w&0x80000000u)!=0u;
             arena.Store(po+12u,broken?1u:0u);
             uint reportAddress=p.writebackBias+p.resultPatchOffset+
                 patchIndex*4u;
-            uint report=gpuGrowth?arena.Load(reportAddress):0u;
+            uint report=(gpuGrowth ||
+                (p.launchControl&0x08000000u)!=0u)
+                ?arena.Load(reportAddress):0u;
             arena.Store(reportAddress,(report&~1u)|(broken?1u:0u));
         }
     }
-    if(contactCursor!=manager.w)
-        arena.InterlockedOr(errorAddress,512u);
+    if(contactCursor!=manager.w) {
+        sourceDyTaskErrorOr(errorAddress,512u);
+        return false;
+    }
+    state.va=va;
+    state.vb=vb;
+    state.aa=aa;
+    state.ab=ab;
+    return true;
+}
+
+bool solveContactRows(uint4 descriptor,SourceDyContactSpan span,
+                      uint errorAddress,bool biased,
+                      bool frictionEnabled,bool finalPass,
+                      inout SourceDySolverPair state) {
+    SourceDyNormalRow unused=(SourceDyNormalRow)0;
+    float4 impulses=0.0f;
+    return solveContactRows(descriptor,span,errorAddress,biased,
+                            frictionEnabled,finalPass,state,false,unused,0u,impulses,
+                            (SourceDyPreparedFriction)0);
 }
 
 float3 prepSlop(float3 value,float slop) {
@@ -221,110 +363,173 @@ float3 prepSlop(float3 value,float slop) {
                   abs(value.y)<slop?0.0f:value.y,
                   abs(value.z)<slop?0.0f:value.z);
 }
-// Low-bit-tagged references reuse one active integrateCore body for every
-// contact manager. Even references address the inline immovable-body payload
-// relative to the packed source contact-prep block.
+// Packed body references distinguish inline standalone data (00),
+// integrated solver rows (01), and resident immovable actors (11).
 uint prepBodyOffset(uint source,uint offset) {
-    if((source&1u)==0u)return p.prepBias+source+offset;
-    const uint ordinal=source>>1u;
-    const uint base=p.integrationBias+40u+ordinal*76u;
-    if(offset>=36u && offset<=60u)return base+offset-36u;
+    if((source&3u)==0u)return p.prepBias+source+offset;
+    const uint ordinal=source>>2u;
+    const uint base=p.integrationBias+44u+ordinal*40u;
+    if(offset>=36u && offset<=60u)
+        return sourceDyInertiaAddress(ordinal)+offset-36u;
     if(offset==72u)return p.bodyBias+ordinal*52u+48u;
     return base+offset;
 }
-// Resolve the identical Sc mass frame for fixed and integrated participants.
-// A tagged body with no host pose reads the authorized device transform.
 bool prepBodyPose(uint source,out float3 position,out float4 orientation) {
-    if((source&1u)==0u) {
+    if((source&3u)==3u) {
+        const uint local=source&~3u;
+        const float3 actorPosition=asfloat(
+            scActorLocals.Load3(local+116u));
+        const float4 actorAxes=asfloat(
+            scActorLocals.Load4(local+128u));
+        const float3 massLocal=asfloat(scActorLocals.Load3(local));
+        const float4 massAxes=asfloat(scActorLocals.Load4(local+12u));
+        position=actorPosition+sourceRigidRotate(actorAxes,massLocal);
+        orientation=sourceRigidMultiply(actorAxes,massAxes);
+    } else if((source&3u)==0u) {
         const uint base=p.prepBias+source;
         position=asfloat(arena.Load3(base));
         orientation=asfloat(arena.Load4(base+80u));
-        return all(isfinite(position)) && all(isfinite(orientation));
+    } else {
+        const uint input=p.integrationBias+44u+(source>>2u)*40u;
+        return sourceDyMassPose(input,position,orientation);
     }
-    const uint input=p.integrationBias+40u+(source>>1u)*76u;
-    return sourceDyMassPose(input,position,orientation);
+    return all(isfinite(position)) && all(isfinite(orientation));
 }
 float3 prepBody3(uint source,uint offset) {
-    if((source&1u)!=0u && (offset==12u || offset==24u)) {
-        const uint input=p.integrationBias+40u+(source>>1u)*76u;
+    if((source&3u)==3u) {
+        if(offset==12u || offset==24u)
+            return asfloat(scActorLocals.Load3(
+                (source&~3u)+64u+(offset==24u?12u:0u)));
+        return 0.0f;
+    }
+    if((source&3u)==1u && (offset==12u || offset==24u)) {
+        const uint input=p.integrationBias+44u+(source>>2u)*40u;
         return sourceDyPreparedVelocity(input,offset==24u);
     }
     return asfloat(arena.Load3(prepBodyOffset(source,offset)));
 }
 float prepBodyFloat(uint source,uint offset) {
+    if((source&3u)==3u)return 0.0f;
     return asfloat(arena.Load(prepBodyOffset(source,offset)));
 }
-float3 prepInertia(uint source,float3 v) {
-    float3 c0=prepBody3(source,36u);
-    float3 c1=prepBody3(source,48u);
-    float3 c2=prepBody3(source,60u);
-    return c0*v.x+c1*v.y+c2*v.z;
+struct SourceDyContactBody {
+    float3 position,velocity,angular;
+    float4 orientation;
+    float mass;
+    float3 inertia0,inertia1,inertia2;
+    bool immovable;
+};
+bool sourceDyLoadContactBody(uint source,out SourceDyContactBody body) {
+    if(!prepBodyPose(source,body.position,body.orientation))return false;
+    body.velocity=prepBody3(source,12u);
+    body.angular=prepBody3(source,24u);
+    body.mass=prepBodyFloat(source,72u);
+    body.immovable=(source&3u)==3u;
+    body.inertia0=prepBody3(source,36u);
+    body.inertia1=prepBody3(source,48u);
+    body.inertia2=prepBody3(source,60u);
+    return true;
 }
-void prepStoreScalar(uint address,float value) {
-    arena.Store(address,asuint(value));
+float3 sourceDyContactInertia(SourceDyContactBody body,float3 v) {
+    if(body.immovable)return 0.0f;
+    return body.inertia0*v.x+body.inertia1*v.y+body.inertia2*v.z;
 }
-void prepareContactRow(uint index,uint pairIndex,uint contactBegin,
-                       uint contactCount,uint errorAddress) {
-    if(index>=p.contactCount || pairIndex>=p.prepCount) {
-        arena.InterlockedOr(errorAddress,4096u);
-        return;
+struct SourceDyContactFrame {
+    SourceDyContactBody a,b;
+    float restDistance,slop,restitution,damping,maxPenBias;
+    float invDt,seconds,rigidBias,bounceThreshold;
+    bool acceleration;
+    uint geometryBase;
+    bool pcmGeometry;
+    float3 pcmNormal;
+};
+bool sourceDyEnsureContactFrame(uint pair,uint contactCount,uint errorAddress,
+                                inout SourceDyContactFrame frame,inout bool ready) {
+    if(ready)return true;
+    if(!sourceDyLoadContactBody(arena.Load(pair),frame.a) ||
+       !sourceDyLoadContactBody(arena.Load(pair+4u),frame.b)) {
+        sourceDyTaskErrorOr(errorAddress,524288u);
+        return false;
     }
-    uint co=p.contactBias+index*64u;
-    uint pair=p.prepBias+pairIndex*64u;
-    uint b0=arena.Load(pair),b1=arena.Load(pair+4u);
-    // The source correlation fixes patch order and body inputs. The GPU
-    // reconstructs PCM normal rows without uploading a placeholder row.
-    float3 n;
-    float3 pos;
-    float separation;
-    uint pcmIndex=arena.Load(pair+48u);
-    if(pcmIndex!=0xffffffffu) {
-        uint local=index-contactBegin;
-        uint source=p.pcmBias+pcmIndex*84u;
-        uint packed=pcmContacts.Load(source+4u);
-        if(index<contactBegin || local>=contactCount ||
-           local>=4u ||
-           pcmContacts.Load(source)!=arena.Load(pair+52u) ||
+    const float4 coefficients=asfloat(arena.Load4(pair+8u));
+    const uint4 settings=arena.Load4(pair+24u);
+    const float4 timing=asfloat(arena.Load4(p.prepBias));
+    frame.restDistance=coefficients.x;
+    frame.slop=coefficients.y;
+    frame.restitution=coefficients.z;
+    frame.damping=coefficients.w;
+    frame.maxPenBias=asfloat(settings.x);
+    frame.acceleration=settings.y!=0u;
+    frame.invDt=timing.x;
+    frame.seconds=timing.y;
+    frame.rigidBias=timing.z;
+    frame.bounceThreshold=timing.w;
+    const uint pcmIndex=arena.Load(pair+32u);
+    frame.pcmGeometry=pcmIndex!=invalidBody;
+    if(frame.pcmGeometry) {
+        const uint source=p.pcmBias+pcmIndex*84u;
+        const uint packed=pcmContacts.Load(source+4u);
+        if(contactCount>4u ||
+           pcmContacts.Load(source)!=arena.Load(pair+36u) ||
            ((packed>>3u)&7u)!=0u ||
-           local>=((packed>>10u)&7u)) {
-            arena.InterlockedOr(errorAddress,65536u);
-            return;
+           contactCount!=((packed>>10u)&7u)) {
+            sourceDyTaskErrorOr(errorAddress,65536u);
+            return false;
         }
-        n=asfloat(pcmContacts.Load3(source+8u));
-        uint contact=source+20u+local*16u;
-        pos=asfloat(pcmContacts.Load3(contact));
-        separation=asfloat(pcmContacts.Load(contact+12u));
-        arena.Store3(co,asuint(n));
-    } else {
-        uint cpuOffset=arena.Load(pair+60u);
-        if(cpuOffset==0xffffffffu || index<contactBegin ||
-           index-contactBegin>=contactCount) {
-            arena.InterlockedOr(errorAddress,131072u);
-            return;
+        frame.geometryBase=source+20u;
+        frame.pcmNormal=asfloat(pcmContacts.Load3(source+8u));
+    }else {
+        const uint cpuOffset=arena.Load(pair+44u);
+        if(cpuOffset==invalidBody) {
+            sourceDyTaskErrorOr(errorAddress,131072u);
+            return false;
         }
-        uint raw=p.prepBias+p.prepCount*64u+
-            (cpuOffset+index-contactBegin)*28u;
+        frame.geometryBase=p.prepBias+16u+p.prepCount*48u+cpuOffset*28u;
+    }
+    ready=true;
+    return true;
+}
+// Each preparation owner resolves the manager's geometry once.
+bool sourceDyContactGeometry(uint index,uint contactBegin,uint contactCount,
+                             SourceDyContactFrame frame,uint errorAddress,
+                             out float3 n,out float3 pos,out float separation) {
+    n=0.0f;pos=0.0f;separation=0.0f;
+    if(index>=sourceDyContactLogicalCount()) {
+        sourceDyTaskErrorOr(errorAddress,4096u);
+        return false;
+    }
+    const uint local=index-contactBegin;
+    if(index<contactBegin || local>=contactCount) {
+        sourceDyTaskErrorOr(errorAddress,frame.pcmGeometry?65536u:131072u);
+        return false;
+    }
+    if(frame.pcmGeometry) {
+        n=frame.pcmNormal;
+        const float4 pointData=asfloat(pcmContacts.Load4(frame.geometryBase+local*16u));
+        pos=pointData.xyz;
+        separation=pointData.w;
+    }else {
+        const uint raw=frame.geometryBase+local*28u;
         n=asfloat(arena.Load3(raw));
-        pos=asfloat(arena.Load3(raw+12u));
-        separation=asfloat(arena.Load(raw+24u));
-        arena.Store3(co,asuint(n));
+        const float4 pointData=asfloat(arena.Load4(raw+12u));
+        pos=pointData.xyz;
+        separation=pointData.w;
     }
-    float3 p0,p1;
-    float4 q0,q1;
-    if(!prepBodyPose(b0,p0,q0) || !prepBodyPose(b1,p1,q1)) {
-        arena.InterlockedOr(errorAddress,524288u);
-        return;
-    }
-    float3 v0=prepBody3(b0,12u);
-    float3 v1=prepBody3(b1,12u);
-    float3 w0=prepBody3(b0,24u);
-    float3 w1=prepBody3(b1,24u);
-    float m0=prepBodyFloat(b0,72u);
-    float m1=prepBodyFloat(b1,72u);
-    float3 r0=cross(pos-p0,n);
-    float3 r1=cross(pos-p1,n);
-    float linearRel=sourceDyDot3(n,v0-v1);
-    float pairSlop=asfloat(arena.Load(pair+12u));
+    return true;
+}
+void prepareContactRow(uint index,uint contactBegin,
+                       uint contactCount,uint normalBegin,
+                       SourceDyContactFrame frame,uint errorAddress,
+                       bool retainNormal,inout SourceDyPreparedNormal prepared) {
+    float3 n,pos;
+    float separation;
+    if(!sourceDyContactGeometry(index,contactBegin,contactCount,frame,
+                                errorAddress,n,pos,separation))return;
+    float3 w0=frame.a.angular,w1=frame.b.angular;
+    float3 r0=cross(pos-frame.a.position,n);
+    float3 r1=cross(pos-frame.b.position,n);
+    float linearRel=sourceDyDot3(n,frame.a.velocity-frame.b.velocity);
+    float pairSlop=frame.slop;
     if(pairSlop>0.0f) {
         float angularRel=sourceDyDot3(r0,w0)-sourceDyDot3(r1,w1);
         float ratio=linearRel==0.0f
@@ -333,21 +538,22 @@ void prepareContactRow(uint index,uint pairIndex,uint contactBegin,
         r0=prepSlop(r0,slop);
         r1=prepSlop(r1,slop);
     }
-    float3 ja=prepInertia(b0,r0);
-    float3 jb=prepInertia(b1,r1);
+    float3 ja=sourceDyContactInertia(frame.a,r0);
+    float3 jb=sourceDyContactInertia(frame.b,r1);
     float angularRel=sourceDyDot3(r0,w0)-sourceDyDot3(r1,w1);
     float vrel=linearRel+angularRel;
-    precise float response=(m0+sourceDyDot3(ja,ja))+(m1+sourceDyDot3(jb,jb));
+    precise float response=(frame.a.mass+sourceDyDot3(ja,ja))+
+        (frame.b.mass+sourceDyDot3(jb,jb));
     precise float multiplier=response>0.0?1.0/response:0.0;
-    float restDistance=asfloat(arena.Load(pair+8u));
-    float restitution=asfloat(arena.Load(pair+16u));
-    float damping=asfloat(arena.Load(pair+20u));
-    float maxPenBias=asfloat(arena.Load(pair+24u));
-    float invDt=asfloat(arena.Load(pair+28u));
-    float seconds=asfloat(arena.Load(pair+32u));
-    float rigidBias=asfloat(arena.Load(pair+36u));
-    float bounceThreshold=asfloat(arena.Load(pair+40u));
-    bool acceleration=arena.Load(pair+44u)!=0u;
+    float restDistance=frame.restDistance;
+    float restitution=frame.restitution;
+    float damping=frame.damping;
+    float maxPenBias=frame.maxPenBias;
+    float invDt=frame.invDt;
+    float seconds=frame.seconds;
+    float rigidBias=frame.rigidBias;
+    float bounceThreshold=frame.bounceThreshold;
+    bool acceleration=frame.acceleration;
     float penetration=separation-restDistance;
     float penetrationInvDt=penetration*invDt;
     bool separated=penetration>=0.0f;
@@ -383,103 +589,64 @@ void prepareContactRow(uint index,uint pairIndex,uint contactBegin,
        !isfinite(impulseMultiplier) ||
        !isfinite(biasedError) || !isfinite(unbiasedError) ||
        !all(isfinite(ja)) || !all(isfinite(jb))) {
-        arena.InterlockedOr(errorAddress,8192u);
+        sourceDyTaskErrorOr(errorAddress,8192u);
         return;
     }
-    // A freshly prepared source Gu normal row begins with zero impulse.
-    // Its limit is common to the entire contact-manager pair.
-    arena.Store(co+36u,0u);
-    arena.Store(co+56u,0u);
-    arena.Store(co+60u,arena.Load(pair+56u));
-    arena.Store3(co+12u,asuint(ja));
-    arena.Store3(co+24u,asuint(jb));
-    prepStoreScalar(co+40u,multiplier);
-    prepStoreScalar(co+44u,impulseMultiplier);
-    prepStoreScalar(co+48u,biasedError);
-    prepStoreScalar(co+52u,unbiasedError);
+    const float4 coefficients=float4(multiplier,impulseMultiplier,
+                                      biasedError,unbiasedError);
+    if(retainNormal) {
+        prepared.row.normal=n;
+        prepared.row.ja=ja;
+        prepared.row.jb=jb;
+        prepared.row.coefficients=coefficients;
+        prepared.row.impulse=0.0f;
+        prepared.local=true;
+    }else {
+        if(normalBegin==sourceDyLocalNormalRow) {
+            sourceDyTaskErrorOr(errorAddress,8192u);
+            return;
+        }
+        const uint co=p.contactBias+(normalBegin+index-contactBegin)*sourceDyNormalRowBytes;
+        arena.Store3(co,asuint(ja));
+        arena.Store3(co+12u,asuint(jb));
+        arena.Store4(co+24u,asuint(coefficients));
+        arena.Store(co+sourceDyNormalImpulseOffset,0u);
+    }
 }
 
-void prepareFrictionRow(uint index,uint patchIndex,uint pairIndex,
-                        uint errorAddress) {
-    if(index>=p.frictionCount || pairIndex>=p.prepCount) {
-        arena.InterlockedOr(errorAddress,16384u);
-        return;
-    }
-    uint fo=p.frictionBias+index*56u;
-    uint pair=p.prepBias+pairIndex*64u;
-    uint b0=arena.Load(pair),b1=arena.Load(pair+4u);
-    // Source DyFrictionCorrelation selected these body-local anchors.
-    // Source DyContactPrep selected the two tangents and their order.
-    float3 tangent=asfloat(arena.Load3(fo));
-    // The original Gu correlation owns one body-local anchor for both
-    // tangent rows. PCM retrieves its resident EdgeIndex history;
-    // CPU Gu reads its compact patch-local upload without PCM padding.
-    uint po=p.patchBias+patchIndex*32u;
-    uint first=arena.Load(po);
-    if(index<first || ((index-first)>>1u)>=2u) {
-        arena.InterlockedOr(errorAddress,16384u);
-        return;
-    }
-    uint slot=(index-first)>>1u;
-    uint anchor;
-    if(arena.Load(pair+48u)!=0xffffffffu) {
-        uint history=p.writebackBias+arena.Load(pair+52u)*64u;
-        if(arena.Load(history)<=slot) {
-            arena.InterlockedOr(errorAddress,262144u);
-            return;
-        }
-        anchor=history+8u+slot*24u;
-    }else {
-        uint backward=arena.Load(po+28u);
-        if(backward==0u || backward>p.contactBias-p.writebackBias) {
-            arena.InterlockedOr(errorAddress,16384u);
-            return;
-        }
-        anchor=p.contactBias-backward+slot*24u;
-    }
-    float3 p0,p1;
-    float4 q0,q1;
-    if(!prepBodyPose(b0,p0,q0) || !prepBodyPose(b1,p1,q1)) {
-        arena.InterlockedOr(errorAddress,524288u);
-        return;
-    }
-    float3 r0=sourceRigidRotate(q0,asfloat(arena.Load3(anchor)));
-    float3 r1=sourceRigidRotate(q1,asfloat(arena.Load3(anchor+12u)));
-    float3 v0=prepBody3(b0,12u);
-    float3 v1=prepBody3(b1,12u);
-    float3 w0=prepBody3(b0,24u);
-    float3 w1=prepBody3(b1,24u);
-    float m0=prepBodyFloat(b0,72u);
-    float m1=prepBodyFloat(b1,72u);
-    float slop=asfloat(arena.Load(pair+12u));
-    float invDt=asfloat(arena.Load(pair+28u));
-    float rigidBias=asfloat(arena.Load(pair+36u));
-    float3 error=prepSlop((r0+p0)-(r1+p1),slop);
+SourceDyFrictionRow prepareFrictionRow(uint index,float3 tangent,float3 r0,float3 r1,
+                        float3 error,SourceDyContactBody a,SourceDyContactBody b,
+                        float slop,float invDt,float rigidBias,uint errorAddress,
+                        bool retain) {
+    SourceDyFrictionRow row=(SourceDyFrictionRow)0;
     float3 ax0=prepSlop(cross(r0,tangent),slop);
     float3 ax1=prepSlop(cross(r1,tangent),slop);
-    float3 ja=prepInertia(b0,ax0);
-    float3 jb=prepInertia(b1,ax1);
-    precise float response=(m0+sourceDyDot3(ja,ja))+(m1+sourceDyDot3(jb,jb));
+    float3 ja=sourceDyContactInertia(a,ax0);
+    float3 jb=sourceDyContactInertia(b,ax1);
+    precise float response=(a.mass+sourceDyDot3(ja,ja))+(b.mass+sourceDyDot3(jb,jb));
     precise float velocityMultiplier=response>0.0
         ? rigidBias/response:0.0;
     precise float bias=(sourceDyDot3(tangent,error)*invDt);
-    float3 relative=v0-v1;
+    float3 relative=a.velocity-b.velocity;
     precise float targetVelocity=(-(sourceDyDot3(tangent,relative)+
-        sourceDyDot3(ax0,w0)-sourceDyDot3(ax1,w1)));
+        sourceDyDot3(ax0,a.angular)-sourceDyDot3(ax1,b.angular)));
     if(!isfinite(response) || !isfinite(velocityMultiplier) ||
        !isfinite(bias) ||
        !isfinite(targetVelocity) || !all(isfinite(ja)) ||
        !all(isfinite(jb))) {
-        arena.InterlockedOr(errorAddress,32768u);
-        return;
+        sourceDyTaskErrorOr(errorAddress,32768u);
+        return row;
     }
-    arena.Store3(fo+12u,asuint(ja));
-    arena.Store3(fo+24u,asuint(jb));
-    arena.Store(fo+36u,0u);
-    arena.Store(fo+52u,0u);
-    prepStoreScalar(fo+40u,velocityMultiplier);
-    prepStoreScalar(fo+44u,bias);
-    prepStoreScalar(fo+48u,targetVelocity);
+    row.tangent=tangent;row.ja=ja;row.jb=jb;
+    row.coefficients=float3(velocityMultiplier,bias,targetVelocity);
+    if(!retain) {
+        const uint fo=p.frictionBias+index*52u;
+        arena.Store3(fo,asuint(row.tangent));
+        arena.Store3(fo+12u,asuint(row.ja));
+        arena.Store3(fo+24u,asuint(row.jb));
+        arena.Store4(fo+36u,asuint(float4(row.coefficients,0.0f)));
+    }
+    return row;
 }
 
 // GPU PCM supplies exactly one Gu normal/contact patch for each active
@@ -492,18 +659,23 @@ void growPcmFrictionAnchors(uint patchIndex,uint pairIndex,
                             uint errorAddress) {
     uint po=p.patchBias+patchIndex*32u;
     uint4 patch=arena.Load4(po);
-    uint pair=p.prepBias+pairIndex*64u;
-    uint pcmIndex=arena.Load(pair+48u);
-    if(pcmIndex==0xffffffffu || patch.y>4u || patch.z>2u ||
-       (patch.x&1u)!=0u || patch.x+4u>p.frictionCount) {
-        arena.InterlockedOr(errorAddress,262144u);
+    uint pair=sourceDyPrepAddress(pairIndex);
+    uint pcmIndex=arena.Load(pair+32u);
+    const bool singleAnchor=(patch.w&0x08000000u)!=0u;
+    const uint capacity=singleAnchor?1u:2u;
+    if(pcmIndex==0xffffffffu || patch.y>4u || patch.z>capacity ||
+       (singleAnchor && (patch.y>1u || patch.z!=0u ||
+                         (patch.w&0x30000000u)!=0u)) ||
+       (patch.x&1u)!=0u || patch.x>p.frictionCount ||
+       capacity*2u>p.frictionCount-patch.x) {
+        sourceDyTaskErrorOr(errorAddress,262144u);
         return;
     }
     uint stream=p.pcmBias+pcmIndex*84u;
     uint packed=pcmContacts.Load(stream+4u);
     if(((packed>>3u)&7u)!=0u || ((packed>>10u)&7u)!=patch.y ||
-       pcmContacts.Load(stream)!=arena.Load(pair+52u)) {
-        arena.InterlockedOr(errorAddress,262144u);
+       pcmContacts.Load(stream)!=arena.Load(pair+36u)) {
+        sourceDyTaskErrorOr(errorAddress,262144u);
         return;
     }
     uint body0=arena.Load(pair);
@@ -511,7 +683,18 @@ void growPcmFrictionAnchors(uint patchIndex,uint pairIndex,
     // One Sc-owned EdgeIndex physical mirror feeds both patch growth
     // and Dy tangent preparation. Only a rejected-frame recovery reads
     // the compact host anchor input through PCM's spare Gu offset slot.
-    uint history=p.writebackBias+arena.Load(pair+52u)*64u;
+    uint history=p.writebackBias+arena.Load(pair+36u)*64u;
+    // A reserved contact manager can resolve to no physical touch.
+    // Discard its previous anchors before any friction-row preparation.
+    if(patch.y==0u) {
+        arena.Store(history,0u);
+        arena.Store(po+8u,0u);
+        const uint report=p.writebackBias+p.resultPatchOffset+
+            patchIndex*4u;
+        arena.Store(report,arena.Load(report)&
+            (sourceDyPcmExtentValid|(7u<<sourceDyPcmExtentShift)|sourceDyPcmCompacted));
+        return;
+    }
     // The source PCM manager has one contiguous correlated contact run.
     // Reuse this resident geometry for both source patch extent and
     // anchor selection, rather than uploading the host-computed diagonal.
@@ -536,12 +719,94 @@ void growPcmFrictionAnchors(uint patchIndex,uint pairIndex,
     precise float diagonal=(extent.x*extent.x+extent.y*extent.y)+
         extent.z*extent.z;
     uint count=patch.z;
+    uint retainedOrdinal=0u;
+    // Multiple valid source patches share one numerical contact patch.
+    // Select the first matching historical normal against PCM's current
+    // resident normal, then borrow its anchors in the same EdgeIndex slot.
+    if((patch.w&0x10000000u)!=0u) {
+        const uint candidates=(patch.w>>8u)&63u;
+        const uint first=arena.Load(po+28u);
+        float3 position0;
+        float4 orientation0;
+        if(candidates==0u || candidates>32u ||
+           !prepBodyPose(body0,position0,orientation0)) {
+            sourceDyTaskErrorOr(errorAddress,262144u);
+            return;
+        }
+        const float3 current=asfloat(pcmContacts.Load3(stream+8u));
+        if(!all(isfinite(current))) {
+            sourceDyTaskErrorOr(errorAddress,262144u);
+            return;
+        }
+        [loop]
+        for(uint j=0u;j<candidates;++j) {
+            const uint src=first+j*68u;
+            const float3 local=asfloat(retainedSources.Load3(src));
+            const float3 previous=sourceRigidRotate(orientation0,local);
+            if(!all(isfinite(previous))) {
+                sourceDyTaskErrorOr(errorAddress,262144u);
+                return;
+            }
+            if(sourceDyDot3(previous,current)<0.999f)continue;
+            const uint ordinal=retainedSources.Load(src+12u);
+            const uint anchors=retainedSources.Load(src+64u);
+            if(ordinal>=32u || anchors==0u || anchors>2u) {
+                sourceDyTaskErrorOr(errorAddress,262144u);
+                return;
+            }
+            count=anchors;
+            retainedOrdinal=ordinal+1u;
+            arena.Store(history,count);
+            [unroll]
+            for(uint k=0u;k<2u;++k) {
+                if(k>=count)break;
+                arena.Store3(history+8u+k*24u,
+                             retainedSources.Load3(src+16u+k*24u));
+                arena.Store3(history+20u+k*24u,
+                             retainedSources.Load3(src+28u+k*24u));
+            }
+            break;
+        }
+        if(retainedOrdinal==0u && (patch.w&0x04000000u)!=0u) {
+            sourceDyTaskErrorOr(errorAddress,262144u);
+            return;
+        }
+        arena.Store(po+8u,count);
+    }
+    bool normalChanged=false;
+    if((patch.w&0x20000000u)!=0u) {
+        float3 position0;
+        float4 orientation0;
+        if(!prepBodyPose(body0,position0,orientation0)) {
+            sourceDyTaskErrorOr(errorAddress,524288u);
+            return;
+        }
+        const uint encoded=arena.Load(po+28u);
+        float2 oct=float2(int(encoded<<16u)>>16u,int(encoded)>>16u)*
+            (1.0f/32767.0f);
+        float3 localNormal=float3(oct,1.0f-abs(oct.x)-abs(oct.y));
+        if(localNormal.z<0.0f) {
+            const float2 xy=localNormal.xy;
+            localNormal.xy=float2(
+                (1.0f-abs(xy.y))*(xy.x>=0.0f?1.0f:-1.0f),
+                (1.0f-abs(xy.x))*(xy.y>=0.0f?1.0f:-1.0f));
+        }
+        const float3 previous=sourceRigidRotate(
+            orientation0,normalize(localNormal));
+        const float3 current=asfloat(pcmContacts.Load3(stream+8u));
+        if(!all(isfinite(previous)) || !all(isfinite(current))) {
+            sourceDyTaskErrorOr(errorAddress,262144u);
+            return;
+        }
+        normalChanged=sourceDyDot3(previous,current)<0.999f;
+        if(normalChanged)count=0u;
+    }
     if(count>0u) {
         if((patch.w&0x40000000u)!=0u) {
-            uint backward=arena.Load(pair+60u);
+            uint backward=arena.Load(pair+44u);
             if(backward==0xffffffffu || backward==0u ||
                backward>p.contactBias-p.writebackBias) {
-                arena.InterlockedOr(errorAddress,262144u);
+                sourceDyTaskErrorOr(errorAddress,262144u);
                 return;
             }
             uint source=p.contactBias-backward;
@@ -554,7 +819,7 @@ void growPcmFrictionAnchors(uint patchIndex,uint pairIndex,
                              arena.Load3(source+k*24u+12u));
             }
         }else if(arena.Load(history)!=count) {
-            arena.InterlockedOr(errorAddress,262144u);
+            sourceDyTaskErrorOr(errorAddress,262144u);
             return;
         }
     }
@@ -578,7 +843,7 @@ void growPcmFrictionAnchors(uint patchIndex,uint pairIndex,
         float4 orientation0,orientation1;
         if(!prepBodyPose(body0,position0,orientation0) ||
            !prepBodyPose(body1,position1,orientation1)) {
-            arena.InterlockedOr(errorAddress,524288u);
+            sourceDyTaskErrorOr(errorAddress,524288u);
             return;
         }
         if(count==1u)
@@ -636,18 +901,30 @@ void growPcmFrictionAnchors(uint patchIndex,uint pairIndex,
             arena.Store3(history+20u+k*24u,asuint(lb));
         }
     }
+    if(count>capacity) {
+        sourceDyTaskErrorOr(errorAddress,262144u);
+        return;
+    }
     arena.Store(history,count);
     arena.Store(po+8u,count);
     uint report=(count<<1u) |
         ((changed[0]?(selected[0]+1u):0u)<<3u) |
-        ((changed[1]?(selected[1]+1u):0u)<<6u);
-    arena.Store(p.writebackBias+p.resultPatchOffset+
-                patchIndex*4u,report);
+        ((changed[1]?(selected[1]+1u):0u)<<6u) |
+        (normalChanged?0x200u:0u) |
+        (retainedOrdinal<<19u);
+    const uint reportAddress=p.writebackBias+p.resultPatchOffset+
+        patchIndex*4u;
+    report|=arena.Load(reportAddress)&
+        (sourceDyPcmExtentValid|(7u<<sourceDyPcmExtentShift)|sourceDyPcmCompacted);
+    arena.Store(reportAddress,report);
 }
 
-void prepareFrictionPatch(uint patchIndex,uint pairIndex,uint errorAddress) {
+void prepareFrictionPatch(uint patchIndex,uint pairIndex,uint contactBegin,
+                          uint contactCount,uint errorAddress,
+                          inout SourceDyContactFrame frame,inout bool ready,
+                          bool exclusive,inout SourceDyPreparedFriction prepared) {
     if(patchIndex>=p.patchCount || pairIndex>=p.prepCount) {
-        arena.InterlockedOr(errorAddress,16384u);
+        sourceDyTaskErrorOr(errorAddress,16384u);
         return;
     }
     uint po=p.patchBias+patchIndex*32u;
@@ -658,24 +935,28 @@ void prepareFrictionPatch(uint patchIndex,uint pairIndex,uint errorAddress) {
     }
     if(patch.z==0u)return;
     uint orderOffset=arena.Load(po+24u);
+    uint frictionBase;
     if(patch.y==0u || !sourceDyContactOrderValid(orderOffset,patch.y) ||
-       patch.x>p.frictionCount || patch.z>2u ||
-       patch.z*2u>p.frictionCount-patch.x) {
-        arena.InterlockedOr(errorAddress,16384u);
+       !sourceDyFrictionStorage(patch,frictionBase) ||
+       (frictionBase==sourceDyLocalFrictionRow && !exclusive)) {
+        sourceDyTaskErrorOr(errorAddress,16384u);
         return;
     }
     // setupFinalizeSolverConstraints chooses the first normal from the
     // source's reverse correlated contact-run list for this patch.
     uint first=sourceDyContactOrderPoint(orderOffset,0u);
-    if(first>=p.contactCount) {
-        arena.InterlockedOr(errorAddress,16384u);
+    if(first>=sourceDyContactLogicalCount()) {
+        sourceDyTaskErrorOr(errorAddress,16384u);
         return;
     }
-    float3 n=asfloat(arena.Load3(p.contactBias+first*64u));
-    uint pair=p.prepBias+pairIndex*64u;
-    float3 a=prepBody3(arena.Load(pair),12u);
-    float3 b=prepBody3(arena.Load(pair+4u),12u);
-    float3 relative=a-b;
+    uint pair=sourceDyPrepAddress(pairIndex);
+    float3 n,pos;
+    float separation;
+    if(!sourceDyEnsureContactFrame(pair,contactCount,errorAddress,frame,ready))return;
+    if(!sourceDyContactGeometry(first,contactBegin,contactCount,frame,
+                                errorAddress,n,pos,separation))return;
+    const SourceDyContactBody a=frame.a,b=frame.b;
+    float3 relative=a.velocity-b.velocity;
     float projection=sourceDyDot3(relative,n);
     float3 tangent0=relative-float3(
         n.x*projection,n.y*projection,n.z*projection);
@@ -691,14 +972,41 @@ void prepareFrictionPatch(uint patchIndex,uint pairIndex,uint errorAddress) {
     tangent0=tangent0*inverseLength;
     float3 tangent1=cross(n,tangent0);
     if(!all(isfinite(tangent0)) || !all(isfinite(tangent1))) {
-        arena.InterlockedOr(errorAddress,32768u);
+        sourceDyTaskErrorOr(errorAddress,32768u);
         return;
     }
+    uint anchorBase;
+    if(arena.Load(pair+32u)!=invalidBody) {
+        uint history=p.writebackBias+arena.Load(pair+36u)*64u;
+        if(arena.Load(history)<patch.z) {
+            sourceDyTaskErrorOr(errorAddress,262144u);
+            return;
+        }
+        anchorBase=history+8u;
+    }else {
+        uint backward=arena.Load(po+28u);
+        if(backward==0u || backward>p.contactBias-p.writebackBias) {
+            sourceDyTaskErrorOr(errorAddress,16384u);
+            return;
+        }
+        anchorBase=p.contactBias-backward;
+    }
+    const float slop=frame.slop;
+    const float invDt=frame.invDt;
+    const float rigidBias=frame.rigidBias;
     for(uint anchor=0u;anchor<patch.z;++anchor) {
-        uint row=patch.x+anchor*2u;
-        arena.Store3(p.frictionBias+row*56u,asuint(tangent0));
-        arena.Store3(p.frictionBias+(row+1u)*56u,asuint(tangent1));
-        prepareFrictionRow(row,patchIndex,pairIndex,errorAddress);
-        prepareFrictionRow(row+1u,patchIndex,pairIndex,errorAddress);
+        const uint address=anchorBase+anchor*24u;
+        const float3 r0=sourceRigidRotate(a.orientation,asfloat(arena.Load3(address)));
+        const float3 r1=sourceRigidRotate(b.orientation,asfloat(arena.Load3(address+12u)));
+        const float3 error=prepSlop((r0+a.position)-(r1+b.position),slop);
+        const bool local=frictionBase==sourceDyLocalFrictionRow;
+        const uint row=local?0u:frictionBase+anchor*2u;
+        const SourceDyFrictionRow first=prepareFrictionRow(row,tangent0,r0,r1,error,a,b,
+            slop,invDt,rigidBias,errorAddress,local);
+        const SourceDyFrictionRow second=prepareFrictionRow(row+1u,tangent1,r0,r1,error,a,b,
+            slop,invDt,rigidBias,errorAddress,local);
+        if(local) {
+            prepared.first=first;prepared.second=second;prepared.local=true;
+        }
     }
 }

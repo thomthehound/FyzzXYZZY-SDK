@@ -10,17 +10,335 @@
 
 #include <algorithm>
 #include <array>
+#include <bit>
 #include <chrono>
 #include <cmath>
+#include <cstddef>
 #include <cstring>
 #include <fstream>
 #include <iostream>
 #include <iterator>
+#include <limits>
 #include <stdexcept>
 #include <string_view>
+#include <utility>
+#include <vector>
+
+namespace fyzz::physx_gpu {
+struct SourceScDeviceIslandFixture {
+    static bool pcm_ready(const SourceScOwnedGpuBroadphaseNative& owner) {
+        return owner.pcm_ && owner.pcm_->device_contact_ready();
+    }
+    static std::size_t pcm_candidate_dispatches(
+            const SourceScOwnedGpuBroadphaseNative& owner) {
+        return owner.pcm_ ? owner.pcm_->last_candidate_dispatches() : 0u;
+    }
+    static std::size_t pcm_pair_upload_spans(
+            const SourceScOwnedGpuBroadphaseNative& owner) {
+        return owner.pcm_ ? owner.pcm_->last_pair_upload_spans() : 0u;
+    }
+    static bool software_adapter(const SourceScOwnedGpuBroadphaseNative& owner) {
+        return owner.context_.device_info().software_adapter;
+    }
+    static bool shared_frame_input(const SourceScOwnedGpuBroadphaseNative& owner) {
+        return owner.context_.device_info().supports_shared_frame_input;
+    }
+    static std::size_t source_submissions(
+            const SourceScOwnedGpuBroadphaseNative& owner) {
+        return owner.stream_.submitted_token_count();
+    }
+    static std::size_t recorded_copy_bytes(SourceScOwnedGpuBroadphaseNative& owner) {
+        std::size_t bytes=0u;
+        for(const auto& command:owner.stream_.commands())
+            if(const auto* copy=std::get_if<compute::CopyCommand>(&command))
+                bytes+=copy->bytes;
+        return bytes;
+    }
+    static bool pcm_fence_retired(
+            const SourceScOwnedGpuBroadphaseNative& owner) {
+        return owner.stream_.fetch_fence_retired();
+    }
+    static bool source_gpu_complete(
+            const SourceScOwnedGpuBroadphaseNative& owner) {
+        return owner.stream_.gpu_complete();
+    }
+    static std::string contact_records(SourceScOwnedGpuBroadphaseNative& owner) {
+        const auto count=owner.device_pcm_contact_count();
+        const auto source=owner.device_pcm_contact_stream();
+        if(!count || !source)return {};
+        const auto bytes=std::size_t(count)*sizeof(native::GpuPcmBoxResult);
+        const auto view=owner.addresses_.resolve(source,bytes);
+        std::vector<native::GpuPcmBoxResult> records(count);
+        owner.context_.download(view.buffer,view.offset,records.data(),bytes);
+        std::string result;
+        for(std::size_t i=0u;i<records.size();++i)
+            result+=" [slot="+std::to_string(i)+
+                " edge="+std::to_string(records[i].edge)+
+                " count="+std::to_string(records[i].count())+
+                " transition="+std::to_string(static_cast<std::uint32_t>(
+                    records[i].touch_transition()))+"]";
+        return result;
+    }
+    static std::array<std::uint32_t,2> touch(
+            SourceScOwnedGpuBroadphaseNative& owner,std::uint32_t edge) {
+        if(edge>=owner.device_pcm_touch_capacity())
+            return {0xffffffffu,0xffffffffu};
+        owner.stream_.wait_at_fetch();
+        const auto address=owner.device_pcm_touch_history()+
+            std::size_t(edge)*240u+72u;
+        const auto view=owner.addresses_.resolve(address,8u);
+        std::array<std::uint32_t,2> state{};
+        owner.context_.download(view.buffer,view.offset,
+                                state.data(),sizeof(state));
+        return state;
+    }
+    static std::vector<std::uint32_t> contact_admissions(
+            SourceScOwnedGpuBroadphaseNative& owner) {
+        if(!owner.pcm_ || !owner.pcm_->device_island_work_address())
+            throw std::runtime_error("Missing resident Sc contact admission");
+        const auto words=std::size_t(
+            (owner.pcm_->device_island_contact_capacity()+31u)/32u);
+        std::vector<std::uint32_t> admitted(words);
+        if(words) {
+            owner.stream_.wait_at_fetch();
+            const auto address=owner.pcm_->device_island_work_address()+
+                owner.pcm_->device_island_layout().contact_admissions;
+            const auto view=owner.addresses_.resolve(
+                address,admitted.size()*sizeof(std::uint32_t));
+            owner.context_.download(view.buffer,view.offset,
+                                    admitted.data(),admitted.size()*sizeof(std::uint32_t));
+        }
+        return admitted;
+    }
+    static std::uint32_t extent(
+            SourceScOwnedGpuBroadphaseNative& owner,std::uint32_t response) {
+        if(!owner.pcm_ || !owner.pcm_->device_island_work_address())
+            throw std::runtime_error("Missing device Sc numerical extent stream");
+        owner.stream_.wait_at_fetch();
+        const auto layout=owner.pcm_->device_island_layout();
+        const auto address=owner.pcm_->device_island_work_address()+
+            layout.response_extents+std::size_t(response)*4u;
+        const auto view=owner.addresses_.resolve(address,4u);
+        std::uint32_t value=0u;
+        owner.context_.download(view.buffer,view.offset,&value,sizeof(value));
+        return value;
+    }
+    static void overwrite_extent(
+            SourceScOwnedGpuBroadphaseNative& owner,std::uint32_t response,
+            std::uint32_t value) {
+        if(!owner.pcm_ || !owner.pcm_->device_island_work_address())
+            throw std::runtime_error("Missing device Sc numerical extent stream");
+        const auto address=owner.pcm_->device_island_work_address()+
+            owner.pcm_->device_island_layout().response_extents+
+            std::size_t(response)*4u;
+        auto& uploads=owner.stream_.upload_scratch();
+        uploads.push_back({address,&value,sizeof(value)});
+        owner.stream_.queue_uploads(uploads);
+    }
+    static float resident_position_x(
+            SourceScOwnedGpuBroadphaseNative& owner,ShapeId shape) {
+        owner.stream_.wait_at_fetch();
+        const auto handle=owner.producer_->source_element_handle(shape);
+        const auto address=owner.box_cache_.getDevicePtr()+
+            std::size_t(handle)*32u+16u;
+        const auto view=owner.addresses_.resolve(address,sizeof(float));
+        float position=0.f;
+        owner.context_.download(view.buffer,view.offset,
+                                &position,sizeof(position));
+        return position;
+    }
+    static void write_resident_position_x(
+            SourceScOwnedGpuBroadphaseNative& owner,ShapeId shape,float value) {
+        const auto handle=owner.producer_->source_element_handle(shape);
+        const auto address=owner.box_cache_.getDevicePtr()+
+            std::size_t(handle)*32u+16u;
+        auto& uploads=owner.stream_.upload_scratch();
+        uploads.push_back({address,&value,sizeof(value)});
+        owner.stream_.queue_uploads(uploads);
+    }
+    static void inject_failed_touch(
+            SourceScOwnedGpuBroadphaseNative& owner,std::uint32_t edge) {
+        if(edge>=owner.device_pcm_touch_capacity())
+            throw std::runtime_error("Invalid Sc test contact EdgeIndex");
+        constexpr std::uint32_t failed_touch=0x80000001u;
+        const auto address=owner.device_pcm_touch_history()+
+            std::size_t(edge)*240u+72u;
+        auto& uploads=owner.stream_.upload_scratch();
+        uploads.push_back({address,&failed_touch,sizeof(failed_touch)});
+        owner.stream_.queue_uploads(uploads);
+    }
+    static SourceScDeviceIslandHeader read(SourceScOwnedGpuBroadphaseNative& owner) {
+        if(!owner.pcm_ || !owner.pcm_->device_island_work_address())
+            throw std::runtime_error("Device Sc task work was not queued");
+        // An ordered direct download observes this task result without
+        // touching the pending PCM witness DMA or its source tokens.
+        // Production Dy consumes the buffer without a host observation.
+        owner.stream_.wait_at_fetch();
+        const auto layout=owner.pcm_->device_island_layout();
+        const auto resolved=owner.addresses_.resolve(
+            owner.pcm_->device_island_work_address(),layout.bytes);
+        std::vector<std::byte> work(layout.bytes);
+        owner.context_.download(resolved.buffer,resolved.offset,
+                                work.data(),work.size());
+        SourceScDeviceIslandHeader header{};
+        std::memcpy(&header,work.data(),sizeof(header));
+        if(header.errors==0u) {
+            if(layout.admissions+
+                   std::uint64_t(header.source_edges)*
+                       sizeof(SourceScDeviceIslandAdmission)>work.size() ||
+               layout.response_order+
+                   std::uint64_t(header.admitted_edges)*4u>work.size() ||
+               layout.response_tokens+
+                   std::uint64_t(header.admitted_edges)*4u>work.size() ||
+               layout.response_extents+
+                   std::uint64_t(header.admitted_edges)*4u>work.size() ||
+               layout.response_prefixes+
+                   std::uint64_t(header.admitted_edges)*4u>work.size() ||
+               layout.body_order+
+                   std::uint64_t(header.responding_nodes)*4u>work.size())
+                throw std::runtime_error("Device Sc response work exceeds its allocation");
+            std::uint32_t previous_root=0u,previous_edge=0u;
+            std::uint32_t previous_kind=0u;
+            std::uint32_t previous_body_root=0u,previous_body=0u;
+            for(std::uint32_t i=0u;i<header.responding_nodes;++i) {
+                std::uint32_t node=0u;
+                std::memcpy(&node,work.data()+layout.body_order+i*4u,4u);
+                if(node>=((layout.counts-layout.roots)/sizeof(std::uint32_t)))
+                    throw std::runtime_error(
+                        "Device Sc body order references an invalid node");
+                std::uint32_t root=0u;
+                std::memcpy(&root,work.data()+layout.roots+node*4u,4u);
+                if(i!=0u && (root<previous_body_root ||
+                   (root==previous_body_root && node<=previous_body)))
+                    throw std::runtime_error(
+                        "Device Sc body order differs from canonical task roots");
+                previous_body_root=root;
+                previous_body=node;
+            }
+            std::uint32_t exact_prefix=0u;
+            for(std::uint32_t i=0u;i<header.admitted_edges;++i) {
+                if(layout.device_contact_prefix) {
+                    std::uint32_t row=0u,extent=0u;
+                    std::memcpy(&row,work.data()+layout.response_prefixes+i*4u,4u);
+                    std::memcpy(&extent,work.data()+layout.response_extents+i*4u,4u);
+                    if(row!=exact_prefix)
+                        throw std::runtime_error(
+                            "Sc numerical rows lost device source order");
+                    if((extent&0xc0000000u)==0x80000000u)
+                        exact_prefix+=extent&255u;
+                }
+                std::uint32_t edge=0u;
+                std::memcpy(&edge,work.data()+layout.response_order+i*4u,4u);
+                if(edge>=header.source_edges)
+                    throw std::runtime_error("Device Sc response referenced a missing source edge");
+                SourceScDeviceIslandAdmission record{};
+                std::memcpy(&record,work.data()+layout.admissions+
+                            std::size_t(edge)*sizeof(record),sizeof(record));
+                const std::uint32_t expected_tag=
+                    (record.kind&source_sc_device_island_joint_bit)==0u
+                        ?0xc0000000u:
+                        ((record.kind&source_sc_device_island_device_joint_bit)!=0u
+                            ?0x80000000u:0u);
+                std::uint32_t token=0u;
+                std::memcpy(&token,work.data()+layout.response_tokens+i*4u,4u);
+                const std::uint32_t kind_rank=
+                    (record.kind&source_sc_device_island_joint_bit)!=0u
+                        ?0u:1u;
+                if(record.island_root==0xffffffffu ||
+                   (record.kind&source_sc_device_island_no_response_bit)!=0u ||
+                   record.source_index>=0x40000000u ||
+                   token!=(expected_tag|record.source_index) ||
+                   (i!=0u && (record.island_root<previous_root ||
+                    (record.island_root==previous_root &&
+                     (kind_rank<previous_kind ||
+                      (kind_rank==previous_kind && edge<=previous_edge))))))
+                    throw std::runtime_error(
+                        "Device Sc response identity/order differs from source admission");
+                previous_root=record.island_root;
+                previous_edge=edge;
+                previous_kind=kind_rank;
+            }
+        }
+        const auto launch=owner.pcm_->device_island_indirect_args();
+        if(!launch)
+            throw std::runtime_error("Device Sc indirect task launch unavailable");
+        std::array<std::uint32_t,3> groups{};
+        owner.context_.download(launch->buffer,launch->offset,
+                                groups.data(),sizeof(groups));
+        if(groups!=std::array<std::uint32_t,3>{
+                header.dispatch_x,header.dispatch_y,header.dispatch_z})
+            throw std::runtime_error(
+                "Device Sc indirect launch differs from resident task header");
+        return header;
+    }
+};
+} // namespace fyzz::physx_gpu
 
 namespace fyzz::native {
 struct GpuPcmFrictionAnchorFixture {
+    static bool has_host_schedule(const Scene& scene) {
+        return !scene.gpu_dy_tasks_.empty() || !scene.gpu_dy_body_ordinals_.empty();
+    }
+    static std::size_t compact_host_schedule_result_bytes(const Scene& scene) {
+        const auto integrated=scene.gpu_dy_integration_inputs_.size();
+        return integrated*(52u+32u)+
+            scene.gpu_dy_tasks_.size()*sizeof(std::uint32_t)+
+            scene.gpu_dy_contact_forces_.size()*sizeof(float)+
+            scene.gpu_dy_friction_impulses_.size()*sizeof(GpuDyFrictionAnchorImpulse)+
+            scene.gpu_dy_patches_.size()*sizeof(std::uint32_t);
+    }
+    static bool actor_has_staged_source(const Scene& scene,BodyId id) {
+        return id<scene.gpu_dy_actor_stage_epochs_.size() &&
+            scene.gpu_dy_actor_stage_epochs_[id]==scene.gpu_dy_actor_stage_epoch_;
+    }
+    static void verify_pre_witness_immovable_sources(const Scene& scene) {
+        for(const auto manager_index:scene.indexed_managers_) {
+            const auto& manager=scene.manifolds_[manager_index];
+            if(!manager.friction_patch_count)continue;
+            for(const ShapeId shape:{manager.pair.a,manager.pair.b}) {
+                const BodyId body=scene.shapes_[shape].body;
+                if(scene.actors_[body].motion!=Scene::Motion::Dynamic &&
+                   !actor_has_staged_source(scene,body))
+                    throw std::runtime_error(
+                        "Responding contact omitted pre-witness immovable source");
+            }
+        }
+    }
+    static std::size_t compact_contact_source_bytes(const Scene& scene) {
+        return scene.gpu_dy_contact_prep_pairs_.size()*
+            sizeof(GpuDyCompactContactPrep);
+    }
+    static void verify_early_normal_contract(Scene& scene) {
+        Scene::PcmManifoldCache cache{};
+        GpuPcmBoxResult result{};
+        result.set_primitive(2u,false);
+        result.normal={0.f,1.f,0.f};
+        std::array<ContactPoint,4> contacts{};
+        contacts[0].normal={0.f,0.f,2.f};
+        const auto count=scene.publish_gpu_pcm_box_box(
+            result,cache,contacts,true,true);
+        const auto empty_count=scene.publish_gpu_pcm_box_box(
+            result,cache,{},true,true);
+        if(count!=2u || empty_count!=2u || !cache.initialized ||
+           contacts[0].normal.z!=2.f ||
+           contacts[0].normal.y!=0.f ||
+           contacts[0].position.y!=0.f ||
+           contacts[0].separation!=0.f ||
+           contacts[1].position.y!=0.f)
+            throw std::runtime_error(
+                "Deferred PCM allocated or modified host world contacts");
+        result.normal={};
+        bool rejected=false;
+        try {
+            scene.publish_gpu_pcm_box_box(
+                result,cache,contacts,true,true);
+        }catch(const std::overflow_error&) {
+            rejected=true;
+        }
+        if(!rejected)
+            throw std::runtime_error(
+                "Sc admitted a missing early PCM friction normal");
+    }
     static void verify_early_speculative_admission(
         const Scene& reference,const Scene& gpu) {
         if(!gpu.speculative_connectivity_prepared_)
@@ -54,6 +372,621 @@ struct GpuPcmFrictionAnchorFixture {
             }
         }
     }
+    static void verify_early_pcm_numerical_materials(const Scene& scene) {
+        if(scene.gpu_pcm_pairs_.empty() ||
+           scene.gpu_dy_candidate_sources_.size()!=
+               scene.gpu_dy_contact_prep_pairs_.size())
+            throw std::runtime_error(
+                "Resident PCM numerical preparation lacks candidate sources");
+        std::size_t pcm_source=0u;
+        for(std::size_t i=0u;i<scene.previous_pairs_.size();++i) {
+            const auto pair=scene.previous_pairs_[i];
+            const auto edge=scene.active_edge_handles_[i];
+            if(edge>=scene.island_edges_.size() ||
+               !(scene.island_edges_[edge].shapes==pair))
+                throw std::runtime_error(
+                    "Pre-witness numerical source differs from Sc candidate identity");
+            const auto reversed=scene.island_edges_[edge].gu_order_reversed;
+            const auto first=reversed?pair.b:pair.a;
+            const auto second=reversed?pair.a:pair.b;
+            const auto slot=scene.gpu_dy_contact_prep_indices_[i];
+            const auto expected_pcm=pcm_source<scene.gpu_pcm_pairs_.size() &&
+                scene.gpu_pcm_pairs_[pcm_source].candidate_ordinal==i
+                    ?static_cast<std::uint32_t>(pcm_source++)
+                    :0xffffffffu;
+            if(slot==0xffffffffu)continue;
+            if(slot>=scene.gpu_dy_candidate_sources_.size())
+                throw std::runtime_error(
+                    "Numerical source material has no compact record");
+            const auto& actual=scene.gpu_dy_candidate_sources_[slot].material;
+            const auto expected=scene.prepare_contact_material(first,second);
+            if((expected_pcm!=0xffffffffu &&
+                scene.gpu_pcm_pairs_[expected_pcm].edge!=edge) ||
+               !actual.prepared ||
+               actual.rest_distance!=expected.rest_distance ||
+               actual.pair_slop!=expected.pair_slop ||
+               actual.max_contact_impulse!=expected.max_contact_impulse ||
+               actual.max_penetration_bias!=expected.max_penetration_bias ||
+               actual.restitution!=expected.restitution ||
+               actual.damping!=expected.damping ||
+               actual.static_friction!=expected.static_friction ||
+               actual.dynamic_friction!=expected.dynamic_friction ||
+               actual.acceleration_spring!=expected.acceleration_spring ||
+               actual.disable_friction!=expected.disable_friction ||
+               actual.disable_strong_friction!=expected.disable_strong_friction)
+                throw std::runtime_error(
+                    "Sc candidate numerical source changed across witness publication");
+        }
+        if(pcm_source!=scene.gpu_pcm_pairs_.size())
+            throw std::runtime_error("Pre-witness numerical sources skipped PCM pairs");
+        std::size_t active_sources=0u,active_pcm_cursor=0u;
+        std::vector<bool> seen(scene.gpu_dy_contact_prep_pairs_.size(),false);
+        for(std::size_t i=0u;i<scene.previous_pairs_.size();++i) {
+            const auto pair=scene.previous_pairs_[i];
+            const auto edge=scene.active_edge_handles_[i];
+            const auto expected_pcm=active_pcm_cursor<scene.gpu_pcm_pairs_.size() &&
+                scene.gpu_pcm_pairs_[active_pcm_cursor].candidate_ordinal==i
+                ?static_cast<std::uint32_t>(active_pcm_cursor++):0xffffffffu;
+            const auto slot=scene.gpu_dy_contact_prep_indices_[i];
+            if(slot==0xffffffffu)continue;
+            if(slot>=scene.gpu_dy_contact_prep_pairs_.size() ||
+               slot>=scene.gpu_dy_contact_prep_sources_.size() ||
+               slot>=scene.gpu_dy_candidate_sources_.size() ||
+               scene.gpu_dy_contact_prep_sources_[slot]!=i ||
+               seen[slot] ||
+               scene.gpu_dy_contact_prep_pairs_[slot].pcm_pair_index!=expected_pcm ||
+               scene.gpu_dy_contact_prep_pairs_[slot].source_body0!=
+                   scene.shapes_[scene.island_edges_[edge].gu_order_reversed
+                       ?pair.b:pair.a].body ||
+               scene.gpu_dy_contact_prep_pairs_[slot].source_body1!=
+                   scene.shapes_[scene.island_edges_[edge].gu_order_reversed
+                       ?pair.a:pair.b].body)
+                throw std::runtime_error(
+                    "Dy compact preparation lost its Sc source mapping");
+            seen[slot]=true;
+            ++active_sources;
+        }
+        if(active_pcm_cursor!=scene.gpu_pcm_pairs_.size())
+            throw std::runtime_error("Compact Dy numerical sources omitted PCM candidates");
+        if(active_sources!=scene.gpu_dy_contact_prep_pairs_.size() ||
+           !std::all_of(seen.begin(),seen.end(),[](bool used) {return used;}))
+            throw std::runtime_error(
+                "Dy compact preparation has missing or unused source records");
+        for(const auto& request:scene.gpu_pcm_pairs_) {
+            const auto slot=scene.gpu_dy_contact_prep_indices_.at(
+                request.candidate_ordinal);
+            if(slot==0xffffffffu)continue;
+            const auto& actual=scene.gpu_dy_candidate_sources_.at(
+                slot).material;
+            const auto expected=scene.prepare_contact_material(
+                request.first,request.second);
+            if(!actual.prepared ||
+               actual.rest_distance!=expected.rest_distance ||
+               actual.pair_slop!=expected.pair_slop ||
+               actual.max_contact_impulse!=expected.max_contact_impulse ||
+               actual.max_penetration_bias!=expected.max_penetration_bias ||
+               actual.restitution!=expected.restitution ||
+               actual.damping!=expected.damping ||
+               actual.static_friction!=expected.static_friction ||
+               actual.dynamic_friction!=expected.dynamic_friction ||
+               actual.acceleration_spring!=expected.acceleration_spring ||
+               actual.disable_friction!=expected.disable_friction ||
+               actual.disable_strong_friction!=expected.disable_strong_friction)
+                throw std::runtime_error(
+                    "Resident PCM candidate material differs from authored input");
+        }
+        for(const auto& manifold:scene.manifolds_) {
+            if(manifold.pcm_result_index==0xffffffffu ||
+               !manifold.friction_patch_count)continue;
+            const auto index=manifold.pcm_result_index;
+            if(index>=scene.gpu_pcm_pairs_.size() ||
+               scene.gpu_pcm_pairs_[index].edge!=manifold.edge_handle)
+                throw std::runtime_error(
+                    "Resident PCM numerical material lost its source EdgeIndex");
+            const auto prep_index=scene.gpu_dy_contact_prep_indices_[
+                manifold.candidate_ordinal];
+            const auto& material=scene.gpu_dy_candidate_sources_.at(
+                prep_index).material;
+            if(prep_index>=scene.gpu_dy_contact_prep_pairs_.size())
+                throw std::runtime_error(
+                    "Resident PCM material did not enter numerical contact prep");
+            const auto& prep=scene.gpu_dy_contact_prep_pairs_[prep_index];
+            if(prep.pcm_pair_index!=index ||
+               prep.pcm_edge!=manifold.edge_handle ||
+               prep.rest_distance!=material.rest_distance ||
+               prep.pair_slop!=material.pair_slop ||
+               prep.max_contact_impulse!=material.max_contact_impulse ||
+               prep.max_penetration_bias!=material.max_penetration_bias ||
+               prep.restitution!=material.restitution ||
+               prep.damping!=material.damping ||
+               prep.acceleration_spring!=
+                   static_cast<std::uint32_t>(material.acceleration_spring))
+                throw std::runtime_error(
+                    "Resident PCM numerical preparation recombined contact inputs");
+        }
+    }
+    static void verify_cpu_dy_omits_device_materials(const Scene& scene) {
+        if(!scene.gpu_dy_candidate_sources_.empty())
+            throw std::runtime_error(
+                "CPU Dy prepared unused GPU numerical sources");
+    }
+    static std::size_t expected_mixed_contact_source_count(const Scene& scene) {
+        const bool early=scene.gpu_dy_source_body_order_;
+        std::size_t count=early?scene.gpu_pcm_pairs_.size():0u;
+        for(const auto& manager:scene.manifolds_)
+            if(manager.friction_patch_count &&
+               (!early || manager.pcm_result_index==0xffffffffu))
+                ++count;
+        return count;
+    }
+    static std::array<std::size_t,3> numerical_prep_sizes(
+        const Scene& scene) {
+        return {scene.gpu_dy_contact_prep_pairs_.size(),
+                scene.gpu_dy_contact_prep_sources_.size(),
+                scene.gpu_dy_contact_prep_indices_.size()};
+    }
+    static void verify_collision_only_omits_numerical_preps(
+        const Scene& scene,std::array<std::size_t,3> previous) {
+        if(numerical_prep_sizes(scene)!=previous)
+            throw std::runtime_error(
+                "Collision-only PCM modified numerical preparation records");
+    }
+    static bool has_early_device_admission(const Scene& scene) {
+        return scene.gpu_dy_early_islands_;
+    }
+    static bool has_source_body_order(const Scene& scene) {
+        return scene.gpu_dy_source_body_order_;
+    }
+    static bool has_identity_device_body_order(const Scene& scene) {
+        if(!scene.gpu_dy_source_body_order_ ||
+           !scene.gpu_dy_early_joint_edges_.empty() ||
+           scene.gpu_dy_early_actor_ids_.size()!=scene.solver_active_ids_.size())
+            return false;
+        for(std::size_t i=0u;i<scene.gpu_dy_early_actor_ids_.size();++i) {
+            const auto id=scene.gpu_dy_early_actor_ids_[i];
+            if(scene.actors_[id].solver_row_generation!=
+                   scene.solver_preparation_generation_ ||
+               scene.actors_[id].solver_row_index!=i)
+                return false;
+        }
+        return true;
+    }
+    static void verify_device_numerical_response_ownership(
+        const Scene& scene) {
+        if(!scene.gpu_dy_early_islands_ ||
+           !scene.gpu_dy_responding_island_count_ ||
+           !scene.ordered_constraints_.empty() ||
+           scene.gpu_dy_island_edges_.empty())
+            throw std::runtime_error(
+                "Early device Sc graph retained host numerical descriptors");
+    }
+    static void verify_gpu_source_candidate_descriptors(
+        const Scene& scene) {
+        verify_pre_witness_immovable_sources(scene);
+        if(scene.gpu_dy_manifolds_.size()!=scene.previous_pairs_.size())
+            throw std::runtime_error(
+                "GPU Dy contact table does not cover source candidates");
+        for(const auto& manager_index:scene.indexed_managers_) {
+            const auto& manager=scene.manifolds_[manager_index];
+            const auto candidate=manager.candidate_ordinal;
+            if(candidate>=scene.gpu_dy_manifolds_.size() ||
+               ((manager.friction_patch_count || !scene.gpu_dy_source_body_order_) &&
+                scene.gpu_dy_manifolds_[candidate].patch_count!=
+                   manager.friction_patch_count))
+                throw std::runtime_error(
+                    "GPU Dy numerical manager lost its source candidate");
+        }
+        for(const auto& descriptor:scene.ordered_constraints_) {
+            if((descriptor.row_count&255u)!=0u)continue;
+            const auto candidate=descriptor.index;
+            if(candidate>=scene.previous_pairs_.size() ||
+               candidate>=scene.active_edge_handles_.size())
+                throw std::runtime_error(
+                    "GPU Dy descriptor references a non-candidate manager");
+            const auto edge=scene.active_edge_handles_[candidate];
+            if(edge>=scene.manifold_by_edge_.size() ||
+               scene.manifold_by_edge_[edge].generation!=
+                   scene.manifold_lookup_generation_ ||
+               scene.manifold_by_edge_[edge].index>=scene.manifolds_.size())
+                throw std::runtime_error(
+                    "GPU Dy candidate has no published Sc contact identity");
+            const auto& manager=scene.manifolds_[
+                scene.manifold_by_edge_[edge].index];
+            if(manager.candidate_ordinal!=candidate ||
+               manager.edge_handle!=edge ||
+               !(manager.pair==scene.previous_pairs_[candidate]) ||
+               scene.gpu_dy_manifolds_[candidate].patch_count!=
+                   manager.friction_patch_count)
+                throw std::runtime_error(
+                    "GPU Dy candidate and Sc contact preparation disagree");
+        }
+    }
+    static bool has_prewitness_solve(const Scene& scene) noexcept {
+        return scene.gpu_dy_prewitness_solve_;
+    }
+    static void verify_pre_witness_device_admission(const Scene& scene) {
+        verify_pre_witness_immovable_sources(scene);
+        const auto stamped=std::count(
+            scene.gpu_dy_actor_stage_epochs_.begin(),
+            scene.gpu_dy_actor_stage_epochs_.end(),
+            scene.gpu_dy_actor_stage_epoch_);
+        const auto joints=scene.gpu_dy_early_joint_edges_.size();
+        const bool source_body_order=scene.gpu_dy_source_body_order_;
+        if(!scene.gpu_dy_early_islands_ ||
+           scene.gpu_dy_island_edges_.size()!=scene.previous_pairs_.size()+joints ||
+           scene.gpu_dy_early_actor_ids_.empty() ||
+           (scene.gpu_dy_island_node_flags_.size()!=
+                scene.gpu_dy_early_actor_ids_.size() &&
+            scene.gpu_dy_island_node_flags_.size()!=
+                2u*scene.gpu_dy_early_actor_ids_.size()) ||
+           !std::is_sorted(scene.gpu_dy_early_actor_ids_.begin(),
+                           scene.gpu_dy_early_actor_ids_.end()) ||
+           stamped!=scene.gpu_dy_staged_actor_count_ ||
+           std::any_of(scene.gpu_dy_early_actor_ids_.begin(),
+                       scene.gpu_dy_early_actor_ids_.end(),[&](BodyId id) {
+               return !actor_has_staged_source(scene,id);
+           }))
+            throw std::runtime_error(
+                "Sc did not queue compact actor and contact identities before Gu");
+        const auto& owner=*static_cast<const
+            physx_gpu::SourceScOwnedGpuBroadphaseNative*>(
+                scene.gpu_broadphase_.get());
+        const auto bytes=scene.gpu_dy_island_edges_.size()*
+            sizeof(GpuDyIslandEdge)+
+            scene.gpu_dy_island_node_flags_.size()*sizeof(std::uint32_t);
+        const auto direct=owner.sc_island_source_direct_bytes();
+        const auto staged=owner.sc_island_source_upload_bytes();
+        if(direct+staged!=bytes ||
+           (physx_gpu::SourceScDeviceIslandFixture::shared_frame_input(owner)
+                ?(direct!=bytes || staged!=0u)
+                :(staged!=bytes || direct!=0u)))
+            throw std::runtime_error(
+                "Pre-witness Sc numerical graph used an unexpected source transfer");
+        std::size_t previous_row=0u;
+        bool seen_row=false;
+        for(const BodyId id:scene.gpu_dy_early_actor_ids_) {
+            const auto& actor=scene.actors_[id];
+            if(actor.solver_row_generation!=
+               scene.solver_preparation_generation_)continue;
+            if(actor.solver_row_index>=scene.solver_rows_.size() ||
+               (seen_row && actor.solver_row_index<=previous_row))
+                throw std::runtime_error(
+                    "Early Sc dynamic solver rows lost stable candidate order");
+            previous_row=actor.solver_row_index;
+            seen_row=true;
+        }
+        constexpr auto veto=physx_gpu::source_sc_device_island_kinematic_awake_bit;
+        std::size_t joint_row=0u;
+        for(std::size_t i=0u;i<scene.gpu_dy_island_edges_.size();++i) {
+            const auto& edge=scene.gpu_dy_island_edges_[i];
+            if(i<joints) {
+                if(edge.edge_index!=scene.gpu_dy_early_joint_edges_[i] ||
+                   edge.source_index!=joint_row || (edge.kind&~veto)!=17u)
+                    throw std::runtime_error(
+                        "Early device Sc graph lost its typed joint row");
+                const auto& joint=scene.constraint_records_[
+                    scene.island_edges_[edge.edge_index].constraint_id];
+                joint_row+=joint.kind==Scene::JointKind::Distance?1u:
+                    joint.kind==Scene::JointKind::Spherical?3u:
+                    joint.kind==Scene::JointKind::Fixed?6u:5u;
+            } else {
+                const auto candidate=i-joints;
+                const auto reversed=scene.island_edges_[
+                    scene.active_edge_handles_[candidate]].gu_order_reversed;
+                const auto pair=scene.previous_pairs_[candidate];
+                const auto a=scene.shapes_[pair.a].body;
+                const auto b=scene.shapes_[pair.b].body;
+                const bool responds=std::min(
+                    scene.actors_[a].dynamics.max_contact_impulse,
+                    scene.actors_[b].dynamics.max_contact_impulse)!=0.f;
+                const auto expected_kind=(reversed
+                    ?physx_gpu::source_sc_device_island_reverse_contact_bit:0u)|
+                    (responds?0u:physx_gpu::source_sc_device_island_no_response_bit);
+                const auto check_node=[&](BodyId id,std::uint32_t node) {
+                    return scene.actors_[id].motion==Scene::Motion::Dynamic
+                        ?node<scene.gpu_dy_early_actor_ids_.size() &&
+                         scene.gpu_dy_early_actor_ids_[node]==id
+                        :node==0xffffffffu;
+                };
+                if(edge.edge_index!=scene.active_edge_handles_[candidate] ||
+                   edge.source_index!=candidate || (edge.kind&~veto)!=expected_kind ||
+                   !check_node(a,edge.node_a) || !check_node(b,edge.node_b))
+                    throw std::runtime_error(
+                        "Early device Sc graph lost its contact connectivity");
+            }
+            for(const auto node:{edge.node_a,edge.node_b})
+                if(node!=0xffffffffu &&
+                   node>=scene.gpu_dy_early_actor_ids_.size())
+                    throw std::runtime_error(
+                        "Early device Sc contact references an absent compact node");
+        }
+        for(std::size_t i=0u;i<scene.gpu_dy_early_actor_ids_.size();++i) {
+            const BodyId id=scene.gpu_dy_early_actor_ids_[i];
+            const auto it=std::find(
+                scene.solver_active_ids_.begin(),
+                scene.solver_active_ids_.end(),id);
+            const auto expected=it==scene.solver_active_ids_.end()
+                ?0xffffffffu:static_cast<std::uint32_t>(
+                    scene.actors_[id].solver_row_index);
+            if(source_body_order) {
+                const auto free=std::find(scene.gpu_dy_free_ids_.begin(),
+                    scene.gpu_dy_free_ids_.end(),id);
+                const bool active=expected!=0xffffffffu ||
+                    free!=scene.gpu_dy_free_ids_.end();
+                if(i>=scene.gpu_dy_integration_inputs_.size() ||
+                   ((scene.gpu_dy_integration_inputs_[i].active&1u)!=0u)!=active ||
+                   (active && scene.gpu_dy_integration_inputs_[i].source_actor!=id) ||
+                   (free!=scene.gpu_dy_free_ids_.end() &&
+                    scene.gpu_dy_free_ordinals_[free-scene.gpu_dy_free_ids_.begin()]!=i))
+                    throw std::runtime_error(
+                        "Device Sc source ordinal does not own its numerical body");
+                if(active && (scene.gpu_dy_integrated_poses_[i].valid!=1u ||
+                    std::count_if(scene.gpu_dy_integration_inputs_.begin(),
+                        scene.gpu_dy_integration_inputs_.end(),
+                        [id](const auto& input) {
+                            return (input.active&1u) && input.source_actor==id;
+                        })!=1))
+                    throw std::runtime_error(
+                        "Device Sc candidate integrated more than once or lost its pose");
+            }
+        }
+        if(source_body_order) {
+            if(scene.gpu_dy_bodies_.size()!=scene.gpu_dy_early_actor_ids_.size()+
+                scene.gpu_dy_joint_kinematic_ids_.size())
+                throw std::runtime_error(
+                    "Device numerical storage lost its pre-witness body capacity");
+            if(scene.gpu_dy_prewitness_solve_)
+                for(std::size_t i=0u;i<scene.gpu_dy_joint_kinematic_ids_.size();++i) {
+                    const auto ordinal=scene.gpu_dy_early_actor_ids_.size()+i;
+                    const auto& input=scene.gpu_dy_integration_inputs_[ordinal];
+                    if(input.active!=16u ||
+                       input.source_actor!=scene.gpu_dy_joint_kinematic_ids_[i] ||
+                       scene.gpu_dy_integrated_poses_[ordinal].valid!=0u)
+                        throw std::runtime_error(
+                            "Early Dy kinematic endpoint acquired integration ownership");
+                }
+            constexpr auto invalid=std::numeric_limits<std::uint32_t>::max();
+            for(std::size_t i=0u;i<scene.gpu_dy_contact_prep_pairs_.size();++i) {
+                const auto source=scene.gpu_dy_contact_prep_sources_[i];
+                if(source>=scene.previous_pairs_.size() ||
+                   joints+source>=scene.gpu_dy_island_edges_.size())
+                    throw std::runtime_error(
+                        "Device contact preparation has no source graph edge");
+                const auto& edge=scene.gpu_dy_island_edges_[joints+source];
+                if(edge.source_index!=source ||
+                   edge.edge_index!=scene.active_edge_handles_[source])
+                    throw std::runtime_error(
+                        "Device contact preparation lost its Sc EdgeIndex");
+                const auto& pair=scene.previous_pairs_[source];
+                const bool reversed=scene.island_edges_[edge.edge_index].
+                    gu_order_reversed;
+                const auto& prep=scene.gpu_dy_contact_prep_pairs_[i];
+                const auto expected0=reversed?edge.node_b:edge.node_a;
+                const auto expected1=reversed?edge.node_a:edge.node_b;
+                const auto numerical_source=[invalid](std::uint32_t node) {
+                    return node==invalid
+                        ?invalid:native::gpu_dy_unresolved_solver_ordinal;
+                };
+                if(scene.gpu_dy_candidate_sources_[i].material.max_contact_impulse==0.f)
+                    continue;
+                if(prep.solver_ordinal0!=numerical_source(expected0) ||
+                   prep.solver_ordinal1!=numerical_source(expected1) ||
+                   prep.source_body0!=scene.shapes_[
+                       reversed?pair.b:pair.a].body ||
+                   prep.source_body1!=scene.shapes_[
+                       reversed?pair.a:pair.b].body)
+                    throw std::runtime_error(
+                        "Device contact prep reconstructed a host solver ordinal");
+                for(const auto [row,id]:{
+                    std::pair{expected0,prep.source_body0},
+                    std::pair{expected1,prep.source_body1}})
+                    if(row!=invalid &&
+                       (row>=scene.gpu_dy_early_actor_ids_.size() ||
+                        scene.gpu_dy_early_actor_ids_[row]!=id))
+                        throw std::runtime_error(
+                            "Device contact ordinal addresses another actor");
+            }
+        } else if(joints==0u)
+            for(const auto& prep:scene.gpu_dy_contact_prep_pairs_)
+                if(prep.solver_ordinal0!=0xffffffffu ||
+                   prep.solver_ordinal1!=0xffffffffu)
+                    throw std::runtime_error(
+                        "Host-scheduled contact retains a device source ordinal");
+        if(joints<scene.indexed_joints_.size())
+            throw std::runtime_error(
+                "Early device Sc joint graph omitted Dy source membership");
+        if(source_body_order) {
+            if(joint_row!=scene.gpu_dy_joint_row_count_)
+                throw std::runtime_error("Early Sc joint rows were not prepared before witnesses");
+            for(std::size_t i=0u;i<joints;++i) {
+                const auto& edge=scene.gpu_dy_island_edges_[i];
+                const auto& joint=scene.constraint_records_[
+                    scene.island_edges_[edge.edge_index].constraint_id];
+                const auto& source=scene.gpu_dy_joint_sources_[i];
+                const auto& input=scene.gpu_dy_joint_inputs_[source.source_index];
+                if(source.descriptor.index!=edge.source_index ||
+                   input.source_slot!=scene.island_edges_[edge.edge_index].constraint_id ||
+                   input.source_generation!=joint.generation)
+                    throw std::runtime_error(
+                        "Device joint token does not address its authored source");
+            }
+        }
+    }
+    static void verify_resident_mass_inputs(const Scene& scene) {
+        if(scene.gpu_dy_bodies_.size()!=(scene.gpu_dy_source_body_order_
+               ?scene.gpu_dy_early_actor_ids_.size()+
+                    scene.gpu_dy_joint_kinematic_ids_.size()
+               :scene.solver_rows_.size()))
+            throw std::runtime_error(
+                "GPU world-motion results lack the admitted body count");
+        for(const auto& body:scene.gpu_dy_bodies_)
+            if(body.inverse_mass!=0.0f)
+                throw std::runtime_error(
+                    "GPU world-motion admission copied host inverse masses");
+        for(const BodyId id:scene.solver_active_ids_) {
+            const auto& actor=scene.actors_[id];
+            const auto ordinal=scene.gpu_dy_body_index(id);
+            if(ordinal>=scene.gpu_dy_integration_inputs_.size() ||
+               scene.gpu_dy_integration_inputs_[ordinal].source_inverse_mass!=
+                   actor.inverse_mass)
+                throw std::runtime_error(
+                    "GPU resident actor input lost its authoritative inverse mass");
+        }
+    }
+    static void verify_resident_joint_rows(const Scene& scene) {
+        const auto& edges=scene.gpu_dy_source_body_order_
+            ?scene.gpu_dy_early_joint_edges_:scene.indexed_joints_;
+        if(!scene.joint_rows_.empty() ||
+           scene.gpu_dy_joint_inputs_.size()!=edges.size() ||
+           scene.gpu_dy_joint_sources_.size()!=edges.size())
+            throw std::runtime_error(
+                "GPU joint preparation retained CPU rows or omitted compact sources");
+        std::size_t expected_rows=0u;
+        for(std::size_t i=0u;i<edges.size();++i) {
+            const auto& edge=scene.island_edges_[edges[i]];
+            const auto& joint=scene.constraint_records_[edge.constraint_id];
+            const auto& source=scene.gpu_dy_joint_sources_[i];
+            if(source.source_index>=scene.gpu_dy_joint_inputs_.size())
+                throw std::runtime_error("GPU joint source index exceeds authored inputs");
+            const auto& input=scene.gpu_dy_joint_inputs_[source.source_index];
+            const auto count=joint.kind==Scene::JointKind::Distance?1u:
+                joint.kind==Scene::JointKind::Spherical?3u:
+                joint.kind==Scene::JointKind::Fixed?6u:5u;
+            if(source.descriptor.index!=expected_rows ||
+               (source.descriptor.row_count&255u)!=count ||
+               input.source_slot!=edge.constraint_id ||
+               input.source_generation!=joint.generation)
+                throw std::runtime_error(
+                    "Compact GPU joint source changed logical row or constraint identity");
+            expected_rows+=count;
+        }
+        if(scene.gpu_dy_joint_row_count_!=expected_rows)
+            throw std::runtime_error("GPU joint source extent differs from numerical rows");
+    }
+    static void verify_device_partition_source(const Scene& scene) {
+        const auto& edges=scene.gpu_dy_island_edges_;
+        if(edges.size()!=
+               scene.indexed_joints_.size()+scene.indexed_managers_.size() ||
+           scene.gpu_dy_island_node_flags_.size()!=scene.solver_rows_.size() ||
+           !scene.ordered_constraints_.empty())
+            throw std::runtime_error(
+                "Source Dy partition retained host numerical descriptors");
+        for(const BodyId id:scene.solver_active_ids_) {
+            const auto index=scene.actors_[id].solver_row_index;
+            if(index>=scene.gpu_dy_island_node_flags_.size() ||
+               (scene.gpu_dy_island_node_flags_[index]&(1u<<16u))==0u)
+                throw std::runtime_error(
+                    "Device Sc numerical body lost its responding ordinal");
+        }
+        const auto responds=[&](BodyId id0,BodyId id1) {
+            const auto& a=scene.actors_[id0];
+            const auto& b=scene.actors_[id1];
+            const bool dynamic_a=a.motion==Scene::Motion::Dynamic;
+            const bool dynamic_b=b.motion==Scene::Motion::Dynamic;
+            return (dynamic_a || dynamic_b) &&
+                (!dynamic_a || !a.sleeping) &&
+                (!dynamic_b || !b.sleeping);
+        };
+        std::size_t ordinal=0u,joint=0u,manager=0u,joint_row=0u;
+        std::size_t descriptor=0u;
+        for(const auto& task:scene.solver_tasks_) {
+            for(;joint<task.joint_end;++joint) {
+                const auto id=scene.indexed_joints_[joint];
+                const auto& graph=scene.island_edges_[id];
+                const auto& source=scene.constraint_records_[graph.constraint_id];
+                const auto& entry=edges[ordinal++];
+                const std::size_t rows=source.kind==Scene::JointKind::Distance
+                    ?1u:source.kind==Scene::JointKind::Spherical
+                        ?3u:source.kind==Scene::JointKind::Fixed?6u:5u;
+                const bool admitted=responds(graph.pair.a,graph.pair.b);
+                if(admitted)++descriptor;
+                if(entry.edge_index!=id ||
+                   entry.kind!=(admitted?17u:3u) ||
+                   (admitted && entry.source_index!=joint_row))
+                    throw std::runtime_error(
+                        "Source Dy partition reordered typed joint identities");
+                joint_row+=rows;
+            }
+            for(;manager<task.manager_end;++manager) {
+                const auto index=scene.indexed_managers_[manager];
+                const auto& m=scene.manifolds_[index];
+                const auto& entry=edges[ordinal++];
+                const auto& a=scene.actors_[scene.shapes_[m.pair.a].body];
+                const auto& b=scene.actors_[scene.shapes_[m.pair.b].body];
+                const bool admitted=responds(
+                    scene.shapes_[m.pair.a].body,
+                    scene.shapes_[m.pair.b].body);
+                if(admitted)++descriptor;
+                const bool numerical=admitted &&
+                    std::min(a.dynamics.max_contact_impulse,
+                             b.dynamics.max_contact_impulse)!=0.0f;
+                if(entry.edge_index!=m.edge_handle ||
+                   entry.source_index!=m.candidate_ordinal ||
+                   entry.kind!=(numerical?0u:2u))
+                    throw std::runtime_error(
+                        "Source Dy partition changed contact response ownership");
+            }
+            if(descriptor!=task.constraint_end)
+                throw std::runtime_error(
+                    "Device Sc source identity order differs from Dy task order");
+        }
+        if(ordinal!=edges.size() ||
+           joint_row!=scene.gpu_dy_joint_row_count_)
+            throw std::runtime_error(
+                "Device Sc numerical source table has unconsumed records");
+    }
+    static std::string describe_dy_force_ownership(const Scene& scene) {
+        std::string result=" forces=";
+        for(const auto force:scene.gpu_dy_contact_forces_)
+            result+=" "+std::to_string(force);
+        for(const auto& m:scene.manifolds_) {
+            result+=" [edge="+std::to_string(m.edge_handle)+
+                " gu="+std::to_string(m.contact_offset)+
+                " dy="+std::to_string(m.solver_offset)+
+                " count="+std::to_string(m.count)+
+                " candidate="+std::to_string(m.candidate_ordinal)+
+                " pcm="+std::to_string(m.pcm_result_index)+"]";
+        }
+        return result;
+    }
+    static void verify_device_admitted_contact_sources(const Scene& scene) {
+        const auto admitted=
+            scene.gpu_broadphase_->gpu_dy_admitted_contact_sources();
+        if(!scene.gpu_broadphase_->gpu_dy_admitted_response_tokens().empty())
+            throw std::runtime_error(
+                "Production Sc downloaded redundant response tokens");
+        if(admitted.size()!=(scene.previous_pairs_.size()+31u)/32u)
+            throw std::runtime_error(
+                "Resident Sc contact mask does not cover source candidates");
+        for(const auto& manager:scene.manifolds_) {
+            const auto candidate=manager.candidate_ordinal;
+            if(candidate>=scene.previous_pairs_.size() ||
+               !(scene.previous_pairs_[candidate]==manager.pair))
+                throw std::runtime_error(
+                    "Resident contact manager lost its Sc candidate source");
+            const bool expected=
+                (admitted[candidate/32u]&(1u<<(candidate%32u)))!=0u;
+            if(scene.gpu_dy_admits_contact(manager)!=expected)
+                throw std::runtime_error(
+                    "Sc contact writeback did not consume candidate admission");
+        }
+    }
+    static void verify_active_reverse_indices(const Scene& scene) {
+        const auto verify=[](const auto& graph) {
+            for(std::size_t i=0;i<graph.active_nodes.size();++i)
+                if(graph.active_node_index[graph.active_nodes[i]]!=i)
+                    throw std::runtime_error("Source active island reverse index lost node order");
+            for(std::size_t id=0;id<graph.active_node_index.size();++id) {
+                const auto index=graph.active_node_index[id];
+                if(index!=Scene::invalid_instance &&
+                   (index>=graph.active_nodes.size() ||
+                    graph.active_nodes[index]!=id))
+                    throw std::runtime_error("Source active island reverse index retained an inactive node");
+            }
+        };
+        verify(scene.speculative_islands_);
+        verify(scene.accurate_islands_);
+    }
     static std::uint32_t contact_manager_edge(const Scene& scene,Pair shapes) {
         return scene.contact_edge_index(shapes);
     }
@@ -62,43 +995,508 @@ struct GpuPcmFrictionAnchorFixture {
     }
     static void verify_pcm_contact_arena(const Scene& scene) {
         const auto* base=scene.contact_points_.data();
+        std::size_t next=0u;
         for(const auto& manager:scene.manifolds_) {
-            if(manager.pcm_result_index==
-               std::numeric_limits<std::uint32_t>::max())continue;
-            if(manager.count==0u ||
-               manager.contact_offset>scene.contact_points_.size() ||
-               manager.count>scene.contact_points_.size()-manager.contact_offset ||
+            if(!manager.count || manager.contact_offset!=next ||
+               next>scene.contact_points_.size() ||
+               manager.count>scene.contact_points_.size()-next ||
                manager.points.size()!=manager.count ||
-               manager.points.data()!=base+manager.contact_offset)
+               manager.points.data()!=base+next)
                 throw std::runtime_error(
-                    "Source GPU PCM published outside its Sc Gu contact arena");
+                    "Sc published noncontiguous Gu and PCM contact ranges");
+            next+=manager.count;
         }
+        if(next!=scene.contact_points_.size())
+            throw std::runtime_error(
+                "Sc retained speculative GPU PCM point reservations");
+    }
+    static std::size_t expected_pcm_friction_rows(
+            const Scene& scene,std::size_t pcm) {
+        const auto& request=scene.gpu_pcm_pairs_.at(pcm);
+        const auto& source=scene.gpu_dy_candidate_sources_.at(pcm);
+        if(source.material.disable_friction)return 0u;
+        return request.candidate_capacity==1u &&
+            source.retained_count==0u &&
+            source.retained_single_patch==0xffffffffu?2u:4u;
+    }
+    static void verify_pre_witness_pcm_capacity(const Scene& scene,
+                                                std::size_t expected_contacts) {
+        std::size_t expected_friction=0u;
+        for(std::size_t i=0u;i<scene.gpu_pcm_pairs_.size();++i) {
+            const auto& source=scene.gpu_dy_candidate_sources_.at(i);
+            if(source.friction_begin!=expected_friction)
+                throw std::runtime_error("PCM friction source windows are not contiguous");
+            expected_friction+=expected_pcm_friction_rows(scene,i);
+        }
+        if(!scene.gpu_dy_source_body_order_ ||
+           scene.gpu_dy_prewitness_contact_rows_!=expected_contacts ||
+           scene.gpu_dy_prewitness_friction_rows_!=expected_friction ||
+           scene.prepared_contact_rows_!=expected_contacts ||
+           scene.prepared_friction_rows_!=expected_friction)
+            throw std::runtime_error(
+                "Early PCM numerical windows differ from source capacity: normal="+
+                std::to_string(scene.gpu_dy_prewitness_contact_rows_)+"/"+
+                std::to_string(scene.prepared_contact_rows_)+" expected="+
+                std::to_string(expected_contacts)+" friction="+
+                std::to_string(scene.gpu_dy_prewitness_friction_rows_)+"/"+
+                std::to_string(scene.prepared_friction_rows_)+" expected="+
+                std::to_string(expected_friction));
+        if(scene.gpu_dy_candidate_sources_compacted_ ||
+           scene.gpu_dy_contact_prep_pairs_.size()<scene.gpu_pcm_pairs_.size())
+            throw std::runtime_error("Early PCM source prefix was compacted");
+        for(std::size_t i=0u;i<scene.gpu_pcm_pairs_.size();++i) {
+            const auto source=scene.gpu_pcm_pairs_[i].candidate_ordinal;
+            const auto& manager=scene.gpu_dy_manifolds_[source];
+            if(scene.gpu_dy_contact_prep_indices_[source]!=i ||
+               scene.gpu_dy_contact_prep_pairs_[i].pcm_pair_index!=i ||
+               manager.prep_index!=i || manager.patch_offset!=i ||
+               manager.patch_count!=1u)
+                throw std::runtime_error("PCM response lost its original preparation slot");
+        }
+        std::vector<bool> published(expected_contacts,false);
+        for(const auto index:scene.indexed_managers_) {
+            const auto& m=scene.manifolds_[index];
+            if(!m.friction_patch_count)continue;
+            if(m.solver_offset>published.size() ||
+               m.count>published.size()-m.solver_offset)
+                throw std::runtime_error("PCM result window exceeds source capacity");
+            for(std::size_t j=0u;j<m.count;++j) {
+                if(published[m.solver_offset+j])
+                    throw std::runtime_error("PCM source result windows overlap");
+                published[m.solver_offset+j]=true;
+            }
+        }
+        for(std::size_t i=0u;i<published.size();++i)
+            if(!published[i] && scene.gpu_dy_contact_forces_[i]!=0.f)
+                throw std::runtime_error("Unadmitted PCM source returned a normal force");
     }
     static void verify_device_contact_order(const Scene& scene,
                                             bool require_pcm,
                                             bool require_cpu) {
         std::size_t pcm_count=0u,cpu_count=0u;
-        for(const auto index:scene.indexed_managers_) {
+        std::size_t numerical_end=scene.gpu_dy_source_body_order_
+            ?scene.gpu_dy_prewitness_contact_rows_:0u;
+        auto numerical_managers=scene.indexed_managers_;
+        if(scene.gpu_dy_prewitness_solve_)
+            std::sort(numerical_managers.begin(),numerical_managers.end(),
+                [&](auto a,auto b) {
+                    return scene.manifolds_[a].candidate_ordinal<
+                           scene.manifolds_[b].candidate_ordinal;
+                });
+        for(const auto index:numerical_managers) {
             const auto& manager=scene.manifolds_[index];
             if(!manager.friction_patch_count)continue;
+            if((!scene.gpu_dy_source_body_order_ ||
+                manager.pcm_result_index==0xffffffffu) &&
+               manager.solver_offset!=numerical_end)
+                throw std::runtime_error(
+                    "GPU Dy source numerical row reservation lost manager order");
             if(manager.pcm_result_index==
-               std::numeric_limits<std::uint32_t>::max())
+               std::numeric_limits<std::uint32_t>::max()) {
                 cpu_count+=manager.count;
-            else pcm_count+=manager.count;
+                numerical_end+=manager.count;
+            }else {
+                if(manager.pcm_result_index>=scene.gpu_pcm_pairs_.size())
+                    throw std::runtime_error(
+                        "GPU Dy reserved rows for an unknown PCM source");
+                const auto& request=scene.gpu_pcm_pairs_[
+                    manager.pcm_result_index];
+                const auto capacity=request.candidate_capacity==1u?1u:4u;
+                if(manager.count>capacity ||
+                   manager.friction_patch_count!=1u)
+                    throw std::runtime_error(
+                        "GPU Dy PCM capacity disagrees with published Gu contacts");
+                pcm_count+=manager.count;
+                if(scene.gpu_dy_source_body_order_) {
+                    const auto slot=scene.gpu_dy_contact_prep_indices_[
+                        manager.candidate_ordinal];
+                    const auto& source=scene.gpu_dy_candidate_sources_[slot];
+                    if(manager.solver_offset!=source.contact_begin ||
+                       manager.solver_offset>scene.gpu_dy_prewitness_contact_rows_ ||
+                       capacity>scene.gpu_dy_prewitness_contact_rows_-manager.solver_offset)
+                        throw std::runtime_error(
+                            "PCM manager lost its pre-witness numerical range");
+                    const auto& patch=scene.friction_patches_[
+                        manager.friction_patch_offset];
+                    if(!patch.disable_friction &&
+                       (patch.row_offset!=source.friction_begin ||
+                        patch.row_offset>scene.gpu_dy_prewitness_friction_rows_ ||
+                        expected_pcm_friction_rows(scene,manager.pcm_result_index)>
+                            scene.gpu_dy_prewitness_friction_rows_-patch.row_offset))
+                        throw std::runtime_error(
+                            "PCM friction lost its pre-witness numerical range");
+                }else numerical_end+=manager.count;
+                const auto patchIndex=scene.gpu_dy_manifolds_[
+                    manager.candidate_ordinal].patch_offset;
+                if(scene.gpu_dy_source_body_order_ &&
+                   patchIndex!=manager.pcm_result_index)
+                    throw std::runtime_error(
+                        "PCM numerical patch address depends on public cache order");
+                if(patchIndex>=scene.gpu_dy_patches_.size())
+                    throw std::runtime_error(
+                        "Device PCM numerical patch has no result");
+                const auto& patch=scene.gpu_dy_patches_[patchIndex];
+                const auto extent=patch.reserved;
+                if(scene.gpu_dy_manifolds_[
+                       manager.candidate_ordinal].contact_count!=0u ||
+                   patch.contact_count!=manager.count ||
+                   (extent&physx_gpu::source_dy_pcm_extent_valid_bit)==0u ||
+                   ((extent>>physx_gpu::source_dy_pcm_extent_shift)&
+                      physx_gpu::source_dy_pcm_extent_count_mask)!=manager.count)
+                    throw std::runtime_error(
+                        "Dy used host contact counts instead of resident PCM extents");
+            }
         }
+        if(numerical_end!=scene.prepared_contact_rows_)
+            throw std::runtime_error(
+                "GPU Dy numerical layout differs from its admitted source windows");
         if((require_pcm && !pcm_count) ||
            (require_cpu && !cpu_count) ||
-           scene.gpu_dy_contact_order_.size()!=cpu_count)
+           scene.gpu_dy_contact_order_.size()!=cpu_count ||
+           scene.gpu_dy_gu_inputs_.size()!=cpu_count ||
+           scene.gpu_dy_contact_forces_.size()!=scene.prepared_contact_rows_ ||
+           scene.gpu_dy_friction_anchors_.size()*2u!=
+               scene.prepared_friction_rows_ ||
+           !scene.solver_contact_points_.empty() ||
+           !scene.solver_friction_rows_.empty())
             throw std::runtime_error(
-                "GPU Dy still uploads resident PCM contact order or omitted CPU Gu order");
+                "GPU Dy duplicated CPU numerical contact rows or lost Gu order");
+        for(const auto& prep:scene.gpu_dy_contact_prep_pairs_) {
+            const auto verify=[&](BodyId id,float inverse_mass,
+                                  std::uint32_t ordinal) {
+                if(id>=scene.actors_.size())
+                    throw std::runtime_error(
+                        "Compact GPU contact preparation has no actor owner");
+                const auto& actor=scene.actors_[id];
+                if(actor.motion!=Scene::Motion::Dynamic ||
+                   actor.sleeping)return;
+                const auto expected=scene.gpu_dy_source_body_order_
+                    ?native::gpu_dy_unresolved_solver_ordinal
+                    :static_cast<std::uint32_t>(scene.gpu_dy_body_index(id));
+                if(inverse_mass!=actor.inverse_mass ||
+                   ordinal!=expected ||
+                   (!scene.gpu_dy_source_body_order_ &&
+                    ordinal>=scene.gpu_dy_bodies_.size()))
+                    throw std::runtime_error(
+                        "Compact GPU contact source lost its numerical body ownership");
+            };
+            verify(prep.source_body0,prep.inverse_mass0,prep.solver_ordinal0);
+            verify(prep.source_body1,prep.inverse_mass1,prep.solver_ordinal1);
+        }
+    }
+    static void verify_pcm_candidate_ownership(const Scene& scene) {
+        if(scene.gpu_dy_active() &&
+           scene.gpu_dy_contact_prep_indices_.size()!=
+               scene.previous_pairs_.size())
+            throw std::runtime_error(
+                "Dy contact preparation does not index original Sc candidates");
+        std::uint32_t last=0u;
+        bool first=true;
+        for(const auto& request:scene.gpu_pcm_pairs_) {
+            const auto source=request.candidate_ordinal;
+            if(source>=scene.previous_pairs_.size() ||
+               source>=scene.active_edge_handles_.size() ||
+               request.edge!=scene.active_edge_handles_[source] ||
+               request.edge>=scene.island_edges_.size() ||
+               !(scene.island_edges_[request.edge].shapes==
+                 scene.previous_pairs_[source]) ||
+               (!first && source<=last))
+                throw std::runtime_error(
+                    "Pre-witness PCM candidate lost its original Sc ordinal");
+            first=false;
+            last=source;
+        }
+        if(scene.gpu_dy_active()) {
+            for(std::size_t source=0u;source<scene.previous_pairs_.size();
+                ++source) {
+                const auto index=scene.gpu_dy_contact_prep_indices_[source];
+                const bool prepared=index!=0xffffffffu;
+                bool responding=false;
+                for(const auto& manager:scene.manifolds_)
+                    if(manager.candidate_ordinal==source &&
+                       manager.friction_patch_count!=0u) {
+                        responding=true;
+                        break;
+                    }
+                if((responding && !prepared) ||
+                   (!scene.gpu_dy_source_body_order_ && prepared!=responding) ||
+                   (prepared && index>=scene.gpu_dy_contact_prep_pairs_.size()))
+                    throw std::runtime_error(
+                        "Dy candidate preparation lost its source membership");
+                const bool pcm=std::any_of(scene.gpu_pcm_pairs_.begin(),
+                    scene.gpu_pcm_pairs_.end(),[source](const auto& request) {
+                        return request.candidate_ordinal==source;
+                    });
+                const bool touching=std::any_of(scene.manifolds_.begin(),
+                    scene.manifolds_.end(),[source](const auto& manager) {
+                        return manager.candidate_ordinal==source;
+                    });
+                if(!pcm && !touching && index!=0xffffffffu)
+                    throw std::runtime_error(
+                        "CPU Gu allocated material for a non-touching candidate");
+                if(scene.gpu_dy_source_body_order_ && pcm &&
+                   (!prepared ||
+                    scene.gpu_dy_contact_prep_pairs_[index].pcm_pair_index!=index ||
+                    scene.gpu_pcm_pairs_[index].candidate_ordinal!=source))
+                    throw std::runtime_error(
+                        "Early PCM preparation was compacted after witness publication");
+            }
+        }
     }
     static bool had_early_friction_history(const Scene& scene) {
-        const auto& masks=scene.gpu_pcm_friction_history_masks_;
-        if(!masks.empty() && masks.size()!=scene.gpu_pcm_pairs_.size())
+        return std::any_of(scene.gpu_pcm_pairs_.begin(),
+            scene.gpu_pcm_pairs_.end(),[](const auto& request) {
+                return request.friction_history_mask!=0u;
+            });
+    }
+    static bool had_compatible_friction_history(const Scene& scene) {
+        return std::any_of(scene.gpu_pcm_pairs_.begin(),
+            scene.gpu_pcm_pairs_.end(),[](const auto& request) {
+                if((request.friction_eligible_mask&
+                    ~request.friction_history_mask)!=0u)
+                    throw std::runtime_error(
+                        "Sc admitted a friction patch with invalid history");
+                return request.friction_eligible_mask!=0u;
+            });
+    }
+    static bool single_eligible_history_on_device(const Scene& scene,
+                                                  std::uint32_t eligible_bit=1u) {
+        return std::any_of(scene.gpu_pcm_pairs_.begin(),
+            scene.gpu_pcm_pairs_.end(),[&](const auto& request) {
+                if(request.friction_history_mask!=3u ||
+                   request.friction_eligible_mask!=eligible_bit ||
+                   request.early_host_normal ||
+                   !std::has_single_bit(eligible_bit) ||
+                   request.candidate_ordinal>=
+                       scene.gpu_dy_contact_prep_indices_.size() ||
+                   request.edge>=scene.next_friction_by_edge_.size())
+                    return false;
+                const auto slot=scene.gpu_dy_contact_prep_indices_[
+                    request.candidate_ordinal];
+                if(slot>=scene.gpu_dy_candidate_sources_.size())
+                    return false;
+                const auto& selected=scene.gpu_dy_candidate_sources_[slot];
+                const auto& history=scene.next_friction_by_edge_[request.edge];
+                return selected.retained_count==0u &&
+                       selected.retained_single_patch==
+                           history.offset+std::countr_zero(eligible_bit);
+            });
+    }
+    static std::string friction_history_state(const Scene& scene) {
+        std::string state="requests="+
+            std::to_string(scene.gpu_pcm_pairs_.size());
+        for(const auto& request:scene.gpu_pcm_pairs_)
+            state+=" [valid="+std::to_string(request.friction_history_mask)+
+                " eligible="+std::to_string(request.friction_eligible_mask)+
+                " normal="+std::to_string(request.early_host_normal)+
+                " source="+std::to_string(request.candidate_ordinal)+"]";
+        return state;
+    }
+    static void reverse_first_retained_normal(Scene& scene,Pair shapes) {
+        const auto edge=scene.contact_edge_index(shapes);
+        if(edge==Scene::invalid_edge ||
+           edge>=scene.friction_by_edge_.size() ||
+           edge>=scene.manifold_by_edge_.size())
             throw std::runtime_error(
-                "Source early friction history lost the PCM manager stream");
-        return std::any_of(masks.begin(),masks.end(),
-            [](std::uint32_t bits) {return bits!=0u;});
+                "PCM normal validation fixture lacks an active manager");
+        const auto span=scene.friction_by_edge_[edge];
+        const auto lookup=scene.manifold_by_edge_[edge];
+        if(span.epoch!=scene.friction_cache_epoch_ ||
+           span.count!=2u ||
+           span.offset>scene.friction_patches_.size() ||
+           span.count>scene.friction_patches_.size()-span.offset ||
+           lookup.generation!=scene.manifold_lookup_generation_ ||
+           lookup.index>=scene.manifolds_.size())
+            throw std::runtime_error(
+                "PCM normal validation fixture lacks retained patches");
+        const auto& manager=scene.manifolds_[lookup.index];
+        if(manager.points.empty())
+            throw std::runtime_error(
+                "PCM normal validation fixture lacks contact witnesses");
+        const bool swapped=scene.island_edges_[edge].gu_order_reversed;
+        const auto& first=scene.shapes_[swapped?shapes.b:shapes.a];
+        const auto& second=scene.shapes_[swapped?shapes.a:shapes.b];
+        const auto& actor0=scene.actors_[first.body];
+        const auto& actor1=scene.actors_[second.body];
+        const auto cross=[](Vec3 a,Vec3 b) {
+            return Vec3{a.y*b.z-a.z*b.y,a.z*b.x-a.x*b.z,
+                        a.x*b.y-a.y*b.x};
+        };
+        const auto inverse_rotate=[&](Quat q,Vec3 v) {
+            const Vec3 u{-q.x,-q.y,-q.z};
+            const auto c=cross(u,v);
+            const Vec3 t{2.f*c.x,2.f*c.y,2.f*c.z};
+            const auto d=cross(u,t);
+            return Vec3{v.x+q.w*t.x+d.x,
+                        v.y+q.w*t.y+d.y,v.z+q.w*t.z+d.z};
+        };
+        const auto local=[&](const auto& actor,Vec3 world) {
+            const Vec3 origin=scene.mass_position(actor);
+            return inverse_rotate(scene.mass_orientation(actor),
+                {world.x-origin.x,world.y-origin.y,world.z-origin.z});
+        };
+        // Current witnesses define valid retained anchors and normals
+        // before the device rejects the deliberately inverted history.
+        const auto current=manager.points.front().normal;
+        for(std::size_t i=0u;i<span.count;++i) {
+            auto& patch=scene.friction_patches_[span.offset+i];
+            patch.normal=current;
+            patch.body0_normal=inverse_rotate(
+                scene.mass_orientation(actor0),current);
+            patch.body1_normal=inverse_rotate(
+                scene.mass_orientation(actor1),current);
+            for(std::size_t k=0u;k<patch.anchor_count;++k) {
+                const auto& point=manager.points[
+                    std::min(k,manager.points.size()-1u)].position;
+                patch.body0_anchors[k]=local(actor0,point);
+                patch.body1_anchors[k]=local(actor1,point);
+            }
+        }
+        auto& patch=scene.friction_patches_[span.offset];
+        const auto reverse=[](Vec3 n) {
+            return Vec3{-n.x,-n.y,-n.z};
+        };
+        patch.normal=reverse(patch.normal);
+        patch.body0_normal=reverse(patch.body0_normal);
+        patch.body1_normal=reverse(patch.body1_normal);
+        for(std::size_t i=0u;i<span.count;++i)
+            if(!scene.cached_friction_patch_valid(
+                    scene.friction_patches_[span.offset+i],actor0,actor1))
+                throw std::runtime_error(
+                    "PCM normal validation fixture has invalid retained anchors");
+    }
+    static bool device_rejected_retained_normal(const Scene& scene) {
+        for(const auto& manager:scene.manifolds_) {
+            if(manager.pcm_result_index==0xffffffffu)continue;
+            const auto first=scene.gpu_dy_manifolds_[
+                manager.candidate_ordinal].patch_offset;
+            for(std::size_t i=first;
+                i<first+manager.friction_patch_count;++i)
+                if(i<scene.gpu_dy_patches_.size() &&
+                   (scene.gpu_dy_patches_[i].reserved&0x200u)!=0u)
+                    return true;
+        }
+        return false;
+    }
+    static bool selected_second_retained_patch(const Scene& scene) {
+        for(const auto& manifold:scene.manifolds_) {
+            if(manifold.pcm_result_index==0xffffffffu ||
+               manifold.friction_patch_count!=1u)
+                continue;
+            const auto patch=scene.gpu_dy_manifolds_[
+                manifold.candidate_ordinal].patch_offset;
+            if(patch>=scene.gpu_dy_patches_.size())continue;
+            const auto choice=(scene.gpu_dy_patches_[
+                patch].reserved>>19u)&63u;
+            if(choice==2u)return true;
+        }
+        return false;
+    }
+    static void seed_multiple_friction_patches(Scene& scene,Pair shapes,
+                                               bool broken=false) {
+        const auto edge=scene.contact_edge_index(shapes);
+        if(edge==Scene::invalid_edge ||
+           edge>=scene.friction_by_edge_.size())
+            throw std::runtime_error(
+                "Multi-patch PCM fixture has no contact manager");
+        const auto span=scene.friction_by_edge_[edge];
+        if(span.epoch!=scene.friction_cache_epoch_ ||
+           span.count!=1u ||
+           span.offset+span.count!=scene.friction_patches_.size())
+            throw std::runtime_error(
+                "Multi-patch PCM fixture lacks one current friction patch");
+        auto patch=scene.friction_patches_[span.offset];
+        if(patch.contact_count==0u || patch.anchor_count==0u ||
+           patch.disable_friction || patch.disable_strong_friction)
+            throw std::runtime_error(
+                "Multi-patch PCM fixture has no reusable friction state");
+        patch.broken=broken;
+        scene.friction_patches_[span.offset].broken=broken;
+        scene.friction_patches_.push_back(patch);
+        scene.friction_by_edge_[edge].count=2u;
+    }
+    static void invalidate_first_friction_material(Scene& scene,Pair shapes) {
+        const auto edge=scene.contact_edge_index(shapes);
+        if(edge==Scene::invalid_edge ||
+           edge>=scene.friction_by_edge_.size())
+            throw std::runtime_error(
+                "Single-compatible PCM fixture lost its contact manager");
+        const auto span=scene.friction_by_edge_[edge];
+        if(span.epoch!=scene.friction_cache_epoch_ || span.count!=2u ||
+           span.offset>scene.friction_patches_.size() ||
+           span.count>scene.friction_patches_.size()-span.offset)
+            throw std::runtime_error(
+                "Single-compatible PCM fixture needs two retained patches");
+        auto& patch=scene.friction_patches_[span.offset];
+        patch.broken=false;
+        patch.static_friction+=10.f;
+    }
+    static void invalidate_multiple_friction_normals(Scene& scene,Pair shapes) {
+        const auto edge=scene.contact_edge_index(shapes);
+        if(edge==Scene::invalid_edge ||
+           edge>=scene.friction_by_edge_.size())
+            throw std::runtime_error(
+                "Invalid-normal PCM fixture lost its contact manager");
+        const auto span=scene.friction_by_edge_[edge];
+        if(span.epoch!=scene.friction_cache_epoch_ || span.count!=2u)
+            throw std::runtime_error(
+                "Invalid-normal PCM fixture needs two retained patches");
+        for(std::size_t j=0u;j<span.count;++j) {
+            auto& patch=scene.friction_patches_[span.offset+j];
+            patch.broken=false;
+            patch.body1_normal={
+                -patch.body1_normal.x,
+                -patch.body1_normal.y,
+                -patch.body1_normal.z};
+        }
+    }
+    static void invalidate_multiple_friction_materials(
+            Scene& scene,Pair shapes,bool only_last=false) {
+        const auto edge=scene.contact_edge_index(shapes);
+        if(edge==Scene::invalid_edge ||
+           edge>=scene.friction_by_edge_.size())
+            throw std::runtime_error(
+                "Material-mismatch PCM fixture lost its contact manager");
+        const auto span=scene.friction_by_edge_[edge];
+        if(span.epoch!=scene.friction_cache_epoch_ || span.count!=2u)
+            throw std::runtime_error(
+                "Material-mismatch PCM fixture needs two retained patches");
+        for(std::size_t j=only_last?1u:0u;j<span.count;++j) {
+            auto& patch=scene.friction_patches_[span.offset+j];
+            patch.broken=false;
+            patch.static_friction+=10.f;
+        }
+    }
+    static void verify_compact_gpu_contact_admission(const Scene& scene) {
+        std::size_t manager_begin=0u,joint_begin=0u;
+        std::size_t body_begin=0u,descriptor_begin=0u,contact_count=0u;
+        for(const auto& task:scene.solver_tasks_) {
+            const auto potential=task.joint_end-joint_begin+
+                task.manager_end-manager_begin;
+            const bool compact=
+                potential<gpu_dy_wide_task_threshold ||
+                task.solver_body_end-body_begin<gpu_dy_wide_task_threshold;
+            for(std::size_t i=descriptor_begin;i<task.constraint_end;++i) {
+                const auto& descriptor=scene.ordered_constraints_[i];
+                if((descriptor.row_count&255u)!=0u)continue;
+                ++contact_count;
+                const bool has_endpoints=
+                    descriptor.row0!=Scene::invalid_solver_row ||
+                    descriptor.row1!=Scene::invalid_solver_row;
+                if(compact==has_endpoints)
+                    throw std::runtime_error(compact
+                        ? "Compact GPU contact retained host solver endpoints"
+                        : "Wide GPU contact lost its scheduling endpoints");
+            }
+            manager_begin=task.manager_end;
+            joint_begin=task.joint_end;
+            body_begin=task.solver_body_end;
+            descriptor_begin=task.constraint_end;
+        }
+        if(descriptor_begin!=scene.ordered_constraints_.size() ||
+           !contact_count)
+            throw std::runtime_error(
+                "GPU task admission failed to cover source contact descriptors");
     }
     static std::size_t cpu_gu_anchor_bytes(const Scene& scene) {
         std::size_t count=0u;
@@ -164,6 +1562,10 @@ namespace {
 void require(bool good,const char* message) {
     if(!good)throw std::runtime_error(message);
 }
+void report_pcm_friction_progress(const char* stage,std::size_t frame) {
+    std::cerr << "PCM friction stage=" << stage
+              << " frame=" << frame << '\n' << std::flush;
+}
 // Inspect compiled requirements: software adapters can execute FP64 and
 // would otherwise conceal an accidental increase of the hardware floor.
 void verify_rigid_shader_requirements(
@@ -215,6 +1617,73 @@ void verify_rigid_shader_requirements(
 }
 // Independent GPU broadphase volumes share one Sc rigid actor identity.
 // Same-actor shape overlap is filtered; each cross-actor shape pair is kept.
+void verify_sap_overlap_rejection_rebuild(
+    fyzz::compute::Backend backend,const char* sap) {
+    using namespace fyzz;
+    using Motion=native::GpuBroadphaseBox::Motion;
+    physx_gpu::SourceScOwnedGpuBroadphaseNative gpu(
+        backend,load_native_gpu_sap_shaders(backend,sap),128u,128u);
+    gpu.admit_shape_element(0u,0u,Motion::Dynamic,0.02f);
+    gpu.admit_shape_element(1u,1u,Motion::Static,0.02f);
+    std::array<native::GpuBroadphaseBox,2> shapes{};
+    for(std::uint32_t i=0u;i<shapes.size();++i) {
+        shapes[i].id=i;
+        shapes[i].half_extents={0.5f,0.5f,0.5f};
+        shapes[i].contact_offset=0.02f;
+        shapes[i].motion=i?Motion::Static:Motion::Dynamic;
+    }
+    shapes[1].position={0.5f,0.f,0.f};
+    struct Reject {};
+    bool rejected=false;
+    const auto before=gpu.stream_submission_stats();
+    try {
+        gpu.advance_overlapping(shapes,false,true,[&] {
+            const auto& current=gpu.stream_submission_stats();
+            require(current.fused_readbacks==before.fused_readbacks+1u &&
+                    current.fetch_batches==before.fetch_batches,
+                "Sc preflight did not run before SAP GPU result publication");
+            throw Reject{};
+        });
+    }catch(const Reject&) { rejected=true; }
+    require(rejected && gpu.source_sap_fetch_count()==0u,
+        "Rejected Sc preparation consumed a source SAP frame");
+    const auto recovered=gpu.advance(shapes,false,true);
+    require(recovered.full_rebuild && !recovered.overflow &&
+            recovered.found.size()==1u &&
+            recovered.found[0]==native::Pair{0u,1u} &&
+            recovered.lost.empty() &&
+            gpu.source_sap_fetch_count()==1u,
+        "Source SAP failed to reconstruct original report identities after a rejected CPU overlap");
+    gpu.post_reports_cleanup();
+}
+
+void verify_sc_only_dirty_sap_skip(
+    fyzz::compute::Backend backend,const char* sap) {
+    using namespace fyzz;
+    native::Scene scene;
+    auto owner=std::make_unique<physx_gpu::SourceScOwnedGpuBroadphaseNative>(
+        backend,load_native_gpu_sap_shaders(backend,sap),128u,128u);
+    auto* producer=owner.get();
+    scene.set_gpu_broadphase(std::move(owner));
+    const auto a=scene.add_dynamic_box(
+        {0.5f,0.5f,0.5f},{0.f,0.f,0.f},1.f);
+    const auto b=scene.add_dynamic_box(
+        {0.5f,0.5f,0.5f},{4.f,0.f,0.f},1.f);
+    scene.advance_collision();
+    scene.advance_collision();
+    const auto before=producer->source_sap_fetch_count();
+    scene.create_center_distance_constraint(a,b,4.f);
+    scene.advance_collision();
+    require(producer->source_sap_fetch_count()==before &&
+            scene.largest_accurate_island_size()>=2u,
+        "Sc joint topology unnecessarily advanced unchanged GPU SAP bounds");
+    scene.set_position(b,{0.7f,0.f,0.f});
+    scene.advance_collision();
+    require(producer->source_sap_fetch_count()==before+1u &&
+            !scene.pairs().empty(),
+        "Real Sc geometry edit failed to resume source GPU SAP");
+}
+
 void verify_compound_shape_gpu_pairs(
     fyzz::compute::Backend backend,const char* sap) {
     using namespace fyzz;
@@ -238,7 +1707,15 @@ void verify_compound_shape_gpu_pairs(
                            native::Pair expected) {
         return std::find(pairs.begin(),pairs.end(),expected)!=pairs.end();
     };
-    const auto created=gpu.advance(shapes,false,true);
+    const auto before_fused=gpu.stream_submission_stats();
+    bool overlapped=false;
+    const auto created=gpu.advance_overlapping(shapes,false,true,[&] {
+        const auto now=gpu.stream_submission_stats();
+        overlapped=now.fused_readbacks==before_fused.fused_readbacks+1u &&
+                   now.fetch_batches==before_fused.fetch_batches;
+    });
+    require(overlapped,
+        "Source Sc CPU preparation did not overlap in-flight SAP readback");
     require(!created.overflow && created.found.size()==2u &&
             contains(created.found,{0u,2u}) &&
             contains(created.found,{1u,2u}) &&
@@ -254,6 +1731,11 @@ void verify_compound_shape_gpu_pairs(
             gpu.source_sap_fetch_count()==initial_fetches+1u &&
             !gpu.last_frame().update.execute_gpu_stages,
         "Unchanged source AABB submitted or fetched another SAP frame");
+    // Source geometry is unchanged even when Sc has unrelated work.
+    const auto contact_only=gpu.advance(shapes,false,true);
+    require(contact_only.found.empty() && contact_only.lost.empty() &&
+            gpu.source_sap_fetch_count()==initial_fetches+1u,
+        "Sc-only dirty state submitted a redundant source GPU SAP frame");
     // ScBodySim changes one rigid actor's motion and refilters every attached
     // ElementSim, even when the shapes overlap each other.
     gpu.set_actor_motion(0u,Motion::Kinematic);
@@ -302,6 +1784,38 @@ void verify(fyzz::compute::Backend backend,const char* sap,
     require(producer->has_gpu_pcm_box(),
             "GPU scene has no installed native Gu PCM producer");
     gpu.set_gpu_broadphase(std::move(owner));
+    // Authored joints need no contact-history allocation. Contact
+    // managers, including CPU Gu, instead require resident EdgeIndex
+    // physical-touch publication before device task admission.
+    constexpr std::uint32_t invalid_edge=0xffffffffu;
+    const std::array<physx_gpu::SourceScDeviceIslandEdge,1> joint_edge{{
+        {0u,0u,invalid_edge,0u,
+         physx_gpu::source_sc_device_island_joint_bit}
+    }};
+    const std::array<std::uint32_t,1> joint_flags{{
+        4u|(1u<<8u)|physx_gpu::source_sc_device_island_active_bit
+    }};
+    require(producer->device_pcm_touch_capacity()==0u,
+        "Fresh source scene unexpectedly owns contact history");
+    producer->enqueue_gpu_dy_island_admission(joint_edge,joint_flags,
+        physx_gpu::SourceScDeviceIslandSources{0u,0u,1u});
+    bool rejected_unsubmitted_island=false;
+    try {
+        producer->commit_gpu_step();
+    }catch(const std::logic_error&) {
+        rejected_unsubmitted_island=true;
+    }
+    require(rejected_unsubmitted_island,
+        "Unsubmitted device Sc island work committed without a Dy consumer");
+    const auto joint_task=physx_gpu::SourceScDeviceIslandFixture::read(*producer);
+    require(joint_task.errors==0u &&
+            joint_task.runnable_components==1u &&
+            joint_task.responding_nodes==1u &&
+            joint_task.admitted_edges==1u,
+        "Joint-only Sc task admission required contact witnesses");
+    producer->commit_gpu_step();
+    require(producer->device_island_work_address()==0u,
+        "Committed joint-only task survived its source epoch");
     const auto cpu_a=cpu.add_dynamic_box(
         {0.5f,0.5f,0.5f},{0.0f,1.0f,0.0f},1.0f);
     const auto cpu_b=cpu.add_static_box(
@@ -348,15 +1862,13 @@ void verify(fyzz::compute::Backend backend,const char* sap,
         {gpu_a,gpu_b,edge,false}
     }};
     std::array<native::GpuPcmBoxResult,1> direct{};
-    const auto before_enqueue=producer->stream_submission_stats();
     producer->enqueue_gpu_pcm_box_contacts(request,direct);
-    const auto queued=producer->stream_submission_stats();
-    require(queued.command_batches>before_enqueue.command_batches &&
-            queued.readback_submissions==before_enqueue.readback_submissions+1u &&
-            queued.fetch_batches==before_enqueue.fetch_batches &&
-            queued.fetch_bytes==before_enqueue.fetch_bytes &&
-            direct[0].packed_counts==0u,
-        "GPU PCM enqueue blocked or published Sc witnesses before its join");
+    require(direct[0].packed_counts==0u &&
+            producer->device_pcm_contact_count()==1u &&
+            producer->device_pcm_contact_stream()!=0u &&
+            producer->device_pcm_touch_history()!=0u &&
+            producer->device_pcm_touch_capacity()>edge,
+        "GPU PCM enqueue did not expose resident Gu before the host join");
     bool rejected_early_commit=false;
     try {
         producer->commit_gpu_step();
@@ -365,6 +1877,29 @@ void verify(fyzz::compute::Backend backend,const char* sap,
     }
     require(rejected_early_commit,
         "GPU PCM accepted a frame before Sc joined its numerical witnesses");
+    // Use actual device PCM touch, not a fixture-initialized contact
+    // history. Execute accurate connectivity before host Gu publication.
+    constexpr std::uint32_t no_node=0xffffffffu;
+    const std::array<physx_gpu::SourceScDeviceIslandEdge,1> source_edges{{
+        {edge,0u,no_node,0u,0u}
+    }};
+    const std::array<std::uint32_t,1> source_nodes{{
+        4u|(4u<<8u)|physx_gpu::source_sc_device_island_active_bit
+    }};
+    producer->enqueue_gpu_dy_island_admission(source_edges,source_nodes,
+        physx_gpu::SourceScDeviceIslandSources{1u,0u,0u});
+    const auto graph=physx_gpu::SourceScDeviceIslandFixture::read(*producer);
+    const auto direct_extent=
+        physx_gpu::SourceScDeviceIslandFixture::extent(*producer,0u);
+    require(graph.errors==0u &&
+            (direct_extent&0x80000000u)!=0u &&
+            (direct_extent&7u)>0u && (direct_extent&7u)<=4u &&
+            graph.runnable_components==1u &&
+            graph.responding_nodes==1u &&
+            graph.admitted_edges==1u &&
+            graph.dispatch_x==1u &&
+            direct[0].packed_counts==0u,
+        "Device Sc task admission waited for host PCM witness publication");
     producer->finish_gpu_pcm_box_contacts();
     producer->commit_gpu_step();
     require(producer->pcm_contact_readback_bytes()==
@@ -385,6 +1920,7 @@ void verify(fyzz::compute::Backend backend,const char* sap,
     require(header.edge_handle==direct[0].edge &&
             header.cached_count==direct[0].cached_count() &&
             header.emitted_count==direct[0].count() &&
+            (direct_extent&7u)==direct[0].count() &&
             header.touch_transition==
                 static_cast<std::uint32_t>(direct[0].touch_transition()),
         "Source Sc result does not share the 84-byte GPU contact ABI");
@@ -399,6 +1935,36 @@ void verify(fyzz::compute::Backend backend,const char* sap,
             repeated[0].count()>0u &&
             repeated[0].touch_transition()==native::GpuPcmTouchTransition::Persists,
             "Stable Sc PCM manager unexpectedly re-uploaded source pair input");
+    // A corrupted resident transform must invalidate the actual GPU PCM
+    // producer, even if the pair's cached contact would otherwise vanish.
+    const float original_x=physx_gpu::SourceScDeviceIslandFixture::
+        resident_position_x(*producer,gpu_b);
+    require(std::isfinite(original_x),
+        "Source PCM fixture has no finite resident box transform");
+    physx_gpu::SourceScDeviceIslandFixture::write_resident_position_x(
+        *producer,gpu_b,std::numeric_limits<float>::quiet_NaN());
+    std::array<native::GpuPcmBoxResult,1> invalid_transform{};
+    producer->enqueue_gpu_pcm_box_contacts(request,invalid_transform);
+    producer->enqueue_gpu_dy_island_admission(source_edges,source_nodes,
+        physx_gpu::SourceScDeviceIslandSources{1u,0u,0u});
+    const auto invalid_graph=physx_gpu::SourceScDeviceIslandFixture::read(
+        *producer);
+    require((invalid_graph.errors&256u)!=0u &&
+            invalid_graph.runnable_components==0u &&
+            invalid_graph.dispatch_x==0u &&
+            invalid_transform[0].packed_counts==0u,
+        "Invalid resident PCM transform reached numerical task admission");
+    bool invalid_publication_rejected=false;
+    try {
+        producer->finish_gpu_pcm_box_contacts();
+    } catch(const std::logic_error&) {
+        invalid_publication_rejected=true;
+    }
+    require(invalid_publication_rejected,
+        "Invalid resident PCM transform passed host publication");
+    producer->invalidate_after_rollback();
+    physx_gpu::SourceScDeviceIslandFixture::write_resident_position_x(
+        *producer,gpu_b,original_x);
     // Explicitly invalidate a live Sc EdgeIndex. A newly admitted or
     // rejected source frame uses the identical candidate-owned reset.
     const std::array<native::GpuPcmBoxPair,1> reset_request{{
@@ -474,6 +2040,131 @@ void verify(fyzz::compute::Backend backend,const char* sap,
                 native::GpuPcmTouchTransition::Persists,
         "Unjoined GPU PCM epoch contaminated a subsequent Sc publication");
     producer->commit_gpu_step();
+    // A CPU-only Gu EdgeIndex is journaled independently of the GPU
+    // PCM contact list. Rejecting the combined epoch must restore its
+    // exact previous touch words without disturbing the PCM manager.
+    if(edge==0xfffffffeu)
+        throw std::overflow_error("Sc Gu rollback test EdgeIndex exhausted");
+    const auto gu_edge=edge+1u;
+    constexpr std::uint32_t gu_extent=0x20000u|(7u<<8u)|1u;
+    const std::array<native::GpuGuTouchRecord,1> gu_touch{{
+        {gu_edge,gu_extent}
+    }};
+    std::array<native::GpuPcmBoxResult,1> shared_pending{};
+    producer->enqueue_gpu_pcm_box_contacts(
+        request,shared_pending,gu_edge+1u);
+    producer->enqueue_cpu_gu_touch_history(gu_touch);
+    const std::array<std::uint32_t,1> one_active{{
+        4u|physx_gpu::source_sc_device_island_active_bit
+    }};
+    producer->enqueue_gpu_dy_island_admission(
+        std::span<const native::GpuDyIslandEdge>{},one_active,
+        native::GpuDyIslandSources{});
+    producer->finish_gpu_pcm_box_contacts();
+    const auto changed=physx_gpu::SourceScDeviceIslandFixture::touch(
+        *producer,gu_edge);
+    require(changed[0]==gu_extent && changed[1]==0u,
+            "CPU-only Gu contact extent did not reach device history");
+    producer->invalidate_after_rollback();
+    std::array<native::GpuPcmBoxResult,1> restored_pcm{};
+    producer->enqueue_gpu_pcm_box_contacts(
+        request,restored_pcm,gu_edge+1u);
+    producer->finish_gpu_pcm_box_contacts();
+    const auto restored_touch=physx_gpu::SourceScDeviceIslandFixture::touch(
+        *producer,gu_edge);
+    require(restored_touch[0]==0u && restored_touch[1]==0u &&
+            restored_pcm[0].count()>0u &&
+            restored_pcm[0].touch_transition()==
+                native::GpuPcmTouchTransition::Persists,
+            "Rejected CPU Gu touch changed the committed device epoch");
+    producer->commit_gpu_step();
+    // A Gu-only transaction uses the same journal without any PCM pairs.
+    // Rollback restores its exact edge word before the next epoch.
+    const std::array<native::GpuPcmBoxPair,0> no_pcm_pairs{};
+    std::array<native::GpuPcmBoxResult,0> no_pcm_results{};
+    constexpr std::uint32_t gu_only_extent=0x20000u|(5u<<8u)|1u;
+    const std::array<native::GpuGuTouchRecord,1> gu_only_touch{{
+        {gu_edge,gu_only_extent}
+    }};
+    producer->enqueue_gpu_pcm_box_contacts(
+        no_pcm_pairs,no_pcm_results,gu_edge+1u);
+    producer->enqueue_cpu_gu_touch_history(gu_only_touch);
+    const auto gu_only_observed=
+        physx_gpu::SourceScDeviceIslandFixture::touch(*producer,gu_edge);
+    require(gu_only_observed==
+                std::array<std::uint32_t,2>{gu_only_extent,0u},
+        "Gu-only device epoch lost its exact numerical extent");
+    producer->invalidate_after_rollback();
+    const auto before_restore=producer->stream_submission_stats().command_batches;
+    producer->enqueue_gpu_pcm_box_contacts(
+        no_pcm_pairs,no_pcm_results,gu_edge+1u);
+    require(producer->stream_submission_stats().command_batches==before_restore+1u &&
+            physx_gpu::SourceScDeviceIslandFixture::source_submissions(*producer)==1u,
+        "PCM journal restoration joined the queue before retry preparation");
+    // Reject the retry before publishing another touch. Its discarded
+    // commands must not undo or cancel the accepted history repair.
+    producer->enqueue_cpu_gu_touch_history(gu_only_touch);
+    producer->invalidate_after_rollback();
+    producer->enqueue_gpu_pcm_box_contacts(
+        no_pcm_pairs,no_pcm_results,gu_edge+1u);
+    require(producer->stream_submission_stats().command_batches==before_restore+1u,
+        "Rejected retry replayed an accepted PCM history repair");
+    const auto gu_only_restored=
+        physx_gpu::SourceScDeviceIslandFixture::touch(*producer,gu_edge);
+    require(gu_only_restored==std::array<std::uint32_t,2>{0u,0u},
+        "Gu-only device epoch failed to restore its contact journal");
+    producer->commit_gpu_step();
+    // A rejected, unsubmitted Gu update has no journal to restore.
+    // Preserve a nonzero committed word rather than replaying stale scratch.
+    producer->enqueue_gpu_pcm_box_contacts(
+        no_pcm_pairs,no_pcm_results,gu_edge+1u);
+    producer->enqueue_cpu_gu_touch_history(gu_only_touch);
+    producer->commit_gpu_step();
+    const auto committed_history=producer->device_pcm_touch_history();
+    const auto committed_capacity=producer->device_pcm_touch_capacity();
+    const auto before_growth=producer->stream_submission_stats().command_batches;
+    const auto expanded_capacity=committed_capacity*8u+32u;
+    producer->enqueue_gpu_pcm_box_contacts(
+        no_pcm_pairs,no_pcm_results,expanded_capacity);
+    require(producer->device_pcm_touch_history()!=committed_history &&
+            producer->stream_submission_stats().command_batches==before_growth &&
+            producer->pcm_edge_history_copy_bytes()==committed_capacity*240u,
+            "PCM history growth submitted a standalone preservation copy");
+    producer->invalidate_after_rollback();
+    producer->enqueue_gpu_pcm_box_contacts(
+        no_pcm_pairs,no_pcm_results,committed_capacity);
+    require(producer->device_pcm_touch_history()==committed_history &&
+            physx_gpu::SourceScDeviceIslandFixture::touch(*producer,gu_edge)[0]
+                ==gu_only_extent,
+            "Rejected PCM growth lost committed allocation identity or touch history");
+    producer->commit_gpu_step();
+    const std::array<native::GpuGuTouchRecord,1> staged_loss{{
+        {gu_edge,0u}
+    }};
+    // The current epoch can cover fewer edges than committed history.
+    producer->enqueue_gpu_pcm_box_contacts(
+        no_pcm_pairs,no_pcm_results,gu_edge);
+    producer->enqueue_cpu_gu_touch_history(staged_loss);
+    require(physx_gpu::SourceScDeviceIslandFixture::touch(*producer,gu_edge)[0]==0u,
+            "Sparse Gu epoch did not update a retained high EdgeIndex");
+    producer->invalidate_after_rollback();
+    producer->enqueue_gpu_pcm_box_contacts(
+        no_pcm_pairs,no_pcm_results,gu_edge);
+    require(physx_gpu::SourceScDeviceIslandFixture::touch(*producer,gu_edge)[0]
+                ==gu_only_extent,
+            "Sparse Gu rollback omitted a retained high EdgeIndex");
+    producer->commit_gpu_step();
+    producer->enqueue_gpu_pcm_box_contacts(
+        no_pcm_pairs,no_pcm_results,gu_edge+1u);
+    producer->enqueue_cpu_gu_touch_history(staged_loss);
+    producer->invalidate_after_rollback();
+    producer->enqueue_gpu_pcm_box_contacts(
+        no_pcm_pairs,no_pcm_results,gu_edge+1u);
+    require(physx_gpu::SourceScDeviceIslandFixture::touch(*producer,gu_edge)[0]
+                ==gu_only_extent,
+        "Unsubmitted Gu rollback replayed a stale device journal");
+    producer->enqueue_cpu_gu_touch_history(staged_loss);
+    producer->commit_gpu_step();
     check(true,true);
     require(gpu.contact_edge_index({gpu_a,gpu_b})==edge,
             "AABB capacity growth discarded an unchanged GPU PCM manifold");
@@ -524,9 +2215,9 @@ void verify(fyzz::compute::Backend backend,const char* sap,
             std::fabs(cpu_body.position.z-gpu_body.position.z)<0.002f,
             "Source GPU PCM did not feed the existing Sc/Dy rigid solve");
 
-    // GPU general PCM must start before its independent CPU primitive
-    // witness exists. The latter is staged only at the join; both
-    // preserve their original ordinals in the same resident contact arena.
+    // GPU general PCM starts before its independent CPU primitive
+    // witness exists. The bounded Gu span is submitted before Sc's
+    // numerical witness join; both preserve their original ordinals.
     const auto sphere_a=gpu.add_static_sphere(
         0.5f,{100.f,2.f,0.f});
     const auto sphere_b=gpu.add_dynamic_sphere(
@@ -542,16 +2233,16 @@ void verify(fyzz::compute::Backend backend,const char* sap,
          true,true,true}
     }};
     std::array<native::GpuPcmBoxResult,2> mixed_results{};
-    const auto before_mixed=producer->stream_submission_stats();
     producer->enqueue_gpu_pcm_box_contacts(mixed,mixed_results);
-    const auto after_mixed=producer->stream_submission_stats();
-    require(after_mixed.command_batches>before_mixed.command_batches &&
-            after_mixed.readback_submissions==
-                before_mixed.readback_submissions+1u &&
-            after_mixed.fetch_batches==before_mixed.fetch_batches &&
+    require(physx_gpu::SourceScDeviceIslandFixture::
+                pcm_candidate_dispatches(*producer)==1u &&
             producer->pcm_host_contact_upload_bytes()==0u &&
-            mixed_results[1].packed_counts==0u,
-        "Mixed PCM failed to submit witness DMA ahead of the Sc join");
+            mixed_results[1].packed_counts==0u &&
+            producer->device_pcm_contact_count()==0u &&
+            producer->device_pcm_contact_stream()==0u &&
+            producer->device_pcm_touch_history()==0u &&
+            !physx_gpu::SourceScDeviceIslandFixture::pcm_ready(*producer),
+        "Incomplete mixed Gu stream leaked into device task admission");
     std::array<native::ContactPoint,1> points{};
     const auto emitted=native::source_pcm_sphere_sphere(
         {100.f,2.f,0.f},0.5f,{100.7f,2.f,0.f},0.5f,0.04f,points);
@@ -561,6 +2252,38 @@ void verify(fyzz::compute::Backend backend,const char* sap,
     primitive.set_primitive(emitted,true);
     primitive.normal=points[0].normal;
     primitive.points[0]={points[0].position,points[0].separation};
+    producer->enqueue_host_pcm_contacts(mixed,mixed_results);
+    require(producer->pcm_host_contact_upload_bytes()==
+                sizeof(physx_gpu::SourcePcmGpuContactStreamNative) &&
+            producer->device_pcm_contact_count()==mixed.size() &&
+            producer->device_pcm_contact_stream()!=0u &&
+            producer->device_pcm_touch_history()!=0u &&
+            producer->device_pcm_touch_capacity()>sphere_edge &&
+            physx_gpu::SourceScDeviceIslandFixture::pcm_ready(*producer),
+        "Mixed Gu was not device-ready before Sc joined GPU witnesses");
+    const std::array<physx_gpu::SourceScDeviceIslandEdge,2> mixed_edges{{
+        {edge,0u,no_node,0u,0u},
+        {sphere_edge,1u,no_node,1u,0u}
+    }};
+    const std::array<std::uint32_t,2> mixed_nodes{{
+        source_nodes[0],source_nodes[0]
+    }};
+    producer->enqueue_gpu_dy_island_admission(mixed_edges,mixed_nodes,
+        physx_gpu::SourceScDeviceIslandSources{2u,0u,0u});
+    const auto mixed_graph=physx_gpu::SourceScDeviceIslandFixture::read(*producer);
+    const auto mixed_gpu_extent=
+        physx_gpu::SourceScDeviceIslandFixture::extent(*producer,0u);
+    const auto mixed_host_extent=
+        physx_gpu::SourceScDeviceIslandFixture::extent(*producer,1u);
+    require((mixed_gpu_extent&0x80000000u)!=0u &&
+            (mixed_gpu_extent&7u)>0u &&
+            mixed_host_extent==0xc0000001u &&
+            mixed_graph.errors==0u &&
+            mixed_graph.runnable_components==2u &&
+            mixed_graph.responding_nodes==2u &&
+            mixed_graph.admitted_edges==2u &&
+            mixed_results[0].packed_counts==0u,
+        "Mixed CPU Gu/GPU PCM device connectivity required Sc witness join");
     producer->finish_gpu_pcm_box_contacts();
     require(producer->pcm_host_contact_upload_bytes()==
                 sizeof(physx_gpu::SourcePcmGpuContactStreamNative) &&
@@ -570,28 +2293,44 @@ void verify(fyzz::compute::Backend backend,const char* sap,
             mixed_results[0].status()==0u &&
             mixed_results[0].cached_count()<=4u &&
             mixed_results[0].count()<=mixed_results[0].cached_count() &&
+            (mixed_gpu_extent&7u)==mixed_results[0].count() &&
             primitive.edge==sphere_edge &&
             primitive.count()==1u,
         "Late CPU Gu upload or general PCM readback lost source ordinals");
-    const auto after_join=producer->stream_submission_stats();
-    require(after_join.upload_batches==after_mixed.upload_batches+1u &&
-            after_join.fetch_batches==after_mixed.fetch_batches+1u,
-        "Mixed PCM added a redundant upload or GPU witness fetch");
-    // The late host upload remains ordered on the original device queue.
+    // The early host upload remains ordered after the GPU witness DMA.
     // Collision-only commit must retire it even without a Dy solve.
     producer->commit_gpu_step();
 
-    // Reject a fully fetched GPU PCM epoch while its independent host
-    // Gu upload may still be outstanding, then reuse the exact EdgeIndex
-    // records without observing stale primitive data.
+    // Roll back while the Gu witness DMA and later primitive upload
+    // are both outstanding. Neither rejected host data nor GPU contact
+    // results may escape their common source transaction.
     std::array<native::GpuPcmBoxResult,2> abandoned_mixed{};
     abandoned_mixed[1]=primitive;
     producer->enqueue_gpu_pcm_box_contacts(mixed,abandoned_mixed);
-    producer->finish_gpu_pcm_box_contacts();
+    producer->enqueue_host_pcm_contacts(mixed,abandoned_mixed);
+    producer->enqueue_gpu_dy_island_admission(mixed_edges,mixed_nodes,
+        physx_gpu::SourceScDeviceIslandSources{2u,0u,0u});
     producer->invalidate_after_rollback();
+    require(producer->device_pcm_contact_count()==0u &&
+            producer->device_pcm_contact_stream()==0u &&
+            producer->device_pcm_touch_history()==0u &&
+            producer->device_island_work_address()==0u &&
+            !producer->device_island_indirect_args().has_value() &&
+            !physx_gpu::SourceScDeviceIslandFixture::pcm_ready(*producer),
+        "Rejected PCM transaction retained an executable device task view");
+    require(abandoned_mixed[0].packed_counts==0u,
+        "Rejected mixed PCM DMA published an abandoned GPU witness");
     std::array<native::GpuPcmBoxResult,2> restored{};
     restored[1]=primitive;
     producer->enqueue_gpu_pcm_box_contacts(mixed,restored);
+    producer->enqueue_host_pcm_contacts(mixed,restored);
+    producer->enqueue_gpu_dy_island_admission(mixed_edges,mixed_nodes,
+        physx_gpu::SourceScDeviceIslandSources{2u,0u,0u});
+    const auto recovered_graph=physx_gpu::SourceScDeviceIslandFixture::read(*producer);
+    require(recovered_graph.errors==0u &&
+            recovered_graph.runnable_components==2u &&
+            recovered_graph.admitted_edges==2u,
+        "Rolled-back PCM regenerated an incorrect device island task");
     producer->finish_gpu_pcm_box_contacts();
     require(restored[0].edge==edge &&
             restored[0].status()==0u &&
@@ -600,6 +2339,1858 @@ void verify(fyzz::compute::Backend backend,const char* sap,
             producer->pcm_host_contact_upload_bytes()==
                 sizeof(physx_gpu::SourcePcmGpuContactStreamNative),
         "Rejected late primitive upload contaminated the next PCM epoch");
+    producer->commit_gpu_step();
+    // A collision-only epoch has no Dy submission to publish CPU Gu
+    // touch history. Commit must finish the existing source transaction.
+    const auto collision_only_edge=std::max(edge,sphere_edge)+1u;
+    const std::array<native::GpuGuTouchRecord,1> collision_only_touch{{
+        {collision_only_edge,1u}
+    }};
+    std::array<native::GpuPcmBoxResult,1> collision_only_result{};
+    producer->enqueue_gpu_pcm_box_contacts(
+        request,collision_only_result,collision_only_edge+1u);
+    producer->enqueue_cpu_gu_touch_history(collision_only_touch);
+    producer->finish_gpu_pcm_box_contacts();
+    const auto before_commit_batches=
+        producer->stream_submission_stats().command_batches;
+    producer->commit_gpu_step();
+    const auto after_commit_batches=
+        producer->stream_submission_stats().command_batches;
+    const auto committed_touch=physx_gpu::SourceScDeviceIslandFixture::touch(
+        *producer,collision_only_edge);
+    require(after_commit_batches==before_commit_batches+1u &&
+            committed_touch[0]==1u && committed_touch[1]==0u,
+        "Collision-only Gu touch did not finish its source transaction");
+
+    // CPU-origin PCM has no device witness to fetch. The existing
+    // source queue must retain its host upload until the real consumer.
+    const std::array<native::GpuPcmBoxPair,1> host_only{{mixed[1]}};
+    std::array<native::GpuPcmBoxResult,1> host_only_results{{primitive}};
+    const auto before_host_only_batches=
+        producer->stream_submission_stats().command_batches;
+    const auto before_host_only_tokens=
+        physx_gpu::SourceScDeviceIslandFixture::source_submissions(*producer);
+    producer->enqueue_gpu_pcm_box_contacts(host_only,host_only_results);
+    require(producer->stream_submission_stats().command_batches==
+                before_host_only_batches &&
+            physx_gpu::SourceScDeviceIslandFixture::
+                source_submissions(*producer)==before_host_only_tokens &&
+            physx_gpu::SourceScDeviceIslandFixture::
+                pcm_candidate_dispatches(*producer)==0u,
+        "CPU-origin PCM submitted its snapshot before the host witness");
+    // An unsubmitted source snapshot cannot be restored from the device
+    // journal. Reject it, then admit the same epoch without a stale copy.
+    producer->invalidate_after_rollback();
+    producer->enqueue_gpu_pcm_box_contacts(host_only,host_only_results);
+    producer->enqueue_host_pcm_contacts(host_only,host_only_results);
+    const auto accepted_host_only_batches=
+        producer->stream_submission_stats().command_batches;
+    const auto accepted_host_only_tokens=
+        physx_gpu::SourceScDeviceIslandFixture::source_submissions(*producer);
+    require(accepted_host_only_batches==before_host_only_batches+1u &&
+            accepted_host_only_tokens==before_host_only_tokens+1u,
+        "CPU-origin PCM did not coalesce snapshot and host publication");
+    producer->finish_gpu_pcm_box_contacts();
+    require(physx_gpu::SourceScDeviceIslandFixture::
+                source_submissions(*producer)==accepted_host_only_tokens &&
+            producer->pcm_contact_readback_bytes()==0u &&
+            producer->pcm_host_contact_upload_bytes()==
+                sizeof(physx_gpu::SourcePcmGpuContactStreamNative) &&
+            host_only_results[0].edge==sphere_edge &&
+            host_only_results[0].count()==1u,
+        "CPU-origin PCM blocked on GPU or lost its source witness");
+    producer->commit_gpu_step();
+    require(producer->stream_submission_stats().command_batches==
+                accepted_host_only_batches,
+        "CPU-origin PCM committed with a redundant GPU submission");
+    require((physx_gpu::SourceScDeviceIslandFixture::touch(
+                 *producer,sphere_edge)[0]&1u)!=0u,
+        "CPU-origin PCM failed to commit its device touch history");
+}
+
+// A PCM readback may remain pending while independent Dy integration
+// executes on the same Context queue. The Dy result is fetched only
+// after Sc has explicitly joined the earlier witness DMA.
+// Contact-free Sc admission exercises the exact Vulkan/D3D12 indirect
+// binding and Dy task ordering without running GJK on software GPUs.
+void verify_device_sc_dy_indirect_api(
+    fyzz::compute::Backend backend,const char* sap,const char* pcm,
+    const char* dy_shader) {
+    using namespace fyzz;
+    std::ifstream file(dy_shader,std::ios::binary);
+    require(bool(file),"Source indirect Dy shader unavailable");
+    compute::ShaderBinary shader{};
+    shader.format=backend==compute::Backend::Vulkan
+        ?compute::ShaderFormat::Spirv:compute::ShaderFormat::Dxil;
+    shader.bytes.assign(std::istreambuf_iterator<char>{file},
+                        std::istreambuf_iterator<char>{});
+    native::Scene scene;
+    auto owner=std::make_unique<physx_gpu::SourceScOwnedGpuBroadphaseNative>(
+        backend,load_native_gpu_sap_shaders(backend,sap),128u,128u,
+        std::nullopt,load_native_gpu_pcm_shaders(backend,pcm),
+        std::move(shader));
+    auto* producer=owner.get();
+    native::GpuBroadphaseProducer& scene_producer=*producer;
+    scene.set_gpu_broadphase(std::move(owner));
+    const std::array<BodyId,2> actors{{
+        scene.add_dynamic_box({0.5f,0.5f,0.5f},{2.f,1.f,0.f},1.f),
+        scene.add_dynamic_box({0.5f,0.5f,0.5f},{10.f,1.f,0.f},1.f)
+    }};
+    const std::array<native::GpuPcmBoxPair,0> no_pairs{};
+    std::array<native::GpuPcmBoxResult,0> no_witness{};
+    producer->enqueue_gpu_pcm_box_contacts(no_pairs,no_witness);
+    const auto batches_before_admission=
+        producer->stream_submission_stats().command_batches;
+    const std::array<std::uint32_t,3> nodes{{
+        4u|(1u<<8u)|physx_gpu::source_sc_device_island_active_bit,
+        physx_gpu::source_sc_device_island_nonresponding_bit,
+        5u|(2u<<8u)|physx_gpu::source_sc_device_island_active_bit
+    }};
+    scene_producer.enqueue_gpu_dy_island_admission(
+        std::span<const native::GpuDyIslandEdge>{},nodes,
+        physx_gpu::SourceScDeviceIslandSources{});
+    require(producer->stream_submission_stats().command_batches==
+                batches_before_admission,
+        "Sc island admission submitted before its numerical consumer");
+    std::array<native::GpuDyDistanceBody,3> bodies{};
+    bodies[0].inverse_mass=bodies[2].inverse_mass=1.f;
+    const std::array<std::uint32_t,2> ordinals{{0u,2u}};
+    std::array<native::GpuDyDistanceTask,2> tasks{{
+        {0u,0u,0u,0u,0u,1u,4u,1u,0x4000u},
+        {0u,0u,0u,0u,1u,2u,5u,2u,0x4000u}
+    }};
+    std::array<native::GpuDyBodyIntegrationInput,3> inputs{};
+    std::array<native::GpuDyIntegratedPose,3> poses{};
+    std::array<native::GpuDySleepState,3> sleep{};
+    constexpr float seconds=1.f/120.f;
+    for(std::size_t i=0u;i<actors.size();++i) {
+        auto& in=inputs[ordinals[i]];
+        in.active=1u;
+        in.source_actor=actors[i];
+        in.source_element=0xffffffffu;
+        in.source_inverse_mass=1.f;
+        in.position[0]=2.f+8.f*float(i);
+        in.position[1]=1.f;
+        in.orientation[3]=1.f;
+        in.actor_position[0]=in.position[0];
+        in.actor_position[1]=in.position[1];
+        in.actor_orientation[3]=1.f;
+        in.mass_local_orientation[3]=1.f;
+        in.linear_velocity[0]=0.5f+0.25f*float(i);
+        in.max_linear_speed_squared=100.f;
+        in.max_angular_speed_squared=100.f;
+        in.wake_counter=0.4f;
+        in.seconds=seconds;
+    }
+    producer->enqueue_gpu_dy_distance(
+        bodies,{},{},{},ordinals,tasks,
+        {},{},{},{},{},{},{},{},
+        inputs,poses,true,{},true,true,true,sleep);
+    require(producer->stream_submission_stats().command_batches==
+                batches_before_admission+1u &&
+            producer->has_queued_gpu_dy_distance() &&
+            producer->dy_launch_stats().device_island_indirect_dispatches==1u &&
+            producer->dy_launch_stats().device_generated_bytes==
+                sizeof(tasks)+sizeof(ordinals) &&
+            producer->dy_launch_stats().device_source_copy_bytes==0u &&
+            producer->dy_launch_stats().host_inertia_upload_bytes==
+                bodies.size()*9u*sizeof(float) &&
+            producer->dy_launch_stats().device_inertia_generated_bytes==0u &&
+            producer->dy_launch_stats().source_descriptor_upload_bytes==0u &&
+            producer->dy_upload_span_count()==1u,
+        "Source Sc task admission retained a host numerical task upload");
+    producer->finish_gpu_dy_distance();
+    require(tasks[0].error==0u && tasks[1].error==0u &&
+            poses[0].valid==1u && poses[2].valid==1u &&
+            poses[1].valid==0u &&
+            std::fabs(poses[0].position[0]-(2.f+0.5f*seconds))<0.002f &&
+            std::fabs(poses[2].position[0]-(10.f+0.75f*seconds))<0.002f,
+        "Device-indirect Dy omitted an isolated responding body");
+    producer->commit_gpu_step();
+
+    // The declared task/body capacity is deliberately larger than the
+    // source graph's one runnable island. GPU admission owns the valid
+    // prefix; no CPU predicted task, body or descriptor count is read
+    // back to choose a numerical launch or publish extra body motion.
+    const std::array<std::uint32_t,3> partly_active{{
+        nodes[0],nodes[1],
+        nodes[2]&~physx_gpu::source_sc_device_island_active_bit
+    }};
+    producer->enqueue_gpu_pcm_box_contacts(no_pairs,no_witness);
+    producer->enqueue_gpu_dy_island_admission(
+        std::span<const physx_gpu::SourceScDeviceIslandEdge>{},
+        partly_active,physx_gpu::SourceScDeviceIslandSources{});
+    tasks[0].error=0x4000u;
+    // The unused second slot is capacity, not a host-authored task.
+    // It intentionally violates range and iteration invariants.
+    tasks[1].descriptor_begin=37u;
+    tasks[1].partition_end=999u;
+    tasks[1].body_end=0u;
+    tasks[1].position_iterations=0u;
+    tasks[1].error=0x4000u;
+    poses={};
+    producer->enqueue_gpu_dy_distance(
+        bodies,{},{},{},ordinals,tasks,
+        {},{},{},{},{},{},{},{},
+        inputs,poses,true,{},true,true,true,sleep);
+    producer->finish_gpu_dy_distance();
+    require(producer->dy_launch_stats().device_admitted_tasks==1u &&
+            producer->dy_launch_stats().device_admitted_bodies==1u &&
+            producer->dy_launch_stats().device_admitted_descriptors==0u &&
+            tasks[0].body_begin==0u && tasks[0].body_end==1u &&
+            tasks[0].error==0u && tasks[1].error==0u &&
+            poses[0].valid==1u && poses[1].valid==0u &&
+            poses[2].valid==0u,
+        "Dy used the host task capacity instead of the device admission");
+    producer->commit_gpu_step();
+
+    // Device Sc orders independent responding tasks across the compact
+    // shared-sort and radix-sort boundary with the same source tokens.
+    for(const std::uint32_t count:{1u,8u,31u,32u,33u,64u,120u,129u}) {
+        std::vector<std::uint32_t> independent_nodes(
+            count,4u|(1u<<8u)|
+                physx_gpu::source_sc_device_island_active_bit);
+        std::vector<physx_gpu::SourceScDeviceIslandEdge> joint_edges;
+        joint_edges.reserve(count);
+        for(std::uint32_t i=0u;i<count;++i)
+            joint_edges.push_back({
+                i,i,0xffffffffu,i,
+                physx_gpu::source_sc_device_island_joint_bit});
+        producer->enqueue_gpu_pcm_box_contacts(no_pairs,no_witness);
+        producer->enqueue_gpu_dy_island_admission(
+            joint_edges,independent_nodes,
+            physx_gpu::SourceScDeviceIslandSources{0u,0u,count});
+        const auto sorted=physx_gpu::SourceScDeviceIslandFixture::read(*producer);
+        require(sorted.errors==0u &&
+                sorted.runnable_components==count &&
+                sorted.responding_nodes==count &&
+                sorted.admitted_edges==count &&
+                sorted.dispatch_x==(count+127u)/128u,
+            "Device Sc response ordering lost an independent island");
+        producer->invalidate_after_rollback();
+    }
+
+    // Compact accurate admission must merge a full 32-node component
+    // without an additional dispatch or reordered source responses.
+    {
+        constexpr std::uint32_t count=32u;
+        std::vector<std::uint32_t> linked_nodes(
+            count,4u|(1u<<8u)|
+                physx_gpu::source_sc_device_island_active_bit);
+        std::vector<physx_gpu::SourceScDeviceIslandEdge> linked_edges;
+        linked_edges.reserve(count);
+        for(std::uint32_t i=0u;i<count;++i)
+            linked_edges.push_back({
+                i,i,i+1u<count?i+1u:0xffffffffu,i,
+                physx_gpu::source_sc_device_island_joint_bit});
+        producer->enqueue_gpu_pcm_box_contacts(no_pairs,no_witness);
+        producer->enqueue_gpu_dy_island_admission(
+            linked_edges,linked_nodes,
+            physx_gpu::SourceScDeviceIslandSources{0u,0u,count});
+        const auto joined=physx_gpu::SourceScDeviceIslandFixture::read(*producer);
+        require(joined.errors==0u &&
+                joined.runnable_components==1u &&
+                joined.responding_nodes==count &&
+                joined.admitted_edges==count &&
+                joined.dispatch_x==1u &&
+                joined.has_non_singleton_task==1u,
+            "Compact GPU union failed to admit one connected numerical island");
+        producer->invalidate_after_rollback();
+    }
+}
+
+// Dy consumes the physical task and body-ordinal stream produced by
+// Sc on the same source queue. The deliberately poisoned host task is
+// not the numerical input. An inconsistent device header must reject
+// the epoch before any motion or contact writeback is committed.
+void verify_device_sc_dy_task_admission(
+    fyzz::compute::Backend backend,const char* sap,const char* pcm,
+    const char* dy_shader) {
+    using namespace fyzz;
+    std::ifstream file(dy_shader,std::ios::binary);
+    require(bool(file),"Device Sc/Dy shader unavailable");
+    compute::ShaderBinary shader{};
+    shader.format=backend==compute::Backend::Vulkan
+        ?compute::ShaderFormat::Spirv:compute::ShaderFormat::Dxil;
+    shader.bytes.assign(std::istreambuf_iterator<char>{file},
+                        std::istreambuf_iterator<char>{});
+    native::Scene scene;
+    auto owner=std::make_unique<physx_gpu::SourceScOwnedGpuBroadphaseNative>(
+        backend,load_native_gpu_sap_shaders(backend,sap),128u,128u,
+        std::nullopt,load_native_gpu_pcm_shaders(backend,pcm),
+        std::move(shader));
+    auto* producer=owner.get();
+    scene.set_gpu_broadphase(std::move(owner));
+    const auto moving=scene.add_dynamic_box(
+        {0.5f,0.5f,0.5f},{0.f,1.f,0.f},1.f);
+    const auto fixed=scene.add_static_box(
+        {0.5f,0.5f,0.5f},{0.8f,1.f,0.f});
+    const auto independent=scene.add_dynamic_box(
+        {0.5f,0.5f,0.5f},{8.f,1.f,0.f},1.f);
+    // The broadphase AABBs overlap at their corners, but the
+    // diagonally separated oriented boxes have no physical contact.
+    const auto separated=scene.add_static_box(
+        {0.5f,0.5f,0.5f},{9.08f,2.08f,0.f});
+    scene.set_pose(separated,{9.08f,2.08f,0.f},
+        {0.f,0.f,0.382683432f,0.923879533f});
+    scene.advance_collision(true);
+    const auto edge=scene.contact_edge_index({moving,fixed});
+    require(edge!=0xffffffffu,"Device Sc/Dy test lost its Sc manager");
+    const auto empty_edge=scene.contact_edge_index({independent,separated});
+    require(empty_edge!=0xffffffffu &&
+            !scene.contact_edge_connected({independent,separated}),
+        "Device PCM zero-contact case requires a non-touching overlap");
+    constexpr float seconds=1.f/120.f;
+    const std::array<native::GpuPcmBoxPair,1> requests{{
+        {moving,fixed,edge,false}
+    }};
+    std::array<native::GpuPcmBoxResult,1> witness{};
+    std::array<native::GpuDyDistanceBody,1> body{};
+    std::array<native::GpuDyDistanceDescriptor,1> descriptors{{
+        {1u,0u,0xffffffffu,0x100u}
+    }};
+    // The host descriptor addresses manager 1; the resident Sc token
+    // addresses manager 0. Only manager 0 has a responding endpoint.
+    // A retained host token therefore rejects numerical admission.
+    std::array<native::GpuDyContactManifold,2> managers{{
+        {0u,0u,0xffffffffu,0u,0x100u},
+        {0xffffffffu,0u,0xffffffffu,0u,0u}
+    }};
+    std::array<std::uint32_t,1> ordinals{0u};
+    std::array<native::GpuDyDistanceTask,1> tasks{};
+    std::array<native::GpuDyBodyIntegrationInput,1> inputs{};
+    std::array<native::GpuDyIntegratedPose,1> poses{};
+    std::array<native::GpuDySleepState,1> sleep{};
+    const auto dispatch=[&] {
+        body={};
+        body[0].inverse_mass=1.f;
+        tasks={};
+        tasks[0]={0u,1u,0u,1u,0u,1u,4u,1u,0x4000u};
+        inputs={};
+        poses={};
+        sleep={};
+        auto& in=inputs[0];
+        in.active=1u;
+        in.source_actor=moving;
+        in.source_element=0xffffffffu;
+        in.source_inverse_mass=1.f;
+        in.position[0]=2.f;
+        in.position[1]=1.f;
+        in.orientation[3]=1.f;
+        in.actor_position[0]=2.f;
+        in.actor_position[1]=1.f;
+        in.actor_orientation[3]=1.f;
+        in.mass_local_orientation[3]=1.f;
+        in.linear_velocity[0]=0.5f;
+        in.max_linear_speed_squared=100.f;
+        in.max_angular_speed_squared=100.f;
+        in.wake_counter=0.4f;
+        in.seconds=seconds;
+        producer->enqueue_gpu_dy_distance(
+            body,{},descriptors,{},ordinals,tasks,
+            {},{},{},{},{},managers,{},{},
+            inputs,poses,true,{},true,true,true,sleep);
+    };
+    const std::array<std::uint32_t,1> single_node{{
+        4u|(1u<<8u)|physx_gpu::source_sc_device_island_active_bit
+    }};
+    producer->enqueue_gpu_pcm_box_contacts(requests,witness);
+    const std::array<physx_gpu::SourceScDeviceIslandEdge,1> touching{{
+        {edge,0u,0xffffffffu,0u,0u}
+    }};
+    producer->enqueue_gpu_dy_island_admission(
+        touching,single_node,physx_gpu::SourceScDeviceIslandSources{2u,0u,0u});
+    dispatch();
+    require(producer->has_queued_gpu_dy_distance() &&
+            witness[0].packed_counts==0u,
+        "Device Sc/Dy consumed the PCM witness before numerical dispatch");
+    producer->finish_gpu_dy_distance();
+    require(witness[0].packed_counts==0u,
+        "Resident Sc numerical task observed unpublished PCM witnesses");
+    producer->finish_gpu_pcm_box_contacts();
+    require(tasks[0].error==0u && poses[0].valid==1u &&
+            producer->dy_launch_stats().device_island_indirect_dispatches==1u &&
+            producer->dy_launch_stats().source_descriptor_upload_bytes==0u &&
+            producer->dy_upload_span_count()==1u &&
+            std::fabs(poses[0].position[0]-
+                      (2.f+0.5f*seconds))<0.002f,
+        "Dy did not indirectly execute the resident Sc task");
+    producer->commit_gpu_step();
+
+    // A failed PCM producer cannot launch a numerical island even when
+    // its previous physical touch bit remains set. The device rejects
+    // this epoch before Sc observes the witness and restores the journal.
+    witness={};
+    producer->enqueue_gpu_pcm_box_contacts(requests,witness);
+    physx_gpu::SourceScDeviceIslandFixture::inject_failed_touch(
+        *producer,edge);
+    producer->enqueue_gpu_dy_island_admission(
+        touching,single_node,
+        physx_gpu::SourceScDeviceIslandSources{2u,0u,0u});
+    const auto failed=physx_gpu::SourceScDeviceIslandFixture::read(*producer);
+    require((failed.errors&256u)!=0u &&
+            failed.runnable_components==0u && failed.dispatch_x==0u &&
+            witness[0].packed_counts==0u,
+        "Failed GPU PCM touch was admitted before Sc result validation");
+    producer->finish_gpu_pcm_box_contacts();
+    producer->invalidate_after_rollback();
+
+    // The indirect launch also has to execute every independent
+    // source task, not merely the first workgroup from a host hint.
+    // One physically touching manager belongs to node 0; node 1 is a
+    // separate awake solver body with no numerical constraint.
+    {
+        std::array<native::GpuDyDistanceBody,2> bodies{};
+        for(auto& item:bodies)item.inverse_mass=1.f;
+        const std::array<std::uint32_t,2> body_order{{0u,1u}};
+        std::array<native::GpuDyDistanceTask,2> active_tasks{{
+            {0u,1u,0u,1u,0u,1u,4u,1u,0x4000u},
+            {1u,1u,1u,1u,1u,2u,5u,1u,0x4000u}
+        }};
+        std::array<native::GpuDyBodyIntegrationInput,2> active_inputs{};
+        std::array<native::GpuDyIntegratedPose,2> active_poses{};
+        std::array<native::GpuDySleepState,2> active_sleep{};
+        for(std::size_t i=0u;i<2u;++i) {
+            auto& in=active_inputs[i];
+            in.active=1u;
+            in.source_actor=i==0u?moving:independent;
+            in.source_element=0xffffffffu;
+            in.source_inverse_mass=1.f;
+            in.position[0]=2.f+8.f*float(i);
+            in.position[1]=1.f;
+            in.orientation[3]=1.f;
+            in.actor_position[0]=in.position[0];
+            in.actor_position[1]=in.position[1];
+            in.actor_orientation[3]=1.f;
+            in.mass_local_orientation[3]=1.f;
+            in.linear_velocity[0]=0.5f+0.25f*float(i);
+            in.max_linear_speed_squared=100.f;
+            in.max_angular_speed_squared=100.f;
+            in.wake_counter=0.4f;
+            in.seconds=seconds;
+        }
+        const std::array<std::uint32_t,2> active_nodes{{
+            single_node[0],
+            5u|(1u<<8u)|physx_gpu::source_sc_device_island_active_bit
+        }};
+        witness={};
+        producer->enqueue_gpu_pcm_box_contacts(requests,witness);
+        producer->enqueue_gpu_dy_island_admission(
+            touching,active_nodes,
+            physx_gpu::SourceScDeviceIslandSources{2u,0u,0u});
+        producer->enqueue_gpu_dy_distance(
+            bodies,{},descriptors,{},body_order,active_tasks,
+            {},{},{},{},{},managers,{},{},
+            active_inputs,active_poses,true,{},true,true,true,active_sleep);
+        producer->finish_gpu_dy_distance();
+        require(witness[0].packed_counts==0u,
+            "Multiple resident tasks joined PCM witnesses before Sc");
+        producer->finish_gpu_pcm_box_contacts();
+        require(active_tasks[0].error==0u && active_tasks[1].error==0u &&
+                active_poses[0].valid==1u && active_poses[1].valid==1u &&
+                producer->dy_launch_stats().device_island_indirect_dispatches==1u &&
+                std::fabs(active_poses[0].position[0]-
+                          (2.f+0.5f*seconds))<0.002f &&
+                std::fabs(active_poses[1].position[0]-
+                          (10.f+0.75f*seconds))<0.002f,
+            "Resident Sc indirect launch omitted an independent Dy task");
+        producer->commit_gpu_step();
+    }
+
+    // The work allocation has room for two nodes, but Sc admits two
+    // responding nodes while the Dy caller provides only one. Runtime
+    // validation must fail before any free body is integrated.
+    witness={};
+    const std::array<physx_gpu::SourceScDeviceIslandEdge,1> bridge{{
+        {edge,0u,1u,0xffffffffu,
+         physx_gpu::source_sc_device_island_joint_bit|
+         physx_gpu::source_sc_device_island_no_response_bit}
+    }};
+    const std::array<std::uint32_t,2> two_nodes{{
+        single_node[0],4u|(1u<<8u)
+    }};
+    producer->enqueue_gpu_pcm_box_contacts(requests,witness);
+    producer->enqueue_gpu_dy_island_admission(
+        bridge,two_nodes,physx_gpu::SourceScDeviceIslandSources{2u,0u,0u});
+    dispatch();
+    producer->finish_gpu_pcm_box_contacts();
+    bool rejected=false;
+    try {
+        producer->finish_gpu_dy_distance();
+    }catch(const std::overflow_error& error) {
+        const std::string_view message{error.what()};
+        rejected=message.find("task 0")!=std::string_view::npos &&
+            message.find("flags 16777216")!=std::string_view::npos;
+    }
+    require(rejected && poses[0].valid==0u,
+        "Dy accepted device Sc island counts inconsistent with its numerical tables");
+    producer->invalidate_after_rollback();
+
+    // A numerical manifold cannot shorten a resident PCM contact run.
+    // The source PCM pair is valid; only Dy's declared Gu row extent
+    // understates the number of generated contacts.
+    witness={};
+    producer->enqueue_gpu_pcm_box_contacts(requests,witness);
+    producer->finish_gpu_pcm_box_contacts();
+    require(witness[0].status()==0u && witness[0].count()>1u,
+        "PCM count regression requires a multi-contact source manifold");
+    const auto short_count=witness[0].count()-1u;
+    std::vector<float> forces(short_count);
+    std::array<native::GpuDyContactPatch,1> contact_patches{{
+        {0u,short_count,0u,0u,0.f,0.f,0x80000000u,0u}
+    }};
+    std::array<native::GpuDyContactManifold,1> contact_managers{{
+        {0u,1u,0xffffffffu,0u,0u,0u}
+    }};
+    std::array<native::GpuDyContactPrepPair,1> contact_prep{};
+    contact_prep[0].pcm_pair_index=0u;
+    contact_prep[0].pcm_edge=edge;
+    contact_prep[0].body0.solver_ordinal=0u;
+    contact_prep[0].body0.inverse_mass=1.f;
+    contact_prep[0].body0.orientation[3]=1.f;
+    contact_prep[0].body1.orientation[3]=1.f;
+    contact_prep[0].inv_dt=1.f/seconds;
+    contact_prep[0].rigid_contact_bias=0.8f;
+    contact_prep[0].seconds=seconds;
+    contact_prep[0].max_contact_impulse=
+        std::numeric_limits<float>::max();
+    const std::array<native::GpuDyDistanceDescriptor,1> contact_desc{{
+        {0u,0u,0xffffffffu,0x100u}
+    }};
+    std::array<native::GpuDyDistanceTask,1> contact_tasks{{
+        {0u,1u,0u,1u,0u,1u,4u,1u,0u}
+    }};
+    body={};
+    body[0].inverse_mass=1.f;
+    inputs={};
+    poses={};
+    sleep={};
+    auto& input=inputs[0];
+    input.active=1u;
+    input.source_actor=moving;
+    input.source_element=0xffffffffu;
+    input.source_inverse_mass=1.f;
+    input.position[1]=1.f;
+    input.orientation[3]=1.f;
+    input.actor_position[1]=1.f;
+    input.actor_orientation[3]=1.f;
+    input.mass_local_orientation[3]=1.f;
+    input.max_linear_speed_squared=100.f;
+    input.max_angular_speed_squared=100.f;
+    input.wake_counter=0.4f;
+    input.seconds=seconds;
+    producer->enqueue_gpu_dy_distance(
+        body,{},contact_desc,{},ordinals,contact_tasks,
+        forces,{},{},{},contact_patches,contact_managers,{},
+        contact_prep,inputs,poses,true,{},true,true,true,sleep);
+    bool count_rejected=false;
+    try {
+        producer->finish_gpu_dy_distance();
+    }catch(const std::overflow_error&) {
+        count_rejected=true;
+    }
+    if(!count_rejected || (contact_tasks[0].error&65536u)==0u ||
+       poses[0].valid!=0u)
+        throw std::runtime_error(
+            "Dy executed a truncated resident PCM numerical task: rejected=" +
+            std::to_string(count_rejected) +
+            " task_error=" + std::to_string(contact_tasks[0].error) +
+            " integrated=" + std::to_string(poses[0].valid) +
+            " source_count=" + std::to_string(witness[0].count()) +
+            " prepared_count=" + std::to_string(short_count));
+    producer->invalidate_after_rollback();
+
+    // Contact-preparation failure must reach Sc's resident task error
+    // before the numerical epoch is committed. Host task scratch is not
+    // the producer of that error in device admission.
+    witness={};
+    body={};
+    body[0].inverse_mass=1.f;
+    contact_tasks={{{0u,1u,0u,1u,0u,1u,4u,1u,0u}}};
+    poses={};
+    sleep={};
+    producer->enqueue_gpu_pcm_box_contacts(requests,witness);
+    producer->enqueue_gpu_dy_island_admission(
+        touching,single_node,
+        physx_gpu::SourceScDeviceIslandSources{1u,0u,0u});
+    producer->enqueue_gpu_dy_distance(
+        body,{},contact_desc,{},ordinals,contact_tasks,
+        forces,{},{},{},contact_patches,contact_managers,{},
+        contact_prep,inputs,poses,true,{},true,true,true,sleep,{},false);
+    require(witness[0].packed_counts==0u,
+        "Sc contact preparation joined the PCM header before device admission");
+    bool device_contact_rejected=false;
+    try {
+        producer->finish_gpu_dy_distance();
+    }catch(const std::overflow_error& error) {
+        const std::string_view message{error.what()};
+        device_contact_rejected=
+            message.find("task 0")!=std::string_view::npos &&
+            message.find("flags 65536")!=std::string_view::npos;
+    }
+    require(device_contact_rejected &&
+            producer->dy_launch_stats().device_task_readback_bytes==0u &&
+            producer->dy_launch_stats().device_epoch_error_readback_bytes==8u &&
+            contact_tasks[0].error==0u &&
+            poses[0].valid==0u &&
+            witness[0].packed_counts==0u,
+        "Resident Sc task missed a compact Dy contact-preparation rejection");
+    producer->finish_gpu_pcm_box_contacts();
+    producer->invalidate_after_rollback();
+
+    // Sc admits the real physical contact on the same queue while Dy
+    // compacts its reserved PCM row capacity from resident Gu geometry.
+    constexpr std::uint32_t contact_capacity=5u;
+    std::vector<float> capacity_forces(contact_capacity,-17.f);
+    std::array<native::GpuDyContactPatch,1> capacity_patches{{
+        {0u,contact_capacity,0u,0u,0.f,0.f,0u,0u}
+    }};
+    std::array<native::GpuDyContactManifold,1> capacity_managers{{
+        {0u,1u,0xffffffffu,0u,0u,0u}
+    }};
+    body={};
+    body[0].inverse_mass=1.f;
+    contact_tasks={{{0u,1u,0u,1u,0u,1u,4u,1u,0u}}};
+    poses={};
+    sleep={};
+    witness={};
+    producer->enqueue_gpu_pcm_box_contacts(requests,witness);
+    producer->enqueue_gpu_dy_island_admission(
+        touching,single_node,
+        physx_gpu::SourceScDeviceIslandSources{1u,0u,0u});
+    producer->enqueue_gpu_dy_distance(
+        body,{},contact_desc,{},ordinals,contact_tasks,
+        capacity_forces,{},{},{},capacity_patches,capacity_managers,{},
+        contact_prep,inputs,poses,true,{},true,true,true,sleep);
+    require(witness[0].packed_counts==0u,
+        "Sc contact capacity admission joined the GPU witness");
+    producer->finish_gpu_dy_distance();
+    require(witness[0].packed_counts==0u &&
+            contact_tasks[0].error==0u && poses[0].valid==1u &&
+            capacity_patches[0].contact_count>0u &&
+            capacity_patches[0].contact_count<contact_capacity &&
+            capacity_patches[0].order_offset==0u &&
+            capacity_forces[0]!=-17.f &&
+            capacity_forces[contact_capacity-1u]==-17.f &&
+            producer->dy_launch_stats().device_island_indirect_dispatches==1u,
+        "Device Sc PCM contact extent failed before witness publication");
+    producer->finish_gpu_pcm_box_contacts();
+    require(witness[0].status()==0u && witness[0].count()>0u &&
+            witness[0].count()==capacity_patches[0].contact_count,
+        "GPU PCM numerical extent differs from the published witness");
+    producer->commit_gpu_step();
+
+    // Device-authored PCM extents cannot be omitted or replaced by stale
+    // counts. Both failures reject before numerical integration.
+    for(const std::uint32_t bad_extent:{0x80000000u,0u}) {
+        witness={};
+        capacity_patches[0]={0u,contact_capacity,0u,0u,0.f,0.f,
+                             0x80000000u,0u};
+        std::fill(capacity_forces.begin(),capacity_forces.end(),-17.f);
+        body={};
+        body[0].inverse_mass=1.f;
+        contact_tasks={{{0u,1u,0u,1u,0u,1u,4u,1u,0u}}};
+        poses={};
+        sleep={};
+        producer->enqueue_gpu_pcm_box_contacts(requests,witness);
+        producer->enqueue_gpu_dy_island_admission(
+            touching,single_node,
+            physx_gpu::SourceScDeviceIslandSources{1u,0u,0u});
+        physx_gpu::SourceScDeviceIslandFixture::overwrite_extent(
+            *producer,0u,bad_extent);
+        const auto injected_extent=
+            physx_gpu::SourceScDeviceIslandFixture::extent(*producer,0u);
+        require(injected_extent==bad_extent,
+            "Sc extent injection did not reach its resident numerical source");
+        producer->enqueue_gpu_dy_distance(
+            body,{},contact_desc,{},ordinals,contact_tasks,
+            capacity_forces,{},{},{},capacity_patches,capacity_managers,{},
+            contact_prep,inputs,poses,true,{},true,true,true,sleep);
+        bool extent_rejected=false;
+        try {
+            producer->finish_gpu_dy_distance();
+        }catch(const std::overflow_error&) {
+            extent_rejected=true;
+        }
+        if(!(extent_rejected &&
+             (contact_tasks[0].error&65536u)!=0u &&
+             poses[0].valid==0u &&
+             witness[0].packed_counts==0u))
+            throw std::runtime_error(
+                "Dy accepted a contact count inconsistent with resident Sc admission"
+                " rejected="+std::to_string(extent_rejected)+
+                " flags="+std::to_string(contact_tasks[0].error)+
+                " pose="+std::to_string(poses[0].valid)+
+                " witness="+std::to_string(witness[0].packed_counts)+
+                " extent="+std::to_string(injected_extent));
+        producer->finish_gpu_pcm_box_contacts();
+        producer->invalidate_after_rollback();
+    }
+
+    // A valid cached anchor with an incompatible local normal must be
+    // replaced using the current resident Gu contact geometry.
+    std::array<native::GpuDyFrictionAnchorInput,2> cached_anchors{};
+    std::array<native::GpuDyFrictionAnchorImpulse,2> cached_impulses{};
+    std::array<native::GpuDyContactPatch,1> cached_patches{{
+        {0u,contact_capacity,1u,0xa0000000u,0.5f,0.5f,
+         0x80000000u,0u}
+    }};
+    // Octahedral (0,0) encodes local +Z, orthogonal to this pair's
+    // actual X-facing PCM contact normal.
+    body={};
+    body[0].inverse_mass=1.f;
+    contact_tasks={{{0u,1u,0u,1u,0u,1u,4u,1u,0u}}};
+    poses={};
+    sleep={};
+    witness={};
+    producer->enqueue_gpu_pcm_box_contacts(requests,witness);
+    producer->enqueue_gpu_dy_distance(
+        body,{},contact_desc,{},ordinals,contact_tasks,
+        capacity_forces,{},{},cached_anchors,cached_patches,
+        capacity_managers,{},contact_prep,inputs,poses,true,
+        cached_impulses,true,true,true,sleep);
+    producer->finish_gpu_dy_distance();
+    require(contact_tasks[0].error==0u && poses[0].valid==1u &&
+            (cached_patches[0].reserved&0x200u)!=0u &&
+            cached_patches[0].anchor_count>0u,
+        "GPU PCM friction retained a cached normal from another face");
+    producer->finish_gpu_pcm_box_contacts();
+    require(witness[0].status()==0u && witness[0].count()>0u,
+        "GPU PCM normal revalidation lost its source manifold");
+    producer->commit_gpu_step();
+
+    // A candidate PCM manager can have zero current-frame contacts.
+    // Its reserved numerical rows and old friction anchors must not
+    // become a solver response or force a host witness join.
+    const std::array<native::GpuPcmBoxPair,1> empty_request{{
+        {independent,separated,empty_edge,false}
+    }};
+    std::array<native::GpuDyContactPatch,1> empty_patches{{
+        {0u,contact_capacity,1u,0x80000000u,0.5f,0.5f,
+         0x80000000u,0u}
+    }};
+    contact_prep[0].pcm_edge=empty_edge;
+    inputs[0].source_actor=independent;
+    inputs[0].position[0]=8.f;
+    inputs[0].actor_position[0]=8.f;
+    std::fill(capacity_forces.begin(),capacity_forces.end(),0.f);
+    body={};
+    body[0].inverse_mass=1.f;
+    contact_tasks={{{0u,1u,0u,1u,0u,1u,4u,1u,0u}}};
+    poses={};
+    sleep={};
+    witness={};
+    producer->enqueue_gpu_pcm_box_contacts(empty_request,witness);
+    std::array<native::GpuDyRetainedFrictionCandidate,2> unused_history{};
+    for(auto& record:unused_history)record.anchor_count=1u;
+    producer->enqueue_gpu_dy_distance(
+        body,{},contact_desc,{},ordinals,contact_tasks,
+        capacity_forces,{},{},cached_anchors,empty_patches,
+        capacity_managers,{},contact_prep,inputs,poses,true,
+        cached_impulses,true,true,true,sleep,{},true,false,{},unused_history);
+    require(witness[0].packed_counts==0u &&
+            producer->dy_launch_stats().retained_friction_source_bytes==0u,
+        "Non-touching PCM candidate transferred unused retained friction");
+    producer->finish_gpu_dy_distance();
+    require(witness[0].packed_counts==0u &&
+            contact_tasks[0].error==0u && poses[0].valid==1u &&
+            empty_patches[0].anchor_count==0u &&
+            std::all_of(capacity_forces.begin(),capacity_forces.end(),
+                        [](float impulse){return impulse==0.f;}),
+        "Empty resident PCM contact run applied stale numerical response");
+    producer->finish_gpu_pcm_box_contacts();
+    require(witness[0].status()==0u && witness[0].count()==0u,
+        "Separated broadphase candidate unexpectedly produced PCM contacts");
+    producer->commit_gpu_step();
+
+    // Device admission retains the awake body's unconstrained
+    // integration while excluding the non-touching contact response.
+    // Unused host contact and friction outputs remain unpublished.
+    const std::array<physx_gpu::SourceScDeviceIslandEdge,1> no_touch_edge{{
+        {empty_edge,0u,0xffffffffu,0u,0u}
+    }};
+    const std::array<std::uint32_t,1> no_touch_node{{
+        4u|(1u<<8u)|physx_gpu::source_sc_device_island_active_bit
+    }};
+    std::fill(capacity_forces.begin(),capacity_forces.end(),-17.f);
+    empty_patches[0]={0u,contact_capacity,1u,0x80000000u,
+                      0.5f,0.5f,0x80000000u,0u};
+    body={};
+    body[0].inverse_mass=1.f;
+    contact_tasks={{{0u,1u,0u,1u,0u,1u,4u,1u,0u}}};
+    poses={};
+    sleep={};
+    witness={};
+    producer->enqueue_gpu_pcm_box_contacts(empty_request,witness);
+    producer->enqueue_gpu_dy_island_admission(
+        no_touch_edge,no_touch_node,
+        physx_gpu::SourceScDeviceIslandSources{1u,0u,0u});
+    producer->enqueue_gpu_dy_distance(
+        body,{},contact_desc,{},ordinals,contact_tasks,
+        capacity_forces,{},{},cached_anchors,empty_patches,
+        capacity_managers,{},contact_prep,inputs,poses,true,
+        cached_impulses,true,true,true,sleep);
+    producer->finish_gpu_dy_distance();
+    const bool witness_unjoined=witness[0].packed_counts==0u;
+    const auto schedule=producer->dy_launch_stats();
+    const bool forces_unchanged=std::all_of(
+        capacity_forces.begin(),capacity_forces.end(),
+        [](float impulse){return impulse==-17.f;});
+    producer->finish_gpu_pcm_box_contacts();
+    if(!witness_unjoined || schedule.device_admitted_tasks!=1u ||
+       schedule.device_admitted_bodies!=1u ||
+       schedule.device_admitted_descriptors!=0u ||
+       contact_tasks[0].error!=0u || poses[0].valid!=1u ||
+       std::fabs(poses[0].position[0]-8.f)>0.005f ||
+       empty_patches[0].anchor_count!=1u || !forces_unchanged ||
+       witness[0].status()!=0u || witness[0].count()!=0u) {
+        const auto graph=physx_gpu::SourceScDeviceIslandFixture::read(*producer);
+        const auto touch=physx_gpu::SourceScDeviceIslandFixture::touch(
+            *producer,empty_edge);
+        throw std::runtime_error(
+            "Non-touching Sc response admission failed: tasks=" +
+            std::to_string(schedule.device_admitted_tasks) +
+            " bodies=" + std::to_string(schedule.device_admitted_bodies) +
+            " descriptors=" + std::to_string(schedule.device_admitted_descriptors) +
+            " task_error=" + std::to_string(contact_tasks[0].error) +
+            " pose_valid=" + std::to_string(poses[0].valid) +
+            " position_x=" + std::to_string(poses[0].position[0]) +
+            " anchors=" + std::to_string(empty_patches[0].anchor_count) +
+            " forces_unchanged=" + std::to_string(forces_unchanged) +
+            " witness_unjoined=" + std::to_string(witness_unjoined) +
+            " witness_status=" + std::to_string(witness[0].status()) +
+            " witness_count=" + std::to_string(witness[0].count()) +
+            " graph_errors=" + std::to_string(graph.errors) +
+            " graph_tasks=" + std::to_string(graph.runnable_components) +
+            " graph_descriptors=" + std::to_string(graph.admitted_edges) +
+            " touch=" + std::to_string(touch[0]) + "/" +
+            std::to_string(touch[1]));
+    }
+    producer->commit_gpu_step();
+
+    // A touching manager and a non-touching candidate share one resident
+    // task epoch. Only the touching source response owns host writeback.
+    const std::array<native::GpuPcmBoxPair,2> mixed_requests{{
+        requests[0],empty_request[0]
+    }};
+    std::array<native::GpuPcmBoxResult,2> mixed_witness{};
+    std::array<native::GpuDyDistanceBody,2> mixed_bodies{};
+    for(auto& item:mixed_bodies)item.inverse_mass=1.f;
+    const std::array<native::GpuDyDistanceDescriptor,2> mixed_desc{{
+        {0u,0u,0xffffffffu,0x100u},
+        {1u,1u,0xffffffffu,0x100u}
+    }};
+    const std::array<std::uint32_t,2> mixed_ordinals{{0u,1u}};
+    std::array<native::GpuDyDistanceTask,2> mixed_tasks{{
+        {0u,1u,0u,1u,0u,1u,4u,1u,0u},
+        {1u,2u,1u,2u,1u,2u,4u,1u,0u}
+    }};
+    std::array<native::GpuDyContactManifold,2> mixed_managers{{
+        {0u,1u,0xffffffffu,0u,0u,0u},
+        {1u,1u,0xffffffffu,0u,1u,contact_capacity}
+    }};
+    std::array<native::GpuDyContactPatch,2> mixed_patches{{
+        {0u,contact_capacity,0u,0x80000000u,0.f,0.f,
+         0u,0u},
+        {0u,contact_capacity,1u,0x80000000u,0.5f,0.5f,
+         0u,0u}
+    }};
+    std::array<native::GpuDyContactPrepPair,2> mixed_prep{{
+        contact_prep[0],contact_prep[0]
+    }};
+    mixed_prep[0].pcm_edge=edge;
+    mixed_prep[1].pcm_pair_index=1u;
+    mixed_prep[1].pcm_edge=empty_edge;
+    mixed_prep[1].body0.solver_ordinal=1u;
+    std::array<native::GpuDyBodyIntegrationInput,2> mixed_inputs{{
+        inputs[0],inputs[0]
+    }};
+    mixed_inputs[0].source_actor=moving;
+    mixed_inputs[0].position[0]=0.f;
+    mixed_inputs[0].actor_position[0]=0.f;
+    mixed_inputs[1].source_actor=independent;
+    mixed_inputs[1].position[0]=8.f;
+    mixed_inputs[1].actor_position[0]=8.f;
+    std::array<native::GpuDyIntegratedPose,2> mixed_poses{};
+    std::array<native::GpuDySleepState,2> mixed_sleep{};
+    std::vector<float> mixed_forces(2u*contact_capacity,-17.f);
+    const std::array<physx_gpu::SourceScDeviceIslandEdge,2> mixed_edges{{
+        {edge,0u,0xffffffffu,0u,0u},
+        {empty_edge,1u,0xffffffffu,1u,0u}
+    }};
+    const std::array<std::uint32_t,2> mixed_nodes{{
+        no_touch_node[0],no_touch_node[0]
+    }};
+    producer->enqueue_gpu_pcm_box_contacts(mixed_requests,mixed_witness);
+    producer->enqueue_gpu_dy_island_admission(
+        mixed_edges,mixed_nodes,
+        physx_gpu::SourceScDeviceIslandSources{2u,0u,0u});
+    producer->enqueue_gpu_dy_distance(
+        mixed_bodies,{},mixed_desc,{},mixed_ordinals,mixed_tasks,
+        mixed_forces,{},{},cached_anchors,mixed_patches,mixed_managers,{},
+        mixed_prep,mixed_inputs,mixed_poses,true,cached_impulses,
+        true,true,true,mixed_sleep);
+    producer->finish_gpu_dy_distance();
+    const auto mixed_schedule=producer->dy_launch_stats();
+    const auto admitted=producer->gpu_dy_admitted_response_tokens();
+    const bool published_touch=std::any_of(
+        mixed_forces.begin(),mixed_forces.begin()+contact_capacity,
+        [](float impulse){return impulse!=-17.f;});
+    const bool retained_untouched=std::all_of(
+        mixed_forces.begin()+contact_capacity,mixed_forces.end(),
+        [](float impulse){return impulse==-17.f;});
+    require(mixed_witness[0].packed_counts==0u &&
+            mixed_witness[1].packed_counts==0u &&
+            mixed_schedule.device_admitted_tasks==2u &&
+            mixed_schedule.device_admitted_bodies==2u &&
+            mixed_schedule.device_admitted_descriptors==1u &&
+            admitted.size()==1u && admitted[0]==0xc0000000u &&
+            mixed_tasks[0].error==0u && mixed_tasks[1].error==0u &&
+            mixed_poses[0].valid==1u && mixed_poses[1].valid==1u &&
+            published_touch && retained_untouched &&
+            mixed_patches[0].contact_count>0u &&
+            mixed_patches[0].contact_count<contact_capacity &&
+            mixed_patches[0].order_offset==0u &&
+            mixed_patches[1].order_offset==0u &&
+            mixed_patches[1].contact_count==contact_capacity &&
+            std::all_of(
+                mixed_forces.begin()+mixed_patches[0].contact_count,
+                mixed_forces.begin()+contact_capacity,
+                [](float impulse){return impulse==-17.f;}) &&
+            mixed_patches[1].anchor_count==1u,
+        "GPU Sc mixed PCM epoch published unadmitted numerical output");
+    producer->finish_gpu_pcm_box_contacts();
+    require(mixed_witness[0].status()==0u &&
+            mixed_witness[0].count()==mixed_patches[0].contact_count &&
+            mixed_witness[1].status()==0u &&
+            mixed_witness[1].count()==0u,
+        "GPU Sc mixed PCM epoch lost source touch classification");
+    producer->commit_gpu_step();
+
+    // Invalid joint numerics can arise after valid source preparation.
+    // They must not integrate a body before the rejected task is reported.
+    const std::array<native::GpuPcmBoxPair,0> no_pcm_pairs{};
+    std::array<native::GpuPcmBoxResult,0> no_pcm_results{};
+    producer->enqueue_gpu_pcm_box_contacts(no_pcm_pairs,no_pcm_results);
+    std::array<native::GpuDyJointRow,1> bad_joint{};
+    bad_joint[0].axis[0]=1.f;
+    bad_joint[0].inverse_mass_a=1.f;
+    bad_joint[0].velocity_multiplier=1.f;
+    bad_joint[0].constant=0.5f;
+    bad_joint[0].unbiased_constant=0.5f;
+    const std::array<native::GpuDyDistanceDescriptor,1> joint_desc{{
+        {0u,0u,0xffffffffu,0x101u}
+    }};
+    std::array<native::GpuDyDistanceTask,1> joint_tasks{{
+        {0u,1u,0u,1u,0u,1u,4u,1u,0u}
+    }};
+    body={};
+    body[0].inverse_mass=1.f;
+    inputs={};
+    poses={};
+    inputs[0].active=1u;
+    inputs[0].source_actor=moving;
+    inputs[0].source_element=0xffffffffu;
+    inputs[0].source_inverse_mass=1.f;
+    inputs[0].position[1]=1.f;
+    inputs[0].orientation[3]=1.f;
+    inputs[0].actor_position[1]=1.f;
+    inputs[0].actor_orientation[3]=1.f;
+    inputs[0].mass_local_orientation[3]=1.f;
+    inputs[0].max_linear_speed_squared=100.f;
+    inputs[0].max_angular_speed_squared=100.f;
+    inputs[0].wake_counter=0.4f;
+    inputs[0].seconds=seconds;
+    producer->enqueue_gpu_dy_distance(
+        body,bad_joint,joint_desc,{},ordinals,joint_tasks,
+        {},{},{},{},{},{},{},{},inputs,poses,true);
+    producer->finish_gpu_dy_distance();
+    if(joint_tasks[0].error!=0u || poses[0].valid!=1u ||
+       !(poses[0].position[0]>0.002f))
+        throw std::runtime_error(
+            "Valid GPU Dy joint did not produce numerical response: error=" +
+            std::to_string(joint_tasks[0].error) +
+            " integrated=" + std::to_string(poses[0].valid) +
+            " position_x=" + std::to_string(poses[0].position[0]));
+    producer->commit_gpu_step();
+
+    // Joint geometry and impulse coefficients must refresh each epoch.
+    bad_joint[0].constant=-0.5f;
+    bad_joint[0].unbiased_constant=-0.5f;
+    body={};
+    body[0].inverse_mass=1.f;
+    poses={};
+    producer->enqueue_gpu_pcm_box_contacts(no_pcm_pairs,no_pcm_results);
+    producer->enqueue_gpu_dy_distance(
+        body,bad_joint,joint_desc,{},ordinals,joint_tasks,
+        {},{},{},{},{},{},{},{},inputs,poses,true);
+    producer->finish_gpu_dy_distance();
+    if(joint_tasks[0].error!=0u || poses[0].valid!=1u ||
+       !(poses[0].position[0]<-0.002f))
+        throw std::runtime_error(
+            "GPU Dy reused a stale joint coefficient: error=" +
+            std::to_string(joint_tasks[0].error) +
+            " integrated=" + std::to_string(poses[0].valid) +
+            " position_x=" + std::to_string(poses[0].position[0]));
+    producer->commit_gpu_step();
+
+    bad_joint[0].constant=std::numeric_limits<float>::quiet_NaN();
+    body={};
+    body[0].inverse_mass=1.f;
+    joint_tasks[0].error=0u;
+    poses={};
+    producer->enqueue_gpu_pcm_box_contacts(no_pcm_pairs,no_pcm_results);
+    producer->enqueue_gpu_dy_distance(
+        body,bad_joint,joint_desc,{},ordinals,joint_tasks,
+        {},{},{},{},{},{},{},{},inputs,poses,true);
+    bool numerical_rejected=false;
+    std::string rejection_reason;
+    try {
+        producer->finish_gpu_dy_distance();
+    }catch(const std::overflow_error& error) {
+        numerical_rejected=true;
+        rejection_reason=error.what();
+    }
+    if(!numerical_rejected || (joint_tasks[0].error&2u)==0u ||
+       poses[0].valid!=0u)
+        throw std::runtime_error(
+            "GPU Dy numerical joint rejection failed: rejected=" +
+            std::to_string(numerical_rejected) +
+            " task_error=" + std::to_string(joint_tasks[0].error) +
+            " integrated=" + std::to_string(poses[0].valid) +
+            " position_x=" + std::to_string(poses[0].position[0]) +
+            " reason=" + rejection_reason);
+    producer->invalidate_after_rollback();
+}
+
+// GPU PCM and independently generated CPU Gu share one numerical epoch.
+void verify_mixed_pre_witness_numerical(
+    fyzz::compute::Backend backend,const char* sap,const char* pcm,
+    const char* dy_shader) {
+    using namespace fyzz;
+    std::ifstream file(dy_shader,std::ios::binary);
+    require(bool(file),"Mixed Sc/Dy numerical shader unavailable");
+    compute::ShaderBinary shader{};
+    shader.format=backend==compute::Backend::Vulkan
+        ?compute::ShaderFormat::Spirv:compute::ShaderFormat::Dxil;
+    shader.bytes.assign(std::istreambuf_iterator<char>{file},
+                        std::istreambuf_iterator<char>{});
+    native::Scene scene;
+    auto owner=std::make_unique<
+        physx_gpu::SourceScOwnedGpuBroadphaseNative>(
+            backend,load_native_gpu_sap_shaders(backend,sap),128u,128u,
+            std::nullopt,load_native_gpu_pcm_shaders(backend,pcm),
+            std::move(shader));
+    auto* producer=owner.get();
+    scene.set_gpu_broadphase(std::move(owner));
+    const auto box=scene.add_dynamic_box(
+        {0.5f,0.5f,0.5f},{0.f,1.f,0.f},1.f);
+    const auto box_static=scene.add_static_box(
+        {0.5f,0.5f,0.5f},{0.8f,1.f,0.f});
+    const auto sphere=scene.add_dynamic_sphere(
+        0.5f,{20.7f,2.f,0.f},1.f);
+    const auto sphere_static=scene.add_static_sphere(
+        0.5f,{20.f,2.f,0.f});
+    scene.advance_collision(true);
+    const auto box_edge=scene.contact_edge_index({box,box_static});
+    const auto sphere_edge=scene.contact_edge_index({sphere,sphere_static});
+    require(box_edge!=0xffffffffu && sphere_edge!=0xffffffffu &&
+            box_edge!=sphere_edge,
+        "Mixed numerical sources require distinct live Sc managers");
+
+    constexpr float dt=1.f/120.f;
+    constexpr std::uint32_t box_capacity=4u;
+    constexpr std::uint32_t sphere_capacity=1u;
+    const std::array<native::GpuPcmBoxPair,1> sources{{
+        {box,box_static,box_edge,false}
+    }};
+    const std::array<physx_gpu::SourceScDeviceIslandEdge,2> edges{{
+        {box_edge,0u,0xffffffffu,0u,0u},
+        {sphere_edge,1u,0xffffffffu,1u,0u}
+    }};
+    const std::array<std::uint32_t,2> nodes{{
+        4u|(1u<<8u)|physx_gpu::source_sc_device_island_active_bit,
+        4u|(1u<<8u)|physx_gpu::source_sc_device_island_active_bit
+    }};
+    const std::array<native::GpuDyDistanceDescriptor,2> descriptors{{
+        {0u,0u,0xffffffffu,0x100u},
+        {1u,1u,0xffffffffu,0x100u}
+    }};
+    const std::array<std::uint32_t,2> ordinals{{0u,1u}};
+    std::array<native::GpuDyDistanceTask,2> tasks{};
+    std::array<native::GpuDyDistanceBody,2> bodies{};
+    std::array<native::GpuDyContactManifold,2> managers{{
+        {0u,1u,0xffffffffu,0u,0u,0u},
+        {1u,1u,box_capacity,sphere_capacity,1u,box_capacity}
+    }};
+    std::array<native::GpuDyContactPrepPair,2> preparation{};
+    for(std::uint32_t i=0u;i<preparation.size();++i) {
+        auto& pair=preparation[i];
+        if(i==0u) {
+            pair.pcm_pair_index=0u;
+            pair.pcm_edge=box_edge;
+        }else pair.cpu_gu_offset=0u;
+        pair.source_body0=i?sphere:box;
+        pair.source_body1=i?sphere_static:box_static;
+        pair.body0.solver_ordinal=i;
+        pair.body0.inverse_mass=1.f;
+        pair.body0.orientation[3]=1.f;
+        pair.body1.orientation[3]=1.f;
+        pair.body1.position[0]=i?20.f:0.8f;
+        pair.body1.position[1]=i?2.f:1.f;
+        pair.inv_dt=1.f/dt;
+        pair.seconds=dt;
+        pair.rigid_contact_bias=0.8f;
+        pair.max_penetration_bias=-1.0e32f;
+        pair.bounce_threshold=-2.f;
+        pair.max_contact_impulse=std::numeric_limits<float>::max();
+    }
+    std::array<native::GpuDyBodyIntegrationInput,2> inputs{};
+    for(std::size_t i=0u;i<inputs.size();++i) {
+        auto& in=inputs[i];
+        in.active=1u;
+        in.source_actor=i?sphere:box;
+        in.source_element=0xffffffffu;
+        in.source_inverse_mass=1.f;
+        in.position[0]=i?20.7f:0.f;
+        in.position[1]=i?2.f:1.f;
+        in.actor_position[0]=in.position[0];
+        in.actor_position[1]=in.position[1];
+        in.orientation[3]=1.f;
+        in.actor_orientation[3]=1.f;
+        in.mass_local_orientation[3]=1.f;
+        in.max_linear_speed_squared=100.f;
+        in.max_angular_speed_squared=100.f;
+        in.wake_counter=0.4f;
+        in.seconds=dt;
+    }
+    std::array<native::GpuDyIntegratedPose,2> poses{};
+    std::array<native::GpuDySleepState,2> sleep{};
+    std::array<native::GpuDyFrictionAnchorInput,4> anchors{};
+    std::array<native::GpuDyFrictionAnchorImpulse,4> impulses{};
+    std::array<native::GpuDyContactPatch,2> patches{{
+        {0u,box_capacity,0u,0x80000000u,0.5f,0.5f,0u,0u},
+        {4u,sphere_capacity,0u,0u,0.5f,0.5f,0u,0u}
+    }};
+    std::array<float,box_capacity+sphere_capacity> forces{};
+    forces.fill(-17.f);
+    std::array<native::GpuPcmBoxResult,1> witness{};
+    producer->enqueue_gpu_pcm_box_contacts(
+        sources,witness,sphere_edge+1u);
+    std::array<native::ContactPoint,1> point{};
+    const auto count=native::source_pcm_sphere_sphere(
+        {20.7f,2.f,0.f},0.5f,{20.f,2.f,0.f},0.5f,0.04f,point);
+    require(count==1u,"Mixed numerical CPU Gu fixture has no contact");
+    const std::array<native::GpuGuTouchRecord,1> touch{{
+        {sphere_edge,0x20000u|(count<<8u)|1u}
+    }};
+    producer->enqueue_cpu_gu_touch_history(touch);
+    std::array<native::GpuDyGuContactInput,1> gu{};
+    gu[0].normal[0]=point[0].normal.x;
+    gu[0].normal[1]=point[0].normal.y;
+    gu[0].normal[2]=point[0].normal.z;
+    gu[0].position[0]=point[0].position.x;
+    gu[0].position[1]=point[0].position.y;
+    gu[0].position[2]=point[0].position.z;
+    gu[0].separation=point[0].separation;
+    const std::array<std::uint32_t,1> order{{box_capacity}};
+    producer->enqueue_gpu_dy_island_admission(
+        edges,nodes,physx_gpu::SourceScDeviceIslandSources{2u,0u,0u});
+    producer->enqueue_gpu_dy_distance(
+        bodies,{},descriptors,{},ordinals,tasks,forces,gu,{},anchors,
+        patches,managers,order,preparation,inputs,poses,true,
+        impulses,true,true,true,sleep,{},false,true);
+    require(witness[0].packed_counts==0u &&
+            producer->has_queued_gpu_dy_distance() &&
+            producer->dy_launch_stats().device_island_indirect_dispatches==1u,
+        "Mixed Sc numerical submission joined GPU PCM witnesses");
+    producer->finish_gpu_dy_distance();
+    const auto stats=producer->dy_launch_stats();
+    const bool box_force=std::any_of(
+        forces.begin(),forces.begin()+box_capacity,
+        [](float f){return f!=-17.f;});
+    require(witness[0].packed_counts==0u &&
+            stats.device_admitted_tasks==2u &&
+            stats.device_admitted_bodies==2u &&
+            stats.device_admitted_descriptors==2u &&
+            stats.device_task_readback_bytes==0u &&
+            stats.device_epoch_error_readback_bytes==8u &&
+            poses[0].valid==1u && poses[1].valid==1u &&
+            box_force && forces[box_capacity]!=-17.f &&
+            patches[0].contact_count>0u &&
+            patches[0].contact_count<=box_capacity &&
+            patches[1].contact_count==sphere_capacity &&
+            producer->dy_cpu_gu_geometry_bytes()==sizeof(gu),
+        "Mixed CPU Gu/GPU PCM did not solve from resident witnesses");
+    producer->finish_gpu_pcm_box_contacts();
+    require(witness[0].edge==box_edge &&
+            witness[0].status()==0u &&
+            witness[0].count()==patches[0].contact_count &&
+            producer->pcm_early_gu_touch_bytes()==sizeof(touch) &&
+            producer->pcm_host_contact_upload_bytes()==0u,
+        "Mixed GPU PCM numerical completion changed source contact identity");
+    producer->commit_gpu_step();
+}
+
+// A coupled contact island compacts working rows without changing their
+// source-indexed force destinations.
+void verify_device_sc_dy_compact_contact_ranges(
+    fyzz::compute::Backend backend,const char* sap,const char* pcm,
+    const char* dy_shader,bool reverse_source=false) {
+    using namespace fyzz;
+    std::ifstream binary_file(dy_shader,std::ios::binary);
+    require(bool(binary_file),"Device Sc/Dy shader unavailable");
+    compute::ShaderBinary shader{};
+    shader.format=backend==compute::Backend::Vulkan
+        ?compute::ShaderFormat::Spirv:compute::ShaderFormat::Dxil;
+    shader.bytes.assign(std::istreambuf_iterator<char>{binary_file},
+                        std::istreambuf_iterator<char>{});
+    native::Scene scene;
+    auto owner=std::make_unique<physx_gpu::SourceScOwnedGpuBroadphaseNative>(
+        backend,load_native_gpu_sap_shaders(backend,sap),128u,128u,
+        std::nullopt,load_native_gpu_pcm_shaders(backend,pcm),
+        std::move(shader));
+    auto* producer=owner.get();
+    scene.set_gpu_broadphase(std::move(owner));
+    const auto moving=scene.add_dynamic_box(
+        {0.5f,0.5f,0.5f},{0.f,1.f,0.f},1.f);
+    const auto left=scene.add_static_box(
+        {0.5f,0.5f,0.5f},{-0.8f,1.f,0.f});
+    const auto right=scene.add_static_box(
+        {0.5f,0.5f,0.5f},{0.8f,1.f,0.f});
+    scene.advance_collision(true);
+    const auto edge0=scene.contact_edge_index({moving,left});
+    const auto edge1=scene.contact_edge_index({moving,right});
+    require(edge0!=0xffffffffu && edge1!=0xffffffffu &&
+            edge0!=edge1,
+        "Coupled PCM compaction requires two live contact edges");
+    constexpr std::uint32_t capacity=5u;
+    constexpr float seconds=1.f/120.f;
+    const std::array<native::GpuPcmBoxPair,2> requests{{
+        {moving,left,edge0,false},{moving,right,edge1,false}
+    }};
+    std::array<native::GpuPcmBoxResult,2> witness{};
+    const std::array<physx_gpu::SourceScDeviceIslandEdge,2> edges{{
+        {edge0,0u,0xffffffffu,0u,0u},
+        {edge1,0u,0xffffffffu,1u,0u}
+    }};
+    const std::array<std::uint32_t,1> nodes{{
+        4u|(1u<<8u)|physx_gpu::source_sc_device_island_active_bit
+    }};
+    std::array<native::GpuDyDistanceBody,1> bodies{};
+    bodies[0].inverse_mass=1.f;
+    const std::array<native::GpuDyDistanceDescriptor,2> descriptors{{
+        {0u,0u,0xffffffffu,0x100u},
+        {1u,0u,0xffffffffu,0x100u}
+    }};
+    const std::array<std::uint32_t,1> ordinals{{0u}};
+    std::array<native::GpuDyDistanceTask,1> tasks{{
+        {0u,2u,0u,2u,0u,1u,4u,1u,0u}
+    }};
+    std::array<native::GpuDyContactPatch,2> patches{{
+        {0u,capacity,0u,0x80000000u,0.5f,0.5f,0u,0u},
+        {4u,capacity,0u,0x80000000u,0.5f,0.5f,0u,0u}
+    }};
+    const std::array<native::GpuDyContactManifold,2> managers{{
+        {0u,1u,0xffffffffu,0u,0u,reverse_source?capacity:0u},
+        {1u,1u,0xffffffffu,0u,1u,reverse_source?0u:capacity}
+    }};
+    std::array<native::GpuDyContactPrepPair,2> preparation{};
+    for(std::uint32_t i=0u;i<preparation.size();++i) {
+        auto& pair=preparation[i];
+        pair.pcm_pair_index=i;
+        pair.pcm_edge=i?edge1:edge0;
+        pair.body0.solver_ordinal=0u;
+        pair.body0.inverse_mass=1.f;
+        pair.body0.orientation[3]=1.f;
+        pair.body1.orientation[3]=1.f;
+        pair.inv_dt=1.f/seconds;
+        pair.rigid_contact_bias=0.8f;
+        pair.seconds=seconds;
+        pair.max_contact_impulse=std::numeric_limits<float>::max();
+    }
+    std::array<native::GpuDyBodyIntegrationInput,1> input{};
+    input[0].active=1u;
+    input[0].source_actor=moving;
+    input[0].source_element=0xffffffffu;
+    input[0].source_inverse_mass=1.f;
+    input[0].position[1]=1.f;
+    input[0].actor_position[1]=1.f;
+    input[0].orientation[3]=1.f;
+    input[0].actor_orientation[3]=1.f;
+    input[0].mass_local_orientation[3]=1.f;
+    input[0].max_linear_speed_squared=100.f;
+    input[0].max_angular_speed_squared=100.f;
+    input[0].wake_counter=0.4f;
+    input[0].seconds=seconds;
+    std::array<native::GpuDyIntegratedPose,1> poses{};
+    std::array<native::GpuDySleepState,1> sleep{};
+    std::array<native::GpuDyFrictionAnchorInput,4> anchors{};
+    std::array<native::GpuDyFrictionAnchorImpulse,4> anchor_impulses{};
+    std::array<float,2u*capacity> forces{};
+    forces.fill(-17.f);
+    producer->enqueue_gpu_pcm_box_contacts(requests,witness);
+    producer->enqueue_gpu_dy_island_admission(
+        edges,nodes,physx_gpu::SourceScDeviceIslandSources{2u,0u,0u});
+    auto invalid_provenance=preparation;
+    invalid_provenance[1].pcm_pair_index=
+        static_cast<std::uint32_t>(requests.size());
+    bool provenance_rejected=false;
+    try {
+        producer->enqueue_gpu_dy_distance(
+            bodies,{},descriptors,{},ordinals,tasks,
+            forces,{},{},anchors,patches,managers,{},
+            invalid_provenance,input,poses,
+            true,anchor_impulses,true,true,true,sleep);
+    } catch(const std::logic_error&) {
+        provenance_rejected=true;
+    }
+    require(provenance_rejected &&
+            !producer->has_queued_gpu_dy_distance(),
+        "Dy accepted an invalid borrowed PCM provenance record");
+    auto conflicting_preparation=preparation;
+    conflicting_preparation[1].seconds=seconds*2.f;
+    bool timestep_mismatch_rejected=false;
+    try {
+        producer->enqueue_gpu_dy_distance(
+            bodies,{},descriptors,{},ordinals,tasks,
+            forces,{},{},anchors,patches,managers,{},
+            conflicting_preparation,input,poses,
+            true,anchor_impulses,true,true,true,sleep);
+    } catch(const std::invalid_argument&) {
+        timestep_mismatch_rejected=true;
+    }
+    require(timestep_mismatch_rejected &&
+            !producer->has_queued_gpu_dy_distance(),
+        "Dy admitted contact sources with conflicting frame coefficients");
+    producer->enqueue_gpu_dy_distance(
+        bodies,{},descriptors,{},ordinals,tasks,
+        forces,{},{},anchors,patches,managers,{},preparation,input,poses,
+        true,anchor_impulses,true,true,true,sleep);
+    producer->finish_gpu_dy_distance();
+    const auto schedule=producer->dy_launch_stats();
+    require(witness[0].packed_counts==0u &&
+            witness[1].packed_counts==0u &&
+            tasks[0].error==0u && poses[0].valid==1u &&
+            schedule.device_admitted_tasks==1u &&
+            schedule.device_admitted_descriptors==2u &&
+            schedule.normal_numerical_bytes==2u*4u*44u &&
+            fyzz::physx_gpu::SourceScDeviceIslandFixture::
+                contact_admissions(*producer)==
+                    std::vector<std::uint32_t>{3u} &&
+            schedule.device_task_readback_bytes==
+                tasks.size()*sizeof(native::GpuDyDistanceTask) &&
+            patches[0].contact_count>0u &&
+            patches[0].contact_count<capacity &&
+            patches[1].contact_count>0u &&
+            patches[1].contact_count<capacity &&
+            ((patches[0].reserved&
+                physx_gpu::source_dy_pcm_compacted_bit)!=0u)==
+                    reverse_source &&
+            forces[0]!=-17.f && forces[capacity]!=-17.f &&
+            forces[capacity-1u]==-17.f &&
+            forces[2u*capacity-1u]==-17.f,
+        "GPU coupled PCM compaction lost source-indexed force publication");
+    producer->finish_gpu_pcm_box_contacts();
+    require(witness[0].count()==patches[0].contact_count &&
+            witness[1].count()==patches[1].contact_count,
+        "Compacted PCM extents disagree with physical contact publication");
+    producer->commit_gpu_step();
+}
+// Independent islands compact into disjoint numerical rows even when
+// their source force reservations are interleaved.
+void verify_device_sc_dy_sparse_task_windows(
+    fyzz::compute::Backend backend,const char* sap,const char* pcm,
+    const char* dy_shader,bool pack_singletons=false) {
+    using namespace fyzz;
+    std::ifstream binary_file(dy_shader,std::ios::binary);
+    require(bool(binary_file),"Sparse Sc/Dy shader unavailable");
+    compute::ShaderBinary shader{};
+    shader.format=backend==compute::Backend::Vulkan
+        ?compute::ShaderFormat::Spirv:compute::ShaderFormat::Dxil;
+    shader.bytes.assign(std::istreambuf_iterator<char>{binary_file},
+                        std::istreambuf_iterator<char>{});
+    native::Scene scene;
+    auto owner=std::make_unique<physx_gpu::SourceScOwnedGpuBroadphaseNative>(
+        backend,load_native_gpu_sap_shaders(backend,sap),128u,128u,
+        std::nullopt,load_native_gpu_pcm_shaders(backend,pcm),
+        std::move(shader));
+    auto* producer=owner.get();
+    scene.set_gpu_broadphase(std::move(owner));
+    const auto body_a=scene.add_dynamic_box(
+        {0.5f,0.5f,0.5f},{0.f,1.f,0.f},1.f);
+    const auto fixed_a0=scene.add_static_box(
+        {0.5f,0.5f,0.5f},{-0.8f,1.f,0.f});
+    const auto fixed_a1=scene.add_static_box(
+        {0.5f,0.5f,0.5f},{0.8f,1.f,0.f});
+    const auto body_b=scene.add_dynamic_box(
+        {0.5f,0.5f,0.5f},{4.f,1.f,0.f},1.f);
+    const auto fixed_b=scene.add_static_box(
+        {0.5f,0.5f,0.5f},{4.8f,1.f,0.f});
+    scene.advance_collision(true);
+    const std::array<std::uint32_t,3> handles{{
+        scene.contact_edge_index({body_a,fixed_a0}),
+        scene.contact_edge_index({body_b,fixed_b}),
+        scene.contact_edge_index({body_a,fixed_a1})
+    }};
+    require(std::all_of(handles.begin(),handles.end(),
+                [](std::uint32_t handle){return handle!=0xffffffffu;}) &&
+            handles[0]!=handles[1] && handles[0]!=handles[2] &&
+            handles[1]!=handles[2],
+        "Sparse task fixture lacks three independent contact managers");
+    constexpr std::uint32_t capacity=5u;
+    constexpr float seconds=1.f/120.f;
+    const std::array<native::GpuPcmBoxPair,3> requests{{
+        {body_a,fixed_a0,handles[0],false},
+        {body_b,fixed_b,handles[1],false},
+        {body_a,fixed_a1,handles[2],false}
+    }};
+    std::array<native::GpuPcmBoxResult,3> witness{};
+    const std::array<physx_gpu::SourceScDeviceIslandEdge,3> edges{{
+        {handles[0],0u,0xffffffffu,0u,0u},
+        {handles[1],1u,0xffffffffu,1u,0u},
+        {handles[2],0u,0xffffffffu,2u,
+            pack_singletons?physx_gpu::source_sc_device_island_no_response_bit:0u}
+    }};
+    const std::array<std::uint32_t,2> nodes{{
+        4u|(1u<<8u)|physx_gpu::source_sc_device_island_active_bit,
+        4u|(1u<<8u)|physx_gpu::source_sc_device_island_active_bit
+    }};
+    std::array<native::GpuDyDistanceBody,2> bodies{};
+    for(auto& body:bodies)body.inverse_mass=1.f;
+    const std::array<native::GpuDyDistanceDescriptor,3> descriptors{{
+        {0u,0u,0xffffffffu,0x100u},
+        {1u,1u,0xffffffffu,0x100u},
+        {2u,0u,0xffffffffu,0x100u}
+    }};
+    const std::array<std::uint32_t,2> ordinals{{0u,1u}};
+    std::array<native::GpuDyDistanceTask,2> tasks{{
+        {0u,2u,0u,2u,0u,1u,4u,1u,0u},
+        {2u,3u,2u,3u,1u,2u,4u,1u,0u}
+    }};
+    std::array<native::GpuDyContactPatch,3> patches{{
+        {0u,capacity,0u,0x80000000u,0.5f,0.5f,0u,0u},
+        {4u,capacity,0u,0x80000000u,0.5f,0.5f,0u,0u},
+        {8u,capacity,0u,0x80000000u,0.5f,0.5f,0u,0u}
+    }};
+    const std::array<native::GpuDyContactManifold,3> managers{{
+        {0u,1u,0xffffffffu,0u,0u,0u},
+        {1u,1u,0xffffffffu,0u,1u,capacity},
+        {2u,1u,0xffffffffu,0u,2u,2u*capacity}
+    }};
+    std::array<native::GpuDyContactPrepPair,3> preparation{};
+    for(std::uint32_t i=0u;i<preparation.size();++i) {
+        auto& pair=preparation[i];
+        pair.pcm_pair_index=i;
+        pair.pcm_edge=handles[i];
+        pair.body0.solver_ordinal=i==1u?1u:0u;
+        pair.body0.inverse_mass=1.f;
+        pair.body0.orientation[3]=1.f;
+        pair.body1.orientation[3]=1.f;
+        pair.inv_dt=1.f/seconds;
+        pair.rigid_contact_bias=0.8f;
+        pair.seconds=seconds;
+        pair.max_contact_impulse=std::numeric_limits<float>::max();
+    }
+    std::array<native::GpuDyBodyIntegrationInput,2> input{};
+    for(std::size_t i=0u;i<input.size();++i) {
+        auto& body=input[i];
+        body.active=1u;
+        body.source_actor=i?body_b:body_a;
+        body.source_element=0xffffffffu;
+        body.source_inverse_mass=1.f;
+        body.position[0]=i?4.f:0.f;
+        body.position[1]=1.f;
+        body.actor_position[0]=body.position[0];
+        body.actor_position[1]=1.f;
+        body.orientation[3]=1.f;
+        body.actor_orientation[3]=1.f;
+        body.mass_local_orientation[3]=1.f;
+        body.max_linear_speed_squared=100.f;
+        body.max_angular_speed_squared=100.f;
+        body.wake_counter=0.4f;
+        body.seconds=seconds;
+    }
+    std::array<native::GpuDyIntegratedPose,2> poses{};
+    std::array<native::GpuDySleepState,2> sleep{};
+    std::array<native::GpuDyFrictionAnchorInput,6> anchors{};
+    std::array<native::GpuDyFrictionAnchorImpulse,6> anchor_impulses{};
+    std::array<float,3u*capacity> forces{};
+    forces.fill(-17.f);
+    producer->enqueue_gpu_pcm_box_contacts(requests,witness);
+    producer->enqueue_gpu_dy_island_admission(
+        edges,nodes,physx_gpu::SourceScDeviceIslandSources{3u,0u,0u});
+    producer->enqueue_gpu_dy_distance(
+        bodies,{},descriptors,{},ordinals,tasks,
+        forces,{},{},anchors,patches,managers,{},preparation,input,poses,
+        true,anchor_impulses,true,true,true,sleep);
+    producer->finish_gpu_dy_distance();
+    const auto schedule=producer->dy_launch_stats();
+    require(tasks[0].error==0u && tasks[1].error==0u &&
+            poses[0].valid==1u && poses[1].valid==1u &&
+            schedule.device_admitted_tasks==2u &&
+            schedule.device_admitted_descriptors==
+                (pack_singletons?2u:3u) &&
+            schedule.device_colored_descriptors==(pack_singletons?2u:3u) &&
+            schedule.normal_numerical_bytes==(pack_singletons?2u:3u)*4u*44u &&
+            schedule.device_island_indirect_dispatches==1u &&
+            fyzz::physx_gpu::SourceScDeviceIslandFixture::
+                contact_admissions(*producer)==
+                    std::vector<std::uint32_t>{pack_singletons?3u:7u} &&
+            patches[0].contact_count>0u &&
+            patches[0].contact_count<capacity &&
+            patches[1].contact_count>0u &&
+            patches[1].contact_count<capacity &&
+            (pack_singletons
+                ?patches[2].contact_count==capacity &&
+                    (patches[2].reserved&
+                        physx_gpu::source_dy_pcm_compacted_bit)==0u &&
+                    forces[2u*capacity]==-17.f
+                :patches[2].contact_count>0u &&
+                    patches[2].contact_count<capacity &&
+                    (patches[2].reserved&
+                        physx_gpu::source_dy_pcm_compacted_bit)!=0u &&
+                    forces[2u*capacity]!=-17.f) &&
+            (patches[1].reserved&
+                physx_gpu::source_dy_pcm_compacted_bit)!=0u &&
+            forces[0]!=-17.f && forces[capacity]!=-17.f &&
+            forces[capacity-1u]==-17.f &&
+            forces[2u*capacity-1u]==-17.f &&
+            forces[3u*capacity-1u]==-17.f,
+        "Sparse device contact tasks crossed Sc row reservations");
+    producer->finish_gpu_pcm_box_contacts();
+    for(std::size_t i=0u;i<witness.size();++i) {
+        if(pack_singletons && i==2u)continue;
+        require(witness[i].count()==patches[i].contact_count,
+            "Sparse task contact extent differs from Sc publication");
+    }
+    producer->commit_gpu_step();
+}
+
+void verify_queued_pcm_dy(fyzz::compute::Backend backend,const char* sap,
+                          const char* pcm,const char* dy_shader) {
+    using namespace fyzz;
+    std::ifstream input(dy_shader,std::ios::binary);
+    require(bool(input),"Source queued Dy shader unavailable");
+    compute::ShaderBinary shader{};
+    shader.format=backend==compute::Backend::Vulkan
+        ?compute::ShaderFormat::Spirv:compute::ShaderFormat::Dxil;
+    shader.bytes.assign(std::istreambuf_iterator<char>{input},
+                        std::istreambuf_iterator<char>{});
+    native::Scene scene;
+    native::GpuPcmFrictionAnchorFixture::verify_early_normal_contract(scene);
+    auto owner=std::make_unique<physx_gpu::SourceScOwnedGpuBroadphaseNative>(
+        backend,load_native_gpu_sap_shaders(backend,sap),128u,128u,
+        std::nullopt,load_native_gpu_pcm_shaders(backend,pcm),
+        std::move(shader));
+    auto* producer=owner.get();
+    scene.set_gpu_broadphase(std::move(owner));
+    const auto moving=scene.add_dynamic_box(
+        {0.5f,0.5f,0.5f},{0.f,1.f,0.f},1.f);
+    const auto fixed=scene.add_static_box(
+        {0.5f,0.5f,0.5f},{0.8f,1.f,0.f});
+    scene.advance_collision(true);
+    const auto edge=scene.contact_edge_index({moving,fixed});
+    require(edge!=std::numeric_limits<std::uint32_t>::max(),
+        "Queued PCM/Dy test could not find source Sc contact manager");
+
+    constexpr float seconds=1.f/120.f;
+    const std::array<native::GpuPcmBoxPair,1> request{{
+        {moving,fixed,edge,false}
+    }};
+    const auto launch=[&](std::array<native::GpuPcmBoxResult,1>& witness,
+                          std::array<native::GpuDyBodyIntegrationInput,1>& inputs,
+                          std::array<native::GpuDyIntegratedPose,1>& poses) {
+        witness={};
+        inputs={};
+        poses={};
+        auto& body=inputs[0];
+        body.active=1u;
+        body.position[0]=2.f;
+        body.position[1]=1.f;
+        body.orientation[3]=1.f;
+        body.actor_position[0]=2.f;
+        body.actor_position[1]=1.f;
+        body.actor_orientation[3]=1.f;
+        body.linear_velocity[0]=0.5f;
+        body.seconds=seconds;
+        body.source_actor=0u;
+        body.source_inverse_mass=1.f;
+        body.max_linear_speed_squared=100.f;
+        body.max_angular_speed_squared=100.f;
+        body.wake_counter=0.4f;
+        producer->begin_gpu_dy_actor_sources();
+        producer->enqueue_gpu_dy_actor_sources(inputs);
+        producer->enqueue_gpu_dy_actor_sources(inputs);
+        producer->enqueue_gpu_pcm_box_contacts(request,witness);
+        producer->enqueue_gpu_dy_distance(
+            {},{},{},{},{},{},{},{},{},{},{},{},{},{},
+            inputs,poses);
+    };
+    std::array<native::GpuPcmBoxResult,1> witness{};
+    std::array<native::GpuDyBodyIntegrationInput,1> inputs{};
+    std::array<native::GpuDyIntegratedPose,1> poses{};
+    const auto before_enqueue=producer->stream_submission_stats();
+    launch(witness,inputs,poses);
+    if(backend==compute::Backend::D3D12) {
+        const auto continuation=producer->pcm_continuation_commands();
+        const bool software=physx_gpu::SourceScDeviceIslandFixture::
+            software_adapter(*producer);
+        require(software?continuation>32u:continuation==4u,
+            "D3D12 PCM GJK did not select its adapter's numerical dispatch");
+    }
+    const auto queued=producer->stream_submission_stats();
+    require(producer->has_queued_gpu_dy_distance() &&
+            witness[0].packed_counts==0u &&
+            producer->device_pcm_contact_count()==1u &&
+            queued.fused_readbacks==before_enqueue.fused_readbacks+2u &&
+            queued.command_batches==before_enqueue.command_batches+2u,
+        "PCM and Dy did not each fuse their result DMA into the producer batch");
+    bool duplicate_rejected=false;
+    try {
+        producer->enqueue_gpu_dy_distance(
+            {},{},{},{},{},{},{},{},{},{},{},{},{},{},
+            inputs,poses);
+    } catch(const std::logic_error&) {
+        duplicate_rejected=true;
+    }
+    require(duplicate_rejected && producer->has_queued_gpu_dy_distance(),
+        "Dy reused active numerical output before its owning fetch");
+    producer->finish_gpu_dy_distance();
+    require(physx_gpu::SourceScDeviceIslandFixture::
+                pcm_fence_retired(*producer) &&
+            physx_gpu::SourceScDeviceIslandFixture::
+                source_gpu_complete(*producer) &&
+            witness[0].packed_counts==0u,
+        "Numerical completion did not retire the unpublished PCM fence");
+    const auto joined_stats=producer->stream_submission_stats();
+    const auto early=producer->dy_launch_stats();
+    require(early.prewitness_actor_local_upload_bytes==
+                sizeof(physx_gpu::SourceDyActorLocalNative) &&
+            early.prewitness_actor_local_upload_spans==1u,
+        "Repeated source staging uploaded an unchanged actor twice");
+    require(joined_stats.command_batches==queued.command_batches &&
+            joined_stats.fused_readbacks==queued.fused_readbacks &&
+            !producer->has_queued_gpu_dy_distance() &&
+            witness[0].packed_counts==0u &&
+            poses[0].valid==1u &&
+            std::fabs(poses[0].position[0]-
+                      (2.f+0.5f*seconds))<0.002f,
+        "Source Dy waited for Sc PCM witness publication");
+    // Repeated numerical results share the still-unpublished PCM stream.
+    // Only the first completion retires its original witness submission.
+    poses={};
+    producer->enqueue_gpu_dy_distance(
+        {},{},{},{},{},{},{},{},{},{},{},{},{},{},
+        inputs,poses);
+    producer->finish_gpu_dy_distance();
+    require(poses[0].valid==1u &&
+            witness[0].packed_counts==0u &&
+            physx_gpu::SourceScDeviceIslandFixture::
+                pcm_fence_retired(*producer),
+        "Repeated Dy completion retired the PCM witness twice");
+    bool premature_commit_rejected=false;
+    try {
+        producer->commit_gpu_step();
+    } catch(const std::logic_error&) {
+        premature_commit_rejected=true;
+    }
+    require(premature_commit_rejected &&
+            witness[0].packed_counts==0u,
+        "Source Sc committed numerical results before PCM publication");
+    producer->finish_gpu_pcm_box_contacts();
+    require(!physx_gpu::SourceScDeviceIslandFixture::
+                pcm_fence_retired(*producer) &&
+            witness[0].status()==0u && witness[0].count()>0u &&
+            poses[0].valid==1u &&
+            std::fabs(poses[0].position[1]-1.f)<0.002f,
+        "Source Sc PCM publication invalidated previously joined Dy output");
+    producer->commit_gpu_step();
+
+    // A completed numerical readback cannot commit the earlier PCM
+    // witness transaction. Rollback must discard the still-borrowed
+    // source output and invalidate the numerical resident cache.
+    std::array<native::GpuPcmBoxResult,1> numerical_first{};
+    launch(numerical_first,inputs,poses);
+    producer->finish_gpu_dy_distance();
+    require(poses[0].valid==1u && numerical_first[0].packed_counts==0u &&
+            physx_gpu::SourceScDeviceIslandFixture::
+                pcm_fence_retired(*producer),
+        "Numerical readback published an unjoined PCM witness");
+    producer->invalidate_after_rollback();
+    require(!physx_gpu::SourceScDeviceIslandFixture::
+                pcm_fence_retired(*producer) &&
+            numerical_first[0].packed_counts==0u &&
+            producer->device_pcm_contact_count()==0u &&
+            !producer->has_queued_gpu_dy_distance(),
+        "Rollback after Dy completion retained rejected PCM publication");
+    // Rejected resident caches do not own history to preserve on growth.
+    std::array<native::GpuDyJointInput,1> staged_joint{};
+    staged_joint[0].source_slot=0u;
+    producer->enqueue_gpu_dy_joint_sources(staged_joint);
+    producer->invalidate_after_rollback();
+    auto high_actor=inputs;
+    high_actor[0].source_actor=64u;
+    staged_joint[0].source_slot=64u;
+    producer->begin_gpu_dy_actor_sources();
+    producer->enqueue_gpu_dy_actor_sources(high_actor);
+    producer->enqueue_gpu_dy_joint_sources(staged_joint);
+    require(physx_gpu::SourceScDeviceIslandFixture::recorded_copy_bytes(*producer)==
+                sizeof(physx_gpu::SourceDyActorLocalNative)+
+                sizeof(native::GpuDyJointInput),
+        "Dy source growth copied invalidated actor or joint storage");
+    producer->invalidate_after_rollback();
+    std::array<native::GpuPcmBoxResult,1> numerical_retry{};
+    launch(numerical_retry,inputs,poses);
+    producer->finish_gpu_dy_distance();
+    require(poses[0].valid==1u && numerical_retry[0].packed_counts==0u,
+        "Rolled-back Dy cache contaminated a new numerical epoch");
+    producer->finish_gpu_pcm_box_contacts();
+    require(numerical_retry[0].status()==0u &&
+            numerical_retry[0].count()>0u,
+        "Rolled-back numerical completion corrupted PCM journal recovery");
+    producer->commit_gpu_step();
+
+    // Reject a numerical epoch before either source result is fetched.
+    // Neither borrowed output may survive the common rollback boundary.
+    std::array<native::GpuPcmBoxResult,1> rejected{};
+    launch(rejected,inputs,poses);
+    producer->invalidate_after_rollback();
+    require(!producer->has_queued_gpu_dy_distance() &&
+            producer->device_pcm_contact_count()==0u &&
+            rejected[0].packed_counts==0u,
+        "Rollback retained GPU PCM or numerical Dy publication");
+    std::array<native::GpuPcmBoxResult,1> recovered{};
+    launch(recovered,inputs,poses);
+    producer->finish_gpu_pcm_box_contacts();
+    producer->finish_gpu_dy_distance();
+    require(recovered[0].status()==0u && recovered[0].count()>0u &&
+            poses[0].valid==1u,
+        "Rolled-back source GPU numerical epoch failed to regenerate");
+    producer->commit_gpu_step();
+
+    // Reject after Sc has already joined PCM, but while the Dy GPU
+    // output remains outstanding. Its submitted commands must finish
+    // before the next source arena allocation can reuse those bytes.
+    std::array<native::GpuPcmBoxResult,1> joined{};
+    launch(joined,inputs,poses);
+    producer->finish_gpu_pcm_box_contacts();
+    require(producer->has_queued_gpu_dy_distance() &&
+            joined[0].status()==0u,
+        "PCM witness join unexpectedly consumed deferred Dy numerical work");
+    producer->invalidate_after_rollback();
+    require(!producer->has_queued_gpu_dy_distance() &&
+            producer->device_pcm_contact_count()==0u,
+        "Rollback after PCM witness publication retained pending Dy work");
+    std::array<native::GpuPcmBoxResult,1> retry{};
+    launch(retry,inputs,poses);
+    producer->finish_gpu_pcm_box_contacts();
+    producer->finish_gpu_dy_distance();
+    require(retry[0].status()==0u && retry[0].count()>0u &&
+            poses[0].valid==1u,
+        "Rejected joined-PCM GPU Dy epoch corrupted its subsequent retry");
+    producer->commit_gpu_step();
+
+    // Without a numerical consumer the same compact Sc header fetch
+    // must provide the full public Gu witnesses at the later boundary.
+    std::array<native::GpuPcmBoxResult,1> deferred{};
+    producer->enqueue_gpu_pcm_box_contacts(request,deferred,0u,true);
+    producer->finish_gpu_pcm_box_contacts();
+    require(deferred[0].edge==edge && deferred[0].status()==0u &&
+            deferred[0].count()>0u &&
+            deferred[0].normal.x==0.f &&
+            deferred[0].normal.y==0.f &&
+            deferred[0].normal.z==0.f &&
+            producer->pcm_header_join_bytes()==2u*sizeof(std::uint32_t) &&
+            producer->pcm_contact_readback_bytes()==2u*sizeof(std::uint32_t),
+        "Deferred PCM witness join fetched full numerical geometry");
+    producer->finish_deferred_gpu_pcm_points();
+    require(producer->pcm_deferred_point_bytes()==
+                sizeof(physx_gpu::SourcePcmGpuContactStreamNative)-
+                    2u*sizeof(std::uint32_t) &&
+            deferred[0].count()>0u &&
+            std::isfinite(deferred[0].points[0].separation) &&
+            std::fabs(deferred[0].points[0].position.x)>0.01f &&
+            std::isfinite(deferred[0].normal.x) &&
+            std::isfinite(deferred[0].normal.y) &&
+            std::isfinite(deferred[0].normal.z) &&
+            (std::fabs(deferred[0].normal.x)+
+             std::fabs(deferred[0].normal.y)+
+             std::fabs(deferred[0].normal.z))>0.5f,
+        "Deferred PCM witness publication did not restore world points");
+    producer->commit_gpu_step();
+
+    // A host Gu PCM upload submits its source history before numerical Dy.
+    // The Dy result fence retires that earlier submission with its own
+    // readback; Sc commit must not join an already completed source token.
+    const std::array<native::GpuPcmBoxPair,1> host_request{{
+        {moving,fixed,edge,false,1u,false,0.f,0.f,true,true,true}
+    }};
+    std::array<native::GpuPcmBoxResult,1> host_results{};
+    host_results[0].edge=edge;
+    host_results[0].set_primitive(1u,true);
+    host_results[0].normal={-1.f,0.f,0.f};
+    host_results[0].points[0]={{0.4f,1.f,0.f},-0.1f};
+    producer->upload_host_pcm_contacts(host_request,host_results);
+    require(physx_gpu::SourceScDeviceIslandFixture::
+                source_submissions(*producer)>0u,
+        "Host PCM upload did not submit its source history");
+    poses={};
+    producer->enqueue_gpu_dy_distance(
+        {},{},{},{},{},{},{},{},{},{},{},{},{},{},
+        inputs,poses);
+    producer->finish_gpu_dy_distance();
+    require(poses[0].valid==1u &&
+            physx_gpu::SourceScDeviceIslandFixture::
+                source_submissions(*producer)==0u,
+        "Completed Dy result fence retained an earlier source submission");
+    producer->commit_gpu_step();
+
+    // A friction-dependent manager fetches its current normal without
+    // fetching point geometry. Its independent neighbor stays deferred.
+    const auto near=scene.add_static_box(
+        {0.5f,0.5f,0.5f},{-0.8f,1.f,0.f});
+    scene.advance_collision(true);
+    const auto near_edge=scene.contact_edge_index({moving,near});
+    require(near_edge!=std::numeric_limits<std::uint32_t>::max() &&
+            near_edge!=edge,
+        "Selective PCM fixture did not admit independent Sc managers");
+    std::array<native::GpuPcmBoxPair,2> selective_requests{{
+        {moving,fixed,edge,false},
+        {moving,near,near_edge,false}
+    }};
+    selective_requests[0].early_host_normal=true;
+    std::array<native::GpuPcmBoxResult,2> selective{};
+    producer->enqueue_gpu_pcm_box_contacts(selective_requests,selective,0u,true);
+    producer->finish_gpu_pcm_box_contacts();
+    constexpr auto full_bytes=sizeof(native::GpuPcmBoxResult);
+    constexpr auto header_bytes=2u*sizeof(std::uint32_t);
+    require(selective[0].edge==edge && selective[1].edge==near_edge &&
+            selective[0].status()==0u && selective[1].status()==0u &&
+            selective[0].count()>0u && selective[1].count()>0u &&
+            std::fabs(selective[0].normal.x)>0.5f &&
+            selective[1].normal.x==0.f &&
+            selective[1].normal.y==0.f &&
+            selective[1].normal.z==0.f &&
+            selective[0].points[0].separation==0.f &&
+            selective[1].points[0].separation==0.f &&
+            producer->pcm_header_join_bytes()==
+                2u*header_bytes+sizeof(selective[0].normal) &&
+            producer->pcm_contact_readback_bytes()==
+                2u*header_bytes+sizeof(selective[0].normal),
+        "Selective PCM Sc join fetched unnecessary point geometry");
+    const auto early_normal=selective[0].normal;
+    producer->finish_deferred_gpu_pcm_points();
+    require(producer->pcm_deferred_point_bytes()==
+                2u*full_bytes-2u*header_bytes-sizeof(early_normal) &&
+            selective[0].normal.x==early_normal.x &&
+            selective[0].normal.y==early_normal.y &&
+            selective[0].normal.z==early_normal.z &&
+            std::fabs(selective[0].points[0].position.x)>0.01f &&
+            std::isfinite(selective[0].points[0].separation) &&
+            std::fabs(selective[1].normal.x)>0.5f &&
+            std::isfinite(selective[1].points[0].separation),
+        "Selective PCM deferred transfer corrupted normals or late points");
     producer->commit_gpu_step();
 }
 
@@ -694,6 +4285,36 @@ void verify_sparse_contact_stream(
     gpu.advance_collision(true);
     require(producer->pcm_pair_upload_bytes()==0u,
         "Stable PCM manager descriptors triggered a redundant upload");
+    check_ordinals();
+    // Distant edits share the PCM command batch without retransferring
+    // unchanged descriptors between their original Sc ordinals.
+    for(const std::uint32_t i:{0u,11u}) {
+        const Vec3 moved{5.f*float(i)+0.02f,1.f,0.f};
+        cpu.set_position(moving_cpu[i],moved);
+        gpu.set_position(moving_gpu[i],moved);
+    }
+    cpu.advance_collision();
+    gpu.advance_collision();
+    require(producer->pcm_pair_upload_bytes()==
+                2u*sizeof(physx_gpu::SourcePcmBoxPairNative) &&
+            physx_gpu::SourceScDeviceIslandFixture::
+                pcm_pair_upload_spans(*producer)==2u,
+        "Distant Sc PCM edits reuploaded unchanged pair descriptors");
+    check_transitions(0u,0u);
+    check_ordinals();
+    cpu.advance_collision(true);
+    gpu.advance_collision(true);
+    require(producer->pcm_pair_upload_bytes()==
+                2u*sizeof(physx_gpu::SourcePcmBoxPairNative) &&
+            physx_gpu::SourceScDeviceIslandFixture::
+                pcm_pair_upload_spans(*producer)==2u,
+        "Sparse PCM reset retirement crossed unchanged source ordinals");
+    cpu.advance_collision(true);
+    gpu.advance_collision(true);
+    require(producer->pcm_pair_upload_bytes()==0u &&
+            physx_gpu::SourceScDeviceIslandFixture::
+                pcm_pair_upload_spans(*producer)==0u,
+        "Unchanged PCM pair input retained dirty transfer spans");
     check_ordinals();
     // Physically retire disjoint managers before their BP EdgeIndex
     // handles are reused. The simultaneous lost and later found sets
@@ -1098,6 +4719,1489 @@ void verify_coupled_rigid_stack(
     require(coupled,
             "GPU coupled rigid stack never admitted dynamic-dynamic contacts");
 }
+
+void verify_world_device_island_admission(
+    fyzz::compute::Backend backend,const char* sap,
+    const char* pcm,const char* dy_shader) {
+    using namespace fyzz;
+    std::ifstream input(dy_shader,std::ios::binary);
+    require(bool(input),"Compiled GPU World Dy shader unavailable");
+    compute::ShaderBinary shader{};
+    shader.format=backend==compute::Backend::Vulkan
+        ?compute::ShaderFormat::Spirv:compute::ShaderFormat::Dxil;
+    shader.bytes.assign(std::istreambuf_iterator<char>{input},
+                        std::istreambuf_iterator<char>{});
+    WorldOptions options{ExecutionMode::NativePortableGpu};
+    require(options.gpu_device_island_admission,
+        "Portable GPU worlds must enable source device admission");
+    auto gpu=create_native_gpu_world(
+        backend,load_native_gpu_sap_shaders(backend,sap),
+        load_native_gpu_pcm_shaders(backend,pcm),std::move(shader),options);
+    World cpu(WorldOptions{ExecutionMode::NativeCpu});
+    const auto ca=cpu.add_dynamic_box(
+        {0.5f,0.5f,0.5f},{0.f,0.83f,0.f},1.f);
+    const auto ga=gpu.add_dynamic_box(
+        {0.5f,0.5f,0.5f},{0.f,0.83f,0.f},1.f);
+    cpu.add_static_box({0.5f,0.5f,0.5f},{0.f,0.f,0.f});
+    gpu.add_static_box({0.5f,0.5f,0.5f},{0.f,0.f,0.f});
+    const auto cb=cpu.add_dynamic_box(
+        {0.5f,0.5f,0.5f},{0.f,1.66f,0.f},1.f);
+    const auto gb=gpu.add_dynamic_box(
+        {0.5f,0.5f,0.5f},{0.f,1.66f,0.f},1.f);
+    cpu.add_center_distance_constraint(ca,cb,0.83f);
+    gpu.add_center_distance_constraint(ga,gb,0.83f);
+    for(unsigned step=0;step<4u;++step) {
+        cpu.step(1.f/120.f);
+        gpu.step(1.f/120.f);
+        for(const auto [reference,actual]:
+            {std::pair{ca,ga},std::pair{cb,gb}}) {
+            const auto a=cpu.body_state(reference);
+            const auto b=gpu.body_state(actual);
+            require(std::fabs(a.position.y-b.position.y)<0.03f &&
+                    std::fabs(a.velocity.y-b.velocity.y)<0.03f,
+                "Native GPU World lost resident Sc/Dy contact response");
+        }
+    }
+}
+
+void verify_gpu_single_island_hybrid_solver(
+    fyzz::compute::Backend backend,const char* sap,
+    const char* pcm,const char* dy_shader,bool resident_admission=false) {
+    using namespace fyzz;
+    std::ifstream file(dy_shader,std::ios::binary);
+    require(bool(file),"Source Dy shader bundle missing");
+    std::vector<char> bytes(
+        std::istreambuf_iterator<char>{file},
+        std::istreambuf_iterator<char>{});
+    compute::ShaderBinary shader{};
+    shader.format=backend==compute::Backend::Vulkan
+        ?compute::ShaderFormat::Spirv:compute::ShaderFormat::Dxil;
+    shader.bytes.assign(bytes.begin(),bytes.end());
+    native::Scene cpu,gpu;
+    auto owner=std::make_unique<physx_gpu::SourceScOwnedGpuBroadphaseNative>(
+        backend,load_native_gpu_sap_shaders(backend,sap),
+        128u,128u,std::nullopt,
+        load_native_gpu_pcm_shaders(backend,pcm),std::move(shader));
+    auto* producer=owner.get();
+    gpu.set_gpu_broadphase(std::move(owner));
+    gpu.set_gpu_dy_device_admission_enabled(resident_admission);
+    cpu.add_static_box({0.5f,0.5f,0.5f},{0.f,0.f,0.f});
+    gpu.add_static_box({0.5f,0.5f,0.5f},{0.f,0.f,0.f});
+    std::array<BodyId,2> a{},b{};
+    for(std::size_t i=0;i<a.size();++i) {
+        const Vec3 p{0.f,0.83f+float(i)*0.83f,0.f};
+        a[i]=cpu.add_dynamic_box({0.5f,0.5f,0.5f},p,1.f);
+        b[i]=gpu.add_dynamic_box({0.5f,0.5f,0.5f},p,1.f);
+    }
+    // The joint preserves one responding island while independent
+    // free-flight actors exercise CPU task grouping without GPU graph work.
+    cpu.create_center_distance_constraint(a[0],a[1],0.83f);
+    gpu.create_center_distance_constraint(b[0],b[1],0.83f);
+    BodyId separate_cpu=0u,separate_gpu=0u;
+    if(resident_admission) {
+        cpu.add_static_box({0.5f,0.5f,0.5f},{5.f,0.f,0.f});
+        gpu.add_static_box({0.5f,0.5f,0.5f},{5.f,0.f,0.f});
+        separate_cpu=cpu.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{5.f,0.83f,0.f},1.f);
+        separate_gpu=gpu.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{5.f,0.83f,0.f},1.f);
+    }
+    constexpr unsigned free_count=8u;
+    std::array<BodyId,free_count> free_cpu{},free_gpu{};
+    RigidBodyDynamics free_dynamics{};
+    free_dynamics.gravity_enabled=false;
+    for(unsigned i=0u;i<free_count;++i) {
+        const Vec3 p{20.f+4.f*float(i),5.f,0.f};
+        free_cpu[i]=cpu.add_dynamic_box({0.3f,0.3f,0.3f},p,1.f);
+        free_gpu[i]=gpu.add_dynamic_box({0.3f,0.3f,0.3f},p,1.f);
+        cpu.set_dynamics(free_cpu[i],free_dynamics);
+        gpu.set_dynamics(free_gpu[i],free_dynamics);
+        cpu.set_velocity(free_cpu[i],{0.25f,0.f,0.f});
+        gpu.set_velocity(free_gpu[i],{0.25f,0.f,0.f});
+    }
+    bool saw_pcm_contact=false;
+    for(unsigned frame=0u;frame<6u;++frame) {
+        cpu.step(1.f/120.f);
+        gpu.step(1.f/120.f);
+        const auto schedule=producer->dy_launch_stats();
+        if(resident_admission) {
+            if(native::GpuPcmFrictionAnchorFixture::
+                    has_early_device_admission(gpu))
+                native::GpuPcmFrictionAnchorFixture::
+                    verify_pre_witness_device_admission(gpu);
+            else
+                native::GpuPcmFrictionAnchorFixture::
+                    verify_device_partition_source(gpu);
+        }
+        saw_pcm_contact|=producer->dy_pcm_device_contact_rows()>0u;
+        for(const auto& contact:gpu.contacts())
+            for(const auto& point:contact.points)
+                require(std::isfinite(point.position.x) &&
+                        std::isfinite(point.position.y) &&
+                        std::isfinite(point.position.z) &&
+                        std::isfinite(point.separation) &&
+                        point.position.y>0.1f,
+                    "GPU Dy returned unpublished PCM world witnesses");
+        require(gpu.largest_accurate_island_size()==2u &&
+                cpu.contacts().size()==gpu.contacts().size() &&
+                gpu.active_accurate_island_count()>1u &&
+                producer->dy_gpu_integrated_body_count()==
+                    2u+free_count+(resident_admission?1u:0u) &&
+                schedule.device_colored_tasks>0u &&
+                schedule.device_colored_descriptors>0u &&
+                schedule.host_descriptor_inputs==
+                    (resident_admission?0u:schedule.device_colored_descriptors) &&
+                schedule.device_island_indirect_dispatches==
+                    (resident_admission?1u:0u) &&
+                (resident_admission
+                    ?schedule.device_admitted_tasks>=2u &&
+                     schedule.device_admitted_descriptors>=2u
+                    :schedule.device_admitted_tasks==0u),
+            "Accurate islands did not use the selected numerical task admission");
+        for(std::size_t i=0;i<a.size();++i)
+            test::compound_compare_state(
+                gpu.body_state(b[i]),cpu.body_state(a[i]),0.03f,
+                "Single-island hybrid GPU Dy diverged from CPU PGS");
+        if(resident_admission)
+            test::compound_compare_state(
+                gpu.body_state(separate_gpu),cpu.body_state(separate_cpu),
+                0.03f,"Device-admitted independent contact island diverged");
+        for(unsigned i=0u;i<free_count;++i)
+            test::compound_compare_state(
+                gpu.body_state(free_gpu[i]),cpu.body_state(free_cpu[i]),
+                0.003f,"Hybrid GPU free-flight integration diverged");
+        if(frame==0u)
+            std::cout<<"FYZZXYZZY_METRIC suite=sc_pcm case=single_island"
+                     <<" dy_dispatches="<<schedule.dispatches
+                     <<" island_indirect_dispatches="
+                     <<schedule.device_island_indirect_dispatches
+                     <<" descriptor_upload_bytes="
+                     <<schedule.source_descriptor_upload_bytes<<'\n';
+    }
+    require(saw_pcm_contact,
+        "Single-island hybrid solver never processed GPU PCM contacts");
+}
+// One connected island reuses its pre-witness source graph even when
+// Sc's host task grouping would produce the same number of tasks.
+void verify_connected_pre_witness_island_admission(
+    fyzz::compute::Backend backend,const char* sap,
+    const char* pcm,const char* dy_shader) {
+    using namespace fyzz;
+    std::ifstream input(dy_shader,std::ios::binary);
+    require(bool(input),"Compiled source Dy shader unavailable");
+    compute::ShaderBinary shader{};
+    shader.format=backend==compute::Backend::Vulkan
+        ?compute::ShaderFormat::Spirv:compute::ShaderFormat::Dxil;
+    shader.bytes.assign(std::istreambuf_iterator<char>{input},
+                        std::istreambuf_iterator<char>{});
+    native::Scene cpu,gpu;
+    auto owner=std::make_unique<
+        physx_gpu::SourceScOwnedGpuBroadphaseNative>(
+        backend,load_native_gpu_sap_shaders(backend,sap),
+        128u,128u,std::nullopt,
+        load_native_gpu_pcm_shaders(backend,pcm),std::move(shader));
+    auto* producer=owner.get();
+    gpu.set_gpu_broadphase(std::move(owner));
+    gpu.set_gpu_dy_device_admission_enabled(true);
+    cpu.add_static_box({0.5f,0.5f,0.5f},{0.f,0.f,0.f});
+    gpu.add_static_box({0.5f,0.5f,0.5f},{0.f,0.f,0.f});
+    std::array<BodyId,2> cpu_ids{},gpu_ids{};
+    for(std::size_t i=0u;i<cpu_ids.size();++i) {
+        const Vec3 position{0.f,0.83f+0.83f*float(i),0.f};
+        cpu_ids[i]=cpu.add_dynamic_box(
+            {0.5f,0.5f,0.5f},position,1.f);
+        gpu_ids[i]=gpu.add_dynamic_box(
+            {0.5f,0.5f,0.5f},position,1.f);
+    }
+    cpu.create_center_distance_constraint(cpu_ids[0],cpu_ids[1],0.83f);
+    gpu.create_center_distance_constraint(gpu_ids[0],gpu_ids[1],0.83f);
+    // A zero-impulse dynamic bridge connects a second responding region
+    // without contributing contact response rows of its own.
+    const auto add_bridge=[](native::Scene& scene) {
+        scene.add_static_box({0.5f,0.5f,0.5f},{1.8f,0.f,0.f});
+        const auto bridge=scene.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{0.9f,0.83f,0.f},1.f);
+        const auto responding=scene.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{1.8f,0.83f,0.f},1.f);
+        RigidBodyDynamics dynamics{};
+        dynamics.gravity_enabled=false;
+        dynamics.max_contact_impulse=0.f;
+        scene.set_dynamics(bridge,dynamics);
+        scene.set_velocity(bridge,{0.02f,0.f,0.f});
+        return std::array<BodyId,2>{bridge,responding};
+    };
+    const auto bridge_cpu=add_bridge(cpu),bridge_gpu=add_bridge(gpu);
+    BodyId free_cpu{},free_gpu{};
+    for(std::uint32_t frame=0u;frame<3u;++frame) {
+        if(frame==1u) {
+            free_cpu=cpu.add_dynamic_box({0.25f,0.25f,0.25f},{20.f,5.f,0.f},1.f);
+            free_gpu=gpu.add_dynamic_box({0.25f,0.25f,0.25f},{20.f,5.f,0.f},1.f);
+            cpu.set_velocity(free_cpu,{1.f,0.f,0.f});
+            gpu.set_velocity(free_gpu,{1.f,0.f,0.f});
+        }
+        cpu.step(1.f/120.f);
+        gpu.step(1.f/120.f);
+        if(!native::GpuPcmFrictionAnchorFixture::has_prewitness_solve(gpu))
+            throw std::runtime_error(
+                "Compact awake numerical work waited for PCM publication at frame "+
+                std::to_string(frame));
+        native::GpuPcmFrictionAnchorFixture::
+            verify_pre_witness_device_admission(gpu);
+        native::GpuPcmFrictionAnchorFixture::
+            verify_device_numerical_response_ownership(gpu);
+        const auto stats=producer->dy_launch_stats();
+        const auto root=gpu.accurate_island_id(gpu_ids[0]);
+        if(gpu.contacts().size()!=cpu.contacts().size() ||
+           stats.device_island_indirect_dispatches!=1u ||
+           stats.device_admitted_tasks!=1u ||
+           stats.device_admitted_bodies!=4u ||
+           stats.device_admitted_descriptors!=4u ||
+           producer->dy_gpu_integrated_body_count()!=(frame==0u?4u:5u) ||
+           root!=gpu.accurate_island_id(gpu_ids[1]) ||
+           root!=gpu.accurate_island_id(bridge_gpu[0]) ||
+           root!=gpu.accurate_island_id(bridge_gpu[1]))
+            throw std::runtime_error(
+                "Connected bridge admission mismatch: frame="+std::to_string(frame)+
+                " cpu_contacts="+std::to_string(cpu.contacts().size())+
+                " gpu_contacts="+std::to_string(gpu.contacts().size())+
+                " launches="+std::to_string(stats.device_island_indirect_dispatches)+
+                " tasks="+std::to_string(stats.device_admitted_tasks)+
+                " bodies="+std::to_string(stats.device_admitted_bodies)+
+                " descriptors="+std::to_string(stats.device_admitted_descriptors)+
+                " integrated="+std::to_string(producer->dy_gpu_integrated_body_count())+
+                " roots="+std::to_string(root)+","+
+                    std::to_string(gpu.accurate_island_id(gpu_ids[1]))+","+
+                    std::to_string(gpu.accurate_island_id(bridge_gpu[0]))+","+
+                    std::to_string(gpu.accurate_island_id(bridge_gpu[1])));
+        if(frame!=0u)
+            test::compound_compare_state(
+                gpu.body_state(free_gpu),cpu.body_state(free_cpu),0.003f,
+                "Independent free-flight source diverged during early solve");
+        for(std::size_t i=0u;i<bridge_gpu.size();++i)
+            test::compound_compare_state(
+                gpu.body_state(bridge_gpu[i]),cpu.body_state(bridge_cpu[i]),
+                0.03f,"Response-disabled bridge motion diverged from CPU PGS");
+        for(std::size_t i=0u;i<cpu_ids.size();++i)
+            test::compound_compare_state(
+                gpu.body_state(gpu_ids[i]),cpu.body_state(cpu_ids[i]),
+                0.03f,"Connected resident GPU island diverged from CPU PGS");
+    }
+}
+// A one-body contact can use the same pre-witness graph as multi-body
+// islands; a speculative pair without physical touch cannot create Dy work.
+void verify_single_body_pre_witness_contact(
+    fyzz::compute::Backend backend,const char* sap,
+    const char* pcm,const char* dy_shader) {
+    using namespace fyzz;
+    std::ifstream input(dy_shader,std::ios::binary);
+    require(bool(input),"Compiled source Dy shader unavailable");
+    compute::ShaderBinary shader{};
+    shader.format=backend==compute::Backend::Vulkan
+        ?compute::ShaderFormat::Spirv:compute::ShaderFormat::Dxil;
+    shader.bytes.assign(std::istreambuf_iterator<char>{input},
+                        std::istreambuf_iterator<char>{});
+    native::Scene cpu,gpu;
+    auto owner=std::make_unique<
+        physx_gpu::SourceScOwnedGpuBroadphaseNative>(
+        backend,load_native_gpu_sap_shaders(backend,sap),
+        128u,128u,std::nullopt,
+        load_native_gpu_pcm_shaders(backend,pcm),shader);
+    auto* producer=owner.get();
+    gpu.set_gpu_broadphase(std::move(owner));
+    gpu.set_gpu_dy_device_admission_enabled(true);
+    cpu.add_static_box({0.5f,0.5f,0.5f},{0.f,0.f,0.f});
+    gpu.add_static_box({0.5f,0.5f,0.5f},{0.f,0.f,0.f});
+    const auto cpu_body=cpu.add_dynamic_box(
+        {0.5f,0.5f,0.5f},{0.f,0.83f,0.f},1.f);
+    const auto gpu_body=gpu.add_dynamic_box(
+        {0.5f,0.5f,0.5f},{0.f,0.83f,0.f},1.f);
+    for(std::uint32_t frame=0u;frame<3u;++frame) {
+        cpu.step(1.f/120.f);
+        gpu.step(1.f/120.f);
+        native::GpuPcmFrictionAnchorFixture::
+            verify_pre_witness_device_admission(gpu);
+        native::GpuPcmFrictionAnchorFixture::
+            verify_device_numerical_response_ownership(gpu);
+        const auto stats=producer->dy_launch_stats();
+        require(gpu.pairs().size()==1u &&
+                gpu.contacts().size()==1u &&
+                cpu.contacts().size()==1u &&
+                stats.device_island_indirect_dispatches==1u &&
+                stats.device_admitted_tasks==1u &&
+                stats.device_admitted_descriptors==1u &&
+                gpu.solved_normal_impulses().size()==
+                    cpu.solved_normal_impulses().size(),
+            "Single-body PCM contact did not retain device numerical admission");
+        test::compound_compare_state(
+            gpu.body_state(gpu_body),cpu.body_state(cpu_body),0.03f,
+            "Single-body resident GPU contact diverged from CPU PGS");
+    }
+
+    native::Scene empty_cpu,empty_gpu;
+    auto empty_owner=std::make_unique<
+        physx_gpu::SourceScOwnedGpuBroadphaseNative>(
+        backend,load_native_gpu_sap_shaders(backend,sap),
+        128u,128u,std::nullopt,
+        load_native_gpu_pcm_shaders(backend,pcm),std::move(shader));
+    auto* empty_producer=empty_owner.get();
+    empty_gpu.set_gpu_broadphase(std::move(empty_owner));
+    empty_gpu.set_gpu_dy_device_admission_enabled(true);
+    const auto dormant_cpu=empty_cpu.add_dynamic_box(
+        {0.25f,0.25f,0.25f},{30.f,5.f,0.f},1.f);
+    const auto dormant_gpu=empty_gpu.add_dynamic_box(
+        {0.25f,0.25f,0.25f},{30.f,5.f,0.f},1.f);
+    RigidBodyDynamics dormant_dynamics{};
+    dormant_dynamics.gravity_enabled=false;
+    empty_cpu.set_dynamics(dormant_cpu,dormant_dynamics);
+    empty_gpu.set_dynamics(dormant_gpu,dormant_dynamics);
+    for(unsigned i=0u;i<3u &&
+        (!empty_cpu.body_is_sleeping(dormant_cpu) ||
+         !empty_gpu.body_is_sleeping(dormant_gpu));++i) {
+        empty_cpu.step(0.5f);
+        empty_gpu.step(0.5f);
+    }
+    require(empty_cpu.body_is_sleeping(dormant_cpu) &&
+            empty_gpu.body_is_sleeping(dormant_gpu),
+        "Independent integration source did not enter sleep");
+    const Vec3 center{10.f,1.f,0.f};
+    const Vec3 other{11.08f,2.08f,0.f};
+    const Quat tilt{0.f,0.f,0.382683432f,0.923879533f};
+    const auto expected=empty_cpu.add_dynamic_box(
+        {0.5f,0.5f,0.5f},center,1.f);
+    const auto actual=empty_gpu.add_dynamic_box(
+        {0.5f,0.5f,0.5f},center,1.f);
+    const auto fixed_cpu=empty_cpu.add_static_box(
+        {0.5f,0.5f,0.5f},other);
+    const auto fixed_gpu=empty_gpu.add_static_box(
+        {0.5f,0.5f,0.5f},other);
+    empty_cpu.set_pose(fixed_cpu,other,tilt);
+    empty_gpu.set_pose(fixed_gpu,other,tilt);
+    RigidBodyDynamics dynamics{};
+    dynamics.gravity_enabled=false;
+    empty_cpu.set_dynamics(expected,dynamics);
+    empty_gpu.set_dynamics(actual,dynamics);
+    empty_cpu.step(1.f/120.f);
+    empty_gpu.step(1.f/120.f);
+    const auto stats=empty_producer->dy_launch_stats();
+    require(empty_gpu.pairs().size()==1u &&
+            empty_gpu.contacts().empty() &&
+            empty_cpu.contacts().empty() &&
+            stats.device_admitted_tasks==0u &&
+            stats.device_admitted_descriptors==0u,
+        "Non-touching PCM candidate incorrectly admitted one-body Dy work");
+    test::compound_compare_state(
+        empty_gpu.body_state(actual),empty_cpu.body_state(expected),0.003f,
+        "Non-touching PCM candidate changed free-flight motion");
+
+    // An actual contact exercises early numerical admission without
+    // allocating an integration slot for the unrelated sleeping actor.
+    const Vec3 contact_pose{10.f,0.17f,0.f};
+    empty_cpu.set_pose(fixed_cpu,contact_pose,{});
+    empty_gpu.set_pose(fixed_gpu,contact_pose,{});
+    for(unsigned frame=0u;frame<2u;++frame) {
+        if(frame==1u) {
+            empty_cpu.set_velocity(dormant_cpu,{1.f,0.f,0.f});
+            empty_gpu.set_velocity(dormant_gpu,{1.f,0.f,0.f});
+        }
+        empty_cpu.step(1.f/120.f);
+        empty_gpu.step(1.f/120.f);
+        const auto admission=empty_producer->dy_launch_stats();
+        if(!native::GpuPcmFrictionAnchorFixture::has_prewitness_solve(empty_gpu) ||
+           empty_gpu.contacts().size()!=1u ||
+           empty_cpu.contacts().size()!=1u ||
+           admission.device_island_indirect_dispatches!=1u ||
+           admission.device_admitted_tasks!=1u ||
+           admission.device_admitted_bodies!=1u ||
+           admission.device_admitted_descriptors!=1u ||
+           empty_producer->dy_gpu_integrated_body_count()!=1u+frame)
+            throw std::runtime_error(
+                "Independent dormant admission mismatch: frame="+
+                std::to_string(frame)+
+                " early="+std::to_string(native::GpuPcmFrictionAnchorFixture::
+                    has_prewitness_solve(empty_gpu))+
+                " cpu_contacts="+std::to_string(empty_cpu.contacts().size())+
+                " gpu_contacts="+std::to_string(empty_gpu.contacts().size())+
+                " launches="+std::to_string(admission.device_island_indirect_dispatches)+
+                " tasks="+std::to_string(admission.device_admitted_tasks)+
+                " bodies="+std::to_string(admission.device_admitted_bodies)+
+                " descriptors="+std::to_string(admission.device_admitted_descriptors)+
+                " integrated="+std::to_string(empty_producer->dy_gpu_integrated_body_count()));
+        require(empty_cpu.body_is_sleeping(dormant_cpu)==(frame==0u) &&
+                empty_gpu.body_is_sleeping(dormant_gpu)==(frame==0u),
+            "Independent dormant actor changed activation incorrectly");
+        test::compound_compare_state(
+            empty_gpu.body_state(dormant_gpu),empty_cpu.body_state(dormant_cpu),
+            0.003f,"Independent dormant or reactivated source diverged");
+        test::compound_compare_state(
+            empty_gpu.body_state(actual),empty_cpu.body_state(expected),
+            0.03f,"Contact motion diverged alongside independent dormant source");
+    }
+}
+// One PCM manager and two disconnected joint-only islands admit
+// three independent numerical tasks before Sc joins contact witnesses.
+void verify_single_pcm_joint_island_admission(
+    fyzz::compute::Backend backend,const char* sap,
+    const char* pcm,const char* dy_shader) {
+    using namespace fyzz;
+    std::ifstream input(dy_shader,std::ios::binary);
+    require(bool(input),"Compiled source Dy shader unavailable");
+    compute::ShaderBinary shader{};
+    shader.format=backend==compute::Backend::Vulkan
+        ?compute::ShaderFormat::Spirv:compute::ShaderFormat::Dxil;
+    shader.bytes.assign(std::istreambuf_iterator<char>{input},
+                        std::istreambuf_iterator<char>{});
+    native::Scene cpu,gpu;
+    auto owner=std::make_unique<
+        physx_gpu::SourceScOwnedGpuBroadphaseNative>(
+            backend,load_native_gpu_sap_shaders(backend,sap),
+            128u,128u,std::nullopt,
+            load_native_gpu_pcm_shaders(backend,pcm),std::move(shader));
+    auto* producer=owner.get();
+    gpu.set_gpu_broadphase(std::move(owner));
+    gpu.set_gpu_dy_device_admission_enabled(true);
+    cpu.add_static_box({0.5f,0.5f,0.5f},{0.f,0.f,0.f});
+    gpu.add_static_box({0.5f,0.5f,0.5f},{0.f,0.f,0.f});
+    const auto contact_cpu=cpu.add_dynamic_box(
+        {0.5f,0.5f,0.5f},{0.f,0.83f,0.f},1.f);
+    const auto contact_gpu=gpu.add_dynamic_box(
+        {0.5f,0.5f,0.5f},{0.f,0.83f,0.f},1.f);
+    std::array<BodyId,4> joints_cpu{},joints_gpu{};
+    for(std::uint32_t i=0u;i<4u;++i) {
+        const Vec3 center{10.f+float(i/2u)*10.f+
+            float(i%2u)*3.f,4.f,0.f};
+        joints_cpu[i]=cpu.add_dynamic_box(
+            {0.3f,0.3f,0.3f},center,1.f);
+        joints_gpu[i]=gpu.add_dynamic_box(
+            {0.3f,0.3f,0.3f},center,1.f);
+        RigidBodyDynamics dynamics{};
+        dynamics.gravity_enabled=false;
+        cpu.set_dynamics(joints_cpu[i],dynamics);
+        gpu.set_dynamics(joints_gpu[i],dynamics);
+    }
+    for(std::size_t i=0u;i<joints_cpu.size();i+=2u) {
+        cpu.create_center_distance_constraint(
+            joints_cpu[i],joints_cpu[i+1u],2.8f);
+        gpu.create_center_distance_constraint(
+            joints_gpu[i],joints_gpu[i+1u],2.8f);
+    }
+    // This speculative PCM overlap has no physical touch. Sc's device
+    // task stream must exclude it without a host-authored endpoint row.
+    constexpr Vec3 empty_center{40.f,1.f,0.f};
+    constexpr Vec3 empty_other{41.08f,2.08f,0.f};
+    constexpr Quat empty_tilt{0.f,0.f,0.382683432f,0.923879533f};
+    const auto empty_cpu=cpu.add_dynamic_box(
+        {0.5f,0.5f,0.5f},empty_center,1.f);
+    const auto empty_gpu=gpu.add_dynamic_box(
+        {0.5f,0.5f,0.5f},empty_center,1.f);
+    const auto fixed_cpu=cpu.add_static_box(
+        {0.5f,0.5f,0.5f},empty_other);
+    const auto fixed_gpu=gpu.add_static_box(
+        {0.5f,0.5f,0.5f},empty_other);
+    cpu.set_pose(fixed_cpu,empty_other,empty_tilt);
+    gpu.set_pose(fixed_gpu,empty_other,empty_tilt);
+    RigidBodyDynamics no_gravity{};
+    no_gravity.gravity_enabled=false;
+    cpu.set_dynamics(empty_cpu,no_gravity);
+    gpu.set_dynamics(empty_gpu,no_gravity);
+    for(std::uint32_t frame=0u;frame<3u;++frame) {
+        cpu.step(1.f/120.f);
+        gpu.step(1.f/120.f);
+        native::GpuPcmFrictionAnchorFixture::
+            verify_pre_witness_device_admission(gpu);
+        native::GpuPcmFrictionAnchorFixture::
+            verify_device_numerical_response_ownership(gpu);
+        const auto stats=producer->dy_launch_stats();
+        require(gpu.pairs().size()==2u && gpu.contacts().size()==1u &&
+                cpu.contacts().size()==1u &&
+                stats.device_island_indirect_dispatches==1u &&
+                stats.device_admitted_tasks==3u &&
+                stats.device_admitted_descriptors==3u &&
+                stats.prewitness_joint_source_upload_bytes==
+                    (frame==0u?2u*sizeof(native::GpuDyJointInput):0u) &&
+                stats.device_joint_metadata_upload_bytes==
+                    stats.prewitness_joint_source_upload_bytes &&
+                stats.device_joint_geometry_count==2u &&
+                stats.joint_row_input_bytes==0u &&
+                stats.compact_joint_source_bytes==
+                    2u*32u+stats.device_joint_input_rows*4u &&
+                (frame!=0u ||
+                    (stats.prewitness_actor_local_upload_bytes>=
+                        offsetof(physx_gpu::SourceDyActorLocalNative,
+                                 linear_velocity) &&
+                     stats.prewitness_actor_local_upload_spans>0u)) &&
+                gpu.accurate_island_id(joints_gpu[0])==
+                    gpu.accurate_island_id(joints_gpu[1]) &&
+                gpu.accurate_island_id(joints_gpu[2])==
+                    gpu.accurate_island_id(joints_gpu[3]) &&
+                gpu.accurate_island_id(joints_gpu[0])!=
+                    gpu.accurate_island_id(joints_gpu[2]) &&
+                gpu.accurate_island_id(contact_gpu)!=
+                    gpu.accurate_island_id(joints_gpu[0]),
+            "PCM and multiple joint sources lost independent device tasks");
+        test::compound_compare_state(
+            gpu.body_state(empty_gpu),cpu.body_state(empty_cpu),0.003f,
+            "Non-touching GPU PCM candidate acquired a numerical response");
+        test::compound_compare_state(
+            gpu.body_state(contact_gpu),cpu.body_state(contact_cpu),0.03f,
+            "Single PCM island diverged from CPU PGS");
+        for(std::size_t i=0u;i<joints_cpu.size();++i)
+            test::compound_compare_state(
+                gpu.body_state(joints_gpu[i]),cpu.body_state(joints_cpu[i]),
+                0.03f,"Joint-only island diverged from CPU PGS");
+    }
+}
+// A newly touching GPU PCM pair can wake a sleeping solver body without
+// requiring Sc to authorize a speculative contact before device admission.
+void verify_sleeping_new_touch_device_admission(
+    fyzz::compute::Backend backend,const char* sap,
+    const char* pcm,const char* dy_shader) {
+    using namespace fyzz;
+    std::ifstream input(dy_shader,std::ios::binary);
+    require(bool(input),"Sleeping-contact Dy shader unavailable");
+    compute::ShaderBinary shader{};
+    shader.format=backend==compute::Backend::Vulkan
+        ?compute::ShaderFormat::Spirv:compute::ShaderFormat::Dxil;
+    shader.bytes.assign(std::istreambuf_iterator<char>{input},
+                        std::istreambuf_iterator<char>{});
+    native::Scene cpu,gpu;
+    auto owner=std::make_unique<
+        physx_gpu::SourceScOwnedGpuBroadphaseNative>(
+        backend,load_native_gpu_sap_shaders(backend,sap),
+        128u,128u,std::nullopt,
+        load_native_gpu_pcm_shaders(backend,pcm),shader);
+    auto* producer=owner.get();
+    gpu.set_gpu_broadphase(std::move(owner));
+    gpu.set_gpu_dy_device_admission_enabled(true);
+    const auto fixed_cpu=cpu.add_static_box(
+        {0.5f,0.5f,0.5f},{0.f,0.f,0.f});
+    const auto fixed_gpu=gpu.add_static_box(
+        {0.5f,0.5f,0.5f},{0.f,0.f,0.f});
+    const auto moving_cpu=cpu.add_dynamic_box(
+        {0.5f,0.5f,0.5f},{0.f,2.5f,0.f},1.f);
+    const auto moving_gpu=gpu.add_dynamic_box(
+        {0.5f,0.5f,0.5f},{0.f,2.5f,0.f},1.f);
+    RigidBodyDynamics dynamics{};
+    dynamics.gravity_enabled=false;
+    cpu.set_dynamics(moving_cpu,dynamics);
+    gpu.set_dynamics(moving_gpu,dynamics);
+    constexpr float seconds=1.f/30.f;
+    for(unsigned frame=0u;frame<40u &&
+        (!cpu.body_is_sleeping(moving_cpu) ||
+         !gpu.body_is_sleeping(moving_gpu));++frame) {
+        cpu.step(seconds);
+        gpu.step(seconds);
+    }
+    require(cpu.body_is_sleeping(moving_cpu) &&
+            gpu.body_is_sleeping(moving_gpu) &&
+            cpu.contacts().empty() && gpu.contacts().empty(),
+        "Free rigid body did not enter sleep before its first contact");
+
+    // A refreshed speculative candidate without touch must leave the
+    // dormant source inactive, including its sleep counter.
+    const Vec3 miss_pose{1.08f,3.58f,0.f};
+    const Quat tilt{0.f,0.f,0.382683432f,0.923879533f};
+    cpu.set_pose(fixed_cpu,miss_pose,tilt);
+    gpu.set_pose(fixed_gpu,miss_pose,tilt);
+    cpu.step(seconds);
+    gpu.step(seconds);
+    require(gpu.pairs().size()==1u &&
+            cpu.contacts().empty() && gpu.contacts().empty() &&
+            cpu.body_is_sleeping(moving_cpu) && gpu.body_is_sleeping(moving_gpu) &&
+            gpu.body_wake_counter(moving_gpu)==0.f &&
+            native::GpuPcmFrictionAnchorFixture::has_prewitness_solve(gpu) &&
+            producer->dy_gpu_integrated_body_count()==0u,
+        "Non-touching dormant PCM candidate executed integration");
+    test::compound_compare_state(
+        gpu.body_state(moving_gpu),cpu.body_state(moving_cpu),0.003f,
+        "Non-touching dormant PCM candidate changed motion");
+
+    const Vec3 contact_pose{0.f,2.1f,0.f};
+    cpu.set_pose(fixed_cpu,contact_pose,{});
+    gpu.set_pose(fixed_gpu,contact_pose,{});
+    require(cpu.body_is_sleeping(moving_cpu) &&
+            gpu.body_is_sleeping(moving_gpu),
+        "Static shape edit woke the isolated actor before physical touch");
+
+    cpu.step(seconds);
+    gpu.step(seconds);
+    const auto schedule=producer->dy_launch_stats();
+    require(cpu.contacts().size()==1u &&
+            gpu.contacts().size()==1u &&
+            cpu.found_contacts().size()==1u &&
+            gpu.found_contacts().size()==1u &&
+            !cpu.body_is_sleeping(moving_cpu) &&
+            !gpu.body_is_sleeping(moving_gpu) &&
+            native::GpuPcmFrictionAnchorFixture::
+                has_early_device_admission(gpu) &&
+            schedule.device_island_indirect_dispatches==1u &&
+            schedule.device_admitted_tasks==1u &&
+            schedule.device_admitted_descriptors==1u &&
+            native::GpuPcmFrictionAnchorFixture::has_prewitness_solve(gpu) &&
+            producer->dy_gpu_integrated_body_count()==1u &&
+            std::fabs(gpu.body_wake_counter(moving_gpu)-
+                      cpu.body_wake_counter(moving_cpu))<1.e-5f,
+        "New physical touch did not wake an early device-admitted island");
+    native::GpuPcmFrictionAnchorFixture::
+        verify_pre_witness_device_admission(gpu);
+    require(native::GpuPcmFrictionAnchorFixture::
+                actor_has_staged_source(gpu,moving_gpu),
+        "Dormant candidate actor source waited for physical touch publication");
+    test::compound_compare_state(
+        gpu.body_state(moving_gpu),cpu.body_state(moving_cpu),0.04f,
+        "Sleeping first-touch device admission diverged from CPU PGS");
+
+    // Retired contact endpoints must not be staged from stale Gu history.
+    cpu.set_position(fixed_cpu,{0.f,-20.f,0.f});
+    gpu.set_position(fixed_gpu,{0.f,-20.f,0.f});
+    cpu.step(seconds);
+    gpu.step(seconds);
+    require(cpu.contacts().empty() && gpu.contacts().empty() &&
+            gpu.pairs().empty() &&
+            !native::GpuPcmFrictionAnchorFixture::
+                actor_has_staged_source(gpu,fixed_gpu) &&
+            native::GpuPcmFrictionAnchorFixture::
+                actor_has_staged_source(gpu,moving_gpu),
+        "Retired Gu endpoint consumed an actor-local staging slot");
+    test::compound_compare_state(
+        gpu.body_state(moving_gpu),cpu.body_state(moving_cpu),0.04f,
+        "Retired contact changed free-flight motion");
+
+    native::Scene speculative_cpu,speculative_gpu;
+    auto speculative_owner=std::make_unique<
+        physx_gpu::SourceScOwnedGpuBroadphaseNative>(
+        backend,load_native_gpu_sap_shaders(backend,sap),
+        128u,128u,std::nullopt,
+        load_native_gpu_pcm_shaders(backend,pcm),shader);
+    auto* speculative_producer=speculative_owner.get();
+    speculative_gpu.set_gpu_broadphase(std::move(speculative_owner));
+    speculative_gpu.set_gpu_dy_device_admission_enabled(true);
+    const auto make_joint=[&](native::Scene& scene) {
+        const auto a=scene.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{0.f,1.f,0.f},1.f);
+        const auto b=scene.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{-3.f,1.f,0.f},1.f);
+        scene.set_dynamics(a,dynamics);
+        scene.set_dynamics(b,dynamics);
+        scene.create_center_distance_constraint(a,b,3.f);
+        return std::array<BodyId,2>{a,b};
+    };
+    const auto joint_cpu=make_joint(speculative_cpu);
+    const auto joint_gpu=make_joint(speculative_gpu);
+    for(unsigned frame=0u;frame<40u &&
+        (!speculative_cpu.body_is_sleeping(joint_cpu[0]) ||
+         !speculative_gpu.body_is_sleeping(joint_gpu[0]));++frame) {
+        speculative_cpu.step(seconds);
+        speculative_gpu.step(seconds);
+    }
+    for(std::size_t i=0u;i<joint_cpu.size();++i)
+        require(speculative_cpu.body_is_sleeping(joint_cpu[i]) &&
+                speculative_gpu.body_is_sleeping(joint_gpu[i]),
+            "Speculative activation fixture joint did not sleep");
+    const auto add_candidate=[&](native::Scene& scene) {
+        const Vec3 p{1.08f,2.08f,0.f};
+        const Quat q{0.f,0.f,0.382683432f,0.923879533f};
+        const auto id=scene.add_dynamic_box({0.5f,0.5f,0.5f},p,1.f);
+        scene.set_dynamics(id,dynamics);
+        scene.set_pose(id,p,q);
+        return id;
+    };
+    const auto candidate_cpu=add_candidate(speculative_cpu);
+    const auto candidate_gpu=add_candidate(speculative_gpu);
+    speculative_cpu.step(seconds);
+    speculative_gpu.step(seconds);
+    const auto projected=speculative_producer->dy_launch_stats();
+    require(speculative_gpu.pairs().size()==1u &&
+            speculative_gpu.contacts().empty() &&
+            speculative_cpu.contacts().empty() &&
+            projected.device_island_indirect_dispatches==1u &&
+            projected.device_admitted_tasks==1u &&
+            projected.device_admitted_bodies==2u &&
+            projected.device_admitted_descriptors==1u &&
+            speculative_producer->dy_gpu_integrated_body_count()==3u &&
+            native::GpuPcmFrictionAnchorFixture::has_prewitness_solve(speculative_gpu),
+        "SAP-only wake did not admit dormant joint bodies before Gu publication");
+    native::GpuPcmFrictionAnchorFixture::
+        verify_pre_witness_device_admission(speculative_gpu);
+    for(std::size_t i=0u;i<joint_cpu.size();++i) {
+        require(!speculative_cpu.body_is_sleeping(joint_cpu[i]) &&
+                !speculative_gpu.body_is_sleeping(joint_gpu[i]) &&
+                std::fabs(speculative_gpu.body_wake_counter(joint_gpu[i])-
+                          speculative_cpu.body_wake_counter(joint_cpu[i]))<1.e-5f,
+            "Speculative wake did not reach the retained joint component");
+        test::compound_compare_state(
+            speculative_gpu.body_state(joint_gpu[i]),
+            speculative_cpu.body_state(joint_cpu[i]),0.003f,
+            "Speculative joint activation changed numerical motion");
+    }
+    test::compound_compare_state(
+        speculative_gpu.body_state(candidate_gpu),
+        speculative_cpu.body_state(candidate_cpu),0.003f,
+        "Speculative activation changed unrelated free-flight motion");
+
+    // A new static touch wakes two separate accurate components.
+    const auto static_cpu=speculative_cpu.add_static_box(
+        {0.5f,0.5f,0.5f},{10.f,10.f,0.f});
+    const auto static_gpu=speculative_gpu.add_static_box(
+        {0.5f,0.5f,0.5f},{10.f,10.f,0.f});
+    for(unsigned frame=0u;frame<40u &&
+        (!speculative_cpu.body_is_sleeping(candidate_cpu) ||
+         !speculative_gpu.body_is_sleeping(candidate_gpu) ||
+         !speculative_cpu.body_is_sleeping(joint_cpu[0]) ||
+         !speculative_gpu.body_is_sleeping(joint_gpu[0]));++frame) {
+        speculative_cpu.step(seconds);
+        speculative_gpu.step(seconds);
+    }
+    require(speculative_cpu.body_is_sleeping(candidate_cpu) &&
+            speculative_gpu.body_is_sleeping(candidate_gpu) &&
+            speculative_cpu.body_is_sleeping(joint_cpu[0]) &&
+            speculative_gpu.body_is_sleeping(joint_gpu[0]),
+        "Physical-touch propagation fixture did not sleep");
+    const Vec3 new_touch{1.08f,2.75f,0.f};
+    speculative_cpu.set_pose(static_cpu,new_touch,{});
+    speculative_gpu.set_pose(static_gpu,new_touch,{});
+    speculative_cpu.step(seconds);
+    speculative_gpu.step(seconds);
+    const auto physical_wake=speculative_producer->dy_launch_stats();
+    require(speculative_cpu.contacts().size()==1u &&
+            speculative_gpu.contacts().size()==1u &&
+            speculative_gpu.accurate_island_id(candidate_gpu)!=
+                speculative_gpu.accurate_island_id(joint_gpu[0]) &&
+            physical_wake.device_island_indirect_dispatches==1u &&
+            physical_wake.device_admitted_tasks==2u &&
+            physical_wake.device_admitted_bodies==3u &&
+            physical_wake.device_admitted_descriptors==2u &&
+            speculative_producer->dy_gpu_integrated_body_count()==3u &&
+            native::GpuPcmFrictionAnchorFixture::has_prewitness_solve(speculative_gpu),
+        "Resident physical touch failed to activate separate accurate islands");
+    native::GpuPcmFrictionAnchorFixture::
+        verify_pre_witness_device_admission(speculative_gpu);
+    for(std::size_t i=0u;i<joint_cpu.size();++i) {
+        require(std::fabs(speculative_gpu.body_wake_counter(joint_gpu[i])-
+                          speculative_cpu.body_wake_counter(joint_cpu[i]))<1.e-5f,
+            "Physical-touch propagation lost joint wake state");
+        test::compound_compare_state(
+            speculative_gpu.body_state(joint_gpu[i]),
+            speculative_cpu.body_state(joint_cpu[i]),0.003f,
+            "Physical-touch speculative wake changed joint motion");
+    }
+    require(std::fabs(speculative_gpu.body_wake_counter(candidate_gpu)-
+                      speculative_cpu.body_wake_counter(candidate_cpu))<1.e-5f,
+        "Physical-touch propagation lost contact wake state");
+    test::compound_compare_state(
+        speculative_gpu.body_state(candidate_gpu),
+        speculative_cpu.body_state(candidate_cpu),0.04f,
+        "Physical-touch speculative wake changed contact motion");
+
+    // A removed speculative bridge preserves wake reach until the
+    // third pass, even though its detached actor has no numerical edge.
+    native::Scene bridge_cpu,bridge_gpu;
+    auto bridge_owner=std::make_unique<
+        physx_gpu::SourceScOwnedGpuBroadphaseNative>(
+        backend,load_native_gpu_sap_shaders(backend,sap),
+        128u,128u,std::nullopt,
+        load_native_gpu_pcm_shaders(backend,pcm),shader);
+    auto* bridge_producer=bridge_owner.get();
+    bridge_gpu.set_gpu_broadphase(std::move(bridge_owner));
+    bridge_gpu.set_gpu_dy_device_admission_enabled(true);
+    const auto make_bridge=[&](native::Scene& scene,float x) {
+        const auto seed=scene.add_dynamic_sphere(0.5f,{x,1.f,0.f},1.f);
+        const auto detached=scene.add_dynamic_sphere(
+            0.5f,{x+0.85f,1.85f,0.f},1.f);
+        const auto fixed=scene.add_static_sphere(0.5f,{x,8.f,0.f});
+        scene.set_dynamics(seed,dynamics);
+        scene.set_dynamics(detached,dynamics);
+        return std::array<BodyId,3>{seed,detached,fixed};
+    };
+    const std::array bridges_cpu{make_bridge(bridge_cpu,0.f),
+                                 make_bridge(bridge_cpu,20.f)};
+    const std::array bridges_gpu{make_bridge(bridge_gpu,0.f),
+                                 make_bridge(bridge_gpu,20.f)};
+    for(unsigned frame=0u;frame<40u;++frame) {
+        bridge_cpu.step(seconds);
+        bridge_gpu.step(seconds);
+        bool sleeping=true;
+        for(std::size_t i=0u;i<2u;++i)
+            for(std::size_t j=0u;j<2u;++j)
+                sleeping &= bridge_cpu.body_is_sleeping(bridges_cpu[i][j]) &&
+                            bridge_gpu.body_is_sleeping(bridges_gpu[i][j]);
+        if(sleeping)break;
+    }
+    require(bridge_cpu.contacts().empty() && bridge_gpu.contacts().empty() &&
+            bridge_gpu.pairs().size()==2u,
+        "Retired bridge fixture lacks separated speculative pairs");
+    for(std::size_t i=0u;i<2u;++i) {
+        const auto& a=bridges_cpu[i];
+        const auto& b=bridges_gpu[i];
+        require(bridge_cpu.body_is_sleeping(a[0]) &&
+                bridge_cpu.body_is_sleeping(a[1]) &&
+                bridge_gpu.body_is_sleeping(b[0]) &&
+                bridge_gpu.body_is_sleeping(b[1]) &&
+                bridge_gpu.speculative_island_id(b[0])==
+                    bridge_gpu.speculative_island_id(b[1]) &&
+                bridge_gpu.accurate_island_id(b[0])!=
+                    bridge_gpu.accurate_island_id(b[1]),
+            "Retired bridge fixture lost dormant speculative membership");
+        bridge_cpu.set_shape_simulation_enabled(a[1],false);
+        bridge_gpu.set_shape_simulation_enabled(b[1],false);
+        const Vec3 position=i==0u?Vec3{-0.85f,1.f,0.f}:
+                                  Vec3{19.15f,1.85f,0.f};
+        bridge_cpu.set_position(a[2],position);
+        bridge_gpu.set_position(b[2],position);
+    }
+    bridge_cpu.step(seconds);
+    bridge_gpu.step(seconds);
+    const auto bridge_schedule=bridge_producer->dy_launch_stats();
+    require(bridge_cpu.contacts().size()==1u &&
+            bridge_gpu.contacts().size()==1u &&
+            bridge_gpu.pairs().size()==2u &&
+            native::GpuPcmFrictionAnchorFixture::has_prewitness_solve(bridge_gpu) &&
+            bridge_schedule.device_admitted_tasks==1u &&
+            bridge_schedule.device_admitted_bodies==1u &&
+            bridge_schedule.device_admitted_descriptors==1u &&
+            bridge_schedule.host_descriptor_inputs==0u &&
+            bridge_producer->dy_gpu_integrated_body_count()==2u,
+        "Retired speculative bridge did not admit conditional free motion");
+    for(std::size_t i=0u;i<2u;++i)
+        for(std::size_t j=0u;j<2u;++j) {
+            const auto a=bridges_cpu[i][j],b=bridges_gpu[i][j];
+            require(bridge_cpu.body_is_sleeping(a)==(i!=0u) &&
+                    bridge_gpu.body_is_sleeping(b)==(i!=0u) &&
+                    std::fabs(bridge_cpu.body_wake_counter(a)-
+                              bridge_gpu.body_wake_counter(b))<1.e-5f,
+                "Retired bridge wake propagated without a physical touch or lost a member");
+            test::compound_compare_state(
+                bridge_gpu.body_state(b),bridge_cpu.body_state(a),0.04f,
+                "Retired bridge conditional integration diverged from CPU PGS");
+        }
+
+    // Dormant CPU Gu contacts are numerical candidates, not wake authority.
+    // A new PCM touch activates only the first of two sleeping components.
+    native::Scene mixed_cpu,mixed_gpu;
+    mixed_cpu.set_pcm_plane_box(false);
+    mixed_gpu.set_pcm_plane_box(false);
+    auto mixed_owner=std::make_unique<
+        physx_gpu::SourceScOwnedGpuBroadphaseNative>(
+        backend,load_native_gpu_sap_shaders(backend,sap),
+        128u,128u,std::nullopt,
+        load_native_gpu_pcm_shaders(backend,pcm),shader);
+    auto* mixed_producer=mixed_owner.get();
+    mixed_gpu.set_gpu_broadphase(std::move(mixed_owner));
+    mixed_gpu.set_gpu_dy_device_admission_enabled(true);
+    mixed_cpu.add_static_floor(0.f);
+    mixed_gpu.add_static_floor(0.f);
+    const auto make_mixed=[&](native::Scene& scene,float x) {
+        const auto body=scene.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{x,0.5f,0.f},1.f);
+        const auto fixed=scene.add_static_box(
+            {0.5f,0.5f,0.5f},{x,8.f,0.f});
+        scene.set_dynamics(body,dynamics);
+        return std::array<BodyId,2>{body,fixed};
+    };
+    const std::array mixed_c{make_mixed(mixed_cpu,0.f),
+                             make_mixed(mixed_cpu,20.f)};
+    const std::array mixed_g{make_mixed(mixed_gpu,0.f),
+                             make_mixed(mixed_gpu,20.f)};
+    for(unsigned frame=0u;frame<40u;++frame) {
+        mixed_cpu.step(seconds);
+        mixed_gpu.step(seconds);
+        if(mixed_cpu.body_is_sleeping(mixed_c[0][0]) &&
+           mixed_cpu.body_is_sleeping(mixed_c[1][0]) &&
+           mixed_gpu.body_is_sleeping(mixed_g[0][0]) &&
+           mixed_gpu.body_is_sleeping(mixed_g[1][0]))break;
+    }
+    require(mixed_cpu.contacts().size()==2u &&
+            mixed_gpu.contacts().size()==2u &&
+            mixed_cpu.body_is_sleeping(mixed_c[0][0]) &&
+            mixed_cpu.body_is_sleeping(mixed_c[1][0]) &&
+            mixed_gpu.body_is_sleeping(mixed_g[0][0]) &&
+            mixed_gpu.body_is_sleeping(mixed_g[1][0]),
+        "Mixed wake fixture did not retain two dormant Gu floor contacts");
+    mixed_cpu.set_position(mixed_c[0][1],{-0.85f,0.5f,0.f});
+    mixed_gpu.set_position(mixed_g[0][1],{-0.85f,0.5f,0.f});
+    const Vec3 miss_position{21.08f,1.58f,0.f};
+    const Quat miss_rotation{0.f,0.f,0.382683432f,0.923879533f};
+    mixed_cpu.set_pose(mixed_c[1][1],miss_position,miss_rotation);
+    mixed_gpu.set_pose(mixed_g[1][1],miss_position,miss_rotation);
+    require(mixed_gpu.body_is_sleeping(mixed_g[0][0]) &&
+            mixed_gpu.body_is_sleeping(mixed_g[1][0]),
+        "Static edit woke mixed Gu candidates before physical touch");
+    mixed_cpu.step(seconds);
+    mixed_gpu.step(seconds);
+    const auto mixed_schedule=mixed_producer->dy_launch_stats();
+    require(mixed_cpu.contacts().size()==3u &&
+            mixed_gpu.contacts().size()==3u &&
+            native::GpuPcmFrictionAnchorFixture::has_prewitness_solve(mixed_gpu) &&
+            mixed_schedule.device_admitted_tasks==1u &&
+            mixed_schedule.device_admitted_bodies==1u &&
+            mixed_schedule.device_admitted_descriptors==2u &&
+            mixed_schedule.host_descriptor_inputs==0u &&
+            mixed_producer->dy_gpu_integrated_body_count()==1u &&
+            mixed_producer->dy_cpu_gu_geometry_bytes()>0u &&
+            !mixed_cpu.body_is_sleeping(mixed_c[0][0]) &&
+            !mixed_gpu.body_is_sleeping(mixed_g[0][0]) &&
+            mixed_cpu.body_is_sleeping(mixed_c[1][0]) &&
+            mixed_gpu.body_is_sleeping(mixed_g[1][0]),
+        "Mixed dormant Gu sources did not follow device wake authorization");
+    native::GpuPcmFrictionAnchorFixture::verify(mixed_cpu,mixed_gpu);
+    native::GpuPcmFrictionAnchorFixture::
+        verify_device_admitted_contact_sources(mixed_gpu);
+    for(const auto& manager:mixed_gpu.contacts())
+        if(manager.pair.a==mixed_g[1][0] ||
+           manager.pair.b==mixed_g[1][0])
+            require(manager.friction_patch_count==0u,
+                "Unactivated Gu candidate published friction history");
+    for(std::size_t i=0u;i<2u;++i) {
+        require(std::fabs(mixed_cpu.body_wake_counter(mixed_c[i][0])-
+                          mixed_gpu.body_wake_counter(mixed_g[i][0]))<1.e-5f,
+            "Mixed Gu wake counter diverged");
+        test::compound_compare_state(
+            mixed_gpu.body_state(mixed_g[i][0]),
+            mixed_cpu.body_state(mixed_c[i][0]),0.04f,
+            "Mixed conditional Gu response diverged from CPU PGS");
+    }
+
+    native::Scene ready_cpu,ready_gpu;
+    auto ready_owner=std::make_unique<
+        physx_gpu::SourceScOwnedGpuBroadphaseNative>(
+        backend,load_native_gpu_sap_shaders(backend,sap),
+        128u,128u,std::nullopt,
+        load_native_gpu_pcm_shaders(backend,pcm),std::move(shader));
+    auto* ready_producer=ready_owner.get();
+    ready_gpu.set_gpu_broadphase(std::move(ready_owner));
+    ready_gpu.set_gpu_dy_device_admission_enabled(true);
+    const auto make_ready_chain=[&](native::Scene& scene) {
+        std::array<BodyId,4> ids{};
+        for(unsigned i=0u;i<3u;++i) {
+            ids[i]=scene.add_dynamic_box(
+                {0.5f,0.5f,0.5f},{3.f*i,1.f,0.f},1.f);
+            scene.set_dynamics(ids[i],dynamics);
+        }
+        ids[3]=scene.add_static_box({0.5f,0.5f,0.5f},{20.f,20.f,0.f});
+        scene.create_center_distance_constraint(ids[0],ids[1],3.f);
+        scene.create_center_distance_constraint(ids[1],ids[2],3.f);
+        // A zero-response PCM manager keeps the early numerical epoch live.
+        auto contact_dynamics=dynamics;
+        contact_dynamics.max_contact_impulse=0.f;
+        scene.set_dynamics(ids[2],contact_dynamics);
+        scene.add_static_box({0.5f,0.5f,0.5f},{6.f,0.003f,0.f});
+        return ids;
+    };
+    const auto ready_c=make_ready_chain(ready_cpu);
+    const auto ready_g=make_ready_chain(ready_gpu);
+    bool mixed_ready=false;
+    for(unsigned frame=0u;frame<20u;++frame) {
+        ready_cpu.set_velocity(ready_c[0],{});
+        ready_gpu.set_velocity(ready_g[0],{});
+        const Vec3 remote{20.f+0.01f*frame,20.f,0.f};
+        ready_cpu.set_pose(ready_c[3],remote,{});
+        ready_gpu.set_pose(ready_g[3],remote,{});
+        ready_cpu.step(seconds);
+        ready_gpu.step(seconds);
+        for(unsigned i=0u;i<3u;++i) {
+            require(!ready_cpu.body_is_sleeping(ready_c[i]) &&
+                    !ready_gpu.body_is_sleeping(ready_g[i]) &&
+                    ready_cpu.body_ready_for_sleep(ready_c[i])==
+                        ready_gpu.body_ready_for_sleep(ready_g[i]),
+                "Ready member prematurely deactivated its joint component");
+            test::compound_compare_state(
+                ready_gpu.body_state(ready_g[i]),ready_cpu.body_state(ready_c[i]),
+                0.003f,"Mixed-readiness joint motion diverged");
+        }
+        if(ready_gpu.body_ready_for_sleep(ready_g[1]) &&
+           ready_gpu.body_ready_for_sleep(ready_g[2])) {
+            const auto active=ready_producer->dy_launch_stats();
+            require(!ready_gpu.body_ready_for_sleep(ready_g[0]) &&
+                    active.device_island_indirect_dispatches==1u &&
+                    active.device_admitted_tasks==1u &&
+                    active.device_admitted_bodies==3u &&
+                    active.device_admitted_descriptors==2u,
+                "Sleep-ready joint members prevented device admission");
+            native::GpuPcmFrictionAnchorFixture::
+                verify_pre_witness_device_admission(ready_gpu);
+            mixed_ready=true;
+            break;
+        }
+    }
+    require(mixed_ready,"Joint component never reached mixed sleep readiness");
+    ready_cpu.set_velocity(ready_c[0],{});
+    ready_gpu.set_velocity(ready_g[0],{});
+    ready_cpu.step(seconds);
+    ready_gpu.step(seconds);
+    require(native::GpuPcmFrictionAnchorFixture::has_prewitness_solve(ready_gpu) &&
+            ready_producer->dy_gpu_integrated_body_count()==3u,
+        "Mixed-readiness component waited for Sc integration authorization");
+    for(unsigned i=0u;i<3u;++i)
+        test::compound_compare_state(
+            ready_gpu.body_state(ready_g[i]),ready_cpu.body_state(ready_c[i]),
+            0.003f,"Early mixed-readiness motion diverged");
+    bool slept=false;
+    for(unsigned frame=0u;frame<20u;++frame) {
+        const Vec3 remote{21.f+0.01f*frame,20.f,0.f};
+        ready_cpu.set_pose(ready_c[3],remote,{});
+        ready_gpu.set_pose(ready_g[3],remote,{});
+        ready_cpu.step(seconds);
+        ready_gpu.step(seconds);
+        for(unsigned i=0u;i<3u;++i)
+            require(ready_cpu.body_is_sleeping(ready_c[i])==
+                    ready_gpu.body_is_sleeping(ready_g[i]),
+                "Joint component sleep arbitration diverged");
+        if(ready_gpu.body_is_sleeping(ready_g[0])) {
+            require(ready_gpu.body_is_sleeping(ready_g[1]) &&
+                    ready_gpu.body_is_sleeping(ready_g[2]),
+                "Ready component did not deactivate together");
+            require(native::GpuPcmFrictionAnchorFixture::has_prewitness_solve(ready_gpu) &&
+                    ready_producer->dy_gpu_integrated_body_count()==0u &&
+                    ready_producer->dy_launch_stats().device_admitted_tasks==0u,
+                "Inactive accurate component executed numerical integration");
+            slept=true;
+            break;
+        }
+    }
+    require(slept,"Fully ready joint component did not deactivate");
+}
+
+void verify_early_pcm_island_pipeline(
+    fyzz::compute::Backend backend,const char* sap,
+    const char* pcm,const char* dy_shader,
+    bool with_sphere=false,bool with_joints=false,
+    bool enhanced_determinism=false,bool identity_order=false) {
+    using namespace fyzz;
+    std::ifstream input(dy_shader,std::ios::binary);
+    require(bool(input),"Source Dy shader bundle unavailable");
+    compute::ShaderBinary shader{};
+    shader.format=backend==compute::Backend::Vulkan
+        ?compute::ShaderFormat::Spirv:compute::ShaderFormat::Dxil;
+    shader.bytes.assign(std::istreambuf_iterator<char>{input},
+                        std::istreambuf_iterator<char>{});
+    native::Scene cpu,gpu;
+    auto producer=std::make_unique<
+        physx_gpu::SourceScOwnedGpuBroadphaseNative>(
+            backend,load_native_gpu_sap_shaders(backend,sap),
+            128u,128u,std::nullopt,
+            load_native_gpu_pcm_shaders(backend,pcm),std::move(shader));
+    auto* device=producer.get();
+    gpu.set_gpu_broadphase(std::move(producer));
+    gpu.set_gpu_dy_device_admission_enabled(true);
+    cpu.set_enhanced_determinism(enhanced_determinism);
+    gpu.set_enhanced_determinism(enhanced_determinism);
+    // Inert scene actors cannot inflate the numerical graph allocation.
+    for(std::uint32_t i=0u;i<140u;++i) {
+        const Transform pose{{1000.f+float(i),0.f,0.f},{}};
+        cpu.create_body(pose,false);
+        gpu.create_body(pose,false);
+    }
+    std::array<BodyId,2> a{},b{},fixed_cpu{},fixed_gpu{};
+    for(std::uint32_t i=0u;i<a.size();++i) {
+        const float x=5.f*i;
+        fixed_cpu[i]=cpu.add_static_box({0.5f,0.5f,0.5f},{x,0.f,0.f});
+        fixed_gpu[i]=gpu.add_static_box({0.5f,0.5f,0.5f},{x,0.f,0.f});
+        a[i]=cpu.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{x,0.83f,0.f},1.f);
+        b[i]=gpu.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{x,0.83f,0.f},1.f);
+    }
+    if(with_joints)
+        for(std::size_t i=0u;i<a.size();++i) {
+            cpu.create_center_distance_constraint(fixed_cpu[i],a[i],0.83f);
+            gpu.create_center_distance_constraint(fixed_gpu[i],b[i],0.83f);
+        }
+    // A speculative candidate that separates in Gu must not acquire a
+    // GPU numerical task or consume a dense solver-row identity.
+    const auto add_non_touching=[](native::Scene& scene) {
+        const Vec3 center{10.f,1.f,0.f};
+        const Vec3 other{11.08f,2.08f,0.f};
+        const Quat tilt{0.f,0.f,0.382683432f,0.923879533f};
+        const auto moving=scene.add_dynamic_box(
+            {0.5f,0.5f,0.5f},center,1.f);
+        const auto fixed=scene.add_static_box(
+            {0.5f,0.5f,0.5f},other);
+        scene.set_pose(fixed,other,tilt);
+        RigidBodyDynamics dynamics{};
+        dynamics.gravity_enabled=false;
+        scene.set_dynamics(moving,dynamics);
+    };
+    if(!identity_order) {
+        add_non_touching(cpu);
+        add_non_touching(gpu);
+    }
+    BodyId host_cpu=0u,host_gpu=0u;
+    if(with_sphere) {
+        cpu.add_static_sphere(0.5f,{15.f,0.f,0.f});
+        gpu.add_static_sphere(0.5f,{15.f,0.f,0.f});
+        host_cpu=cpu.add_dynamic_sphere(0.5f,{15.f,0.83f,0.f},1.f);
+        host_gpu=gpu.add_dynamic_sphere(0.5f,{15.f,0.83f,0.f},1.f);
+    }
+    // Static actors separate stable ActorIDs from the dense Dy rows.
+    // Only physically touching candidates acquire numerical task ranges.
+    for(std::uint32_t frame=0u;frame<3u;++frame) {
+        cpu.step(1.f/120.f);
+        gpu.step(1.f/120.f);
+        native::GpuPcmFrictionAnchorFixture::
+            verify_pcm_candidate_ownership(gpu);
+        if(enhanced_determinism)
+            require(!native::GpuPcmFrictionAnchorFixture::
+                        has_early_device_admission(gpu),
+                "Deterministic Sc task grouping submitted redundant GPU admission");
+        else
+            native::GpuPcmFrictionAnchorFixture::
+                verify_pre_witness_device_admission(gpu);
+        const auto schedule=device->dy_launch_stats();
+        require(schedule.host_contact_source_bytes==
+                    native::GpuPcmFrictionAnchorFixture::
+                        compact_contact_source_bytes(gpu),
+            "Scene uploaded full inline body source records to GPU Dy");
+        require(schedule.resident_immovable_contact_bodies>=2u &&
+                schedule.inline_contact_body_bytes==0u,
+            "GPU PCM contact preparation uploaded repeated static body records");
+        native::GpuPcmFrictionAnchorFixture::
+            verify_gpu_source_candidate_descriptors(gpu);
+        const auto responding=with_sphere?3u:2u;
+        if(!enhanced_determinism) {
+            const auto source_capacity=responding+
+                (identity_order?0u:1u);
+            require(schedule.device_colored_tasks==source_capacity &&
+                    schedule.device_admitted_tasks==responding,
+                "Pre-witness Sc tasks were sized from host touch results");
+            native::GpuPcmFrictionAnchorFixture::
+                verify_pre_witness_pcm_capacity(gpu,
+                    4u*(identity_order?2u:3u)+(with_sphere?1u:0u));
+            native::GpuPcmFrictionAnchorFixture::
+                verify_device_contact_order(gpu,true,false);
+        }
+        require(gpu.pairs().size()==responding+(identity_order?0u:1u) &&
+                gpu.contacts().size()==responding &&
+                cpu.contacts().size()==responding &&
+                schedule.device_island_indirect_dispatches==
+                    (enhanced_determinism?0u:1u) &&
+                schedule.device_admitted_tasks==
+                    (enhanced_determinism?0u:responding) &&
+                schedule.device_admitted_descriptors==
+                    (enhanced_determinism?0u:
+                        responding+(with_joints?2u:0u)) &&
+                device->pcm_host_contact_upload_bytes()==0u &&
+                device->dy_cpu_gu_geometry_bytes()==0u &&
+                (!with_sphere || device->dy_pcm_device_contact_rows()>=3u),
+            "Pre-witness mixed PCM topology did not reach production device Dy");
+        if(identity_order)
+            require(native::GpuPcmFrictionAnchorFixture::
+                        has_identity_device_body_order(gpu) &&
+                    device->sc_island_remap_dispatch_count()==0u &&
+                    !device->sc_island_deferred_body_remap() &&
+                    !device->sc_island_deferred_joint_remap(),
+                "Identity-ordered source Sc bodies still uploaded and dispatched a remap");
+        else if(!enhanced_determinism) {
+            require(device->sc_island_remap_dispatch_count()==0u &&
+                    !device->sc_island_deferred_joint_remap(),
+                "Distance joints requested an unneeded device remap dispatch");
+            require(native::GpuPcmFrictionAnchorFixture::
+                        has_source_body_order(gpu) &&
+                    !device->sc_island_deferred_body_remap(),
+                "Device Sc bodies still requested a host solver-row map");
+        }
+        const auto expected_found=frame==0u?responding:0u;
+        require(gpu.found_contacts().size()==expected_found &&
+                gpu.lost_contacts().empty() &&
+                cpu.found_contacts().size()==gpu.found_contacts().size() &&
+                cpu.lost_contacts().size()==gpu.lost_contacts().size(),
+            "Deferred Sc PCM witness publication changed contact event lifetime");
+        if(with_sphere)
+            test::compound_compare_state(
+                gpu.body_state(host_gpu),cpu.body_state(host_cpu),0.03f,
+                "Pre-witness GPU PCM sphere contact diverged from CPU PGS");
+        for(std::size_t i=0u;i<a.size();++i)
+            test::compound_compare_state(
+                gpu.body_state(b[i]),cpu.body_state(a[i]),0.03f,
+                "Early device Sc actor remap changed rigid contact response");
+    }
+    if(!with_joints) {
+        // A retired PCM contact must publish one lost transition after
+        // a frame whose source witness join was deferred.
+        cpu.set_pose(a[1],{5.f,3.f,0.f},{});
+        gpu.set_pose(b[1],{5.f,3.f,0.f},{});
+        cpu.step(1.f/120.f);
+        gpu.step(1.f/120.f);
+        require(gpu.lost_contacts().size()==1u &&
+                cpu.lost_contacts().size()==1u &&
+                gpu.found_contacts().empty() &&
+                cpu.found_contacts().empty() &&
+                gpu.contacts().size()==(with_sphere?2u:1u) &&
+                cpu.contacts().size()==gpu.contacts().size(),
+            "Deferred PCM witness publication retained a lost Sc contact");
+        for(std::size_t i=0u;i<a.size();++i)
+            test::compound_compare_state(
+                gpu.body_state(b[i]),cpu.body_state(a[i]),0.03f,
+                "Deferred PCM touch retirement changed rigid body state");
+    }
+}
+
+// A large set of independent speculative contacts must not be routed
+// through CPU numerical descriptor construction merely because the total
+// source graph exceeds the connected-island tiling threshold.
+void verify_sparse_large_device_response_graph(
+    fyzz::compute::Backend backend,const char* sap,
+    const char* pcm,const char* dy_shader) {
+    using namespace fyzz;
+    std::ifstream input(dy_shader,std::ios::binary);
+    require(bool(input),"Sparse device-response shader unavailable");
+    compute::ShaderBinary shader{};
+    shader.format=backend==compute::Backend::Vulkan
+        ?compute::ShaderFormat::Spirv:compute::ShaderFormat::Dxil;
+    shader.bytes.assign(std::istreambuf_iterator<char>{input},
+                        std::istreambuf_iterator<char>{});
+    native::Scene cpu,gpu;
+    auto producer=std::make_unique<
+        physx_gpu::SourceScOwnedGpuBroadphaseNative>(
+            backend,load_native_gpu_sap_shaders(backend,sap),
+            native::gpu_dy_wide_task_threshold+16u,128u,std::nullopt,
+            load_native_gpu_pcm_shaders(backend,pcm),std::move(shader));
+    auto* device=producer.get();
+    gpu.set_gpu_broadphase(std::move(producer));
+    gpu.set_gpu_dy_device_admission_enabled(true);
+    std::array<BodyId,2> cpu_responders{},gpu_responders{};
+    for(std::uint32_t i=0u;i<2u;++i) {
+        const float x=5.f*float(i);
+        cpu.add_static_box({0.5f,0.5f,0.5f},{x,0.f,0.f});
+        gpu.add_static_box({0.5f,0.5f,0.5f},{x,0.f,0.f});
+        cpu_responders[i]=cpu.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{x,0.83f,0.f},1.f);
+        gpu_responders[i]=gpu.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{x,0.83f,0.f},1.f);
+    }
+    constexpr auto inactive=native::gpu_dy_wide_task_threshold+8u;
+    const auto add_candidates=[&](native::Scene& scene) {
+        std::array<BodyId,inactive> ids{};
+        for(std::uint32_t i=0u;i<inactive;++i) {
+            const float x=20.f+5.f*float(i);
+            const auto moving=scene.add_dynamic_sphere(
+                0.5f,{x,1.f,0.f},1.f);
+            scene.add_static_sphere(
+                0.5f,{x+0.85f,1.85f,0.f});
+            RigidBodyDynamics dynamics{};
+            dynamics.gravity_enabled=false;
+            scene.set_dynamics(moving,dynamics);
+            ids[i]=moving;
+        }
+        return ids;
+    };
+    const auto cpu_candidates=add_candidates(cpu);
+    const auto gpu_candidates=add_candidates(gpu);
+    constexpr float dt=1.f/120.f;
+    cpu.step(dt);
+    gpu.step(dt);
+    native::GpuPcmFrictionAnchorFixture::
+        verify_device_numerical_response_ownership(gpu);
+    const auto schedule=device->dy_launch_stats();
+    require(gpu.pairs().size()==inactive+2u &&
+            gpu.contacts().size()==2u &&
+            cpu.contacts().size()==gpu.contacts().size() &&
+            schedule.device_colored_tasks==inactive+2u &&
+            schedule.device_admitted_tasks==2u &&
+            schedule.device_admitted_descriptors==2u &&
+            schedule.host_descriptor_inputs==0u &&
+            schedule.device_task_readback_bytes==0u &&
+            schedule.device_epoch_error_readback_bytes==8u &&
+            schedule.device_island_indirect_dispatches==1u &&
+            schedule.wide_tasks==0u &&
+            native::GpuPcmFrictionAnchorFixture::has_prewitness_solve(gpu) &&
+            device->dy_gpu_integrated_body_count()==inactive+2u,
+        "Large independent PCM graph waited for host numerical admission");
+    for(std::size_t i=0u;i<cpu_responders.size();++i)
+        test::compound_compare_state(
+            gpu.body_state(gpu_responders[i]),
+            cpu.body_state(cpu_responders[i]),0.03f,
+            "Large sparse device response changed rigid contact dynamics");
+    for(std::size_t i=0u;i<cpu_candidates.size();++i)
+        test::compound_compare_state(
+            gpu.body_state(gpu_candidates[i]),cpu.body_state(cpu_candidates[i]),
+            0.003f,"Large sparse candidate changed free-flight motion");
+    std::cout<<"FYZZXYZZY_METRIC sparse_device_response candidates="
+             <<gpu.pairs().size()
+             <<" admitted_tasks="<<schedule.device_admitted_tasks
+             <<" task_capacity="<<schedule.device_colored_tasks
+             <<" host_descriptors="<<schedule.host_descriptor_inputs<<'\n';
+}
+
+void verify_resident_wide_device_response(
+    fyzz::compute::Backend backend,const char* sap,
+    const char* pcm,const char* dy_shader) {
+    using namespace fyzz;
+    std::ifstream input(dy_shader,std::ios::binary);
+    require(bool(input),"Resident wide Dy shader unavailable");
+    compute::ShaderBinary shader{};
+    shader.format=backend==compute::Backend::Vulkan
+        ?compute::ShaderFormat::Spirv:compute::ShaderFormat::Dxil;
+    shader.bytes.assign(std::istreambuf_iterator<char>{input},
+                        std::istreambuf_iterator<char>{});
+    native::Scene cpu,gpu;
+    // Compare component-local iteration budgets rather than CPU batch maxima.
+    cpu.set_enhanced_determinism(true);
+    auto owner=std::make_unique<
+        physx_gpu::SourceScOwnedGpuBroadphaseNative>(
+            backend,load_native_gpu_sap_shaders(backend,sap),
+            2048u,128u,std::nullopt,
+            load_native_gpu_pcm_shaders(backend,pcm),std::move(shader));
+    auto* producer=owner.get();
+    gpu.set_gpu_broadphase(std::move(owner));
+    gpu.set_gpu_dy_device_admission_enabled(true);
+    constexpr auto count=native::gpu_dy_wide_task_threshold;
+    constexpr std::uint32_t spokes=192u;
+    constexpr std::uint32_t extra_singletons=128u;
+    constexpr auto cross_group=native::gpu_dy_cross_group_color_min;
+    RigidBodyDynamics dynamics{};
+    dynamics.position_iterations=1u;
+    dynamics.velocity_iterations=0u;
+    const auto assemble=[&](native::Scene& scene) {
+        std::array<BodyId,2u*count+1u+extra_singletons> ids{};
+        for(std::uint32_t i=0u;i<=count;++i) {
+            const float x=i==count?-8.f:1.25f*float(i);
+            scene.add_static_box({0.5f,0.5f,0.5f},{x,0.f,0.f});
+            ids[i]=scene.add_dynamic_box(
+                {0.5f,0.5f,0.5f},{x,0.83f,0.f},1.f);
+            if(i && i<count)
+                scene.create_center_distance_constraint(ids[i-1u],ids[i],1.25f);
+            scene.set_dynamics(ids[i],dynamics);
+            scene.set_velocity(ids[i],{i%2u?0.02f:-0.02f,0.f,0.01f});
+        }
+        for(std::uint32_t i=2u;i<2u+spokes;++i)
+            scene.create_center_distance_constraint(ids[0],ids[i],1.25f*i);
+        // A hub with a static contact and hundreds of spokes has
+        // only one useful lane per color, regardless of its degree.
+        scene.add_static_box({0.5f,0.5f,0.5f},{0.f,0.f,8.f});
+        const auto hub=scene.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{0.f,0.83f,8.f},1.f);
+        ids[count+1u]=hub;
+        auto hub_dynamics=dynamics;
+        hub_dynamics.position_iterations=3u;
+        hub_dynamics.velocity_iterations=2u;
+        scene.set_dynamics(hub,hub_dynamics);
+        for(std::uint32_t i=1u;i<count;++i) {
+            const float x=1.5f*float(i);
+            const auto leaf=scene.add_dynamic_box(
+                {0.3f,0.3f,0.3f},{x,0.83f,8.f},1.f);
+            ids[count+1u+i]=leaf;
+            scene.create_center_distance_constraint(hub,leaf,x);
+            scene.set_dynamics(leaf,hub_dynamics);
+            scene.set_velocity(leaf,{0.f,0.f,0.01f});
+        }
+        for(std::uint32_t i=0u;i<extra_singletons;++i) {
+            const float x=-10.f-2.f*float(i);
+            scene.add_static_box({0.5f,0.5f,0.5f},{x,0.f,0.f});
+            const auto body=scene.add_dynamic_box(
+                {0.5f,0.5f,0.5f},{x,0.83f,0.f},1.f);
+            ids[2u*count+1u+i]=body;
+            auto compact_dynamics=dynamics;
+            compact_dynamics.position_iterations=8u;
+            compact_dynamics.velocity_iterations=4u;
+            scene.set_dynamics(body,compact_dynamics);
+            scene.set_velocity(body,{i%2u?0.02f:-0.02f,0.f,0.01f});
+        }
+        return ids;
+    };
+    const auto a=assemble(cpu),b=assemble(gpu);
+    constexpr float dt=1.f/120.f;
+    cpu.step(dt);
+    gpu.step(dt);
+    const auto schedule=producer->dy_launch_stats();
+    const auto [uploaded,downloaded]=producer->dy_distance_transfer_bytes();
+    require(!native::GpuPcmFrictionAnchorFixture::has_host_schedule(gpu),
+        "Resident Dy allocated host task or ordinal records");
+    require(schedule.mapped_input_bytes==uploaded &&
+            schedule.host_staging_bytes<=downloaded &&
+            schedule.host_result_capacity>=schedule.host_staging_bytes &&
+            schedule.numerical_arena_bytes<=schedule.numerical_arena_capacity &&
+            schedule.numerical_arena_padding_bytes<=18u*16u &&
+            schedule.aliased_partition_scratch_bytes==
+                schedule.device_initialized_bodies*12u &&
+            schedule.omitted_partition_scratch_bytes==
+                schedule.device_source_descriptors*20u+
+                3u*(schedule.device_source_descriptors/cross_group)*4u+
+                schedule.device_initialized_bodies*12u,
+        "Resident Dy input or result staging includes redundant host storage");
+    require(native::GpuPcmFrictionAnchorFixture::has_prewitness_solve(gpu) &&
+            schedule.resident_wide_schedule &&
+            schedule.wide_tasks==1u &&
+            schedule.device_admitted_tasks==3u+extra_singletons &&
+            schedule.resident_fused_workgroups==3u &&
+            schedule.motion_capture_dispatches==0u &&
+            schedule.device_admitted_bodies==b.size() &&
+            schedule.device_admitted_descriptors==3u*count+spokes+extra_singletons &&
+            schedule.max_partition_groups==(count+127u)/128u+1u &&
+            schedule.device_partition_tile_bytes>0u &&
+            schedule.device_partition_tile_bytes<=
+                4u*(schedule.device_source_descriptors/128u)*16u &&
+            (2u*(spokes+2u)-1u)*schedule.max_partition_groups>
+                schedule.device_admitted_descriptors &&
+            schedule.host_descriptor_inputs==0u &&
+            schedule.host_degree_scanned_descriptors==0u &&
+            schedule.device_task_readback_bytes==0u &&
+            schedule.constraint_preparation_dispatches==0u &&
+            schedule.device_partition_indirect_dispatches>0u &&
+            schedule.device_partition_indirect_dispatches<=
+                2u*(2u*((2u*count-1u+spokes)/cross_group)+1u) &&
+            producer->dy_gpu_integrated_body_count()==b.size(),
+        "Resident wide component lost bounded device-authored scheduling");
+    require(cpu.contacts().size()==count+2u+extra_singletons &&
+            gpu.contacts().size()==cpu.contacts().size(),
+        "Resident wide execution changed contact publication");
+    for(std::size_t i=0u;i<b.size();++i)
+        test::compound_compare_state(gpu.body_state(b[i]),cpu.body_state(a[i]),
+            0.03f,"Resident wide device schedule changed body motion");
+    const auto reset=[&](native::Scene& scene,const auto& ids) {
+        for(std::uint32_t i=0u;i<=count;++i) {
+            const float x=i==count?-8.f:1.25f*float(i);
+            scene.set_pose(ids[i],{x,0.83f,0.f},{});
+            scene.set_velocity(ids[i],{i%2u?0.02f:-0.02f,0.f,0.01f});
+            scene.set_angular_velocity(ids[i],{});
+        }
+        scene.set_pose(ids[count+1u],{0.f,0.83f,8.f},{});
+        scene.set_velocity(ids[count+1u],{});
+        scene.set_angular_velocity(ids[count+1u],{});
+        for(std::uint32_t i=1u;i<count;++i) {
+            scene.set_pose(ids[count+1u+i],{1.5f*float(i),0.83f,8.f},{});
+            scene.set_velocity(ids[count+1u+i],{0.f,0.f,0.01f});
+            scene.set_angular_velocity(ids[count+1u+i],{});
+        }
+        for(std::uint32_t i=0u;i<extra_singletons;++i) {
+            const auto body=ids[2u*count+1u+i];
+            scene.set_pose(body,{-10.f-2.f*float(i),0.83f,0.f},{});
+            scene.set_velocity(body,{i%2u?0.02f:-0.02f,0.f,0.01f});
+            scene.set_angular_velocity(body,{});
+        }
+    };
+    bool reused=false;
+    for(std::size_t frame=0u;frame<2u;++frame) {
+        reset(cpu,a);
+        reset(gpu,b);
+        cpu.step(dt);
+        gpu.step(dt);
+        const auto next=producer->dy_launch_stats();
+        require(next.resident_wide_schedule &&
+                next.device_admitted_tasks==schedule.device_admitted_tasks &&
+                next.resident_fused_workgroups==schedule.resident_fused_workgroups &&
+                next.motion_capture_dispatches==0u &&
+                next.constraint_preparation_dispatches==0u &&
+                next.device_admitted_descriptors==schedule.device_admitted_descriptors,
+                "Repeated resident frame changed numerical membership");
+        if(next.resident_schedule_reuse_candidate)
+            require(next.resident_schedule_reused,
+                    "Stable resident endpoints rebuilt their retained schedule");
+        reused|=next.resident_schedule_reused;
+        for(std::size_t i=0u;i<b.size();++i)
+            test::compound_compare_state(gpu.body_state(b[i]),cpu.body_state(a[i]),
+                0.03f,"Retained wide schedule changed body motion");
+    }
+    require(reused,"Repeated resident frames did not retain coloring and tiles");
+    std::cout<<"FYZZXYZZY_METRIC resident_wide tasks="
+             <<schedule.device_admitted_tasks
+             <<" tiled="<<schedule.wide_tasks
+             <<" fused_workgroups="<<schedule.resident_fused_workgroups
+             <<" preparation_dispatches="<<schedule.constraint_preparation_dispatches
+             <<" motion_dispatches="<<schedule.motion_capture_dispatches
+             <<" host_descriptors="<<schedule.host_descriptor_inputs
+             <<" indirect_partitions="<<schedule.device_partition_indirect_dispatches
+             <<'\n';
+}
+
 // Source Gu PCM rows, friction patches, and 1D joints share the same
 // production Dy task partitions and device execution on both backends.
 void verify_gpu_coupled_solver(
@@ -1187,6 +6291,7 @@ void verify_gpu_coupled_solver(
     double max_normal_error=0.0,max_friction_error=0.0;
     float max_position_error=0.f,max_velocity_error=0.f;
     std::size_t uploaded_bytes=0,downloaded_bytes=0;
+    std::array<double,11> cpu_step_ms{},gpu_step_ms{};
     for(std::uint32_t frame=0;frame<12u;++frame) {
         if(frame==4u || frame==8u) {
             capped_dynamics.max_contact_impulse=frame==4u
@@ -1206,8 +6311,26 @@ void verify_gpu_coupled_solver(
                 {current.position.x+0.12f,current.position.y,
                  current.position.z},current.orientation);
         }
+        const auto start_step=std::chrono::steady_clock::now();
         cpu.step(dt);
+        const auto cpu_done=std::chrono::steady_clock::now();
         gpu.step(dt);
+        const bool capped_immovable_staged=
+            native::GpuPcmFrictionAnchorFixture::actor_has_staged_source(
+                gpu,capped_fixed_gpu);
+        require(capped_immovable_staged==(frame>=4u && frame<8u),
+            "Response-disabled PCM staged an immovable numerical actor");
+        if(frame>0u) {
+            const auto gpu_done=std::chrono::steady_clock::now();
+            cpu_step_ms[frame-1u]=
+                std::chrono::duration<double,std::milli>(
+                    cpu_done-start_step).count();
+            gpu_step_ms[frame-1u]=
+                std::chrono::duration<double,std::milli>(
+                    gpu_done-cpu_done).count();
+        }
+        native::GpuPcmFrictionAnchorFixture::
+            verify_compact_gpu_contact_admission(gpu);
         native::GpuPcmFrictionAnchorFixture::verify(cpu,gpu);
         saw_early_pcm_history |=
             native::GpuPcmFrictionAnchorFixture::
@@ -1224,21 +6347,31 @@ void verify_gpu_coupled_solver(
                 host_pose_bytes==0u,
             "GPU Dy resident contact poses have inconsistent transfer accounting");
         if(frame==0u)
-            require(resident==0u,
-                "First Sc contact solve reused an unauthorized device pose");
+            require(resident==0u &&
+                    producer->dy_launch_stats().prewitness_actor_local_upload_bytes>=
+                        2u*offsetof(physx_gpu::SourceDyActorLocalNative,
+                                    linear_velocity),
+                "Initial coupled actors were not staged during GPU PCM");
         else if(frame==6u)
             require(resident>=2u && resident<integrated &&
-                    producer->dy_launch_stats().actor_local_upload_bytes>=
-                        sizeof(physx_gpu::SourceDyActorLocalNative),
-                "Authored Sc contact pose did not invalidate only its device owner");
+                    (producer->dy_launch_stats().prewitness_actor_local_upload_bytes>=
+                        sizeof(physx_gpu::SourceDyHostPoseNative) &&
+                     producer->dy_launch_stats().prewitness_actor_local_upload_bytes<
+                        sizeof(physx_gpu::SourceDyActorLocalNative)),
+                "Authored Sc contact pose was not staged as a compact source update");
         else
             require(resident>=2u && host_pose_bytes==0u,
                 "Active GPU contact bodies still upload authored mass poses");
         const auto [uploaded,downloaded]=producer->dy_distance_transfer_bytes();
         const auto schedule=producer->dy_launch_stats();
         require(schedule.device_colored_tasks>0u &&
-                schedule.device_colored_descriptors>0u,
-            "Coupled Dy solver skipped device-owned constraint partitioning");
+                schedule.device_colored_descriptors>0u &&
+                schedule.host_degree_scanned_descriptors==0u &&
+                schedule.device_island_indirect_dispatches==0u &&
+                schedule.device_admitted_tasks==0u &&
+                schedule.source_descriptor_upload_bytes==
+                    schedule.device_colored_descriptors*sizeof(std::uint32_t),
+            "Coupled Dy retained redundant host constraint-degree scanning");
         require(schedule.device_source_descriptors==
                     schedule.device_colored_descriptors &&
                 schedule.source_descriptor_upload_bytes<
@@ -1249,14 +6382,16 @@ void verify_gpu_coupled_solver(
                 schedule.device_world_motion_bodies>0u &&
                 schedule.device_world_motion_bodies<=
                     schedule.device_initialized_bodies &&
-                schedule.device_body_upload_bytes==0u,
-            "Coupled Dy failed device world-motion publication");
+                schedule.device_body_upload_bytes==0u &&
+                schedule.device_world_inertia_bodies>0u &&
+                schedule.host_inertia_upload_bytes==0u &&
+                schedule.device_inertia_generated_bytes==
+                    schedule.device_initialized_bodies*9u*sizeof(float),
+            "Coupled Dy failed device-resident motion and inertia publication");
         const auto prep_saving=producer->dy_contact_prep_upload_saving();
-        // Compare writeback with the source-sized upload baseline. The
-        // GPU contact-prep payload is intentionally smaller now.
         require(downloaded>0u &&
-                static_cast<std::int64_t>(downloaded)*2<
-                    static_cast<std::int64_t>(uploaded)+prep_saving,
+                downloaded==native::GpuPcmFrictionAnchorFixture::
+                    compact_host_schedule_result_bytes(gpu),
             "Source coupled GPU Dy writeback did not use compact output");
         uploaded_bytes+=uploaded;
         downloaded_bytes+=downloaded;
@@ -1372,6 +6507,14 @@ void verify_gpu_coupled_solver(
     require(saw_contact && saw_force && saw_friction &&
             saw_correlated_multi_point,
         "Source coupled GPU test never exercised multi-point contact/friction");
+    std::sort(cpu_step_ms.begin(),cpu_step_ms.end());
+    std::sort(gpu_step_ms.begin(),gpu_step_ms.end());
+    std::cout<<"FYZZXYZZY_METRIC suite=dy_pgs spring_mode="<<spring_mode
+             <<" sampled_frames=11"
+             <<" cpu_step_p50_ms="<<cpu_step_ms[5]
+             <<" gpu_step_p50_ms="<<gpu_step_ms[5]
+             <<" cpu_step_p90_ms="<<cpu_step_ms[9]
+             <<" gpu_step_p90_ms="<<gpu_step_ms[9]<<'\n';
     std::cout<<"FYZZXYZZY_METRIC suite=dy_pgs spring_mode="<<spring_mode
              <<" frames=12 gpu_dispatches="
              <<producer->dy_distance_dispatch_count()
@@ -1404,7 +6547,8 @@ void verify_gpu_coupled_solver(
         cpu.set_dynamics(responder_cpu,dynamics);
         gpu.set_dynamics(responder_gpu,dynamics);
         constexpr Quat identity{0.f,0.f,0.f,1.f};
-        for(float target_x:{30.1f,30.2f}) {
+        std::uint32_t moving_kinematic_frame=0u;
+        for(float target_x:{30.1f,30.25f}) {
             cpu.set_kinematic_target(
                 kinematic_cpu,{target_x,2.f,0.f},identity);
             gpu.set_kinematic_target(
@@ -1413,10 +6557,15 @@ void verify_gpu_coupled_solver(
             gpu.step(dt);
             const auto schedule=producer->dy_launch_stats();
             require(schedule.device_source_descriptors>0u &&
+                    schedule.device_island_indirect_dispatches==0u &&
                     schedule.source_descriptor_upload_bytes==
-                        schedule.device_source_descriptors*
-                            sizeof(std::uint32_t),
-                "Moving kinematic contact reuploaded a full host Dy descriptor");
+                        schedule.device_source_descriptors*sizeof(std::uint32_t) &&
+                    schedule.resident_immovable_contact_bodies>0u &&
+                    schedule.inline_contact_body_bytes==0u &&
+                    (moving_kinematic_frame++==0u ||
+                     schedule.prewitness_actor_local_upload_bytes>=
+                         sizeof(physx_gpu::SourceDyPreparedVelocityNative)),
+                "Moving kinematic contact did not stage its velocity before Dy");
             const native::Pair pair{kinematic_cpu,responder_cpu};
             const auto contains=[&](const native::Scene& scene) {
                 const auto pairs=scene.pairs();
@@ -1517,6 +6666,8 @@ void verify_cpu_gu_gpu_dy_solver(
     native::Scene cpu,gpu;
     cpu.set_pcm_box_box(false);
     gpu.set_pcm_box_box(false);
+    cpu.set_pcm_plane_box(false);
+    gpu.set_pcm_plane_box(false);
     auto owner=std::make_unique<
         physx_gpu::SourceScOwnedGpuBroadphaseNative>(
             backend,load_native_gpu_sap_shaders(backend,sap),
@@ -1568,8 +6719,13 @@ void verify_cpu_gu_gpu_dy_solver(
         require(producer->dy_friction_writeback_bytes()*2u==
                     producer->dy_friction_prepared_rows()*12u,
             "CPU Gu GPU Dy returned tangent rows instead of anchor impulses");
-        require(producer->dy_contact_prep_upload_saving()==88,
-            "CPU Gu contact-prep accounting includes friction anchors or geometry");
+        require(producer->dy_contact_prep_upload_saving()==
+                    std::int64_t(sizeof(native::GpuDyContactPrepPair)-
+                    sizeof(physx_gpu::SourceDyPackedContactPrepNative)-
+                    physx_gpu::source_dy_contact_frame_bytes) &&
+                producer->dy_launch_stats().resident_immovable_contact_bodies==1u &&
+                producer->dy_launch_stats().inline_contact_body_bytes==0u,
+            "CPU Gu contact preparation retained an inline static body");
         require(producer->dy_distance_dispatch_count()==frame+1u,
             "CPU Gu contact rows did not enter source GPU Dy solver");
         const auto a=cpu.body_state(moving_cpu);
@@ -1579,14 +6735,614 @@ void verify_cpu_gu_gpu_dy_solver(
             "Source GPU Dy legacy Gu contact solve diverged from CPU");
     }
     require(saw_contact,"Source legacy Gu fixture never generated a contact");
+    // Both CPU Gu contacts own exact EdgeIndex extents. The accurate
+    // device graph partitions their independent response islands.
+    const auto another_fixed_cpu=cpu.add_static_box(
+        {0.5f,0.5f,0.5f},{8.f,0.f,0.f});
+    const auto another_fixed_gpu=gpu.add_static_box(
+        {0.5f,0.5f,0.5f},{8.f,0.f,0.f});
+    const auto another_cpu=cpu.add_dynamic_box(
+        {0.5f,0.5f,0.5f},{8.f,0.84f,0.f},1.f);
+    const auto another_gpu=gpu.add_dynamic_box(
+        {0.5f,0.5f,0.5f},{8.f,0.84f,0.f},1.f);
+    gpu.set_gpu_dy_device_admission_enabled(true);
+    std::uint32_t cpu_contact_edge=0xffffffffu;
+    std::uint32_t gpu_contact_edge=0xffffffffu;
+    for(std::uint32_t frame=0u;frame<4u;++frame) {
+        if(frame==2u) {
+            cpu.set_position(another_cpu,{8.f,3.f,0.f});
+            gpu.set_position(another_gpu,{8.f,3.f,0.f});
+        }
+        cpu.step(dt);
+        gpu.step(dt);
+        const bool device_graph=frame<2u;
+        if(frame==0u)
+            native::GpuPcmFrictionAnchorFixture::
+                verify_pre_witness_device_admission(gpu);
+        const auto stats=producer->dy_launch_stats();
+        const auto expected=frame<2u?2u:1u;
+        require(stats.device_island_indirect_dispatches==(device_graph?1u:0u) &&
+                stats.device_admitted_tasks==(device_graph?expected:0u) &&
+                stats.device_admitted_descriptors==(device_graph?expected:0u) &&
+                producer->dy_pcm_device_contact_rows()==0u &&
+                producer->dy_cpu_gu_geometry_bytes()>0u &&
+                gpu.contacts().size()==expected &&
+                cpu.contacts().size()==expected &&
+                gpu.lost_contacts().size()==cpu.lost_contacts().size() &&
+                (frame!=2u || gpu.lost_contacts().size()==1u),
+            "CPU Gu-only device admission retained an invalid contact response");
+        if(device_graph)
+            native::GpuPcmFrictionAnchorFixture::
+                verify_device_admitted_contact_sources(gpu);
+        test::compound_compare_state(
+            gpu.body_state(moving_gpu),cpu.body_state(moving_cpu),0.003f,
+            "CPU Gu device island admission changed existing contact motion");
+        test::compound_compare_state(
+            gpu.body_state(another_gpu),cpu.body_state(another_cpu),0.003f,
+            "CPU Gu device island admission changed new contact motion");
+        const auto current_cpu=cpu.contact_edge_index(
+            {another_fixed_cpu,another_cpu});
+        const auto current_gpu=gpu.contact_edge_index(
+            {another_fixed_gpu,another_gpu});
+        if(frame==0u) {
+            cpu_contact_edge=current_cpu;
+            gpu_contact_edge=current_gpu;
+            require(cpu_contact_edge!=0xffffffffu &&
+                    gpu_contact_edge!=0xffffffffu,
+                "CPU Gu-only numerical admission omitted live contact identity");
+        }
+        require(frame<2u
+                    ?current_cpu==cpu_contact_edge &&
+                     current_gpu==gpu_contact_edge
+                    :current_cpu==0xffffffffu &&
+                     current_gpu==0xffffffffu,
+            "CPU Gu-only numerical admission did not preserve or retire contact identity");
+    }
 }
 
+// An already-admitted native scene can change numerical executor while
+// retaining its independent SAP, PCM and contact-edge publication.
+
+
+void verify_aggregate_snapshot_in_producer_submission(
+    fyzz::compute::Backend backend,const char* sap,const char* aggregate) {
+    using namespace fyzz;
+    native::Scene gpu;
+    auto owner=std::make_unique<physx_gpu::SourceScOwnedGpuBroadphaseNative>(
+        backend,load_native_gpu_sap_shaders(backend,sap),128u,128u,
+        load_native_gpu_aggregate_shaders(backend,aggregate));
+    auto* producer=owner.get();
+    gpu.set_gpu_broadphase(std::move(owner));
+    const auto group=gpu.create_aggregate(2u,false);
+    const auto actor=gpu.add_dynamic_box(
+        {0.5f,0.5f,0.5f},{0.f,0.83f,0.f},1.f,group);
+    const auto support=gpu.add_static_box(
+        {0.5f,0.5f,0.5f},{0.f,0.f,0.f});
+    const auto before=producer->stream_submission_stats();
+    gpu.advance_collision(true);
+    const auto after=producer->stream_submission_stats();
+    require(after.fused_readbacks==before.fused_readbacks+1u &&
+            after.readback_submissions==before.readback_submissions,
+            "Aggregate SAP snapshot used a second GPU readback submission");
+    require(std::any_of(gpu.contacts().begin(),gpu.contacts().end(),
+                        [actor,support](const auto& contact) {
+                            return contact.pair==native::Pair{
+                                std::min(actor,support),std::max(actor,support)};
+                        }),
+            "Fused aggregate SAP snapshot lost Sc contact membership");
+}
+
+void verify_integrated_aggregate_gpu_pipeline(
+    fyzz::compute::Backend backend,const char* sap,const char* pcm,
+    const char* dy_path,const char* convex_path,const char* aggregate) {
+    using namespace fyzz;
+    const auto compiled=[backend](const char* path) {
+        std::ifstream file(path,std::ios::binary);
+        require(bool(file),"Integrated GPU scene shader is missing");
+        std::vector<char> bytes(std::istreambuf_iterator<char>{file},
+                                std::istreambuf_iterator<char>{});
+        require(!bytes.empty(),"Integrated GPU scene shader is empty");
+        compute::ShaderBinary binary{};
+        binary.format=backend==compute::Backend::Vulkan
+            ?compute::ShaderFormat::Spirv:compute::ShaderFormat::Dxil;
+        binary.bytes.assign(bytes.begin(),bytes.end());
+        return binary;
+    };
+    World gpu=create_native_gpu_world(
+        backend,NativeGpuPipelineShaders{
+            .sap=load_native_gpu_sap_shaders(backend,sap),
+            .aggregates=load_native_gpu_aggregate_shaders(backend,aggregate),
+            .pcm=load_native_gpu_pcm_shaders(backend,pcm),
+            .dy=compiled(dy_path),.convex_dy=compiled(convex_path)},
+        {.execution=ExecutionMode::NativePortableGpu,
+         .contact_notifications=true});
+    World cpu({.execution=ExecutionMode::NativeCpu,
+               .contact_notifications=true});
+    const auto group=gpu.create_aggregate(3u,false);
+    const auto a=gpu.add_dynamic_box_to_aggregate(
+        group,{0.5f,0.5f,0.5f},{0.f,0.83f,0.f},1.f);
+    const auto ca=cpu.add_dynamic_box(
+        {0.5f,0.5f,0.5f},{0.f,0.83f,0.f},1.f);
+    const auto support=gpu.add_static_box(
+        {0.5f,0.5f,0.5f},{0.f,0.f,0.f});
+    const auto csupport=cpu.add_static_box(
+        {0.5f,0.5f,0.5f},{0.f,0.f,0.f});
+    const auto b=gpu.add_dynamic_box_to_aggregate(
+        group,{0.5f,0.5f,0.5f},{12.f,4.f,0.f},1.f);
+    const auto cb=cpu.add_dynamic_box(
+        {0.5f,0.5f,0.5f},{12.f,4.f,0.f},1.f);
+    const auto contains=[](std::span<const ContactEvent> events,
+                           BodyId x,BodyId y,ContactEventKind kind) {
+        return std::any_of(events.begin(),events.end(),
+            [&](const ContactEvent& e) {
+                return e.kind==kind &&
+                    ((e.body0==x && e.body1==y) ||
+                     (e.body0==y && e.body1==x));
+            });
+    };
+    bool found=false,lost=false,found_again=false;
+    for(unsigned frame=0u;frame<6u;++frame) {
+        if(frame==2u) {
+            gpu.set_body_position(support,{20.f,0.f,0.f});
+            cpu.set_body_position(csupport,{20.f,0.f,0.f});
+        }
+        if(frame==4u) {
+            const float height=cpu.body_state(ca).position.y-0.83f;
+            gpu.set_body_position(support,{0.f,height,0.f});
+            cpu.set_body_position(csupport,{0.f,height,0.f});
+        }
+        gpu.set_gpu_dy_enabled(frame!=3u);
+        cpu.step(1.f/120.f);
+        gpu.step(1.f/120.f);
+        found|=contains(gpu.contact_events(),a,support,
+                        ContactEventKind::Found) && frame<2u;
+        lost|=contains(gpu.contact_events(),a,support,
+                       ContactEventKind::Lost) && frame>=2u;
+        found_again|=contains(gpu.contact_events(),a,support,
+                              ContactEventKind::Found) && frame>=4u;
+        require(gpu.contact_events().size()==cpu.contact_events().size(),
+                "Integrated GPU aggregate changed Sc contact publication");
+        test::compound_compare_state(
+            gpu.body_state(a),cpu.body_state(ca),0.035f,
+            "Integrated aggregate PCM/Dy responding body diverged");
+        test::compound_compare_state(
+            gpu.body_state(b),cpu.body_state(cb),0.035f,
+            "Integrated aggregate free-body motion diverged");
+    }
+    require(found && lost && found_again,
+            "Integrated aggregate PCM/Dy lost contact lifecycle transitions");
+    gpu.remove_actor_from_aggregate(group,b);
+    gpu.destroy_aggregate(group);
+    gpu.step(1.f/120.f);
+    require(gpu.body_state(a).position.y<3.f,
+            "Integrated aggregate release invalidated live body state");
+}
+
+void verify_plane_pcm_without_finite_pcm(
+    fyzz::compute::Backend backend,const char* sap,
+    const char* pcm,const char* dy_shader) {
+    using namespace fyzz;
+    std::ifstream file(dy_shader,std::ios::binary);
+    require(bool(file),"Plane-only PCM Dy shader missing");
+    const std::vector<char> bytes{
+        std::istreambuf_iterator<char>{file},std::istreambuf_iterator<char>{}};
+    compute::ShaderBinary shader{};
+    shader.format=backend==compute::Backend::Vulkan
+        ?compute::ShaderFormat::Spirv:compute::ShaderFormat::Dxil;
+    shader.bytes.assign(bytes.begin(),bytes.end());
+    native::Scene cpu,gpu;
+    cpu.set_pcm_box_box(false);
+    gpu.set_pcm_box_box(false);
+    auto producer=std::make_unique<physx_gpu::SourceScOwnedGpuBroadphaseNative>(
+        backend,load_native_gpu_sap_shaders(backend,sap),
+        128u,128u,std::nullopt,
+        load_native_gpu_pcm_shaders(backend,pcm),std::move(shader));
+    auto* source=producer.get();
+    gpu.set_gpu_broadphase(std::move(producer));
+    cpu.add_static_floor(0.f);
+    gpu.add_static_floor(0.f);
+    cpu.add_static_box({0.5f,0.5f,0.5f},{5.f,2.f,0.f});
+    const auto box_support=gpu.add_static_box(
+        {0.5f,0.5f,0.5f},{5.f,2.f,0.f});
+    cpu.add_static_sphere(0.5f,{10.f,2.f,0.f});
+    const auto sphere_support=gpu.add_static_sphere(
+        0.5f,{10.f,2.f,0.f});
+    const std::array<BodyId,3> c{
+        cpu.add_dynamic_box({0.5f,0.5f,0.5f},{0.f,0.43f,0.f},1.f),
+        cpu.add_dynamic_box({0.5f,0.5f,0.5f},{5.4f,2.f,0.f},1.f),
+        cpu.add_dynamic_sphere(0.5f,{10.75f,2.f,0.f},1.f)};
+    const std::array<BodyId,3> g{
+        gpu.add_dynamic_box({0.5f,0.5f,0.5f},{0.f,0.43f,0.f},1.f),
+        gpu.add_dynamic_box({0.5f,0.5f,0.5f},{5.4f,2.f,0.f},1.f),
+        gpu.add_dynamic_sphere(0.5f,{10.75f,2.f,0.f},1.f)};
+    // Collision-only publication must advance CPU Gu physical touch
+    // on the same resident EdgeIndex journal used by GPU PCM and Dy.
+    // No solver step has run at this point.
+    cpu.advance_collision(true);
+    gpu.advance_collision(true);
+    native::GpuPcmFrictionAnchorFixture::verify_pcm_contact_arena(gpu);
+    const auto box_edge=native::GpuPcmFrictionAnchorFixture::
+        contact_manager_edge(gpu,{box_support,g[1]});
+    const auto sphere_edge=native::GpuPcmFrictionAnchorFixture::
+        contact_manager_edge(gpu,{sphere_support,g[2]});
+    const auto expected_gu_touch=[&](std::uint32_t edge,
+                                     std::uint32_t prior) {
+        for(const auto& manager:gpu.contacts())
+            if(manager.edge_handle==edge) {
+                require(manager.count>0u && manager.count<=255u,
+                    "Finite Gu numerical contact extent is invalid");
+                return std::array<std::uint32_t,2>{
+                    0x20001u |
+                        (static_cast<std::uint32_t>(manager.count)<<8u),
+                    prior};
+            }
+        throw std::runtime_error("Finite Gu contact manager was not published");
+    };
+    require(box_edge!=std::numeric_limits<std::uint32_t>::max() &&
+            sphere_edge!=std::numeric_limits<std::uint32_t>::max() &&
+            physx_gpu::SourceScDeviceIslandFixture::touch(
+                *source,box_edge)==expected_gu_touch(box_edge,0u) &&
+            physx_gpu::SourceScDeviceIslandFixture::touch(
+                *source,sphere_edge)==expected_gu_touch(sphere_edge,0u),
+        "Collision-only Scene did not publish finite Gu touch to device history");
+    cpu.advance_collision(true);
+    gpu.advance_collision(true);
+    require(physx_gpu::SourceScDeviceIslandFixture::touch(
+                *source,box_edge)==expected_gu_touch(box_edge,1u) &&
+            physx_gpu::SourceScDeviceIslandFixture::touch(
+                *source,sphere_edge)==expected_gu_touch(sphere_edge,1u),
+        "Collision-only Scene did not preserve finite Gu touch history");
+    for(unsigned frame=0u;frame<3u;++frame) {
+        cpu.step(1.f/120.f);
+        gpu.step(1.f/120.f);
+        native::GpuPcmFrictionAnchorFixture::
+            verify_pcm_candidate_ownership(gpu);
+        native::GpuPcmFrictionAnchorFixture::
+            verify_early_pcm_numerical_materials(gpu);
+        require(source->pcm_host_contact_upload_bytes()==0u &&
+                source->dy_cpu_gu_geometry_bytes()>0u &&
+                cpu.contacts().size()==3u &&
+                cpu.contacts().size()==gpu.contacts().size(),
+            "Plane-only PCM did not preserve finite legacy Gu contacts");
+        for(std::size_t i=0u;i<c.size();++i)
+            test::compound_compare_state(gpu.body_state(g[i]),
+                cpu.body_state(c[i]),0.035f,
+                "Plane-only GPU PCM and finite Gu motion diverged");
+    }
+    // Retire a physically touching finite Gu manager through BP while
+    // the independent plane PCM producer remains live in this epoch.
+    cpu.set_position(c[1],{8.f,2.f,0.f});
+    gpu.set_position(g[1],{8.f,2.f,0.f});
+    cpu.advance_collision();
+    gpu.advance_collision();
+    require(physx_gpu::SourceScDeviceIslandFixture::touch(
+                *source,box_edge)==std::array<std::uint32_t,2>{0u,1u},
+        "BP-retired Gu manager retained physical touch on the device");
+    cpu.advance_collision(true);
+    gpu.advance_collision(true);
+    require(physx_gpu::SourceScDeviceIslandFixture::touch(
+                *source,box_edge)==std::array<std::uint32_t,2>{0u,1u},
+        "Retired Gu EdgeIndex unexpectedly advanced without a contact producer");
+    // Reusing the retired handle must admit a fresh Found touch. The
+    // generation's first observation replaces both history words;
+    // the previous generation's Lost state cannot leak into the new one.
+    cpu.set_position(c[1],{5.4f,2.f,0.f});
+    gpu.set_position(g[1],{5.4f,2.f,0.f});
+    cpu.advance_collision();
+    gpu.advance_collision();
+    require(native::GpuPcmFrictionAnchorFixture::
+                contact_manager_edge(gpu,{box_support,g[1]})==box_edge &&
+            physx_gpu::SourceScDeviceIslandFixture::touch(
+                *source,box_edge)==expected_gu_touch(box_edge,0u),
+        "Recycled Gu EdgeIndex retained the retired manager's prior touch");
+    cpu.advance_collision(true);
+    gpu.advance_collision(true);
+    require(physx_gpu::SourceScDeviceIslandFixture::touch(
+                *source,box_edge)==expected_gu_touch(box_edge,1u),
+        "Recycled Gu EdgeIndex did not preserve its new touching generation");
+}
+void verify_pcm_friction_normal_revalidation(
+    fyzz::compute::Backend backend,const char* sap,
+    const char* pcm,const char* dy_shader) {
+    using namespace fyzz;
+    std::size_t friction_step=0u;
+    std::ifstream file(dy_shader,std::ios::binary);
+    require(bool(file),"PCM friction Dy shader missing");
+    compute::ShaderBinary shader{};
+    shader.format=backend==compute::Backend::Vulkan
+        ?compute::ShaderFormat::Spirv:compute::ShaderFormat::Dxil;
+    shader.bytes.assign(std::istreambuf_iterator<char>{file},
+                        std::istreambuf_iterator<char>{});
+    native::Scene cpu,gpu;
+    auto owner=std::make_unique<physx_gpu::SourceScOwnedGpuBroadphaseNative>(
+        backend,load_native_gpu_sap_shaders(backend,sap),
+        128u,128u,std::nullopt,load_native_gpu_pcm_shaders(backend,pcm),
+        std::move(shader));
+    auto* producer=owner.get();
+    gpu.set_gpu_broadphase(std::move(owner));
+    gpu.set_gpu_dy_device_admission_enabled(false);
+    const Vec3 half{0.5f,0.5f,0.5f};
+    const Vec3 fixed{0.f,1.f,0.f};
+    const auto cs=cpu.add_static_box(half,fixed);
+    const auto gs=gpu.add_static_box(half,fixed);
+    const auto cb=cpu.add_dynamic_box(half,{0.f,1.8f,0.f},1.f);
+    const auto gb=gpu.add_dynamic_box(half,{0.f,1.8f,0.f},1.f);
+    const std::array<Vec3,3> positions{{
+        {0.f,1.8f,0.f},{0.8f,1.f,0.f},{0.f,1.8f,0.f}
+    }};
+    const std::array<Quat,3> rotations{{
+        {0.f,0.f,0.f,1.f},
+        {0.f,0.f,std::sin(0.1f),std::cos(0.1f)},
+        {0.f,0.f,0.f,1.f}
+    }};
+    Vec3 previous_normal{};
+    for(std::size_t i=0u;i<positions.size();++i) {
+        if(i!=0u) {
+            cpu.set_pose(cb,positions[i],rotations[i]);
+            gpu.set_pose(gb,positions[i],rotations[i]);
+        }
+        cpu.step(1.f/120.f);
+        report_pcm_friction_progress("normal-begin",friction_step);
+        gpu.step(1.f/120.f);
+        report_pcm_friction_progress("normal-end",friction_step++);
+        require(cpu.contacts().size()==1u && gpu.contacts().size()==1u &&
+                !gpu.solved_friction_patches().empty() &&
+                producer->pcm_host_contact_upload_bytes()==0u &&
+                producer->dy_launch_stats().device_island_indirect_dispatches==0u &&
+                gpu.contacts()[0].count!=0u &&
+                producer->dy_launch_stats().normal_numerical_bytes==
+                    gpu.contacts()[0].count*44u &&
+                cpu.contacts()[0].count==gpu.contacts()[0].count &&
+                gpu.solved_normal_impulses().size()==
+                    cpu.solved_normal_impulses().size(),
+            "Host-scheduled GPU Dy lost device PCM numerical contact extent");
+        const auto normal=gpu.contacts()[0].points.front().normal;
+        if(i!=0u)
+            require(normal.x*previous_normal.x+
+                    normal.y*previous_normal.y+
+                    normal.z*previous_normal.z<0.5f,
+                "PCM friction fixture did not change the contact normal");
+        previous_normal=normal;
+        const auto& friction=gpu.solved_friction_patches()[0];
+        require(friction.anchor_count>0u,
+            "GPU PCM did not regenerate its friction anchors");
+        if(i!=0u)
+            for(std::size_t anchor=0u;anchor<friction.anchor_count;++anchor) {
+                const auto& world=friction.anchor_positions[anchor];
+                float best=std::numeric_limits<float>::max();
+                for(const auto& point:gpu.contacts()[0].points) {
+                    const float dx=world.x-point.position.x;
+                    const float dy=world.y-point.position.y;
+                    const float dz=world.z-point.position.z;
+                    best=std::min(best,dx*dx+dy*dy+dz*dz);
+                }
+                require(best<0.04f,
+                    "GPU PCM kept an anchor from an incompatible contact normal");
+            }
+        test::compound_compare_state(gpu.body_state(gb),cpu.body_state(cb),
+            0.05f,"GPU PCM friction normal change diverged from CPU solve");
+        require(gpu.contact_edge_index({gs,gb})!=0xffffffffu &&
+                cpu.contact_edge_index({cs,cb})!=0xffffffffu,
+            "PCM friction normal change retired the live Sc edge");
+    }
+
+    // One compatible retained patch needs no early normal DMA. The
+    // resident numerical pass rejects an incompatible historical normal
+    // and regenerates its anchors from the current contact witnesses.
+    native::GpuPcmFrictionAnchorFixture::seed_multiple_friction_patches(
+        gpu,{gs,gb});
+    native::GpuPcmFrictionAnchorFixture::invalidate_multiple_friction_materials(
+        gpu,{gs,gb},true);
+    native::GpuPcmFrictionAnchorFixture::reverse_first_retained_normal(
+        gpu,{gs,gb});
+    cpu.step(1.f/120.f);
+    report_pcm_friction_progress("normal-begin",friction_step);
+    gpu.step(1.f/120.f);
+    report_pcm_friction_progress("normal-end",friction_step++);
+    require(gpu.contacts().size()==1u &&
+            !gpu.solved_friction_patches().empty(),
+        "PCM normal validation fixture has no published patch");
+    const auto normal=gpu.contacts().front().points.front().normal;
+    const auto& friction=gpu.solved_friction_patches().front();
+    require(native::GpuPcmFrictionAnchorFixture::
+                had_early_friction_history(gpu),
+        "PCM normal validation lost geometric validity of cached friction");
+    require(native::GpuPcmFrictionAnchorFixture::
+                had_compatible_friction_history(gpu),
+        "PCM normal validation lost material compatibility of cached friction");
+    require(native::GpuPcmFrictionAnchorFixture::
+                single_eligible_history_on_device(gpu),
+        "PCM normal validation did not retain one device-validated patch");
+    require(producer->pcm_header_join_bytes()==2u*sizeof(std::uint32_t) &&
+            producer->pcm_deferred_point_bytes()==
+                sizeof(native::GpuPcmBoxResult)-2u*sizeof(std::uint32_t),
+        "Unique cached PCM patch still fetched an early contact normal");
+    require(cpu.contacts().size()==1u &&
+            normal.x*cpu.contacts().front().points.front().normal.x+
+                normal.y*cpu.contacts().front().points.front().normal.y+
+                normal.z*cpu.contacts().front().points.front().normal.z>0.99f &&
+            native::GpuPcmFrictionAnchorFixture::
+                device_rejected_retained_normal(gpu),
+        "Resident PCM did not reject the incompatible historical normal");
+    require(friction.anchor_count>0u,
+        "PCM did not regenerate a friction anchor after normal change");
+    for(std::size_t anchor=0u;anchor<friction.anchor_count;++anchor) {
+        const auto& world=friction.anchor_positions[anchor];
+        float best=std::numeric_limits<float>::max();
+        for(const auto& point:gpu.contacts()[0].points) {
+            const auto dx=world.x-point.position.x;
+            const auto dy=world.y-point.position.y;
+            const auto dz=world.z-point.position.z;
+            best=std::min(best,dx*dx+dy*dy+dz*dz);
+        }
+        require(best<0.04f,
+            "Device PCM retained an anchor with a mismatched normal");
+    }
+    test::compound_compare_state(gpu.body_state(gb),cpu.body_state(cb),
+        0.05f,"Unique-history device normal validation changed rigid response");
+
+    // The sole compatible source need not occupy the first cached slot.
+    // Sc uses the existing pre-witness eligibility mask rather than
+    // revisiting each historical patch after PCM publication.
+    native::GpuPcmFrictionAnchorFixture::seed_multiple_friction_patches(
+        gpu,{gs,gb});
+    native::GpuPcmFrictionAnchorFixture::reverse_first_retained_normal(
+        gpu,{gs,gb});
+    native::GpuPcmFrictionAnchorFixture::invalidate_first_friction_material(
+        gpu,{gs,gb});
+    cpu.step(1.f/120.f);
+    report_pcm_friction_progress("normal-begin",friction_step);
+    gpu.step(1.f/120.f);
+    report_pcm_friction_progress("normal-end",friction_step++);
+    if(!native::GpuPcmFrictionAnchorFixture::
+            single_eligible_history_on_device(gpu,2u))
+        throw std::runtime_error(
+            "Second-slot PCM friction eligibility mask is incorrect: "+
+            native::GpuPcmFrictionAnchorFixture::friction_history_state(gpu));
+    require(producer->pcm_header_join_bytes()==
+                2u*sizeof(std::uint32_t),
+        "Second-slot PCM friction requested an early normal transfer");
+    require(producer->dy_launch_stats().retained_friction_source_bytes==0u,
+        "Second-slot PCM friction uploaded redundant retained candidates");
+    require(gpu.contacts().size()==1u &&
+            !gpu.solved_friction_patches().empty(),
+        "Second-slot PCM friction lost its published contact patch");
+    require(gpu.solved_friction_patches().front().anchor_count>0u,
+        "Second-slot PCM friction failed to retain or regenerate anchors");
+    test::compound_compare_state(gpu.body_state(gb),cpu.body_state(cb),
+        0.05f,"Second-slot PCM history changed the rigid-body response");
+}
+
+void verify_dy_execution_switch(
+    fyzz::compute::Backend backend,const char* sap,
+    const char* pcm,const char* dy_shader) {
+    using namespace fyzz;
+    std::ifstream file(dy_shader,std::ios::binary);
+    require(bool(file),"Compiled switchable Dy shader missing");
+    std::vector<char> bytes(
+        std::istreambuf_iterator<char>{file},
+        std::istreambuf_iterator<char>{});
+    compute::ShaderBinary shader{};
+    shader.format=backend==compute::Backend::Vulkan
+        ? compute::ShaderFormat::Spirv:compute::ShaderFormat::Dxil;
+    shader.bytes.assign(bytes.begin(),bytes.end());
+    native::Scene cpu,gpu;
+    cpu.set_enhanced_determinism(true);
+    gpu.set_enhanced_determinism(true);
+    cpu.set_pcm_plane_box(false);
+    gpu.set_pcm_plane_box(false);
+    cpu.set_contact_notifications(true);
+    gpu.set_contact_notifications(true);
+    auto owner=std::make_unique<physx_gpu::SourceScOwnedGpuBroadphaseNative>(
+        backend,load_native_gpu_sap_shaders(backend,sap),
+        128u,128u,std::nullopt,
+        load_native_gpu_pcm_shaders(backend,pcm),std::move(shader));
+    auto* producer=owner.get();
+    gpu.set_gpu_broadphase(std::move(owner));
+    cpu.add_static_floor(0.f);
+    gpu.add_static_floor(0.f);
+    cpu.add_static_box({0.5f,0.5f,0.5f},{5.f,10.f,0.f});
+    gpu.add_static_box({0.5f,0.5f,0.5f},{5.f,10.f,0.f});
+    std::array<BodyId,3> a{},b{};
+    for(std::size_t i=0u;i<2u;++i) {
+        const Vec3 p=i==0u?Vec3{0.f,0.43f,0.f}:
+                               Vec3{5.f,10.84f,0.f};
+        a[i]=cpu.add_dynamic_box({0.5f,0.5f,0.5f},p,1.f);
+        b[i]=gpu.add_dynamic_box({0.5f,0.5f,0.5f},p,1.f);
+    }
+    a[2]=cpu.add_dynamic_box({0.25f,0.25f,0.25f},
+                             {20.f,5.f,0.f},1.f);
+    b[2]=gpu.add_dynamic_box({0.25f,0.25f,0.25f},
+                             {20.f,5.f,0.f},1.f);
+    constexpr std::array<bool,6> schedule{true,false,true,true,false,true};
+    std::uint64_t gpu_dispatches=0u;
+    for(std::size_t frame=0u;frame<schedule.size();++frame) {
+        gpu.set_gpu_dy_enabled(schedule[frame]);
+        cpu.step(1.f/120.f);
+        gpu.step(1.f/120.f);
+        gpu_dispatches+=schedule[frame]?1u:0u;
+        if(schedule[frame])
+            native::GpuPcmFrictionAnchorFixture::
+                verify_early_pcm_numerical_materials(gpu);
+        else
+            native::GpuPcmFrictionAnchorFixture::
+                verify_cpu_dy_omits_device_materials(gpu);
+        require(producer->dy_distance_dispatch_count()==gpu_dispatches &&
+                (!schedule[frame] ||
+                 producer->dy_pcm_device_contact_rows()>0u),
+            "CPU/GPU Dy selection lost numerical ownership or GPU PCM input");
+        require(cpu.contacts().size()==gpu.contacts().size() &&
+                cpu.solved_normal_impulses().size()==
+                    gpu.solved_normal_impulses().size() &&
+                cpu.contact_events().size()==gpu.contact_events().size(),
+            "Switching Dy execution changed Sc contact publication");
+        for(std::size_t i=0u;i<a.size();++i)
+            test::compound_compare_state(
+                gpu.body_state(b[i]),cpu.body_state(a[i]),0.03f,
+                "GPU SAP/PCM and switched CPU/GPU Dy diverged");
+    }
+    // A rejected CPU Dy frame must roll back the same GPU SAP/PCM
+    // transaction before numerical execution returns to the device.
+    // The kinematic target velocity is prepared while PCM runs; rejecting
+    // this epoch must restore its previous velocity and retain the target.
+    const auto ck=cpu.add_dynamic_box(
+        {0.25f,0.25f,0.25f},{40.f,5.f,0.f},1.f);
+    const auto gk=gpu.add_dynamic_box(
+        {0.25f,0.25f,0.25f},{40.f,5.f,0.f},1.f);
+    cpu.set_kinematic(ck,true);
+    gpu.set_kinematic(gk,true);
+    const Quat identity{0.f,0.f,0.f,1.f};
+    cpu.set_kinematic_target(ck,{41.f,5.f,0.f},identity);
+    gpu.set_kinematic_target(gk,{41.f,5.f,0.f},identity);
+    const auto prior_kinematic=gpu.body_state(gk);
+    gpu.set_gpu_dy_enabled(false);
+    const auto published=gpu.body_state(b[2]);
+    const auto frame=gpu.frame_index();
+    const auto solved=gpu.solved_result_frame();
+    const auto prior_contacts=gpu.contacts().size();
+    const float extreme=std::numeric_limits<float>::max()*0.75f;
+    gpu.set_angular_velocity(b[2],{extreme,0.f,0.f});
+    gpu.add_spatial_velocity_mod(
+        b[2],{extreme,0.f,0.f},ForceMode::VelocityChange,true);
+    bool rejected=false;
+    try {gpu.step(1.f/120.f);}
+    catch(const std::overflow_error&) {rejected=true;}
+    require(rejected && gpu.frame_index()==frame &&
+            gpu.solved_result_frame()==solved &&
+            gpu.contacts().size()==prior_contacts &&
+            producer->dy_distance_dispatch_count()==gpu_dispatches &&
+            gpu.body_state(b[2]).position.x==published.position.x &&
+            gpu.body_state(gk).position.x==prior_kinematic.position.x &&
+            gpu.body_state(gk).velocity.x==prior_kinematic.velocity.x,
+        "Rejected CPU Dy frame corrupted GPU contact or numerical lifetime");
+    native::GpuPcmFrictionAnchorFixture::verify_active_reverse_indices(gpu);
+    gpu.clear_spatial_velocity_mod(
+        b[2],ForceMode::VelocityChange,true);
+    gpu.set_angular_velocity(b[2],published.angular_velocity);
+    gpu.set_gpu_dy_enabled(true);
+    cpu.step(1.f/120.f);
+    gpu.step(1.f/120.f);
+    native::GpuPcmFrictionAnchorFixture::verify_active_reverse_indices(gpu);
+    require(producer->dy_distance_dispatch_count()==gpu_dispatches+1u &&
+            cpu.contacts().size()==gpu.contacts().size() &&
+            cpu.contact_events().size()==gpu.contact_events().size(),
+        "CPU Dy rollback prevented subsequent GPU PCM/Dy execution");
+    test::compound_compare_state(
+        gpu.body_state(gk),cpu.body_state(ck),0.03f,
+        "Kinematic velocity preintegration did not survive retry");
+    for(std::size_t i=0u;i<a.size();++i)
+        test::compound_compare_state(
+            gpu.body_state(b[i]),cpu.body_state(a[i]),0.03f,
+            "Recovered GPU Dy frame diverged after CPU Dy rollback");
+}
+ 
 // Explicit diagnostic plane Gu combines with device box PCM inside
 // one Dy task. Default GPU plane PCM is verified separately; the
 // diagnostic selection preserves CPU-origin Gu upload coverage.
 void verify_mixed_gu_pcm_gpu_dy_solver(
     fyzz::compute::Backend backend,const char* sap,
-    const char* pcm,const char* dy_shader) {
+    const char* pcm,const char* dy_shader,
+    bool device_admission=false,bool with_joint=false) {
     using namespace fyzz;
     std::ifstream input(dy_shader,std::ios::binary);
     require(bool(input),"Compiled mixed Gu/PCM Dy shader missing");
@@ -1599,8 +7355,8 @@ void verify_mixed_gu_pcm_gpu_dy_solver(
             ? compute::ShaderFormat::Spirv:compute::ShaderFormat::Dxil;
         shader.bytes.assign(binary.begin(),binary.end());
         native::Scene cpu,gpu;
-        cpu.set_enhanced_determinism(true);
-        gpu.set_enhanced_determinism(true);
+        cpu.set_enhanced_determinism(!device_admission);
+        gpu.set_enhanced_determinism(!device_admission);
         // Retain a real CPU Gu producer for the mixed-input regression.
         cpu.set_pcm_plane_box(false);
         gpu.set_pcm_plane_box(false);
@@ -1611,8 +7367,24 @@ void verify_mixed_gu_pcm_gpu_dy_solver(
                 load_native_gpu_pcm_shaders(backend,pcm),std::move(shader));
         auto* producer=owner.get();
         gpu.set_gpu_broadphase(std::move(owner));
+        gpu.set_gpu_dy_device_admission_enabled(device_admission);
         std::array<BodyId,2> moving_cpu{},moving_gpu{};
         BodyId floor_cpu{},floor_gpu{},pcm_static_cpu{},pcm_static_gpu{};
+        // A non-touching source candidate precedes both responding
+        // managers, so the device ordinal differs from the Gu index.
+        if(device_admission && !plane_first) {
+            const Vec3 center{80.f,1.f,0.f};
+            const Vec3 other{81.08f,2.08f,0.f};
+            const Quat rotation{0.f,0.f,0.382683432f,0.923879533f};
+            cpu.add_dynamic_box({0.5f,0.5f,0.5f},center,1.f);
+            gpu.add_dynamic_box({0.5f,0.5f,0.5f},center,1.f);
+            const auto cpu_shape=cpu.add_static_box(
+                {0.5f,0.5f,0.5f},other);
+            const auto gpu_shape=gpu.add_static_box(
+                {0.5f,0.5f,0.5f},other);
+            cpu.set_pose(cpu_shape,other,rotation);
+            gpu.set_pose(gpu_shape,other,rotation);
+        }
         const auto add_plane_contact=[&] {
             floor_cpu=cpu.add_static_floor(0.f);
             floor_gpu=gpu.add_static_floor(0.f);
@@ -1638,10 +7410,116 @@ void verify_mixed_gu_pcm_gpu_dy_solver(
             add_pcm_contact();
             add_plane_contact();
         }
+        // Plane candidates are speculative even without physical touch.
+        // The untouched floor must not acquire a pre-witness actor input.
+        cpu.add_static_floor(-100.f);
+        const auto unused_floor_gpu=gpu.add_static_floor(-100.f);
+        if(with_joint) {
+            cpu.create_center_distance_constraint(
+                pcm_static_cpu,moving_cpu[1],0.84f);
+            gpu.create_center_distance_constraint(
+                pcm_static_gpu,moving_gpu[1],0.84f);
+        }
+        // A speculative GPU PCM pair with no physical touch reserves
+        // no published Gu rows, even when mixed legacy Gu generation
+        // runs after a different GPU pair in source order.
+        const Vec3 empty_center{60.f,1.f,0.f};
+        const Vec3 empty_fixed{61.08f,2.08f,0.f};
+        const Quat empty_rotation{
+            0.f,0.f,0.382683432f,0.923879533f};
+        const auto empty_cpu=cpu.add_dynamic_box(
+            {0.5f,0.5f,0.5f},empty_center,1.f);
+        const auto empty_gpu=gpu.add_dynamic_box(
+            {0.5f,0.5f,0.5f},empty_center,1.f);
+        const auto fixed_empty_cpu=cpu.add_static_box(
+            {0.5f,0.5f,0.5f},empty_fixed);
+        const auto fixed_empty_gpu=gpu.add_static_box(
+            {0.5f,0.5f,0.5f},empty_fixed);
+        cpu.set_pose(fixed_empty_cpu,empty_fixed,empty_rotation);
+        gpu.set_pose(fixed_empty_gpu,empty_fixed,empty_rotation);
+        RigidBodyDynamics free_dynamics{};
+        free_dynamics.gravity_enabled=false;
+        cpu.set_dynamics(empty_cpu,free_dynamics);
+        gpu.set_dynamics(empty_gpu,free_dynamics);
         constexpr float dt=1.f/120.f;
         for(std::uint32_t frame=0;frame<4u;++frame) {
+            if(with_joint && frame==2u) {
+                const Vec3 edited{5.02f,10.f,0.f};
+                cpu.set_position(pcm_static_cpu,edited);
+                gpu.set_position(pcm_static_gpu,edited);
+            }
             cpu.step(dt);
             gpu.step(dt);
+            native::GpuPcmFrictionAnchorFixture::
+                verify_pre_witness_immovable_sources(gpu);
+            const native::Pair unused_pair{moving_gpu[0],unused_floor_gpu};
+            require(gpu.contact_edge_index(unused_pair)!=0xffffffffu,
+                "Unused Gu floor is not a speculative Sc candidate");
+            require(!gpu.contact_edge_connected(unused_pair),
+                "Unused Gu floor unexpectedly published physical contact");
+            require(!native::GpuPcmFrictionAnchorFixture::
+                        actor_has_staged_source(gpu,unused_floor_gpu),
+                "Non-touching CPU Gu candidate staged an immovable actor");
+            if(with_joint) {
+                const auto transferred=(frame==0u || frame==2u)
+                    ?sizeof(native::GpuDyJointInput):0u;
+                const auto schedule=producer->dy_launch_stats();
+                require(schedule.prewitness_joint_source_upload_bytes==
+                            transferred &&
+                        schedule.device_joint_metadata_upload_bytes==
+                            transferred,
+                    "Authored joint source was re-uploaded after SAP admission");
+            }
+            native::GpuPcmFrictionAnchorFixture::
+                verify_pcm_contact_arena(gpu);
+            native::GpuPcmFrictionAnchorFixture::
+                verify_pcm_candidate_ownership(gpu);
+            native::GpuPcmFrictionAnchorFixture::
+                verify_early_pcm_numerical_materials(gpu);
+            if(device_admission) {
+                if(frame==0u)
+                    require(native::GpuPcmFrictionAnchorFixture::
+                            has_early_device_admission(gpu) &&
+                            native::GpuPcmFrictionAnchorFixture::
+                                has_prewitness_solve(gpu) &&
+                            producer->dy_launch_stats().host_descriptor_inputs==0u,
+                        "Mixed CPU Gu/PCM numerical execution waited for witnesses");
+                if(native::GpuPcmFrictionAnchorFixture::
+                        has_early_device_admission(gpu))
+                    native::GpuPcmFrictionAnchorFixture::
+                        verify_pre_witness_device_admission(gpu);
+                else
+                    native::GpuPcmFrictionAnchorFixture::
+                        verify_device_partition_source(gpu);
+                native::GpuPcmFrictionAnchorFixture::
+                    verify_device_admitted_contact_sources(gpu);
+                if(with_joint) {
+                    const auto contact_bits=
+                        producer->gpu_dy_admitted_contact_sources();
+                    std::size_t contacts=0u;
+                    for(const auto bits:contact_bits)
+                        contacts+=std::popcount(bits);
+                    require(producer->dy_launch_stats().
+                                device_admitted_descriptors==contacts+1u,
+                        "Mixed CPU Gu/PCM admission lost its joint response");
+                }
+            }
+            if(device_admission && !plane_first && frame==0u) {
+                bool shifted=false;
+                for(std::size_t i=0u;i<gpu.contacts().size();++i) {
+                    const auto& manager=gpu.contacts()[i];
+                    shifted |= manager.candidate_ordinal!=i;
+                    require(manager.candidate_ordinal<gpu.pairs().size() &&
+                            gpu.pairs()[manager.candidate_ordinal]==manager.pair,
+                        "Resident contact source lost its pre-PCM pair ordinal");
+                }
+                require(shifted,
+                    "Device admission did not exercise sparse contact candidates");
+            }
+            if(frame==0u)
+                require(producer->pcm_early_gu_touch_bytes()>=
+                            sizeof(native::GpuGuTouchRecord),
+                    "CPU Gu touch journal waited for Sc PCM witness");
             if(frame>0u)
                 require(producer->last_frame().device_cached_box_count>0u,
                     "Mixed Gu/PCM Dy body still uploaded its solved Sc pose");
@@ -1649,8 +7527,15 @@ void verify_mixed_gu_pcm_gpu_dy_solver(
                     producer->dy_pcm_device_contact_rows()>0u &&
                     producer->dy_cpu_gu_geometry_bytes()>=
                         sizeof(native::GpuDyGuContactInput) &&
-                    producer->dy_upload_span_count()==1u,
-                "Mixed source Gu and PCM rows did not enter one GPU Dy task");
+                    producer->dy_upload_span_count()==1u &&
+                    producer->dy_launch_stats().device_island_indirect_dispatches==
+                        (device_admission?1u:0u) &&
+                    producer->dy_launch_stats().device_task_readback_bytes==0u &&
+                    (device_admission
+                        ?producer->dy_launch_stats().device_admitted_tasks>=2u &&
+                         producer->dy_launch_stats().device_admitted_descriptors>=2u
+                        :producer->dy_launch_stats().device_admitted_tasks==0u),
+                "Mixed source Gu and PCM rows did not enter selected Dy tasks");
             native::GpuPcmFrictionAnchorFixture::verify_device_contact_order(
                 gpu,true,true);
             const auto expected_cpu_anchors=
@@ -1666,8 +7551,37 @@ void verify_mixed_gu_pcm_gpu_dy_solver(
                         producer->dy_friction_prepared_rows()*12u,
                 "Mixed source Gu/PCM Dy returned tangent rows instead of anchors");
             native::GpuPcmFrictionAnchorFixture::verify(cpu,gpu);
-            require(producer->dy_contact_prep_upload_saving()==176,
-                "Mixed Gu/PCM contact-prep savings counted unrelated inputs");
+            const auto source_count=native::GpuPcmFrictionAnchorFixture::
+                expected_mixed_contact_source_count(gpu);
+            const auto actual_count=native::GpuPcmFrictionAnchorFixture::
+                numerical_prep_sizes(gpu)[0];
+            const auto stats=producer->dy_launch_stats();
+            const auto expected_bytes=
+                source_count*sizeof(native::GpuDyCompactContactPrep);
+            const auto expected_saving=
+                std::int64_t(source_count)*
+                std::int64_t(sizeof(native::GpuDyContactPrepPair)-
+                    sizeof(physx_gpu::SourceDyPackedContactPrepNative))-
+                std::int64_t(physx_gpu::source_dy_contact_frame_bytes)-
+                std::int64_t(stats.retained_friction_source_bytes);
+            if(actual_count!=source_count ||
+               stats.host_contact_source_bytes!=expected_bytes ||
+               producer->dy_contact_prep_upload_saving()!=expected_saving ||
+               stats.resident_immovable_contact_bodies!=source_count ||
+               stats.inline_contact_body_bytes!=0u)
+                throw std::runtime_error(
+                    "Mixed Gu/PCM numerical source accounting"
+                    " plane_first="+std::to_string(plane_first)+
+                    " joint="+std::to_string(with_joint)+
+                    " frame="+std::to_string(frame)+
+                    " sources="+std::to_string(actual_count)+
+                    "/"+std::to_string(source_count)+
+                    " source_bytes="+std::to_string(stats.host_contact_source_bytes)+
+                    "/"+std::to_string(expected_bytes)+
+                    " saving="+std::to_string(producer->dy_contact_prep_upload_saving())+
+                    "/"+std::to_string(expected_saving)+
+                    " immovable_refs="+std::to_string(stats.resident_immovable_contact_bodies)+
+                    " inline_bytes="+std::to_string(stats.inline_contact_body_bytes));
             require(cpu.contacts().size()==gpu.contacts().size() &&
                     cpu.solved_normal_impulses().size()==
                         gpu.solved_normal_impulses().size() &&
@@ -1681,12 +7595,83 @@ void verify_mixed_gu_pcm_gpu_dy_solver(
                 saw_pcm |= m.pcm_result_index!=
                     std::numeric_limits<std::uint32_t>::max() && m.count>0u;
             }
-            require(saw_plane && saw_pcm,
-                "Mixed Dy task did not retain both source contact producers");
-            for(std::size_t i=0;i<cpu.solved_normal_impulses().size();++i)
-                require(std::fabs(cpu.solved_normal_impulses()[i]-
-                                  gpu.solved_normal_impulses()[i])<0.08,
-                    "Mixed CPU Gu/GPU PCM normal impulse lost source ordinal");
+            require(saw_plane && saw_pcm &&
+                    gpu.pairs().size()==cpu.pairs().size() &&
+                    gpu.contact_edge_index({empty_gpu,fixed_empty_gpu})!=
+                        0xffffffffu &&
+                    !gpu.contact_edge_connected({empty_gpu,fixed_empty_gpu}) &&
+                    !cpu.contact_edge_connected({empty_cpu,fixed_empty_cpu}),
+                "Mixed Gu/PCM lost its separated speculative candidate");
+            std::size_t contact_end=0u;
+            for(const auto& manager:gpu.contacts()) {
+                require(manager.contact_offset==contact_end,
+                    "Mixed Gu/PCM publication left reserved witness gaps");
+                contact_end+=manager.count;
+            }
+            require(std::is_sorted(gpu.found_contacts().begin(),
+                                   gpu.found_contacts().end()) &&
+                    std::is_sorted(gpu.lost_contacts().begin(),
+                                   gpu.lost_contacts().end()),
+                "Mixed Gu/PCM physical touch events lost source pair order");
+            // Both producers publish to the same persistent device Gu
+            // history. CPU-only plane contacts must not disappear from
+            // the GPU accurate graph just because they lack a PCM slot.
+            for(const auto& manager:gpu.contacts()) {
+                if(manager.pcm_result_index!=0xffffffffu || !manager.count)
+                    continue;
+                const auto touch=physx_gpu::SourceScDeviceIslandFixture::
+                    touch(*producer,manager.edge_handle);
+                require(manager.count<=255u &&
+                        touch[0]==(0x20001u|
+                            (static_cast<std::uint32_t>(manager.count)<<8u)) &&
+                        touch[1]==(frame>0u?1u:0u),
+                    "CPU Gu contact extent was not journaled to the shared GPU EdgeIndex");
+            }
+            for(std::size_t i=0;i<cpu.solved_normal_impulses().size();++i) {
+                const auto expected=cpu.solved_normal_impulses()[i];
+                const auto actual=gpu.solved_normal_impulses()[i];
+                if(std::fabs(expected-actual)>=0.08) {
+                    const auto admission=producer->dy_launch_stats();
+                    throw std::runtime_error(
+                        "Mixed CPU Gu/GPU PCM normal impulse lost source ordinal"
+                        " plane_first="+std::to_string(plane_first)+
+                        " frame="+std::to_string(frame)+
+                        " index="+std::to_string(i)+
+                        " cpu="+std::to_string(expected)+
+                        " gpu="+std::to_string(actual)+
+                        " task_count="+std::to_string(admission.device_admitted_tasks)+
+                        " body_count="+std::to_string(admission.device_admitted_bodies)+
+                        " response_count="+std::to_string(admission.device_admitted_descriptors)+
+                        " source_count="+std::to_string(admission.device_colored_descriptors)+
+                        " resident_contacts="+physx_gpu::SourceScDeviceIslandFixture::
+                            contact_records(*producer)+
+                        native::GpuPcmFrictionAnchorFixture::
+                            describe_dy_force_ownership(gpu)+
+                        [&] {
+                            std::string values=" expected=";
+                            for(const auto force:cpu.solved_normal_impulses())
+                                values+=" "+std::to_string(force);
+                            values+=" actual=";
+                            for(const auto force:gpu.solved_normal_impulses())
+                                values+=" "+std::to_string(force);
+                            return values;
+                        }()+
+                        [&]{
+                            std::string state;
+                            for(const auto& manager:gpu.contacts()) {
+                                const auto touch=physx_gpu::SourceScDeviceIslandFixture::
+                                    touch(*producer,manager.edge_handle);
+                                state+=" [edge="+std::to_string(manager.edge_handle)+
+                                    " pcm="+std::to_string(
+                                        manager.pcm_result_index!=0xffffffffu)+
+                                    " rows="+std::to_string(manager.friction_patch_count)+
+                                    " touch="+std::to_string(touch[0])+
+                                    "/"+std::to_string(touch[1])+"]";
+                            }
+                            return state;
+                        }());
+                }
+            }
             for(std::size_t i=0;i<cpu.solved_friction_patches().size();++i) {
                 const auto& a=cpu.solved_friction_patches()[i];
                 const auto& b=gpu.solved_friction_patches()[i];
@@ -1706,6 +7691,64 @@ void verify_mixed_gu_pcm_gpu_dy_solver(
                         std::fabs(a.velocity.y-b.velocity.y)<0.02f,
                     "Mixed source Gu/PCM GPU Dy motion diverged from CPU");
             }
+        }
+        // Lost and regained CPU Gu contacts must reach the resident
+        // EdgeIndex journal before Sc consumes unrelated GPU witnesses.
+        // Both source orders use the same producer and rollback contract.
+        for(const auto [height,touching]:
+            std::array<std::pair<float,bool>,2>{{{5.f,false},{0.43f,true}}}) {
+            cpu.set_position(moving_cpu[0],{0.f,height,0.f});
+            gpu.set_position(moving_gpu[0],{0.f,height,0.f});
+            cpu.step(dt);
+            gpu.step(dt);
+            require(producer->pcm_early_gu_touch_bytes()>=
+                        sizeof(native::GpuGuTouchRecord) &&
+                    cpu.contact_edge_connected({floor_cpu,moving_cpu[0]})==
+                        touching &&
+                    gpu.contact_edge_connected({floor_gpu,moving_gpu[0]})==
+                        touching,
+                "Mixed CPU Gu loss/recontact waited for GPU PCM publication");
+        }
+        if(!plane_first) {
+            // Reject after mixed PCM and Gu have prepared their shared
+            // contact arena, then retry from the committed Sc epoch.
+            gpu.set_gpu_dy_enabled(false);
+            const auto before=gpu.body_state(empty_gpu);
+            const auto previous_frame=gpu.frame_index();
+            const auto previous_contacts=gpu.contacts().size();
+            const auto previous_dispatches=producer->dy_distance_dispatch_count();
+            const float extreme=std::numeric_limits<float>::max()*0.75f;
+            gpu.set_angular_velocity(empty_gpu,{extreme,0.f,0.f});
+            gpu.add_spatial_velocity_mod(
+                empty_gpu,{extreme,0.f,0.f},ForceMode::VelocityChange,true);
+            bool rejected=false;
+            try {gpu.step(dt);}
+            catch(const std::overflow_error&) {rejected=true;}
+            require(rejected && gpu.frame_index()==previous_frame &&
+                    gpu.contacts().size()==previous_contacts &&
+                    producer->dy_distance_dispatch_count()==previous_dispatches &&
+                    gpu.body_state(empty_gpu).position.x==before.position.x,
+                "Mixed PCM/Gu rejected frame published incomplete contact state");
+            native::GpuPcmFrictionAnchorFixture::verify_active_reverse_indices(gpu);
+            gpu.clear_spatial_velocity_mod(
+                empty_gpu,ForceMode::VelocityChange,true);
+            gpu.set_angular_velocity(empty_gpu,before.angular_velocity);
+            gpu.set_gpu_dy_enabled(true);
+            cpu.step(dt);
+            gpu.step(dt);
+            require(producer->dy_distance_dispatch_count()==
+                        previous_dispatches+1u &&
+                    cpu.contacts().size()==gpu.contacts().size() &&
+                    cpu.pairs().size()==gpu.pairs().size(),
+                "Mixed PCM/Gu rollback lost a subsequent numerical epoch");
+            for(std::size_t i=0u;i<moving_cpu.size();++i)
+                test::compound_compare_state(
+                    gpu.body_state(moving_gpu[i]),
+                    cpu.body_state(moving_cpu[i]),0.04f,
+                    "Mixed PCM/Gu retry diverged after rejected publication");
+            test::compound_compare_state(
+                gpu.body_state(empty_gpu),cpu.body_state(empty_cpu),0.04f,
+                "Mixed PCM/Gu rollback retained rejected free-body motion");
         }
         // The plane has no finite GPU handle. Its simulation-flag and
         // actor retirement must still retire the same Sc contact edge
@@ -1839,9 +7882,204 @@ void verify_mixed_gu_pcm_gpu_dy_solver(
 
 // The explicitly installed device Dy 1D stage must replace the
 // production PGS solve, not merely compute a disconnected fixture result.
-void verify_gpu_distance_solver(
+void verify_joint_only_device_admission(
     fyzz::compute::Backend backend,const char* sap,
     const char* pcm,const char* dy_shader) {
+    using namespace fyzz;
+    std::ifstream stream(dy_shader,std::ios::binary);
+    require(bool(stream),"Compiled device joint shader is unavailable");
+    compute::ShaderBinary shader{};
+    shader.format=backend==compute::Backend::Vulkan
+        ?compute::ShaderFormat::Spirv:compute::ShaderFormat::Dxil;
+    shader.bytes.assign(std::istreambuf_iterator<char>{stream},
+                        std::istreambuf_iterator<char>{});
+    native::Scene cpu,gpu;
+    auto owner=std::make_unique<
+        physx_gpu::SourceScOwnedGpuBroadphaseNative>(
+            backend,load_native_gpu_sap_shaders(backend,sap),
+            128u,128u,std::nullopt,
+            load_native_gpu_pcm_shaders(backend,pcm),std::move(shader));
+    auto* producer=owner.get();
+    gpu.set_gpu_broadphase(std::move(owner));
+    gpu.set_gpu_dy_device_admission_enabled(true);
+    std::array<BodyId,6> a{},b{};
+    std::array<ConstraintId,3> joints_cpu{},joints_gpu{};
+    for(std::size_t i=0u;i<3u;++i) {
+        const Vec3 p{float(i)*10.f,3.f,0.f};
+        const Vec3 q{p.x+2.f,3.f,0.f};
+        a[i*2u]=cpu.add_dynamic_box({0.25f,0.25f,0.25f},p,1.f);
+        b[i*2u]=gpu.add_dynamic_box({0.25f,0.25f,0.25f},p,1.f);
+        a[i*2u+1u]=cpu.add_dynamic_box({0.25f,0.25f,0.25f},q,1.f);
+        b[i*2u+1u]=gpu.add_dynamic_box({0.25f,0.25f,0.25f},q,1.f);
+        RigidBodyDynamics dynamics{};
+        dynamics.gravity_enabled=false;
+        for(const auto id:{a[i*2u],a[i*2u+1u]})
+            cpu.set_dynamics(id,dynamics);
+        for(const auto id:{b[i*2u],b[i*2u+1u]})
+            gpu.set_dynamics(id,dynamics);
+        if(i==1u) {
+            // A multirow joint changes the following source row offset.
+            const Transform anchor_a{{2.f,0.f,0.f},{}};
+            const Transform anchor_b{};
+            joints_cpu[i]=cpu.create_spherical_constraint(
+                a[i*2u],a[i*2u+1u],anchor_a,anchor_b);
+            joints_gpu[i]=gpu.create_spherical_constraint(
+                b[i*2u],b[i*2u+1u],anchor_a,anchor_b);
+        }else {
+            joints_cpu[i]=cpu.create_center_distance_constraint(
+                a[i*2u],a[i*2u+1u],1.5f);
+            joints_gpu[i]=gpu.create_center_distance_constraint(
+                b[i*2u],b[i*2u+1u],1.5f);
+        }
+    }
+    constexpr float dt=1.f/120.f;
+    for(std::uint32_t frame=0u;frame<5u;++frame) {
+        if(frame==2u || frame==4u) {
+            const auto index=frame==2u?1u:2u;
+            cpu.retire_constraint(joints_cpu[index]);
+            gpu.retire_constraint(joints_gpu[index]);
+        }
+        cpu.step(dt);
+        gpu.step(dt);
+        if(frame==0u)
+            native::GpuPcmFrictionAnchorFixture::
+                verify_pre_witness_device_admission(gpu);
+        const auto responding=frame<2u?3u:frame<4u?2u:1u;
+        const bool device_graph=responding>1u;
+        const auto stats=producer->dy_launch_stats();
+        require(!producer->sc_island_deferred_joint_remap() &&
+                !producer->sc_island_deferred_body_remap() &&
+                native::GpuPcmFrictionAnchorFixture::
+                    has_source_body_order(gpu)==device_graph &&
+                producer->sc_island_remap_dispatch_count()==0u,
+            "Sc joint numerical admission retained a remap");
+        require(stats.host_descriptor_inputs==
+                    (device_graph?0u:responding),
+            "Joint-only Sc descriptor ownership differs from task admission");
+        const auto contact_bits=producer->gpu_dy_admitted_contact_sources();
+        require(stats.prewitness_joint_source_upload_bytes==
+                    (frame==0u?3u*sizeof(native::GpuDyJointInput):0u) &&
+                stats.device_joint_metadata_upload_bytes==
+                    stats.prewitness_joint_source_upload_bytes,
+            "Joint-only numerical sources were restaged after Sc admission");
+        require(cpu.contacts().empty() && gpu.contacts().empty() &&
+                producer->pcm_header_join_bytes()==0u &&
+                producer->dy_pcm_device_contact_rows()==0u &&
+                stats.device_island_indirect_dispatches==(device_graph?1u:0u) &&
+                stats.device_admitted_tasks==(device_graph?responding:0u) &&
+                stats.device_admitted_descriptors==(device_graph?responding:0u) &&
+                stats.device_contact_admission_readback_bytes==0u &&
+                contact_bits.empty() &&
+                std::all_of(contact_bits.begin(),contact_bits.end(),
+                    [](std::uint32_t bits) {return bits==0u;}),
+            "Joint-only Sc task ownership disagreed with numerical work");
+        for(std::size_t i=0u;i<a.size();++i)
+            test::compound_compare_state(
+                gpu.body_state(b[i]),cpu.body_state(a[i]),0.003f,
+                "Joint-only device admission diverged from CPU PGS");
+    }
+    cpu.retire_constraint(joints_cpu[0]);
+    gpu.retire_constraint(joints_gpu[0]);
+
+    const auto kcpu=cpu.add_dynamic_box(
+        {0.25f,0.25f,0.25f},{80.f,3.f,0.f},1.f);
+    const auto kgpu=gpu.add_dynamic_box(
+        {0.25f,0.25f,0.25f},{80.f,3.f,0.f},1.f);
+    cpu.set_kinematic(kcpu,true);
+    gpu.set_kinematic(kgpu,true);
+    std::array<BodyId,2> followers_cpu{},followers_gpu{};
+    for(std::size_t i=0u;i<2u;++i) {
+        const Vec3 position{77.f+6.f*float(i),3.f,0.f};
+        followers_cpu[i]=cpu.add_dynamic_box(
+            {0.25f,0.25f,0.25f},position,1.f);
+        followers_gpu[i]=gpu.add_dynamic_box(
+            {0.25f,0.25f,0.25f},position,1.f);
+        RigidBodyDynamics dynamics{};
+        dynamics.gravity_enabled=false;
+        cpu.set_dynamics(followers_cpu[i],dynamics);
+        gpu.set_dynamics(followers_gpu[i],dynamics);
+        cpu.create_anchored_distance_constraint(
+            kcpu,followers_cpu[i],{0.f,0.2f,0.f},{0.f,0.2f,0.f},3.f);
+        gpu.create_anchored_distance_constraint(
+            kgpu,followers_gpu[i],{0.f,0.2f,0.f},{0.f,0.2f,0.f},3.f);
+    }
+    for(unsigned frame=0u;frame<2u;++frame) {
+        const Vec3 target{80.f+0.05f*float(frame+1u),3.f,0.f};
+        cpu.set_kinematic_target(kcpu,target,Quat{});
+        gpu.set_kinematic_target(kgpu,target,Quat{});
+        cpu.step(dt);
+        gpu.step(dt);
+        native::GpuPcmFrictionAnchorFixture::
+            verify_pre_witness_device_admission(gpu);
+        const auto stats=producer->dy_launch_stats();
+        require(stats.device_admitted_tasks==2u &&
+                stats.device_admitted_descriptors==2u &&
+                stats.device_island_indirect_dispatches==1u &&
+                !producer->sc_island_deferred_body_remap() &&
+                !producer->sc_island_deferred_joint_remap() &&
+                gpu.accurate_island_id(followers_gpu[0])!=
+                    gpu.accurate_island_id(followers_gpu[1]),
+            "Shared kinematic endpoint merged independent responding tasks");
+        for(std::size_t i=0u;i<2u;++i)
+            test::compound_compare_state(
+                gpu.body_state(followers_gpu[i]),
+                cpu.body_state(followers_cpu[i]),0.003f,
+                "Shared kinematic joint motion diverged from CPU PGS");
+    }
+
+    // Independent PCM and free motion share the early joint submission.
+    cpu.add_static_box({0.5f,0.5f,0.5f},{100.f,0.f,0.f});
+    gpu.add_static_box({0.5f,0.5f,0.5f},{100.f,0.f,0.f});
+    const auto contact_cpu=cpu.add_dynamic_box(
+        {0.5f,0.5f,0.5f},{100.f,0.83f,0.f},1.f);
+    const auto contact_gpu=gpu.add_dynamic_box(
+        {0.5f,0.5f,0.5f},{100.f,0.83f,0.f},1.f);
+    const auto free_cpu=cpu.add_dynamic_box(
+        {0.25f,0.25f,0.25f},{110.f,3.f,0.f},1.f);
+    const auto free_gpu=gpu.add_dynamic_box(
+        {0.25f,0.25f,0.25f},{110.f,3.f,0.f},1.f);
+    for(unsigned frame=0u;frame<2u;++frame) {
+        const Vec3 target{80.15f+0.05f*float(frame),3.f,0.f};
+        const float half_angle=0.005f*float(frame+1u);
+        const Quat orientation{0.f,0.f,std::sin(half_angle),std::cos(half_angle)};
+        cpu.set_kinematic_target(kcpu,target,orientation);
+        gpu.set_kinematic_target(kgpu,target,orientation);
+        cpu.step(dt);
+        gpu.step(dt);
+        native::GpuPcmFrictionAnchorFixture::
+            verify_pre_witness_device_admission(gpu);
+        const auto stats=producer->dy_launch_stats();
+        require(native::GpuPcmFrictionAnchorFixture::has_prewitness_solve(gpu) &&
+                stats.device_admitted_tasks==3u &&
+                stats.device_admitted_bodies==3u &&
+                stats.device_admitted_descriptors==3u &&
+                stats.host_descriptor_inputs==0u &&
+                stats.device_task_readback_bytes==0u &&
+                gpu.contacts().size()==1u && cpu.contacts().size()==1u &&
+                gpu.accurate_island_id(followers_gpu[0])!=
+                    gpu.accurate_island_id(followers_gpu[1]),
+            "Mixed PCM and kinematic joints lost early numerical admission");
+        for(std::size_t i=0u;i<2u;++i)
+            test::compound_compare_state(
+                gpu.body_state(followers_gpu[i]),
+                cpu.body_state(followers_cpu[i]),0.003f,
+                "Early moving kinematic joint diverged from CPU PGS");
+        test::compound_compare_state(
+            gpu.body_state(kgpu),cpu.body_state(kcpu),0.003f,
+            "Early Dy changed the authored kinematic target");
+        test::compound_compare_state(
+            gpu.body_state(contact_gpu),cpu.body_state(contact_cpu),0.04f,
+            "Early kinematic joint admission changed PCM contact motion");
+        test::compound_compare_state(
+            gpu.body_state(free_gpu),cpu.body_state(free_cpu),0.003f,
+            "Kinematic endpoint displaced an independent integration ordinal");
+    }
+}
+
+void verify_gpu_distance_solver(
+    fyzz::compute::Backend backend,const char* sap,
+    const char* pcm,const char* dy_shader,
+    bool device_admission=false) {
     using namespace fyzz;
     std::ifstream input(dy_shader,std::ios::binary);
     require(bool(input),"Compiled source Dy shader unavailable");
@@ -1865,6 +8103,7 @@ void verify_gpu_distance_solver(
     require(producer->has_gpu_dy_distance(),
             "Explicit source Dy distance stage was not installed");
     gpu.set_gpu_broadphase(std::move(owner));
+    gpu.set_gpu_dy_device_admission_enabled(device_admission);
     constexpr float dt=1.f/120.f;
     std::array<BodyId,4> ids_cpu{},ids_gpu{};
     for(std::size_t i=0;i<ids_cpu.size();++i) {
@@ -1959,6 +8198,10 @@ void verify_gpu_distance_solver(
         }
         cpu.step(dt);
         gpu.step(dt);
+        native::GpuPcmFrictionAnchorFixture::
+            verify_resident_joint_rows(gpu);
+        native::GpuPcmFrictionAnchorFixture::
+            verify_resident_mass_inputs(gpu);
         require(gpu.accurate_island_id(ids_gpu[0])==
                     gpu.accurate_island_id(ids_gpu[1]) &&
                 gpu.accurate_island_id(ids_gpu[2])==
@@ -1988,21 +8231,34 @@ void verify_gpu_distance_solver(
                 producer->dy_gpu_integrated_body_count()>0u &&
                 producer->dy_launch_stats().device_joint_input_rows==3u &&
                 producer->dy_launch_stats().device_joint_geometry_count==3u &&
+                producer->dy_launch_stats().joint_row_input_bytes==0u &&
+                producer->dy_launch_stats().compact_joint_source_bytes==108u &&
                 (frame==0?producer->dy_launch_stats().device_joint_metadata_upload_bytes==
                     3u*sizeof(native::GpuDyJointInput)
                     :producer->dy_launch_stats().device_joint_metadata_upload_bytes==0u) &&
                 producer->dy_launch_stats().device_joint_metadata_reuses==
                     (frame==0?0u:3u),
             "Source GPU 1D joint rows did not reach device preparation");
-        const auto [uploaded,downloaded]=
-            producer->dy_distance_transfer_bytes();
+        const auto downloaded=producer->dy_distance_transfer_bytes().second;
         // Five dynamic solver bodies and three disjoint task reports.
         // Joint impulses stay in their device PGS rows, not the
         // completed Sc result stream.
-        constexpr std::size_t expected_output=
+        constexpr std::size_t numerical_output=
             5u*(52u+sizeof(native::GpuDyIntegratedPose))+
             3u*sizeof(std::uint32_t);
-        require(downloaded==expected_output && downloaded<uploaded/2u,
+        const auto& admission=producer->dy_launch_stats();
+        require(admission.host_lane_packed_tasks==3u &&
+                admission.local_joint_rows==3u &&
+                admission.joint_numerical_bytes==0u,
+            "Exclusive distance joints reserved unused numerical rows");
+        require(admission.device_island_indirect_dispatches==0u &&
+                admission.device_admitted_tasks==0u,
+            "Joint-only Scene duplicated CPU-authorized task admission");
+        const std::size_t scheduling_output=admission.device_island_indirect_dispatches
+            ?16u+admission.device_colored_tasks*sizeof(native::GpuDyDistanceTask)+
+                 admission.device_world_motion_bodies*sizeof(std::uint32_t)
+            :0u;
+        require(downloaded==numerical_output+scheduling_output,
             "Source Dy GPU fetched transient joint row impulses");
         const auto fixed_expected=cpu.body_state(anchored_cpu);
         const auto fixed_actual=gpu.body_state(anchored_gpu);
@@ -2062,6 +8318,10 @@ void verify_gpu_distance_solver(
         gpu.set_kinematic_target(kinematic_gpu,target,orientation);
         cpu.step(dt);
         gpu.step(dt);
+        native::GpuPcmFrictionAnchorFixture::
+            verify_resident_joint_rows(gpu);
+        native::GpuPcmFrictionAnchorFixture::
+            verify_resident_mass_inputs(gpu);
         require(producer->dy_launch_stats().device_joint_input_rows>=4u &&
                 producer->dy_launch_stats().device_joint_geometry_count>=4u &&
                 producer->dy_launch_stats().device_joint_metadata_upload_bytes<=
@@ -2097,6 +8357,10 @@ void verify_gpu_distance_solver(
     for(unsigned frame=0u;frame<3u;++frame) {
         cpu.step(dt);
         gpu.step(dt);
+        native::GpuPcmFrictionAnchorFixture::
+            verify_resident_joint_rows(gpu);
+        native::GpuPcmFrictionAnchorFixture::
+            verify_resident_mass_inputs(gpu);
         require(gpu.accurate_island_id(ids_gpu[2])==
                     gpu.accurate_island_id(ids_gpu[3]),
             "Recycled joint did not reconnect the accurate island");
@@ -2121,6 +8385,27 @@ void verify_gpu_distance_solver(
                 "Recycled GPU joint diverged from source constraint response");
         }
     }
+    // An active contact extends EdgeIndex friction history without
+    // invalidating resident definitions of unrelated 1D joints.
+    cpu.add_static_floor(0.f);
+    gpu.add_static_floor(0.f);
+    const auto touching_cpu=cpu.add_dynamic_box(
+        {0.3f,0.3f,0.3f},{120.f,0.29f,0.f},1.f);
+    const auto touching_gpu=gpu.add_dynamic_box(
+        {0.3f,0.3f,0.3f},{120.f,0.29f,0.f},1.f);
+    RigidBodyDynamics contact_dynamics{};
+    contact_dynamics.gravity_enabled=false;
+    cpu.set_dynamics(touching_cpu,contact_dynamics);
+    gpu.set_dynamics(touching_gpu,contact_dynamics);
+    cpu.step(dt);
+    gpu.step(dt);
+    const auto growth=producer->dy_launch_stats();
+    require(!gpu.contacts().empty() &&
+            cpu.contacts().size()==gpu.contacts().size() &&
+            growth.device_joint_geometry_count==3u &&
+            growth.device_joint_metadata_upload_bytes==0u &&
+            growth.device_joint_metadata_reuses==3u,
+        "PCM friction-history growth reuploaded unchanged joint sources");
 }
 } // namespace
 
@@ -2161,12 +8446,14 @@ void verify_sphere_gpu_solver(
             0.25f,{10.7f,10.f,0.f},1.f);
         RigidBodyDynamics dynamic{};
         dynamic.gravity_enabled=false;
+        dynamic.position_iterations=6u;
+        dynamic.velocity_iterations=3u;
         for(auto id:moving)scene.set_dynamics(id,dynamic);
-        // Three closing impacts exercise contact impulses rather than
-        // merely preserving speculative overlaps at zero velocity.
-        scene.set_velocity(moving[0],{0.f,-2.f,0.f});
-        scene.set_velocity(moving[1],{-2.f,0.f,0.f});
-        scene.set_velocity(moving[2],{-2.f,0.f,0.f});
+        // Closing and tangential velocity exercise the normal/friction
+        // dependency through both numerical phases.
+        scene.set_velocity(moving[0],{0.25f,-2.f,0.15f});
+        scene.set_velocity(moving[1],{-2.f,0.15f,0.25f});
+        scene.set_velocity(moving[2],{-2.f,0.25f,0.15f});
         return moving;
     };
     const auto cpu_ids=add_scene(cpu);
@@ -2198,8 +8485,9 @@ void verify_sphere_gpu_solver(
                 "New sphere actors reused unauthorised device mass poses");
         else if(frame==3u)
             require(resident<integrated &&
-                    producer->dy_launch_stats().actor_local_upload_bytes>=
-                        sizeof(physx_gpu::SourceDyActorLocalNative),
+                    producer->dy_launch_stats().actor_local_upload_bytes+
+                    producer->dy_launch_stats().prewitness_actor_local_upload_bytes>=
+                        sizeof(physx_gpu::SourceDyHostPoseNative),
                 "Authored sphere quaternion did not invalidate its device pose");
         else
             require(resident>=2u && uploaded==0u,
@@ -2219,9 +8507,10 @@ void verify_sphere_gpu_solver(
             // touch, but their GPU PCM records still execute this frame.
             constexpr std::size_t pcm_managers=5u;
             if(gpu.contacts().size()!=3u || cpu_bytes!=0u ||
-               pcm_rows!=3u || pcm_bytes!=0u ||
-               host_contact_bytes!=pcm_managers*sizeof(
-                   physx_gpu::SourcePcmGpuContactStreamNative)) {
+               pcm_rows!=3u || pcm_bytes==0u ||
+               producer->pcm_header_join_bytes()!=
+                   pcm_managers*2u*sizeof(std::uint32_t) ||
+               host_contact_bytes!=0u) {
                 throw std::runtime_error(
                     "Sphere GPU contact path: managers="+
                     std::to_string(gpu.contacts().size())+
@@ -2232,6 +8521,15 @@ void verify_sphere_gpu_solver(
             }
             require(cpu.contacts().size()==3u,
                 "Source sphere impact fixtures lost a contact manager");
+            const auto& schedule=producer->dy_launch_stats();
+            require(schedule.single_anchor_pcm_patches>=pcm_rows &&
+                    schedule.single_anchor_pcm_patches<=pcm_managers &&
+                    producer->dy_friction_prepared_rows()==
+                        schedule.single_anchor_pcm_patches*2u &&
+                    schedule.normal_numerical_bytes+schedule.local_normal_rows*44u==
+                        schedule.single_anchor_pcm_patches*44u &&
+                    schedule.local_normal_rows>0u,
+                "Fresh single-point PCM reserved redundant numerical rows");
             for(std::size_t j=0;j<cpu.contacts().size();++j) {
                 const auto& source=cpu.contacts()[j];
                 const auto& device=gpu.contacts()[j];
@@ -2243,6 +8541,31 @@ void verify_sphere_gpu_solver(
                         std::fabs(expected-actual)<0.05,
                     "GPU sphere impact did not produce source-equivalent normal impulse");
             }
+            const auto cpu_friction=cpu.solved_friction_patches();
+            const auto gpu_friction=gpu.solved_friction_patches();
+            require(cpu_friction.size()==gpu_friction.size(),
+                "Single-point contact changed friction patch publication");
+            bool saw_tangent_impulse=false;
+            for(std::size_t j=0;j<cpu_friction.size();++j) {
+                const auto& expected=cpu_friction[j];
+                const auto& actual=gpu_friction[j];
+                require(expected.pair==actual.pair &&
+                        expected.anchor_count==actual.anchor_count &&
+                        expected.broken==actual.broken,
+                    "Single-point contact changed friction anchor state");
+                for(std::size_t k=0;k<expected.anchor_count;++k) {
+                    const auto& x=expected.anchor_impulses[k];
+                    const auto& y=actual.anchor_impulses[k];
+                    saw_tangent_impulse|=std::fabs(x.x)+std::fabs(x.y)+
+                                         std::fabs(x.z)>0.001;
+                    require(std::fabs(x.x-y.x)<0.05 &&
+                            std::fabs(x.y-y.y)<0.05 &&
+                            std::fabs(x.z-y.z)<0.05,
+                        "Single-point contact changed final tangent impulse");
+                }
+            }
+            require(saw_tangent_impulse,
+                "Sphere impacts did not exercise normal/friction coupling");
             touched_all=true;
         }
         require(producer->dy_distance_dispatch_count()==frame+1u &&
@@ -2293,12 +8616,17 @@ void verify_sphere_gpu_solver(
     cpu.add_dynamic_sphere(0.25f,{20.f,10.f,0.f},1.f);
     gpu.add_dynamic_sphere(0.25f,{20.f,10.f,0.f},1.f);
     const auto solved_before=producer->dy_distance_dispatch_count();
+    const auto prior_numerical_preps=
+        native::GpuPcmFrictionAnchorFixture::numerical_prep_sizes(gpu);
     cpu.advance_collision(true);
     gpu.advance_collision(true);
-    require(producer->pcm_contact_readback_bytes()==0u &&
-            producer->pcm_host_contact_upload_bytes()>0u &&
+    require(producer->pcm_contact_readback_bytes()>0u &&
+            producer->pcm_host_contact_upload_bytes()==0u &&
             producer->dy_distance_dispatch_count()==solved_before,
-        "Collision-only primitive PCM unexpectedly fetched GPU contacts");
+        "Collision-only GPU PCM unexpectedly dispatched numerical work");
+    native::GpuPcmFrictionAnchorFixture::
+        verify_collision_only_omits_numerical_preps(
+            gpu,prior_numerical_preps);
     const auto embedded=[](const native::Scene& scene) -> native::ContactPoint {
         for(const auto& manager:scene.contacts())
             for(const auto& point:manager.points)
@@ -2311,6 +8639,255 @@ void verify_sphere_gpu_solver(
             std::fabs(expected.normal.z-actual.normal.z)<0.0004f &&
             std::fabs(actual.position.z-0.5f)<0.0004f,
         "GPU embedded sphere did not preserve source PCM exit-face witness");
+}
+
+void verify_exclusive_resident_normals(
+    fyzz::compute::Backend backend,const char* sap,
+    const char* pcm,const char* dy_shader) {
+    using namespace fyzz;
+    for(const std::size_t count:{1u,2u}) {
+        std::ifstream input(dy_shader,std::ios::binary);
+        require(bool(input),"Resident normal shader unavailable");
+        compute::ShaderBinary shader{};
+        shader.format=backend==compute::Backend::Vulkan
+            ?compute::ShaderFormat::Spirv:compute::ShaderFormat::Dxil;
+        shader.bytes.assign(std::istreambuf_iterator<char>{input},
+                            std::istreambuf_iterator<char>{});
+        native::Scene cpu,gpu;
+        auto owner=std::make_unique<physx_gpu::SourceScOwnedGpuBroadphaseNative>(
+            backend,load_native_gpu_sap_shaders(backend,sap),128u,128u,
+            std::nullopt,load_native_gpu_pcm_shaders(backend,pcm),std::move(shader));
+        auto* producer=owner.get();
+        gpu.set_gpu_broadphase(std::move(owner));
+        gpu.set_gpu_dy_device_admission_enabled(true);
+        std::array<BodyId,2> reference{},actual{};
+        const auto add=[](native::Scene& scene,std::size_t i) {
+            const float x=8.f*static_cast<float>(i);
+            scene.add_static_sphere(0.5f,{x,4.f,0.f});
+            const auto id=scene.add_dynamic_sphere(0.5f,{x,4.9f,0.f},1.f);
+            RigidBodyDynamics dynamics{};
+            dynamics.gravity_enabled=false;
+            scene.set_dynamics(id,dynamics);
+            scene.set_velocity(id,{0.2f,-1.f,0.1f});
+            return id;
+        };
+        for(std::size_t i=0u;i<count;++i) {
+            reference[i]=add(cpu,i);
+            actual[i]=add(gpu,i);
+        }
+        cpu.step(1.f/120.f);
+        gpu.step(1.f/120.f);
+        const auto schedule=producer->dy_launch_stats();
+        require(schedule.device_island_indirect_dispatches==1u &&
+                schedule.device_admitted_tasks==count &&
+                schedule.device_admitted_descriptors==count &&
+                schedule.local_normal_rows==count &&
+                schedule.normal_numerical_bytes==0u &&
+                schedule.local_friction_rows==count*2u &&
+                schedule.friction_numerical_bytes==0u &&
+                cpu.contacts().size()==count && gpu.contacts().size()==count,
+            "Exclusive resident normal solve allocated global numerical rows");
+        const auto cpu_friction=cpu.solved_friction_patches();
+        const auto gpu_friction=gpu.solved_friction_patches();
+        require(cpu_friction.size()==count && gpu_friction.size()==count,
+                "Exclusive resident solve lost source friction patches");
+        for(std::size_t i=0u;i<count;++i) {
+            const auto& a=cpu_friction[i];
+            const auto& b=gpu_friction[i];
+            require(a.pair==b.pair && a.anchor_count==1u && b.anchor_count==1u &&
+                    a.broken==b.broken,
+                    "Exclusive resident solve changed anchor ownership");
+            const auto x=a.anchor_impulses[0],y=b.anchor_impulses[0];
+            require(std::fabs(x.x)+std::fabs(x.y)+std::fabs(x.z)>0.001f &&
+                    std::fabs(x.x-y.x)<0.05f && std::fabs(x.y-y.y)<0.05f &&
+                    std::fabs(x.z-y.z)<0.05f,
+                    "Exclusive resident solve changed tangent impulse publication");
+            test::compound_compare_state(gpu.body_state(actual[i]),
+                cpu.body_state(reference[i]),0.03f,
+                "Exclusive resident normal changed rigid contact motion");
+            const auto expected=cpu.solved_normal_impulses()[cpu.contacts()[i].contact_offset];
+            const auto force=gpu.solved_normal_impulses()[gpu.contacts()[i].contact_offset];
+            require(expected>0.001f && std::fabs(expected-force)<0.05f,
+                "Exclusive resident normal lost source force publication");
+        }
+    }
+}
+
+void verify_scene_normal_only_multi_patch(
+    fyzz::compute::Backend backend,const char* sap,
+    const char* pcm,const char* dy_shader) {
+    using namespace fyzz;
+    std::size_t friction_step=0u;
+    std::ifstream input(dy_shader,std::ios::binary);
+    require(bool(input),"Multi-patch GPU Dy shader unavailable");
+    compute::ShaderBinary shader{};
+    shader.format=backend==compute::Backend::Vulkan
+        ?compute::ShaderFormat::Spirv:compute::ShaderFormat::Dxil;
+    shader.bytes.assign(std::istreambuf_iterator<char>{input},
+                        std::istreambuf_iterator<char>{});
+    native::Scene cpu,gpu;
+    auto owner=std::make_unique<
+        physx_gpu::SourceScOwnedGpuBroadphaseNative>(
+            backend,load_native_gpu_sap_shaders(backend,sap),
+            128u,128u,std::nullopt,
+            load_native_gpu_pcm_shaders(backend,pcm),std::move(shader));
+    auto* producer=owner.get();
+    gpu.set_gpu_broadphase(std::move(owner));
+    const auto make=[](native::Scene& scene) {
+        const auto floor=scene.add_static_box(
+            {3.f,0.5f,3.f},{0.f,-0.5f,0.f});
+        const auto body=scene.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{0.f,0.48f,0.f},1.f);
+        return std::array<BodyId,2>{floor,body};
+    };
+    const auto a=make(cpu),b=make(gpu);
+    constexpr float seconds=1.f/120.f;
+    cpu.step(seconds);
+    report_pcm_friction_progress("multipatch-begin",friction_step);
+    gpu.step(seconds);
+    report_pcm_friction_progress("multipatch-end",friction_step++);
+    require(cpu.contacts().size()==1u && gpu.contacts().size()==1u &&
+            producer->dy_pcm_device_contact_rows()>0u,
+        "Multi-patch Sc fixture did not establish physical GPU PCM contact");
+    native::GpuPcmFrictionAnchorFixture::seed_multiple_friction_patches(
+        gpu,{b[0],b[1]});
+    native::GpuPcmFrictionAnchorFixture::reverse_first_retained_normal(
+        gpu,{b[0],b[1]});
+    cpu.step(seconds);
+    report_pcm_friction_progress("multipatch-begin",friction_step);
+    gpu.step(seconds);
+    report_pcm_friction_progress("multipatch-end",friction_step++);
+    constexpr auto metadata=2u*sizeof(std::uint32_t);
+    constexpr auto full=sizeof(native::GpuPcmBoxResult);
+    require(gpu.contacts().size()==1u &&
+            producer->pcm_header_join_bytes()==metadata &&
+            producer->pcm_deferred_point_bytes()==full-metadata &&
+            producer->pcm_contact_readback_bytes()==full &&
+            producer->dy_pcm_device_contact_rows()>0u &&
+            producer->dy_launch_stats().retained_friction_source_bytes==
+                2u*sizeof(native::GpuDyRetainedFrictionCandidate) &&
+            (producer->dy_launch_stats().prewitness_retained_friction_upload_bytes+
+             producer->dy_launch_stats().prewitness_retained_friction_direct_bytes)==
+                2u*sizeof(native::GpuDyRetainedFrictionCandidate) &&
+            (producer->dy_launch_stats().prewitness_retained_friction_upload_bytes==0u ||
+             producer->dy_launch_stats().prewitness_retained_friction_direct_bytes==0u) &&
+            producer->dy_launch_stats().late_retained_friction_upload_bytes==0u &&
+            producer->dy_launch_stats().late_retained_friction_direct_bytes==0u &&
+            native::GpuPcmFrictionAnchorFixture::
+                selected_second_retained_patch(gpu) &&
+            native::GpuPcmFrictionAnchorFixture::
+                had_early_friction_history(gpu) &&
+            native::GpuPcmFrictionAnchorFixture::
+                had_compatible_friction_history(gpu),
+        "Device PCM did not select the matching retained friction source");
+    require(cpu.contacts().size()==gpu.contacts().size() &&
+            cpu.contacts()[0].count==gpu.contacts()[0].count &&
+            std::isfinite(gpu.contacts()[0].points[0].separation) &&
+            std::fabs(cpu.contacts()[0].points[0].normal.y-
+                      gpu.contacts()[0].points[0].normal.y)<0.02f,
+        "Normal-only Sc friction correlation changed published Gu contacts");
+    const auto expected=cpu.body_state(a[1]);
+    const auto actual=gpu.body_state(b[1]);
+    require(std::fabs(expected.position.y-actual.position.y)<0.03f &&
+            std::fabs(expected.velocity.y-actual.velocity.y)<0.03f,
+        "Normal-only retained PCM friction changed rigid-body response");
+
+    // Broken historical anchors cannot participate in strong-friction
+    // correlation and must not force any early normal transfer.
+    native::GpuPcmFrictionAnchorFixture::seed_multiple_friction_patches(
+        gpu,{b[0],b[1]},true);
+    report_pcm_friction_progress("multipatch-begin",friction_step);
+    gpu.step(seconds);
+    report_pcm_friction_progress("multipatch-end",friction_step++);
+    require(gpu.contacts().size()==1u &&
+            producer->pcm_header_join_bytes()==metadata &&
+            producer->pcm_deferred_point_bytes()==full-metadata &&
+            producer->pcm_contact_readback_bytes()==full &&
+            std::isfinite(gpu.contacts()[0].points[0].separation),
+        "Retired Sc friction history forced an early GPU normal readback");
+
+    // An unbroken anchor may still fail the source relative-normal
+    // test. Its failed history cannot require a host normal either.
+    native::GpuPcmFrictionAnchorFixture::seed_multiple_friction_patches(
+        gpu,{b[0],b[1]});
+    native::GpuPcmFrictionAnchorFixture::invalidate_multiple_friction_normals(
+        gpu,{b[0],b[1]});
+    report_pcm_friction_progress("multipatch-begin",friction_step);
+    gpu.step(seconds);
+    report_pcm_friction_progress("multipatch-end",friction_step++);
+    require(gpu.contacts().size()==1u &&
+            producer->pcm_header_join_bytes()==metadata &&
+            producer->pcm_deferred_point_bytes()==full-metadata &&
+            producer->pcm_contact_readback_bytes()==full &&
+            !native::GpuPcmFrictionAnchorFixture::
+                had_early_friction_history(gpu) &&
+            !native::GpuPcmFrictionAnchorFixture::
+                had_compatible_friction_history(gpu) &&
+            std::isfinite(gpu.contacts()[0].points[0].separation),
+        "Invalid cached friction normals forced an unnecessary early DMA");
+
+    // Valid prior anchors with incompatible material do not require
+    // the current Gu normal for Sc correlation.
+    native::GpuPcmFrictionAnchorFixture::seed_multiple_friction_patches(
+        gpu,{b[0],b[1]});
+    native::GpuPcmFrictionAnchorFixture::invalidate_multiple_friction_materials(
+        gpu,{b[0],b[1]});
+    report_pcm_friction_progress("multipatch-begin",friction_step);
+    gpu.step(seconds);
+    report_pcm_friction_progress("multipatch-end",friction_step++);
+    require(gpu.contacts().size()==1u &&
+            producer->pcm_header_join_bytes()==metadata &&
+            producer->pcm_deferred_point_bytes()==full-metadata &&
+            producer->pcm_contact_readback_bytes()==full &&
+            native::GpuPcmFrictionAnchorFixture::
+                had_early_friction_history(gpu) &&
+            !native::GpuPcmFrictionAnchorFixture::
+                had_compatible_friction_history(gpu) &&
+            std::isfinite(gpu.contacts()[0].points[0].separation),
+        "Incompatible retained PCM material forced an early normal transfer");
+}
+
+void verify_zero_touch_gpu_pcm_transfer(
+    fyzz::compute::Backend backend,const char* sap,
+    const char* pcm,const char* dy_shader) {
+    using namespace fyzz;
+    std::ifstream input(dy_shader,std::ios::binary);
+    require(bool(input),"Zero-touch source Dy shader unavailable");
+    compute::ShaderBinary shader{};
+    shader.format=backend==compute::Backend::Vulkan
+        ?compute::ShaderFormat::Spirv:compute::ShaderFormat::Dxil;
+    shader.bytes.assign(std::istreambuf_iterator<char>{input},
+                        std::istreambuf_iterator<char>{});
+    native::Scene cpu,gpu;
+    auto owner=std::make_unique<
+        physx_gpu::SourceScOwnedGpuBroadphaseNative>(
+            backend,load_native_gpu_sap_shaders(backend,sap),
+            128u,128u,std::nullopt,
+            load_native_gpu_pcm_shaders(backend,pcm),std::move(shader));
+    auto* producer=owner.get();
+    gpu.set_gpu_broadphase(std::move(owner));
+    const auto add=[](native::Scene& scene) {
+        const Vec3 center{1.5f,0.7f,0.f};
+        scene.add_static_box({1.f,0.1f,0.1f},{0.f,0.f,0.f});
+        const auto moving=scene.add_dynamic_box(
+            {1.f,0.1f,0.1f},center,1.f);
+        scene.set_pose(moving,center,
+            Quat{0.f,0.f,-0.382683432f,0.923879533f});
+        RigidBodyDynamics dynamics{};
+        dynamics.gravity_enabled=false;
+        scene.set_dynamics(moving,dynamics);
+    };
+    add(cpu);
+    add(gpu);
+    cpu.step(1.f/120.f);
+    gpu.step(1.f/120.f);
+    require(cpu.pairs().size()==1u && gpu.pairs().size()==1u &&
+            cpu.contacts().empty() && gpu.contacts().empty() &&
+            producer->pcm_header_join_bytes()==2u*sizeof(std::uint32_t) &&
+            producer->pcm_deferred_point_bytes()==0u &&
+            producer->pcm_contact_readback_bytes()==
+                2u*sizeof(std::uint32_t),
+        "Zero-touch GPU PCM fetched world witnesses without a contact");
 }
 
 void verify_host_primitive_pcm_solver(
@@ -2332,6 +8909,7 @@ void verify_host_primitive_pcm_solver(
         std::nullopt,load_native_gpu_pcm_shaders(backend,pcm),std::move(dy));
     auto* producer=owner.get();
     gpu.set_gpu_broadphase(std::move(owner));
+    gpu.set_gpu_dy_device_admission_enabled(true);
     const auto make=[](native::Scene& scene) {
         scene.add_static_floor(0.f);
         const auto box=scene.add_dynamic_box(
@@ -2357,17 +8935,48 @@ void verify_host_primitive_pcm_solver(
         const auto before_fetch=producer->stream_submission_stats();
         cpu.step(dt);
         gpu.step(dt);
+        if(frame==0u) {
+            native::GpuPcmFrictionAnchorFixture::
+                verify_pre_witness_device_admission(gpu);
+            native::GpuPcmFrictionAnchorFixture::
+                verify_device_numerical_response_ownership(gpu);
+            const auto stats=producer->dy_launch_stats();
+            require(stats.device_island_indirect_dispatches==1u &&
+                    stats.device_admitted_descriptors==2u,
+                "Primitive-only contacts fell back to host numerical admission");
+            constexpr std::int64_t expected_saving=
+                2*std::int64_t(sizeof(native::GpuDyContactPrepPair)-
+                    sizeof(physx_gpu::SourceDyPackedContactPrepNative))-
+                physx_gpu::source_dy_contact_frame_bytes;
+            require(producer->dy_contact_prep_upload_saving()==expected_saving &&
+                    stats.resident_immovable_contact_bodies==2u &&
+                    stats.inline_contact_body_bytes==0u,
+                "Two plane contact managers retained an inline static body");
+        }
         const auto& completed=producer->stream_submission_stats();
-        require(completed.fetch_batches==before_fetch.fetch_batches+1u &&
-                completed.fetch_spans==before_fetch.fetch_spans+1u &&
-                completed.fetch_bytes-before_fetch.fetch_bytes==
-                    producer->dy_distance_transfer_bytes().second,
-            "Primitive PCM introduced an unnecessary GPU readback");
-        require(producer->pcm_contact_readback_bytes()==0u &&
-                producer->pcm_host_contact_upload_bytes()==
-                    2u*sizeof(physx_gpu::SourcePcmGpuContactStreamNative) &&
+        const auto indirect=
+            producer->dy_launch_stats().device_island_indirect_dispatches;
+        const auto fetch_batches=
+            completed.fetch_batches-before_fetch.fetch_batches;
+        const auto fetch_spans=
+            completed.fetch_spans-before_fetch.fetch_spans;
+        const auto fetch_bytes=
+            completed.fetch_bytes-before_fetch.fetch_bytes;
+        const auto numerical_bytes=producer->dy_distance_transfer_bytes().second;
+        require(fetch_bytes>=numerical_bytes,
+            "GPU numerical readback exceeds the recorded frame transfer");
+        std::cout<<"FYZZXYZZY_METRIC primitive_pcm frame="<<frame
+                 <<" readback_batches="<<fetch_batches
+                 <<" readback_spans="<<fetch_spans
+                 <<" total_readback_bytes="<<fetch_bytes
+                 <<" dy_readback_bytes="<<numerical_bytes
+                 <<" indirect_dispatches="<<indirect<<'\n';
+        require(producer->pcm_header_join_bytes()==
+                    2u*2u*sizeof(std::uint32_t) &&
+                producer->pcm_host_contact_upload_bytes()==0u &&
+                producer->dy_cpu_gu_geometry_bytes()==0u &&
                 producer->dy_gpu_integrated_body_count()==2u,
-            "Primitive CPU Sc/GPU Dy path duplicated numerical PCM work");
+            "Device primitive PCM returned to host-origin numerical preparation");
         require(cpu.contacts().size()==gpu.contacts().size(),
             "Deferred primitive PCM changed the Sc touch graph");
         if(frame==2u)
@@ -2391,8 +9000,8 @@ void verify_host_primitive_pcm_solver(
         }
     }
 
-    // Switch CPU primitive -> mixed GPU Gu -> CPU primitive. Sc must
-    // regenerate the correct side's persistent EdgeIndex witness cache.
+    // Add a general box pair between primitive sources. All three retain
+    // source-ordered device PCM history across admission and retirement.
     const auto add_general=[](native::Scene& scene) {
         scene.add_static_box({0.5f,0.5f,0.5f},{50.f,5.f,0.f});
         const auto moving=scene.add_dynamic_box(
@@ -2404,8 +9013,7 @@ void verify_host_primitive_pcm_solver(
     };
     const auto cpu_general=add_general(cpu);
     const auto gpu_general=add_general(gpu);
-    // The second CPU primitive run lies AFTER the general box pair in
-    // Sc source order. Both host islands must retain their device slots.
+    // The remote sphere follows the general box pair in source order.
     const auto add_remote_sphere=[](native::Scene& scene) {
         scene.add_static_sphere(0.5f,{100.f,5.f,0.f});
         const auto moving=scene.add_dynamic_sphere(
@@ -2418,21 +9026,25 @@ void verify_host_primitive_pcm_solver(
     add_remote_sphere(gpu);
     cpu.step(dt);
     gpu.step(dt);
-    require(producer->pcm_contact_readback_bytes()==
-                sizeof(physx_gpu::SourcePcmGpuContactStreamNative) &&
-            producer->pcm_host_contact_upload_bytes()==
-                5u*sizeof(physx_gpu::SourcePcmGpuContactStreamNative) &&
+    require(producer->pcm_header_join_bytes()>=
+                3u*2u*sizeof(std::uint32_t) &&
+            producer->pcm_deferred_point_bytes()>0u &&
+            producer->pcm_contact_readback_bytes()>=
+                producer->pcm_header_join_bytes()+
+                producer->pcm_deferred_point_bytes() &&
+            producer->pcm_host_contact_upload_bytes()==0u &&
+            producer->dy_cpu_gu_geometry_bytes()==0u &&
             cpu.contacts().size()==gpu.contacts().size(),
-        "Mixed Sc PCM fetched primitive contacts or lost general GPU Gu");
+        "Device PCM did not retain primitive and general witness ownership");
     native::GpuPcmFrictionAnchorFixture::verify(cpu,gpu);
     cpu.remove(cpu_general);
     gpu.remove(gpu_general);
     cpu.step(dt);
     gpu.step(dt);
-    require(producer->pcm_contact_readback_bytes()==0u &&
-            producer->pcm_host_contact_upload_bytes()>0u &&
+    require(producer->pcm_header_join_bytes()>0u &&
+            producer->pcm_host_contact_upload_bytes()==0u &&
             cpu.contacts().size()==gpu.contacts().size(),
-        "Primitive frame failed to resume Sc CPU PCM ownership");
+        "Device PCM failed to retain primitive ownership after pair retirement");
     for(std::size_t i=0u;i<cpu.contacts().size();++i) {
         const auto& a=cpu.contacts()[i],&b=gpu.contacts()[i];
         require(a.pair==b.pair && a.count==b.count,
@@ -2457,16 +9069,24 @@ void verify_compound_actor_gpu_solver(
         load_native_gpu_pcm_shaders(backend,pcm),std::move(shader),
         {.execution=ExecutionMode::NativePortableGpu,.contact_notifications=true});
     World cpu({.execution=ExecutionMode::NativeCpu,.contact_notifications=true});
-    test::compound_mass_and_motion(gpu,&cpu);
-    test::compound_contact_lifetimes(gpu,&cpu);
-    test::compound_default_contact_response(gpu,&cpu);
-    test::compound_joint_response(gpu,&cpu);
-    test::fixed_joint_response(gpu,&cpu);
-    test::spherical_joint_response(gpu,&cpu);
-    test::revolute_joint_response(gpu,&cpu);
-    test::prismatic_joint_response(gpu,&cpu);
-    test::compound_plane_box_device_pcm(gpu,&cpu);
-    test::compound_plane_sphere_device_pcm(gpu,&cpu);
+    const auto verify_stage=[&](const char* name,auto&& verify) {
+        try { verify(); }
+        catch(...) {
+            std::cerr<<"FYZZXYZZY_METRIC suite=sc_pcm case=compound_solver"
+                     <<" rejected_stage="<<name<<'\n';
+            throw;
+        }
+    };
+    verify_stage("compound_mass_and_motion",[&]{test::compound_mass_and_motion(gpu,&cpu);});
+    verify_stage("compound_contact_lifetimes",[&]{test::compound_contact_lifetimes(gpu,&cpu);});
+    verify_stage("compound_default_contact_response",[&]{test::compound_default_contact_response(gpu,&cpu);});
+    verify_stage("compound_joint_response",[&]{test::compound_joint_response(gpu,&cpu);});
+    verify_stage("fixed_joint_response",[&]{test::fixed_joint_response(gpu,&cpu);});
+    verify_stage("spherical_joint_response",[&]{test::spherical_joint_response(gpu,&cpu);});
+    verify_stage("revolute_joint_response",[&]{test::revolute_joint_response(gpu,&cpu);});
+    verify_stage("prismatic_joint_response",[&]{test::prismatic_joint_response(gpu,&cpu);});
+    verify_stage("compound_plane_box_device_pcm",[&]{test::compound_plane_box_device_pcm(gpu,&cpu);});
+    verify_stage("compound_plane_sphere_device_pcm",[&]{test::compound_plane_sphere_device_pcm(gpu,&cpu);});
     // Native GPU and CPU World APIs query the same authored attachment
     // geometry, including shapes excluded from simulation collision.
     const auto gpu_body=gpu.create_static_body({{250.f,0.f,0.f},{}});
@@ -2637,25 +9257,35 @@ void verify_gpu_free_integration(
         const auto resident_record_bytes=
             sizeof(physx_gpu::SourceDyActorLocalNative);
         const auto mass_frame_edits=(frame==3u || frame==4u)?1u:0u;
+        const auto actor_upload_bytes=metadata.actor_local_upload_bytes+
+            metadata.prewitness_actor_local_upload_bytes;
+        if(frame==3u || frame==4u)
+            require(metadata.prewitness_actor_local_upload_bytes>=
+                        offsetof(physx_gpu::SourceDyActorLocalNative,
+                                 linear_velocity),
+                "Active free-flight actor metadata waited for the Dy join");
+        const auto actor_upload_spans=metadata.actor_local_upload_spans+
+            metadata.prewitness_actor_local_upload_spans;
         const auto transfer_error=
             std::string{"Source Dy actor-state refresh exceeded authored changes: frame="}+
             std::to_string(frame)+
-            " bytes="+std::to_string(metadata.actor_local_upload_bytes)+
+            " bytes="+std::to_string(actor_upload_bytes)+
             " reuses="+std::to_string(metadata.reused_actor_local_poses)+
-            " spans="+std::to_string(metadata.actor_local_upload_spans);
+            " spans="+std::to_string(actor_upload_spans);
         require((frame==0u
-                    ? metadata.actor_local_upload_bytes==
+                    ? actor_upload_bytes==
                           actual.size()*resident_record_bytes &&
-                      metadata.actor_local_upload_spans==1u &&
+                      actor_upload_spans>=1u && actor_upload_spans<=3u &&
                       metadata.reused_actor_local_poses==0u
                     : metadata.reused_actor_local_poses==
                           actual.size()-mass_frame_edits &&
-                      metadata.actor_local_upload_bytes%resident_record_bytes==0u &&
-                      metadata.actor_local_upload_bytes<=
-                          6u*resident_record_bytes &&
-                      metadata.actor_local_upload_spans<=3u &&
+                      actor_upload_bytes%sizeof(float)==0u &&
+                      actor_upload_bytes<=6u*resident_record_bytes &&
+                      actor_upload_spans<=12u &&
                       (mass_frame_edits==0u ||
-                       metadata.actor_local_upload_bytes>=resident_record_bytes)),
+                       actor_upload_bytes>=offsetof(
+                           physx_gpu::SourceDyActorLocalNative,
+                           linear_velocity))),
             transfer_error.c_str());
         require(resident<=actual.size() &&
                 producer->dy_host_pose_upload_bytes()==0u &&
@@ -2672,7 +9302,9 @@ void verify_gpu_free_integration(
                 (!contacts || schedule.device_world_inertia_bodies>0u),
             "Contact-only native Dy skipped resident world-inertia preparation");
         if(contacts) {
-            require(!released && schedule.dispatches==2u &&
+            require(!released &&
+                    schedule.dispatches==2u+
+                        schedule.device_island_indirect_dispatches &&
                     schedule.device_initialization_dispatches==0u &&
                     schedule.device_initialized_bodies>0u &&
                     schedule.device_world_motion_bodies>0u &&
@@ -2742,9 +9374,11 @@ void verify_gpu_free_integration(
                 after_replacement.prepared_velocity_updated_bodies*
                     sizeof(physx_gpu::SourceDyPreparedVelocityNative),
         "Retired native body contaminated resident velocity publication");
-    require(after_replacement.actor_local_upload_bytes==
-                sizeof(physx_gpu::SourceDyActorLocalNative) &&
-            after_replacement.actor_local_upload_spans==1u &&
+    require(after_replacement.actor_local_upload_bytes+
+                after_replacement.prewitness_actor_local_upload_bytes==
+                    sizeof(physx_gpu::SourceDyActorLocalNative) &&
+            after_replacement.actor_local_upload_spans+
+                after_replacement.prewitness_actor_local_upload_spans==1u &&
             after_replacement.reused_actor_local_poses==actual.size()-1u,
         "GPU Dy retired actor metadata leaked into newly admitted rigid");
     test::compound_compare_state(
@@ -2793,7 +9427,8 @@ void verify_gpu_free_integration(
 
 void verify_gpu_wide_island_solver(
     fyzz::compute::Backend backend,const char* sap,const char* pcm,
-    const char* dy_shader,unsigned connected_bodies) {
+    const char* dy_shader,unsigned connected_bodies,bool diagnose=false,
+    bool disable_friction=false,bool disable_strong_friction=false) {
     using namespace fyzz;
     std::ifstream input(dy_shader,std::ios::binary);
     require(bool(input),"Compiled source Dy shader unavailable");
@@ -2803,6 +9438,8 @@ void verify_gpu_wide_island_solver(
     shader.format=backend==compute::Backend::Vulkan
         ? compute::ShaderFormat::Spirv : compute::ShaderFormat::Dxil;
     shader.bytes.assign(binary.begin(),binary.end());
+    std::optional<compute::ShaderBinary> diagnostic_shader;
+    if(diagnose)diagnostic_shader=shader;
 
     native::Scene cpu,gpu;
     cpu.set_enhanced_determinism(true);
@@ -2813,12 +9450,25 @@ void verify_gpu_wide_island_solver(
         load_native_gpu_pcm_shaders(backend,pcm),std::move(shader));
     auto* producer=owner.get();
     gpu.set_gpu_broadphase(std::move(owner));
+    std::unique_ptr<native::Scene> pcm_cpu_dy;
+    if(diagnose) {
+        pcm_cpu_dy=std::make_unique<native::Scene>();
+        pcm_cpu_dy->set_enhanced_determinism(true);
+        pcm_cpu_dy->set_gpu_broadphase(
+            std::make_unique<physx_gpu::SourceScOwnedGpuBroadphaseNative>(
+                backend,load_native_gpu_sap_shaders(backend,sap),
+                connected_bodies>768u ? 32768u : 4096u,128u,
+                std::nullopt,load_native_gpu_pcm_shaders(backend,pcm),
+                std::move(*diagnostic_shader)));
+        pcm_cpu_dy->set_gpu_dy_enabled(false);
+    }
 
     struct Assembly {
         std::vector<BodyId> bodies;
         ConstraintId split_joint=0;
     };
-    const auto assemble=[connected_bodies](native::Scene& scene) {
+    const auto assemble=[connected_bodies,disable_friction,disable_strong_friction](
+        native::Scene& scene) {
         Assembly out;
         const auto chain=[&](unsigned count,float z,std::uint8_t pos,std::uint8_t vel) {
             RigidBodyDynamics dynamics;
@@ -2831,6 +9481,12 @@ void verify_gpu_wide_island_solver(
                 const auto body=scene.add_dynamic_box(
                     {0.4f,0.5f,0.4f},{x,0.48f,z},1.0f);
                 out.bodies.push_back(body);
+                if(disable_friction || disable_strong_friction) {
+                    Material material{};
+                    material.disable_friction=disable_friction;
+                    material.disable_strong_friction=disable_strong_friction;
+                    scene.set_material(body,material);
+                }
                 scene.set_dynamics(body,dynamics);
                 scene.set_velocity(body,{0.08f,0.0f,i%2u ? -0.06f : 0.06f});
                 if(i) {
@@ -2860,20 +9516,30 @@ void verify_gpu_wide_island_solver(
     };
     const auto expected=assemble(cpu);
     const auto actual=assemble(gpu);
+    std::optional<Assembly> diagnostic;
+    if(pcm_cpu_dy)diagnostic=assemble(*pcm_cpu_dy);
     for(unsigned frame=0;frame<4u;++frame) {
         if(frame==2u) {
             cpu.retire_constraint(expected.split_joint);
             gpu.retire_constraint(actual.split_joint);
+            if(pcm_cpu_dy)
+                pcm_cpu_dy->retire_constraint(diagnostic->split_joint);
         }
         constexpr float dt=1.0f/120.0f;
         cpu.step(dt);
+        if(pcm_cpu_dy)pcm_cpu_dy->step(dt);
         gpu.step(dt);
         const auto schedule=producer->dy_launch_stats();
         require(schedule.device_colored_tasks>=1u &&
                 schedule.device_colored_descriptors>=connected_bodies &&
+                schedule.host_degree_scanned_descriptors>=connected_bodies-2u &&
                 schedule.device_joint_input_rows>=connected_bodies/2u &&
-                schedule.device_joint_geometry_count>=connected_bodies/2u,
-            "Wide Dy task lost device joint preparation or coloring");
+                schedule.device_joint_geometry_count>=connected_bodies/2u &&
+                schedule.joint_row_input_bytes==0u &&
+                schedule.compact_joint_source_bytes==
+                    schedule.device_joint_geometry_count*32u+
+                    schedule.device_joint_input_rows*4u,
+            "Wide Dy task lost compact device joint preparation or coloring");
         // Once the assembly moves, individual supports can lose touch.
         // Joint connectivity must still supply a wide partition.
         const auto width=frame==0u?connected_bodies-2u:connected_bodies/2u;
@@ -2885,7 +9551,10 @@ void verify_gpu_wide_island_solver(
                     (connected_bodies+127u)/128u &&
                 schedule.tile_bytes<=schedule.device_colored_descriptors*
                     sizeof(native::GpuDyDistanceDescriptor) &&
-                schedule.dispatches>7u &&
+                schedule.dispatches>6u &&
+                schedule.constraint_preparation_dispatches==1u &&
+                schedule.device_partition_tile_bytes>0u &&
+                schedule.device_partition_indirect_dispatches>0u &&
                 schedule.device_initialization_dispatches==0u,
                 "Connected Dy islands did not execute tiled conflict partitions");
         require(schedule.device_generated_bytes==
@@ -2898,11 +9567,157 @@ void verify_gpu_wide_island_solver(
                     schedule.device_colored_descriptors*
                         sizeof(std::uint32_t),
                 "Source Sc did not materialize Dy descriptors on the device");
-        require(producer->dy_upload_span_count()==1u &&
+        require(schedule.device_upload_batches==1u &&
+                producer->dy_upload_span_count()==1u &&
+                schedule.aliased_partition_scratch_bytes>0u &&
+                schedule.omitted_partition_scratch_bytes==
+                    schedule.device_colored_descriptors*16u+
+                    schedule.device_initialized_bodies*12u &&
                 producer->dy_gpu_integrated_body_count()==actual.bodies.size() &&
                 producer->dy_pcm_device_contact_rows()>=actual.bodies.size() &&
                 producer->dy_cpu_gu_geometry_bytes()==0u,
                 "Wide island lost GPU contact preparation or body integration");
+        if(pcm_cpu_dy) {
+            const auto max_axis_error=[](Vec3 a,Vec3 b) {
+                return std::max({std::abs(double(a.x)-b.x),
+                                 std::abs(double(a.y)-b.y),
+                                 std::abs(double(a.z)-b.z)});
+            };
+            const auto max_force_error=[](auto lhs,auto rhs) {
+                if(lhs.size()!=rhs.size())return -1.0;
+                double difference=0.0;
+                for(std::size_t k=0;k<lhs.size();++k)
+                    difference=std::max(difference,
+                        std::abs(double(lhs[k])-double(rhs[k])));
+                return difference;
+            };
+            struct FrictionDifference {
+                double impulse=0.0,anchor_position=0.0;
+                std::size_t count_mismatch=0u,broken_mismatch=0u;
+            };
+            const auto friction_difference=[&](auto lhs,auto rhs) {
+                FrictionDifference result{};
+                if(lhs.size()!=rhs.size()) {
+                    result.count_mismatch=std::max(lhs.size(),rhs.size());
+                    return result;
+                }
+                for(std::size_t k=0u;k<lhs.size();++k) {
+                    const auto& a=lhs[k];
+                    const auto& b=rhs[k];
+                    if(a.pair!=b.pair || a.anchor_count!=b.anchor_count) {
+                        ++result.count_mismatch;
+                        continue;
+                    }
+                    if(a.broken!=b.broken)++result.broken_mismatch;
+                    for(std::size_t n=0u;n<a.anchor_count;++n) {
+                        result.anchor_position=std::max(
+                            result.anchor_position,
+                            max_axis_error(a.anchor_positions[n],
+                                           b.anchor_positions[n]));
+                        const auto& x=a.anchor_impulses[n];
+                        const auto& y=b.anchor_impulses[n];
+                        result.impulse=std::max({
+                            result.impulse,std::abs(x.x-y.x),
+                            std::abs(x.y-y.y),std::abs(x.z-y.z)});
+                    }
+                }
+                return result;
+            };
+            struct ContactDifference {
+                double position=0.0,normal=0.0,separation=0.0;
+                std::size_t topology_mismatches=0u;
+            };
+            const auto contact_difference=[&](auto lhs,auto rhs) {
+                ContactDifference result{};
+                if(lhs.size()!=rhs.size()) {
+                    result.topology_mismatches=std::max(lhs.size(),rhs.size());
+                    return result;
+                }
+                for(std::size_t k=0u;k<lhs.size();++k) {
+                    const auto& a=lhs[k];
+                    const auto& b=rhs[k];
+                    if(a.pair!=b.pair || a.count!=b.count) {
+                        ++result.topology_mismatches;
+                        continue;
+                    }
+                    for(std::size_t j=0u;j<a.count;++j) {
+                        result.position=std::max(result.position,
+                            max_axis_error(a.points[j].position,b.points[j].position));
+                        result.normal=std::max(result.normal,
+                            max_axis_error(a.points[j].normal,b.points[j].normal));
+                        result.separation=std::max(result.separation,
+                            std::abs(double(a.points[j].separation)-
+                                     double(b.points[j].separation)));
+                    }
+                }
+                return result;
+            };
+            const auto contact_geometry=contact_difference(
+                cpu.contacts(),pcm_cpu_dy->contacts());
+            const auto solver_geometry=contact_difference(
+                pcm_cpu_dy->contacts(),gpu.contacts());
+            const auto contact_friction=friction_difference(
+                cpu.solved_friction_patches(),
+                pcm_cpu_dy->solved_friction_patches());
+            const auto solver_friction=friction_difference(
+                pcm_cpu_dy->solved_friction_patches(),
+                gpu.solved_friction_patches());
+            double contact_linear=0.0,contact_angular=0.0;
+            double dy_linear=0.0,dy_angular=0.0;
+            double contact_position=0.0,dy_position=0.0;
+            for(std::size_t i=0;i<actual.bodies.size();++i) {
+                const auto reference=cpu.body_state(expected.bodies[i]);
+                const auto contact=pcm_cpu_dy->body_state(diagnostic->bodies[i]);
+                const auto solved=gpu.body_state(actual.bodies[i]);
+                contact_position=std::max(contact_position,
+                    max_axis_error(reference.position,contact.position));
+                contact_linear=std::max(contact_linear,
+                    max_axis_error(reference.velocity,contact.velocity));
+                contact_angular=std::max(contact_angular,
+                    max_axis_error(reference.angular_velocity,
+                                   contact.angular_velocity));
+                dy_position=std::max(dy_position,
+                    max_axis_error(contact.position,solved.position));
+                dy_linear=std::max(dy_linear,
+                    max_axis_error(contact.velocity,solved.velocity));
+                dy_angular=std::max(dy_angular,
+                    max_axis_error(contact.angular_velocity,
+                                   solved.angular_velocity));
+            }
+            std::cout<<"FYZZXYZZY_METRIC suite=sc_pcm"
+                     <<" case=wide_islands_diagnose frame="<<frame
+                     <<" cpu_vs_pcm_position="<<contact_position
+                     <<" cpu_vs_pcm_linear="<<contact_linear
+                     <<" cpu_vs_pcm_angular="<<contact_angular
+                     <<" pcm_vs_gpu_position="<<dy_position
+                     <<" pcm_vs_gpu_linear="<<dy_linear
+                     <<" pcm_vs_gpu_angular="<<dy_angular
+                     <<" cpu_vs_pcm_normal_force="<<max_force_error(
+                         cpu.solved_normal_impulses(),
+                         pcm_cpu_dy->solved_normal_impulses())
+                     <<" pcm_vs_gpu_normal_force="<<max_force_error(
+                         pcm_cpu_dy->solved_normal_impulses(),
+                         gpu.solved_normal_impulses())
+                     <<" cpu_vs_pcm_contact_position="<<contact_geometry.position
+                     <<" pcm_vs_gpu_contact_position="<<solver_geometry.position
+                     <<" cpu_vs_pcm_contact_normal="<<contact_geometry.normal
+                     <<" pcm_vs_gpu_contact_normal="<<solver_geometry.normal
+                     <<" cpu_vs_pcm_contact_separation="<<contact_geometry.separation
+                     <<" pcm_vs_gpu_contact_separation="<<solver_geometry.separation
+                     <<" cpu_vs_pcm_contact_topology_mismatch="<<contact_geometry.topology_mismatches
+                     <<" pcm_vs_gpu_contact_topology_mismatch="<<solver_geometry.topology_mismatches
+                     <<" cpu_vs_pcm_friction_impulse="<<contact_friction.impulse
+                     <<" pcm_vs_gpu_friction_impulse="<<solver_friction.impulse
+                     <<" cpu_vs_pcm_anchor_position="<<contact_friction.anchor_position
+                     <<" pcm_vs_gpu_anchor_position="<<solver_friction.anchor_position
+                     <<" cpu_vs_pcm_friction_count_mismatch="<<contact_friction.count_mismatch
+                     <<" pcm_vs_gpu_friction_count_mismatch="<<solver_friction.count_mismatch
+                     <<" cpu_vs_pcm_friction_broken_mismatch="<<contact_friction.broken_mismatch
+                     <<" pcm_vs_gpu_friction_broken_mismatch="<<solver_friction.broken_mismatch
+                     <<" cpu_contacts="<<cpu.contacts().size()
+                     <<" pcm_contacts="<<pcm_cpu_dy->contacts().size()
+                     <<" gpu_contacts="<<gpu.contacts().size()<<'\n';
+        }
         for(std::size_t i=0;i<actual.bodies.size();++i) {
             const auto actual_state=gpu.body_state(actual.bodies[i]);
             const auto expected_state=cpu.body_state(expected.bodies[i]);
@@ -3040,6 +9855,8 @@ void verify_gpu_zero_response_wide_island(
                 (joint_bodies+zero_contact_bodies+127u)/128u,
         "Device Dy partition tiles omit zero-response contact endpoints");
     require(schedule.tile_bytes>0u &&
+            schedule.device_partition_tile_bytes>0u &&
+            schedule.device_partition_indirect_dispatches>0u &&
             schedule.tile_bytes<=schedule.device_colored_descriptors*
                 sizeof(native::GpuDyDistanceDescriptor),
         "Device Dy partition tile metadata exceeds its source workload");
@@ -3051,13 +9868,163 @@ void verify_gpu_zero_response_wide_island(
             "Wide Dy zero-response contact and joint island");
 }
 
+// Two independent responding chains share one numerical task. Their
+// final color has one active lane, while both chains own earlier colors.
+void verify_owned_color_task(fyzz::native::GpuBroadphaseProducer& producer) {
+    using namespace fyzz;
+    constexpr std::uint32_t count=9u;
+    constexpr std::uint32_t fixed=0xffffffffu;
+    constexpr std::array<std::array<std::uint32_t,2>,9> endpoints{{
+        {{0u,1u}},{{5u,6u}},{{2u,0u}},{{7u,5u}},
+        {{0u,3u}},{{5u,8u}},{{4u,0u}},{{5u,fixed}},{{fixed,0u}}
+    }};
+    constexpr std::array<std::uint32_t,5> ends{{2u,4u,6u,8u,9u}};
+    std::array<std::uint32_t,count> ordinals{};
+    std::array<native::GpuDyJointRow,endpoints.size()> initial_rows{};
+    std::array<native::GpuDyDistanceDescriptor,endpoints.size()> authored{};
+    for(std::uint32_t i=0u;i<count;++i)ordinals[i]=i;
+    for(std::uint32_t i=0u;i<endpoints.size();++i) {
+        auto& row=initial_rows[i];
+        row.axis[0]=1.f;
+        row.inverse_mass_a=endpoints[i][0]==fixed?0.f:1.f;
+        row.inverse_mass_b=endpoints[i][1]==fixed?0.f:1.f;
+        row.angular_a[2]=0.125f*row.inverse_mass_a;
+        row.angular_b[2]=0.25f*row.inverse_mass_b;
+        row.velocity_multiplier=-0.375f;
+        row.constant=0.025f*float(i+1u);
+        row.unbiased_constant=-0.01f*float(i+1u);
+        authored[i]={i,endpoints[i][0],endpoints[i][1],1u};
+    }
+    const auto solve=[&](bool colored,bool initialize,bool nonzero) {
+        std::array<native::GpuDyDistanceBody,count> bodies{};
+        std::array<native::GpuDyBodyIntegrationInput,count> integration{};
+        std::array<native::GpuDyIntegratedPose,count> poses{};
+        auto rows=initial_rows;
+        auto descriptors=authored;
+        for(std::uint32_t i=0u;i<count;++i) {
+            bodies[i].inverse_mass=1.f;
+            if(nonzero) {
+                bodies[i].linear_delta[0]=0.03125f*float(i);
+                bodies[i].angular_state[2]=-0.015625f*float(i);
+            }
+        }
+        if(colored)
+            for(auto& desc:descriptors)
+                desc.row_count|=(desc.row0==fixed?0u:0x100u)|
+                                (desc.row1==fixed?0u:0x200u);
+        constexpr auto responses=static_cast<std::uint32_t>(endpoints.size());
+        constexpr auto colors=static_cast<std::uint32_t>(ends.size());
+        std::array<native::GpuDyDistanceTask,1> tasks{{
+            {0u,responses,0u,colored?responses:colors,0u,count,5u,3u,0u}
+        }};
+        const std::array<native::GpuPcmBoxPair,0> no_pairs{};
+        std::array<native::GpuPcmBoxResult,0> no_witness{};
+        producer.enqueue_gpu_pcm_box_contacts(no_pairs,no_witness);
+        producer.enqueue_gpu_dy_distance(
+            bodies,rows,descriptors,
+            colored?std::span<const std::uint32_t>{}:
+                    std::span<const std::uint32_t>{ends},
+            ordinals,tasks,{},{},{},{},{},{},{},{},integration,poses,
+            colored,{},initialize);
+        producer.finish_gpu_dy_distance();
+        producer.commit_gpu_step();
+        require(tasks[0].error==0u,"Owned numerical task rejected");
+        return bodies;
+    };
+    for(const bool nonzero:{false,true}) {
+        const auto reference=solve(false,false,nonzero);
+        const auto actual=solve(true,!nonzero,nonzero);
+        for(std::uint32_t i=0u;i<count;++i) {
+            const auto compare=[](const float* a,const float* b) {
+                for(unsigned k=0u;k<3u;++k)
+                    require(std::fabs(a[k]-b[k])<1e-6f,
+                            "Owned color task changed PGS body or motion state");
+            };
+            compare(actual[i].linear_delta,reference[i].linear_delta);
+            compare(actual[i].angular_state,reference[i].angular_state);
+            compare(actual[i].motion_linear_delta,
+                    reference[i].motion_linear_delta);
+            compare(actual[i].motion_angular_state,
+                    reference[i].motion_angular_state);
+        }
+    }
+}
+
+
+// Compact and streamed joint blocks use the same ordered row algebra.
+// Compare exclusive device coloring with explicit partition execution.
+void verify_exclusive_joint_blocks(fyzz::native::GpuBroadphaseProducer& producer) {
+    using namespace fyzz;
+    const std::array<std::uint32_t,2> ordinals{{0u,1u}};
+    const std::array<std::uint32_t,1> ends{{1u}};
+    const auto solve=[&](std::uint32_t count,bool colored,bool initialized) {
+        std::array<native::GpuDyDistanceBody,2> bodies{};
+        std::array<native::GpuDyBodyIntegrationInput,2> integration{};
+        std::array<native::GpuDyIntegratedPose,2> poses{};
+        std::array<native::GpuDyJointRow,6> rows{};
+        for(auto& body:bodies)body.inverse_mass=1.f;
+        if(!initialized) {
+            bodies[0].linear_delta[0]=0.125f;
+            bodies[1].angular_state[2]=-0.0625f;
+        }
+        for(std::uint32_t i=0u;i<count;++i) {
+            auto& row=rows[i];
+            row.axis[i%3u]=1.f;
+            row.angular_a[(i+1u)%3u]=0.125f;
+            row.angular_b[(i+2u)%3u]=0.25f;
+            row.inverse_mass_a=row.inverse_mass_b=1.f;
+            row.velocity_multiplier=-0.375f;
+            row.constant=0.025f*float(i+1u);
+            row.unbiased_constant=-0.01f*float(i+1u);
+            row.applied_force=0.005f*float(i);
+        }
+        const std::array<native::GpuDyDistanceDescriptor,1> descriptors{{
+            {0u,0u,1u,count|(colored?0x300u:0u)}
+        }};
+        std::array<native::GpuDyDistanceTask,1> tasks{{
+            {0u,1u,0u,1u,0u,2u,6u,3u,0u}
+        }};
+        const std::array<native::GpuPcmBoxPair,0> no_pairs{};
+        std::array<native::GpuPcmBoxResult,0> no_witness{};
+        producer.enqueue_gpu_pcm_box_contacts(no_pairs,no_witness);
+        producer.enqueue_gpu_dy_distance(
+            bodies,std::span{rows}.first(count),descriptors,
+            colored?std::span<const std::uint32_t>{}:
+                    std::span<const std::uint32_t>{ends},
+            ordinals,tasks,{},{},{},{},{},{},{},{},integration,poses,
+            colored,{},colored && initialized);
+        producer.finish_gpu_dy_distance();
+        producer.commit_gpu_step();
+        require(tasks[0].error==0u,"Exclusive joint block rejected");
+        return bodies;
+    };
+    for(const auto count:{3u,6u})
+        for(const bool initialized:{false,true}) {
+            const auto reference=solve(count,false,initialized);
+            const auto actual=solve(count,true,initialized);
+            for(std::size_t i=0u;i<actual.size();++i) {
+                const auto compare=[](const float* a,const float* b) {
+                    for(unsigned k=0u;k<3u;++k)
+                        require(std::fabs(a[k]-b[k])<1e-6f,
+                                "Exclusive joint block changed PGS body or motion state");
+                };
+                compare(actual[i].linear_delta,reference[i].linear_delta);
+                compare(actual[i].angular_state,reference[i].angular_state);
+                compare(actual[i].motion_linear_delta,
+                        reference[i].motion_linear_delta);
+                compare(actual[i].motion_angular_state,
+                        reference[i].motion_angular_state);
+            }
+        }
+}
+
 // Hub and connected two-hub graphs exercise the source-order
 // 32-color rollover. Mixed static contact and 1D rows reserve colors
 // without writing one dynamic body from concurrent PGS lanes.
 void verify_gpu_high_degree_coloring(
     fyzz::compute::Backend backend,const char* sap,const char* pcm,
     const char* dy_shader,unsigned leaves=36u,
-    bool dual_hub=false,unsigned frames_override=0u) {
+    bool dual_hub=false,unsigned frames_override=0u,bool pure_hub=false) {
     using namespace fyzz;
     std::ifstream input(dy_shader,std::ios::binary);
     require(bool(input),"High-degree GPU Dy shader unavailable");
@@ -3077,21 +10044,25 @@ void verify_gpu_high_degree_coloring(
         std::move(shader));
     auto* producer=owner.get();
     gpu.set_gpu_broadphase(std::move(owner));
-    const auto assemble=[leaves,dual_hub](native::Scene& scene) {
+    if(dual_hub) {
+        verify_owned_color_task(*producer);
+        verify_exclusive_joint_blocks(*producer);
+    }
+    const auto assemble=[leaves,dual_hub,pure_hub](native::Scene& scene) {
         std::vector<BodyId> ids;
         ids.reserve(leaves+1u+(dual_hub?1u:0u));
-        const auto fixed=scene.add_static_box(
+        const auto fixed=pure_hub?BodyId{}:scene.add_static_box(
             {0.4f,0.4f,0.4f},{-0.72f,3.f,0.f});
         const auto center=scene.add_dynamic_box(
             {0.4f,0.4f,0.4f},{0.f,3.f,0.f},1.f);
         ids.push_back(center);
         RigidBodyDynamics dynamics{};
         dynamics.gravity_enabled=false;
-        dynamics.position_iterations=4u;
-        dynamics.velocity_iterations=1u;
+        dynamics.position_iterations=pure_hub?7u:4u;
+        dynamics.velocity_iterations=pure_hub?4u:dual_hub?3u:1u;
         scene.set_dynamics(center,dynamics);
         scene.set_velocity(center,{0.05f,0.f,0.07f});
-        scene.create_center_distance_constraint(fixed,center,0.72f);
+        if(!pure_hub)scene.create_center_distance_constraint(fixed,center,0.72f);
         BodyId second_center=0u;
         if(dual_hub) {
             second_center=scene.add_dynamic_box(
@@ -3102,10 +10073,12 @@ void verify_gpu_high_degree_coloring(
             scene.create_center_distance_constraint(
                 center,second_center,3.f);
         }
+        // Unequal hub degrees produce concurrent colors and a serial tail.
+        const unsigned split=leaves-leaves/4u;
         for(unsigned i=0u;i<leaves;++i) {
-            const bool second=dual_hub && i>=leaves/2u;
+            const bool second=dual_hub && i>=split;
             const float x=second
-                ?-6.f-1.5f*static_cast<float>(i-leaves/2u)
+                ?-6.f-1.5f*static_cast<float>(i-split)
                 :3.f+1.5f*static_cast<float>(i);
             const auto anchor=second?second_center:center;
             const float rest=second?(-3.f-x):x;
@@ -3115,7 +10088,11 @@ void verify_gpu_high_degree_coloring(
             scene.set_dynamics(body,dynamics);
             scene.set_velocity(body,
                 {-0.03f,0.f,i%2u ? 0.02f:-0.02f});
-            scene.create_center_distance_constraint(anchor,body,rest);
+            // Alternate endpoint order while preserving the distance row.
+            if(i%2u)
+                scene.create_center_distance_constraint(body,anchor,rest);
+            else
+                scene.create_center_distance_constraint(anchor,body,rest);
         }
         return ids;
     };
@@ -3133,6 +10110,12 @@ void verify_gpu_high_degree_coloring(
     const unsigned frames=frames_override?frames_override:
         leaves>=10000u?1u:leaves>=1024u?2u:leaves>=64u?1u:3u;
     for(unsigned frame=0u;frame<frames;++frame) {
+        if(dual_hub && frame==1u) {
+            // Couple the spoke chains through an additional responding edge.
+            const float rest=9.f+1.5f*float(leaves/4u-1u);
+            cpu.create_center_distance_constraint(a[2],a.back(),rest);
+            gpu.create_center_distance_constraint(b[2],b.back(),rest);
+        }
         const auto tick=std::chrono::steady_clock::now();
         cpu.step(1.f/120.f);
         const auto cpu_done=std::chrono::steady_clock::now();
@@ -3152,16 +10135,20 @@ void verify_gpu_high_degree_coloring(
                           gpu_done-cpu_done).count()<<'\n';
         const auto schedule=producer->dy_launch_stats();
         require(schedule.device_colored_tasks>0u &&
-                schedule.device_colored_descriptors>=leaves+1u &&
+                schedule.device_colored_descriptors>=leaves+(pure_hub?0u:1u) &&
                 schedule.wide_tasks==0u &&
                 schedule.max_partition_groups==1u &&
                 schedule.tile_bytes==0u &&
-                schedule.dispatches==(b.size()<=128u?1u:2u) &&
+                schedule.device_partition_tile_bytes==0u &&
+                schedule.device_partition_indirect_dispatches==0u &&
+                schedule.dispatches==
+                    (b.size()<=128u?1u:2u)+
+                        schedule.device_island_indirect_dispatches &&
                 schedule.device_initialization_dispatches==
                     (b.size()<=128u?0u:1u) &&
                 producer->dy_gpu_integrated_body_count()==b.size() &&
                 gpu.contacts().size()==cpu.contacts().size() &&
-                !gpu.contacts().empty() &&
+                (pure_hub?gpu.contacts().empty():!gpu.contacts().empty()) &&
                 (!dual_hub ||
                  (gpu.largest_accurate_island_size()>=b.size() &&
                   cpu.largest_accurate_island_size()>=a.size())),
@@ -3179,19 +10166,389 @@ void verify_gpu_high_degree_coloring(
     }
 }
 
+
+
+void qualify_hardware_scene(
+    fyzz::compute::Backend backend,const char* sap,const char* pcm,
+    const char* dy_path,std::uint32_t body_count,bool gpu_first) {
+    using namespace fyzz;
+    const auto compiled=[backend](const char* path) {
+        std::ifstream file(path,std::ios::binary);
+        require(bool(file),"Hardware scene GPU Dy shader is missing");
+        std::vector<char> bytes(std::istreambuf_iterator<char>{file},
+                                std::istreambuf_iterator<char>{});
+        require(!bytes.empty(),"Hardware scene GPU Dy shader is empty");
+        compute::ShaderBinary binary{};
+        binary.format=backend==compute::Backend::Vulkan
+            ?compute::ShaderFormat::Spirv:compute::ShaderFormat::Dxil;
+        binary.bytes.assign(bytes.begin(),bytes.end());
+        return binary;
+    };
+    const auto create=[&](bool device_admission) {
+        return create_native_gpu_world(
+            backend,NativeGpuPipelineShaders{
+                .sap=load_native_gpu_sap_shaders(backend,sap),
+                .pcm=load_native_gpu_pcm_shaders(backend,pcm),
+                .dy=compiled(dy_path)},
+            {.execution=ExecutionMode::NativePortableGpu,
+             .gpu_device_island_admission=device_admission});
+    };
+    const auto width=static_cast<std::uint32_t>(
+        std::ceil(std::sqrt(static_cast<double>(body_count))));
+    const float spacing=3.0f;
+    const float origin=0.5f*float(width-1u)*spacing;
+    const float platform_extent=float(width)*spacing*0.5f+1.f;
+    constexpr float dt=1.f/120.f;
+    constexpr std::uint32_t warmup=4u;
+    const std::uint32_t measured=body_count>=10000u?16u:48u;
+    const auto run=[&](bool gpu_dy,std::vector<double>& step_ms,
+                       bool device_admission=false) {
+        const auto setup_begin=std::chrono::steady_clock::now();
+        World world=create(device_admission);
+        const auto create_end=std::chrono::steady_clock::now();
+        world.set_gpu_dy_enabled(gpu_dy);
+        world.add_static_box(
+            {platform_extent,0.5f,platform_extent},{0.f,-0.5f,0.f});
+        std::vector<BodyId> ids;
+        ids.reserve(body_count);
+        for(std::uint32_t i=0u;i<body_count;++i) {
+            const Vec3 position{
+                float(i%width)*spacing-origin,0.48f,
+                float(i/width)*spacing-origin};
+            ids.push_back(world.add_dynamic_box(
+                {0.5f,0.5f,0.5f},position,1.f));
+        }
+        const auto setup_end=std::chrono::steady_clock::now();
+        std::cout<<"FYZZXYZZY_METRIC suite=hardware_setup"
+                 <<" bodies="<<body_count
+                 <<" gpu_dy="<<gpu_dy
+                 <<" device_admission="<<device_admission
+                 <<" create_ms="<<std::chrono::duration<double,std::milli>(
+                    create_end-setup_begin).count()
+                 <<" assemble_ms="<<std::chrono::duration<double,std::milli>(
+                    setup_end-create_end).count()<<'\n';
+        step_ms.reserve(measured);
+        for(std::uint32_t frame=0u;frame<warmup+measured;++frame) {
+            const auto start=std::chrono::steady_clock::now();
+            world.step(dt);
+            if(frame>=warmup)
+                step_ms.push_back(std::chrono::duration<double,std::milli>(
+                    std::chrono::steady_clock::now()-start).count());
+        }
+        for(std::size_t sample=0u;sample<step_ms.size();++sample)
+            std::cout<<"FYZZXYZZY_METRIC suite=hardware_step"
+                     <<" bodies="<<body_count
+                     <<" gpu_dy="<<gpu_dy
+                     <<" device_admission="<<device_admission
+                     <<" sample="<<sample
+                     <<" step_ms="<<step_ms[sample]<<'\n';
+        std::vector<BodyState> final_states;
+        final_states.reserve(body_count);
+        for(const BodyId id:ids)
+            final_states.push_back(world.body_state(id));
+        return final_states;
+    };
+    std::vector<double> cpu_ms,gpu_ms,admitted_ms;
+    std::vector<BodyState> cpu_states,gpu_states,admitted_states;
+    if(gpu_first) {
+        admitted_states=run(true,admitted_ms,true);
+        gpu_states=run(true,gpu_ms);
+        cpu_states=run(false,cpu_ms);
+    } else {
+        cpu_states=run(false,cpu_ms);
+        gpu_states=run(true,gpu_ms);
+        admitted_states=run(true,admitted_ms,true);
+    }
+    float max_position_error=0.f,max_velocity_error=0.f;
+    float max_admitted_position_error=0.f,max_admitted_velocity_error=0.f;
+    for(std::uint32_t i=0u;i<body_count;++i) {
+        const auto& a=cpu_states[i];
+        const auto& b=gpu_states[i];
+        const auto& c=admitted_states[i];
+        for(const auto values:std::array<std::array<float,3>,6>{{
+                {a.position.x,b.position.x,c.position.x},
+                {a.position.y,b.position.y,c.position.y},
+                {a.position.z,b.position.z,c.position.z},
+                {a.velocity.x,b.velocity.x,c.velocity.x},
+                {a.velocity.y,b.velocity.y,c.velocity.y},
+                {a.velocity.z,b.velocity.z,c.velocity.z}}})
+            require(std::isfinite(values[0]) && std::isfinite(values[1]) &&
+                    std::isfinite(values[2]),
+                    "Hardware scene published nonfinite rigid state");
+        max_position_error=std::max({max_position_error,
+            std::fabs(a.position.x-b.position.x),
+            std::fabs(a.position.y-b.position.y),
+            std::fabs(a.position.z-b.position.z)});
+        max_velocity_error=std::max({max_velocity_error,
+            std::fabs(a.velocity.x-b.velocity.x),
+            std::fabs(a.velocity.y-b.velocity.y),
+            std::fabs(a.velocity.z-b.velocity.z)});
+        max_admitted_position_error=std::max({max_admitted_position_error,
+            std::fabs(a.position.x-c.position.x),
+            std::fabs(a.position.y-c.position.y),
+            std::fabs(a.position.z-c.position.z)});
+        max_admitted_velocity_error=std::max({max_admitted_velocity_error,
+            std::fabs(a.velocity.x-c.velocity.x),
+            std::fabs(a.velocity.y-c.velocity.y),
+            std::fabs(a.velocity.z-c.velocity.z)});
+        require(a.position.y>0.44f && b.position.y>0.44f &&
+                c.position.y>0.44f,
+                "Hardware scene lost physical platform contact");
+    }
+    require(max_position_error<0.05f && max_velocity_error<0.05f &&
+            max_admitted_position_error<0.05f &&
+            max_admitted_velocity_error<0.05f,
+            "Hardware scene GPU numerical trajectories diverged from CPU");
+    const auto percentile=[](std::vector<double>& values,double fraction) {
+        std::sort(values.begin(),values.end());
+        const double rank=(values.size()-1u)*fraction;
+        const auto lo=static_cast<std::size_t>(std::floor(rank));
+        const auto hi=static_cast<std::size_t>(std::ceil(rank));
+        return values[lo]+(rank-double(lo))*(values[hi]-values[lo]);
+    };
+    std::cout<<"FYZZXYZZY_METRIC suite=hardware_scene"
+             <<" bodies="<<body_count
+             <<" samples="<<measured
+             <<" gpu_first="<<gpu_first
+             <<" cpu_step_p50_ms="<<percentile(cpu_ms,0.50)
+             <<" gpu_step_p50_ms="<<percentile(gpu_ms,0.50)
+             <<" cpu_step_p95_ms="<<percentile(cpu_ms,0.95)
+             <<" gpu_step_p95_ms="<<percentile(gpu_ms,0.95)
+             <<" admitted_step_p50_ms="<<percentile(admitted_ms,0.50)
+             <<" admitted_step_p95_ms="<<percentile(admitted_ms,0.95)
+             <<" admitted_step_p99_ms="<<percentile(admitted_ms,0.99)
+             <<" cpu_step_p99_ms="<<percentile(cpu_ms,0.99)
+             <<" gpu_step_p99_ms="<<percentile(gpu_ms,0.99)
+             <<" max_position_abs_error="<<max_position_error
+             <<" max_velocity_abs_error="<<max_velocity_error
+             <<" max_admitted_position_abs_error="<<max_admitted_position_error
+             <<" max_admitted_velocity_abs_error="<<max_admitted_velocity_error<<'\n';
+}
+
+void verify_host_lane_packed_islands(
+    fyzz::compute::Backend backend,const char* sap,
+    const char* pcm,const char* dy_shader,
+    bool device_admission=false) {
+    using namespace fyzz;
+    std::ifstream stream(dy_shader,std::ios::binary);
+    require(bool(stream),"GPU Dy shader bundle missing");
+    std::vector<char> bytes(
+        std::istreambuf_iterator<char>{stream},
+        std::istreambuf_iterator<char>{});
+    compute::ShaderBinary shader{};
+    shader.format=backend==compute::Backend::Vulkan
+        ?compute::ShaderFormat::Spirv:compute::ShaderFormat::Dxil;
+    shader.bytes.assign(bytes.begin(),bytes.end());
+    native::Scene cpu,gpu;
+    // Match the packed solver's per-island iteration budgets.
+    cpu.set_enhanced_determinism(true);
+    auto owner=std::make_unique<physx_gpu::SourceScOwnedGpuBroadphaseNative>(
+        backend,load_native_gpu_sap_shaders(backend,sap),
+        512u,512u,std::nullopt,
+        load_native_gpu_pcm_shaders(backend,pcm),std::move(shader));
+    auto* producer=owner.get();
+    gpu.set_gpu_broadphase(std::move(owner));
+    gpu.set_gpu_dy_device_admission_enabled(device_admission);
+    std::array<BodyId,129> cpu_bodies{},gpu_bodies{};
+    for(std::size_t i=0;i<cpu_bodies.size();++i) {
+        const Vec3 floor{static_cast<float>(i)*8.f,0.f,0.f};
+        const Vec3 position{floor.x,0.86f,0.f};
+        cpu.add_static_box({0.6f,0.5f,0.6f},floor);
+        gpu.add_static_box({0.6f,0.5f,0.6f},floor);
+        cpu_bodies[i]=cpu.add_dynamic_box({0.5f,0.5f,0.5f},position,1.f);
+        gpu_bodies[i]=gpu.add_dynamic_box({0.5f,0.5f,0.5f},position,1.f);
+        if(i==0u || i+1u==cpu_bodies.size()) {
+            const Vec3 slide{0.15f,0.f,-0.1f};
+            cpu.set_velocity(cpu_bodies[i],slide);
+            gpu.set_velocity(gpu_bodies[i],slide);
+        }
+    }
+    const Vec3 first{-16.f,1.0f,0.f};
+    const Vec3 second{-16.f,1.82f,0.f};
+    const BodyId pair_cpu_a=cpu.add_dynamic_box(
+        {0.5f,0.5f,0.5f},first,1.f);
+    const BodyId pair_cpu_b=cpu.add_dynamic_box(
+        {0.5f,0.5f,0.5f},second,1.f);
+    const BodyId pair_gpu_a=gpu.add_dynamic_box(
+        {0.5f,0.5f,0.5f},first,1.f);
+    const BodyId pair_gpu_b=gpu.add_dynamic_box(
+        {0.5f,0.5f,0.5f},second,1.f);
+    const Vec3 joint_first{-32.f,2.f,0.f};
+    const Vec3 joint_second{-30.65f,2.f,0.f};
+    const BodyId joint_cpu_a=cpu.add_dynamic_box(
+        {0.5f,0.5f,0.5f},joint_first,1.f);
+    const BodyId joint_cpu_b=cpu.add_dynamic_box(
+        {0.5f,0.5f,0.5f},joint_second,1.f);
+    const BodyId joint_gpu_a=gpu.add_dynamic_box(
+        {0.5f,0.5f,0.5f},joint_first,1.f);
+    const BodyId joint_gpu_b=gpu.add_dynamic_box(
+        {0.5f,0.5f,0.5f},joint_second,1.f);
+    const Vec3 joint_anchor_a{0.12f,0.2f,-0.1f};
+    const Vec3 joint_anchor_b{-0.08f,-0.15f,0.05f};
+    cpu.create_anchored_distance_constraint(
+        joint_cpu_a,joint_cpu_b,joint_anchor_a,joint_anchor_b,1.f);
+    gpu.create_anchored_distance_constraint(
+        joint_gpu_a,joint_gpu_b,joint_anchor_a,joint_anchor_b,1.f);
+    RigidBodyDynamics joint_dynamics{};
+    joint_dynamics.position_iterations=6u;
+    joint_dynamics.velocity_iterations=3u;
+    cpu.set_dynamics(joint_cpu_a,joint_dynamics);
+    cpu.set_dynamics(joint_cpu_b,joint_dynamics);
+    gpu.set_dynamics(joint_gpu_a,joint_dynamics);
+    gpu.set_dynamics(joint_gpu_b,joint_dynamics);
+    cpu.set_velocity(joint_cpu_a,{0.2f,0.1f,-0.05f});
+    gpu.set_velocity(joint_gpu_a,{0.2f,0.1f,-0.05f});
+    cpu.set_velocity(joint_cpu_b,{-0.15f,0.f,0.05f});
+    gpu.set_velocity(joint_gpu_b,{-0.15f,0.f,0.05f});
+    // A multirow packed joint shares the numerical arena with a cooperative task.
+    const auto sphere_cpu_a=cpu.add_dynamic_box({0.3f,0.3f,0.3f},{-40.f,4.f,0.f},1.f);
+    const auto sphere_cpu_b=cpu.add_dynamic_box({0.3f,0.3f,0.3f},{-38.f,4.f,0.f},1.f);
+    const auto sphere_gpu_a=gpu.add_dynamic_box({0.3f,0.3f,0.3f},{-40.f,4.f,0.f},1.f);
+    const auto sphere_gpu_b=gpu.add_dynamic_box({0.3f,0.3f,0.3f},{-38.f,4.f,0.f},1.f);
+    cpu.create_spherical_constraint(sphere_cpu_a,sphere_cpu_b,{{2.f,0.f,0.f},{}},{});
+    gpu.create_spherical_constraint(sphere_gpu_a,sphere_gpu_b,{{2.f,0.f,0.f},{}},{});
+    for(const auto body:{sphere_cpu_a,sphere_cpu_b})cpu.set_dynamics(body,joint_dynamics);
+    for(const auto body:{sphere_gpu_a,sphere_gpu_b})gpu.set_dynamics(body,joint_dynamics);
+    cpu.set_velocity(sphere_cpu_b,{0.15f,0.05f,0.0f});
+    gpu.set_velocity(sphere_gpu_b,{0.15f,0.05f,0.0f});
+    // Three joint-connected bodies require a cooperative numerical task.
+    std::array<BodyId,3> chain_cpu{},chain_gpu{};
+    for(std::size_t i=0u;i<chain_cpu.size();++i) {
+        const Vec3 position{-48.f+2.f*float(i),4.f,0.f};
+        chain_cpu[i]=cpu.add_dynamic_box({0.3f,0.3f,0.3f},position,1.f);
+        chain_gpu[i]=gpu.add_dynamic_box({0.3f,0.3f,0.3f},position,1.f);
+        cpu.set_dynamics(chain_cpu[i],joint_dynamics);
+        gpu.set_dynamics(chain_gpu[i],joint_dynamics);
+        if(i) {
+            cpu.create_center_distance_constraint(chain_cpu[i-1u],chain_cpu[i],1.8f);
+            gpu.create_center_distance_constraint(chain_gpu[i-1u],chain_gpu[i],1.8f);
+        }
+    }
+    cpu.add_static_sphere(0.5f,{-64.f,4.f,0.f});
+    gpu.add_static_sphere(0.5f,{-64.f,4.f,0.f});
+    const auto contact_cpu=cpu.add_dynamic_sphere(0.5f,{-64.f,4.83f,0.f},1.f);
+    const auto contact_gpu=gpu.add_dynamic_sphere(0.5f,{-64.f,4.83f,0.f},1.f);
+    bool saw_dependent_task=false;
+    for(unsigned frame=0;frame<3u;++frame) {
+        cpu.step(1.f/120.f);
+        gpu.step(1.f/120.f);
+        const auto schedule=producer->dy_launch_stats();
+        native::GpuPcmFrictionAnchorFixture::
+            verify_gpu_source_candidate_descriptors(gpu);
+        const auto expected=frame==0u
+            ?cpu_bodies.size()+2u:cpu_bodies.size();
+        const bool valid=device_admission
+            ?schedule.device_island_indirect_dispatches==1u &&
+             schedule.device_admitted_tasks>=expected &&
+             schedule.device_admitted_descriptors>=expected &&
+             producer->sc_island_dispatch_count()==1u &&
+             producer->sc_island_remap_dispatch_count()==0u &&
+             !producer->sc_island_deferred_joint_remap() &&
+             schedule.wide_tasks==0u
+            :schedule.host_lane_packed_tasks>=expected &&
+             schedule.device_island_indirect_dispatches==0u &&
+             schedule.wide_tasks==0u;
+        if(!valid)
+            throw std::runtime_error(
+                "Independent Sc islands lost their numerical task execution: frame="+
+                std::to_string(frame)+
+                " packed="+std::to_string(schedule.host_lane_packed_tasks)+
+                " admitted="+std::to_string(schedule.device_admitted_tasks)+
+                " descriptors="+std::to_string(schedule.device_admitted_descriptors)+
+                " indirect="+
+                    std::to_string(schedule.device_island_indirect_dispatches)+
+                " wide="+std::to_string(schedule.wide_tasks)+
+                " contacts="+std::to_string(gpu.contacts().size())+
+                " largest_island="+
+                    std::to_string(gpu.largest_accurate_island_size()));
+        if(!device_admission &&
+           schedule.host_lane_packed_tasks==schedule.device_colored_tasks)
+            require(schedule.device_generated_bytes==0u,
+                "Packed-only Dy allocated unused sorted descriptors or partitions");
+        if(!device_admission)
+            require(schedule.local_joint_rows==1u &&
+                    schedule.joint_numerical_bytes==
+                        (schedule.device_joint_input_rows-1u)*sizeof(native::GpuDyJointRow) &&
+                    schedule.joint_numerical_bytes>=5u*sizeof(native::GpuDyJointRow),
+                "Mixed packed and cooperative joints lost physical row ownership");
+        else
+            require(schedule.local_joint_rows==0u &&
+                    schedule.joint_numerical_bytes==
+                        schedule.device_joint_input_rows*sizeof(native::GpuDyJointRow),
+                "Device-admitted joint capacity lost its conservative bound");
+        if(frame==0u) {
+            std::size_t contacts=0u;
+            for(const auto& manager:gpu.contacts())contacts+=manager.count;
+            require(schedule.local_normal_rows==1u &&
+                    (device_admission || schedule.normal_numerical_bytes==(contacts-1u)*44u) &&
+                    schedule.local_friction_rows==2u &&
+                    schedule.friction_numerical_bytes==
+                        (producer->dy_friction_prepared_rows()-2u)*sizeof(native::GpuDyFrictionRow),
+                "Packed single-point contact retained global numerical storage");
+        }
+        test::compound_compare_state(gpu.body_state(contact_gpu),cpu.body_state(contact_cpu),
+            0.03f,"Packed single-point normal changed rigid contact motion");
+        saw_dependent_task |= device_admission
+            ?gpu.largest_accurate_island_size()>=3u
+            :schedule.host_lane_packed_tasks<
+                schedule.device_colored_tasks;
+        require(cpu.contacts().size()>=cpu_bodies.size() &&
+                cpu.contacts().size()==gpu.contacts().size() &&
+                cpu.solved_normal_impulses().size()==
+                    gpu.solved_normal_impulses().size(),
+            "Packed CPU-admitted islands changed Sc contact publication");
+        for(std::size_t i=0;i<cpu_bodies.size();++i)
+            test::compound_compare_state(
+                gpu.body_state(gpu_bodies[i]),cpu.body_state(cpu_bodies[i]),
+                0.03f,"Packed GPU singleton diverged from CPU rigid contact");
+        test::compound_compare_state(
+            gpu.body_state(pair_gpu_a),cpu.body_state(pair_cpu_a),
+            0.03f,"Packed GPU two-body contact changed the first response");
+        test::compound_compare_state(
+            gpu.body_state(pair_gpu_b),cpu.body_state(pair_cpu_b),
+            0.03f,"Packed GPU two-body contact changed the second response");
+        test::compound_compare_state(
+            gpu.body_state(joint_gpu_a),cpu.body_state(joint_cpu_a),
+            0.03f,"Packed GPU two-body joint changed the first response");
+        test::compound_compare_state(
+            gpu.body_state(joint_gpu_b),cpu.body_state(joint_cpu_b),
+            0.03f,"Packed GPU two-body joint changed the second response");
+        test::compound_compare_state(
+            gpu.body_state(sphere_gpu_a),cpu.body_state(sphere_cpu_a),
+            0.03f,"Packed multirow joint changed the first response");
+        test::compound_compare_state(
+            gpu.body_state(sphere_gpu_b),cpu.body_state(sphere_cpu_b),
+            0.03f,"Packed multirow joint changed the second response");
+        for(std::size_t i=0u;i<chain_cpu.size();++i)
+            test::compound_compare_state(
+                gpu.body_state(chain_gpu[i]),cpu.body_state(chain_cpu[i]),
+                0.03f,"Cooperative joint chain changed body motion");
+    }
+    require(saw_dependent_task,
+            "Mixed Sc contact/joint island did not exercise general GPU Dy");
+}
+
 int main(int argc,char** argv) {
     try {
-        require(argc>=4 && argc<=6,
+        require(argc>=4 && argc<=7,
                 "Expected SAP/PCM manifests, source Dy and convex Dy shaders, optional scenario");
         const bool has_convex_shader=argc>=5 &&
             (std::string_view(argv[4]).ends_with(".spv") ||
              std::string_view(argv[4]).ends_with(".dxil"));
-        const std::string_view scenario=argc==6?argv[5]:
+        const std::string_view scenario=argc>=6?argv[5]:
             (argc==5 && !has_convex_shader?argv[4]:"all");
+        if((scenario=="hardware_scene_1k" || scenario=="hardware_scene_10k") &&
+           argc==7)
+            require(std::string_view(argv[6])=="gpu-first",
+                    "Unknown hardware scenario execution-order selector");
         require(scenario=="all" || scenario=="scene" ||
+                scenario=="sap_overlap" || scenario=="aggregate_coupled" ||
                 scenario=="sparse_contacts" || scenario=="coupled_stack" ||
-                scenario=="coupled_solver" || scenario=="legacy_gu_solver" ||
-                scenario=="mixed_solver" || scenario=="distance_solver" ||
+                scenario=="coupled_solver" || scenario=="single_island" ||
+                scenario=="legacy_gu_solver" ||
+                scenario=="mixed_solver" || scenario=="dy_switch" ||
+                scenario=="plane_only_pcm" ||
+                scenario=="distance_solver" || scenario=="host_packed" ||
                 scenario=="compound_shapes" || scenario=="compound_solver" ||
                 scenario=="sphere_solver" || scenario=="convex_plane" ||
                 scenario=="convex_finite" || scenario=="wide_islands" ||
@@ -3200,17 +10557,46 @@ int main(int argc,char** argv) {
                 scenario=="star_island" ||
                 scenario=="dual_hub" ||
                 scenario=="star_island_10k" ||
-                scenario=="free_integration",
+                scenario=="free_integration" ||
+                scenario=="device_admission" ||
+                scenario=="friction_normal" ||
+                scenario=="device_admission_scene" ||
+                scenario=="device_admission_mixed_scene" ||
+                scenario=="device_admission_joint_scene" ||
+                scenario=="indirect_api" ||
+                scenario=="hardware_scene_1k" ||
+                scenario=="hardware_scene_10k" ||
+                scenario=="wide_islands_diagnose" ||
+                scenario=="wide_islands_diagnose_no_friction" ||
+                scenario=="wide_islands_diagnose_no_strong_friction",
                 "Unknown GPU scene regression scenario");
 #ifdef FYZZXYZZY_TEST_D3D12
         constexpr auto backend=fyzz::compute::Backend::D3D12;
 #else
         constexpr auto backend=fyzz::compute::Backend::Vulkan;
 #endif
+        const auto adapters=fyzz::compute::enumerate_devices(backend);
+        require(!adapters.empty(),"No compute adapter is available");
+        const auto& adapter=adapters.front();
+        std::cout<<"FYZZXYZZY_ADAPTER backend="
+                 <<(backend==fyzz::compute::Backend::D3D12?"d3d12":"vulkan")
+                 <<" ordinal="<<adapter.ordinal
+                 <<" vendor_id="<<adapter.vendor_id
+                 <<" device_id="<<adapter.device_id
+                 <<" subgroup_size="<<adapter.subgroup_size
+                 <<" max_workgroup_count_x="<<adapter.max_workgroup_count[0]
+                 <<" unified_memory="<<adapter.unified_memory
+                 <<" name=\""<<adapter.name<<"\"\n";
         verify_rigid_shader_requirements(backend,argv[3]);
         if(scenario=="all" || scenario=="compound_shapes")
             fyzz::tests::measure_gpu_case("sc_pcm","compound_shapes",
                 [&]{verify_compound_shape_gpu_pairs(backend,argv[1]);});
+        if(scenario=="all" || scenario=="sap_overlap")
+            fyzz::tests::measure_gpu_case("sc_pcm","sap_overlap",
+                [&]{
+                    verify_sap_overlap_rejection_rebuild(backend,argv[1]);
+                    verify_sc_only_dirty_sap_skip(backend,argv[1]);
+                });
         if(scenario=="all" || scenario=="compound_solver")
             fyzz::tests::measure_gpu_case("sc_pcm","compound_solver",
                 [&]{verify_compound_actor_gpu_solver(backend,argv[1],argv[2],argv[3]);});
@@ -3219,7 +10605,11 @@ int main(int argc,char** argv) {
                 [&]{
                     verify_sphere_gpu_solver(
                         backend,argv[1],argv[2],argv[3]);
+                    verify_exclusive_resident_normals(
+                        backend,argv[1],argv[2],argv[3]);
                     verify_host_primitive_pcm_solver(
+                        backend,argv[1],argv[2],argv[3]);
+                    verify_zero_touch_gpu_pcm_transfer(
                         backend,argv[1],argv[2],argv[3]);
                 });
         if(scenario=="all" || scenario=="convex_plane")
@@ -3240,9 +10630,78 @@ int main(int argc,char** argv) {
                     verify_convex_face_dispatch_window(
                         backend,argv[1],argv[2]);
                 });
+        if(scenario=="indirect_api")
+            fyzz::tests::measure_gpu_case("sc_pcm","indirect_api",
+                [&]{verify_device_sc_dy_indirect_api(
+                    backend,argv[1],argv[2],argv[3]);});
+        if(scenario=="device_admission")
+            fyzz::tests::measure_gpu_case("sc_pcm","device_admission",
+                [&]{
+                    verify_device_sc_dy_task_admission(
+                        backend,argv[1],argv[2],argv[3]);
+                    verify_device_sc_dy_compact_contact_ranges(
+                        backend,argv[1],argv[2],argv[3]);
+                    verify_device_sc_dy_compact_contact_ranges(
+                        backend,argv[1],argv[2],argv[3],true);
+                    verify_mixed_pre_witness_numerical(
+                        backend,argv[1],argv[2],argv[3]);
+                    verify_device_sc_dy_sparse_task_windows(
+                        backend,argv[1],argv[2],argv[3]);
+                    verify_device_sc_dy_sparse_task_windows(
+                        backend,argv[1],argv[2],argv[3],true);
+                });
+        if(scenario=="all" || scenario=="friction_normal")
+            fyzz::tests::measure_gpu_case("sc_pcm","friction_normal",
+                [&]{
+                    verify_pcm_friction_normal_revalidation(
+                        backend,argv[1],argv[2],argv[3]);
+                    verify_scene_normal_only_multi_patch(
+                        backend,argv[1],argv[2],argv[3]);
+                });
+        if(scenario=="device_admission_scene")
+            fyzz::tests::measure_gpu_case("sc_pcm","device_admission_scene",
+                [&]{
+                    verify_gpu_single_island_hybrid_solver(
+                        backend,argv[1],argv[2],argv[3],true);
+                    verify_connected_pre_witness_island_admission(
+                        backend,argv[1],argv[2],argv[3]);
+                    verify_single_body_pre_witness_contact(
+                        backend,argv[1],argv[2],argv[3]);
+                    verify_sleeping_new_touch_device_admission(
+                        backend,argv[1],argv[2],argv[3]);
+                    verify_world_device_island_admission(
+                        backend,argv[1],argv[2],argv[3]);
+                    verify_early_pcm_island_pipeline(
+                        backend,argv[1],argv[2],argv[3]);
+                    verify_early_pcm_island_pipeline(
+                        backend,argv[1],argv[2],argv[3],true);
+                    verify_early_pcm_island_pipeline(
+                        backend,argv[1],argv[2],argv[3],false,true);
+                    verify_early_pcm_island_pipeline(
+                        backend,argv[1],argv[2],argv[3],true,true);
+                    verify_early_pcm_island_pipeline(
+                        backend,argv[1],argv[2],argv[3],
+                        false,false,false,true);
+                    verify_single_pcm_joint_island_admission(
+                        backend,argv[1],argv[2],argv[3]);
+                    verify_sparse_large_device_response_graph(
+                        backend,argv[1],argv[2],argv[3]);
+                    verify_resident_wide_device_response(
+                        backend,argv[1],argv[2],argv[3]);
+                    verify_early_pcm_island_pipeline(
+                        backend,argv[1],argv[2],argv[3],
+                        false,false,true);
+                    verify_host_lane_packed_islands(
+                        backend,argv[1],argv[2],argv[3],true);
+                });
         if(scenario=="all" || scenario=="scene")
             fyzz::tests::measure_gpu_case("sc_pcm","scene",
-                [&]{verify(backend,argv[1],argv[2]);});
+                [&]{
+                    verify(backend,argv[1],argv[2]);
+                    verify_queued_pcm_dy(backend,argv[1],argv[2],argv[3]);
+                    verify_device_sc_dy_task_admission(
+                        backend,argv[1],argv[2],argv[3]);
+                });
         if(scenario=="all" || scenario=="sparse_contacts")
             fyzz::tests::measure_gpu_case("sc_pcm","sparse_contacts",
                 [&]{
@@ -3253,6 +10712,10 @@ int main(int argc,char** argv) {
         if(scenario=="all" || scenario=="coupled_stack")
             fyzz::tests::measure_gpu_case("sc_pcm","coupled_stack",
                 [&]{verify_coupled_rigid_stack(backend,argv[1],argv[2]);});
+        if(scenario=="all" || scenario=="single_island")
+            fyzz::tests::measure_gpu_case("sc_pcm","single_island",
+                [&]{verify_gpu_single_island_hybrid_solver(
+                    backend,argv[1],argv[2],argv[3]);});
         if(scenario=="all" || scenario=="coupled_solver")
             fyzz::tests::measure_gpu_case("sc_pcm","coupled_solver",
                 [&]{
@@ -3264,13 +10727,52 @@ int main(int argc,char** argv) {
             fyzz::tests::measure_gpu_case("sc_pcm","legacy_gu_solver",
                 [&]{verify_cpu_gu_gpu_dy_solver(
                     backend,argv[1],argv[2],argv[3]);});
+        if(scenario=="aggregate_coupled") {
+            require(argc==7 && has_convex_shader,
+                "Integrated aggregate scene needs the aggregate manifest");
+            fyzz::tests::measure_gpu_case("sc_pcm","aggregate_coupled",
+                [&]{
+                    verify_aggregate_snapshot_in_producer_submission(
+                        backend,argv[1],argv[6]);
+                    verify_integrated_aggregate_gpu_pipeline(
+                        backend,argv[1],argv[2],argv[3],argv[4],argv[6]);
+                });
+        }
+        if(scenario=="all" || scenario=="plane_only_pcm")
+            fyzz::tests::measure_gpu_case("sc_pcm","plane_only_pcm",
+                [&]{verify_plane_pcm_without_finite_pcm(
+                    backend,argv[1],argv[2],argv[3]);});
+        if(scenario=="all" || scenario=="dy_switch")
+            fyzz::tests::measure_gpu_case("sc_pcm","dy_switch",
+                [&]{verify_dy_execution_switch(
+                    backend,argv[1],argv[2],argv[3]);});
         if(scenario=="all" || scenario=="mixed_solver")
             fyzz::tests::measure_gpu_case("sc_pcm","mixed_solver",
                 [&]{verify_mixed_gu_pcm_gpu_dy_solver(
                     backend,argv[1],argv[2],argv[3]);});
+        if(scenario=="device_admission_mixed_scene")
+            fyzz::tests::measure_gpu_case("sc_pcm","device_admission_mixed_scene",
+                [&]{
+                    verify_mixed_gu_pcm_gpu_dy_solver(
+                        backend,argv[1],argv[2],argv[3],true);
+                    verify_mixed_gu_pcm_gpu_dy_solver(
+                        backend,argv[1],argv[2],argv[3],true,true);
+                });
         if(scenario=="all" || scenario=="distance_solver")
             fyzz::tests::measure_gpu_case("sc_pcm","distance_solver",
                 [&]{verify_gpu_distance_solver(
+                    backend,argv[1],argv[2],argv[3]);});
+        if(scenario=="device_admission_joint_scene")
+            fyzz::tests::measure_gpu_case("sc_pcm","device_admission_joint_scene",
+                [&]{
+                    verify_joint_only_device_admission(
+                        backend,argv[1],argv[2],argv[3]);
+                    verify_gpu_distance_solver(
+                        backend,argv[1],argv[2],argv[3],true);
+                });
+        if(scenario=="all" || scenario=="host_packed")
+            fyzz::tests::measure_gpu_case("sc_pcm","host_packed",
+                [&]{verify_host_lane_packed_islands(
                     backend,argv[1],argv[2],argv[3]);});
         if(scenario=="all" || scenario=="free_integration")
             fyzz::tests::measure_gpu_case("sc_pcm","free_integration",
@@ -3283,6 +10785,10 @@ int main(int argc,char** argv) {
             fyzz::tests::measure_gpu_case("sc_pcm","multiwave_coloring",
                 [&]{verify_gpu_high_degree_coloring(
                     backend,argv[1],argv[2],argv[3]);});
+        if(scenario=="all" || scenario=="wide_islands")
+            fyzz::tests::measure_gpu_case("sc_pcm","pure_dynamic_hub",
+                [&]{verify_gpu_high_degree_coloring(
+                    backend,argv[1],argv[2],argv[3],36u,false,2u,true);});
         if(scenario=="all" || scenario=="wide_islands" ||
            scenario=="star_island")
             fyzz::tests::measure_gpu_case("sc_pcm","star_island",
@@ -3291,17 +10797,34 @@ int main(int argc,char** argv) {
         if(scenario=="dual_hub")
             fyzz::tests::measure_gpu_case("sc_pcm","dual_hub",
                 [&]{verify_gpu_high_degree_coloring(
-                    backend,argv[1],argv[2],argv[3],68u,true,1u);});
+                    backend,argv[1],argv[2],argv[3],68u,true,2u);});
         if(scenario=="star_island_10k")
             fyzz::tests::measure_gpu_case("sc_pcm","star_island_10k",
                 [&]{verify_gpu_high_degree_coloring(
                     backend,argv[1],argv[2],argv[3],10000u);});
-        if(scenario=="all" || scenario=="wide_islands" || scenario=="wide_islands_10k") {
+        if(scenario=="all" || scenario=="wide_islands" ||
+           scenario=="wide_islands_10k" ||
+           scenario=="wide_islands_diagnose" ||
+           scenario=="wide_islands_diagnose_no_friction" ||
+           scenario=="wide_islands_diagnose_no_strong_friction") {
             const bool large=scenario=="wide_islands_10k";
-            fyzz::tests::measure_gpu_case("sc_pcm",large ? "wide_islands_10k" : "wide_islands",
+            const bool diagnose=scenario.starts_with("wide_islands_diagnose");
+            const bool no_friction=scenario=="wide_islands_diagnose_no_friction";
+            const bool no_strong_friction=
+                scenario=="wide_islands_diagnose_no_strong_friction";
+            fyzz::tests::measure_gpu_case("sc_pcm",scenario=="all" ?
+                "wide_islands" : scenario,
                 [&]{verify_gpu_wide_island_solver(
-                    backend,argv[1],argv[2],argv[3],large ? 10240u : 768u);});
+                    backend,argv[1],argv[2],argv[3],
+                    large ? 10240u : 768u,diagnose,
+                    no_friction,no_strong_friction);});
         }
+        if(scenario=="hardware_scene_1k" || scenario=="hardware_scene_10k")
+            fyzz::tests::measure_gpu_case("hardware_scene",scenario,
+                [&]{qualify_hardware_scene(
+                    backend,argv[1],argv[2],argv[3],
+                    scenario=="hardware_scene_1k"?1000u:10000u,
+                    argc==7 && std::string_view(argv[6])=="gpu-first");});
         std::cout<<"Native Sc GPU PCM scene "<<scenario<<" PASS\n";
         return 0;
     }catch(const std::exception& error) {

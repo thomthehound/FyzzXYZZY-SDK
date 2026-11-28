@@ -20,6 +20,9 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
+permissions:
+  contents: read
+
 # Godot version and bindings revision live in godot/dependency.json.
 # Cache identity follows that manifest, cmake/GodotDependency.cmake and
 # the compiler toolchain; unrelated SDK CMake edits do not rebuild bindings.
@@ -93,6 +96,8 @@ jobs:
             build/fyzzxyzzy-godot-cpp-targets.cmake
           key: godotcpp-v6-${{ runner.os }}-${{ runner.arch }}-${{ steps.cache_toolchain.outputs.toolchain }}-${{ hashFiles('godot/dependency.json', 'cmake/GodotDependency.cmake') }}-template_debug-Release
       - name: Configure
+        env:
+          GIT_LFS_SKIP_SMUDGE: '1'
         run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON -DFYZZXYZZY_BUILD_GODOT=ON -DFYZZXYZZY_STRICT_RIGID_FRICTION_CONFORMANCE=ON -DFYZZXYZZY_BUILD_VULKAN=ON -DFYZZXYZZY_BUILD_PHYSX_GPU_AABB_TEST=ON -DFYZZXYZZY_ENABLE_GPU_PHYSICS_PROTOTYPES=ON -DFYZZXYZZY_GODOT_CPP_CACHED=${{ steps.godot_cpp_cache.outputs.cache-hit }}
       - name: Verify SDK C++23 compiler and standard library
         run: |
@@ -192,6 +197,7 @@ jobs:
           timeout 45s "$engine" --headless --path "$project" --script res://tests/headless_smoke.gd \
             2>&1 | tee "${RUNNER_TEMP}/fyzzxyzzy-editor-runtime.log"
           grep -Fq "FyzzXYZZY Godot acceptance PASS" "${RUNNER_TEMP}/fyzzxyzzy-editor-runtime.log"
+
   windows:
     runs-on: windows-latest
     timeout-minutes: 35
@@ -237,8 +243,10 @@ jobs:
             build/fyzzxyzzy-godot-cpp-runtime.cmake
           key: godotcpp-v6-${{ runner.os }}-${{ runner.arch }}-${{ steps.cache_toolchain.outputs.toolchain }}-${{ hashFiles('godot/dependency.json', 'cmake/GodotDependency.cmake') }}-template_debug-Release
       - name: Configure
+        env:
+          GIT_LFS_SKIP_SMUDGE: '1'
         shell: pwsh
-        run: cmake -S . -B build -A x64 -DBUILD_TESTING=ON -DFYZZXYZZY_BUILD_GODOT=ON -DFYZZXYZZY_STRICT_RIGID_FRICTION_CONFORMANCE=ON -DFYZZXYZZY_BUILD_D3D12=ON -DFYZZXYZZY_BUILD_D3D12_AABB_TEST=ON -DFYZZXYZZY_GODOT_CPP_CACHED=${{ steps.godot_cpp_cache.outputs.cache-hit }} "-DFYZZXYZZY_DXC=$env:FYZZXYZZY_DXC"
+        run: cmake -S . -B build -A x64 -DBUILD_TESTING=ON -DFYZZXYZZY_BUILD_GODOT=ON -DFYZZXYZZY_STRICT_RIGID_FRICTION_CONFORMANCE=ON -DFYZZXYZZY_BUILD_D3D12=ON -DFYZZXYZZY_GODOT_CPP_CACHED=${{ steps.godot_cpp_cache.outputs.cache-hit }} "-DFYZZXYZZY_DXC=$env:FYZZXYZZY_DXC"
       - name: Verify SDK C++23 compiler and standard library
         shell: pwsh
         run: |
@@ -294,7 +302,7 @@ jobs:
         run: ctest --test-dir build -C Release -R '^fyzzxyzzy_native_scene_smoke$' --repeat until-fail:32 --output-on-failure
       - name: Preserve native scene crash dumps
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: &upload_diagnostics actions/upload-artifact@v4
         with:
           name: fyzzxyzzy-native-scene-crash-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/fyzzxyzzy-native-scene-dumps/*.dmp
@@ -352,9 +360,13 @@ jobs:
           }
 
   native-no-physx-linux:
-    name: Independent SDK / Vulkan without PhysX
+    name: Independent SDK / Vulkan ${{ matrix.suite }} without PhysX
     runs-on: ubuntu-26.04
-    timeout-minutes: 12
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        suite: [source, profile]
     steps:
       - uses: actions/checkout@v7
       - name: Record Ubuntu release for package-cache isolation
@@ -397,22 +409,55 @@ jobs:
         shell: bash
         run: *install_linux_dxc
       - name: Configure without external source or network
+        if: matrix.suite == 'source'
         run: cmake -S . -B build-native -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON -DFYZZXYZZY_ENABLE_PHYSX_SOURCE=OFF -DFYZZXYZZY_BUILD_VULKAN=ON -DFYZZXYZZY_BUILD_SOURCE_GPU_TESTS=ON -DFYZZXYZZY_ENABLE_GPU_PHYSICS_PROTOTYPES=ON -DFETCHCONTENT_FULLY_DISCONNECTED=ON
-      - name: Build and test native core and compute
+      - name: Build independent SDK
+        if: matrix.suite == 'source'
+        run: cmake --build build-native --parallel 4
+      - name: Test independent Vulkan SDK
+        if: matrix.suite == 'source'
+        shell: bash
+        env:
+          # Software Vulkan qualifies numerical behavior, not JIT optimization.
+          GALLIVM_PERF: nopt
+        run: ctest --test-dir build-native --parallel 2 --output-on-failure --no-tests=error --output-junit ctest-results.xml
+      - name: Validate independent SDK outputs and summarize metrics
+        if: matrix.suite == 'source'
         shell: bash
         run: |
-          cmake --build build-native --parallel 4
-          ctest --test-dir build-native --output-on-failure
           grep -F 'FYZZXYZZY_METRIC' build-native/Testing/Temporary/LastTest.log | tee -a "$GITHUB_STEP_SUMMARY"
           test ! -d build-native/_deps/fyzzxyzzy_physx-src
           test -f build-native/libfyzzxyzzy_core.a
           test -f build-native/libfyzzxyzzy_compute.a
           test -f build-native/libfyzzxyzzy_source_gpu_primitives.a
+      - name: Compile instrumented Vulkan scene with the production execution graph
+        if: matrix.suite == 'profile'
+        shell: bash
+        run: |
+          cmake -S . -B build-profile-vulkan -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON -DFYZZXYZZY_ENABLE_PHYSX_SOURCE=OFF -DFYZZXYZZY_BUILD_VULKAN=ON -DFYZZXYZZY_BUILD_SOURCE_GPU_TESTS=ON -DFYZZXYZZY_PROFILE_GPU=ON -DFETCHCONTENT_FULLY_DISCONNECTED=ON
+          cmake --build build-profile-vulkan --target fyzzxyzzy_source_sc_gpu_pcm_scene fyzzxyzzy_hardware_profile_stream --parallel 4
+          ctest --test-dir build-profile-vulkan -R '^fyzzxyzzy_hardware_profile_stream$' --output-on-failure --no-tests=error --output-junit ctest-results.xml
+      - name: Preserve Vulkan diagnostics
+        if: failure()
+        uses: *upload_diagnostics
+        with:
+          name: vulkan-${{ matrix.suite }}-diagnostics-${{ github.run_attempt }}
+          path: |
+            build-native/ctest-results.xml
+            build-native/Testing/Temporary/
+            build-profile-vulkan/ctest-results.xml
+            build-profile-vulkan/Testing/Temporary/
+          if-no-files-found: ignore
+          retention-days: 7
 
   native-no-physx-windows:
-    name: Independent SDK / D3D12 without PhysX
+    name: Independent SDK / D3D12 ${{ matrix.suite }} without PhysX
     runs-on: windows-latest
-    timeout-minutes: 20
+    timeout-minutes: 35
+    strategy:
+      fail-fast: false
+      matrix:
+        suite: [source, aabb, profile]
     steps:
       - uses: actions/checkout@v7
       - name: Locate Windows SDK DXC for reference-free source GPU conformance
@@ -424,21 +469,116 @@ jobs:
             Sort-Object FullName -Descending | Select-Object -First 1)
           if (-not $dxc) { throw 'Windows SDK DXC is required for source GPU conformance' }
           "FYZZXYZZY_DXC=$($dxc[0].FullName)" >> $env:GITHUB_ENV
+      - name: Validate hardware qualification script syntax
+        if: matrix.suite == 'profile'
+        shell: pwsh
+        run: |
+          $tokens = $null
+          $parseErrors = $null
+          [System.Management.Automation.Language.Parser]::ParseFile(
+            (Resolve-Path 'tools/hardware/qualify.ps1').Path,
+            [ref]$tokens, [ref]$parseErrors) | Out-Null
+          if ($parseErrors.Count -ne 0) {
+            throw ($parseErrors | Out-String)
+          }
+      - name: Regenerate qualification summary from existing evidence
+        if: matrix.suite == 'profile'
+        shell: pwsh
+        run: |
+          $evidence = Join-Path $env:RUNNER_TEMP 'qualify-report-regression'
+          New-Item -ItemType Directory -Path $evidence -Force | Out-Null
+          $record = [ordered]@{
+            backend = 'Vulkan'
+            case = 'hardware_scene_1k'
+            phase = 'sample'
+            run = 0
+            log = 'sample.log'
+            exit_code = 0
+            process_wall_ms = 16.0
+            metrics = @(
+              @{ suite = 'hardware_step'; gpu_dy = 0.0; step_ms = 1.25 },
+              @{ suite = 'hardware_step'; gpu_dy = 1.0; step_ms = 1.5 }
+            )
+          }
+          $record | ConvertTo-Json -Compress -Depth 8 |
+            Set-Content -LiteralPath (Join-Path $evidence 'runs.jsonl')
+          @(
+            @{ kind = 'pipeline'; context = 1; pipeline = 7; label = 'dy.distance_pgs' },
+            @{ kind = 'frame'; trace_id = 1; frame = 7; gpu_dy = 1; success = 1 },
+            @{ kind = 'gpu'; context = 1; pipeline = 7; trace_id = 1; type = 'compute'; duration_ns = 150000 },
+            @{ kind = 'cpu'; trace_id = 1; stage = 'dy.prep'; duration_ns = 100000 }
+          ) | ForEach-Object {
+            @{
+              backend = 'Vulkan'
+              case = 'hardware_scene_1k'
+              phase = 'sample'
+              log = 'sample.log'
+              event = $_
+            } | ConvertTo-Json -Compress -Depth 8
+          } | Set-Content -LiteralPath (Join-Path $evidence 'trace.jsonl')
+          pwsh -NoProfile -File tools/hardware/qualify.ps1 -SummarizeEvidence $evidence
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $summary = @(Get-Content -LiteralPath (Join-Path $evidence 'summary.json') -Raw | ConvertFrom-Json)
+          $stages = @(Get-Content -LiteralPath (Join-Path $evidence 'stages.json') -Raw | ConvertFrom-Json)
+          if ($summary.Count -ne 1 -or $summary[0].gpu_frame_p50_ms -ne 1.5 -or
+              $stages.Count -ne 2 -or
+              @($stages | Where-Object { $_.stage -eq 'dy.distance_pgs' -and
+                $_.segment_p50_ms -eq 0.15 }).Count -ne 1) {
+            throw 'Qualification evidence reporting regression'
+          }
       - name: Configure without external source or network
+        if: matrix.suite != 'profile'
         shell: pwsh
-        run: cmake -S . -B build-native -A x64 -DBUILD_TESTING=ON -DFYZZXYZZY_ENABLE_PHYSX_SOURCE=OFF -DFYZZXYZZY_BUILD_D3D12=ON -DFYZZXYZZY_BUILD_SOURCE_GPU_TESTS=ON -DFETCHCONTENT_FULLY_DISCONNECTED=ON "-DFYZZXYZZY_DXC=$env:FYZZXYZZY_DXC"
-      - name: Build and test native core and compute on WARP
-        shell: pwsh
+        run: |
+          $sourceTests = if ('${{ matrix.suite }}' -eq 'source') { 'ON' } else { 'OFF' }
+          $aabbTests = if ('${{ matrix.suite }}' -eq 'aabb') { 'ON' } else { 'OFF' }
+          cmake -S . -B build-native -A x64 -DBUILD_TESTING=ON -DFYZZXYZZY_ENABLE_PHYSX_SOURCE=OFF -DFYZZXYZZY_BUILD_D3D12=ON -DFYZZXYZZY_BUILD_SOURCE_GPU_TESTS=$sourceTests -DFYZZXYZZY_BUILD_D3D12_AABB_TEST=$aabbTests -DFETCHCONTENT_FULLY_DISCONNECTED=ON "-DFYZZXYZZY_DXC=$env:FYZZXYZZY_DXC"
+      - name: Build independent SDK
+        if: matrix.suite != 'profile'
+        run: cmake --build build-native --config Release --parallel 4
+      - name: Test independent SDK on WARP
+        if: matrix.suite != 'profile'
         env:
           FYZZXYZZY_D3D12_FORCE_WARP: '1'
+        run: ctest --test-dir build-native -C Release -LE '^d3d12-extended$' --output-on-failure --stop-on-failure --no-tests=error --output-junit ctest-results.xml
+      - name: Validate independent SDK outputs and summarize metrics
+        if: matrix.suite != 'profile'
+        shell: pwsh
         run: |
-          cmake --build build-native --config Release --parallel 4
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          ctest --test-dir build-native -C Release -LE '^d3d12-extended$' --output-on-failure --stop-on-failure
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          $measurements = @(Select-String -Path 'build-native/Testing/Temporary/LastTest.log' -Pattern 'FYZZXYZZY_METRIC' |
-            ForEach-Object { $_.Line })
-          if (-not $measurements) { throw 'Native GPU integration measurements missing' }
-          $measurements | Tee-Object -FilePath $env:GITHUB_STEP_SUMMARY -Append
+          if ('${{ matrix.suite }}' -eq 'source') {
+            $measurements = @(Select-String -Path 'build-native/Testing/Temporary/LastTest.log' -Pattern 'FYZZXYZZY_METRIC' |
+              ForEach-Object { $_.Line })
+            if (-not $measurements) { throw 'Native GPU integration measurements missing' }
+            $measurements | Tee-Object -FilePath $env:GITHUB_STEP_SUMMARY -Append
+          }
           if (Test-Path 'build-native/_deps/fyzzxyzzy_physx-src') { throw 'Native-only build unexpectedly fetched source dependencies' }
           if (-not (Test-Path 'build-native/Release/fyzzxyzzy_source_gpu_primitives_d3d12.lib')) { throw 'Independent source GPU primitive library missing' }
+      - name: Compile instrumented D3D12 scene with the production execution graph
+        if: matrix.suite == 'profile'
+        shell: pwsh
+        run: |
+          cmake -S . -B build-profile-d3d12 -A x64 -DBUILD_TESTING=ON -DFYZZXYZZY_ENABLE_PHYSX_SOURCE=OFF -DFYZZXYZZY_BUILD_D3D12=ON -DFYZZXYZZY_BUILD_SOURCE_GPU_TESTS=ON -DFYZZXYZZY_PROFILE_GPU=ON -DFETCHCONTENT_FULLY_DISCONNECTED=ON "-DFYZZXYZZY_DXC=$env:FYZZXYZZY_DXC"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cmake --build build-profile-d3d12 --config Release --target fyzzxyzzy_source_sc_gpu_pcm_scene_d3d12 fyzzxyzzy_hardware_profile_stream --parallel 4
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          ctest --test-dir build-profile-d3d12 -C Release -R '^fyzzxyzzy_hardware_profile_stream$' --output-on-failure --no-tests=error --output-junit ctest-results.xml
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Validate qualified D3D12 shader artifact inventory
+        if: matrix.suite == 'profile'
+        shell: pwsh
+        run: |
+          pwsh -NoProfile -File tools/hardware/qualify.ps1 -Backend D3D12 -ValidateArtifactsOnly
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Preserve D3D12 diagnostics
+        if: failure()
+        uses: *upload_diagnostics
+        with:
+          name: d3d12-${{ matrix.suite }}-diagnostics-${{ github.run_attempt }}
+          path: |
+            build-native/ctest-results.xml
+            build-native/Testing/Temporary/
+            build-profile-d3d12/ctest-results.xml
+            build-profile-d3d12/Testing/Temporary/
+          if-no-files-found: ignore
+          retention-days: 7

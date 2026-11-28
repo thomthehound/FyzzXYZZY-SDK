@@ -7,6 +7,11 @@
 // setup; this layer never interprets CUDA virtual addresses.
 
 #include "fyzzxyzzy/compute.h"
+#include "compute_readback_cache.h"
+#include "compute_range_hazards.h"
+#if defined(FYZZXYZZY_PROFILE_GPU)
+#include "hardware_profile.h"
+#endif
 
 #ifndef _WIN32
 #error D3D12 compute is Windows-only
@@ -25,6 +30,11 @@
 #include <array>
 #include <cstdlib>
 #include <cstring>
+#include <exception>
+#include <functional>
+#if defined(FYZZXYZZY_PROFILE_GPU)
+#include <cstdio>
+#endif
 #include <iostream>
 #include <limits>
 #include <stdexcept>
@@ -91,6 +101,8 @@ std::vector<Candidate> discover_adapters() {
         info.name = adapter_name(description);
         info.vendor_id = description.VendorId;
         info.device_id = description.DeviceId;
+        info.software_adapter =
+            (description.Flags & DXGI_ADAPTER_FLAG_SOFTWARE) != 0;
         info.api_version = D3D_FEATURE_LEVEL_12_0;
         info.max_storage_buffer_range = static_cast<std::uint64_t>(
             std::numeric_limits<std::uint32_t>::max()) * 4ull;
@@ -103,9 +115,13 @@ std::vector<Candidate> discover_adapters() {
         info.max_workgroup_size[2] = 64;
         // Query the real adapter: a DXIL shader compiling under DXC
         // says nothing about WaveOps support on the selected device.
-        ComPtr<ID3D12Device> probe;
-        check(D3D12CreateDevice(adapter.Get(), D3D_FEATURE_LEVEL_12_0,
-                                IID_PPV_ARGS(&probe)), "D3D12 feature probe");
+        ComPtr<ID3D12Device10> probe;
+        if(FAILED(D3D12CreateDevice(adapter.Get(), D3D_FEATURE_LEVEL_12_0,
+                                   IID_PPV_ARGS(&probe))))return;
+        D3D12_FEATURE_DATA_D3D12_OPTIONS12 enhanced{};
+        if(FAILED(probe->CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS12,
+                &enhanced,sizeof(enhanced))) || !enhanced.EnhancedBarriersSupported)
+            return;
         D3D12_FEATURE_DATA_D3D12_OPTIONS1 opts{};
         const bool waveOps =
             SUCCEEDED(probe->CheckFeatureSupport(
@@ -153,7 +169,7 @@ std::vector<Candidate> discover_adapters() {
                 if (heap.Type == D3D12_HEAP_TYPE_CUSTOM &&
                     heap.CPUPageProperty == D3D12_CPU_PAGE_PROPERTY_WRITE_BACK &&
                     heap.MemoryPoolPreference == D3D12_MEMORY_POOL_L0) {
-                    D3D12_RESOURCE_DESC desc{};
+                    D3D12_RESOURCE_DESC1 desc{};
                     desc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
                     desc.Width = 256;
                     desc.Height = 1;
@@ -163,10 +179,10 @@ std::vector<Candidate> discover_adapters() {
                     desc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
                     desc.Flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
                     ComPtr<ID3D12Resource> trial;
-                    if (SUCCEEDED(probe->CreateCommittedResource(
-                            &heap, D3D12_HEAP_FLAG_NONE, &desc,
-                            D3D12_RESOURCE_STATE_COMMON, nullptr,
-                            IID_PPV_ARGS(&trial)))) {
+                    if (SUCCEEDED(probe->CreateCommittedResource3(
+                            &heap,D3D12_HEAP_FLAG_NONE,&desc,
+                            D3D12_BARRIER_LAYOUT_UNDEFINED,nullptr,nullptr,
+                            0u,nullptr,IID_PPV_ARGS(&trial)))) {
                         void* pointer = nullptr;
                         D3D12_RANGE read{0, 0};
                         if (SUCCEEDED(trial->Map(0, &read, &pointer)) && pointer) {
@@ -174,6 +190,7 @@ std::vector<Candidate> discover_adapters() {
                             trial->Unmap(0, &written);
                             info.supports_gpu_writable_host_visible = true;
                             info.has_device_local_host_visible_memory = true;
+                            info.supports_shared_frame_input = true;
                         }
                     }
                 }
@@ -198,15 +215,14 @@ std::vector<Candidate> discover_adapters() {
     return candidates;
 }
 
-ComPtr<ID3D12Resource> allocate_resource(ID3D12Device* device, UINT64 bytes,
+ComPtr<ID3D12Resource> allocate_resource(ID3D12Device10* device, UINT64 bytes,
                                          D3D12_HEAP_TYPE heap_type,
-                                         D3D12_RESOURCE_FLAGS flags,
-                                         D3D12_RESOURCE_STATES initial_state) {
+                                         D3D12_RESOURCE_FLAGS flags) {
     D3D12_HEAP_PROPERTIES heap{};
     heap.Type = heap_type;
     heap.CreationNodeMask = 1;
     heap.VisibleNodeMask = 1;
-    D3D12_RESOURCE_DESC desc{};
+    D3D12_RESOURCE_DESC1 desc{};
     desc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
     desc.Width = std::max<UINT64>(1, bytes);
     desc.Height = 1;
@@ -217,22 +233,28 @@ ComPtr<ID3D12Resource> allocate_resource(ID3D12Device* device, UINT64 bytes,
     desc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
     desc.Flags = flags;
     ComPtr<ID3D12Resource> resource;
-    check(device->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &desc,
-                                          initial_state, nullptr,
-                                          IID_PPV_ARGS(&resource)), "CreateCommittedResource");
+    check(device->CreateCommittedResource3(&heap,D3D12_HEAP_FLAG_NONE,&desc,
+              D3D12_BARRIER_LAYOUT_UNDEFINED,nullptr,nullptr,0u,nullptr,
+              IID_PPV_ARGS(&resource)), "CreateCommittedResource3");
     return resource;
 }
 
-void transition(ID3D12GraphicsCommandList* list, ID3D12Resource* resource,
-                D3D12_RESOURCE_STATES before, D3D12_RESOURCE_STATES after) {
-    if (before == after) return;
-    D3D12_RESOURCE_BARRIER barrier{};
-    barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-    barrier.Transition.pResource = resource;
-    barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-    barrier.Transition.StateBefore = before;
-    barrier.Transition.StateAfter = after;
-    list->ResourceBarrier(1, &barrier);
+void emit_buffer_barriers(ID3D12GraphicsCommandList7* list,
+                          std::span<const D3D12_BUFFER_BARRIER> barriers) {
+    if(barriers.empty())return;
+    D3D12_BARRIER_GROUP group{};
+    group.Type=D3D12_BARRIER_TYPE_BUFFER;
+    group.NumBarriers=static_cast<UINT>(barriers.size());
+    group.pBufferBarriers=barriers.data();
+    list->Barrier(1u,&group);
+}
+
+void order_copy_writes(ID3D12GraphicsCommandList7* list,ID3D12Resource* resource) {
+    const D3D12_BUFFER_BARRIER barrier{
+        D3D12_BARRIER_SYNC_COPY,D3D12_BARRIER_SYNC_COPY,
+        D3D12_BARRIER_ACCESS_COPY_DEST,D3D12_BARRIER_ACCESS_COPY_DEST,
+        resource,0u,UINT64_MAX};
+    emit_buffer_barriers(list,std::span(&barrier,1u));
 }
 
 void validate_range(std::size_t capacity, std::size_t offset, std::size_t bytes) {
@@ -257,6 +279,8 @@ struct Context::Impl {
         bool host_visible = false;
         bool cpu_mapped = false;
         HostMapAccess map_access = HostMapAccess::ReadWrite;
+        bool upload_only = false;
+        std::uint64_t last_reference_fence=0u;
     };
     struct Pipeline {
         ComPtr<ID3D12RootSignature> signature;
@@ -274,13 +298,21 @@ struct Context::Impl {
         std::size_t bytes = 0;
         ID3D12Resource* resource = nullptr;
     };
+#if defined(FYZZXYZZY_PROFILE_GPU)
+    struct ProfileOp {
+        PipelineId pipeline=0;
+        std::size_t bytes=0u;
+        std::uint32_t x=0u,y=0u,z=0u;
+        bool indirect=false;
+    };
+#endif
     struct Submission {
         // A descriptor heap belongs to its completed command submission.
         // These identities describe the live entries in that exact heap.
         std::vector<PipelineId> cached_pipelines;
         std::vector<DescriptorView> cached_views;
         ComPtr<ID3D12CommandAllocator> allocator;
-        ComPtr<ID3D12GraphicsCommandList> commands;
+        ComPtr<ID3D12GraphicsCommandList7> commands;
         ComPtr<ID3D12DescriptorHeap> heap;
         ComPtr<ID3D12QueryHeap> query_heap;
         ComPtr<ID3D12Resource> query_readback;
@@ -288,16 +320,18 @@ struct Context::Impl {
         // It is dropped on fence completion, not retained in command cache.
         ComPtr<ID3D12Resource> owned_upload;
         ComPtr<ID3D12Resource> owned_readback;
-        // Legacy D3D12 cannot set one subresource to both COPY_SOURCE
-        // and COPY_DEST. Non-overlapping same-resource DtoD therefore
-        // uses an all-device-local scratch resource, fence-owned by this
-        // submission. Enhanced-barrier native self-copy remains an
-        // optional future performance optimization.
-        std::vector<ComPtr<ID3D12Resource>> owned_copy_scratch;
         std::uint64_t fence_value = 0;
+#if defined(FYZZXYZZY_PROFILE_GPU)
+        std::vector<ProfileOp> profile_ops;
+        std::uint64_t profile_trace_id=0u;
+        std::uint32_t query_capacity=0u;
+#endif
     };
 
-    ComPtr<ID3D12Device> device;
+#if defined(FYZZXYZZY_PROFILE_GPU)
+    std::uint64_t profile_context_id=hardware_profile::allocate_context_id();
+#endif
+    ComPtr<ID3D12Device10> device;
     ComPtr<ID3D12InfoQueue> debug_messages;
     ComPtr<ID3D12CommandQueue> queue;
     ComPtr<ID3D12Fence> fence;
@@ -317,25 +351,22 @@ struct Context::Impl {
     // Completed command allocator/list and descriptor heap reuse. Never
     // recycle an in-flight allocation: D3D12 Reset requires GPU completion.
     std::vector<Submission> recycled;
-    // The largest completed source relocation scratch can serve later
-    // submissions. In-flight command lists retain their own allocation.
-    ComPtr<ID3D12Resource> completed_copy_scratch;
-    // The source report fetch waits for completion before its next use.
-    // One completed READBACK heap serves subsequent batches.
-    ComPtr<ID3D12Resource> completed_readback;
+    CompletedReadbackCache<ComPtr<ID3D12Resource>> completed_readbacks_;
     struct PendingReadback {
-        SubmissionId submission=0;
         std::size_t bytes=0;
         ComPtr<ID3D12Resource> staging;
         std::vector<DownloadSpan> outputs;
     };
-    PendingReadback pending_readback_{};
-    std::vector<BufferId> readback_sources;
+    std::unordered_map<SubmissionId,PendingReadback> pending_readbacks_;
     static constexpr std::size_t kMaxRecycled = 8;
     BufferId next_buffer = 1;
     PipelineId next_pipeline = 1;
     SubmissionId next_submission = 1;
     std::uint64_t next_fence = 1;
+    std::uint64_t completed_fence = 0;
+#if defined(FYZZXYZZY_PROFILE_GPU)
+    std::uint64_t trace_frequency = 0;
+#endif
     // ExecuteCommandLists can succeed even if queue->Signal fails. This
     // fence value must never be used as a completion target.
     std::uint64_t first_unsignaled_fence = 0;
@@ -344,7 +375,7 @@ struct Context::Impl {
         if (backend != Backend::D3D12) throw std::invalid_argument("Expected D3D12 backend");
         auto adapters = discover_adapters();
         if (ordinal >= adapters.size())
-            throw std::out_of_range("D3D12 adapter ordinal does not exist");
+            throw std::out_of_range("D3D12 adapter with enhanced barriers does not exist");
         info = adapters[ordinal].info;
         if (environment_equals("FYZZXYZZY_D3D12_REQUIRE_HARDWARE",'1')) {
             DXGI_ADAPTER_DESC1 description{};
@@ -379,16 +410,33 @@ struct Context::Impl {
         D3D12_COMMAND_QUEUE_DESC q{};
         q.Type = D3D12_COMMAND_LIST_TYPE_COMPUTE;
         check(device->CreateCommandQueue(&q, IID_PPV_ARGS(&queue)), "CreateCommandQueue");
+#if defined(FYZZXYZZY_PROFILE_GPU)
+        if(FAILED(queue->GetTimestampFrequency(&trace_frequency)))
+            trace_frequency=0u;
+#endif
         check(device->CreateFence(0, D3D12_FENCE_FLAG_NONE,
                                   IID_PPV_ARGS(&fence)), "CreateFence");
+        recycled.reserve(kMaxRecycled);
         completion_event = CreateEventW(nullptr, FALSE, FALSE, nullptr);
         if (!completion_event)
             throw std::runtime_error("CreateEvent failed for D3D12 fence");
     }
 
     ~Impl() {
-        if (queue && fence) {
-            try { wait_all(); } catch (...) {}
+        if (!submissions.empty() && SUCCEEDED(device->GetDeviceRemovedReason())) {
+            const auto last=next_fence-1u;
+            try {
+                if(first_unsignaled_fence) {
+                    // A teardown-only signal drains the poisoned queue without
+                    // publishing the failed submission or admitting more work.
+                    check(queue->Signal(fence.Get(),last),"Signal D3D12 teardown fence");
+                    first_unsignaled_fence=0;
+                    wait_value(last);
+                }else wait_all();
+            }catch(...) {
+                if(completed_fence<last && SUCCEEDED(device->GetDeviceRemovedReason()))
+                    std::terminate();
+            }
         }
         if (completion_event) CloseHandle(completion_event);
     }
@@ -434,6 +482,10 @@ struct Context::Impl {
             check(submission.commands->Reset(submission.allocator.Get(), nullptr),
                   "ResetCommandList");
             submission.fence_value = 0;
+#if defined(FYZZXYZZY_PROFILE_GPU)
+            submission.profile_ops.clear();
+            submission.profile_trace_id=0u;
+#endif
             return submission;
         }
         Submission submission;
@@ -450,21 +502,14 @@ struct Context::Impl {
     void recycle_completed(Submission&& submission) {
         submission.owned_upload.Reset(); // GPU completed; staging no longer referenced.
         submission.owned_readback.Reset();
-        if (!submission.owned_copy_scratch.empty()) {
-            auto& candidate = submission.owned_copy_scratch.front();
-            if (candidate &&
-                (!completed_copy_scratch ||
-                 candidate->GetDesc().Width > completed_copy_scratch->GetDesc().Width))
-                completed_copy_scratch = std::move(candidate);
-            submission.owned_copy_scratch.clear();
-        }
         // The caller must first wait for the submission fence. A cached heap
         // keeps its descriptors only until the next recording overwrites them.
         if (recycled.size() < kMaxRecycled)
             recycled.push_back(std::move(submission));
     }
 
-    SubmissionId enqueue(Submission&& submission) {
+    SubmissionId enqueue(Submission&& submission,
+                         std::span<Buffer* const> referenced) {
         if (first_unsignaled_fence)
             throw std::runtime_error(
                 "D3D12 queue cannot submit after a failed completion signal");
@@ -484,6 +529,7 @@ struct Context::Impl {
             throw std::logic_error("D3D12 submission ID already registered");
         ++next_submission;
         ++next_fence;
+        for(auto* buffer:referenced)buffer->last_reference_fence=signal;
         ID3D12CommandList* lists[] = {it->second.commands.Get()};
         queue->ExecuteCommandLists(1, lists);
         // The command list has executed even if the signal fails. Keep
@@ -534,13 +580,19 @@ struct Context::Impl {
         if (first_unsignaled_fence && value >= first_unsignaled_fence)
             throw std::runtime_error(
                 "D3D12 submission has no completion fence after queue signal failure");
-        if (completed >= value) return;
+        if (completed >= value) {
+            observe_completion(completed);
+            return;
+        }
         check(fence->SetEventOnCompletion(value, completion_event),
               "SetEventOnCompletion");
         for (;;) {
             const DWORD result=WaitForSingleObject(completion_event,1000u);
-            if(result==WAIT_OBJECT_0)break;
-            if(result!=WAIT_TIMEOUT)
+            if(result==WAIT_OBJECT_0) {
+                // An event can retain a signal from an interrupted wait.
+                const auto observed=fence->GetCompletedValue();
+                if(observed>=value)break;
+            }else if(result!=WAIT_TIMEOUT)
                 throw std::runtime_error("D3D12 fence wait failed");
             // Device removal does not guarantee that an outstanding queue
             // fence signals. Check the device while the event is pending.
@@ -552,34 +604,62 @@ struct Context::Impl {
                     std::to_string(static_cast<unsigned long>(reason))+")");
             }
         }
-        if (fence->GetCompletedValue() == std::numeric_limits<std::uint64_t>::max()) {
+        const auto observed=fence->GetCompletedValue();
+        if (observed == std::numeric_limits<std::uint64_t>::max()) {
             const auto reason = device->GetDeviceRemovedReason();
             print_debug_messages();
             throw std::runtime_error(
                 "D3D12 device removed during GPU submission (HRESULT " +
                 std::to_string(static_cast<unsigned long>(reason)) + ")");
         }
+        observe_completion(observed);
     }
 
-    void release_retired_through(std::uint64_t completed_fence) noexcept {
-        auto it = retired_buffers.begin();
-        while (it != retired_buffers.end()) {
-            if (it->release_after_fence <= completed_fence) {
-                it = retired_buffers.erase(it); // ComPtr releases GPU allocation
-            } else {
-                ++it;
-            }
+    void observe_completion(std::uint64_t value) noexcept {
+        if(value<=completed_fence)return;
+        completed_fence=value;
+        std::erase_if(retired_buffers,[&](const RetiredBuffer& retired) {
+            return retired.release_after_fence<=completed_fence;
+        });
+    }
+
+#if defined(FYZZXYZZY_PROFILE_GPU)
+    void report_gpu_profile(SubmissionId id,Submission& submission) {
+        if(submission.profile_ops.empty() || !trace_frequency)return;
+        const auto count=submission.profile_ops.size()+1u;
+        void* mapped=nullptr;
+        const D3D12_RANGE read{0,count*sizeof(std::uint64_t)};
+        std::vector<std::uint64_t> ticks(count);
+        check(submission.query_readback->Map(0,&read,&mapped),
+              "Map hardware GPU timestamp query");
+        std::memcpy(ticks.data(),mapped,read.End);
+        const D3D12_RANGE written{0,0};
+        submission.query_readback->Unmap(0,&written);
+        for(std::size_t i=0u;i<submission.profile_ops.size();++i) {
+            const auto& operation=submission.profile_ops[i];
+            if(ticks[i+1u]<ticks[i])
+                throw std::runtime_error("D3D12 hardware timestamp counter regressed");
+            const auto elapsed=ticks[i+1u]-ticks[i];
+            hardware_profile::gpu_event({
+                "d3d12",operation.pipeline?"dispatch":"copy",
+                profile_context_id,submission.profile_trace_id,
+                id,i,operation.pipeline,operation.bytes,
+                operation.x,operation.y,operation.z,operation.indirect,
+                static_cast<double>(elapsed)*1.0e9/static_cast<double>(trace_frequency)});
         }
     }
-
+#endif
     void wait_submission(SubmissionId id) {
         auto it = submissions.find(id);
         if (it == submissions.end()) throw std::invalid_argument("Unknown D3D12 submission");
         const auto completed = it->second.fence_value;
         wait_value(completed);
+#if defined(FYZZXYZZY_PROFILE_GPU)
+        report_gpu_profile(id,it->second);
+#endif
         recycle_completed(std::move(it->second));
         submissions.erase(it);
-        release_retired_through(completed);
+        recycle_cancelled_readback(id);
     }
 
     void wait_submissions(std::span<const SubmissionId> ordered) {
@@ -591,33 +671,45 @@ struct Context::Impl {
                     "D3D12 GPU retire batch requires live ordered submissions");
             previous=id;
         }
-        // Reserve the completed resource pool before mutating submission
-        // ownership, then wait only for the newest queue fence.
-        if(recycled.capacity()<kMaxRecycled)recycled.reserve(kMaxRecycled);
         const auto last_fence=submissions.at(ordered.back()).fence_value;
         wait_value(last_fence);
         for(const auto id:ordered) {
             auto it=submissions.find(id);
+#if defined(FYZZXYZZY_PROFILE_GPU)
+            report_gpu_profile(id,it->second);
+#endif
             recycle_completed(std::move(it->second));
             submissions.erase(it);
+            recycle_cancelled_readback(id);
         }
-        release_retired_through(last_fence);
     }
 
     void wait_all() {
         if (submissions.empty()) return;
         const auto completed = next_fence - 1;
         wait_value(completed);
-        for (auto& entry : submissions)
-            recycle_completed(std::move(entry.second));
-        submissions.clear();
-        release_retired_through(completed);
+        while(!submissions.empty()) {
+            auto it=submissions.begin();
+#if defined(FYZZXYZZY_PROFILE_GPU)
+            report_gpu_profile(it->first,it->second);
+#endif
+            const auto id=it->first;
+            recycle_completed(std::move(it->second));
+            submissions.erase(it);
+            recycle_cancelled_readback(id);
+        }
     }
 
     BufferId create_buffer(std::size_t bytes, MemoryPlacement placement) {
         if (!bytes) throw std::invalid_argument("Compute buffer size must be positive");
         Buffer buffer;
-        if (placement == MemoryPlacement::HostVisible) {
+        if(placement==MemoryPlacement::Upload) {
+            buffer.resource=allocate_resource(device.Get(),bytes,D3D12_HEAP_TYPE_UPLOAD,
+                D3D12_RESOURCE_FLAG_NONE);
+            buffer.host_visible=true;
+            buffer.upload_only=true;
+        }else if (placement == MemoryPlacement::HostVisible ||
+            placement == MemoryPlacement::SharedLocal) {
             // The PhysX actor-pair report output is GPU-writable AND
             // CPU-readable; UPLOAD (GENERIC_READ) and READBACK (COPY_DEST)
             // are not legal substitutes for a UAV destination.
@@ -629,14 +721,14 @@ struct Context::Impl {
             // The READBACK-derived CUSTOM heap selects WRITE_BACK/L0 even
             // on non-cache-coherent UMA, avoiding very slow CPU reads from
             // upload-oriented WRITE_COMBINE pages. The CUSTOM heap permits
-            // GPU UAV and normal state transitions; a regular READBACK heap
+            // GPU UAV and buffer access barriers; a regular READBACK heap
             // does not. The admission probe exercises precisely this pairing.
             const auto heap = device->GetCustomHeapProperties(0, D3D12_HEAP_TYPE_READBACK);
             if (heap.Type != D3D12_HEAP_TYPE_CUSTOM ||
                 heap.CPUPageProperty != D3D12_CPU_PAGE_PROPERTY_WRITE_BACK ||
                 heap.MemoryPoolPreference != D3D12_MEMORY_POOL_L0)
                 throw UnsupportedMemoryPlacement("D3D12 UMA did not expose a CPU-mappable L0 custom heap");
-            D3D12_RESOURCE_DESC desc{};
+            D3D12_RESOURCE_DESC1 desc{};
             desc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
             desc.Width = static_cast<UINT64>(bytes);
             desc.Height = 1;
@@ -646,17 +738,16 @@ struct Context::Impl {
             desc.SampleDesc.Count = 1;
             desc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
             desc.Flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
-            check(device->CreateCommittedResource(
-                &heap, D3D12_HEAP_FLAG_NONE, &desc, D3D12_RESOURCE_STATE_COMMON,
-                nullptr, IID_PPV_ARGS(&buffer.resource)),
+            check(device->CreateCommittedResource3(
+                &heap,D3D12_HEAP_FLAG_NONE,&desc,D3D12_BARRIER_LAYOUT_UNDEFINED,
+                nullptr,nullptr,0u,nullptr,IID_PPV_ARGS(&buffer.resource)),
                 "Create GPU-writable CPU-visible D3D12 UMA buffer");
             buffer.host_visible = true;
         } else {
             // Auto preserves the established D3D12 default, while explicit
             // DeviceLocal remains a GPU-preferred DEFAULT allocation.
             buffer.resource = allocate_resource(device.Get(), bytes, D3D12_HEAP_TYPE_DEFAULT,
-                                                 D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS,
-                                                 D3D12_RESOURCE_STATE_COMMON);
+                                                 D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
         }
         buffer.bytes = bytes;
         const BufferId id = next_buffer;
@@ -669,6 +760,8 @@ struct Context::Impl {
 
     void* map_buffer(BufferId id, HostMapAccess access) {
         auto& buffer = get_buffer(id);
+        if(buffer.upload_only && access!=HostMapAccess::Write)
+            throw std::invalid_argument("D3D12 upload storage requires write mapping");
         if (!buffer.host_visible)
             throw std::invalid_argument("D3D12 buffer is not CPU-mappable GPU storage");
         if (buffer.cpu_mapped)
@@ -708,77 +801,24 @@ struct Context::Impl {
             throw std::invalid_argument("Unknown D3D12 buffer");
         if (it->second.cpu_mapped)
             throw std::logic_error("Cannot retire mapped D3D12 GPU storage");
-        if (!submissions.empty()) {
-            std::uint64_t last_fence = 0;
-            for (const auto& pending : submissions)
-                last_fence = std::max(last_fence, pending.second.fence_value);
-            // Copy the owning ComPtr into the retirement record *before*
-            // erasing the ID. On host allocation failure the original ID
-            // still owns the live resource.
-            retired_buffers.push_back({last_fence, it->second});
-        }
+        if(it->second.last_reference_fence>completed_fence)
+            retired_buffers.push_back({it->second.last_reference_fence,it->second});
         // The handle becomes unusable immediately. Its backing resource
         // lives in retired_buffers until the last dependent queue fence.
         buffers.erase(it);
     }
 
     void upload(BufferId id, std::size_t offset, const void* data, std::size_t bytes) {
-        Buffer& buffer = get_buffer(id);
-        validate_range(buffer.bytes, offset, bytes);
-        if (!bytes) return;
-        if (!data || offset % 4 || bytes % 4)
-            throw std::invalid_argument("D3D12 upload requires aligned range and data");
-        auto staging = allocate_resource(device.Get(), bytes, D3D12_HEAP_TYPE_UPLOAD,
-                                         D3D12_RESOURCE_FLAG_NONE,
-                                         D3D12_RESOURCE_STATE_GENERIC_READ);
-        void* mapped = nullptr;
-        D3D12_RANGE read{0, 0};
-        check(staging->Map(0, &read, &mapped), "Map upload");
-        std::memcpy(mapped, data, bytes);
-        D3D12_RANGE written{0, bytes};
-        staging->Unmap(0, &written);
-        Submission cmd = new_commands();
-        transition(cmd.commands.Get(), buffer.resource.Get(),
-                   D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_COPY_DEST);
-        cmd.commands->CopyBufferRegion(buffer.resource.Get(), offset,
-                                       staging.Get(), 0, bytes);
-        transition(cmd.commands.Get(), buffer.resource.Get(),
-                   D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_COMMON);
-        wait_submission(enqueue(std::move(cmd))); // staging remains alive to completion
+        const auto& buffer=get_buffer(id);
+        if(buffer.upload_only)
+            throw std::invalid_argument("Upload storage requires write mapping");
+        validate_range(buffer.bytes,offset,bytes);
+        if(bytes)wait_submission(submit_upload(id,offset,data,bytes));
     }
 
-    SubmissionId submit_upload(BufferId id, std::size_t offset,
-                               const void* data, std::size_t bytes) {
-        Buffer& destination = get_buffer(id);
-        validate_range(destination.bytes, offset, bytes);
-        if (!bytes || !data || (offset % 4) || (bytes % 4))
-            throw std::invalid_argument("Async D3D12 upload requires nonempty aligned data");
-        // The staging allocation must be owned before submitting the queue
-        // work; reserve its retirement entry before enqueue can succeed.
-        retired_buffers.reserve(retired_buffers.size() + 1);
-        auto staging = allocate_resource(device.Get(), bytes, D3D12_HEAP_TYPE_UPLOAD,
-                                         D3D12_RESOURCE_FLAG_NONE,
-                                         D3D12_RESOURCE_STATE_GENERIC_READ);
-        void* mapped = nullptr;
-        const D3D12_RANGE read{0, 0};
-        check(staging->Map(0, &read, &mapped), "Map async upload");
-        std::memcpy(mapped, data, bytes);
-        const D3D12_RANGE written{0, bytes};
-        staging->Unmap(0, &written);
-
-        Submission cmd = new_commands();
-        transition(cmd.commands.Get(), destination.resource.Get(),
-                   D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_COPY_DEST);
-        cmd.commands->CopyBufferRegion(destination.resource.Get(), offset,
-                                       staging.Get(), 0, bytes);
-        transition(cmd.commands.Get(), destination.resource.Get(),
-                   D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_COMMON);
-        const SubmissionId submission = enqueue(std::move(cmd));
-        const auto fence_value = submissions.at(submission).fence_value;
-        // No allocation after enqueue; ComPtr move retains upload heap
-        // until wait_submission or a later completed queue-fence releases it.
-        retired_buffers.push_back({fence_value, {std::move(staging), bytes}});
-        return submission;
+    SubmissionId submit_upload(BufferId id,std::size_t offset,
+                               const void* data,std::size_t bytes) {
+        return submit_uploads({{id,offset,data,bytes}});
     }
 
     SubmissionId submit_uploads(const std::vector<UploadSpan>& uploads) {
@@ -789,6 +829,8 @@ struct Context::Impl {
         destinations.reserve(uploads.size());
         for (const auto& upload : uploads) {
             const auto& target = get_buffer(upload.destination);
+            if(target.upload_only)
+                throw std::invalid_argument("Upload storage cannot be a GPU destination");
             validate_range(target.bytes, upload.destination_offset, upload.bytes);
             if (!upload.data || !upload.bytes ||
                 (upload.destination_offset % 4) || (upload.bytes % 4) ||
@@ -799,8 +841,7 @@ struct Context::Impl {
         }
 
         auto staging = allocate_resource(device.Get(), total, D3D12_HEAP_TYPE_UPLOAD,
-                                         D3D12_RESOURCE_FLAG_NONE,
-                                         D3D12_RESOURCE_STATE_GENERIC_READ);
+                                         D3D12_RESOURCE_FLAG_NONE);
         void* mapped = nullptr;
         const D3D12_RANGE read{0, 0};
         check(staging->Map(0, &read, &mapped), "Map batched upload");
@@ -813,114 +854,120 @@ struct Context::Impl {
         const D3D12_RANGE written{0, total};
         staging->Unmap(0, &written);
 
+        std::vector<Buffer*> referenced;
+        referenced.reserve(destinations.size());
         Submission submission = new_commands();
-        // A target enters COPY_DEST once for the whole batch; repeated
-        // CopyBufferRegion writes are ordered under the legacy D3D12
-        // copy contract. Restore COMMON once at the end.
-        for (const auto id : destinations) {
-            transition(submission.commands.Get(), get_buffer(id).resource.Get(),
-                       D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_COPY_DEST);
-        }
+        for (const auto id : destinations)
+            referenced.push_back(&get_buffer(id));
         position = 0;
+        destinations.clear();
         for (const auto& upload : uploads) {
+            if(!destinations.insert(upload.destination).second)
+                order_copy_writes(submission.commands.Get(),
+                    get_buffer(upload.destination).resource.Get());
             submission.commands->CopyBufferRegion(
                 get_buffer(upload.destination).resource.Get(),
                 upload.destination_offset, staging.Get(), position, upload.bytes);
             position += upload.bytes;
         }
-        for (const auto id : destinations) {
-            transition(submission.commands.Get(), get_buffer(id).resource.Get(),
-                       D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_COMMON);
-        }
         // Ownership is attached BEFORE queue submission. A later allocation
         // failure cannot free the memory while the GPU still reads it.
         submission.owned_upload = std::move(staging);
-        return enqueue(std::move(submission));
+        return enqueue(std::move(submission),referenced);
     }
 
-    void download(BufferId id, std::size_t offset, void* data, std::size_t bytes) {
-        Buffer& buffer = get_buffer(id);
-        validate_range(buffer.bytes, offset, bytes);
-        if (!bytes) return;
-        if (!data || offset % 4 || bytes % 4)
-            throw std::invalid_argument("D3D12 download requires aligned range and data");
-        auto staging = allocate_resource(device.Get(), bytes, D3D12_HEAP_TYPE_READBACK,
-                                         D3D12_RESOURCE_FLAG_NONE,
-                                         D3D12_RESOURCE_STATE_COPY_DEST);
-        Submission cmd = new_commands();
-        transition(cmd.commands.Get(), buffer.resource.Get(),
-                   D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_COPY_SOURCE);
-        cmd.commands->CopyBufferRegion(staging.Get(), 0,
-                                       buffer.resource.Get(), offset, bytes);
-        transition(cmd.commands.Get(), buffer.resource.Get(),
-                   D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_COMMON);
-        wait_submission(enqueue(std::move(cmd)));
-        void* mapped = nullptr;
-        D3D12_RANGE read{0, bytes};
-        check(staging->Map(0, &read, &mapped), "Map readback");
-        std::memcpy(data, mapped, bytes);
-        D3D12_RANGE written{0, 0};
-        staging->Unmap(0, &written);
+    void download(BufferId id,std::size_t offset,void* data,std::size_t bytes) {
+        const auto& buffer=get_buffer(id);
+        if(buffer.upload_only)
+            throw std::invalid_argument("Upload storage requires write mapping");
+        validate_range(buffer.bytes,offset,bytes);
+        if(!bytes)return;
+        const std::array<DownloadSpan,1u> spans{{{id,offset,data,bytes}}};
+        finish_download_batch(submit_download_batch(spans),true);
     }
 
+    struct ReadbackTail {
+        ID3D12Resource* staging;
+        std::span<const DownloadSpan> sources;
+    };
+
+    ComPtr<ID3D12Resource> acquire_readback(std::size_t bytes) {
+        auto cached=completed_readbacks_.acquire(bytes,
+            [](ComPtr<ID3D12Resource>) noexcept {});
+        if(!cached.capacity)
+            return allocate_resource(device.Get(),bytes,
+                D3D12_HEAP_TYPE_READBACK,D3D12_RESOURCE_FLAG_NONE);
+        return std::move(cached.resource);
+    }
+    void recycle_readback(ComPtr<ID3D12Resource> staging) noexcept {
+        const auto capacity=static_cast<std::size_t>(staging->GetDesc().Width);
+        completed_readbacks_.recycle(std::move(staging),capacity,
+            [](ComPtr<ID3D12Resource>) noexcept {});
+    }
     SubmissionId submit_download_batch(
-            std::span<const DownloadSpan> downloads) {
+            std::span<const DownloadSpan> downloads,
+            const std::vector<BatchCommand>& producer = {}) {
         if(downloads.empty())
             throw std::invalid_argument("Empty D3D12 GPU readback batch");
-        if(pending_readback_.submission)
-            throw std::logic_error("D3D12 GPU readback already in flight");
         std::size_t bytes=0;
-        readback_sources.clear();
-        readback_sources.reserve(downloads.size());
-        // The source destination-span allocation is reused across frames.
-        pending_readback_.outputs.assign(downloads.begin(),downloads.end());
         for(const auto& item:downloads) {
             const auto& source=get_buffer(item.source);
+            if(source.upload_only && source.cpu_mapped)
+                throw std::invalid_argument("Mapped upload storage cannot be submitted");
             validate_range(source.bytes,item.source_offset,item.bytes);
             if(!item.data || !item.bytes ||
                (item.source_offset&3u) || (item.bytes&3u) ||
                item.bytes>std::numeric_limits<std::size_t>::max()-bytes)
                 throw std::invalid_argument("Invalid D3D12 GPU readback span");
             bytes+=item.bytes;
-            if(std::find(readback_sources.begin(),readback_sources.end(),
-                         item.source)==readback_sources.end())
-                readback_sources.push_back(item.source);
         }
-        auto staging=std::move(completed_readback);
-        if(!staging || staging->GetDesc().Width<bytes)
-            staging=allocate_resource(device.Get(),bytes,
-                D3D12_HEAP_TYPE_READBACK,D3D12_RESOURCE_FLAG_NONE,
-                D3D12_RESOURCE_STATE_COPY_DEST);
-        Submission cmd=new_commands();
-        for(const auto id:readback_sources)
-            transition(cmd.commands.Get(),get_buffer(id).resource.Get(),
-                D3D12_RESOURCE_STATE_COMMON,D3D12_RESOURCE_STATE_COPY_SOURCE);
-        std::size_t offset=0;
-        for(const auto& item:downloads) {
-            cmd.commands->CopyBufferRegion(staging.Get(),offset,
-                get_buffer(item.source).resource.Get(),item.source_offset,
-                item.bytes);
-            offset+=item.bytes;
+        std::vector<DownloadSpan> outputs(downloads.begin(),downloads.end());
+        auto staging=acquire_readback(bytes);
+        const ReadbackTail tail{staging.Get(),downloads};
+        const auto id=next_submission;
+        const auto [entry,inserted]=pending_readbacks_.emplace(
+            id,PendingReadback{bytes,staging,std::move(outputs)});
+        if(!inserted)
+            throw std::logic_error("D3D12 readback ID already registered");
+        try {
+            submit_batch(producer,false,&tail);
+        }catch(...) {
+            pending_readbacks_.erase(entry);
+            // Submission owns its staging if execution has begun.
+            if(!first_unsignaled_fence)recycle_readback(std::move(staging));
+            throw;
         }
-        for(const auto id:readback_sources)
-            transition(cmd.commands.Get(),get_buffer(id).resource.Get(),
-                D3D12_RESOURCE_STATE_COPY_SOURCE,D3D12_RESOURCE_STATE_COMMON);
-        // Keep the READBACK heap alive even if queue signalling fails
-        // after command execution has already begun.
-        cmd.owned_readback=staging;
-        const SubmissionId id=enqueue(std::move(cmd));
-        pending_readback_.submission=id;
-        pending_readback_.bytes=bytes;
-        pending_readback_.staging=std::move(staging);
         return id;
     }
 
+    // A cancelled readback keeps its staging until the submission retires.
+    bool cancel_download_batch(SubmissionId id) {
+        const auto it=pending_readbacks_.find(id);
+        if(it==pending_readbacks_.end())
+            throw std::logic_error("Unknown GPU readback batch");
+        it->second.outputs.clear();
+        if(submissions.find(id)!=submissions.end())return true;
+        recycle_cancelled_readback(id);
+        return false;
+    }
+
+    void recycle_cancelled_readback(SubmissionId id) noexcept {
+        const auto it=pending_readbacks_.find(id);
+        if(it==pending_readbacks_.end() || !it->second.outputs.empty())return;
+        auto staging=std::move(it->second.staging);
+        pending_readbacks_.erase(it);
+        recycle_readback(std::move(staging));
+    }
+
     void finish_download_batch(SubmissionId id,bool publish) {
-        if(!pending_readback_.submission || pending_readback_.submission!=id)
+        const auto it=pending_readbacks_.find(id);
+        if(it==pending_readbacks_.end())
             throw std::logic_error("Unknown D3D12 GPU readback batch");
+        if(it->second.outputs.empty())
+            throw std::logic_error("Cancelled GPU readback cannot be finished");
         if(submissions.find(id)!=submissions.end())
             wait_submission(id);
-        auto& pending=pending_readback_;
+        auto& pending=it->second;
         if(publish) {
             void* mapped=nullptr;
             D3D12_RANGE read{0,pending.bytes};
@@ -929,18 +976,16 @@ struct Context::Impl {
             std::size_t offset=0;
             for(const auto& item:pending.outputs) {
                 std::memcpy(item.data,
-                    static_cast<const std::uint8_t*>(mapped)+offset,item.bytes);
+                    static_cast<const std::uint8_t*>(mapped)+offset,
+                    item.bytes);
                 offset+=item.bytes;
             }
             D3D12_RANGE written{0,0};
             pending.staging->Unmap(0,&written);
         }
-        if(!completed_readback ||
-           completed_readback->GetDesc().Width<pending.staging->GetDesc().Width)
-            completed_readback=std::move(pending.staging);
-        pending_readback_.submission=0;
-        pending_readback_.bytes=0;
-        pending_readback_.outputs.clear();
+        auto staging=std::move(pending.staging);
+        pending_readbacks_.erase(it);
+        recycle_readback(std::move(staging));
     }
 
     void download_batch(std::span<const DownloadSpan> downloads) {
@@ -1083,85 +1128,86 @@ struct Context::Impl {
         pipelines.erase(id);
     }
 
-    void validate_dispatch(const DispatchCommand& cmd) {
-        const Pipeline& pipe = get_pipeline(cmd.pipeline);
-        if (!cmd.groups.x || !cmd.groups.y || !cmd.groups.z ||
-            cmd.groups.x > info.max_workgroup_count[0] ||
-            cmd.groups.y > info.max_workgroup_count[1] ||
-            cmd.groups.z > info.max_workgroup_count[2] ||
-            cmd.buffers.size() != pipe.bindings ||
-            cmd.push_constants.size() != pipe.parameters)
-            throw std::invalid_argument("Invalid D3D12 dispatch shape or bindings");
-        for (std::size_t i = 0; i < cmd.buffers.size(); ++i) {
-            const auto& binding = cmd.buffers[i];
-            if (binding.slot != i || !binding.bytes ||
-                binding.offset % 4 || binding.bytes % 4 ||
-                binding.bytes / 4 > std::numeric_limits<UINT>::max())
-                throw std::invalid_argument("Invalid D3D12 structured buffer view");
-            const auto kind = pipe.view_kinds[i];
-            // D3D12 requires RAW buffer UAV/SRV FirstElement to start
-            // on a 16-byte boundary. Reject an invalid descriptor before
-            // the debug layer removes the device on command execution.
-            if ((kind == StorageBufferViewKind::RawRead ||
-                 kind == StorageBufferViewKind::RawReadWrite) &&
-                binding.offset % 16u != 0u)
-                throw std::invalid_argument(
-                    "D3D12 RAW buffer view base must be 16-byte aligned");
-            const bool srv_slot = kind == StorageBufferViewKind::RawRead ||
-                                  kind == StorageBufferViewKind::Structured32Read;
-            if (binding.access != BufferAccess::Unspecified &&
-                binding.access != BufferAccess::Read &&
-                binding.access != BufferAccess::Write &&
-                binding.access != BufferAccess::ReadWrite)
-                throw std::invalid_argument("Invalid D3D12 compute buffer access intent");
-            if (srv_slot && binding.access != BufferAccess::Unspecified &&
-                binding.access != BufferAccess::Read)
-                throw std::invalid_argument("D3D12 SRV cannot be declared writable");
-            const auto& buf = get_buffer(binding.buffer);
-            validate_range(buf.bytes, binding.offset, binding.bytes);
-        }
-        if(cmd.indirect) {
-            if(cmd.groups.x!=1u || cmd.groups.y!=1u || cmd.groups.z!=1u ||
-               cmd.indirect->offset%4u)
-                throw std::invalid_argument("Invalid D3D12 indirect dispatch arguments");
-            const auto& args=get_buffer(cmd.indirect->buffer);
-            validate_range(args.bytes,cmd.indirect->offset,
-                           sizeof(D3D12_DISPATCH_ARGUMENTS));
-            for(const auto& binding:cmd.buffers)
-                if(binding.buffer==cmd.indirect->buffer)
-                    throw std::invalid_argument(
-                        "D3D12 indirect arguments cannot alias shader bindings");
-        }
-        // The entire D3D12 buffer is one stateful subresource. A dispatch
-        // cannot simultaneously bind it as an SRV and UAV, even when the
-        // views name disjoint byte ranges. Several UAV views may alias.
-        for (std::size_t a = 0; a < cmd.buffers.size(); ++a) {
-            const auto a_kind = pipe.view_kinds[a];
-            const bool a_read = a_kind == StorageBufferViewKind::RawRead ||
-                                a_kind == StorageBufferViewKind::Structured32Read;
-            for (std::size_t b = a + 1u; b < cmd.buffers.size(); ++b) {
-                const auto b_kind = pipe.view_kinds[b];
-                const bool b_read = b_kind == StorageBufferViewKind::RawRead ||
-                                    b_kind == StorageBufferViewKind::Structured32Read;
-                if (a_read != b_read &&
-                    cmd.buffers[a].buffer == cmd.buffers[b].buffer)
-                    throw std::invalid_argument(
-                        "D3D12 cannot bind one resource as SRV and UAV simultaneously");
-            }
-        }
+    void validate_dispatch_shape(const Pipeline& pipe,const DispatchCommand& cmd) const {
+        if(!cmd.groups.x || !cmd.groups.y || !cmd.groups.z ||
+           cmd.groups.x>info.max_workgroup_count[0] ||
+           cmd.groups.y>info.max_workgroup_count[1] ||
+           cmd.groups.z>info.max_workgroup_count[2] ||
+           cmd.parameter_bytes().size()!=pipe.parameters)
+            throw std::invalid_argument("Invalid D3D12 dispatch shape or parameters");
+        if(cmd.indirect && (cmd.groups.x!=1u || cmd.groups.y!=1u || cmd.groups.z!=1u))
+            throw std::invalid_argument("Invalid D3D12 indirect dispatch groups");
     }
 
     SubmissionId submit_batch(const std::vector<BatchCommand>& commands,
-                              bool profile = false) {
-        if (commands.empty()) throw std::invalid_argument("Empty D3D12 command batch");
+                              bool profile = false,
+                              const ReadbackTail* readback_tail = nullptr) {
+#if defined(FYZZXYZZY_PROFILE_GPU)
+        const bool hardware_trace=!profile && trace_frequency!=0u;
+        profile=profile || hardware_trace;
+#endif
+        if (commands.empty() && !readback_tail)
+            throw std::invalid_argument("Empty D3D12 command batch");
+        // Each distinct pipeline/binding view needs one descriptor table
+        // for this submission. Repeated dispatches may change constants or
+        // execution dimensions without duplicating identical descriptors.
+        struct DescriptorTable {
+            PipelineId pipeline;
+            const Pipeline* native_pipeline;
+            std::vector<DescriptorView> views;
+            UINT first_descriptor;
+        };
+        std::vector<DescriptorTable> descriptor_tables;
+        std::unordered_map<std::size_t,std::vector<std::size_t>> descriptor_lookup;
+        std::vector<PreparedDispatch> prepared_dispatches;
+        DispatchRangePlans range_plans;
         std::size_t descriptor_count = 0;
         bool uses_indirect = false;
-        std::size_t same_resource_copy_scratch_bytes = 0;
+        std::size_t upload_total_bytes = 0;
         std::vector<PipelineId> pipeline_sequence;
+        const auto mix_key=[](std::size_t& hash,std::size_t word) {
+            hash^=std::hash<std::size_t>{}(word)+0x9e3779b9u+
+                  (hash<<6u)+(hash>>2u);
+        };
+        struct Access {
+            Buffer* buffer;
+            PendingBufferRanges ranges;
+            RangeAccessScope scope{};
+            std::size_t incoming=std::numeric_limits<std::size_t>::max();
+        };
+        // Range plans refer to dense batch-local resource ordinals.
+        std::unordered_map<BufferId,std::size_t> resource_ordinals;
+        resource_ordinals.reserve(std::min<std::size_t>(commands.size()*2u,512u));
+        std::vector<Access> resource_access;
+        std::vector<Buffer*> referenced;
+        const auto reference=[&](BufferId id) -> Access& {
+            const auto found=resource_ordinals.find(id);
+            if(found!=resource_ordinals.end())return resource_access[found->second];
+            auto& buffer=get_buffer(id);
+            resource_ordinals.emplace(id,resource_access.size());
+            referenced.push_back(&buffer);
+            resource_access.push_back(Access{&buffer,{},{}});
+            return resource_access.back();
+        };
+        const auto same_bindings=[](
+                const std::vector<DescriptorView>& a,
+                std::span<const BufferBinding> b) {
+            if(a.size()!=b.size())return false;
+            for(std::size_t i=0u;i<a.size();++i)
+                if(b[i].slot!=i ||
+                   a[i].buffer!=b[i].buffer ||
+                   a[i].offset!=b[i].offset ||
+                   a[i].bytes!=b[i].bytes)
+                    return false;
+            // Access intent affects barriers, never descriptor contents.
+            return true;
+        };
         for (const BatchCommand& op : commands) {
             if (const auto* copy = std::get_if<CopyCommand>(&op)) {
-                const auto& source = get_buffer(copy->source);
-                const auto& dest = get_buffer(copy->destination);
+                const auto& source=*reference(copy->source).buffer;
+                const auto& dest=*reference(copy->destination).buffer;
+                if(dest.upload_only || (source.upload_only && source.cpu_mapped))
+                    throw std::invalid_argument("Invalid D3D12 upload storage copy");
                 validate_range(source.bytes, copy->source_offset, copy->bytes);
                 validate_range(dest.bytes, copy->destination_offset, copy->bytes);
                 const bool overlap = copy->source == copy->destination &&
@@ -1171,19 +1217,140 @@ struct Context::Impl {
                     copy->source_offset % 4 || copy->destination_offset % 4 ||
                     copy->bytes % 4)
                     throw std::invalid_argument("Invalid D3D12 buffer copy");
-                if (copy->source == copy->destination)
-                    same_resource_copy_scratch_bytes =
-                        std::max(same_resource_copy_scratch_bytes, copy->bytes);
+            } else if(const auto* upload=std::get_if<UploadCommand>(&op)) {
+                const auto& target=*reference(upload->destination).buffer;
+                if(target.upload_only)
+                    throw std::invalid_argument("Upload storage cannot be a GPU destination");
+                validate_range(target.bytes,upload->destination_offset,
+                               upload->bytes.size());
+                if(upload->bytes.empty() || upload->destination_offset%4u ||
+                   upload->bytes.size()%4u ||
+                   upload->bytes.size()>
+                       std::numeric_limits<std::size_t>::max()-upload_total_bytes)
+                    throw std::invalid_argument("Invalid D3D12 ordered upload");
+                upload_total_bytes+=upload->bytes.size();
             } else {
                 const auto& dispatch = std::get<DispatchCommand>(op);
-                validate_dispatch(dispatch);
+                const auto bindings=dispatch.bindings();
                 uses_indirect |= dispatch.indirect.has_value();
-                descriptor_count += get_pipeline(dispatch.pipeline).bindings;
-                pipeline_sequence.push_back(dispatch.pipeline);
+                const auto prepared=range_plans.prepare(dispatch,[&]() {
+                    std::size_t key=std::hash<PipelineId>{}(dispatch.pipeline);
+                    for(const auto& binding:bindings) {
+                        mix_key(key,binding.slot);
+                        mix_key(key,binding.buffer);
+                        mix_key(key,binding.offset);
+                        mix_key(key,binding.bytes);
+                    }
+                    auto& candidates=descriptor_lookup[key];
+                    std::size_t table=descriptor_tables.size();
+                    for(const auto candidate:candidates) {
+                        const auto& existing=descriptor_tables[candidate];
+                        if(existing.pipeline==dispatch.pipeline &&
+                           same_bindings(existing.views,bindings)) {
+                            table=candidate;
+                            break;
+                        }
+                    }
+                    if(table==descriptor_tables.size()) {
+                        const auto& pipeline=get_pipeline(dispatch.pipeline);
+                        const auto binding_count=pipeline.bindings;
+                        if(bindings.size()!=binding_count)
+                            throw std::invalid_argument("Incorrect number of D3D12 compute bindings");
+                        if(binding_count>
+                           std::numeric_limits<UINT>::max()-descriptor_count)
+                            throw std::out_of_range("D3D12 descriptor heap capacity exceeded");
+                        DescriptorTable prepared{dispatch.pipeline,&pipeline,{},
+                                                 static_cast<UINT>(descriptor_count)};
+                        prepared.views.reserve(binding_count);
+                        for(std::size_t i=0u;i<binding_count;++i) {
+                            const auto& binding=bindings[i];
+                            if(binding.slot!=i || !binding.bytes ||
+                               binding.offset%4u || binding.bytes%4u ||
+                               binding.bytes/4u>std::numeric_limits<UINT>::max())
+                                throw std::invalid_argument("Invalid D3D12 structured buffer view");
+                            const auto kind=pipeline.view_kinds[i];
+                            if((kind==StorageBufferViewKind::RawRead ||
+                                kind==StorageBufferViewKind::RawReadWrite) &&
+                               binding.offset%16u)
+                                throw std::invalid_argument("D3D12 RAW buffer view base must be 16-byte aligned");
+                            const auto& buffer=*reference(binding.buffer).buffer;
+                            if(buffer.upload_only)
+                                throw std::invalid_argument("Upload storage cannot be a shader binding");
+                            validate_range(buffer.bytes,binding.offset,binding.bytes);
+                            // One native resource cannot mix SRV and UAV views.
+                            for(std::size_t prior=0u;prior<i;++prior)
+                                if(prepared.views[prior].buffer==binding.buffer &&
+                                   read_only_view(pipeline.view_kinds[prior])!=read_only_view(kind))
+                                    throw std::invalid_argument("D3D12 cannot bind one resource as SRV and UAV simultaneously");
+                            prepared.views.push_back({binding.buffer,binding.offset,binding.bytes,
+                                                      buffer.resource.Get()});
+                        }
+                        descriptor_tables.push_back(std::move(prepared));
+                        candidates.push_back(table);
+                        pipeline_sequence.push_back(dispatch.pipeline);
+                        descriptor_count+=binding_count;
+                    }
+                    return table;
+                },[&](std::size_t table,std::vector<OperationRangeUse>& ranges) {
+                    const auto& pipeline=*descriptor_tables[table].native_pipeline;
+                    for(const auto& binding:bindings)
+                        validate_binding_access(binding,
+                            read_only_view(pipeline.view_kinds[binding.slot]));
+                    if(dispatch.indirect) {
+                        const auto& indirect=*dispatch.indirect;
+                        const auto& args=*reference(indirect.buffer).buffer;
+                        if(indirect.offset%4u || args.upload_only)
+                            throw std::invalid_argument("Invalid D3D12 indirect dispatch arguments");
+                        validate_range(args.bytes,indirect.offset,sizeof(D3D12_DISPATCH_ARGUMENTS));
+                        for(const auto& binding:bindings)
+                            if(binding.buffer==indirect.buffer)
+                                throw std::invalid_argument("D3D12 indirect arguments cannot alias shader bindings");
+                        ranges.push_back({resource_ordinals.at(dispatch.indirect->buffer),
+                            dispatch.indirect->offset,
+                            dispatch.indirect->offset+sizeof(D3D12_DISPATCH_ARGUMENTS),
+                            {D3D12_BARRIER_SYNC_EXECUTE_INDIRECT,
+                             D3D12_BARRIER_ACCESS_INDIRECT_ARGUMENT},false});
+                    }
+                    dispatch.for_each_access([&](const BufferBinding& binding,
+                                            BufferAccessExtent extent,BufferAccess access) {
+                        const auto kind=pipeline.view_kinds[binding.slot];
+                        const bool srv=kind==StorageBufferViewKind::RawRead ||
+                                       kind==StorageBufferViewKind::Structured32Read;
+                        if(srv && access!=BufferAccess::Read &&
+                           access!=BufferAccess::Unspecified)
+                            throw std::invalid_argument("Dispatch access writes SRV");
+                        const auto begin=binding.offset+extent.offset;
+                        ranges.push_back({resource_ordinals.at(binding.buffer),
+                            begin,begin+extent.bytes,
+                            {D3D12_BARRIER_SYNC_COMPUTE_SHADING,
+                             static_cast<std::uint64_t>(srv
+                                ?D3D12_BARRIER_ACCESS_SHADER_RESOURCE
+                                :D3D12_BARRIER_ACCESS_UNORDERED_ACCESS)},
+                            !srv && access!=BufferAccess::Read});
+                    });
+                    std::sort(ranges.begin(),ranges.end(),[](const auto& a,const auto& b) {
+                        return a.buffer<b.buffer;
+                    });
+                });
+                validate_dispatch_shape(*descriptor_tables[prepared.table].native_pipeline,dispatch);
+                prepared_dispatches.push_back(prepared);
             }
         }
         if (descriptor_count > std::numeric_limits<UINT>::max())
             throw std::out_of_range("D3D12 descriptor heap capacity exceeded");
+#if defined(FYZZXYZZY_PROFILE_GPU)
+        if(hardware_trace) {
+            FYZZ_PROFILE_COUNTER("d3d12.descriptor_tables",
+                                 descriptor_tables.size());
+            FYZZ_PROFILE_COUNTER("d3d12.descriptor_table_reuses",
+                                 prepared_dispatches.size()-
+                                 descriptor_tables.size());
+            FYZZ_PROFILE_COUNTER("d3d12.descriptor_slots",descriptor_count);
+            FYZZ_PROFILE_COUNTER("d3d12.range_plans",range_plans.size());
+            FYZZ_PROFILE_COUNTER("d3d12.range_plan_reuses",
+                                 prepared_dispatches.size()-range_plans.size());
+        }
+#endif
         if(uses_indirect && !dispatch_signature) {
             D3D12_INDIRECT_ARGUMENT_DESC argument{};
             argument.Type=D3D12_INDIRECT_ARGUMENT_TYPE_DISPATCH;
@@ -1196,36 +1363,61 @@ struct Context::Impl {
                   "CreateCommandSignature");
         }
         Submission submission = new_commands(&pipeline_sequence, descriptor_count);
-        // Legacy D3D12 requires staging nonoverlapping copies within one
-        // buffer. All such copies in this command batch can share one
-        // device-local scratch allocation, with ordered state transitions
-        // between uses. Keep it fence-owned by the original submission.
-        if (same_resource_copy_scratch_bytes) {
-            ComPtr<ID3D12Resource> scratch;
-            if (completed_copy_scratch &&
-                completed_copy_scratch->GetDesc().Width >=
-                    same_resource_copy_scratch_bytes)
-                scratch = std::move(completed_copy_scratch);
-            else
-                scratch = allocate_resource(
-                    device.Get(), same_resource_copy_scratch_bytes,
-                    D3D12_HEAP_TYPE_DEFAULT, D3D12_RESOURCE_FLAG_NONE,
-                    D3D12_RESOURCE_STATE_COPY_DEST);
-            submission.owned_copy_scratch.push_back(std::move(scratch));
+        if(readback_tail)submission.owned_readback=readback_tail->staging;
+        if(upload_total_bytes) {
+            auto staging=allocate_resource(
+                device.Get(),upload_total_bytes,D3D12_HEAP_TYPE_UPLOAD,
+                D3D12_RESOURCE_FLAG_NONE);
+            void* mapped=nullptr;
+            const D3D12_RANGE read{0,0};
+            check(staging->Map(0,&read,&mapped),"Map ordered upload batch");
+            std::size_t offset=0;
+            for(const auto& op:commands)
+                if(const auto* upload=std::get_if<UploadCommand>(&op)) {
+                    std::memcpy(static_cast<std::uint8_t*>(mapped)+offset,
+                                upload->bytes.data(),upload->bytes.size());
+                    offset+=upload->bytes.size();
+                }
+            const D3D12_RANGE written{0,upload_total_bytes};
+            staging->Unmap(0,&written);
+            submission.owned_upload=std::move(staging);
         }
-        bool scratch_in_source_state = false;
+#if defined(FYZZXYZZY_PROFILE_GPU)
+        if(hardware_trace &&
+           submission.query_capacity<=commands.size()) {
+            submission.query_heap.Reset();
+            submission.query_readback.Reset();
+            submission.query_capacity=0u;
+        }
+#endif
         if (profile) {
             D3D12_QUERY_HEAP_DESC desc{};
             desc.Type = D3D12_QUERY_HEAP_TYPE_TIMESTAMP;
             desc.Count = 2;
-            if (!submission.query_heap)
+#if defined(FYZZXYZZY_PROFILE_GPU)
+            if(hardware_trace) {
+                if(commands.size()>=std::numeric_limits<UINT>::max())
+                    throw std::out_of_range("Hardware trace query count exceeds 32-bit range");
+                desc.Count=static_cast<UINT>(commands.size()+1u);
+            }
+#endif
+            if (!submission.query_heap) {
                 check(device->CreateQueryHeap(&desc, IID_PPV_ARGS(&submission.query_heap)),
                       "CreateQueryHeap(timestamp)");
+#if defined(FYZZXYZZY_PROFILE_GPU)
+                submission.query_capacity=desc.Count;
+#endif
+            }
             if (!submission.query_readback)
                 submission.query_readback = allocate_resource(
-                    device.Get(), 2 * sizeof(std::uint64_t),
-                    D3D12_HEAP_TYPE_READBACK, D3D12_RESOURCE_FLAG_NONE,
-                    D3D12_RESOURCE_STATE_COPY_DEST);
+                    device.Get(),
+#if defined(FYZZXYZZY_PROFILE_GPU)
+                    static_cast<std::size_t>(hardware_trace?desc.Count:2u) *
+#else
+                    2u *
+#endif
+                    sizeof(std::uint64_t),
+                    D3D12_HEAP_TYPE_READBACK,D3D12_RESOURCE_FLAG_NONE);
             submission.commands->EndQuery(submission.query_heap.Get(),
                                            D3D12_QUERY_TYPE_TIMESTAMP, 0);
         }
@@ -1266,156 +1458,203 @@ struct Context::Impl {
             submission.commands->SetDescriptorHeaps(1, heaps);
         }
 
-        // Track states for the entire batch instead of returning each buffer
-        // to COMMON after every operation. Keep real RAW/WAW ordering: a
-        // transition orders different uses and a UAV barrier orders
-        // consecutive dependent UAV writes. Legacy copy operations have
-        // implicit ordering. End at COMMON for the next submission.
-        struct Access {
-            D3D12_RESOURCE_STATES state = D3D12_RESOURCE_STATE_COMMON;
-            bool pending_write = false;
+        // Whole-buffer barriers separate conflicting access epochs.
+        // Each barrier's destination stages cover the complete next epoch.
+        std::vector<OperationRangeUse> uses;
+        std::vector<D3D12_BUFFER_BARRIER> barriers;
+        std::vector<std::size_t> barrier_offsets;
+        constexpr RangeAccessScope copy_read{D3D12_BARRIER_SYNC_COPY,
+            D3D12_BARRIER_ACCESS_COPY_SOURCE},copy_write{D3D12_BARRIER_SYNC_COPY,
+            D3D12_BARRIER_ACCESS_COPY_DEST};
+        const auto use=[&](BufferId id,std::size_t offset,std::size_t size,
+                           RangeAccessScope scope,bool writes) {
+            if(!reference(id).buffer->upload_only)
+                uses.push_back({resource_ordinals.at(id),offset,offset+size,scope,writes});
         };
-        std::unordered_map<BufferId, Access> resource_access;
-        resource_access.reserve(std::min<std::size_t>(commands.size() * 2, 512));
-        auto require_state = [&](BufferId id, D3D12_RESOURCE_STATES target) {
-            Access& access = resource_access[id];
-            auto* resource = get_buffer(id).resource.Get();
-            if (access.state != target) {
-                transition(submission.commands.Get(), resource, access.state, target);
-                access.state = target;
-                access.pending_write = false;
-            } else if (access.pending_write) {
-                if (target == D3D12_RESOURCE_STATE_UNORDERED_ACCESS) {
-                    D3D12_RESOURCE_BARRIER barrier{};
-                    barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_UAV;
-                    barrier.UAV.pResource = resource;
-                    submission.commands->ResourceBarrier(1, &barrier);
+        const auto plan_operation=[&](std::span<const OperationRangeUse> uses) {
+            barrier_offsets.push_back(barriers.size());
+            for(std::size_t first=0u;first<uses.size();) {
+                auto& state=resource_access[uses[first].buffer];
+                auto last=first;
+                RangeAccessScope scope{};
+                bool conflict=false;
+                for(;last<uses.size() && uses[last].buffer==uses[first].buffer;++last) {
+                    const auto& item=uses[last];
+                    scope.include(item.scope);
+                    if(!conflict)
+                        conflict=state.ranges.conflicts(item.begin,item.end,item.writes);
                 }
-                // Legacy D3D12 CopyBufferRegion commands are synchronous
-                // with an implicit copy/resolve flush. Successive COPY_DEST
-                // writes therefore need no fabricated COMMON round-trip
-                // (DirectX Enhanced Barriers specification, legacy section).
-                access.pending_write = false;
+                // UAV and copy destinations are distinct write access classes.
+                constexpr auto write_classes=std::uint64_t(D3D12_BARRIER_ACCESS_UNORDERED_ACCESS) |
+                                             D3D12_BARRIER_ACCESS_COPY_DEST;
+                conflict|=((state.scope.access|scope.access)&write_classes)==write_classes;
+                if(conflict) {
+                    state.incoming=barriers.size();
+                    barriers.push_back({
+                        static_cast<D3D12_BARRIER_SYNC>(state.scope.stages),
+                        static_cast<D3D12_BARRIER_SYNC>(scope.stages),
+                        static_cast<D3D12_BARRIER_ACCESS>(state.scope.access),
+                        D3D12_BARRIER_ACCESS_COMMON,
+                        state.buffer->resource.Get(),0u,UINT64_MAX});
+                    state.ranges.clear();
+                    state.scope={};
+                }else if(state.incoming!=std::numeric_limits<std::size_t>::max()) {
+                    auto& incoming=barriers[state.incoming];
+                    incoming.SyncAfter=static_cast<D3D12_BARRIER_SYNC>(
+                        std::uint64_t(incoming.SyncAfter)|scope.stages);
+                }
+                state.scope.include(scope);
+                for(auto i=first;i<last;++i)
+                    state.ranges.record(uses[i].begin,uses[i].end,uses[i].writes);
+                first=last;
             }
         };
-        UINT descriptor_index = 0;
+        std::size_t planned_dispatch=0u;
+        for(const auto& op:commands) {
+            uses.clear();
+            if(const auto* copy=std::get_if<CopyCommand>(&op)) {
+                use(copy->source,copy->source_offset,copy->bytes,copy_read,false);
+                use(copy->destination,copy->destination_offset,copy->bytes,copy_write,true);
+                if(uses.size()==2u && uses[0].buffer>uses[1].buffer)
+                    std::swap(uses[0],uses[1]);
+            }else if(const auto* upload=std::get_if<UploadCommand>(&op)) {
+                use(upload->destination,upload->destination_offset,upload->bytes.size(),copy_write,true);
+            }else {
+                plan_operation(range_plans.ranges(prepared_dispatches[planned_dispatch++].range_plan));
+                continue;
+            }
+            plan_operation(uses);
+        }
+        if(readback_tail)
+            for(const auto& item:readback_tail->sources) {
+                uses.clear();
+                use(item.source,item.source_offset,item.bytes,copy_read,false);
+                plan_operation(uses);
+            }
+        barrier_offsets.push_back(barriers.size());
+        std::size_t operation_index=0u,barrier_calls=0u;
+        const auto before_operation=[&]() {
+            const auto begin=barrier_offsets[operation_index];
+            const auto end=barrier_offsets[++operation_index];
+            if(begin!=end) {
+                emit_buffer_barriers(submission.commands.Get(),
+                    std::span<const D3D12_BUFFER_BARRIER>(barriers).subspan(begin,end-begin));
+                ++barrier_calls;
+            }
+        };
+        std::vector<bool> descriptor_table_written(descriptor_tables.size(),false);
+        std::size_t dispatch_index=0u;
+        std::size_t ordered_upload_offset=0u;
+        PipelineId bound_pipeline=0u;
+        std::size_t bound_table=std::numeric_limits<std::size_t>::max();
+#if defined(FYZZXYZZY_PROFILE_GPU)
+        UINT hardware_query_index=1u;
+#endif
         for (const BatchCommand& op : commands) {
+            before_operation();
             if (const auto* copy = std::get_if<CopyCommand>(&op)) {
-                auto& src = get_buffer(copy->source);
-                auto& dst = get_buffer(copy->destination);
-                if (copy->source == copy->destination) {
-                    // Legacy D3D12 cannot simultaneously use this buffer
-                    // for COPY_SOURCE and COPY_DEST. Reuse the batch's
-                    // fence-owned device-local staging allocation. Each
-                    // transition enforces the original copy order before
-                    // the scratch bytes are overwritten by the next copy.
-                    auto* scratch = submission.owned_copy_scratch.front().Get();
-                    if (scratch_in_source_state)
-                        transition(submission.commands.Get(), scratch,
-                            D3D12_RESOURCE_STATE_COPY_SOURCE,
-                            D3D12_RESOURCE_STATE_COPY_DEST);
-                    require_state(copy->source, D3D12_RESOURCE_STATE_COPY_SOURCE);
-                    submission.commands->CopyBufferRegion(scratch, 0u,
-                        src.resource.Get(), copy->source_offset, copy->bytes);
-                    transition(submission.commands.Get(), scratch,
-                        D3D12_RESOURCE_STATE_COPY_DEST,
-                        D3D12_RESOURCE_STATE_COPY_SOURCE);
-                    scratch_in_source_state = true;
-                    require_state(copy->destination, D3D12_RESOURCE_STATE_COPY_DEST);
-                    submission.commands->CopyBufferRegion(dst.resource.Get(),
-                        copy->destination_offset, scratch, 0u,
-                        copy->bytes);
-                } else {
-                    require_state(copy->source, D3D12_RESOURCE_STATE_COPY_SOURCE);
-                    require_state(copy->destination, D3D12_RESOURCE_STATE_COPY_DEST);
-                    submission.commands->CopyBufferRegion(dst.resource.Get(),
-                        copy->destination_offset, src.resource.Get(),
-                        copy->source_offset, copy->bytes);
-                }
-                resource_access[copy->destination].pending_write = true;
+                auto& src=*resource_access[resource_ordinals.at(copy->source)].buffer;
+                auto& dst=*resource_access[resource_ordinals.at(copy->destination)].buffer;
+                submission.commands->CopyBufferRegion(dst.resource.Get(),
+                    copy->destination_offset,src.resource.Get(),
+                    copy->source_offset,copy->bytes);
+#if defined(FYZZXYZZY_PROFILE_GPU)
+                if(hardware_trace)
+                    submission.commands->EndQuery(submission.query_heap.Get(),
+                        D3D12_QUERY_TYPE_TIMESTAMP,hardware_query_index++);
+#endif
+                continue;
+            }
+            if(const auto* upload=std::get_if<UploadCommand>(&op)) {
+                auto& dst=*resource_access[resource_ordinals.at(upload->destination)].buffer;
+                submission.commands->CopyBufferRegion(
+                    dst.resource.Get(),upload->destination_offset,
+                    submission.owned_upload.Get(),ordered_upload_offset,
+                    upload->bytes.size());
+                ordered_upload_offset+=upload->bytes.size();
+#if defined(FYZZXYZZY_PROFILE_GPU)
+                if(hardware_trace)
+                    submission.commands->EndQuery(submission.query_heap.Get(),
+                        D3D12_QUERY_TYPE_TIMESTAMP,hardware_query_index++);
+#endif
                 continue;
             }
             const auto& cmd = std::get<DispatchCommand>(op);
-            Pipeline& pipeline = get_pipeline(cmd.pipeline);
-            if(cmd.indirect)
-                require_state(cmd.indirect->buffer,
-                              D3D12_RESOURCE_STATE_INDIRECT_ARGUMENT);
-            for (std::size_t slot = 0; slot < cmd.buffers.size(); ++slot) {
-                const auto& binding = cmd.buffers[slot];
-                const auto kind = pipeline.view_kinds[slot];
-                const bool read_only = kind == StorageBufferViewKind::RawRead ||
-                                       kind == StorageBufferViewKind::Structured32Read;
-                const auto desired = read_only
-                    ? D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE
-                    : D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
-                require_state(binding.buffer, desired);
-            }
-
-            const auto cpu_start = submission.heap->GetCPUDescriptorHandleForHeapStart();
-            const auto gpu_start = submission.heap->GetGPUDescriptorHandleForHeapStart();
-            for (UINT slot = 0; slot < pipeline.bindings; ++slot) {
-                const auto& binding = cmd.buffers[slot];
-                auto& buffer = get_buffer(binding.buffer);
-                const auto kind = pipeline.view_kinds[slot];
-                const bool read_only = kind == StorageBufferViewKind::RawRead ||
-                                       kind == StorageBufferViewKind::Structured32Read;
-                const bool raw = kind == StorageBufferViewKind::RawRead ||
-                                 kind == StorageBufferViewKind::RawReadWrite;
-                const auto physical_slot = descriptor_index +
-                    pipeline.descriptor_slots[slot];
-                DescriptorView& cached = submission.cached_views[physical_slot];
-                const DescriptorView next{
-                    binding.buffer, binding.offset, binding.bytes,
-                    buffer.resource.Get()};
-                if (cached.buffer == next.buffer &&
-                    cached.offset == next.offset &&
-                    cached.bytes == next.bytes &&
-                    cached.resource == next.resource)
-                    continue;
-                D3D12_CPU_DESCRIPTOR_HANDLE cpu{
-                    cpu_start.ptr + physical_slot * increment
-                };
-                if (!read_only) {
-                    D3D12_UNORDERED_ACCESS_VIEW_DESC view{};
-                    view.Format = raw ? DXGI_FORMAT_R32_TYPELESS : DXGI_FORMAT_UNKNOWN;
-                    view.ViewDimension = D3D12_UAV_DIMENSION_BUFFER;
-                    view.Buffer.FirstElement = binding.offset / 4;
-                    view.Buffer.NumElements = static_cast<UINT>(binding.bytes / 4);
-                    view.Buffer.StructureByteStride = raw ? 0u : 4u;
-                    view.Buffer.Flags = raw ? D3D12_BUFFER_UAV_FLAG_RAW :
-                                               D3D12_BUFFER_UAV_FLAG_NONE;
-                    device->CreateUnorderedAccessView(buffer.resource.Get(), nullptr, &view, cpu);
-                } else {
-                    D3D12_SHADER_RESOURCE_VIEW_DESC view{};
-                    view.Format = raw ? DXGI_FORMAT_R32_TYPELESS : DXGI_FORMAT_UNKNOWN;
-                    view.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
-                    view.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-                    view.Buffer.FirstElement = binding.offset / 4;
-                    view.Buffer.NumElements = static_cast<UINT>(binding.bytes / 4);
-                    view.Buffer.StructureByteStride = raw ? 0u : 4u;
-                    view.Buffer.Flags = raw ? D3D12_BUFFER_SRV_FLAG_RAW :
-                                              D3D12_BUFFER_SRV_FLAG_NONE;
-                    device->CreateShaderResourceView(buffer.resource.Get(), &view, cpu);
+            const auto table=prepared_dispatches[dispatch_index++].table;
+            const auto& prepared=descriptor_tables[table];
+            const auto& pipeline=*prepared.native_pipeline;
+            const auto descriptor_index=prepared.first_descriptor;
+            const auto gpu_start=submission.heap->GetGPUDescriptorHandleForHeapStart();
+            if(!descriptor_table_written[table]) {
+                descriptor_table_written[table]=true;
+                const auto cpu_start=submission.heap->GetCPUDescriptorHandleForHeapStart();
+                for (UINT slot = 0; slot < pipeline.bindings; ++slot) {
+                    const auto& next=prepared.views[slot];
+                    const auto kind = pipeline.view_kinds[slot];
+                    const bool read_only = kind == StorageBufferViewKind::RawRead ||
+                                           kind == StorageBufferViewKind::Structured32Read;
+                    const bool raw = kind == StorageBufferViewKind::RawRead ||
+                                     kind == StorageBufferViewKind::RawReadWrite;
+                    const auto physical_slot = descriptor_index +
+                        pipeline.descriptor_slots[slot];
+                    DescriptorView& cached = submission.cached_views[physical_slot];
+                    if (cached.buffer == next.buffer &&
+                        cached.offset == next.offset &&
+                        cached.bytes == next.bytes &&
+                        cached.resource == next.resource)
+                        continue;
+                    D3D12_CPU_DESCRIPTOR_HANDLE cpu{
+                        cpu_start.ptr + physical_slot * increment
+                    };
+                    if (!read_only) {
+                        D3D12_UNORDERED_ACCESS_VIEW_DESC view{};
+                        view.Format = raw ? DXGI_FORMAT_R32_TYPELESS : DXGI_FORMAT_UNKNOWN;
+                        view.ViewDimension = D3D12_UAV_DIMENSION_BUFFER;
+                        view.Buffer.FirstElement = next.offset / 4;
+                        view.Buffer.NumElements = static_cast<UINT>(next.bytes / 4);
+                        view.Buffer.StructureByteStride = raw ? 0u : 4u;
+                        view.Buffer.Flags = raw ? D3D12_BUFFER_UAV_FLAG_RAW :
+                                                   D3D12_BUFFER_UAV_FLAG_NONE;
+                        device->CreateUnorderedAccessView(next.resource, nullptr, &view, cpu);
+                    } else {
+                        D3D12_SHADER_RESOURCE_VIEW_DESC view{};
+                        view.Format = raw ? DXGI_FORMAT_R32_TYPELESS : DXGI_FORMAT_UNKNOWN;
+                        view.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
+                        view.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+                        view.Buffer.FirstElement = next.offset / 4;
+                        view.Buffer.NumElements = static_cast<UINT>(next.bytes / 4);
+                        view.Buffer.StructureByteStride = raw ? 0u : 4u;
+                        view.Buffer.Flags = raw ? D3D12_BUFFER_SRV_FLAG_RAW :
+                                                  D3D12_BUFFER_SRV_FLAG_NONE;
+                        device->CreateShaderResourceView(next.resource, &view, cpu);
+                    }
+                    cached = next;
                 }
-                cached = next;
             }
-            submission.commands->SetComputeRootSignature(pipeline.signature.Get());
-            submission.commands->SetPipelineState(pipeline.state.Get());
-            UINT table_root = 0u;
-            if (pipeline.srv_count) {
-                submission.commands->SetComputeRootDescriptorTable(table_root++, {
-                    gpu_start.ptr + descriptor_index * increment
-                });
+            if(bound_pipeline!=cmd.pipeline) {
+                submission.commands->SetComputeRootSignature(pipeline.signature.Get());
+                submission.commands->SetPipelineState(pipeline.state.Get());
+                bound_pipeline=cmd.pipeline;
+                bound_table=std::numeric_limits<std::size_t>::max();
             }
-            if (pipeline.uav_count) {
-                submission.commands->SetComputeRootDescriptorTable(table_root++, {
-                    gpu_start.ptr + (descriptor_index + pipeline.srv_count) * increment
-                });
+            UINT table_root=0u;
+            if(pipeline.srv_count) {
+                if(bound_table!=table)
+                    submission.commands->SetComputeRootDescriptorTable(table_root,{
+                        gpu_start.ptr+descriptor_index*increment});
+                ++table_root;
             }
+            if(pipeline.uav_count) {
+                if(bound_table!=table)
+                    submission.commands->SetComputeRootDescriptorTable(table_root,{
+                        gpu_start.ptr+(descriptor_index+pipeline.srv_count)*increment});
+                ++table_root;
+            }
+            bound_table=table;
             submission.commands->SetComputeRoot32BitConstants(
-                table_root, pipeline.parameters / 4u, cmd.push_constants.data(), 0);
+                table_root,pipeline.parameters/4u,cmd.parameter_bytes().data(),0);
             if(cmd.indirect) {
-                auto* arguments=get_buffer(cmd.indirect->buffer).resource.Get();
+                auto* arguments=resource_access[resource_ordinals.at(cmd.indirect->buffer)].buffer->resource.Get();
                 // The X group count also predicates the single indirect
                 // command, so an empty GPU worklist launches no dispatch.
                 submission.commands->ExecuteIndirect(
@@ -1425,32 +1664,63 @@ struct Context::Impl {
             }else
                 submission.commands->Dispatch(
                     cmd.groups.x,cmd.groups.y,cmd.groups.z);
-            for (std::size_t slot = 0; slot < cmd.buffers.size(); ++slot) {
-                const auto kind = pipeline.view_kinds[slot];
-                const bool writable = kind == StorageBufferViewKind::RawReadWrite ||
-                                      kind == StorageBufferViewKind::Structured32ReadWrite;
-                if (writable && cmd.buffers[slot].access != BufferAccess::Read)
-                    resource_access[cmd.buffers[slot].buffer].pending_write = true;
+#if defined(FYZZXYZZY_PROFILE_GPU)
+            if(hardware_trace)
+                submission.commands->EndQuery(submission.query_heap.Get(),
+                    D3D12_QUERY_TYPE_TIMESTAMP,hardware_query_index++);
+#endif
+        }
+        if(readback_tail) {
+            std::size_t offset=0u;
+            for(const auto& item:readback_tail->sources) {
+                before_operation();
+                if(offset!=0u)
+                    order_copy_writes(submission.commands.Get(),readback_tail->staging);
+                submission.commands->CopyBufferRegion(
+                    readback_tail->staging,offset,
+                    resource_access[resource_ordinals.at(item.source)].buffer->resource.Get(),item.source_offset,
+                    item.bytes);
+                offset+=item.bytes;
             }
-            descriptor_index += pipeline.bindings;
         }
-        for (const auto& entry : resource_access) {
-            transition(submission.commands.Get(), get_buffer(entry.first).resource.Get(),
-                       entry.second.state, D3D12_RESOURCE_STATE_COMMON);
-        }
-        if (scratch_in_source_state)
-            transition(submission.commands.Get(),
-                       submission.owned_copy_scratch.front().Get(),
-                       D3D12_RESOURCE_STATE_COPY_SOURCE,
-                       D3D12_RESOURCE_STATE_COPY_DEST);
         if (profile) {
+#if defined(FYZZXYZZY_PROFILE_GPU)
+            if(!hardware_trace)
+#endif
             submission.commands->EndQuery(submission.query_heap.Get(),
                                            D3D12_QUERY_TYPE_TIMESTAMP, 1);
             submission.commands->ResolveQueryData(
                 submission.query_heap.Get(), D3D12_QUERY_TYPE_TIMESTAMP,
-                0, 2, submission.query_readback.Get(), 0);
+#if defined(FYZZXYZZY_PROFILE_GPU)
+                0,hardware_trace?static_cast<UINT>(commands.size()+1u):2u,
+#else
+                0, 2,
+#endif
+                submission.query_readback.Get(), 0);
         }
-        return enqueue(std::move(submission));
+#if defined(FYZZXYZZY_PROFILE_GPU)
+        if(hardware_trace) {
+            FYZZ_PROFILE_COUNTER("d3d12.barrier_calls",barrier_calls);
+            FYZZ_PROFILE_COUNTER("d3d12.buffer_barriers",barriers.size());
+            submission.profile_trace_id=hardware_profile::current_trace_id();
+            submission.profile_ops.reserve(commands.size());
+            for(const auto& operation:commands) {
+                if(const auto* copy=std::get_if<CopyCommand>(&operation))
+                    submission.profile_ops.push_back(
+                        {0u,copy->bytes,0u,0u,0u,false});
+                else if(const auto* upload=std::get_if<UploadCommand>(&operation))
+                    submission.profile_ops.push_back(
+                        {0u,upload->bytes.size(),0u,0u,0u,false});
+                else {
+                    const auto& dispatch=std::get<DispatchCommand>(operation);
+                    submission.profile_ops.push_back({
+                        dispatch.pipeline,0u,dispatch.groups.x,dispatch.groups.y,
+                        dispatch.groups.z,dispatch.indirect.has_value()});
+                }
+            }
+        }
+#endif
+        return enqueue(std::move(submission),referenced);
     }
 
     std::optional<double> profile_batch_gpu_nanoseconds(
@@ -1469,10 +1739,8 @@ struct Context::Impl {
         std::memcpy(ticks, mapped, sizeof(ticks));
         const D3D12_RANGE written{0, 0};
         it->second.query_readback->Unmap(0, &written);
-        const auto completed = it->second.fence_value;
         recycle_completed(std::move(it->second));
         submissions.erase(it);
-        release_retired_through(completed);
         if (ticks[1] < ticks[0])
             throw std::runtime_error("D3D12 GPU timestamp counter regressed");
         return static_cast<double>(ticks[1] - ticks[0]) *
@@ -1487,12 +1755,41 @@ Context::Context(Context&&) noexcept = default;
 Context& Context::operator=(Context&&) noexcept = default;
 const DeviceInfo& Context::device_info() const { return impl_->info; }
 BufferId Context::create_buffer(std::size_t bytes, MemoryPlacement placement) {
-    return impl_->create_buffer(bytes, placement);
+    const auto id=impl_->create_buffer(bytes, placement);
+#if defined(FYZZXYZZY_PROFILE_GPU)
+    hardware_profile::buffer_event({
+        "d3d12","create",impl_->profile_context_id,
+        hardware_profile::current_trace_id(),id,bytes,unsigned(placement)});
+#endif
+    return id;
 }
-void Context::destroy_buffer(BufferId id) { impl_->destroy_buffer(id); }
-void Context::retire_buffer(BufferId id) { impl_->retire_buffer(id); }
+void Context::destroy_buffer(BufferId id) {
+#if defined(FYZZXYZZY_PROFILE_GPU)
+    const auto bytes=impl_->get_buffer(id).bytes;
+#endif
+    impl_->destroy_buffer(id);
+#if defined(FYZZXYZZY_PROFILE_GPU)
+    hardware_profile::buffer_event({
+        "d3d12","destroy",impl_->profile_context_id,
+        hardware_profile::current_trace_id(),id,bytes,0u});
+#endif
+}
+void Context::retire_buffer(BufferId id) {
+#if defined(FYZZXYZZY_PROFILE_GPU)
+    const auto bytes=impl_->get_buffer(id).bytes;
+#endif
+    impl_->retire_buffer(id);
+#if defined(FYZZXYZZY_PROFILE_GPU)
+    hardware_profile::buffer_event({
+        "d3d12","retire",impl_->profile_context_id,
+        hardware_profile::current_trace_id(),id,bytes,0u});
+#endif
+}
 bool Context::buffer_is_host_visible(BufferId id) const {
     return impl_->get_buffer(id).host_visible;
+}
+bool Context::buffer_in_use(BufferId id) const {
+    return impl_->get_buffer(id).last_reference_fence>impl_->completed_fence;
 }
 void* Context::map_buffer(BufferId id, HostMapAccess access) {
     return impl_->map_buffer(id, access);
@@ -1518,8 +1815,16 @@ SubmissionId Context::submit_download_batch(
         std::span<const DownloadSpan> downloads) {
     return impl_->submit_download_batch(downloads);
 }
+SubmissionId Context::submit_batch_with_readback(
+        std::vector<BatchCommand>& commands,
+        std::span<const DownloadSpan> downloads) {
+    return impl_->submit_download_batch(downloads,commands);
+}
 void Context::finish_download_batch(SubmissionId id,bool publish) {
     impl_->finish_download_batch(id,publish);
+}
+bool Context::cancel_download_batch(SubmissionId id) {
+    return impl_->cancel_download_batch(id);
 }
 void Context::download_batch(std::span<const DownloadSpan> downloads) const {
     impl_->download_batch(downloads);
@@ -1536,6 +1841,12 @@ SubmissionId Context::submit_copy_buffer(BufferId source, std::size_t so, Buffer
 PipelineId Context::create_compute_pipeline(const ComputePipelineDesc& desc) {
     return impl_->create_pipeline(desc);
 }
+#if defined(FYZZXYZZY_PROFILE_GPU)
+void Context::set_pipeline_profile_label(PipelineId id,const char* label) const noexcept {
+    hardware_profile::pipeline_event({
+        "d3d12",label,impl_->profile_context_id,id});
+}
+#endif
 void Context::destroy_compute_pipeline(PipelineId id) { impl_->destroy_pipeline(id); }
 void Context::dispatch(PipelineId pipeline, DispatchSize groups,
                        const std::vector<BufferBinding>& buffers,
@@ -1559,7 +1870,14 @@ bool Context::submission_complete(SubmissionId id) const {
     auto it = impl_->submissions.find(id);
     if (it == impl_->submissions.end())
         throw std::invalid_argument("Unknown D3D12 submission");
-    return impl_->fence->GetCompletedValue() >= it->second.fence_value;
+    const auto completed=impl_->fence->GetCompletedValue();
+    if(completed==std::numeric_limits<std::uint64_t>::max())
+        throw std::runtime_error("D3D12 device removed during completion query");
+    if(impl_->first_unsignaled_fence &&
+       it->second.fence_value>=impl_->first_unsignaled_fence)
+        throw std::runtime_error("D3D12 submission has no completion fence");
+    impl_->observe_completion(completed);
+    return completed>=it->second.fence_value;
 }
 void Context::wait_submission(SubmissionId id) { impl_->wait_submission(id); }
 void Context::wait_submissions(std::span<const SubmissionId> ordered) {

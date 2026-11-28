@@ -6,6 +6,7 @@
 #include "physx_gpu/source_physx_root_callback.h"
 #include "physx_gpu/source_physx_mapped_report_roots.h"
 #include "physx_gpu/source_sap_dma_native.h"
+#include "physx_gpu/frame_working_set.h"
 
 #include "extensions/PxDefaultAllocator.h"
 #include "foundation/PxFoundation.h"
@@ -125,6 +126,44 @@ void exercise(Context& context) {
         require(observed==contents && buffer.getDevicePtr()!=previous,
                 "Source GPU prefix growth failed to preserve retained history");
         heap.flushDeferredDeallocs();
+
+        // An exceptional numerical allocation must return its root once
+        // smaller frames no longer need the transient capacity.
+        buffer.resizeCopyPrefixAsync(16384u,sizeof(contents),stream,PX_FL);
+        stream.wait_at_fetch();
+        heap.flushDeferredDeallocs();
+        require(roots.live_roots()==2u,
+                "Exceptional numerical storage lacks a dedicated root");
+        FrameWorkingSet working_set;
+        for(unsigned frame=1u;frame<FrameWorkingSet::contraction_frames;++frame)
+            require(!working_set.should_contract(256u,buffer.getSize()),
+                    "Transient numerical capacity contracted prematurely");
+        require(!working_set.should_contract(16384u,buffer.getSize()),
+                "Full demand did not cancel pending contraction");
+        for(unsigned frame=1u;frame<FrameWorkingSet::contraction_frames;++frame)
+            require(!working_set.should_contract(256u,buffer.getSize()),
+                    "Transient numerical capacity contracted prematurely");
+        require(working_set.should_contract(256u,buffer.getSize()),
+                "Sustained smaller frames did not contract numerical storage");
+        const auto peak=buffer.getDevicePtr();
+        bool invalid_shrink=false;
+        try {
+            buffer.resizeCopyPrefixAsync(16u,sizeof(contents),stream,PX_FL);
+        }catch(const std::out_of_range&) { invalid_shrink=true; }
+        require(invalid_shrink && buffer.getDevicePtr()==peak,
+                "Numerical contraction discarded live history");
+        buffer.resizeCopyPrefixAsync(256u,sizeof(contents),stream,PX_FL);
+        require(buffer.getSize()==256u && roots.live_roots()==2u &&
+                stream.commands().size()==1u &&
+                std::get<CopyCommand>(stream.commands().front()).bytes==sizeof(contents),
+                "Numerical contraction did not retain exactly its live history");
+        stream.wait_at_fetch();
+        const auto contracted=addresses.resolve(buffer.getDevicePtr(),sizeof(observed));
+        context.download(contracted.buffer,contracted.offset,
+                         observed.data(),sizeof(observed));
+        heap.flushDeferredDeallocs();
+        require(observed==contents && roots.live_roots()==1u,
+                "Numerical contraction lost history or retained the peak root");
         companion.deallocate();
         buffer.deallocate();
         reused.deallocate();
@@ -136,9 +175,57 @@ void exercise(Context& context) {
         require(roots.live_roots() == 2u &&
                 heap.getHeapStats().stats[group] == 5000u,
                 "Original PhysX exceptional allocation did not use its own root");
+        physx::PxgCudaBuffer destination(heap, group);
+        destination.allocate(256u,PX_FL);
+        const auto dst=addresses.resolve(destination.getDevicePtr(),sizeof(contents));
+        const std::array<std::uint32_t,8> initial{};
+        stream.queue_uploads({{destination.getDevicePtr(),initial.data(),sizeof(initial)}});
+        const auto batches=stream.command_batch_generation();
         exceptional.deallocate();
-        require(roots.live_roots() == 1u &&
-                heap.getHeapStats().stats[group] == 0u,
+        require(roots.live_roots()==1u &&
+                stream.command_batch_generation()==batches &&
+                !stream.commands().empty(),
+                "Unrelated root retirement submitted pending work");
+
+        exceptional.allocate(5000u,PX_FL);
+        const auto copied_root=addresses.resolve(exceptional.getDevicePtr(),sizeof(contents)).buffer;
+        stream.queue_uploads({{exceptional.getDevicePtr(),contents.data(),sizeof(contents)}});
+        stream.queue_device_copy(destination.getDevicePtr(),
+                                 exceptional.getDevicePtr(),sizeof(contents));
+        exceptional.deallocate();
+        require(roots.live_roots()==1u &&
+                stream.command_batch_generation()==batches &&
+                !stream.commands().empty(),
+                "Referenced root retirement forced a submission");
+        const std::array<DownloadSpan,1> output{{
+            {dst.buffer,dst.offset,observed.data(),sizeof(observed)}
+        }};
+        stream.fetch(output);
+        require(observed==contents &&
+                stream.command_batch_generation()==batches+1u,
+                "Retired root lost its fused ordered copy");
+        const auto native_retired=[&](BufferId id) {
+            try { (void)context.buffer_is_host_visible(id); }
+            catch(const std::logic_error&) { return true; }
+            return false;
+        };
+        require(native_retired(copied_root),
+                "Submitted root retained its native handle");
+
+        exceptional.allocate(5000u,PX_FL);
+        const auto discarded_root=addresses.resolve(exceptional.getDevicePtr(),sizeof(initial)).buffer;
+        stream.queue_uploads({{exceptional.getDevicePtr(),initial.data(),sizeof(initial)}});
+        stream.queue_device_copy(destination.getDevicePtr(),
+                                 exceptional.getDevicePtr(),sizeof(initial));
+        exceptional.deallocate();
+        stream.discard_unsubmitted_commands();
+        require(native_retired(discarded_root) &&
+                stream.command_batch_generation()==batches+1u,
+                "Discarded root retained native storage or submitted work");
+        stream.fetch(output);
+        require(observed==contents,"Discarded root copy modified resident data");
+        destination.deallocate();
+        require(heap.getHeapStats().stats[group]==0u,
                 "Original PhysX exceptional root did not retire");
         require(!aborted && !foundation.errors.reported,
                 "Original PhysX source heap reported a corrupted allocation");

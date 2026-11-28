@@ -6,6 +6,7 @@
 #include <array>
 #include <cmath>
 #include <limits>
+#include <iostream>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -54,8 +55,22 @@ inline void compound_compare_state(BodyState a,BodyState b,float tolerance,const
         std::abs(a.orientation.z+b.orientation.z),std::abs(a.orientation.w+b.orientation.w)});
     const float error=std::max({compound_error(a.position,b.position),compound_error(a.velocity,b.velocity),
         compound_error(a.angular_velocity,b.angular_velocity),std::min(direct,negated)});
-    if(error>tolerance)throw std::runtime_error(std::string(stage)+": body state error "+std::to_string(error)+
-        "; linear "+std::to_string(compound_error(a.velocity,b.velocity))+"; angular "+std::to_string(compound_error(a.angular_velocity,b.angular_velocity)));
+    if(error>tolerance) {
+        const auto position=[](Vec3 p) {
+            return std::to_string(p.x)+","+std::to_string(p.y)+","+std::to_string(p.z);
+        };
+        const auto rotation=[](Quat q) {
+            return std::to_string(q.x)+","+std::to_string(q.y)+","+
+                std::to_string(q.z)+","+std::to_string(q.w);
+        };
+        throw std::runtime_error(std::string(stage)+": body state error "+std::to_string(error)+
+            "; position "+std::to_string(compound_error(a.position,b.position))+
+            "; orientation "+std::to_string(std::min(direct,negated))+
+            "; linear "+std::to_string(compound_error(a.velocity,b.velocity))+
+            "; angular "+std::to_string(compound_error(a.angular_velocity,b.angular_velocity))+
+            "; actual_p="+position(a.position)+" expected_p="+position(b.position)+
+            "; actual_q="+rotation(a.orientation)+" expected_q="+rotation(b.orientation));
+    }
 }
 
 // Public API conformance: no private solver rows or alternate dynamics.
@@ -507,7 +522,12 @@ inline void prismatic_joint_response(World& world,World* reference) {
     float last_slide=0.0f;
     for(unsigned frame=0;frame<24u;++frame) {
         world.add_body_torque(actual.body,{0.1f,0.12f,-0.08f});
-        world.step(dt);
+        try { world.step(dt); }
+        catch(...) {
+            std::cerr<<"FYZZXYZZY_METRIC suite=prismatic"
+                     <<" rejected_frame="<<frame<<'\n';
+            throw;
+        }
         if(reference) {
             reference->add_body_torque(expected.body,{0.1f,0.12f,-0.08f});
             reference->step(dt);

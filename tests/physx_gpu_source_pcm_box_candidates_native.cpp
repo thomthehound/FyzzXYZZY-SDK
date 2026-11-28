@@ -1126,7 +1126,10 @@ void verify(Context& context,const char* transform_shader,
                 }
                 const bool expected_current=i<2u;
                 const bool expected_prior=i==1u || i==2u;
-                require(actual[18]==static_cast<std::uint32_t>(expected_current) &&
+                const auto emitted=expected_current?1u:0u;
+                const auto physical_touch=
+                    0x10000u|(emitted<<8u)|std::uint32_t(expected_current);
+                require(actual[18]==physical_touch &&
                         actual[19]==static_cast<std::uint32_t>(expected_prior) &&
                         actual[3]==before[i][3],
                         "Device Sc touch disagrees with source Gu transition");

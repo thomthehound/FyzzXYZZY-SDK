@@ -89,6 +89,23 @@ struct GpuBroadphaseReports {
     // delta against previous Sc contacts (which omit non-dynamic pairs).
     bool full_rebuild=false;
 };
+// Source-ordered numerical coefficients depend on authored inputs, not
+// on the current GPU PCM witness or physical touch.
+struct GpuDyPairMaterial {
+    float rest_distance=0.0f,pair_slop=0.0f;
+    float max_contact_impulse=0.0f,max_penetration_bias=0.0f;
+    float restitution=0.0f,damping=0.0f;
+    float static_friction=0.0f,dynamic_friction=0.0f;
+    bool acceleration_spring=false,disable_friction=false;
+    bool disable_strong_friction=false,prepared=false;
+};
+struct GpuDyCandidateSource {
+    GpuDyPairMaterial material{};
+    std::uint32_t retained_first=0u,retained_count=0u;
+    std::uint32_t retained_single_patch=0xffffffffu;
+    bool retained_full=false;
+    std::uint32_t contact_begin=0xffffffffu,friction_begin=0xffffffffu;
+};
 // Gu PCM contacts remain keyed by Sc's original contact-manager EdgeIndex.
 // These are borrowed per-frame views; GPU state belongs to the same Sc edge.
 struct GpuPcmBoxPair {
@@ -108,6 +125,11 @@ struct GpuPcmBoxPair {
     // general managers in the same batch remain GPU-owned.
     bool candidate_complete=false;
     bool host_generated=false;
+    // Sc validates retained friction before GPU witness publication.
+    std::uint32_t friction_history_mask=0u,friction_eligible_mask=0u;
+    // Stable source candidate identity precedes Gu contact publication.
+    std::uint32_t candidate_ordinal=0xffffffffu;
+    bool early_host_normal=false;
 };
 enum class GpuPcmTouchTransition : std::uint32_t {
     None=0,Found=1,Persists=2,Lost=3
@@ -182,8 +204,15 @@ struct GpuDyDistanceBody {
     }
 };
 static_assert(sizeof(GpuDyDistanceBody)==52u);
-// DyBodyCoreIntegrator::integrateCore inputs. Free bodies follow the
-// solver-body ordinals and integrate without solver deltas.
+// Source-indexed dynamic bodies share one integration slot, regardless
+// of whether their accurate component admits a numerical solver task.
+inline constexpr std::uint32_t gpu_dy_source_indexed_integration=0x200u;
+// Sleep-ready integration depends on the accurate component's activity.
+inline constexpr std::uint32_t gpu_dy_conditional_integration=0x400u;
+// A dormant source initializes sleep state only on admitted integration.
+inline constexpr std::uint32_t gpu_dy_wake_integration=0x800u;
+inline constexpr std::uint32_t gpu_dy_integration_inactive=2u;
+// DyBodyCoreIntegrator::integrateCore inputs.
 struct GpuDyBodyIntegrationInput {
     float position[3]{},orientation[4]{};
     float linear_velocity[3]{},angular_velocity[3]{};
@@ -267,10 +296,18 @@ static_assert(sizeof(GpuDyJointInput)==152u &&
               offsetof(GpuDyJointInput,kind)==140u &&
               offsetof(GpuDyJointInput,source_slot)==144u &&
               offsetof(GpuDyJointInput,source_generation)==148u);
+// Scene GPU contact indices address Sc candidates; CPU PGS contact
+// indices address published Gu manifolds. Joint indices address Dy rows.
 struct GpuDyDistanceDescriptor {
     std::uint32_t index=0,row0=0,row1=0,row_count=0;
 };
 static_assert(sizeof(GpuDyDistanceDescriptor)==16u);
+struct GpuDyJointSource {
+    GpuDyDistanceDescriptor descriptor;
+    std::uint32_t source_index=0u;
+    float inverse_mass_a=0.0f,inverse_mass_b=0.0f;
+};
+static_assert(sizeof(GpuDyJointSource)==28u);
 struct GpuDyDistanceTask {
     std::uint32_t descriptor_begin=0,descriptor_end=0;
     std::uint32_t partition_begin=0,partition_end=0;
@@ -279,6 +316,39 @@ struct GpuDyDistanceTask {
     std::uint32_t error=0u;
 };
 static_assert(sizeof(GpuDyDistanceTask)==36u);
+// Transient Sc edge identities and typed Dy numerical table bounds.
+// These are borrowed per-step views, not persistent public island IDs.
+struct GpuDyIslandEdge {
+    std::uint32_t edge_index=0;
+    std::uint32_t node_a=0xffffffffu,node_b=0xffffffffu;
+    std::uint32_t source_index=0,kind=0;
+};
+static_assert(sizeof(GpuDyIslandEdge)==20u);
+// CPU Gu uses the shared EdgeIndex journal. Bits 0–1 record touch,
+// bits 8–15 encode exact contact count, and bit 17 marks that extent.
+struct GpuGuTouchRecord {
+    std::uint32_t edge_index=0u,touch_bits=0u;
+};
+static_assert(sizeof(GpuGuTouchRecord)==8u);
+struct GpuDyIslandSources {
+    std::uint32_t contact_managers=0u;
+    std::uint32_t joint_rows=0u;
+    std::uint32_t full_descriptors=0u;
+    bool speculative_wake_groups=false;
+};
+// Both Sc endpoint admission and Dy wide-task scheduling use this gate.
+// Compact tasks never require host endpoint-degree analysis.
+inline constexpr std::uint32_t gpu_dy_wide_task_threshold=4u*128u;
+inline constexpr std::uint32_t gpu_dy_cross_group_color_min=129u;
+// Device-owned schedule ranges have no host records.
+struct GpuDyResidentScheduleCapacity {
+    std::size_t tasks=0u,body_ordinals=0u;
+};
+// Candidate topology bounds the portable indirect command envelope.
+struct GpuDyWideScheduleBounds {
+    std::uint32_t nodes=0u,stages=0u,iterations=0u;
+    std::array<std::uint32_t,8> position_ends{};
+};
 
 // DyContactPrep normal and friction rows use source PxReal arithmetic
 // with separate Gu-indexed contact-force writeback.
@@ -291,20 +361,28 @@ struct GpuDyGuContactInput {
 static_assert(sizeof(GpuDyGuContactInput)==28u);
 struct GpuDyContactPoint {
     float normal[3]{},angular_a[3]{},angular_b[3]{};
-    std::uint32_t reserved=0u;
     float velocity_multiplier=0.0f,impulse_multiplier=1.0f;
     float biased_error=0.0f,unbiased_error=0.0f;
-    float applied_force=0.0f,max_impulse=0.0f;
+    float applied_force=0.0f;
 };
-static_assert(sizeof(GpuDyContactPoint)==64u &&
-              offsetof(GpuDyContactPoint,velocity_multiplier)==40u &&
-              offsetof(GpuDyContactPoint,applied_force)==56u);
+static_assert(sizeof(GpuDyContactPoint)==56u &&
+              offsetof(GpuDyContactPoint,velocity_multiplier)==36u &&
+              offsetof(GpuDyContactPoint,applied_force)==52u);
 // The GPU constructs two tangent rows from each Sc-owned, body-local
 // friction anchor. Standalone conformance may retrieve the solved rows.
 struct GpuDyFrictionAnchorInput {
     float local_a[3]{},local_b[3]{};
 };
 static_assert(sizeof(GpuDyFrictionAnchorInput)==24u);
+struct GpuDyRetainedFrictionCandidate {
+    float body0_normal[3]{};
+    std::uint32_t source_ordinal=0u;
+    std::array<GpuDyFrictionAnchorInput,2> anchors{};
+    std::uint32_t anchor_count=0u;
+};
+static_assert(sizeof(GpuDyRetainedFrictionCandidate)==68u &&
+              offsetof(GpuDyRetainedFrictionCandidate,anchors)==16u &&
+              offsetof(GpuDyRetainedFrictionCandidate,anchor_count)==64u);
 struct GpuDyFrictionWriteback {
     float tangent[3]{};
     float applied_force=0.0f;
@@ -319,13 +397,14 @@ static_assert(sizeof(GpuDyFrictionAnchorImpulse)==12u);
 // The GPU friction row retains source PxReal coefficients and impulses.
 struct GpuDyFrictionRow {
     float tangent[3]{},angular_a[3]{},angular_b[3]{};
-    std::uint32_t reserved=0u;
     float velocity_multiplier=0.0f,bias=0.0f;
     float target_velocity=0.0f,applied_force=0.0f;
 };
-static_assert(sizeof(GpuDyFrictionRow)==56u &&
-              offsetof(GpuDyFrictionRow,velocity_multiplier)==40u &&
-              offsetof(GpuDyFrictionRow,applied_force)==52u);
+static_assert(sizeof(GpuDyFrictionRow)==52u &&
+              offsetof(GpuDyFrictionRow,velocity_multiplier)==36u &&
+              offsetof(GpuDyFrictionRow,applied_force)==48u);
+// Fresh single-point PCM patches can grow only one anchor.
+inline constexpr std::uint32_t gpu_dy_pcm_single_anchor=0x08000000u;
 struct GpuDyContactPatch {
     std::uint32_t row_offset=0,contact_count=0,anchor_count=0,broken=0;
     float static_friction=0.0f,dynamic_friction=0.0f;
@@ -339,8 +418,10 @@ struct GpuDyContactManifold {
     std::uint32_t patch_offset=0,patch_count=0;
     std::uint32_t order_offset=0,contact_count=0;
     std::uint32_t prep_index=0xffffffffu;
+    // Sc's source result slot is stable while Dy resolves working rows.
+    std::uint32_t source_order_offset=0u;
 };
-static_assert(sizeof(GpuDyContactManifold)==20u);
+static_assert(sizeof(GpuDyContactManifold)==24u);
 
 // DyContactPrepShared normal-row inputs, packed in the same source-owned
 // GPU arena as the solver. Correlated friction patches retain Sc ownership.
@@ -348,7 +429,8 @@ struct GpuDyContactPrepBody {
     float position[3]{},linear_velocity[3]{},angular_velocity[3]{};
     float sqrt_inverse_inertia[9]{};
     float inverse_mass=0.0f;
-    // Inline nonintegrated bodies retain their source solver ordinal.
+    // Solver-row identity is shared with compact contact descriptors.
+    // Static participants retain the invalid ordinal.
     std::uint32_t solver_ordinal=0xffffffffu;
     float orientation[4]{};
 };
@@ -369,11 +451,38 @@ struct GpuDyContactPrepPair {
     float max_contact_impulse=0.0f;
     // Dense CPU Gu geometry offset for non-PCM managers only.
     std::uint32_t cpu_gu_offset=0xffffffffu;
+    // Only the host packer reads these identities. Repeated immovable
+    // participants share one inline Dy body in a numerical frame.
+    BodyId source_body0=0xffffffffu,source_body1=0xffffffffu;
 };
-static_assert(sizeof(GpuDyContactPrepPair)==248u &&
+static_assert(sizeof(GpuDyContactPrepPair)==256u &&
               offsetof(GpuDyContactPrepPair,rest_distance)==192u &&
               offsetof(GpuDyContactPrepPair,max_contact_impulse)==240u &&
-              offsetof(GpuDyContactPrepPair,cpu_gu_offset)==244u);
+              offsetof(GpuDyContactPrepPair,cpu_gu_offset)==244u &&
+              offsetof(GpuDyContactPrepPair,source_body0)==248u);
+// The Scene numerical path borrows every actor frame from Dy's resident
+// pool. Only source identities, inverse masses and material coefficients
+// enter the CPU-to-GPU preparation boundary.
+// Device admission resolves this responding-body reference after upload.
+inline constexpr std::uint32_t gpu_dy_unresolved_solver_ordinal=0xfffffffeu;
+struct GpuDyCompactContactPrep {
+    std::uint32_t solver_ordinal0=0xffffffffu,solver_ordinal1=0xffffffffu;
+    BodyId source_body0=0xffffffffu,source_body1=0xffffffffu;
+    float inverse_mass0=0.0f,inverse_mass1=0.0f;
+    float rest_distance=0.0f,pair_slop=0.0f;
+    float restitution=0.0f,damping=0.0f;
+    float max_penetration_bias=0.0f,inv_dt=0.0f;
+    float seconds=0.0f,rigid_contact_bias=0.0f;
+    float bounce_threshold=0.0f;
+    std::uint32_t acceleration_spring=0u;
+    std::uint32_t pcm_pair_index=0xffffffffu,pcm_edge=0u;
+    float max_contact_impulse=0.0f;
+    std::uint32_t cpu_gu_offset=0xffffffffu;
+};
+static_assert(sizeof(GpuDyCompactContactPrep)==80u &&
+              offsetof(GpuDyCompactContactPrep,rest_distance)==24u &&
+              offsetof(GpuDyCompactContactPrep,pcm_pair_index)==64u &&
+              offsetof(GpuDyCompactContactPrep,cpu_gu_offset)==76u);
 
 struct GpuConvexFaceSpan {
     std::uint32_t first_face=0;
@@ -394,6 +503,16 @@ public:
     virtual GpuBroadphaseReports advance(
         std::span<const GpuBroadphaseBox> live_boxes,
         bool force_update,bool geometry_dirty)=0;
+    // Run Sc work that cannot observe SAP results while native GPU
+    // report production is in flight. All report identity publication
+    // still occurs after the producer's original fetch boundary.
+    virtual GpuBroadphaseReports advance_overlapping(
+        std::span<const GpuBroadphaseBox> live_boxes,
+        bool force_update,bool geometry_dirty,
+        const std::function<void()>& independent_sc_work) {
+        if(independent_sc_work)independent_sc_work();
+        return advance(live_boxes,force_update,geometry_dirty);
+    }
     // ScShapeSim's authored transform/contact-distance changes and
     // ScPipeline::afterIntegration mark the original PxgAABBManager
     // changed-handle bitmap. No CPU geometry diff or parallel dirty list.
@@ -405,11 +524,25 @@ public:
     // spans remain alive until that join. No second contact owner exists.
     virtual void enqueue_gpu_pcm_box_contacts(
         std::span<const GpuPcmBoxPair>,
-        std::span<GpuPcmBoxResult>) {
+        std::span<GpuPcmBoxResult>,
+        std::uint32_t=0u,bool=false) {
         throw std::logic_error("Source GPU PCM stages are not installed");
     }
     virtual void finish_gpu_pcm_box_contacts() {
         throw std::logic_error("Source GPU PCM publication is unavailable");
+    }
+    virtual void finish_deferred_gpu_pcm_points() {}
+    // A mixed frame submits bounded CPU Gu into the resident source
+    // contact stream as soon as those witnesses are available. Sc's
+    // subsequent GPU witness join must not wait for this later upload.
+    virtual void enqueue_cpu_gu_touch_history(
+        std::span<const GpuGuTouchRecord>) {
+        throw std::logic_error("Device Gu touch history is unavailable");
+    }
+    virtual void enqueue_host_pcm_contacts(
+        std::span<const GpuPcmBoxPair>,
+        std::span<const GpuPcmBoxResult>) {
+        throw std::logic_error("Source GPU PCM host input is unavailable");
     }
     // Sc can generate bounded primitive Gu witnesses once, then upload
     // their existing source-ordered records for device Dy preparation.
@@ -417,11 +550,39 @@ public:
     virtual bool supports_host_pcm_contacts() const noexcept { return false; }
     virtual void upload_host_pcm_contacts(
         std::span<const GpuPcmBoxPair>,
-        std::span<const GpuPcmBoxResult>) {
+        std::span<const GpuPcmBoxResult>,
+        std::uint32_t=0u) {
         throw std::logic_error("Source GPU host PCM stream unavailable");
     }
     virtual bool has_gpu_dy_distance() const noexcept { return false; }
-    virtual void solve_gpu_dy_distance(
+    virtual void enqueue_gpu_dy_retained_friction_sources(
+        std::span<const GpuDyRetainedFrictionCandidate>) {
+        throw std::logic_error("Source GPU Dy retained friction input is unavailable");
+    }
+    virtual void enqueue_gpu_dy_joint_sources(
+        std::span<const GpuDyJointInput>) {
+        throw std::logic_error("Source GPU Dy joint source is unavailable");
+    }
+    virtual void begin_gpu_dy_actor_sources() {
+        throw std::logic_error("Source GPU Dy actor source is unavailable");
+    }
+    virtual void enqueue_gpu_dy_actor_sources(
+        std::span<const GpuDyBodyIntegrationInput>) {
+        throw std::logic_error("Source GPU Dy actor source is unavailable");
+    }
+    virtual std::uint32_t gpu_dy_direct_task_limit() const noexcept {
+        return 0u;
+    }
+    virtual void enqueue_gpu_dy_island_admission(
+        std::span<const GpuDyIslandEdge>,
+        std::span<const std::uint32_t>,GpuDyIslandSources,
+        bool /*early*/=false) {
+        throw std::logic_error("Device Sc accurate-island admission is unavailable");
+    }
+    virtual void discard_gpu_dy_island_admission() {
+        throw std::logic_error("Device Sc admission discard is unavailable");
+    }
+    virtual void enqueue_gpu_dy_distance(
         std::span<GpuDyDistanceBody>,
         std::span<GpuDyJointRow>,
         std::span<const GpuDyDistanceDescriptor>,
@@ -443,8 +604,24 @@ public:
         bool /*device_world_motion*/=false,
         bool /*device_unconstrained_preparation*/=false,
         std::span<GpuDySleepState> /*sleep_states*/={},
-        std::span<const GpuDyJointInput> /*joint_inputs*/={}) {
+        std::span<const GpuDyJointInput> /*joint_inputs*/={},
+        bool /*readback_device_task_records*/=true,
+        bool /*compact_contact_admission*/=false,
+        std::span<const GpuDyCompactContactPrep> /*compact_contact_prep*/={},
+        std::span<const GpuDyRetainedFrictionCandidate> /*retained_candidates*/={},
+        GpuDyWideScheduleBounds /*wide_bounds*/={},
+        GpuDyResidentScheduleCapacity /*resident_capacity*/={},
+        std::span<const GpuDyJointSource> /*joint_sources*/={}) {
         throw std::logic_error("Source GPU Dy shader is not installed");
+    }
+    virtual void finish_gpu_dy_distance() {
+        throw std::logic_error("Source GPU Dy result is not available");
+    }
+    virtual std::span<const std::uint32_t> gpu_dy_admitted_response_tokens() const {
+        throw std::logic_error("Source GPU Dy response admission is unavailable");
+    }
+    virtual std::span<const std::uint32_t> gpu_dy_admitted_contact_sources() const {
+        throw std::logic_error("Source GPU Dy contact admission is unavailable");
     }
     // Sc's afterIntegration authorizes the source ElementSim device pose.
     virtual void authorize_device_integrated_pose(BodyId) {
@@ -541,6 +718,8 @@ struct ContactManifold {
     std::uint8_t count = 0;
     // GuContactBoxBox collision-axis cache (mPairData), retained by pair.
     std::uint8_t collision_axis = 0;
+    // Ordinal of this edge in Sc's pre-PCM candidate stream.
+    std::uint32_t candidate_ordinal=std::numeric_limits<std::uint32_t>::max();
     // Transient source Dy contact constraints are held in the scene's
     // contiguous row arena, indexed by this manager's offset and count.
     std::size_t solver_offset = 0;
@@ -648,6 +827,13 @@ public:
     // The production GPU SAP/AABB owner is attached before any actor is
     // admitted. A selected GPU scene never silently runs native CPU SAP.
     void set_gpu_broadphase(std::unique_ptr<GpuBroadphaseProducer> producer);
+    // Select numerical Dy execution between completed frames. Sc, SAP,
+    // PCM, contact history and published body state retain one owner.
+    void set_gpu_dy_enabled(bool enabled);
+    // Select the resident Sc island/response ordering for compact GPU
+    // task graphs. GPU-generated touch controls connectivity; Sc retains
+    // persistent identities and result publication.
+    void set_gpu_dy_device_admission_enabled(bool enabled);
     Scene(Scene&&) = default;
     Scene& operator=(Scene&&) = default;
     // Configured only at World construction, before scene admission.
@@ -1325,7 +1511,9 @@ private:
     void refresh_shape_links(BodyId body);
     static Transform validated_pose(Transform pose);
     // Shared Gu collision progression, independent of Dy solver execution.
-    void advance_collision_internal(bool force_update,bool checkpointed);
+    void advance_collision_internal(bool force_update,bool checkpointed,
+                                    bool defer_device_points=false,
+                                    float step_seconds=0.0f);
     void update_shape_bounds(Shape& shape);
     void publish_integrated_shape_bounds(BodyId id,Actor& actor);
     void update_bounds();
@@ -1336,9 +1524,18 @@ private:
     void prepare_unconstrained_velocities(float seconds);
     void publish_kinematic_targets();
     void update_pairs();
-    void update_gpu_pairs(bool force_update);
+    void update_gpu_pairs(bool force_update,
+                          const std::function<void()>& independent_sc_work);
     void publish_pairs();
-    void update_contacts();
+    GpuDyPairMaterial prepare_contact_material(ShapeId first,
+                                             ShapeId second) const;
+    void update_contacts(bool defer_device_points=false,
+                         float step_seconds=0.0f);
+    void prepare_gpu_dy_contact_prep(std::size_t source,float seconds);
+    void prepare_gpu_dy_candidate_contact_preps(float seconds);
+    void reserve_gpu_dy_pcm_source_rows();
+    void prepare_gpu_dy_pcm_friction_history();
+    void materialize_gpu_pcm_points();
     // Original contact-manager addEdge/setEdgeConnected/removeConnection
     // lifecycle, within the existing single scene-owned island pipeline.
     std::uint32_t allocate_contact_edge(Pair bodies,Pair shapes={});
@@ -1401,17 +1598,30 @@ private:
     void prepare_solver_bodies();
     void partition_constraints();
     void prepare_constraints(float seconds);
+    void prepare_contact_constraints(ContactManifold& manifold,float seconds,
+        bool gpu_normal_prep,bool source_body_order,bool prewitness,
+        std::uint64_t next_cache_epoch);
+    void pack_gpu_dy_contact_descriptor(const ContactManifold& manifold,
+        std::span<const FrictionPatch> source_patches,bool early_device_admission,
+        std::size_t& explicit_order_cursor);
     void erase_shape_friction_history(ShapeId id);
     void erase_body_friction_history(BodyId id);
     void erase_friction_history(std::uint32_t id,bool body_scope);
     void wake_shape_partners(ShapeId id);
+    void publish_cpu_gu_touch_history(
+        std::span<const Pair> lost_pairs,
+        std::span<const ContactManifold> previous_manifolds);
+    void prepare_gpu_dy_device_islands(bool selected,std::size_t task_capacity);
     void solve_gpu_distance_constraints(float seconds);
+    std::size_t gpu_dy_body_index(BodyId id) const;
+    std::size_t gpu_dy_source_body_index(BodyId id) const;
     void solve_constraint_task(std::size_t task_index);
     void integrate_solver_task(std::size_t task_index,float seconds,
                                std::vector<BodyId>& ready_nodes);
     void complete_solver_end_task(std::size_t task_index,float seconds,
                                   std::vector<BodyId>& ready_nodes);
     void begin_contact_writeback();
+    bool gpu_dy_admits_contact(const ContactManifold& manifold) const;
     void write_back_contacts(std::size_t first,std::size_t last);
     void update_threshold_stream(float seconds);
     void publish_contact_events();
@@ -1428,6 +1638,13 @@ private:
     std::size_t uploaded_convex_vertex_count_=0;
     std::size_t rigid_shape_count_=0;
     using EdgeIndex=std::uint32_t;
+    GpuDyJointInput pack_gpu_dy_joint_input(EdgeIndex edge) const;
+    void prepare_gpu_dy_joint_sources(std::span<const EdgeIndex> edges,
+                                   bool source_order,bool staged_sources);
+    void pack_gpu_dy_integration_input(
+        BodyId id,float seconds,GpuDyBodyIntegrationInput& input) const;
+    void stage_gpu_dy_actor_sources(std::span<const BodyId> ids,float seconds,
+                                    bool immovable=false,bool include_dormant=false);
     static constexpr EdgeIndex invalid_edge=std::numeric_limits<EdgeIndex>::max();
     static constexpr std::size_t invalid_instance=
         std::numeric_limits<std::size_t>::max();
@@ -1479,7 +1696,8 @@ private:
         PcmManifoldCache& cache,std::span<ContactPoint> output);
     static std::uint8_t publish_gpu_pcm_box_box(
         const GpuPcmBoxResult& gpu,PcmManifoldCache& cache,
-        std::span<ContactPoint> output);
+        std::span<ContactPoint> output,bool defer_points,
+        bool require_normal);
     enum class IslandEdgeType : std::uint8_t {
         ContactManager, Constraint
     };
@@ -1769,6 +1987,8 @@ private:
     // Reusable flat Dy normal-constraint stream; patch ownership and all
     // point offsets remain with this scene, not with allocating manifolds.
     std::vector<SolverContactPoint> solver_contact_points_;
+    // GPU Dy keeps source Gu ordinals but no CPU numerical normal rows.
+    std::size_t prepared_contact_rows_=0u;
     // DyFrictionCorrelation::ContactPatchData is constructed from
     // CONTIGUOUS runs of compatible Gu contacts before friction patch
     // correlation; one reused scratch arena, not per-manager objects.
@@ -2040,6 +2260,7 @@ private:
         void publish_results();
     };
     std::vector<SolverTask> solver_tasks_;
+    std::size_t gpu_dy_responding_island_count_=0u;
     // Frame-local PxsSolverEndTask completions are keyed by the actual
     // task descriptor; stamps avoid allocating/clearing a new registry.
     std::vector<std::uint32_t> solver_task_completion_stamps_;
@@ -2076,6 +2297,8 @@ private:
     std::vector<FrictionManagerSpan> next_friction_by_edge_;
     std::uint64_t friction_cache_epoch_=0;
     std::vector<SolverContactFriction> solver_friction_rows_;
+    // GPU Dy retains source tangent offsets without CPU numerical rows.
+    std::size_t prepared_friction_rows_=0u;
     // DyDynamics::mWorldSolverBody / mWorldSolverBodyData: one zero-mass
     // solver body shared by all static collision participants.
     SolverBodyRow world_solver_row_{};
@@ -2089,11 +2312,35 @@ private:
     std::vector<GpuDyIntegratedPose> gpu_dy_integrated_poses_;
     std::vector<GpuDySleepState> gpu_dy_sleep_states_;
     std::vector<BodyId> gpu_dy_free_ids_;
+    std::vector<std::size_t> gpu_dy_free_ordinals_;
     bool gpu_dy_pose_ready_=false;
-    std::vector<GpuDyJointRow> gpu_dy_rows_;
+    bool gpu_dy_source_body_order_=false;
+    std::vector<GpuDyJointSource> gpu_dy_joint_sources_;
+    std::size_t gpu_dy_joint_row_count_=0u;
     std::vector<GpuDyJointInput> gpu_dy_joint_inputs_;
+    std::vector<std::uint32_t> gpu_dy_joint_source_slots_;
     std::vector<std::uint32_t> gpu_dy_body_ordinals_;
+    std::vector<GpuGuTouchRecord> gpu_dy_gu_touches_;
     std::vector<GpuDyDistanceTask> gpu_dy_tasks_;
+    std::vector<GpuDyIslandEdge> gpu_dy_island_edges_;
+    std::vector<std::uint32_t> gpu_dy_island_node_flags_;
+    struct GpuDyCandidateWidth {
+        std::uint32_t nodes=0u,responses=0u,cover=0u;
+        std::uint32_t position=0u,velocity=0u;
+    };
+    std::vector<GpuDyCandidateWidth> gpu_dy_candidate_widths_;
+    std::vector<std::uint8_t> gpu_dy_candidate_covered_;
+    std::vector<BodyId> gpu_dy_early_actor_ids_;
+    std::vector<BodyId> gpu_dy_joint_kinematic_ids_;
+    std::vector<std::uint32_t> gpu_dy_actor_stage_epochs_;
+    std::uint32_t gpu_dy_actor_stage_epoch_=0u;
+    std::size_t gpu_dy_staged_actor_count_=0u;
+    std::vector<BodyId> gpu_dy_immovable_source_ids_;
+    std::vector<EdgeIndex> gpu_dy_early_joint_edges_;
+    bool gpu_dy_early_islands_=false;
+    bool gpu_dy_prewitness_solve_=false;
+    std::size_t gpu_dy_prewitness_contact_rows_=0u;
+    std::size_t gpu_dy_prewitness_friction_rows_=0u;
     std::vector<float> gpu_dy_contact_forces_;
     std::vector<GpuDyGuContactInput> gpu_dy_gu_inputs_;
     std::vector<GpuDyFrictionAnchorImpulse> gpu_dy_friction_impulses_;
@@ -2101,7 +2348,12 @@ private:
     std::vector<GpuDyContactPatch> gpu_dy_patches_;
     std::vector<GpuDyContactManifold> gpu_dy_manifolds_;
     std::vector<std::uint32_t> gpu_dy_contact_order_;
-    std::vector<GpuDyContactPrepPair> gpu_dy_contact_prep_pairs_;
+    std::vector<std::size_t> gpu_dy_public_patch_permutation_;
+    std::vector<GpuDyCompactContactPrep> gpu_dy_contact_prep_pairs_;
+    std::vector<std::uint32_t> gpu_dy_contact_prep_sources_;
+    std::vector<GpuDyRetainedFrictionCandidate> gpu_dy_history_candidates_;
+    // Original Sc candidate ordinals resolve only authored numerical
+    // sources; unused source IDs have no compact preparation slot.
     std::vector<std::uint32_t> gpu_dy_contact_prep_indices_;
     // retired slots never participate in the SAP workload again. Keep
     // registration in insertion order; retirement erases only its live
@@ -2199,6 +2451,12 @@ private:
     // The GPU owner is the only broadphase producer in GPU mode; these
     // cached shape views are reused, never a duplicate SAP/pair registry.
     std::unique_ptr<GpuBroadphaseProducer> gpu_broadphase_;
+    bool gpu_dy_enabled_=true;
+    bool gpu_dy_device_admission_enabled_=false;
+    bool gpu_dy_active() const noexcept {
+        return gpu_dy_enabled_ && gpu_broadphase_ &&
+            gpu_broadphase_->has_gpu_dy_distance();
+    }
     std::vector<GpuBroadphaseBox> gpu_broadphase_boxes_;
     // This is a reusable Sc-to-BP input view, not an actor-state owner.
     // A rejected transaction revokes its validity before the next fetch.
@@ -2214,14 +2472,19 @@ private:
     bool broadphase_pair_membership_changed_=true;
     std::vector<Pair> sap_created_pairs_,sap_deleted_pairs_;
     std::vector<Pair> previous_pairs_;
+    // Numerical coefficients and ordered actor endpoints are fixed by
+    // Sparse numerical material and retained friction follow the same
+    // compact Sc source slots as device contact preparation.
+    std::vector<GpuDyCandidateSource> gpu_dy_candidate_sources_;
+    std::vector<GpuDyCandidateSource> gpu_dy_candidate_source_scratch_;
+    bool gpu_dy_candidate_sources_compacted_=false;
     std::vector<Pair> pending_pairs_;
+    std::vector<Pair> gpu_plane_pair_candidates_;
     // Sc's ordered contact-manager stream borrows these GPU per-frame
     // records; edge identity and rollback ownership remain with Sc.
     std::vector<GpuPcmBoxPair> gpu_pcm_pairs_;
     std::vector<GpuPcmBoxResult> gpu_pcm_results_;
-    // Source friction cache geometry is independent of current PCM Gu.
-    // Each bit is a previous friction patch validated while GPU Gu runs.
-    std::vector<std::uint32_t> gpu_pcm_friction_history_masks_;
+    bool gpu_pcm_points_deferred_=false;
     // Publish swaps are reversible without copying the source-owned
     // contact/pair arenas. Rollback keeps externally held Gu spans valid.
     std::uint64_t pair_epoch_=0;
@@ -2310,6 +2573,9 @@ private:
         float seconds=0.0f;
         RigidStepJoin* solver_join=nullptr;
         std::size_t solver_first=invalid_instance, solver_end=0;
+#if defined(FYZZXYZZY_PROFILE_GPU)
+        std::uint64_t trace_id=0u,trace_origin=0u,trace_frame=0u;
+#endif
         std::exception_ptr error;
         std::jthread worker;
         ~ThirdPassWorkerState() noexcept;
@@ -2330,5 +2596,6 @@ namespace fyzz {
 std::unique_ptr<WorldBackend> create_native_gpu_broadphase_backend(
     std::unique_ptr<native::GpuBroadphaseProducer> source_producer,
     bool contact_notifications, bool enhanced_determinism,
-    bool pcm_plane_box, bool pcm_box_box);
+    bool pcm_plane_box, bool pcm_box_box,
+    bool device_island_admission=false);
 } // namespace fyzz

@@ -12,6 +12,7 @@
 #include <string>
 #include <vector>
 #include <variant>
+#include <utility>
 
 namespace fyzz::compute {
 
@@ -24,7 +25,10 @@ enum class Backend { Vulkan, D3D12 };
 // request for CPU-mappable, GPU-writeable storage: unsupported adapters
 // reject it, never silently allocate a DEFAULT heap and label it mapped.
 // DeviceLocal retains normal GPU-preferred storage with staging transfers.
-enum class MemoryPlacement { Auto, HostVisible, DeviceLocal };
+// SharedLocal requires a GPU-local, CPU-mappable resource with explicit host
+// visibility; it never selects nonlocal host memory.
+// Upload is CPU-write-mapped, GPU-copy-source-only transfer storage.
+enum class MemoryPlacement { Auto, HostVisible, DeviceLocal, SharedLocal, Upload };
 
 // Only this explicit exception permits a higher-level source allocator to
 // fall back from direct mapped storage to staging. Allocation exhaustion,
@@ -42,6 +46,9 @@ struct DeviceInfo {
     std::string name;
     std::uint32_t vendor_id = 0;
     std::uint32_t device_id = 0;
+    // Software adapters execute compute through the API but do not
+    // determine the native hardware dispatch strategy.
+    bool software_adapter = false;
     std::uint32_t api_version = 0;
     std::uint64_t max_storage_buffer_range = 0;
     // Device-creation-time descriptor binding alignment. Vulkan obtains its
@@ -63,6 +70,9 @@ struct DeviceInfo {
     // non-UMA systems (e.g. CPU-accessible discrete GPU memory). Do not
     // infer unified CPU/GPU architecture from this memory-type property.
     bool has_device_local_host_visible_memory = false;
+    // A GPU-storage resource supports explicit SharedLocal placement for
+    // compact CPU-authored inputs with no device transfer copy.
+    bool supports_shared_frame_input = false;
     // These describe architecture-level UMA/cache guarantees where actually
     // exposed (D3D12 architecture query), not Vulkan HOST_COHERENT.
     bool unified_memory = false;
@@ -134,12 +144,24 @@ struct ComputePipelineDesc {
 // these declarations against shader reflection/source manifests.
 enum class BufferAccess { Unspecified, Read, Write, ReadWrite };
 
+// A contiguous accessed interval relative to the descriptor base.
+// Absence means the entire descriptor extent participates in dependencies.
+struct BufferAccessExtent {
+    std::size_t offset=0u;
+    std::size_t bytes=0u;
+};
+
 struct BufferBinding {
     std::uint32_t slot = 0;
     BufferId buffer = 0;
     std::size_t offset = 0;
     std::size_t bytes = 0;
     BufferAccess access = BufferAccess::Unspecified;
+    std::optional<BufferAccessExtent> access_extent;
+
+    BufferAccessExtent accessed_extent() const noexcept {
+        return access_extent.value_or(BufferAccessExtent{0u,bytes});
+    }
 };
 
 struct DispatchSize {
@@ -182,6 +204,53 @@ struct DispatchIndirectArgs {
     std::size_t offset = 0; // Three GPU-written uint32 workgroup counts.
 };
 
+// Owned host snapshot for an ordered GPU upload inside a command batch.
+// The backend packs snapshots into fence-owned transfer staging.
+struct UploadCommand {
+    BufferId destination = 0;
+    std::size_t destination_offset = 0;
+    std::vector<std::uint8_t> bytes;
+};
+
+// A phase can declare disjoint intervals of its existing descriptor slots.
+struct DispatchAccess {
+    std::uint32_t slot=0u;
+    BufferAccessExtent extent;
+    BufferAccess access=BufferAccess::ReadWrite;
+};
+
+// Immutable shader resource declarations can be shared by ordered launches.
+struct DispatchResources {
+    std::vector<BufferBinding> buffers;
+    std::vector<DispatchAccess> accesses;
+};
+
+// Appending parameters cannot alter the words owned by earlier launches.
+class DispatchParameterStorage {
+    friend struct DispatchCommand;
+    std::vector<std::uint32_t> words_;
+
+    std::size_t append(std::span<const std::uint32_t> words) {
+        const auto first=words_.size();
+        words_.insert(words_.end(),words.begin(),words.end());
+        return first;
+    }
+    std::span<const std::byte> bytes(std::size_t first,std::size_t count) const {
+        if(first>words_.size() || count>words_.size()-first)
+            throw std::invalid_argument("Dispatch parameter slice exceeds storage");
+        return std::as_bytes(std::span<const std::uint32_t>(words_).subspan(first,count));
+    }
+public:
+    DispatchParameterStorage()=default;
+    DispatchParameterStorage(const DispatchParameterStorage&)=delete;
+    DispatchParameterStorage& operator=(const DispatchParameterStorage&)=delete;
+};
+
+struct DispatchParameterSlice {
+    std::shared_ptr<const DispatchParameterStorage> storage;
+    std::size_t first=0u,count=0u;
+};
+
 struct DispatchCommand {
     PipelineId pipeline = 0;
     DispatchSize groups;
@@ -189,9 +258,88 @@ struct DispatchCommand {
     std::vector<std::uint8_t> push_constants;
     // GPU-generated dimensions replace direct groups; leave groups {1,1,1}.
     std::optional<DispatchIndirectArgs> indirect;
+    // Nonempty declares every shader access for this dispatch.
+    std::vector<DispatchAccess> accesses{};
+    // Shared declarations replace, rather than supplement, the owned vectors.
+    std::shared_ptr<const DispatchResources> resources{};
+    DispatchParameterSlice parameter_slice{};
+
+    void append_parameters(const std::shared_ptr<DispatchParameterStorage>& storage,
+                           std::span<const std::uint32_t> words) {
+        if(!storage || !push_constants.empty())
+            throw std::invalid_argument("Invalid shared dispatch parameter ownership");
+        const auto first=storage->append(words);
+        parameter_slice={storage,first,words.size()};
+    }
+    std::span<const std::byte> parameter_bytes() const {
+        if(parameter_slice.storage) {
+            if(!push_constants.empty())
+                throw std::invalid_argument("Dispatch mixes owned and shared parameter bytes");
+            return parameter_slice.storage->bytes(parameter_slice.first,parameter_slice.count);
+        }
+        if(parameter_slice.first || parameter_slice.count)
+            throw std::invalid_argument("Dispatch parameter slice has no storage");
+        return std::as_bytes(std::span<const std::uint8_t>(push_constants));
+    }
+
+    std::span<const BufferBinding> bindings() const noexcept {
+        return resources?std::span<const BufferBinding>(resources->buffers):
+                         std::span<const BufferBinding>(buffers);
+    }
+    std::span<const DispatchAccess> phase_accesses() const noexcept {
+        return resources?std::span<const DispatchAccess>(resources->accesses):
+                         std::span<const DispatchAccess>(accesses);
+    }
+    void validate_resource_ownership() const {
+        if(resources && (!buffers.empty() || !accesses.empty()))
+            throw std::invalid_argument("Dispatch mixes owned and shared resource declarations");
+    }
+    void share_resources() {
+        validate_resource_ownership();
+        if(resources)return;
+        auto declaration=std::make_shared<const DispatchResources>(
+            DispatchResources{std::move(buffers),std::move(accesses)});
+        buffers.clear();
+        accesses.clear();
+        resources=std::move(declaration);
+    }
+
+    template<class Visit>
+    void for_each_access(Visit visit) const {
+        validate_resource_ownership();
+        const auto views=bindings();
+        const auto declared=phase_accesses();
+        if(declared.empty()) {
+            for(const auto& binding:views)
+                visit(binding,binding.accessed_extent(),binding.access);
+            return;
+        }
+        for(const auto& item:declared) {
+            const BufferBinding* binding=nullptr;
+            for(const auto& candidate:views)
+                if(candidate.slot==item.slot) {
+                    binding=&candidate;
+                    break;
+                }
+            if(!binding)
+                throw std::invalid_argument("Dispatch access has no descriptor");
+            const auto extent=binding->accessed_extent();
+            if(!item.extent.bytes || item.extent.offset<extent.offset ||
+               item.extent.offset-extent.offset>extent.bytes ||
+               item.extent.bytes>extent.bytes-(item.extent.offset-extent.offset))
+                throw std::invalid_argument("Dispatch access exceeds binding extent");
+            if((item.access!=BufferAccess::Read &&
+                item.access!=BufferAccess::Write &&
+                item.access!=BufferAccess::ReadWrite) ||
+               (binding->access==BufferAccess::Read && item.access!=BufferAccess::Read) ||
+               (binding->access==BufferAccess::Write && item.access!=BufferAccess::Write))
+                throw std::invalid_argument("Dispatch access contradicts binding intent");
+            visit(*binding,item.extent,item.access);
+        }
+    }
 };
 
-using BatchCommand = std::variant<CopyCommand, DispatchCommand>;
+using BatchCommand = std::variant<CopyCommand, UploadCommand, DispatchCommand>;
 
 std::vector<DeviceInfo> enumerate_devices(Backend backend);
 
@@ -207,29 +355,33 @@ public:
 
     const DeviceInfo& device_info() const;
 
-    // Auto retains the pre-existing backend default. An explicit
-    // HostVisible request must produce CPU-mappable GPU-writable memory,
-    // or fail at creation rather than silently allocating device-only memory.
+    // Auto retains the pre-existing backend default. HostVisible requires
+    // GPU-writable CPU mapping. SharedLocal additionally requires physical
+    // GPU-local memory, so compact shared inputs cannot silently use slower
+    // CPU-only storage.
     BufferId create_buffer(std::size_t bytes,
                            MemoryPlacement placement = MemoryPlacement::Auto);
     void destroy_buffer(BufferId id);
 
     // Invalidates the handle immediately without waiting for the GPU.
-    // Its physical allocation remains alive until all GPU commands already
-    // submitted on this Context's ordered queue have completed. No future
+    // Its physical allocation remains alive at least until all submitted
+    // GPU uses of the allocation have completed. No future
     // command may use id; this is a precursor to PhysX's deferred free on
     // async grow/copy. Pending submissions must still be waited or retired
     // through their normal API. The Context owns the retired allocation.
     void retire_buffer(BufferId id);
 
-    // Direct CPU access to a GPU-writable HostVisible buffer; never
-    // implicitly synchronize. Callers must wait the existing source GPU
+    // Direct CPU access to HostVisible, SharedLocal or Upload storage;
+    // never implicitly synchronize. Upload requires Write access and
+    // cannot be a GPU destination or shader binding. Callers must wait the existing source GPU
     // fence BEFORE reading GPU writes; finish CPU accesses before GPU uses
     // the resource. map_buffer returns a pointer valid until unmap_buffer.
     // Unmap makes CPU writes visible per backend memory-coherency rules.
     // Neither API stages a transfer or takes ownership of the buffer.
     // Mapping twice or freeing/retiring a mapped buffer is invalid.
     bool buffer_is_host_visible(BufferId id) const;
+    // Conservative reference check against already observed completion.
+    bool buffer_in_use(BufferId id) const;
     void* map_buffer(BufferId id,
                      HostMapAccess access = HostMapAccess::ReadWrite);
     void unmap_buffer(BufferId id);
@@ -251,13 +403,23 @@ public:
     SubmissionId submit_upload_batch(const std::vector<UploadSpan>& uploads);
 
     void download(BufferId id, std::size_t offset, void* data, std::size_t bytes) const;
-    // Submit one ordered GPU readback into Context-owned staging without
-    // blocking the caller. Destination pointers remain borrowed until
-    // finish_download_batch; false retires the transfer without publishing
-    // bytes from a rejected scene transaction. One outstanding readback
-    // batch per Context retains the existing reusable staging allocation.
+    // Submit an ordered GPU readback into Context-owned staging without
+    // blocking the caller. Pending readbacks own separate staging and can
+    // finish or be cancelled independently by submission ID. Destination
+    // pointers remain borrowed until finish_download_batch; false retires
+    // the transfer without publishing rejected scene results.
     SubmissionId submit_download_batch(std::span<const DownloadSpan> downloads);
+    // Append a readback tail to the producer's native submission.
+    // The backend borrows the command vector as recording scratch and
+    // restores its original contents before returning. The returned
+    // token owns completion until finish_download_batch publishes results.
+    SubmissionId submit_batch_with_readback(
+        std::vector<BatchCommand>& commands,
+        std::span<const DownloadSpan> downloads);
     void finish_download_batch(SubmissionId id, bool publish = true);
+    // Detach borrowed destinations without waiting. Returns true if the
+    // submission token still needs retirement by the caller.
+    bool cancel_download_batch(SubmissionId id);
     // Synchronous wrapper for callers with an immediate host dependency.
     void download_batch(std::span<const DownloadSpan> downloads) const;
 
@@ -274,6 +436,9 @@ public:
                                     std::size_t bytes);
 
     PipelineId create_compute_pipeline(const ComputePipelineDesc& description);
+#if defined(FYZZXYZZY_PROFILE_GPU)
+    void set_pipeline_profile_label(PipelineId id,const char* label) const noexcept;
+#endif
     void destroy_compute_pipeline(PipelineId id);
     void dispatch(PipelineId pipeline, DispatchSize groups,
                   const std::vector<BufferBinding>& buffers,

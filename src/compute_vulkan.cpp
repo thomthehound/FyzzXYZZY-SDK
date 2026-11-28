@@ -2,12 +2,22 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #include "fyzzxyzzy/compute.h"
+#include "compute_readback_cache.h"
+#include "compute_range_hazards.h"
+#if defined(FYZZXYZZY_PROFILE_GPU)
+#include "hardware_profile.h"
+#endif
 
 #include <vulkan/vulkan.h>
 
 #include <array>
 
 #include <cstring>
+#include <cstdlib>
+#include <exception>
+#if defined(FYZZXYZZY_PROFILE_GPU)
+#include <cstdio>
+#endif
 #include <algorithm>
 #include <limits>
 #include <span>
@@ -31,24 +41,19 @@ VkInstance create_instance() {
     VkApplicationInfo application{};
     application.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO;
     application.pApplicationName = "FyzzXYZZY";
-    // The SPIR-V wave path uses Vulkan 1.1 subgroup properties and SPIR-V 1.3.
-    // The generic Vulkan compute API still works with Vulkan 1.0.
-    // Subgroup arithmetic is an OPTIONAL optimized shader path, not a
-    // reason to fail vkCreateInstance on a 1.0 loader.
-    std::uint32_t runtimeVersion = VK_API_VERSION_1_0;
-    auto getVersion = reinterpret_cast<PFN_vkEnumerateInstanceVersion>(
-        vkGetInstanceProcAddr(VK_NULL_HANDLE, "vkEnumerateInstanceVersion"));
-    if (getVersion)
-        require(getVersion(&runtimeVersion), "vkEnumerateInstanceVersion");
-    application.apiVersion = runtimeVersion >= VK_API_VERSION_1_4
-        ? VK_API_VERSION_1_4 : (runtimeVersion >= VK_API_VERSION_1_3
-            ? VK_API_VERSION_1_3 : (runtimeVersion >= VK_API_VERSION_1_2
-                ? VK_API_VERSION_1_2 : (runtimeVersion >= VK_API_VERSION_1_1
-                    ? VK_API_VERSION_1_1 : VK_API_VERSION_1_0)));
+    std::uint32_t runtimeVersion=VK_API_VERSION_1_0;
+    require(vkEnumerateInstanceVersion(&runtimeVersion),
+            "vkEnumerateInstanceVersion");
+    if(runtimeVersion<VK_API_VERSION_1_3)
+        throw std::runtime_error("Vulkan compute requires Vulkan 1.3");
+    application.apiVersion=std::min(runtimeVersion,VK_API_VERSION_1_4);
 
     VkInstanceCreateInfo create{};
     create.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO;
     create.pApplicationInfo = &application;
+#if defined(FYZZXYZZY_PROFILE_GPU)
+    std::uint64_t profile_context_id=hardware_profile::allocate_context_id();
+#endif
     VkInstance instance = VK_NULL_HANDLE;
     require(vkCreateInstance(&create, nullptr, &instance), "vkCreateInstance");
     return instance;
@@ -84,6 +89,14 @@ std::vector<DeviceCandidate> find_compute_devices(VkInstance instance) {
             }
             VkPhysicalDeviceProperties properties{};
             vkGetPhysicalDeviceProperties(physical, &properties);
+            if(properties.apiVersion<VK_API_VERSION_1_3)break;
+            VkPhysicalDeviceSynchronization2Features sync{};
+            sync.sType=VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SYNCHRONIZATION_2_FEATURES;
+            VkPhysicalDeviceFeatures2 required{};
+            required.sType=VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
+            required.pNext=&sync;
+            vkGetPhysicalDeviceFeatures2(physical,&required);
+            if(!sync.synchronization2)break;
             const auto& limits = properties.limits;
             DeviceInfo info;
             info.ordinal = static_cast<std::uint32_t>(result.size());
@@ -91,6 +104,8 @@ std::vector<DeviceCandidate> find_compute_devices(VkInstance instance) {
             info.vendor_id = properties.vendorID;
             info.device_id = properties.deviceID;
             info.api_version = properties.apiVersion;
+            info.unified_memory =
+                properties.deviceType == VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU;
             VkPhysicalDeviceMemoryProperties memory{};
             vkGetPhysicalDeviceMemoryProperties(physical, &memory);
             for (std::uint32_t m = 0; m < memory.memoryTypeCount; ++m) {
@@ -105,6 +120,14 @@ std::vector<DeviceCandidate> find_compute_devices(VkInstance instance) {
                              (VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT |
                               VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT))
                     info.has_device_local_host_visible_memory = true;
+                if(info.unified_memory &&
+                   (flags & (VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT |
+                             VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+                             VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)) ==
+                            (VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT |
+                             VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+                             VK_MEMORY_PROPERTY_HOST_COHERENT_BIT))
+                    info.supports_shared_frame_input = true;
             }
             // Coarse memory-heap capability only: actual VkBuffer
             // memoryTypeBits are validated by make_buffer at allocation.
@@ -115,77 +138,46 @@ std::vector<DeviceCandidate> find_compute_devices(VkInstance instance) {
             info.max_storage_buffer_range = limits.maxStorageBufferRange;
             info.storage_buffer_offset_alignment = limits.minStorageBufferOffsetAlignment;
             info.max_workgroup_invocations = limits.maxComputeWorkGroupInvocations;
-            bool has_compute_required_size = false;
-            // Vulkan 1.0 loader/device pairs have no core subgroup
-            // properties. Keep their old compute path and disable the
-            // native-wave optimization instead of rejecting the context.
-            auto getProperties2 = reinterpret_cast<PFN_vkGetPhysicalDeviceProperties2>(
-                vkGetInstanceProcAddr(instance, "vkGetPhysicalDeviceProperties2"));
-            if (getProperties2 && properties.apiVersion >= VK_API_VERSION_1_1) {
-                VkPhysicalDeviceSubgroupProperties subgroup{};
-                subgroup.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SUBGROUP_PROPERTIES;
-                VkPhysicalDeviceSubgroupSizeControlProperties size_properties{};
-                if (properties.apiVersion >= VK_API_VERSION_1_3) {
-                    size_properties.sType =
-                        VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SUBGROUP_SIZE_CONTROL_PROPERTIES;
-                    subgroup.pNext = &size_properties;
-                }
-                VkPhysicalDeviceProperties2 queried{};
-                queried.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2;
-                queried.pNext = &subgroup;
-                getProperties2(physical, &queried);
-                info.subgroup_size = subgroup.subgroupSize;
-                info.min_subgroup_size = subgroup.subgroupSize;
-                info.max_subgroup_size = subgroup.subgroupSize;
-                info.supports_wave_arithmetic =
-                    (subgroup.supportedStages & VK_SHADER_STAGE_COMPUTE_BIT) != 0 &&
-                    (subgroup.supportedOperations & VK_SUBGROUP_FEATURE_ARITHMETIC_BIT) != 0;
-                has_compute_required_size =
-                    properties.apiVersion >= VK_API_VERSION_1_3 &&
-                    (size_properties.requiredSubgroupSizeStages &
-                     VK_SHADER_STAGE_COMPUTE_BIT) != 0;
-                if (has_compute_required_size) {
-                    info.min_subgroup_size = size_properties.minSubgroupSize;
-                    info.max_subgroup_size = size_properties.maxSubgroupSize;
-                }
+            VkPhysicalDeviceSubgroupProperties subgroup{};
+            subgroup.sType=VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SUBGROUP_PROPERTIES;
+            VkPhysicalDeviceSubgroupSizeControlProperties size_properties{};
+            size_properties.sType=
+                VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SUBGROUP_SIZE_CONTROL_PROPERTIES;
+            subgroup.pNext=&size_properties;
+            VkPhysicalDeviceProperties2 queried{};
+            queried.sType=VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2;
+            queried.pNext=&subgroup;
+            vkGetPhysicalDeviceProperties2(physical,&queried);
+            info.subgroup_size=subgroup.subgroupSize;
+            info.min_subgroup_size=subgroup.subgroupSize;
+            info.max_subgroup_size=subgroup.subgroupSize;
+            info.supports_wave_arithmetic=
+                (subgroup.supportedStages&VK_SHADER_STAGE_COMPUTE_BIT)!=0u &&
+                (subgroup.supportedOperations&VK_SUBGROUP_FEATURE_ARITHMETIC_BIT)!=0u;
+            const bool has_compute_required_size=
+                (size_properties.requiredSubgroupSizeStages&VK_SHADER_STAGE_COMPUTE_BIT)!=0u;
+            if(has_compute_required_size) {
+                info.min_subgroup_size=size_properties.minSubgroupSize;
+                info.max_subgroup_size=size_properties.maxSubgroupSize;
             }
-            // Query shader integer and extended subgroup types once per
-            // physical device. Only Vulkan >=1.2 offers the core 64-bit
-            // subgroup feature; legacy compute contexts remain usable.
-            VkPhysicalDeviceFeatures basic{};
-            vkGetPhysicalDeviceFeatures(physical, &basic);
-            info.supports_int64_shader = basic.shaderInt64 == VK_TRUE;
-            info.supports_float64_shader = basic.shaderFloat64 == VK_TRUE;
-            if (properties.apiVersion >= VK_API_VERSION_1_2) {
-                auto getFeatures2 = reinterpret_cast<PFN_vkGetPhysicalDeviceFeatures2>(
-                    vkGetInstanceProcAddr(instance, "vkGetPhysicalDeviceFeatures2"));
-                if (getFeatures2) {
-                    VkPhysicalDeviceShaderSubgroupExtendedTypesFeatures extended{};
-                    extended.sType =
-                        VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_SUBGROUP_EXTENDED_TYPES_FEATURES;
-                    VkPhysicalDeviceSubgroupSizeControlFeatures size_features{};
-                    if (properties.apiVersion >= VK_API_VERSION_1_3) {
-                        size_features.sType =
-                            VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SUBGROUP_SIZE_CONTROL_FEATURES;
-                        extended.pNext = &size_features;
-                    }
-                    VkPhysicalDeviceFeatures2 features{};
-                    features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
-                    features.pNext = &extended;
-                    getFeatures2(physical, &features);
-                    info.supports_int64_shader = features.features.shaderInt64 == VK_TRUE;
-                    info.supports_float64_shader = features.features.shaderFloat64 == VK_TRUE;
-                    info.supports_int64_wave = info.supports_int64_shader &&
-                        info.supports_wave_arithmetic &&
-                        extended.shaderSubgroupExtendedTypes == VK_TRUE;
-                    info.supports_required_subgroup_size =
-                        properties.apiVersion >= VK_API_VERSION_1_3 &&
-                        size_features.subgroupSizeControl == VK_TRUE &&
-                        has_compute_required_size &&
-                        info.min_subgroup_size != 0u &&
-                        info.min_subgroup_size <= info.max_subgroup_size;
-                }
-            }
+            VkPhysicalDeviceShaderSubgroupExtendedTypesFeatures extended{};
+            extended.sType=
+                VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_SUBGROUP_EXTENDED_TYPES_FEATURES;
+            VkPhysicalDeviceSubgroupSizeControlFeatures size_features{};
+            size_features.sType=
+                VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SUBGROUP_SIZE_CONTROL_FEATURES;
+            required.pNext=&extended;
+            extended.pNext=&size_features;
+            vkGetPhysicalDeviceFeatures2(physical,&required);
+            info.supports_int64_shader=required.features.shaderInt64==VK_TRUE;
+            info.supports_float64_shader=required.features.shaderFloat64==VK_TRUE;
+            info.supports_int64_wave=info.supports_int64_shader &&
+                info.supports_wave_arithmetic &&
+                extended.shaderSubgroupExtendedTypes==VK_TRUE;
+            info.supports_required_subgroup_size=
+                size_features.subgroupSizeControl==VK_TRUE &&
+                has_compute_required_size && info.min_subgroup_size!=0u &&
+                info.min_subgroup_size<=info.max_subgroup_size;
             for (std::size_t j = 0; j < 3; ++j) {
                 info.max_workgroup_count[j] = limits.maxComputeWorkGroupCount[j];
                 info.max_workgroup_size[j] = limits.maxComputeWorkGroupSize[j];
@@ -235,6 +227,8 @@ struct Context::Impl {
         // constrains a bound shader descriptor, not a transfer source.
         bool storage_eligible = true;
         bool cpu_mapped = false;
+        BufferRangeHazards queue_hazards;
+        SubmissionId last_reference=0u;
     };
     struct Pipeline {
         VkDescriptorSetLayout descriptors = VK_NULL_HANDLE;
@@ -253,6 +247,14 @@ struct Context::Impl {
         std::vector<VkDescriptorBufferInfo> views;
         std::vector<BufferId> buffer_ids;
     };
+#if defined(FYZZXYZZY_PROFILE_GPU)
+    struct ProfileOp {
+        PipelineId pipeline=0;
+        std::size_t bytes=0u;
+        std::uint32_t x=0u,y=0u,z=0u;
+        bool indirect=false;
+    };
+#endif
     struct Submission {
         VkCommandBuffer commands = VK_NULL_HANDLE;
         VkDescriptorPool descriptor_pool = VK_NULL_HANDLE;
@@ -262,6 +264,10 @@ struct Context::Impl {
         std::uint32_t descriptor_capacity = 0;
         std::uint32_t set_capacity = 0;
         DescriptorReuse descriptors{};
+#if defined(FYZZXYZZY_PROFILE_GPU)
+        std::vector<ProfileOp> profile_ops;
+        std::uint64_t profile_trace_id=0u;
+#endif
     };
     struct CachedBatch {
         VkCommandBuffer commands = VK_NULL_HANDLE;
@@ -271,7 +277,9 @@ struct Context::Impl {
         DescriptorReuse descriptors;
     };
     static constexpr std::size_t kMaxCachedBatches = 8;
-
+#if defined(FYZZXYZZY_PROFILE_GPU)
+    std::uint64_t profile_context_id=hardware_profile::allocate_context_id();
+#endif
     VkInstance instance = VK_NULL_HANDLE;
     VkPhysicalDevice physical = VK_NULL_HANDLE;
     VkDevice device = VK_NULL_HANDLE;
@@ -290,19 +298,21 @@ struct Context::Impl {
     // completion and must never fail from host allocation pressure.
     std::array<CachedBatch, kMaxCachedBatches> cached_batches{};
     std::size_t cached_batch_count = 0;
-    // The synchronous source fetch reuses one completed transfer-only
-    // host-visible readback arena; it never overlaps another GPU fetch.
-    BufferId readback_staging_ = 0;
-    std::size_t readback_staging_bytes_ = 0;
+    struct ReadbackStaging {
+        BufferId buffer=0u;
+        std::size_t capacity=0u;
+    };
+    CompletedReadbackCache<BufferId> readback_cache_;
     struct PendingReadback {
-        SubmissionId submission=0;
+        BufferId staging=0;
         std::size_t bytes=0;
         std::vector<DownloadSpan> outputs;
     };
-    PendingReadback pending_readback_{};
+    std::unordered_map<SubmissionId,PendingReadback> pending_readbacks_;
     BufferId next_buffer = 1;
     PipelineId next_pipeline = 1;
     SubmissionId next_submission = 1;
+    SubmissionId completed_submission = 0;
     mutable bool device_lost = false;
     VkPhysicalDeviceLimits limits{};
     std::uint32_t timestamp_valid_bits = 0;
@@ -322,6 +332,15 @@ struct Context::Impl {
             info = selected.info;
             VkPhysicalDeviceProperties properties{};
             vkGetPhysicalDeviceProperties(physical, &properties);
+#if defined(FYZZXYZZY_PROFILE_GPU)
+            const char* require_hardware =
+                std::getenv("FYZZXYZZY_VULKAN_REQUIRE_HARDWARE");
+            if (require_hardware && std::strcmp(require_hardware, "1") == 0 &&
+                properties.deviceType != VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU &&
+                properties.deviceType != VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU)
+                throw std::runtime_error(
+                    "Vulkan hardware verification requires a physical GPU");
+#endif
             limits = properties.limits;
             std::uint32_t family_count = 0;
             vkGetPhysicalDeviceQueueFamilyProperties(physical, &family_count, nullptr);
@@ -363,6 +382,11 @@ struct Context::Impl {
                 else
                     create.pNext = &size_control;
             }
+            VkPhysicalDeviceSynchronization2Features sync{};
+            sync.sType=VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SYNCHRONIZATION_2_FEATURES;
+            sync.synchronization2=VK_TRUE;
+            sync.pNext=const_cast<void*>(create.pNext);
+            create.pNext=&sync;
             require(vkCreateDevice(physical, &create, nullptr, &device), "vkCreateDevice");
             vkGetDeviceQueue(device, selected.queue_family, 0, &queue);
 
@@ -379,15 +403,20 @@ struct Context::Impl {
         }
     }
 
+    void drain_device() noexcept {
+        const auto status=vkDeviceWaitIdle(device);
+        if(status!=VK_SUCCESS && status!=VK_ERROR_DEVICE_LOST)
+            std::terminate();
+    }
+
     void cleanup() noexcept {
         if (device != VK_NULL_HANDLE) {
-            vkDeviceWaitIdle(device);
+            drain_device();
             for (const auto& item : submissions) {
                 release_submission(item.second);
             }
             submissions.clear();
-            // vkDeviceWaitIdle above guarantees the last submission has
-            // completed; no retired GPU allocation may survive device teardown.
+            // Device execution has completed or the device is lost.
             for (const auto& retired : retired_buffers)
                 release_buffer(retired.buffer);
             retired_buffers.clear();
@@ -476,7 +505,11 @@ struct Context::Impl {
             submit.pCommandBuffers = &commands;
             const VkResult status = vkQueueSubmit(queue, 1, &submit, fence);
             if (status != VK_SUCCESS) {
-                if(status==VK_ERROR_DEVICE_LOST)device_lost=true;
+                if(status==VK_ERROR_DEVICE_LOST) {
+                    device_lost=true;
+                    // A lost-device submission can still own pending resources.
+                    drain_device();
+                }
                 submissions.erase(id);
                 require(status, "vkQueueSubmit");
             }
@@ -492,22 +525,45 @@ struct Context::Impl {
         // The Context uses one ordered Vulkan queue. Completion of N
         // therefore makes every submission <= N safe to release, even if a
         // caller waits on N before earlier submission IDs.
-        auto it = retired_buffers.begin();
-        while (it != retired_buffers.end()) {
-            if (it->release_after <= completed_id) {
-                release_buffer(it->buffer);
-                it = retired_buffers.erase(it);
-            } else {
-                ++it;
-            }
-        }
+        std::erase_if(retired_buffers,[&](const RetiredBuffer& retired) {
+            if(retired.release_after>completed_id)return false;
+            release_buffer(retired.buffer);
+            return true;
+        });
     }
 
+#if defined(FYZZXYZZY_PROFILE_GPU)
+    void report_gpu_profile(SubmissionId id,const Submission& submission) {
+        if(submission.profile_ops.empty() ||
+           submission.timestamps==VK_NULL_HANDLE)return;
+        const std::size_t count=submission.profile_ops.size()+1u;
+        std::vector<std::uint64_t> ticks(count);
+        const auto result=vkGetQueryPoolResults(
+            device,submission.timestamps,0,static_cast<std::uint32_t>(count),
+            ticks.size()*sizeof(std::uint64_t),ticks.data(),
+            sizeof(std::uint64_t),VK_QUERY_RESULT_64_BIT);
+        require(result,"vkGetQueryPoolResults hardware trace");
+        const std::uint64_t mask=timestamp_valid_bits==64u
+            ?~std::uint64_t{0}
+            :((std::uint64_t{1}<<timestamp_valid_bits)-1u);
+        for(std::size_t i=0u;i<submission.profile_ops.size();++i) {
+            const auto& operation=submission.profile_ops[i];
+            const auto elapsed=(ticks[i+1u]-ticks[i])&mask;
+            hardware_profile::gpu_event({
+                "vulkan",operation.pipeline?"dispatch":"copy",
+                profile_context_id,submission.profile_trace_id,
+                id,i,operation.pipeline,operation.bytes,
+                operation.x,operation.y,operation.z,operation.indirect,
+                static_cast<double>(elapsed)*limits.timestampPeriod});
+        }
+    }
+#endif
     bool submission_complete(SubmissionId id) const {
         const auto it = submissions.find(id);
         if (it == submissions.end()) {
             throw std::out_of_range("Unknown compute submission ID");
         }
+        if(id<=completed_submission)return true;
         const VkResult status = vkGetFenceStatus(device, it->second.fence);
         if (status == VK_NOT_READY) {
             return false;
@@ -517,19 +573,31 @@ struct Context::Impl {
         return true;
     }
 
+    // Completion and token retirement have independent lifetimes.
+    // A completed fence covers every earlier submission on this queue.
+    void wait_for_completion(SubmissionId id) {
+        if(id<=completed_submission)return;
+        const VkFence fence=submissions.at(id).fence;
+        const VkResult result=vkWaitForFences(
+            device,1,&fence,VK_TRUE,UINT64_MAX);
+        if(result==VK_ERROR_DEVICE_LOST)device_lost=true;
+        require(result,"vkWaitForFences");
+        completed_submission=id;
+        release_retired_through(completed_submission);
+    }
+
     void wait_submission(SubmissionId id) {
         auto it = submissions.find(id);
         if (it == submissions.end()) {
             throw std::out_of_range("Unknown compute submission ID");
         }
-        const VkFence fence = it->second.fence;
-        const VkResult result=vkWaitForFences(
-            device,1,&fence,VK_TRUE,UINT64_MAX);
-        if(result==VK_ERROR_DEVICE_LOST)device_lost=true;
-        require(result,"vkWaitForFences");
+        wait_for_completion(id);
+#if defined(FYZZXYZZY_PROFILE_GPU)
+        report_gpu_profile(id,it->second);
+#endif
         retire_submission(it->second);
         submissions.erase(it);
-        release_retired_through(id);
+        recycle_cancelled_readback(id);
     }
 
     void wait_submissions(std::span<const SubmissionId> ordered) {
@@ -541,43 +609,24 @@ struct Context::Impl {
                     "Vulkan GPU retire batch requires live ordered submissions");
             previous=id;
         }
-        const VkFence fence=submissions.find(ordered.back())->second.fence;
-        const VkResult status=vkWaitForFences(
-            device,1,&fence,VK_TRUE,UINT64_MAX);
-        if(status==VK_ERROR_DEVICE_LOST)device_lost=true;
-        require(status,"vkWaitForFences source batch");
+        wait_for_completion(ordered.back());
         // One ordered queue: the newest completed fence covers every
         // earlier source upload and kernel allocation.
         for(const auto id:ordered) {
             auto it=submissions.find(id);
+#if defined(FYZZXYZZY_PROFILE_GPU)
+            report_gpu_profile(id,it->second);
+#endif
             retire_submission(it->second);
             submissions.erase(it);
+            recycle_cancelled_readback(id);
         }
-        release_retired_through(ordered.back());
     }
 
     void wait_all() {
-        while (!submissions.empty()) {
+        wait_for_completion(next_submission-1u);
+        while (!submissions.empty())
             wait_submission(submissions.begin()->first);
-        }
-    }
-
-    // Direct CPU mapping must observe the newest ordered GPU submission,
-    // but its token stays with the stream that submitted it.
-    void wait_for_host_access() {
-        if(submissions.empty())return;
-        const Submission* newest=nullptr;
-        SubmissionId newest_id=0u;
-        for(const auto& [id,submission]:submissions)
-            if(!newest || id>newest_id) {
-                newest=&submission;
-                newest_id=id;
-            }
-        const VkFence fence=newest->fence;
-        const VkResult result=vkWaitForFences(
-            device,1,&fence,VK_TRUE,UINT64_MAX);
-        if(result==VK_ERROR_DEVICE_LOST)device_lost=true;
-        require(result,"vkWaitForFences host transfer");
     }
 
     void destroy_pipeline_handles(Pipeline& pipeline) noexcept {
@@ -629,7 +678,9 @@ struct Context::Impl {
             VkBufferCreateInfo create{};
             create.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
             create.size = static_cast<VkDeviceSize>(bytes);
-            create.usage = storage_eligible
+            create.usage = placement == MemoryPlacement::Upload
+                ? VK_BUFFER_USAGE_TRANSFER_SRC_BIT
+                : storage_eligible
                 ? (VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
                    VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT |
                    VK_BUFFER_USAGE_TRANSFER_SRC_BIT |
@@ -644,9 +695,16 @@ struct Context::Impl {
             vkGetBufferMemoryRequirements(device, resource.buffer, &requirements);
             VkPhysicalDeviceMemoryProperties properties{};
             vkGetPhysicalDeviceMemoryProperties(physical, &properties);
-            const VkMemoryPropertyFlags required = placement == MemoryPlacement::HostVisible
-                ? (VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)
-                : VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
+            const VkMemoryPropertyFlags required =
+                placement == MemoryPlacement::SharedLocal
+                    ? (VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT |
+                       VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+                       VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)
+                    : (placement == MemoryPlacement::HostVisible ||
+                       placement == MemoryPlacement::Upload)
+                        ? (VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+                           VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)
+                        : VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
 
             std::uint32_t type_index = properties.memoryTypeCount;
             // Prefer non-mappable device-local memory when available.
@@ -657,7 +715,8 @@ struct Context::Impl {
                         (flags & required) != required) {
                         continue;
                     }
-                    if (placement == MemoryPlacement::DeviceLocal && pass == 0 &&
+                    if (placement == MemoryPlacement::DeviceLocal &&
+                        pass == 0 &&
                         (flags & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) != 0) {
                         continue;
                     }
@@ -690,6 +749,7 @@ struct Context::Impl {
 
     BufferId create_buffer(std::size_t bytes, MemoryPlacement placement,
                            bool storage_eligible = true) {
+        if(placement==MemoryPlacement::Upload)storage_eligible=false;
         if (!bytes || (storage_eligible && bytes > info.max_storage_buffer_range)) {
             throw std::invalid_argument("Compute buffer size is zero or exceeds device limits");
         }
@@ -733,28 +793,33 @@ struct Context::Impl {
             throw std::out_of_range("Unknown compute buffer ID");
         if (it->second.cpu_mapped)
             throw std::logic_error("Cannot retire a mapped Vulkan buffer");
-        if (submissions.empty()) {
-            // No tracked in-flight work. Any earlier submitted work was
-            // already waited on the ordered queue.
-            release_buffer(it->second);
-        } else {
-            SubmissionId last = 0;
-            for (const auto& pending : submissions)
-                last = std::max(last, pending.first);
-            // Queue-retirement record must be secured *before* invalidating
-            // the public BufferId, preserving ownership on allocation failure.
-            retired_buffers.push_back({last, it->second});
+        const auto& buffer=it->second;
+        if(buffer.last_reference<=completed_submission)
+            release_buffer(buffer);
+        else {
+            // Only native allocation ownership survives handle retirement.
+            // No dependency history or unrelated submission is retained.
+            Buffer retired{};
+            retired.buffer=buffer.buffer;
+            retired.memory=buffer.memory;
+            retired_buffers.push_back({buffer.last_reference,std::move(retired)});
         }
         buffers.erase(it);
     }
 
     bool buffer_is_host_visible(BufferId id) const {
-        return get(id).placement == MemoryPlacement::HostVisible;
+        return get(id).placement == MemoryPlacement::HostVisible ||
+            get(id).placement == MemoryPlacement::SharedLocal ||
+            get(id).placement == MemoryPlacement::Upload;
     }
 
-    void* map_buffer(BufferId id, HostMapAccess /*access*/) {
+    void* map_buffer(BufferId id, HostMapAccess access) {
         auto& buffer = get(id);
-        if (buffer.placement != MemoryPlacement::HostVisible)
+        if(buffer.placement==MemoryPlacement::Upload && access!=HostMapAccess::Write)
+            throw std::invalid_argument("Vulkan upload storage requires write mapping");
+        if (buffer.placement != MemoryPlacement::HostVisible &&
+            buffer.placement != MemoryPlacement::SharedLocal &&
+            buffer.placement != MemoryPlacement::Upload)
             throw std::invalid_argument("Vulkan buffer is not host-visible");
         if (buffer.cpu_mapped)
             throw std::logic_error("Vulkan buffer already CPU mapped");
@@ -790,61 +855,6 @@ struct Context::Impl {
         vkUnmapMemory(device, buffer.memory);
     }
 
-    SubmissionId submit_copy(const Buffer& source, std::size_t source_offset,
-                     const Buffer& destination, std::size_t destination_offset,
-                     std::size_t bytes) {
-        if (source_offset % 4 != 0 || destination_offset % 4 != 0 || bytes % 4 != 0) {
-            throw std::invalid_argument("Vulkan buffer copies require 4-byte alignment");
-        }
-        VkCommandBufferAllocateInfo allocation{};
-        allocation.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
-        allocation.commandPool = command_pool;
-        allocation.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
-        allocation.commandBufferCount = 1;
-        VkCommandBuffer commands = VK_NULL_HANDLE;
-        require(vkAllocateCommandBuffers(device, &allocation, &commands),
-                "vkAllocateCommandBuffers");
-        try {
-            VkCommandBufferBeginInfo begin{};
-            begin.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
-            begin.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-            require(vkBeginCommandBuffer(commands, &begin), "vkBeginCommandBuffer");
-
-            // Make prior shader/transfer writes visible to the transfer read.
-            VkMemoryBarrier before{};
-            before.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
-            before.srcAccessMask = VK_ACCESS_MEMORY_WRITE_BIT;
-            before.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
-            vkCmdPipelineBarrier(commands, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
-                                 VK_PIPELINE_STAGE_TRANSFER_BIT, 0,
-                                 1, &before, 0, nullptr, 0, nullptr);
-
-            VkBufferCopy region{};
-            region.srcOffset = source_offset;
-            region.dstOffset = destination_offset;
-            region.size = bytes;
-            vkCmdCopyBuffer(commands, source.buffer, destination.buffer, 1, &region);
-
-            // The destination may next be accessed by the host or a shader.
-            VkMemoryBarrier after{};
-            after.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
-            after.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-            after.dstAccessMask = VK_ACCESS_HOST_READ_BIT |
-                                  VK_ACCESS_SHADER_READ_BIT |
-                                  VK_ACCESS_SHADER_WRITE_BIT;
-            vkCmdPipelineBarrier(commands, VK_PIPELINE_STAGE_TRANSFER_BIT,
-                                 VK_PIPELINE_STAGE_HOST_BIT |
-                                 VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0,
-                                 1, &after, 0, nullptr, 0, nullptr);
-            require(vkEndCommandBuffer(commands), "vkEndCommandBuffer");
-
-            return enqueue(commands, VK_NULL_HANDLE);
-        } catch (...) {
-            vkFreeCommandBuffers(device, command_pool, 1, &commands);
-            throw;
-        }
-    }
-
     SubmissionId submit_uploads(const std::vector<UploadSpan>& uploads) {
         if (uploads.empty())
             throw std::invalid_argument("Async Vulkan upload batch cannot be empty");
@@ -853,6 +863,8 @@ struct Context::Impl {
         // recording GPU work or invalidating any public resource handle.
         for (const auto& upload : uploads) {
             const Buffer& destination = get(upload.destination);
+            if(destination.placement==MemoryPlacement::Upload)
+                throw std::invalid_argument("Upload storage cannot be a GPU destination");
             validate_range(destination.bytes, upload.destination_offset, upload.bytes);
             if (!upload.data || !upload.bytes ||
                 (upload.destination_offset % 4) || (upload.bytes % 4) ||
@@ -860,21 +872,6 @@ struct Context::Impl {
                 throw std::invalid_argument("Invalid Vulkan upload span or staging capacity");
             total += upload.bytes;
         }
-        // Native source uploads often target disjoint allocations within a
-        // single PhysX heap root. Avoid redundant intra-batch barriers
-        // for these independent ranges, while preserving transfer order
-        // when two uploads overwrite the same destination bytes.
-        bool independent_destinations=true;
-        for(std::size_t i=0;i<uploads.size() && independent_destinations;++i)
-            for(std::size_t j=0;j<i;++j)
-                if(uploads[i].destination==uploads[j].destination &&
-                   uploads[i].destination_offset<
-                       uploads[j].destination_offset+uploads[j].bytes &&
-                   uploads[j].destination_offset<
-                       uploads[i].destination_offset+uploads[i].bytes) {
-                    independent_destinations=false;
-                    break;
-                }
         // Prevent post-submit allocation failure during deferred staging
         // ownership transfer. In the single-queue model, the last submitted
         // fence captures the lifetime of this entire upload batch.
@@ -882,7 +879,7 @@ struct Context::Impl {
         // The packed staging buffer is never bound to a shader. It is legal
         // for its aggregate size to exceed maxStorageBufferRange even when
         // every public destination remains within that descriptor limit.
-        const BufferId staging_id = create_buffer(total, MemoryPlacement::HostVisible, false);
+        const BufferId staging_id = create_buffer(total, MemoryPlacement::Upload, false);
         bool submitted = false;
         try {
             const Buffer& staging = get(staging_id);
@@ -906,8 +903,7 @@ struct Context::Impl {
                     upload.destination_offset, upload.bytes});
                 position += upload.bytes;
             }
-            const SubmissionId id = submit_batch(
-                copies,false,independent_destinations);
+            const SubmissionId id=submit_batch(copies);
             submitted = true;
             // Guaranteed room in retired_buffers. Retires only the public
             // staging ID, not the memory still referenced by the GPU.
@@ -917,40 +913,21 @@ struct Context::Impl {
             // If a GPU command was actually enqueued, the staging handle
             // remains live until its fence; never release backing memory.
             if (!submitted)
-                destroy_buffer(staging_id);
+                release_unused_buffer(staging_id);
             throw;
         }
     }
 
-    SubmissionId submit_upload(BufferId destination_id, std::size_t offset,
-                               const void* data, std::size_t bytes) {
-        // Snapshot into coherent pinned/mappable memory before submitting;
-        // the user's pointer is never retained beyond this call.
-        const Buffer& destination = get(destination_id);
-        validate_range(destination.bytes, offset, bytes);
-        if (!bytes || !data || (offset % 4) || (bytes % 4))
-            throw std::invalid_argument("Async Vulkan upload requires nonempty aligned data");
-        // Reserve the retirement slot BEFORE queue submission. Otherwise a
-        // bad_alloc while retaining staging after submit could free memory
-        // that a live GPU copy still references.
-        retired_buffers.reserve(retired_buffers.size() + 1);
-        const Buffer staging = make_buffer(bytes, MemoryPlacement::HostVisible);
-        try {
-            map_transfer(staging, 0, const_cast<void*>(data), bytes, true);
-            const SubmissionId id = submit_copy(staging, 0, destination, offset, bytes);
-            // Buffer is trivially copyable; reserved capacity prevents
-            // vector relocation/allocation after the GPU is submitted.
-            retired_buffers.push_back({id, staging});
-            return id;
-        } catch (...) {
-            release_buffer(staging);
-            throw;
-        }
+    SubmissionId submit_upload(BufferId destination_id,std::size_t offset,
+                               const void* data,std::size_t bytes) {
+        return submit_uploads({{destination_id,offset,data,bytes}});
     }
 
     void transfer(BufferId id, std::size_t offset, void* data,
                   std::size_t bytes, bool upload) {
         const Buffer& buffer = get(id);
+        if(buffer.placement==MemoryPlacement::Upload)
+            throw std::invalid_argument("Upload storage requires write mapping");
         validate_range(buffer.bytes, offset, bytes);
         if (bytes == 0) {
             return;
@@ -959,7 +936,7 @@ struct Context::Impl {
             throw std::invalid_argument("Null compute transfer data");
         }
         if (buffer.placement == MemoryPlacement::HostVisible) {
-            wait_for_host_access();
+            wait_for_completion(buffer.last_reference);
             map_transfer(buffer, offset, data, bytes, upload);
             return;
         }
@@ -967,28 +944,40 @@ struct Context::Impl {
         if (offset % 4 != 0 || bytes % 4 != 0) {
             throw std::invalid_argument("Device-local transfers require 4-byte alignment");
         }
-        const Buffer staging = make_buffer(bytes, MemoryPlacement::HostVisible);
-        try {
-            if (upload) {
-                map_transfer(staging, 0, data, bytes, true);
-                wait_submission(submit_copy(staging, 0, buffer, offset, bytes));
-            } else {
-                wait_submission(submit_copy(buffer, offset, staging, 0, bytes));
-                map_transfer(staging, 0, data, bytes, false);
-            }
-        } catch (...) {
-            release_buffer(staging);
-            throw;
+        if(upload)
+            wait_submission(submit_upload(id,offset,data,bytes));
+        else {
+            const std::array<DownloadSpan,1u> outputs{{
+                {id,offset,data,bytes}
+            }};
+            finish_download_batch(submit_download_batch(outputs),true);
         }
-        release_buffer(staging);
     }
 
+    // Internal staging with no in-flight users or public handles.
+    void release_unused_buffer(BufferId id) noexcept {
+        const auto it=buffers.find(id);
+        release_buffer(it->second);
+        buffers.erase(it);
+    }
+    ReadbackStaging acquire_readback(std::size_t bytes) {
+        const auto cached=readback_cache_.acquire(bytes,[this](BufferId id) noexcept {
+            release_unused_buffer(id);
+        });
+        if(!cached.capacity)
+            return {create_buffer(bytes,MemoryPlacement::HostVisible,false),bytes};
+        return {cached.resource,cached.capacity};
+    }
+    void recycle_readback(ReadbackStaging staging) noexcept {
+        readback_cache_.recycle(staging.buffer,staging.capacity,[this](BufferId id) noexcept {
+            release_unused_buffer(id);
+        });
+    }
     SubmissionId submit_download_batch(
-            std::span<const DownloadSpan> downloads) {
+            std::span<const DownloadSpan> downloads,
+            std::vector<BatchCommand>* producer = nullptr) {
         if(downloads.empty())
             throw std::invalid_argument("Empty Vulkan GPU readback batch");
-        if(pending_readback_.submission)
-            throw std::logic_error("Vulkan GPU readback already in flight");
         std::size_t bytes=0;
         for(const auto& item:downloads) {
             const auto& source=get(item.source);
@@ -999,46 +988,73 @@ struct Context::Impl {
                 throw std::invalid_argument("Invalid Vulkan GPU readback span");
             bytes+=item.bytes;
         }
-        // Retain allocation capacity across all source readback epochs.
-        // The destination addresses remain borrowed until completion.
-        pending_readback_.outputs.assign(downloads.begin(),downloads.end());
-        if(bytes>readback_staging_bytes_) {
-            if(readback_staging_)retire_buffer(readback_staging_);
-            readback_staging_=0;
-            readback_staging_bytes_=0;
-            readback_staging_=create_buffer(
-                bytes,MemoryPlacement::HostVisible,false);
-            readback_staging_bytes_=bytes;
-        }
-        std::vector<BatchCommand> copies;
-        copies.reserve(downloads.size());
+        std::vector<DownloadSpan> outputs(downloads.begin(),downloads.end());
+        const auto staging=acquire_readback(bytes);
+        std::vector<BatchCommand> local;
+        auto& batch=producer?*producer:local;
+        const auto original=batch.size();
         std::size_t offset=0;
-        for(const auto& item:downloads) {
-            copies.emplace_back(CopyCommand{
-                item.source,item.source_offset,readback_staging_,offset,
-                item.bytes});
-            offset+=item.bytes;
+        const auto id=next_submission;
+        bool registered=false;
+        try {
+            batch.reserve(original+downloads.size());
+            for(const auto& item:downloads) {
+                batch.emplace_back(CopyCommand{
+                    item.source,item.source_offset,staging.buffer,offset,item.bytes});
+                offset+=item.bytes;
+            }
+            registered=pending_readbacks_.emplace(
+                id,PendingReadback{staging.buffer,staging.capacity,std::move(outputs)}).second;
+            if(!registered)
+                throw std::logic_error("Vulkan readback ID already registered");
+            submit_batch(batch);
+            batch.erase(batch.begin()+original,batch.end());
+        } catch(...) {
+            batch.erase(batch.begin()+original,batch.end());
+            if(registered)pending_readbacks_.erase(id);
+            recycle_readback(staging);
+            throw;
         }
-        const SubmissionId id=submit_batch(copies);
-        pending_readback_.submission=id;
-        pending_readback_.bytes=bytes;
         return id;
     }
 
+    // A cancelled readback keeps its staging until the submission retires.
+    bool cancel_download_batch(SubmissionId id) {
+        const auto it=pending_readbacks_.find(id);
+        if(it==pending_readbacks_.end())
+            throw std::logic_error("Unknown GPU readback batch");
+        it->second.outputs.clear();
+        if(submissions.find(id)!=submissions.end())return true;
+        recycle_cancelled_readback(id);
+        return false;
+    }
+
+    void recycle_cancelled_readback(SubmissionId id) noexcept {
+        const auto it=pending_readbacks_.find(id);
+        if(it==pending_readbacks_.end() || !it->second.outputs.empty())return;
+        const ReadbackStaging staging{it->second.staging,it->second.bytes};
+        pending_readbacks_.erase(it);
+        recycle_readback(staging);
+    }
+
     void finish_download_batch(SubmissionId id,bool publish) {
-        if(!pending_readback_.submission || pending_readback_.submission!=id)
+        const auto it=pending_readbacks_.find(id);
+        if(it==pending_readbacks_.end())
             throw std::logic_error("Unknown Vulkan GPU readback batch");
-        // The source stream may already have reaped this submission when
-        // joining a newer ordered batch. The staging still belongs here.
+        if(it->second.outputs.empty())
+            throw std::logic_error("Cancelled GPU readback cannot be finished");
+        if(publish && device_lost)
+            throw std::runtime_error("Cannot publish readback from a lost Vulkan device");
         if(submissions.find(id)!=submissions.end())
             wait_submission(id);
+        const auto& pending=it->second;
         if(publish) {
-            const auto& buffer=get(readback_staging_);
+            const auto& buffer=get(pending.staging);
             void* mapped=nullptr;
             require(vkMapMemory(device,buffer.memory,0,VK_WHOLE_SIZE,0,&mapped),
                     "vkMapMemory asynchronous GPU readback");
             std::size_t offset=0;
-            for(const auto& item:pending_readback_.outputs) {
+            for(const auto& item:pending.outputs) {
                 std::memcpy(item.data,
                     static_cast<const std::uint8_t*>(mapped)+offset,
                     item.bytes);
@@ -1046,9 +1062,9 @@ struct Context::Impl {
             }
             vkUnmapMemory(device,buffer.memory);
         }
-        pending_readback_.submission=0;
-        pending_readback_.bytes=0;
-        pending_readback_.outputs.clear();
+        const ReadbackStaging staging{pending.staging,pending.bytes};
+        pending_readbacks_.erase(it);
+        recycle_readback(staging);
     }
 
     void download_batch(std::span<const DownloadSpan> downloads) {
@@ -1211,185 +1227,112 @@ struct Context::Impl {
         pipelines.erase(it);
     }
 
-    void validate_dispatch_into(
-            PipelineId id, DispatchSize groups,
-            const std::vector<BufferBinding>& bindings,
-            const void* push_constants, std::size_t push_bytes,
-            std::span<VkDescriptorBufferInfo> descriptors,
-            std::span<std::uint8_t> assigned) const {
-        const Pipeline& pipeline = get_pipeline(id);
-        const std::uint32_t counts[3] = {groups.x, groups.y, groups.z};
-        for (std::uint32_t i = 0; i < 3; ++i) {
-            if (counts[i] == 0 || counts[i] > info.max_workgroup_count[i]) {
+    void validate_dispatch_shape(const Pipeline& pipeline,
+                                 const DispatchCommand& command) const {
+        const auto groups=command.groups;
+        const std::uint32_t counts[3]={groups.x,groups.y,groups.z};
+        for(std::uint32_t i=0u;i<3u;++i)
+            if(!counts[i] || counts[i]>info.max_workgroup_count[i])
                 throw std::out_of_range("Compute workgroup count exceeds device limits");
-            }
-        }
-        if (bindings.size() != pipeline.binding_count) {
-            throw std::invalid_argument("Incorrect number of compute buffer bindings");
-        }
-        if (push_bytes != pipeline.push_bytes || (push_bytes && !push_constants)) {
+        if(command.parameter_bytes().size()!=pipeline.push_bytes)
             throw std::invalid_argument("Push constants do not match pipeline layout");
-        }
-
-        if(descriptors.size()!=pipeline.binding_count ||
-           assigned.size()!=pipeline.binding_count)
-            throw std::logic_error("Compute descriptor validation scratch size mismatch");
-        std::fill(assigned.begin(),assigned.end(),0u);
-        for (const auto& binding : bindings) {
-            if (binding.slot >= pipeline.binding_count || assigned[binding.slot]) {
-                throw std::invalid_argument("Invalid or duplicate compute binding slot");
-            }
-            if (binding.access != BufferAccess::Unspecified &&
-                binding.access != BufferAccess::Read &&
-                binding.access != BufferAccess::Write &&
-                binding.access != BufferAccess::ReadWrite)
-                throw std::invalid_argument("Invalid compute buffer access intent");
-            if (!pipeline.view_kinds.empty()) {
-                const auto kind = pipeline.view_kinds[binding.slot];
-                const bool read_only = kind == StorageBufferViewKind::RawRead ||
-                                       kind == StorageBufferViewKind::Structured32Read;
-                if (read_only && binding.access != BufferAccess::Unspecified &&
-                    binding.access != BufferAccess::Read)
-                    throw std::invalid_argument("Read-only Vulkan view declared writable");
-            }
-            const Buffer& buffer = get(binding.buffer);
-            if (!buffer.storage_eligible)
-                throw std::invalid_argument("Transfer-only Vulkan staging cannot bind as shader storage");
-            validate_range(buffer.bytes, binding.offset, binding.bytes);
-            if (binding.bytes == 0 || binding.bytes > limits.maxStorageBufferRange) {
-                throw std::invalid_argument("Invalid compute descriptor range");
-            }
-            if (binding.offset % limits.minStorageBufferOffsetAlignment != 0) {
-                throw std::invalid_argument("Compute descriptor offset is misaligned");
-            }
-            assigned[binding.slot] = true;
-            descriptors[binding.slot] = {buffer.buffer, binding.offset, binding.bytes};
-        }
+        if(command.indirect && (groups.x!=1u || groups.y!=1u || groups.z!=1u))
+            throw std::invalid_argument("Indirect dispatch cannot specify direct groups");
     }
 
-    std::vector<VkDescriptorBufferInfo> validate_dispatch(
-            PipelineId id, DispatchSize groups,
-            const std::vector<BufferBinding>& bindings,
-            const void* push_constants, std::size_t push_bytes) const {
-        const auto count=get_pipeline(id).binding_count;
-        std::vector<VkDescriptorBufferInfo> descriptors(count);
-        std::vector<std::uint8_t> assigned(count);
-        validate_dispatch_into(id,groups,bindings,push_constants,push_bytes,
-                               descriptors,assigned);
-        return descriptors;
-    }
-
-    SubmissionId dispatch(PipelineId id, DispatchSize groups,
+    SubmissionId dispatch(PipelineId id,DispatchSize groups,
                   const std::vector<BufferBinding>& bindings,
-                  const void* push_constants, std::size_t push_bytes) {
-        const Pipeline& pipeline = get_pipeline(id);
-        std::vector<VkDescriptorBufferInfo> descriptors =
-            validate_dispatch(id, groups, bindings, push_constants, push_bytes);
-
-        VkDescriptorPool pool = VK_NULL_HANDLE;
-        VkCommandBuffer commands = VK_NULL_HANDLE;
-        try {
-            VkDescriptorPoolSize pool_size{};
-            pool_size.type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-            pool_size.descriptorCount = std::max(1u, pipeline.binding_count);
-            VkDescriptorPoolCreateInfo pool_create{};
-            pool_create.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
-            pool_create.maxSets = 1;
-            pool_create.poolSizeCount = 1;
-            pool_create.pPoolSizes = &pool_size;
-            require(vkCreateDescriptorPool(device, &pool_create, nullptr, &pool),
-                    "vkCreateDescriptorPool");
-
-            VkDescriptorSetAllocateInfo set_allocate{};
-            set_allocate.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
-            set_allocate.descriptorPool = pool;
-            set_allocate.descriptorSetCount = 1;
-            set_allocate.pSetLayouts = &pipeline.descriptors;
-            VkDescriptorSet set = VK_NULL_HANDLE;
-            require(vkAllocateDescriptorSets(device, &set_allocate, &set),
-                    "vkAllocateDescriptorSets");
-
-            std::vector<VkWriteDescriptorSet> writes(pipeline.binding_count);
-            for (std::uint32_t i = 0; i < writes.size(); ++i) {
-                writes[i].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-                writes[i].dstSet = set;
-                writes[i].dstBinding = i;
-                writes[i].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-                writes[i].descriptorCount = 1;
-                writes[i].pBufferInfo = &descriptors[i];
-            }
-            if (!writes.empty()) {
-                vkUpdateDescriptorSets(device, static_cast<std::uint32_t>(writes.size()),
-                                       writes.data(), 0, nullptr);
-            }
-
-            VkCommandBufferAllocateInfo allocate{};
-            allocate.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
-            allocate.commandPool = command_pool;
-            allocate.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
-            allocate.commandBufferCount = 1;
-            require(vkAllocateCommandBuffers(device, &allocate, &commands),
-                    "vkAllocateCommandBuffers");
-
-            VkCommandBufferBeginInfo begin{};
-            begin.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
-            begin.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-            require(vkBeginCommandBuffer(commands, &begin), "vkBeginCommandBuffer");
-            // Order prior GPU writes before reading or updating shader buffers.
-            VkMemoryBarrier before{};
-            before.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
-            before.srcAccessMask = VK_ACCESS_MEMORY_WRITE_BIT;
-            before.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
-            vkCmdPipelineBarrier(commands, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
-                                 VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0,
-                                 1, &before, 0, nullptr, 0, nullptr);
-            vkCmdBindPipeline(commands, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline.pipeline);
-            vkCmdBindDescriptorSets(commands, VK_PIPELINE_BIND_POINT_COMPUTE,
-                                    pipeline.layout, 0, 1, &set, 0, nullptr);
-            if (push_bytes) {
-                vkCmdPushConstants(commands, pipeline.layout, VK_SHADER_STAGE_COMPUTE_BIT,
-                                   0, static_cast<std::uint32_t>(push_bytes), push_constants);
-            }
-            vkCmdDispatch(commands, groups.x, groups.y, groups.z);
-
-            VkMemoryBarrier barrier{};
-            barrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
-            barrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
-            barrier.dstAccessMask = VK_ACCESS_HOST_READ_BIT |
-                                    VK_ACCESS_TRANSFER_READ_BIT |
-                                    VK_ACCESS_SHADER_READ_BIT |
-                                    VK_ACCESS_SHADER_WRITE_BIT;
-            vkCmdPipelineBarrier(commands, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-                                 VK_PIPELINE_STAGE_HOST_BIT |
-                                 VK_PIPELINE_STAGE_TRANSFER_BIT |
-                                 VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0,
-                                 1, &barrier, 0, nullptr, 0, nullptr);
-            require(vkEndCommandBuffer(commands), "vkEndCommandBuffer");
-
-            return enqueue(commands, pool);
-        } catch (...) {
-            if (commands != VK_NULL_HANDLE) {
-                vkFreeCommandBuffers(device, command_pool, 1, &commands);
-            }
-            if (pool != VK_NULL_HANDLE) {
-                vkDestroyDescriptorPool(device, pool, nullptr);
-            }
-            throw;
+                  const void* push_constants,std::size_t push_bytes) {
+        const auto& pipeline=get_pipeline(id);
+        if(push_bytes!=pipeline.push_bytes || (push_bytes && !push_constants))
+            throw std::invalid_argument("Push constants do not match pipeline layout");
+        std::vector<BatchCommand> commands;
+        auto& command=commands.emplace_back(DispatchCommand{});
+        auto& dispatch=std::get<DispatchCommand>(command);
+        dispatch.pipeline=id;
+        dispatch.groups=groups;
+        dispatch.buffers=bindings;
+        if(push_bytes) {
+            const auto* first=static_cast<const std::uint8_t*>(push_constants);
+            dispatch.push_constants.assign(first,first+push_bytes);
         }
+        return submit_batch(commands);
     }
 
     SubmissionId submit_batch(const std::vector<BatchCommand>& operations,
-                              bool profile = false,
-                              bool independent_uploads = false) {
+                              bool profile = false) {
+        if(device_lost)
+            throw std::runtime_error("Cannot submit work to a lost Vulkan device");
+        const bool explicit_profile=profile;
+#if defined(FYZZXYZZY_PROFILE_GPU)
+        const bool hardware_trace=!profile && timestamp_valid_bits>0u &&
+            limits.timestampPeriod>0.0f;
+        profile=profile || hardware_trace;
+#endif
         if (operations.empty()) {
             throw std::invalid_argument("Compute batch must contain an operation");
         }
-        if(independent_uploads)
-            for(const auto& operation:operations)
-                if(!std::holds_alternative<CopyCommand>(operation))
-                    throw std::invalid_argument(
-                        "Independent upload batch may not contain GPU dispatches");
-
+        // Upload snapshots are converted into ordinary ordered device
+        // copies using one fence-owned transfer resource. The existing
+        // RAW/WAW dependency recorder then handles upload-to-dispatch
+        // visibility without a separate queue submission.
+        const bool has_upload=std::any_of(operations.begin(),operations.end(),
+            [](const BatchCommand& op) {
+                return std::holds_alternative<UploadCommand>(op);
+            });
+        if(has_upload) {
+            std::size_t total=0;
+            for(const auto& op:operations)
+                if(const auto* upload=std::get_if<UploadCommand>(&op)) {
+                    const auto& destination=get(upload->destination);
+                    if(destination.placement==MemoryPlacement::Upload)
+                        throw std::invalid_argument("Upload storage cannot be a GPU destination");
+                    validate_range(destination.bytes,
+                                   upload->destination_offset,upload->bytes.size());
+                    if(upload->bytes.empty() || upload->destination_offset%4u ||
+                       upload->bytes.size()%4u ||
+                       upload->bytes.size()>
+                           std::numeric_limits<std::size_t>::max()-total)
+                        throw std::invalid_argument("Invalid Vulkan ordered upload");
+                    total+=upload->bytes.size();
+                }
+            retired_buffers.reserve(retired_buffers.size()+1u);
+            const BufferId staging_id=create_buffer(
+                total,MemoryPlacement::Upload,false);
+            bool submitted=false;
+            try {
+                std::vector<BatchCommand> expanded;
+                expanded.reserve(operations.size());
+                std::size_t offset=0;
+                for(const auto& op:operations) {
+                    if(const auto* upload=std::get_if<UploadCommand>(&op)) {
+                        expanded.emplace_back(CopyCommand{
+                            staging_id,offset,upload->destination,
+                            upload->destination_offset,upload->bytes.size()});
+                        offset+=upload->bytes.size();
+                    }else expanded.push_back(op);
+                }
+                const Buffer& staging=get(staging_id);
+                void* mapped=nullptr;
+                require(vkMapMemory(device,staging.memory,0,VK_WHOLE_SIZE,0,&mapped),
+                        "vkMapMemory ordered upload batch");
+                offset=0;
+                for(const auto& op:operations)
+                    if(const auto* upload=std::get_if<UploadCommand>(&op)) {
+                        std::memcpy(static_cast<std::uint8_t*>(mapped)+offset,
+                                    upload->bytes.data(),upload->bytes.size());
+                        offset+=upload->bytes.size();
+                    }
+                vkUnmapMemory(device,staging.memory);
+                const auto id=submit_batch(expanded,explicit_profile);
+                submitted=true;
+                retire_buffer(staging_id);
+                return id;
+            } catch(...) {
+                if(!submitted)release_unused_buffer(staging_id);
+                throw;
+            }
+        }
         // Validate the complete batch before recording any GPU commands.
         // This prevents a malformed later operation from partially executing.
         std::uint64_t dispatch_count = 0;
@@ -1398,11 +1341,42 @@ struct Context::Impl {
         // recorded. Keep the slot-ordered views for actual recording.
         std::vector<VkDescriptorBufferInfo> validated_dispatches;
         std::vector<BufferId> validated_buffer_ids;
-        std::vector<std::uint8_t> assigned_slots;
+        std::vector<const BufferBinding*> slots;
+        std::vector<PipelineId> table_pipelines;
+        std::vector<const Pipeline*> table_native_pipelines;
+        std::vector<std::size_t> table_offsets;
+        std::vector<PreparedDispatch> prepared_dispatches;
+        DispatchRangePlans range_plans;
+        std::vector<OperationRangeUse> range_scratch;
+        std::unordered_map<std::size_t,std::vector<std::size_t>> table_lookup;
+        const auto mix_key=[](std::size_t& key,std::size_t value) {
+            key^=value+0x9e3779b9u+(key<<6u)+(key>>2u);
+        };
+        struct PendingBuffer {
+            Buffer* buffer;
+            std::optional<BufferRangeHazards> hazards;
+        };
+        // Native descriptors own references even when a phase declares
+        // no access through that binding.
+        // Range plans refer to dense batch-local resource ordinals.
+        std::unordered_map<BufferId,std::size_t> resource_ordinals;
+        std::vector<PendingBuffer> referenced;
+        const auto reference=[&](BufferId id) -> Buffer& {
+            const auto existing=resource_ordinals.find(id);
+            if(existing!=resource_ordinals.end())
+                return *referenced[existing->second].buffer;
+            auto& buffer=get(id);
+            resource_ordinals.emplace(id,referenced.size());
+            referenced.push_back({&buffer,{}});
+            return buffer;
+        };
         for (const BatchCommand& operation : operations) {
             if (const auto* copy = std::get_if<CopyCommand>(&operation)) {
-                const Buffer& source = get(copy->source);
-                const Buffer& destination = get(copy->destination);
+                const Buffer& source = reference(copy->source);
+                const Buffer& destination = reference(copy->destination);
+                if(destination.placement==MemoryPlacement::Upload ||
+                   (source.placement==MemoryPlacement::Upload && source.cpu_mapped))
+                    throw std::invalid_argument("Invalid Vulkan upload storage copy");
                 validate_range(source.bytes, copy->source_offset, copy->bytes);
                 validate_range(destination.bytes, copy->destination_offset, copy->bytes);
                 // Vulkan permits disjoint copies within one VkBuffer.
@@ -1418,36 +1392,113 @@ struct Context::Impl {
                 }
             } else {
                 const auto& dispatch = std::get<DispatchCommand>(operation);
-                const Pipeline& pipeline = get_pipeline(dispatch.pipeline);
-                const auto offset=validated_dispatches.size();
-                validated_dispatches.resize(offset+pipeline.binding_count);
-                assigned_slots.resize(pipeline.binding_count);
-                if(dispatch.indirect) {
-                    const auto& indirect=*dispatch.indirect;
-                    const auto& argument=get(indirect.buffer);
-                    if(!argument.storage_eligible || indirect.offset%4u)
-                        throw std::invalid_argument("Invalid Vulkan indirect dispatch arguments");
-                    validate_range(argument.bytes,indirect.offset,12u);
-                    if(dispatch.groups.x!=1u || dispatch.groups.y!=1u ||
-                       dispatch.groups.z!=1u)
-                        throw std::invalid_argument("Indirect dispatch cannot specify direct groups");
-                    for(const auto& binding:dispatch.buffers)
-                        if(binding.buffer==indirect.buffer)
-                            throw std::invalid_argument(
-                                "Indirect arguments cannot alias shader bindings");
-                }
-                validate_dispatch_into(
-                    dispatch.pipeline, dispatch.groups,
-                    dispatch.buffers, dispatch.push_constants.data(),
-                    dispatch.push_constants.size(),
-                    std::span<VkDescriptorBufferInfo>(validated_dispatches)
-                        .subspan(offset,pipeline.binding_count),
-                    assigned_slots);
-                validated_buffer_ids.resize(offset+pipeline.binding_count);
-                for(const auto& binding:dispatch.buffers)
-                    validated_buffer_ids[offset+binding.slot]=binding.buffer;
+                const auto bindings=dispatch.bindings();
+                const auto prepared=range_plans.prepare(dispatch,[&]() {
+                    // Canonical slot order preserves identity for unordered Vulkan bindings.
+                    slots.assign(bindings.size(),nullptr);
+                    for(const auto& binding:bindings) {
+                        if(binding.slot>=slots.size() || slots[binding.slot])
+                            throw std::invalid_argument("Invalid or duplicate compute binding slot");
+                        slots[binding.slot]=&binding;
+                    }
+                    std::size_t key=dispatch.pipeline;
+                    mix_key(key,slots.size());
+                    for(const auto* binding:slots) {
+                        mix_key(key,binding->buffer);
+                        mix_key(key,binding->offset);
+                        mix_key(key,binding->bytes);
+                    }
+                    auto& candidates=table_lookup[key];
+                    auto table=table_pipelines.size();
+                    for(const auto candidate:candidates) {
+                        if(table_pipelines[candidate]!=dispatch.pipeline ||
+                           table_native_pipelines[candidate]->binding_count!=slots.size())
+                            continue;
+                        const auto prior=table_offsets[candidate];
+                        bool same=true;
+                        for(std::size_t slot=0u;slot<slots.size();++slot) {
+                            const auto& old=validated_dispatches[prior+slot];
+                            const auto& next=*slots[slot];
+                            if(validated_buffer_ids[prior+slot]!=next.buffer ||
+                               old.offset!=next.offset || old.range!=next.bytes) {
+                                same=false;
+                                break;
+                            }
+                        }
+                        if(same) {
+                            table=candidate;
+                            break;
+                        }
+                    }
+                    if(table==table_pipelines.size()) {
+                        const auto& pipeline=get_pipeline(dispatch.pipeline);
+                        if(slots.size()!=pipeline.binding_count)
+                            throw std::invalid_argument("Incorrect number of compute buffer bindings");
+                        table_offsets.push_back(validated_dispatches.size());
+                        for(const auto* binding:slots) {
+                            const auto& buffer=reference(binding->buffer);
+                            if(!buffer.storage_eligible)
+                                throw std::invalid_argument("Transfer-only Vulkan staging cannot bind as shader storage");
+                            validate_range(buffer.bytes,binding->offset,binding->bytes);
+                            if(!binding->bytes || binding->bytes>limits.maxStorageBufferRange)
+                                throw std::invalid_argument("Invalid compute descriptor range");
+                            if(binding->offset%limits.minStorageBufferOffsetAlignment)
+                                throw std::invalid_argument("Compute descriptor offset is misaligned");
+                            validated_dispatches.push_back({buffer.buffer,binding->offset,binding->bytes});
+                            validated_buffer_ids.push_back(binding->buffer);
+                        }
+                        table_pipelines.push_back(dispatch.pipeline);
+                        table_native_pipelines.push_back(&pipeline);
+                        candidates.push_back(table);
+                        descriptor_count+=pipeline.binding_count;
+                    }
+                    return table;
+                },[&](std::size_t table,std::vector<OperationRangeUse>& ranges) {
+                    const auto& pipeline=*table_native_pipelines[table];
+                    range_scratch.clear();
+                    for(const auto& binding:bindings)
+                        validate_binding_access(binding,!pipeline.view_kinds.empty() &&
+                            read_only_view(pipeline.view_kinds[binding.slot]));
+                    if(dispatch.indirect) {
+                        const auto& indirect=*dispatch.indirect;
+                        const auto& argument=reference(indirect.buffer);
+                        if(!argument.storage_eligible || indirect.offset%4u)
+                            throw std::invalid_argument("Invalid Vulkan indirect dispatch arguments");
+                        validate_range(argument.bytes,indirect.offset,12u);
+                        for(const auto& binding:bindings)
+                            if(binding.buffer==indirect.buffer)
+                                throw std::invalid_argument("Indirect arguments cannot alias shader bindings");
+                    }
+                    dispatch.for_each_access([&](const BufferBinding& binding,
+                                            BufferAccessExtent extent,BufferAccess access) {
+                        if(!pipeline.view_kinds.empty() &&
+                           access!=BufferAccess::Read &&
+                           access!=BufferAccess::Unspecified) {
+                            const auto kind=pipeline.view_kinds[binding.slot];
+                            if(kind==StorageBufferViewKind::RawRead ||
+                               kind==StorageBufferViewKind::Structured32Read)
+                                throw std::invalid_argument("Dispatch access writes read-only view");
+                        }
+                        const bool reads=access!=BufferAccess::Write;
+                        const bool writes=access!=BufferAccess::Read;
+                        const VkAccessFlags2 mask=
+                            (reads?VK_ACCESS_2_SHADER_STORAGE_READ_BIT:0u) |
+                            (writes?VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT:0u);
+                        const auto begin=binding.offset+extent.offset;
+                        range_scratch.push_back({resource_ordinals.at(binding.buffer),
+                            begin,begin+extent.bytes,
+                            {VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,mask},writes});
+                    });
+                    if(dispatch.indirect)
+                        range_scratch.push_back({resource_ordinals.at(dispatch.indirect->buffer),
+                            dispatch.indirect->offset,dispatch.indirect->offset+12u,
+                            {VK_PIPELINE_STAGE_2_DRAW_INDIRECT_BIT,
+                             VK_ACCESS_2_INDIRECT_COMMAND_READ_BIT},false});
+                    normalize_operation_ranges(range_scratch,ranges);
+                });
+                validate_dispatch_shape(*table_native_pipelines[prepared.table],dispatch);
+                prepared_dispatches.push_back(prepared);
                 ++dispatch_count;
-                descriptor_count += pipeline.binding_count;
             }
         }
         if (dispatch_count > std::numeric_limits<std::uint32_t>::max() ||
@@ -1455,6 +1506,16 @@ struct Context::Impl {
             throw std::out_of_range("Compute batch descriptor capacity exceeded");
         }
 
+        const auto set_count=table_pipelines.size();
+#if defined(FYZZXYZZY_PROFILE_GPU)
+        if(hardware_trace) {
+            FYZZ_PROFILE_COUNTER("vulkan.descriptor_tables",set_count);
+            FYZZ_PROFILE_COUNTER("vulkan.descriptor_table_reuses",dispatch_count-set_count);
+            FYZZ_PROFILE_COUNTER("vulkan.descriptor_slots",descriptor_count);
+            FYZZ_PROFILE_COUNTER("vulkan.range_plans",range_plans.size());
+            FYZZ_PROFILE_COUNTER("vulkan.range_plan_reuses",dispatch_count-range_plans.size());
+        }
+#endif
         VkDescriptorPool pool = VK_NULL_HANDLE;
         VkCommandBuffer commands = VK_NULL_HANDLE;
         VkQueryPool timestamps = VK_NULL_HANDLE;
@@ -1472,16 +1533,10 @@ struct Context::Impl {
                     return cached.descriptors.pipelines.empty();
                 if(cached.descriptor_pool==VK_NULL_HANDLE ||
                    cached.descriptor_capacity<descriptor_count ||
-                   cached.set_capacity<dispatch_count ||
-                   cached.descriptors.sets.size()!=dispatch_count ||
-                   cached.descriptors.pipelines.size()!=dispatch_count)
+                   cached.set_capacity<set_count ||
+                   cached.descriptors.sets.size()!=set_count)
                     return false;
-                std::size_t index=0;
-                for(const auto& operation:operations)
-                    if(const auto* dispatch=std::get_if<DispatchCommand>(&operation))
-                        if(cached.descriptors.pipelines[index++]!=dispatch->pipeline)
-                            return false;
-                return true;
+                return cached.descriptors.pipelines==table_pipelines;
             };
             std::size_t cached_index=cached_batch_count;
             for(std::size_t i=cached_batch_count;i>0;--i)
@@ -1510,7 +1565,7 @@ struct Context::Impl {
             if (dispatch_count != 0) {
                 if (pool == VK_NULL_HANDLE ||
                     descriptor_capacity < descriptor_count ||
-                    set_capacity < dispatch_count) {
+                    set_capacity < set_count) {
                     if (pool != VK_NULL_HANDLE)
                         vkDestroyDescriptorPool(device, pool, nullptr);
                     pool = VK_NULL_HANDLE;
@@ -1521,7 +1576,7 @@ struct Context::Impl {
                         std::max<std::uint64_t>(1, descriptor_count));
                     VkDescriptorPoolCreateInfo create{};
                     create.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
-                    create.maxSets = static_cast<std::uint32_t>(dispatch_count);
+                    create.maxSets = static_cast<std::uint32_t>(set_count);
                     create.poolSizeCount = 1;
                     create.pPoolSizes = &pool_size;
                     require(vkCreateDescriptorPool(device, &create, nullptr, &pool),
@@ -1529,19 +1584,8 @@ struct Context::Impl {
                     descriptor_capacity = pool_size.descriptorCount;
                     set_capacity = create.maxSets;
                 } else {
-                    reuse_sets=descriptor_reuse.sets.size()==dispatch_count &&
-                        descriptor_reuse.pipelines.size()==dispatch_count;
-                    if(reuse_sets) {
-                        std::size_t i=0;
-                        for(const auto& operation:operations) {
-                            if(const auto* dispatch=
-                                    std::get_if<DispatchCommand>(&operation))
-                                if(descriptor_reuse.pipelines[i++]!=dispatch->pipeline) {
-                                    reuse_sets=false;
-                                    break;
-                                }
-                        }
-                    }
+                    reuse_sets=descriptor_reuse.sets.size()==set_count &&
+                        descriptor_reuse.pipelines==table_pipelines;
                     if(!reuse_sets) {
                         require(vkResetDescriptorPool(device, pool, 0),
                                 "vkResetDescriptorPool");
@@ -1561,23 +1605,16 @@ struct Context::Impl {
                         "vkAllocateCommandBuffers");
             }
 
-            // Every dispatch was validated in the preflight pass. Allocate
-            // all of its native sets at once and publish the prevalidated
-            // descriptors in one update instead of calling the Vulkan driver
-            // twice for every small SAP kernel.
+            // Allocate one immutable set per distinct physical binding table
+            // in this batch. All dispatches sharing that table bind the same set.
             auto& descriptor_sets=descriptor_reuse.sets;
             if (dispatch_count != 0) {
                 if(!reuse_sets) {
                     std::vector<VkDescriptorSetLayout> layouts;
-                    layouts.reserve(static_cast<std::size_t>(dispatch_count));
-                    descriptor_reuse.pipelines.reserve(layouts.capacity());
-                    for(const auto& operation:operations) {
-                        if(const auto* dispatch=
-                                std::get_if<DispatchCommand>(&operation)) {
-                            layouts.push_back(get_pipeline(dispatch->pipeline).descriptors);
-                            descriptor_reuse.pipelines.push_back(dispatch->pipeline);
-                        }
-                    }
+                    layouts.reserve(set_count);
+                    for(const auto* pipeline:table_native_pipelines)
+                        layouts.push_back(pipeline->descriptors);
+                    descriptor_reuse.pipelines=table_pipelines;
                     descriptor_sets.resize(layouts.size(),VK_NULL_HANDLE);
                     VkDescriptorSetAllocateInfo allocate{};
                     allocate.sType=VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
@@ -1594,12 +1631,9 @@ struct Context::Impl {
                     descriptor_reuse.views.size()==validated_dispatches.size() &&
                     descriptor_reuse.buffer_ids.size()==validated_buffer_ids.size();
                 std::vector<VkWriteDescriptorSet> writes;
-                std::size_t descriptor_offset=0;
-                std::size_t dispatch_index=0;
-                for(const auto& operation:operations) {
-                    const auto* dispatch=std::get_if<DispatchCommand>(&operation);
-                    if(!dispatch)continue;
-                    const auto count=get_pipeline(dispatch->pipeline).binding_count;
+                for(std::size_t table=0u;table<set_count;++table) {
+                    const auto descriptor_offset=table_offsets[table];
+                    const auto count=table_native_pipelines[table]->binding_count;
                     for(std::uint32_t slot=0;slot<count;++slot) {
                         const auto index=descriptor_offset+slot;
                         const auto& next=validated_dispatches[index];
@@ -1612,15 +1646,13 @@ struct Context::Impl {
                         }
                         VkWriteDescriptorSet write{};
                         write.sType=VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-                        write.dstSet=descriptor_sets[dispatch_index];
+                        write.dstSet=descriptor_sets[table];
                         write.dstBinding=slot;
                         write.descriptorType=VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
                         write.descriptorCount=1;
                         write.pBufferInfo=&next;
                         writes.push_back(write);
                     }
-                    descriptor_offset+=count;
-                    ++dispatch_index;
                 }
                 if(!writes.empty())
                     vkUpdateDescriptorSets(device,
@@ -1639,177 +1671,247 @@ struct Context::Impl {
                 query.sType = VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO;
                 query.queryType = VK_QUERY_TYPE_TIMESTAMP;
                 query.queryCount = 2;
+#if defined(FYZZXYZZY_PROFILE_GPU)
+                if(hardware_trace) {
+                    if(operations.size()>=std::numeric_limits<std::uint32_t>::max())
+                        throw std::out_of_range("Hardware trace query count exceeds 32-bit range");
+                    query.queryCount=static_cast<std::uint32_t>(operations.size()+1u);
+                }
+#endif
                 require(vkCreateQueryPool(device, &query, nullptr, &timestamps),
                         "vkCreateQueryPool");
-                vkCmdResetQueryPool(commands, timestamps, 0, 2);
+                vkCmdResetQueryPool(commands, timestamps, 0, query.queryCount);
                 vkCmdWriteTimestamp(commands, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, timestamps, 0);
             }
 
-            // A single inter-submission dependency preserves the original
-            // queue contract. Vulkan queue ordering alone does not publish
-            // shader writes as memory dependencies between submissions.
-            VkMemoryBarrier from_previous{};
-            from_previous.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
-            from_previous.srcAccessMask = VK_ACCESS_MEMORY_WRITE_BIT;
-            from_previous.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT |
-                                          VK_ACCESS_TRANSFER_WRITE_BIT |
-                                          VK_ACCESS_SHADER_READ_BIT |
-                                          VK_ACCESS_SHADER_WRITE_BIT |
-                                          VK_ACCESS_INDIRECT_COMMAND_READ_BIT;
-            vkCmdPipelineBarrier(commands, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
-                                 VK_PIPELINE_STAGE_TRANSFER_BIT |
-                                 VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT |
-                                 VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT, 0,
-                                 1, &from_previous, 0, nullptr, 0, nullptr);
-
-            struct Access {
-                VkPipelineStageFlags stage = 0;
-                VkAccessFlags mask = 0;
-                bool writes = false;
-            };
-            std::unordered_map<BufferId, Access> last_access;
-            if(!independent_uploads)
-                last_access.reserve(std::min<std::size_t>(operations.size() * 2, 512));
-            // Reuse CPU-side command scratch throughout this batch instead
-            // of allocating per copy, kernel, and barrier publication.
-            std::vector<std::pair<BufferId, Access>> operation_uses;
-            std::vector<VkBufferMemoryBarrier> barriers;
+            std::vector<OperationRangeUse> operation_uses,normalized_uses;
+            std::vector<VkBufferMemoryBarrier2> barriers;
+            std::vector<VkBufferCopy> copy_regions;
+            VkPipeline bound_pipeline=VK_NULL_HANDLE;
+            VkDescriptorSet bound_set=VK_NULL_HANDLE;
             std::size_t dispatch_index=0;
-            auto before_operation = [&](const std::vector<std::pair<BufferId, Access>>& uses) {
-                barriers.clear();
-                VkPipelineStageFlags sources = 0;
-                VkPipelineStageFlags targets = 0;
-                for (const auto& use : uses) {
-                    const auto prev = last_access.find(use.first);
-                    if (prev == last_access.end()) continue;
-                    if (!prev->second.writes && !use.second.writes) continue;
-                    VkBufferMemoryBarrier barrier{};
-                    barrier.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER;
-                    barrier.srcAccessMask = prev->second.mask;
-                    barrier.dstAccessMask = use.second.mask;
-                    barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-                    barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-                    barrier.buffer = get(use.first).buffer;
-                    barrier.offset = 0;
-                    barrier.size = VK_WHOLE_SIZE;
-                    barriers.push_back(barrier);
-                    sources |= prev->second.stage;
-                    targets |= use.second.stage;
-                }
-                if (!barriers.empty()) {
-                    vkCmdPipelineBarrier(commands, sources, targets, 0,
-                                         0, nullptr,
-                                         static_cast<std::uint32_t>(barriers.size()),
-                                         barriers.data(), 0, nullptr);
-                }
-                for (const auto& use : uses) {
-                    auto& current = last_access[use.first];
-                    if (!current.stage || current.writes || use.second.writes) {
-                        current = use.second;
-                    } else {
-                        // Read after read is unordered: retain both source
-                        // stages in case a later operation writes the buffer.
-                        current.stage |= use.second.stage;
-                        current.mask |= use.second.mask;
+            const auto append_barrier=[&](VkBuffer buffer,std::size_t begin,
+                                          std::size_t end,RangeAccessScope source,
+                                          RangeAccessScope target) {
+                if(!barriers.empty()) {
+                    auto& prior=barriers.back();
+                    if(prior.buffer==buffer && prior.offset+prior.size==begin &&
+                       prior.srcStageMask==source.stages &&
+                       prior.srcAccessMask==source.access &&
+                       prior.dstStageMask==target.stages &&
+                       prior.dstAccessMask==target.access) {
+                        prior.size+=end-begin;
+                        return;
                     }
                 }
+                VkBufferMemoryBarrier2 barrier{};
+                barrier.sType=VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2;
+                barrier.srcStageMask=source.stages;
+                barrier.srcAccessMask=source.access;
+                barrier.dstStageMask=target.stages;
+                barrier.dstAccessMask=target.access;
+                barrier.srcQueueFamilyIndex=VK_QUEUE_FAMILY_IGNORED;
+                barrier.dstQueueFamilyIndex=VK_QUEUE_FAMILY_IGNORED;
+                barrier.buffer=buffer;
+                barrier.offset=begin;
+                barrier.size=end-begin;
+                barriers.push_back(barrier);
+            };
+            std::size_t barrier_calls=0u,buffer_barriers=0u;
+            const auto emit_barriers=[&]() {
+                if(barriers.empty())return;
+                VkDependencyInfo dependency{};
+                dependency.sType=VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
+                dependency.bufferMemoryBarrierCount=
+                    static_cast<std::uint32_t>(barriers.size());
+                dependency.pBufferMemoryBarriers=barriers.data();
+                vkCmdPipelineBarrier2(commands,&dependency);
+                ++barrier_calls;
+                buffer_barriers+=barriers.size();
+                barriers.clear();
+            };
+            const auto before_operation=[&](std::span<const OperationRangeUse> uses) {
+                for(const auto& use:uses) {
+                    auto& pending=referenced[use.buffer];
+                    const auto& buffer=*pending.buffer;
+                    if(buffer.placement==MemoryPlacement::Upload)continue;
+                    if(!pending.hazards)pending.hazards.emplace(buffer.queue_hazards);
+                    const bool mappable=buffer.placement==MemoryPlacement::HostVisible ||
+                                        buffer.placement==MemoryPlacement::SharedLocal;
+                    pending.hazards->use(use.begin,use.end,use.scope,use.writes,
+                        [&](std::size_t begin,std::size_t end,
+                            RangeAccessScope source,RangeAccessScope target) {
+                            append_barrier(buffer.buffer,begin,end,source,target);
+                        },mappable);
+                }
+                emit_barriers();
             };
 
-            for (const BatchCommand& operation : operations) {
+#if defined(FYZZXYZZY_PROFILE_GPU)
+            std::uint32_t hardware_query_index=1u;
+#endif
+            for(std::size_t operation_index=0u;
+                operation_index<operations.size();++operation_index) {
+                const auto& operation=operations[operation_index];
                 operation_uses.clear();
                 if (const auto* copy = std::get_if<CopyCommand>(&operation)) {
-                    // A packed upload batch has only staging reads and
-                    // validated nonoverlapping destination writes.
-                    if(!independent_uploads) {
-                        if (copy->source == copy->destination) {
-                            // One buffer, one combined dependency entry.
-                            operation_uses.push_back(
-                                {copy->source, {VK_PIPELINE_STAGE_TRANSFER_BIT,
-                                    VK_ACCESS_TRANSFER_READ_BIT |
-                                    VK_ACCESS_TRANSFER_WRITE_BIT, true}});
-                        } else {
-                            operation_uses.push_back(
-                                {copy->source, {VK_PIPELINE_STAGE_TRANSFER_BIT,
-                                    VK_ACCESS_TRANSFER_READ_BIT, false}});
-                            operation_uses.push_back(
-                                {copy->destination, {VK_PIPELINE_STAGE_TRANSFER_BIT,
-                                    VK_ACCESS_TRANSFER_WRITE_BIT, true}});
-                        }
-                        before_operation(operation_uses);
-                    }
                     VkBufferCopy region{};
-                    region.srcOffset = copy->source_offset;
-                    region.dstOffset = copy->destination_offset;
-                    region.size = copy->bytes;
-                    vkCmdCopyBuffer(commands, get(copy->source).buffer,
-                                    get(copy->destination).buffer, 1, &region);
+                    region.srcOffset=copy->source_offset;
+                    region.dstOffset=copy->destination_offset;
+                    region.size=copy->bytes;
+                    copy_regions.clear();
+                    copy_regions.push_back(region);
+                    // Disjoint monotonic copies between the same resources
+                    // share one dependency and one native transfer command.
+                    // Self-copies and overlapping destinations retain order.
+                    bool combine=copy->source!=copy->destination;
+#if defined(FYZZXYZZY_PROFILE_GPU)
+                    combine=combine && !hardware_trace;
+#endif
+                    while(combine && operation_index+1u<operations.size() &&
+                          copy_regions.size()<std::numeric_limits<std::uint32_t>::max()) {
+                        const auto* next=std::get_if<CopyCommand>(
+                            &operations[operation_index+1u]);
+                        if(!next || next->source!=copy->source ||
+                           next->destination!=copy->destination)break;
+                        auto& previous=copy_regions.back();
+                        const auto source_end=previous.srcOffset+previous.size;
+                        const auto destination_end=previous.dstOffset+previous.size;
+                        if(next->source_offset<source_end ||
+                           next->destination_offset<destination_end)break;
+                        if(next->source_offset==source_end &&
+                           next->destination_offset==destination_end)
+                            previous.size+=next->bytes;
+                        else copy_regions.push_back({
+                            next->source_offset,next->destination_offset,next->bytes});
+                        ++operation_index;
+                    }
+                    const auto source=resource_ordinals.at(copy->source);
+                    const auto destination=resource_ordinals.at(copy->destination);
+                    for(const auto& part:copy_regions) {
+                        operation_uses.push_back({source,
+                            static_cast<std::size_t>(part.srcOffset),
+                            static_cast<std::size_t>(part.srcOffset+part.size),
+                            {VK_PIPELINE_STAGE_2_COPY_BIT,
+                             VK_ACCESS_2_TRANSFER_READ_BIT},false});
+                        operation_uses.push_back({destination,
+                            static_cast<std::size_t>(part.dstOffset),
+                            static_cast<std::size_t>(part.dstOffset+part.size),
+                            {VK_PIPELINE_STAGE_2_COPY_BIT,
+                             VK_ACCESS_2_TRANSFER_WRITE_BIT},true});
+                    }
+                    normalize_operation_ranges(operation_uses,normalized_uses);
+                    before_operation(normalized_uses);
+                    vkCmdCopyBuffer(commands,referenced[source].buffer->buffer,
+                                    referenced[destination].buffer->buffer,
+                                    static_cast<std::uint32_t>(copy_regions.size()),
+                                    copy_regions.data());
+#if defined(FYZZXYZZY_PROFILE_GPU)
+                    if(hardware_trace)
+                        vkCmdWriteTimestamp(commands,VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
+                                            timestamps,hardware_query_index++);
+#endif
                     continue;
                 }
 
                 const auto& dispatch = std::get<DispatchCommand>(operation);
-                const Pipeline& pipeline = get_pipeline(dispatch.pipeline);
-                // Access intent comes from the PhysX launch contract, not
-                // an assumption that each storage buffer is writable. The
-                // conservative Unspecified default remains read/write.
-                // Multiple slots aliasing one allocation are merged before
-                // the dependency graph is updated, regardless of view ranges.
-                operation_uses.reserve(dispatch.buffers.size());
-                for (const auto& binding : dispatch.buffers) {
-                    const bool reads = binding.access != BufferAccess::Write;
-                    const bool writes = binding.access != BufferAccess::Read;
-                    const VkAccessFlags mask =
-                        (reads ? VkAccessFlags(VK_ACCESS_SHADER_READ_BIT) : 0u) |
-                        (writes ? VkAccessFlags(VK_ACCESS_SHADER_WRITE_BIT) : 0u);
-                    auto found = std::find_if(operation_uses.begin(), operation_uses.end(),
-                        [&](const auto& entry) { return entry.first == binding.buffer; });
-                    if (found == operation_uses.end()) {
-                        operation_uses.push_back({
-                            binding.buffer,
-                            {VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, mask, writes}});
-                    } else {
-                        found->second.mask |= mask;
-                        found->second.writes |= writes;
-                    }
-                }
-                if(dispatch.indirect)
-                    operation_uses.push_back({
-                        dispatch.indirect->buffer,
-                        {VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT,
-                         VK_ACCESS_INDIRECT_COMMAND_READ_BIT,false}});
-                before_operation(operation_uses);
-                const VkDescriptorSet descriptor_set=descriptor_sets[dispatch_index++];
+                const auto prepared=prepared_dispatches[dispatch_index++];
+                const auto table=prepared.table;
+                const auto& pipeline=*table_native_pipelines[table];
+                before_operation(range_plans.ranges(prepared.range_plan));
+                const VkDescriptorSet descriptor_set=descriptor_sets[table];
 
-                vkCmdBindPipeline(commands, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline.pipeline);
-                vkCmdBindDescriptorSets(commands, VK_PIPELINE_BIND_POINT_COMPUTE,
-                                        pipeline.layout, 0, 1, &descriptor_set, 0, nullptr);
-                if (!dispatch.push_constants.empty()) {
-                    vkCmdPushConstants(commands, pipeline.layout,
-                                       VK_SHADER_STAGE_COMPUTE_BIT, 0,
-                                       static_cast<std::uint32_t>(dispatch.push_constants.size()),
-                                       dispatch.push_constants.data());
+                if(bound_pipeline!=pipeline.pipeline) {
+                    vkCmdBindPipeline(commands,VK_PIPELINE_BIND_POINT_COMPUTE,pipeline.pipeline);
+                    bound_pipeline=pipeline.pipeline;
+                    bound_set=VK_NULL_HANDLE;
+                }
+                if(bound_set!=descriptor_set) {
+                    vkCmdBindDescriptorSets(commands,VK_PIPELINE_BIND_POINT_COMPUTE,
+                        pipeline.layout,0,1,&descriptor_set,0,nullptr);
+                    bound_set=descriptor_set;
+                }
+                const auto parameters=dispatch.parameter_bytes();
+                if(!parameters.empty()) {
+                    vkCmdPushConstants(commands,pipeline.layout,
+                                       VK_SHADER_STAGE_COMPUTE_BIT,0,
+                                       static_cast<std::uint32_t>(parameters.size()),
+                                       parameters.data());
                 }
                 if(dispatch.indirect)
                     vkCmdDispatchIndirect(commands,
-                        get(dispatch.indirect->buffer).buffer,
+                        referenced[resource_ordinals.at(dispatch.indirect->buffer)].buffer->buffer,
                         static_cast<VkDeviceSize>(dispatch.indirect->offset));
                 else
                     vkCmdDispatch(commands, dispatch.groups.x, dispatch.groups.y,
                                   dispatch.groups.z);
+#if defined(FYZZXYZZY_PROFILE_GPU)
+                if(hardware_trace)
+                    vkCmdWriteTimestamp(commands,VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
+                                        timestamps,hardware_query_index++);
+#endif
             }
 
-            VkMemoryBarrier to_host{};
-            to_host.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
-            to_host.srcAccessMask = VK_ACCESS_MEMORY_WRITE_BIT;
-            to_host.dstAccessMask = VK_ACCESS_HOST_READ_BIT;
-            vkCmdPipelineBarrier(commands, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
-                                 VK_PIPELINE_STAGE_HOST_BIT, 0, 1, &to_host,
-                                 0, nullptr, 0, nullptr);
-            if (timestamps != VK_NULL_HANDLE)
+            // Only written mappable ranges require a device-to-host
+            // dependency. Device-local writes retain their GPU scopes.
+            for(auto& pending:referenced) {
+                const auto& buffer=*pending.buffer;
+                if(!pending.hazards ||
+                   (buffer.placement!=MemoryPlacement::HostVisible &&
+                    buffer.placement!=MemoryPlacement::SharedLocal))continue;
+                pending.hazards->publish_host_writes(
+                    [&](std::size_t begin,std::size_t end,RangeAccessScope writer) {
+                        writer.access&=VK_ACCESS_2_TRANSFER_WRITE_BIT |
+                            VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT;
+                        append_barrier(buffer.buffer,begin,end,writer,
+                            {VK_PIPELINE_STAGE_2_HOST_BIT,VK_ACCESS_2_HOST_READ_BIT});
+                    });
+            }
+            emit_barriers();
+#if defined(FYZZXYZZY_PROFILE_GPU)
+            if(hardware_trace) {
+                FYZZ_PROFILE_COUNTER("vulkan.barrier_calls",barrier_calls);
+                FYZZ_PROFILE_COUNTER("vulkan.buffer_barriers",buffer_barriers);
+            }
+#endif
+            if (timestamps != VK_NULL_HANDLE) {
+#if defined(FYZZXYZZY_PROFILE_GPU)
+                if(!hardware_trace)
+#endif
                 vkCmdWriteTimestamp(commands, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, timestamps, 1);
+            }
             require(vkEndCommandBuffer(commands), "vkEndCommandBuffer");
+#if defined(FYZZXYZZY_PROFILE_GPU)
+            std::vector<ProfileOp> recorded_ops;
+            if(hardware_trace) {
+                recorded_ops.reserve(operations.size());
+                for(const auto& operation:operations) {
+                    if(const auto* copy=std::get_if<CopyCommand>(&operation))
+                        recorded_ops.push_back({0u,copy->bytes,0u,0u,0u,false});
+                    else {
+                        const auto& dispatch=std::get<DispatchCommand>(operation);
+                        recorded_ops.push_back({
+                            dispatch.pipeline,0u,dispatch.groups.x,dispatch.groups.y,
+                            dispatch.groups.z,dispatch.indirect.has_value()});
+                    }
+                }
+            }
+#endif
             const SubmissionId id = enqueue(commands, pool);
+            // Commit recorded queue dependencies without allocation.
+            for(auto& pending:referenced) {
+                pending.buffer->last_reference=id;
+                if(pending.hazards)
+                    std::swap(pending.buffer->queue_hazards,*pending.hazards);
+            }
             auto& submitted = submissions.at(id);
             submitted.timestamps = timestamps;
+#if defined(FYZZXYZZY_PROFILE_GPU)
+            if(hardware_trace) {
+                submitted.profile_trace_id=hardware_profile::current_trace_id();
+                submitted.profile_ops=std::move(recorded_ops);
+            }
+#endif
             submitted.cacheable_batch = true;
             submitted.descriptor_capacity = descriptor_capacity;
             submitted.set_capacity = set_capacity;
@@ -1835,9 +1937,7 @@ struct Context::Impl {
             return std::nullopt;
         const auto id = submit_batch(operations, true);
         auto it = submissions.find(id);
-        const auto fence = it->second.fence;
-        require(vkWaitForFences(device, 1, &fence, VK_TRUE, UINT64_MAX),
-                "vkWaitForFences timestamp batch");
+        wait_for_completion(id);
         std::uint64_t ticks[2]{};
         const VkResult result = vkGetQueryPoolResults(
             device, it->second.timestamps, 0, 2, sizeof(ticks),
@@ -1845,7 +1945,6 @@ struct Context::Impl {
         if (result != VK_SUCCESS) {
             retire_submission(it->second);
             submissions.erase(it);
-            release_retired_through(id);
             require(result, "vkGetQueryPoolResults");
         }
         const auto mask = timestamp_valid_bits == 64 ? ~std::uint64_t{0} :
@@ -1853,7 +1952,6 @@ struct Context::Impl {
         const std::uint64_t delta = (ticks[1] - ticks[0]) & mask;
         retire_submission(it->second);
         submissions.erase(it);
-        release_retired_through(id);
         return static_cast<double>(delta) * limits.timestampPeriod;
     }
 
@@ -1875,7 +1973,8 @@ struct Context::Impl {
             destination_offset < source_offset + bytes)
             throw std::invalid_argument(
                 "Overlapping GPU buffer copy source and destination");
-        return submit_copy(source, source_offset, destination, destination_offset, bytes);
+        return submit_batch({CopyCommand{
+            source_id,source_offset,destination_id,destination_offset,bytes}});
     }
 };
 
@@ -1889,13 +1988,42 @@ Context& Context::operator=(Context&&) noexcept = default;
 const DeviceInfo& Context::device_info() const { return impl_->info; }
 
 BufferId Context::create_buffer(std::size_t bytes, MemoryPlacement placement) {
-    return impl_->create_buffer(bytes, placement);
+    const auto id=impl_->create_buffer(bytes, placement);
+#if defined(FYZZXYZZY_PROFILE_GPU)
+    hardware_profile::buffer_event({
+        "vulkan","create",impl_->profile_context_id,
+        hardware_profile::current_trace_id(),id,bytes,unsigned(placement)});
+#endif
+    return id;
 }
 
-void Context::destroy_buffer(BufferId id) { impl_->destroy_buffer(id); }
-void Context::retire_buffer(BufferId id) { impl_->retire_buffer(id); }
+void Context::destroy_buffer(BufferId id) {
+#if defined(FYZZXYZZY_PROFILE_GPU)
+    const auto bytes=impl_->get(id).bytes;
+#endif
+    impl_->destroy_buffer(id);
+#if defined(FYZZXYZZY_PROFILE_GPU)
+    hardware_profile::buffer_event({
+        "vulkan","destroy",impl_->profile_context_id,
+        hardware_profile::current_trace_id(),id,bytes,0u});
+#endif
+}
+void Context::retire_buffer(BufferId id) {
+#if defined(FYZZXYZZY_PROFILE_GPU)
+    const auto bytes=impl_->get(id).bytes;
+#endif
+    impl_->retire_buffer(id);
+#if defined(FYZZXYZZY_PROFILE_GPU)
+    hardware_profile::buffer_event({
+        "vulkan","retire",impl_->profile_context_id,
+        hardware_profile::current_trace_id(),id,bytes,0u});
+#endif
+}
 bool Context::buffer_is_host_visible(BufferId id) const {
     return impl_->buffer_is_host_visible(id);
+}
+bool Context::buffer_in_use(BufferId id) const {
+    return impl_->get(id).last_reference>impl_->completed_submission;
 }
 void* Context::map_buffer(BufferId id, HostMapAccess access) {
     return impl_->map_buffer(id, access);
@@ -1923,8 +2051,16 @@ SubmissionId Context::submit_download_batch(
         std::span<const DownloadSpan> downloads) {
     return impl_->submit_download_batch(downloads);
 }
+SubmissionId Context::submit_batch_with_readback(
+        std::vector<BatchCommand>& commands,
+        std::span<const DownloadSpan> downloads) {
+    return impl_->submit_download_batch(downloads,&commands);
+}
 void Context::finish_download_batch(SubmissionId id,bool publish) {
     impl_->finish_download_batch(id,publish);
+}
+bool Context::cancel_download_batch(SubmissionId id) {
+    return impl_->cancel_download_batch(id);
 }
 void Context::download_batch(std::span<const DownloadSpan> downloads) const {
     impl_->download_batch(downloads);
@@ -1949,6 +2085,12 @@ SubmissionId Context::submit_copy_buffer(BufferId source, std::size_t source_off
 PipelineId Context::create_compute_pipeline(const ComputePipelineDesc& description) {
     return impl_->create_pipeline(description);
 }
+#if defined(FYZZXYZZY_PROFILE_GPU)
+void Context::set_pipeline_profile_label(PipelineId id,const char* label) const noexcept {
+    hardware_profile::pipeline_event({
+        "vulkan",label,impl_->profile_context_id,id});
+}
+#endif
 
 void Context::destroy_compute_pipeline(PipelineId id) { impl_->destroy_pipeline(id); }
 

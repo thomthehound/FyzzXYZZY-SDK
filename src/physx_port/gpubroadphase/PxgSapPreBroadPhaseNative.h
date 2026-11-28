@@ -9,7 +9,10 @@
 
 #include "physx_port/gpucommon/PxgCudaBuffer.h"
 #include "foundation/PxBounds3.h"
+#include <array>
+#include <optional>
 #include <span>
+#include <utility>
 #include <vector>
 
 namespace physx { namespace Bp { class BroadPhaseUpdateData; } }
@@ -29,6 +32,16 @@ struct SourceSapPreBroadPhaseBuffers {
     physx::PxgTypedCudaBuffer<physx::PxU32>& environment_ids;
     physx::PxU32& boxes_capacity;
 };
+
+// Bounded dirty spans use the original Bp deltas and AABB changed bitmap.
+struct SourceSapDirtyRangesNative {
+    std::array<std::pair<physx::PxU32,physx::PxU32>,32u> spans{};
+    std::size_t count=0u;
+};
+std::optional<SourceSapDirtyRangesNative> source_sap_dirty_ranges_native(
+    const physx::Bp::BroadPhaseUpdateData& update,
+    std::span<const physx::PxU32> changed,
+    bool include_removed=false);
 
 // Preflight source bounds and host-array capacity before any preceding
 // AABB-manager bitmap transfer can enter the same GPU frame.

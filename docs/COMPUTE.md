@@ -77,10 +77,22 @@ correctness but does not establish AMD GPU compatibility or performance.
 The default `Unspecified` means conservatively read/write, preserving
 existing API callers. The source-derived AABB stage marks its three input
 bindings read-only and encoded output write-only; the incremental SAP
-single-arena stage declares read/write. Vulkan merges all bindings for
-the same allocation before placing barriers, so overlapping read/write
-aliases are treated as writes. For now the dependency granularity is the
-**whole resource**, not the declared byte subranges.
+single-arena stage declares read/write. Vulkan requires core 1.3 Synchronization2 support and tracks overlapping
+access intervals with per-buffer-barrier stage and access scopes. D3D12
+requires enhanced barriers and tracks read/write ranges to identify
+conflicting access epochs. Native buffer barriers cover the entire
+resource; sequential writers remain ordered. A binding's
+optional `access_extent` describes a contiguous interval relative to its
+descriptor base. Native source views exclude descriptor alignment padding.
+The descriptor itself is unchanged, and the declared interval must cover
+all actual shader accesses. A dispatch may declare a complete set of
+disjoint slot-relative accesses with `DispatchCommand::accesses`. Each
+range must lie within its binding's declared extent and agree with its
+access intent. The descriptor layout and resource-state requirements are
+unchanged. Vulkan shares immutable descriptor sets within a batch by
+pipeline and physical binding identity; access declarations and push
+constants remain dispatch-local. Completed batches retain their sets
+until reuse or eviction.
 
 The current D3D12 proof retains its **fixed** SRV/UAV pipeline layouts,
 not a general descriptor allocator. It checks that a bound SRV is not
@@ -88,9 +100,77 @@ incorrectly declared writable; access declarations do not change the
 DXIL resource type or make arbitrary shaders writable. Eventually shader
 reflection or source-derived manifests should cross-check intent so
 incorrect declarations cannot silently remove necessary barriers.
+D3D12 buffers have no layout transitions. Access epochs are
+submission-local; their barriers order the actual producer and consumer
+pipeline stages. Whole-buffer visibility is retained across access
+classes. Non-overlapping same-buffer copies execute directly without
+relocation staging. Each submission executes one command list.
+Within a batch, physical descriptor validation and resource resolution
+belong to the unique descriptor table. Native recording consumes the
+resolved views and pipelines. D3D12 completion-cache identity follows
+the unique table layout rather than the sequence of dispatches.
+Dy shares immutable, frame-local resource declarations between launches
+of the same numerical phase. Launch dimensions and indirect arguments
+remain command-owned. Dy snapshots parameter words into an append-only
+frame store; each launch retains its own offset, count and storage
+ownership. Native recording validates the slice and parameter size.
+Storage growth cannot invalidate a recorded slice. Recorded source
+consumers retain every resource in the shared declaration through
+submission or discard.
+Each shared declaration and pipeline resolves its physical table once per
+batch. Its direct and distinct indirect argument ranges retain separate
+validated access plans across alternating launches. Owned declarations
+reuse the latest matching plan per table. Constants and launch dimensions
+do not affect range identity; launch shape is validated independently.
+Range lists resolve resources to dense batch-local
+ordinals; dependency processing does not look up resource handles per
+interval. Vulkan leaves unchanged interval states intact while retaining
+write-after-write barriers. D3D12 retains reader ranges only until the
+first writer in an access epoch; subsequent writes already require a
+whole-buffer barrier. Every operation still advances native dependency
+history.
 The PhysX task graph, cross-submission dependencies, and actual lifetime
-rules remain authoritative. Do not infer performance gains from software
-Vulkan or WARP CI.
+rules remain authoritative. Context teardown releases in-flight native
+resources only after queue completion or device loss; a failed D3D12
+queue signal prohibits further work and result publication for that
+submission. Vulkan rejected recording releases unused staging without
+waiting for unrelated submissions. Source heap root retirement invalidates
+virtual addresses immediately. Recorded consumers retain native storage
+until their batch is accepted or discarded; accepted GPU uses retain it
+through their completion fence. PCM EdgeIndex growth retains the committed
+allocation until the replacement copy is accepted. Rejected recording
+restores the committed allocation identity without a preservation-copy
+submission. PCM journal repair enters the ordered queue independently of
+the next speculative batch and requires no host completion wait before
+device-local retry preparation. Dy arena relocation retains only the live
+source and friction history prefixes; rollback invalidates those prefixes
+without discarding reserved capacity. Cancelling a readback detaches its
+host destinations without waiting; the accepted submission retains its
+staging until ordered retirement. Rollback and teardown discard recorded
+work and join accepted source tokens together before host-visible heap
+reuse. Mapped frame inputs and packed numerical upload storage retain
+immutable snapshots through recorded and submitted readers. Replacement
+does not force a submission; completed allocations remain reusable.
+Wide host-scheduled Dy tasks omit GPU-generated coloring scratch from
+the packed input upload while retaining authored descriptor tokens.
+Internal Dy arena tables use 16-byte alignment within the native raw
+buffer view. Host result storage is allocated without initialization or
+preservation copies; it receives the completed readback before publication.
+Dy validates contact ownership, friction history, anchor extents and
+retained candidates in one manager traversal. Integration metadata and
+actor-slot bounds share one source traversal. Dy initializes conflict
+state during descriptor expansion when retained colors are not candidates
+for reuse. Pure dynamic hubs emit singleton partitions directly; mixed
+hubs prefix dynamic encounter ranks across the workgroup and compact
+static reservations into the existing cursor range. General coloring
+resets rollover masks with election priorities; elected edges own
+disjoint endpoints and update their masks and maxima directly.
+Normal and friction preparation consume the same authored contact
+geometry without a dependency on materialized normal rows. Each patch
+shares body data and transformed anchors across its tangent rows.
+Normal and friction preparation reuse invocation-local contact frames;
+packed singleton tasks prepare the complete constraint in one visit.
+Do not infer performance gains from software Vulkan or WARP CI.
 
 ### Nonblocking upload staging
 
@@ -133,8 +213,8 @@ be bound as shader storage. The temporary HostVisible GPU buffer is retired
 against the final submission fence. D3D12 records
 `CopyBufferRegion` operations against a single upload heap and attaches
 that heap directly to the submission's lifetime, releasing it on GPU
-completion. Each destination transitions into COPY_DEST once and returns
-to COMMON after the batch. Invalid destination IDs, null pointers,
+completion. Destinations promote to COPY_DEST on first use and decay to
+COMMON at execution completion. Invalid destination IDs, null pointers,
 misalignment and out-of-bounds ranges are rejected before submission.
 
 **Current limitations:** This is a first *batching and ownership* path,

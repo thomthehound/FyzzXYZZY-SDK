@@ -46,6 +46,12 @@ public:
                                  fyzz::physx_gpu::SourceSapDmaNative& stream,
                                  const char* filename, PxI32 line);
 
+    // Replace the allocation at an explicit capacity, retaining only the
+    // aligned live prefix until its ordered copy completes.
+    void resizeCopyPrefixAsync(PxU64 capacity, PxU64 livePrefixBytes,
+                               fyzz::physx_gpu::SourceSapDmaNative& stream,
+                               const char* filename, PxI32 line);
+
     void deallocate();
     void deallocateDeferred();
 
