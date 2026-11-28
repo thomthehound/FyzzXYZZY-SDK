@@ -8221,6 +8221,10 @@ void verify_gpu_distance_solver(
             5u*(52u+sizeof(native::GpuDyIntegratedPose))+
             3u*sizeof(std::uint32_t);
         const auto& admission=producer->dy_launch_stats();
+        require(admission.host_lane_packed_tasks==3u &&
+                admission.local_joint_rows==3u &&
+                admission.joint_numerical_bytes==0u,
+            "Exclusive distance joints reserved unused numerical rows");
         require(admission.device_island_indirect_dispatches==0u &&
                 admission.device_admitted_tasks==0u,
             "Joint-only Scene duplicated CPU-authorized task admission");
@@ -10289,6 +10293,17 @@ void verify_host_lane_packed_islands(
     gpu.set_velocity(joint_gpu_a,{0.2f,0.1f,-0.05f});
     cpu.set_velocity(joint_cpu_b,{-0.15f,0.f,0.05f});
     gpu.set_velocity(joint_gpu_b,{-0.15f,0.f,0.05f});
+    // A multirow packed joint shares the numerical arena with a cooperative task.
+    const auto sphere_cpu_a=cpu.add_dynamic_box({0.3f,0.3f,0.3f},{-40.f,4.f,0.f},1.f);
+    const auto sphere_cpu_b=cpu.add_dynamic_box({0.3f,0.3f,0.3f},{-38.f,4.f,0.f},1.f);
+    const auto sphere_gpu_a=gpu.add_dynamic_box({0.3f,0.3f,0.3f},{-40.f,4.f,0.f},1.f);
+    const auto sphere_gpu_b=gpu.add_dynamic_box({0.3f,0.3f,0.3f},{-38.f,4.f,0.f},1.f);
+    cpu.create_spherical_constraint(sphere_cpu_a,sphere_cpu_b,{{2.f,0.f,0.f},{}},{});
+    gpu.create_spherical_constraint(sphere_gpu_a,sphere_gpu_b,{{2.f,0.f,0.f},{}},{});
+    for(const auto body:{sphere_cpu_a,sphere_cpu_b})cpu.set_dynamics(body,joint_dynamics);
+    for(const auto body:{sphere_gpu_a,sphere_gpu_b})gpu.set_dynamics(body,joint_dynamics);
+    cpu.set_velocity(sphere_cpu_b,{0.15f,0.05f,0.0f});
+    gpu.set_velocity(sphere_gpu_b,{0.15f,0.05f,0.0f});
     // Three joint-connected bodies require a cooperative numerical task.
     std::array<BodyId,3> chain_cpu{},chain_gpu{};
     for(std::size_t i=0u;i<chain_cpu.size();++i) {
@@ -10339,6 +10354,17 @@ void verify_host_lane_packed_islands(
            schedule.host_lane_packed_tasks==schedule.device_colored_tasks)
             require(schedule.device_generated_bytes==0u,
                 "Packed-only Dy allocated unused sorted descriptors or partitions");
+        if(!device_admission)
+            require(schedule.local_joint_rows==1u &&
+                    schedule.joint_numerical_bytes==
+                        (schedule.device_joint_input_rows-1u)*sizeof(native::GpuDyJointRow) &&
+                    schedule.joint_numerical_bytes>=5u*sizeof(native::GpuDyJointRow),
+                "Mixed packed and cooperative joints lost physical row ownership");
+        else
+            require(schedule.local_joint_rows==0u &&
+                    schedule.joint_numerical_bytes==
+                        schedule.device_joint_input_rows*sizeof(native::GpuDyJointRow),
+                "Device-admitted joint capacity lost its conservative bound");
         saw_dependent_task |= device_admission
             ?gpu.largest_accurate_island_size()>=3u
             :schedule.host_lane_packed_tasks<
@@ -10364,6 +10390,12 @@ void verify_host_lane_packed_islands(
         test::compound_compare_state(
             gpu.body_state(joint_gpu_b),cpu.body_state(joint_cpu_b),
             0.03f,"Packed GPU two-body joint changed the second response");
+        test::compound_compare_state(
+            gpu.body_state(sphere_gpu_a),cpu.body_state(sphere_cpu_a),
+            0.03f,"Packed multirow joint changed the first response");
+        test::compound_compare_state(
+            gpu.body_state(sphere_gpu_b),cpu.body_state(sphere_cpu_b),
+            0.03f,"Packed multirow joint changed the second response");
         for(std::size_t i=0u;i<chain_cpu.size();++i)
             test::compound_compare_state(
                 gpu.body_state(chain_gpu[i]),cpu.body_state(chain_cpu[i]),
