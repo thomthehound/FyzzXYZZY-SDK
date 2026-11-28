@@ -952,8 +952,9 @@ void sourceDyPartitionTask(uint taskId,uint scratch,uint errorAddress,
     const uint descriptorCapacity=arena.Load(p.integrationBias+20u);
     const uint colors=scratch+views.y;
     const uint bodyState=scratch+views.w;
-    const uint raw=sourceDescriptors
-        ?bodyState-descriptorCapacity*16u:scratch+views.x;
+    const uint raw=sourceDyResidentColor()
+        ?colors+descriptorCapacity*4u:sourceDescriptors
+            ?bodyState-descriptorCapacity*16u:scratch+views.x;
     const uint task=p.taskBias+taskId*36u;
     const uint4 ranges=sourceDyTaskLoad4(task);
     const uint first=ranges.x,last=ranges.y;

@@ -6073,6 +6073,8 @@ void verify_resident_wide_device_response(
             schedule.host_result_capacity>=schedule.host_staging_bytes &&
             schedule.numerical_arena_bytes<=schedule.numerical_arena_capacity &&
             schedule.numerical_arena_padding_bytes<=18u*16u &&
+            schedule.aliased_partition_scratch_bytes==
+                schedule.device_initialized_bodies*12u &&
             schedule.omitted_partition_scratch_bytes==
                 schedule.device_source_descriptors*20u+
                 3u*(schedule.device_source_descriptors/cross_group)*4u+
@@ -9437,6 +9439,7 @@ void verify_gpu_wide_island_solver(
                 "Source Sc did not materialize Dy descriptors on the device");
         require(schedule.device_upload_batches==1u &&
                 producer->dy_upload_span_count()==1u &&
+                schedule.aliased_partition_scratch_bytes>0u &&
                 schedule.omitted_partition_scratch_bytes==
                     schedule.device_colored_descriptors*16u+
                     schedule.device_initialized_bodies*12u &&

@@ -142,6 +142,7 @@ struct SourceDyLaunchStats {
     // omitted from the host numerical input packet.
     std::size_t device_generated_bytes=0u;
     std::size_t omitted_partition_scratch_bytes=0u;
+    std::size_t aliased_partition_scratch_bytes=0u;
     std::size_t device_source_copy_bytes=0u;
     std::size_t device_source_descriptors=0u;
     std::size_t host_descriptor_inputs=0u;
@@ -1573,6 +1574,16 @@ public:
            std::numeric_limits<std::uint32_t>::max())
             throw std::overflow_error(
                 "Device Dy partition storage exceeds address space");
+        // Only staged coloring has a global lifetime boundary before
+        // numerical row preparation. Resident schedules retain their
+        // descriptor maps and stage list, but not endpoint color state.
+        const bool staged_colors=device_partitions &&
+            (!wide_tasks_.empty() || resident_wide);
+        const std::size_t color_alias_bytes=staged_colors
+            ?(resident_wide?color_body_count*12u:
+                static_cast<std::size_t>(partition_workspace_bytes)):0u;
+        const auto dedicated_workspace_bytes=
+            static_cast<std::size_t>(partition_workspace_bytes)-color_alias_bytes;
         last_schedule_.device_source_descriptors=
             source_descriptors?descriptor_capacity:0u;
         last_schedule_.source_descriptor_upload_bytes=source_descriptors
@@ -1596,7 +1607,7 @@ public:
             integration_bytes,compact_anchor_bytes,
             tiles_.size()*sizeof(WorkTile),
             static_cast<std::size_t>(partition_input_bytes),inertia_bytes,
-            static_cast<std::size_t>(partition_workspace_bytes)};
+            dedicated_workspace_bytes};
         const std::array<std::size_t,count> elements{
             bodies.size(),rows.size(),descriptor_capacity,partition_count,
             ordinal_capacity,task_capacity,contact_forces.size(),friction_count,
@@ -1731,6 +1742,7 @@ public:
         const std::size_t upload_begin=history_bytes+align_table(output_bytes);
         std::size_t padding_bytes=upload_begin-history_bytes-output_bytes;
         std::size_t total=upload_begin;
+        std::size_t color_alias_offset=0u;
         for(const auto i:order) {
             if((i==14u || i==15u || i==17u) && !bytes[i])continue;
             if(packed_only && (i==2u || i==3u))continue;
@@ -1746,6 +1758,20 @@ public:
                 align_table(total+view_bytes);
             padding_bytes+=next-total-bytes[i];
             total=next;
+            if(i==7u && color_alias_bytes) {
+                color_alias_offset=align_table(offsets[6]);
+                if(color_alias_offset>total ||
+                   color_alias_bytes>std::numeric_limits<std::uint32_t>::max()-
+                       color_alias_offset-table_alignment)
+                    throw std::overflow_error("Dy aliased color workspace exceeds arena");
+                last_schedule_.aliased_partition_scratch_bytes=
+                    std::min(color_alias_bytes,total-color_alias_offset);
+                const auto alias_end=color_alias_offset+color_alias_bytes;
+                if(alias_end>total) {
+                    total=align_table(alias_end);
+                    padding_bytes+=total-alias_end;
+                }
+            }
         }
         narrow(total);
         const auto partition_output_offset=total;
@@ -1770,7 +1796,8 @@ public:
         // The contact shader addresses anchors backward from contactBias.
         // Host staging stops at the writable contact arena.
         const auto input_end=offsets[6];
-        last_schedule_.omitted_partition_scratch_bytes=bytes[17];
+        last_schedule_.omitted_partition_scratch_bytes=
+            static_cast<std::size_t>(partition_workspace_bytes);
         const std::size_t uploaded_bytes=input_end-upload_begin;
         // Numerical input is packed directly into transfer memory; host_
         // owns only the unpublished numerical result.
@@ -1888,12 +1915,16 @@ public:
             inline_bodies_.size()*sizeof(native::GpuDyContactPrepBody);
         if(device_partitions) {
             const auto n=descriptor_capacity;
-            const auto workspace=bytes[17]?offsets[17]-offsets[15]:0u;
+            const auto workspace=bytes[17]?offsets[17]-offsets[15]:
+                color_alias_bytes?color_alias_offset-offsets[15]:0u;
             const auto color_begin=source_descriptors && !device_admission
                 ?partition_header_bytes:workspace;
-            const auto body_state_begin=workspace+device_color_count*4u+
+            const auto raw_end=workspace+device_color_count*4u+
                 raw_descriptor_count*16u;
-            const auto stage_list_begin=body_state_begin+color_body_count*12u;
+            const auto body_state_begin=resident_wide
+                ?color_alias_offset-offsets[15]:raw_end;
+            const auto stage_list_begin=resident_wide
+                ?raw_end:body_state_begin+color_body_count*12u;
             // Host tokens alias color slots. Raw descriptors precede
             // endpoint coloring state; resident tiles retain stage ends.
             const std::array<std::uint32_t,5> scratch_header{
@@ -2525,6 +2556,7 @@ public:
                     table(2u,A::ReadWrite);
                     table(3u,A::ReadWrite);
                     table(17u,A::ReadWrite);
+                    arena_region(color_alias_offset,color_alias_bytes,A::ReadWrite);
                 }else {
                     if(prepares || solves)table(2u,A::Read);
                     if(solves)table(3u,A::Read);
