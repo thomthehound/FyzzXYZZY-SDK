@@ -935,6 +935,7 @@ void sourceDyBuildOwnedRuns(uint first,uint partitionFirst,uint partitionEnd,
                 runBegin=begin;runStart=color;running=true;
                 stamp=0x80000000u|((color-partitionFirst)<<3u);
                 active=(1u<<width)-1u;
+                permutation=0u;
                 for(uint owner=0u;owner<width;++owner)
                     permutation|=owner<<(3u*owner);
             }
