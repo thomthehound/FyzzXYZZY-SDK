@@ -8495,6 +8495,9 @@ void verify_sphere_gpu_solver(
             }
             require(cpu.contacts().size()==3u,
                 "Source sphere impact fixtures lost a contact manager");
+            require(producer->dy_launch_stats().single_anchor_pcm_patches==3u &&
+                    producer->dy_friction_prepared_rows()==6u,
+                "Fresh single-point PCM reserved redundant friction rows");
             for(std::size_t j=0;j<cpu.contacts().size();++j) {
                 const auto& source=cpu.contacts()[j];
                 const auto& device=gpu.contacts()[j];

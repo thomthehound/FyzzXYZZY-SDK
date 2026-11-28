@@ -178,6 +178,7 @@ struct SourceDyLaunchStats {
     std::size_t joint_row_input_bytes=0u;
     std::size_t compact_joint_source_bytes=0u;
     std::size_t joint_numerical_bytes=0u;
+    std::size_t single_anchor_pcm_patches=0u;
     std::size_t local_joint_rows=0u;
     std::size_t device_joint_metadata_upload_bytes=0u;
     std::size_t prewitness_joint_source_upload_bytes=0u;
@@ -955,6 +956,15 @@ public:
                    patch.anchor_count!=0u &&
                    history_epochs_[pair.pcm_edge]!=history_epoch_)
                     patch.broken|=0x40000000u;
+                if((patch.broken&native::gpu_dy_pcm_single_anchor)!=0u) {
+                    if(!pcm || (patch.broken&0x80000000u)==0u ||
+                       (patch.broken&0x30000000u)!=0u ||
+                       patch.contact_count!=1u || patch.anchor_count!=0u ||
+                       patch.row_offset>friction_count ||
+                       2u>friction_count-patch.row_offset)
+                        throw std::logic_error("Source PCM single-anchor capacity invalid");
+                    ++last_schedule_.single_anchor_pcm_patches;
+                }
                 if(patch.anchor_count>2u || patch.row_offset%2u ||
                    patch.row_offset/2u>anchors.size() ||
                    patch.anchor_count>anchors.size()-patch.row_offset/2u)
@@ -3366,7 +3376,9 @@ public:
                         host_.get()+result_offsets[4]+j*4u,4u);
                 const auto count=pcm_growth?(report>>1u)&3u:
                     patch.anchor_count;
-                if(count>2u || patch.row_offset>friction_count ||
+                const auto capacity=(patch.broken&native::gpu_dy_pcm_single_anchor)!=0u
+                    ?1u:2u;
+                if(count>capacity || patch.row_offset>friction_count ||
                    count*2u>friction_count-patch.row_offset)
                     throw std::logic_error(
                         "Source Dy friction writeback range invalid");

@@ -4338,6 +4338,13 @@ void Scene::prepare_gpu_dy_candidate_contact_preps(float seconds) {
         prep.pcm_edge=request.edge;
     }
 }
+static std::uint32_t pcm_friction_row_capacity(
+    const GpuPcmBoxPair& pair,const GpuDyCandidateSource& source) {
+    if(source.material.disable_friction)return 0u;
+    return pair.candidate_capacity==1u &&
+           source.retained_count==0u &&
+           source.retained_single_patch==0xffffffffu?2u:4u;
+}
 void Scene::reserve_gpu_dy_pcm_source_rows() {
     FYZZ_PROFILE_SCOPE("dy.prewitness_pcm_row_capacity");
     std::size_t contacts=0u,friction=0u;
@@ -4352,7 +4359,7 @@ void Scene::reserve_gpu_dy_pcm_source_rows() {
         source.contact_begin=static_cast<std::uint32_t>(contacts);
         source.friction_begin=static_cast<std::uint32_t>(friction);
         contacts+=capacity;
-        if(!source.material.disable_friction)friction+=4u;
+        friction+=pcm_friction_row_capacity(gpu_pcm_pairs_[i],source);
     }
     gpu_dy_prewitness_contact_rows_=contacts;
     gpu_dy_prewitness_friction_rows_=friction;
@@ -4394,6 +4401,8 @@ void Scene::reserve_gpu_dy_pcm_source_rows() {
         gpu_dy_patches_[i]={
             source.friction_begin,capacity,anchors,
             (grow?0x80000000u:0u)|
+                (pcm_friction_row_capacity(request,source)==2u
+                    ?gpu_dy_pcm_single_anchor:0u)|
                 (anchors?0x20000000u:0u)|
                 (select?0x10000000u|(source.retained_count<<8u)|
                     (source.retained_full?0x04000000u:0u):0u),
@@ -9777,16 +9786,18 @@ void Scene::prepare_contact_constraints(
                    (source.candidate_capacity==1u?1u:4u))
                 throw std::logic_error(
                     "Source GPU PCM friction is not one correlated patch");
+            const auto row_capacity=pcm_friction_row_capacity(
+                source,gpu_dy_candidate_sources_[prep_slot]);
             if(source_body_order) {
                 patch.row_offset=gpu_dy_candidate_sources_[prep_slot].friction_begin;
                 if(patch.row_offset>gpu_dy_prewitness_friction_rows_ ||
-                   4u>gpu_dy_prewitness_friction_rows_-patch.row_offset)
+                   row_capacity>gpu_dy_prewitness_friction_rows_-patch.row_offset)
                     throw std::logic_error("PCM friction exceeds pre-witness row range");
             }else {
                 patch.row_offset=prepared_friction_rows_;
                 gpu_dy_friction_anchors_.resize(
-                    gpu_dy_friction_anchors_.size()+2u);
-                prepared_friction_rows_+=4u;
+                    gpu_dy_friction_anchors_.size()+row_capacity/2u);
+                prepared_friction_rows_+=row_capacity;
             }
             continue;
         }
@@ -10610,11 +10621,13 @@ void Scene::pack_gpu_dy_contact_descriptor(
             throw std::logic_error("GPU Dy friction patch rows invalid");
         const bool pcm_growth=resident_pcm &&
             !patch.disable_friction;
+        const auto row_capacity=pcm_growth?pcm_friction_row_capacity(
+            gpu_pcm_pairs_[pcm_index],gpu_dy_candidate_sources_[prep_index]):0u;
         if(pcm_growth) {
-            if(patch.row_offset%2u || patch.row_offset/2u+2u>
-               gpu_dy_friction_anchors_.size())
+            if(patch.row_offset%2u || patch.anchor_count>row_capacity/2u ||
+               row_capacity/2u>gpu_dy_friction_anchors_.size()-patch.row_offset/2u)
                 throw std::logic_error(
-                    "Source GPU PCM has no room for two friction anchors");
+                    "Source GPU PCM has insufficient friction anchor capacity");
             for(std::size_t k=0u;k<patch.anchor_count;++k) {
                 auto& anchor=gpu_dy_friction_anchors_[patch.row_offset/2u+k];
                 pack(anchor.local_a,patch.body0_anchors[k]);
@@ -10648,6 +10661,7 @@ void Scene::pack_gpu_dy_contact_descriptor(
             narrow(resident_pcm?numerical_count:patch.contact_count),
             patch.anchor_count,(patch.broken?1u:0u)|
                 (pcm_growth?0x80000000u:0u)|
+                (row_capacity==2u?gpu_dy_pcm_single_anchor:0u)|
                 (cached_normal?0x20000000u:0u)|
                 (select_history?0x10000000u|
                     (source.retained_count<<8u)|

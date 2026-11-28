@@ -403,6 +403,8 @@ struct GpuDyFrictionRow {
 static_assert(sizeof(GpuDyFrictionRow)==52u &&
               offsetof(GpuDyFrictionRow,velocity_multiplier)==36u &&
               offsetof(GpuDyFrictionRow,applied_force)==48u);
+// Fresh single-point PCM patches can grow only one anchor.
+inline constexpr std::uint32_t gpu_dy_pcm_single_anchor=0x08000000u;
 struct GpuDyContactPatch {
     std::uint32_t row_offset=0,contact_count=0,anchor_count=0,broken=0;
     float static_friction=0.0f,dynamic_friction=0.0f;

@@ -595,8 +595,13 @@ void growPcmFrictionAnchors(uint patchIndex,uint pairIndex,
     uint4 patch=arena.Load4(po);
     uint pair=sourceDyPrepAddress(pairIndex);
     uint pcmIndex=arena.Load(pair+32u);
-    if(pcmIndex==0xffffffffu || patch.y>4u || patch.z>2u ||
-       (patch.x&1u)!=0u || patch.x+4u>p.frictionCount) {
+    const bool singleAnchor=(patch.w&0x08000000u)!=0u;
+    const uint capacity=singleAnchor?1u:2u;
+    if(pcmIndex==0xffffffffu || patch.y>4u || patch.z>capacity ||
+       (singleAnchor && (patch.y>1u || patch.z!=0u ||
+                         (patch.w&0x30000000u)!=0u)) ||
+       (patch.x&1u)!=0u || patch.x>p.frictionCount ||
+       capacity*2u>p.frictionCount-patch.x) {
         sourceDyTaskErrorOr(errorAddress,262144u);
         return;
     }
@@ -829,6 +834,10 @@ void growPcmFrictionAnchors(uint patchIndex,uint pairIndex,
             arena.Store3(history+8u+k*24u,asuint(la));
             arena.Store3(history+20u+k*24u,asuint(lb));
         }
+    }
+    if(count>capacity) {
+        sourceDyTaskErrorOr(errorAddress,262144u);
+        return;
     }
     arena.Store(history,count);
     arena.Store(po+8u,count);
