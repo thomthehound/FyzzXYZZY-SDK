@@ -2409,13 +2409,14 @@ void sourceDySolveExclusive(uint4 desc,uint2 iters,uint2 iterations,
             return;
         }
         const uint pointIndex=sourceDyContactOrderPoint(order,0u);
-        if(pointIndex>=p.contactCount) {
+        if(pointIndex>=p.contactCount || pointIndex<span.manager.z ||
+           pointIndex-span.manager.z>=span.manager.w) {
             sourceDyTaskErrorOr(errorAddress,256u);
             return;
         }
-        normalAddress=p.contactBias+pointIndex*56u;
+        normalAddress=p.contactBias+pointIndex*sourceDyNormalRowBytes;
         if(preparedNormal.local)normal=preparedNormal.row;
-        else normal=sourceDyLoadNormalRow(normalAddress);
+        else normal=sourceDyLoadNormalRow(normalAddress,span,pointIndex);
     }
     uint localCount=0u,impulseBase=0u,impulseStride=0u;
     if(joint && !localJoint && desc.w<=dyLocalImpulseCapacity) {
@@ -2493,7 +2494,8 @@ void sourceDySolveExclusive(uint4 desc,uint2 iters,uint2 iterations,
             }
             arena.Store(jointOffset+60u,asuint(prepared.impulse));
         }
-        if(localNormal)arena.Store(normalAddress+52u,asuint(normal.impulse));
+        if(localNormal)
+            arena.Store(normalAddress+sourceDyNormalImpulseOffset,asuint(normal.impulse));
         sourceDyFlushImpulses(impulseBase,impulseStride,localCount,impulses);
     }
     sourceDyStoreSolverPair(desc,state,false);

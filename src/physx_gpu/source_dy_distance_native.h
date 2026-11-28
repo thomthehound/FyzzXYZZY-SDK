@@ -179,6 +179,7 @@ struct SourceDyLaunchStats {
     std::size_t compact_joint_source_bytes=0u;
     std::size_t joint_numerical_bytes=0u;
     std::size_t single_anchor_pcm_patches=0u;
+    std::size_t normal_numerical_bytes=0u;
     std::size_t local_joint_rows=0u;
     std::size_t device_joint_metadata_upload_bytes=0u;
     std::size_t prewitness_joint_source_upload_bytes=0u;
@@ -824,11 +825,14 @@ public:
             if(!compact_joint_rows && rows[descriptor.index].reserved==2u)
                 throw std::logic_error("Source Dy native joint requires a compact source");
         }
+        // Contact normals belong to the resident Gu geometry; only
+        // angular Jacobians, coefficients and impulses occupy Dy rows.
+        constexpr std::size_t normal_row_bytes=44u;
         if(contact_forces.size()>
-           std::numeric_limits<std::size_t>::max()/sizeof(native::GpuDyContactPoint))
+           std::numeric_limits<std::size_t>::max()/normal_row_bytes)
             throw std::overflow_error("Source Dy contact row byte count overflow");
-        const auto contact_bytes=
-            contact_forces.size()*sizeof(native::GpuDyContactPoint);
+        const auto contact_bytes=contact_forces.size()*normal_row_bytes;
+        last_schedule_.normal_numerical_bytes=contact_bytes;
         const bool compact_friction=!anchor_impulses.empty();
         if(compact_friction && !friction.empty())
             throw std::invalid_argument(
@@ -2702,7 +2706,8 @@ public:
                 arena_region(history_bytes+result_offsets[1],
                     task_capacity*sizeof(std::uint32_t),A::Write);
 
-            if((admits_extents || prepares) && pcm_pair_count)binding(1u,A::Read);
+            if((admits_extents || prepares || solves) && pcm_pair_count)
+                binding(1u,A::Read);
             if((initializes || prepares || integrates) && has_shape_targets) {
                 binding(2u,integrates?A::ReadWrite:A::Read);
                 if(integrates)binding(3u,A::Write);

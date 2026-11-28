@@ -55,6 +55,8 @@ struct SourceDyContactSpan {
     uint4 manager;
     uint sourceBegin;
     float impulseLimit;
+    uint guNormalBase;
+    float3 pcmNormal;
     uint4 singlePatch,singleSettings;
 };
 
@@ -85,7 +87,18 @@ bool sourceDyLoadContactSpan(uint4 descriptor,uint errorAddress,
         return false;
     }
     const uint pair=sourceDyPrepAddress(prepIndex);
-    const bool pcm=arena.Load(pair+32u)!=invalidBody;
+    const uint pcmIndex=arena.Load(pair+32u);
+    const bool pcm=pcmIndex!=invalidBody;
+    if(pcm)
+        span.pcmNormal=asfloat(pcmContacts.Load3(p.pcmBias+pcmIndex*84u+8u));
+    else {
+        const uint cpuOffset=arena.Load(pair+44u);
+        if(cpuOffset==invalidBody) {
+            sourceDyTaskErrorOr(errorAddress,64u);
+            return false;
+        }
+        span.guNormalBase=p.prepBias+16u+p.prepCount*48u+cpuOffset*28u;
+    }
     span.impulseLimit=asfloat(arena.Load(pair+40u));
     span.sourceBegin=pcm ||
         (p.launchControl&0x08000000u)!=0u
@@ -110,13 +123,19 @@ struct SourceDyPreparedNormal {
     bool local;
 };
 
-SourceDyNormalRow sourceDyLoadNormalRow(uint address) {
+static const uint sourceDyNormalRowBytes=44u;
+static const uint sourceDyNormalImpulseOffset=40u;
+
+SourceDyNormalRow sourceDyLoadNormalRow(uint address,SourceDyContactSpan span,
+                                       uint pointIndex) {
     SourceDyNormalRow row;
-    row.normal=asfloat(arena.Load3(address));
-    row.ja=asfloat(arena.Load3(address+12u));
-    row.jb=asfloat(arena.Load3(address+24u));
-    row.coefficients=asfloat(arena.Load4(address+36u));
-    row.impulse=asfloat(arena.Load(address+52u));
+    row.normal=span.guNormalBase!=0u
+        ?asfloat(arena.Load3(span.guNormalBase+(pointIndex-span.manager.z)*28u))
+        :span.pcmNormal;
+    row.ja=asfloat(arena.Load3(address));
+    row.jb=asfloat(arena.Load3(address+12u));
+    row.coefficients=asfloat(arena.Load4(address+24u));
+    row.impulse=asfloat(arena.Load(address+sourceDyNormalImpulseOffset));
     return row;
 }
 
@@ -155,14 +174,15 @@ bool solveContactRows(uint4 descriptor,SourceDyContactSpan span,
         precise float normalImpulse=0.0;
         for(uint i=0;i<patch.y;++i) {
             uint pointIndex=sourceDyContactOrderPoint(settings.z,i);
-            if(pointIndex>=p.contactCount) {
+            if(pointIndex>=p.contactCount || pointIndex<manager.z ||
+               pointIndex-manager.z>=manager.w) {
                 sourceDyTaskErrorOr(errorAddress,256u);
                 return false;
             }
-            uint co=p.contactBias+pointIndex*56u;
+            uint co=p.contactBias+pointIndex*sourceDyNormalRowBytes;
             SourceDyNormalRow row;
             if(retainNormal)row=retainedNormal;
-            else row=sourceDyLoadNormalRow(co);
+            else row=sourceDyLoadNormalRow(co,span,pointIndex);
             const float3 n=row.normal,ja=row.ja,jb=row.jb;
             precise float normalVelocity=
                 sourceDyDot3(n,va)-sourceDyDot3(n,vb)+
@@ -198,7 +218,8 @@ bool solveContactRows(uint4 descriptor,SourceDyContactSpan span,
             }
             if(retainNormal)retainedNormal.impulse=nextForce;
             if(finalPass || !retainNormal)
-                storeContactScalar(co+52u,nextForce,outputIndex,finalPass);
+                storeContactScalar(co+sourceDyNormalImpulseOffset,nextForce,
+                                   outputIndex,finalPass);
             normalImpulse+=nextForce;
         }
         contactCursor+=patch.y;
@@ -468,7 +489,7 @@ void prepareContactRow(uint index,uint contactBegin,
     float separation;
     if(!sourceDyContactGeometry(index,contactBegin,contactCount,frame,
                                 errorAddress,n,pos,separation))return;
-    uint co=p.contactBias+index*56u;
+    uint co=p.contactBias+index*sourceDyNormalRowBytes;
     float3 w0=frame.a.angular,w1=frame.b.angular;
     float3 r0=cross(pos-frame.a.position,n);
     float3 r1=cross(pos-frame.b.position,n);
@@ -546,11 +567,10 @@ void prepareContactRow(uint index,uint contactBegin,
         prepared.row.impulse=0.0f;
         prepared.local=true;
     }else {
-        arena.Store3(co,asuint(n));
-        arena.Store3(co+12u,asuint(ja));
-        arena.Store3(co+24u,asuint(jb));
-        arena.Store4(co+36u,asuint(coefficients));
-        arena.Store(co+52u,0u);
+        arena.Store3(co,asuint(ja));
+        arena.Store3(co+12u,asuint(jb));
+        arena.Store4(co+24u,asuint(coefficients));
+        arena.Store(co+sourceDyNormalImpulseOffset,0u);
     }
 }
 
