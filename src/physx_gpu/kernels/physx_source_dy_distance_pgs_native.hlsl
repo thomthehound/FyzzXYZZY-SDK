@@ -220,27 +220,33 @@ bool sourceDyLoadSolverPair(uint4 desc,uint errorAddress,bool response,
         uint2(invalidBody,invalidBody),(SourceDySolverPair)0,state);
 }
 
-// Ordered biased-phase writers also own the motion snapshot in resident
-// wide tasks. Untouched bodies retain their initialized zero deltas.
+void sourceDyStoreMotionPair(uint4 desc,SourceDySolverPair state) {
+    if(desc.y!=invalidBody && state.ma>0.0f) {
+        const uint ao=p.bodyBias+desc.y*52u;
+        arena.Store3(ao+24u,asuint(state.va));
+        arena.Store3(ao+36u,asuint(state.aa));
+    }
+    if(desc.z!=invalidBody && state.mb>0.0f) {
+        const uint bo=p.bodyBias+desc.z*52u;
+        arena.Store3(bo+24u,asuint(state.vb));
+        arena.Store3(bo+36u,asuint(state.ab));
+    }
+}
+
+// Ordered biased-phase writers own the motion snapshot when bodies
+// start with zero deltas. Untouched endpoints retain their initialization.
 void sourceDyStoreSolverPair(uint4 desc,SourceDySolverPair state,bool captureMotion) {
     if(desc.y!=invalidBody && state.ma>0.0f) {
         const uint ao=p.bodyBias+desc.y*52u;
         arena.Store3(ao,asuint(state.va));
         arena.Store3(ao+12u,asuint(state.aa));
-        if(captureMotion) {
-            arena.Store3(ao+24u,asuint(state.va));
-            arena.Store3(ao+36u,asuint(state.aa));
-        }
     }
     if(desc.z!=invalidBody && state.mb>0.0f) {
         const uint bo=p.bodyBias+desc.z*52u;
         arena.Store3(bo,asuint(state.vb));
         arena.Store3(bo+12u,asuint(state.ab));
-        if(captureMotion) {
-            arena.Store3(bo+24u,asuint(state.vb));
-            arena.Store3(bo+36u,asuint(state.ab));
-        }
     }
+    if(captureMotion)sourceDyStoreMotionPair(desc,state);
 }
 
 struct SourceDyJointRow {
@@ -1714,12 +1720,13 @@ void solveSerialRun(uint begin,uint end,uint2 iters,uint2 iterations,
         const bool biased=iter<iters.x;
         const bool finalPass=iter+1u==total;
         const bool friction=!biased || iters.x-iter<=3u;
+        const bool snapshot=captureMotion && iter+1u==iters.x;
         for(uint i=begin;i<end;++i) {
             const uint4 desc=arena.Load4(p.descriptorBias+i*16u);
             SourceDySolverPair state;
             if(!sourceDySolveDescriptor(desc,endError,biased,friction,finalPass,
                                         retained,prior,state)) {
-                sourceDyStoreSolverPair(uint4(0u,retained,0u),prior,captureMotion);
+                sourceDyStoreSolverPair(uint4(0u,retained,0u),prior,snapshot);
                 return;
             }
             const uint2 next=uint2(state.ma>0.0f?desc.y:invalidBody,
@@ -1727,12 +1734,14 @@ void solveSerialRun(uint begin,uint end,uint2 iters,uint2 iterations,
             uint2 evicted=retained;
             if(any(next==retained.x))evicted.x=invalidBody;
             if(any(next==retained.y))evicted.y=invalidBody;
-            sourceDyStoreSolverPair(uint4(0u,evicted,0u),prior,captureMotion);
+            sourceDyStoreSolverPair(uint4(0u,evicted,0u),prior,snapshot);
             retained=next;
             prior=state;
         }
+        if(snapshot)
+            sourceDyStoreMotionPair(uint4(0u,retained,0u),prior);
     }
-    sourceDyStoreSolverPair(uint4(0u,retained,0u),prior,captureMotion);
+    sourceDyStoreSolverPair(uint4(0u,retained,0u),prior,false);
 }
 
 void saveMotion(uint index,uint endError) {
@@ -2089,7 +2098,7 @@ void publishTaskError(uint task,uint error) {
 // The descriptor owns its responding endpoints for this iteration range.
 void sourceDySolveExclusive(uint4 desc,uint2 iters,uint2 iterations,
                             uint2 bodies,uint errorAddress,
-                            SourceDyPreparedJoint prepared) {
+                            SourceDyPreparedJoint prepared,bool ownedMotion) {
     SourceDyContactSpan span=(SourceDyContactSpan)0;
     SourceDySolverPair state;
     const bool joint=desc.w!=0u;
@@ -2127,6 +2136,7 @@ void sourceDySolveExclusive(uint4 desc,uint2 iters,uint2 iterations,
         if(iteration+1u==iters.x) {
             // Position integration consumes the biased-phase snapshot,
             // without publishing the live velocity deltas.
+            if(ownedMotion)sourceDyStoreMotionPair(desc,state);
             for(uint body=bodies.x;body<bodies.y;++body) {
                 const uint ordinal=sourceDyBodyOrdinal(body);
                 if(ordinal>=p.bodyCount) {
@@ -2232,7 +2242,7 @@ void sourceDySolvePackedTask(uint taskId,bool precolored) {
     }
 
     const uint total=iters.x+max(iters.y,1u);
-    sourceDySolveExclusive(desc,iters,uint2(0u,total),bodies,errorAddress,prepared);
+    sourceDySolveExclusive(desc,iters,uint2(0u,total),bodies,errorAddress,prepared,false);
     if(sourceDyTaskLoad(errorAddress)!=0u) {
         publishTaskError(taskId,sourceDyTaskLoad(errorAddress));
         return;
@@ -2883,6 +2893,7 @@ void main(uint3 group:SV_GroupID,uint3 lane:SV_GroupThreadID) {
             return;
         }
 
+        const bool initializedMotion=arena.Load(p.integrationBias+36u)!=0u;
         const bool singleLaneTask=fused &&
             descriptors.y-descriptors.x==1u &&
             partitions.y-partitions.x==1u &&
@@ -2918,24 +2929,25 @@ void main(uint3 group:SV_GroupID,uint3 lane:SV_GroupThreadID) {
                 }
                 return;
             }
-            // A fixed owner can finish a numerical phase before the
-            // cooperative motion capture. Single colors own disjoint
-            // endpoints per lane; singleton colors share lane zero.
+            // A fixed owner can retain both phases when untouched
+            // endpoints already have a zero motion snapshot.
             const uint total=iters.x+max(iters.y,1u);
-            for(uint pass=0u;pass<2u;++pass) {
-                const uint2 iterations=pass==0u?uint2(0u,iters.x):
-                    uint2(iters.x,total);
+            const uint passes=initializedMotion?1u:2u;
+            for(uint pass=0u;pass<passes;++pass) {
+                const uint2 iterations=initializedMotion?uint2(0u,total):
+                    pass==0u?uint2(0u,iters.x):uint2(iters.x,total);
                 if(serialPartitions) {
                     if(lane.x==0u)
                         solveSerialRun(descriptors.x,descriptors.y,iters,
-                                       iterations,endError,false);
+                                       iterations,endError,initializedMotion);
                 } else {
                     for(uint i=descriptors.x+lane.x;i<descriptors.y;i+=128u)
                         sourceDySolveExclusive(
                             arena.Load4(p.descriptorBias+i*16u),iters,iterations,
-                            uint2(0u,0u),endError,(SourceDyPreparedJoint)0);
+                            uint2(0u,0u),endError,(SourceDyPreparedJoint)0,
+                            initializedMotion);
                 }
-                if(pass==0u) {
+                if(!initializedMotion && pass==0u) {
                     AllMemoryBarrierWithGroupSync();
                     for(uint i=bodies.x+lane.x;i<bodies.y;i+=128u)
                         saveMotion(i,endError);
@@ -2948,7 +2960,8 @@ void main(uint3 group:SV_GroupID,uint3 lane:SV_GroupThreadID) {
             const uint endIteration=fused ? total : min(iter+1u,total);
             for(uint iteration=fused?0u:iter;iteration<endIteration;++iteration) {
                 if(fused || phase==partitionTile) {
-                    const bool captureMotion=residentWide && phase==partitionTile &&
+                    const bool captureMotion=initializedMotion &&
+                        (fused || (residentWide && phase==partitionTile)) &&
                         iteration+1u==iters.x;
                     if(serialPartitions) {
                         if(lane.x==0u)
@@ -2997,7 +3010,8 @@ void main(uint3 group:SV_GroupID,uint3 lane:SV_GroupThreadID) {
                         }
                     }
                 }
-                if((fused || phase==motionTile) && iteration+1u==iters.x) {
+                if(((fused && !initializedMotion) || phase==motionTile) &&
+                   iteration+1u==iters.x) {
                     if(singleLaneTask) {
                         // Keep both snapshots with the numerical writer.
                         if(lane.x==0u)

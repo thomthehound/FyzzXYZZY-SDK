@@ -165,6 +165,11 @@ quality rather than individual dispatch or barrier counts.
   tile visit. Retain preparation dependencies only on the first
   iteration and omit the standalone preparation dispatch and tile range.
 
+- [x] Preserve biased motion at the numerical owner across both solver
+  phases of initialized compact islands. Retain serial endpoints and
+  exclusive row state across the position/velocity boundary; skip the
+  cooperative snapshot traversal and its synchronization.
+
 These are implementation milestones, not hardware-performance acceptance.
 
 ## Execution and lifetime work

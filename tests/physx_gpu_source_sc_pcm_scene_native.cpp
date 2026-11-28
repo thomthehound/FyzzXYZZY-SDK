@@ -6031,14 +6031,17 @@ void verify_resident_wide_device_response(
         const auto hub=scene.add_dynamic_box(
             {0.5f,0.5f,0.5f},{0.f,0.83f,8.f},1.f);
         ids[count+1u]=hub;
-        scene.set_dynamics(hub,dynamics);
+        auto hub_dynamics=dynamics;
+        hub_dynamics.position_iterations=3u;
+        hub_dynamics.velocity_iterations=2u;
+        scene.set_dynamics(hub,hub_dynamics);
         for(std::uint32_t i=1u;i<count;++i) {
             const float x=1.5f*float(i);
             const auto leaf=scene.add_dynamic_box(
                 {0.3f,0.3f,0.3f},{x,0.83f,8.f},1.f);
             ids[count+1u+i]=leaf;
             scene.create_center_distance_constraint(hub,leaf,x);
-            scene.set_dynamics(leaf,dynamics);
+            scene.set_dynamics(leaf,hub_dynamics);
             scene.set_velocity(leaf,{0.f,0.f,0.01f});
         }
         for(std::uint32_t i=0u;i<extra_singletons;++i) {
