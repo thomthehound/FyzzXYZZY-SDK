@@ -302,6 +302,12 @@ struct GpuDyDistanceDescriptor {
     std::uint32_t index=0,row0=0,row1=0,row_count=0;
 };
 static_assert(sizeof(GpuDyDistanceDescriptor)==16u);
+struct GpuDyJointSource {
+    GpuDyDistanceDescriptor descriptor;
+    std::uint32_t source_index=0u;
+    float inverse_mass_a=0.0f,inverse_mass_b=0.0f;
+};
+static_assert(sizeof(GpuDyJointSource)==28u);
 struct GpuDyDistanceTask {
     std::uint32_t descriptor_begin=0,descriptor_end=0;
     std::uint32_t partition_begin=0,partition_end=0;
@@ -602,7 +608,8 @@ public:
         std::span<const GpuDyCompactContactPrep> /*compact_contact_prep*/={},
         std::span<const GpuDyRetainedFrictionCandidate> /*retained_candidates*/={},
         GpuDyWideScheduleBounds /*wide_bounds*/={},
-        GpuDyResidentScheduleCapacity /*resident_capacity*/={}) {
+        GpuDyResidentScheduleCapacity /*resident_capacity*/={},
+        std::span<const GpuDyJointSource> /*joint_sources*/={}) {
         throw std::logic_error("Source GPU Dy shader is not installed");
     }
     virtual void finish_gpu_dy_distance() {
@@ -2306,7 +2313,8 @@ private:
     std::vector<std::size_t> gpu_dy_free_ordinals_;
     bool gpu_dy_pose_ready_=false;
     bool gpu_dy_source_body_order_=false;
-    std::vector<GpuDyJointRow> gpu_dy_rows_;
+    std::vector<GpuDyJointSource> gpu_dy_joint_sources_;
+    std::size_t gpu_dy_joint_row_count_=0u;
     std::vector<GpuDyJointInput> gpu_dy_joint_inputs_;
     std::vector<std::uint32_t> gpu_dy_joint_source_slots_;
     std::vector<std::uint32_t> gpu_dy_body_ordinals_;

@@ -5034,10 +5034,8 @@ void Scene::update_contacts(bool defer_device_points,float step_seconds) {
                     true);
                 gpu_dy_early_islands_=true;
             }
-            gpu_dy_rows_.reserve(early_joint_rows);
-            // Authored joint rows and endpoints do not consume PCM witnesses.
             prepare_gpu_dy_joint_rows(gpu_dy_early_joint_edges_,true,true);
-            if(gpu_dy_rows_.size()!=early_joint_rows)
+            if(gpu_dy_joint_row_count_!=early_joint_rows)
                 throw std::logic_error("Early Sc joint row capacity changed");
             reserve_gpu_dy_pcm_source_rows();
         }else {
@@ -5620,7 +5618,7 @@ void Scene::update_contacts(bool defer_device_points,float step_seconds) {
             actor.angular_inertia_available;
     };
     bool prewitness_ready=gpu_results_pending && gpu_dy_early_islands_ &&
-       (gpu_dy_prewitness_contact_rows_ || !gpu_dy_rows_.empty() ||
+       (gpu_dy_prewitness_contact_rows_ || !gpu_dy_joint_sources_.empty() ||
         gu_numerical_prepared) &&
        std::none_of(gpu_pcm_pairs_.begin(),gpu_pcm_pairs_.end(),
            [](const auto& pair){return pair.host_generated;}) &&
@@ -5837,14 +5835,14 @@ void Scene::update_contacts(bool defer_device_points,float step_seconds) {
             pack_gpu_dy_integration_input(gpu_dy_free_ids_[i],step_seconds,
                 gpu_dy_integration_inputs_[body_count+i]);
         gpu_broadphase_->enqueue_gpu_dy_distance(
-            gpu_dy_bodies_,gpu_dy_rows_,{},{},gpu_dy_body_ordinals_,gpu_dy_tasks_,
+            gpu_dy_bodies_,{},{},{},gpu_dy_body_ordinals_,gpu_dy_tasks_,
             gpu_dy_contact_forces_,gpu_dy_gu_inputs_,{},gpu_dy_friction_anchors_,
             gpu_dy_patches_,gpu_dy_manifolds_,gpu_dy_contact_order_,{},
             gpu_dy_integration_inputs_,gpu_dy_integrated_poses_,true,
             gpu_dy_friction_impulses_,true,true,true,gpu_dy_sleep_states_,
             gpu_dy_joint_inputs_,false,true,
             gpu_dy_contact_prep_pairs_,gpu_dy_history_candidates_,wide_bounds,
-            resident_capacity);
+            resident_capacity,gpu_dy_joint_sources_);
         gpu_dy_prewitness_solve_=true;
     }
     FYZZ_PROFILE_COUNTER("dy.prewitness_solve",gpu_dy_prewitness_solve_?1u:0u);
@@ -8958,10 +8956,7 @@ void Scene::partition_constraints() {
         joint_begin=task.joint_end;
     }
 
-    if(gpu_integration) {
-        gpu_dy_rows_.reserve(joint_row_begin);
-        return;
-    }
+    if(gpu_integration)return;
     joint_rows_.reserve(joint_row_begin);
 
     // Prefix-count and stable-scatter the unified descriptor sequence.
@@ -9050,7 +9045,9 @@ GpuDyJointInput Scene::pack_gpu_dy_joint_input(EdgeIndex edge_id) const {
 
 void Scene::prepare_gpu_dy_joint_rows(std::span<const EdgeIndex> edges,
                                       bool source_order,bool staged_sources) {
-    gpu_dy_rows_.clear();
+    gpu_dy_joint_sources_.clear();
+    gpu_dy_joint_row_count_=0u;
+    gpu_dy_joint_sources_.reserve(edges.size());
     for(const EdgeIndex edge_id:edges) {
         const auto& edge=island_edges_[edge_id];
         const auto& joint=constraint_records_[edge.constraint_id];
@@ -9085,7 +9082,6 @@ void Scene::prepare_gpu_dy_joint_rows(std::span<const EdgeIndex> edges,
             gpu_dy_joint_inputs_.push_back(
                 pack_gpu_dy_joint_input(edge_id));
         }
-        const auto& input=gpu_dy_joint_inputs_[source_index];
         const auto count=joint.kind==JointKind::Distance?1u:
             joint.kind==JointKind::Spherical?3u:
             joint.kind==JointKind::Fixed?6u:5u;
@@ -9111,24 +9107,12 @@ void Scene::prepare_gpu_dy_joint_rows(std::span<const EdgeIndex> edges,
         const std::uint32_t flags=count|
             (body0.motion==Motion::Dynamic?0x100u:0u)|
             (body1.motion==Motion::Dynamic?0x200u:0u);
-        for(std::uint32_t i=0u;i<count;++i) {
-            auto& gpu=gpu_dy_rows_.emplace_back();
-            gpu.inverse_mass_a=mass0;
-            gpu.inverse_mass_b=mass1;
-            gpu.reserved=2u;
-            if(i==0u) {
-                // Device joint tokens read their typed descriptor
-                // directly from the first row before Jacobian prep.
-                gpu.axis[0]=std::bit_cast<float>(row0);
-                gpu.axis[1]=std::bit_cast<float>(row1);
-                gpu.axis[2]=std::bit_cast<float>(flags);
-                gpu.applied_force=std::bit_cast<float>(source_index);
-                // The device verifies both source slot and generation
-                // before replacing these transient admission words.
-                gpu.constant=std::bit_cast<float>(input.source_slot);
-                gpu.unbiased_constant=std::bit_cast<float>(input.source_generation);
-            }
-        }
+        if(gpu_dy_joint_row_count_>std::numeric_limits<std::uint32_t>::max()-count)
+            throw std::overflow_error("Native GPU joint row count overflow");
+        gpu_dy_joint_sources_.push_back({
+            {static_cast<std::uint32_t>(gpu_dy_joint_row_count_),row0,row1,flags},
+            source_index,mass0,mass1});
+        gpu_dy_joint_row_count_+=count;
     }
 }
 
@@ -9985,7 +9969,10 @@ void Scene::prepare_constraints(float seconds) {
     solver_contact_order_.clear();
     joint_rows_.clear();
     const bool gpu_normal_prep=gpu_dy_active();
-    if(!gpu_dy_source_body_order_)gpu_dy_rows_.clear();
+    if(!gpu_dy_source_body_order_) {
+        gpu_dy_joint_sources_.clear();
+        gpu_dy_joint_row_count_=0u;
+    }
     const bool prewitness_joint_sources=
         gpu_normal_prep && !gpu_dy_joint_inputs_.empty();
     if(gpu_dy_source_body_order_) {
@@ -10436,7 +10423,7 @@ void Scene::prepare_gpu_dy_device_islands(bool selected,std::size_t task_capacit
     // source indices in Dy task order; device touch selects response.
     gpu_broadphase_->enqueue_gpu_dy_island_admission(
         gpu_dy_island_edges_,gpu_dy_island_node_flags_,
-        {narrow(gpu_dy_manifolds_.size()),narrow(gpu_dy_rows_.size()),0u});
+        {narrow(gpu_dy_manifolds_.size()),narrow(gpu_dy_joint_row_count_),0u});
 }
 void Scene::stage_gpu_dy_actor_sources(
     std::span<const BodyId> ids,float seconds,bool immovable,bool include_dormant) {
@@ -10825,9 +10812,9 @@ void Scene::solve_gpu_distance_constraints(float seconds) {
             if(!gpu_dy_integration_inputs_[i].active)
                 gpu_dy_integration_inputs_[i]={};
     if(!joint_rows_.empty() ||
-       gpu_dy_rows_.size()<gpu_dy_joint_inputs_.size())
+       gpu_dy_joint_sources_.size()!=gpu_dy_joint_inputs_.size())
         throw std::logic_error(
-            "Source GPU 1D preparation retained CPU rows or omitted device rows");
+            "Source GPU joint preparation retained CPU rows or omitted joint sources");
 
     if(!device_admission) {
         for(std::size_t i=0;i<solver_active_ids_.size();++i)
@@ -10934,18 +10921,13 @@ void Scene::solve_gpu_distance_constraints(float seconds) {
     // Sc owns persistent island identities. Device admission consumes
     // physical EdgeIndex touch history and authors only numerical ranges.
     // Its resident response tokens replace the host numerical descriptors.
-    if(device_admission)
-        for(const auto& joint:gpu_dy_rows_)
-            if(joint.reserved!=2u)
-                throw std::logic_error(
-                    "Device Sc response requires device-authored joint rows");
     prepare_gpu_dy_device_islands(device_admission,resident_capacity.tasks);
     const std::span<const GpuDyDistanceDescriptor> dy_descriptors=
         device_admission?std::span<const GpuDyDistanceDescriptor>{}
                         :std::span<const GpuDyDistanceDescriptor>{
                             ordered_constraints_};
     gpu_broadphase_->enqueue_gpu_dy_distance(
-        gpu_dy_bodies_,gpu_dy_rows_,dy_descriptors,
+        gpu_dy_bodies_,{},dy_descriptors,
         {},gpu_dy_body_ordinals_,gpu_dy_tasks_,
         gpu_dy_contact_forces_,gpu_dy_gu_inputs_,
         {},gpu_dy_friction_anchors_,
@@ -10954,7 +10936,8 @@ void Scene::solve_gpu_distance_constraints(float seconds) {
         gpu_dy_integration_inputs_,gpu_dy_integrated_poses_,true,
         gpu_dy_friction_impulses_,true,true,true,gpu_dy_sleep_states_,
         gpu_dy_joint_inputs_,false,device_admission,
-        gpu_dy_contact_prep_pairs_,gpu_dy_history_candidates_,{},resident_capacity);
+        gpu_dy_contact_prep_pairs_,gpu_dy_history_candidates_,{},resident_capacity,
+        gpu_dy_joint_sources_);
     }else {
         // Consume submitted ordinals without rewriting borrowed storage.
         if(!gpu_dy_source_body_order_ ||
@@ -13508,6 +13491,8 @@ void Scene::advance_collision_internal(
     // the SAP producer submits but before its host-facing fetch joins.
     const auto prepare_sc_publication=[&] {
         gpu_dy_joint_inputs_.clear();
+        gpu_dy_joint_sources_.clear();
+        gpu_dy_joint_row_count_=0u;
         gpu_dy_joint_source_slots_.clear();
         gpu_dy_joint_kinematic_ids_.clear();
         gpu_dy_prewitness_contact_rows_=0u;

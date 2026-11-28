@@ -796,17 +796,17 @@ struct GpuPcmFrictionAnchorFixture {
             throw std::runtime_error(
                 "Early device Sc joint graph omitted Dy source membership");
         if(source_body_order) {
-            if(joint_row!=scene.gpu_dy_rows_.size())
+            if(joint_row!=scene.gpu_dy_joint_row_count_)
                 throw std::runtime_error("Early Sc joint rows were not prepared before witnesses");
             for(std::size_t i=0u;i<joints;++i) {
                 const auto& edge=scene.gpu_dy_island_edges_[i];
                 const auto& joint=scene.constraint_records_[
                     scene.island_edges_[edge.edge_index].constraint_id];
-                const auto& row=scene.gpu_dy_rows_[edge.source_index];
-                if(row.reserved!=2u ||
-                   std::bit_cast<std::uint32_t>(row.constant)!=
-                       scene.island_edges_[edge.edge_index].constraint_id ||
-                   std::bit_cast<std::uint32_t>(row.unbiased_constant)!=joint.generation)
+                const auto& source=scene.gpu_dy_joint_sources_[i];
+                const auto& input=scene.gpu_dy_joint_inputs_[source.source_index];
+                if(source.descriptor.index!=edge.source_index ||
+                   input.source_slot!=scene.island_edges_[edge.edge_index].constraint_id ||
+                   input.source_generation!=joint.generation)
                     throw std::runtime_error(
                         "Device joint token does not address its authored source");
             }
@@ -844,12 +844,8 @@ struct GpuPcmFrictionAnchorFixture {
         }
         if(!scene.joint_rows_.empty() ||
            scene.gpu_dy_joint_inputs_.size()!=scene.indexed_joints_.size() ||
-           scene.gpu_dy_rows_.size()!=expected_rows ||
-           std::any_of(scene.gpu_dy_rows_.begin(),
-                       scene.gpu_dy_rows_.end(),
-                       [](const GpuDyJointRow& row) {
-                           return row.reserved!=2u;
-                       }))
+           scene.gpu_dy_joint_row_count_!=expected_rows ||
+           scene.gpu_dy_joint_sources_.size()!=scene.indexed_joints_.size())
             throw std::runtime_error(
                 "GPU joint preparation retained CPU solver rows or lost device geometry");
     }
@@ -921,7 +917,7 @@ struct GpuPcmFrictionAnchorFixture {
                     "Device Sc source identity order differs from Dy task order");
         }
         if(ordinal!=edges.size() ||
-           joint_row!=scene.gpu_dy_rows_.size())
+           joint_row!=scene.gpu_dy_joint_row_count_)
             throw std::runtime_error(
                 "Device Sc numerical source table has unconsumed records");
     }

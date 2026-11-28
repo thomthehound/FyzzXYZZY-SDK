@@ -550,7 +550,8 @@ public:
                bool device_world_motion=false,
                bool device_unconstrained_preparation=false,
                std::span<native::GpuDySleepState> sleep_states={},
-               std::span<const native::GpuDyJointInput> joint_inputs={}) {
+               std::span<const native::GpuDyJointInput> joint_inputs={},
+                std::span<const native::GpuDyJointSource> joint_records={}) {
         enqueue(bodies,rows,descriptors,partition_ends,body_ordinals,
                 tasks,contact_forces,cpu_gu,friction,anchors,patches,
                 manifolds,contact_order,contact_prep,integration,
@@ -558,7 +559,8 @@ public:
                 shape_bounds,shape_geometry,shape_capacity,convex_vertices,
                 convex_vertex_count,device_partitions,anchor_impulses,
                 device_initial_bodies,device_world_motion,
-                device_unconstrained_preparation,sleep_states,joint_inputs);
+                device_unconstrained_preparation,sleep_states,joint_inputs,
+                 std::nullopt,{},true,false,{},{},false,{},{},joint_records);
         finish();
     }
     void enqueue(std::span<native::GpuDyDistanceBody> bodies,
@@ -600,7 +602,8 @@ public:
         std::span<const native::GpuDyRetainedFrictionCandidate> retained_candidates={},
         bool defer_result_dma=false,
         native::GpuDyWideScheduleBounds wide_bounds={},
-        native::GpuDyResidentScheduleCapacity resident_capacity={}) {
+        native::GpuDyResidentScheduleCapacity resident_capacity={},
+         std::span<const native::GpuDyJointSource> joint_records={}) {
         if(pending_solve_)
             throw std::logic_error("Source Dy numerical epoch already queued");
         const bool prior_schedule=std::exchange(resident_schedule_committed_,false);
@@ -772,9 +775,31 @@ public:
                 ?active_integration_count:0u;
         last_schedule_.device_sleep_bodies=
             last_schedule_.device_preintegrated_bodies;
-        last_schedule_.device_joint_input_rows=
-            std::count_if(rows.begin(),rows.end(),
-                [](const auto& row){return row.reserved==1u || row.reserved==2u;});
+        const bool compact_joint_rows=!joint_records.empty();
+        if(joint_records.size()!=joint_inputs.size() ||
+           (compact_joint_rows && (!rows.empty() || !device_world_motion)))
+            throw std::invalid_argument("Source Dy joint geometry requires compact native sources");
+        std::size_t logical_joint_rows=rows.size();
+        if(compact_joint_rows) {
+            joint_row_source_seen_.assign(joint_inputs.size(),0u);
+            for(const auto& record:joint_records) {
+                const auto& desc=record.descriptor;
+                if(record.source_index>=joint_inputs.size() ||
+                   joint_row_source_seen_[record.source_index]++)
+                    throw std::logic_error("Source Dy joint input lacks a unique source");
+                const auto kind=joint_inputs[record.source_index].kind;
+                const auto count=kind==0u?1u:kind==2u?3u:kind==1u?6u:5u;
+                if(kind>4u || (desc.row_count&255u)!=count ||
+                   (desc.row_count&~0x3ffu)!=0u ||
+                   desc.index!=logical_joint_rows ||
+                   logical_joint_rows>std::numeric_limits<std::uint32_t>::max()-count)
+                    throw std::logic_error("Source Dy joint kind and row extent disagree");
+                logical_joint_rows+=count;
+            }
+        }
+        last_schedule_.device_joint_input_rows=compact_joint_rows
+            ?logical_joint_rows:std::count_if(rows.begin(),rows.end(),
+                [](const auto& row){return row.reserved==1u;});
         last_schedule_.device_joint_geometry_count=joint_inputs.size();
         last_schedule_.device_joint_metadata_upload_bytes=
             prewitness_joint_source_upload_bytes_;
@@ -787,25 +812,14 @@ public:
         last_schedule_.prewitness_actor_local_upload_spans=
             prewitness_actor_local_upload_spans_;
         last_schedule_.device_joint_metadata_reuses=0u;
-        if(!joint_inputs.empty() && !device_world_motion)
-            throw std::invalid_argument(
-                "Source device joint geometry requires native resident actor motion");
         for(const auto& descriptor:descriptors) {
-            const auto row_count=descriptor.row_count&255u;
-            if(!row_count)continue;
-            if(descriptor.index>=rows.size() ||
-               row_count>rows.size()-descriptor.index)
+            const auto count=descriptor.row_count&255u;
+            if(!count)continue;
+            if(descriptor.index>=logical_joint_rows ||
+               count>logical_joint_rows-descriptor.index)
                 throw std::logic_error("Source Dy joint descriptor exceeds row storage");
-            const auto& first=rows[descriptor.index];
-            if(first.reserved!=2u)continue;
-            const auto index=std::bit_cast<std::uint32_t>(first.applied_force);
-            if(index>=joint_inputs.size())
-                throw std::logic_error("Source Dy joint metadata index is invalid");
-            const auto kind=joint_inputs[index].kind;
-            const auto expected=kind==0u?1u:kind==2u?3u:
-                kind==1u?6u:5u;
-            if(kind>4u || row_count!=expected)
-                throw std::logic_error("Source Dy joint kind and row count disagree");
+            if(!compact_joint_rows && rows[descriptor.index].reserved==2u)
+                throw std::logic_error("Source Dy native joint requires a compact source");
         }
         if(contact_forces.size()>
            std::numeric_limits<std::size_t>::max()/sizeof(native::GpuDyContactPoint))
@@ -1445,11 +1459,10 @@ public:
                 "Source Dy device solver-body masses exceed address space");
         const std::size_t mass_bytes=upload_body_masses
             ? bodies.size()*sizeof(float):0u;
-        const bool compact_joint_rows=!joint_inputs.empty();
         const std::size_t joint_table_begin=mass_offset+mass_bytes;
         // One logical-row index word and eight source words per joint.
         const std::uint64_t joint_table_bytes=compact_joint_rows
-            ?std::uint64_t(rows.size())*4u+
+            ?std::uint64_t(logical_joint_rows)*4u+
                 std::uint64_t(joint_inputs.size())*32u:0u;
         if(joint_table_bytes>std::numeric_limits<std::uint32_t>::max()-
                                 joint_table_begin)
@@ -1557,7 +1570,7 @@ public:
                     if(!device_admission)
                         source_descriptor_tokens_.push_back(
                             0xc0000000u|desc.index);
-                }else if(rows[desc.index].reserved==2u) {
+                }else if(compact_joint_rows) {
                     if(!device_admission)
                         source_descriptor_tokens_.push_back(
                             0x80000000u|desc.index);
@@ -1605,13 +1618,15 @@ public:
             ?source_descriptor_tokens_.size()*sizeof(std::uint32_t)+
                 source_descriptor_full_.size()*sizeof(native::GpuDyDistanceDescriptor)
             :descriptors.size_bytes();
-        if(rows.size_bytes()>std::numeric_limits<std::uint32_t>::max())
+        if(logical_joint_rows>std::numeric_limits<std::uint32_t>::max()/
+                                 sizeof(native::GpuDyJointRow))
             throw std::overflow_error("Device Dy joint rows exceed 32-bit view");
+        const auto joint_numerical_bytes=logical_joint_rows*sizeof(native::GpuDyJointRow);
         constexpr std::size_t count=18u;
         // The integration prefix describes Sc/SAP views and the launch
         // table. Solver-body ordinals precede the free-body suffix.
         const std::array<std::size_t,count> bytes{
-            bodies.size_bytes(),rows.size_bytes(),
+            bodies.size_bytes(),joint_numerical_bytes,
             (packed_only?0u:descriptor_capacity)*sizeof(native::GpuDyDistanceDescriptor),
             (packed_only?0u:partition_count)*sizeof(std::uint32_t),
             device_admission?0u:ordinal_bytes,
@@ -1624,7 +1639,7 @@ public:
             static_cast<std::size_t>(partition_input_bytes),inertia_bytes,
             dedicated_workspace_bytes};
         const std::array<std::size_t,count> elements{
-            bodies.size(),rows.size(),descriptor_capacity,partition_count,
+            bodies.size(),logical_joint_rows,descriptor_capacity,partition_count,
             ordinal_capacity,task_capacity,contact_forces.size(),friction_count,
             patches.size(),manifolds.size(),contact_order.size(),
             prep_count,integration.size(),compact_anchor_count,
@@ -2290,9 +2305,7 @@ public:
                 write_input(offsets[16]+i*9u*sizeof(float),
                             integration[i].sqrt_inverse_inertia,
                             9u*sizeof(float));
-        // Joint source slots are stable; Dy rows retain task order.
-        // Each first-row descriptor selects its source independently.
-        joint_row_source_seen_.assign(joint_inputs.size(),0u);
+        // Resolve stable joint slots into the bound device source view.
         const auto joint_table=offsets[12]+joint_table_begin;
         const auto joint_table_bias=compact_joint_rows
             ?narrow(std::size_t(params[28])+joint_table):0u;
@@ -2300,47 +2313,24 @@ public:
                     &joint_table_bias,sizeof(joint_table_bias));
         if(compact_joint_rows)
             std::memset(input_map.data+joint_table-upload_begin,0xff,
-                        rows.size()*sizeof(std::uint32_t));
-        std::size_t joint_row_begin=0u;
-        for(std::size_t i=0u;i<joint_inputs.size();++i) {
-            if(joint_row_begin>=rows.size())
-                throw std::logic_error(
-                    "Source Dy joint input exceeds prepared row storage");
-            const auto& first=rows[joint_row_begin];
-            const auto source=std::bit_cast<std::uint32_t>(first.applied_force);
-            if(first.reserved!=2u || source>=joint_inputs.size() ||
-               joint_row_source_seen_[source]++)
-                throw std::logic_error(
-                    "Source Dy joint input lacks a unique first-row descriptor");
-            const auto& input=joint_inputs[source];
-            const auto kind=input.kind;
-            const std::size_t count=kind==0u?1u:kind==2u?3u:
-                kind==1u?6u:5u;
-            if(kind>4u || count>rows.size()-joint_row_begin)
-                throw std::logic_error(
-                    "Source Dy joint input exceeds prepared row storage");
-            const auto flags=std::bit_cast<std::uint32_t>(first.axis[2]);
-            if((flags&255u)!=count || (flags&~0x3ffu)!=0u)
-                throw std::logic_error(
-                    "Source Dy joint input lacks its first-row descriptor");
+                        logical_joint_rows*sizeof(std::uint32_t));
+        for(std::size_t i=0u;i<joint_records.size();++i) {
+            const auto& joint=joint_records[i];
+            const auto& desc=joint.descriptor;
+            const auto& input=joint_inputs[joint.source_index];
             const auto address=narrow(std::size_t(joint_source_bias)+
                 std::size_t(input.source_slot)*sizeof(native::GpuDyJointInput));
-            const auto record_offset=joint_table+rows.size()*4u+i*32u;
+            const auto record_offset=joint_table+logical_joint_rows*4u+i*32u;
             const auto record_address=narrow(std::size_t(params[28])+record_offset);
             const std::array<std::uint32_t,8> record{
-                std::bit_cast<std::uint32_t>(first.axis[0]),
-                std::bit_cast<std::uint32_t>(first.axis[1]),flags,address,
-                std::bit_cast<std::uint32_t>(first.inverse_mass_a),
-                std::bit_cast<std::uint32_t>(first.inverse_mass_b),
+                desc.row0,desc.row1,desc.row_count,address,
+                std::bit_cast<std::uint32_t>(joint.inverse_mass_a),
+                std::bit_cast<std::uint32_t>(joint.inverse_mass_b),
                 input.source_slot,input.source_generation};
-            write_input(joint_table+joint_row_begin*4u,
+            write_input(joint_table+desc.index*4u,
                         &record_address,sizeof(record_address));
             write_input(record_offset,record.data(),sizeof(record));
-            joint_row_begin+=count;
         }
-        if(!joint_inputs.empty() && joint_row_begin!=rows.size())
-            throw std::logic_error(
-                "Source Dy joint inputs omitted numerical rows");
         // Changed actor-local fields share contiguous source DMA spans.
         build_actor_local_uploads();
         for(const auto& upload:actor_local_uploads_)
