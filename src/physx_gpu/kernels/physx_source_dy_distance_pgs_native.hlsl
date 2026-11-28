@@ -2350,12 +2350,12 @@ void sourceDySolveExclusive(uint4 desc,uint2 iters,uint2 iterations,
             sourceDyTaskErrorOr(errorAddress,128u);
             return;
         }
-        const uint point=sourceDyContactOrderPoint(order,0u);
-        if(point>=p.contactCount) {
+        const uint pointIndex=sourceDyContactOrderPoint(order,0u);
+        if(pointIndex>=p.contactCount) {
             sourceDyTaskErrorOr(errorAddress,256u);
             return;
         }
-        normalAddress=p.contactBias+point*56u;
+        normalAddress=p.contactBias+pointIndex*56u;
         if(preparedNormal.local)normal=preparedNormal.row;
         else normal=sourceDyLoadNormalRow(normalAddress);
     }
