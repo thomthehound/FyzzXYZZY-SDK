@@ -5996,6 +5996,8 @@ void verify_resident_wide_device_response(
     shader.bytes.assign(std::istreambuf_iterator<char>{input},
                         std::istreambuf_iterator<char>{});
     native::Scene cpu,gpu;
+    // Compare component-local iteration budgets rather than CPU batch maxima.
+    cpu.set_enhanced_determinism(true);
     auto owner=std::make_unique<
         physx_gpu::SourceScOwnedGpuBroadphaseNative>(
             backend,load_native_gpu_sap_shaders(backend,sap),
