@@ -326,21 +326,45 @@ void sourceDyCommitJointPair(uint4 desc,SourceDySolverPair local,
     }
 }
 
+// Exclusive compact constraints retain mutable impulses within a fixed
+// scalar budget; larger constraints stream their numerical rows.
+static const uint dyLocalImpulseCapacity=4u;
+
+float4 sourceDyLoadImpulses(uint base,uint stride,uint count) {
+    float4 impulses=0.0f;
+    for(uint i=0u;i<count;++i)
+        impulses[i]=loadScalar(base+i*stride);
+    return impulses;
+}
+
+void sourceDyFlushImpulses(uint base,uint stride,uint count,float4 impulses) {
+    for(uint i=0u;i<count;++i)
+        arena.Store(base+i*stride,asuint(impulses[i]));
+}
+
 bool solveJointRows(uint4 desc,uint errorAddress,bool biased,
-                    inout SourceDySolverPair state) {
+                    inout SourceDySolverPair state,
+                    uint localCount,inout float4 impulses) {
     SourceDySolverPair local=state;
     const uint first=p.distanceBias+desc.x*64u;
     for(uint row=0u;row<desc.w;++row) {
         const uint offset=first+row*64u;
         const SourceDyJointRow data=sourceDyLoadJointRow(offset);
         const uint coefficient=arena.Load(offset+(biased?48u:52u));
-        float previous=loadScalar(offset+60u);
+        float previous=localCount!=0u?impulses[row]:loadScalar(offset+60u);
         if(!sourceDySolveJointRow(data,coefficient,errorAddress,local,previous))
             return false;
-        arena.Store(offset+60u,asuint(previous));
+        if(localCount!=0u)impulses[row]=previous;
+        else arena.Store(offset+60u,asuint(previous));
     }
     sourceDyCommitJointPair(desc,local,state);
     return true;
+}
+
+bool solveJointRows(uint4 desc,uint errorAddress,bool biased,
+                    inout SourceDySolverPair state) {
+    float4 unused=0.0f;
+    return solveJointRows(desc,errorAddress,biased,state,0u,unused);
 }
 
 // Native Dy reconstructs the mass frame from resident actor motion.
@@ -2335,6 +2359,22 @@ void sourceDySolveExclusive(uint4 desc,uint2 iters,uint2 iterations,
         if(preparedNormal.local)normal=preparedNormal.row;
         else normal=sourceDyLoadNormalRow(normalAddress);
     }
+    uint localCount=0u,impulseBase=0u,impulseStride=0u;
+    if(joint && !localJoint && desc.w<=dyLocalImpulseCapacity) {
+        localCount=desc.w;
+        impulseBase=jointOffset+60u;
+        impulseStride=64u;
+    }else if(!joint && span.manager.y==1u) {
+        const uint4 patch=span.singlePatch;
+        if(patch.z<=dyLocalImpulseCapacity/2u &&
+           patch.x<=p.frictionCount &&
+           patch.z*2u<=p.frictionCount-patch.x) {
+            localCount=patch.z*2u;
+            impulseBase=p.frictionBias+patch.x*52u+48u;
+            impulseStride=52u;
+        }
+    }
+    float4 impulses=sourceDyLoadImpulses(impulseBase,impulseStride,localCount);
     const uint total=iters.x+max(iters.y,1u);
     for(uint iteration=iterations.x;iteration<iterations.y;++iteration) {
         const bool biased=iteration<iters.x;
@@ -2348,10 +2388,11 @@ void sourceDySolveExclusive(uint4 desc,uint2 iters,uint2 iterations,
                 errorAddress,local,prepared.impulse);
             if(solved)sourceDyCommitJointPair(desc,local,state);
         } else if(joint)
-            solved=solveJointRows(desc,errorAddress,biased,state);
+            solved=solveJointRows(desc,errorAddress,biased,state,localCount,impulses);
         else
             solved=solveContactRows(desc,span,errorAddress,biased,friction,
-                                    finalPass,state,localNormal,normal);
+                                    finalPass,state,localNormal,normal,
+                                    localCount,impulses);
         if(!solved)return;
         if(iteration+1u==iters.x) {
             // Position integration consumes the biased-phase snapshot,
@@ -2389,6 +2430,7 @@ void sourceDySolveExclusive(uint4 desc,uint2 iters,uint2 iterations,
     if(iterations.y<total) {
         if(localJoint)arena.Store(jointOffset+60u,asuint(prepared.impulse));
         if(localNormal)arena.Store(normalAddress+52u,asuint(normal.impulse));
+        sourceDyFlushImpulses(impulseBase,impulseStride,localCount,impulses);
     }
     sourceDyStoreSolverPair(desc,state,false);
 }

@@ -124,7 +124,8 @@ bool solveContactRows(uint4 descriptor,SourceDyContactSpan span,
                       uint errorAddress,bool biased,
                       bool frictionEnabled,bool finalPass,
                       inout SourceDySolverPair state,
-                      bool retainNormal,inout SourceDyNormalRow retainedNormal) {
+                      bool retainNormal,inout SourceDyNormalRow retainedNormal,
+                      uint localCount,inout float4 impulses) {
     const uint4 manager=span.manager;
     if(manager.y==0u)return true;
     const uint sourceBegin=span.sourceBegin;
@@ -217,8 +218,16 @@ bool solveContactRows(uint4 descriptor,SourceDyContactSpan span,
             precise float tangentDelta=
                 sourceDyDot3(n,va)-sourceDyDot3(n,vb)+
                 sourceDyDot3(aa,ja)-sourceDyDot3(ab,jb);
-            const float4 coefficients=asfloat(arena.Load4(fo+36u));
-            float oldForce=coefficients.w;
+            float3 coefficients;
+            float oldForce;
+            if(localCount!=0u) {
+                coefficients=asfloat(arena.Load3(fo+36u));
+                oldForce=impulses[k-patch.x];
+            }else {
+                const float4 row=asfloat(arena.Load4(fo+36u));
+                coefficients=row.xyz;
+                oldForce=row.w;
+            }
             float bias=biased?coefficients.y:0.0;
             precise float candidate=oldForce+
                 (coefficients.z-bias-tangentDelta)*coefficients.x;
@@ -238,7 +247,8 @@ bool solveContactRows(uint4 descriptor,SourceDyContactSpan span,
             if(!contactImpulse(a,b,n,ja,jb,
                                va,vb,aa,ab,nextForce-oldForce,
                                ma,mb,errorAddress))return false;
-            if(!finalPass)arena.Store(fo+48u,asuint(nextForce));
+            if(localCount!=0u)impulses[k-patch.x]=nextForce;
+            else if(!finalPass)arena.Store(fo+48u,asuint(nextForce));
             broken=broken||saturated;
             if(publishAnchors) {
                 // Consecutive tangent rows form one world-space anchor.
@@ -287,8 +297,9 @@ bool solveContactRows(uint4 descriptor,SourceDyContactSpan span,
                       bool frictionEnabled,bool finalPass,
                       inout SourceDySolverPair state) {
     SourceDyNormalRow unused=(SourceDyNormalRow)0;
+    float4 impulses=0.0f;
     return solveContactRows(descriptor,span,errorAddress,biased,
-                            frictionEnabled,finalPass,state,false,unused);
+                            frictionEnabled,finalPass,state,false,unused,0u,impulses);
 }
 
 float3 prepSlop(float3 value,float slop) {
