@@ -208,9 +208,10 @@ bool solveContactRows(uint4 descriptor,SourceDyContactSpan span,
             uint outputIndex=pointIndex;
             if(finalPass) {
                 const uint local=pointIndex-manager.z;
+                const uint publicationCount=sourceDyContactPublicationCount();
                 if(pointIndex<manager.z || local>=manager.w ||
-                   sourceBegin>p.contactCount ||
-                   local>=p.contactCount-sourceBegin) {
+                   sourceBegin>publicationCount ||
+                   local>=publicationCount-sourceBegin) {
                     sourceDyTaskErrorOr(errorAddress,256u);
                     return false;
                 }

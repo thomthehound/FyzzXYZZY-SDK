@@ -788,6 +788,7 @@ public:
         const auto edge_count=static_cast<std::uint32_t>(edges.size());
         const auto edge_capacity=device_edge_history_capacity();
         constexpr std::uint32_t invalid=0xffffffffu;
+        std::uint32_t response_capacity=0u;
         for(const auto& edge:edges) {
             if(edge.edge_index==invalid ||
                (edge.kind&~(source_sc_device_island_joint_bit|
@@ -806,6 +807,8 @@ public:
                (edge.node_a!=invalid && edge.node_a>=node_count) ||
                (edge.node_b!=invalid && edge.node_b>=node_count))
                 throw std::invalid_argument("Device Sc island edge is not admitted");
+            if((edge.kind&source_sc_device_island_no_response_bit)==0u)
+                ++response_capacity;
         }
         for(const auto word:node_flags.first(node_count))
             if((word&0xfff80000u)!=0u ||
@@ -826,6 +829,7 @@ public:
         island_body_remap_={};
         island_node_count_=node_count;
         island_edge_count_=edge_count;
+        island_response_capacity_=response_capacity;
         island_contact_count_=sources.contact_managers;
         island_joint_count_=early?sources.joint_rows:0u;
         island_work_.allocate(island_layout_.bytes,PX_FL);
@@ -921,7 +925,7 @@ public:
         return island_work_ready_?island_layout_:SourceScDeviceIslandLayout{};
     }
     std::uint32_t device_island_response_capacity() const noexcept {
-        return island_work_ready_?island_edge_count_:0u;
+        return island_work_ready_?island_response_capacity_:0u;
     }
     std::uint32_t device_island_contact_capacity() const noexcept {
         return island_work_ready_?island_contact_count_:0u;
@@ -1239,7 +1243,7 @@ private:
     SourceFrameInputArenaNative island_frame_input_;
     SourceScDeviceIslandLayout island_layout_{};
     std::uint32_t island_node_count_=0u,island_edge_count_=0u,
-                  island_contact_count_=0u;
+                  island_contact_count_=0u,island_response_capacity_=0u;
     std::uint32_t island_joint_count_=0u;
     compute::BufferId indirect_buffer_=0u;
     CudaDeviceAddressMap::Address indirect_address_=0u;

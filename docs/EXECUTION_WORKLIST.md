@@ -191,10 +191,11 @@ These are implementation milestones, not hardware-performance acceptance.
   scratch where useful; avoid unnecessary CPU mirrors, staging, copies,
   and host/device transfers. Keep hot numerical data local.
   - Joined PCM contact preparation uses the exact normal-row extent.
-    Pre-witness Dy submission still reserves candidate-sized backing
-    storage despite compact device row indices. Separate source-indexed
-    publication windows from numerical working storage without adding
-    a host observation or changing source identity.
+    Resident admission sizes descriptor and color storage by potentially
+    responding edges. Compact normal rows use a response-bounded extent
+    independent of source force publication. Pre-witness numerical
+    backing still includes unresolved potential responses; reduce it
+    without adding a host observation or changing source identity.
 - [ ] Audit shader work and binding granularity. Keep pair- or group-local
   intermediates in registers/shared memory where practical; reduce
   redundant dispatch, compaction, scan and publication work.

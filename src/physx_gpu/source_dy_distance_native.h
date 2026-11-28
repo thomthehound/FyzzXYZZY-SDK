@@ -825,14 +825,6 @@ public:
             if(!compact_joint_rows && rows[descriptor.index].reserved==2u)
                 throw std::logic_error("Source Dy native joint requires a compact source");
         }
-        // Contact normals belong to the resident Gu geometry; only
-        // angular Jacobians, coefficients and impulses occupy Dy rows.
-        constexpr std::size_t normal_row_bytes=44u;
-        if(contact_forces.size()>
-           std::numeric_limits<std::size_t>::max()/normal_row_bytes)
-            throw std::overflow_error("Source Dy contact row byte count overflow");
-        const auto contact_bytes=contact_forces.size()*normal_row_bytes;
-        last_schedule_.normal_numerical_bytes=contact_bytes;
         const bool compact_friction=!anchor_impulses.empty();
         if(compact_friction && !friction.empty())
             throw std::invalid_argument(
@@ -853,6 +845,7 @@ public:
             ? anchor_impulses.size()*sizeof(native::GpuDyFrictionAnchorImpulse)
             : friction.size()*sizeof(native::GpuDyFrictionWriteback);
         std::size_t reused_pcm_rows=0u;
+        std::size_t pcm_numerical_bound=0u;
         std::size_t cpu_gu_rows=0u;
         if(next_history_capacity_>
            (std::numeric_limits<std::uint32_t>::max()-127u)/64u)
@@ -945,6 +938,7 @@ public:
                     throw std::logic_error(
                         "Source PCM pair unexpectedly owns CPU Gu geometry");
                 reused_pcm_rows+=capacity;
+                pcm_numerical_bound+=std::min<std::size_t>(capacity,4u);
             } else {
                 if(pair.cpu_gu_offset==0xffffffffu ||
                    pair.cpu_gu_offset>cpu_gu.size() ||
@@ -1019,6 +1013,17 @@ public:
             source_rows!=contact_forces.size()))
             throw std::logic_error(
                 "Source Gu contact preparation exceeds numerical row capacity");
+        // Device prefixes address compact normal rows independently of
+        // source force windows. PCM emits at most four rows per response.
+        const auto numerical_contact_rows=device_admission
+            ?cpu_gu_rows+std::min(pcm_numerical_bound,descriptor_capacity*4u)
+            :contact_forces.size();
+        constexpr std::size_t normal_row_bytes=44u;
+        if(numerical_contact_rows>
+           std::numeric_limits<std::size_t>::max()/normal_row_bytes)
+            throw std::overflow_error("Source Dy contact row byte count overflow");
+        const auto contact_bytes=numerical_contact_rows*normal_row_bytes;
+        last_schedule_.normal_numerical_bytes=contact_bytes;
         // Reuse resident Dy body inputs and share identical timestep
         // coefficients across the source contact-preparation records.
         if(prep_count>
@@ -1678,7 +1683,7 @@ public:
             dedicated_workspace_bytes};
         const std::array<std::size_t,count> elements{
             bodies.size(),logical_joint_rows,descriptor_capacity,partition_count,
-            ordinal_capacity,task_capacity,contact_forces.size(),friction_count,
+            ordinal_capacity,task_capacity,numerical_contact_rows,friction_count,
             patches.size(),manifolds.size(),contact_order.size(),
             prep_count,integration.size(),compact_anchor_count,
             tiles_.size(),device_partitions?1u:0u,bodies.size(),0u};
@@ -1708,7 +1713,7 @@ public:
         std::size_t output_bytes=0u;
         for(std::size_t i=0;i<output_inputs.size();++i) {
             const auto n=i==1u && device_admission
-                ?0u:i==3u && compact_friction
+                ?0u:i==2u?contact_forces.size():i==3u && compact_friction
                     ?anchor_impulses.size():elements[output_inputs[i]];
             if(n>(std::numeric_limits<std::uint32_t>::max()-output_bytes)/
                 output_strides[i])

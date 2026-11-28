@@ -3674,6 +3674,7 @@ void verify_device_sc_dy_compact_contact_ranges(
             tasks[0].error==0u && poses[0].valid==1u &&
             schedule.device_admitted_tasks==1u &&
             schedule.device_admitted_descriptors==2u &&
+            schedule.normal_numerical_bytes==2u*4u*44u &&
             fyzz::physx_gpu::SourceScDeviceIslandFixture::
                 contact_admissions(*producer)==
                     std::vector<std::uint32_t>{3u} &&
@@ -3830,6 +3831,8 @@ void verify_device_sc_dy_sparse_task_windows(
             schedule.device_admitted_tasks==2u &&
             schedule.device_admitted_descriptors==
                 (pack_singletons?2u:3u) &&
+            schedule.device_colored_descriptors==(pack_singletons?2u:3u) &&
+            schedule.normal_numerical_bytes==(pack_singletons?2u:3u)*4u*44u &&
             schedule.device_island_indirect_dispatches==1u &&
             fyzz::physx_gpu::SourceScDeviceIslandFixture::
                 contact_admissions(*producer)==

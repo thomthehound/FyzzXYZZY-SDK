@@ -620,6 +620,9 @@ bool sourceDyPrepareSleep(uint input,uint local,
 uint sourceDyPrepAddress(uint index) {
     return p.prepBias+16u+index*48u;
 }
+uint sourceDyContactPublicationCount() {
+    return (p.resultFrictionOffset-p.resultContactOffset)/4u;
+}
 #include "physx_source_dy_contact_pgs_native.hlsli"
 
 // Sc assigns each response its exact numerical contact window.
@@ -645,7 +648,8 @@ bool sourceDyRelocateContact(uint4 desc,uint scratch,uint responseIndex,
         sourceDyPrepAddress(prepIndex)+32u)!=invalidBody;
     const uint source=arena.Load(manager+20u);
     const uint exact=arena.Load(manager+12u);
-    if(source>p.contactCount || exact>p.contactCount-source ||
+    const uint publicationCount=sourceDyContactPublicationCount();
+    if(source>publicationCount || exact>publicationCount-source ||
        (pcm && patchCount!=1u)) {
         sourceDyTaskErrorOr(errorAddress,65536u);
         return false;
@@ -742,14 +746,15 @@ bool sourceDyExpandDescriptor(uint token,uint extent,
                 }
                 const uint patch=p.patchBias+patchIndex*32u;
                 const uint capacity=arena.Load(patch+4u);
+                const uint publicationCount=sourceDyContactPublicationCount();
                 if(pcmContacts.Load(source)!=arena.Load(prep+36u) ||
                    ((packed>>3u)&7u)!=0u ||
                    ((p.launchControl&0x08000000u)!=0u &&
                     (extent&0x80000000u)==0u) ||
                    ((extent&0x80000000u)!=0u && (extent&7u)!=emitted) ||
                    emitted>capacity || emitted>4u ||
-                   sourceBegin>p.contactCount ||
-                   capacity>p.contactCount-sourceBegin ||
+                   sourceBegin>publicationCount ||
+                   capacity>publicationCount-sourceBegin ||
                    (numericalBegin!=invalidBody &&
                     numericalBegin!=sourceBegin) ||
                    (admitted!=0u && admitted!=emitted)) {
