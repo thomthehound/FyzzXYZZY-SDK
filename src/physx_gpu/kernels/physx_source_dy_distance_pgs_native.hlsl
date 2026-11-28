@@ -80,6 +80,12 @@ struct Parameters {
 ConstantBuffer<Parameters> p : register(b0,space0);
 #endif
 static const uint invalidBody = 0xffffffffu;
+uint sourceDyJointTable() {
+    return arena.Load(p.integrationBias-4u);
+}
+uint sourceDyJointSource(uint index,uint table) {
+    return arena.Load(table+index*4u);
+}
 uint sourceDyInertiaAddress(uint ordinal) {
     return arena.Load(p.integrationBias+40u)+ordinal*36u;
 }
@@ -776,9 +782,14 @@ bool sourceDyExpandDescriptor(uint token,uint extent,
             sourceDyTaskErrorOr(errorAddress,1048576u);
             return false;
         }
-        const uint row=p.distanceBias+index*64u;
-        desc=uint4(index,arena.Load(row),
-                   arena.Load(row+4u),arena.Load(row+8u));
+        const uint table=sourceDyJointTable();
+        const uint record=table!=0u?sourceDyJointSource(index,table):invalidBody;
+        if(record==invalidBody) {
+            sourceDyTaskErrorOr(errorAddress,1048576u);
+            return false;
+        }
+        const uint4 source=arena.Load4(record);
+        desc=uint4(index,source.xyz);
     }else if(kind==0u) {
         if(token>=sourceCount) {
             sourceDyTaskErrorOr(errorAddress,1048576u);
@@ -1055,11 +1066,21 @@ void sourceDyPartitionTask(uint taskId,uint scratch,uint errorAddress,
                 continue;
             }
             bool invalidCoefficient=false;
-            for(uint row=0u;row<rowCount;++row) {
+            const uint jointTable=sourceDyJointTable();
+            if(jointTable!=0u) {
+                const uint source=sourceDyJointSource(desc.x,jointTable);
+                if(source==invalidBody) {
+                    sourceDyTaskErrorOr(errorAddress,1048576u);
+                    continue;
+                }
+                const uint flags=arena.Load(source+8u);
+                if((flags&255u)!=rowCount) {
+                    sourceDyTaskErrorOr(errorAddress,1048576u);
+                    continue;
+                }
+            }
+            for(uint row=0u;jointTable==0u && row<rowCount;++row) {
                 const uint address=p.distanceBias+(desc.x+row)*64u;
-                // Device-authored rows acquire their coefficients during
-                // numerical preparation. Their solver validates the result.
-                if(arena.Load(address+44u)==2u)continue;
                 const uint biased=arena.Load(address+48u);
                 const uint unbiased=arena.Load(address+52u);
                 if((biased&0x7f800000u)==0x7f800000u ||
@@ -1532,13 +1553,13 @@ float3 sourceDyJointInertia(uint ordinal,float3 angular) {
            asfloat(arena.Load3(inertia+12u))*angular.y+
            asfloat(arena.Load3(inertia+24u))*angular.z;
 }
-bool sourceDyPrepareJointGeometry(uint4 desc,uint endError,
+bool sourceDyPrepareJointGeometry(uint4 desc,uint record,uint endError,
                                   bool retainSingle,
                                   inout SourceDyPreparedJoint prepared) {
     const uint first=p.distanceBias+desc.x*64u;
-    const uint source=arena.Load(first+60u);
-    if(jointSources.Load(source+144u)!=arena.Load(first+48u) ||
-       jointSources.Load(source+148u)!=arena.Load(first+52u)) {
+    const uint source=arena.Load(record+12u);
+    if(jointSources.Load(source+144u)!=arena.Load(record+24u) ||
+       jointSources.Load(source+148u)!=arena.Load(record+28u)) {
         sourceDyTaskErrorOr(endError,8192u);
         return false;
     }
@@ -1577,8 +1598,9 @@ bool sourceDyPrepareJointGeometry(uint4 desc,uint endError,
         float3(d,c.z,-c.y),float3(-c.z,d,c.x),float3(c.y,-c.x,d)};
     const float3 basis[3]={
         float3(1.0f,0.0f,0.0f),float3(0.0f,1.0f,0.0f),float3(0.0f,0.0f,1.0f)};
-    const float mass0=asfloat(arena.Load(first+36u));
-    const float mass1=asfloat(arena.Load(first+40u));
+    const uint2 masses=arena.Load2(record+16u);
+    const float mass0=asfloat(masses.x),mass1=asfloat(masses.y);
+    arena.Store2(first+36u,masses);
     const uint inputA=p.integrationBias+44u+desc.y*40u;
     const uint inputB=p.integrationBias+44u+desc.z*40u;
     const float3 vA=desc.y==invalidBody?0.0f:sourceDyPreparedVelocity(inputA,false);
@@ -1698,8 +1720,15 @@ void prepareJointRows(uint4 desc,uint lane,uint lanes,uint endError,
         return;
     }
     const uint massRow=p.distanceBias+desc.x*64u;
-    if(arena.Load(massRow+44u)==2u) {
-        if(lane==0u)sourceDyPrepareJointGeometry(desc,endError,retainSingle,prepared);
+    const uint jointTable=sourceDyJointTable();
+    if(jointTable!=0u) {
+        if(lane==0u) {
+            const uint record=sourceDyJointSource(desc.x,jointTable);
+            if(record==invalidBody)
+                sourceDyTaskErrorOr(endError,8192u);
+            else
+                sourceDyPrepareJointGeometry(desc,record,endError,retainSingle,prepared);
+        }
         return;
     }
     const float inverseMassA=asfloat(arena.Load(massRow+36u));

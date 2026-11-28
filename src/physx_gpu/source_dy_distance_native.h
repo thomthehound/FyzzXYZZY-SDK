@@ -175,6 +175,8 @@ struct SourceDyLaunchStats {
     std::size_t prepared_velocity_upload_bytes=0u;
     std::size_t device_joint_input_rows=0u;
     std::size_t device_joint_geometry_count=0u;
+    std::size_t joint_row_input_bytes=0u;
+    std::size_t compact_joint_source_bytes=0u;
     std::size_t device_joint_metadata_upload_bytes=0u;
     std::size_t prewitness_joint_source_upload_bytes=0u;
     std::size_t resident_joint_source_bytes=0u;
@@ -1443,7 +1445,20 @@ public:
                 "Source Dy device solver-body masses exceed address space");
         const std::size_t mass_bytes=upload_body_masses
             ? bodies.size()*sizeof(float):0u;
-        const std::size_t integration_bytes=mass_offset+mass_bytes;
+        const bool compact_joint_rows=!joint_inputs.empty();
+        const std::size_t joint_table_begin=mass_offset+mass_bytes;
+        // One logical-row index word and eight source words per joint.
+        const std::uint64_t joint_table_bytes=compact_joint_rows
+            ?std::uint64_t(rows.size())*4u+
+                std::uint64_t(joint_inputs.size())*32u:0u;
+        if(joint_table_bytes>std::numeric_limits<std::uint32_t>::max()-
+                                joint_table_begin)
+            throw std::overflow_error("Source Dy joint table exceeds address space");
+        const std::size_t integration_bytes=joint_table_begin+
+            static_cast<std::size_t>(joint_table_bytes);
+        last_schedule_.compact_joint_source_bytes=
+            static_cast<std::size_t>(joint_table_bytes);
+        last_schedule_.joint_row_input_bytes=compact_joint_rows?0u:rows.size_bytes();
         // Contact-only native rigid bodies derive their world inertia from
         // resident actor mass properties. Separate that GPU-written matrix
         // from the compact authored input without adding a dispatch.
@@ -1720,10 +1735,12 @@ public:
         for(const auto slot:source_order) {
             if(!device_generated_inertia && slot==13u)
                 order[order_count++]=16u;
-            order[order_count++]=slot;
+            if(slot!=1u || !compact_joint_rows)
+                order[order_count++]=slot;
         }
         if(device_generated_inertia)order[order_count++]=16u;
         order[order_count++]=17u;
+        if(compact_joint_rows)order[order_count++]=1u;
         if(order_count!=count)
             throw std::logic_error("Source Dy arena placement omitted a view");
         last_schedule_.device_generated_bytes=device_partitions
@@ -1746,17 +1763,18 @@ public:
         for(const auto i:order) {
             if((i==14u || i==15u || i==17u) && !bytes[i])continue;
             if(packed_only && (i==2u || i==3u))continue;
-            const auto view_bytes=std::max<std::size_t>(bytes[i],4u);
+            const auto prefix=i==12u?sizeof(std::uint32_t):0u;
+            const auto view_bytes=std::max<std::size_t>(bytes[i],4u)+prefix;
             if(total>std::numeric_limits<std::uint32_t>::max()-table_alignment ||
                view_bytes>std::numeric_limits<std::uint32_t>::max()-total)
                 throw std::overflow_error("Source Dy solver arena too large");
-            offsets[i]=total;
+            offsets[i]=total+prefix;
             // Anchor input ends exactly at the writable contact arena.
             // GPU-only PCM can omit that trailing region while retaining
             // one contiguous source upload and the original dispatch.
             const auto next=i==13u?total+view_bytes:
                 align_table(total+view_bytes);
-            padding_bytes+=next-total-bytes[i];
+            padding_bytes+=next-total-bytes[i]-prefix;
             total=next;
             if(i==7u && color_alias_bytes) {
                 color_alias_offset=align_table(offsets[6]);
@@ -1880,6 +1898,7 @@ public:
         for(std::size_t i=0;i<count;++i)
             if(i!=6u && i!=7u && i!=11u && i!=12u &&
                i!=13u && i!=15u && i!=16u && i!=17u && bytes[i] &&
+               (!compact_joint_rows || i!=1u) &&
                (!device_initial_bodies || i!=0u) &&
                (!device_partitions || (i!=2u && i!=3u)) &&
                (!device_admission || (i!=4u && i!=5u)))
@@ -2274,6 +2293,14 @@ public:
         // Joint source slots are stable; Dy rows retain task order.
         // Each first-row descriptor selects its source independently.
         joint_row_source_seen_.assign(joint_inputs.size(),0u);
+        const auto joint_table=offsets[12]+joint_table_begin;
+        const auto joint_table_bias=compact_joint_rows
+            ?narrow(std::size_t(params[28])+joint_table):0u;
+        write_input(offsets[12]-sizeof(joint_table_bias),
+                    &joint_table_bias,sizeof(joint_table_bias));
+        if(compact_joint_rows)
+            std::memset(input_map.data+joint_table-upload_begin,0xff,
+                        rows.size()*sizeof(std::uint32_t));
         std::size_t joint_row_begin=0u;
         for(std::size_t i=0u;i<joint_inputs.size();++i) {
             if(joint_row_begin>=rows.size())
@@ -2298,10 +2325,17 @@ public:
                     "Source Dy joint input lacks its first-row descriptor");
             const auto address=narrow(std::size_t(joint_source_bias)+
                 std::size_t(input.source_slot)*sizeof(native::GpuDyJointInput));
-            write_input(offsets[1]+
-                            joint_row_begin*sizeof(native::GpuDyJointRow)+
-                            offsetof(native::GpuDyJointRow,applied_force),
-                        &address,sizeof(address));
+            const auto record_offset=joint_table+rows.size()*4u+i*32u;
+            const auto record_address=narrow(std::size_t(params[28])+record_offset);
+            const std::array<std::uint32_t,8> record{
+                std::bit_cast<std::uint32_t>(first.axis[0]),
+                std::bit_cast<std::uint32_t>(first.axis[1]),flags,address,
+                std::bit_cast<std::uint32_t>(first.inverse_mass_a),
+                std::bit_cast<std::uint32_t>(first.inverse_mass_b),
+                input.source_slot,input.source_generation};
+            write_input(joint_table+joint_row_begin*4u,
+                        &record_address,sizeof(record_address));
+            write_input(record_offset,record.data(),sizeof(record));
             joint_row_begin+=count;
         }
         if(!joint_inputs.empty() && joint_row_begin!=rows.size())
@@ -2505,9 +2539,12 @@ public:
             const bool reads_ordinals=snapshots || (integrates && !free);
             const bool task_access=!free && phase!=Launch::InitializeBodies;
             const bool task_writes=task_access && phase!=Launch::PublishErrors;
-            arena_region(offsets[12],
-                initializes || prepares || integrates
-                    ?bytes[12]:integration_header_bytes,A::Read);
+            arena_region(offsets[12]-sizeof(std::uint32_t),
+                sizeof(std::uint32_t)+(initializes || prepares || integrates
+                    ?bytes[12]:integration_header_bytes),A::Read);
+            if(colors && compact_joint_rows && !prepares)
+                arena_region(offsets[12]+joint_table_begin,
+                             static_cast<std::size_t>(joint_table_bytes),A::Read);
             if(device_partitions) {
                 if(colors)table(15u,A::ReadWrite);
                 else {
@@ -2550,7 +2587,7 @@ public:
             else if(initializes)table(0u,A::Write);
             else if(prepares || (integrates && !free))table(0u,A::Read);
             if(prepares || solves)table(1u,A::ReadWrite);
-            else if(colors)table(1u,A::Read);
+            else if(colors && !compact_joint_rows)table(1u,A::Read);
             if(!packed) {
                 if(colors) {
                     table(2u,A::ReadWrite);
