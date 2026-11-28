@@ -8399,12 +8399,14 @@ void verify_sphere_gpu_solver(
             0.25f,{10.7f,10.f,0.f},1.f);
         RigidBodyDynamics dynamic{};
         dynamic.gravity_enabled=false;
+        dynamic.position_iterations=6u;
+        dynamic.velocity_iterations=3u;
         for(auto id:moving)scene.set_dynamics(id,dynamic);
-        // Three closing impacts exercise contact impulses rather than
-        // merely preserving speculative overlaps at zero velocity.
-        scene.set_velocity(moving[0],{0.f,-2.f,0.f});
-        scene.set_velocity(moving[1],{-2.f,0.f,0.f});
-        scene.set_velocity(moving[2],{-2.f,0.f,0.f});
+        // Closing and tangential velocity exercise the normal/friction
+        // dependency through both numerical phases.
+        scene.set_velocity(moving[0],{0.25f,-2.f,0.15f});
+        scene.set_velocity(moving[1],{-2.f,0.15f,0.25f});
+        scene.set_velocity(moving[2],{-2.f,0.25f,0.15f});
         return moving;
     };
     const auto cpu_ids=add_scene(cpu);
@@ -8483,6 +8485,31 @@ void verify_sphere_gpu_solver(
                         std::fabs(expected-actual)<0.05,
                     "GPU sphere impact did not produce source-equivalent normal impulse");
             }
+            const auto cpu_friction=cpu.solved_friction_patches();
+            const auto gpu_friction=gpu.solved_friction_patches();
+            require(cpu_friction.size()==gpu_friction.size(),
+                "Single-point contact changed friction patch publication");
+            bool saw_tangent_impulse=false;
+            for(std::size_t j=0;j<cpu_friction.size();++j) {
+                const auto& expected=cpu_friction[j];
+                const auto& actual=gpu_friction[j];
+                require(expected.pair==actual.pair &&
+                        expected.anchor_count==actual.anchor_count &&
+                        expected.broken==actual.broken,
+                    "Single-point contact changed friction anchor state");
+                for(std::size_t k=0;k<expected.anchor_count;++k) {
+                    const auto& x=expected.anchor_impulses[k];
+                    const auto& y=actual.anchor_impulses[k];
+                    saw_tangent_impulse|=std::fabs(x.x)+std::fabs(x.y)+
+                                         std::fabs(x.z)>0.001;
+                    require(std::fabs(x.x-y.x)<0.05 &&
+                            std::fabs(x.y-y.y)<0.05 &&
+                            std::fabs(x.z-y.z)<0.05,
+                        "Single-point contact changed final tangent impulse");
+                }
+            }
+            require(saw_tangent_impulse,
+                "Sphere impacts did not exercise normal/friction coupling");
             touched_all=true;
         }
         require(producer->dy_distance_dispatch_count()==frame+1u &&
