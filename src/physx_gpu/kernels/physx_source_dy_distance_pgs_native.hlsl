@@ -623,6 +623,16 @@ uint sourceDyPrepAddress(uint index) {
 uint sourceDyContactPublicationCount() {
     return (p.resultFrictionOffset-p.resultContactOffset)/4u;
 }
+static const uint sourceDyLocalNormalRow=0xfffffffeu;
+uint sourceDyContactLogicalCount() {
+    return (p.launchControl&0x08000000u)!=0u
+        ?p.contactCount:sourceDyContactPublicationCount();
+}
+bool sourceDyNormalStorageValid(uint begin,uint count) {
+    return begin==sourceDyLocalNormalRow
+        ?(p.launchControl&0x08000000u)==0u && count<=1u
+        :begin<=p.contactCount && count<=p.contactCount-begin;
+}
 #include "physx_source_dy_contact_pgs_native.hlsli"
 
 // Sc assigns each response its exact numerical contact window.
@@ -755,8 +765,8 @@ bool sourceDyExpandDescriptor(uint token,uint extent,
                    emitted>capacity || emitted>4u ||
                    sourceBegin>publicationCount ||
                    capacity>publicationCount-sourceBegin ||
-                   (numericalBegin!=invalidBody &&
-                    numericalBegin!=sourceBegin) ||
+                   ((p.launchControl&0x08000000u)!=0u &&
+                    numericalBegin!=invalidBody && numericalBegin!=sourceBegin) ||
                    (admitted!=0u && admitted!=emitted)) {
                     sourceDyTaskErrorOr(errorAddress,65536u);
                     return false;
@@ -1858,12 +1868,17 @@ void prepareConstraint(uint4 desc,uint lane,uint lanes,uint endError,
     uint mo=p.manifoldBias+desc.x*24u;
     uint4 manager=arena.Load4(mo);
     if(manager.y==0u)return;
+    const uint normalBegin=manager.z;
+    if((p.launchControl&0x08000000u)==0u)manager.z=arena.Load(mo+20u);
+    const uint logicalCount=sourceDyContactLogicalCount();
     uint pairIndex=arena.Load(mo+16u);
     if(pairIndex>=p.prepCount ||
        manager.x>p.patchCount ||
        manager.y>p.patchCount-manager.x ||
-       manager.z>p.contactCount ||
-       manager.w>p.contactCount-manager.z) {
+       manager.z>logicalCount ||
+       manager.w>logicalCount-manager.z ||
+       !sourceDyNormalStorageValid(normalBegin,manager.w) ||
+       (normalBegin==sourceDyLocalNormalRow && !retainSingle)) {
         sourceDyTaskErrorOr(endError,4096u);
         return;
     }
@@ -1887,8 +1902,8 @@ void prepareConstraint(uint4 desc,uint lane,uint lanes,uint endError,
                 const uint index=sourceDyContactOrderPoint(order,c);
                 const bool retainNormal=retainSingle && manager.y==1u &&
                     manager.w==1u && count==1u;
-                prepareContactRow(index,manager.z,manager.w,frame,endError,
-                                  retainNormal,normal);
+                prepareContactRow(index,manager.z,manager.w,normalBegin,
+                                  frame,endError,retainNormal,normal);
             }
         }
         // Each patch has one friction writer. Its source geometry
@@ -2414,12 +2429,18 @@ void sourceDySolveExclusive(uint4 desc,uint2 iters,uint2 iterations,
             return;
         }
         const uint pointIndex=sourceDyContactOrderPoint(order,0u);
-        if(pointIndex>=p.contactCount || pointIndex<span.manager.z ||
+        if(pointIndex>=sourceDyContactLogicalCount() || pointIndex<span.manager.z ||
            pointIndex-span.manager.z>=span.manager.w) {
             sourceDyTaskErrorOr(errorAddress,256u);
             return;
         }
-        normalAddress=p.contactBias+pointIndex*sourceDyNormalRowBytes;
+        if(span.normalBegin==sourceDyLocalNormalRow &&
+           (!preparedNormal.local || iterations.y<iters.x+max(iters.y,1u))) {
+            sourceDyTaskErrorOr(errorAddress,256u);
+            return;
+        }
+        if(span.normalBegin!=sourceDyLocalNormalRow)
+            normalAddress=p.contactBias+(span.normalBegin+pointIndex-span.manager.z)*sourceDyNormalRowBytes;
         if(preparedNormal.local)normal=preparedNormal.row;
         else normal=sourceDyLoadNormalRow(normalAddress,span,pointIndex);
     }

@@ -180,6 +180,7 @@ struct SourceDyLaunchStats {
     std::size_t joint_numerical_bytes=0u;
     std::size_t single_anchor_pcm_patches=0u;
     std::size_t normal_numerical_bytes=0u;
+    std::size_t local_normal_rows=0u;
     std::size_t local_joint_rows=0u;
     std::size_t device_joint_metadata_upload_bytes=0u;
     std::size_t prewitness_joint_source_upload_bytes=0u;
@@ -1018,12 +1019,6 @@ public:
         const auto numerical_contact_rows=device_admission
             ?cpu_gu_rows+std::min(pcm_numerical_bound,descriptor_capacity*4u)
             :contact_forces.size();
-        constexpr std::size_t normal_row_bytes=44u;
-        if(numerical_contact_rows>
-           std::numeric_limits<std::size_t>::max()/normal_row_bytes)
-            throw std::overflow_error("Source Dy contact row byte count overflow");
-        const auto contact_bytes=numerical_contact_rows*normal_row_bytes;
-        last_schedule_.normal_numerical_bytes=contact_bytes;
         // Reuse resident Dy body inputs and share identical timestep
         // coefficients across the source contact-preparation records.
         if(prep_count>
@@ -1540,6 +1535,36 @@ public:
                local_joint_rows_.size()>logical_joint_rows)
                 throw std::logic_error("Packed Dy joint has multiple numerical owners");
         }
+        local_normal_managers_.clear();
+        if(host_lane_packing) {
+            for(const auto& task:tasks) {
+                if(!lane_task(task))continue;
+                if(task.descriptor_begin>=descriptors.size())
+                    throw std::logic_error("Packed Dy task exceeds descriptor inputs");
+                const auto& desc=descriptors[task.descriptor_begin];
+                if((desc.row_count&255u)!=0u)continue;
+                if(desc.index>=manifolds.size())
+                    throw std::logic_error("Packed Dy contact manager is invalid");
+                const auto& manager=manifolds[desc.index];
+                if(manager.patch_count==1u &&
+                   patches[manager.patch_offset].contact_count==1u &&
+                   (contact_origin(manager.prep_index).pcm_pair_index!=invalid ||
+                    manager.contact_count==1u))
+                    local_normal_managers_.push_back(desc.index);
+            }
+            std::sort(local_normal_managers_.begin(),local_normal_managers_.end());
+            if(std::adjacent_find(local_normal_managers_.begin(),local_normal_managers_.end())!=
+                   local_normal_managers_.end() ||
+               local_normal_managers_.size()>numerical_contact_rows)
+                throw std::logic_error("Packed Dy contact has multiple numerical owners");
+        }
+        const auto materialized_normal_rows=numerical_contact_rows-local_normal_managers_.size();
+        constexpr std::size_t normal_row_bytes=44u;
+        if(materialized_normal_rows>std::numeric_limits<std::size_t>::max()/normal_row_bytes)
+            throw std::overflow_error("Source Dy contact row byte count overflow");
+        const auto contact_bytes=materialized_normal_rows*normal_row_bytes;
+        last_schedule_.normal_numerical_bytes=contact_bytes;
+        last_schedule_.local_normal_rows=local_normal_managers_.size();
         const auto materialized_joint_rows=logical_joint_rows-local_joint_rows_.size();
         last_schedule_.local_joint_rows=local_joint_rows_.size();
         const auto raw_descriptor_count=source_descriptors && !packed_only
@@ -1683,7 +1708,7 @@ public:
             dedicated_workspace_bytes};
         const std::array<std::size_t,count> elements{
             bodies.size(),logical_joint_rows,descriptor_capacity,partition_count,
-            ordinal_capacity,task_capacity,numerical_contact_rows,friction_count,
+            ordinal_capacity,task_capacity,materialized_normal_rows,friction_count,
             patches.size(),manifolds.size(),contact_order.size(),
             prep_count,integration.size(),compact_anchor_count,
             tiles_.size(),device_partitions?1u:0u,bodies.size(),0u};
@@ -1962,19 +1987,33 @@ public:
                (!device_partitions || (i!=2u && i!=3u)) &&
                (!device_admission || (i!=4u && i!=5u)))
                 write_input(offsets[i],sources[i],bytes[i]);
-        if(device_admission)
-            for(std::size_t i=0u;i<manifolds.size();++i) {
-                const auto& manager=manifolds[i];
-                if(!manager.patch_count ||
-                   manager.prep_index>=prep_count ||
-                   contact_origin(manager.prep_index).pcm_pair_index!=invalid)
-                    continue;
+        // Source order is independent of the physical normal row base.
+        std::size_t local_normal_cursor=0u,physical_normal_row=0u;
+        for(std::size_t i=0u;i<manifolds.size();++i) {
+            const auto& manager=manifolds[i];
+            if(!manager.patch_count)continue;
+            const bool pcm=contact_origin(manager.prep_index).pcm_pair_index!=invalid;
+            const auto address=offsets[9]+i*sizeof(native::GpuDyContactManifold);
+            if(!pcm) {
                 const auto source=manager.order_offset;
-                write_input(offsets[9]+
-                    i*sizeof(native::GpuDyContactManifold)+
-                    offsetof(native::GpuDyContactManifold,source_order_offset),
-                    &source,sizeof(source));
+                write_input(address+offsetof(native::GpuDyContactManifold,source_order_offset),
+                            &source,sizeof(source));
             }
+            if(local_normal_managers_.empty())continue;
+            const bool local=local_normal_cursor<local_normal_managers_.size() &&
+                local_normal_managers_[local_normal_cursor]==i;
+            const auto count=pcm?patches[manager.patch_offset].contact_count:
+                manager.contact_count;
+            constexpr std::uint32_t local_normal_row=0xfffffffeu;
+            const auto row=local?local_normal_row:narrow(physical_normal_row);
+            if(local)++local_normal_cursor;
+            else physical_normal_row+=count;
+            write_input(address+offsetof(native::GpuDyContactManifold,order_offset),
+                        &row,sizeof(row));
+        }
+        if(local_normal_cursor!=local_normal_managers_.size() ||
+           (!local_normal_managers_.empty() && physical_normal_row!=materialized_normal_rows))
+            throw std::logic_error("Packed Dy normal ownership disagrees with allocation");
         if(prep_bytes) {
             write_input(offsets[11],contact_frame.data(),
                         source_dy_contact_frame_bytes);
@@ -4267,7 +4306,7 @@ private:
     std::size_t actor_local_capacity_=0u,actor_local_live_slots_=0u;
     std::vector<native::GpuDyJointInput> joint_source_host_;
     std::vector<std::uint8_t> joint_source_valid_,joint_row_source_seen_;
-    std::vector<std::uint32_t> joint_source_dirty_,local_joint_rows_;
+    std::vector<std::uint32_t> joint_source_dirty_,local_joint_rows_,local_normal_managers_;
     std::vector<std::uint32_t> joint_source_late_upload_slots_;
     std::vector<std::uint32_t> prewitness_joint_source_slots_;
     std::vector<std::uint32_t> prewitness_actor_slots_;

@@ -17,7 +17,7 @@ static const uint sourceDyDirectContactOrder=0x80000000u;
 bool sourceDyContactOrderValid(uint order,uint count) {
     const uint begin=order&~sourceDyDirectContactOrder;
     const uint limit=(order&sourceDyDirectContactOrder)!=0u
-        ?p.contactCount:p.orderCount;
+        ?sourceDyContactLogicalCount():p.orderCount;
     return begin<=limit && count<=limit-begin;
 }
 uint sourceDyContactOrderPoint(uint order,uint relative) {
@@ -53,7 +53,7 @@ bool contactImpulse(uint a,uint b,
 }
 struct SourceDyContactSpan {
     uint4 manager;
-    uint sourceBegin;
+    uint sourceBegin,normalBegin;
     float impulseLimit;
     uint guNormalBase;
     float3 pcmNormal;
@@ -71,13 +71,17 @@ bool sourceDyLoadContactSpan(uint4 descriptor,uint errorAddress,
     }
     const uint managerAddress=p.manifoldBias+descriptor.x*24u;
     span.manager=arena.Load4(managerAddress);
-    const uint4 manager=span.manager;
     // Zero-response descriptors carry source endpoint ordinals in the
     // otherwise unused patch offsets. They have no contact rows to read.
-    if(manager.y==0u)return true;
+    if(span.manager.y==0u)return true;
+    span.sourceBegin=arena.Load(managerAddress+20u);
+    span.normalBegin=span.manager.z;
+    if((p.launchControl&0x08000000u)==0u)span.manager.z=span.sourceBegin;
+    const uint4 manager=span.manager;
+    const uint logicalCount=sourceDyContactLogicalCount();
     if(manager.x>p.patchCount || manager.y>p.patchCount-manager.x ||
-       manager.z>p.contactCount ||
-       manager.w>p.contactCount-manager.z) {
+       manager.z>logicalCount || manager.w>logicalCount-manager.z ||
+       !sourceDyNormalStorageValid(span.normalBegin,manager.w)) {
         sourceDyTaskErrorOr(errorAddress,64u);
         return false;
     }
@@ -100,9 +104,6 @@ bool sourceDyLoadContactSpan(uint4 descriptor,uint errorAddress,
         span.guNormalBase=p.prepBias+16u+p.prepCount*48u+cpuOffset*28u;
     }
     span.impulseLimit=asfloat(arena.Load(pair+40u));
-    span.sourceBegin=pcm ||
-        (p.launchControl&0x08000000u)!=0u
-        ?arena.Load(managerAddress+20u):manager.z;
     // Patch ranges and coefficients are immutable during PGS.
     if(manager.y==1u) {
         const uint po=p.patchBias+manager.x*32u;
@@ -174,12 +175,14 @@ bool solveContactRows(uint4 descriptor,SourceDyContactSpan span,
         precise float normalImpulse=0.0;
         for(uint i=0;i<patch.y;++i) {
             uint pointIndex=sourceDyContactOrderPoint(settings.z,i);
-            if(pointIndex>=p.contactCount || pointIndex<manager.z ||
-               pointIndex-manager.z>=manager.w) {
+            if(pointIndex>=sourceDyContactLogicalCount() || pointIndex<manager.z ||
+               pointIndex-manager.z>=manager.w ||
+               (!retainNormal && span.normalBegin==sourceDyLocalNormalRow)) {
                 sourceDyTaskErrorOr(errorAddress,256u);
                 return false;
             }
-            uint co=p.contactBias+pointIndex*sourceDyNormalRowBytes;
+            uint co=span.normalBegin==sourceDyLocalNormalRow?0u:
+                p.contactBias+(span.normalBegin+pointIndex-manager.z)*sourceDyNormalRowBytes;
             SourceDyNormalRow row;
             if(retainNormal)row=retainedNormal;
             else row=sourceDyLoadNormalRow(co,span,pointIndex);
@@ -460,7 +463,7 @@ bool sourceDyContactGeometry(uint index,uint contactBegin,uint contactCount,
                              SourceDyContactFrame frame,uint errorAddress,
                              out float3 n,out float3 pos,out float separation) {
     n=0.0f;pos=0.0f;separation=0.0f;
-    if(index>=p.contactCount) {
+    if(index>=sourceDyContactLogicalCount()) {
         sourceDyTaskErrorOr(errorAddress,4096u);
         return false;
     }
@@ -484,13 +487,13 @@ bool sourceDyContactGeometry(uint index,uint contactBegin,uint contactCount,
     return true;
 }
 void prepareContactRow(uint index,uint contactBegin,
-                       uint contactCount,SourceDyContactFrame frame,uint errorAddress,
+                       uint contactCount,uint normalBegin,
+                       SourceDyContactFrame frame,uint errorAddress,
                        bool retainNormal,inout SourceDyPreparedNormal prepared) {
     float3 n,pos;
     float separation;
     if(!sourceDyContactGeometry(index,contactBegin,contactCount,frame,
                                 errorAddress,n,pos,separation))return;
-    uint co=p.contactBias+index*sourceDyNormalRowBytes;
     float3 w0=frame.a.angular,w1=frame.b.angular;
     float3 r0=cross(pos-frame.a.position,n);
     float3 r1=cross(pos-frame.b.position,n);
@@ -568,6 +571,11 @@ void prepareContactRow(uint index,uint contactBegin,
         prepared.row.impulse=0.0f;
         prepared.local=true;
     }else {
+        if(normalBegin==sourceDyLocalNormalRow) {
+            sourceDyTaskErrorOr(errorAddress,8192u);
+            return;
+        }
+        const uint co=p.contactBias+(normalBegin+index-contactBegin)*sourceDyNormalRowBytes;
         arena.Store3(co,asuint(ja));
         arena.Store3(co+12u,asuint(jb));
         arena.Store4(co+24u,asuint(coefficients));
@@ -898,7 +906,7 @@ void prepareFrictionPatch(uint patchIndex,uint pairIndex,uint contactBegin,
     // setupFinalizeSolverConstraints chooses the first normal from the
     // source's reverse correlated contact-run list for this patch.
     uint first=sourceDyContactOrderPoint(orderOffset,0u);
-    if(first>=p.contactCount) {
+    if(first>=sourceDyContactLogicalCount()) {
         sourceDyTaskErrorOr(errorAddress,16384u);
         return;
     }

@@ -194,7 +194,9 @@ These are implementation milestones, not hardware-performance acceptance.
     Resident admission sizes descriptor and color storage by potentially
     responding edges. Compact normal rows use a response-bounded extent
     independent of source force publication. Pre-witness numerical
-    backing still includes unresolved potential responses; reduce it
+    backing still includes unresolved potential responses. Host-packed
+    single-point normals have no physical numerical row; mixed tasks
+    retain dense backing only for materialized rows. Reduce resident backing
     without adding a host observation or changing source identity.
 - [ ] Audit shader work and binding granularity. Keep pair- or group-local
   intermediates in registers/shared memory where practical; reduce

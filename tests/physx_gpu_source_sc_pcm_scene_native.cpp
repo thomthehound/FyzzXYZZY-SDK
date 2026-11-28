@@ -10351,6 +10351,10 @@ void verify_host_lane_packed_islands(
             gpu.create_center_distance_constraint(chain_gpu[i-1u],chain_gpu[i],1.8f);
         }
     }
+    cpu.add_static_sphere(0.5f,{-64.f,4.f,0.f});
+    gpu.add_static_sphere(0.5f,{-64.f,4.f,0.f});
+    const auto contact_cpu=cpu.add_dynamic_sphere(0.5f,{-64.f,4.83f,0.f},1.f);
+    const auto contact_gpu=gpu.add_dynamic_sphere(0.5f,{-64.f,4.83f,0.f},1.f);
     bool saw_dependent_task=false;
     for(unsigned frame=0;frame<3u;++frame) {
         cpu.step(1.f/120.f);
@@ -10399,6 +10403,15 @@ void verify_host_lane_packed_islands(
                     schedule.joint_numerical_bytes==
                         schedule.device_joint_input_rows*sizeof(native::GpuDyJointRow),
                 "Device-admitted joint capacity lost its conservative bound");
+        if(!device_admission && frame==0u) {
+            std::size_t contacts=0u;
+            for(const auto& manager:gpu.contacts())contacts+=manager.count;
+            require(schedule.local_normal_rows==1u &&
+                    schedule.normal_numerical_bytes==(contacts-1u)*44u,
+                "Packed single-point contact retained global numerical storage");
+        }
+        test::compound_compare_state(gpu.body_state(contact_gpu),cpu.body_state(contact_cpu),
+            0.03f,"Packed single-point normal changed rigid contact motion");
         saw_dependent_task |= device_admission
             ?gpu.largest_accurate_island_size()>=3u
             :schedule.host_lane_packed_tasks<
