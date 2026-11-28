@@ -125,6 +125,29 @@ struct SourceDyPreparedNormal {
     bool local;
 };
 
+struct SourceDyFrictionRow {
+    float3 tangent,ja,jb,coefficients;
+};
+struct SourceDyPreparedFriction {
+    SourceDyFrictionRow first,second;
+    bool local;
+};
+static const uint sourceDyLocalFrictionRow=0xfffffffeu;
+bool sourceDyFrictionStorage(uint4 patch,out uint physical) {
+    physical=patch.x;
+    const uint rows=patch.z*2u;
+    if(patch.x>p.frictionCount || patch.z>2u ||
+       rows>p.frictionCount-patch.x || (patch.x&1u)!=0u)return false;
+    if(rows==0u)return true;
+    if((patch.w&0x02000000u)==0u)return true;
+    const uint map=p.patchBias+p.patchCount*32u;
+    const uint capacity=arena.Load(map);
+    physical=arena.Load(map+4u+patch.x/2u*4u);
+    if(physical==sourceDyLocalFrictionRow)return rows==2u;
+    if(physical>capacity || rows>capacity-physical)return false;
+    if(rows==4u && arena.Load(map+8u+patch.x/2u*4u)!=physical+2u)return false;
+    return true;
+}
 static const uint sourceDyNormalRowBytes=44u;
 static const uint sourceDyNormalImpulseOffset=40u;
 
@@ -146,7 +169,8 @@ bool solveContactRows(uint4 descriptor,SourceDyContactSpan span,
                       bool frictionEnabled,bool finalPass,
                       inout SourceDySolverPair state,
                       bool retainNormal,inout SourceDyNormalRow retainedNormal,
-                      uint localCount,inout float4 impulses) {
+                      uint localCount,inout float4 impulses,
+                      SourceDyPreparedFriction preparedFriction) {
     const uint4 manager=span.manager;
     if(manager.y==0u)return true;
     const uint sourceBegin=span.sourceBegin;
@@ -165,8 +189,10 @@ bool solveContactRows(uint4 descriptor,SourceDyContactSpan span,
             patch=arena.Load4(po);
             settings=arena.Load4(po+16u);
         }
-        if(patch.x>p.frictionCount || patch.z>2u ||
-           patch.z*2u>p.frictionCount-patch.x ||
+        uint frictionBase;
+        if(!sourceDyFrictionStorage(patch,frictionBase) ||
+           (patch.z!=0u && frictionBase==sourceDyLocalFrictionRow &&
+            (!preparedFriction.local || manager.y!=1u || localCount!=2u)) ||
            contactCursor>manager.w ||
            patch.y>manager.w-contactCursor ||
            !sourceDyContactOrderValid(settings.z,patch.y)) {
@@ -237,23 +263,26 @@ bool solveContactRows(uint4 descriptor,SourceDyContactSpan span,
             (p.launchControl&0x20000000u)!=0u;
         precise float3 firstImpulse=0.0f;
         for(uint k=patch.x;k<patch.x+patch.z*2u;++k) {
-            uint fo=p.frictionBias+k*52u;
-            float3 n=asfloat(arena.Load3(fo));
-            float3 ja=asfloat(arena.Load3(fo+12u));
-            float3 jb=asfloat(arena.Load3(fo+24u));
+            const bool localFriction=frictionBase==sourceDyLocalFrictionRow;
+            const uint fo=localFriction?0u:p.frictionBias+(frictionBase+k-patch.x)*52u;
+            float3 n,ja,jb,coefficients;
+            if(localFriction) {
+                SourceDyFrictionRow row;
+                if(k==patch.x)row=preparedFriction.first;
+                else row=preparedFriction.second;
+                n=row.tangent;ja=row.ja;jb=row.jb;coefficients=row.coefficients;
+            }else {
+                n=asfloat(arena.Load3(fo));
+                ja=asfloat(arena.Load3(fo+12u));
+                jb=asfloat(arena.Load3(fo+24u));
+                coefficients=asfloat(arena.Load3(fo+36u));
+            }
             precise float tangentDelta=
                 sourceDyDot3(n,va)-sourceDyDot3(n,vb)+
                 sourceDyDot3(aa,ja)-sourceDyDot3(ab,jb);
-            float3 coefficients;
             float oldForce;
-            if(localCount!=0u) {
-                coefficients=asfloat(arena.Load3(fo+36u));
-                oldForce=impulses[k-patch.x];
-            }else {
-                const float4 row=asfloat(arena.Load4(fo+36u));
-                coefficients=row.xyz;
-                oldForce=row.w;
-            }
+            if(localCount!=0u)oldForce=impulses[k-patch.x];
+            else oldForce=asfloat(arena.Load(fo+48u));
             float bias=biased?coefficients.y:0.0;
             precise float candidate=oldForce+
                 (coefficients.z-bias-tangentDelta)*coefficients.x;
@@ -325,7 +354,8 @@ bool solveContactRows(uint4 descriptor,SourceDyContactSpan span,
     SourceDyNormalRow unused=(SourceDyNormalRow)0;
     float4 impulses=0.0f;
     return solveContactRows(descriptor,span,errorAddress,biased,
-                            frictionEnabled,finalPass,state,false,unused,0u,impulses);
+                            frictionEnabled,finalPass,state,false,unused,0u,impulses,
+                            (SourceDyPreparedFriction)0);
 }
 
 float3 prepSlop(float3 value,float slop) {
@@ -584,10 +614,11 @@ void prepareContactRow(uint index,uint contactBegin,
     }
 }
 
-void prepareFrictionRow(uint index,float3 tangent,float3 r0,float3 r1,
+SourceDyFrictionRow prepareFrictionRow(uint index,float3 tangent,float3 r0,float3 r1,
                         float3 error,SourceDyContactBody a,SourceDyContactBody b,
-                        float slop,float invDt,float rigidBias,uint errorAddress) {
-    uint fo=p.frictionBias+index*52u;
+                        float slop,float invDt,float rigidBias,uint errorAddress,
+                        bool retain) {
+    SourceDyFrictionRow row=(SourceDyFrictionRow)0;
     float3 ax0=prepSlop(cross(r0,tangent),slop);
     float3 ax1=prepSlop(cross(r1,tangent),slop);
     float3 ja=sourceDyContactInertia(a,ax0);
@@ -604,13 +635,18 @@ void prepareFrictionRow(uint index,float3 tangent,float3 r0,float3 r1,
        !isfinite(targetVelocity) || !all(isfinite(ja)) ||
        !all(isfinite(jb))) {
         sourceDyTaskErrorOr(errorAddress,32768u);
-        return;
+        return row;
     }
-    arena.Store3(fo,asuint(tangent));
-    arena.Store3(fo+12u,asuint(ja));
-    arena.Store3(fo+24u,asuint(jb));
-    arena.Store4(fo+36u,asuint(float4(velocityMultiplier,bias,
-                                       targetVelocity,0.0f)));
+    row.tangent=tangent;row.ja=ja;row.jb=jb;
+    row.coefficients=float3(velocityMultiplier,bias,targetVelocity);
+    if(!retain) {
+        const uint fo=p.frictionBias+index*52u;
+        arena.Store3(fo,asuint(row.tangent));
+        arena.Store3(fo+12u,asuint(row.ja));
+        arena.Store3(fo+24u,asuint(row.jb));
+        arena.Store4(fo+36u,asuint(float4(row.coefficients,0.0f)));
+    }
+    return row;
 }
 
 // GPU PCM supplies exactly one Gu normal/contact patch for each active
@@ -885,7 +921,8 @@ void growPcmFrictionAnchors(uint patchIndex,uint pairIndex,
 
 void prepareFrictionPatch(uint patchIndex,uint pairIndex,uint contactBegin,
                           uint contactCount,uint errorAddress,
-                          inout SourceDyContactFrame frame,inout bool ready) {
+                          inout SourceDyContactFrame frame,inout bool ready,
+                          bool exclusive,inout SourceDyPreparedFriction prepared) {
     if(patchIndex>=p.patchCount || pairIndex>=p.prepCount) {
         sourceDyTaskErrorOr(errorAddress,16384u);
         return;
@@ -898,9 +935,10 @@ void prepareFrictionPatch(uint patchIndex,uint pairIndex,uint contactBegin,
     }
     if(patch.z==0u)return;
     uint orderOffset=arena.Load(po+24u);
+    uint frictionBase;
     if(patch.y==0u || !sourceDyContactOrderValid(orderOffset,patch.y) ||
-       patch.x>p.frictionCount || patch.z>2u ||
-       patch.z*2u>p.frictionCount-patch.x) {
+       !sourceDyFrictionStorage(patch,frictionBase) ||
+       (frictionBase==sourceDyLocalFrictionRow && !exclusive)) {
         sourceDyTaskErrorOr(errorAddress,16384u);
         return;
     }
@@ -961,8 +999,14 @@ void prepareFrictionPatch(uint patchIndex,uint pairIndex,uint contactBegin,
         const float3 r0=sourceRigidRotate(a.orientation,asfloat(arena.Load3(address)));
         const float3 r1=sourceRigidRotate(b.orientation,asfloat(arena.Load3(address+12u)));
         const float3 error=prepSlop((r0+a.position)-(r1+b.position),slop);
-        const uint row=patch.x+anchor*2u;
-        prepareFrictionRow(row,tangent0,r0,r1,error,a,b,slop,invDt,rigidBias,errorAddress);
-        prepareFrictionRow(row+1u,tangent1,r0,r1,error,a,b,slop,invDt,rigidBias,errorAddress);
+        const bool local=frictionBase==sourceDyLocalFrictionRow;
+        const uint row=local?0u:frictionBase+anchor*2u;
+        const SourceDyFrictionRow first=prepareFrictionRow(row,tangent0,r0,r1,error,a,b,
+            slop,invDt,rigidBias,errorAddress,local);
+        const SourceDyFrictionRow second=prepareFrictionRow(row+1u,tangent1,r0,r1,error,a,b,
+            slop,invDt,rigidBias,errorAddress,local);
+        if(local) {
+            prepared.first=first;prepared.second=second;prepared.local=true;
+        }
     }
 }

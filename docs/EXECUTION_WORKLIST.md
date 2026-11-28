@@ -198,7 +198,10 @@ These are implementation milestones, not hardware-performance acceptance.
     single-point normals have no physical numerical row. Resident Sc
     prefixes omit exclusive single-point normals; candidate topology bounds
     their backing before submission. Unresolved potential dependencies
-    retain conservative capacity without a host observation.
+    retain conservative capacity without a host observation. Exclusive
+    single-anchor tangents retain their Jacobians, coefficients and impulses
+    locally; source anchor slots map to independently sized physical rows.
+    Multi-anchor and coupled patches retain physical backing.
 - [ ] Audit shader work and binding granularity. Keep pair- or group-local
   intermediates in registers/shared memory where practical; reduce
   redundant dispatch, compaction, scan and publication work.

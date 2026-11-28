@@ -182,6 +182,7 @@ struct SourceDyLaunchStats {
     std::size_t normal_numerical_bytes=0u;
     // Normal capacity omitted before submission.
     std::size_t local_normal_rows=0u;
+    std::size_t friction_numerical_bytes=0u,local_friction_rows=0u;
     std::size_t local_joint_rows=0u;
     std::size_t device_joint_metadata_upload_bytes=0u;
     std::size_t prewitness_joint_source_upload_bytes=0u;
@@ -841,8 +842,7 @@ public:
                              sizeof(native::GpuDyFrictionRow) ||
            friction_count%2u || anchors.size()!=friction_count/2u)
             throw std::logic_error("Source friction rows lack paired anchors");
-        const auto friction_bytes=
-            friction_count*sizeof(native::GpuDyFrictionRow);
+
         last_friction_writeback_bytes_=compact_friction
             ? anchor_impulses.size()*sizeof(native::GpuDyFrictionAnchorImpulse)
             : friction.size()*sizeof(native::GpuDyFrictionWriteback);
@@ -1568,6 +1568,49 @@ public:
                 throw std::logic_error("Packed Dy contact has multiple numerical owners");
         }
         const auto materialized_normal_rows=numerical_contact_rows-local_normal_managers_.size();
+        // The anchor source window owns publication, not transient tangent rows.
+        friction_row_map_.clear();
+        std::size_t local_friction_rows=0u;
+        for(std::size_t i=0u;i<manifolds.size();++i) {
+            const auto& manager=manifolds[i];
+            if(manager.patch_count!=1u)continue;
+            const auto& patch=patches[manager.patch_offset];
+            const bool pcm=contact_origin(manager.prep_index).pcm_pair_index!=invalid;
+            const bool resident_local=device_admission &&
+                i<device_admission->exclusive_contacts.size() &&
+                device_admission->exclusive_contacts[i]!=0u &&
+                (pcm?patch.contact_count:manager.contact_count)==1u;
+            const bool host_local=std::binary_search(local_normal_managers_.begin(),
+                                                     local_normal_managers_.end(),narrow(i));
+            if(!resident_local && !host_local)continue;
+            const auto capacity=(patch.broken&0x80000000u)!=0u
+                ?((patch.broken&native::gpu_dy_pcm_single_anchor)!=0u?2u:4u)
+                :patch.anchor_count*2u;
+            if(capacity!=2u)continue;
+            if(patch.row_offset%2u || patch.row_offset>=friction_count ||
+               2u>friction_count-patch.row_offset)
+                throw std::logic_error("Exclusive Dy friction source range invalid");
+            if(friction_row_map_.empty())friction_row_map_.assign(anchors.size()+1u,0u);
+            auto& entry=friction_row_map_[1u+patch.row_offset/2u];
+            if(entry!=0u)throw std::logic_error("Exclusive Dy friction source aliases another owner");
+            entry=0xfffffffeu;
+            local_friction_rows+=2u;
+        }
+        const auto materialized_friction_rows=friction_count-local_friction_rows;
+        if(!friction_row_map_.empty()) {
+            std::uint32_t physical=0u;
+            friction_row_map_[0]=narrow(materialized_friction_rows);
+            for(std::size_t i=1u;i<friction_row_map_.size();++i)
+                if(friction_row_map_[i]!=0xfffffffeu) {
+                    friction_row_map_[i]=physical;
+                    physical+=2u;
+                }
+            if(physical!=materialized_friction_rows)
+                throw std::logic_error("Dy friction map disagrees with numerical allocation");
+        }
+        const auto friction_bytes=materialized_friction_rows*sizeof(native::GpuDyFrictionRow);
+        last_schedule_.friction_numerical_bytes=friction_bytes;
+        last_schedule_.local_friction_rows=local_friction_rows;
         constexpr std::size_t normal_row_bytes=44u;
         if(materialized_normal_rows>std::numeric_limits<std::size_t>::max()/normal_row_bytes)
             throw std::overflow_error("Source Dy contact row byte count overflow");
@@ -1710,7 +1753,8 @@ public:
             device_admission?0u:ordinal_bytes,
             device_admission?0u:task_bytes,
             contact_bytes,friction_bytes,
-            patches.size_bytes(),manifolds.size_bytes(),contact_order.size_bytes(),
+            patches.size_bytes()+friction_row_map_.size()*sizeof(std::uint32_t),
+            manifolds.size_bytes(),contact_order.size_bytes(),
             compact_prep_bytes,
             integration_bytes,compact_anchor_bytes,
             tiles_.size()*sizeof(WorkTile),
@@ -1990,13 +2034,23 @@ public:
             }
         }
         for(std::size_t i=0;i<count;++i)
-            if(i!=6u && i!=7u && i!=11u && i!=12u &&
+            if(i!=6u && i!=7u && i!=8u && i!=11u && i!=12u &&
                i!=13u && i!=15u && i!=16u && i!=17u && bytes[i] &&
                (!compact_joint_rows || i!=1u) &&
                (!device_initial_bodies || i!=0u) &&
                (!device_partitions || (i!=2u && i!=3u)) &&
                (!device_admission || (i!=4u && i!=5u)))
                 write_input(offsets[i],sources[i],bytes[i]);
+        write_input(offsets[8],patches.data(),patches.size_bytes());
+        if(!friction_row_map_.empty()) {
+            write_input(offsets[8]+patches.size_bytes(),friction_row_map_.data(),
+                        friction_row_map_.size()*sizeof(std::uint32_t));
+            for(std::size_t i=0u;i<patches.size();++i) {
+                const auto flags=patches[i].broken|0x02000000u;
+                write_input(offsets[8]+i*sizeof(native::GpuDyContactPatch)+
+                            offsetof(native::GpuDyContactPatch,broken),&flags,sizeof(flags));
+            }
+        }
         // Source order is independent of the physical normal row base.
         std::size_t local_normal_cursor=0u,physical_normal_row=0u;
         for(std::size_t i=0u;i<manifolds.size();++i) {
@@ -4316,7 +4370,8 @@ private:
     std::size_t actor_local_capacity_=0u,actor_local_live_slots_=0u;
     std::vector<native::GpuDyJointInput> joint_source_host_;
     std::vector<std::uint8_t> joint_source_valid_,joint_row_source_seen_;
-    std::vector<std::uint32_t> joint_source_dirty_,local_joint_rows_,local_normal_managers_;
+    std::vector<std::uint32_t> joint_source_dirty_,local_joint_rows_,local_normal_managers_,
+                               friction_row_map_;
     std::vector<std::uint32_t> joint_source_late_upload_slots_;
     std::vector<std::uint32_t> prewitness_joint_source_slots_;
     std::vector<std::uint32_t> prewitness_actor_slots_;

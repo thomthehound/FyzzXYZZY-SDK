@@ -8683,9 +8683,25 @@ void verify_exclusive_resident_normals(
                 schedule.device_admitted_descriptors==count &&
                 schedule.local_normal_rows==count &&
                 schedule.normal_numerical_bytes==0u &&
+                schedule.local_friction_rows==count*2u &&
+                schedule.friction_numerical_bytes==0u &&
                 cpu.contacts().size()==count && gpu.contacts().size()==count,
             "Exclusive resident normal solve allocated global numerical rows");
+        const auto cpu_friction=cpu.solved_friction_patches();
+        const auto gpu_friction=gpu.solved_friction_patches();
+        require(cpu_friction.size()==count && gpu_friction.size()==count,
+                "Exclusive resident solve lost source friction patches");
         for(std::size_t i=0u;i<count;++i) {
+            const auto& a=cpu_friction[i];
+            const auto& b=gpu_friction[i];
+            require(a.pair==b.pair && a.anchor_count==1u && b.anchor_count==1u &&
+                    a.broken==b.broken,
+                    "Exclusive resident solve changed anchor ownership");
+            const auto x=a.anchor_impulses[0],y=b.anchor_impulses[0];
+            require(std::fabs(x.x)+std::fabs(x.y)+std::fabs(x.z)>0.001f &&
+                    std::fabs(x.x-y.x)<0.05f && std::fabs(x.y-y.y)<0.05f &&
+                    std::fabs(x.z-y.z)<0.05f,
+                    "Exclusive resident solve changed tangent impulse publication");
             test::compound_compare_state(gpu.body_state(actual[i]),
                 cpu.body_state(reference[i]),0.03f,
                 "Exclusive resident normal changed rigid contact motion");
@@ -10464,7 +10480,10 @@ void verify_host_lane_packed_islands(
             std::size_t contacts=0u;
             for(const auto& manager:gpu.contacts())contacts+=manager.count;
             require(schedule.local_normal_rows==1u &&
-                    (device_admission || schedule.normal_numerical_bytes==(contacts-1u)*44u),
+                    (device_admission || schedule.normal_numerical_bytes==(contacts-1u)*44u) &&
+                    schedule.local_friction_rows==2u &&
+                    schedule.friction_numerical_bytes==
+                        (producer->dy_friction_prepared_rows()-2u)*sizeof(native::GpuDyFrictionRow),
                 "Packed single-point contact retained global numerical storage");
         }
         test::compound_compare_state(gpu.body_state(contact_gpu),cpu.body_state(contact_cpu),

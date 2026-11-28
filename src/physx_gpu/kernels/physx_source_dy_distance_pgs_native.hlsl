@@ -1866,9 +1866,11 @@ void admitPcmContactExtents(uint begin,uint end,uint lane,uint endError) {
 
 void prepareConstraint(uint4 desc,uint lane,uint lanes,uint endError,
                        bool retainSingle,out SourceDyPreparedJoint prepared,
-                       out SourceDyPreparedNormal normal) {
+                       out SourceDyPreparedNormal normal,
+                       out SourceDyPreparedFriction friction) {
     prepared=(SourceDyPreparedJoint)0;
     normal=(SourceDyPreparedNormal)0;
+    friction=(SourceDyPreparedFriction)0;
     if(desc.w!=0u) {
         prepareJointRows(desc,lane,lanes,endError,retainSingle,prepared);
         return;
@@ -1928,7 +1930,8 @@ void prepareConstraint(uint4 desc,uint lane,uint lanes,uint endError,
                 sourceDyTaskErrorOr(endError,16384u);
             else
                 prepareFrictionPatch(patchIndex,pairIndex,
-                                     manager.z,manager.w,endError,frame,ready);
+                                     manager.z,manager.w,endError,frame,ready,
+                                     retainSingle && normalBegin==sourceDyLocalNormalRow,friction);
         }
         covered+=count;
     }
@@ -1940,8 +1943,9 @@ void prepareConstraints(uint begin,uint end,uint lane,uint endError) {
     for(uint i=begin+(lane>>2u);i<end;i+=32u) {
         SourceDyPreparedJoint unused;
         SourceDyPreparedNormal unusedNormal;
+        SourceDyPreparedFriction unusedFriction;
         prepareConstraint(sourceDyNumericalDescriptor(i),lane&3u,4u,
-                          endError,false,unused,unusedNormal);
+                          endError,false,unused,unusedNormal,unusedFriction);
     }
 }
 
@@ -2408,7 +2412,8 @@ void publishTaskError(uint task,uint error) {
 void sourceDySolveExclusive(uint4 desc,uint2 iters,uint2 iterations,
                             uint2 bodies,uint errorAddress,
                             SourceDyPreparedJoint prepared,
-                            SourceDyPreparedNormal preparedNormal,bool ownedMotion) {
+                            SourceDyPreparedNormal preparedNormal,
+                            SourceDyPreparedFriction preparedFriction,bool ownedMotion) {
     SourceDyContactSpan span=(SourceDyContactSpan)0;
     SourceDySolverPair state;
     const bool joint=desc.w!=0u;
@@ -2464,15 +2469,28 @@ void sourceDySolveExclusive(uint4 desc,uint2 iters,uint2 iterations,
         impulseStride=64u;
     }else if(!joint && span.manager.y==1u) {
         const uint4 patch=span.singlePatch;
-        if(patch.z<=dyLocalImpulseCapacity/2u &&
-           patch.x<=p.frictionCount &&
-           patch.z*2u<=p.frictionCount-patch.x) {
+        uint physical;
+        if(!sourceDyFrictionStorage(patch,physical)) {
+            sourceDyTaskErrorOr(errorAddress,128u);
+            return;
+        }
+        if(patch.z<=dyLocalImpulseCapacity/2u) {
             localCount=patch.z*2u;
-            impulseBase=p.frictionBias+patch.x*52u+48u;
-            impulseStride=52u;
+            if(physical==sourceDyLocalFrictionRow) {
+                if(!preparedFriction.local || iterations.x!=0u ||
+                   iterations.y!=iters.x+max(iters.y,1u)) {
+                    sourceDyTaskErrorOr(errorAddress,128u);
+                    return;
+                }
+            }else {
+                impulseBase=p.frictionBias+physical*52u+48u;
+                impulseStride=52u;
+            }
         }
     }
-    float4 impulses=sourceDyLoadImpulses(impulseBase,impulseStride,localCount);
+    float4 impulses=0.0f;
+    if(!preparedFriction.local)
+        impulses=sourceDyLoadImpulses(impulseBase,impulseStride,localCount);
     const uint total=iters.x+max(iters.y,1u);
     for(uint iteration=iterations.x;iteration<iterations.y;++iteration) {
         const bool biased=iteration<iters.x;
@@ -2490,7 +2508,7 @@ void sourceDySolveExclusive(uint4 desc,uint2 iters,uint2 iterations,
         else
             solved=solveContactRows(desc,span,errorAddress,biased,friction,
                                     finalPass,state,localNormal,normal,
-                                    localCount,impulses);
+                                    localCount,impulses,preparedFriction);
         if(!solved)return;
         if(iteration+1u==iters.x) {
             // Position integration consumes the biased-phase snapshot,
@@ -2606,7 +2624,8 @@ void sourceDySolvePackedTask(uint taskId,bool precolored) {
     desc.w&=255u;
     SourceDyPreparedJoint prepared;
     SourceDyPreparedNormal normal;
-    prepareConstraint(desc,0u,1u,errorAddress,true,prepared,normal);
+    SourceDyPreparedFriction friction;
+    prepareConstraint(desc,0u,1u,errorAddress,true,prepared,normal,friction);
     if(sourceDyTaskLoad(errorAddress)!=0u) {
         publishTaskError(taskId,sourceDyTaskLoad(errorAddress));
         return;
@@ -2614,7 +2633,7 @@ void sourceDySolvePackedTask(uint taskId,bool precolored) {
 
     const uint total=iters.x+max(iters.y,1u);
     sourceDySolveExclusive(desc,iters,uint2(0u,total),bodies,errorAddress,
-                           prepared,normal,false);
+                           prepared,normal,friction,false);
     if(sourceDyTaskLoad(errorAddress)!=0u) {
         publishTaskError(taskId,sourceDyTaskLoad(errorAddress));
         return;
@@ -3336,7 +3355,8 @@ void main(uint3 group:SV_GroupID,uint3 lane:SV_GroupThreadID) {
                         sourceDySolveExclusive(
                             sourceDyNumericalDescriptor(i),iters,iterations,
                             uint2(0u,0u),endError,(SourceDyPreparedJoint)0,
-                            (SourceDyPreparedNormal)0,initializedMotion);
+                            (SourceDyPreparedNormal)0,(SourceDyPreparedFriction)0,
+                            initializedMotion);
                 }
                 if(!initializedMotion && pass==0u) {
                     AllMemoryBarrierWithGroupSync();
