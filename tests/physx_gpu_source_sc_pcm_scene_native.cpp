@@ -9817,6 +9817,74 @@ void verify_owned_color_task(fyzz::native::GpuBroadphaseProducer& producer) {
     }
 }
 
+
+// Compact and streamed joint blocks use the same ordered row algebra.
+// Compare exclusive device coloring with explicit partition execution.
+void verify_exclusive_joint_blocks(fyzz::native::GpuBroadphaseProducer& producer) {
+    using namespace fyzz;
+    const std::array<std::uint32_t,2> ordinals{{0u,1u}};
+    const std::array<std::uint32_t,1> ends{{1u}};
+    const auto solve=[&](std::uint32_t count,bool colored,bool initialized) {
+        std::array<native::GpuDyDistanceBody,2> bodies{};
+        std::array<native::GpuDyBodyIntegrationInput,2> integration{};
+        std::array<native::GpuDyIntegratedPose,2> poses{};
+        std::array<native::GpuDyJointRow,6> rows{};
+        for(auto& body:bodies)body.inverse_mass=1.f;
+        if(!initialized) {
+            bodies[0].linear_delta[0]=0.125f;
+            bodies[1].angular_state[2]=-0.0625f;
+        }
+        for(std::uint32_t i=0u;i<count;++i) {
+            auto& row=rows[i];
+            row.axis[i%3u]=1.f;
+            row.angular_a[(i+1u)%3u]=0.125f;
+            row.angular_b[(i+2u)%3u]=0.25f;
+            row.inverse_mass_a=row.inverse_mass_b=1.f;
+            row.velocity_multiplier=-0.375f;
+            row.constant=0.025f*float(i+1u);
+            row.unbiased_constant=-0.01f*float(i+1u);
+            row.applied_force=0.005f*float(i);
+        }
+        const std::array<native::GpuDyDistanceDescriptor,1> descriptors{{
+            {0u,0u,1u,count|(colored?0x300u:0u)}
+        }};
+        std::array<native::GpuDyDistanceTask,1> tasks{{
+            {0u,1u,0u,1u,0u,2u,6u,3u,0u}
+        }};
+        const std::array<native::GpuPcmBoxPair,0> no_pairs{};
+        std::array<native::GpuPcmBoxResult,0> no_witness{};
+        producer.enqueue_gpu_pcm_box_contacts(no_pairs,no_witness);
+        producer.enqueue_gpu_dy_distance(
+            bodies,std::span{rows}.first(count),descriptors,
+            colored?std::span<const std::uint32_t>{}:
+                    std::span<const std::uint32_t>{ends},
+            ordinals,tasks,{},{},{},{},{},{},{},{},integration,poses,
+            colored,{},colored && initialized);
+        producer.finish_gpu_dy_distance();
+        producer.commit_gpu_step();
+        require(tasks[0].error==0u,"Exclusive joint block rejected");
+        return bodies;
+    };
+    for(const auto count:{3u,6u})
+        for(const bool initialized:{false,true}) {
+            const auto reference=solve(count,false,initialized);
+            const auto actual=solve(count,true,initialized);
+            for(std::size_t i=0u;i<actual.size();++i) {
+                const auto compare=[](const float* a,const float* b) {
+                    for(unsigned k=0u;k<3u;++k)
+                        require(std::fabs(a[k]-b[k])<1e-6f,
+                                "Exclusive joint block changed PGS body or motion state");
+                };
+                compare(actual[i].linear_delta,reference[i].linear_delta);
+                compare(actual[i].angular_state,reference[i].angular_state);
+                compare(actual[i].motion_linear_delta,
+                        reference[i].motion_linear_delta);
+                compare(actual[i].motion_angular_state,
+                        reference[i].motion_angular_state);
+            }
+        }
+}
+
 // Hub and connected two-hub graphs exercise the source-order
 // 32-color rollover. Mixed static contact and 1D rows reserve colors
 // without writing one dynamic body from concurrent PGS lanes.
@@ -9843,7 +9911,10 @@ void verify_gpu_high_degree_coloring(
         std::move(shader));
     auto* producer=owner.get();
     gpu.set_gpu_broadphase(std::move(owner));
-    if(dual_hub)verify_owned_color_task(*producer);
+    if(dual_hub) {
+        verify_owned_color_task(*producer);
+        verify_exclusive_joint_blocks(*producer);
+    }
     const auto assemble=[leaves,dual_hub,pure_hub](native::Scene& scene) {
         std::vector<BodyId> ids;
         ids.reserve(leaves+1u+(dual_hub?1u:0u));
