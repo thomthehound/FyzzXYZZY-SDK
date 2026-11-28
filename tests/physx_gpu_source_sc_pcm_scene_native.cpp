@@ -224,7 +224,7 @@ struct SourceScDeviceIslandFixture {
                     if(row!=exact_prefix)
                         throw std::runtime_error(
                             "Sc numerical rows lost device source order");
-                    if(extent&0x80000000u)
+                    if((extent&0xc0000000u)==0x80000000u)
                         exact_prefix+=extent&255u;
                 }
                 std::uint32_t edge=0u;
@@ -2277,7 +2277,7 @@ void verify(fyzz::compute::Backend backend,const char* sap,
         physx_gpu::SourceScDeviceIslandFixture::extent(*producer,1u);
     require((mixed_gpu_extent&0x80000000u)!=0u &&
             (mixed_gpu_extent&7u)>0u &&
-            mixed_host_extent==0x80000001u &&
+            mixed_host_extent==0xc0000001u &&
             mixed_graph.errors==0u &&
             mixed_graph.runnable_components==2u &&
             mixed_graph.responding_nodes==2u &&
@@ -8526,8 +8526,9 @@ void verify_sphere_gpu_solver(
                     schedule.single_anchor_pcm_patches<=pcm_managers &&
                     producer->dy_friction_prepared_rows()==
                         schedule.single_anchor_pcm_patches*2u &&
-                    schedule.normal_numerical_bytes==
-                        schedule.single_anchor_pcm_patches*44u,
+                    schedule.normal_numerical_bytes+schedule.local_normal_rows*44u==
+                        schedule.single_anchor_pcm_patches*44u &&
+                    schedule.local_normal_rows>0u,
                 "Fresh single-point PCM reserved redundant numerical rows");
             for(std::size_t j=0;j<cpu.contacts().size();++j) {
                 const auto& source=cpu.contacts()[j];
@@ -10403,11 +10404,11 @@ void verify_host_lane_packed_islands(
                     schedule.joint_numerical_bytes==
                         schedule.device_joint_input_rows*sizeof(native::GpuDyJointRow),
                 "Device-admitted joint capacity lost its conservative bound");
-        if(!device_admission && frame==0u) {
+        if(frame==0u) {
             std::size_t contacts=0u;
             for(const auto& manager:gpu.contacts())contacts+=manager.count;
             require(schedule.local_normal_rows==1u &&
-                    schedule.normal_numerical_bytes==(contacts-1u)*44u,
+                    (device_admission || schedule.normal_numerical_bytes==(contacts-1u)*44u),
                 "Packed single-point contact retained global numerical storage");
         }
         test::compound_compare_state(gpu.body_state(contact_gpu),cpu.body_state(contact_cpu),

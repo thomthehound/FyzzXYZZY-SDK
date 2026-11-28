@@ -909,7 +909,7 @@ public:
                 "Pre-witness retained friction source changed before Dy admission");
         retained_patch_inputs_.clear();
         packed_retained_candidates_.clear();
-        std::size_t selected_retained=0u;
+        std::size_t selected_retained=0u,exclusive_pcm_rows=0u,exclusive_gu_rows=0u;
         for(const auto& manager:manifolds) {
             if(!manager.patch_count)continue;
             if(manager.prep_index>=prep_count ||
@@ -928,6 +928,11 @@ public:
             const auto capacity=pcm
                 ?patches[manager.patch_offset].contact_count
                 :manager.contact_count;
+            const auto manager_index=std::size_t(&manager-manifolds.data());
+            const bool exclusive=device_admission && capacity==1u &&
+                manager.patch_count==1u &&
+                manager_index<device_admission->exclusive_contacts.size() &&
+                device_admission->exclusive_contacts[manager_index]!=0u;
             const auto source_begin=pcm
                 ?manager.source_order_offset:manager.order_offset;
             if(source_begin>contact_forces.size() ||
@@ -940,6 +945,7 @@ public:
                         "Source PCM pair unexpectedly owns CPU Gu geometry");
                 reused_pcm_rows+=capacity;
                 pcm_numerical_bound+=std::min<std::size_t>(capacity,4u);
+                exclusive_pcm_rows+=exclusive;
             } else {
                 if(pair.cpu_gu_offset==0xffffffffu ||
                    pair.cpu_gu_offset>cpu_gu.size() ||
@@ -947,6 +953,7 @@ public:
                     throw std::logic_error(
                         "Source CPU Gu contact inputs are incomplete");
                 cpu_gu_rows+=capacity;
+                exclusive_gu_rows+=exclusive;
             }
             for(std::size_t i=manager.patch_offset;
                 i<manager.patch_offset+manager.patch_count;++i) {
@@ -1017,7 +1024,8 @@ public:
         // Device prefixes address compact normal rows independently of
         // source force windows. PCM emits at most four rows per response.
         const auto numerical_contact_rows=device_admission
-            ?cpu_gu_rows+std::min(pcm_numerical_bound,descriptor_capacity*4u)
+            ?cpu_gu_rows-exclusive_gu_rows+
+                std::min(pcm_numerical_bound-exclusive_pcm_rows,descriptor_capacity*4u)
             :contact_forces.size();
         // Reuse resident Dy body inputs and share identical timestep
         // coefficients across the source contact-preparation records.
@@ -1564,7 +1572,8 @@ public:
             throw std::overflow_error("Source Dy contact row byte count overflow");
         const auto contact_bytes=materialized_normal_rows*normal_row_bytes;
         last_schedule_.normal_numerical_bytes=contact_bytes;
-        last_schedule_.local_normal_rows=local_normal_managers_.size();
+        last_schedule_.local_normal_rows=local_normal_managers_.size()+
+            exclusive_pcm_rows+exclusive_gu_rows;
         const auto materialized_joint_rows=logical_joint_rows-local_joint_rows_.size();
         last_schedule_.local_joint_rows=local_joint_rows_.size();
         const auto raw_descriptor_count=source_descriptors && !packed_only

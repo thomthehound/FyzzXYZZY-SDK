@@ -76,7 +76,8 @@ bool sourceDyLoadContactSpan(uint4 descriptor,uint errorAddress,
     if(span.manager.y==0u)return true;
     span.sourceBegin=arena.Load(managerAddress+20u);
     span.normalBegin=span.manager.z;
-    if((p.launchControl&0x08000000u)==0u)span.manager.z=span.sourceBegin;
+    if((p.launchControl&0x08000000u)==0u || span.normalBegin==sourceDyLocalNormalRow)
+        span.manager.z=span.sourceBegin;
     const uint4 manager=span.manager;
     const uint logicalCount=sourceDyContactLogicalCount();
     if(manager.x>p.patchCount || manager.y>p.patchCount-manager.x ||

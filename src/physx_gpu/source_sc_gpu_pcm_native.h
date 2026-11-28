@@ -789,6 +789,8 @@ public:
         const auto edge_capacity=device_edge_history_capacity();
         constexpr std::uint32_t invalid=0xffffffffu;
         std::uint32_t response_capacity=0u;
+        island_node_degree_.assign(node_count,0u);
+        island_exclusive_contacts_.assign(sources.contact_managers,0u);
         for(const auto& edge:edges) {
             if(edge.edge_index==invalid ||
                (edge.kind&~(source_sc_device_island_joint_bit|
@@ -809,6 +811,21 @@ public:
                 throw std::invalid_argument("Device Sc island edge is not admitted");
             if((edge.kind&source_sc_device_island_no_response_bit)==0u)
                 ++response_capacity;
+            if(edge.node_a!=invalid && island_node_degree_[edge.node_a]<2u)
+                ++island_node_degree_[edge.node_a];
+            if(edge.node_b!=invalid && edge.node_b!=edge.node_a &&
+               island_node_degree_[edge.node_b]<2u)
+                ++island_node_degree_[edge.node_b];
+        }
+        // Even nonresponding edges can connect otherwise independent tasks.
+        for(const auto& edge:edges) {
+            if((edge.kind&(source_sc_device_island_joint_bit|
+                           source_sc_device_island_no_response_bit))!=0u ||
+               edge.source_index>=sources.contact_managers ||
+               (edge.node_a==invalid && edge.node_b==invalid))continue;
+            if((edge.node_a==invalid || island_node_degree_[edge.node_a]==1u) &&
+               (edge.node_b==invalid || island_node_degree_[edge.node_b]==1u))
+                island_exclusive_contacts_[edge.source_index]=1u;
         }
         for(const auto word:node_flags.first(node_count))
             if((word&0xfff80000u)!=0u ||
@@ -926,6 +943,10 @@ public:
     }
     std::uint32_t device_island_response_capacity() const noexcept {
         return island_work_ready_?island_response_capacity_:0u;
+    }
+    std::span<const std::uint8_t> device_island_exclusive_contacts() const noexcept {
+        return island_work_ready_?std::span<const std::uint8_t>{island_exclusive_contacts_}:
+            std::span<const std::uint8_t>{};
     }
     std::uint32_t device_island_contact_capacity() const noexcept {
         return island_work_ready_?island_contact_count_:0u;
@@ -1245,6 +1266,7 @@ private:
     std::uint32_t island_node_count_=0u,island_edge_count_=0u,
                   island_contact_count_=0u,island_response_capacity_=0u;
     std::uint32_t island_joint_count_=0u;
+    std::vector<std::uint8_t> island_node_degree_,island_exclusive_contacts_;
     compute::BufferId indirect_buffer_=0u;
     CudaDeviceAddressMap::Address indirect_address_=0u;
     std::vector<SourcePcmBoxPairNative> pair_host_;

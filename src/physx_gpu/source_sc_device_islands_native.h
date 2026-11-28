@@ -220,6 +220,7 @@ struct SourceScDeviceIslandDyView {
     bool deferred_joint_remap=false;
     std::uint32_t joint_source_count=0u;
     std::span<const std::uint32_t> source_to_solver_row{};
+    std::span<const std::uint8_t> exclusive_contacts{};
 };
 class SourceScDeviceIslandsNativeStage final {
 public:

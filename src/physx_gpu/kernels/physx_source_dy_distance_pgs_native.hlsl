@@ -625,19 +625,18 @@ uint sourceDyContactPublicationCount() {
 }
 static const uint sourceDyLocalNormalRow=0xfffffffeu;
 uint sourceDyContactLogicalCount() {
-    return (p.launchControl&0x08000000u)!=0u
-        ?p.contactCount:sourceDyContactPublicationCount();
+    return sourceDyContactPublicationCount();
 }
 bool sourceDyNormalStorageValid(uint begin,uint count) {
     return begin==sourceDyLocalNormalRow
-        ?(p.launchControl&0x08000000u)==0u && count<=1u
+        ?count<=1u
         :begin<=p.contactCount && count<=p.contactCount-begin;
 }
 #include "physx_source_dy_contact_pgs_native.hlsli"
 
 // Sc assigns each response its exact numerical contact window.
 bool sourceDyRelocateContact(uint4 desc,uint scratch,uint responseIndex,
-                             uint errorAddress) {
+                             uint errorAddress,bool exclusive) {
     if((desc.w&255u)!=0u)return true;
     if(desc.x>=p.manifoldCount) {
         sourceDyTaskErrorOr(errorAddress,65536u);
@@ -663,6 +662,16 @@ bool sourceDyRelocateContact(uint4 desc,uint scratch,uint responseIndex,
        (pcm && patchCount!=1u)) {
         sourceDyTaskErrorOr(errorAddress,65536u);
         return false;
+    }
+    const uint extent=sourceDyResponseExtent(scratch,responseIndex);
+    if((extent&0x40000000u)!=0u) {
+        if(!exclusive || exact!=1u || patchCount!=1u ||
+           arena.Load(p.patchBias+patchFirst*32u+4u)!=1u) {
+            sourceDyTaskErrorOr(errorAddress,65536u);
+            return false;
+        }
+        arena.Store(manager+8u,sourceDyLocalNormalRow);
+        return true;
     }
     const uint firstRow=sourceDyContactPrefix(scratch,responseIndex);
     if(firstRow>p.contactCount || exact>p.contactCount-firstRow) {
@@ -1132,7 +1141,10 @@ void sourceDyPartitionTask(uint taskId,uint scratch,uint errorAddress,
             }
         }
         if(deviceAdmission &&
-           !sourceDyRelocateContact(desc,scratch,i,errorAddress))
+           !sourceDyRelocateContact(desc,scratch,i,errorAddress,
+               last-first==1u &&
+               sourceDyTaskLoad(task+20u)>sourceDyTaskLoad(task+16u) &&
+               sourceDyTaskLoad(task+20u)-sourceDyTaskLoad(task+16u)<=2u))
             continue;
         // Unchanged descriptors retain their numerical slots. Changed
         // topology triggers a complete recolor of the task.
@@ -1869,7 +1881,8 @@ void prepareConstraint(uint4 desc,uint lane,uint lanes,uint endError,
     uint4 manager=arena.Load4(mo);
     if(manager.y==0u)return;
     const uint normalBegin=manager.z;
-    if((p.launchControl&0x08000000u)==0u)manager.z=arena.Load(mo+20u);
+    if((p.launchControl&0x08000000u)==0u || normalBegin==sourceDyLocalNormalRow)
+        manager.z=arena.Load(mo+20u);
     const uint logicalCount=sourceDyContactLogicalCount();
     uint pairIndex=arena.Load(mo+16u);
     if(pairIndex>=p.prepCount ||
@@ -2584,7 +2597,7 @@ void sourceDySolvePackedTask(uint taskId,bool precolored) {
         }
         if((p.launchControl&0x08000000u)!=0u &&
            !sourceDyRelocateContact(
-                desc,scratch,ranges.x,errorAddress)) {
+                desc,scratch,ranges.x,errorAddress,true)) {
             publishTaskError(taskId,sourceDyTaskLoad(errorAddress));
             return;
         }
@@ -3209,6 +3222,15 @@ void main(uint3 group:SV_GroupID,uint3 lane:SV_GroupThreadID) {
                     sourceDyTaskErrorOr(endError,4u);
                     publishTaskError(tile.x,4u);
                 }
+                return;
+            }
+        }
+        if(fused && devicePartitions && (p.launchControl&0x08000000u)!=0u &&
+           sourceDyPackedTaskShape(sourceDyTaskLoad4(t),bodies)) {
+            const uint4 desc=sourceDyNumericalDescriptor(descriptors.x);
+            if(desc.w==0u && desc.x<p.manifoldCount &&
+               arena.Load(p.manifoldBias+desc.x*24u+8u)==sourceDyLocalNormalRow) {
+                if(lane.x==0u)sourceDySolvePackedTask(taskId,true);
                 return;
             }
         }

@@ -41,6 +41,11 @@ ConstantBuffer<Parameters> p:register(b0,space0);
 static const uint invalid=0xffffffffu;
 static const uint contactEdge=0u;
 static const uint numericalExtentValid=0x80000000u;
+static const uint numericalLocalNormal=0x40000000u;
+uint materializedNormalCount(uint extent) {
+    return (extent&(numericalExtentValid|numericalLocalNormal))==numericalExtentValid
+        ?extent&255u:0u;
+}
 static const uint jointEdge=1u;
 static const uint noResponse=2u;
 static const uint reverseContact=4u;
@@ -239,7 +244,10 @@ uint responseExtent(uint edgeIndex) {
         work.Store(p.workBias+16u,0u);
         return 0u;
     }
-    return numericalExtentValid|emitted;
+    const uint root=work.Load(address+16u);
+    const uint2 counts=work.Load2(p.countBias+root*24u);
+    const bool local=emitted==1u && counts.x>0u && counts.x<=2u && counts.y==1u;
+    return numericalExtentValid|emitted|(local?numericalLocalNormal:0u);
 }
 uint itemRoot(uint item) {
     if(item>=p.nodeCount)return responseRoot(item-p.nodeCount);
@@ -716,8 +724,7 @@ void admitCompact(uint lane,bool speculativeWake) {
     for(uint index=lane;index<256u;index+=128u) {
         const uint extent=index<responses
             ?work.Load(p.extentBias+index*4u):0u;
-        compactContactScan[index]=(extent&numericalExtentValid)!=0u
-            ?(extent&255u):0u;
+        compactContactScan[index]=materializedNormalCount(extent);
     }
     GroupMemoryBarrierWithGroupSync();
     [unroll]
@@ -732,8 +739,7 @@ void admitCompact(uint lane,bool speculativeWake) {
     }
     for(uint index=lane;index<responses;index+=128u) {
         const uint extent=work.Load(p.extentBias+index*4u);
-        const uint count=(extent&numericalExtentValid)!=0u
-            ?(extent&255u):0u;
+        const uint count=materializedNormalCount(extent);
         work.Store(p.contactPrefixBias+index*4u,
                    compactContactScan[index]-count);
     }
@@ -802,8 +808,7 @@ void main(uint3 thread:SV_DispatchThreadID,
             const uint item=start+lane.x;
             const uint extent=item<responses
                 ?work.Load(p.extentBias+item*4u):0u;
-            const uint amount=(extent&numericalExtentValid)!=0u
-                ?(extent&255u):0u;
+            const uint amount=materializedNormalCount(extent);
             compactContactScan[lane.x]=amount;
             GroupMemoryBarrierWithGroupSync();
             scanContactBlock(lane.x);
@@ -825,8 +830,7 @@ void main(uint3 thread:SV_DispatchThreadID,
         if(p.phase==34u) {
             const uint extent=index<responses
                 ?work.Load(p.extentBias+index*4u):0u;
-            const uint amount=(extent&numericalExtentValid)!=0u
-                ?(extent&255u):0u;
+            const uint amount=materializedNormalCount(extent);
             compactContactScan[lane.x]=amount;
             GroupMemoryBarrierWithGroupSync();
             scanContactBlock(lane.x);

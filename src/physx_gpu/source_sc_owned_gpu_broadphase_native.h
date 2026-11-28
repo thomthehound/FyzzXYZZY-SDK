@@ -395,7 +395,8 @@ public:
                                         pcm_->device_island_deferred_body_remap(),
                                         pcm_->device_island_deferred_joint_remap(),
                                         pcm_->device_island_joint_source_count(),
-                                        pcm_->device_island_body_remap()}}
+                                        pcm_->device_island_body_remap(),
+                                        pcm_->device_island_exclusive_contacts()}}
                                 :std::nullopt,
                             deferred_points,readback_device_task_records,
                             compact_contact_admission,compact_contact_prep,

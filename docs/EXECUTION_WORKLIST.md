@@ -195,9 +195,10 @@ These are implementation milestones, not hardware-performance acceptance.
     responding edges. Compact normal rows use a response-bounded extent
     independent of source force publication. Pre-witness numerical
     backing still includes unresolved potential responses. Host-packed
-    single-point normals have no physical numerical row; mixed tasks
-    retain dense backing only for materialized rows. Reduce resident backing
-    without adding a host observation or changing source identity.
+    single-point normals have no physical numerical row. Resident Sc
+    prefixes omit exclusive single-point normals; candidate topology bounds
+    their backing before submission. Unresolved potential dependencies
+    retain conservative capacity without a host observation.
 - [ ] Audit shader work and binding granularity. Keep pair- or group-local
   intermediates in registers/shared memory where practical; reduce
   redundant dispatch, compaction, scan and publication work.
