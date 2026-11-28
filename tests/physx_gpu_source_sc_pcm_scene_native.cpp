@@ -9713,11 +9713,12 @@ void verify_gpu_zero_response_wide_island(
 void verify_owned_color_task(fyzz::native::GpuBroadphaseProducer& producer) {
     using namespace fyzz;
     constexpr std::uint32_t count=9u;
-    constexpr std::array<std::array<std::uint32_t,2>,7> endpoints{{
+    constexpr std::uint32_t fixed=0xffffffffu;
+    constexpr std::array<std::array<std::uint32_t,2>,9> endpoints{{
         {{0u,1u}},{{5u,6u}},{{2u,0u}},{{7u,5u}},
-        {{0u,3u}},{{5u,8u}},{{4u,0u}}
+        {{0u,3u}},{{5u,8u}},{{4u,0u}},{{5u,fixed}},{{fixed,0u}}
     }};
-    constexpr std::array<std::uint32_t,4> ends{{2u,4u,6u,7u}};
+    constexpr std::array<std::uint32_t,5> ends{{2u,4u,6u,8u,9u}};
     std::array<std::uint32_t,count> ordinals{};
     std::array<native::GpuDyJointRow,endpoints.size()> initial_rows{};
     std::array<native::GpuDyDistanceDescriptor,endpoints.size()> authored{};
@@ -9725,9 +9726,10 @@ void verify_owned_color_task(fyzz::native::GpuBroadphaseProducer& producer) {
     for(std::uint32_t i=0u;i<endpoints.size();++i) {
         auto& row=initial_rows[i];
         row.axis[0]=1.f;
-        row.angular_a[2]=0.125f;
-        row.angular_b[2]=0.25f;
-        row.inverse_mass_a=row.inverse_mass_b=1.f;
+        row.inverse_mass_a=endpoints[i][0]==fixed?0.f:1.f;
+        row.inverse_mass_b=endpoints[i][1]==fixed?0.f:1.f;
+        row.angular_a[2]=0.125f*row.inverse_mass_a;
+        row.angular_b[2]=0.25f*row.inverse_mass_b;
         row.velocity_multiplier=-0.375f;
         row.constant=0.025f*float(i+1u);
         row.unbiased_constant=-0.01f*float(i+1u);
@@ -9747,9 +9749,13 @@ void verify_owned_color_task(fyzz::native::GpuBroadphaseProducer& producer) {
             }
         }
         if(colored)
-            for(auto& desc:descriptors)desc.row_count|=0x300u;
+            for(auto& desc:descriptors)
+                desc.row_count|=(desc.row0==fixed?0u:0x100u)|
+                                (desc.row1==fixed?0u:0x200u);
+        constexpr auto responses=static_cast<std::uint32_t>(endpoints.size());
+        constexpr auto colors=static_cast<std::uint32_t>(ends.size());
         std::array<native::GpuDyDistanceTask,1> tasks{{
-            {0u,7u,0u,colored?7u:4u,0u,count,5u,3u,0u}
+            {0u,responses,0u,colored?responses:colors,0u,count,5u,3u,0u}
         }};
         const std::array<native::GpuPcmBoxPair,0> no_pairs{};
         std::array<native::GpuPcmBoxResult,0> no_witness{};
