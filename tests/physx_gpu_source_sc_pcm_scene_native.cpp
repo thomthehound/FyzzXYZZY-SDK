@@ -1010,16 +1010,37 @@ struct GpuPcmFrictionAnchorFixture {
             throw std::runtime_error(
                 "Sc retained speculative GPU PCM point reservations");
     }
+    static std::size_t expected_pcm_friction_rows(
+            const Scene& scene,std::size_t pcm) {
+        const auto& request=scene.gpu_pcm_pairs_.at(pcm);
+        const auto& source=scene.gpu_dy_candidate_sources_.at(pcm);
+        if(source.material.disable_friction)return 0u;
+        return request.candidate_capacity==1u &&
+            source.retained_count==0u &&
+            source.retained_single_patch==0xffffffffu?2u:4u;
+    }
     static void verify_pre_witness_pcm_capacity(const Scene& scene,
-                                                std::size_t expected_contacts,
-                                                std::size_t expected_friction) {
+                                                std::size_t expected_contacts) {
+        std::size_t expected_friction=0u;
+        for(std::size_t i=0u;i<scene.gpu_pcm_pairs_.size();++i) {
+            const auto& source=scene.gpu_dy_candidate_sources_.at(i);
+            if(source.friction_begin!=expected_friction)
+                throw std::runtime_error("PCM friction source windows are not contiguous");
+            expected_friction+=expected_pcm_friction_rows(scene,i);
+        }
         if(!scene.gpu_dy_source_body_order_ ||
            scene.gpu_dy_prewitness_contact_rows_!=expected_contacts ||
            scene.gpu_dy_prewitness_friction_rows_!=expected_friction ||
            scene.prepared_contact_rows_!=expected_contacts ||
            scene.prepared_friction_rows_!=expected_friction)
             throw std::runtime_error(
-                "Early PCM numerical windows depend on host touch results");
+                "Early PCM numerical windows differ from source capacity: normal="+
+                std::to_string(scene.gpu_dy_prewitness_contact_rows_)+"/"+
+                std::to_string(scene.prepared_contact_rows_)+" expected="+
+                std::to_string(expected_contacts)+" friction="+
+                std::to_string(scene.gpu_dy_prewitness_friction_rows_)+"/"+
+                std::to_string(scene.prepared_friction_rows_)+" expected="+
+                std::to_string(expected_friction));
         if(scene.gpu_dy_candidate_sources_compacted_ ||
            scene.gpu_dy_contact_prep_pairs_.size()<scene.gpu_pcm_pairs_.size())
             throw std::runtime_error("Early PCM source prefix was compacted");
@@ -1100,7 +1121,8 @@ struct GpuPcmFrictionAnchorFixture {
                     if(!patch.disable_friction &&
                        (patch.row_offset!=source.friction_begin ||
                         patch.row_offset>scene.gpu_dy_prewitness_friction_rows_ ||
-                        4u>scene.gpu_dy_prewitness_friction_rows_-patch.row_offset))
+                        expected_pcm_friction_rows(scene,manager.pcm_result_index)>
+                            scene.gpu_dy_prewitness_friction_rows_-patch.row_offset))
                         throw std::runtime_error(
                             "PCM friction lost its pre-witness numerical range");
                 }else numerical_end+=manager.count;
@@ -5839,8 +5861,7 @@ void verify_early_pcm_island_pipeline(
                 "Pre-witness Sc tasks were sized from host touch results");
             native::GpuPcmFrictionAnchorFixture::
                 verify_pre_witness_pcm_capacity(gpu,
-                    4u*(identity_order?2u:3u)+(with_sphere?1u:0u),
-                    4u*source_capacity);
+                    4u*(identity_order?2u:3u)+(with_sphere?1u:0u));
             native::GpuPcmFrictionAnchorFixture::
                 verify_device_contact_order(gpu,true,false);
         }

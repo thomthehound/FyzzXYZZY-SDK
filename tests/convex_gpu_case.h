@@ -443,7 +443,8 @@ inline void verify_convex_plane_gpu_solver(
                   gpu.contacts()[4].count==3u,
                 "Cooked hull contact managers lost tetrahedron, wedge, polygon or compound witnesses");
             check(producer->dy_cpu_gu_geometry_bytes()==0u &&
-                  producer->dy_pcm_device_contact_rows()==20u &&
+                  producer->dy_pcm_device_contact_rows()==17u &&
+                  producer->dy_launch_stats().normal_numerical_bytes==17u*44u &&
                   producer->pcm_header_join_bytes()==
                       5u*2u*sizeof(std::uint32_t) &&
                   producer->pcm_deferred_point_bytes()==
