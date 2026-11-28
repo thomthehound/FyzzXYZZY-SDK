@@ -5186,6 +5186,9 @@ void verify_single_pcm_joint_island_admission(
                 stats.device_joint_metadata_upload_bytes==
                     stats.prewitness_joint_source_upload_bytes &&
                 stats.device_joint_geometry_count==2u &&
+                stats.joint_row_input_bytes==0u &&
+                stats.compact_joint_source_bytes==
+                    2u*32u+stats.device_joint_input_rows*4u &&
                 (frame!=0u ||
                     (stats.prewitness_actor_local_upload_bytes>=
                         offsetof(physx_gpu::SourceDyActorLocalNative,
@@ -8192,6 +8195,8 @@ void verify_gpu_distance_solver(
                 producer->dy_gpu_integrated_body_count()>0u &&
                 producer->dy_launch_stats().device_joint_input_rows==3u &&
                 producer->dy_launch_stats().device_joint_geometry_count==3u &&
+                producer->dy_launch_stats().joint_row_input_bytes==0u &&
+                producer->dy_launch_stats().compact_joint_source_bytes==108u &&
                 (frame==0?producer->dy_launch_stats().device_joint_metadata_upload_bytes==
                     3u*sizeof(native::GpuDyJointInput)
                     :producer->dy_launch_stats().device_joint_metadata_upload_bytes==0u) &&
@@ -9408,8 +9413,12 @@ void verify_gpu_wide_island_solver(
                 schedule.device_colored_descriptors>=connected_bodies &&
                 schedule.host_degree_scanned_descriptors>=connected_bodies-2u &&
                 schedule.device_joint_input_rows>=connected_bodies/2u &&
-                schedule.device_joint_geometry_count>=connected_bodies/2u,
-            "Wide Dy task lost device joint preparation or coloring");
+                schedule.device_joint_geometry_count>=connected_bodies/2u &&
+                schedule.joint_row_input_bytes==0u &&
+                schedule.compact_joint_source_bytes==
+                    schedule.device_joint_geometry_count*32u+
+                    schedule.device_joint_input_rows*4u,
+            "Wide Dy task lost compact device joint preparation or coloring");
         // Once the assembly moves, individual supports can lose touch.
         // Joint connectivity must still supply a wide partition.
         const auto width=frame==0u?connected_bodies-2u:connected_bodies/2u;
