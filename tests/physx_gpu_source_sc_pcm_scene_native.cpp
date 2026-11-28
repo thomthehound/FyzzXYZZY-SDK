@@ -9708,6 +9708,82 @@ void verify_gpu_zero_response_wide_island(
             "Wide Dy zero-response contact and joint island");
 }
 
+// Two independent responding chains share one numerical task. Their
+// final color has one active lane, while both chains own earlier colors.
+void verify_owned_color_task(fyzz::native::GpuBroadphaseProducer& producer) {
+    using namespace fyzz;
+    constexpr std::uint32_t count=9u;
+    constexpr std::array<std::array<std::uint32_t,2>,7> endpoints{{
+        {{0u,1u}},{{5u,6u}},{{2u,0u}},{{7u,5u}},
+        {{0u,3u}},{{5u,8u}},{{4u,0u}}
+    }};
+    constexpr std::array<std::uint32_t,4> ends{{2u,4u,6u,7u}};
+    std::array<std::uint32_t,count> ordinals{};
+    std::array<native::GpuDyJointRow,endpoints.size()> initial_rows{};
+    std::array<native::GpuDyDistanceDescriptor,endpoints.size()> authored{};
+    for(std::uint32_t i=0u;i<count;++i)ordinals[i]=i;
+    for(std::uint32_t i=0u;i<endpoints.size();++i) {
+        auto& row=initial_rows[i];
+        row.axis[0]=1.f;
+        row.angular_a[2]=0.125f;
+        row.angular_b[2]=0.25f;
+        row.inverse_mass_a=row.inverse_mass_b=1.f;
+        row.velocity_multiplier=-0.375f;
+        row.constant=0.025f*float(i+1u);
+        row.unbiased_constant=-0.01f*float(i+1u);
+        authored[i]={i,endpoints[i][0],endpoints[i][1],1u};
+    }
+    const auto solve=[&](bool colored,bool initialize,bool nonzero) {
+        std::array<native::GpuDyDistanceBody,count> bodies{};
+        std::array<native::GpuDyBodyIntegrationInput,count> integration{};
+        std::array<native::GpuDyIntegratedPose,count> poses{};
+        auto rows=initial_rows;
+        auto descriptors=authored;
+        for(std::uint32_t i=0u;i<count;++i) {
+            bodies[i].inverse_mass=1.f;
+            if(nonzero) {
+                bodies[i].linear_delta[0]=0.03125f*float(i);
+                bodies[i].angular_state[2]=-0.015625f*float(i);
+            }
+        }
+        if(colored)
+            for(auto& desc:descriptors)desc.row_count|=0x300u;
+        std::array<native::GpuDyDistanceTask,1> tasks{{
+            {0u,7u,0u,colored?7u:4u,0u,count,5u,3u,0u}
+        }};
+        const std::array<native::GpuPcmBoxPair,0> no_pairs{};
+        std::array<native::GpuPcmBoxResult,0> no_witness{};
+        producer.enqueue_gpu_pcm_box_contacts(no_pairs,no_witness);
+        producer.enqueue_gpu_dy_distance(
+            bodies,rows,descriptors,
+            colored?std::span<const std::uint32_t>{}:
+                    std::span<const std::uint32_t>{ends},
+            ordinals,tasks,{},{},{},{},{},{},{},{},integration,poses,
+            colored,{},initialize);
+        producer.finish_gpu_dy_distance();
+        producer.commit_gpu_step();
+        require(tasks[0].error==0u,"Owned numerical task rejected");
+        return bodies;
+    };
+    for(const bool nonzero:{false,true}) {
+        const auto reference=solve(false,false,nonzero);
+        const auto actual=solve(true,!nonzero,nonzero);
+        for(std::uint32_t i=0u;i<count;++i) {
+            const auto compare=[](const float* a,const float* b) {
+                for(unsigned k=0u;k<3u;++k)
+                    require(std::fabs(a[k]-b[k])<1e-6f,
+                            "Owned color task changed PGS body or motion state");
+            };
+            compare(actual[i].linear_delta,reference[i].linear_delta);
+            compare(actual[i].angular_state,reference[i].angular_state);
+            compare(actual[i].motion_linear_delta,
+                    reference[i].motion_linear_delta);
+            compare(actual[i].motion_angular_state,
+                    reference[i].motion_angular_state);
+        }
+    }
+}
+
 // Hub and connected two-hub graphs exercise the source-order
 // 32-color rollover. Mixed static contact and 1D rows reserve colors
 // without writing one dynamic body from concurrent PGS lanes.
@@ -9734,6 +9810,7 @@ void verify_gpu_high_degree_coloring(
         std::move(shader));
     auto* producer=owner.get();
     gpu.set_gpu_broadphase(std::move(owner));
+    if(dual_hub)verify_owned_color_task(*producer);
     const auto assemble=[leaves,dual_hub,pure_hub](native::Scene& scene) {
         std::vector<BodyId> ids;
         ids.reserve(leaves+1u+(dual_hub?1u:0u));
