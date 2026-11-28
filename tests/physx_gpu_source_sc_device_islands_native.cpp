@@ -542,9 +542,8 @@ void verify(Context& context,const char* filename) {
                 "Parallel connectivity did not reconnect a physical bridge");
     }
 
-    // PCM and CPU Gu share one source-ordered numerical extent stream.
-    // The compact and parallel schedules preserve counts up to 255 without
-    // fetching physical witnesses or rebuilding Gu manifolds.
+    // PCM and CPU Gu retain exact extents; only materialized normals
+    // advance the numerical prefix in compact and parallel admission.
     for(const std::uint32_t nodes:{1u,2u,257u,384u,512u,513u,1024u}) {
         std::vector<SourceScDeviceIslandEdge> edges;
         std::vector<std::uint32_t> touches;
@@ -575,11 +574,46 @@ void verify(Context& context,const char* filename) {
                 result.second,result.first.response_extents+i*4u);
             const auto prefix=load<std::uint32_t>(
                 result.second,result.first.response_prefixes+i*4u);
-            require(source<nodes &&
-                    extent==(0x80000000u|count(source)) &&
-                    prefix==expected_prefix,
-                    "Device Sc numerical extent or contact prefix lost source order");
-            expected_prefix+=count(source);
+            const auto contacts=count(source);
+            const bool local=contacts==1u;
+            const auto expected_extent=0x80000000u|contacts|
+                (local?0x40000000u:0u);
+            if(source>=nodes || extent!=expected_extent || prefix!=expected_prefix)
+                throw std::runtime_error(
+                    "Device Sc numerical extent or contact prefix mismatch: nodes="+
+                    std::to_string(nodes)+" source="+std::to_string(source)+
+                    " extent="+std::to_string(extent)+
+                    " expected_extent="+std::to_string(expected_extent)+
+                    " prefix="+std::to_string(prefix)+
+                    " expected_prefix="+std::to_string(expected_prefix));
+            if(!local)expected_prefix+=contacts;
+        }
+    }
+    // One-point contacts in a coupled island require physical rows.
+    // An independent one-point response consumes no prefix space.
+    for(const std::uint32_t nodes:{3u,513u}) {
+        const std::vector<SourceScDeviceIslandEdge> edges{
+            {0u,0u,invalid,0u,0u},
+            {1u,0u,1u,1u,0u},
+            {2u,2u,invalid,2u,0u}
+        };
+        const std::vector<std::uint32_t> flags(
+            nodes,4u|source_sc_device_island_active_bit);
+        const auto result=evaluate(nodes,edges,{0x10101u,0x20101u,0x10101u},flags);
+        no_errors(result);
+        check_task_mapping(result);
+        require(header(result).admitted_edges==3u,
+                "Mixed normal ownership omitted a response");
+        for(std::uint32_t i=0u;i<3u;++i) {
+            const auto source=load<std::uint32_t>(
+                result.second,result.first.response_order+i*4u);
+            const auto extent=load<std::uint32_t>(
+                result.second,result.first.response_extents+i*4u);
+            const auto prefix=load<std::uint32_t>(
+                result.second,result.first.response_prefixes+i*4u);
+            require(source==i && extent==(i==2u?0xc0000001u:0x80000001u) &&
+                    prefix==i,
+                    "Coupled normals lost their materialized prefix or exclusive owner");
         }
     }
     {
