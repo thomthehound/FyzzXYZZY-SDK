@@ -105,6 +105,11 @@ struct SourceDyNormalRow {
     float impulse;
 };
 
+struct SourceDyPreparedNormal {
+    SourceDyNormalRow row;
+    bool local;
+};
+
 SourceDyNormalRow sourceDyLoadNormalRow(uint address) {
     SourceDyNormalRow row;
     row.normal=asfloat(arena.Load3(address));
@@ -446,7 +451,8 @@ bool sourceDyContactGeometry(uint index,uint contactBegin,uint contactCount,
     return true;
 }
 void prepareContactRow(uint index,uint contactBegin,
-                       uint contactCount,SourceDyContactFrame frame,uint errorAddress) {
+                       uint contactCount,SourceDyContactFrame frame,uint errorAddress,
+                       bool retainNormal,inout SourceDyPreparedNormal prepared) {
     float3 n,pos;
     float separation;
     if(!sourceDyContactGeometry(index,contactBegin,contactCount,frame,
@@ -519,12 +525,22 @@ void prepareContactRow(uint index,uint contactBegin,
         sourceDyTaskErrorOr(errorAddress,8192u);
         return;
     }
-    arena.Store3(co,asuint(n));
-    arena.Store3(co+12u,asuint(ja));
-    arena.Store3(co+24u,asuint(jb));
-    arena.Store4(co+36u,asuint(float4(multiplier,impulseMultiplier,
-                                       biasedError,unbiasedError)));
-    arena.Store(co+52u,0u);
+    const float4 coefficients=float4(multiplier,impulseMultiplier,
+                                      biasedError,unbiasedError);
+    if(retainNormal) {
+        prepared.row.normal=n;
+        prepared.row.ja=ja;
+        prepared.row.jb=jb;
+        prepared.row.coefficients=coefficients;
+        prepared.row.impulse=0.0f;
+        prepared.local=true;
+    }else {
+        arena.Store3(co,asuint(n));
+        arena.Store3(co+12u,asuint(ja));
+        arena.Store3(co+24u,asuint(jb));
+        arena.Store4(co+36u,asuint(coefficients));
+        arena.Store(co+52u,0u);
+    }
 }
 
 void prepareFrictionRow(uint index,float3 tangent,float3 r0,float3 r1,

@@ -1760,8 +1760,10 @@ void admitPcmContactExtents(uint begin,uint end,uint lane,uint endError) {
 }
 
 void prepareConstraint(uint4 desc,uint lane,uint lanes,uint endError,
-                       bool retainSingle,out SourceDyPreparedJoint prepared) {
+                       bool retainSingle,out SourceDyPreparedJoint prepared,
+                       out SourceDyPreparedNormal normal) {
     prepared=(SourceDyPreparedJoint)0;
+    normal=(SourceDyPreparedNormal)0;
     if(desc.w!=0u) {
         prepareJointRows(desc,lane,lanes,endError,retainSingle,prepared);
         return;
@@ -1800,7 +1802,10 @@ void prepareConstraint(uint4 desc,uint lane,uint lanes,uint endError,
             if(!sourceDyEnsureContactFrame(pair,manager.w,endError,frame,ready))return;
             for(uint c=lane;c<count;c+=lanes) {
                 const uint index=sourceDyContactOrderPoint(order,c);
-                prepareContactRow(index,manager.z,manager.w,frame,endError);
+                const bool retainNormal=retainSingle && manager.y==1u &&
+                    manager.w==1u && count==1u;
+                prepareContactRow(index,manager.z,manager.w,frame,endError,
+                                  retainNormal,normal);
             }
         }
         // Each patch has one friction writer. Its source geometry
@@ -1823,8 +1828,9 @@ void prepareConstraint(uint4 desc,uint lane,uint lanes,uint endError,
 void prepareConstraints(uint begin,uint end,uint lane,uint endError) {
     for(uint i=begin+(lane>>2u);i<end;i+=32u) {
         SourceDyPreparedJoint unused;
+        SourceDyPreparedNormal unusedNormal;
         prepareConstraint(sourceDyNumericalDescriptor(i),lane&3u,4u,
-                          endError,false,unused);
+                          endError,false,unused,unusedNormal);
     }
 }
 
@@ -2290,7 +2296,8 @@ void publishTaskError(uint task,uint error) {
 // The descriptor owns its responding endpoints for this iteration range.
 void sourceDySolveExclusive(uint4 desc,uint2 iters,uint2 iterations,
                             uint2 bodies,uint errorAddress,
-                            SourceDyPreparedJoint prepared,bool ownedMotion) {
+                            SourceDyPreparedJoint prepared,
+                            SourceDyPreparedNormal preparedNormal,bool ownedMotion) {
     SourceDyContactSpan span=(SourceDyContactSpan)0;
     SourceDySolverPair state;
     const bool joint=desc.w!=0u;
@@ -2325,7 +2332,8 @@ void sourceDySolveExclusive(uint4 desc,uint2 iters,uint2 iterations,
             return;
         }
         normalAddress=p.contactBias+point*56u;
-        normal=sourceDyLoadNormalRow(normalAddress);
+        if(preparedNormal.local)normal=preparedNormal.row;
+        else normal=sourceDyLoadNormalRow(normalAddress);
     }
     const uint total=iters.x+max(iters.y,1u);
     for(uint iteration=iterations.x;iteration<iterations.y;++iteration) {
@@ -2450,14 +2458,16 @@ void sourceDySolvePackedTask(uint taskId,bool precolored) {
     // This invocation owns the descriptor and its complete numerical solve.
     desc.w&=255u;
     SourceDyPreparedJoint prepared;
-    prepareConstraint(desc,0u,1u,errorAddress,true,prepared);
+    SourceDyPreparedNormal normal;
+    prepareConstraint(desc,0u,1u,errorAddress,true,prepared,normal);
     if(sourceDyTaskLoad(errorAddress)!=0u) {
         publishTaskError(taskId,sourceDyTaskLoad(errorAddress));
         return;
     }
 
     const uint total=iters.x+max(iters.y,1u);
-    sourceDySolveExclusive(desc,iters,uint2(0u,total),bodies,errorAddress,prepared,false);
+    sourceDySolveExclusive(desc,iters,uint2(0u,total),bodies,errorAddress,
+                           prepared,normal,false);
     if(sourceDyTaskLoad(errorAddress)!=0u) {
         publishTaskError(taskId,sourceDyTaskLoad(errorAddress));
         return;
@@ -3170,7 +3180,7 @@ void main(uint3 group:SV_GroupID,uint3 lane:SV_GroupThreadID) {
                         sourceDySolveExclusive(
                             sourceDyNumericalDescriptor(i),iters,iterations,
                             uint2(0u,0u),endError,(SourceDyPreparedJoint)0,
-                            initializedMotion);
+                            (SourceDyPreparedNormal)0,initializedMotion);
                 }
                 if(!initializedMotion && pass==0u) {
                     AllMemoryBarrierWithGroupSync();
