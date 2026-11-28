@@ -162,6 +162,12 @@ void sourceDyTaskErrorOr(uint address,uint value) {
         scIslandWork.InterlockedOr(address,value);
     else arena.InterlockedOr(address,value);
 }
+uint4 sourceDyNumericalDescriptor(uint index) {
+    uint4 desc=arena.Load4(p.descriptorBias+index*16u);
+    desc.w&=255u;
+    return desc;
+}
+
 struct SourceDySolverPair {
     float3 va,vb,aa,ab;
     float ma,mb;
@@ -642,7 +648,7 @@ groupshared uint dyReuseColors,dyRetainedPartitionEnd;
 groupshared uint dySingletonPartitions,dyPreparationError;
 groupshared uint dyPartitionTileCount,dyPartitionTileBase;
 groupshared uint dyPackedTaskCount,dyCompactTaskCount;
-groupshared uint dyHubA,dyHubB,dyHubMask;
+groupshared uint dyHubA,dyHubB,dyHubMask,dyOwnedCandidates;
 groupshared uint dyCapacityScan[128];
 
 // The resident source token has one authoritative decoding rule for
@@ -791,6 +797,98 @@ void sourceDyInitializeColorState(uint4 desc,uint bodyState,uint colors,uint i) 
     }
     arena.Store(colors+i*4u,0xffffffffu);
 }
+// Low descriptor bits retain row count and response flags. The upper
+// bits encode a lane permutation and the length of an owned color run.
+static const uint dyOwnedWidth=8u;
+static const uint dyOwnedLengthMax=0x7ffffu;
+
+uint sourceDyOwnedEndpoint(uint bodyState,uint ordinal,uint stamp) {
+    const uint word=arena.Load(bodyState+ordinal*12u+4u);
+    return (word&~7u)==stamp?word&7u:invalidBody;
+}
+
+bool sourceDyExtendOwnedColor(uint begin,uint width,uint bodyState,uint stamp,
+                              out uint permutation) {
+    permutation=0u;
+    uint used=0u,assigned=0u;
+    for(uint j=0u;j<width;++j) {
+        const uint4 desc=arena.Load4(p.descriptorBias+(begin+j)*16u);
+        uint a=invalidBody,b=invalidBody;
+        if((desc.w&0x100u)!=0u)
+            a=sourceDyOwnedEndpoint(bodyState,desc.y,stamp);
+        if((desc.w&0x200u)!=0u)
+            b=sourceDyOwnedEndpoint(bodyState,desc.z,stamp);
+        if(a!=invalidBody && b!=invalidBody && a!=b)return false;
+        const uint owner=a!=invalidBody?a:b;
+        if(owner==invalidBody)continue;
+        if((used&(1u<<owner))!=0u)return false;
+        used|=1u<<owner;
+        assigned|=1u<<j;
+        permutation|=j<<(3u*owner);
+    }
+    for(uint j=0u;j<width;++j) {
+        if((assigned&(1u<<j))!=0u)continue;
+        const uint owner=uint(firstbitlow(~used));
+        used|=1u<<owner;
+        permutation|=j<<(3u*owner);
+    }
+    return true;
+}
+
+void sourceDyCommitOwnedColor(uint begin,uint width,uint bodyState,uint stamp,
+                              uint permutation) {
+    for(uint owner=0u;owner<width;++owner) {
+        const uint j=(permutation>>(3u*owner))&7u;
+        const uint4 desc=arena.Load4(p.descriptorBias+(begin+j)*16u);
+        if((desc.w&0x100u)!=0u)
+            arena.Store(bodyState+desc.y*12u+4u,stamp|owner);
+        if((desc.w&0x200u)!=0u)
+            arena.Store(bodyState+desc.z*12u+4u,stamp|owner);
+        const uint slot=p.descriptorBias+(begin+owner)*16u+12u;
+        arena.Store(slot,(arena.Load(slot)&0x3ffu)|(j<<10u));
+    }
+}
+
+void sourceDyFinishOwnedRun(uint begin,uint length) {
+    if(length<2u)return;
+    const uint slot=p.descriptorBias+begin*16u+12u;
+    arena.Store(slot,arena.Load(slot)|(length<<13u));
+}
+
+void sourceDyBuildOwnedRuns(uint first,uint partitionFirst,uint partitionEnd,
+                            uint bodyState) {
+    uint begin=first,runBegin=first,runStart=partitionFirst,runWidth=0u;
+    for(uint color=partitionFirst;color<partitionEnd;++color) {
+        const uint end=arena.Load(p.partitionBias+color*4u);
+        const uint width=end-begin;
+        uint stamp=0x80000000u|((runStart-partitionFirst)<<3u);
+        uint permutation=0u;
+        bool extends=false;
+        if(runWidth!=0u && width==runWidth &&
+           color-runStart<dyOwnedLengthMax)
+            extends=sourceDyExtendOwnedColor(begin,width,bodyState,stamp,
+                                             permutation);
+        if(!extends) {
+            if(runWidth!=0u)sourceDyFinishOwnedRun(runBegin,color-runStart);
+            runWidth=0u;
+            if(width>=2u && width<=dyOwnedWidth && color+1u<partitionEnd) {
+                const uint nextEnd=arena.Load(p.partitionBias+(color+1u)*4u);
+                if(nextEnd-end==width) {
+                    runBegin=begin;runStart=color;runWidth=width;
+                    stamp=0x80000000u|((color-partitionFirst)<<3u);
+                    for(uint owner=0u;owner<width;++owner)
+                        permutation|=owner<<(3u*owner);
+                }
+            }
+        }
+        if(runWidth!=0u)
+            sourceDyCommitOwnedColor(begin,width,bodyState,stamp,permutation);
+        begin=end;
+    }
+    if(runWidth!=0u)
+        sourceDyFinishOwnedRun(runBegin,partitionEnd-runStart);
+}
+
 void sourceDyPartitionTask(uint taskId,uint scratch,uint errorAddress,
                            uint lane) {
     const uint4 views=arena.Load4(scratch);
@@ -923,9 +1021,11 @@ void sourceDyPartitionTask(uint taskId,uint scratch,uint errorAddress,
             continue;
         // Unchanged descriptors retain their numerical slots. Changed
         // topology triggers a complete recolor of the task.
-        if(retainedDestination!=invalidBody)
-            arena.Store4(p.descriptorBias+retainedDestination*16u,
-                         uint4(desc.xyz,rowCount));
+        if(retainedDestination!=invalidBody) {
+            const uint destination=p.descriptorBias+retainedDestination*16u;
+            const uint execution=arena.Load(destination+12u)&~0x3ffu;
+            arena.Store4(destination,uint4(desc.xyz,desc.w|execution));
+        }
         if(!compareEndpoints && count>1u) {
             sourceDyInitializeColorState(desc,bodyState,colors,i);
             needed+=uint(da && db);
@@ -943,8 +1043,7 @@ void sourceDyPartitionTask(uint taskId,uint scratch,uint errorAddress,
         // A single constraint owns its entire partition and requires
         // no conflict-mask coloring or cross-lane prefix scan.
         if(lane==0u) {
-            uint4 desc=arena.Load4(raw+first*16u);
-            desc.w&=255u;
+            const uint4 desc=arena.Load4(raw+first*16u);
             arena.Store4(p.descriptorBias+first*16u,desc);
             arena.Store(p.partitionBias+partitionFirst*4u,last);
             arena.Store(colors+first*4u,residentColor?first:0u);
@@ -1003,8 +1102,7 @@ void sourceDyPartitionTask(uint taskId,uint scratch,uint errorAddress,
                 // All edges conflict at the common endpoint. Encounter
                 // order already gives the final singleton partitions.
                 for(uint i=first+lane;i<last;i+=128u) {
-                    uint4 desc=arena.Load4(raw+i*16u);
-                    desc.w&=255u;
+                    const uint4 desc=arena.Load4(raw+i*16u);
                     arena.Store4(p.descriptorBias+i*16u,desc);
                     arena.Store(p.partitionBias+(partitionFirst+i-first)*4u,i+1u);
                     if(residentColor)arena.Store(colors+i*4u,i);
@@ -1266,8 +1364,7 @@ void sourceDyPartitionTask(uint taskId,uint scratch,uint errorAddress,
     if(dyHighest==1u) {
         // A single color is already conflict-free in encounter order.
         for(uint i=first+lane;i<last;i+=128u) {
-            uint4 desc=arena.Load4(raw+i*16u);
-            desc.w&=255u;
+            const uint4 desc=arena.Load4(raw+i*16u);
             arena.Store4(p.descriptorBias+i*16u,desc);
             if(residentColor)arena.Store(colors+i*4u,i);
         }
@@ -1298,11 +1395,15 @@ void sourceDyPartitionTask(uint taskId,uint scratch,uint errorAddress,
     AllMemoryBarrierWithGroupSync();
     if(sourceDyTaskLoad(errorAddress)!=0u)return;
     if(lane==0u) {
-        uint end=first;
+        uint end=first,previousWidth=0u;
+        dyOwnedCandidates=0u;
         // Convert counts into scatter starts in the same partition slots.
         for(uint i=partitionFirst;i<partitionFirst+dyHighest;++i) {
             const uint address=p.partitionBias+i*4u;
             const uint n=arena.Load(address);
+            if(n>=2u && n<=dyOwnedWidth && n==previousWidth)
+                dyOwnedCandidates=1u;
+            previousWidth=n;
             arena.Store(address,end);
             end+=n;
         }
@@ -1316,14 +1417,19 @@ void sourceDyPartitionTask(uint taskId,uint scratch,uint errorAddress,
     // Each scatter counter finishes at its partition's exact end.
     // Descriptors within a color own distinct responding bodies.
     for(uint i=first+lane;i<last;i+=128u) {
-        uint4 desc=arena.Load4(raw+i*16u);
+        const uint4 desc=arena.Load4(raw+i*16u);
         const uint target=p.partitionBias+
             (partitionFirst+arena.Load(colors+i*4u))*4u;
         uint offset;
         arena.InterlockedAdd(target,1u,offset);
-        desc.w&=255u;
         arena.Store4(p.descriptorBias+offset*16u,desc);
         if(residentColor)arena.Store(colors+i*4u,offset);
+    }
+    if(dyOwnedCandidates!=0u) {
+        AllMemoryBarrierWithGroupSync();
+        if(lane==0u)
+            sourceDyBuildOwnedRuns(first,partitionFirst,
+                                   partitionFirst+dyHighest,bodyState);
     }
 }
 
@@ -1593,7 +1699,7 @@ void prepareJointRows(uint4 desc,uint lane,uint lanes,uint endError,
 // The existing device-admitted descriptor path applies the same extent.
 void admitPcmContactExtents(uint begin,uint end,uint lane,uint endError) {
     for(uint i=begin+lane;i<end;i+=128u) {
-        const uint4 desc=arena.Load4(p.descriptorBias+i*16u);
+        const uint4 desc=sourceDyNumericalDescriptor(i);
         if(desc.w!=0u || desc.x>=p.manifoldCount)continue;
         const uint manager=p.manifoldBias+desc.x*24u;
         if(arena.Load(manager+4u)==0u)continue;
@@ -1674,7 +1780,7 @@ void prepareConstraint(uint4 desc,uint lane,uint lanes,uint endError,
 void prepareConstraints(uint begin,uint end,uint lane,uint endError) {
     for(uint i=begin+(lane>>2u);i<end;i+=32u) {
         SourceDyPreparedJoint unused;
-        prepareConstraint(arena.Load4(p.descriptorBias+i*16u),lane&3u,4u,
+        prepareConstraint(sourceDyNumericalDescriptor(i),lane&3u,4u,
                           endError,false,unused);
     }
 }
@@ -1701,12 +1807,32 @@ void solvePartition(uint begin,uint end,uint lane,uint2 iters,
     const bool finalPass=iter+1u==total;
     const bool friction=!biased || iters.x-iter<=3u;
     for(uint i=begin+lane;i<end;i+=128u) {
-        const uint4 desc=arena.Load4(p.descriptorBias+i*16u);
+        const uint4 desc=sourceDyNumericalDescriptor(i);
         SourceDySolverPair state;
         if(sourceDySolveDescriptor(desc,endError,biased,friction,finalPass,
                 uint2(invalidBody,invalidBody),(SourceDySolverPair)0,state))
             sourceDyStoreSolverPair(desc,state,captureMotion);
     }
+}
+
+bool sourceDyAdvanceOwnedDescriptor(uint4 desc,uint errorAddress,bool biased,
+                                    bool friction,bool finalPass,bool snapshot,
+                                    inout uint2 retained,inout SourceDySolverPair prior) {
+    SourceDySolverPair state;
+    if(!sourceDySolveDescriptor(desc,errorAddress,biased,friction,finalPass,
+                                retained,prior,state)) {
+        sourceDyStoreSolverPair(uint4(0u,retained,0u),prior,snapshot);
+        return false;
+    }
+    const uint2 next=uint2(state.ma>0.0f?desc.y:invalidBody,
+                           state.mb>0.0f?desc.z:invalidBody);
+    uint2 evicted=retained;
+    if(any(next==retained.x))evicted.x=invalidBody;
+    if(any(next==retained.y))evicted.y=invalidBody;
+    sourceDyStoreSolverPair(uint4(0u,evicted,0u),prior,snapshot);
+    retained=next;
+    prior=state;
+    return true;
 }
 
 // The serial owner retains responding endpoints until eviction or the
@@ -1722,26 +1848,34 @@ void solveSerialRun(uint begin,uint end,uint2 iters,uint2 iterations,
         const bool friction=!biased || iters.x-iter<=3u;
         const bool snapshot=captureMotion && iter+1u==iters.x;
         for(uint i=begin;i<end;++i) {
-            const uint4 desc=arena.Load4(p.descriptorBias+i*16u);
-            SourceDySolverPair state;
-            if(!sourceDySolveDescriptor(desc,endError,biased,friction,finalPass,
-                                        retained,prior,state)) {
-                sourceDyStoreSolverPair(uint4(0u,retained,0u),prior,snapshot);
+            if(!sourceDyAdvanceOwnedDescriptor(sourceDyNumericalDescriptor(i),
+                    endError,biased,friction,finalPass,snapshot,retained,prior))
                 return;
-            }
-            const uint2 next=uint2(state.ma>0.0f?desc.y:invalidBody,
-                                   state.mb>0.0f?desc.z:invalidBody);
-            uint2 evicted=retained;
-            if(any(next==retained.x))evicted.x=invalidBody;
-            if(any(next==retained.y))evicted.y=invalidBody;
-            sourceDyStoreSolverPair(uint4(0u,evicted,0u),prior,snapshot);
-            retained=next;
-            prior=state;
         }
         if(snapshot)
             sourceDyStoreMotionPair(uint4(0u,retained,0u),prior);
     }
     sourceDyStoreSolverPair(uint4(0u,retained,0u),prior,false);
+}
+
+// All responding endpoints in an owned run are exclusive to one lane.
+void solveOwnedRun(uint begin,uint width,uint length,uint lane,uint2 iters,
+                   uint iteration,uint endError,bool captureMotion) {
+    const bool biased=iteration<iters.x;
+    const bool finalPass=iteration+1u==iters.x+max(iters.y,1u);
+    const bool friction=!biased || iters.x-iteration<=3u;
+    uint2 retained=uint2(invalidBody,invalidBody);
+    SourceDySolverPair prior=(SourceDySolverPair)0;
+    for(uint color=0u;color<length;++color) {
+        const uint first=begin+color*width;
+        uint4 desc=arena.Load4(p.descriptorBias+(first+lane)*16u);
+        const uint offset=(desc.w>>10u)&7u;
+        if(offset!=lane)desc=arena.Load4(p.descriptorBias+(first+offset)*16u);
+        desc.w&=255u;
+        if(!sourceDyAdvanceOwnedDescriptor(desc,endError,biased,friction,
+                finalPass,captureMotion,retained,prior))return;
+    }
+    sourceDyStoreSolverPair(uint4(0u,retained,0u),prior,captureMotion);
 }
 
 void saveMotion(uint index,uint endError) {
@@ -2943,7 +3077,7 @@ void main(uint3 group:SV_GroupID,uint3 lane:SV_GroupThreadID) {
                 } else {
                     for(uint i=descriptors.x+lane.x;i<descriptors.y;i+=128u)
                         sourceDySolveExclusive(
-                            arena.Load4(p.descriptorBias+i*16u),iters,iterations,
+                            sourceDyNumericalDescriptor(i),iters,iterations,
                             uint2(0u,0u),endError,(SourceDyPreparedJoint)0,
                             initializedMotion);
                 }
@@ -2976,26 +3110,47 @@ void main(uint3 group:SV_GroupID,uint3 lane:SV_GroupThreadID) {
                         while(partition<partitions.y) {
                             // Consecutive singleton colors have the same
                             // lane owner and can stream in source order.
-                            const bool singleton=end-begin==1u;
-                            uint nextEnd=end;
-                            ++partition;
-                            if(fused || localRun) {
-                                while(partition<partitions.y) {
-                                    nextEnd=arena.Load(
-                                        p.partitionBias+partition*4u);
-                                    if(!singleton || nextEnd-end!=1u)break;
-                                    end=nextEnd;
-                                    ++partition;
+                            const uint width=end-begin;
+                            const bool singleton=width==1u;
+                            uint nextEnd=end,ownedLength=0u;
+                            if(devicePartitions && (fused || localRun) &&
+                               width>=2u && width<=dyOwnedWidth)
+                                ownedLength=arena.Load(
+                                    p.descriptorBias+begin*16u+12u)>>13u;
+                            if(ownedLength>1u) {
+                                if(ownedLength>partitions.y-partition ||
+                                   ownedLength>(descriptors.y-begin)/width) {
+                                    if(lane.x==0u)
+                                        sourceDyTaskErrorOr(endError,0x02000000u);
+                                    break;
                                 }
-                            }
-                            if(singleton) {
-                                if(lane.x==0u)
-                                    solveSerialRun(begin,end,iters,
-                                                   uint2(iteration,iteration+1u),
-                                                   endError,captureMotion);
+                                if(lane.x<width)
+                                    solveOwnedRun(begin,width,ownedLength,lane.x,
+                                        iters,iteration,endError,captureMotion);
+                                partition+=ownedLength;
+                                end=begin+ownedLength*width;
+                                nextEnd=partition<partitions.y?
+                                    arena.Load(p.partitionBias+partition*4u):end;
                             } else {
-                                solvePartition(begin,end,lane.x,iters,
-                                               iteration,endError,captureMotion);
+                                ++partition;
+                                if(fused || localRun) {
+                                    while(partition<partitions.y) {
+                                        nextEnd=arena.Load(
+                                            p.partitionBias+partition*4u);
+                                        if(!singleton || nextEnd-end!=1u)break;
+                                        end=nextEnd;
+                                        ++partition;
+                                    }
+                                }
+                                if(singleton) {
+                                    if(lane.x==0u)
+                                        solveSerialRun(begin,end,iters,
+                                            uint2(iteration,iteration+1u),
+                                            endError,captureMotion);
+                                } else {
+                                    solvePartition(begin,end,lane.x,iters,
+                                                   iteration,endError,captureMotion);
+                                }
                             }
                             // The final range hands off at integration
                             // or the dispatch boundary.
