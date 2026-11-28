@@ -202,6 +202,24 @@ These are implementation milestones, not hardware-performance acceptance.
   communication. Preserve PGS semantics, position/velocity phases,
   convergence, friction, and stable publication. Do not rely on
   cross-workgroup spin-wait forward progress.
+  - Lower consecutive local colors into bounded endpoint-owned runs at
+    coloring time. Each run assigns every responding endpoint to one
+    lane; constraints sharing a responding endpoint belong to the same
+    chain. Preserve color order within each chain. Static and kinematic
+    endpoints do not couple chains.
+  - Reuse the serial descriptor solver for each chain and publish live
+    deltas only at eviction or ownership handoff. Preserve the final
+    biased motion snapshot independently of subsequent velocity solves.
+  - Retain run boundaries and descriptor destinations with the existing
+    schedule; rebuild them on endpoint or response-ownership changes.
+    Use existing partition capacity where possible. A run must remove
+    more execution work than its construction, storage and lost lane
+    utilization cost; do not introduce a second graph or scheduler.
+  - Qualify independent narrow chains, late chain merges, alternating
+    endpoint order, shared nonresponding endpoints, mixed iteration
+    budgets and retained-schedule changes. Use the existing high-degree
+    and resident mixed-scene regressions; measure construction separately
+    from repeated execution.
 - [ ] Revisit broadphase-to-PCM overlap. Continue admitted persistent
   numerical work independently of host reconciliation where valid;
   preserve filtering, new/retired manager identity and touch semantics.
