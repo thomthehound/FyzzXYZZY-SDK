@@ -797,10 +797,11 @@ void sourceDyInitializeColorState(uint4 desc,uint bodyState,uint colors,uint i) 
     }
     arena.Store(colors+i*4u,0xffffffffu);
 }
-// Low descriptor bits retain row count and response flags. The upper
-// bits encode a lane permutation and the length of an owned color run.
+// The descriptor's high bits hold a lane-to-slot permutation, active
+// lane mask, and (at a run head) the number of consecutive colors.
 static const uint dyOwnedWidth=8u;
-static const uint dyOwnedLengthMax=0x7ffffu;
+static const uint dyOwnedMask=255u;
+static const uint dyOwnedLengthMax=0x7ffu;
 
 uint sourceDyOwnedEndpoint(uint bodyState,uint ordinal,uint stamp) {
     const uint word=arena.Load(bodyState+ordinal*12u+4u);
@@ -808,9 +809,10 @@ uint sourceDyOwnedEndpoint(uint bodyState,uint ordinal,uint stamp) {
 }
 
 bool sourceDyExtendOwnedColor(uint begin,uint width,uint bodyState,uint stamp,
-                              out uint permutation) {
+                              out uint permutation,out uint active) {
     permutation=0u;
-    uint used=0u,assigned=0u;
+    active=0u;
+    uint assigned=0u;
     for(uint j=0u;j<width;++j) {
         const uint4 desc=arena.Load4(p.descriptorBias+(begin+j)*16u);
         uint a=invalidBody,b=invalidBody;
@@ -821,71 +823,77 @@ bool sourceDyExtendOwnedColor(uint begin,uint width,uint bodyState,uint stamp,
         if(a!=invalidBody && b!=invalidBody && a!=b)return false;
         const uint owner=a!=invalidBody?a:b;
         if(owner==invalidBody)continue;
-        if((used&(1u<<owner))!=0u)return false;
-        used|=1u<<owner;
+        if((active&(1u<<owner))!=0u)return false;
+        active|=1u<<owner;
         assigned|=1u<<j;
         permutation|=j<<(3u*owner);
     }
     for(uint j=0u;j<width;++j) {
         if((assigned&(1u<<j))!=0u)continue;
-        const uint owner=uint(firstbitlow(~used));
-        used|=1u<<owner;
+        const uint owner=uint(firstbitlow(~active));
+        active|=1u<<owner;
         permutation|=j<<(3u*owner);
     }
     return true;
 }
 
-void sourceDyCommitOwnedColor(uint begin,uint width,uint bodyState,uint stamp,
-                              uint permutation) {
-    for(uint owner=0u;owner<width;++owner) {
+void sourceDyCommitOwnedColor(uint begin,uint bodyState,uint stamp,
+                              uint permutation,uint active) {
+    uint rank=0u;
+    for(uint remaining=active;remaining!=0u;remaining&=remaining-1u) {
+        const uint owner=uint(firstbitlow(remaining));
         const uint j=(permutation>>(3u*owner))&7u;
         const uint4 desc=arena.Load4(p.descriptorBias+(begin+j)*16u);
         if((desc.w&0x100u)!=0u)
             arena.Store(bodyState+desc.y*12u+4u,stamp|owner);
         if((desc.w&0x200u)!=0u)
             arena.Store(bodyState+desc.z*12u+4u,stamp|owner);
-        const uint slot=p.descriptorBias+(begin+owner)*16u+12u;
-        arena.Store(slot,(arena.Load(slot)&0x3ffu)|(j<<10u));
+        const uint slot=p.descriptorBias+(begin+rank)*16u+12u;
+        arena.Store(slot,(arena.Load(slot)&0x3ffu)|(j<<10u)|
+                         (rank==0u?active<<13u:0u));
+        ++rank;
     }
 }
 
 void sourceDyFinishOwnedRun(uint begin,uint length) {
     if(length<2u)return;
     const uint slot=p.descriptorBias+begin*16u+12u;
-    arena.Store(slot,arena.Load(slot)|(length<<13u));
+    arena.Store(slot,arena.Load(slot)|(length<<21u));
 }
 
 void sourceDyBuildOwnedRuns(uint first,uint partitionFirst,uint partitionEnd,
                             uint bodyState) {
-    uint begin=first,runBegin=first,runStart=partitionFirst,runWidth=0u;
+    uint begin=first,runBegin=first,runStart=partitionFirst;
+    bool running=false;
     for(uint color=partitionFirst;color<partitionEnd;++color) {
         const uint end=arena.Load(p.partitionBias+color*4u);
         const uint width=end-begin;
         uint stamp=0x80000000u|((runStart-partitionFirst)<<3u);
-        uint permutation=0u;
+        uint permutation=0u,active=0u;
         bool extends=false;
-        if(runWidth!=0u && width==runWidth &&
+        if(running && width!=0u && width<=dyOwnedWidth &&
            color-runStart<dyOwnedLengthMax)
             extends=sourceDyExtendOwnedColor(begin,width,bodyState,stamp,
-                                             permutation);
+                                             permutation,active);
         if(!extends) {
-            if(runWidth!=0u)sourceDyFinishOwnedRun(runBegin,color-runStart);
-            runWidth=0u;
+            if(running)sourceDyFinishOwnedRun(runBegin,color-runStart);
+            running=false;
             if(width>=2u && width<=dyOwnedWidth && color+1u<partitionEnd) {
-                const uint nextEnd=arena.Load(p.partitionBias+(color+1u)*4u);
-                if(nextEnd-end==width) {
-                    runBegin=begin;runStart=color;runWidth=width;
+                const uint nextWidth=arena.Load(p.partitionBias+(color+1u)*4u)-end;
+                if(nextWidth!=0u && nextWidth<=dyOwnedWidth) {
+                    runBegin=begin;runStart=color;running=true;
                     stamp=0x80000000u|((color-partitionFirst)<<3u);
+                    active=(1u<<width)-1u;
                     for(uint owner=0u;owner<width;++owner)
                         permutation|=owner<<(3u*owner);
                 }
             }
         }
-        if(runWidth!=0u)
-            sourceDyCommitOwnedColor(begin,width,bodyState,stamp,permutation);
+        if(running)
+            sourceDyCommitOwnedColor(begin,bodyState,stamp,permutation,active);
         begin=end;
     }
-    if(runWidth!=0u)
+    if(running)
         sourceDyFinishOwnedRun(runBegin,partitionEnd-runStart);
 }
 
@@ -1401,7 +1409,8 @@ void sourceDyPartitionTask(uint taskId,uint scratch,uint errorAddress,
         for(uint i=partitionFirst;i<partitionFirst+dyHighest;++i) {
             const uint address=p.partitionBias+i*4u;
             const uint n=arena.Load(address);
-            if(n>=2u && n<=dyOwnedWidth && n==previousWidth)
+            if(previousWidth>=2u && previousWidth<=dyOwnedWidth &&
+               n!=0u && n<=dyOwnedWidth)
                 dyOwnedCandidates=1u;
             previousWidth=n;
             arena.Store(address,end);
@@ -1858,24 +1867,38 @@ void solveSerialRun(uint begin,uint end,uint2 iters,uint2 iterations,
     sourceDyStoreSolverPair(uint4(0u,retained,0u),prior,false);
 }
 
-// All responding endpoints in an owned run are exclusive to one lane.
-void solveOwnedRun(uint begin,uint width,uint length,uint lane,uint2 iters,
-                   uint iteration,uint endError,bool captureMotion) {
-    const bool biased=iteration<iters.x;
-    const bool finalPass=iteration+1u==iters.x+max(iters.y,1u);
-    const bool friction=!biased || iters.x-iteration<=3u;
+// Inactive lanes retain their endpoints until their next numerical visit.
+void solveOwnedRun(uint begin,uint length,uint lane,uint2 iters,
+                   uint2 iterations,uint endError,bool captureMotion) {
+    const uint total=iters.x+max(iters.y,1u);
+    const uint laneBit=1u<<lane;
     uint2 retained=uint2(invalidBody,invalidBody);
     SourceDySolverPair prior=(SourceDySolverPair)0;
-    for(uint color=0u;color<length;++color) {
-        const uint first=begin+color*width;
-        uint4 desc=arena.Load4(p.descriptorBias+(first+lane)*16u);
-        const uint offset=(desc.w>>10u)&7u;
-        if(offset!=lane)desc=arena.Load4(p.descriptorBias+(first+offset)*16u);
-        desc.w&=255u;
-        if(!sourceDyAdvanceOwnedDescriptor(desc,endError,biased,friction,
-                finalPass,captureMotion,retained,prior))return;
+    for(uint iteration=iterations.x;iteration<iterations.y;++iteration) {
+        const bool biased=iteration<iters.x;
+        const bool finalPass=iteration+1u==total;
+        const bool friction=!biased || iters.x-iteration<=3u;
+        const bool snapshot=captureMotion && iteration+1u==iters.x;
+        uint first=begin;
+        for(uint color=0u;color<length;++color) {
+            const uint head=arena.Load(p.descriptorBias+first*16u+12u);
+            const uint active=(head>>13u)&dyOwnedMask;
+            if((active&laneBit)!=0u) {
+                const uint rank=countbits(active&(laneBit-1u));
+                uint4 desc=arena.Load4(p.descriptorBias+(first+rank)*16u);
+                const uint offset=(desc.w>>10u)&7u;
+                if(offset!=rank)
+                    desc=arena.Load4(p.descriptorBias+(first+offset)*16u);
+                desc.w&=255u;
+                if(!sourceDyAdvanceOwnedDescriptor(desc,endError,biased,friction,
+                        finalPass,snapshot,retained,prior))return;
+            }
+            first+=countbits(active);
+        }
+        if(snapshot)
+            sourceDyStoreMotionPair(uint4(0u,retained,0u),prior);
     }
-    sourceDyStoreSolverPair(uint4(0u,retained,0u),prior,captureMotion);
+    sourceDyStoreSolverPair(uint4(0u,retained,0u),prior,false);
 }
 
 void saveMotion(uint index,uint endError) {
@@ -3054,7 +3077,12 @@ void main(uint3 group:SV_GroupID,uint3 lane:SV_GroupThreadID) {
         }
         const bool independent=fused && devicePartitions &&
             partitions.y-partitions.x==1u && descriptors.y>descriptors.x;
-        if(independent || (fused && serialPartitions)) {
+        const uint ownedTaskLength=fused && devicePartitions &&
+            !independent && !serialPartitions && descriptors.y>descriptors.x
+            ?arena.Load(p.descriptorBias+descriptors.x*16u+12u)>>21u:0u;
+        const bool ownedTask=ownedTaskLength>1u &&
+            ownedTaskLength==partitions.y-partitions.x;
+        if(independent || ownedTask || (fused && serialPartitions)) {
             if(independent &&
                arena.Load(p.partitionBias+partitions.x*4u)!=descriptors.y) {
                 if(lane.x==0u) {
@@ -3074,6 +3102,10 @@ void main(uint3 group:SV_GroupID,uint3 lane:SV_GroupThreadID) {
                     if(lane.x==0u)
                         solveSerialRun(descriptors.x,descriptors.y,iters,
                                        iterations,endError,initializedMotion);
+                } else if(ownedTask) {
+                    if(lane.x<dyOwnedWidth)
+                        solveOwnedRun(descriptors.x,ownedTaskLength,lane.x,
+                                      iters,iterations,endError,initializedMotion);
                 } else {
                     for(uint i=descriptors.x+lane.x;i<descriptors.y;i+=128u)
                         sourceDySolveExclusive(
@@ -3116,19 +3148,20 @@ void main(uint3 group:SV_GroupID,uint3 lane:SV_GroupThreadID) {
                             if(devicePartitions && (fused || localRun) &&
                                width>=2u && width<=dyOwnedWidth)
                                 ownedLength=arena.Load(
-                                    p.descriptorBias+begin*16u+12u)>>13u;
+                                    p.descriptorBias+begin*16u+12u)>>21u;
                             if(ownedLength>1u) {
                                 if(ownedLength>partitions.y-partition ||
-                                   ownedLength>(descriptors.y-begin)/width) {
+                                   ownedLength>descriptors.y-begin) {
                                     if(lane.x==0u)
                                         sourceDyTaskErrorOr(endError,0x02000000u);
                                     break;
                                 }
-                                if(lane.x<width)
-                                    solveOwnedRun(begin,width,ownedLength,lane.x,
-                                        iters,iteration,endError,captureMotion);
+                                if(lane.x<dyOwnedWidth)
+                                    solveOwnedRun(begin,ownedLength,lane.x,iters,
+                                        uint2(iteration,iteration+1u),
+                                        endError,captureMotion);
                                 partition+=ownedLength;
-                                end=begin+ownedLength*width;
+                                end=arena.Load(p.partitionBias+(partition-1u)*4u);
                                 nextEnd=partition<partitions.y?
                                     arena.Load(p.partitionBias+partition*4u):end;
                             } else {
