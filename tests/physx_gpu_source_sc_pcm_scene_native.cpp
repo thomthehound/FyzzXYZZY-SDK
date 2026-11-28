@@ -6090,7 +6090,7 @@ void verify_resident_wide_device_response(
             schedule.host_descriptor_inputs==0u &&
             schedule.host_degree_scanned_descriptors==0u &&
             schedule.device_task_readback_bytes==0u &&
-            schedule.constraint_preparation_dispatches==1u &&
+            schedule.constraint_preparation_dispatches==0u &&
             schedule.device_partition_indirect_dispatches>0u &&
             schedule.device_partition_indirect_dispatches<=
                 2u*(2u*((2u*count-1u+spokes)/cross_group)+1u) &&
@@ -6135,6 +6135,7 @@ void verify_resident_wide_device_response(
                 next.device_admitted_tasks==schedule.device_admitted_tasks &&
                 next.resident_fused_workgroups==schedule.resident_fused_workgroups &&
                 next.motion_capture_dispatches==0u &&
+                next.constraint_preparation_dispatches==0u &&
                 next.device_admitted_descriptors==schedule.device_admitted_descriptors,
                 "Repeated resident frame changed numerical membership");
         if(next.resident_schedule_reuse_candidate)
@@ -6150,6 +6151,7 @@ void verify_resident_wide_device_response(
              <<schedule.device_admitted_tasks
              <<" tiled="<<schedule.wide_tasks
              <<" fused_workgroups="<<schedule.resident_fused_workgroups
+             <<" preparation_dispatches="<<schedule.constraint_preparation_dispatches
              <<" motion_dispatches="<<schedule.motion_capture_dispatches
              <<" host_descriptors="<<schedule.host_descriptor_inputs
              <<" indirect_partitions="<<schedule.device_partition_indirect_dispatches

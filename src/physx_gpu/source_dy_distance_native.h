@@ -2430,7 +2430,8 @@ public:
             }
         }
         const auto declare_phase_accesses=[&](compute::DispatchResources& declaration,
-                                              Launch phase,bool packed) {
+                                              Launch phase,bool packed,
+                                              bool prepare_partition) {
             using A=compute::BufferAccess;
             auto& accesses=declaration.accesses;
             const bool fused=phase==Launch::Fused;
@@ -2438,7 +2439,7 @@ public:
             const bool integrates=fused || free || phase==Launch::Integrate;
             const bool solves=fused || phase==Launch::Partition;
             const bool snapshots=fused || phase==Launch::Motion;
-            const bool prepares=fused || phase==Launch::Prepare;
+            const bool prepares=fused || phase==Launch::Prepare || prepare_partition;
             const bool colors=phase==Launch::Color ||
                 (fused && !packed && device_partitions &&
                  wide_tasks_.empty() && !resident_wide);
@@ -2601,9 +2602,11 @@ public:
         };
         // Phase declarations are frame-local; launches own only their parameters.
         constexpr auto packed_phase=static_cast<std::size_t>(Launch::BuildPartitionTiles)+1u;
-        std::array<std::shared_ptr<const compute::DispatchResources>,packed_phase+1u> phases{};
-        const auto phase_resources=[&](Launch phase,bool packed) {
-            auto& entry=phases[packed?packed_phase:static_cast<std::size_t>(phase)];
+        constexpr auto initial_partition_phase=packed_phase+1u;
+        std::array<std::shared_ptr<const compute::DispatchResources>,initial_partition_phase+1u> phases{};
+        const auto phase_resources=[&](Launch phase,bool packed,bool prepare_partition=false) {
+            auto& entry=phases[packed?packed_phase:prepare_partition?initial_partition_phase:
+                static_cast<std::size_t>(phase)];
             if(!entry) {
                 compute::DispatchResources declaration{dispatch.buffers,{}};
                 const bool integrates=phase==Launch::Fused || phase==Launch::Integrate ||
@@ -2618,7 +2621,7 @@ public:
                 declaration.buffers[5].access=writes_actor_velocities
                     ?compute::BufferAccess::ReadWrite
                     :compute::BufferAccess::Read;
-                declare_phase_accesses(declaration,phase,packed);
+                declare_phase_accesses(declaration,phase,packed,prepare_partition);
                 entry=std::make_shared<const compute::DispatchResources>(std::move(declaration));
             }
             return entry;
@@ -2628,7 +2631,8 @@ public:
         const auto launch=[&](Launch phase,TileRange range,std::uint32_t iteration=0u) {
             if(!range.count)return;
             if(resident_wide)params[23]=resident_mode_bias;
-            launch_command.resources=phase_resources(phase,false);
+            launch_command.resources=phase_resources(phase,false,
+                resident_wide && phase==Launch::Partition && iteration==0u);
             params[10]=(iteration<<4u)|static_cast<std::uint32_t>(phase)|
                 (compact_friction?0x20000000u:0u)|
                 (device_partitions?0x80000000u:0u)|
@@ -2658,9 +2662,7 @@ public:
                 return;
             }
             const bool resident_tiles=resident_wide &&
-                (phase==Launch::Fused || phase==Launch::Prepare ||
-                 phase==Launch::Motion ||
-                 phase==Launch::Integrate);
+                (phase==Launch::Fused || phase==Launch::Integrate);
             if(resident_tiles ||
                (phase==Launch::Partition && partition_dispatch_count_)) {
                 if(phase==Launch::Partition)params[10]|=0x10000000u;
@@ -2785,7 +2787,7 @@ public:
             arguments[17]=narrow(partition_header_begin_);
             arguments[18]=narrow(partition_task_begin_);
             arguments[19]=narrow(wide_tasks_.size());
-            const auto reservations=partition_tiles_.size()+(resident_wide?3u:0u);
+            const auto reservations=partition_tiles_.size()+(resident_wide?2u:0u);
             if(resident_wide) {
                 arguments[10]|=0x0c000000u;
                 arguments[18]=wide_bounds.stages;
@@ -2818,10 +2820,12 @@ public:
             // The existing arena write dependencies order each dispatch
             // across workgroups. A relative partition from every wide
             // task can execute together because their body writes are disjoint.
-            const auto before_preparation=last_schedule_.dispatches;
-            launch(Launch::Prepare,prep_tiles_);
-            last_schedule_.constraint_preparation_dispatches=
-                last_schedule_.dispatches-before_preparation;
+            if(!resident_wide) {
+                const auto before_preparation=last_schedule_.dispatches;
+                launch(Launch::Prepare,prep_tiles_);
+                last_schedule_.constraint_preparation_dispatches=
+                    last_schedule_.dispatches-before_preparation;
+            }
             for(std::uint32_t iteration=0u;iteration<wide_iterations_;++iteration) {
                 for(const auto range:partition_tiles_)
                     if(iteration<range.iterations)
@@ -3913,7 +3917,7 @@ private:
         };
         partition_header_begin_=0u;
         reserve(fused_tiles_,task_capacity);
-        reserve(prep_tiles_,(responses+31u)/32u+wide_capacity);
+        prep_tiles_={};
         reserve(body_tiles_,body_groups);
         // Wide colors and intervening local runs share a response-bounded
         // tile pool. Each stage reserves only its indirect commands.

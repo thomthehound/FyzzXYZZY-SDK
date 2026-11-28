@@ -161,6 +161,10 @@ quality rather than individual dispatch or barrier counts.
   components advance through occupied stages without alternating empty
   local runs; the portable indirect command envelope stays bounded.
 
+- [x] Prepare resident wide constraints within their first numerical
+  tile visit. Retain preparation dependencies only on the first
+  iteration and omit the standalone preparation dispatch and tile range.
+
 These are implementation milestones, not hardware-performance acceptance.
 
 ## Execution and lifetime work

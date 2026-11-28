@@ -2322,18 +2322,16 @@ bool sourceDyResidentTileRange(uint task,uint kind,
     const uint address=p.taskBias+task*36u;
     // Color mode is immutable across the count and fill passes.
     // Errors from other color builders cannot remove a reserved tile.
-    if(kind<3u && sourceDyTaskLoad(address+32u)!=0u)return false;
+    if(kind<2u && sourceDyTaskLoad(address+32u)!=0u)return false;
     const uint stageCount=arena.Load(p.resultTaskOffset+task*4u);
     if((stageCount!=0u)==(kind==0u))return false;
     const uint4 ranges=sourceDyTaskLoad4(address);
     const uint2 bodies=sourceDyTaskLoad2(address+16u);
     begin=0u;end=1u;step=1u;color=0u;
     if(kind==1u) {
-        begin=ranges.x;end=ranges.y;step=32u;
-    }else if(kind==2u) {
         begin=bodies.x;end=bodies.y;step=128u;
-    }else if(kind>=3u) {
-        const uint stage=kind-3u;
+    }else if(kind>=2u) {
+        const uint stage=kind-2u;
         if(ranges.w<ranges.z || ranges.y<ranges.x ||
            ranges.y>arena.Load(p.integrationBias+20u) ||
            stageCount>2u*((ranges.y-ranges.x)/dyCrossGroupColorMin)+1u ||
@@ -2454,7 +2452,7 @@ void sourceDyBuildResidentTiles(uint kind,uint lane) {
         header.z<=p.bodyCount && header.w<=p.orderCount;
     if(valid && arena.Load(scratch+32u)==header.y) {
         if(lane==0u) {
-            if(kind>=3u)
+            if(kind>=2u)
                 arena.Store(metadata+(p.contactCount+kind)*16u,
                             retainedSources.Load(reservation.z*16u+12u));
             if(kind==0u) {
@@ -2480,7 +2478,7 @@ void sourceDyBuildResidentTiles(uint kind,uint lane) {
         if(!sourceDyResidentTileRange(task,kind,begin,end,step,color))continue;
         const uint width=end-begin;
         const uint groups=width/step+uint(width%step!=0u);
-        if(kind>=3u) {
+        if(kind>=2u) {
             laneGroups+=groups;
             continue;
         }
@@ -2496,13 +2494,13 @@ void sourceDyBuildResidentTiles(uint kind,uint lane) {
                 uint4(task,first,first+min(step,end-first),color));
         }
     }
-    if(kind>=3u) {
+    if(kind>=2u) {
         uint laneOffset=0u;
         if(laneGroups!=0u)
             InterlockedAdd(dyPartitionTileCount,laneGroups,laneOffset);
         GroupMemoryBarrierWithGroupSync();
         if(lane==0u) {
-            const uint poolAddress=metadata+(p.contactCount+3u+p.frictionCount)*16u;
+            const uint poolAddress=metadata+(p.contactCount+2u+p.frictionCount)*16u;
             const uint2 pool=arena.Load2(poolAddress);
             const uint count=dyPartitionTileCount;
             uint offset=0u;
@@ -2845,14 +2843,15 @@ void main(uint3 group:SV_GroupID,uint3 lane:SV_GroupThreadID) {
                 return;
             }
         }
-        // A preparation tile owns complete contact managers. Normal
-        // and friction rows consume their shared source geometry.
+        // Resident tiles prepare their own rows on the first visit.
+        // Preparation reads base motion, not accumulated solver deltas.
+        const bool residentPrepare=residentWide && phase==partitionTile && iter==0u;
         if(!fused) {
-            if(phase==prepareTile) {
+            if(phase==prepareTile || residentPrepare) {
                 if(preparationError(endError,lane.x)!=0u)return;
             }else if(sourceDyTaskLoad(endError)!=0u)return;
         }
-        if(fused || phase==prepareTile) {
+        if(fused || phase==prepareTile || residentPrepare) {
             // Source response-token expansion already applies the PCM
             // extent before coloring. Other Dy callers use this path.
             const uint scratch=arena.Load(p.integrationBias+28u);
@@ -2869,12 +2868,16 @@ void main(uint3 group:SV_GroupID,uint3 lane:SV_GroupThreadID) {
                 }
             }
             prepareConstraints(descriptors.x,descriptors.y,lane.x,endError);
-            if(!fused)return;
+            if(!fused && !residentPrepare)return;
             AllMemoryBarrierWithGroupSync();
         }
-        // Preparation failures belong to this task, not its solver or
-        // integration output. Tiled phases observe the preceding dispatch.
-        if(sourceDyTaskLoad(endError)!=0u) {
+        // Other workgroups may report a concurrent task error.
+        // A preparing workgroup must agree before entering the solve.
+        uint numericalError=0u;
+        if(residentPrepare)
+            numericalError=preparationError(endError,lane.x);
+        else numericalError=sourceDyTaskLoad(endError);
+        if(numericalError!=0u) {
             if(fused && lane.x==0u)
                 publishTaskError(taskId,sourceDyTaskLoad(endError));
             return;
