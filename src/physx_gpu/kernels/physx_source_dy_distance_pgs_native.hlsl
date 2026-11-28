@@ -177,6 +177,7 @@ uint4 sourceDyNumericalDescriptor(uint index) {
 struct SourceDySolverPair {
     float3 va,vb,aa,ab;
     float ma,mb;
+    uint jointAddress;
 };
 
 void sourceDyLoadEndpoint(uint ordinal,uint2 retained,SourceDySolverPair prior,
@@ -216,9 +217,25 @@ bool sourceDyLoadSolverPair(uint4 desc,uint errorAddress,bool response,
     sourceDyLoadEndpoint(desc.y,retained,prior,state.va,state.aa);
     sourceDyLoadEndpoint(desc.z,retained,prior,state.vb,state.ab);
     if(joint) {
-        const uint first=p.distanceBias+desc.x*64u;
-        state.ma=loadScalar(first+36u);
-        state.mb=loadScalar(first+40u);
+        uint first=p.distanceBias+desc.x*64u;
+        if((p.distanceBias&1u)!=0u) {
+            const uint record=sourceDyJointSource(desc.x,sourceDyJointTable());
+            if(record==invalidBody) {
+                sourceDyTaskErrorOr(errorAddress,1u);
+                return false;
+            }
+            first=arena.Load(record+12u);
+            if(first==invalidBody) {
+                const float2 masses=asfloat(arena.Load2(record+16u));
+                state.ma=masses.x;
+                state.mb=masses.y;
+            }
+        }
+        state.jointAddress=first;
+        if(first!=invalidBody) {
+            state.ma=loadScalar(first+36u);
+            state.mb=loadScalar(first+40u);
+        }
     } else {
         if(desc.y!=invalidBody)state.ma=loadScalar(ao+48u);
         if(desc.z!=invalidBody)state.mb=loadScalar(bo+48u);
@@ -352,7 +369,11 @@ bool solveJointRows(uint4 desc,uint errorAddress,bool biased,
                     inout SourceDySolverPair state,
                     uint localCount,inout float4 impulses) {
     SourceDySolverPair local=state;
-    const uint first=p.distanceBias+desc.x*64u;
+    const uint first=state.jointAddress;
+    if(first==invalidBody) {
+        sourceDyTaskErrorOr(errorAddress,1u);
+        return false;
+    }
     for(uint row=0u;row<desc.w;++row) {
         const uint offset=first+row*64u;
         const SourceDyJointRow data=sourceDyLoadJointRow(offset);
@@ -1557,16 +1578,18 @@ float3 sourceDyJointInertia(uint ordinal,float3 angular) {
 bool sourceDyPrepareJointGeometry(uint4 desc,uint record,uint endError,
                                   bool retainSingle,
                                   inout SourceDyPreparedJoint prepared) {
-    const uint first=p.distanceBias+desc.x*64u;
-    const uint source=arena.Load(record+12u);
-    if(jointSources.Load(source+144u)!=arena.Load(record+24u) ||
+    const uint first=arena.Load(record+12u);
+    const uint slot=arena.Load(record+24u);
+    const uint source=arena.Load(p.integrationBias-8u)+slot*152u;
+    if(jointSources.Load(source+144u)!=slot ||
        jointSources.Load(source+148u)!=arena.Load(record+28u)) {
         sourceDyTaskErrorOr(endError,8192u);
         return false;
     }
     const uint kind=jointSources.Load(source+140u);
     const uint count=kind==0u?1u:kind==2u?3u:kind==1u?6u:5u;
-    if(kind>4u || desc.w!=count) {
+    if(kind>4u || desc.w!=count ||
+       (first==invalidBody && (!retainSingle || count!=1u))) {
         sourceDyTaskErrorOr(endError,8192u);
         return false;
     }
@@ -1601,7 +1624,7 @@ bool sourceDyPrepareJointGeometry(uint4 desc,uint record,uint endError,
         float3(1.0f,0.0f,0.0f),float3(0.0f,1.0f,0.0f),float3(0.0f,0.0f,1.0f)};
     const uint2 masses=arena.Load2(record+16u);
     const float mass0=asfloat(masses.x),mass1=asfloat(masses.y);
-    arena.Store2(first+36u,masses);
+    if(first!=invalidBody)arena.Store2(first+36u,masses);
     const uint inputA=p.integrationBias+44u+desc.y*40u;
     const uint inputB=p.integrationBias+44u+desc.z*40u;
     const float3 vA=desc.y==invalidBody?0.0f:sourceDyPreparedVelocity(inputA,false);
@@ -2363,8 +2386,12 @@ void sourceDySolveExclusive(uint4 desc,uint2 iters,uint2 iterations,
     }
     // One exclusively owned joint row has a bounded live working set.
     const bool localJoint=desc.w==1u;
-    const uint jointOffset=p.distanceBias+desc.x*64u;
+    const uint jointOffset=state.jointAddress;
     if(localJoint && !prepared.local) {
+        if(jointOffset==invalidBody) {
+            sourceDyTaskErrorOr(errorAddress,1u);
+            return;
+        }
         prepared.row=sourceDyLoadJointRow(jointOffset);
         prepared.coefficients=arena.Load2(jointOffset+48u);
         prepared.impulse=loadScalar(jointOffset+60u);
@@ -2459,7 +2486,13 @@ void sourceDySolveExclusive(uint4 desc,uint2 iters,uint2 iterations,
         }
     }
     if(iterations.y<total) {
-        if(localJoint)arena.Store(jointOffset+60u,asuint(prepared.impulse));
+        if(localJoint) {
+            if(jointOffset==invalidBody) {
+                sourceDyTaskErrorOr(errorAddress,1u);
+                return;
+            }
+            arena.Store(jointOffset+60u,asuint(prepared.impulse));
+        }
         if(localNormal)arena.Store(normalAddress+52u,asuint(normal.impulse));
         sourceDyFlushImpulses(impulseBase,impulseStride,localCount,impulses);
     }

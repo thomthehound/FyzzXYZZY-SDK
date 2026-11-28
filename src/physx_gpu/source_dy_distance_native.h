@@ -177,6 +177,8 @@ struct SourceDyLaunchStats {
     std::size_t device_joint_geometry_count=0u;
     std::size_t joint_row_input_bytes=0u;
     std::size_t compact_joint_source_bytes=0u;
+    std::size_t joint_numerical_bytes=0u;
+    std::size_t local_joint_rows=0u;
     std::size_t device_joint_metadata_upload_bytes=0u;
     std::size_t prewitness_joint_source_upload_bytes=0u;
     std::size_t resident_joint_source_bytes=0u;
@@ -1501,6 +1503,26 @@ public:
             ?std::count_if(tasks.begin(),tasks.end(),lane_task):0u;
         const bool packed_only=host_lane_packing &&
             last_schedule_.host_lane_packed_tasks==task_capacity;
+        // A host-authored packed task owns its complete iteration range.
+        // Its single native joint row never needs a numerical address.
+        local_joint_rows_.clear();
+        if(host_lane_packing && compact_joint_rows) {
+            for(const auto& task:tasks) {
+                if(!lane_task(task))continue;
+                if(task.descriptor_begin>=descriptors.size())
+                    throw std::logic_error("Packed Dy task exceeds descriptor inputs");
+                const auto& desc=descriptors[task.descriptor_begin];
+                if((desc.row_count&255u)==1u)
+                    local_joint_rows_.push_back(desc.index);
+            }
+            std::sort(local_joint_rows_.begin(),local_joint_rows_.end());
+            if(std::adjacent_find(local_joint_rows_.begin(),local_joint_rows_.end())!=
+                   local_joint_rows_.end() ||
+               local_joint_rows_.size()>logical_joint_rows)
+                throw std::logic_error("Packed Dy joint has multiple numerical owners");
+        }
+        const auto materialized_joint_rows=logical_joint_rows-local_joint_rows_.size();
+        last_schedule_.local_joint_rows=local_joint_rows_.size();
         const auto raw_descriptor_count=source_descriptors && !packed_only
             ?descriptor_capacity:0u;
         const auto device_color_count=device_admission || !source_descriptors
@@ -1618,10 +1640,12 @@ public:
             ?source_descriptor_tokens_.size()*sizeof(std::uint32_t)+
                 source_descriptor_full_.size()*sizeof(native::GpuDyDistanceDescriptor)
             :descriptors.size_bytes();
-        if(logical_joint_rows>std::numeric_limits<std::uint32_t>::max()/
-                                 sizeof(native::GpuDyJointRow))
+        if(materialized_joint_rows>std::numeric_limits<std::uint32_t>::max()/
+                                      sizeof(native::GpuDyJointRow))
             throw std::overflow_error("Device Dy joint rows exceed 32-bit view");
-        const auto joint_numerical_bytes=logical_joint_rows*sizeof(native::GpuDyJointRow);
+        const auto joint_numerical_bytes=
+            materialized_joint_rows*sizeof(native::GpuDyJointRow);
+        last_schedule_.joint_numerical_bytes=joint_numerical_bytes;
         constexpr std::size_t count=18u;
         // The integration prefix describes Sc/SAP views and the launch
         // table. Solver-body ordinals precede the free-body suffix.
@@ -1778,7 +1802,8 @@ public:
         for(const auto i:order) {
             if((i==14u || i==15u || i==17u) && !bytes[i])continue;
             if(packed_only && (i==2u || i==3u))continue;
-            const auto prefix=i==12u?sizeof(std::uint32_t):0u;
+            if(i==1u && compact_joint_rows && !bytes[i])continue;
+            const auto prefix=i==12u?2u*sizeof(std::uint32_t):0u;
             const auto view_bytes=std::max<std::size_t>(bytes[i],4u)+prefix;
             if(total>std::numeric_limits<std::uint32_t>::max()-table_alignment ||
                view_bytes>std::numeric_limits<std::uint32_t>::max()-total)
@@ -2305,21 +2330,32 @@ public:
                 write_input(offsets[16]+i*9u*sizeof(float),
                             integration[i].sqrt_inverse_inertia,
                             9u*sizeof(float));
-        // Resolve stable joint slots into the bound device source view.
+        // Joint records address only materialized numerical rows.
         const auto joint_table=offsets[12]+joint_table_begin;
         const auto joint_table_bias=compact_joint_rows
             ?narrow(std::size_t(params[28])+joint_table):0u;
-        write_input(offsets[12]-sizeof(joint_table_bias),
-                    &joint_table_bias,sizeof(joint_table_bias));
+        const std::array<std::uint32_t,2> joint_header{
+            joint_source_bias,joint_table_bias};
+        write_input(offsets[12]-sizeof(joint_header),
+                    joint_header.data(),sizeof(joint_header));
         if(compact_joint_rows)
             std::memset(input_map.data+joint_table-upload_begin,0xff,
                         logical_joint_rows*sizeof(std::uint32_t));
+        std::size_t local_cursor=0u,physical_row=0u;
         for(std::size_t i=0u;i<joint_records.size();++i) {
             const auto& joint=joint_records[i];
             const auto& desc=joint.descriptor;
             const auto& input=joint_inputs[joint.source_index];
-            const auto address=narrow(std::size_t(joint_source_bias)+
-                std::size_t(input.source_slot)*sizeof(native::GpuDyJointInput));
+            const auto count=desc.row_count&255u;
+            const bool local=local_cursor<local_joint_rows_.size() &&
+                local_joint_rows_[local_cursor]==desc.index;
+            if(local && count!=1u)
+                throw std::logic_error("Packed Dy joint row extent disagrees with owner");
+            const auto address=local?invalid:narrow(
+                std::size_t(params[28])+offsets[1]+
+                physical_row*sizeof(native::GpuDyJointRow));
+            if(local)++local_cursor;
+            else physical_row+=count;
             const auto record_offset=joint_table+logical_joint_rows*4u+i*32u;
             const auto record_address=narrow(std::size_t(params[28])+record_offset);
             const std::array<std::uint32_t,8> record{
@@ -2331,6 +2367,9 @@ public:
                         &record_address,sizeof(record_address));
             write_input(record_offset,record.data(),sizeof(record));
         }
+        if(local_cursor!=local_joint_rows_.size() ||
+           (compact_joint_rows && physical_row!=materialized_joint_rows))
+            throw std::logic_error("Source Dy numerical row ownership disagrees with allocation");
         // Changed actor-local fields share contiguous source DMA spans.
         build_actor_local_uploads();
         for(const auto& upload:actor_local_uploads_)
@@ -2403,6 +2442,12 @@ public:
         for(std::size_t i=0;i<11u;++i)
             params[i<6u?i:i+6u]=narrow(
                 static_cast<std::size_t>(params[28])+offsets[i]);
+        if(!local_joint_rows_.empty()) {
+            // Bit zero selects the compact physical-row map.
+            if(params[1]&1u)
+                throw std::logic_error("Source Dy joint arena is not word aligned");
+            params[1]|=1u;
+        }
         if(device_admission) {
             params[4]=resident_ordinal_bias;
             params[5]=resident_task_bias;
@@ -2529,8 +2574,8 @@ public:
             const bool reads_ordinals=snapshots || (integrates && !free);
             const bool task_access=!free && phase!=Launch::InitializeBodies;
             const bool task_writes=task_access && phase!=Launch::PublishErrors;
-            arena_region(offsets[12]-sizeof(std::uint32_t),
-                sizeof(std::uint32_t)+(initializes || prepares || integrates
+            arena_region(offsets[12]-2u*sizeof(std::uint32_t),
+                2u*sizeof(std::uint32_t)+(initializes || prepares || integrates
                     ?bytes[12]:integration_header_bytes),A::Read);
             if(colors && compact_joint_rows && !prepares)
                 arena_region(offsets[12]+joint_table_begin,
@@ -4200,7 +4245,7 @@ private:
     std::size_t actor_local_capacity_=0u,actor_local_live_slots_=0u;
     std::vector<native::GpuDyJointInput> joint_source_host_;
     std::vector<std::uint8_t> joint_source_valid_,joint_row_source_seen_;
-    std::vector<std::uint32_t> joint_source_dirty_;
+    std::vector<std::uint32_t> joint_source_dirty_,local_joint_rows_;
     std::vector<std::uint32_t> joint_source_late_upload_slots_;
     std::vector<std::uint32_t> prewitness_joint_source_slots_;
     std::vector<std::uint32_t> prewitness_actor_slots_;
