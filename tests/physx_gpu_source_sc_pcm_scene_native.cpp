@@ -9796,6 +9796,12 @@ void verify_gpu_high_degree_coloring(
     const unsigned frames=frames_override?frames_override:
         leaves>=10000u?1u:leaves>=1024u?2u:leaves>=64u?1u:3u;
     for(unsigned frame=0u;frame<frames;++frame) {
+        if(dual_hub && frame==1u) {
+            // Couple the spoke chains through an additional responding edge.
+            const float rest=9.f+1.5f*float(leaves/4u-1u);
+            cpu.create_center_distance_constraint(a[2],a.back(),rest);
+            gpu.create_center_distance_constraint(b[2],b.back(),rest);
+        }
         const auto tick=std::chrono::steady_clock::now();
         cpu.step(1.f/120.f);
         const auto cpu_done=std::chrono::steady_clock::now();
@@ -10431,7 +10437,7 @@ int main(int argc,char** argv) {
         if(scenario=="dual_hub")
             fyzz::tests::measure_gpu_case("sc_pcm","dual_hub",
                 [&]{verify_gpu_high_degree_coloring(
-                    backend,argv[1],argv[2],argv[3],68u,true,1u);});
+                    backend,argv[1],argv[2],argv[3],68u,true,2u);});
         if(scenario=="star_island_10k")
             fyzz::tests::measure_gpu_case("sc_pcm","star_island_10k",
                 [&]{verify_gpu_high_degree_coloring(
